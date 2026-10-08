@@ -3,6 +3,7 @@
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
     Initiative, Partner, Person, PersonRole, ReportDefinition, UserAccount,
+    WorkerProfile,
 )
 from serversherpa.security.passwords import hash_password
 
@@ -428,12 +429,13 @@ async def test_report_definition_attachments_view_requires_reports_view(client, 
 
 # ── self-service bypass is avatars-only (security-fixes task 2) ─────
 
-async def test_worker_document_upload_and_list_denied_on_own_person(client, seeded_user, db):
+async def test_worker_document_upload_denied_and_list_everyone_only_on_own_person(
+        client, seeded_user, db):
     """The self-service bypass in `_authorize` is for AVATARS only. A
-    worker uploading `kind=document` on their own person record, or
-    listing without an explicit `kind=avatar` filter, must fall through
-    to the normal `attachments` permission check (which a plain worker
-    lacks) — entity_id == actor.person.id is never on its own enough."""
+    worker uploading `kind=document` on their own person record is denied
+    (a plain worker lacks `attachments:add`) — entity_id == actor.person.id
+    is never on its own enough. Reading is the shared host rule: a list
+    without `kind=avatar` returns only the Everyone files, never Internal."""
     wes = Person(first_name="Wes", last_name="Worker", email="wes@test.example.com")
     db.add(wes)
     await db.flush()
@@ -442,6 +444,7 @@ async def test_worker_document_upload_and_list_denied_on_own_person(client, seed
         password_hash=hash_password(
             LOGIN["password"], pepper=get_settings().password_pepper.get_secret_value())))
     db.add(PersonRole(person_id=wes.id, role="worker"))
+    db.add(WorkerProfile(person_id=wes.id))
     await db.commit()
 
     staff_headers, _ = await _login(client)
@@ -457,12 +460,21 @@ async def test_worker_document_upload_and_list_denied_on_own_person(client, seed
                                 "document", b"%PDF-1.4 fake", "another.pdf")
     assert resp.status_code == 403
 
-    # Wes listing WITHOUT a kind filter: falls through to the normal
-    # attachments gate, which he doesn't hold — denied, not a leaked list
+    # staff also attaches an Internal file to Wes's record
+    hidden = await client.post(
+        "/attachments", headers=staff_headers,
+        data={"entity_type": "person", "entity_id": wes_id,
+              "kind": "document", "visibility": "internal"},
+        files={"file": ("review.pdf", b"%PDF-1.4 fake", "application/pdf")})
+    assert hidden.status_code == 201, hidden.text
+
+    # Wes listing WITHOUT a kind filter: the host read rule applies — he
+    # sees the Everyone file, never the Internal one
     resp = await client.get(
         "/attachments", headers=wes_headers,
         params={"entity_type": "person", "entity_id": wes_id})
-    assert resp.status_code == 403
+    assert resp.status_code == 200
+    assert [a["filename"] for a in resp.json()] == ["resume.pdf"]
 
     # ...but his OWN avatar kind is still self-service
     assert (await _upload(client, wes_headers, wes_id)).status_code == 201

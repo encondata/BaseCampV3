@@ -1,15 +1,15 @@
 """Global notes — polymorphic text notes on any registered host entity.
-Permission derives from the HOST's resource: viewing notes requires viewing
-the host row (scope included); writing requires change on the host resource
-and a global anchor. Only 'asset' is registered in V1; new hosts are one
-NOTE_HOSTS entry (plus grants) away.
+Permission derives from the HOST's resource (access/hosts.py): viewing notes
+requires viewing the host row (scope included); writing requires change on
+the host resource and a global anchor. New hosts are one NOTE_HOSTS entry
+(plus grants) away.
 
-Exception: 'initiative', 'person', 'client', and 'partner' notes are
-global-only for BOTH read and write — non-global read access to notes on
-these non-physical hosts is deferred to a future product decision, so the
-generic "view = host view + scope" rule is overridden for them in
-_authorize_host. Only the physical/operational hosts (asset, container,
-truck, site) follow the generic rule."""
+Each note carries a visibility level. Everyone: anyone who can see the host
+record, clients included. Internal: global (staff) actors only. Admin:
+global actors at Admin rank or higher. A note above the actor's level reads
+as missing (404 on edit and delete), and an actor may only set a level they
+can see themselves. Spec: docs/superpowers/specs/2026-10-08-note-file-
+visibility-design.md"""
 
 import uuid
 from datetime import UTC, datetime
@@ -17,37 +17,14 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
-from serversherpa.access.scope import scope_conditions
+from serversherpa.access.hosts import NOTE_HOSTS, authorize_host_view
+from serversherpa.access.visibility import can_set_visibility, visible_levels
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession
 from serversherpa.api.schemas import NoteCreateIn, NoteOut, NoteUpdateIn
-from serversherpa.db.models import (
-    Asset, Client, Container, Initiative, Note, Partner, Person, Site,
-    Truck, WorkerProfile,
-)
+from serversherpa.db.models import Note, Person
 from serversherpa.services.audit import audit
 
 router = APIRouter(prefix="/notes", tags=["notes"])
-
-# entity_type -> (resource id, model) — the permission/scope anchor
-NOTE_HOSTS: dict[str, tuple[str, type]] = {
-    "asset": ("assets", Asset),
-    "container": ("containers", Container),
-    "truck": ("trucks", Truck),
-    "initiative": ("initiatives", Initiative),
-    "person": ("workers", Person),
-    "site": ("sites", Site),
-    "client": ("clients", Client),
-    "partner": ("partners", Partner),
-}
-
-# person's "workers" scope columns live on WorkerProfile (keyed by
-# person_id), not Person — probing Person with them would cross-join and
-# match everyone. Mirror routes/workers.py::_check_worker_scope instead.
-SCOPE_PROBES = {
-    "person": lambda entity_id, cond: (
-        select(WorkerProfile.person_id)
-        .where(WorkerProfile.person_id == entity_id, cond)),
-}
 
 
 def _err(status: int, code: str, **extra) -> HTTPException:
@@ -58,43 +35,29 @@ async def _authorize_host(
     db: DbSession, actor: AuthContext, entity_type: str,
     entity_id: uuid.UUID, action: str,
 ) -> None:
-    """view: host resource view + host row in scope (404 outside).
-    write: host resource change + global anchor (client tiers are read-only)."""
+    """view: the shared host read rule (host view + scope, 404 outside).
+    write: host resource change + global anchor (client tiers are read-only).
+    The global anchor spans every row, so no scope probe is needed."""
+    if action == "view":
+        await authorize_host_view(db, actor, entity_type, entity_id)
+        return
     host = NOTE_HOSTS.get(entity_type)
     if host is None:
         raise _err(422, "unknown_entity_type")
     resource, model = host
-    needed = "view" if action == "view" else "change"
-    if not actor.access.can(resource, needed):
+    if not actor.access.can(resource, "change"):
         raise _err(403, "forbidden")
-    if action != "view" and not actor.access.is_global:
-        raise _err(403, "forbidden")
-    # Notes on these hosts stay internal-only, including reads — whether
-    # clients/workers/vendors should ever see notes on their own initiative,
-    # person, client, or partner record is a future product decision, not
-    # something to fall out of the generic "host view + scope" rule. (Only
-    # the physical/operational hosts — asset, container, truck, site — are
-    # covered by that generic rule.)
-    if action == "view" and not actor.access.is_global \
-            and entity_type in ("initiative", "person", "client", "partner"):
+    if not actor.access.is_global:
         raise _err(403, "forbidden")
     row = await db.get(model, entity_id)
     if row is None:
         raise _err(404, "entity_not_found")
-    cond = scope_conditions(resource, actor.access, actor.person.id)
-    if cond is not None:
-        probe = SCOPE_PROBES.get(entity_type)
-        query = (probe(entity_id, cond) if probe
-                 else select(model.id).where(model.id == entity_id, cond))
-        visible = await db.scalar(query)
-        if visible is None:
-            raise _err(404, "entity_not_found")
 
 
 def _out(note: Note, authors: dict) -> NoteOut:
     return NoteOut(
         id=note.id, entity_type=note.entity_type, entity_id=note.entity_id,
-        body=note.body, created_by=note.created_by,
+        body=note.body, visibility=note.visibility, created_by=note.created_by,
         author_name=authors.get(note.created_by),
         created_at=note.created_at, updated_at=note.updated_at)
 
@@ -118,7 +81,8 @@ async def list_notes(
     notes = (await db.scalars(
         select(Note).where(Note.entity_type == entity_type,
                            Note.entity_id == entity_id,
-                           Note.deleted_at.is_(None))
+                           Note.deleted_at.is_(None),
+                           Note.visibility.in_(visible_levels(actor.access)))
         .order_by(Note.created_at.desc()))).all()
     authors = await _authors(db, {n.created_by for n in notes})
     return [_out(n, authors) for n in notes]
@@ -131,21 +95,27 @@ async def create_note(
     actor: CurrentUser,
 ) -> NoteOut:
     await _authorize_host(db, actor, body.entity_type, body.entity_id, "add")
+    if not can_set_visibility(actor.access, body.visibility):
+        raise _err(403, "visibility_not_allowed")
     note = Note(entity_type=body.entity_type, entity_id=body.entity_id,
-                body=body.body, created_by=actor.person.id)
+                body=body.body, visibility=body.visibility,
+                created_by=actor.person.id)
     db.add(note)
     await db.flush()
     audit(db, actor_id=actor.person.id, entity_type=body.entity_type,
           entity_id=str(body.entity_id), action="note.add",
-          changes={"note_id": str(note.id)})
+          changes={"note_id": str(note.id), "visibility": body.visibility})
     await db.commit()
     authors = await _authors(db, {note.created_by})
     return _out(note, authors)
 
 
-async def _get_live_note(db: DbSession, note_id: uuid.UUID) -> Note:
+async def _get_live_note(
+    db: DbSession, note_id: uuid.UUID, actor: AuthContext,
+) -> Note:
     note = await db.get(Note, note_id)
-    if note is None or note.deleted_at is not None:
+    if note is None or note.deleted_at is not None \
+            or note.visibility not in visible_levels(actor.access):
         raise _err(404, "note_not_found")
     return note
 
@@ -157,15 +127,26 @@ async def update_note(
     db: DbSession,
     actor: CurrentUser,
 ) -> NoteOut:
-    note = await _get_live_note(db, note_id)
+    note = await _get_live_note(db, note_id, actor)
     await _authorize_host(db, actor, note.entity_type, note.entity_id, "change")
-    if body.body != note.body:
+    if body.body is None and body.visibility is None:
+        raise _err(422, "nothing_to_update")
+    if body.visibility is not None \
+            and not can_set_visibility(actor.access, body.visibility):
+        raise _err(403, "visibility_not_allowed")
+    changes: dict = {"note_id": str(note.id)}
+    edited = body.body is not None and body.body != note.body
+    if edited:
         note.body = body.body
+    if body.visibility is not None and body.visibility != note.visibility:
+        changes["visibility"] = {"from": note.visibility, "to": body.visibility}
+        note.visibility = body.visibility
+    if edited or len(changes) > 1:
         note.updated_by = actor.person.id
         note.updated_at = datetime.now(UTC)
         audit(db, actor_id=actor.person.id, entity_type=note.entity_type,
               entity_id=str(note.entity_id), action="note.update",
-              changes={"note_id": str(note.id)})
+              changes=changes)
     await db.commit()
     authors = await _authors(db, {note.created_by})
     return _out(note, authors)
@@ -177,7 +158,7 @@ async def delete_note(
     db: DbSession,
     actor: CurrentUser,
 ) -> None:
-    note = await _get_live_note(db, note_id)
+    note = await _get_live_note(db, note_id, actor)
     await _authorize_host(db, actor, note.entity_type, note.entity_id, "delete")
     note.deleted_at = datetime.now(UTC)
     note.updated_by = actor.person.id

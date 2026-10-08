@@ -151,33 +151,33 @@ async def test_person_notes_scoped_worker_cannot_read_others(client, seeded_user
     await db.commit()
 
     admin_headers = await _headers(client)
-    resp = await client.post("/notes", headers=admin_headers, json={
-        "entity_type": "person", "entity_id": str(worker_b.id),
-        "body": "note about worker B"})
-    assert resp.status_code == 201
+    for worker, level in ((worker_b, "everyone"), (worker_a, "everyone"),
+                          (worker_a, "internal")):
+        resp = await client.post("/notes", headers=admin_headers, json={
+            "entity_type": "person", "entity_id": str(worker.id),
+            "body": f"note about {worker.last_name} ({level})",
+            "visibility": level})
+        assert resp.status_code == 201
 
     worker_a_headers = await _headers(client, email="worker-a@test.example.com")
 
-    # worker A must NOT be able to read worker B's notes. This used to hit
-    # the "workers" scope-probe (guarding against a bug where
-    # scope_conditions("workers", ...) returns WorkerProfile columns, but
-    # was being probed against Person, creating an unjoined cross product
-    # that matched every person id) and 404 out-of-scope. Security-fixes
-    # task 2 finding (b) generalized notes' internal-only rule to the
-    # 'person' host too — a non-global actor is denied on ANY person-notes
-    # read, in-scope or not, before the scope probe ever runs — so this is
-    # now 403, matching worker A's own notes below.
+    # worker A must NOT be able to read worker B's notes: the "workers"
+    # scope-probe (WorkerProfile columns, not Person — probing Person would
+    # cross-join and match every person id) rejects it as 404, even though
+    # B's note is Everyone-level.
     resp = await client.get(
         f"/notes?entity_type=person&entity_id={worker_b.id}",
         headers=worker_a_headers)
-    assert resp.status_code == 403
+    assert resp.status_code == 404
 
-    # worker A cannot read their OWN notes either — notes on the person
-    # host are internal-only for non-global reads, full stop.
+    # worker A reads the Everyone notes on their OWN record, never the
+    # Internal one.
     resp = await client.get(
         f"/notes?entity_type=person&entity_id={worker_a.id}",
         headers=worker_a_headers)
-    assert resp.status_code == 403
+    assert resp.status_code == 200
+    assert [n["body"] for n in resp.json()] == [
+        "note about WorkerA (everyone)"]
 
 
 async def test_worker_detail_redacts_internal_fields_for_partner_actor(

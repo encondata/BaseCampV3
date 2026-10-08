@@ -65,7 +65,8 @@ async def my_activity(user: CurrentUser, db: DbSession) -> list[MyActivityItem]:
     """The signed-in user's history: rows they acted in, plus rows about
     their person/account/auth identity (admin resets, failed logins against
     their email — those carry actor NULL and entity_id = the typed email)."""
-    rows = await person_activity(db, user.person.id, user.account.email, limit=50)
+    rows = await person_activity(db, user.person.id, user.account.email, limit=50,
+                                hide_others_note_file_changes=True)
     return [MyActivityItem(**row) for row in rows]
 
 

@@ -12,6 +12,8 @@
 
 .nf-composer { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .nf-composer textarea { width: 100%; resize: vertical; }
+.nf-visibility { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.nf-visibility-hint { margin: 0; }
 .nf-composer-actions, .nf-actions { display: flex; gap: 6px; }
 .nf-list { list-style: none; margin: 0; padding: 0; display: flex;
            flex-direction: column; gap: 10px; }
@@ -45,6 +47,10 @@
    (that class is for the note/file list rows' own meta line, a
    different shape) — a plain 2-column grid row like any other mini-row. */
 .nf-thumb-cap { grid-template-columns: 1fr auto; }
+/* level chip + Visibility button under the caption; an open picker needs
+   more than one 120px cell, so that thumbnail spans two */
+.nf-thumb-vis { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.nf-thumb-wrap.nf-vis-open { grid-column: span 2; }
 .nf-thumb-cap span:first-child {
   overflow: hidden;
   text-overflow: ellipsis;

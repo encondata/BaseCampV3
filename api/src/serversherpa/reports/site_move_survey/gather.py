@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from serversherpa.access.defaults import GATE_BYPASS_RANK
+from serversherpa.access.visibility import VISIBILITY_LEVELS
 from serversherpa.db.models import (
     Asset, AssetModel, Attachment, Initiative, InitiativeAsset, Partner, Person,
     ReportRun, Site, SiteSurveyEntry,
@@ -102,13 +104,20 @@ async def _survey_answers(db: AsyncSession, site_id: uuid.UUID | None) -> dict[s
     return {row.field_key: row.value for row in rows}
 
 
-async def _site_photos(db: AsyncSession, site: Site | None) -> list[bytes]:
+async def _site_photos(db: AsyncSession, site: Site | None,
+                       requested_rank: int) -> list[bytes]:
+    """Only photos the requester could see on the site's Notes & files panel
+    are embedded. Reports are staff-only, so the requester is always global:
+    Admin rank and above also gets `admin` photos, everyone else does not."""
     if site is None:
         return []
+    levels = (VISIBILITY_LEVELS if requested_rank >= GATE_BYPASS_RANK
+              else ("everyone", "internal"))
     atts = (await db.scalars(
         select(Attachment)
         .where(Attachment.entity_type == "site", Attachment.entity_id == site.id,
-               Attachment.kind == "photo", Attachment.deleted_at.is_(None))
+               Attachment.kind == "photo", Attachment.deleted_at.is_(None),
+               Attachment.visibility.in_(levels))
         .order_by(Attachment.created_at.desc(), Attachment.id.desc())
         .limit(MAX_SITE_PHOTOS))).all()
     return [await get_object(att.storage_key) for att in atts]
@@ -257,7 +266,7 @@ async def gather(db: AsyncSession, run: ReportRun) -> SurveyData:
             # this rather than showing one site's photos twice under two
             # headings.
             continue
-        images = await _site_photos(db, site)
+        images = await _site_photos(db, site, run.requested_rank)
         if images:
             photos.append((f"{label_prefix}: {site.name}", images))
 

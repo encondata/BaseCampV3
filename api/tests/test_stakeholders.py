@@ -1160,7 +1160,7 @@ async def test_org_archive_requires_delete_not_just_change(client, db, seeded_us
 async def test_org_notes_redacted_for_scoped_actors(client, db, seeded_user):
     """`Organization.notes` is staff free text about the org; the org's own
     client/vendor contacts must not read it through the list or detail
-    routes (the /notes host was already internal-only — task 2)."""
+    routes (the separate /notes API is gated per note by visibility)."""
     staff = await _headers(client)
     cases = (
         ("/clients", "client_owner", "client_id", "owner-notes2@test.example.com"),

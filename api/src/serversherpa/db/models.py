@@ -356,6 +356,8 @@ class Attachment(Base):
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     uploaded_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     deleted_at: Mapped[datetime | None]
+    # who may read it: everyone / internal / admin (access/visibility.py)
+    visibility: Mapped[str] = mapped_column(server_default="everyone")
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
@@ -1443,7 +1445,8 @@ class SystemConfig(Base):
 
 class Note(Base):
     """Global polymorphic notes (attachments-style entity_type/entity_id).
-    Soft-deleted like attachments; only entity_type='asset' is wired in V1."""
+    Soft-deleted like attachments. Each note carries a visibility level
+    (everyone / internal / admin, see access/visibility.py)."""
 
     __tablename__ = "notes"
 
@@ -1452,6 +1455,8 @@ class Note(Base):
     entity_type: Mapped[str]
     entity_id: Mapped[uuid.UUID]
     body: Mapped[str]
+    # who may read it: everyone / internal / admin (access/visibility.py)
+    visibility: Mapped[str] = mapped_column(server_default="everyone")
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     updated_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     deleted_at: Mapped[datetime | None]

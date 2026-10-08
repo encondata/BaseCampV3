@@ -18,6 +18,7 @@ import type { TagKey } from '../labels/tagTypes';
 import type { Action, PermMap, ScopeInfo } from './access';
 import type { OrgItem } from './orgs';
 import { siblingOrigin } from './siblingOrigin';
+import type { Visibility } from './visibility';
 import type { WorkerItem } from './workers';
 
 // Default: same host the portal was loaded from, port 8000 — so LAN devices
@@ -123,6 +124,7 @@ export interface AttachmentOut {
   size_bytes: number;
   created_at: string;
   url: string | null;
+  visibility: Visibility;
 }
 
 export type ProfileUpdate = Partial<Omit<PersonDetail, 'id' | 'display_name' | 'badge_uid' | 'created_at'>>;
@@ -434,12 +436,15 @@ export async function uploadAttachmentRequest(opts: {
   entityId: string;
   kind: 'avatar' | 'photo' | 'document' | 'survey_template' | 'report_asset';
   file: File;
+  /** Who can read the file (Notes & files); omitted = the API default, Everyone. */
+  visibility?: Visibility;
 }): Promise<AttachmentOut> {
   const form = new FormData();
   form.set('entity_type', opts.entityType);
   form.set('entity_id', opts.entityId);
   form.set('kind', opts.kind);
   form.set('file', opts.file);
+  if (opts.visibility) form.set('visibility', opts.visibility);
   const resp = await apiFetch('/attachments', { method: 'POST', body: form });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
@@ -1972,6 +1977,7 @@ export interface NoteOut {
   id: string; entity_type: string; entity_id: string; body: string;
   created_by: string | null; author_name: string | null;
   created_at: string; updated_at: string;
+  visibility: Visibility;
 }
 
 export async function listAssets(): Promise<AssetItem[]> {
@@ -2136,21 +2142,24 @@ export async function listNotes(entityType: string, entityId: string): Promise<N
 
 export async function createNote(
   entityType: string, entityId: string, body: string,
+  visibility: Visibility = 'everyone',
 ): Promise<NoteOut> {
   const resp = await apiFetch('/notes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ entity_type: entityType, entity_id: entityId, body }),
+    body: JSON.stringify({ entity_type: entityType, entity_id: entityId, body, visibility }),
   });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
 
-export async function updateNote(id: string, body: string): Promise<NoteOut> {
+export async function updateNote(
+  id: string, patch: { body?: string; visibility?: Visibility },
+): Promise<NoteOut> {
   const resp = await apiFetch(`/notes/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ body }),
+    body: JSON.stringify(patch),
   });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
@@ -2169,6 +2178,18 @@ export async function listAttachments(
 ): Promise<AttachmentOut[]> {
   const resp = await apiFetch(
     `/attachments?entity_type=${entityType}&entity_id=${entityId}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateAttachment(
+  id: string, patch: { visibility: Visibility },
+): Promise<AttachmentOut> {
+  const resp = await apiFetch(`/attachments/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

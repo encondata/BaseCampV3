@@ -183,12 +183,24 @@ async def test_people_ratings_hidden_from_clients(client, db, seeded_user):
     assert any(r["rating"] == 4 for r in rows)
 
 
-async def test_initiative_notes_internal_only(client, db, seeded_user):
-    a, _b, ia, *_ = await _two_clients_with_initiatives(db)
+async def test_initiative_notes_everyone_only(client, db, seeded_user):
+    """A client reads the Everyone notes on its own initiative and never the
+    Internal ones; a foreign client's initiative stays 404."""
+    a, _b, ia, ib, _n = await _two_clients_with_initiatives(db)
+    staff = await login(client)
+    for body, level in (("shared", "everyone"), ("staff only", "internal")):
+        resp = await client.post("/notes", headers=staff, json={
+            "entity_type": "initiative", "entity_id": str(ia.id),
+            "body": body, "visibility": level})
+        assert resp.status_code == 201, resp.text
     hdrs = await client_login(db, client, a.id)
     resp = await client.get(
         f"/notes?entity_type=initiative&entity_id={ia.id}", headers=hdrs)
-    assert resp.status_code == 403
+    assert resp.status_code == 200
+    assert [n["body"] for n in resp.json()] == ["shared"]
+    resp = await client.get(
+        f"/notes?entity_type=initiative&entity_id={ib.id}", headers=hdrs)
+    assert resp.status_code == 404
 
 
 async def test_provenance_scoped(client, db, seeded_user):

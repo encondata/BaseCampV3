@@ -10,16 +10,28 @@
  * a legacy `survey_template` row's chip so old data doesn't crash.
  */
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { AttachmentOut, NoteOut } from '../lib/api';
+import { ApiError, type AttachmentOut, type NoteOut } from '../lib/api';
 
 const api = vi.hoisted(() => ({
   listNotes: vi.fn(),
   listAttachments: vi.fn(),
   uploadAttachmentRequest: vi.fn(),
+  createNote: vi.fn(),
+  updateNote: vi.fn(),
+  updateAttachment: vi.fn(),
+}));
+
+const auth = vi.hoisted(() => ({
+  maxRank: 40,
+  scope: { global: true, client_ids: [], partner_ids: [] } as
+    { global: boolean; client_ids: string[]; partner_ids: string[] } | null,
+}));
+vi.mock('../auth/AuthContext', () => ({
+  useAuth: () => ({ maxRank: auth.maxRank, scope: auth.scope }),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -27,11 +39,12 @@ vi.mock('../lib/api', async (importActual) => ({
   ...api,
 }));
 
-function note(id: string): NoteOut {
+function note(id: string, over: Partial<NoteOut> = {}): NoteOut {
   return {
     id, entity_type: 'site', entity_id: 'site-1', body: `Note ${id}`,
     created_by: null, author_name: 'Someone',
     created_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-01T00:00:00Z',
+    visibility: 'everyone', ...over,
   };
 }
 
@@ -40,12 +53,14 @@ function attachment(over: Partial<AttachmentOut>): AttachmentOut {
     id: 'file-1', entity_type: 'site', entity_id: 'site-1', kind: 'document',
     storage_key: 'k', filename: 'report.pdf', content_type: 'application/pdf',
     size_bytes: 2048, created_at: '2026-08-01T00:00:00Z', url: 'https://x/report.pdf',
-    ...over,
+    visibility: 'everyone', ...over,
   };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  auth.maxRank = 40;
+  auth.scope = { global: true, client_ids: [], partner_ids: [] };
 });
 
 afterEach(cleanup);
@@ -124,12 +139,238 @@ it('a partner upload sends kind document (or photo for images), with no upload-t
   const pdf = new File(['x'], 'contract.pdf', { type: 'application/pdf' });
   await user.upload(input, pdf);
   await waitFor(() => expect(api.uploadAttachmentRequest).toHaveBeenCalledWith({
-    entityType: 'partner', entityId: 'p1', kind: 'document', file: pdf,
+    entityType: 'partner', entityId: 'p1', kind: 'document', file: pdf, visibility: 'everyone',
   }));
 
   const png = new File(['x'], 'site.png', { type: 'image/png' });
   await user.upload(input, png);
   await waitFor(() => expect(api.uploadAttachmentRequest).toHaveBeenCalledWith({
-    entityType: 'partner', entityId: 'p1', kind: 'photo', file: png,
+    entityType: 'partner', entityId: 'p1', kind: 'photo', file: png, visibility: 'everyone',
   }));
+});
+
+// ── visibility (Everyone / Internal / Admin) ─────────────────────────
+
+const HINT = 'Everyone includes client and partner users who can see this record.';
+
+async function openPanel(canWrite = true) {
+  const user = userEvent.setup();
+  render(<NotesFilesPanel entityType="site" entityId="site-1" canWrite={canWrite} />);
+  await user.click(await screen.findByRole('button', { expanded: false }));
+  return user;
+}
+
+const buttonsIn = (group: HTMLElement) =>
+  within(group).getAllByRole('button').map((b) => b.textContent);
+
+it('a rank-40 writer picks between Everyone and Internal, with the clients hint', async () => {
+  api.listNotes.mockResolvedValue([]);
+  api.listAttachments.mockResolvedValue([]);
+  await openPanel();
+
+  const group = screen.getByRole('group', { name: 'Visible to' });
+  expect(buttonsIn(group)).toEqual(['Everyone', 'Internal']);
+  expect(within(group).getByRole('button', { name: 'Everyone' }).getAttribute('aria-pressed'))
+    .toBe('true');
+  expect(within(group).getByRole('button', { name: 'Internal' }).getAttribute('aria-pressed'))
+    .toBe('false');
+  expect(screen.getByText(HINT)).toBeDefined();
+});
+
+it('a rank-60 writer is offered Admin; the chosen level goes with the note and the upload', async () => {
+  auth.maxRank = 60;
+  api.listNotes.mockResolvedValue([]);
+  api.listAttachments.mockResolvedValue([]);
+  api.createNote.mockResolvedValue(note('new'));
+  api.uploadAttachmentRequest.mockResolvedValue(attachment({}));
+  const user = await openPanel();
+
+  const group = screen.getByRole('group', { name: 'Visible to' });
+  expect(buttonsIn(group)).toEqual(['Everyone', 'Internal', 'Admin']);
+
+  await user.click(within(group).getByRole('button', { name: 'Internal' }));
+  await user.type(screen.getByPlaceholderText('Add a note…'), 'Gate code is 4411');
+  await user.click(screen.getByRole('button', { name: 'Add note' }));
+  await waitFor(() => expect(api.createNote)
+    .toHaveBeenCalledWith('site', 'site-1', 'Gate code is 4411', 'internal'));
+
+  // the chosen level sticks after a save
+  expect(within(screen.getByRole('group', { name: 'Visible to' }))
+    .getByRole('button', { name: 'Internal' }).getAttribute('aria-pressed')).toBe('true');
+
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  const pdf = new File(['x'], 'plan.pdf', { type: 'application/pdf' });
+  await user.upload(input, pdf);
+  await waitFor(() => expect(api.uploadAttachmentRequest).toHaveBeenCalledWith({
+    entityType: 'site', entityId: 'site-1', kind: 'document', file: pdf, visibility: 'internal',
+  }));
+});
+
+it('a reader sees no picker', async () => {
+  api.listNotes.mockResolvedValue([note('n1')]);
+  api.listAttachments.mockResolvedValue([]);
+  await openPanel(false);
+
+  expect(screen.queryByRole('group', { name: 'Visible to' })).toBeNull();
+  expect(screen.queryByText(HINT)).toBeNull();
+});
+
+it('a non-global user with canWrite sees no composer, Edit/Delete or Visibility buttons', async () => {
+  auth.scope = { global: false, client_ids: ['c1'], partner_ids: [] };
+  api.listNotes.mockResolvedValue([note('n1')]);
+  api.listAttachments.mockResolvedValue([
+    attachment({ id: 'doc-1', filename: 'manual.pdf' }),
+    attachment({ id: 'img-1', filename: 'rack.png', content_type: 'image/png',
+                 url: 'https://x/rack.png', kind: 'photo' }),
+  ]);
+  await openPanel();
+
+  // the lists still load and render
+  expect(screen.getByText('Note n1')).toBeDefined();
+  expect(screen.getByText(/📎 manual\.pdf/)).toBeDefined();
+  expect(screen.getByRole('button', { name: 'Open rack.png' })).toBeDefined();
+
+  expect(screen.queryByPlaceholderText('Add a note…')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Add note' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Attach file' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+  expect(screen.queryByRole('button', { name: /^Visibility/ })).toBeNull();
+  expect(screen.queryByRole('group', { name: 'Visible to' })).toBeNull();
+});
+
+it('an unknown scope counts as non-global: no write controls', async () => {
+  auth.scope = null;
+  api.listNotes.mockResolvedValue([note('n1')]);
+  api.listAttachments.mockResolvedValue([]);
+  await openPanel();
+
+  expect(screen.getByText('Note n1')).toBeDefined();
+  expect(screen.queryByPlaceholderText('Add a note…')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+});
+
+it('fixed-visibility kinds (avatar, survey template, report asset) get no Visibility button', async () => {
+  api.listNotes.mockResolvedValue([]);
+  api.listAttachments.mockResolvedValue([
+    attachment({ id: 'av-1', filename: 'me.png', kind: 'avatar', content_type: 'image/png',
+                 url: 'https://x/me.png' }),
+    attachment({ id: 'st-1', filename: 'tmpl.xlsx', kind: 'survey_template' }),
+    attachment({ id: 'ra-1', filename: 'std.docx', kind: 'report_asset' }),
+    attachment({ id: 'doc-1', filename: 'manual.pdf' }),
+  ]);
+  await openPanel();
+
+  const buttons = screen.getAllByRole('button', { name: /^Visibility of / });
+  expect(buttons.map((b) => b.getAttribute('aria-label')))
+    .toEqual(['Visibility of manual.pdf']);
+});
+
+it('shows Internal / Admin chips on notes, file rows and thumbnails, none for Everyone', async () => {
+  api.listNotes.mockResolvedValue([
+    note('n-int', { visibility: 'internal', created_at: '2026-08-05T00:00:00Z' }),
+    note('n-all', { created_at: '2026-08-04T00:00:00Z' }),
+  ]);
+  api.listAttachments.mockResolvedValue([
+    attachment({ id: 'doc-adm', filename: 'budget.pdf', visibility: 'admin' }),
+    attachment({ id: 'doc-all', filename: 'open.pdf', visibility: 'everyone' }),
+    attachment({ id: 'img-int', filename: 'rack.png', content_type: 'image/png',
+                 url: 'https://x/rack.png', visibility: 'internal' }),
+  ]);
+  await openPanel(false);
+
+  const noteInt = screen.getByText('Note n-int').closest('li') as HTMLElement;
+  expect(within(noteInt).getByText('Internal', { selector: '.chip' })).toBeDefined();
+  const noteAll = screen.getByText('Note n-all').closest('li') as HTMLElement;
+  expect(noteAll.querySelector('.chip')).toBeNull();
+
+  const docAdm = screen.getByText(/📎 budget\.pdf/).closest('li') as HTMLElement;
+  expect(within(docAdm).getByText('Admin', { selector: '.chip' })).toBeDefined();
+  const docAll = screen.getByText(/📎 open\.pdf/).closest('li') as HTMLElement;
+  expect(within(docAll).queryByText('Admin', { selector: '.chip' })).toBeNull();
+  expect(within(docAll).queryByText('Internal', { selector: '.chip' })).toBeNull();
+
+  const cap = screen.getByText('rack.png', { selector: '.nf-thumb-cap *' })
+    .closest('.nf-thumb-wrap') as HTMLElement;
+  expect(within(cap).getByText('Internal', { selector: '.chip' })).toBeDefined();
+});
+
+it('editing a note presets its level and saves body and visibility together', async () => {
+  api.listNotes.mockResolvedValue([note('n1', { visibility: 'internal' })]);
+  api.listAttachments.mockResolvedValue([]);
+  api.updateNote.mockResolvedValue(note('n1'));
+  const user = await openPanel();
+
+  await user.click(screen.getByRole('button', { name: 'Edit' }));
+  const group = screen.getByRole('group', { name: 'Note visibility' });
+  expect(within(group).getByRole('button', { name: 'Internal' }).getAttribute('aria-pressed'))
+    .toBe('true');
+
+  await user.click(within(group).getByRole('button', { name: 'Everyone' }));
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateNote)
+    .toHaveBeenCalledWith('n1', { body: 'Note n1', visibility: 'everyone' }));
+});
+
+it('a file row\'s Visibility button opens the picker and saves the new level', async () => {
+  api.listNotes.mockResolvedValue([]);
+  api.listAttachments.mockResolvedValue([
+    attachment({ id: 'doc-1', filename: 'manual.pdf' }),
+    attachment({ id: 'av-1', filename: 'me.png', kind: 'avatar', content_type: 'image/png',
+                 url: 'https://x/me.png' }),
+  ]);
+  api.updateAttachment.mockResolvedValue(attachment({ visibility: 'internal' }));
+  const user = await openPanel();
+
+  // an avatar never gets the button; the document does, named for its file
+  expect(screen.getAllByRole('button', { name: /^Visibility of / })).toHaveLength(1);
+  const button = screen.getByRole('button', { name: 'Visibility of manual.pdf' });
+  expect(button.getAttribute('aria-expanded')).toBe('false');
+
+  await user.click(button);
+  expect(button.getAttribute('aria-expanded')).toBe('true');
+  const group = screen.getByRole('group', { name: 'Visibility of manual.pdf options' });
+
+  // picking the level the file already has closes the picker, no call
+  await user.click(within(group).getByRole('button', { name: 'Everyone' }));
+  expect(api.updateAttachment).not.toHaveBeenCalled();
+  expect(screen.queryByRole('group', { name: 'Visibility of manual.pdf options' })).toBeNull();
+  expect(button.getAttribute('aria-expanded')).toBe('false');
+
+  await user.click(button);
+  api.listAttachments.mockClear();
+  await user.click(within(screen.getByRole('group', { name: 'Visibility of manual.pdf options' }))
+    .getByRole('button', { name: 'Internal' }));
+  await waitFor(() => expect(api.updateAttachment)
+    .toHaveBeenCalledWith('doc-1', { visibility: 'internal' }));
+  await waitFor(() => expect(api.listAttachments).toHaveBeenCalled());
+  await waitFor(() => expect(
+    screen.queryByRole('group', { name: 'Visibility of manual.pdf options' })).toBeNull());
+});
+
+it('thumbnails get the Visibility button too', async () => {
+  api.listNotes.mockResolvedValue([]);
+  api.listAttachments.mockResolvedValue([
+    attachment({ id: 'img-1', filename: 'rack.png', content_type: 'image/png',
+                 url: 'https://x/rack.png', kind: 'photo' }),
+  ]);
+  api.updateAttachment.mockResolvedValue(attachment({}));
+  const user = await openPanel();
+
+  await user.click(screen.getByRole('button', { name: 'Visibility of rack.png' }));
+  await user.click(within(screen.getByRole('group', { name: 'Visibility of rack.png options' }))
+    .getByRole('button', { name: 'Internal' }));
+  await waitFor(() => expect(api.updateAttachment)
+    .toHaveBeenCalledWith('img-1', { visibility: 'internal' }));
+});
+
+it('maps a visibility_not_allowed 403 to a plain message', async () => {
+  api.listNotes.mockResolvedValue([]);
+  api.listAttachments.mockResolvedValue([]);
+  api.createNote.mockRejectedValue(new ApiError(403, 'visibility_not_allowed'));
+  const user = await openPanel();
+
+  await user.type(screen.getByPlaceholderText('Add a note…'), 'hello');
+  await user.click(screen.getByRole('button', { name: 'Add note' }));
+  expect(await screen.findByText("You can't choose that visibility.")).toBeDefined();
 });

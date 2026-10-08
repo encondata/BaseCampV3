@@ -46,13 +46,13 @@ const TIMESHEET_DEF: ReportDefinition = {
 const file = (over: Partial<AttachmentOut> = {}): AttachmentOut => ({
   id: 'f1', entity_type: 'report_definition', entity_id: 'd2', kind: 'report_asset',
   storage_key: 'k', filename: 'Transportation Standards.docx', content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  size_bytes: 2048, created_at: '2026-09-09T10:00:00Z', url: null, ...over,
+  size_bytes: 2048, created_at: '2026-09-09T10:00:00Z', url: null, visibility: 'everyone', ...over,
 });
 const templateFile = (over: Partial<AttachmentOut> = {}): AttachmentOut => ({
   id: 'f2', entity_type: 'report_definition', entity_id: 'd2', kind: 'survey_template',
   storage_key: 'k2', filename: 'Move Survey.xlsx',
   content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  size_bytes: 4096, created_at: '2026-09-09T10:00:00Z', url: null, ...over,
+  size_bytes: 4096, created_at: '2026-09-09T10:00:00Z', url: null, visibility: 'everyone', ...over,
 });
 
 beforeEach(() => {

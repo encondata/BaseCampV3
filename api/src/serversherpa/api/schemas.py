@@ -421,6 +421,7 @@ class AttachmentOut(BaseModel):
     filename: str
     content_type: str
     size_bytes: int
+    visibility: str = "everyone"
     created_at: datetime
     url: str | None = None  # presigned
 
@@ -1675,21 +1676,32 @@ class NoteOut(BaseModel):
     entity_type: str
     entity_id: uuid.UUID
     body: str
+    visibility: str
     created_by: uuid.UUID | None = None
     author_name: str | None = None
     created_at: datetime
     updated_at: datetime
 
 
+VisibilityLevel = Literal["everyone", "internal", "admin"]
+
+
+class AttachmentUpdateIn(BaseModel):
+    visibility: VisibilityLevel
+    model_config = ConfigDict(extra="forbid")
+
+
 class NoteCreateIn(BaseModel):
     entity_type: str
     entity_id: uuid.UUID
     body: str = Field(min_length=1)
+    visibility: VisibilityLevel = "everyone"
     model_config = ConfigDict(extra="forbid")
 
 
 class NoteUpdateIn(BaseModel):
-    body: str = Field(min_length=1)
+    body: str | None = Field(default=None, min_length=1)
+    visibility: VisibilityLevel | None = None
     model_config = ConfigDict(extra="forbid")
 
 

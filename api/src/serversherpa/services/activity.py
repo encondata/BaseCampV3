@@ -8,7 +8,7 @@ the routes wrap them."""
 
 import uuid
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import AuditLog, Person
@@ -16,10 +16,20 @@ from serversherpa.services.entity_refs import resolve_entity_refs
 
 ABOUT_ENTITY_TYPES = ("person", "user_account", "auth")
 
+# Note and file changes made BY OTHERS on this person's record carry
+# filenames and visibility levels — including for Internal/Admin items the
+# person may not read — so the person's own feed (/auth/me/activity) leaves
+# them out. Admins reading /users/{id}/activity still see them.
+HIDDEN_WHEN_BY_OTHERS_PREFIXES = ("note.", "attachment.")
+
 
 async def person_activity(
     db: AsyncSession, person_id: uuid.UUID, login_email: str | None, *, limit: int = 50,
+    hide_others_note_file_changes: bool = False,
 ) -> list[dict]:
+    about_filters = ([not_(or_(*(AuditLog.action.startswith(p)
+                                 for p in HIDDEN_WHEN_BY_OTHERS_PREFIXES)))]
+                     if hide_others_note_file_changes else [])
     identities = [str(person_id)]
     if login_email:
         identities.append(login_email)
@@ -29,7 +39,8 @@ async def person_activity(
         .where(or_(
             AuditLog.actor_person_id == person_id,
             and_(AuditLog.entity_type.in_(ABOUT_ENTITY_TYPES),
-                 AuditLog.entity_id.in_(identities)),
+                 AuditLog.entity_id.in_(identities),
+                 *about_filters),
         ))
         .order_by(AuditLog.at.desc())
         .limit(limit)
