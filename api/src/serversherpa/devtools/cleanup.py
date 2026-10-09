@@ -156,12 +156,16 @@ async def purge_in_chunks(
     storage keys), delete the ids, then, when `still_used` is given, ask it
     which of the candidate keys a kept row still uses (it runs after the
     delete, in the same transaction, so the rows just deleted do not count).
-    Those keys are kept and counted in `files_kept`; the rest are deleted
+    Those keys are kept and counted once in `files_kept`; the rest are deleted
     from storage after the commit. Stops when a chunk comes back short.
 
     `result` is updated as each chunk commits. If anything raises, the
     exception carries it as `partial_result` so the caller can report what
     was already removed."""
+    # Objects found in use so far. A set, so an object that stays in use
+    # across several chunks counts once; one that is freed by a later chunk
+    # leaves the set, so files_kept is what is still kept when the run ends.
+    kept_keys: set[str] = set()
     try:
         while True:
             async with maker() as session:
@@ -178,14 +182,14 @@ async def purge_in_chunks(
                     # again forever
                     raise RuntimeError(
                         f"cleanup made no progress on {model.__tablename__}")
-                kept = 0
+                used: set[str] = set()
                 if still_used is not None and keys:
                     used = await still_used(session, set(keys))
-                    kept = len(used)
                     keys = [k for k in keys if k not in used]
                 await session.commit()
                 result.rows_deleted += deleted.rowcount
-                result.files_kept += kept
+                kept_keys = (kept_keys | used) - set(keys)
+                result.files_kept = len(kept_keys)
             await delete_objects(keys, result)
             if len(ids) < CHUNK_SIZE:
                 return
@@ -311,10 +315,12 @@ async def _count_unused_keys(
 ) -> int:
     """How many distinct stored objects a purge of `model` rows matching
     `where` would delete: their keys, minus any key a row that is NOT being
-    purged still uses. Approximate in one way: a run deletes in chunks and
-    sees rows of later chunks as kept, so an object shared by purged rows
-    that straddle a chunk boundary is counted here once but shows as
-    "kept" in the run's own totals until the last of them goes."""
+    purged still uses. A run deletes in chunks and sees rows of later chunks
+    as kept for the moment, so an object shared by purged rows
+    that straddle a chunk boundary is counted here once, and the run's own
+    `files_kept` ends up the same (an object freed by a later chunk leaves
+    the kept set). The one difference is timing: a run sees rows added or
+    changed after the preview."""
     kept = []
     for src_model, column, alive in _key_sources():
         query = select(column).where(column.is_not(None), column != "").correlate(None)
@@ -351,8 +357,6 @@ REPORT_DONE = ("completed", "failed")                      # reports/worker.py _
 LABEL_RUN_DONE = ("completed", "failed", "canceled")       # label_generation_runs_status_check
 SPEC_JOB_DONE = ("done", "failed")                         # spec_lookup_jobs_status_check
 
-# A finished status with a time: both must hold, so a row with no finish
-# time is never old enough.
 def _old_mail(cutoff: datetime) -> ColumnElement[bool]:
     return and_(EmailOutbox.status.in_(MAIL_DONE), EmailOutbox.created_at < cutoff)
 
@@ -366,18 +370,29 @@ def _old_notifications(cutoff: datetime) -> ColumnElement[bool]:
         func.coalesce(Notification.payload["state"].astext, "").not_in(("pending", "open")))
 
 
-# A Create-a-move draft (kind move_setup) points at its From-To file check
-# (a move_assets job) through payload.assets.check_job_id, which is not an FK.
-# A check a kept draft still points at stays, however old it is. A draft that
-# is itself being purged does not count as kept.
+# Jobs and runs need a terminal status AND a finish time before the cutoff;
+# a row with no finish time is never old enough.
+#
+# A failed Create-a-move draft (kind move_setup) is not finished work: any
+# edit reopens it, and the draft sweep (imports/jobs.py) owns its cleanup, so
+# it is never purged here. Every other move_setup row (a created move) is.
+#
+# A draft points at its From-To file check (a move_assets job) through
+# payload.assets.check_job_id, which is not an FK. A check a draft that stays
+# still points at stays too, however old it is. A draft that is itself being
+# purged does not count.
+def _import_goes(job, cutoff: datetime) -> ColumnElement[bool]:
+    return and_(job.status.in_(IMPORT_DONE), job.finished_at < cutoff,
+                ~and_(job.kind == "move_setup", job.status == "failed"))
+
+
 def _old_imports(cutoff: datetime) -> ColumnElement[bool]:
     draft = aliased(ImportJob)
-    draft_goes = and_(draft.status.in_(IMPORT_DONE), draft.finished_at < cutoff)
     needed = exists().where(
         draft.kind == "move_setup",
         draft.payload["assets"]["check_job_id"].astext == cast(ImportJob.id, String),
-        func.coalesce(draft_goes, false()).is_(False))
-    return and_(ImportJob.status.in_(IMPORT_DONE), ImportJob.finished_at < cutoff, ~needed)
+        func.coalesce(_import_goes(draft, cutoff), false()).is_(False))
+    return and_(_import_goes(ImportJob, cutoff), ~needed)
 
 
 def _old_reports(cutoff: datetime) -> ColumnElement[bool]:
@@ -537,18 +552,20 @@ GROUPS: dict[str, Group] = {g.key: g for g in (
                 description="Completed, failed and canceled imports, with the file that was "
                             "uploaded. Their result reports go too, so a finished From-To "
                             "import can no longer be downloaded or have its review rows "
-                            "reprocessed. A file check that a move still being set up "
-                            "uses stays. A file another job still uses stays.",
+                            "reprocessed. Move drafts that failed, and the file check a draft "
+                            "still uses, stay. A file another job still uses stays.",
                 count=_count_imports, purge=_purge_imports),
             Category(
                 key="reports", label="Report runs",
                 description="Finished report runs and their generated file. A file that is "
-                            "also a move's attachment stays; only the run record goes.",
+                            "also a move's attachment stays; only the run record goes. Old inbox "
+                            "notifications for a purged run no longer open it.",
                 count=_count_reports, purge=_purge_reports),
             Category(
                 key="label_runs", label="Label generation runs",
                 description="Finished label generation runs. The labels they made all stay; "
-                            "they just no longer name the run.",
+                            "they just no longer name the run. Old inbox notifications for a purged "
+                            "run no longer open it.",
                 count=_count_label_runs, purge=_purge_label_runs),
             Category(
                 key="spec_lookups", label="Finished spec lookups",

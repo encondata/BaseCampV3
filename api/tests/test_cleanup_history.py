@@ -550,12 +550,12 @@ async def test_imports_in_small_chunks_still_delete_a_shared_file_once_it_is_fre
     assert len(storage_calls.deleted) == 3 and storage_calls.deleted.count(shared) == 1
 
 
-async def test_a_draft_that_is_itself_old_does_not_protect_its_check(
+async def test_a_draft_that_is_itself_purged_does_not_protect_its_check(
         client, db, seeded_user, storage_calls):
     check = _job("completed", key=_key())
     db.add(check)
     await db.flush()
-    draft = ImportJob(kind="move_setup", filename="m", status="failed", finished_at=OLD,
+    draft = ImportJob(kind="move_setup", filename="m", status="completed", finished_at=OLD,
                       payload={"assets": {"check_job_id": str(check.id)}})
     db.add(draft)
     await db.commit()
@@ -615,3 +615,47 @@ async def test_a_notification_a_mail_row_mirrors_is_deleted_and_the_mail_row_sta
     assert res["rows_deleted"] == 1
     db.expire_all()
     assert (await db.get(EmailOutbox, mail_id)).notification_id is None
+
+
+# -- review fixes ------------------------------------------------------
+
+
+async def test_imports_a_file_kept_across_many_chunks_counts_once(
+        client, db, seeded_user, storage_calls, monkeypatch):
+    monkeypatch.setattr("serversherpa.devtools.cleanup.CHUNK_SIZE", 1)
+    shared = _key()
+    db.add_all([_job("completed", key=shared) for _ in range(3)]
+               + [_job("queued", key=shared, finished=None)])
+    await db.commit()
+    res, _ = await _go(client, db, seeded_user, "imports")
+    assert (res["rows_deleted"], res["files_deleted"], res["files_kept"]) == (3, 0, 1)
+    assert storage_calls.deleted == []
+
+
+async def test_imports_a_failed_move_draft_is_never_purged(
+        client, db, seeded_user, storage_calls):
+    failed_draft = ImportJob(kind="move_setup", filename="m", status="failed",
+                             finished_at=OLD, payload={"move": {}})
+    created = ImportJob(kind="move_setup", filename="m2", status="completed",
+                        finished_at=OLD)
+    db.add_all([failed_draft, created])
+    await db.commit()
+    failed_id, created_id = failed_draft.id, created.id
+    res, _ = await _go(client, db, seeded_user, "imports")
+    assert res["rows_deleted"] == 1
+    assert await _ids(db, ImportJob, failed_id, created_id) == {failed_id}
+
+
+async def test_imports_a_check_of_a_failed_draft_stays_with_it(
+        client, db, seeded_user, storage_calls):
+    check = _job("completed", key=_key())
+    db.add(check)
+    await db.flush()
+    draft = ImportJob(kind="move_setup", filename="m", status="failed", finished_at=OLD,
+                      payload={"assets": {"check_job_id": str(check.id)}})
+    db.add(draft)
+    await db.commit()
+    check_id, draft_id = check.id, draft.id
+    res, _ = await _go(client, db, seeded_user, "imports")
+    assert res["rows_deleted"] == 0
+    assert await _ids(db, ImportJob, check_id, draft_id) == {check_id, draft_id}
