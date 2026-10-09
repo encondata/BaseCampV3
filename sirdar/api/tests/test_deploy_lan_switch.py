@@ -13,9 +13,9 @@ from sqlalchemy import select, update
 
 from sirdar_api.config import get_settings
 from sirdar_api.db.engine import get_sessionmaker
-from sirdar_api.db.models import Environment, EnvironmentService, EsxiVm
+from sirdar_api.db.models import Environment, EnvironmentService, EsxiVm, ManagedRecord
 from sirdar_api.deploy import publish, vmcommon
-from sirdar_api.deploy.publish import DNS
+from sirdar_api.deploy.publish import CERT, DNS
 from sirdar_api.deploy.npm import NpmError
 
 from .deploy_factories import secrets_key  # noqa: F401
@@ -486,3 +486,27 @@ async def test_a_bare_name_with_its_a_record_switches_with_the_rest(
                for c in publish_fakes.npm.certs.values())
     await _switched(db, lan_home, "purple")
     assert _forwards(publish_fakes)["lan9.serversherpa.com"] == PURPLE_IP
+
+
+async def test_a_bare_name_whose_records_are_under_an_old_name_waits_too(
+        db, lan, publish_fakes):  # noqa: F811
+    # The base domain changed and nothing was published since: Sirdar's rows
+    # still name the old bare name, and the new one has no A record yet.
+    await managed(db, lan, "home", DNS, "rec-old", name="old9.serversherpa.com")
+    await _switched(db, lan, "orange")
+    assert "lan9.serversherpa.com" not in _forwards(publish_fakes)
+    assert all(c["domain_names"] != ["lan9.serversherpa.com"]
+               for c in publish_fakes.npm.certs.values())
+
+
+async def test_a_switch_keeps_a_bare_name_certificate_sirdar_already_has(
+        db, lan, publish_fakes):  # noqa: F811
+    cert = publish_fakes.npm.add_cert(["lan9.serversherpa.com"])
+    await managed(db, lan, "home", CERT, cert, name="lan9.serversherpa.com")
+    await _switched(db, lan, "orange")
+    rows = await db.scalars(select(ManagedRecord).where(
+        ManagedRecord.environment_id == lan.id, ManagedRecord.service == "home",
+        ManagedRecord.kind == CERT).execution_options(populate_existing=True))
+    assert [r.external_id for r in rows] == [str(cert)]
+    assert cert in publish_fakes.npm.certs
+    assert _host(publish_fakes, "lan9.serversherpa.com")["certificate_id"] == cert

@@ -81,8 +81,11 @@ def _dns(records, managed_row=None, owners=None, service=API):
     # Records that can sit beside an A record at the same name never block it.
     ([rec("t1", type_="TXT", content="v=spf1 -all"), rec("m1", type_="MX", content="mx.x"),
       rec("c1", type_="CAA", content="0 issue \"letsencrypt.org\""),
-      rec("s1", type_="SRV", content="1 1 443 x"), rec("a6", type_="AAAA", content="2001:db8::1")],
+      rec("s1", type_="SRV", content="1 1 443 x")],
      None, None, ("create", "Sirdar will create A 203.0.113.7.")),
+    # A foreign AAAA would send IPv6 clients elsewhere, out of the smoke test's sight.
+    ([rec("a6", type_="AAAA", content="2001:db8::1")], None, None,
+     ("conflict", "A AAAA record already uses this name.")),
     ([rec("n1", type_="NS", content="ns1.example.com")], None, None,
      ("conflict", "A NS record already uses this name.")),
     ([rec("r1"), rec("t1", type_="TXT", content="v=spf1 -all")], row(DNS, "r1"), None,

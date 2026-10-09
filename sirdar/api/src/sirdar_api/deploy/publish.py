@@ -220,9 +220,11 @@ def in_zone(hostname: str, zone: str) -> bool:
     return hostname == zone or hostname.endswith("." + zone)
 
 
-# Record types that can't share a name with an A record. Everything else
-# (TXT for SPF/DKIM, MX, CAA, SRV, AAAA, ...) sits beside it and is ignored.
-BLOCKS_AN_A = ("CNAME", "NS")
+# Record types that block an A record at the same name: CNAME and NS can't
+# share it, and a foreign AAAA would send IPv6 clients elsewhere, out of the
+# smoke test's sight. Everything else (TXT for SPF/DKIM, MX, CAA, SRV, ...)
+# sits beside it and is ignored.
+BLOCKS_AN_A = ("CNAME", "NS", "AAAA")
 
 
 def _unmanaged_dns(sp: ServicePlan, records: list[DnsRecord], owners: dict[str, str], *,
@@ -1070,14 +1072,18 @@ async def _wait_for_put_back(rollback: Awaitable[str | None]) -> tuple[str | Non
     return task.result(), cancelled
 
 
-async def _home_without_dns(env_id) -> bool:
-    """The bare name has neither Sirdar's A record nor its proxy host yet (an
-    environment made before the home service, never published since): a
-    switch leaves it out rather than ask Let's Encrypt for a name nothing
-    resolves. The next publish that runs step 12 picks it up. A home proxy
-    host Sirdar already manages stays in, so the switch never drops it."""
-    rows = await _all_rows(env_id, (DNS, PROXY))
-    return not any(r.service == home.HOME for r in rows)
+async def _home_without_dns(ctx: PublishContext) -> bool:
+    """Sirdar manages nothing yet at the current bare name (an environment
+    made before the home service, or whose base domain changed, with no
+    publish since): a switch leaves it out rather than ask Let's Encrypt for
+    a name nothing resolves. The next publish that runs step 12 picks it up.
+    A home record, proxy host or certificate Sirdar already manages under
+    that name keeps it in, so the switch never drops one as stale."""
+    name = next((s.hostname for s in ctx.services if s.service == home.HOME), None)
+    if name is None:
+        return False
+    rows = await _all_rows(ctx.env_id, (DNS, PROXY, CERT))
+    return not any(r.service == home.HOME and r.name == name for r in rows)
 
 
 async def switch_lan(ctx: PublishContext, out: Output, *, npm_transport, smoke_transport,
@@ -1097,7 +1103,7 @@ async def switch_lan(ctx: PublishContext, out: Output, *, npm_transport, smoke_t
         recorded = await _record(ctx, transport=npm_transport)
     except (StepFailed, NpmError) as e:
         raise StepFailed(f"{e.reason} Sirdar changed nothing.") from None
-    waiting = await _home_without_dns(ctx.env_id)
+    waiting = await _home_without_dns(ctx)
     moved = replace(ctx, services=tuple(replace(s, host_ip=ip) if s.service in APP_SERVICES
                                         else s for s in ctx.services
                                         if not (waiting and s.service == home.HOME)))
