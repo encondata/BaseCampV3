@@ -7,9 +7,14 @@ from dataclasses import asdict
 from fastapi import APIRouter, HTTPException
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
-from serversherpa.api.schemas import CleanupPreviewOut, CleanupRunIn, CleanupRunOut
+from serversherpa.api.schemas import (
+    CleanupDuplicatesOut,
+    CleanupPreviewOut,
+    CleanupRunIn,
+    CleanupRunOut,
+)
 from serversherpa.db.engine import get_sessionmaker
-from serversherpa.devtools import cleanup
+from serversherpa.devtools import cleanup, duplicates
 from serversherpa.services.audit import audit
 
 router = APIRouter(prefix="/devtools/cleanup", tags=["devtools"])
@@ -67,3 +72,14 @@ async def run_cleanup(
             "categories": [asdict(r) for r in results]})
     return CleanupRunOut(group=body.group, older_than_days=age,
                          categories=[asdict(r) for r in results])
+
+
+@router.get("/duplicates", response_model=CleanupDuplicatesOut)
+async def list_duplicates(
+    db: DbSession,
+    actor: AuthContext = _CAN_VIEW,
+) -> CleanupDuplicatesOut:
+    """Report only: assets sharing a serial number, people sharing a name."""
+    return CleanupDuplicatesOut(
+        assets=await duplicates.duplicate_assets(db),
+        people=await duplicates.duplicate_people(db))

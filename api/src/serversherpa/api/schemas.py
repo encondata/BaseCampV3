@@ -4170,3 +4170,36 @@ class CleanupRunOut(BaseModel):
     group: str
     older_than_days: int | None
     categories: list[CleanupCategoryResultOut]
+
+
+class DuplicateAssetOut(BaseModel):
+    id: uuid.UUID
+    name: str | None
+    serial_number: str | None
+    site_name: str | None
+    status_label: str
+    href: str
+
+
+class DuplicateAssetGroupOut(BaseModel):
+    serial: str
+    items: list[DuplicateAssetOut]
+
+
+class DuplicatePersonOut(BaseModel):
+    id: uuid.UUID
+    display_name: str
+    email: str | None
+    has_login: bool
+    is_worker: bool
+    href: str | None
+
+
+class DuplicatePersonGroupOut(BaseModel):
+    name: str
+    items: list[DuplicatePersonOut]
+
+
+class CleanupDuplicatesOut(BaseModel):
+    assets: list[DuplicateAssetGroupOut]
+    people: list[DuplicatePersonGroupOut]
