@@ -274,6 +274,10 @@ a.dash-kpi:hover {
   color: var(--text-mute);
 }
 .dash-grid-line { stroke: var(--paper-line); stroke-width: 1; }
+.dash-sr-list {
+  position: absolute; width: 1px; height: 1px; margin: 0; padding: 0;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
 .dash-chart-tooltip {
   position: absolute;
   transform: translate(-50%, calc(-100% - 8px));

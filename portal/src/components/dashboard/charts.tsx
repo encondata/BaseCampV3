@@ -86,9 +86,7 @@ export function DailyBars({ days, ariaLabel, formatTooltip }: {
               )}
               {/* full-height hit target so hover works on short bars */}
               <rect className="dash-bar-hit" x={i * slot} y="0" width={slot} height={BAR_H}
-                    onMouseEnter={(e) => handleHover(d.key, e)}>
-                <title>{formatTooltip(d)}</title>
-              </rect>
+                    onMouseEnter={(e) => handleHover(d.key, e)} />
             </g>
           );
         })}
@@ -106,6 +104,11 @@ export function DailyBars({ days, ariaLabel, formatTooltip }: {
           ) : null
         ))}
       </div>
+      {/* per-day counts for screen readers; sighted users get the one
+          hover tooltip below (an SVG <title> would add a second, native one) */}
+      <ul className="dash-sr-list">
+        {days.map((d) => <li key={`sr-${d.key}`}>{formatTooltip(d)}</li>)}
+      </ul>
       {hovered && hover && (
         <div className="dash-chart-tooltip" style={{ left: hover.x, top: hover.y }}>
           {formatTooltip(hovered)}
