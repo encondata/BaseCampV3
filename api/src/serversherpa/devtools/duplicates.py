@@ -53,9 +53,11 @@ async def duplicate_assets(db: AsyncSession) -> list[dict]:
             "id": r.id, "name": r.name, "serial_number": r.serial_number,
             "site_name": r.site_name,
             "status_label": labels.get(r.status, (r.status, ""))[0],
-            "href": f"/assets?open={r.id}"})
+            "href": f"/assets/{r.id}"})
+    # a record can change between the two queries; a group that no longer has
+    # two members is no longer a duplicate, and is labeled from what was fetched
     return [{"serial": (members[k][0]["serial_number"] or "").strip(),
-             "items": members[k]} for k in keys]
+             "items": members[k]} for k in keys if len(members[k]) > 1]
 
 
 async def duplicate_people(db: AsyncSession) -> list[dict]:
@@ -88,4 +90,7 @@ async def duplicate_people(db: AsyncSession) -> list[dict]:
         members[(f, l)].append({
             "id": p.id, "display_name": p.display_name, "email": p.email,
             "has_login": login, "is_worker": worker, "href": href})
-    return [{"name": names[tuple(k)], "items": members[tuple(k)]} for k in keys]
+    # a record can change between the two queries; a group that no longer has
+    # two members is no longer a duplicate, and is labeled from what was fetched
+    return [{"name": names[tuple(k)], "items": members[tuple(k)]}
+            for k in keys if len(members[tuple(k)]) > 1]

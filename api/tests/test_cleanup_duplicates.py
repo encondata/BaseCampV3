@@ -53,7 +53,7 @@ async def test_serials_match_ignoring_case_and_surrounding_spaces(client, db, se
     ten = group["items"][2]
     assert ten["site_name"] == "DC-Dup"
     assert ten["status_label"] == "Active"
-    assert ten["href"] == f"/assets?open={ten['id']}"
+    assert ten["href"] == f"/assets/{ten['id']}"
     assert set(ten) == {"id", "name", "serial_number", "site_name", "status_label", "href"}
 
 
@@ -158,3 +158,52 @@ async def test_view_only_developer_can_read(client, db, seeded_user):
     await db.commit()
     hdrs = await devtools_login(client)
     assert (await client.get(URL, headers=hdrs)).status_code == 200
+
+
+class _RacingSession:
+    """Runs `race()` right after the first query, as if another request changed
+    a record between the groups query and the members query."""
+
+    def __init__(self, db, race):
+        self._db, self._race, self._calls = db, race, 0
+
+    async def execute(self, *a, **kw):
+        result = await self._db.execute(*a, **kw)
+        self._calls += 1
+        if self._calls == 1:
+            await self._race(self._db)
+        return result
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+
+async def test_a_group_that_shrinks_between_the_queries_is_skipped(db):
+    from sqlalchemy import delete
+
+    doomed_a, kept_a = _asset("race-1", "Gone"), _asset("RACE-1", "Kept")
+    solo_a1, solo_a2 = _asset("race-2", "S1"), _asset("race-2", "S2")
+    db.add_all([doomed_a, kept_a, solo_a1, solo_a2])
+    p1, p2 = Person(first_name="Ra", last_name="Ce"), Person(first_name="Ra", last_name="Ce")
+    q1, q2 = Person(first_name="Ra", last_name="Ce2"), Person(first_name="Ra", last_name="Ce2")
+    q3 = Person(first_name="Ra", last_name="Ce3")
+    r1, r2 = Person(first_name="Ra", last_name="Ce3"), Person(first_name="Ra", last_name="Ce3")
+    db.add_all([p1, p2, q1, q2, q3, r1, r2])
+    await db.commit()
+
+    async def race_assets(s):
+        # the whole group vanishes, and another shrinks to one member
+        await s.execute(delete(Asset).where(Asset.id.in_([solo_a1.id, solo_a2.id])))
+        await s.execute(delete(Asset).where(Asset.id == doomed_a.id))
+
+    out = await duplicates.duplicate_assets(_RacingSession(db, race_assets))
+    assert out == []
+
+    async def race_people(s):
+        await s.execute(delete(Person).where(Person.id.in_([q1.id, q2.id])))
+        await s.execute(delete(Person).where(Person.id.in_([q3.id, r1.id])))
+
+    out = await duplicates.duplicate_people(_RacingSession(db, race_people))
+    # Ra Ce keeps both members; Ra Ce2 vanished; Ra Ce3 shrank to one
+    assert [g["name"] for g in out] == ["Ra Ce"]
+    assert len(out[0]["items"]) == 2
