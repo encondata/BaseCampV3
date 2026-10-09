@@ -40,7 +40,7 @@ from sirdar_api.deploy import (
     digitalocean,
     do_accounts,
     do_envs,
-    envfile,
+    home,
     integrations,
     lan_slots,
     names,
@@ -255,7 +255,7 @@ def certificate_of(results: list[certcheck.HostCert], now: datetime) -> dict | N
 
 async def _public_hostnames(db: AsyncSession, env_ids: list) -> dict:
     """{environment id: [hostname, ...]} in the services' usual order, set values only."""
-    order = {s: i for i, s in enumerate(envfile.SERVICES)}
+    order = {s: i for i, s in enumerate(home.SERVICE_ORDER)}
     rows = (await db.execute(select(EnvironmentService.environment_id,
                                     EnvironmentService.service, EnvironmentService.hostname)
                              .where(EnvironmentService.environment_id.in_(env_ids),

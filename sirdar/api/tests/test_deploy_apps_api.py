@@ -173,7 +173,7 @@ async def test_publish_plans_only_the_running_apps(client, db, target):
     env.apps = ["mailpit"]
     await db.flush()
     assert [p.service for p in await publish.service_plans(db, env)] == [
-        "api", "portal", "spaces"]
+        "api", "portal", "home", "spaces"]
 
 
 async def test_a_new_base_domain_names_only_the_running_apps(client, db, target):
@@ -184,6 +184,7 @@ async def test_a_new_base_domain_names_only_the_running_apps(client, db, target)
     assert resp.status_code == 200, resp.text
     names = {s["service"]: s["hostname"] for s in resp.json()["services"]}
     assert names == {"api": "api.qa2.serversherpa.com", "portal": "portal.qa2.serversherpa.com",
+                     "home": "qa2.serversherpa.com",
                      "kiosk": "kiosk.qa2.serversherpa.com", "wiki": None,
                      "spaces": "spaces.qa2.serversherpa.com", "status": None, "mailpit": None}
 
@@ -208,7 +209,7 @@ async def test_digitalocean_smokes_and_certifies_only_the_running_apps(
     values = await _render_values(fake_runner)
     assert values["STACK_APPS"] == "status,mailpit"
     assert values["SS_CERT_NAMES"] == ("api.uat9.serversherpa.com,portal.uat9.serversherpa.com,"
-                                       "status.uat9.serversherpa.com")
+                                       "status.uat9.serversherpa.com,uat9.serversherpa.com")
     for request in fake_runner.requests:
         assert [h["service"] for h in request.extravars["public_hosts"]] == [
             "api", "portal", "status"], request.step
@@ -221,7 +222,7 @@ async def test_digitalocean_create_names_only_the_running_apps(db, do_build):
     await db.flush()
     ctx = await do_provision.prepare(db, env, await do_build.deployment(), get_settings())
     assert ctx.names == ("api.uat9.serversherpa.com", "portal.uat9.serversherpa.com",
-                         "wiki.uat9.serversherpa.com")
+                         "wiki.uat9.serversherpa.com", "uat9.serversherpa.com")
 
 
 async def test_lan_bluegreen_smokes_only_the_running_apps(db, lan, fake_runner, fake_publisher,
@@ -237,7 +238,7 @@ async def test_lan_bluegreen_smokes_only_the_running_apps(db, lan, fake_runner, 
 # ---- free default ports on a shared SSH host -------------------------------------
 
 def _ports(body) -> dict[str, int]:
-    return {s["service"]: s["port"] for s in body["services"]}
+    return {s["service"]: s["port"] for s in body["services"] if s["service"] != "home"}
 
 
 async def test_a_second_environment_on_the_same_ssh_host_gets_free_ports(client, db, target):

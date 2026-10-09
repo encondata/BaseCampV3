@@ -249,8 +249,9 @@ async def test_env_extra(db):
         "SS_SPACES_SECRET_KEY": "spaces-SECRET-1", "SS_SPACES_USE_PATH_STYLE": "false",
         "STACK_DROPLET_ID": "4001",
         "SS_CERT_DO_TOKEN": DEV_RENEW_TOKEN, "SS_CERT_LB_ID": "lb-0001",
-        "SS_CERT_NAMES": ",".join(f"{s}.uat9.serversherpa.com"
-                                  for s in ("api", "portal", "kiosk", "wiki", "status")),
+        "SS_CERT_NAMES": ",".join([*(f"{s}.uat9.serversherpa.com"
+                                     for s in ("api", "portal", "kiosk", "wiki", "status")),
+                                   "uat9.serversherpa.com"]),
         "SS_CERT_ACME_DIRECTORY": "https://acme-v02.api.letsencrypt.org/directory",
         "SS_CERT_ACME_KEY": acme_b64,
     }
@@ -302,3 +303,13 @@ async def test_the_droplet_env_names_the_environments_own_bucket(db):
     env = await make_do_environment(db)
     row = await do_envs.get(db, env.id)
     assert env.spaces_bucket == row.bucket != envfile.DEFAULT_SPACES_BUCKET
+
+
+async def test_a_dev_droplet_environment_gets_home_and_production_does_not(db):
+    env = await make_do_environment(db)
+    rows = {s.service: s for s in await environments.services_of(db, env.id)}
+    assert (rows["home"].hostname, rows["home"].port) == ("uat9.serversherpa.com",
+                                                          rows["portal"].port)
+    prod = await make_do_environment(db, name="prod", type_="production", account="production",
+                                     slots=None)
+    assert "home" not in {s.service for s in await environments.services_of(db, prod.id)}

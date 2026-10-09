@@ -125,3 +125,34 @@ async def test_every_check_gets_its_own_connection_and_tls_handshake():
 
 async def _no_sleep(seconds):
     pass
+
+
+HOME = [("home", "uat2.serversherpa.com")]
+
+
+async def _home(fake):
+    return (await smoke.run(HOME, "10.10.48.6", transport=fake.transport(), attempts=1))[0]
+
+
+async def test_the_bare_name_passes_only_as_a_302_to_its_portal():
+    fake = FakeSmoke()                      # a bare name redirects by default, like NPM
+    result = await _home(fake)
+    assert (result.ok, result.url, result.detail) == (
+        True, "https://uat2.serversherpa.com/", "HTTP 302 to the portal")
+    assert fake.requests[0].headers["host"] == "uat2.serversherpa.com"
+    for answer in (200, (301, "https://portal.uat2.serversherpa.com/"),
+                   (302, "https://elsewhere.example/"),
+                   (302, "https://portal.uat2.serversherpa.com.evil.example/"),
+                   (302, "")):
+        fake.set("uat2.serversherpa.com", answer)
+        result = await _home(fake)
+        code = answer if isinstance(answer, int) else answer[0]
+        assert (result.ok, result.detail) == (
+            False, f"HTTP {code}, not a redirect to the portal"), answer
+
+
+async def test_a_service_name_still_passes_on_any_2xx_or_3xx():
+    fake = FakeSmoke()
+    fake.set("portal.uat2.serversherpa.com", (302, "https://anywhere.example/"))
+    results = await _run(fake, attempts=1)
+    assert [r.ok for r in results] == [True, True, True]

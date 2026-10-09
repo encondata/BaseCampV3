@@ -20,6 +20,9 @@ import {
   deploymentRunning, gbOf, hostLabel, mbOf, onBluegreen, onDo, onVmHost, sshTargets, targetLabel, vmRef, vmStage,
 } from './labels';
 
+/** The bare name (home) follows the portal's address and port: never edited on its own. */
+const editable = (env: Environment) => env.services.filter((s) => s.service !== 'home');
+
 const SECRET_LABELS: Record<string, string> = {
   SS_ANTHROPIC_API_KEY: 'Anthropic API key', SS_DB_TESTING_PASSWORD: 'Database testing password',
   SS_SMTP_PASSWORD: 'SMTP password',
@@ -41,7 +44,7 @@ function fromEnv(env: Environment) {
   return {
     ref: env.git_ref, target: env.target, domain: env.base_domain, proxy: env.proxy_ip, bind: env.bind_ip,
     keep: String(env.keep_dumps), bucket: env.spaces_bucket, level: env.log_level,
-    services: Object.fromEntries(env.services.map((s) => [s.service, { host_ip: s.host_ip, port: String(s.port) }])) as Record<string, Svc>,
+    services: Object.fromEntries(editable(env).map((s) => [s.service, { host_ip: s.host_ip, port: String(s.port) }])) as Record<string, Svc>,
     cores: String(env.vm?.cores ?? ''), memory: env.vm ? gbOf(env.vm.memory_mb) : '',
     disk: String(env.vm?.disk_gb ?? ''), keepVm: String(env.vm?.keep_snapshots ?? ''),
   };
@@ -129,7 +132,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
     }
     const keep = Number(form.keep);
     put('keep', /^\d+$/.test(form.keep.trim()) && keep >= 1 && keep <= 100 ? '' : 'Keep 1 to 100 dumps.');
-    for (const s of env.services) {
+    for (const s of editable(env)) {
       const v = form.services[s.service];
       // A VM's or DigitalOcean environment's addresses are managed: only the ports are edited.
       const problem = (!managedAddr && ipv4Problem(v.host_ip, `${s.service} address`))
@@ -160,7 +163,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
       }
     }
     if (!e.services) {
-      const used = env.services.map((s) => Number(form.services[s.service].port));
+      const used = editable(env).map((s) => Number(form.services[s.service].port));
       if (new Set(used).size !== used.length) e.services = "Two services can't use the same port.";
     }
     for (const key of secretKeys) {
@@ -186,7 +189,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
     if (Number(form.keep) !== env.keep_dumps) patch.keep_dumps = Number(form.keep);
     if (form.level !== env.log_level) patch.log_level = form.level;
     const services: NonNullable<EnvironmentPatch['services']> = {};
-    for (const s of env.services) {
+    for (const s of editable(env)) {
       const v = form.services[s.service];
       const change: { port?: number; host_ip?: string } = {};
       if (Number(v.port) !== s.port) change.port = Number(v.port);
@@ -322,7 +325,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
         ariaLabel="Service addresses"
         columns={[{ key: 'service', label: 'Service' }, { key: 'host', label: 'Public name', mono: true },
                   { key: 'addr', label: 'Address', width: '200px' }, { key: 'port', label: 'Port', width: '120px' }]}
-        rows={env.services.map((s) => ({
+        rows={editable(env).map((s) => ({
           key: s.service,
           cells: [
             <b className="cell-top">{s.service}</b>,

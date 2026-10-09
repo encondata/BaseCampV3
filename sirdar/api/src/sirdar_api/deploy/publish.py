@@ -37,6 +37,7 @@ from sirdar_api.deploy import (
     apps as app_rules,
     do_envs,
     envfile,
+    home,
     integrations,
     lan_slots,
     npm,
@@ -83,6 +84,19 @@ class ServicePlan:
     @property
     def forward(self) -> str:
         return f"{self.host_ip}:{self.port}"
+
+
+SPACES_ADVANCED = "client_max_body_size 0;"
+
+
+def advanced_config(sp: ServicePlan) -> str:
+    """The NPM advanced config Sirdar writes for a service: uploads without a
+    size cap for spaces, the redirect to the portal for the bare name."""
+    if sp.service == "spaces":
+        return SPACES_ADVANCED
+    if sp.service == home.HOME:
+        return home.nginx_redirect(sp.hostname)
+    return ""
 
 
 NO_LB_YET = ("No load balancer yet: step 0 (Prepare DigitalOcean) makes it, and the records "
@@ -206,13 +220,20 @@ def in_zone(hostname: str, zone: str) -> bool:
     return hostname == zone or hostname.endswith("." + zone)
 
 
+# Record types that block an A record at the same name: CNAME and NS can't
+# share it, and a foreign AAAA would send IPv6 clients elsewhere, out of the
+# smoke test's sight. Everything else (TXT for SPF/DKIM, MX, CAA, SRV, ...)
+# sits beside it and is ignored.
+BLOCKS_AN_A = ("CNAME", "NS", "AAAA")
+
+
 def _unmanaged_dns(sp: ServicePlan, records: list[DnsRecord], owners: dict[str, str], *,
                    public_ip: str) -> Status:
     """The name as seen without a managed record of this environment."""
     here = [r for r in records if r.name == sp.hostname]
-    others = [r for r in here if r.type != "A"]
-    if others:
-        return Status("conflict", f"A {others[0].type} record already uses this name.")
+    blocking = [r for r in here if r.type in BLOCKS_AN_A]
+    if blocking:
+        return Status("conflict", f"A {blocking[0].type} record already uses this name.")
     a_records = [r for r in here if r.type == "A"]
     if len(a_records) > 1:
         return Status("conflict", "More than one A record uses this name.")
@@ -223,7 +244,11 @@ def _unmanaged_dns(sp: ServicePlan, records: list[DnsRecord], owners: dict[str, 
         return Status("claimable", f"A {found.content}, made outside Sirdar.", found)
     parent = sp.hostname.split(".", 1)[1]
     wildcard = f"*.{parent}"
-    if any(r.name == wildcard for r in records):
+    # A name that already has records of its own isn't answered by the wildcard.
+    # The bare name's A only shadows a wildcard for that one name (the
+    # wildcard itself is never touched), so home is never blocked by one.
+    if (sp.service != home.HOME and not here
+            and any(r.name == wildcard for r in records)):
         return Status("conflict", f"The wildcard {wildcard} covers this name; a record here "
                                   "would override it.")
     return Status("create", f"Sirdar will create A {public_ip}.")
@@ -262,10 +287,14 @@ def dns_status(sp: ServicePlan, records: list[DnsRecord], row: ManagedRecord | N
 
 
 def _forward_drift(host: ProxyHost, sp: ServicePlan) -> list[str]:
-    checks = (("the scheme", host.forward_scheme, "http"),
+    checks = [("the scheme", host.forward_scheme, "http"),
               ("the forward host", host.forward_host, sp.host_ip),
               ("the forward port", host.forward_port, sp.port),
-              ("WebSockets", host.allow_websocket_upgrade, True))
+              ("WebSockets", host.allow_websocket_upgrade, True)]
+    if sp.service == home.HOME:
+        # only the bare name's advanced config is Sirdar's; others keep theirs
+        checks.append(("the redirect", host.raw.get("advanced_config") or "",
+                       advanced_config(sp)))
     return [name for name, have, want in checks if have != want]
 
 
@@ -485,8 +514,6 @@ async def claim(db: AsyncSession, env: Environment, state: dict) -> list[str]:
 
 # ---- steps 12–14 and 16–17 -------------------------------------------------------------
 
-SPACES_ADVANCED = "client_max_body_size 0;"
-
 
 class StepFailed(Exception):
     """A publish step can't finish. `reason` (our own copy) ends its log."""
@@ -678,17 +705,20 @@ def new_host_body(sp: ServicePlan) -> dict:
             "ssl_forced": False, "hsts_enabled": False, "hsts_subdomains": False,
             "http2_support": False, "block_exploits": True, "caching_enabled": False,
             "allow_websocket_upgrade": True, "access_list_id": 0,
-            "advanced_config": SPACES_ADVANCED if sp.service == "spaces" else "",
+            "advanced_config": advanced_config(sp),
             "meta": {"letsencrypt_agree": False, "dns_challenge": False}, "locations": []}
 
 
 def host_body(host: ProxyHost, sp: ServicePlan, *, certificate_id: int | None = None) -> dict:
     """Read-modify-write: everything the host has (access lists, advanced
-    config, ...) with Sirdar's fields on top."""
+    config, ...) with Sirdar's fields on top. The bare name's advanced config
+    is Sirdar's (the redirect) and is rewritten."""
     body = {k: host.raw[k] for k in npm.HOST_FIELDS if k in host.raw}
     body["locations"] = body.get("locations") or []
     body.update(forward_scheme="http", forward_host=sp.host_ip, forward_port=sp.port,
                 allow_websocket_upgrade=True)
+    if sp.service == home.HOME:
+        body["advanced_config"] = advanced_config(sp)
     if certificate_id is not None:
         body.update(certificate_id=certificate_id, ssl_forced=True, http2_support=True)
     return body
@@ -814,6 +844,16 @@ async def _delete_replaced(api: Npm, hostname: str, cert_id: int, out: Output) -
             "it stays in Nginx Proxy Manager\n")
 
 
+def _updated(drift: list[str], sp: ServicePlan) -> str:
+    """What a proxy host update changed, for the log: the bare name's
+    redirect gets its own words."""
+    if "the redirect" not in drift:
+        return f"proxy host now goes to {sp.forward}"
+    if drift == ["the redirect"]:
+        return "proxy host now redirects to the portal"
+    return f"proxy host now goes to {sp.forward} and redirects to the portal"
+
+
 async def ensure_proxy(ctx: PublishContext, out: Output, *, transport,
                        sleep: Callable[[float], Awaitable[None]], now: datetime,
                        backoff: tuple[int, ...]) -> None:
@@ -846,8 +886,9 @@ async def ensure_proxy(ctx: PublishContext, out: Output, *, transport,
                 await _remember(ctx.env_id, s.service, PROXY, found.id, s.hostname)
                 out(f"{s.hostname}: created a proxy host to {s.forward}\n")
             elif st.state == "update":
+                drift = _forward_drift(found, s)
                 found = await api.update_host(found.id, host_body(found, s))
-                out(f"{s.hostname}: proxy host now goes to {s.forward}\n")
+                out(f"{s.hostname}: {_updated(drift, s)}\n")
             else:
                 out(f"{s.hostname}: proxy host to {s.forward}, unchanged\n")
             cert_id, replaced = await _ensure_certificate(api, ctx, s, found, certs,
@@ -893,8 +934,8 @@ async def run_smoke(ctx: PublishContext, out: Output, *, transport,
 
 
 # Switch traffic on the LAN (deploy phase 8b): these follow the live app VM;
-# spaces stays on the data VM.
-APP_SERVICES = tuple(s for s in envfile.SERVICES if s != "spaces")
+# spaces stays on the data VM. home (the bare name) goes where portal goes.
+APP_SERVICES = (*(s for s in envfile.SERVICES if s != "spaces"), home.HOME)
 
 
 async def _point(env_id, addresses: dict[str, str]) -> None:
@@ -1034,6 +1075,20 @@ async def _wait_for_put_back(rollback: Awaitable[str | None]) -> tuple[str | Non
     return task.result(), cancelled
 
 
+async def _home_without_dns(ctx: PublishContext) -> bool:
+    """Sirdar manages nothing yet at the current bare name (an environment
+    made before the home service, or whose base domain changed, with no
+    publish since): a switch leaves it out rather than ask Let's Encrypt for
+    a name nothing resolves. The next publish that runs step 12 picks it up.
+    A home record, proxy host or certificate Sirdar already manages under
+    that name keeps it in, so the switch never drops one as stale."""
+    name = next((s.hostname for s in ctx.services if s.service == home.HOME), None)
+    if name is None:
+        return False
+    rows = await _all_rows(ctx.env_id, (DNS, PROXY, CERT))
+    return not any(r.service == home.HOME and r.name == name for r in rows)
+
+
 async def switch_lan(ctx: PublishContext, out: Output, *, npm_transport, smoke_transport,
                      sleep: Callable[[float], Awaitable[None]], now: datetime,
                      backoff: tuple[int, ...], attempts: int, delay: float) -> None:
@@ -1051,8 +1106,10 @@ async def switch_lan(ctx: PublishContext, out: Output, *, npm_transport, smoke_t
         recorded = await _record(ctx, transport=npm_transport)
     except (StepFailed, NpmError) as e:
         raise StepFailed(f"{e.reason} Sirdar changed nothing.") from None
+    waiting = await _home_without_dns(ctx)
     moved = replace(ctx, services=tuple(replace(s, host_ip=ip) if s.service in APP_SERVICES
-                                        else s for s in ctx.services))
+                                        else s for s in ctx.services
+                                        if not (waiting and s.service == home.HOME)))
     out(f"Switching the proxy hosts to {ctx.slot} ({ip}).\n")
     try:
         await ensure_proxy(moved, out, transport=npm_transport, sleep=sleep, now=now,

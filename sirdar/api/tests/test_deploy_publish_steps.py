@@ -501,3 +501,118 @@ async def test_unproxy_leaves_a_multi_name_certificate_at_the_recorded_id(db, en
     assert shared in proxy.certs
     assert f"api.uat2.serversherpa.com: Certificate #{shared} {LEFT}" in lines
     assert await _rows(db) == []
+
+
+REDIRECT = ('if ($request_uri !~ "^/\\.well-known/acme-challenge/") {\n'
+            "    return 302 https://portal.uat2.serversherpa.com$request_uri;\n"
+            "}")
+
+
+@pytest.fixture
+async def home_env(db, secrets_key, publish_fakes):  # noqa: F811
+    publish_fakes.npm.now = NOW
+    await configure(db)
+    return await make_environment(db, name="uat2", host="10.10.48.63", with_home=True)
+
+
+def _bare(fake_npm) -> dict:
+    return next(h for h in fake_npm.hosts.values()
+                if h["domain_names"] == ["uat2.serversherpa.com"])
+
+
+async def test_the_bare_name_gets_a_redirect_host_with_its_own_certificate(db, home_env,
+                                                                         publish_fakes):  # noqa: F811
+    lines = await _run(db, home_env, "proxy")
+    bare = _bare(publish_fakes.npm)
+    assert bare["advanced_config"] == REDIRECT
+    assert (bare["forward_host"], bare["forward_port"]) == ("10.10.48.63", 8091)
+    assert bare["ssl_forced"] and publish_fakes.npm.certs[bare["certificate_id"]][
+        "domain_names"] == ["uat2.serversherpa.com"]
+    others = [h for h in publish_fakes.npm.hosts.values() if h is not bare]
+    assert {h["advanced_config"] for h in others} == {"", "client_max_body_size 0;"}
+    assert ("uat2.serversherpa.com: created a proxy host to 10.10.48.63:8091\n" in lines)
+    order = [line.split(":")[0] for line in lines if "created a proxy host" in line]
+    assert order[:3] == ["api.uat2.serversherpa.com", "portal.uat2.serversherpa.com",
+                         "uat2.serversherpa.com"]
+
+
+async def test_a_redirect_changed_by_hand_is_put_back(db, home_env, publish_fakes):  # noqa: F811
+    await _run(db, home_env, "proxy")
+    _bare(publish_fakes.npm)["advanced_config"] = "return 301 https://elsewhere.example;"
+    state = await publish.inspect(db, home_env, get_settings())
+    bare = next(s for s in state["services"] if s["service"] == "home")
+    assert (bare["proxy"]["state"], bare["proxy"]["detail"]) == (
+        "update", "Sirdar will change the redirect.")
+    lines = await _run(db, home_env, "proxy")
+    assert _bare(publish_fakes.npm)["advanced_config"] == REDIRECT
+    assert "uat2.serversherpa.com: proxy host now redirects to the portal\n" in lines
+    assert not any("now goes to" in line for line in lines)
+
+
+async def test_a_moved_bare_name_says_where_it_goes_and_that_it_redirects(
+        db, home_env, publish_fakes):  # noqa: F811
+    await _run(db, home_env, "proxy")
+    bare = _bare(publish_fakes.npm)
+    bare["advanced_config"] = ""
+    bare["forward_host"] = "10.10.48.99"
+    lines = await _run(db, home_env, "proxy")
+    assert ("uat2.serversherpa.com: proxy host now goes to 10.10.48.63:8091 and redirects "
+            "to the portal\n") in lines
+
+
+async def test_other_hosts_keep_their_own_advanced_config(db, home_env,
+                                                          publish_fakes):  # noqa: F811
+    await _run(db, home_env, "proxy")
+    api = next(h for h in publish_fakes.npm.hosts.values()
+               if h["domain_names"] == ["api.uat2.serversherpa.com"])
+    api["advanced_config"] = "proxy_read_timeout 300;"
+    writes = len(_writes(publish_fakes.npm))
+    await _run(db, home_env, "proxy")
+    assert api["advanced_config"] == "proxy_read_timeout 300;"
+    assert len(_writes(publish_fakes.npm)) == writes
+
+
+async def test_the_bare_name_gets_its_a_record_beside_txt_and_mx(db, home_env,
+                                                                  publish_fakes):  # noqa: F811
+    cf = publish_fakes.cf
+    spf = cf.add("TXT", "uat2.serversherpa.com", "v=spf1 include:_spf.example.com -all")
+    mx = cf.add("MX", "uat2.serversherpa.com", "mail.example.com")
+    lines = await _run(db, home_env, "dns")
+    assert "uat2.serversherpa.com: created A 203.0.113.7\n" in lines
+    a = [r for r in cf.records.values()
+         if r["name"] == "uat2.serversherpa.com" and r["type"] == "A"]
+    assert len(a) == 1 and a[0]["comment"] == "Managed by Sirdar (uat2/home)"
+    assert spf in cf.records and mx in cf.records
+    assert ("home", DNS, a[0]["id"], "created") in await _rows(db)
+    again = await _run(db, home_env, "dns")
+    assert "uat2.serversherpa.com: A 203.0.113.7, unchanged\n" in again
+
+
+async def test_a_cname_at_the_bare_name_still_blocks(db, home_env, publish_fakes):  # noqa: F811
+    cf = publish_fakes.cf
+    cf.add("CNAME", "uat2.serversherpa.com", "elsewhere.example.com")
+    with pytest.raises(StepFailed) as e:
+        await _run(db, home_env, "dns")
+    assert "  uat2.serversherpa.com: A CNAME record already uses this name.\n" in e.value.reason
+    assert cf.writes() == [] and await _rows(db) == []
+
+
+async def test_the_bare_name_shadows_a_zone_wildcard_and_leaves_it_alone(
+        db, home_env, publish_fakes):  # noqa: F811
+    cf = publish_fakes.cf
+    wildcard = cf.add("A", "*.serversherpa.com", "198.51.100.9")
+    before = dict(cf.records[wildcard])
+    lines = await _run(db, home_env, "dns")
+    assert "uat2.serversherpa.com: created A 203.0.113.7\n" in lines
+    assert cf.records[wildcard] == before
+    assert all(f"/{wildcard}" not in r.url.path for r in cf.requests if r.method != "GET")
+    assert wildcard not in {e for _, _, e, _ in await _rows(db)}
+
+
+async def test_a_wildcard_still_blocks_a_service_name(db, env, publish_fakes):  # noqa: F811
+    publish_fakes.cf.add("A", "*.uat2.serversherpa.com", "198.51.100.9")
+    with pytest.raises(StepFailed) as e:
+        await _run(db, env, "dns")
+    assert "  api.uat2.serversherpa.com: The wildcard *.uat2.serversherpa.com covers" \
+        in e.value.reason
+    assert publish_fakes.cf.writes() == []

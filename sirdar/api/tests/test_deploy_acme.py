@@ -22,7 +22,7 @@ from .fake_acme import FakeAcme
 from .integration_helpers import CF_TOKEN, configure
 
 pytestmark = pytest.mark.usefixtures("secrets_key")
-NAMES = certs.public_names("uat9.serversherpa.com")
+NAMES = tuple(f"{s}.uat9.serversherpa.com" for s in certs.PUBLIC_SERVICES)
 
 
 async def _nap(_s):

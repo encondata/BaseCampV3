@@ -80,7 +80,8 @@ async def trust_fake(db, fake) -> None:
 async def make_environment(db, *, name: str = "uat", target_id: str = "ssh",
                            host: str = "127.0.0.1", status: str = "ready",
                            current_sha: str | None = None,
-                           secrets: dict | None = None) -> Environment:
+                           secrets: dict | None = None,
+                           with_home: bool = False) -> Environment:
     settings = get_settings()
     env = Environment(name=name, type="dev", target_id=target_id,
                       base_domain=f"{name}.serversherpa.com", git_ref="main",
@@ -96,6 +97,10 @@ async def make_environment(db, *, name: str = "uat", target_id: str = "ssh",
             port=envfile.DEFAULT_PORTS[service], proxied=False,
             hostname=(f"{service}.{env.base_domain}"
                       if service in envfile.PUBLIC_SERVICES else None)))
+    if with_home:
+        db.add(EnvironmentService(
+            environment_id=env.id, service="home", host_ip=host,
+            port=envfile.DEFAULT_PORTS["portal"], proxied=False, hostname=env.base_domain))
     for key, value in (ENV_SECRETS if secrets is None else secrets).items():
         db.add(EnvironmentSecret(environment_id=env.id, key=key,
                                  value_enc=vault.encrypt(settings, value)))

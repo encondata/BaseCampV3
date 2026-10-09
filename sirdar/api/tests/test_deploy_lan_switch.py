@@ -13,14 +13,15 @@ from sqlalchemy import select, update
 
 from sirdar_api.config import get_settings
 from sirdar_api.db.engine import get_sessionmaker
-from sirdar_api.db.models import Environment, EnvironmentService, EsxiVm
+from sirdar_api.db.models import Environment, EnvironmentService, EsxiVm, ManagedRecord
 from sirdar_api.deploy import publish, vmcommon
+from sirdar_api.deploy.publish import CERT, DNS
 from sirdar_api.deploy.npm import NpmError
 
 from .deploy_factories import secrets_key  # noqa: F401
 from .integration_helpers import NPM_PASSWORD, configure, configure_esxi
 from .lan_helpers import DATA, ORANGE, make_bluegreen_environment
-from .publish_helpers import publish_fakes  # noqa: F401
+from .publish_helpers import managed, publish_fakes  # noqa: F401
 
 PURPLE_IP = "10.10.48.49"
 
@@ -41,6 +42,14 @@ async def lan(db, secrets_key):  # noqa: F811
     await vmcommon.set_vm(EsxiVm, env.id, role="data", ip=DATA, created=True,
                           moref="vm-3", instance_uuid="uuid-data")
     return env
+
+
+@pytest.fixture
+async def lan_home(db, lan):
+    """lan whose bare name already has its A record (step 12 ran since the
+    home service was added)."""
+    await managed(db, lan, "home", DNS, "rec-home", name="lan9.serversherpa.com")
+    return lan
 
 
 def _publisher():
@@ -117,11 +126,15 @@ async def test_a_switch_repoints_every_app_proxy_host(db, lan, publish_fakes):  
     assert hosts["spaces"] == DATA and hosts["api"] == PURPLE_IP and hosts["mailpit"] == PURPLE_IP
 
 
-async def test_each_service_keeps_its_port_on_the_new_slot(db, lan, publish_fakes):  # noqa: F811
+async def test_each_service_keeps_its_port_on_the_new_slot(db, lan_home,
+                                                           publish_fakes):  # noqa: F811
+    lan = lan_home
     await _switched(db, lan, "orange")
     await _switched(db, lan, "purple")
     ports = await _ports(db, lan)
-    assert len(set(ports.values())) == len(ports)          # one port per service
+    named = {n: p for n, p in ports.items() if n != "lan9.serversherpa.com"}
+    assert len(set(named.values())) == len(named)          # one port per service
+    assert ports["lan9.serversherpa.com"] == ports["portal.lan9.serversherpa.com"]
     got = {h["domain_names"][0]: (h["forward_host"], h["forward_port"])
            for h in publish_fakes.npm.hosts.values()}
     assert got == {name: (DATA if name.startswith("spaces.") else PURPLE_IP, port)
@@ -298,7 +311,8 @@ async def test_a_database_failure_after_the_smoke_test_puts_npm_back(
 
 
 async def test_a_database_failure_while_putting_back_says_both(
-        db, lan, publish_fakes, monkeypatch):  # noqa: F811
+        db, lan_home, publish_fakes, monkeypatch):  # noqa: F811
+    lan = lan_home                                 # seven names, the bare one too
     await _switched(db, lan, "orange")
     publish_fakes.smoke.set("portal.lan9.serversherpa.com", 502)
     real = publish._managed_hosts
@@ -312,13 +326,15 @@ async def test_a_database_failure_while_putting_back_says_both(
 
     monkeypatch.setattr(publish, "_managed_hosts", second_call_fails)
     reason = await _fails(db, lan, "purple")
-    assert reason.startswith("1 of 6 public URLs didn't answer: portal.")
+    assert reason.startswith("1 of 7 public URLs didn't answer: portal.")
     assert reason.endswith("Sirdar couldn't put the proxy hosts back: check them in Nginx "
                            "Proxy Manager.")
     assert "hunter2" not in reason
 
 
-async def test_one_host_that_cant_be_put_back_is_named(db, lan, publish_fakes):  # noqa: F811
+async def test_one_host_that_cant_be_put_back_is_named(db, lan_home,
+                                                       publish_fakes):  # noqa: F811
+    lan = lan_home                                 # seven hosts, the bare name's too
     await _switched(db, lan, "orange")
     wiki = _host(publish_fakes, "wiki.lan9.serversherpa.com")["id"]
     publish_fakes.smoke.set("portal.lan9.serversherpa.com", 502)
@@ -333,7 +349,7 @@ async def test_one_host_that_cant_be_put_back_is_named(db, lan, publish_fakes): 
 
     publish_fakes.npm.handler = fail_wiki_on_put_back
     reason = await _fails(db, lan, "purple")
-    assert "Sirdar couldn't put 1 of 6 proxy hosts back: check them in Nginx Proxy Manager." \
+    assert "Sirdar couldn't put 1 of 7 proxy hosts back: check them in Nginx Proxy Manager." \
         in reason
     assert "wiki.lan9.serversherpa.com: " in reason
     forwards = _forwards(publish_fakes)
@@ -419,3 +435,78 @@ async def test_the_wait_for_the_put_back_is_bounded(db, lan, publish_fakes,
     while publish._PUTTING_BACK:
         await asyncio.sleep(0.01)
     assert _app_forwards(publish_fakes) == {ORANGE}
+
+
+async def test_the_bare_name_follows_the_portal(db, lan_home, publish_fakes):  # noqa: F811
+    lan = lan_home
+    await _switched(db, lan, "orange")
+    await _switched(db, lan, "purple")
+    bare = _host(publish_fakes, "lan9.serversherpa.com")
+    portal = _host(publish_fakes, "portal.lan9.serversherpa.com")
+    assert (bare["forward_host"], bare["forward_port"]) == (
+        PURPLE_IP, portal["forward_port"])
+    assert (await _hosts(db, lan))["home"] == PURPLE_IP
+    publish_fakes.smoke.set("portal.lan9.serversherpa.com", 502)
+    await _fails(db, lan, "orange")
+    assert _host(publish_fakes, "lan9.serversherpa.com")["forward_host"] == PURPLE_IP
+    assert (await _hosts(db, lan))["home"] == PURPLE_IP
+
+
+async def test_a_switch_keeps_the_redirect_on_the_bare_name(db, lan_home,
+                                                            publish_fakes):  # noqa: F811
+    lan = lan_home
+    await _switched(db, lan, "orange")
+    await _switched(db, lan, "purple")
+    assert ("return 302 https://portal.lan9.serversherpa.com$request_uri;"
+            in _host(publish_fakes, "lan9.serversherpa.com")["advanced_config"])
+
+
+async def test_a_bare_name_without_its_a_record_waits_for_the_next_publish(
+        db, lan, publish_fakes):  # noqa: F811
+    # An environment made before the home service: no A record at the bare
+    # name yet, so no proxy host and no certificate request for it.
+    lines: list[str] = []
+    await _publisher().run("lan_switch", await _ctx(db, lan, "orange"), lines.append)
+    await _live(lan, "orange")
+    assert "lan9.serversherpa.com" not in _forwards(publish_fakes)
+    assert all(c["domain_names"] != ["lan9.serversherpa.com"]
+               for c in publish_fakes.npm.certs.values())
+    assert not any(line.startswith("lan9.serversherpa.com") for line in lines)
+    assert "Traffic goes to orange" in "".join(lines)
+    await _switched(db, lan, "purple")
+    assert "lan9.serversherpa.com" not in _forwards(publish_fakes)
+    assert (await _hosts(db, lan))["home"] == PURPLE_IP      # still follows portal
+
+
+async def test_a_bare_name_with_its_a_record_switches_with_the_rest(
+        db, lan_home, publish_fakes):  # noqa: F811
+    await _switched(db, lan_home, "orange")
+    assert _forwards(publish_fakes)["lan9.serversherpa.com"] == ORANGE
+    assert any(c["domain_names"] == ["lan9.serversherpa.com"]
+               for c in publish_fakes.npm.certs.values())
+    await _switched(db, lan_home, "purple")
+    assert _forwards(publish_fakes)["lan9.serversherpa.com"] == PURPLE_IP
+
+
+async def test_a_bare_name_whose_records_are_under_an_old_name_waits_too(
+        db, lan, publish_fakes):  # noqa: F811
+    # The base domain changed and nothing was published since: Sirdar's rows
+    # still name the old bare name, and the new one has no A record yet.
+    await managed(db, lan, "home", DNS, "rec-old", name="old9.serversherpa.com")
+    await _switched(db, lan, "orange")
+    assert "lan9.serversherpa.com" not in _forwards(publish_fakes)
+    assert all(c["domain_names"] != ["lan9.serversherpa.com"]
+               for c in publish_fakes.npm.certs.values())
+
+
+async def test_a_switch_keeps_a_bare_name_certificate_sirdar_already_has(
+        db, lan, publish_fakes):  # noqa: F811
+    cert = publish_fakes.npm.add_cert(["lan9.serversherpa.com"])
+    await managed(db, lan, "home", CERT, cert, name="lan9.serversherpa.com")
+    await _switched(db, lan, "orange")
+    rows = await db.scalars(select(ManagedRecord).where(
+        ManagedRecord.environment_id == lan.id, ManagedRecord.service == "home",
+        ManagedRecord.kind == CERT).execution_options(populate_existing=True))
+    assert [r.external_id for r in rows] == [str(cert)]
+    assert cert in publish_fakes.npm.certs
+    assert _host(publish_fakes, "lan9.serversherpa.com")["certificate_id"] == cert
