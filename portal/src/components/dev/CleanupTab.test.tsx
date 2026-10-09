@@ -255,6 +255,94 @@ it('shows partial results and the message when a run fails', async () => {
   expect(signin.getByText(/2 rows deleted/)).toBeTruthy();
 });
 
+it('shows category descriptions only once the preview supplies them', async () => {
+  const { user } = renderTab();
+  const signin = within(card('Sign-in leftovers'));
+  expect(signin.queryByText('Expired sessions description')).toBeNull();
+  await user.click(signin.getByRole('button', { name: 'Preview' }));
+  expect(await signin.findByText('Expired sessions description')).toBeTruthy();
+});
+
+it('drops the preview, results and Delete when the age is edited', async () => {
+  api.runCleanup.mockResolvedValue({
+    group: 'history', older_than_days: 90,
+    categories: [{ key: 'mail', rows_deleted: 5, files_deleted: 0, files_kept: 0, files_failed: 0 }],
+  });
+  const { user } = renderTab();
+  const history = within(card('Old history'));
+  await user.click(history.getByRole('button', { name: 'Preview' }));
+  await waitFor(() => expect(history.getByText('1,204 rows · 38 files')).toBeTruthy());
+  await user.click(history.getByRole('button', { name: 'Delete selected' }));
+  await waitFor(() => expect(history.getByText(/5 rows deleted/)).toBeTruthy());
+  await waitFor(() => expect(history.getByText('1,204 rows · 38 files')).toBeTruthy());
+
+  const age = history.getByLabelText(/Older than/);
+  await user.clear(age);
+  await user.type(age, '45');
+  expect(history.queryByText('1,204 rows · 38 files')).toBeNull();
+  expect(history.queryByText(/5 rows deleted/)).toBeNull();
+  expect((history.getByRole('button', { name: 'Delete selected' }) as HTMLButtonElement).disabled)
+    .toBe(true);
+});
+
+it('changes the confirm totals when a category is toggled after the preview', async () => {
+  const { user } = renderTab();
+  const history = within(card('Old history'));
+  await user.click(history.getByRole('button', { name: 'Preview' }));
+  await waitFor(() => expect(history.getByText('1,204 rows · 38 files')).toBeTruthy());
+  await user.click(history.getByRole('checkbox', { name: 'Sent, failed and skipped mail' }));
+  api.runCleanup.mockResolvedValue({ group: 'history', older_than_days: 90, categories: [] });
+  await user.click(history.getByRole('button', { name: 'Delete selected' }));
+  const text = confirmSpy.mock.calls[0][0] as string;
+  expect(text).toContain('7 rows');
+  expect(text).not.toContain('1,204');
+  expect(text).not.toContain('files');
+});
+
+it.each([
+  ['invalid_age', 'Enter a whole number of days from 1 to 3650.'],
+  ['unknown_category', 'The server does not recognize one of these categories — reload the page.'],
+  ['whatever', 'The cleanup failed — try again.'],
+])('maps a %s run error to its message', async (code, message) => {
+  api.runCleanup.mockRejectedValue(new ApiError(422, code, { code }));
+  const { user } = renderTab();
+  const signin = within(card('Sign-in leftovers'));
+  await user.click(signin.getByRole('button', { name: 'Preview' }));
+  await waitFor(() => expect(signin.getByText('3 rows')).toBeTruthy());
+  await user.click(signin.getByRole('button', { name: 'Delete selected' }));
+  expect((await signin.findByText(message)).className).toContain('pf-error');
+});
+
+it('keeps the part-way message when the refresh after a failed run also fails', async () => {
+  api.runCleanup.mockRejectedValue(new ApiError(500, 'cleanup_failed', {
+    code: 'cleanup_failed', message: 'storage went away',
+    categories: [{ key: 'sessions', rows_deleted: 2, files_deleted: 0, files_kept: 0, files_failed: 0 }],
+  }));
+  const { user } = renderTab();
+  const signin = within(card('Sign-in leftovers'));
+  await user.click(signin.getByRole('button', { name: 'Preview' }));
+  await waitFor(() => expect(signin.getByText('3 rows')).toBeTruthy());
+  api.getCleanupPreview.mockClear().mockRejectedValue(new ApiError(500, 'boom'));
+  await user.click(signin.getByRole('button', { name: 'Delete selected' }));
+  await waitFor(() => expect(api.getCleanupPreview).toHaveBeenCalled());
+  await waitFor(() => expect(
+    (signin.getByRole('button', { name: 'Preview' }) as HTMLButtonElement).disabled).toBe(false));
+  expect(signin.getByText(/storage went away/).className).toContain('pf-error');
+  // partial counts from a failed run are not styled as a success
+  const partial = signin.getByText(/2 rows deleted/);
+  expect(partial.className).not.toContain('set-ok');
+});
+
+it('styles a clean run result as a success', async () => {
+  api.runCleanup.mockResolvedValue(runOut('signin', ['sessions']));
+  const { user } = renderTab();
+  const signin = within(card('Sign-in leftovers'));
+  await user.click(signin.getByRole('button', { name: 'Preview' }));
+  await waitFor(() => expect(signin.getByText('3 rows')).toBeTruthy());
+  await user.click(signin.getByRole('button', { name: 'Delete selected' }));
+  expect((await signin.findByText(/3 rows deleted/)).className).toContain('set-ok');
+});
+
 it('blocks Preview and Delete for an age outside 1 to 3650', async () => {
   const { user } = renderTab();
   const history = within(card('Old history'));

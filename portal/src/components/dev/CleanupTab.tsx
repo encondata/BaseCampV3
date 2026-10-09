@@ -9,9 +9,9 @@
  * disabled until a preview of the CURRENT age found something selected.
  * Changing the age drops the card's counts — they described a different
  * cutoff. The API (routes/cleanup.py, devtools/cleanup.py) owns every rule
- * about what is safe to delete; the labels below are only the pre-preview
- * catalog, and the preview's own descriptions replace the short ones here
- * once they arrive.
+ * about what is safe to delete; the keys and labels below are only the
+ * pre-preview catalog, and a category's description appears once the preview
+ * supplies it (the API is the single source for that copy).
  *
  * A run that fails part-way returns 500 `cleanup_failed` with the counts of
  * what was already deleted — those are shown like a normal result, plus the
@@ -47,7 +47,7 @@ interface GroupSpec {
   label: string;
   description: string;
   needsAge: boolean;
-  categories: { key: string; label: string; description: string }[];
+  categories: { key: string; label: string }[];
 }
 
 const GROUPS: GroupSpec[] = [
@@ -55,32 +55,22 @@ const GROUPS: GroupSpec[] = [
     key: 'signin', label: 'Sign-in leftovers', needsAge: false,
     description: 'Sign-in records that have expired or been used up and can never be used again.',
     categories: [
-      { key: 'sessions', label: 'Expired sessions',
-        description: 'Portal and kiosk sessions past their expiry.' },
-      { key: 'reset_links', label: 'Used or expired password-reset links',
-        description: 'Password-reset links that were already used or have expired.' },
-      { key: 'trusted_browsers', label: 'Expired or revoked trusted browsers',
-        description: 'Remembered browsers whose trust has expired or was revoked.' },
+      { key: 'sessions', label: 'Expired sessions' },
+      { key: 'reset_links', label: 'Used or expired password-reset links' },
+      { key: 'trusted_browsers', label: 'Expired or revoked trusted browsers' },
     ],
   },
   {
     key: 'history', label: 'Old history', needsAge: true,
     description: 'Finished work and old records past the age you choose.',
     categories: [
-      { key: 'mail', label: 'Sent, failed and skipped mail',
-        description: 'Outgoing email that is done. Queued and sending mail stays.' },
-      { key: 'notifications', label: 'Read or hidden notifications',
-        description: 'Inbox items someone already read or hid.' },
-      { key: 'imports', label: 'Finished import jobs',
-        description: 'Completed, failed and canceled imports, with their uploaded file.' },
-      { key: 'reports', label: 'Report runs',
-        description: 'Finished report runs and their generated file.' },
-      { key: 'label_runs', label: 'Label generation runs',
-        description: 'Finished label generation runs. The labels they made stay.' },
-      { key: 'spec_lookups', label: 'Finished spec lookups',
-        description: 'Finished spec lookup jobs. Their suggestions stay.' },
-      { key: 'rule_logs', label: 'Status rule run logs',
-        description: 'The log of each time a status rule ran.' },
+      { key: 'mail', label: 'Sent, failed and skipped mail' },
+      { key: 'notifications', label: 'Read or hidden notifications' },
+      { key: 'imports', label: 'Finished import jobs' },
+      { key: 'reports', label: 'Report runs' },
+      { key: 'label_runs', label: 'Label generation runs' },
+      { key: 'spec_lookups', label: 'Finished spec lookups' },
+      { key: 'rule_logs', label: 'Status rule run logs' },
     ],
   },
   {
@@ -88,12 +78,9 @@ const GROUPS: GroupSpec[] = [
     description: 'Files, notes and fonts that were deleted and are past the age you choose, '
       + 'along with their stored copies.',
     categories: [
-      { key: 'attachments', label: 'Deleted files',
-        description: 'Files and photos deleted from a record, with the stored copy.' },
-      { key: 'notes', label: 'Deleted notes',
-        description: 'Notes that were deleted from a record.' },
-      { key: 'label_fonts', label: 'Deleted label fonts',
-        description: 'Label fonts removed from the font library, with the stored font file.' },
+      { key: 'attachments', label: 'Deleted files' },
+      { key: 'notes', label: 'Deleted notes' },
+      { key: 'label_fonts', label: 'Deleted label fonts' },
     ],
   },
 ];
@@ -140,6 +127,7 @@ function GroupCard({ spec, canChange }: { spec: GroupSpec; canChange: boolean })
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
   const [results, setResults] = useState<CleanupCategoryResult[] | null>(null);
+  const [resultsFailed, setResultsFailed] = useState(false);
   // bumped whenever the cutoff changes so a slow preview of the OLD age can't land
   const generation = useRef(0);
 
@@ -157,7 +145,7 @@ function GroupCard({ spec, canChange }: { spec: GroupSpec; canChange: boolean })
         setPreview(out.groups.find((g) => g.key === spec.key) ?? null);
       }
     } catch (err) {
-      if (mine === generation.current) setError(previewErrorText(err));
+      if (mine === generation.current) setError((prev) => prev || previewErrorText(err));
     } finally {
       setPreviewing(false);
     }
@@ -167,6 +155,7 @@ function GroupCard({ spec, canChange }: { spec: GroupSpec; canChange: boolean })
     generation.current += 1;
     setAgeText(text);
     setPreview(null);
+    setResults(null);
     setError('');
   };
 
@@ -198,6 +187,7 @@ function GroupCard({ spec, canChange }: { spec: GroupSpec; canChange: boolean })
         ...(spec.needsAge ? { older_than_days: age } : {}),
       });
       setResults(out.categories);
+      setResultsFailed(false);
     } catch (err) {
       if (err instanceof ApiError && err.code === 'cleanup_failed') {
         const detail = (err.detail ?? {}) as FailedRunDetail;
@@ -205,6 +195,7 @@ function GroupCard({ spec, canChange }: { spec: GroupSpec; canChange: boolean })
           ? `The cleanup stopped part-way: ${detail.message}`
           : 'The cleanup stopped part-way.');
         setResults(detail.categories ?? []);
+        setResultsFailed(true);
       } else if (err instanceof ApiError && err.code === 'invalid_age') {
         setError(AGE_ERROR);
       } else if (err instanceof ApiError && err.code === 'unknown_category') {
@@ -219,11 +210,10 @@ function GroupCard({ spec, canChange }: { spec: GroupSpec; canChange: boolean })
   };
 
   return (
-    <section className="init-panel sysconf-card" aria-label={spec.label}
-             style={{ marginBottom: 20 }}>
+    <section className="init-panel sysconf-card cleanup-card" aria-label={spec.label}>
       <div className="sysconf-card-head">
         <div className="eyebrow-sm">{spec.label}</div>
-        <p className="sysconf-card-desc">{preview?.description ?? spec.description}</p>
+        <p className="sysconf-card-desc">{spec.description}</p>
       </div>
 
       {spec.needsAge && (
@@ -253,7 +243,7 @@ function GroupCard({ spec, canChange }: { spec: GroupSpec; canChange: boolean })
             <div key={c.key} className="set-row">
               <div className="set-label">
                 <b>{c.label}</b>
-                <span>{found?.description ?? c.description}</span>
+                {found && <span>{found.description}</span>}
               </div>
               <span className="set-num-inline">
                 <span>{found ? countText(found.rows, found.files) : '—'}</span>
@@ -269,7 +259,7 @@ function GroupCard({ spec, canChange }: { spec: GroupSpec; canChange: boolean })
         })}
       </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+      <div className="cleanup-actions">
         <button type="button" className="mini-btn" disabled={busy || ageInvalid}
                 onClick={onPreview}>
           {previewing ? 'Previewing…' : 'Preview'}
@@ -287,7 +277,7 @@ function GroupCard({ spec, canChange }: { spec: GroupSpec; canChange: boolean })
       {results && results.length > 0 && (
         <div>
           {results.map((r) => (
-            <p key={r.key} className="set-ok">
+            <p key={r.key} className={resultsFailed ? 'page-hint' : 'set-ok'}>
               {spec.categories.find((c) => c.key === r.key)?.label ?? r.key}: {resultText(r)}
             </p>
           ))}
@@ -329,8 +319,7 @@ function DuplicateFinder() {
   const none = found !== null && found.assets.length === 0 && found.people.length === 0;
 
   return (
-    <section className="init-panel sysconf-card" aria-label="Duplicate finder"
-             style={{ marginBottom: 20 }}>
+    <section className="init-panel sysconf-card cleanup-card" aria-label="Duplicate finder">
       <div className="sysconf-card-head">
         <div className="eyebrow-sm">Duplicate finder</div>
         <p className="sysconf-card-desc">
@@ -346,14 +335,14 @@ function DuplicateFinder() {
       </div>
 
       {error && <p className="pf-error">{error}</p>}
-      {none && <p className="page-hint" style={{ margin: 0 }}>No duplicates found.</p>}
+      {none && <p className="page-hint cleanup-none">No duplicates found.</p>}
 
       {found && found.assets.length > 0 && (
         <div>
           <div className="eyebrow-sm">Assets sharing a serial number</div>
           {found.assets.map((g) => (
-            <div key={g.serial} className="mini-list" style={{ marginTop: 10 }}>
-              <div className="mini-list-head" style={{ gridTemplateColumns: '1fr' }}>
+            <div key={g.serial} className="mini-list cleanup-dup-group">
+              <div className="mini-list-head">
                 <span>{g.serial} · {plural(g.items.length, 'asset')}</span>
               </div>
               {g.items.map((a) => (
@@ -383,8 +372,8 @@ function DuplicateFinder() {
         <div>
           <div className="eyebrow-sm">People sharing a name</div>
           {found.people.map((g) => (
-            <div key={g.name} className="mini-list" style={{ marginTop: 10 }}>
-              <div className="mini-list-head" style={{ gridTemplateColumns: '1fr' }}>
+            <div key={g.name} className="mini-list cleanup-dup-group">
+              <div className="mini-list-head">
                 <span>{g.name} · {plural(g.items.length, 'person', 'people')}</span>
               </div>
               {g.items.map((p) => (
@@ -415,7 +404,7 @@ export default function CleanupTab({ onShowBackups }: { onShowBackups: () => voi
 
   return (
     <>
-      <p className="page-hint" style={{ marginBottom: 16 }}>
+      <p className="page-hint cleanup-intro">
         Remove data that can never be used again or is older than you choose. Take a backup
         first — deletes can&apos;t be undone.{' '}
         <button type="button" className="mini-btn" onClick={onShowBackups}>Go to Backups</button>

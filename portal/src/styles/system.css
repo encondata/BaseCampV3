@@ -260,3 +260,8 @@
    which already pads them, so the shared settings row drops its own side
    padding here. */
 .cleanup-rows .set-row { padding-left: 0; padding-right: 0; }
+.cleanup-card { margin-bottom: 20px; }
+.cleanup-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cleanup-dup-group { margin-top: 10px; }
+.cleanup-none { margin: 0; }
+.cleanup-intro { margin-bottom: 16px; }
