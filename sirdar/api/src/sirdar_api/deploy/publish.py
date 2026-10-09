@@ -220,13 +220,18 @@ def in_zone(hostname: str, zone: str) -> bool:
     return hostname == zone or hostname.endswith("." + zone)
 
 
+# Record types that can't share a name with an A record. Everything else
+# (TXT for SPF/DKIM, MX, CAA, SRV, AAAA, ...) sits beside it and is ignored.
+BLOCKS_AN_A = ("CNAME", "NS")
+
+
 def _unmanaged_dns(sp: ServicePlan, records: list[DnsRecord], owners: dict[str, str], *,
                    public_ip: str) -> Status:
     """The name as seen without a managed record of this environment."""
     here = [r for r in records if r.name == sp.hostname]
-    others = [r for r in here if r.type != "A"]
-    if others:
-        return Status("conflict", f"A {others[0].type} record already uses this name.")
+    blocking = [r for r in here if r.type in BLOCKS_AN_A]
+    if blocking:
+        return Status("conflict", f"A {blocking[0].type} record already uses this name.")
     a_records = [r for r in here if r.type == "A"]
     if len(a_records) > 1:
         return Status("conflict", "More than one A record uses this name.")
@@ -237,7 +242,8 @@ def _unmanaged_dns(sp: ServicePlan, records: list[DnsRecord], owners: dict[str, 
         return Status("claimable", f"A {found.content}, made outside Sirdar.", found)
     parent = sp.hostname.split(".", 1)[1]
     wildcard = f"*.{parent}"
-    if any(r.name == wildcard for r in records):
+    # A name that already has records of its own isn't answered by the wildcard.
+    if not here and any(r.name == wildcard for r in records):
         return Status("conflict", f"The wildcard {wildcard} covers this name; a record here "
                                   "would override it.")
     return Status("create", f"Sirdar will create A {public_ip}.")

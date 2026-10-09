@@ -78,6 +78,23 @@ def _dns(records, managed_row=None, owners=None, service=API):
                   "override it.")),
     ([rec("r2", type_="CNAME", content="x.example.com")], row(DNS, "r1"), None,
      ("conflict", "A CNAME record already uses this name.")),
+    # Records that can sit beside an A record at the same name never block it.
+    ([rec("t1", type_="TXT", content="v=spf1 -all"), rec("m1", type_="MX", content="mx.x"),
+      rec("c1", type_="CAA", content="0 issue \"letsencrypt.org\""),
+      rec("s1", type_="SRV", content="1 1 443 x"), rec("a6", type_="AAAA", content="2001:db8::1")],
+     None, None, ("create", "Sirdar will create A 203.0.113.7.")),
+    ([rec("n1", type_="NS", content="ns1.example.com")], None, None,
+     ("conflict", "A NS record already uses this name.")),
+    ([rec("r1"), rec("t1", type_="TXT", content="v=spf1 -all")], row(DNS, "r1"), None,
+     ("ok", "A 203.0.113.7")),
+    ([rec("r1", content="198.51.100.1"), rec("t1", type_="TXT", content="v=spf1 -all")],
+     None, None, ("claimable", "A 198.51.100.1, made outside Sirdar.")),
+    ([rec("t1", type_="TXT", content="v=spf1 -all")], row(DNS, "r1"), None,
+     ("create", "Sirdar's record is gone; it will be created again.")),
+    # A TXT at the name makes it exist, so a wildcard no longer answers for it.
+    ([rec("t1", type_="TXT", content="v=spf1 -all"),
+      rec("w1", name="*.uat2.serversherpa.com")], None, None,
+     ("create", "Sirdar will create A 203.0.113.7.")),
 ])
 def test_dns_status(records, managed_row, owners, expected):
     status = _dns(records, managed_row, owners)
@@ -243,6 +260,22 @@ async def test_claim_records_only_claimable_entries(db, secrets_key, publish_fak
     assert (api["proxy"]["state"], api["proxy"]["origin"]) == ("ok", "claimed")
     assert await publish.claim(db, env, again) == []
     assert CERT not in {r.kind for r in rows}          # certificates are never claimed
+
+
+async def test_claim_takes_an_a_record_that_shares_its_name_with_txt(db, secrets_key,
+                                                                      publish_fakes):
+    env = await _uat2(db)
+    hand_api = publish_fakes.cf.add("A", "api.uat2.serversherpa.com", PUBLIC_IP)
+    publish_fakes.cf.add("TXT", "api.uat2.serversherpa.com", "v=spf1 -all")
+    publish_fakes.cf.add("MX", "api.uat2.serversherpa.com", "mx.example.com")
+    state = await publish.inspect(db, env, get_settings())
+    assert (state["services"][0]["dns"]["state"]) == "claimable"
+    assert await publish.claim(db, env, state) == ["dns:api.uat2.serversherpa.com"]
+    await db.commit()
+    rows = list(await db.scalars(select(ManagedRecord)))
+    assert [(r.kind, r.external_id) for r in rows] == [(DNS, hand_api)]
+    again = await publish.inspect(db, env, get_settings())
+    assert again["services"][0]["dns"]["state"] == "ok"
 
 
 def test_status_compares_on_state_and_detail_only():

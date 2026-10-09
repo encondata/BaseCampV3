@@ -558,3 +558,28 @@ async def test_other_hosts_keep_their_own_advanced_config(db, home_env,
     await _run(db, home_env, "proxy")
     assert api["advanced_config"] == "proxy_read_timeout 300;"
     assert len(_writes(publish_fakes.npm)) == writes
+
+
+async def test_the_bare_name_gets_its_a_record_beside_txt_and_mx(db, home_env,
+                                                                  publish_fakes):  # noqa: F811
+    cf = publish_fakes.cf
+    spf = cf.add("TXT", "uat2.serversherpa.com", "v=spf1 include:_spf.example.com -all")
+    mx = cf.add("MX", "uat2.serversherpa.com", "mail.example.com")
+    lines = await _run(db, home_env, "dns")
+    assert "uat2.serversherpa.com: created A 203.0.113.7\n" in lines
+    a = [r for r in cf.records.values()
+         if r["name"] == "uat2.serversherpa.com" and r["type"] == "A"]
+    assert len(a) == 1 and a[0]["comment"] == "Managed by Sirdar (uat2/home)"
+    assert spf in cf.records and mx in cf.records
+    assert ("home", DNS, a[0]["id"], "created") in await _rows(db)
+    again = await _run(db, home_env, "dns")
+    assert "uat2.serversherpa.com: A 203.0.113.7, unchanged\n" in again
+
+
+async def test_a_cname_at_the_bare_name_still_blocks(db, home_env, publish_fakes):  # noqa: F811
+    cf = publish_fakes.cf
+    cf.add("CNAME", "uat2.serversherpa.com", "elsewhere.example.com")
+    with pytest.raises(StepFailed) as e:
+        await _run(db, home_env, "dns")
+    assert "  uat2.serversherpa.com: A CNAME record already uses this name.\n" in e.value.reason
+    assert cf.writes() == [] and await _rows(db) == []
