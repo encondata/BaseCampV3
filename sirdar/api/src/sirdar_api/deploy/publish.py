@@ -1059,6 +1059,16 @@ async def _wait_for_put_back(rollback: Awaitable[str | None]) -> tuple[str | Non
     return task.result(), cancelled
 
 
+async def _home_without_dns(env_id) -> bool:
+    """The bare name has neither Sirdar's A record nor its proxy host yet (an
+    environment made before the home service, never published since): a
+    switch leaves it out rather than ask Let's Encrypt for a name nothing
+    resolves. The next publish that runs step 12 picks it up. A home proxy
+    host Sirdar already manages stays in, so the switch never drops it."""
+    rows = await _all_rows(env_id, (DNS, PROXY))
+    return not any(r.service == home.HOME for r in rows)
+
+
 async def switch_lan(ctx: PublishContext, out: Output, *, npm_transport, smoke_transport,
                      sleep: Callable[[float], Awaitable[None]], now: datetime,
                      backoff: tuple[int, ...], attempts: int, delay: float) -> None:
@@ -1076,8 +1086,10 @@ async def switch_lan(ctx: PublishContext, out: Output, *, npm_transport, smoke_t
         recorded = await _record(ctx, transport=npm_transport)
     except (StepFailed, NpmError) as e:
         raise StepFailed(f"{e.reason} Sirdar changed nothing.") from None
+    waiting = await _home_without_dns(ctx.env_id)
     moved = replace(ctx, services=tuple(replace(s, host_ip=ip) if s.service in APP_SERVICES
-                                        else s for s in ctx.services))
+                                        else s for s in ctx.services
+                                        if not (waiting and s.service == home.HOME)))
     out(f"Switching the proxy hosts to {ctx.slot} ({ip}).\n")
     try:
         await ensure_proxy(moved, out, transport=npm_transport, sleep=sleep, now=now,
