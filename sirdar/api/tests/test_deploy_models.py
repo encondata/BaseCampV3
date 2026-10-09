@@ -424,7 +424,7 @@ async def test_migration_0007_downgrade_refuses_while_vms_are_managed():
     assert b"Can't downgrade below 0007 while Sirdar manages Proxmox VMs" in err.value.stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
         # The refused downgrade rolls back as a whole: still at head.
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0013"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0014"
         assert conn.execute("SELECT count(*) FROM proxmox_vms").fetchone()[0] == 1
         assert conn.execute("SELECT count(*) FROM integrations WHERE kind = 'proxmox'"
                             ).fetchone()[0] == 1
@@ -592,7 +592,7 @@ async def test_migration_0010_downgrade_refuses_while_do_environments_exist():
         _alembic("downgrade", "0009")
     assert b"while Sirdar manages DigitalOcean environments" in err.value.stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0013"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0014"
         conn.execute("DELETE FROM environments WHERE id = %s", (env_id,))
 
 
@@ -649,7 +649,7 @@ def _assert_downgrade_refused() -> None:
         pytest.fail("the downgrade below 0010 wasn't refused")
     assert b"while Sirdar manages DigitalOcean environments" in stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0013"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0014"
 
 
 async def test_migration_0010_downgrade_refuses_with_only_do_resources():
@@ -868,7 +868,7 @@ async def test_migration_0012_round_trip_keeps_single_server_vms():
     finally:
         _alembic("upgrade", "head")
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0013"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0014"
         assert conn.execute("SELECT count(*) FROM proxmox_vms WHERE role = 'main'"
                             ).fetchone()[0] == 1
 
@@ -910,5 +910,58 @@ async def test_migration_0012_downgrade_refuses_with_blue_green_records(what):
         pytest.fail("the downgrade below 0012 wasn't refused")
     assert b"Can't downgrade below 0012 while LAN Blue/Green records exist" in stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0013"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0014"
         assert conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 1
+
+
+async def test_migration_0014_adds_home_to_every_non_production_environment():
+    """Upgrade: a home row (base domain, the portal's host and port) for each
+    non-production environment with a portal row and no home row yet.
+    Downgrade: home rows go (their managed records stay; the next publish
+    under the old code drops them as stale)."""
+    from sirdar_api.db.engine import dispose_engine
+    await dispose_engine()
+    _alembic("downgrade", "0013")
+    try:
+        with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+            def env(name, type_="dev", target="esxi", extra_cols="", extra_vals=""):
+                return conn.execute(
+                    "INSERT INTO environments (name, type, target_id, base_domain, proxy_ip"
+                    f"{extra_cols}) VALUES (%s, %s, %s, %s, '10.0.0.2'{extra_vals}) "
+                    "RETURNING id", (name, type_, target, f"{name}.serversherpa.com")
+                ).fetchone()[0]
+
+            def portal(env_id):
+                conn.execute(
+                    "INSERT INTO environment_services (environment_id, service, host_ip, port, "
+                    "hostname) VALUES (%s, 'portal', '10.10.48.40', 8191, %s)",
+                    (env_id, "portal.x.serversherpa.com"))
+
+            demo = env("demo")
+            portal(demo)
+            kept = env("kept", type_="beta", target="ssh")
+            portal(kept)
+            conn.execute(
+                "INSERT INTO environment_services (environment_id, service, host_ip, port, "
+                "hostname) VALUES (%s, 'home', '10.0.0.9', 9999, 'old.example.com')", (kept,))
+            env("bare", type_="custom", target="ssh")            # no portal row: no home
+            prod = env("prod", type_="production", target="digitalocean",
+                       extra_cols=", slots", extra_vals=", '{blue,green}'")
+            portal(prod)
+        _alembic("upgrade", "head")
+        with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+            assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0014"
+            homes = conn.execute(
+                "SELECT e.name, s.host_ip, s.port, s.hostname, s.proxied FROM environment_services s "
+                "JOIN environments e ON e.id = s.environment_id WHERE s.service = 'home' "
+                "ORDER BY e.name").fetchall()
+            assert homes == [("demo", "10.10.48.40", 8191, "demo.serversherpa.com", False),
+                             ("kept", "10.0.0.9", 9999, "old.example.com", False)]
+        _alembic("downgrade", "0013")
+        with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+            assert conn.execute("SELECT count(*) FROM environment_services "
+                                "WHERE service = 'home'").fetchone()[0] == 0
+            assert conn.execute("SELECT count(*) FROM environment_services "
+                                "WHERE service = 'portal'").fetchone()[0] == 3
+    finally:
+        _alembic("upgrade", "head")
