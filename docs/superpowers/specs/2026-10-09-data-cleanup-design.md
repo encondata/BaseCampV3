@@ -49,7 +49,7 @@ and reports what was actually removed.
 
 | Category | Rows deleted |
 |---|---|
-| `sessions` "Expired sessions" | `auth_sessions` with `expires_at < now()` (portal and kiosk). Rotated or revoked sessions still inside their lifetime are **kept** — refresh-token reuse detection needs them. Any kept row whose `replaced_by` points at a deleted row has `replaced_by` set to NULL in the same transaction. |
+| `sessions` "Expired sessions" | `auth_sessions` with `expires_at < now()` (portal and kiosk). Rotated or revoked sessions still inside their lifetime are **kept** — refresh-token reuse detection needs them. An expired session that a kept (unexpired) session still points at through `replaced_by` is also kept (the `auth_sessions_rotation_pair_check` constraint ties `rotated_at` to `replaced_by`, and clearing them would revive a spent refresh token). Real rotation chains share one absolute expiry, so this only affects odd data. |
 | `reset_links` "Used or expired password-reset links" | `password_reset_tokens` with `used_at IS NOT NULL OR expires_at < now()` |
 | `trusted_browsers` "Expired or revoked trusted browsers" | `trusted_devices` with `revoked_at IS NOT NULL OR expires_at < now()` |
 
