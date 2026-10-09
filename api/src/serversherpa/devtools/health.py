@@ -5,6 +5,7 @@ query text or a client address."""
 import time
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from serversherpa.db.engine import get_engine
@@ -80,6 +81,15 @@ class UnknownTable(Exception):
     """The name isn't one of the current public tables."""
 
 
+class TableBusy(Exception):
+    """Another session holds a lock that VACUUM would have to wait behind."""
+
+
+# How long VACUUM may wait for a conflicting lock before giving up. Tests lower it.
+VACUUM_LOCK_TIMEOUT = "10s"
+LOCK_NOT_AVAILABLE = "55P03"
+
+
 _TABLE_STATS_SQL = """
     SELECT relname AS name,
            n_live_tup AS rows,
@@ -136,7 +146,22 @@ async def vacuum_table(name: str) -> dict:
             raise UnknownTable(name)
         quoted = conn.dialect.identifier_preparer.quote(known)
         started = time.perf_counter()
-        await conn.execute(text(f"VACUUM (ANALYZE) public.{quoted}"))
+        # session-level, so it is reset below: the connection goes back to the pool
+        await conn.exec_driver_sql(f"SET lock_timeout = '{VACUUM_LOCK_TIMEOUT}'")
+        try:
+            # exec_driver_sql, not text(): a ':word' in an identifier must not
+            # be read as a bind parameter
+            await conn.exec_driver_sql(f"VACUUM (ANALYZE) public.{quoted}")
+        except DBAPIError as exc:
+            sqlstate = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+            if sqlstate == LOCK_NOT_AVAILABLE:
+                raise TableBusy(known) from None
+            raise
+        finally:
+            try:
+                await conn.exec_driver_sql("RESET lock_timeout")
+            except DBAPIError:      # a dead connection must not mask the real outcome
+                await conn.invalidate()
         duration_ms = round((time.perf_counter() - started) * 1000)
         (stats,) = await _table_stats(conn, known)
     return {"table": stats, "duration_ms": duration_ms}

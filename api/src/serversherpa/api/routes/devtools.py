@@ -62,6 +62,7 @@ async def testing_session_unfinished(db: AsyncSession) -> bool:
     return await db.scalar(select(DbTestingSession.id).where(
         DbTestingSession.status.in_(UNFINISHED_STATUSES)).limit(1)) is not None
 
+
 DB_TESTING_WORKER_NAME = "db-testing-worker"
 WORKER_STALE_SECONDS = 30
 AUTH_FAIL_WINDOW_MINUTES = 10

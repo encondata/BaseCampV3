@@ -53,6 +53,11 @@ async def vacuum_table(
         raise HTTPException(status_code=404, detail={
             "code": "unknown_table",
             "message": "That isn't a table in this database."}) from None
+    except health.TableBusy:
+        raise HTTPException(status_code=409, detail={
+            "code": "table_busy",
+            "message": "Another session is holding a lock on that table. "
+                       "Try again in a moment."}) from None
     audit(db, actor_id=actor.person.id, entity_type="system", entity_id=result["table"]["name"],
           action="db.vacuum",
           changes={"table": result["table"]["name"], "duration_ms": result["duration_ms"]})

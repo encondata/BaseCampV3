@@ -2,6 +2,7 @@
 per-table Vacuum & analyze."""
 
 import uuid
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 
 import pytest
@@ -148,6 +149,44 @@ async def test_vacuum_allowed_once_the_db_testing_session_has_ended(client, db, 
         started_by=seeded_user.id))
     await db.commit()
     hdrs = await _developer(db, client, seeded_user)
+    assert (await _vacuum(client, hdrs, "notes")).status_code == 200
+
+
+# -- lock timeout ----------------------------------------------------------
+
+
+async def test_vacuum_gives_up_on_a_held_lock_with_409_table_busy(
+        client, db, seeded_user, monkeypatch):
+    from sqlalchemy import text as sql_text
+
+    from serversherpa.db.engine import get_engine
+    from serversherpa.devtools import health
+    from tests.test_db_health_api import _holder
+
+    monkeypatch.setattr(health, "VACUUM_LOCK_TIMEOUT", "200ms")
+    hdrs = await _developer(db, client, seeded_user)
+    holder = await _holder("test-lock-holder", in_transaction=True)
+    try:
+        await holder.execute("LOCK TABLE notes IN SHARE UPDATE EXCLUSIVE MODE")
+        resp = await _vacuum(client, hdrs, "notes")
+    finally:
+        await holder.close()
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "table_busy"
+    db.expire_all()
+    assert (await db.scalars(select(AuditLog).where(AuditLog.action == "db.vacuum"))).all() == []
+
+    # no pooled connection keeps the timeout: check out every idle one at once
+    # (plus one fresh), since a single checkout might not be the one VACUUM used
+    await db.rollback()     # the test's own session may be holding the very connection VACUUM used
+    engine = get_engine()
+    async with AsyncExitStack() as stack:
+        conns = [await stack.enter_async_context(engine.connect())
+                 for _ in range(engine.pool.checkedin() + 1)]
+        assert len(conns) >= 2
+        for conn in conns:
+            assert await conn.scalar(sql_text("SHOW lock_timeout")) == "0"
+    # and once the lock is gone the same call works
     assert (await _vacuum(client, hdrs, "notes")).status_code == 200
 
 
