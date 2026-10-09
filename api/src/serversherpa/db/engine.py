@@ -42,6 +42,12 @@ def set_application_name(name: str) -> None:
     _application_name = name
 
 
+def get_application_name(suffix: str = "") -> str:
+    """This process's connection name, with an optional suffix (e.g. "-logs")
+    for a side connection; the base is trimmed so the whole stays within 63."""
+    return _application_name[:_MAX_APPLICATION_NAME - len(suffix)] + suffix
+
+
 def connect_args(settings) -> dict:
     """asyncpg's connect arguments: the Postgres application_name, plus ssl
     verified against the managed database's CA when SS_DATABASE_CA_B64 is

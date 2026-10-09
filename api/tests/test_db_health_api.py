@@ -65,6 +65,45 @@ async def test_engine_connections_carry_the_name(app_name):
     assert got == "serversherpa-test-engine"
 
 
+def test_log_connections_get_a_suffixed_name(app_name):
+    engine.set_application_name("serversherpa-api")
+    assert engine.get_application_name("-logs") == "serversherpa-api-logs"
+    engine.set_application_name("x" * 63)
+    assert len(engine.get_application_name("-logs")) == 63
+    assert engine.get_application_name("-logs").endswith("-logs")
+
+
+def test_log_handler_connections_are_named(app_name):
+    import logging
+    import time
+
+    from sqlalchemy import create_engine, text
+
+    from serversherpa.system.db_logging import DbLogHandler
+
+    engine.set_application_name("serversherpa-test-logs-proc")
+    handler = DbLogHandler("t-appname", flush_seconds=0.1)
+    logger = logging.getLogger("serversherpa.test.appname")
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(handler)
+    probe = create_engine(get_settings().sync_database_url)
+    try:
+        logger.info("hello")
+        names: set[str] = set()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not names:
+            with probe.connect() as conn:
+                names = set(conn.execute(text(
+                    "SELECT application_name FROM pg_stat_activity "
+                    "WHERE application_name = 'serversherpa-test-logs-proc-logs'")).scalars())
+            time.sleep(0.1)
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+        probe.dispose()
+    assert names == {"serversherpa-test-logs-proc-logs"}
+
+
 # (reload-mode child entry point, CLI command name)
 PROCESS_ENTRY_POINTS = [
     ("_run_worker_process", "import-worker"),
@@ -169,9 +208,13 @@ async def _holder(application_name, *, in_transaction):
         host=url.host, port=url.port, user=url.username, password=url.password,
         database=url.database,
         server_settings={"application_name": application_name} if application_name else None)
-    if in_transaction:
-        await conn.execute("BEGIN")
-        await conn.fetchval("SELECT 1")
+    try:
+        if in_transaction:
+            await conn.execute("BEGIN")
+            await conn.fetchval("SELECT 1")
+    except BaseException:
+        await conn.close()
+        raise
     return conn
 
 
@@ -219,12 +262,14 @@ async def test_connections_exclude_the_requesting_backend(client, db, seeded_use
 async def test_connections_sorted_and_free_of_sensitive_keys(client, db, seeded_user):
     hdrs = await _developer(db, client, seeded_user)
     a = await _holder("test-b", in_transaction=True)
-    b = await _holder("test-a", in_transaction=False)
     try:
-        resp = await client.get("/devtools/health/connections", headers=hdrs)
+        b = await _holder("test-a", in_transaction=False)
+        try:
+            resp = await client.get("/devtools/health/connections", headers=hdrs)
+        finally:
+            await b.close()
     finally:
         await a.close()
-        await b.close()
     groups = resp.json()["groups"]
     names = [g["application_name"] for g in groups]
     assert names.index("test-a") < names.index("test-b")
