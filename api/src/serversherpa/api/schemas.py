@@ -4126,3 +4126,47 @@ class KioskSetupReadOut(BaseModel):
     scan_status_label: str | None
     station_type: Literal["label", "rfid"] | None
     reader: KioskSetupReaderOut | None
+
+
+# ── data cleanup (Dev → Database → Cleanup) ─────────────────────────
+
+
+class CleanupCategoryPreview(BaseModel):
+    key: str
+    label: str
+    description: str
+    rows: int
+    files: int
+
+
+class CleanupGroupPreview(BaseModel):
+    key: str
+    label: str
+    description: str
+    needs_age: bool
+    categories: list[CleanupCategoryPreview]
+
+
+class CleanupPreviewOut(BaseModel):
+    groups: list[CleanupGroupPreview]
+
+
+class CleanupRunIn(BaseModel):
+    group: str
+    categories: list[str] = Field(min_length=1)
+    # required for the groups that need an age; ignored for the others
+    older_than_days: int | None = None
+
+
+class CleanupCategoryResultOut(BaseModel):
+    key: str
+    rows_deleted: int
+    files_deleted: int
+    files_kept: int
+    files_failed: int
+
+
+class CleanupRunOut(BaseModel):
+    group: str
+    older_than_days: int | None
+    categories: list[CleanupCategoryResultOut]
