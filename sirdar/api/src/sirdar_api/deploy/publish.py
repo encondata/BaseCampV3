@@ -37,6 +37,7 @@ from sirdar_api.deploy import (
     apps as app_rules,
     do_envs,
     envfile,
+    home,
     integrations,
     lan_slots,
     npm,
@@ -893,8 +894,8 @@ async def run_smoke(ctx: PublishContext, out: Output, *, transport,
 
 
 # Switch traffic on the LAN (deploy phase 8b): these follow the live app VM;
-# spaces stays on the data VM.
-APP_SERVICES = tuple(s for s in envfile.SERVICES if s != "spaces")
+# spaces stays on the data VM. home (the bare name) goes where portal goes.
+APP_SERVICES = (*(s for s in envfile.SERVICES if s != "spaces"), home.HOME)
 
 
 async def _point(env_id, addresses: dict[str, str]) -> None:

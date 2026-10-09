@@ -73,6 +73,7 @@ from sirdar_api.deploy import (
     envfile,
     esxi_provision,
     first_admins,
+    home,
     known_hosts,
     lan_slots,
     provision,
@@ -833,9 +834,10 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
     if dep.bluegreen:
         # The slot smoke test's names, each at its own port on the app VM
         # (no Caddy); spaces lives on the data VM.
+        # (no home: the app VM has no redirect; NPM makes it)
         hosts = [{"service": r.service, "hostname": r.hostname,
                   "path": smoke.PATHS.get(r.service, "/"), "port": r.port}
-                 for r in service_rows if r.hostname and r.service != "spaces"
+                 for r in service_rows if r.hostname and r.service not in ("spaces", home.HOME)
                  and app_rules.is_public(env, r.service)]
     elif dep.cloud:
         # no spaces (objects live in Spaces; Caddy has no route for it)

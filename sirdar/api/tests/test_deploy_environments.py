@@ -52,6 +52,7 @@ async def test_create_new_generates_everything(db, target):
     assert [(r.service, r.host_ip, r.port, r.hostname, r.proxied) for r in rows] == [
         ("api", "127.0.0.1", 8000, "api.qa.serversherpa.com", False),
         ("portal", "127.0.0.1", 8091, "portal.qa.serversherpa.com", False),
+        ("home", "127.0.0.1", 8091, "qa.serversherpa.com", False),
         ("kiosk", "127.0.0.1", 8090, "kiosk.qa.serversherpa.com", False),
         ("wiki", "127.0.0.1", 8096, "wiki.qa.serversherpa.com", False),
         ("spaces", "127.0.0.1", 9000, "spaces.qa.serversherpa.com", False),
@@ -401,3 +402,32 @@ async def test_patch_accepts_an_anthropic_key_with_underscores(db, target):
     await db.commit()
     assert changed == ["secrets.SS_ANTHROPIC_API_KEY"]
     assert (await _secrets(db, env.id))["SS_ANTHROPIC_API_KEY"] == ANTHROPIC_KEY
+
+
+async def test_home_follows_portal_and_the_base_domain(db, target):
+    env = await environments.create_new(db, get_settings(), **_new(), actor_id=None)
+    await db.commit()
+    changed = await environments.update(db, get_settings(), env, {
+        "base_domain": "qa2.serversherpa.com",
+        "services": {"portal": {"port": 8191, "host_ip": "10.0.0.9"}}})
+    await db.commit()
+    assert "services.home.port" not in changed and "services.home.host_ip" not in changed
+    rows = {r.service: r for r in await environments.services_of(db, env.id)}
+    assert (rows["home"].host_ip, rows["home"].port, rows["home"].hostname) == (
+        "10.0.0.9", 8191, "qa2.serversherpa.com")
+
+
+async def test_home_is_never_edited_on_its_own(db, target):
+    env = await environments.create_new(db, get_settings(), **_new(), actor_id=None)
+    await db.commit()
+    with pytest.raises(EnvError) as exc:
+        await environments.update(db, get_settings(), env,
+                                  {"services": {"home": {"port": 9999}}})
+    assert (exc.value.code, exc.value.extra) == ("service_unknown", {"service": "home"})
+
+
+async def test_an_untouched_patch_does_not_trip_over_home_sharing_portal_s_port(db, target):
+    env = await environments.create_new(db, get_settings(), **_new(), actor_id=None)
+    await db.commit()
+    assert await environments.update(db, get_settings(), env, {"keep_dumps": 4}) == [
+        "keep_dumps"]

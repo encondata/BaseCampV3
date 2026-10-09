@@ -121,7 +121,9 @@ async def test_each_service_keeps_its_port_on_the_new_slot(db, lan, publish_fake
     await _switched(db, lan, "orange")
     await _switched(db, lan, "purple")
     ports = await _ports(db, lan)
-    assert len(set(ports.values())) == len(ports)          # one port per service
+    named = {n: p for n, p in ports.items() if n != "lan9.serversherpa.com"}
+    assert len(set(named.values())) == len(named)          # one port per service
+    assert ports["lan9.serversherpa.com"] == ports["portal.lan9.serversherpa.com"]
     got = {h["domain_names"][0]: (h["forward_host"], h["forward_port"])
            for h in publish_fakes.npm.hosts.values()}
     assert got == {name: (DATA if name.startswith("spaces.") else PURPLE_IP, port)
@@ -312,7 +314,7 @@ async def test_a_database_failure_while_putting_back_says_both(
 
     monkeypatch.setattr(publish, "_managed_hosts", second_call_fails)
     reason = await _fails(db, lan, "purple")
-    assert reason.startswith("1 of 6 public URLs didn't answer: portal.")
+    assert reason.startswith("1 of 7 public URLs didn't answer: portal.")
     assert reason.endswith("Sirdar couldn't put the proxy hosts back: check them in Nginx "
                            "Proxy Manager.")
     assert "hunter2" not in reason
@@ -333,7 +335,7 @@ async def test_one_host_that_cant_be_put_back_is_named(db, lan, publish_fakes): 
 
     publish_fakes.npm.handler = fail_wiki_on_put_back
     reason = await _fails(db, lan, "purple")
-    assert "Sirdar couldn't put 1 of 6 proxy hosts back: check them in Nginx Proxy Manager." \
+    assert "Sirdar couldn't put 1 of 7 proxy hosts back: check them in Nginx Proxy Manager." \
         in reason
     assert "wiki.lan9.serversherpa.com: " in reason
     forwards = _forwards(publish_fakes)
@@ -419,3 +421,17 @@ async def test_the_wait_for_the_put_back_is_bounded(db, lan, publish_fakes,
     while publish._PUTTING_BACK:
         await asyncio.sleep(0.01)
     assert _app_forwards(publish_fakes) == {ORANGE}
+
+
+async def test_the_bare_name_follows_the_portal(db, lan, publish_fakes):  # noqa: F811
+    await _switched(db, lan, "orange")
+    await _switched(db, lan, "purple")
+    bare = _host(publish_fakes, "lan9.serversherpa.com")
+    portal = _host(publish_fakes, "portal.lan9.serversherpa.com")
+    assert (bare["forward_host"], bare["forward_port"]) == (
+        PURPLE_IP, portal["forward_port"])
+    assert (await _hosts(db, lan))["home"] == PURPLE_IP
+    publish_fakes.smoke.set("portal.lan9.serversherpa.com", 502)
+    await _fails(db, lan, "orange")
+    assert _host(publish_fakes, "lan9.serversherpa.com")["forward_host"] == PURPLE_IP
+    assert (await _hosts(db, lan))["home"] == PURPLE_IP

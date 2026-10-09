@@ -41,6 +41,7 @@ from sirdar_api.deploy import (
     do_envs,
     envfile,
     first_admins,
+    home,
     integrations,
     lan_slots,
     names,
@@ -161,7 +162,10 @@ def _check_target(target_id: str, settings: Settings) -> SshTargetConfig | None:
 
 
 def _hostname(env: Environment, service: str, domain: str) -> str | None:
-    """A service's public name: none for mailpit, nor for an app that is off."""
+    """A service's public name: none for mailpit, nor for an app that is off.
+    home is the base domain itself."""
+    if service == home.HOME:
+        return domain if home.wants_home(env) else None
     return (f"{service}.{domain}" if service in envfile.PUBLIC_SERVICES
             and app_rules.is_public(env, service) else None)
 
@@ -194,7 +198,7 @@ async def list_all(db: AsyncSession) -> list[Environment]:
 async def services_of(db: AsyncSession, env_id) -> list[EnvironmentService]:
     rows = await db.scalars(select(EnvironmentService)
                             .where(EnvironmentService.environment_id == env_id))
-    order = {s: i for i, s in enumerate(envfile.SERVICES)}
+    order = {s: i for i, s in enumerate(home.SERVICE_ORDER)}
     return sorted(rows, key=lambda r: order.get(r.service, len(order)))
 
 
@@ -251,6 +255,11 @@ async def _insert(db: AsyncSession, settings: Settings, *, name: str,
                                   port=ports[service],
                                   hostname=(f"{service}.{domain}"
                                             if service in public_services else None),
+                                  proxied=False))
+    if home.wants_home(env):
+        # The bare name redirects to the portal: same host and port as portal.
+        db.add(EnvironmentService(environment_id=env.id, service=home.HOME, host_ip=host,
+                                  port=ports["portal"], hostname=home.home_hostname(env),
                                   proxied=False))
     for key, value in secrets.items():
         db.add(EnvironmentSecret(environment_id=env.id, key=key,
@@ -756,7 +765,8 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
 
     rows = {r.service: r for r in await services_of(db, env.id)}
     service_fields = fields.get("services") or {}
-    unknown = sorted(set(service_fields) - set(rows))
+    # home follows portal: it is never edited on its own
+    unknown = sorted(set(service_fields) - (set(rows) - {home.HOME}))
     if unknown:
         raise EnvError("service_unknown", service=unknown[0])
     for service, patch in service_fields.items():
@@ -780,7 +790,10 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
         if patch.get("proxied") is not None and row.proxied != bool(patch["proxied"]):
             row.proxied = bool(patch["proxied"])
             changed.append(f"services.{service}.proxied")
-    _check_ports_unique({s: r.port for s, r in rows.items()})
+    home_row = rows.get(home.HOME)
+    if home_row is not None and "portal" in rows:
+        home_row.host_ip, home_row.port = rows["portal"].host_ip, rows["portal"].port
+    _check_ports_unique({s: r.port for s, r in rows.items() if s != home.HOME})
     if env.base_domain != old_domain:
         for service, row in rows.items():
             row.hostname = _hostname(env, service, env.base_domain)

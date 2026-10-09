@@ -302,3 +302,13 @@ async def test_the_droplet_env_names_the_environments_own_bucket(db):
     env = await make_do_environment(db)
     row = await do_envs.get(db, env.id)
     assert env.spaces_bucket == row.bucket != envfile.DEFAULT_SPACES_BUCKET
+
+
+async def test_a_dev_droplet_environment_gets_home_and_production_does_not(db):
+    env = await make_do_environment(db)
+    rows = {s.service: s for s in await environments.services_of(db, env.id)}
+    assert (rows["home"].hostname, rows["home"].port) == ("uat9.serversherpa.com",
+                                                          rows["portal"].port)
+    prod = await make_do_environment(db, name="prod", type_="production", account="production",
+                                     slots=None)
+    assert "home" not in {s.service for s in await environments.services_of(db, prod.id)}
