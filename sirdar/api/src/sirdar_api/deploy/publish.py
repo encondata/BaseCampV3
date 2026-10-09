@@ -839,6 +839,16 @@ async def _delete_replaced(api: Npm, hostname: str, cert_id: int, out: Output) -
             "it stays in Nginx Proxy Manager\n")
 
 
+def _updated(drift: list[str], sp: ServicePlan) -> str:
+    """What a proxy host update changed, for the log: the bare name's
+    redirect gets its own words."""
+    if "the redirect" not in drift:
+        return f"proxy host now goes to {sp.forward}"
+    if drift == ["the redirect"]:
+        return "proxy host now redirects to the portal"
+    return f"proxy host now goes to {sp.forward} and redirects to the portal"
+
+
 async def ensure_proxy(ctx: PublishContext, out: Output, *, transport,
                        sleep: Callable[[float], Awaitable[None]], now: datetime,
                        backoff: tuple[int, ...]) -> None:
@@ -871,8 +881,9 @@ async def ensure_proxy(ctx: PublishContext, out: Output, *, transport,
                 await _remember(ctx.env_id, s.service, PROXY, found.id, s.hostname)
                 out(f"{s.hostname}: created a proxy host to {s.forward}\n")
             elif st.state == "update":
+                drift = _forward_drift(found, s)
                 found = await api.update_host(found.id, host_body(found, s))
-                out(f"{s.hostname}: proxy host now goes to {s.forward}\n")
+                out(f"{s.hostname}: {_updated(drift, s)}\n")
             else:
                 out(f"{s.hostname}: proxy host to {s.forward}, unchanged\n")
             cert_id, replaced = await _ensure_certificate(api, ctx, s, found, certs,

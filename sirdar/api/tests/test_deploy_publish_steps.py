@@ -545,7 +545,19 @@ async def test_a_redirect_changed_by_hand_is_put_back(db, home_env, publish_fake
         "update", "Sirdar will change the redirect.")
     lines = await _run(db, home_env, "proxy")
     assert _bare(publish_fakes.npm)["advanced_config"] == REDIRECT
-    assert "uat2.serversherpa.com: proxy host now goes to 10.10.48.63:8091\n" in lines
+    assert "uat2.serversherpa.com: proxy host now redirects to the portal\n" in lines
+    assert not any("now goes to" in line for line in lines)
+
+
+async def test_a_moved_bare_name_says_where_it_goes_and_that_it_redirects(
+        db, home_env, publish_fakes):  # noqa: F811
+    await _run(db, home_env, "proxy")
+    bare = _bare(publish_fakes.npm)
+    bare["advanced_config"] = ""
+    bare["forward_host"] = "10.10.48.99"
+    lines = await _run(db, home_env, "proxy")
+    assert ("uat2.serversherpa.com: proxy host now goes to 10.10.48.63:8091 and redirects "
+            "to the portal\n") in lines
 
 
 async def test_other_hosts_keep_their_own_advanced_config(db, home_env,
