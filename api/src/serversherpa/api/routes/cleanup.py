@@ -45,15 +45,25 @@ async def run_cleanup(
     group = cleanup.GROUPS.get(body.group)
     # a group with no age field ignores whatever was sent
     age = body.older_than_days if group is not None and group.needs_age else None
+    failure: cleanup.CleanupFailed | None = None
     try:
         results = await cleanup.run(get_sessionmaker(), body.group, body.categories, age)
+    except cleanup.CleanupFailed as exc:
+        failure, results = exc, exc.results
     except cleanup.CleanupError as exc:
         raise _refuse(exc) from None
 
     counts = {r.key: {k: v for k, v in asdict(r).items() if k != "key"} for r in results}
+    changes = {"group": body.group, "older_than_days": age, "categories": counts}
+    if failure is not None:
+        changes["error"] = failure.message
     audit(db, actor_id=actor.person.id, entity_type="system", entity_id=body.group,
-          action="cleanup.run",
-          changes={"group": body.group, "older_than_days": age, "categories": counts})
+          action="cleanup.run", changes=changes)
     await db.commit()
+    if failure is not None:
+        # what was committed before the failure stays deleted; say so
+        raise HTTPException(status_code=500, detail={
+            "code": "cleanup_failed", "message": failure.message,
+            "categories": [asdict(r) for r in results]})
     return CleanupRunOut(group=body.group, older_than_days=age,
                          categories=[asdict(r) for r in results])

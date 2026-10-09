@@ -5,6 +5,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 
+import pytest
 from sqlalchemy import select, text
 
 from serversherpa.db.models import (
@@ -341,6 +342,19 @@ async def test_unauthenticated_is_401(client):
     assert (await client.get("/devtools/cleanup/preview")).status_code == 401
 
 
+async def test_empty_category_list_is_unknown_category(client, db, seeded_user):
+    hdrs = await _developer(db, client, seeded_user)
+    resp = await _run(client, hdrs, "signin", [])
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == {"code": "unknown_category"}
+
+
+async def test_preview_with_a_non_integer_age_is_422(client, db, seeded_user):
+    hdrs = await _developer(db, client, seeded_user)
+    resp = await client.get("/devtools/cleanup/preview?older_than_days=abc", headers=hdrs)
+    assert resp.status_code == 422
+
+
 def test_registry_shape():
     from serversherpa.devtools import cleanup
 
@@ -405,3 +419,131 @@ async def test_chunk_keys_are_deleted_only_after_the_rows_commit(
     assert result.rows_deleted == 3
     assert (result.files_deleted, result.files_failed) == (1, 1)
     assert seen_rows_at_delete == [1, 0]      # each delete saw its chunk already gone
+
+
+async def test_duplicate_and_generator_keys_are_deleted_once(db, seeded_user, monkeypatch):
+    from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.devtools import cleanup
+
+    db.add(PasswordResetToken(person_id=seeded_user.id, token_hash="t",
+                              expires_at=NOW - HOUR))
+    await db.commit()
+    gone = []
+
+    async def fake_delete(key):
+        gone.append(key)
+
+    monkeypatch.setattr("serversherpa.devtools.cleanup.storage.delete_object", fake_delete)
+
+    async def keys(_session, _ids, _result):
+        return (k for k in ["a", "b", "a"])          # a generator with a duplicate
+
+    result = cleanup.CategoryResult("reset_links")
+    await cleanup.purge_in_chunks(
+        get_sessionmaker(), PasswordResetToken, cleanup._spent_reset_links(),
+        result, before=keys)
+    assert gone == ["a", "b"]
+    assert result.files_deleted == 2
+
+
+async def test_a_full_chunk_that_deletes_nothing_raises_instead_of_looping(
+        db, seeded_user, monkeypatch):
+    from sqlalchemy import delete
+
+    from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.devtools import cleanup
+
+    monkeypatch.setattr("serversherpa.devtools.cleanup.CHUNK_SIZE", 2)
+    db.add_all([PasswordResetToken(person_id=seeded_user.id, token_hash=f"t{i}",
+                                   expires_at=NOW - HOUR) for i in range(3)])
+    await db.commit()
+
+    async def steal(session, ids, _result):
+        # the rows vanish before the chunk's own delete runs
+        await session.execute(delete(PasswordResetToken)
+                              .where(PasswordResetToken.id.in_(ids)))
+        return ()
+
+    result = cleanup.CategoryResult("reset_links")
+    with pytest.raises(RuntimeError, match="no progress"):
+        await cleanup.purge_in_chunks(
+            get_sessionmaker(), PasswordResetToken, cleanup._spent_reset_links(),
+            result, before=steal)
+    assert result.rows_deleted == 0
+
+
+# -- a run that fails partway still audits what it removed -----------------
+
+
+async def _audit_rows(db):
+    db.expire_all()
+    return (await db.execute(
+        select(AuditLog).where(AuditLog.action == "cleanup.run"))).scalars().all()
+
+
+async def test_failure_in_a_later_chunk_keeps_earlier_chunks_and_audits_them(
+        client, db, seeded_user, monkeypatch):
+    from serversherpa.devtools import cleanup
+
+    monkeypatch.setattr("serversherpa.devtools.cleanup.CHUNK_SIZE", 2)
+    pid = seeded_user.id
+    expired = [_session(pid, expires=NOW - HOUR) for _ in range(5)]
+    db.add_all(expired)
+    await db.commit()
+    ids = [x.id for x in expired]
+
+    real = cleanup._release_replaced_by
+    calls = []
+
+    async def flaky(session, chunk_ids, result):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("disk on fire\nsecond line")
+        return await real(session, chunk_ids, result)
+
+    monkeypatch.setattr("serversherpa.devtools.cleanup._release_replaced_by", flaky)
+    hdrs = await _developer(db, client, seeded_user)
+    resp = await _run(client, hdrs, "signin", ["sessions"])
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert detail["code"] == "cleanup_failed"
+    assert detail["categories"][0]["rows_deleted"] == 2
+
+    assert len(await _session_state(db, *ids)) == 3          # first chunk stays deleted
+    (row,) = await _audit_rows(db)
+    assert row.changes["group"] == "signin"
+    assert row.changes["error"] == "RuntimeError: disk on fire"
+    assert row.changes["categories"]["sessions"]["rows_deleted"] == 2
+
+
+async def test_failure_in_a_later_category_audits_the_finished_ones(
+        client, db, seeded_user, monkeypatch):
+    from dataclasses import replace
+
+    from serversherpa.devtools import cleanup
+
+    pid = seeded_user.id
+    old = _session(pid, expires=NOW - HOUR)
+    db.add(old)
+    await db.commit()
+    old_id = old.id
+
+    async def boom(_maker, _cutoff):
+        raise ValueError("nope")
+
+    group = cleanup.GROUPS["signin"]
+    broken = replace(group, categories=tuple(
+        replace(c, purge=boom) if c.key == "reset_links" else c
+        for c in group.categories))
+    monkeypatch.setitem(cleanup.GROUPS, "signin", broken)
+
+    hdrs = await _developer(db, client, seeded_user)
+    resp = await _run(client, hdrs, "signin", ["sessions", "reset_links"])
+    assert resp.status_code == 500
+    assert resp.json()["detail"]["code"] == "cleanup_failed"
+    assert await _session_state(db, old_id) == {}             # sessions finished first
+
+    (row,) = await _audit_rows(db)
+    assert row.changes["error"] == "ValueError: nope"
+    assert list(row.changes["categories"]) == ["sessions"]
+    assert row.changes["categories"]["sessions"]["rows_deleted"] == 1

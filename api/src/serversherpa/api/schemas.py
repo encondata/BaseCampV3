@@ -4153,7 +4153,7 @@ class CleanupPreviewOut(BaseModel):
 
 class CleanupRunIn(BaseModel):
     group: str
-    categories: list[str] = Field(min_length=1)
+    categories: list[str]
     # required for the groups that need an age; ignored for the others
     older_than_days: int | None = None
 

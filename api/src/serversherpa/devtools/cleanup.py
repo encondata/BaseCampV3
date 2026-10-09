@@ -50,6 +50,17 @@ class CategoryResult:
     files_failed: int = 0
 
 
+class CleanupFailed(CleanupError):
+    """A run raised partway. `results` holds what was already committed
+    (finished categories plus the failing one's chunks so far); `message`
+    is a short description of the error for the audit row."""
+
+    def __init__(self, results: list["CategoryResult"], cause: BaseException):
+        super().__init__("cleanup_failed")
+        self.results = results
+        self.message = f"{type(cause).__name__}: {cause}".splitlines()[0][:300]
+
+
 CountFn = Callable[[AsyncSession, datetime | None], Awaitable[tuple[int, int]]]
 PurgeFn = Callable[[async_sessionmaker, datetime | None], Awaitable[CategoryResult]]
 
@@ -109,24 +120,35 @@ async def purge_in_chunks(
     Each chunk is one transaction: pick up to CHUNK_SIZE ids, run `before`
     (which fixes up rows that reference them and returns the storage keys
     that become unused), delete the ids, commit. Then the returned keys are
-    deleted from storage. Stops when a chunk comes back short. Rows are
-    counted in `result` as each chunk commits, so an error mid-run still
-    reports what was removed."""
-    while True:
-        async with maker() as session:
-            ids = list((await session.execute(
-                select(model.id).where(where).limit(CHUNK_SIZE))).scalars())
-            if not ids:
+    deleted from storage. Stops when a chunk comes back short.
+
+    `result` is updated as each chunk commits. If anything raises, the
+    exception carries it as `partial_result` so the caller can report what
+    was already removed."""
+    try:
+        while True:
+            async with maker() as session:
+                ids = list((await session.execute(
+                    select(model.id).where(where).limit(CHUNK_SIZE))).scalars())
+                if not ids:
+                    return
+                keys: list[str] = []
+                if before is not None:
+                    keys = list(dict.fromkeys(await before(session, ids, result)))
+                deleted = await session.execute(delete(model).where(model.id.in_(ids)))
+                if deleted.rowcount == 0 and len(ids) >= CHUNK_SIZE:
+                    # a full chunk that removed nothing would be selected
+                    # again forever
+                    raise RuntimeError(
+                        f"cleanup made no progress on {model.__tablename__}")
+                await session.commit()
+                result.rows_deleted += deleted.rowcount
+            await delete_objects(keys, result)
+            if len(ids) < CHUNK_SIZE:
                 return
-            keys: Iterable[str] = ()
-            if before is not None:
-                keys = await before(session, ids, result)
-            deleted = await session.execute(delete(model).where(model.id.in_(ids)))
-            await session.commit()
-            result.rows_deleted += deleted.rowcount
-        await delete_objects(keys, result)
-        if len(ids) < CHUNK_SIZE:
-            return
+    except Exception as exc:
+        exc.partial_result = result  # type: ignore[attr-defined]
+        raise
 
 
 async def _count_rows(db: AsyncSession, model, where: ColumnElement[bool]) -> int:
@@ -277,7 +299,11 @@ async def run(
     older_than_days: int | None,
 ) -> list[CategoryResult]:
     """Purge the chosen categories of one group, in the group's own order.
-    Raises CleanupError for an unknown group/category or a bad age."""
+
+    Raises CleanupError for an unknown group/category (an empty list
+    included) or a bad age, before anything is deleted. If a purge fails
+    partway it raises CleanupFailed, whose `results` are the counts already
+    committed; earlier chunks and categories stay deleted."""
     group = GROUPS.get(group_key)
     if group is None:
         raise CleanupError("unknown_category")
@@ -291,5 +317,14 @@ async def run(
     chosen = set(category_keys)
     if not chosen or not chosen <= {c.key for c in group.categories}:
         raise CleanupError("unknown_category")
-    return [await category.purge(maker, cutoff)
-            for category in group.categories if category.key in chosen]
+    results: list[CategoryResult] = []
+    try:
+        for category in group.categories:
+            if category.key in chosen:
+                results.append(await category.purge(maker, cutoff))
+    except Exception as exc:
+        partial = getattr(exc, "partial_result", None)
+        if partial is not None:
+            results.append(partial)
+        raise CleanupFailed(results, exc) from exc
+    return results
