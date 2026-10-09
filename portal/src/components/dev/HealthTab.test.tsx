@@ -345,3 +345,77 @@ it('Measure storage shows the unavailable message on a 502', async () => {
   expect(err.className).toMatch(/pf-error/);
   expect(screen.getByRole('button', { name: 'Measure storage' })).not.toBeNull();
 });
+
+it('vacuum: shows "Vacuuming <table>…" and disables the action while it runs', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  api.getHealthTables.mockResolvedValue({ tables: [table('asset')] });
+  let finish: (v: unknown) => void = () => {};
+  api.vacuumHealthTable.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  const user = await renderTab();
+  const row = await openVacuum(user, 'asset');
+
+  expect(await screen.findByText('Vacuuming asset…')).not.toBeNull();
+  await user.click(within(row).getByRole('button', { name: /actions/i }));
+  const item = await screen.findByRole('menuitem', { name: 'Vacuum & analyze' });
+  expect((item as HTMLButtonElement).disabled).toBe(true);
+  await user.keyboard('{Escape}');
+
+  finish({ table: table('asset'), duration_ms: 50 });
+  expect(await screen.findByText(/Vacuumed in 50 ms/)).not.toBeNull();
+  expect(screen.queryByText('Vacuuming asset…')).toBeNull();
+});
+
+it('Refresh clears the vacuum note and the vacuum error', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  api.getHealthTables.mockResolvedValue({ tables: [table('asset')] });
+  api.vacuumHealthTable
+    .mockResolvedValueOnce({ table: table('asset'), duration_ms: 1234 })
+    .mockRejectedValueOnce(new ApiError(409, 'table_busy', {
+      code: 'table_busy', message: 'Another session is holding a lock on that table.' }));
+  const user = await renderTab();
+  await openVacuum(user, 'asset');
+  expect(await screen.findByText(/Vacuumed in 1\.2 s/)).not.toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Refresh' }));
+  await waitFor(() => expect(api.getHealthTables).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.queryByText(/Vacuumed in/)).toBeNull());
+
+  await openVacuum(user, 'asset');
+  expect(await screen.findByText('Another session is holding a lock on that table.')).not.toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Refresh' }));
+  await waitFor(() => expect(screen.queryByText('Another session is holding a lock on that table.')).toBeNull());
+});
+
+it('vacuum: an unknown table shows the API message', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  api.getHealthTables.mockResolvedValue({ tables: [table('asset')] });
+  api.vacuumHealthTable.mockRejectedValue(new ApiError(404, 'unknown_table', {
+    code: 'unknown_table', message: "That isn't a table in this database." }));
+  const user = await renderTab();
+  await openVacuum(user, 'asset');
+  const err = await screen.findByText("That isn't a table in this database.");
+  expect(err.className).toMatch(/pf-error/);
+});
+
+it('tables list: the dead-rows floor fits "1,234,567 · 12.3%" and Connections count has a floor', async () => {
+  api.getHealthTables.mockResolvedValue({ tables: [table('asset')] });
+  api.getHealthConnections.mockResolvedValue({ groups: [group()] });
+  await renderTab();
+  await screen.findByText('asset');
+  const floors = (label: string) => {
+    const head = document.querySelector(`[aria-label="${label}"] .list-head`) as HTMLElement;
+    return Array.from(head.style.gridTemplateColumns.matchAll(/minmax\((\d+)px/g))
+      .map((m) => Number(m[1]));
+  };
+  // dead rows is the sixth Tables column; Count the third Connections column
+  expect(floors('Tables')[5]).toBeGreaterThanOrEqual(150);
+  expect(floors('Connections')[2]).toBeGreaterThanOrEqual(80);
+});
+
+it('Measure storage says so when the bucket is empty', async () => {
+  api.getHealthStorage.mockResolvedValue({
+    folders: [], total_objects: 0, total_bytes: 0, measured_at: '2026-10-09T15:30:00Z' });
+  const user = await renderTab();
+  await user.click(screen.getByRole('button', { name: 'Measure storage' }));
+  expect(await screen.findByText('No files in storage.')).not.toBeNull();
+  expect(screen.getByText(/^Measured at /)).not.toBeNull();
+});

@@ -144,7 +144,7 @@ function SummaryCard({ summary, error, loading, onRefresh }: {
 const CONNECTION_COLUMNS: ColumnDef[] = [
   { key: 'application_name', label: 'Application', width: '2fr', default: true, min: 160 },
   { key: 'state', label: 'State', width: '1.4fr', default: true, min: 140 },
-  { key: 'count', label: 'Count', width: '0.6fr', default: true },
+  { key: 'count', label: 'Count', width: '0.6fr', default: true, min: 80 },
   { key: 'oldest_query', label: 'Oldest query', short: 'Query', width: '1fr', default: true, min: 96 },
   { key: 'oldest_transaction', label: 'Oldest transaction', short: 'Transaction', width: '1fr',
     default: true, min: 104 },
@@ -200,10 +200,12 @@ function ConnectionsCard({ groups, error }: {
 
 /* ── tables ──────────────────────────────────────────────────────── */
 
-function TablesCard({ tables, error, canChange, onChanged }: {
+function TablesCard({ tables, error, canChange, refreshTick, onChanged }: {
   tables: HealthTable[] | null;
   error: string;
   canChange: boolean;
+  /** bumped by every Refresh: the vacuum note and error described the old state */
+  refreshTick: number;
   /** the vacuumed table, as the API returned it */
   onChanged: (table: HealthTable) => void;
 }) {
@@ -213,6 +215,11 @@ function TablesCard({ tables, error, canChange, onChanged }: {
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState('');
   const [vacuumError, setVacuumError] = useState('');
+
+  useEffect(() => {
+    setNote('');
+    setVacuumError('');
+  }, [refreshTick]);
 
   const grid = listGridStyle(TABLE_COLUMNS, [ACTIONS_TRACK], undefined, listScale(preferences?.list_size));
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
@@ -257,7 +264,8 @@ function TablesCard({ tables, error, canChange, onChanged }: {
       </div>
       {error && <p className="pf-error">{error}</p>}
       {vacuumError && <p className="pf-error">{vacuumError}</p>}
-      {note && <p className="set-ok">{note}</p>}
+      {busy ? <p className="page-hint health-none">Vacuuming {busy}…</p>
+        : note && <p className="set-ok">{note}</p>}
       {tables && (
         <div className="dir-list list-scroll">
           <div className="list-head" style={rowStyle}>
@@ -357,7 +365,15 @@ function StorageCard() {
         </button>
       </div>
       {error && <p className="pf-error">{error}</p>}
-      {data && (
+      {data && data.folders.length === 0 && (
+        <>
+          <p className="page-hint health-none">No files in storage.</p>
+          <p className="page-hint health-none">
+            Measured at {new Date(data.measured_at).toLocaleString()}
+          </p>
+        </>
+      )}
+      {data && data.folders.length > 0 && (
         <>
           <PlainList
             cols={STORAGE_COLUMNS}
@@ -395,9 +411,11 @@ export default function HealthTab() {
   const [connectionsError, setConnectionsError] = useState('');
   const [tablesError, setTablesError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
 
   const load = async () => {
     setLoading(true);
+    setRefreshTick((n) => n + 1);
     const [s, c, t] = await Promise.allSettled([
       getHealthSummary(), getHealthConnections(), getHealthTables(),
     ]);
@@ -421,6 +439,7 @@ export default function HealthTab() {
         tables={tables}
         error={tablesError}
         canChange={canChange}
+        refreshTick={refreshTick}
         onChanged={(next) => setTables((prev) =>
           prev && prev.map((t) => (t.name === next.name ? next : t)))}
       />

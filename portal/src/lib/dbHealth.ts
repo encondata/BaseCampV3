@@ -68,7 +68,7 @@ export function isStale(seconds: number | null): boolean {
 }
 
 /** Fixed columns (no picker), so every `min` is an explicit floor sized
- *  for the cell value, not just the short header. 1,032px total with the
+ *  for the cell value, not just the short header. 1,072px total with the
  *  actions track — under LIST_FIT.initPanel. */
 export const TABLE_COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: '2fr', default: true, min: 160 },
@@ -76,7 +76,7 @@ export const TABLE_COLUMNS: ColumnDef[] = [
   { key: 'total_bytes', label: 'Total size', short: 'Total', width: '1fr', default: true, min: 88 },
   { key: 'table_bytes', label: 'Table size', short: 'Table', width: '1fr', default: true, min: 88 },
   { key: 'index_bytes', label: 'Index size', short: 'Index', width: '1fr', default: true, min: 88 },
-  { key: 'dead_rows', label: 'Dead rows', short: 'Dead', width: '1.2fr', default: true, min: 112 },
+  { key: 'dead_rows', label: 'Dead rows', short: 'Dead', width: '1.2fr', default: true, min: 152 },
   { key: 'last_vacuum_at', label: 'Last vacuum', short: 'Vacuum', width: '1fr', default: true, min: 96 },
   { key: 'last_analyze_at', label: 'Last analyze', short: 'Analyze', width: '1fr', default: true, min: 96 },
 ];
