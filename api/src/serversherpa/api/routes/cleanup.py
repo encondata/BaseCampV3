@@ -5,10 +5,9 @@ Database tab: view to preview, change to run."""
 from dataclasses import asdict
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
-from serversherpa.api.routes.devtools import UNFINISHED_STATUSES
+from serversherpa.api.routes.devtools import testing_session_unfinished
 from serversherpa.api.schemas import (
     CleanupDuplicatesOut,
     CleanupPreviewOut,
@@ -16,7 +15,6 @@ from serversherpa.api.schemas import (
     CleanupRunOut,
 )
 from serversherpa.db.engine import get_sessionmaker
-from serversherpa.db.models import DbTestingSession
 from serversherpa.devtools import cleanup, duplicates
 from serversherpa.services.audit import audit
 
@@ -53,8 +51,7 @@ async def run_cleanup(
     # A DB Testing revert restores rows but not stored files, so files removed
     # during a session could never be brought back. Same "unfinished" test as
     # the Testing tab itself.
-    if await db.scalar(select(DbTestingSession.id).where(
-            DbTestingSession.status.in_(UNFINISHED_STATUSES)).limit(1)) is not None:
+    if await testing_session_unfinished(db):
         raise HTTPException(status_code=409, detail={
             "code": "testing_session_active",
             "message": "A DB Testing session is in progress. Finish or revert it before "

@@ -4227,3 +4227,24 @@ class HealthConnectionGroupOut(BaseModel):
 
 class HealthConnectionsOut(BaseModel):
     groups: list[HealthConnectionGroupOut]
+
+
+class HealthTableOut(BaseModel):
+    name: str
+    rows: int
+    total_bytes: int
+    table_bytes: int
+    index_bytes: int
+    dead_rows: int
+    dead_ratio: float | None
+    last_vacuum_at: datetime | None
+    last_analyze_at: datetime | None
+
+
+class HealthTablesOut(BaseModel):
+    tables: list[HealthTableOut]
+
+
+class HealthVacuumOut(BaseModel):
+    table: HealthTableOut
+    duration_ms: int

@@ -1,16 +1,24 @@
 """Database health (Dev -> Database -> Health). Under the `devtools`
 resource like the rest of the Database tab: view for every read here."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
-from serversherpa.api.schemas import HealthConnectionsOut, HealthSummaryOut
+from serversherpa.api.routes.devtools import testing_session_unfinished
+from serversherpa.api.schemas import (
+    HealthConnectionsOut,
+    HealthSummaryOut,
+    HealthTablesOut,
+    HealthVacuumOut,
+)
 from serversherpa.devtools import health
+from serversherpa.services.audit import audit
 
 router = APIRouter(prefix="/devtools/health", tags=["devtools"])
 
 # module-level so the route signatures stay free of calls in defaults
 _CAN_VIEW = require_permission("devtools", "view")
+_CAN_CHANGE = require_permission("devtools", "change")
 
 
 @router.get("/summary", response_model=HealthSummaryOut)
@@ -22,3 +30,31 @@ async def get_summary(db: DbSession, actor: AuthContext = _CAN_VIEW) -> HealthSu
 async def get_connections(
         db: DbSession, actor: AuthContext = _CAN_VIEW) -> HealthConnectionsOut:
     return HealthConnectionsOut(groups=await health.connections(db))
+
+
+@router.get("/tables", response_model=HealthTablesOut)
+async def get_tables(db: DbSession, actor: AuthContext = _CAN_VIEW) -> HealthTablesOut:
+    return HealthTablesOut(tables=await health.tables(db))
+
+
+@router.post("/tables/{name}/vacuum", response_model=HealthVacuumOut)
+async def vacuum_table(
+        name: str, db: DbSession, actor: AuthContext = _CAN_CHANGE) -> HealthVacuumOut:
+    # Same "unfinished" test as Cleanup and the Testing tab: a DB Testing
+    # session owns the database's state until it is finished or reverted.
+    if await testing_session_unfinished(db):
+        raise HTTPException(status_code=409, detail={
+            "code": "testing_session_active",
+            "message": "A DB Testing session is in progress. Finish or revert it "
+                       "before vacuuming tables."})
+    try:
+        result = await health.vacuum_table(name)
+    except health.UnknownTable:
+        raise HTTPException(status_code=404, detail={
+            "code": "unknown_table",
+            "message": "That isn't a table in this database."}) from None
+    audit(db, actor_id=actor.person.id, entity_type="system", entity_id=result["table"]["name"],
+          action="db.vacuum",
+          changes={"table": result["table"]["name"], "duration_ms": result["duration_ms"]})
+    await db.commit()
+    return HealthVacuumOut(**result)

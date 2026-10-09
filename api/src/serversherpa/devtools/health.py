@@ -5,8 +5,9 @@ query text or a client address."""
 import time
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
+from serversherpa.db.engine import get_engine
 from serversherpa.db.ordering import natural_key
 
 OTHER_APP = "Other"     # connections that never set an application_name
@@ -73,3 +74,69 @@ async def connections(db: AsyncSession) -> list[dict]:
     } for r in rows]
     groups.sort(key=lambda g: (natural_key(g["application_name"]), g["state"]))
     return groups
+
+
+class UnknownTable(Exception):
+    """The name isn't one of the current public tables."""
+
+
+_TABLE_STATS_SQL = """
+    SELECT relname AS name,
+           n_live_tup AS rows,
+           pg_total_relation_size(relid) AS total_bytes,
+           pg_relation_size(relid) AS table_bytes,
+           pg_indexes_size(relid) AS index_bytes,
+           n_dead_tup AS dead_rows,
+           CASE WHEN n_live_tup + n_dead_tup = 0 THEN NULL
+                ELSE n_dead_tup::float8 / (n_live_tup + n_dead_tup) END AS dead_ratio,
+           greatest(last_vacuum, last_autovacuum) AS last_vacuum_at,
+           greatest(last_analyze, last_autoanalyze) AS last_analyze_at
+      FROM pg_stat_user_tables
+     WHERE schemaname = 'public'
+"""
+
+
+async def _table_stats(conn: AsyncSession | AsyncConnection, name: str | None = None) -> list[dict]:
+    sql = _TABLE_STATS_SQL
+    params: dict = {}
+    if name is not None:
+        sql += " AND relname = :name"
+        params["name"] = name
+    sql += " ORDER BY pg_total_relation_size(relid) DESC, relname"
+    rows = (await conn.execute(text(sql), params)).all()
+    return [{
+        "name": r.name,
+        "rows": int(r.rows),
+        "total_bytes": int(r.total_bytes),
+        "table_bytes": int(r.table_bytes),
+        "index_bytes": int(r.index_bytes),
+        "dead_rows": int(r.dead_rows),
+        "dead_ratio": None if r.dead_ratio is None else float(r.dead_ratio),
+        "last_vacuum_at": r.last_vacuum_at,
+        "last_analyze_at": r.last_analyze_at,
+    } for r in rows]
+
+
+async def tables(db: AsyncSession) -> list[dict]:
+    """Every public table with its size and vacuum figures, biggest first."""
+    return await _table_stats(db)
+
+
+async def vacuum_table(name: str) -> dict:
+    """VACUUM (ANALYZE) one public table. `name` is only ever compared with
+    the catalog; what gets quoted into the statement is the name the catalog
+    returned. VACUUM can't run inside a transaction, hence the autocommit
+    connection."""
+    async with get_engine().connect() as conn:
+        conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+        known = await conn.scalar(text(
+            "SELECT relname FROM pg_stat_user_tables "
+            "WHERE schemaname = 'public' AND relname = :name"), {"name": name})
+        if known is None:
+            raise UnknownTable(name)
+        quoted = conn.dialect.identifier_preparer.quote(known)
+        started = time.perf_counter()
+        await conn.execute(text(f"VACUUM (ANALYZE) public.{quoted}"))
+        duration_ms = round((time.perf_counter() - started) * 1000)
+        (stats,) = await _table_stats(conn, known)
+    return {"table": stats, "duration_ms": duration_ms}

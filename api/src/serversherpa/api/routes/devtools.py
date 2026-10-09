@@ -18,6 +18,7 @@ from botocore.exceptions import ClientError
 from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.schema import Table
 
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession, require_permission
@@ -52,6 +53,14 @@ router = APIRouter(prefix="/devtools", tags=["devtools"])
 # Session statuses considered "unfinished" — mirrors the partial unique
 # index from migration 0059 (at most one such row ever exists).
 UNFINISHED_STATUSES = (*WORKING_STATUSES, "active")
+
+
+async def testing_session_unfinished(db: AsyncSession) -> bool:
+    """True while a DB Testing session is snapshotting, active or reverting.
+    Work that a revert can't undo (removing stored files, vacuuming) is
+    refused meanwhile."""
+    return await db.scalar(select(DbTestingSession.id).where(
+        DbTestingSession.status.in_(UNFINISHED_STATUSES)).limit(1)) is not None
 
 DB_TESTING_WORKER_NAME = "db-testing-worker"
 WORKER_STALE_SECONDS = 30
