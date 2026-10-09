@@ -4126,3 +4126,81 @@ class KioskSetupReadOut(BaseModel):
     scan_status_label: str | None
     station_type: Literal["label", "rfid"] | None
     reader: KioskSetupReaderOut | None
+
+
+# ── data cleanup (Dev → Database → Cleanup) ─────────────────────────
+
+
+class CleanupCategoryPreview(BaseModel):
+    key: str
+    label: str
+    description: str
+    rows: int
+    files: int
+
+
+class CleanupGroupPreview(BaseModel):
+    key: str
+    label: str
+    description: str
+    needs_age: bool
+    categories: list[CleanupCategoryPreview]
+
+
+class CleanupPreviewOut(BaseModel):
+    groups: list[CleanupGroupPreview]
+
+
+class CleanupRunIn(BaseModel):
+    group: str
+    categories: list[str]
+    # required for the groups that need an age; ignored for the others
+    older_than_days: int | None = None
+
+
+class CleanupCategoryResultOut(BaseModel):
+    key: str
+    rows_deleted: int
+    files_deleted: int
+    files_kept: int
+    files_failed: int
+
+
+class CleanupRunOut(BaseModel):
+    group: str
+    older_than_days: int | None
+    categories: list[CleanupCategoryResultOut]
+
+
+class DuplicateAssetOut(BaseModel):
+    id: uuid.UUID
+    name: str | None
+    serial_number: str | None
+    site_name: str | None
+    status_label: str
+    href: str
+
+
+class DuplicateAssetGroupOut(BaseModel):
+    serial: str
+    items: list[DuplicateAssetOut]
+
+
+class DuplicatePersonOut(BaseModel):
+    id: uuid.UUID
+    display_name: str
+    email: str | None
+    has_login: bool
+    is_worker: bool
+    href: str | None
+
+
+class DuplicatePersonGroupOut(BaseModel):
+    key: str            # unique per group; display names can read alike
+    name: str
+    items: list[DuplicatePersonOut]
+
+
+class CleanupDuplicatesOut(BaseModel):
+    assets: list[DuplicateAssetGroupOut]
+    people: list[DuplicatePersonGroupOut]

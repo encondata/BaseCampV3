@@ -1,5 +1,5 @@
 /**
- * Developer → Database — two tabs sharing one page shell:
+ * Developer → Database — four tabs sharing one page shell:
  *
  *  - Reconcile: the god-mode "pending delete" registry (Task 1/2's
  *    mark/unmark flow, exposed everywhere via GodDeleteButton). Lists
@@ -20,6 +20,9 @@
  *    let changes accumulate, then keep or revert them. Its own component,
  *    components/dev/DbTestingTab.tsx, since it's sizable on its own.
  *
+ *  - Cleanup: preview and purge expired sign-in records, old history and
+ *    deleted files, plus a duplicate finder (components/dev/CleanupTab.tsx).
+ *
  * Tab bar follows the .sysconf-tabbar pattern from pages/SystemConfig.tsx.
  */
 
@@ -28,6 +31,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
 import CascadeDeleteModal from '../components/dev/CascadeDeleteModal';
+import CleanupTab from '../components/dev/CleanupTab';
 import DbTestingTab from '../components/dev/DbTestingTab';
 import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import {
@@ -645,6 +649,7 @@ const TABS = [
   { key: 'reconcile', label: 'Reconcile' },
   { key: 'backups', label: 'Backups' },
   { key: 'testing', label: 'Testing' },
+  { key: 'cleanup', label: 'Cleanup' },
 ] as const;
 
 export default function DevDatabase() {
@@ -673,6 +678,7 @@ export default function DevDatabase() {
       {tab === 'reconcile' && <ReconcileTab />}
       {tab === 'backups' && <BackupsTab />}
       {tab === 'testing' && <DbTestingTab />}
+      {tab === 'cleanup' && <CleanupTab onShowBackups={() => setTab('backups')} />}
     </div>
   );
 }

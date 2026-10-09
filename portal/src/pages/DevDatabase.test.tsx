@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * /dev/database — the tab shell (Reconcile / Backups / Testing). Most of
+ * /dev/database — the tab shell (Reconcile / Backups / Testing / Cleanup). Most of
  * each tab's own behavior is covered elsewhere (pendingDeletes.test.ts,
  * components/dev/DbTestingTab.test.tsx); this file covers what only the
  * shell can: the tab bar itself, the Backups row picking up the
@@ -109,7 +109,7 @@ async function openBackups(rows: DbBackupItem[]) {
   return user;
 }
 
-it('renders three tabs and switches between them', async () => {
+it('renders four tabs and switches between them', async () => {
   const user = userEvent.setup();
   render(<MemoryRouter><DevDatabase /></MemoryRouter>);
   await waitFor(() => expect(screen.queryByText('Nothing pending delete.')).not.toBeNull());
@@ -117,9 +117,23 @@ it('renders three tabs and switches between them', async () => {
   expect(screen.queryByRole('tab', { name: 'Reconcile' })).not.toBeNull();
   expect(screen.queryByRole('tab', { name: 'Backups' })).not.toBeNull();
   expect(screen.queryByRole('tab', { name: 'Testing' })).not.toBeNull();
+  expect(screen.queryByRole('tab', { name: 'Cleanup' })).not.toBeNull();
 
   await user.click(screen.getByRole('tab', { name: 'Testing' }));
   await waitFor(() => expect(screen.queryByText(/Idle/)).not.toBeNull());
+});
+
+it('opens the Cleanup tab and jumps from it to Backups', async () => {
+  const user = userEvent.setup();
+  render(<MemoryRouter><DevDatabase /></MemoryRouter>);
+  await waitFor(() => expect(screen.queryByText('Nothing pending delete.')).not.toBeNull());
+
+  await user.click(screen.getByRole('tab', { name: 'Cleanup' }));
+  expect(screen.queryByRole('region', { name: 'Old history' })).not.toBeNull();
+
+  await user.click(screen.getByRole('button', { name: 'Go to Backups' }));
+  expect(screen.getByRole('tab', { name: 'Backups' }).getAttribute('aria-selected')).toBe('true');
+  expect(screen.queryByRole('region', { name: 'Old history' })).toBeNull();
 });
 
 it('shows the testing lock notice when god mode is off', async () => {
