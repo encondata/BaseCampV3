@@ -3774,6 +3774,92 @@ export async function endDbTesting(password: string, revert: boolean): Promise<D
   return resp.json();
 }
 
+/* ── data cleanup (Developer › Database › Cleanup) ─────────────────── */
+
+export interface CleanupCategoryPreview {
+  key: string;
+  label: string;
+  description: string;
+  rows: number;
+  /** stored files that would go with those rows (0 for categories without any) */
+  files: number;
+}
+
+export interface CleanupGroupPreview {
+  key: string;
+  label: string;
+  description: string;
+  needs_age: boolean;
+  categories: CleanupCategoryPreview[];
+}
+
+export interface CleanupPreviewOut { groups: CleanupGroupPreview[] }
+
+export interface CleanupCategoryResult {
+  key: string;
+  rows_deleted: number;
+  files_deleted: number;
+  files_kept: number;
+  files_failed: number;
+}
+
+export interface CleanupRunOut {
+  group: string;
+  older_than_days: number | null;
+  categories: CleanupCategoryResult[];
+}
+
+/** Errors: 422 `invalid_age`. */
+export async function getCleanupPreview(olderThanDays: number): Promise<CleanupPreviewOut> {
+  const resp = await apiFetch(`/devtools/cleanup/preview?older_than_days=${olderThanDays}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Errors: 422 `invalid_age` / `unknown_category`; 500 `cleanup_failed` whose
+ *  `detail` is { code, message, categories: CleanupCategoryResult[] } — the
+ *  counts for what was already deleted before the run stopped. */
+export async function runCleanup(body: {
+  group: string; categories: string[]; older_than_days?: number;
+}): Promise<CleanupRunOut> {
+  const resp = await apiFetch('/devtools/cleanup/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export interface DuplicateAsset {
+  id: string;
+  name: string | null;
+  serial_number: string | null;
+  site_name: string | null;
+  status_label: string;
+  href: string | null;
+}
+
+export interface DuplicatePerson {
+  id: string;
+  display_name: string;
+  email: string | null;
+  has_login: boolean;
+  is_worker: boolean;
+  href: string | null;
+}
+
+export interface CleanupDuplicatesOut {
+  assets: { serial: string; items: DuplicateAsset[] }[];
+  people: { name: string; items: DuplicatePerson[] }[];
+}
+
+export async function getCleanupDuplicates(): Promise<CleanupDuplicatesOut> {
+  const resp = await apiFetch('/devtools/cleanup/duplicates');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 // ── system: process registry + logs ─────────────────────────────────
 
 export interface SystemProcessOut {
