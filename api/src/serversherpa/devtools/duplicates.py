@@ -28,6 +28,12 @@ def _name_keys():
             func.lower(func.trim(cast(Person.last_name, String))))
 
 
+def _people_key(first: str, last: str) -> str:
+    """A stable id for one group: the normalized first and last name, length-
+    prefixed so "a b"+"c" and "a"+"b c" (which display alike) never collide."""
+    return f"{len(first)}:{first}|{last}"
+
+
 async def duplicate_assets(db: AsyncSession) -> list[dict]:
     expr = _serial_key()
     key = expr.label("k")
@@ -92,5 +98,5 @@ async def duplicate_people(db: AsyncSession) -> list[dict]:
             "has_login": login, "is_worker": worker, "href": href})
     # a record can change between the two queries; a group that no longer has
     # two members is no longer a duplicate, and is labeled from what was fetched
-    return [{"name": names[tuple(k)], "items": members[tuple(k)]}
+    return [{"key": _people_key(*k), "name": names[tuple(k)], "items": members[tuple(k)]}
             for k in keys if len(members[tuple(k)]) > 1]

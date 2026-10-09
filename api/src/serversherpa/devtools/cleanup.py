@@ -19,13 +19,16 @@ from datetime import datetime
 
 from sqlalchemy import (
     ColumnElement,
+    DateTime,
     String,
     and_,
+    case,
     cast,
     delete,
     exists,
     false,
     func,
+    not_,
     or_,
     select,
     text,
@@ -54,6 +57,7 @@ from serversherpa.db.models import (
     StatusRuleExecution,
     TrustedDevice,
 )
+from serversherpa.notifications.password_reminders import KIND as PASSWORD_EXPIRING_KIND
 from serversherpa.services import storage
 
 logger = logging.getLogger("serversherpa.devtools.cleanup")
@@ -154,11 +158,14 @@ async def purge_in_chunks(
 
     Each chunk is one transaction: pick up to CHUNK_SIZE ids, run `before`
     (which fixes up rows that reference them and returns the candidate
-    storage keys), delete the ids, then, when `still_used` is given, ask it
-    which of the candidate keys a kept row still uses (it runs after the
-    delete, in the same transaction, so the rows just deleted do not count).
-    Those keys are kept and counted once in `files_kept`; the rest are deleted
-    from storage after the commit. Stops when a chunk comes back short.
+    storage keys), delete the ids that still match `where` (a row that
+    changed state since the select survives), then, when `still_used` is
+    given, ask it which of the candidate keys a kept row still uses (it runs
+    after the delete, in the same transaction, so the rows just deleted do
+    not count). Those keys are kept and counted once in `files_kept`; the
+    rest are deleted from storage after the commit. Stops when a chunk comes
+    back short; raises if the same ids come back after a chunk that deleted
+    nothing.
 
     `result` is updated as each chunk commits. If anything raises, the
     exception carries it as `partial_result` so the caller can report what
@@ -167,6 +174,9 @@ async def purge_in_chunks(
     # across several chunks counts once; one that is freed by a later chunk
     # leaves the set, so files_kept is what is still kept when the run ends.
     kept_keys: set[str] = set()
+    # ids of a full chunk that deleted nothing; if the very same ids come back
+    # the next time round, nothing will ever change and we would loop forever
+    stalled: set[uuid.UUID] | None = None
     try:
         while True:
             async with maker() as session:
@@ -174,15 +184,21 @@ async def purge_in_chunks(
                     select(model.id).where(where).limit(CHUNK_SIZE))).scalars())
                 if not ids:
                     return
+                if stalled is not None and set(ids) == stalled:
+                    raise RuntimeError(
+                        f"cleanup made no progress on {model.__tablename__}")
                 keys: list[str] = []
                 if before is not None:
                     keys = list(dict.fromkeys(await before(session, ids, result)))
-                deleted = await session.execute(delete(model).where(model.id.in_(ids)))
-                if deleted.rowcount == 0 and len(ids) >= CHUNK_SIZE:
-                    # a full chunk that removed nothing would be selected
-                    # again forever
-                    raise RuntimeError(
-                        f"cleanup made no progress on {model.__tablename__}")
+                # `where` is checked again here: a row that changed state since
+                # the select (a job restarted, a notification marked unread)
+                # no longer matches, so it survives
+                deleted = await session.execute(
+                    delete(model).where(model.id.in_(ids), where))
+                # A full chunk where every row changed state removes nothing,
+                # and those rows no longer match `where`, so the next select
+                # moves on. Only the same ids coming back means no progress.
+                stalled = set(ids) if deleted.rowcount == 0 else None
                 used: set[str] = set()
                 if still_used is not None and keys:
                     used = await still_used(session, set(keys))
@@ -364,11 +380,29 @@ def _old_mail(cutoff: datetime) -> ColumnElement[bool]:
 
 # Read or hidden. An approval card still waiting (state pending/open) stays
 # whatever its age: the inbox popover is where it is decided.
+#
+# A password-expiry reminder stays until the password expires: the hourly
+# reminder sweep (notifications/password_reminders.py) looks for an existing
+# row with the same expires_at and stage, and would send it again. Its
+# payload.expires_at is an ISO-8601 timestamp with an offset; the cast is
+# guarded by the pattern so a malformed value can never fail the delete (such
+# a row is not a live reminder).
+_ISO_TIMESTAMP = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$"
+
+
+def _live_password_reminder() -> ColumnElement[bool]:
+    expires = Notification.payload["expires_at"].astext
+    due = case((expires.op("~")(_ISO_TIMESTAMP), cast(expires, DateTime(timezone=True))))
+    return func.coalesce(
+        and_(Notification.kind == PASSWORD_EXPIRING_KIND, due > func.now()), false())
+
+
 def _old_notifications(cutoff: datetime) -> ColumnElement[bool]:
     return and_(
         or_(Notification.read_at.is_not(None), Notification.dismissed_at.is_not(None)),
         Notification.created_at < cutoff,
-        func.coalesce(Notification.payload["state"].astext, "").not_in(("pending", "open")))
+        func.coalesce(Notification.payload["state"].astext, "").not_in(("pending", "open")),
+        not_(_live_password_reminder()))
 
 
 # Jobs and runs need a terminal status AND a finish time before the cutoff;
@@ -378,13 +412,20 @@ def _old_notifications(cutoff: datetime) -> ColumnElement[bool]:
 # edit reopens it, and the draft sweep (imports/jobs.py) owns its cleanup, so
 # it is never purged here. Every other move_setup row (a created move) is.
 #
+# A From-To file check that validated (kind move_assets, phase validate,
+# status completed) is not finished either: the user can still click Import,
+# with no age limit, and the commit re-reads the uploaded file. Only that
+# kind: other kinds sit at the default phase "validate" for good.
+#
 # A draft points at its From-To file check (a move_assets job) through
 # payload.assets.check_job_id, which is not an FK. A check a draft that stays
 # still points at stays too, however old it is. A draft that is itself being
 # purged does not count.
 def _import_goes(job, cutoff: datetime) -> ColumnElement[bool]:
     return and_(job.status.in_(IMPORT_DONE), job.finished_at < cutoff,
-                ~and_(job.kind == "move_setup", job.status == "failed"))
+                ~and_(job.kind == "move_setup", job.status == "failed"),
+                ~and_(job.kind == "move_assets", job.phase == "validate",
+                      job.status == "completed"))
 
 
 def _old_imports(cutoff: datetime) -> ColumnElement[bool]:
@@ -614,16 +655,18 @@ GROUPS: dict[str, Group] = {g.key: g for g in (
                 count=_count_mail, purge=_purge_mail),
             Category(
                 key="notifications", label="Read or hidden notifications",
-                description="Inbox items someone already read or hid. Unread items and "
-                            "approval requests still waiting for an answer stay.",
+                description="Inbox items someone already read or hid. Unread items, "
+                            "approval requests still waiting for an answer and password "
+                            "expiry reminders for a password that has not expired yet stay.",
                 count=_count_notifications, purge=_purge_notifications),
             Category(
                 key="imports", label="Finished import jobs",
                 description="Completed, failed and canceled imports, with the file that was "
                             "uploaded. Their result reports go too, so a finished From-To "
                             "import can no longer be downloaded or have its review rows "
-                            "reprocessed. Move drafts that failed, and the file check a draft "
-                            "still uses, stay. A file another job still uses stays.",
+                            "reprocessed. A From-To file that was checked but not imported yet, "
+                            "move drafts that failed, and the file check a draft still uses, "
+                            "stay. A file another job still uses stays.",
                 count=_count_imports, purge=_purge_imports),
             Category(
                 key="reports", label="Report runs",

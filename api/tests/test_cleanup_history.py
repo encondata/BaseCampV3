@@ -142,9 +142,11 @@ async def test_notifications_read_or_hidden_old_go_the_rest_stay(
 # -- imports -----------------------------------------------------------
 
 
-def _job(status, *, finished=OLD, key="", kind="move_assets", **kw):
+def _job(status, *, finished=OLD, key="", kind="move_assets", phase="commit", **kw):
+    # phase "commit" = a finished import. A From-To job that only validated
+    # (phase "validate", completed) is waiting for the user to click Import.
     return ImportJob(kind=kind, filename="f.csv", file_key=key, status=status,
-                     finished_at=finished, **kw)
+                     phase=phase, finished_at=finished, **kw)
 
 
 async def test_imports_terminal_old_go_with_their_file(
@@ -155,9 +157,9 @@ async def test_imports_terminal_old_go_with_their_file(
         "completed": _job("completed", key=keys["completed"]),
         "failed": _job("failed", key=keys["failed"]),
         "cancelled": _job("cancelled", key=keys["cancelled"]),
-        "queued": _job("queued", key=keys["queued"], finished=None),
-        "running": _job("running", key=keys["running"], finished=None),
-        "preview": _job("preview", key=keys["preview"], finished=None),
+        "queued": _job("queued", key=keys["queued"], finished=OLD),
+        "running": _job("running", key=keys["running"], finished=OLD),
+        "preview": _job("preview", key=keys["preview"], finished=OLD),
         "recent": _job("completed", key=keys["recent"], finished=RECENT),
         "nofile": _job("completed", key=""),
     }
@@ -177,7 +179,7 @@ async def test_imports_a_file_a_kept_job_still_uses_is_kept(
         client, db, seeded_user, storage_calls):
     shared = _key()
     old = _job("completed", key=shared)
-    reprocess = _job("queued", key=shared, finished=None)     # a reprocess child
+    reprocess = _job("queued", key=shared, finished=OLD)     # a reprocess child
     db.add_all([old, reprocess])
     await db.commit()
     old_id, reprocess_id = old.id, reprocess.id
@@ -250,8 +252,8 @@ async def test_reports_terminal_old_go_with_their_object(
     rows = {
         "done": _report(d, ini, seeded_user, "completed", key=k1),
         "failed": _report(d, ini, seeded_user, "failed"),
-        "queued": _report(d, ini, seeded_user, "queued", finished=None),
-        "running": _report(d, ini, seeded_user, "running", finished=None),
+        "queued": _report(d, ini, seeded_user, "queued", finished=OLD),
+        "running": _report(d, ini, seeded_user, "running", finished=OLD),
         "recent": _report(d, ini, seeded_user, "completed", key=k2, finished=RECENT),
     }
     db.add_all(rows.values())
@@ -296,7 +298,7 @@ async def test_reports_object_also_used_by_a_kept_report_or_avatar_is_kept(
     await db.flush()
     db.add_all([
         _report(d, ini, seeded_user, "completed", key=k_run),
-        _report(d, ini, seeded_user, "queued", key=k_run, finished=None),
+        _report(d, ini, seeded_user, "queued", key=k_run, finished=OLD),
         _report(d, ini, seeded_user, "completed", key=k_avatar),
         _report(d, ini, seeded_user, "completed", key=k_logo),
     ])
@@ -337,7 +339,7 @@ async def test_label_runs_terminal_old_go_labels_stay_with_no_run(
     old_done = run(inis[0], "completed", OLD)
     old_failed = run(inis[1], "failed", OLD)
     old_canceled = run(inis[2], "canceled", OLD)
-    running = run(inis[3], "running", None)
+    running = run(inis[3], "running", OLD)
     recent = run(inis[4], "completed", RECENT)
     runs = [old_done, old_failed, old_canceled, running, recent]
     db.add_all(runs)
@@ -382,8 +384,8 @@ async def test_spec_lookups_finished_old_go_suggestions_stay(
 
     done = job(0, "done", OLD)
     failed = job(1, "failed", OLD)
-    queued = job(2, "queued", None)
-    running = job(3, "running", None)
+    queued = job(2, "queued", OLD)
+    running = job(3, "running", OLD)
     recent = job(4, "done", RECENT)
     jobs = [done, failed, queued, running, recent]
     db.add_all(jobs)
@@ -429,7 +431,7 @@ async def test_preview_counts_rows_and_files_that_would_go(client, db, seeded_us
     db.add_all([
         _mail("sent", OLD),
         _job("completed", key=shared), _job("completed", key=shared),
-        _job("queued", key=shared, finished=None),                 # keeps `shared`
+        _job("queued", key=shared, finished=OLD),                 # keeps `shared`
         _job("completed", key=solo), _job("failed", key=solo),
         _job("completed", key=""),
     ])
@@ -604,7 +606,7 @@ async def test_imports_a_file_kept_across_many_chunks_counts_once(
     monkeypatch.setattr("serversherpa.devtools.cleanup.CHUNK_SIZE", 1)
     shared = _key()
     db.add_all([_job("completed", key=shared) for _ in range(3)]
-               + [_job("queued", key=shared, finished=None)])
+               + [_job("queued", key=shared, finished=OLD)])
     await db.commit()
     res, _ = await _go(client, db, seeded_user, "imports")
     assert (res["rows_deleted"], res["files_deleted"], res["files_kept"]) == (3, 0, 1)
@@ -638,3 +640,137 @@ async def test_imports_a_check_of_a_failed_draft_stays_with_it(
     res, _ = await _go(client, db, seeded_user, "imports")
     assert res["rows_deleted"] == 0
     assert await _ids(db, ImportJob, check_id, draft_id) == {check_id, draft_id}
+
+
+# -- final-review fixes -------------------------------------------------
+
+
+async def test_imports_a_validated_from_to_file_waiting_for_import_stays(
+        client, db, seeded_user, storage_calls):
+    # After validation a From-To job sits at phase validate / status completed
+    # and the user can still click Import, which re-reads the uploaded file.
+    waiting = _job("completed", key=_key(), phase="validate")
+    other_kind = _job("completed", key=_key(), kind="asset_bulk_update", phase="validate")
+    failed_check = _job("failed", key=_key(), phase="validate")
+    committed = _job("completed", key=_key(), phase="commit")
+    db.add_all([waiting, other_kind, failed_check, committed])
+    await db.commit()
+    ids = {n: r.id for n, r in [("waiting", waiting), ("other", other_kind),
+                                ("failed", failed_check), ("committed", committed)]}
+    hdrs = await _developer(db, client, seeded_user)
+    prev = await client.get(f"/devtools/cleanup/preview?older_than_days={AGE}", headers=hdrs)
+    history = next(g for g in prev.json()["groups"] if g["key"] == "history")
+    assert _by_key(history["categories"])["imports"]["rows"] == 3
+    res, _ = await _go(client, db, seeded_user, "imports")
+    assert res["rows_deleted"] == 3
+    assert await _ids(db, ImportJob, *ids.values()) == {ids["waiting"]}
+    assert len(storage_calls.deleted) == 3
+
+
+async def _sent_mail(db, n):
+    rows = [_mail("sent", OLD) for _ in range(n)]
+    db.add_all(rows)
+    await db.commit()
+    return [r.id for r in rows]
+
+
+async def test_purge_rechecks_the_condition_when_it_deletes(db):
+    # A row that stops matching between the select and the delete survives.
+    from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.devtools import cleanup
+
+    ids = await _sent_mail(db, 4)
+    flipped = []
+
+    async def flip(session, chunk_ids, _result):
+        if not flipped:
+            flipped.append(chunk_ids[0])
+            await session.execute(
+                EmailOutbox.__table__.update()
+                .where(EmailOutbox.id == chunk_ids[0]).values(status="queued"))
+        return ()
+
+    result = cleanup.CategoryResult("mail")
+    await cleanup.purge_in_chunks(
+        get_sessionmaker(), EmailOutbox, EmailOutbox.status == "sent", result, before=flip)
+    assert result.rows_deleted == 3
+    left = await _ids(db, EmailOutbox, *ids)
+    assert left == set(flipped)
+    row = await db.get(EmailOutbox, next(iter(left)))
+    assert row.status == "queued"
+
+
+async def test_purge_keeps_going_when_a_whole_full_chunk_stopped_matching(
+        db, monkeypatch):
+    from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.devtools import cleanup
+
+    monkeypatch.setattr("serversherpa.devtools.cleanup.CHUNK_SIZE", 2)
+    ids = await _sent_mail(db, 3)
+    seen = []
+
+    async def flip_first_chunk(session, chunk_ids, _result):
+        seen.append(set(chunk_ids))
+        if len(seen) == 1:
+            await session.execute(
+                EmailOutbox.__table__.update()
+                .where(EmailOutbox.id.in_(chunk_ids)).values(status="queued"))
+        return ()
+
+    result = cleanup.CategoryResult("mail")
+    await cleanup.purge_in_chunks(
+        get_sessionmaker(), EmailOutbox, EmailOutbox.status == "sent", result,
+        before=flip_first_chunk)
+    # the first chunk (2 rows) all changed: nothing deleted there, no error,
+    # and the third row is still picked up
+    assert result.rows_deleted == 1
+    assert len(await _ids(db, EmailOutbox, *ids)) == 2
+
+
+async def test_purge_still_refuses_a_chunk_that_can_never_make_progress(db, monkeypatch):
+    # delete() matching nothing while the same rows keep coming back
+    import pytest
+    from sqlalchemy import false, true
+
+    from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.devtools import cleanup
+
+    monkeypatch.setattr("serversherpa.devtools.cleanup.CHUNK_SIZE", 2)
+    await _sent_mail(db, 2)
+    real_delete = cleanup.delete
+
+    def never_matches(model):
+        return real_delete(model).where(false())
+
+    monkeypatch.setattr("serversherpa.devtools.cleanup.delete", never_matches)
+    with pytest.raises(RuntimeError, match="no progress"):
+        await cleanup.purge_in_chunks(
+            get_sessionmaker(), EmailOutbox, true(), cleanup.CategoryResult("mail"))
+
+
+def _reminder(person, expires_at, *, read=OLD, kind="password_expiring", payload=...):
+    if payload is ...:
+        payload = {"expires_at": expires_at.isoformat(), "stage": 7, "days_left": 7}
+    return Notification(person_id=person.id, kind=kind, title="t", read_at=read,
+                        created_at=OLD, payload=payload)
+
+
+async def test_notifications_a_live_password_reminder_stays_so_it_is_not_resent(
+        client, db, seeded_user, storage_calls):
+    future = NOW + timedelta(days=5)
+    past = NOW - timedelta(days=1)
+    rows = {
+        "live": _reminder(seeded_user, future),
+        "live_z": _reminder(seeded_user, future, payload={
+            "expires_at": future.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"}),
+        "expired": _reminder(seeded_user, past),
+        "no_date": _reminder(seeded_user, future, payload={"stage": 7}),
+        "garbled": _reminder(seeded_user, future, payload={"expires_at": "not a date"}),
+        "other_kind": _reminder(seeded_user, future, kind="test"),
+    }
+    db.add_all(rows.values())
+    await db.commit()
+    ids = _idmap(rows)
+    res, _ = await _go(client, db, seeded_user, "notifications")
+    assert res["rows_deleted"] == 4
+    assert await _ids(db, Notification, *ids.values()) == {ids["live"], ids["live_z"]}

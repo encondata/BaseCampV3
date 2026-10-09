@@ -106,6 +106,9 @@ const card = (name: string) => screen.getByRole('region', { name });
 it('shows the intro with a link to the Backups tab', async () => {
   const { user, onShowBackups } = renderTab();
   expect(screen.getByText(/Take a backup first/)).toBeTruthy();
+  expect(screen.getByText(
+    /Stored files aren't included in backups or testing snapshots, so files removed here can't be brought back\./,
+  )).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Go to Backups' }));
   expect(onShowBackups).toHaveBeenCalledTimes(1);
 });
@@ -395,7 +398,7 @@ const dupes: CleanupDuplicatesOut = {
     ],
   }],
   people: [{
-    name: 'jimmy henderson',
+    key: '6:jimmy|henderson', name: 'jimmy henderson',
     items: [
       { id: 'p1', display_name: 'Jimmy Henderson', email: 'j@x.com', has_login: true,
         is_worker: false, href: '/people/users/p1' },
@@ -437,4 +440,74 @@ it('shows a duplicate-finder error in its card', async () => {
   await user.click(c.getByRole('button', { name: 'Find duplicates' }));
   const err = await c.findByText('Could not look for duplicates — try again.');
   expect(err.className).toContain('pf-error');
+});
+
+
+// ── final-review fixes ─────────────────────────────────────────────
+
+it('clears the counts and disables Delete when the refresh after a run fails', async () => {
+  api.runCleanup.mockResolvedValue(runOut('signin', ['sessions']));
+  const { user } = renderTab();
+  const signin = within(card('Sign-in leftovers'));
+  await user.click(signin.getByRole('button', { name: 'Preview' }));
+  await waitFor(() => expect(signin.getByText('3 rows')).toBeTruthy());
+  api.getCleanupPreview.mockClear().mockRejectedValue(new ApiError(500, 'boom'));
+  await user.click(signin.getByRole('button', { name: 'Delete selected' }));
+  await waitFor(() => expect(api.getCleanupPreview).toHaveBeenCalled());
+  await waitFor(() => expect(signin.getByText('Could not load the preview — try again.'))
+    .toBeTruthy());
+  // the old "3 rows" described data that was just deleted
+  expect(signin.queryByText('3 rows')).toBeNull();
+  expect((signin.getByRole('button', { name: 'Delete selected' }) as HTMLButtonElement).disabled)
+    .toBe(true);
+});
+
+it('shows the testing-session refusal as a clear error and asks for a new preview', async () => {
+  const message = 'A DB Testing session is in progress. Finish or revert it first.';
+  api.runCleanup.mockRejectedValue(new ApiError(409, 'testing_session_active', {
+    code: 'testing_session_active', message,
+  }));
+  const { user } = renderTab();
+  const signin = within(card('Sign-in leftovers'));
+  await user.click(signin.getByRole('button', { name: 'Preview' }));
+  await waitFor(() => expect(signin.getByText('3 rows')).toBeTruthy());
+  await user.click(signin.getByRole('button', { name: 'Delete selected' }));
+  const err = await signin.findByText(message);
+  expect(err.className).toContain('pf-error');
+  expect(signin.queryByText('The cleanup failed — try again.')).toBeNull();
+});
+
+it('falls back to fixed copy for the testing-session refusal without a message', async () => {
+  api.runCleanup.mockRejectedValue(new ApiError(409, 'testing_session_active'));
+  const { user } = renderTab();
+  const signin = within(card('Sign-in leftovers'));
+  await user.click(signin.getByRole('button', { name: 'Preview' }));
+  await waitFor(() => expect(signin.getByText('3 rows')).toBeTruthy());
+  await user.click(signin.getByRole('button', { name: 'Delete selected' }));
+  const err = await signin.findByText(/DB Testing session is in progress/);
+  expect(err.className).toContain('pf-error');
+});
+
+it('lists two people groups whose names read the same without a duplicate-key warning', async () => {
+  const person = (id: string, name: string) => ({
+    id, display_name: name, email: null, has_login: false, is_worker: false, href: null,
+  });
+  api.getCleanupDuplicates.mockResolvedValue({
+    assets: [],
+    people: [
+      { key: '3:a b|c', name: 'A B C', items: [person('p1', 'A B C'), person('p2', 'A B C')] },
+      { key: '1:a|b c', name: 'A B C', items: [person('p3', 'A B C'), person('p4', 'A B C')] },
+    ],
+  });
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const { user } = renderTab();
+    const c = within(card('Duplicate finder'));
+    await user.click(c.getByRole('button', { name: 'Find duplicates' }));
+    expect((await c.findAllByText(/A B C · 2 people/)).length).toBe(2);
+    const keyWarnings = errors.mock.calls.filter((args) => String(args[0]).includes('same key'));
+    expect(keyWarnings).toEqual([]);
+  } finally {
+    errors.mockRestore();
+  }
 });

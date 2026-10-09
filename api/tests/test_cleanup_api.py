@@ -446,7 +446,7 @@ async def test_duplicate_and_generator_keys_are_deleted_once(db, seeded_user, mo
     assert result.files_deleted == 2
 
 
-async def test_a_full_chunk_that_deletes_nothing_raises_instead_of_looping(
+async def test_a_full_chunk_whose_rows_vanished_moves_on_instead_of_looping(
         db, seeded_user, monkeypatch):
     from sqlalchemy import delete
 
@@ -465,11 +465,20 @@ async def test_a_full_chunk_that_deletes_nothing_raises_instead_of_looping(
         return ()
 
     result = cleanup.CategoryResult("reset_links")
-    with pytest.raises(RuntimeError, match="no progress"):
-        await cleanup.purge_in_chunks(
-            get_sessionmaker(), PasswordResetToken, cleanup._spent_reset_links(),
-            result, before=steal)
-    assert result.rows_deleted == 0
+    stolen = []
+
+    async def steal_once(session, ids, _result):
+        if not stolen:
+            stolen.append(ids)
+            await steal(session, ids, _result)
+        return ()
+
+    # the first chunk's rows are gone, so its delete removes nothing; that is
+    # not "no progress" (they no longer match), the next chunk is picked up
+    await cleanup.purge_in_chunks(
+        get_sessionmaker(), PasswordResetToken, cleanup._spent_reset_links(),
+        result, before=steal_once)
+    assert result.rows_deleted == 1
 
 
 # -- a run that fails partway still audits what it removed -----------------
@@ -547,3 +556,44 @@ async def test_failure_in_a_later_category_audits_the_finished_ones(
     assert row.changes["error"] == "ValueError: nope"
     assert list(row.changes["categories"]) == ["sessions"]
     assert row.changes["categories"]["sessions"]["rows_deleted"] == 1
+
+
+# -- DB Testing sessions -----------------------------------------------
+
+
+@pytest.mark.parametrize("status", ["snapshotting", "active", "reverting"])
+async def test_run_is_refused_while_a_db_testing_session_is_unfinished(
+        client, db, seeded_user, status):
+    # a revert restores rows, not stored files, so a purge made during the
+    # session could never be brought back
+    from serversherpa.db.models import DbTestingSession
+
+    reset = PasswordResetToken(
+        person_id=seeded_user.id, token_hash=uuid.uuid4().hex, expires_at=NOW - HOUR)
+    db.add_all([reset, DbTestingSession(
+        status=status, row_counts={}, audit_watermark=NOW, started_by=seeded_user.id)])
+    await db.commit()
+    reset_id = reset.id
+    hdrs = await _developer(db, client, seeded_user)
+    resp = await _run(client, hdrs, "signin", ["reset_links"])
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "testing_session_active"
+    db.expire_all()
+    assert await db.get(PasswordResetToken, reset_id) is not None
+    audits = (await db.scalars(select(AuditLog).where(AuditLog.action == "cleanup.run"))).all()
+    assert audits == []
+    # looking is still fine
+    assert (await client.get("/devtools/cleanup/preview", headers=hdrs)).status_code == 200
+
+
+async def test_run_is_allowed_once_the_db_testing_session_has_ended(
+        client, db, seeded_user):
+    from serversherpa.db.models import DbTestingSession
+
+    db.add(DbTestingSession(
+        status="ended", ended_with="kept", row_counts={}, audit_watermark=NOW,
+        started_by=seeded_user.id))
+    await db.commit()
+    hdrs = await _developer(db, client, seeded_user)
+    resp = await _run(client, hdrs, "signin", ["reset_links"])
+    assert resp.status_code == 200, resp.text

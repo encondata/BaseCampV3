@@ -15,7 +15,11 @@
  *
  * A run that fails part-way returns 500 `cleanup_failed` with the counts of
  * what was already deleted — those are shown like a normal result, plus the
- * message, and the counts are refreshed either way.
+ * message, and the counts are refreshed either way. After any run the old
+ * counts are cleared before the refresh, so a failed refresh cannot leave
+ * stale counts with Delete enabled. A run refused with 409
+ * `testing_session_active` (a DB Testing session is unfinished) shows the
+ * API's message.
  */
 
 import { useRef, useState } from 'react';
@@ -41,6 +45,9 @@ const DEFAULT_AGE = 90;
 const MIN_AGE = 1;
 const MAX_AGE = 3650;
 const AGE_ERROR = `Enter a whole number of days from ${MIN_AGE} to ${MAX_AGE}.`;
+// the API's own message wins; this is the fallback
+const TESTING_ACTIVE_ERROR = 'A DB Testing session is in progress. Finish or revert it before '
+  + "cleaning up data, because a revert can't bring back removed files.";
 
 interface GroupSpec {
   key: string;
@@ -198,6 +205,9 @@ function GroupCard({ spec, canChange }: { spec: GroupSpec; canChange: boolean })
         setResultsFailed(true);
       } else if (err instanceof ApiError && err.code === 'invalid_age') {
         setError(AGE_ERROR);
+      } else if (err instanceof ApiError && err.code === 'testing_session_active') {
+        const detail = (err.detail ?? {}) as FailedRunDetail;
+        setError(detail.message || TESTING_ACTIVE_ERROR);
       } else if (err instanceof ApiError && err.code === 'unknown_category') {
         setError('The server does not recognize one of these categories — reload the page.');
       } else {
@@ -206,6 +216,10 @@ function GroupCard({ spec, canChange }: { spec: GroupSpec; canChange: boolean })
     } finally {
       setRunning(false);
     }
+    // The counts on screen described data this run just changed (or a state
+    // the server has since refused): drop them so that, if the refresh below
+    // fails, Delete stays disabled until a fresh preview succeeds.
+    setPreview(null);
     await loadPreview();
   };
 
@@ -372,7 +386,7 @@ function DuplicateFinder() {
         <div>
           <div className="eyebrow-sm">People sharing a name</div>
           {found.people.map((g) => (
-            <div key={g.name} className="mini-list cleanup-dup-group">
+            <div key={g.key} className="mini-list cleanup-dup-group">
               <div className="mini-list-head">
                 <span>{g.name} · {plural(g.items.length, 'person', 'people')}</span>
               </div>
@@ -406,7 +420,8 @@ export default function CleanupTab({ onShowBackups }: { onShowBackups: () => voi
     <>
       <p className="page-hint cleanup-intro">
         Remove data that can never be used again or is older than you choose. Take a backup
-        first — deletes can&apos;t be undone.{' '}
+        first — deletes can&apos;t be undone. Stored files aren&apos;t included in backups or
+        testing snapshots, so files removed here can&apos;t be brought back.{' '}
         <button type="button" className="mini-btn" onClick={onShowBackups}>Go to Backups</button>
       </p>
 

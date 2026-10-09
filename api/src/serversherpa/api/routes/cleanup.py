@@ -5,8 +5,10 @@ Database tab: view to preview, change to run."""
 from dataclasses import asdict
 
 from fastapi import APIRouter, HTTPException
+from sqlalchemy import select
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
+from serversherpa.api.routes.devtools import UNFINISHED_STATUSES
 from serversherpa.api.schemas import (
     CleanupDuplicatesOut,
     CleanupPreviewOut,
@@ -14,6 +16,7 @@ from serversherpa.api.schemas import (
     CleanupRunOut,
 )
 from serversherpa.db.engine import get_sessionmaker
+from serversherpa.db.models import DbTestingSession
 from serversherpa.devtools import cleanup, duplicates
 from serversherpa.services.audit import audit
 
@@ -47,6 +50,15 @@ async def run_cleanup(
     db: DbSession,
     actor: AuthContext = _CAN_CHANGE,
 ) -> CleanupRunOut:
+    # A DB Testing revert restores rows but not stored files, so files removed
+    # during a session could never be brought back. Same "unfinished" test as
+    # the Testing tab itself.
+    if await db.scalar(select(DbTestingSession.id).where(
+            DbTestingSession.status.in_(UNFINISHED_STATUSES)).limit(1)) is not None:
+        raise HTTPException(status_code=409, detail={
+            "code": "testing_session_active",
+            "message": "A DB Testing session is in progress. Finish or revert it before "
+                       "cleaning up data, because a revert can't bring back removed files."})
     group = cleanup.GROUPS.get(body.group)
     # a group with no age field ignores whatever was sent
     age = body.older_than_days if group is not None and group.needs_age else None

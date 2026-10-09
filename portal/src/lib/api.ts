@@ -3851,7 +3851,7 @@ export interface DuplicatePerson {
 
 export interface CleanupDuplicatesOut {
   assets: { serial: string; items: DuplicateAsset[] }[];
-  people: { name: string; items: DuplicatePerson[] }[];
+  people: { key: string; name: string; items: DuplicatePerson[] }[];
 }
 
 export async function getCleanupDuplicates(): Promise<CleanupDuplicatesOut> {

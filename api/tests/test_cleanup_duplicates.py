@@ -97,6 +97,7 @@ async def test_people_group_by_trimmed_lowercase_name(client, db, seeded_user):
     assert {i["id"] for i in grp["items"]} == {str(a.id), str(b.id)}
     assert set(grp["items"][0]) == {
         "id", "display_name", "email", "has_login", "is_worker", "href"}
+    assert grp["key"]
 
 
 async def test_people_href_login_then_worker_then_none(client, db, seeded_user):
@@ -207,3 +208,18 @@ async def test_a_group_that_shrinks_between_the_queries_is_skipped(db):
     # Ra Ce keeps both members; Ra Ce2 vanished; Ra Ce3 shrank to one
     assert [g["name"] for g in out] == ["Ra Ce"]
     assert len(out[0]["items"]) == 2
+
+
+async def test_people_groups_whose_names_read_the_same_get_distinct_keys(
+        client, db, seeded_user):
+    # "A B" + "C" and "A" + "B C" both display as "A B C"
+    db.add_all([
+        Person(first_name="A B", last_name="C"), Person(first_name="A B", last_name="C"),
+        Person(first_name="A", last_name="B C"), Person(first_name="A", last_name="B C"),
+    ])
+    await db.commit()
+    body = await _get(db, client, seeded_user)
+    groups = [g for g in body["people"] if g["name"] == "A B C"]
+    assert len(groups) == 2
+    assert len({g["key"] for g in groups}) == 2
+    assert len({g["key"] for g in body["people"]}) == len(body["people"])

@@ -1,9 +1,12 @@
-"""Index email_outbox.notification_id and spec_suggestions.job_id.
+"""Index email_outbox.notification_id, spec_suggestions.job_id and
+report_runs.attachment_id.
 
-Both are ON DELETE SET NULL, so deleting a notification or a spec lookup job
-makes Postgres look for the rows that still point at it. Without an index
-that is a sequential scan per deleted row, which makes the data cleanup
-purges of old notifications and finished spec lookups crawl on big tables.
+The first two are ON DELETE SET NULL and report_runs.attachment_id is NO
+ACTION (the purge clears it first). Either way, deleting a notification, a
+spec lookup job or an attachment makes Postgres look for the rows that still
+point at it. Without an index that is a sequential scan per deleted row,
+which makes the data cleanup purges of old notifications, finished spec
+lookups and deleted files crawl on big tables.
 
 Revision ID: 0094
 Revises: 0093
@@ -22,8 +25,10 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.create_index("email_outbox_notification_idx", "email_outbox", ["notification_id"])
     op.create_index("spec_suggestions_job_idx", "spec_suggestions", ["job_id"])
+    op.create_index("report_runs_attachment_idx", "report_runs", ["attachment_id"])
 
 
 def downgrade() -> None:
+    op.drop_index("report_runs_attachment_idx", table_name="report_runs")
     op.drop_index("spec_suggestions_job_idx", table_name="spec_suggestions")
     op.drop_index("email_outbox_notification_idx", table_name="email_outbox")

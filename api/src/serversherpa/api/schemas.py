@@ -4196,6 +4196,7 @@ class DuplicatePersonOut(BaseModel):
 
 
 class DuplicatePersonGroupOut(BaseModel):
+    key: str            # unique per group; display names can read alike
     name: str
     items: list[DuplicatePersonOut]
 
