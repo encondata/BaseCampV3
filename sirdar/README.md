@@ -255,7 +255,7 @@ host per service (http to the service's host and port, WebSockets, Block
 common exploits, HTTP/2, Force SSL, a Let's Encrypt certificate by HTTP
 challenge, reused while it has more than 30 days left), and a smoke test that
 asks every public URL through NPM's LAN IP (`proxy_ip`) with the public name
-as SNI and Host.
+as SNI and Host. A **publish** deployment runs only those three.
 Every environment that isn't production also answers on its bare base domain
 (`demo.serversherpa.com`): a `home` row (hostname = the base domain, the
 portal's host and port) gets an A record, a proxy host with its own
@@ -265,9 +265,11 @@ challenge paths are spared so NPM can still renew). 302, not 301: browsers
 keep a 301 forever, and environment names are reused. The smoke test expects
 exactly that 302. The row follows the portal (Switch traffic, address and
 port edits, a base-domain change) and isn't edited on its own; migration
-0014 added it to existing environments, so their next publish creates it.
-A **publish** deployment runs only those three. Credentials
-live in Settings > Integrations (Cloudflare API token with DNS edit on the
+0014 added it to existing environments, so their next publish creates it
+(until then, Switch traffic leaves the bare name out). Other records at the
+bare name (TXT for SPF or DKIM, MX, CAA, ...) stay; only a CNAME or NS there
+blocks its A record.
+Credentials live in Settings > Integrations (Cloudflare API token with DNS edit on the
 zone; NPM URL, login and password), encrypted with `SIRDAR_SECRETS_KEY` and
 never shown again; each has a Test button. A stored token or password is
 reused (left blank on save or Test) only for the target it was entered for:
