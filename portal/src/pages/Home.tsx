@@ -23,7 +23,7 @@ import { moveAssetProgress } from '../lib/initiatives';
 import { actionLabel, targetLabel } from '../lib/auditFormat';
 import { relativeTime } from '../lib/format';
 import { parseApiDay } from '../lib/timeline';
-import { DailyBars, Distribution, Sparkline, type DistEntry } from '../components/dashboard/charts';
+import { DailyBars, Distribution, Sparkline, STATUS_ROWS, type DistEntry } from '../components/dashboard/charts';
 import DashSitesMap from '../components/dashboard/DashSitesMap';
 import TransitMap from '../components/dashboard/TransitMap';
 import '../styles/directory.css';
@@ -402,7 +402,7 @@ export default function Home() {
               <div className="dash-panel-empty">No assets yet.</div>
             )}
             {assets !== null && liveAssets.length > 0 && (
-              <Distribution entries={assetDist} total={liveAssets.length} />
+              <Distribution entries={assetDist} total={liveAssets.length} limit={STATUS_ROWS} />
             )}
           </section>
         )}

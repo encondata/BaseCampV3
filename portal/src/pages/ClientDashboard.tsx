@@ -27,7 +27,7 @@ import { moveAssetProgress } from '../lib/initiatives';
 import { avatarGradient, initials, longDateOf, relativeTime } from '../lib/format';
 import { STATUS_META, type OrgItem } from '../lib/orgs';
 import { parseApiDay } from '../lib/timeline';
-import { Distribution } from '../components/dashboard/charts';
+import { Distribution, STATUS_ROWS } from '../components/dashboard/charts';
 import '../styles/directory.css';
 import '../styles/dashboard.css';
 
@@ -381,7 +381,7 @@ export default function ClientDashboard() {
                 <div className="dash-panel-empty">No assets on file.</div>
               )}
               {clientAssets !== null && liveAssets.length > 0 && (
-                <Distribution entries={dist} total={liveAssets.length} />
+                <Distribution entries={dist} total={liveAssets.length} limit={STATUS_ROWS} />
               )}
             </section>
           )}
