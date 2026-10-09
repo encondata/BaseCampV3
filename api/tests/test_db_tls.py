@@ -49,6 +49,13 @@ def _settings(ca: str | None = None, ssl_mode: str = "require"):
                            database_ca_b64=None if ca is None else SecretStr(ca))
 
 
+def _tls_args(settings) -> dict:
+    """connect_args without the application_name every connection also carries."""
+    args = dict(engine.connect_args(settings))
+    assert args.pop("server_settings") == {"application_name": engine._application_name}
+    return args
+
+
 def test_the_setting_exists_and_is_off_by_default():
     field = Settings.model_fields["database_ca_b64"]
     assert field.default is None and not field.is_required()
@@ -56,8 +63,8 @@ def test_the_setting_exists_and_is_off_by_default():
 
 @pytest.mark.parametrize("ca", [None, "", "  "])
 def test_without_a_ca_nothing_changes(ca):
-    assert engine.connect_args(_settings(ca, "require")) == {"ssl": True}
-    assert engine.connect_args(_settings(ca, "disable")) == {}
+    assert _tls_args(_settings(ca, "require")) == {"ssl": True}
+    assert _tls_args(_settings(ca, "disable")) == {}
     assert tls.libpq_params(_settings(ca)) == {}
     assert tls.libpq_env(_settings(ca)) == {}
     assert tls.asyncpg_kwargs(_settings(ca)) == {}

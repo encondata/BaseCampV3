@@ -4204,3 +4204,60 @@ class DuplicatePersonGroupOut(BaseModel):
 class CleanupDuplicatesOut(BaseModel):
     assets: list[DuplicateAssetGroupOut]
     people: list[DuplicatePersonGroupOut]
+
+
+class HealthSummaryOut(BaseModel):
+    database_size_bytes: int
+    version: str
+    started_at: datetime
+    latency_ms: float
+    connections: int
+    max_connections: int
+    cache_hit_ratio: float | None
+
+
+class HealthConnectionGroupOut(BaseModel):
+    application_name: str
+    state: str
+    count: int
+    oldest_query_seconds: float | None
+    oldest_transaction_seconds: float | None
+    waiting_on_lock: int
+
+
+class HealthConnectionsOut(BaseModel):
+    groups: list[HealthConnectionGroupOut]
+
+
+class HealthTableOut(BaseModel):
+    name: str
+    rows: int
+    total_bytes: int
+    table_bytes: int
+    index_bytes: int
+    dead_rows: int
+    dead_ratio: float | None
+    last_vacuum_at: datetime | None
+    last_analyze_at: datetime | None
+
+
+class HealthTablesOut(BaseModel):
+    tables: list[HealthTableOut]
+
+
+class HealthVacuumOut(BaseModel):
+    table: HealthTableOut
+    duration_ms: int
+
+
+class HealthStorageFolderOut(BaseModel):
+    name: str
+    objects: int
+    bytes: int
+
+
+class HealthStorageOut(BaseModel):
+    folders: list[HealthStorageFolderOut]
+    total_objects: int
+    total_bytes: int
+    measured_at: datetime

@@ -9,6 +9,7 @@ URLs generated here (pure in-process signing — no network round-trip).
 import asyncio
 import logging
 import threading
+from collections.abc import Callable
 from functools import lru_cache, partial
 from urllib.parse import quote
 
@@ -45,6 +46,16 @@ def _client():
         )
         _preload_ca_bundle(client)
     return client
+
+
+class StorageConfigError(Exception):
+    """The storage client couldn't be built from the settings (a malformed
+    endpoint, a missing key). Carries only the class name of the underlying
+    error, because its message can hold the endpoint URL."""
+
+    def __init__(self, cause: str) -> None:
+        super().__init__(cause)
+        self.cause = cause
 
 
 def _preload_ca_bundle(client) -> None:
@@ -212,6 +223,28 @@ async def list_keys(prefix: str) -> list[str]:
         return keys
 
     return await asyncio.to_thread(_list)
+
+
+async def scan_objects(visit: Callable[[str, int], None], prefix: str = "") -> None:
+    """Call `visit(key, size_in_bytes)` for every object under `prefix`,
+    page by page (paginated, in a thread — like `list_keys`), without ever
+    holding the whole listing: a caller that only totals keeps O(its own
+    state) memory on a bucket with millions of objects. `visit` runs in the
+    worker thread, so it must be a plain function that only touches its
+    own accumulators. Used by the database health tab's storage usage."""
+    s = get_settings()
+
+    def _scan() -> None:
+        try:
+            client = _client()
+        except (ValueError, AttributeError) as exc:
+            raise StorageConfigError(type(exc).__name__) from None
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=s.spaces_bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                visit(obj["Key"], int(obj.get("Size", 0)))
+
+    await asyncio.to_thread(_scan)
 
 
 async def download_to(key: str, path) -> None:

@@ -72,10 +72,12 @@ class DbLogHandler(logging.Handler):
         if self._engine is None:
             from serversherpa.config import get_settings
             from serversherpa.db import tls
+            from serversherpa.db.engine import get_application_name
             settings = get_settings()
             self._engine = tls.create_sync_engine(
                 settings.sync_database_url, settings, pool_size=1,
-                max_overflow=0, pool_pre_ping=True)
+                max_overflow=0, pool_pre_ping=True,
+                application_name=get_application_name("-logs"))
         return self._engine
 
     def _refresh_config(self) -> None:

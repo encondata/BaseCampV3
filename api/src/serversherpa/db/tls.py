@@ -94,10 +94,11 @@ def libpq_env(settings) -> dict[str, str]:
     return {"PGSSLMODE": "verify-full", "PGSSLROOTCERT": path} if path else {}
 
 
-def create_sync_engine(url: str, settings, **kwargs):
+def create_sync_engine(url: str, settings, *, application_name: str | None = None, **kwargs):
     """A psycopg engine that adds libpq_params on every connect, so a CA
     file removed under a long-lived process (a tmp cleaner) is written
-    again rather than failing every later connection."""
+    again rather than failing every later connection. application_name
+    names its connections in pg_stat_activity."""
     from sqlalchemy import create_engine, event
 
     engine = create_engine(url, **kwargs)
@@ -105,6 +106,8 @@ def create_sync_engine(url: str, settings, **kwargs):
     @event.listens_for(engine, "do_connect")
     def _verify(dialect, conn_rec, cargs, cparams):
         cparams.update(libpq_params(settings))
+        if application_name:
+            cparams["application_name"] = application_name
 
     return engine
 
