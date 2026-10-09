@@ -595,3 +595,24 @@ async def test_a_cname_at_the_bare_name_still_blocks(db, home_env, publish_fakes
         await _run(db, home_env, "dns")
     assert "  uat2.serversherpa.com: A CNAME record already uses this name.\n" in e.value.reason
     assert cf.writes() == [] and await _rows(db) == []
+
+
+async def test_the_bare_name_shadows_a_zone_wildcard_and_leaves_it_alone(
+        db, home_env, publish_fakes):  # noqa: F811
+    cf = publish_fakes.cf
+    wildcard = cf.add("A", "*.serversherpa.com", "198.51.100.9")
+    before = dict(cf.records[wildcard])
+    lines = await _run(db, home_env, "dns")
+    assert "uat2.serversherpa.com: created A 203.0.113.7\n" in lines
+    assert cf.records[wildcard] == before
+    assert all(f"/{wildcard}" not in r.url.path for r in cf.requests if r.method != "GET")
+    assert wildcard not in {e for _, _, e, _ in await _rows(db)}
+
+
+async def test_a_wildcard_still_blocks_a_service_name(db, env, publish_fakes):  # noqa: F811
+    publish_fakes.cf.add("A", "*.uat2.serversherpa.com", "198.51.100.9")
+    with pytest.raises(StepFailed) as e:
+        await _run(db, env, "dns")
+    assert "  api.uat2.serversherpa.com: The wildcard *.uat2.serversherpa.com covers" \
+        in e.value.reason
+    assert publish_fakes.cf.writes() == []

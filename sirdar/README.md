@@ -268,7 +268,9 @@ port edits, a base-domain change) and isn't edited on its own; migration
 0014 added it to existing environments, so their next publish creates it
 (until then, Switch traffic leaves the bare name out). Other records at the
 bare name (TXT for SPF or DKIM, MX, CAA, ...) stay; only a CNAME, NS or AAAA
-there blocks its A record.
+there blocks its A record. A wildcard over the bare name (`*.serversherpa.com`)
+doesn't block it either: Sirdar's A only shadows the wildcard for that one name
+and never touches the wildcard itself.
 Credentials live in Settings > Integrations (Cloudflare API token with DNS edit on the
 zone; NPM URL, login and password), encrypted with `SIRDAR_SECRETS_KEY` and
 never shown again; each has a Test button. A stored token or password is

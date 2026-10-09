@@ -245,7 +245,10 @@ def _unmanaged_dns(sp: ServicePlan, records: list[DnsRecord], owners: dict[str, 
     parent = sp.hostname.split(".", 1)[1]
     wildcard = f"*.{parent}"
     # A name that already has records of its own isn't answered by the wildcard.
-    if not here and any(r.name == wildcard for r in records):
+    # The bare name's A only shadows a wildcard for that one name (the
+    # wildcard itself is never touched), so home is never blocked by one.
+    if (sp.service != home.HOME and not here
+            and any(r.name == wildcard for r in records)):
         return Status("conflict", f"The wildcard {wildcard} covers this name; a record here "
                                   "would override it.")
     return Status("create", f"Sirdar will create A {public_ip}.")

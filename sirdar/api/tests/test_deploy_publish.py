@@ -104,6 +104,30 @@ def test_dns_status(records, managed_row, owners, expected):
     assert (status.state, status.detail) == expected
 
 
+BARE = publish.ServicePlan("home", "uat2.serversherpa.com", "10.10.48.63", 8091, False)
+
+
+@pytest.mark.parametrize("records, expected", [
+    # A wildcard over the bare name: Sirdar's own A just shadows it for that one name.
+    ([rec("w1", name="*.serversherpa.com", content="198.51.100.9")],
+     ("create", "Sirdar will create A 203.0.113.7.")),
+    # An empty non-terminal: children exist, the bare name has nothing of its own.
+    ([rec("w1", name="*.serversherpa.com", content="198.51.100.9"),
+      rec("p1", name="portal.uat2.serversherpa.com")],
+     ("create", "Sirdar will create A 203.0.113.7.")),
+    ([rec("c1", type_="CNAME", name="uat2.serversherpa.com", content="x.example.com")],
+     ("conflict", "A CNAME record already uses this name.")),
+])
+def test_dns_status_of_the_bare_name(records, expected):
+    status = _dns(records, service=BARE)
+    assert (status.state, status.detail) == expected
+
+
+def test_a_wildcard_still_blocks_other_services():
+    status = _dns([rec("w1", name="*.uat2.serversherpa.com")])
+    assert status.state == "conflict"
+
+
 def test_dns_status_outside_the_zone():
     outside = publish.ServicePlan("api", "api.example.org", "10.10.48.63", 8100, False)
     status = _dns([], service=outside)
