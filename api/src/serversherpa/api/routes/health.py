@@ -1,6 +1,9 @@
 """Database health (Dev -> Database -> Health). Under the `devtools`
 resource like the rest of the Database tab: view for every read here."""
 
+import logging
+
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, HTTPException
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
@@ -14,6 +17,8 @@ from serversherpa.api.schemas import (
 )
 from serversherpa.devtools import health
 from serversherpa.services.audit import audit
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/devtools/health", tags=["devtools"])
 
@@ -70,9 +75,12 @@ async def vacuum_table(
 async def get_storage(actor: AuthContext = _CAN_VIEW) -> HealthStorageOut:
     try:
         return HealthStorageOut(**await health.storage_usage())
-    except health.STORAGE_ERRORS:
-        # Never echo the exception: botocore messages carry the endpoint URL
-        # (and sometimes the bucket name).
+    except health.STORAGE_ERRORS as exc:
+        # Never echo or log the message: botocore's carries the endpoint URL
+        # (and sometimes the bucket name). The class and S3 error code are
+        # enough to tell an outage from a bad key.
+        code = exc.response.get("Error", {}).get("Code") if isinstance(exc, ClientError) else None
+        logger.warning("storage usage failed: %s (code=%s)", type(exc).__name__, code)
         raise HTTPException(status_code=502, detail={
             "code": "storage_unavailable",
             "message": "File storage couldn't be reached. Try again in a moment."}) from None

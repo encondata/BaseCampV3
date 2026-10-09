@@ -9,6 +9,7 @@ URLs generated here (pure in-process signing — no network round-trip).
 import asyncio
 import logging
 import threading
+from collections.abc import Callable
 from functools import lru_cache, partial
 from urllib.parse import quote
 
@@ -214,21 +215,22 @@ async def list_keys(prefix: str) -> list[str]:
     return await asyncio.to_thread(_list)
 
 
-async def list_objects(prefix: str = "") -> list[tuple[str, int]]:
-    """Every object under `prefix` as `(key, size_in_bytes)` pairs
-    (paginated, in a thread — same shape as `list_keys`). Used by the
-    database health tab's storage usage."""
+async def scan_objects(visit: Callable[[str, int], None], prefix: str = "") -> None:
+    """Call `visit(key, size_in_bytes)` for every object under `prefix`,
+    page by page (paginated, in a thread — like `list_keys`), without ever
+    holding the whole listing: a caller that only totals keeps O(its own
+    state) memory on a bucket with millions of objects. `visit` runs in the
+    worker thread, so it must be a plain function that only touches its
+    own accumulators. Used by the database health tab's storage usage."""
     s = get_settings()
 
-    def _list() -> list[tuple[str, int]]:
-        found: list[tuple[str, int]] = []
+    def _scan() -> None:
         paginator = _client().get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=s.spaces_bucket, Prefix=prefix):
-            found.extend((obj["Key"], int(obj.get("Size", 0)))
-                         for obj in page.get("Contents", []))
-        return found
+            for obj in page.get("Contents", []):
+                visit(obj["Key"], int(obj.get("Size", 0)))
 
-    return await asyncio.to_thread(_list)
+    await asyncio.to_thread(_scan)
 
 
 async def download_to(key: str, path) -> None:

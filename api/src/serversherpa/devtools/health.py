@@ -182,11 +182,17 @@ async def storage_usage() -> dict:
     """Object count and bytes per top-level folder of the bucket. Lists
     every object, so it can take a while on a big bucket — on demand only."""
     folders: dict[str, dict] = {}
-    for key, size in await storage.list_objects():
-        name = key.split("/", 1)[0] if "/" in key else ROOT_FOLDER
+
+    def visit(key: str, size: int) -> None:
+        # a key with no "/" -- or one that starts with it, whose first
+        # segment would be "" -- belongs to no folder
+        name = key.split("/", 1)[0] if "/" in key else ""
+        name = name or ROOT_FOLDER
         folder = folders.setdefault(name, {"name": name, "objects": 0, "bytes": 0})
         folder["objects"] += 1
         folder["bytes"] += size
+
+    await storage.scan_objects(visit)
     rows = sorted(folders.values(), key=lambda f: (-f["bytes"], natural_key(f["name"])))
     return {
         "folders": rows,
