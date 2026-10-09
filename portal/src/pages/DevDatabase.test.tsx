@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * /dev/database — the tab shell (Reconcile / Backups / Testing / Cleanup). Most of
+ * /dev/database — the tab shell (Reconcile / Backups / Testing / Cleanup / Health). Most of
  * each tab's own behavior is covered elsewhere (pendingDeletes.test.ts,
  * components/dev/DbTestingTab.test.tsx); this file covers what only the
  * shell can: the tab bar itself, the Backups row picking up the
@@ -41,6 +41,9 @@ const api = vi.hoisted(() => ({
   deleteDbBackup: vi.fn(),
   getCascadePreview: vi.fn(),
   cascadeDelete: vi.fn(),
+  getHealthSummary: vi.fn(),
+  getHealthConnections: vi.fn(),
+  getHealthTables: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -94,6 +97,13 @@ beforeEach(() => {
     total_rows_db_deleted: 0,
   });
   api.cascadeDelete.mockReset();
+  api.getHealthSummary.mockReset().mockResolvedValue({
+    database_size_bytes: 1024 * 1024 * 1024, version: '16.4',
+    started_at: '2026-10-01T00:00:00Z', latency_ms: 3, connections: 5, max_connections: 100,
+    cache_hit_ratio: 0.99,
+  });
+  api.getHealthConnections.mockReset().mockResolvedValue({ groups: [] });
+  api.getHealthTables.mockReset().mockResolvedValue({ tables: [] });
 });
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -257,6 +267,20 @@ it('reconcile list: column floors, shared template + minimum, sideways-scroll ca
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
+});
+
+it('has a Health tab, fifth after Cleanup, that loads the health data', async () => {
+  const user = userEvent.setup();
+  render(<MemoryRouter><DevDatabase /></MemoryRouter>);
+  const tabs = screen.getAllByRole('tab').map((t) => t.textContent);
+  expect(tabs).toEqual(['Reconcile', 'Backups', 'Testing', 'Cleanup', 'Health']);
+  expect(api.getHealthSummary).not.toHaveBeenCalled();
+
+  await user.click(screen.getByRole('tab', { name: 'Health' }));
+
+  expect(screen.getByRole('tab', { name: 'Health' }).getAttribute('aria-selected')).toBe('true');
+  await waitFor(() => expect(api.getHealthSummary).toHaveBeenCalledTimes(1));
+  expect(await screen.findByText('1.0 GB')).not.toBeNull();
 });
 
 // ── Backups tab: row actions ──────────────────────────────────────────

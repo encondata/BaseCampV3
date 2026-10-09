@@ -1,5 +1,5 @@
 /**
- * Developer → Database — four tabs sharing one page shell:
+ * Developer → Database — five tabs sharing one page shell:
  *
  *  - Reconcile: the god-mode "pending delete" registry (Task 1/2's
  *    mark/unmark flow, exposed everywhere via GodDeleteButton). Lists
@@ -23,6 +23,10 @@
  *  - Cleanup: preview and purge expired sign-in records, old history and
  *    deleted files, plus a duplicate finder (components/dev/CleanupTab.tsx).
  *
+ *  - Health: summary tiles, connections, per-table sizes with Vacuum &
+ *    analyze, and an on-demand file-storage measurement
+ *    (components/dev/HealthTab.tsx).
+ *
  * Tab bar follows the .sysconf-tabbar pattern from pages/SystemConfig.tsx.
  */
 
@@ -33,6 +37,7 @@ import { useAuth } from '../auth/AuthContext';
 import CascadeDeleteModal from '../components/dev/CascadeDeleteModal';
 import CleanupTab from '../components/dev/CleanupTab';
 import DbTestingTab from '../components/dev/DbTestingTab';
+import HealthTab from '../components/dev/HealthTab';
 import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import {
   ApiError,
@@ -48,6 +53,7 @@ import {
   type PendingDeleteItem,
   type PendingDeleteReconcileOut,
 } from '../lib/api';
+import { formatBytes } from '../lib/dbHealth';
 import { longDate, relativeTime } from '../lib/format';
 import {
   ACTIONS_TRACK, ColHead, listGridStyle, listScale, titleFor, type ColumnDef,
@@ -410,19 +416,6 @@ const BACKUP_COLUMNS: ColumnDef[] = [
 const DECRYPT_HINT =
   'openssl enc -d -aes-256-cbc -pbkdf2 -md sha256 -in <file> -out backup.sql';
 
-/** KB/MB(/GB) with one decimal — plain bytes below 1 KB. */
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let value = bytes / 1024;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value.toFixed(1)} ${units[unit]}`;
-}
-
 /** Triggers a browser download from a (possibly presigned) URL without
  *  navigating the SPA away from the page — a detached, immediately-clicked
  *  anchor, same trick used for attachment downloads elsewhere in the
@@ -650,6 +643,7 @@ const TABS = [
   { key: 'backups', label: 'Backups' },
   { key: 'testing', label: 'Testing' },
   { key: 'cleanup', label: 'Cleanup' },
+  { key: 'health', label: 'Health' },
 ] as const;
 
 export default function DevDatabase() {
@@ -679,6 +673,7 @@ export default function DevDatabase() {
       {tab === 'backups' && <BackupsTab />}
       {tab === 'testing' && <DbTestingTab />}
       {tab === 'cleanup' && <CleanupTab onShowBackups={() => setTab('backups')} />}
+      {tab === 'health' && <HealthTab />}
     </div>
   );
 }

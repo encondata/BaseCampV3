@@ -3860,6 +3860,89 @@ export async function getCleanupDuplicates(): Promise<CleanupDuplicatesOut> {
   return resp.json();
 }
 
+/* ── database health (Developer › Database › Health) ───────────────── */
+
+export interface HealthSummary {
+  database_size_bytes: number;
+  /** "16.4" — already trimmed to the version number */
+  version: string;
+  started_at: string;
+  latency_ms: number;
+  /** cluster-wide: every database on the server, not just this one */
+  connections: number;
+  max_connections: number;
+  /** 0-1, null when nothing has been read yet */
+  cache_hit_ratio: number | null;
+}
+
+export interface HealthConnectionGroup {
+  /** "Other" for connections that never named themselves */
+  application_name: string;
+  state: string;
+  count: number;
+  oldest_query_seconds: number | null;
+  oldest_transaction_seconds: number | null;
+  waiting_on_lock: number;
+}
+
+export interface HealthTable {
+  name: string;
+  rows: number;
+  total_bytes: number;
+  table_bytes: number;
+  index_bytes: number;
+  dead_rows: number;
+  dead_ratio: number | null;
+  last_vacuum_at: string | null;
+  last_analyze_at: string | null;
+}
+
+export interface HealthVacuumOut { table: HealthTable; duration_ms: number }
+
+export interface HealthStorageFolder { name: string; objects: number; bytes: number }
+
+export interface HealthStorageOut {
+  folders: HealthStorageFolder[];
+  total_objects: number;
+  total_bytes: number;
+  measured_at: string;
+}
+
+export async function getHealthSummary(): Promise<HealthSummary> {
+  const resp = await apiFetch('/devtools/health/summary');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getHealthConnections(): Promise<{ groups: HealthConnectionGroup[] }> {
+  const resp = await apiFetch('/devtools/health/connections');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getHealthTables(): Promise<{ tables: HealthTable[] }> {
+  const resp = await apiFetch('/devtools/health/tables');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Errors: 404 `unknown_table`; 409 `testing_session_active` / `table_busy`
+ *  (each with a plain-English `detail.message`). */
+export async function vacuumHealthTable(name: string): Promise<HealthVacuumOut> {
+  const resp = await apiFetch(`/devtools/health/tables/${encodeURIComponent(name)}/vacuum`, {
+    method: 'POST',
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Errors: 502 `storage_unavailable`. */
+export async function getHealthStorage(): Promise<HealthStorageOut> {
+  const resp = await apiFetch('/devtools/health/storage');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 // ── system: process registry + logs ─────────────────────────────────
 
 export interface SystemProcessOut {
