@@ -91,7 +91,7 @@ The wiki is excluded (its own trash already empties after 30 days).
 - **Assets sharing a serial number:** non-archived assets grouped by
   `lower(trim(serial_number))` (non-empty), groups of 2+, largest groups
   first, at most 200 groups. Each item: name, serial, site, status, link
-  `/assets?open=<id>`.
+  `/assets/<id>`.
 - **People with the same name:** non-archived people grouped by
   `lower(trim(first_name)), lower(trim(last_name))`, groups of 2+, excluding
   hidden kiosk move identities, at most 200 groups. Each item: display

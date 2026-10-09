@@ -155,7 +155,7 @@ Routes:
 - Modify: `api/src/serversherpa/api/routes/cleanup.py`, `api/src/serversherpa/api/schemas.py`
 - Test: `api/tests/test_cleanup_duplicates.py`
 
-**Interfaces — Produces:** `GET /devtools/cleanup/duplicates` (`devtools:view`) → `{"assets": [{"serial", "items": [{id, name, serial_number, site_name, status_label, href}]}], "people": [{"name", "items": [{id, display_name, email, has_login, is_worker, href}]}]}` — groups of 2+, largest first, ≤ 200 groups each; `href` per the spec (`/assets?open=<id>`; `/people/users/<id>` if a login, else `/people/workers/<id>` if a worker profile, else null).
+**Interfaces — Produces:** `GET /devtools/cleanup/duplicates` (`devtools:view`) → `{"assets": [{"serial", "items": [{id, name, serial_number, site_name, status_label, href}]}], "people": [{"name", "items": [{id, display_name, email, has_login, is_worker, href}]}]}` — groups of 2+, largest first, ≤ 200 groups each; `href` per the spec (`/assets/<id>`; `/people/users/<id>` if a login, else `/people/workers/<id>` if a worker profile, else null).
 
 - [ ] **Step 1: Failing tests:** serial match ignores case and surrounding spaces; empty/null serials ignored; archived assets excluded; singletons excluded; people grouped by trimmed lowercase first+last; archived people and hidden kiosk move identities (`Person.source == KIOSK_MOVE_SOURCE` — find the constant) excluded; href rules; group cap (monkeypatch the cap to 1); non-developer 403.
 - [ ] **Step 2: Run; confirm failure.**
