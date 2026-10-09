@@ -114,11 +114,21 @@ export function DailyBars({ days, ariaLabel, formatTooltip }: {
 
 /* ── labeled distribution: color strip + label/count rows ──── */
 
+/** Status rows the dashboards' "by status" cards list (the biggest first). */
+export const STATUS_ROWS = 8;
+
 export interface DistEntry { key: string; label: string; color: string; count: number }
 
-export function Distribution({ entries, total }: { entries: DistEntry[]; total: number }) {
+/** `limit` caps the label rows at the biggest statuses (largest first) so a
+ *  long status list can't stretch the panel; the strip still shows them all. */
+export function Distribution({ entries, total, limit }: {
+  entries: DistEntry[]; total: number; limit?: number;
+}) {
   const shown = entries.filter((e) => e.count > 0);
   if (total === 0 || shown.length === 0) return null;
+  const rows = limit === undefined
+    ? shown
+    : [...shown].sort((a, b) => b.count - a.count).slice(0, limit);
   return (
     <>
       <div className="dash-strip" role="img"
@@ -129,7 +139,7 @@ export function Distribution({ entries, total }: { entries: DistEntry[]; total: 
         ))}
       </div>
       <div className="mini-list dash-dist-rows">
-        {shown.map((e) => (
+        {rows.map((e) => (
           <div key={e.key} className="mini-row dash-dist-row">
             <span className="dash-dist-swatch" style={{ background: e.color }} aria-hidden="true" />
             <span className="cell-top dash-dist-label">{e.label}</span>
