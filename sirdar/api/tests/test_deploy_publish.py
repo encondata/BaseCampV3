@@ -262,14 +262,14 @@ async def test_claim_records_only_claimable_entries(db, secrets_key, publish_fak
     assert CERT not in {r.kind for r in rows}          # certificates are never claimed
 
 
-async def test_claim_takes_an_a_record_that_shares_its_name_with_txt(db, secrets_key,
-                                                                      publish_fakes):
+async def test_claim_takes_an_a_record_that_shares_its_name_with_txt(
+        db, secrets_key, publish_fakes):  # noqa: F811
     env = await _uat2(db)
     hand_api = publish_fakes.cf.add("A", "api.uat2.serversherpa.com", PUBLIC_IP)
     publish_fakes.cf.add("TXT", "api.uat2.serversherpa.com", "v=spf1 -all")
     publish_fakes.cf.add("MX", "api.uat2.serversherpa.com", "mx.example.com")
     state = await publish.inspect(db, env, get_settings())
-    assert (state["services"][0]["dns"]["state"]) == "claimable"
+    assert state["services"][0]["dns"]["state"] == "claimable"
     assert await publish.claim(db, env, state) == ["dns:api.uat2.serversherpa.com"]
     await db.commit()
     rows = list(await db.scalars(select(ManagedRecord)))
