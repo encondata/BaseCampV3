@@ -1,8 +1,10 @@
 # The edge on a DigitalOcean droplet (STACK_CADDY=1): plain HTTP on :80
 # behind the load balancer, which terminates HTTPS. One route list, in this
 # order: Caddy's own health, the load balancer's health check (any host
-# outside the environment's domain: the API's health), Let's Encrypt
-# HTTP-01 for the cert-worker, plain HTTP to HTTPS, then each public name.
+# outside the environment's names: the API's health), Let's Encrypt HTTP-01
+# for the cert-worker, the bare environment name to its portal (302: names
+# are reused, and browsers keep a 301 forever), plain HTTP to HTTPS, then
+# each public name.
 # Client IPs come only from the load balancer (the VPC's range).
 {
 	auto_https off
@@ -24,7 +26,7 @@
 	}
 	@lbhealth {
 		path /healthz
-		not host *.{$STACK_DOMAIN}
+		not host *.{$STACK_DOMAIN} {$STACK_DOMAIN}
 	}
 	# only the environment's own names are redirected; anything else is a 404
 	@plain {
@@ -36,11 +38,15 @@
 	@kiosk host kiosk.{$STACK_DOMAIN}
 	@wiki host wiki.{$STACK_DOMAIN}
 	@status host status.{$STACK_DOMAIN}
+	# production has the rule too, but no DNS record or certificate name, so
+	# nothing reaches it
+	@home host {$STACK_DOMAIN}
 
 	route {
 		respond @self "ok" 200
 		reverse_proxy @lbhealth api:8000
 		reverse_proxy /.well-known/acme-challenge/* cert-worker:8089
+		redir @home https://portal.{$STACK_DOMAIN}{uri} 302
 		redir @plain https://{host}{uri} 308
 		reverse_proxy @api api:8000 {
 			header_up X-Forwarded-For {client_ip}

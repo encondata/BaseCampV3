@@ -93,6 +93,7 @@ async def test_a_first_deploy_goes_live(db, do_env, fake_runner, fake_publisher,
     assert f"SS_CERT_LB_ID=lb-{do_env.id}\n" in text
     assert f"SS_CERT_DO_TOKEN={DEV_RENEW_TOKEN}\n" in text
     assert "SS_CERT_NAMES=api.uat9.serversherpa.com,portal.uat9.serversherpa.com," in text
+    assert "status.uat9.serversherpa.com,uat9.serversherpa.com\n" in text
     assert f"SS_SPACES_SECRET_KEY={SPACES_SECRET}\n" in text
     assert "SS_DATABASE_URL=postgresql+asyncpg://serversherpa:" in text
     smoke = next(r for r in fake_runner.requests if r.step == "slot_smoke")

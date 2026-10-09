@@ -77,7 +77,8 @@ async def test_the_first_run_builds_everything(db, do_build):
     assert b.env.spaces_bucket in b.cloud.spaces.buckets
     (cert,) = fake.certificates.values()
     assert sorted(cert["dns_names"]) == sorted(
-        f"{s}.uat9.serversherpa.com" for s in ("api", "portal", "kiosk", "wiki", "status"))
+        [*(f"{s}.uat9.serversherpa.com" for s in ("api", "portal", "kiosk", "wiki", "status")),
+         "uat9.serversherpa.com"])
     (lb,) = fake.load_balancers.values()
     assert lb["droplet_ids"] == [] and lb["vpc_uuid"] == database["private_network_uuid"]
     https = next(r for r in lb["forwarding_rules"] if r["entry_protocol"] == "https")
@@ -922,3 +923,19 @@ async def test_a_certificate_whose_create_answer_was_lost_is_adopted(db, do_buil
     assert set(fake.certificates) == recorded          # nothing orphaned
     assert "lost-1" not in fake.certificates           # adopted, then retired
     assert "ss-uat9-20991231000000" in do_build.log()
+
+
+async def test_a_certificate_without_the_bare_name_is_replaced_now(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    (old,) = fake.certificates.values()
+    old["dns_names"] = [n for n in old["dns_names"] if n != "uat9.serversherpa.com"]
+    await do_build.run()
+    (new,) = fake.certificates.values()                 # the old one is retired
+    assert new["id"] != old["id"] and "uat9.serversherpa.com" in new["dns_names"]
+    log = do_build.log()
+    assert (f"Certificate {old['name']} doesn't cover uat9.serversherpa.com; "
+            "Sirdar replaces it.") in log
+    (lb,) = fake.load_balancers.values()
+    https = next(r for r in lb["forwarding_rules"] if r["entry_protocol"] == "https")
+    assert https["certificate_id"] == new["id"]

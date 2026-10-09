@@ -25,6 +25,7 @@ from .do_helpers import (  # noqa: F401
     ssh_server,
 )
 from .fake_digitalocean import DEV_RENEW_TOKEN, DEV_TOKEN
+from .fake_smoke import respond
 
 
 def _answer(status: int):
@@ -32,7 +33,7 @@ def _answer(status: int):
 
     def handler(request):
         seen.append(request)
-        return httpx.Response(status)
+        return respond(request, status)
 
     return httpx.MockTransport(handler), seen
 
@@ -74,6 +75,7 @@ async def test_switch_traffic_to_the_slot(db, do_build):
     assert _lb(fake)["droplet_ids"] == [_droplet_id(fake, "orange")]
     assert {r.headers["host"] for r in seen} >= {"api.uat9.serversherpa.com",
                                                  "status.uat9.serversherpa.com"}
+    assert "uat9.serversherpa.com" in {r.headers["host"] for r in seen}
     assert all(r.url.host == fake.load_balancers[_lb(fake)["id"]]["ip"] for r in seen)
     assert all(r.extensions["sni_hostname"] == r.headers["host"] for r in seen)
     assert "traffic now goes to orange" in do_build.log()
@@ -568,7 +570,7 @@ def _good_then(status: int, good: int):
 
     def handler(request):
         seen.append(request)
-        return httpx.Response(200 if len(seen) <= good else status)
+        return respond(request, 200 if len(seen) <= good else status)
 
     return httpx.MockTransport(handler), seen
 
@@ -629,8 +631,10 @@ async def test_a_foreign_certificate_on_the_load_balancer_fails_the_switch(db, d
 
 
 def do_envs_hosts():
+    """The names the load balancer's smoke test asks for (uat9 is a dev
+    environment with every app on: the five services and the bare name)."""
     from sirdar_api.deploy import certs
-    return certs.PUBLIC_SERVICES
+    return (*certs.PUBLIC_SERVICES, "home")
 
 
 async def test_a_one_slot_environment_says_the_droplet_already_runs_the_commit(db, do_build):

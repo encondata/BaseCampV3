@@ -2,7 +2,8 @@
 issues the first one, and is the backup renewer, by DNS-01 through the
 Cloudflare integration; the environment's cert-worker (7b) renews by
 HTTP-01. A certificate is uploaded to DigitalOcean as a custom certificate
-named ss-<env>-<UTC yyyymmddhhmm> covering exactly the public names.
+named ss-<env>-<UTC yyyymmddhhmm> covering exactly public_names(env) (the
+running apps' names and, outside production, the bare name).
 
 Sirdar's ACME account key (one per directory) is kept Fernet-encrypted in
 acme_accounts. Errors are CertError with our own copy."""
@@ -16,7 +17,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sirdar_api.config import Settings
 from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import AcmeAccount
-from sirdar_api.deploy import acme, outbound, vault
+from sirdar_api.deploy import acme, home, outbound, vault
+from sirdar_api.deploy import apps as app_rules
 from sirdar_api.deploy.cloudflare import Cloudflare, CloudflareError
 from sirdar_api.deploy.integrations import CloudflareConfig
 
@@ -33,8 +35,20 @@ class CertError(Exception):
         self.reason = reason
 
 
-def public_names(base_domain: str) -> tuple[str, ...]:
-    return tuple(f"{s}.{base_domain}" for s in PUBLIC_SERVICES)
+def public_hosts(env) -> tuple[tuple[str, str], ...]:
+    """(service, hostname) a droplet environment serves: its running apps'
+    names, then the bare name (home) unless it is production. The
+    certificate, the cert-worker (SS_CERT_NAMES) and the load balancer's
+    smoke test all use this list."""
+    found = [(s, f"{s}.{env.base_domain}") for s in PUBLIC_SERVICES
+             if app_rules.is_public(env, s)]
+    if home.wants_home(env):
+        found.append((home.HOME, home.home_hostname(env)))
+    return tuple(found)
+
+
+def public_names(env) -> tuple[str, ...]:
+    return tuple(name for _, name in public_hosts(env))
 
 
 def cert_name(env_name: str, now: datetime) -> str:

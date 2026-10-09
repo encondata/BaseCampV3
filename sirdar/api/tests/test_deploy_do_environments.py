@@ -249,8 +249,9 @@ async def test_env_extra(db):
         "SS_SPACES_SECRET_KEY": "spaces-SECRET-1", "SS_SPACES_USE_PATH_STYLE": "false",
         "STACK_DROPLET_ID": "4001",
         "SS_CERT_DO_TOKEN": DEV_RENEW_TOKEN, "SS_CERT_LB_ID": "lb-0001",
-        "SS_CERT_NAMES": ",".join(f"{s}.uat9.serversherpa.com"
-                                  for s in ("api", "portal", "kiosk", "wiki", "status")),
+        "SS_CERT_NAMES": ",".join([*(f"{s}.uat9.serversherpa.com"
+                                     for s in ("api", "portal", "kiosk", "wiki", "status")),
+                                   "uat9.serversherpa.com"]),
         "SS_CERT_ACME_DIRECTORY": "https://acme-v02.api.letsencrypt.org/directory",
         "SS_CERT_ACME_KEY": acme_b64,
     }

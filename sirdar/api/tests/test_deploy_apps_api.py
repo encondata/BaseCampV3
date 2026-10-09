@@ -209,7 +209,7 @@ async def test_digitalocean_smokes_and_certifies_only_the_running_apps(
     values = await _render_values(fake_runner)
     assert values["STACK_APPS"] == "status,mailpit"
     assert values["SS_CERT_NAMES"] == ("api.uat9.serversherpa.com,portal.uat9.serversherpa.com,"
-                                       "status.uat9.serversherpa.com")
+                                       "status.uat9.serversherpa.com,uat9.serversherpa.com")
     for request in fake_runner.requests:
         assert [h["service"] for h in request.extravars["public_hosts"]] == [
             "api", "portal", "status"], request.step
@@ -222,7 +222,7 @@ async def test_digitalocean_create_names_only_the_running_apps(db, do_build):
     await db.flush()
     ctx = await do_provision.prepare(db, env, await do_build.deployment(), get_settings())
     assert ctx.names == ("api.uat9.serversherpa.com", "portal.uat9.serversherpa.com",
-                         "wiki.uat9.serversherpa.com")
+                         "wiki.uat9.serversherpa.com", "uat9.serversherpa.com")
 
 
 async def test_lan_bluegreen_smokes_only_the_running_apps(db, lan, fake_runner, fake_publisher,

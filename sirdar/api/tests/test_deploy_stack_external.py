@@ -458,6 +458,7 @@ def test_caddyfile_routes_in_order():
         "respond @self",
         "reverse_proxy @lbhealth api:8000",
         "reverse_proxy /.well-known/acme-challenge/* cert-worker:8089",
+        "redir @home https://portal.{$STACK_DOMAIN}{uri} 302",
         "redir @plain https://{host}{uri} 308",
         "reverse_proxy @api api:8000",
         "reverse_proxy @portal portal:8080",
@@ -468,6 +469,8 @@ def test_caddyfile_routes_in_order():
     ]
     found = [text.index(line) for line in order]
     assert found == sorted(found)
+    assert "not host *.{$STACK_DOMAIN} {$STACK_DOMAIN}" in text
+    assert "@home host {$STACK_DOMAIN}" in text
 
 
 def test_caddy_image_is_pinned_by_digest():
@@ -633,6 +636,14 @@ def test_caddy_routes_in_a_container(tmp_path):
         assert curl(*portal, "-H", "X-Forwarded-Proto: http", "http://172.30.9.2/x") == (
             "308 https://portal.uat9.serversherpa.com/x"
         )
+        bare = ("-H", "Host: uat9.serversherpa.com")
+        assert curl(*bare, "http://172.30.9.2/x?y=1") == (
+            "302 https://portal.uat9.serversherpa.com/x?y=1")
+        assert curl(*bare, "-H", "X-Forwarded-Proto: http", "http://172.30.9.2/x") == (
+            "302 https://portal.uat9.serversherpa.com/x")
+        assert curl(*bare, "http://172.30.9.2/healthz").startswith("302")
+        assert curl(*bare, "http://172.30.9.2/.well-known/acme-challenge/tok",
+                    body=True).strip() == "acme-token"
         # the redirect is only for the domain: other hosts get the 404
         assert curl(
             "-H", "Host: other.example", "-H", "X-Forwarded-Proto: http", "http://172.30.9.2/x"
