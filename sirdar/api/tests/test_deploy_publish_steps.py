@@ -501,3 +501,60 @@ async def test_unproxy_leaves_a_multi_name_certificate_at_the_recorded_id(db, en
     assert shared in proxy.certs
     assert f"api.uat2.serversherpa.com: Certificate #{shared} {LEFT}" in lines
     assert await _rows(db) == []
+
+
+REDIRECT = ('if ($request_uri !~ "^/\\.well-known/acme-challenge/") {\n'
+            "    return 302 https://portal.uat2.serversherpa.com$request_uri;\n"
+            "}")
+
+
+@pytest.fixture
+async def home_env(db, secrets_key, publish_fakes):  # noqa: F811
+    publish_fakes.npm.now = NOW
+    await configure(db)
+    return await make_environment(db, name="uat2", host="10.10.48.63", with_home=True)
+
+
+def _bare(fake_npm) -> dict:
+    return next(h for h in fake_npm.hosts.values()
+                if h["domain_names"] == ["uat2.serversherpa.com"])
+
+
+async def test_the_bare_name_gets_a_redirect_host_with_its_own_certificate(db, home_env,
+                                                                         publish_fakes):  # noqa: F811
+    lines = await _run(db, home_env, "proxy")
+    bare = _bare(publish_fakes.npm)
+    assert bare["advanced_config"] == REDIRECT
+    assert (bare["forward_host"], bare["forward_port"]) == ("10.10.48.63", 8091)
+    assert bare["ssl_forced"] and publish_fakes.npm.certs[bare["certificate_id"]][
+        "domain_names"] == ["uat2.serversherpa.com"]
+    others = [h for h in publish_fakes.npm.hosts.values() if h is not bare]
+    assert {h["advanced_config"] for h in others} == {"", "client_max_body_size 0;"}
+    assert ("uat2.serversherpa.com: created a proxy host to 10.10.48.63:8091\n" in lines)
+    order = [line.split(":")[0] for line in lines if "created a proxy host" in line]
+    assert order[:3] == ["api.uat2.serversherpa.com", "portal.uat2.serversherpa.com",
+                         "uat2.serversherpa.com"]
+
+
+async def test_a_redirect_changed_by_hand_is_put_back(db, home_env, publish_fakes):  # noqa: F811
+    await _run(db, home_env, "proxy")
+    _bare(publish_fakes.npm)["advanced_config"] = "return 301 https://elsewhere.example;"
+    state = await publish.inspect(db, home_env, get_settings())
+    bare = next(s for s in state["services"] if s["service"] == "home")
+    assert (bare["proxy"]["state"], bare["proxy"]["detail"]) == (
+        "update", "Sirdar will change the redirect.")
+    lines = await _run(db, home_env, "proxy")
+    assert _bare(publish_fakes.npm)["advanced_config"] == REDIRECT
+    assert "uat2.serversherpa.com: proxy host now goes to 10.10.48.63:8091\n" in lines
+
+
+async def test_other_hosts_keep_their_own_advanced_config(db, home_env,
+                                                          publish_fakes):  # noqa: F811
+    await _run(db, home_env, "proxy")
+    api = next(h for h in publish_fakes.npm.hosts.values()
+               if h["domain_names"] == ["api.uat2.serversherpa.com"])
+    api["advanced_config"] = "proxy_read_timeout 300;"
+    writes = len(_writes(publish_fakes.npm))
+    await _run(db, home_env, "proxy")
+    assert api["advanced_config"] == "proxy_read_timeout 300;"
+    assert len(_writes(publish_fakes.npm)) == writes

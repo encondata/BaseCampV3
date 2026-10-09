@@ -86,6 +86,19 @@ class ServicePlan:
         return f"{self.host_ip}:{self.port}"
 
 
+SPACES_ADVANCED = "client_max_body_size 0;"
+
+
+def advanced_config(sp: ServicePlan) -> str:
+    """The NPM advanced config Sirdar writes for a service: uploads without a
+    size cap for spaces, the redirect to the portal for the bare name."""
+    if sp.service == "spaces":
+        return SPACES_ADVANCED
+    if sp.service == home.HOME:
+        return home.nginx_redirect(sp.hostname)
+    return ""
+
+
 NO_LB_YET = ("No load balancer yet: step 0 (Prepare DigitalOcean) makes it, and the records "
              "point at its address.")
 
@@ -263,10 +276,14 @@ def dns_status(sp: ServicePlan, records: list[DnsRecord], row: ManagedRecord | N
 
 
 def _forward_drift(host: ProxyHost, sp: ServicePlan) -> list[str]:
-    checks = (("the scheme", host.forward_scheme, "http"),
+    checks = [("the scheme", host.forward_scheme, "http"),
               ("the forward host", host.forward_host, sp.host_ip),
               ("the forward port", host.forward_port, sp.port),
-              ("WebSockets", host.allow_websocket_upgrade, True))
+              ("WebSockets", host.allow_websocket_upgrade, True)]
+    if sp.service == home.HOME:
+        # only the bare name's advanced config is Sirdar's; others keep theirs
+        checks.append(("the redirect", host.raw.get("advanced_config") or "",
+                       advanced_config(sp)))
     return [name for name, have, want in checks if have != want]
 
 
@@ -486,8 +503,6 @@ async def claim(db: AsyncSession, env: Environment, state: dict) -> list[str]:
 
 # ---- steps 12–14 and 16–17 -------------------------------------------------------------
 
-SPACES_ADVANCED = "client_max_body_size 0;"
-
 
 class StepFailed(Exception):
     """A publish step can't finish. `reason` (our own copy) ends its log."""
@@ -679,17 +694,20 @@ def new_host_body(sp: ServicePlan) -> dict:
             "ssl_forced": False, "hsts_enabled": False, "hsts_subdomains": False,
             "http2_support": False, "block_exploits": True, "caching_enabled": False,
             "allow_websocket_upgrade": True, "access_list_id": 0,
-            "advanced_config": SPACES_ADVANCED if sp.service == "spaces" else "",
+            "advanced_config": advanced_config(sp),
             "meta": {"letsencrypt_agree": False, "dns_challenge": False}, "locations": []}
 
 
 def host_body(host: ProxyHost, sp: ServicePlan, *, certificate_id: int | None = None) -> dict:
     """Read-modify-write: everything the host has (access lists, advanced
-    config, ...) with Sirdar's fields on top."""
+    config, ...) with Sirdar's fields on top. The bare name's advanced config
+    is Sirdar's (the redirect) and is rewritten."""
     body = {k: host.raw[k] for k in npm.HOST_FIELDS if k in host.raw}
     body["locations"] = body.get("locations") or []
     body.update(forward_scheme="http", forward_host=sp.host_ip, forward_port=sp.port,
                 allow_websocket_upgrade=True)
+    if sp.service == home.HOME:
+        body["advanced_config"] = advanced_config(sp)
     if certificate_id is not None:
         body.update(certificate_id=certificate_id, ssl_forced=True, http2_support=True)
     return body

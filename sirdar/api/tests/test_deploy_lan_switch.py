@@ -435,3 +435,10 @@ async def test_the_bare_name_follows_the_portal(db, lan, publish_fakes):  # noqa
     await _fails(db, lan, "orange")
     assert _host(publish_fakes, "lan9.serversherpa.com")["forward_host"] == PURPLE_IP
     assert (await _hosts(db, lan))["home"] == PURPLE_IP
+
+
+async def test_a_switch_keeps_the_redirect_on_the_bare_name(db, lan, publish_fakes):  # noqa: F811
+    await _switched(db, lan, "orange")
+    await _switched(db, lan, "purple")
+    assert ("return 302 https://portal.lan9.serversherpa.com$request_uri;"
+            in _host(publish_fakes, "lan9.serversherpa.com")["advanced_config"])
