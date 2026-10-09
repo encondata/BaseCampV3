@@ -44,6 +44,7 @@ from serversherpa.db.models import (
     ImportJob,
     LabelFont,
     LabelGenerationRun,
+    Note,
     Notification,
     Partner,
     PasswordResetToken,
@@ -505,9 +506,78 @@ async def _purge_rule_logs(maker: async_sessionmaker, cutoff: datetime | None) -
     return result
 
 
+# ── deleted files ────────────────────────────────────────────────────
+
+# Soft-deleted means deleted_at is set. A NULL deleted_at is never old.
+def _old_attachments(cutoff: datetime) -> ColumnElement[bool]:
+    return Attachment.deleted_at < cutoff
+
+
+def _old_notes(cutoff: datetime) -> ColumnElement[bool]:
+    return Note.deleted_at < cutoff
+
+
+def _old_fonts(cutoff: datetime) -> ColumnElement[bool]:
+    return LabelFont.deleted_at < cutoff
+
+
+async def _count_attachments(db: AsyncSession, cutoff: datetime | None) -> tuple[int, int]:
+    where = _old_attachments(cutoff)
+    return (await _count_rows(db, Attachment, where),
+            await _count_unused_keys(db, Attachment, Attachment.storage_key, where))
+
+
+async def _unlink_report_runs(
+    session: AsyncSession, ids: list[uuid.UUID], _result: CategoryResult,
+) -> Iterable[str]:
+    """report_runs.attachment_id is a NO ACTION reference. The run is history
+    that stays (it keeps its own generated file); it just stops naming an
+    attachment that no longer exists. Then the attachments' own objects are
+    the candidates for deletion."""
+    await session.execute(
+        update(ReportRun).where(ReportRun.attachment_id.in_(ids))
+        .values(attachment_id=None))
+    return await _chunk_keys(Attachment, Attachment.storage_key)(session, ids, _result)
+
+
+async def _purge_attachments(maker: async_sessionmaker, cutoff: datetime | None) -> CategoryResult:
+    result = CategoryResult("attachments")
+    await purge_in_chunks(maker, Attachment, _old_attachments(cutoff), result,
+                          before=_unlink_report_runs, still_used=keys_in_use)
+    return result
+
+
+async def _count_notes(db: AsyncSession, cutoff: datetime | None) -> tuple[int, int]:
+    return await _count_rows(db, Note, _old_notes(cutoff)), 0
+
+
+async def _purge_notes(maker: async_sessionmaker, cutoff: datetime | None) -> CategoryResult:
+    result = CategoryResult("notes")
+    await purge_in_chunks(maker, Note, _old_notes(cutoff), result)
+    return result
+
+
+# Nothing else points at a font row: label templates name a font by its
+# printer object name (see routes/labels.py _fonts_used_by), and that name is
+# free to reuse once the font is deleted. Only another font row can share the
+# stored object.
+async def _count_fonts(db: AsyncSession, cutoff: datetime | None) -> tuple[int, int]:
+    where = _old_fonts(cutoff)
+    return (await _count_rows(db, LabelFont, where),
+            await _count_unused_keys(db, LabelFont, LabelFont.storage_key, where))
+
+
+async def _purge_fonts(maker: async_sessionmaker, cutoff: datetime | None) -> CategoryResult:
+    result = CategoryResult("label_fonts")
+    await purge_in_chunks(maker, LabelFont, _old_fonts(cutoff), result,
+                          before=_chunk_keys(LabelFont, LabelFont.storage_key),
+                          still_used=keys_in_use)
+    return result
+
+
 # ── the registry ─────────────────────────────────────────────────────
 
-# Ordered; history and deleted fill in as their categories land.
+# Ordered.
 GROUPS: dict[str, Group] = {g.key: g for g in (
     Group(
         key="signin", label="Sign-in leftovers",
@@ -583,7 +653,26 @@ GROUPS: dict[str, Group] = {g.key: g for g in (
         key="deleted", label="Deleted files",
         description="Files, notes and fonts that were deleted and are past the age you "
                     "choose, along with their stored copies.",
-        needs_age=True),
+        needs_age=True,
+        categories=(
+            Category(
+                key="attachments", label="Deleted files",
+                description="Files and photos that were deleted from a record, with the stored "
+                            "copy. A report run that pointed at one stays, it just no longer "
+                            "links to the file. A copy that a report run, a profile photo or a "
+                            "logo still uses stays.",
+                count=_count_attachments, purge=_purge_attachments),
+            Category(
+                key="notes", label="Deleted notes",
+                description="Notes that were deleted from a record.",
+                count=_count_notes, purge=_purge_notes),
+            Category(
+                key="label_fonts", label="Deleted label fonts",
+                description="Label fonts that were removed from the font library, with the "
+                            "stored font file. A file another font in the library still "
+                            "uses stays.",
+                count=_count_fonts, purge=_purge_fonts),
+        )),
 )}
 
 

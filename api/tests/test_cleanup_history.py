@@ -5,7 +5,6 @@ keys_in_use helper that decides whether a stored file can go."""
 import uuid
 from datetime import UTC, datetime, timedelta
 
-import pytest
 from sqlalchemy import func, select
 
 from serversherpa.db.models import (
@@ -36,26 +35,6 @@ NOW = datetime.now(UTC)
 OLD = NOW - timedelta(days=100)
 RECENT = NOW - timedelta(days=5)
 AGE = 30
-
-
-@pytest.fixture
-def storage_calls(monkeypatch):
-    """Fake object storage: records every key the cleanup deletes; a key in
-    `fail` raises instead."""
-    class Calls:
-        deleted: list[str]
-        fail: set[str]
-
-    calls = Calls()
-    calls.deleted, calls.fail = [], set()
-
-    async def fake_delete(key):
-        if key in calls.fail:
-            raise RuntimeError("storage down")
-        calls.deleted.append(key)
-
-    monkeypatch.setattr("serversherpa.devtools.cleanup.storage.delete_object", fake_delete)
-    return calls
 
 
 async def _go(client, db, seeded_user, category):
