@@ -103,6 +103,36 @@ async def test_storage_error_is_502_without_leaking(client, db, seeded_user, mon
         assert "code=AccessDenied" in caplog.text
 
 
+@pytest.mark.parametrize("error", [
+    ValueError(f"Invalid endpoint: {SECRET}"),
+    AttributeError(f"'NoneType' object has no attribute 'get_secret_value' {SECRET}"),
+], ids=["malformed-endpoint", "missing-key"])
+async def test_unbuildable_storage_client_is_502_without_leaking(
+        client, db, seeded_user, monkeypatch, caplog, error):
+    def boom():
+        raise error
+
+    monkeypatch.setattr(storage, "_client", boom)      # the real scan runs
+    hdrs = await _developer(db, client, seeded_user)
+    resp = await client.get("/devtools/health/storage", headers=hdrs)
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["code"] == "storage_unavailable"
+    assert "secret" not in resp.text.lower()
+    assert "secret" not in caplog.text.lower()
+    assert f"cause={type(error).__name__}" in caplog.text
+
+
+async def test_scan_objects_wraps_a_client_that_cannot_be_built(monkeypatch):
+    def boom():
+        raise ValueError(SECRET)
+
+    monkeypatch.setattr(storage, "_client", boom)
+    with pytest.raises(storage.StorageConfigError) as caught:
+        await storage.scan_objects(lambda key, size: None)
+    assert caught.value.cause == "ValueError"
+    assert "secret" not in str(caught.value).lower()
+
+
 async def test_scan_objects_visits_each_object_page_by_page(monkeypatch):
     pages = [
         {"Contents": [{"Key": "a/1", "Size": 3}, {"Key": "b", "Size": 4}]},

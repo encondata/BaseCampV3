@@ -48,6 +48,16 @@ def _client():
     return client
 
 
+class StorageConfigError(Exception):
+    """The storage client couldn't be built from the settings (a malformed
+    endpoint, a missing key). Carries only the class name of the underlying
+    error, because its message can hold the endpoint URL."""
+
+    def __init__(self, cause: str) -> None:
+        super().__init__(cause)
+        self.cause = cause
+
+
 def _preload_ca_bundle(client) -> None:
     """Load the CA bundle into the client's shared SSLContext once, before
     any request can use it.
@@ -225,7 +235,11 @@ async def scan_objects(visit: Callable[[str, int], None], prefix: str = "") -> N
     s = get_settings()
 
     def _scan() -> None:
-        paginator = _client().get_paginator("list_objects_v2")
+        try:
+            client = _client()
+        except (ValueError, AttributeError) as exc:
+            raise StorageConfigError(type(exc).__name__) from None
+        paginator = client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=s.spaces_bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
                 visit(obj["Key"], int(obj.get("Size", 0)))

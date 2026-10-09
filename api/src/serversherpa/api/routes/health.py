@@ -16,6 +16,7 @@ from serversherpa.api.schemas import (
     HealthVacuumOut,
 )
 from serversherpa.devtools import health
+from serversherpa.services import storage
 from serversherpa.services.audit import audit
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,11 @@ async def vacuum_table(
             "code": "testing_session_active",
             "message": "A DB Testing session is in progress. Finish or revert it "
                        "before vacuuming tables."})
+    # End this request's transaction (the permission and testing checks opened
+    # one) before the long VACUUM: otherwise the session sits "idle in
+    # transaction" for the whole run, which Health itself flags and which holds
+    # back the database's cleanup horizon. The audit row below starts a new one.
+    await db.commit()
     try:
         result = await health.vacuum_table(name)
     except health.UnknownTable:
@@ -80,7 +86,11 @@ async def get_storage(actor: AuthContext = _CAN_VIEW) -> HealthStorageOut:
         # (and sometimes the bucket name). The class and S3 error code are
         # enough to tell an outage from a bad key.
         code = exc.response.get("Error", {}).get("Code") if isinstance(exc, ClientError) else None
-        logger.warning("storage usage failed: %s (code=%s)", type(exc).__name__, code)
+        # a storage client that can't be built (bad endpoint / missing key) is
+        # reported the same way, naming only the class of the underlying error
+        cause = exc.cause if isinstance(exc, storage.StorageConfigError) else None
+        logger.warning("storage usage failed: %s (code=%s%s)", type(exc).__name__, code,
+                       f", cause={cause}" if cause else "")
         raise HTTPException(status_code=502, detail={
             "code": "storage_unavailable",
             "message": "File storage couldn't be reached. Try again in a moment."}) from None

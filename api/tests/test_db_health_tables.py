@@ -152,6 +152,44 @@ async def test_vacuum_allowed_once_the_db_testing_session_has_ended(client, db, 
     assert (await _vacuum(client, hdrs, "notes")).status_code == 200
 
 
+# -- request transaction ---------------------------------------------------
+
+
+async def test_vacuum_request_session_is_not_idle_in_transaction_during_the_vacuum(
+        client, db, seeded_user, monkeypatch):
+    from serversherpa.api.routes import health as routes
+    from serversherpa.devtools import health
+    from tests.test_db_health_api import _holder
+
+    real_check = routes.testing_session_unfinished
+    real_vacuum = health.vacuum_table
+    seen: dict = {}
+
+    async def check(session):
+        seen["pid"] = await session.scalar(text("SELECT pg_backend_pid()"))
+        return await real_check(session)
+
+    async def vacuum(name):
+        # the start of the VACUUM, seen from a separate connection
+        probe = await _holder("test-vacuum-probe", in_transaction=False)
+        try:
+            seen["state"] = await probe.fetchval(
+                "SELECT state FROM pg_stat_activity WHERE pid = $1", seen["pid"])
+        finally:
+            await probe.close()
+        return await real_vacuum(name)
+
+    monkeypatch.setattr(routes, "testing_session_unfinished", check)
+    monkeypatch.setattr(health, "vacuum_table", vacuum)
+    hdrs = await _developer(db, client, seeded_user)
+    resp = await _vacuum(client, hdrs, "notes")
+    assert resp.status_code == 200, resp.text
+    assert seen["state"] == "idle"
+    # the audit row still lands, after the vacuum
+    db.expire_all()
+    assert len((await db.scalars(select(AuditLog).where(AuditLog.action == "db.vacuum"))).all()) == 1
+
+
 # -- lock timeout ----------------------------------------------------------
 
 

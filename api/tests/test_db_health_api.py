@@ -158,6 +158,33 @@ def test_command_names_its_connections(named, command):
     assert named == [f"serversherpa-{command}"]
 
 
+@pytest.mark.parametrize(("args", "expected"), [
+    (["--kinds", "export"], "serversherpa-wiki-export-worker"),
+    (["--exclude-kinds", "export"], "serversherpa-wiki-worker"),
+    ([], "serversherpa-wiki-worker"),
+])
+def test_the_two_wiki_workers_get_different_connection_names(named, args, expected):
+    result = runner.invoke(cli.app, ["wiki-worker", *args])
+    assert result.exit_code == 0, result.output
+    assert named == [expected]
+
+
+def test_wiki_reload_child_names_its_connections_by_kinds(named):
+    cli._run_wiki_worker_process(2.0, frozenset({"export"}))
+    assert named == ["serversherpa-wiki-export-worker"]
+
+
+def test_a_wiki_worker_split_by_kinds_gets_a_name_within_the_limit(app_name):
+    from serversherpa.wiki import worker
+
+    kinds = frozenset(sorted(worker.JOB_KINDS - {"export"})[:-1])   # not the main worker's set
+    name = worker.process_name(kinds)
+    assert len(f"serversherpa-{name}") > 63        # the case the cap is for
+    cli._name_connections(name)
+    assert len(engine._application_name) == 63
+    assert engine._application_name.startswith("serversherpa-wiki-worker:")
+
+
 async def test_api_startup_names_its_connections(monkeypatch):
     from serversherpa.api import app as app_module
 
@@ -251,12 +278,26 @@ async def test_connections_name_unnamed_ones_other(client, db, seeded_user):
     assert group["oldest_transaction_seconds"] is None
 
 
-async def test_connections_exclude_the_requesting_backend(client, db, seeded_user):
+async def test_connections_exclude_the_requesting_backend(client, db, seeded_user, monkeypatch):
+    from sqlalchemy import text
+
+    from serversherpa.devtools import health
+
+    real = health.connections
+    mine = "test-requesting-backend"
+
+    async def tagged(session):
+        # rename only this request's backend, for just this transaction, then
+        # run the real query: it must not count the backend it runs on
+        await session.execute(text(f"SET LOCAL application_name = '{mine}'"))
+        assert await session.scalar(text("SHOW application_name")) == mine
+        return await real(session)
+
+    monkeypatch.setattr(health, "connections", tagged)
     hdrs = await _developer(db, client, seeded_user)
     resp = await client.get("/devtools/health/connections", headers=hdrs)
-    groups = resp.json()["groups"]
-    # the only active backend is the one running this very query
-    assert [g for g in groups if g["state"] == "active"] == []
+    assert resp.status_code == 200, resp.text
+    assert mine not in {g["application_name"] for g in resp.json()["groups"]}
 
 
 async def test_connections_sorted_and_free_of_sensitive_keys(client, db, seeded_user):

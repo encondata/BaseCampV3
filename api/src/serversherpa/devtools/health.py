@@ -173,9 +173,9 @@ async def vacuum_table(name: str) -> dict:
 ROOT_FOLDER = "(root)"      # objects whose key has no "/"
 
 # What a storage listing can raise: botocore's own errors (ClientError and
-# EndpointConnectionError are both BotoCoreError/ClientError subclasses) and
-# the socket/TLS failures under them.
-STORAGE_ERRORS = (ClientError, BotoCoreError, OSError)
+# EndpointConnectionError are both BotoCoreError/ClientError subclasses), the
+# socket/TLS failures under them, and a client that couldn't be built at all.
+STORAGE_ERRORS = (ClientError, BotoCoreError, OSError, storage.StorageConfigError)
 
 
 async def storage_usage() -> dict:

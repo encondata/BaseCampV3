@@ -646,11 +646,11 @@ def label_worker(
 def _run_wiki_worker_process(poll_seconds: float, kinds: frozenset[str] | None = None) -> None:
     """Reload-mode child entry point (see _run_worker_process)."""
 
-    _name_connections("wiki-worker")
+    from serversherpa.wiki import worker
+
+    _name_connections(worker.process_name(kinds or worker.JOB_KINDS))
 
     async def _run() -> None:
-        from serversherpa.wiki import worker
-
         await worker.run_forever(poll_seconds, kinds=kinds)
 
     try:
@@ -695,7 +695,8 @@ def wiki_worker(
                                args=(poll_seconds, handles))
         return
 
-    _name_connections("wiki-worker")
+    # the registry/log name, so the export worker and the main one differ
+    _name_connections(worker.process_name(handles))
 
     async def _run() -> None:
         from serversherpa.db.engine import get_sessionmaker
