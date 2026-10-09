@@ -9,7 +9,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 
-import { Distribution, type DistEntry } from './charts';
+import { DailyBars, Distribution, type DayPoint, type DistEntry } from './charts';
 
 afterEach(cleanup);
 
@@ -45,4 +45,21 @@ it('drops zero-count statuses before applying the limit', () => {
   const { container } = render(<Distribution entries={withZeros} total={total} limit={20} />);
   expect(rowLabels(container)).not.toContain('Zero');
   expect(rowLabels(container)).toHaveLength(12);
+});
+
+/* DailyBars: the SVG stretches to the panel (preserveAspectRatio="none"),
+ * so day labels are page text under it, not SVG text that would stretch
+ * with the bars. */
+const days: DayPoint[] = Array.from({ length: 14 }, (_, i) => ({
+  key: `d${i}`, label: `Oct ${i + 1}`, value: i % 3,
+}));
+
+it('renders the day labels as text outside the stretched SVG', () => {
+  const { container } = render(
+    <DailyBars days={days} ariaLabel="Scans" formatTooltip={(d) => `${d.value}`} />);
+  expect(container.querySelectorAll('svg text')).toHaveLength(0);
+  const labels = [...container.querySelectorAll('.dash-axis .dash-axis-label')];
+  expect(labels.map((n) => n.textContent)).toEqual(['Oct 1', 'Oct 5', 'Oct 9', 'Oct 14']);
+  // each label sits at its bar's center, as a share of the chart width
+  expect((labels[0] as HTMLElement).style.left).toBe(`${(0.5 / 14) * 100}%`);
 });

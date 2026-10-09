@@ -254,8 +254,8 @@ a.dash-kpi:hover {
 
 /* ── scan activity chart ──────────────────────────────────── */
 
-.dash-chart-wrap { position: relative; flex: 1; min-height: 150px; }
-.dash-chart-svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.dash-chart-wrap { position: relative; flex: 1; min-height: 150px; display: flex; flex-direction: column; }
+.dash-chart-svg { width: 100%; flex: 1; min-height: 0; display: block; overflow: visible; }
 .dash-bar {
   fill: var(--accent);
   opacity: 0.85;
@@ -263,10 +263,15 @@ a.dash-kpi:hover {
 }
 .dash-bar.dim { opacity: 0.3; }
 .dash-bar-hit { fill: transparent; cursor: default; }
+.dash-axis { position: relative; height: 18px; margin-top: 6px; }
 .dash-axis-label {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 9px;
-  fill: var(--text-mute);
+  font-size: 11px;
+  color: var(--text-mute);
 }
 .dash-grid-line { stroke: var(--paper-line); stroke-width: 1; }
 .dash-chart-tooltip {
