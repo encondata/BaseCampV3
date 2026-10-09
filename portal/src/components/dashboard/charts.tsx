@@ -38,7 +38,6 @@ export interface DayPoint { key: string; label: string; value: number }
 
 const BAR_W = 560;
 const BAR_H = 170;
-const BAR_PAD_BOTTOM = 18;
 const BAR_PAD_TOP = 8;
 
 export function DailyBars({ days, ariaLabel, formatTooltip }: {
@@ -51,7 +50,7 @@ export function DailyBars({ days, ariaLabel, formatTooltip }: {
 
   if (days.length === 0) return null;
   const max = Math.max(...days.map((d) => d.value), 1);
-  const plotH = BAR_H - BAR_PAD_BOTTOM - BAR_PAD_TOP;
+  const plotH = BAR_H - BAR_PAD_TOP;
   const slot = BAR_W / days.length;
   const barW = Math.min(slot * 0.62, 34);
 
@@ -86,23 +85,27 @@ export function DailyBars({ days, ariaLabel, formatTooltip }: {
                       x={x} y={y} width={barW} height={h} rx="3" />
               )}
               {/* full-height hit target so hover works on short bars */}
-              <rect className="dash-bar-hit" x={i * slot} y="0" width={slot} height={BAR_H - BAR_PAD_BOTTOM}
+              <rect className="dash-bar-hit" x={i * slot} y="0" width={slot} height={BAR_H}
                     onMouseEnter={(e) => handleHover(d.key, e)}>
                 <title>{formatTooltip(d)}</title>
               </rect>
             </g>
           );
         })}
+      </svg>
+      {/* x labels are page text, not SVG text: the SVG stretches to the
+          panel (preserveAspectRatio="none"), which would stretch them too.
+          Sparse: first, last, and every ~4th slot between. */}
+      <div className="dash-axis" aria-hidden="true">
         {days.map((d, i) => (
-          // sparse x labels: first, last, and every ~4th slot between
           (i === 0 || i === days.length - 1 || i % 4 === 0) && i !== days.length - 2 ? (
-            <text key={`l-${d.key}`} className="dash-axis-label"
-                  x={i * slot + slot / 2} y={BAR_H - 4} textAnchor="middle">
+            <span key={`l-${d.key}`} className="dash-axis-label"
+                  style={{ left: `${((i + 0.5) / days.length) * 100}%` }}>
               {d.label}
-            </text>
+            </span>
           ) : null
         ))}
-      </svg>
+      </div>
       {hovered && hover && (
         <div className="dash-chart-tooltip" style={{ left: hover.x, top: hover.y }}>
           {formatTooltip(hovered)}
