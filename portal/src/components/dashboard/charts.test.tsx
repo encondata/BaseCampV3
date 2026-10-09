@@ -63,3 +63,12 @@ it('renders the day labels as text outside the stretched SVG', () => {
   // each label sits at its bar's center, as a share of the chart width
   expect((labels[0] as HTMLElement).style.left).toBe(`${(0.5 / 14) * 100}%`);
 });
+
+it('shows one tooltip: no native SVG title, per-day counts kept for screen readers', () => {
+  const { container } = render(
+    <DailyBars days={days} ariaLabel="Scans" formatTooltip={(d) => `${d.value} scans — ${d.label}`} />);
+  expect(container.querySelectorAll('svg title')).toHaveLength(0);
+  const items = [...container.querySelectorAll('.dash-sr-list li')].map((n) => n.textContent);
+  expect(items).toHaveLength(14);
+  expect(items[0]).toBe('0 scans — Oct 1');
+});
