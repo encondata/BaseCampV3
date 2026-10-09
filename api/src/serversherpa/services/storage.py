@@ -214,6 +214,23 @@ async def list_keys(prefix: str) -> list[str]:
     return await asyncio.to_thread(_list)
 
 
+async def list_objects(prefix: str = "") -> list[tuple[str, int]]:
+    """Every object under `prefix` as `(key, size_in_bytes)` pairs
+    (paginated, in a thread — same shape as `list_keys`). Used by the
+    database health tab's storage usage."""
+    s = get_settings()
+
+    def _list() -> list[tuple[str, int]]:
+        found: list[tuple[str, int]] = []
+        paginator = _client().get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=s.spaces_bucket, Prefix=prefix):
+            found.extend((obj["Key"], int(obj.get("Size", 0)))
+                         for obj in page.get("Contents", []))
+        return found
+
+    return await asyncio.to_thread(_list)
+
+
 async def download_to(key: str, path) -> None:
     """Stream a private object to a local file (boto3's managed transfer:
     chunked, never the whole object in memory) — for the wiki worker,

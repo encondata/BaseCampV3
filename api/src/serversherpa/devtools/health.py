@@ -3,13 +3,16 @@ queries. Nothing here returns the host, a user or role name, a password,
 query text or a client address."""
 
 import time
+from datetime import UTC, datetime
 
+from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from serversherpa.db.engine import get_engine
 from serversherpa.db.ordering import natural_key
+from serversherpa.services import storage
 
 OTHER_APP = "Other"     # connections that never set an application_name
 
@@ -165,3 +168,29 @@ async def vacuum_table(name: str) -> dict:
         duration_ms = round((time.perf_counter() - started) * 1000)
         (stats,) = await _table_stats(conn, known)
     return {"table": stats, "duration_ms": duration_ms}
+
+
+ROOT_FOLDER = "(root)"      # objects whose key has no "/"
+
+# What a storage listing can raise: botocore's own errors (ClientError and
+# EndpointConnectionError are both BotoCoreError/ClientError subclasses) and
+# the socket/TLS failures under them.
+STORAGE_ERRORS = (ClientError, BotoCoreError, OSError)
+
+
+async def storage_usage() -> dict:
+    """Object count and bytes per top-level folder of the bucket. Lists
+    every object, so it can take a while on a big bucket — on demand only."""
+    folders: dict[str, dict] = {}
+    for key, size in await storage.list_objects():
+        name = key.split("/", 1)[0] if "/" in key else ROOT_FOLDER
+        folder = folders.setdefault(name, {"name": name, "objects": 0, "bytes": 0})
+        folder["objects"] += 1
+        folder["bytes"] += size
+    rows = sorted(folders.values(), key=lambda f: (-f["bytes"], natural_key(f["name"])))
+    return {
+        "folders": rows,
+        "total_objects": sum(f["objects"] for f in rows),
+        "total_bytes": sum(f["bytes"] for f in rows),
+        "measured_at": datetime.now(UTC),
+    }

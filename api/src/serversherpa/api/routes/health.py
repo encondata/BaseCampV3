@@ -7,6 +7,7 @@ from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.routes.devtools import testing_session_unfinished
 from serversherpa.api.schemas import (
     HealthConnectionsOut,
+    HealthStorageOut,
     HealthSummaryOut,
     HealthTablesOut,
     HealthVacuumOut,
@@ -63,3 +64,15 @@ async def vacuum_table(
           changes={"table": result["table"]["name"], "duration_ms": result["duration_ms"]})
     await db.commit()
     return HealthVacuumOut(**result)
+
+
+@router.get("/storage", response_model=HealthStorageOut)
+async def get_storage(actor: AuthContext = _CAN_VIEW) -> HealthStorageOut:
+    try:
+        return HealthStorageOut(**await health.storage_usage())
+    except health.STORAGE_ERRORS:
+        # Never echo the exception: botocore messages carry the endpoint URL
+        # (and sometimes the bucket name).
+        raise HTTPException(status_code=502, detail={
+            "code": "storage_unavailable",
+            "message": "File storage couldn't be reached. Try again in a moment."}) from None

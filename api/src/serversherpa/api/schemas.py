@@ -4248,3 +4248,16 @@ class HealthTablesOut(BaseModel):
 class HealthVacuumOut(BaseModel):
     table: HealthTableOut
     duration_ms: int
+
+
+class HealthStorageFolderOut(BaseModel):
+    name: str
+    objects: int
+    bytes: int
+
+
+class HealthStorageOut(BaseModel):
+    folders: list[HealthStorageFolderOut]
+    total_objects: int
+    total_bytes: int
+    measured_at: datetime
