@@ -9,19 +9,21 @@ from fastapi.middleware.gzip import GZipMiddleware
 
 from serversherpa.api.routes import (
     access, ai, asset_models, assets, attachments, audit, auth, cleanup, containers,
-    devices, devtools, initiatives, kiosk, labels, me, move_setup, notes,
+    devices, devtools, health, initiatives, kiosk, labels, me, move_setup, notes,
     notifications, reports, router_agent, scans, search, sites, spec_lookup, stakeholders,
     status_provenance, status_rules, status_values, system,
     time as time_routes, time_bulk as time_bulk_routes, trucks, users, warehouse,
     wiki, workers,
 )
 from serversherpa.config import get_settings
-from serversherpa.db.engine import dispose_engine
+from serversherpa.db.engine import dispose_engine, set_application_name
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     import asyncio
+
+    set_application_name("serversherpa-api")    # before the first connection is made
 
     from serversherpa.system.db_logging import install
     from serversherpa.system.registry import start_heartbeat
@@ -131,6 +133,7 @@ def create_app() -> FastAPI:
     app.include_router(status_provenance.router)
     app.include_router(devtools.router)
     app.include_router(cleanup.router)
+    app.include_router(health.router)
     app.include_router(audit.router)
     app.include_router(system.router)
     app.include_router(notifications.router)

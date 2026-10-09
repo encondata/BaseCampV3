@@ -1,6 +1,7 @@
 """Async engine / session factory. Built lazily so Settings (and therefore
 the environment) is read at first use, not import time."""
 
+import logging
 from collections.abc import AsyncIterator
 
 from sqlalchemy.ext.asyncio import (
@@ -13,14 +14,39 @@ from sqlalchemy.ext.asyncio import (
 from serversherpa.config import get_settings
 from serversherpa.db import tls
 
+log = logging.getLogger(__name__)
+
+DEFAULT_APPLICATION_NAME = "serversherpa"
+_MAX_APPLICATION_NAME = 63      # Postgres truncates anything longer (NAMEDATALEN - 1)
+
 _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
+_application_name = DEFAULT_APPLICATION_NAME
+
+
+def set_application_name(name: str) -> None:
+    """Name this process's database connections (pg_stat_activity shows it).
+
+    Call it before the engine is first built. Connections already open keep
+    the name they were made with, so if the engine exists this still records
+    the new name for any connection made after a dispose, but warns (and
+    otherwise ignores the call) rather than pretending it took effect now.
+    An empty name resets to the default.
+    """
+    global _application_name
+    name = (name or DEFAULT_APPLICATION_NAME)[:_MAX_APPLICATION_NAME]
+    if _engine is not None and name != _application_name:
+        log.warning("application_name set to %r after the engine was built; open "
+                    "connections keep %r until the engine is disposed",
+                    name, _application_name)
+    _application_name = name
 
 
 def connect_args(settings) -> dict:
-    """asyncpg's ssl: verified against the managed database's CA when
-    SS_DATABASE_CA_B64 is set, else the system store for "require"."""
-    args: dict = {}
+    """asyncpg's connect arguments: the Postgres application_name, plus ssl
+    verified against the managed database's CA when SS_DATABASE_CA_B64 is
+    set, else the system store for "require"."""
+    args: dict = {"server_settings": {"application_name": _application_name}}
     if settings.database_ssl == "require":
         args["ssl"] = True
     args.update(tls.asyncpg_kwargs(settings))

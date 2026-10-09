@@ -16,7 +16,7 @@ from pathlib import Path
 import typer
 from sqlalchemy import select
 
-from serversherpa.db.engine import dispose_engine, get_sessionmaker
+from serversherpa.db.engine import dispose_engine, get_sessionmaker, set_application_name
 from serversherpa.db.models import UserAccount
 from serversherpa.services.password_policy import (
     PasswordReused,
@@ -27,6 +27,13 @@ from serversherpa.services.password_policy import (
 
 app = typer.Typer(no_args_is_help=True, help="ServerSherpa operations CLI",
                   pretty_exceptions_show_locals=False)   # a traceback never shows a password
+
+
+def _name_connections(command: str) -> None:
+    """Name this worker's database connections after its CLI command, so
+    pg_stat_activity (Dev > Database > Health) can tell the workers apart.
+    Call before the first query: the name is baked in when the engine builds."""
+    set_application_name(f"serversherpa-{command}")
 
 
 @app.callback()
@@ -424,6 +431,8 @@ def _run_worker_process(poll_seconds: float) -> None:
     hard restarts are safe by the worker's design (batched commits +
     stale-job requeue on startup)."""
 
+    _name_connections("import-worker")
+
     async def _run() -> None:
         from serversherpa.imports import worker
 
@@ -460,6 +469,8 @@ def import_worker(
         watchfiles.run_process(src_dir, target=_run_worker_process,
                                args=(poll_seconds,))
         return
+
+    _name_connections("import-worker")
 
     async def _run() -> None:
         from serversherpa.db.engine import get_sessionmaker
@@ -519,6 +530,8 @@ def _ensure_pango_on_macos(*, exec_self: bool) -> None:
 def _run_report_worker_process(poll_seconds: float) -> None:
     """Reload-mode child entry point (see _run_worker_process)."""
 
+    _name_connections("report-worker")
+
     async def _run() -> None:
         from serversherpa.reports import worker
 
@@ -558,6 +571,8 @@ def report_worker(
     _ensure_pango_on_macos(exec_self=True)      # re-execs; nothing above may
                                                 # have imported WeasyPrint yet
 
+    _name_connections("report-worker")
+
     async def _run() -> None:
         from serversherpa.db.engine import get_sessionmaker
         from serversherpa.reports import worker
@@ -575,6 +590,8 @@ def report_worker(
 
 def _run_label_worker_process(poll_seconds: float) -> None:
     """Reload-mode child entry point (see _run_worker_process)."""
+
+    _name_connections("label-worker")
 
     async def _run() -> None:
         from serversherpa.labels.generate import worker
@@ -609,6 +626,8 @@ def label_worker(
                                args=(poll_seconds,))
         return
 
+    _name_connections("label-worker")
+
     async def _run() -> None:
         from serversherpa.db.engine import get_sessionmaker
         from serversherpa.labels.generate import worker
@@ -626,6 +645,8 @@ def label_worker(
 
 def _run_wiki_worker_process(poll_seconds: float, kinds: frozenset[str] | None = None) -> None:
     """Reload-mode child entry point (see _run_worker_process)."""
+
+    _name_connections("wiki-worker")
 
     async def _run() -> None:
         from serversherpa.wiki import worker
@@ -674,6 +695,8 @@ def wiki_worker(
                                args=(poll_seconds, handles))
         return
 
+    _name_connections("wiki-worker")
+
     async def _run() -> None:
         from serversherpa.db.engine import get_sessionmaker
 
@@ -690,6 +713,8 @@ def wiki_worker(
 
 def _run_spec_lookup_worker_process(poll_seconds: float) -> None:
     """Reload-mode child entry point (see _run_worker_process)."""
+
+    _name_connections("spec-lookup-worker")
 
     async def _run() -> None:
         from serversherpa.spec_lookup import worker
@@ -724,6 +749,8 @@ def spec_lookup_worker(
                                args=(poll_seconds,))
         return
 
+    _name_connections("spec-lookup-worker")
+
     async def _run() -> None:
         from serversherpa.db.engine import get_sessionmaker
         from serversherpa.spec_lookup import worker
@@ -741,6 +768,8 @@ def spec_lookup_worker(
 
 def _run_db_testing_worker_process(poll_seconds: float) -> None:
     """Reload-mode child entry point (see _run_worker_process)."""
+
+    _name_connections("db-testing-worker")
 
     async def _run() -> None:
         from serversherpa.devtools.testing import worker
@@ -777,6 +806,8 @@ def db_testing_worker(
                                args=(poll_seconds,))
         return
 
+    _name_connections("db-testing-worker")
+
     async def _run() -> None:
         from serversherpa.db.engine import get_sessionmaker
         from serversherpa.devtools.testing import worker
@@ -803,6 +834,8 @@ def cert_worker(
     renews the load balancer's Let's Encrypt certificate from the active
     slot. Idles where SS_CERT_* aren't set."""
 
+    _name_connections("cert-worker")
+
     async def _run() -> None:
         from serversherpa.certs import acme, worker
 
@@ -825,6 +858,8 @@ def cert_worker(
 def _run_log_service_process(poll_seconds: float) -> None:
     """Reload-mode child entry point (picklable, like the import
     worker's)."""
+
+    _name_connections("log-service")
 
     async def _run() -> None:
         from serversherpa.system import log_service
@@ -863,6 +898,8 @@ def log_service(
                                args=(poll_seconds,))
         return
 
+    _name_connections("log-service")
+
     async def _run() -> None:
         from serversherpa.system import log_service as svc
 
@@ -880,6 +917,8 @@ def log_service(
 def _run_notification_worker_process(poll_seconds: float) -> None:
     """Reload-mode child entry point (picklable, like the import
     worker's)."""
+
+    _name_connections("notification-worker")
 
     async def _run() -> None:
         from serversherpa.notifications import worker
@@ -918,6 +957,8 @@ def notification_worker(
                                args=(poll_seconds,))
         return
 
+    _name_connections("notification-worker")
+
     async def _run() -> None:
         from serversherpa.db.engine import get_sessionmaker
         from serversherpa.notifications import worker
@@ -940,6 +981,8 @@ def notification_worker(
 def _run_scan_matching_worker_process(poll_seconds: float) -> None:
     """Reload-mode child entry point (picklable, like the import
     worker's)."""
+
+    _name_connections("scan-matching-worker")
 
     async def _run() -> None:
         from serversherpa.scans import worker
@@ -978,6 +1021,8 @@ def scan_matching_worker(
                                target=_run_scan_matching_worker_process,
                                args=(poll_seconds,))
         return
+
+    _name_connections("scan-matching-worker")
 
     async def _run() -> None:
         from serversherpa.db.engine import get_sessionmaker
