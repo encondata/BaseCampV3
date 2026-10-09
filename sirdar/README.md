@@ -255,7 +255,18 @@ host per service (http to the service's host and port, WebSockets, Block
 common exploits, HTTP/2, Force SSL, a Let's Encrypt certificate by HTTP
 challenge, reused while it has more than 30 days left), and a smoke test that
 asks every public URL through NPM's LAN IP (`proxy_ip`) with the public name
-as SNI and Host. A **publish** deployment runs only those three. Credentials
+as SNI and Host.
+Every environment that isn't production also answers on its bare base domain
+(`demo.serversherpa.com`): a `home` row (hostname = the base domain, the
+portal's host and port) gets an A record, a proxy host with its own
+Let's Encrypt certificate, and NPM advanced config that answers
+**302** to `https://portal.<base domain><same path and query>` (Let's Encrypt
+challenge paths are spared so NPM can still renew). 302, not 301: browsers
+keep a 301 forever, and environment names are reused. The smoke test expects
+exactly that 302. The row follows the portal (Switch traffic, address and
+port edits, a base-domain change) and isn't edited on its own; migration
+0014 added it to existing environments, so their next publish creates it.
+A **publish** deployment runs only those three. Credentials
 live in Settings > Integrations (Cloudflare API token with DNS edit on the
 zone; NPM URL, login and password), encrypted with `SIRDAR_SECRETS_KEY` and
 never shown again; each has a Test button. A stored token or password is
@@ -633,10 +644,16 @@ DigitalOcean account. Each one gets:
   own certificate (`SS_DATABASE_CA_B64` in the droplet's `.env`);
 - a Spaces bucket and a Spaces key scoped to that bucket;
 - a load balancer `ss-<env>-lb` (HTTPS 443 and HTTP 80 to the droplet's port
-  80, health check `/healthz`) and its Let's Encrypt certificate;
+  80, health check `/healthz`) and its Let's Encrypt certificate, which covers
+  the running apps' names and, outside production, the bare base domain;
 - a cloud firewall `ss-<env>-fw` (SSH from anywhere, key only; port 80 only
   from the load balancer);
-- Cloudflare A records for the public names, pointing at the load balancer.
+- Cloudflare A records for the public names (and the bare base domain outside
+  production), pointing at the load balancer.
+
+Caddy on each droplet answers the bare name with a 302 to the portal. A
+certificate issued before the bare name existed is replaced on the next Update
+(step 0).
 
 Droplets and the database carry the tags `sirdar`, `sirdar-env-<id>`,
 `sirdar-env:<name>` and `sirdar-slot:<slot>`. Sirdar acts only on resources it
