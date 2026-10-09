@@ -77,7 +77,9 @@ export default function EnvOverview({ env, canActivate = false, onActivate }: {
               s.hostname
                 ? <a href={`https://${s.hostname}`} target="_blank" rel="noreferrer">{`https://${s.hostname}`}</a>
                 : <span className="cell-sub">LAN only</span>,
-              cloud
+              s.service === 'home'
+                ? <span className="cell-sub">Redirects to the portal</span>
+                : cloud
                 ? `:${s.port} on each droplet`
                 : bluegreen && s.service !== 'spaces'
                 ? `:${s.port} on the live app VM`

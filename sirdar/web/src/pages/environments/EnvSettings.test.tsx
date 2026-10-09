@@ -296,3 +296,13 @@ it('the SMTP password is labeled and shown only when mail goes through SMTP', as
   expect(secret('SMTP password: set')).toBeTruthy();
   expect(screen.queryByText(/SS_SMTP_PASSWORD/)).toBeNull();
 });
+
+it('the bare name follows the portal: no row to edit, and it never trips the port check', async () => {
+  const { onSaved } = open();
+  expect(screen.queryByLabelText('home port')).toBeNull();
+  await userEvent.clear(screen.getByLabelText('api port'));
+  await userEvent.type(screen.getByLabelText('api port'), '8100');
+  await save();
+  await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  expect(api.updateEnvironment).toHaveBeenCalledWith('uat', { services: { api: { port: 8100 } } });
+});

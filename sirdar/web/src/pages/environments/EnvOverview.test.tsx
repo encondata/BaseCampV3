@@ -64,3 +64,10 @@ it('one-server environments have no Blue/Green section', () => {
   render(<EnvOverview env={ESXI_ENV} canActivate onActivate={vi.fn()} />);
   expect(screen.queryByRole('region', { name: 'Blue/Green' })).toBeNull();
 });
+
+it('the bare name says where it goes', () => {
+  render(<EnvOverview env={ENV} />);
+  const services = screen.getByRole('table', { name: 'Services' });
+  expect(within(services).getByText('https://uat.serversherpa.com')).toBeTruthy();
+  expect(within(services).getByText('Redirects to the portal')).toBeTruthy();
+});
