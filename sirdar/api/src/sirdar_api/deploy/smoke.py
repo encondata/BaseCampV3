@@ -3,7 +3,9 @@ answers over HTTPS. Requests go to the environment's proxy IP (NPM on the
 LAN) with SNI and Host set to the public name, so the check covers NPM, the
 certificate (verified against that name) and the app without depending on
 the router's hairpin NAT — the reason the stacks map these names to NPM in
-extra_hosts too. Redirects are not followed: 200–399 passes. Details are
+extra_hosts too. Redirects are not followed: 200–399 passes, except for the
+bare environment name (home), which must answer 302 with a Location on its
+portal, so a host that serves the portal directly fails. Details are
 our own copy, never httpx's text.
 
 Every check opens its own client, with keep-alive off: all checks share the
@@ -20,6 +22,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import httpx
+
+from sirdar_api.deploy import home
 
 PATHS = {"api": "/healthz", "portal": "/", "kiosk": "/", "wiki": "/healthz",
          "spaces": "/healthz", "status": "/healthz"}
@@ -70,6 +74,12 @@ async def _check(transport: httpx.AsyncBaseTransport | None, proxy_ip: str, serv
                            else "couldn't connect to the proxy")
     except httpx.HTTPError:
         return SmokeResult(service, url, False, "the request failed")
+    if service == home.HOME:
+        wanted = home.redirect_target(hostname) + "/"
+        if resp.status_code == 302 and resp.headers.get("location", "").startswith(wanted):
+            return SmokeResult(service, url, True, "HTTP 302 to the portal")
+        return SmokeResult(service, url, False,
+                           f"HTTP {resp.status_code}, not a redirect to the portal")
     return SmokeResult(service, url, 200 <= resp.status_code < 400, f"HTTP {resp.status_code}")
 
 
