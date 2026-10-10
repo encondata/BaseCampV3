@@ -5,7 +5,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, true
 
 from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank, rows_from_request
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
@@ -181,29 +181,28 @@ def _split_statuses(raw: list[str]) -> list[str]:
 async def _trails(db: DbSession, ids: list[uuid.UUID],
                   trip_only: bool) -> dict[uuid.UUID, list[TruckTrailPoint]]:
     """Every listed truck's newest TRAIL_POINT_CAP located points in ONE
-    query (ROW_NUMBER over each truck's reports), oldest -> newest. With
-    `trip_only`, only points since the truck's `trip_started_at` (all of them
-    when it is NULL)."""
+    statement: a LATERAL per truck walks `ix_truck_updates_truck_recorded`
+    newest-first and stops at the cap, so a truck's older history is never
+    read. Newest is ranked by (recorded_at, id) so ties are deterministic;
+    points come back oldest -> newest. With `trip_only`, only points since
+    the truck's `trip_started_at` (all of them when it is NULL)."""
     if not ids:
         return {}
-    ranked = (select(
-        TruckUpdate.truck_id, TruckUpdate.recorded_at, TruckUpdate.lat,
-        TruckUpdate.lng,
-        func.row_number().over(
-            partition_by=TruckUpdate.truck_id,
-            order_by=TruckUpdate.recorded_at.desc()).label("rn"))
-        .join(Truck, Truck.id == TruckUpdate.truck_id)
-        .where(TruckUpdate.truck_id.in_(ids),
-               TruckUpdate.lat.isnot(None), TruckUpdate.lng.isnot(None)))
+    newest = (select(TruckUpdate.id, TruckUpdate.recorded_at,
+                     TruckUpdate.lat, TruckUpdate.lng)
+              .where(TruckUpdate.truck_id == Truck.id,
+                     TruckUpdate.lat.isnot(None), TruckUpdate.lng.isnot(None)))
     if trip_only:
-        ranked = ranked.where(
+        newest = newest.where(
             Truck.trip_started_at.is_(None)
             | (TruckUpdate.recorded_at >= Truck.trip_started_at))
-    ranked = ranked.subquery()
+    newest = (newest.order_by(TruckUpdate.recorded_at.desc(), TruckUpdate.id.desc())
+              .limit(TRAIL_POINT_CAP).lateral("pts"))
     rows = (await db.execute(
-        select(ranked.c.truck_id, ranked.c.recorded_at, ranked.c.lat, ranked.c.lng)
-        .where(ranked.c.rn <= TRAIL_POINT_CAP)
-        .order_by(ranked.c.truck_id, ranked.c.recorded_at))).all()
+        select(Truck.id, newest.c.recorded_at, newest.c.lat, newest.c.lng)
+        .select_from(Truck).join(newest, true())
+        .where(Truck.id.in_(ids))
+        .order_by(Truck.id, newest.c.recorded_at, newest.c.id))).all()
     out: dict[uuid.UUID, list[TruckTrailPoint]] = {}
     for truck_id, at, lat, lng in rows:
         out.setdefault(truck_id, []).append(
@@ -270,7 +269,8 @@ async def trucks_summary(
         select(Truck.status, func.count()).where(*scope)
         .where(Truck.status.in_(SUMMARY_STATUSES)).group_by(Truck.status))).all())
     on_board = await db.scalar(
-        select(func.count()).select_from(TruckContainer)
+        select(func.count(func.distinct(TruckContainer.container_id)))
+        .select_from(TruckContainer)
         .join(Truck, Truck.id == TruckContainer.truck_id)
         .where(*scope).where(Truck.status.in_(SUMMARY_STATUSES))) or 0
     return TruckSummary(

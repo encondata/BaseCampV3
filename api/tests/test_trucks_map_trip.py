@@ -225,22 +225,37 @@ async def test_map_query_count_is_flat_as_trucks_grow(client, db, seeded_user):
 
     engine = get_engine().sync_engine
 
-    async def measure():
+    async def measure(query):
         statements.clear()
         event.listen(engine, "before_cursor_execute", count)
         try:
-            resp = await client.get("/trucks/map?trip=true", headers=hdrs)
+            resp = await client.get(f"/trucks/map{query}", headers=hdrs)
         finally:
             event.remove(engine, "before_cursor_execute", count)
         assert resp.status_code == 200
         return len(statements), len(resp.json())
 
     await add(2, "S")
-    small, n_small = await measure()
+    small = {q: await measure(q) for q in ("?trip=true", "?trails=true")}
     await add(12, "L")
-    large, n_large = await measure()
-    assert (n_small, n_large) == (2, 14)
-    assert 0 < small == large, (small, large)
+    large = {q: await measure(q) for q in ("?trip=true", "?trails=true")}
+    for q in small:
+        assert (small[q][1], large[q][1]) == (2, 14)
+        assert 0 < small[q][0] == large[q][0], (q, small[q], large[q])
+
+
+async def test_trail_ties_break_on_id_for_order_and_cap(client, db, seeded_user, monkeypatch):
+    hdrs = await login(client)
+    t = await _truck(db, "Tie", trip=None)
+    for i in range(6):          # six reports with the very same timestamp
+        db.add(TruckUpdate(truck_id=t.id, recorded_at=NOW, location=f"{i}", lat=10.0 + i,
+                           lng=1.0, id=uuid.UUID(int=i + 1)))
+    await db.commit()
+    monkeypatch.setattr(trucks_routes, "TRAIL_POINT_CAP", 4)
+    for query in ("?trip=true", "?trails=true"):
+        pts = (await client.get(f"/trucks/map{query}", headers=hdrs)).json()
+        # the cap keeps the four highest ids; output is ascending (recorded_at, id)
+        assert [p["lat"] for p in pts[0]["trail"]] == [12.0, 13.0, 14.0, 15.0]
 
 
 # ── /trucks/summary ───────────────────────────────────────────────
@@ -259,9 +274,9 @@ async def test_summary_counts(client, db, seeded_user):
     t4 = await _truck(db, "S4", "at_destination", initiative_id=move.id)
     t5 = await _truck(db, "S5", "in_transit", archived_at=NOW)
     t6 = await _truck(db, "S6", "historical")
-    for t, c in ((t1, c1), (t1, c2), (t3, c3), (t5, c4), (t6, c4)):
+    for t, c in ((t1, c1), (t1, c2), (t3, c3), (t2, c1), (t5, c4), (t6, c4)):
         db.add(TruckContainer(truck_id=t.id, container_id=c.id))
-    del t2, t4
+    del t4
     await db.commit()
 
     resp = await client.get("/trucks/summary", headers=hdrs)
