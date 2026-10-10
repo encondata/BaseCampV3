@@ -68,7 +68,7 @@ async def test_put_merges_trims_and_audits(client, db, seeded_user):
     assert row is not None and row.data["banner_message"] == "Hello all"
     audits = (await db.scalars(select(AuditLog).where(
         AuditLog.entity_type == "system", AuditLog.entity_id == "admin",
-        AuditLog.action == "admin_config_update"))).all()
+        AuditLog.action == "admin_config_update").order_by(AuditLog.at))).all()
     assert len(audits) == 2
     assert audits[0].changes["read_only"] == {"from": False, "to": True}
     assert "banner_enabled" not in audits[0].changes   # unchanged fields omitted

@@ -31,7 +31,7 @@ async def _content(client, headers, node_id, version=None, expect=200):
 async def _audits(db, node_id, action):
     return (await db.scalars(select(AuditLog).where(
         AuditLog.entity_type == "wiki_node", AuditLog.entity_id == str(node_id),
-        AuditLog.action == action))).all()
+        AuditLog.action == action).order_by(AuditLog.at))).all()
 
 
 # ── publish ─────────────────────────────────────────────────────────
