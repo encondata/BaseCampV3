@@ -8,7 +8,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import delete, func, literal, select, update
+from sqlalchemy import and_, delete, func, literal, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -310,7 +310,12 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
             select(Partner.id, Partner.parent_id, chain.c.depth + 1)
             .join(chain, Partner.id == chain.c.parent_id)
             .where(chain.c.depth < _PARENT_WALK_LIMIT))
-        if await db.scalar(select(chain.c.id).where(chain.c.id == org.id)) is not None:
+        # A walk that hits the bound with ancestors still above it cannot rule
+        # a loop out, so it is refused too (fail closed).
+        too_deep = and_(chain.c.depth >= _PARENT_WALK_LIMIT,
+                        chain.c.parent_id.is_not(None))
+        if await db.scalar(select(chain.c.id).where(
+                or_(chain.c.id == org.id, too_deep)).limit(1)) is not None:
             raise _err(422, "circular_parent")
         org.parent_id = parent_id
 
@@ -374,9 +379,12 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
         if data["country"] is None:
             data["country"] = "US"
         await _apply(db, org, data, actor)
+        changes: dict = {"name": {"from": None, "to": org.name}}
+        if getattr(org, "parent_id", None) is not None:
+            changes["parent_id"] = {"from": None, "to": str(org.parent_id)}
         audit(db, actor_id=actor.person.id, entity_type=entity_type,
               entity_id=str(org.id), action="create",
-              changes={"name": {"from": None, "to": org.name}})
+              changes=changes)
         await _commit_or_409(db)
         return await _item_for(db, org, actor)
 

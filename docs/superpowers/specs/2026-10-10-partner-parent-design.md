@@ -46,6 +46,8 @@ Clients unchanged.
     → 422 `parent_not_found`;
   - the partner appears among the proposed parent's ancestors (walk
     `parent_id` upward, bounded by a 100-step guard) → 422 `circular_parent`.
+    A chain deeper than 100 levels is refused too (422 `circular_parent`), so
+    the guard fails closed rather than letting a possible loop through.
   - Archived parents are allowed (V2 had no rule).
 - `OrgItem` (partners) gains `parent_id`, `parent_name` and `child_count`.
   `parent_name` (and `parent_id`) are null when the parent isn't visible to

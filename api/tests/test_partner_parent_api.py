@@ -281,6 +281,45 @@ async def test_children_404_for_missing_or_invisible_partner(client, db, seeded_
     assert resp.status_code == 404
 
 
+async def test_a_chain_deeper_than_the_walk_limit_is_refused(
+        client, db, seeded_user, monkeypatch):
+    """The cycle walk is bounded; a chain that outruns the bound is refused
+    rather than waved through (it could hide a loop)."""
+    from serversherpa.api.routes import stakeholders
+
+    monkeypatch.setattr(stakeholders, "_PARENT_WALK_LIMIT", 3)
+    h = await _headers(client)
+    ids = []
+    for i in range(5):
+        ids.append(await db.scalar(text(
+            "INSERT INTO partners (name, parent_id) VALUES (:n, :p) RETURNING id"),
+            {"n": f"Deep {i}", "p": ids[-1] if ids else None}))
+    await db.commit()
+    top = await _mk(client, h, "Top")
+    resp = await _set_parent(client, h, top["id"], str(ids[-1]))
+    assert resp.status_code == 422
+    assert _code(resp) == "circular_parent"
+    # a chain exactly at the limit is still allowed
+    resp = await _set_parent(client, h, top["id"], str(ids[2]))
+    assert resp.status_code == 200, resp.text
+
+
+async def test_create_with_a_parent_is_audited(client, db, seeded_user):
+    h = await _headers(client)
+    parent = await _mk(client, h, "Parent")
+    child = await _mk(client, h, "Kid", parent_id=parent["id"])
+    plain = await _mk(client, h, "Plain")
+    row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "partner", AuditLog.entity_id == child["id"],
+        AuditLog.action == "create"))
+    assert row.changes["parent_id"] == {"from": None, "to": parent["id"]}
+    assert row.changes["name"] == {"from": None, "to": "Kid"}
+    row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "partner", AuditLog.entity_id == plain["id"],
+        AuditLog.action == "create"))
+    assert "parent_id" not in row.changes
+
+
 async def test_parent_change_is_audited(client, db, seeded_user):
     h = await _headers(client)
     parent = await _mk(client, h, "Parent")

@@ -59,3 +59,32 @@ async def test_unknown_parent_is_rejected(db):
         await db.execute(text("UPDATE partners SET parent_id=:x WHERE id=:i"),
                          {"x": uuid.uuid4(), "i": pid})
     await db.rollback()
+
+
+def test_downgrade_drops_everything_upgrade_adds():
+    """Upgrade creates the column, index and check; downgrade drops each."""
+    from importlib.util import module_from_spec, spec_from_file_location
+    from pathlib import Path
+    from unittest.mock import patch
+
+    path = (Path(__file__).resolve().parents[1]
+            / "migrations/versions/0095_partner_parent.py")
+    spec = spec_from_file_location("migration_0095", path)
+    mod = module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    with patch.object(mod.op, "add_column") as add_col, \
+            patch.object(mod.op, "drop_column") as drop_col, \
+            patch.object(mod.op, "create_index") as create_idx, \
+            patch.object(mod.op, "drop_index") as drop_idx, \
+            patch.object(mod.op, "create_check_constraint") as create_ck, \
+            patch.object(mod.op, "drop_constraint") as drop_ck:
+        mod.upgrade()
+        mod.downgrade()
+    assert add_col.call_args.args[0] == "partners"
+    assert add_col.call_args.args[1].name == "parent_id"
+    assert drop_col.call_args.args[:2] == ("partners", "parent_id")
+    assert create_idx.call_args.args[0] == "ix_partners_parent_id"
+    assert drop_idx.call_args.args[0] == "ix_partners_parent_id"
+    assert create_ck.call_args.args[0] == "ck_partners_parent_not_self"
+    assert drop_ck.call_args.args[:2] == ("ck_partners_parent_not_self", "partners")
+    assert drop_ck.call_args.kwargs["type_"] == "check"

@@ -534,3 +534,44 @@ async def test_never_purge_outranks_a_hypothetical_cascade_fk(
 
     assert any("person_roles" in reason for reason in plan.blocked)
     assert _step(plan, "person_roles") is None
+
+
+async def test_cascade_delete_of_a_parent_partner_releases_its_children(
+        client, db, seeded_user):
+    """partners.parent_id is ON DELETE SET NULL: the plan lists the step as
+    db_set_null, and executing it deletes the parent but leaves the child
+    in place with no parent."""
+    from serversherpa.db.models import Partner
+
+    hdrs = await _developer(db, client, seeded_user)
+    parent = Partner(name="Parent Co")
+    db.add(parent)
+    await db.flush()
+    child = Partner(name="Child Co", parent_id=parent.id)
+    db.add(child)
+    await db.commit()
+    parent_id, child_id = parent.id, child.id
+    marker = await _marker(db, parent, "Parent Co", entity_type="partner")
+    marker_id = marker.id
+
+    resp = await client.get(
+        f"/devtools/pending-deletes/{marker_id}/cascade-preview", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["blocked"] == []
+    step = {(s["table"], s["column"]): s for s in body["steps"]}[
+        ("partners", "parent_id")]
+    assert step["action"] == "db_set_null"
+    assert step["count"] == 1
+
+    resp = await client.post(
+        f"/devtools/pending-deletes/{marker_id}/cascade-delete", headers=hdrs,
+        json={"confirm_label": "Parent Co"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"deleted": 1, "failed": []}
+
+    db.expire_all()
+    assert await db.get(Partner, parent_id) is None
+    survivor = await db.get(Partner, child_id)
+    assert survivor is not None
+    assert survivor.parent_id is None
