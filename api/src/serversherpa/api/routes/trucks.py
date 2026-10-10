@@ -10,7 +10,8 @@ from sqlalchemy import delete, func, select, true
 from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank, rows_from_request
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    TruckContainerOut, TruckCreateIn, TruckDetail, TruckEndSite, TruckItem,
+    TruckContainerOut, TruckCreateIn, TruckDetail, TruckEndSite, TruckFeedPage,
+    TruckItem,
     TruckLastUpdate, TruckMapPoint, TruckSummary, TruckTrailPoint,
     TruckUpdateCreateIn, TruckUpdateIn, TruckUpdateOut,
 )
@@ -22,6 +23,7 @@ from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.trucks import bulk_import as bulk
 from serversherpa.trucks.bulk_create import TRUCK_FIELDS
+from serversherpa.trucks.feed import FeedCursorError, build_feed
 from serversherpa.trucks.location import LocationError, format_location, parse_location
 from serversherpa.trucks.trip import apply_status_change, start_trip_if_needed
 
@@ -276,6 +278,22 @@ async def trucks_summary(
     return TruckSummary(
         in_transit=counts.get("in_transit", 0), active=counts.get("active", 0),
         at_destination=counts.get("at_destination", 0), containers_on_board=on_board)
+
+
+@router.get("/feed", response_model=TruckFeedPage)
+async def trucks_feed(
+    db: DbSession, initiative_id: uuid.UUID | None = None,
+    limit: int = Query(50, ge=1, le=200), before: str | None = None,
+    actor: AuthContext = require_permission("trucks", "view"),
+) -> TruckFeedPage:
+    """Shipment update feed, newest first. Pass `next_before` back verbatim
+    as `before` for the next page (see trucks/feed.py for the cursor)."""
+    try:
+        page = await build_feed(db, limit=limit, before=before,
+                                initiative_id=initiative_id)
+    except FeedCursorError as exc:
+        raise _err(422, "bad_cursor") from exc
+    return TruckFeedPage(**page)
 
 
 # ── bulk import ────────────────────────────────────────────────────
