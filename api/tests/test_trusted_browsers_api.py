@@ -364,3 +364,26 @@ async def test_forgetting_a_remembered_browser_brings_the_code_back(client, db, 
     client.cookies.set("ss_trust", resp.cookies["ss_trust"], domain="testserver.local", path="/auth")
     stale = await _login(client)
     assert stale.json()["status"] == "totp_verify"
+
+
+async def test_admin_list_refuses_a_client_scoped_actor(client, db, seeded_user):
+    # users:change alone is not enough: the actor must be global, like the
+    # sessions block on GET /users/{id}
+    from serversherpa.db.models import Client, PermissionOverride
+    from tests.test_initiatives_client_scope import client_login
+
+    acme = Client(name="Acme Trust")
+    db.add(acme)
+    await db.flush()
+    await _remember(db, seeded_user.id)
+    email = "cl-trust@test.example.com"
+    await client_login(db, client, acme.id, role="client_admin", email=email)
+    person = await db.scalar(select(Person).where(Person.email == email))
+    for action in ("view", "change"):
+        db.add(PermissionOverride(person_id=person.id, resource="users",
+                                  action=action, allow=True))
+    await db.commit()
+    hdrs = await login(client, email=email)  # fresh token, after the overrides
+    resp = await client.get(_adm(seeded_user.id), headers=hdrs)
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["code"] == "forbidden"

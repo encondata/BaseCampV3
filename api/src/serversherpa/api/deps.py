@@ -112,6 +112,7 @@ def enforce_session_scope(request: Request, user: AuthContext) -> None:
 
 MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # Never frozen: sign-in/out/refresh/password/preferences/session revocation,
+# forgetting your own remembered browsers,
 # and the admin toggle itself — whoever could turn read-only on can always
 # turn it off. Everything else under /auth/me (profile edits) freezes like
 # any other write. /kiosk/pair* is a sign-in (approve/deny on the phone) —
@@ -130,11 +131,15 @@ READ_ONLY_EXEMPT_PATHS = frozenset({
     "/kiosk/printer-events",
     "/auth/totp/verify", "/auth/totp/enroll/start", "/auth/totp/enroll/confirm",
     "/auth/totp/backup-codes/regenerate",
+    # forget-all remembered browsers (self-service): closing a hole, like
+    # revoking a session. The admin /users/{id}/trusted-browsers stay frozen.
+    "/auth/me/trusted-browsers",
     # a read made through POST (a batch of asset ids): a freeze mustn't
     # blank every image on every wiki page
     "/wiki/assets/urls",
 })
-READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/kiosk/pair")
+READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/auth/me/trusted-browsers/",
+                             "/kiosk/pair")
 # Paths with an id in them. `POST /wiki/nodes/{id}/view` is telemetry, not
 # a state change: the route answers 204 during a freeze and simply doesn't
 # count the view, so a reader opening a page never sees a read-only error.

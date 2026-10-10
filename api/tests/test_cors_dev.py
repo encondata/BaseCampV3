@@ -71,3 +71,27 @@ async def test_preflight_allows_the_totp_challenge_header(monkeypatch):
     assert resp.status_code == 200, resp.text
     assert "x-totp-challenge" in resp.headers.get("access-control-allow-headers", "").lower()
     get_settings.cache_clear()
+
+
+async def test_credentialed_delete_preflight_is_allowed(monkeypatch):
+    # the portal forgets remembered browsers with a credentialed DELETE
+    # (ss_trust rides on it), so the preflight must allow DELETE and credentials
+    from starlette.testclient import TestClient
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("SS_ENV", "development")
+    app = create_app()
+    with TestClient(app) as client:
+        resp = client.options(
+            "/auth/me/trusted-browsers",
+            headers={
+                "Origin": "https://portal.example.com",
+                "Access-Control-Request-Method": "DELETE",
+                "Access-Control-Request-Headers": "authorization",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == "https://portal.example.com"
+    assert resp.headers["access-control-allow-credentials"] == "true"
+    assert "DELETE" in resp.headers["access-control-allow-methods"]
+    get_settings.cache_clear()
