@@ -176,7 +176,10 @@ async def enforce_read_only(db: AsyncSession, request: Request,
 # "you must change your password" screen) and GET /auth/me/sessions (self-
 # scoped list of what DELETE /auth/me/sessions/{id} lets it revoke) since
 # neither is a mutating route and so isn't already covered by
-# READ_ONLY_EXEMPT_PATHS. `/system/admin` is deliberately NOT inherited:
+# READ_ONLY_EXEMPT_PATHS. The self-service remembered-browser DELETEs are
+# inherited from that set: forgetting a browser only touches the person's
+# own rows and only makes sign-in stricter, like revoking a session.
+# `/system/admin` is deliberately NOT inherited:
 # read-only exempts it because whoever can turn read-only on can turn it
 # off, which says nothing about a temp-password admin session. Neither is
 # `/kiosk/printer-events`: read-only exempts it so an already-performed
