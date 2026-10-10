@@ -59,6 +59,19 @@ export const NAV_SECTIONS: NavSection[] = [
         ),
       },
       {
+        to: '/dashboards/shipments',
+        label: 'Shipments',
+        resource: 'trucks',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M2 6h11v10H2zM13 9h4l4 4v3h-8" />
+            <circle cx="6" cy="18" r="2" />
+            <circle cx="17" cy="18" r="2" />
+          </svg>
+        ),
+      },
+      {
         to: '/dashboards/people',
         label: 'People Dashboard',
         resource: 'dashboard',

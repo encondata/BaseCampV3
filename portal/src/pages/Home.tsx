@@ -336,7 +336,7 @@ export default function Home() {
           </section>
         )}
 
-        {/* ── in transit (truck tracking placeholder) ── */}
+        {/* ── in transit (planned routes; live tracking on /dashboards/shipments) ── */}
         {canInitiatives && canSites && (
           <section className="dash-panel dash-span-6 dash-rise" aria-label="In transit">
             <div className="dash-panel-head">
@@ -345,7 +345,7 @@ export default function Home() {
             </div>
             {(initiatives === null || sites === null) && <div className="dash-panel-empty">Loading…</div>}
             {initiatives !== null && sites !== null && (
-              <TransitMap moves={activeMoves} sites={liveSites} />
+              <TransitMap moves={activeMoves} sites={liveSites} liveTracking={can('trucks', 'view')} />
             )}
           </section>
         )}

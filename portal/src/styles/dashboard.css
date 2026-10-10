@@ -331,7 +331,7 @@ a.dash-kpi:hover {
 .dash-dist-count { text-align: right; }
 .dash-dist-pct { width: 4ch; text-align: right; }
 
-/* ── in transit (truck tracking placeholder) ──────────────── */
+/* ── in transit (planned routes + Live tracking link) ─────── */
 
 .dash-transit {
   position: relative;
@@ -684,3 +684,54 @@ a.dash-kpi:hover {
 .cdash-act-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .cdash-act-serial { color: var(--text-mute); }
 .cdash-act-time { text-align: right; color: var(--text-mute); }
+
+/* ── Shipments dashboard (/dashboards/shipments) — layout only ────── */
+.dash-ctrl.shipdash-move { width: 240px; }
+/* the map panel reuses .trucks-map-panel (trucks.css: isolation keeps
+   leaflet's panes under the fullscreen modal) at wall-screen height */
+.trucks-map-panel.shipdash-map-panel { margin-bottom: 0; }
+.shipdash-map-panel .trucks-map,
+.shipdash-map-panel .trucks-map-empty { height: 460px; }
+/* dark theme: the same tile darkening as .dash-sites-map; the SVG
+   overlay (trucks, tracks, destination rings) keeps its colors */
+.portal-shell[data-theme='dark'] .shipdash-map { background: #0b0f17; }
+.portal-shell[data-theme='dark'] .shipdash-map .leaflet-tile {
+  filter: invert(1) hue-rotate(180deg) brightness(0.85) saturate(0.35);
+}
+
+/* 4 children, always: kind icon, truck + load, event text, time */
+.shipdash-feed { max-height: 560px; overflow-y: auto; }
+.shipdash-feed-row { grid-template-columns: 18px minmax(96px, 0.8fr) minmax(0, 1.7fr) auto; }
+.shipdash-feed-icon { width: 18px; height: 18px; color: var(--text-mute); }
+.shipdash-feed-icon svg { display: block; width: 18px; height: 18px; }
+.shipdash-feed-icon.k-location { color: var(--c-blue, #2f6fed); }
+.shipdash-feed-icon.k-status { color: var(--c-amber, #a36207); }
+.shipdash-feed-icon.k-load { color: var(--c-green, #178a4c); }
+.shipdash-feed-icon.k-unload { color: var(--c-red, #c2412d); }
+.shipdash-feed-truck,
+.shipdash-feed-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shipdash-feed-load { margin-left: 6px; color: var(--text-mute); }
+.shipdash-feed-time { color: var(--text-mute); text-align: right; white-space: nowrap; }
+.shipdash-arrow { margin: 0 6px; color: var(--text-mute); }
+.shipdash-by { margin-left: 6px; }
+.shipdash-feed-more { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.shipdash-feed-more .page-hint { margin: 0; }
+
+.shipdash-row-static { cursor: default; }
+.shipdash-row-static:hover { background: none; }
+
+/* fullscreen modal header: eyebrow / title / description stack */
+.shipdash-modal-head { display: flex; flex-direction: column; gap: 2px; }
+.shipdash-modal-head .eyebrow { margin: 0; }
+.shipdash-modal-head h3 { margin: 2px 0 0; }
+.shipdash-modal-head .page-hint { margin: 2px 0 0; }
+
+/* Home's in-transit badge, as a link to the Shipments dashboard */
+a.dash-transit-badge { pointer-events: auto; text-decoration: none; }
+a.dash-transit-badge:hover,
+a.dash-transit-badge:focus-visible { color: var(--amber); border-color: var(--amber); }
