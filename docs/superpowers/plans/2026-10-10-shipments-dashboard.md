@@ -15,7 +15,7 @@
 - Migration **0096** (`api/migrations/versions/0096_truck_trip_and_feed_indexes.py`, `down_revision = "0095"`): `trucks.trip_started_at`, `ix_truck_updates_recorded_at`, `ix_audit_log_entity_type_at`, backfill per the spec.
 - Trip rule: `trip_started_at = now()` when status changes into `active` or `in_transit` from any status other than those two; unchanged otherwise. Every status writer.
 - `TRAIL_POINT_CAP = 500`; trails oldest→newest; set-based (no per-truck queries).
-- Feed: kinds `location`, `status`, `load`, `unload`; `limit` default 50, max 200; `before` cursor; response `{events, next_before}`; stable event ids.
+- Feed: kinds `location`, `status`, `load`, `unload`; `limit` default 50, max 200; `before` cursor; response `{events, next_before}` where `next_before` is an opaque cursor string (compound `at~id`) that the portal passes back verbatim and URL-encoded, and a bare ISO `before` still means strictly older; stable event ids.
 - All new/changed endpoints gated by `trucks:view`; routes declared above `/{truck_id}`.
 - Refresh options Off / 15 s / 30 s / 60 s / 5 min, default 30 s; pause while hidden, refresh on becoming visible.
 - Portal copy: nav "Shipments"; title "Shipment tracking"; picker "All moves"; counts "In transit", "Loading", "At destination", "Containers on board"; map empty "No trucks with a recorded position yet. Add a location update on a truck to see it here."; feed "Show older"; Home badge link "Live tracking →".

@@ -11,8 +11,7 @@ from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank, row
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     TruckContainerOut, TruckCreateIn, TruckDetail, TruckEndSite, TruckFeedPage,
-    TruckItem,
-    TruckLastUpdate, TruckMapPoint, TruckSummary, TruckTrailPoint,
+    TruckItem, TruckLastUpdate, TruckMapPoint, TruckSummary, TruckTrailPoint,
     TruckUpdateCreateIn, TruckUpdateIn, TruckUpdateOut,
 )
 from serversherpa.db.models import (
@@ -283,7 +282,8 @@ async def trucks_summary(
 @router.get("/feed", response_model=TruckFeedPage)
 async def trucks_feed(
     db: DbSession, initiative_id: uuid.UUID | None = None,
-    limit: int = Query(50, ge=1, le=200), before: str | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    before: str | None = Query(None, max_length=200),
     actor: AuthContext = require_permission("trucks", "view"),
 ) -> TruckFeedPage:
     """Shipment update feed, newest first. Pass `next_before` back verbatim

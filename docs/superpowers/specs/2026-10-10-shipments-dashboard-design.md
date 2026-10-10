@@ -63,9 +63,10 @@ All gated by `trucks:view`.
     per truck.
   - Each point adds `end_site` `{name, latitude, longitude}` when the truck
     has a destination site with coordinates (for the destination pin).
-- **`GET /trucks/feed`** → `{events: [...], next_before: <iso or null>}`.
+- **`GET /trucks/feed`** → `{events: [...], next_before: <opaque cursor string or null>}`.
   - Params: `initiative_id` (optional), `limit` (default 50, max 200),
-    `before` (ISO timestamp cursor; events strictly older).
+    `before` (the `next_before` cursor, passed back verbatim and URL-encoded; a
+    bare ISO timestamp still works and means events strictly older).
   - Event kinds (`kind`): `location` (from `truck_updates`: address or
     "lat, lng", source), `status` (from truck `update` audit rows with a
     status change: from/to labels + colors, actor name), `load` / `unload`

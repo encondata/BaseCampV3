@@ -60,16 +60,27 @@ def format_cursor(at: datetime, event_id: str) -> str:
     return f"{stamp}~{event_id}"
 
 
+MAX_CURSOR_LENGTH = 200
+_EARLIEST = datetime(1970, 1, 1, tzinfo=UTC)
+_LATEST = datetime(9000, 1, 1, tzinfo=UTC)
+
+
 def parse_cursor(raw: str) -> tuple[datetime, str | None]:
+    """Parse `before`; anything malformed raises FeedCursorError (a 422),
+    never a database error: NUL bytes, absurd lengths and timestamps outside
+    1970..9000 (which overflow or Postgres rejects) are refused up front."""
+    if len(raw) > MAX_CURSOR_LENGTH or "\x00" in raw:
+        raise FeedCursorError(raw[:40])
     stamp, sep, event_id = raw.partition("~")
     try:
         at = datetime.fromisoformat(stamp.strip())
-    except ValueError as exc:
-        raise FeedCursorError(raw) from exc
-    if at.tzinfo is None:
-        at = at.replace(tzinfo=UTC)
-    if sep and not event_id:
-        raise FeedCursorError(raw)
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=UTC)
+        at = at.astimezone(UTC)
+    except (ValueError, OverflowError) as exc:
+        raise FeedCursorError(raw[:40]) from exc
+    if not _EARLIEST <= at <= _LATEST or (sep and not event_id):
+        raise FeedCursorError(raw[:40])
     return at, (event_id if sep else None)
 
 
@@ -210,7 +221,8 @@ def _container_events(row: AuditLog, base: dict) -> list[dict]:
 
 async def _fill_containers(db: AsyncSession, events: list[dict]) -> None:
     """Names and asset counts for PATCH events, which only recorded ids.
-    Both are read now, not as of the event (the audit row has no history)."""
+    Both are read now, not as of the event (the audit row has no history);
+    a container deleted since then has neither (both null)."""
     portal = [e for e in events if e.get("via") == "portal" and e.get("container_id")]
     wanted = {e["container_id"] for e in portal}
     if not wanted:
@@ -223,15 +235,18 @@ async def _fill_containers(db: AsyncSession, events: list[dict]) -> None:
         .group_by(ContainerAsset.container_id))).all())
     for e in portal:
         cid = e["container_id"]
-        e["container_name"] = names.get(cid, "Unknown container")
+        e["container_name"] = names.get(cid)
         e["asset_count"] = counts.get(cid, 0) if cid in names else None
 
 
 async def _actor_names(db: AsyncSession, ids: set[uuid.UUID]) -> dict[uuid.UUID, str]:
     if not ids:
         return {}
-    people = await db.scalars(select(Person).where(Person.id.in_(ids)))
-    return {p.id: p.display_name for p in people}
+    # same text as Person.display_name, without loading whole people rows
+    name = func.concat(func.coalesce(func.nullif(Person.preferred_name, ""),
+                                     Person.first_name), " ", Person.last_name)
+    rows = await db.execute(select(Person.id, name).where(Person.id.in_(ids)))
+    return dict(rows.all())
 
 
 async def build_feed(db: AsyncSession, *, limit: int, before: str | None,

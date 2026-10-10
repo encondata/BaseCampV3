@@ -239,6 +239,17 @@ async def test_portal_patch_container_changes_make_load_and_unload_events(
     assert all(e["actor_name"] for e in events)
 
 
+async def test_deleted_container_has_no_name_or_count(client, db, seeded_user):
+    hdrs = await login(client)
+    t = await _truck(db, "Rig D")
+    gone = uuid.uuid4()          # a container id that no longer exists
+    _audit(db, t.id, 1, "update", {"container_ids": {"from": [], "to": [str(gone)]}})
+    await db.commit()
+    [ev] = (await _feed(client, hdrs))["events"]
+    assert (ev["kind"], ev["via"], ev["container_id"]) == ("load", "portal", str(gone))
+    assert ev["container_name"] is None and ev["asset_count"] is None
+
+
 async def test_bulk_import_container_rows_make_import_events(client, db, seeded_user):
     hdrs = await login(client)
     t = await _truck(db, "Rig I")
@@ -431,8 +442,21 @@ async def test_before_accepts_a_plain_iso_timestamp_strictly_older(
 
 async def test_bad_cursor_and_limits_are_422(client, db, seeded_user):
     hdrs = await login(client)
-    for q in ("?before=yesterday", "?before=~loc:x", "?limit=0", "?limit=201"):
-        assert (await client.get(f"/trucks/feed{q}", headers=hdrs)).status_code == 422, q
+    bad = ("?before=yesterday", "?before=~loc:x", "?limit=0", "?limit=201",
+           "?before=2026-05-01T12:00:00Z~loc:%00x",         # NUL byte
+           "?before=%00",
+           "?before=0001-01-01T00:00:00%2B05:00",           # overflows converting to UTC
+           "?before=9999-12-31T23:59:59-05:00",
+           "?before=1969-12-31T23:59:59Z",                  # before 1970
+           "?before=9000-01-01T00:00:01Z",                  # after 9000-01-01
+           f"?before=2026-05-01T12:00:00Z~{'x' * 200}")     # over 200 characters
+    for q in bad:
+        resp = await client.get(f"/trucks/feed{q}", headers=hdrs)
+        assert resp.status_code == 422, (q, resp.status_code)
+    edge = ("?before=1970-01-01T00:00:00Z", "?before=9000-01-01T00:00:00Z",
+            f"?before=2026-05-01T12:00:00Z~{'x' * 170}")
+    for q in edge:
+        assert (await client.get(f"/trucks/feed{q}", headers=hdrs)).status_code == 200, q
     assert (await client.get("/trucks/feed?limit=200", headers=hdrs)).status_code == 200
 
 
