@@ -105,3 +105,16 @@ it('bell shows the unread badge and lists items; clicking one marks it read', as
   await user.click(screen.getByText('Mark all read'));
   expect(bell.markAllRead).toHaveBeenCalled();
 });
+
+it('names the Shipments dashboard in the crumbs and finds it in page search', async () => {
+  render(
+    <MemoryRouter initialEntries={['/dashboards/shipments']}>
+      <Topbar />
+    </MemoryRouter>,
+  );
+  expect(document.querySelector('.crumbs')?.textContent).toContain('Shipments');
+  const user = userEvent.setup();
+  const search = screen.getAllByRole('textbox')[0];
+  await user.type(search, 'shipm');
+  expect(await screen.findByText('Shipments', { selector: '*:not(.crumbs *)' })).toBeDefined();
+});

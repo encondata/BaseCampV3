@@ -1,11 +1,13 @@
 /**
  * "In transit" panel map — planned routes of active move initiatives:
  * origin/destination dots joined by a dashed lane, drawn from the sites
- * list's coordinates. Live truck tracking isn't built yet, so the panel
- * wears a COMING SOON chip; the routes are real, the trucks aren't.
+ * list's coordinates. Live truck positions live on the Shipments
+ * dashboard: a viewer with trucks:view gets a "Live tracking →" badge
+ * linking there (no badge otherwise).
  */
 
 import { useEffect, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { CircleMarker, MapContainer, Polyline, Popup, TileLayer, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -51,9 +53,11 @@ export function transitRoutes(moves: InitiativeItem[], sites: SiteItem[]): Route
   return routes;
 }
 
-export default function TransitMap({ moves, sites }: {
+export default function TransitMap({ moves, sites, liveTracking = false }: {
   moves: InitiativeItem[];
   sites: SiteItem[];
+  /** The viewer has trucks:view — show the link to the Shipments dashboard. */
+  liveTracking?: boolean;
 }) {
   const routes = useMemo(() => transitRoutes(moves, sites), [moves, sites]);
   const points = useMemo(
@@ -91,7 +95,9 @@ export default function TransitMap({ moves, sites }: {
           ))}
         </MapContainer>
       )}
-      <span className="dash-transit-badge">Live truck tracking · coming soon</span>
+      {liveTracking && (
+        <Link className="dash-transit-badge" to="/dashboards/shipments">Live tracking →</Link>
+      )}
     </div>
   );
 }

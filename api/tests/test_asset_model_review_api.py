@@ -64,7 +64,8 @@ async def test_dismiss_hides_restore_shows_and_audits(client, db, seeded_user):
                              json={"dismissed": False})
     assert resp.json()["review_dismissed_at"] is None
     actions = [r.action for r in await db.scalars(select(AuditLog).where(
-        AuditLog.entity_type == "asset_model", AuditLog.entity_id == str(forced.id)))]
+        AuditLog.entity_type == "asset_model", AuditLog.entity_id == str(forced.id))
+        .order_by(AuditLog.at))]
     assert actions == ["review.dismiss", "review.restore"]
 
 

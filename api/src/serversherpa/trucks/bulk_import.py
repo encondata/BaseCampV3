@@ -22,6 +22,7 @@ from serversherpa.db.ordering import natural
 from serversherpa.imports import bulk as core
 from serversherpa.imports.bulk import MAX_BYTES, MAX_ROWS, BulkImportError
 from serversherpa.services.audit import audit, snapshot
+from serversherpa.trucks.trip import apply_status_change, start_trip_if_needed
 
 __all__ = ["BulkImportError", "MAX_BYTES", "MAX_ROWS"]
 
@@ -470,6 +471,7 @@ async def _create_truck(db: AsyncSession, actor_id: uuid.UUID, data: dict,
         start_site_id=_ref_id(ref, "start_site", data["start_site"]),
         end_site_id=_ref_id(ref, "end_site", data["end_site"]),
         created_by=actor_id)
+    start_trip_if_needed(truck)
     db.add(truck)
     await db.flush()
     for container_id in sorted(_container_ids(ref, data["containers"]), key=str):
@@ -491,7 +493,9 @@ async def _apply_update(db: AsyncSession, actor_id: uuid.UUID, r: dict,
     tracking = dict(truck.tracking_type or {})
     tracking_changed = False
     for col, change in (r["diff"] or {}).items():
-        if col in TEXT_COLUMNS or col in ("status", "team_drive"):
+        if col == "status":
+            apply_status_change(truck, change["new"])
+        elif col in TEXT_COLUMNS or col == "team_drive":
             setattr(truck, col, change["new"])
         elif col in TRACKING_KEYS:
             tracking[TRACKING_KEYS[col]] = change["new"]

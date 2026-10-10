@@ -860,6 +860,9 @@ class Truck(Base):
         ForeignKey("sites.id", ondelete="SET NULL"))
     end_site_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("sites.id", ondelete="SET NULL"))
+    # When the current trip began: set whenever status changes into
+    # active/in_transit from any other status (trucks/trip.py).
+    trip_started_at: Mapped[datetime | None]
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

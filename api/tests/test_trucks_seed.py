@@ -104,3 +104,13 @@ async def test_seed_leaves_links_none_when_initiative_and_sites_absent(db):
     assert t1.initiative_id is None
     assert t1.start_site_id is None
     assert t1.end_site_id is None
+
+
+async def test_seeded_trips_start_at_their_first_reported_position(db):
+    await seed_demo_trucks(db)
+    for truck in (await _trucks_by_name(db)).values():
+        first = await db.scalar(
+            select(TruckUpdate.recorded_at).where(TruckUpdate.truck_id == truck.id)
+            .order_by(TruckUpdate.recorded_at).limit(1))
+        assert truck.trip_started_at is not None
+        assert abs((truck.trip_started_at - first).total_seconds()) < 1

@@ -54,6 +54,7 @@ import ProcessLogs from './pages/ProcessLogs';
 import Routers from './pages/Routers';
 import Scans from './pages/Scans';
 import Settings from './pages/Settings';
+import ShipmentsDashboard from './pages/ShipmentsDashboard';
 import Sites from './pages/Sites';
 import SiteDetail from './pages/SiteDetail';
 import StakeholderDetail from './pages/StakeholderDetail';
@@ -98,6 +99,9 @@ export default function App() {
                 <Route path="/" element={<ProtectedRoute resource="dashboard"><Home /></ProtectedRoute>} />
                 <Route path="/dashboards/move" element={
                   <ProtectedRoute resource="dashboard"><MoveDashboard /></ProtectedRoute>
+                } />
+                <Route path="/dashboards/shipments" element={
+                  <ProtectedRoute resource="trucks"><ShipmentsDashboard /></ProtectedRoute>
                 } />
                 <Route path="/dashboards/people" element={
                   <ProtectedRoute resource="dashboard"><PeopleDashboard /></ProtectedRoute>

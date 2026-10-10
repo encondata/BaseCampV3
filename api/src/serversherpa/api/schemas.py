@@ -4005,6 +4005,12 @@ class TruckTrailPoint(BaseModel):
     lng: float
 
 
+class TruckEndSite(BaseModel):
+    name: str
+    latitude: float
+    longitude: float
+
+
 class TruckMapPoint(BaseModel):
     id: uuid.UUID
     name: str
@@ -4016,6 +4022,57 @@ class TruckMapPoint(BaseModel):
     seal_id: str | None = None
     last_update: TruckLastUpdate
     trail: list[TruckTrailPoint] = []
+    end_site: TruckEndSite | None = None
+
+
+class TruckSummary(BaseModel):
+    in_transit: int
+    active: int
+    at_destination: int
+    containers_on_board: int
+
+
+class TruckFeedEvent(BaseModel):
+    """One shipment-feed event. `kind` picks which optional group is filled:
+    location (location/lat/lng/address/source), status (from_*/to_*),
+    load/unload (container_*/asset_count/via, + from_truck/device for kiosk
+    loads). `actor_name` is null for tracker location updates and when the
+    audit row has no actor."""
+    id: str
+    at: datetime
+    kind: Literal["location", "status", "load", "unload"]
+    truck_id: uuid.UUID
+    truck_name: str
+    load_number: str | None = None
+    initiative_id: uuid.UUID | None = None
+    initiative_name: str | None = None
+    actor_name: str | None = None
+    # location
+    location: str | None = None
+    lat: float | None = None
+    lng: float | None = None
+    address: str | None = None
+    source: str | None = None
+    # status
+    from_status: str | None = None
+    from_label: str | None = None
+    from_color: str | None = None
+    to_status: str | None = None
+    to_label: str | None = None
+    to_color: str | None = None
+    # load / unload
+    via: Literal["kiosk", "portal", "import"] | None = None
+    container_id: uuid.UUID | None = None
+    container_name: str | None = None
+    asset_count: int | None = None
+    from_truck: str | None = None
+    device: str | None = None
+
+
+class TruckFeedPage(BaseModel):
+    events: list[TruckFeedEvent]
+    # Opaque cursor: pass it back verbatim as `before`; null = no older events.
+    next_before: str | None = None
 
 
 # ── warehouse ─────────────────────────────────────────────────────────

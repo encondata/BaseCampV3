@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import Initiative, Site, Truck, TruckUpdate
 from serversherpa.trucks.location import format_location
+from serversherpa.trucks.trip import start_trip_if_needed
 
 _INITIATIVE_NAME = "NAP11 Hall Migration (demo)"
 _START_SITE_NAME = "ACC4 - Digital Reality"
@@ -92,6 +93,10 @@ async def seed_demo_trucks(db: AsyncSession) -> int:
             start_site_id=start_site_id,
             end_site_id=end_site_id,
         )
+        # the demo trip began with its first reported position
+        started = now - timedelta(hours=max(h for h, *_ in spec["route"]))
+        if not start_trip_if_needed(truck, started) and spec["status"] == "at_destination":
+            truck.trip_started_at = started     # arrived: the trip it just finished
         db.add(truck)
         await db.flush()  # truck.id
 

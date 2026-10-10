@@ -17,6 +17,7 @@ import type { BulkDiff } from '../components/bulk/BulkApplySummary';
 import type { TagKey } from '../labels/tagTypes';
 import type { Action, PermMap, ScopeInfo } from './access';
 import type { OrgItem } from './orgs';
+import { trucksFeedQuery, trucksListQuery, trucksMapQuery } from './shipments';
 import { siblingOrigin } from './siblingOrigin';
 import type { Visibility } from './visibility';
 import type { WorkerItem } from './workers';
@@ -2530,6 +2531,60 @@ export interface TruckMapPoint {
   seal_id: string | null;
   last_update: TruckLastUpdate;
   trail: TruckTrailPoint[];
+  /** The truck's destination site when it has coordinates (the
+   *  Shipments dashboard's destination pin); absent on older callers. */
+  end_site?: TruckEndSite | null;
+}
+
+export interface TruckEndSite {
+  name: string;
+  latitude: number;
+  longitude: number;
+}
+
+/** GET /trucks/summary — headline counts over non-archived trucks. */
+export interface TruckSummary {
+  in_transit: number;
+  active: number;
+  at_destination: number;
+  containers_on_board: number;
+}
+
+/** One shipment-feed event; `kind` picks which optional group is filled
+ *  (api/schemas.py TruckFeedEvent). */
+export interface TruckFeedEvent {
+  id: string;
+  at: string;
+  kind: 'location' | 'status' | 'load' | 'unload';
+  truck_id: string;
+  truck_name: string;
+  load_number: string | null;
+  initiative_id: string | null;
+  initiative_name: string | null;
+  actor_name: string | null;
+  location: string | null;
+  lat: number | null;
+  lng: number | null;
+  address: string | null;
+  source: string | null;
+  from_status: string | null;
+  from_label: string | null;
+  from_color: string | null;
+  to_status: string | null;
+  to_label: string | null;
+  to_color: string | null;
+  via: 'kiosk' | 'portal' | 'import' | null;
+  container_id: string | null;
+  container_name: string | null;
+  asset_count: number | null;
+  from_truck: string | null;
+  device: string | null;
+}
+
+/** `next_before` is an opaque cursor: pass it back verbatim as `before`. */
+export interface TruckFeedPage {
+  events: TruckFeedEvent[];
+  next_before: string | null;
 }
 
 export async function listTrucks(includeArchived = false): Promise<TruckItem[]> {
@@ -2613,6 +2668,35 @@ export async function clearTruckUpdates(id: string): Promise<void> {
 
 export async function getTrucksMap(trails: boolean): Promise<TruckMapPoint[]> {
   const resp = await apiFetch(`/trucks/map?trails=${trails}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Shipments dashboard table: only the live statuses, optionally one move. */
+export async function listShipmentTrucks(initiativeId: string | null): Promise<TruckItem[]> {
+  const resp = await apiFetch(`/trucks?${trucksListQuery(initiativeId)}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Shipments dashboard map: the live trucks' current-trip tracks. */
+export async function getShipmentMap(initiativeId: string | null): Promise<TruckMapPoint[]> {
+  const resp = await apiFetch(`/trucks/map?${trucksMapQuery(initiativeId)}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getTrucksSummary(initiativeId: string | null): Promise<TruckSummary> {
+  const q = initiativeId ? `?initiative_id=${encodeURIComponent(initiativeId)}` : '';
+  const resp = await apiFetch(`/trucks/summary${q}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getTrucksFeed(
+  opts: { initiativeId: string | null; limit: number; before?: string | null },
+): Promise<TruckFeedPage> {
+  const resp = await apiFetch(`/trucks/feed?${trucksFeedQuery(opts)}`);
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

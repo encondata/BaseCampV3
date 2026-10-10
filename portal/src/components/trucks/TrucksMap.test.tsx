@@ -11,11 +11,14 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { TruckMapPoint } from '../../lib/api';
 
 vi.mock('react-leaflet', () => ({
-  MapContainer: ({ children }: any) => <div data-testid="map">{children}</div>,
+  MapContainer: ({ children, scrollWheelZoom }: any) => (
+    <div data-testid="map" data-scroll-zoom={String(scrollWheelZoom ?? true)}>{children}</div>
+  ),
   TileLayer: () => null,
   Tooltip: ({ children }: any) => <span>{children}</span>,
-  CircleMarker: ({ children, eventHandlers }: any) => (
-    <div className="mock-marker" onClick={() => eventHandlers?.click?.()}>{children}</div>
+  CircleMarker: ({ children, eventHandlers, pathOptions }: any) => (
+    <div className={pathOptions?.className === 'trucks-dest-pin' ? 'mock-dest' : 'mock-marker'}
+         onClick={() => eventHandlers?.click?.()}>{children}</div>
   ),
   Polyline: () => <div className="mock-trail" />,
   useMap: () => ({ fitBounds: vi.fn() }),
@@ -81,4 +84,32 @@ it('clicking a marker calls onOpen with that truck id', () => {
   const markers = container.querySelectorAll('.mock-marker');
   (markers[1] as HTMLElement).click();
   expect(onOpen).toHaveBeenCalledWith('t2');
+});
+
+it('draws one hollow destination pin per destination site when asked, none by default', () => {
+  const dest = { name: 'DC-West', latitude: 39.7, longitude: -105 };
+  const points = [
+    point({ id: 't1', end_site: dest }),
+    point({ id: 't2', end_site: dest }),          // same site: one pin
+    point({ id: 't3', end_site: { name: 'DC-South', latitude: 30.2, longitude: -97.7 } }),
+    point({ id: 't4', end_site: null }),
+  ];
+  const off = render(<TrucksMap points={points} trails={false} onOpen={vi.fn()} />);
+  expect(off.container.querySelectorAll('.mock-dest')).toHaveLength(0);
+  cleanup();
+  const { container } = render(
+    <TrucksMap points={points} trails={false} onOpen={vi.fn()} destinations />);
+  const pins = container.querySelectorAll('.mock-dest');
+  expect(pins).toHaveLength(2);
+  expect(pins[0].textContent).toContain('DC-West');
+  expect(container.querySelectorAll('.mock-marker')).toHaveLength(4);
+});
+
+it('passes scrollWheelZoom through and shows a custom empty text', () => {
+  const { getByTestId } = render(
+    <TrucksMap points={[point({})]} trails={false} onOpen={vi.fn()} scrollWheelZoom={false} />);
+  expect(getByTestId('map').getAttribute('data-scroll-zoom')).toBe('false');
+  cleanup();
+  render(<TrucksMap points={[]} trails={false} onOpen={vi.fn()} emptyText="Nothing here yet." />);
+  expect(screen.getByText('Nothing here yet.')).not.toBeNull();
 });

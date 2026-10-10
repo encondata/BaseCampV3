@@ -60,7 +60,8 @@ async def test_set_reveal_and_clear(db, seeded_user):
     assert reveal(init) is None and init.kiosk_password_fp is None
     assert init.kiosk_person_id == person.id     # the identity is kept for history
     rows = list(await db.scalars(select(AuditLog).where(
-        AuditLog.entity_type == "initiative", AuditLog.entity_id == str(init.id))))
+        AuditLog.entity_type == "initiative", AuditLog.entity_id == str(init.id))
+        .order_by(AuditLog.at)))
     assert [r.changes["kiosk_password"] for r in rows] == [
         {"from": None, "to": "set"}, {"from": "set", "to": None}]
 

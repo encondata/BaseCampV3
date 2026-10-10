@@ -20,6 +20,7 @@ import '../styles/toast.css';
 const CRUMBS: Record<string, string[]> = {
   '/': ['Dashboards', 'Main Dashboard'],
   '/dashboards/move': ['Dashboards', 'Move Dashboard'],
+  '/dashboards/shipments': ['Dashboards', 'Shipments'],
   '/dashboards/people': ['Dashboards', 'People Dashboard'],
   '/dashboards/clients': ['Dashboards', 'Client Dashboard'],
   '/assets': ['Assets', 'Assets'],
@@ -56,6 +57,7 @@ const G_CHORD: Record<string, string> = {
 const PAGES = [
   { label: 'Main Dashboard', to: '/' },
   { label: 'Move Dashboard', to: '/dashboards/move' },
+  { label: 'Shipments', to: '/dashboards/shipments' },
   { label: 'People Dashboard', to: '/dashboards/people' },
   { label: 'Client Dashboard', to: '/dashboards/clients' },
   { label: 'Assets', to: '/assets' },

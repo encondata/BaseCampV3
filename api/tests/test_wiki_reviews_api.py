@@ -83,7 +83,8 @@ async def _fresh(db, model, key):
 
 async def _audits(db, entity_type, action):
     return (await db.scalars(select(AuditLog).where(
-        AuditLog.entity_type == entity_type, AuditLog.action == action))).all()
+        AuditLog.entity_type == entity_type, AuditLog.action == action)
+        .order_by(AuditLog.at))).all()
 
 
 async def _page(client, s, title="Runbook", text="first"):
