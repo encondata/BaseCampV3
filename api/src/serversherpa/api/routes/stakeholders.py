@@ -8,7 +8,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, literal, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +28,7 @@ from serversherpa.api.schemas import (
     OrgCreateIn,
     OrgItem,
     OrgUpdateIn,
+    PartnerItem,
     PersonListItem,
     WorkerItem,
 )
@@ -52,6 +53,14 @@ from serversherpa.services.storage import presign_get
 from serversherpa.status.labels import (
     level_colors, level_fields, status_fields, status_labels,
 )
+
+
+# Advisory-lock key serializing partner-parent changes (one key for the whole
+# hierarchy, not per partner: two concurrent PATCHes of *different* partners
+# can still close a loop through existing parents). Distinct from the
+# initiative link graph's key.
+PARTNER_GRAPH_LOCK_KEY = 0x70747068  # "ptph"
+_PARENT_WALK_LIMIT = 100
 
 
 def _err(status: int, code: str, **extra) -> HTTPException:
@@ -149,13 +158,49 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
         rows = (await db.scalars(select(Person).where(Person.id.in_(ids)))).all()
         return {p.id: ManagerRef(id=p.id, display_name=p.display_name) for p in rows}
 
-    def _item(org, counts: dict, managers: dict, actor: AuthContext) -> OrgItem:
+    ItemOut = PartnerItem if is_partner else OrgItem
+
+    async def _hierarchy(
+        db: AsyncSession, orgs: list, actor: AuthContext,
+    ) -> tuple[dict, dict]:
+        """(visible parent names, visible child counts) for these partners in
+        two set-based queries. A parent the actor can't see is simply absent
+        (-> null parent_id/parent_name); child_count counts visible children,
+        archived included."""
+        if not is_partner or not orgs:
+            return {}, {}
+        cond = scope_conditions(resource, actor.access, actor.person.id)
+        parent_ids = {o.parent_id for o in orgs if o.parent_id}
+        names: dict = {}
+        if parent_ids:
+            q = select(Partner.id, Partner.name).where(Partner.id.in_(parent_ids))
+            if cond is not None:
+                q = q.where(cond)
+            names = dict((await db.execute(q)).all())
+        q = (select(Partner.parent_id, func.count())
+             .where(Partner.parent_id.in_([o.id for o in orgs]))
+             .group_by(Partner.parent_id))
+        if cond is not None:
+            q = q.where(cond)
+        return names, dict((await db.execute(q)).all())
+
+    def _item(org, counts: dict, managers: dict, actor: AuthContext,
+              hierarchy: tuple[dict, dict] | None = None) -> OrgItem:
         # `notes` is staff free text ABOUT the org — internal-only, so the
         # org's own client/vendor contacts (non-global anchors) never see it
         # through list/detail (same rule as person_notes in workers.py and
         # the /notes host for these entity types).
         is_global = actor.access.is_global
-        return OrgItem(
+        extra: dict = {}
+        if is_partner:
+            parent_names, child_counts = hierarchy or ({}, {})
+            visible = org.parent_id in parent_names
+            extra = {
+                "parent_id": org.parent_id if visible else None,
+                "parent_name": parent_names.get(org.parent_id),
+                "child_count": child_counts.get(org.id, 0),
+            }
+        return ItemOut(
             id=org.id,
             name=org.name,
             code=org.code,
@@ -177,15 +222,17 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
             logo_url=presign_get(org.logo_key),
             archived_at=org.archived_at,
             created_at=org.created_at,
+            **extra,
         )
 
     async def _item_for(db: AsyncSession, org, actor: AuthContext) -> OrgItem:
         counts = await _contact_counts(db, [org.id])
         managers = await _managers(
             db, {org.account_manager} if org.account_manager else set())
-        return _item(org, counts, managers, actor)
+        return _item(org, counts, managers, actor,
+                     await _hierarchy(db, [org], actor))
 
-    @router.get("", response_model=list[OrgItem])
+    @router.get("", response_model=list[ItemOut])
     async def list_orgs(
         db: DbSession,
         actor: AuthContext = require_permission(resource, "view"),
@@ -198,9 +245,10 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
         counts = await _contact_counts(db, [o.id for o in orgs])
         managers = await _managers(
             db, {o.account_manager for o in orgs if o.account_manager})
-        return [_item(o, counts, managers, actor) for o in orgs]
+        hierarchy = await _hierarchy(db, orgs, actor)
+        return [_item(o, counts, managers, actor, hierarchy) for o in orgs]
 
-    @router.get("/{org_id}", response_model=OrgItem)
+    @router.get("/{org_id}", response_model=ItemOut)
     async def get_org(
         org_id: uuid.UUID,
         db: DbSession,
@@ -208,6 +256,68 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
     ) -> OrgItem:
         org = await _get_org(db, org_id, actor)
         return await _item_for(db, org, actor)
+
+    if is_partner:
+        @router.get("/{org_id}/children", response_model=list[PartnerItem])
+        async def list_children(
+            org_id: uuid.UUID,
+            db: DbSession,
+            actor: AuthContext = require_permission(resource, "view"),
+        ) -> list[OrgItem]:
+            await _get_org(db, org_id, actor)
+            query = (select(Partner).where(Partner.parent_id == org_id)
+                     .order_by(natural(Partner.name)))
+            cond = scope_conditions(resource, actor.access, actor.person.id)
+            if cond is not None:
+                query = query.where(cond)
+            kids = (await db.scalars(query)).all()
+            counts = await _contact_counts(db, [k.id for k in kids])
+            managers = await _managers(
+                db, {k.account_manager for k in kids if k.account_manager})
+            hierarchy = await _hierarchy(db, kids, actor)
+            return [_item(k, counts, managers, actor, hierarchy) for k in kids]
+
+    def _require_staff_for_parent(actor: AuthContext, data: dict) -> None:
+        """Parent changes are staff-only (display-only hierarchy): a
+        partner-scoped user may not see their parent, and must not be able to
+        clear or repoint it. Checked before any lock or lookup."""
+        if is_partner and "parent_id" in data and not actor.access.is_global:
+            raise _err(403, "forbidden")
+
+    async def _set_parent(
+        db: AsyncSession, org, parent_id: uuid.UUID | None, actor: AuthContext,
+    ) -> None:
+        """Validate and set a partner's parent. The lock is taken BEFORE the
+        loop check so a rival's just-committed parent change is visible to it
+        (READ COMMITTED re-reads per statement); it is held to the caller's
+        commit. Clearing needs no checks."""
+        if parent_id is None:
+            org.parent_id = None
+            return
+        if parent_id == org.id:
+            raise _err(422, "self_parent")
+        await db.execute(select(func.pg_advisory_xact_lock(PARTNER_GRAPH_LOCK_KEY)))
+        q = select(Partner.id).where(Partner.id == parent_id)
+        cond = scope_conditions(resource, actor.access, actor.person.id)
+        if cond is not None:
+            q = q.where(cond)
+        if await db.scalar(q) is None:
+            raise _err(422, "parent_not_found")
+        # the partner must not already sit above the proposed parent
+        chain = (select(Partner.id, Partner.parent_id, literal(1).label("depth"))
+                 .where(Partner.id == parent_id).cte("chain", recursive=True))
+        chain = chain.union_all(
+            select(Partner.id, Partner.parent_id, chain.c.depth + 1)
+            .join(chain, Partner.id == chain.c.parent_id)
+            .where(chain.c.depth < _PARENT_WALK_LIMIT))
+        # A walk that hits the bound with ancestors still above it cannot rule
+        # a loop out, so it is refused too (fail closed).
+        too_deep = and_(chain.c.depth >= _PARENT_WALK_LIMIT,
+                        chain.c.parent_id.is_not(None))
+        if await db.scalar(select(chain.c.id).where(
+                or_(chain.c.id == org.id, too_deep)).limit(1)) is not None:
+            raise _err(422, "circular_parent")
+        org.parent_id = parent_id
 
     async def _apply(db: AsyncSession, org, data: dict, actor: AuthContext):
         """Apply field updates only — the CALLER commits, so audit rows added
@@ -219,6 +329,10 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
             raise _err(422, "tier_not_allowed")
         if not is_partner and "service_region" in data:
             raise _err(422, "service_region_not_allowed")
+        if not is_partner and "parent_id" in data:
+            raise _err(422, "parent_not_allowed")
+        if is_partner and "parent_id" in data:
+            await _set_parent(db, org, data.pop("parent_id"), actor)
         if data.get("service_region") is not None:
             data["service_region"] = data["service_region"].strip() or None
         if "account_manager_id" in data:
@@ -246,12 +360,13 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
             await db.rollback()
             raise _err(409, "name_or_code_in_use") from None
 
-    @router.post("", response_model=OrgItem, status_code=201)
+    @router.post("", response_model=ItemOut, status_code=201)
     async def create_org(
         body: OrgCreateIn,
         db: DbSession,
         actor: AuthContext = require_permission(resource, "add"),
     ) -> OrgItem:
+        _require_staff_for_parent(actor, body.model_dump(exclude_unset=True))
         org = model(name=body.name, source="manual", created_by=actor.person.id)
         db.add(org)
         try:
@@ -264,21 +379,25 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
         if data["country"] is None:
             data["country"] = "US"
         await _apply(db, org, data, actor)
+        changes: dict = {"name": {"from": None, "to": org.name}}
+        if getattr(org, "parent_id", None) is not None:
+            changes["parent_id"] = {"from": None, "to": str(org.parent_id)}
         audit(db, actor_id=actor.person.id, entity_type=entity_type,
               entity_id=str(org.id), action="create",
-              changes={"name": {"from": None, "to": org.name}})
+              changes=changes)
         await _commit_or_409(db)
         return await _item_for(db, org, actor)
 
-    @router.patch("/{org_id}", response_model=OrgItem)
+    @router.patch("/{org_id}", response_model=ItemOut)
     async def update_org(
         org_id: uuid.UUID,
         body: OrgUpdateIn,
         db: DbSession,
         actor: AuthContext = require_permission(resource, "change"),
     ) -> OrgItem:
-        org = await _get_org(db, org_id, actor)
         data = body.model_dump(exclude_unset=True)
+        _require_staff_for_parent(actor, data)
+        org = await _get_org(db, org_id, actor)
         # `notes` is staff-internal (redacted to None in _item for non-global
         # actors), so a scoped client/vendor contact holding `change` on its
         # own org must not blind-overwrite it. Refuse explicitly — even an
@@ -302,7 +421,8 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
             # checks below raise the proper 422 for the wrong-kind field.
             elif key == "tier" and is_partner:
                 continue
-            elif key == "service_region" and not is_partner:
+            # (parent_id is partner-only too — same treatment)
+            elif key in ("service_region", "parent_id") and not is_partner:
                 continue
             else:
                 fields.append(key)

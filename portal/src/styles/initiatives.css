@@ -184,6 +184,12 @@
 /* One RowActionsMenu trigger, right-aligned in its track (the same
    treatment the other converted lists give their action cell). */
 .idet-people-actions { display: flex; justify-content: flex-end; }
+/* A panel eyebrow with an action button on the right (Child partners). */
+.idet-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 14px; }
+.idet-panel-head .eyebrow-sm { margin: 0; }
+/* Name cell that links to the record: row-main isn't a click target here. */
+.idet-people-list a.cell-top { color: var(--c-blue); text-decoration: none; }
+.idet-people-list a.cell-top:hover { text-decoration: underline; }
 
 /* The People and Assets cards use .dir-list.list-scroll (directory.css);
    the column menu is portaled, so no overflow override is needed here. */

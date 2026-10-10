@@ -17,6 +17,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
 import NotesFilesPanel from '../components/NotesFilesPanel';
+import ChildPartnersPanel from '../components/stakeholders/ChildPartnersPanel';
 import StatusHover from '../components/StatusHover';
 import { TIER_LABEL } from '../components/TierSelect';
 import {
@@ -180,10 +181,13 @@ const WORKER_CSV_COLUMNS: [string, (w: WorkerItem) => string][] =
 export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner' }) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { can, preferences } = useAuth();
+  const { can, preferences, scope } = useAuth();
   const listGridScale = listScale(preferences?.list_size);
   const resource = kind === 'client' ? 'clients' : 'partners';
   const canChange = can(resource, 'change');
+  // Parent/child links are staff-managed (the API 403s a partner-scoped
+  // actor), so the Add child / Remove controls need global scope too.
+  const canEditHierarchy = canChange && scope?.global === true;
   const listLabel = kind === 'client' ? 'Clients' : 'Partners';
   const backTo = kind === 'client' ? '/stakeholders/clients' : '/stakeholders/partners';
 
@@ -207,6 +211,13 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
       else setLoadError(`Failed to load ${kind === 'client' ? 'client' : 'partner'}.`);
     });
     return () => { alive = false; };
+  }, [kind, id]);
+
+  // Re-read the org row in place (no loading flash) after the hierarchy
+  // changes, so child_count and parent_name stay fresh.
+  const refreshOrg = useCallback(() => {
+    if (!id) return;
+    void getOrg(kind, id).then(setOrg).catch(() => {});
   }, [kind, id]);
 
   useEffect(() => {
@@ -599,6 +610,16 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
                   : <span className="cell-sub">{org.website}</span>)
               : '—'}</dd>
             <dt>Account manager</dt><dd>{org.account_manager?.display_name ?? '—'}</dd>
+            {kind === 'partner' && org.parent_id && (
+              <>
+                <dt>Parent partner</dt>
+                <dd>
+                  <Link to={`/stakeholders/partners/${org.parent_id}`}>
+                    {org.parent_name ?? 'Parent partner'}
+                  </Link>
+                </dd>
+              </>
+            )}
             <dt>{kind === 'client' ? 'Tier' : 'Region'}</dt>
             <dd>{(kind === 'client' ? org.tier : org.service_region) ?? '—'}</dd>
             <dt>Created</dt><dd className="mono">{longDate(org.created_at)}</dd>
@@ -606,6 +627,12 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
           </dl>
         </div>
       </div>
+
+      {/* ── Child partners (partners only) ───────────────────────────── */}
+      {kind === 'partner' && (
+        <ChildPartnersPanel partner={org} typeVocab={typeVocab} canEdit={canEditHierarchy}
+                            onChanged={refreshOrg} />
+      )}
 
       {/* ── Previous initiatives ────────────────────────────────────── */}
       <div className="init-panel" style={{ marginTop: 18 }}>

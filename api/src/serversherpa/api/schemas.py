@@ -630,6 +630,15 @@ class OrgItem(BaseModel):
     created_at: datetime
 
 
+class PartnerItem(OrgItem):
+    """A partner row: an OrgItem plus the parent/child hierarchy (clients
+    don't have one, so their payload stays an OrgItem)."""
+
+    parent_id: uuid.UUID | None = None   # None when unset OR not visible
+    parent_name: str | None = None
+    child_count: int = 0                 # children visible to the actor
+
+
 class OrgCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -650,6 +659,7 @@ class OrgCreateIn(BaseModel):
     country: str | None = Field(None, min_length=2, max_length=2)
     notes: str | None = None
     account_manager_id: uuid.UUID | None = None
+    parent_id: uuid.UUID | None = None   # partners only; None clears (PATCH)
 
     @field_validator("website")
     @classmethod
@@ -676,6 +686,7 @@ class OrgUpdateIn(BaseModel):
     country: str | None = Field(None, min_length=2, max_length=2)
     notes: str | None = None
     account_manager_id: uuid.UUID | None = None
+    parent_id: uuid.UUID | None = None   # partners only; None clears (PATCH)
 
     @field_validator("website")
     @classmethod

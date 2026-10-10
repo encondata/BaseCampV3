@@ -188,6 +188,10 @@ class Client(OrgColumns, Base):
 
 class Partner(OrgColumns, Base):
     __tablename__ = "partners"
+    __table_args__ = (
+        CheckConstraint("parent_id IS NULL OR parent_id <> id",
+                        name="ck_partners_parent_not_self"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, server_default=text("gen_random_uuid()"))
@@ -201,6 +205,10 @@ class Partner(OrgColumns, Base):
     # record which regions they service; NULL = unrecorded
     service_region: Mapped[str | None]
     notes: Mapped[str | None]
+    # parent partner (subcontractor under a parent firm); display-only, no
+    # access inheritance. Loops are refused by the API under an advisory lock.
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("partners.id", ondelete="SET NULL"), index=True)
     source: Mapped[str] = mapped_column(server_default="manual")
     source_ref: Mapped[str | None]
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))

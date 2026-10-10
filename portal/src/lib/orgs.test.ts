@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { StatusValue } from './api';
 import {
-  effectiveStatus, ORG_ERRORS, ORG_GOD_FIELDS, orgCellText, partnerTypeColor, partnerTypeLabel,
-  type OrgItem,
+  effectiveStatus, ORG_ERRORS, ORG_GOD_FIELDS, orgCellText, partnerAncestorIds,
+  partnerDescendantIds, partnerTypeColor, partnerTypeLabel, type OrgItem,
 } from './orgs';
 
 function statusValue(key: string, label: string, color: string): StatusValue {
@@ -206,6 +206,41 @@ describe('ORG_ERRORS', () => {
       'name_required', 'status_required', 'tier_required', 'country_required',
       'tier_not_allowed', 'service_region_not_allowed', 'forbidden',
     ]) {
+      expect(ORG_ERRORS[code]).toBeTruthy();
+    }
+  });
+});
+
+describe('partner hierarchy helpers', () => {
+  const p = (id: string, parent: string | null): OrgItem => ({ ...org, id, parent_id: parent });
+  // a > b > c, a > d, e alone
+  const rows = [p('a', null), p('b', 'a'), p('c', 'b'), p('d', 'a'), p('e', null)];
+
+  it('descendants: every level below, never the root or unrelated rows', () => {
+    expect([...partnerDescendantIds(rows, 'a')].sort()).toEqual(['b', 'c', 'd']);
+    expect([...partnerDescendantIds(rows, 'b')]).toEqual(['c']);
+    expect(partnerDescendantIds(rows, 'e').size).toBe(0);
+  });
+
+  it('ancestors: parent, grandparent, …', () => {
+    expect([...partnerAncestorIds(rows, 'c')]).toEqual(['b', 'a']);
+    expect(partnerAncestorIds(rows, 'a').size).toBe(0);
+  });
+
+  it('terminates on bad data that loops', () => {
+    const loop = [p('x', 'y'), p('y', 'x')];
+    expect([...partnerDescendantIds(loop, 'x')].sort()).toEqual(['x', 'y']);
+    expect([...partnerAncestorIds(loop, 'x')].sort()).toEqual(['x', 'y']);
+  });
+
+  it('Parent column text is the parent name, a dash when unset or hidden', () => {
+    expect(orgCellText({ ...org, parent_id: 'a', parent_name: 'Zeta Holdings' }, 'parent'))
+      .toBe('Zeta Holdings');
+    expect(orgCellText(org, 'parent')).toBe('—');
+  });
+
+  it('maps the parent_id validation codes', () => {
+    for (const code of ['self_parent', 'parent_not_found', 'circular_parent']) {
       expect(ORG_ERRORS[code]).toBeTruthy();
     }
   });

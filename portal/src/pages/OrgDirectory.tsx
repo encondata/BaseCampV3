@@ -51,8 +51,8 @@ import {
 import { VirtualRows } from '../lib/virtualRows';
 import { naturalCompare } from '../lib/sites';
 import {
-  effectiveStatus, ORG_ERRORS, ORG_GOD_FIELDS, orgCellText, partnerTypeColor, partnerTypeLabel,
-  STATUS_META, type OrgItem,
+  effectiveStatus, ORG_ERRORS, ORG_GOD_FIELDS, orgCellText, partnerDescendantIds,
+  partnerTypeColor, partnerTypeLabel, STATUS_META, type OrgItem,
 } from '../lib/orgs';
 import '../styles/directory.css';
 import '../styles/profile.css';
@@ -142,6 +142,7 @@ const ALL_COLUMNS: (ColumnDef & { partnerOnly?: boolean; clientOnly?: boolean })
     width: '1.4fr', default: true,
   },
   { key: 'contacts', label: 'Contacts', width: '0.8fr', default: true },
+  { key: 'parent', label: 'Parent', width: '1.3fr', default: false, partnerOnly: true },
   { key: 'website', label: 'Website', width: '1.5fr', default: false },
   { key: 'phone', label: 'Phone', width: '1.1fr', default: false },
   { key: 'location', label: 'Location', width: '1.3fr', default: false },
@@ -197,6 +198,7 @@ function sortValueFor(o: OrgItem, key: string): string | number {
     case 'status': return effectiveStatus(o);
     case 'manager': return o.account_manager?.display_name.toLowerCase() ?? '';
     case 'contacts': return o.contact_count;
+    case 'parent': return (o.parent_name ?? '').toLowerCase();
     case 'created': return o.created_at;
     case 'website': return o.website ?? '';
     case 'phone': return o.phone ?? '';
@@ -229,6 +231,7 @@ function csvColumns(hasType: boolean): [string, (o: OrgItem) => string][] {
     ['Status', (o) => effectiveStatus(o)],
     ['Account manager', (o) => o.account_manager?.display_name ?? ''],
     ['Contacts', (o) => String(o.contact_count)],
+    ...(hasType ? [['Parent', (o: OrgItem) => o.parent_name ?? ''] as [string, (o: OrgItem) => string]] : []),
     ['Phone', (o) => o.phone ?? ''],
     ['Website', (o) => o.website ?? ''],
     ['City', (o) => o.city ?? ''],
@@ -339,7 +342,8 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
 
   const orgsHaystackText = useCallback((o: OrgItem) =>
     (`${o.name} ${o.code ?? ''} ${o.city ?? ''} ${o.region ?? ''} ` +
-      `${o.partner_types.join(' ')} ${o.account_manager?.display_name ?? ''}`).toLowerCase(), []);
+      `${o.partner_types.join(' ')} ${o.account_manager?.display_name ?? ''} ` +
+      `${o.parent_name ?? ''}`).toLowerCase(), []);
   const haystack = useSearchHaystacks(orgs, orgsHaystackText);
 
   const visible = useMemo(() => {
@@ -471,6 +475,16 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
       }
       case 'contacts':
         return <span className="mono">{o.contact_count}</span>;
+      case 'parent': {
+        const text = o.parent_name ?? '—';
+        return o.parent_id && o.parent_name
+          ? (
+            <Link className="cell-top cell-line link-plain" title={titleFor(text)}
+                  to={`/stakeholders/partners/${o.parent_id}`}
+                  onClick={(e) => e.stopPropagation()}>{text}</Link>
+          )
+          : <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'website': {
         const text = o.website ?? '—';
         return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
@@ -734,6 +748,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
           cfg={cfg}
           org={editing === 'new' ? null : editing}
           partnerTypes={partnerTypes}
+          allOrgs={orgs ?? []}
           onClose={() => setEditing(null)}
           onSaved={(id) => {
             setEditing(null);
@@ -1183,10 +1198,11 @@ function AddContactModal({ cfg, orgId, linkedIds, onClose, onAdded }: {
 /* ── create / edit modal ────────────────────────────────────────── */
 /* ORG_ERRORS now lives in lib/orgs.ts, shared with GodCell's error map. */
 
-function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
+function OrgFormModal({ cfg, org, partnerTypes, allOrgs, onClose, onSaved }: {
   cfg: OrgConfig;
   org: OrgItem | null;
   partnerTypes: StatusValue[];
+  allOrgs: OrgItem[];
   onClose: () => void;
   onSaved: (id: string) => void;
 }) {
@@ -1196,6 +1212,22 @@ function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
   // sees the field nor sends it.
   const { scope } = useAuth();
   const isGlobal = scope?.global ?? true;
+  // The parent link is staff-only: the API 403s any partner write that names
+  // parent_id from a non-global actor, so they never see the field (and the
+  // key is never sent unless staff changed it).
+  const canSetParent = cfg.kind === 'partner' && scope?.global === true;
+  const [parentId, setParentId] = useState(org?.parent_id ?? '');
+  const parentOptions = useMemo(() => {
+    // not this partner, nor anything below it (that would loop)
+    const blocked = org ? partnerDescendantIds(allOrgs, org.id) : new Set<string>();
+    return [
+      { value: '', label: 'None' },
+      ...allOrgs
+        .filter((p) => p.id !== org?.id && !blocked.has(p.id))
+        .sort((a, b) => naturalCompare(a.name, b.name))
+        .map((p) => ({ value: p.id, label: p.name, sub: p.archived_at ? 'Archived' : p.code })),
+    ];
+  }, [allOrgs, org]);
   const [types, setTypes] = useState<Set<string>>(new Set(org?.partner_types ?? []));
   const [form, setForm] = useState({
     name: org?.name ?? '',
@@ -1244,6 +1276,7 @@ function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
     if (cfg.kind === 'client') payload.tier = form.tier;
     else payload.service_region = form.service_region.trim() || null;
     if (cfg.hasType) payload.partner_types = [...types];
+    if (canSetParent && parentId !== (org?.parent_id ?? '')) payload.parent_id = parentId || null;
     const resp = await apiFetch(org ? `${cfg.apiBase}/${org.id}` : cfg.apiBase, {
       method: org ? 'PATCH' : 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1319,6 +1352,15 @@ function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
                     sub: p.email,
                   }))}
                 /></div>
+              {canSetParent && (
+                <div className="full"><label>Parent partner</label>
+                  <ComboBox
+                    placeholder="Type to search partners…"
+                    value={parentId}
+                    onChange={setParentId}
+                    options={parentOptions}
+                  /></div>
+              )}
               <div><label>Phone</label>
                 <input value={form.phone} onChange={set('phone')} /></div>
               <div><label>Website</label>
