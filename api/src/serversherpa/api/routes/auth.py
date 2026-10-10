@@ -81,6 +81,14 @@ def _set_trust_cookie(response: Response, token: str) -> None:
         domain=settings.cookie_domain or None, path="/auth")
 
 
+def clear_trust_cookie(response: Response) -> None:
+    """Delete ss_trust with the same attributes _set_trust_cookie sets it with."""
+    settings = get_settings()
+    response.delete_cookie(
+        TRUST_COOKIE, httponly=True, secure=settings.env != "development", samesite="lax",
+        domain=settings.cookie_domain or None, path="/auth")
+
+
 def _scope_out(access) -> ScopeOut:
     return ScopeOut(**{"global": access.is_global},
                     client_ids=sorted(access.client_ids),

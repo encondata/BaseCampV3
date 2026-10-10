@@ -493,6 +493,30 @@ class SessionItem(BaseModel):
     current: bool
 
 
+class TrustedBrowserOut(BaseModel):
+    """One remembered browser (skips the two-factor code until it expires)."""
+
+    id: uuid.UUID
+    user_agent: str | None
+    created_at: datetime
+    last_used_at: datetime | None
+    expires_at: datetime
+
+
+class MyTrustedBrowserOut(TrustedBrowserOut):
+    current: bool
+
+
+class TrustedBrowsersOut(BaseModel):
+    trust_days: int
+    browsers: list[TrustedBrowserOut]
+
+
+class MyTrustedBrowsersOut(BaseModel):
+    trust_days: int
+    browsers: list[MyTrustedBrowserOut]
+
+
 class UserItem(BaseModel):
     """A person with a login account — the Users directory row."""
 

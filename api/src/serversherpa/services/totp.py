@@ -433,9 +433,40 @@ async def check_trust(db: AsyncSession, account: UserAccount, token: str | None)
     return True
 
 
-async def revoke_trust(db: AsyncSession, person_id: uuid.UUID) -> None:
-    """Does not commit."""
-    await db.execute(
+def trust_token_hash(token: str | None) -> str | None:
+    """The stored hash for a trust cookie value (None when there is no cookie)."""
+    return _hash_trust(token) if token else None
+
+
+def _remembered(person_id: uuid.UUID):
+    """Where-clauses for a person's remembered browsers: not forgotten, not expired."""
+    return (TrustedDevice.person_id == person_id,
+            TrustedDevice.revoked_at.is_(None),
+            TrustedDevice.expires_at > datetime.now(UTC))
+
+
+async def list_trust(db: AsyncSession, person_id: uuid.UUID) -> list[TrustedDevice]:
+    """The person's remembered browsers, newest first."""
+    return list(await db.scalars(
+        select(TrustedDevice).where(*_remembered(person_id))
+        .order_by(TrustedDevice.created_at.desc(), TrustedDevice.id)))
+
+
+async def forget_trust(db: AsyncSession, person_id: uuid.UUID, trusted_id: uuid.UUID) -> bool:
+    """Forget one remembered browser. False when it isn't a remembered row of
+    this person. Does not commit."""
+    result = await db.execute(
+        update(TrustedDevice)
+        .where(TrustedDevice.id == trusted_id, *_remembered(person_id))
+        .values(revoked_at=datetime.now(UTC)))
+    return result.rowcount > 0
+
+
+async def revoke_trust(db: AsyncSession, person_id: uuid.UUID) -> int:
+    """Forget every browser the person still has on file; returns how many
+    rows were revoked. Does not commit."""
+    result = await db.execute(
         update(TrustedDevice)
         .where(TrustedDevice.person_id == person_id, TrustedDevice.revoked_at.is_(None))
         .values(revoked_at=datetime.now(UTC)))
+    return result.rowcount
