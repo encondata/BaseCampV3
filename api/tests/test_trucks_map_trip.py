@@ -258,6 +258,105 @@ async def test_trail_ties_break_on_id_for_order_and_cap(client, db, seeded_user,
         assert [p["lat"] for p in pts[0]["trail"]] == [12.0, 13.0, 14.0, 15.0]
 
 
+# ── latest position (LATERAL) and the /trucks list filters ───────────
+
+def _capture(engine):
+    statements = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    class _Ctx:
+        def __enter__(self):
+            event.listen(engine, "before_cursor_execute", record)
+            return statements
+
+        def __exit__(self, *exc):
+            event.remove(engine, "before_cursor_execute", record)
+
+    return _Ctx()
+
+
+async def test_map_latest_position_is_lateral_newest_located_with_id_tiebreak(
+        client, db, seeded_user):
+    hdrs = await login(client)
+    tied = await _truck(db, "Tied")
+    for i in range(3):      # same instant: the highest id wins
+        db.add(TruckUpdate(truck_id=tied.id, recorded_at=NOW, location=f"{i}",
+                           lat=10.0 + i, lng=1.0, id=uuid.UUID(int=i + 1)))
+    gap = await _truck(db, "Gap")      # newest report carries no coordinates
+    _pt(db, gap, 0, lat=20.0)
+    db.add(TruckUpdate(truck_id=gap.id, recorded_at=NOW + timedelta(minutes=5),
+                       location="unparsable", lat=None, lng=None))
+    blind = await _truck(db, "Blind")  # nothing located at all: not on the map
+    db.add(TruckUpdate(truck_id=blind.id, recorded_at=NOW, location="?", lat=None, lng=None))
+    await _truck(db, "Silent")
+    await db.commit()
+
+    with _capture(get_engine().sync_engine) as statements:
+        resp = await client.get("/trucks/map", headers=hdrs)
+    pts = {p["name"]: p["last_update"] for p in resp.json()}
+    assert sorted(pts) == ["Gap", "Tied"]
+    assert pts["Tied"]["lat"] == 12.0
+    assert pts["Gap"]["lat"] == 20.0 and pts["Gap"]["recorded_at"].startswith("2026-05-01T12:00:00")
+    sql = " ".join(statements).upper()
+    assert "LATERAL" in sql and "DISTINCT ON" not in sql
+
+
+async def test_trucks_list_last_update_is_the_newest_report_even_unlocated(
+        client, db, seeded_user):
+    hdrs = await login(client)
+    gap = await _truck(db, "Gap")
+    _pt(db, gap, 0, lat=20.0)
+    db.add(TruckUpdate(truck_id=gap.id, recorded_at=NOW + timedelta(minutes=5),
+                       location="unparsable", lat=None, lng=None,
+                       approximate_address="Somewhere"))
+    tied = await _truck(db, "Tied")
+    for i in range(3):
+        db.add(TruckUpdate(truck_id=tied.id, recorded_at=NOW, location=f"{i}",
+                           lat=10.0 + i, lng=1.0, id=uuid.UUID(int=i + 1)))
+    await _truck(db, "Silent")
+    await db.commit()
+
+    with _capture(get_engine().sync_engine) as statements:
+        resp = await client.get("/trucks", headers=hdrs)
+    got = {t["name"]: t["last_update"] for t in resp.json()}
+    assert got["Silent"] is None
+    assert got["Tied"]["lat"] == 12.0
+    assert got["Gap"]["lat"] is None and got["Gap"]["approximate_address"] == "Somewhere"
+    sql = " ".join(statements).upper()
+    assert "LATERAL" in sql and "DISTINCT ON" not in sql
+    detail = (await client.get(f"/trucks/{gap.id}", headers=hdrs)).json()
+    assert detail["last_update"]["lat"] is None
+
+
+async def test_trucks_list_filters_by_statuses_and_move(client, db, seeded_user):
+    hdrs = await login(client)
+    a = Initiative(name="Move A", initiative_type="move")
+    b = Initiative(name="Move B", initiative_type="move")
+    db.add_all([a, b])
+    await db.flush()
+    for name, status, move in (("T1", "in_transit", a), ("T2", "active", a),
+                               ("T3", "at_destination", b), ("T4", "historical", a),
+                               ("T5", "created", None)):
+        await _truck(db, name, status, initiative_id=move.id if move else None)
+    await db.commit()
+
+    async def names(query=""):
+        resp = await client.get(f"/trucks{query}", headers=hdrs)
+        assert resp.status_code == 200, resp.text
+        return sorted(t["name"] for t in resp.json())
+
+    assert await names() == ["T1", "T2", "T3", "T4", "T5"]       # unchanged default
+    assert await names("?statuses=active,in_transit") == ["T1", "T2"]
+    assert await names("?statuses=active&statuses=at_destination") == ["T2", "T3"]
+    assert await names(f"?initiative_id={a.id}") == ["T1", "T2", "T4"]
+    assert await names(f"?initiative_id={a.id}&statuses=active,in_transit,at_destination") == [
+        "T1", "T2"]
+    assert await names(f"?initiative_id={b.id}&statuses=active") == []
+    assert (await client.get("/trucks?initiative_id=nope", headers=hdrs)).status_code == 422
+
+
 # ── /trucks/summary ───────────────────────────────────────────────
 
 async def test_summary_counts(client, db, seeded_user):

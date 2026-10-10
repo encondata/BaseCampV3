@@ -5,7 +5,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from sqlalchemy import delete, func, select, true
+from sqlalchemy import Row, delete, func, select, true
 
 from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank, rows_from_request
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
@@ -62,6 +62,27 @@ async def _truck_statuses(db: DbSession) -> dict:
     return statuses
 
 
+async def _latest_updates(db: DbSession, ids: list[uuid.UUID]) -> dict[uuid.UUID, Row]:
+    """Each listed truck's newest update, one statement: a LATERAL per truck
+    takes the first row of `ix_truck_updates_truck_recorded`, so a truck's
+    older history is never read (a DISTINCT ON over the table reads every
+    update). Newest is (recorded_at, id), so ties are deterministic; it may
+    carry no coordinates (lat/lng None). Trucks with no update are absent.
+    Rows expose recorded_at, lat, lng, approximate_address."""
+    if not ids:
+        return {}
+    newest = select(TruckUpdate.recorded_at, TruckUpdate.lat, TruckUpdate.lng,
+                    TruckUpdate.approximate_address).where(TruckUpdate.truck_id == Truck.id)
+    newest = (newest.order_by(TruckUpdate.recorded_at.desc(), TruckUpdate.id.desc())
+              .limit(1).lateral("newest"))
+    rows = (await db.execute(
+        select(Truck.id, newest.c.recorded_at, newest.c.lat, newest.c.lng,
+               newest.c.approximate_address)
+        .select_from(Truck).join(newest, true())
+        .where(Truck.id.in_(ids)))).all()
+    return {r[0]: r for r in rows}
+
+
 async def _context(db: DbSession, trucks: list[Truck]) -> tuple:
     statuses, container_statuses = await _vocab(db)
 
@@ -84,14 +105,7 @@ async def _context(db: DbSession, trucks: list[Truck]) -> tuple:
         .group_by(TruckContainer.truck_id)
     )).all()) if ids else {}
 
-    last_updates: dict[uuid.UUID, TruckUpdate] = {}
-    if ids:
-        rows = (await db.scalars(
-            select(TruckUpdate).distinct(TruckUpdate.truck_id)
-            .where(TruckUpdate.truck_id.in_(ids))
-            .order_by(TruckUpdate.truck_id, TruckUpdate.recorded_at.desc())
-        )).all()
-        last_updates = {u.truck_id: u for u in rows}
+    last_updates = await _latest_updates(db, ids)
 
     return statuses, container_statuses, initiatives, sites, counts, last_updates
 
@@ -160,11 +174,20 @@ async def _detail(db: DbSession, truck: Truck) -> TruckDetail:
 async def list_trucks(
     db: DbSession,
     include_archived: bool = False,
+    initiative_id: uuid.UUID | None = None,
+    statuses: list[str] = Query(default=[]),
     actor: AuthContext = require_permission("trucks", "view"),
 ) -> list[TruckItem]:
+    """All trucks, newest first; optionally one move's and/or only the given
+    statuses (repeated or comma-separated, like /trucks/map)."""
     query = select(Truck).order_by(Truck.created_at.desc())
     if not include_archived:
         query = query.where(Truck.archived_at.is_(None))
+    if initiative_id is not None:
+        query = query.where(Truck.initiative_id == initiative_id)
+    wanted = _split_statuses(statuses)
+    if wanted:
+        query = query.where(Truck.status.in_(wanted))
     trucks = list(await db.scalars(query))
     ctx = await _context(db, trucks)
     return [TruckItem(**_item(t, *ctx)) for t in trucks]
@@ -218,17 +241,21 @@ async def trucks_map(
     statuses: list[str] = Query(default=[]),
     actor: AuthContext = require_permission("trucks", "view"),
 ) -> list[TruckMapPoint]:
-    latest = (select(TruckUpdate)
-              .distinct(TruckUpdate.truck_id)
-              .order_by(TruckUpdate.truck_id, TruckUpdate.recorded_at.desc())
-              .subquery())
+    # Trucks are chosen first (cheap filters), then each one's newest located
+    # update is read by a LATERAL on the (truck_id, recorded_at DESC) index;
+    # only trucks with a located update appear.
+    latest = (select(TruckUpdate.recorded_at, TruckUpdate.lat, TruckUpdate.lng,
+                     TruckUpdate.approximate_address)
+              .where(TruckUpdate.truck_id == Truck.id,
+                     TruckUpdate.lat.isnot(None), TruckUpdate.lng.isnot(None))
+              .order_by(TruckUpdate.recorded_at.desc(), TruckUpdate.id.desc())
+              .limit(1).lateral("latest"))
     query = (select(Truck, latest.c.recorded_at, latest.c.lat, latest.c.lng,
                     latest.c.approximate_address,
                     Site.name, Site.latitude, Site.longitude)
-             .join(latest, latest.c.truck_id == Truck.id)
+             .select_from(Truck).join(latest, true())
              .outerjoin(Site, Site.id == Truck.end_site_id)
-             .where(Truck.archived_at.is_(None),
-                    latest.c.lat.isnot(None), latest.c.lng.isnot(None)))
+             .where(Truck.archived_at.is_(None)))
     wanted = _split_statuses(statuses)
     if wanted:
         query = query.where(Truck.status.in_(wanted))

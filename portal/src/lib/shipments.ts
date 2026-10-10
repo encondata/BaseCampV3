@@ -22,6 +22,13 @@ export function trucksMapQuery(initiativeId: string | null): string {
   return initiativeId ? `${q}&initiative_id=${encodeURIComponent(initiativeId)}` : q;
 }
 
+/** `GET /trucks` query for the dashboard's table: the three live statuses,
+ *  optionally one move (the unfiltered list is only for the move picker). */
+export function trucksListQuery(initiativeId: string | null): string {
+  const q = `statuses=${SHIPMENT_STATUSES.join(',')}`;
+  return initiativeId ? `${q}&initiative_id=${encodeURIComponent(initiativeId)}` : q;
+}
+
 /** `/trucks/feed` query; `before` is the previous page's opaque
  *  `next_before`, passed back verbatim (URL-encoded). */
 export function trucksFeedQuery(
@@ -44,6 +51,9 @@ export const DEFAULT_REFRESH_SEC = 30;
 
 /** Events per feed request (the API caps `limit` at 200). */
 export const FEED_PAGE_SIZE = 50;
+/** Most events the feed keeps once the viewer has loaded older pages;
+ *  refreshes that would grow it past this drop the oldest. */
+export const FEED_CAP = 500;
 
 /* ── feed text ───────────────────────────────────────────────────── */
 
@@ -95,6 +105,9 @@ export interface FeedState {
   events: TruckFeedEvent[];
   /** Cursor for "Show older" — the oldest loaded page's next_before. */
   nextBefore: string | null;
+  /** The viewer has loaded older pages, so refreshes merge into what is
+   *  shown instead of replacing it. */
+  olderLoaded: boolean;
 }
 
 /** Newest first: `at` descending, then `id` descending (the API's order). */
@@ -103,20 +116,40 @@ function compareEvents(a: TruckFeedEvent, b: TruckFeedEvent): number {
   return dt !== 0 ? dt : compareOrdinal(b.id, a.id);
 }
 
-/** Fold a freshly fetched first page into what's loaded. Unseen events
- *  prepend (by id) and every older page already loaded stays. When the
- *  fresh page shares no event with the loaded feed and there are older
- *  events beyond it, more arrived than one page holds: keeping the old
- *  rows would leave a silent hole, so the fresh page replaces them. */
+/** The cursor the API would give after `e`: `<at>~<id>` (the server accepts
+ *  any ISO stamp; `at` is the API's own string, so no precision is lost). */
+const cursorAfter = (e: TruckFeedEvent) => `${e.at}~${e.id}`;
+
+/** Drop the oldest events past FEED_CAP and point "Show older" at the new
+ *  tail, so the dropped events are the next page rather than a hole. */
+function capFeed(state: FeedState): FeedState {
+  if (state.events.length <= FEED_CAP) return state;
+  const events = state.events.slice(0, FEED_CAP);
+  return { ...state, events, nextBefore: cursorAfter(events[FEED_CAP - 1]) };
+}
+
+/** Fold a freshly fetched first page into what's loaded.
+ *
+ *  Until the viewer loads an older page the feed IS the first page, so each
+ *  refresh simply replaces it (and picks up events removed server-side).
+ *  Once older pages are loaded, unseen events prepend (by id) and every
+ *  older page stays, capped at FEED_CAP. When the fresh page shares no
+ *  event with the loaded feed and there are older events beyond it, more
+ *  arrived than one page holds: keeping the old rows would leave a silent
+ *  hole, so the fresh page replaces them. */
 export function mergeFeedPage(prev: FeedState | null, page: TruckFeedPage): FeedState {
-  const fresh: FeedState = { events: page.events, nextBefore: page.next_before };
-  if (!prev || prev.events.length === 0) return fresh;
+  const fresh: FeedState = { events: page.events, nextBefore: page.next_before, olderLoaded: false };
+  if (!prev || !prev.olderLoaded || prev.events.length === 0) return fresh;
   const seen = new Set(prev.events.map((e) => e.id));
   const overlaps = page.events.some((e) => seen.has(e.id));
   if (!overlaps && page.next_before !== null) return fresh;
   const added = page.events.filter((e) => !seen.has(e.id));
   if (added.length === 0) return prev;
-  return { events: [...added, ...prev.events].sort(compareEvents), nextBefore: prev.nextBefore };
+  return capFeed({
+    events: [...added, ...prev.events].sort(compareEvents),
+    nextBefore: prev.nextBefore,
+    olderLoaded: true,
+  });
 }
 
 /** Append a "Show older" page fetched with `cursor`. Ignored (returns
@@ -130,6 +163,7 @@ export function appendOlderPage(
   return {
     events: [...prev.events, ...page.events.filter((e) => !seen.has(e.id))],
     nextBefore: page.next_before,
+    olderLoaded: true,
   };
 }
 

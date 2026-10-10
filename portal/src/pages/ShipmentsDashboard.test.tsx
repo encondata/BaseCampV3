@@ -37,6 +37,7 @@ vi.mock('../auth/AuthContext', () => ({
 
 const api = vi.hoisted(() => ({
   listTrucks: vi.fn(),
+  listShipmentTrucks: vi.fn(),
   getShipmentMap: vi.fn(),
   getTrucksFeed: vi.fn(),
   getTrucksSummary: vi.fn(),
@@ -144,6 +145,7 @@ beforeEach(() => {
   Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
   auth.can = () => true;
   api.listTrucks.mockResolvedValue(TRUCKS);
+  api.listShipmentTrucks.mockResolvedValue(TRUCKS);
   api.getShipmentMap.mockResolvedValue([point(TRUCKS[0]), point(TRUCKS[1], { trail: [] })]);
   api.getTrucksFeed.mockImplementation(async ({ before }: { before?: string | null }) =>
     (before ? FEED_OLDER : FEED_1));
@@ -269,6 +271,21 @@ it('refresh prepends new events without dropping older pages, and a failed tick 
   expect(screen.getByText('Containers on board').parentElement!.textContent).toContain('7');
 });
 
+it('a refresh before any Show older replaces the feed, dropping events the server removed', async () => {
+  renderPage();
+  await flush();
+  const feed = within(panel('Update feed'));
+  expect(feed.getAllByTestId('feed-row')).toHaveLength(4);
+
+  api.getTrucksFeed.mockResolvedValueOnce({
+    events: [FEED_1.events[0], FEED_1.events[1]],      // the other two are gone
+    next_before: null,
+  });
+  await act(() => vi.advanceTimersByTimeAsync(30_000));
+  expect(feed.getAllByTestId('feed-row')).toHaveLength(2);
+  expect(screen.queryByRole('button', { name: 'Show older' })).toBeNull();
+});
+
 it('refreshes every 30 s by default, pauses while hidden, refreshes on return, stops when Off', async () => {
   renderPage();
   await flush();
@@ -329,6 +346,36 @@ it('changing the move refetches with its id and clears the old move’s panels',
   expect(screen.getByText('Containers on board').parentElement!.textContent).toContain('4');
 });
 
+it('the table asks only for live trucks (and the move); the unfiltered list feeds the picker once', async () => {
+  renderPage();
+  await flush();
+  expect(api.listShipmentTrucks).toHaveBeenLastCalledWith(null);
+  expect(api.listTrucks).toHaveBeenCalledTimes(1);
+  expect(api.listTrucks).toHaveBeenCalledWith();
+
+  // ticks refresh the filtered table, never the unfiltered picker list
+  await act(() => vi.advanceTimersByTimeAsync(90_000));
+  expect(api.listShipmentTrucks).toHaveBeenCalledTimes(4);
+  expect(api.listTrucks).toHaveBeenCalledTimes(1);
+
+  // a move change re-reads both, the table with the move's id
+  const move = screen.getByRole('combobox', { name: 'Move' });
+  fireEvent.focus(move);
+  fireEvent.mouseDown(screen.getByRole('button', { name: 'Austin move' }));
+  await flush();
+  expect(api.listShipmentTrucks).toHaveBeenLastCalledWith('i2');
+  expect(api.listTrucks).toHaveBeenCalledTimes(2);
+});
+
+it('the move picker lists moves from the unfiltered list, not the live-only table', async () => {
+  api.listShipmentTrucks.mockResolvedValue([TRUCKS[0]]);          // only Denver is live
+  renderPage();
+  await flush();
+  fireEvent.focus(screen.getByRole('combobox', { name: 'Move' }));
+  expect(screen.getByRole('button', { name: 'Austin move' })).not.toBeNull();
+  expect(screen.getByRole('button', { name: 'Denver move' })).not.toBeNull();
+});
+
 it('trucks table: live, non-archived trucks, naturally sorted, linked', async () => {
   renderPage();
   await flush();
@@ -366,7 +413,7 @@ it('skips a tick while the previous refresh is still running', async () => {
 
   await act(() => vi.advanceTimersByTimeAsync(60_000)); // two ticks, both skipped
   expect(api.getTrucksSummary).toHaveBeenCalledTimes(1);
-  expect(api.listTrucks).toHaveBeenCalledTimes(1);
+  expect(api.listShipmentTrucks).toHaveBeenCalledTimes(1);
 
   await act(async () => { first.resolve(SUMMARY); });
   await act(() => vi.advanceTimersByTimeAsync(30_000));
@@ -442,7 +489,7 @@ it('drops a Show older reply that lands after a move change', async () => {
 it('a failed first load shows an error in that panel, and the next good tick clears it', async () => {
   api.getShipmentMap.mockRejectedValueOnce(new Error('down'));
   api.getTrucksFeed.mockRejectedValueOnce(new Error('down'));
-  api.listTrucks.mockRejectedValueOnce(new Error('down'));
+  api.listShipmentTrucks.mockRejectedValueOnce(new Error('down'));
   api.getTrucksSummary.mockRejectedValueOnce(new Error('down'));
   renderPage();
   await flush();

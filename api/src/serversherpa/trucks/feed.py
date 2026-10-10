@@ -17,7 +17,9 @@ Sources (two set-based queries, each joined to the truck and its move):
 Ordering and paging. Every event has a stable string `id` (`loc:<uuid>`,
 `audit:<uuid>` for a kiosk row, `audit:<uuid>:status` and
 `audit:<uuid>:load:<container uuid>` / `...:unload:...` for the events one
-PATCH or import row expands into). Events sort by (`at`, `id`) descending,
+PATCH or import row expands into; a bulk-import event, which knows only the
+container's name, ends in a short hash of the name instead of the name, so an
+id and the cursor built from it stay short). Events sort by (`at`, `id`) descending,
 the id compared as a plain string (SQL uses COLLATE "C" so the database and
 Python agree). `next_before` is the compound cursor `<UTC ISO>~<id>` of the
 last event returned; `before=<cursor>` returns events strictly after it in
@@ -27,6 +29,7 @@ than that instant". The cursor is opaque: clients pass it back verbatim
 (URL-encoded).
 """
 
+import hashlib
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -104,7 +107,25 @@ def _older_than(at_col, key_col, cursor, *, audit: bool):
     parts = cur_key.split(":", 2)
     if audit and len(parts) == 3:
         tie = or_(tie, key_col == ":".join(parts[:2]))
-    return or_(at_col < cur_at, and_(at_col == cur_at, tie))
+    # `at <= cur_at` is implied by the rest; stated on its own it is a plain
+    # range the `at` index can bound, so a deep page does not scan every
+    # newer row to apply the (at, key) tuple compare.
+    return and_(at_col <= cur_at, or_(at_col < cur_at, and_(at_col == cur_at, tie)))
+
+
+def _name_ids(names: list[str]) -> dict[str, str]:
+    """A short, deterministic id token per container name: the first 12 hex
+    characters of its sha1, lengthened (never shared) in the astronomically
+    unlikely case two names of one row collide. `names` is sorted so the
+    same row always yields the same tokens."""
+    taken: set[str] = set()
+    out: dict[str, str] = {}
+    for name in names:
+        digest = hashlib.sha1(name.encode("utf-8")).hexdigest()
+        token = next(digest[:n] for n in (12, 20, 40) if digest[:n] not in taken)
+        taken.add(token)
+        out[name] = token
+    return out
 
 
 def _ids(values: Any) -> list[str]:
@@ -213,8 +234,10 @@ def _container_events(row: AuditLog, base: dict) -> list[dict]:
     if isinstance(names, dict):
         old, new = set(_ids(names.get("from"))), set(_ids(names.get("to")))
         for kind, group in (("load", new - old), ("unload", old - new)):
-            for name in sorted(group):
-                out.append({**base, "id": f"audit:{row.id}:{kind}:{name}",
+            ordered = sorted(group)
+            tokens = _name_ids(ordered)
+            for name in ordered:
+                out.append({**base, "id": f"audit:{row.id}:{kind}:{tokens[name]}",
                             "kind": kind, "via": "import", "container_name": name})
     return out
 

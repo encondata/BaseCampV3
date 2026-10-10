@@ -7,6 +7,7 @@ import {
   REFRESH_OPTIONS,
   SHIPMENT_COLUMNS, SHIPMENT_PRIMARY_COL, SHIPMENT_STATUSES, shipmentCellText,
   shipmentMoveOptions, shipmentSortValue, shipmentTrucks, trucksMapQuery, trucksFeedQuery,
+  trucksListQuery, FEED_CAP,
 } from './shipments';
 
 function ev(over: Partial<TruckFeedEvent>): TruckFeedEvent {
@@ -55,6 +56,11 @@ describe('query strings', () => {
     expect(SHIPMENT_STATUSES).toEqual(['active', 'in_transit', 'at_destination']);
   });
 
+  it('the trucks list asks for the three live statuses, optionally one move', () => {
+    expect(trucksListQuery(null)).toBe('statuses=active,in_transit,at_destination');
+    expect(trucksListQuery('abc')).toBe('statuses=active,in_transit,at_destination&initiative_id=abc');
+  });
+
   it('feed passes the cursor back verbatim, URL-encoded', () => {
     expect(trucksFeedQuery({ initiativeId: null, limit: 50 })).toBe('limit=50');
     expect(trucksFeedQuery({
@@ -101,13 +107,14 @@ describe('feed paging', () => {
       ev({ id: 'a', at: '2026-10-10T10:00:00Z' }),
     ],
     nextBefore: 'cursor-a',
+    olderLoaded: true,
   };
   const page = (events: TruckFeedEvent[], next: string | null = 'cursor-new') =>
     ({ events, next_before: next });
 
   it('first page: takes the events and the cursor as given', () => {
     expect(mergeFeedPage(null, page([ev({ id: 'x' })]))).toEqual({
-      events: [ev({ id: 'x' })], nextBefore: 'cursor-new',
+      events: [ev({ id: 'x' })], nextBefore: 'cursor-new', olderLoaded: false,
     });
   });
 
@@ -131,14 +138,65 @@ describe('feed paging', () => {
 
   it('a fresh page that shares nothing with a longer feed replaces it (no silent gap)', () => {
     const out = mergeFeedPage(older, page([ev({ id: 'x', at: '2026-10-10T13:00:00Z' })], 'cursor-x'));
-    expect(out).toEqual({ events: [ev({ id: 'x', at: '2026-10-10T13:00:00Z' })], nextBefore: 'cursor-x' });
+    expect(out).toEqual({
+      events: [ev({ id: 'x', at: '2026-10-10T13:00:00Z' })], nextBefore: 'cursor-x', olderLoaded: false,
+    });
   });
 
   it('no gap when the fresh page is the whole feed, or nothing was loaded yet', () => {
     const fresh = ev({ id: 'x', at: '2026-10-10T13:00:00Z' });
     expect(mergeFeedPage(older, page([fresh], null)).events.map((e) => e.id)).toEqual(['x', 'b', 'a']);
-    const empty: FeedState = { events: [], nextBefore: null };
-    expect(mergeFeedPage(empty, page([fresh]))).toEqual({ events: [fresh], nextBefore: 'cursor-new' });
+    const empty: FeedState = { events: [], nextBefore: null, olderLoaded: true };
+    expect(mergeFeedPage(empty, page([fresh]))).toEqual({
+      events: [fresh], nextBefore: 'cursor-new', olderLoaded: false,
+    });
+  });
+
+  it('before any older page is loaded, a refresh replaces the feed with the fresh first page', () => {
+    const firstPage: FeedState = {
+      events: [ev({ id: 'b', at: '2026-10-10T11:00:00Z' }), ev({ id: 'a', at: '2026-10-10T10:00:00Z' })],
+      nextBefore: 'cursor-a',
+      olderLoaded: false,
+    };
+    // "a" was removed server-side, "c" is new, and the cursor moved
+    const out = mergeFeedPage(firstPage, page([
+      ev({ id: 'c', at: '2026-10-10T12:00:00Z' }),
+      ev({ id: 'b', at: '2026-10-10T11:00:00Z' }),
+    ], 'cursor-b'));
+    expect(out.events.map((e) => e.id)).toEqual(['c', 'b']);
+    expect(out.nextBefore).toBe('cursor-b');
+    expect(out.olderLoaded).toBe(false);
+  });
+
+  it('loading an older page switches the feed to merging', () => {
+    const firstPage: FeedState = {
+      events: [ev({ id: 'b', at: '2026-10-10T11:00:00Z' })], nextBefore: 'cursor-b', olderLoaded: false,
+    };
+    const deeper = appendOlderPage(firstPage, 'cursor-b', page([ev({ id: 'a', at: '2026-10-10T10:00:00Z' })], 'cursor-a'));
+    expect(deeper!.olderLoaded).toBe(true);
+    const out = mergeFeedPage(deeper, page([
+      ev({ id: 'c', at: '2026-10-10T12:00:00Z' }), ev({ id: 'b', at: '2026-10-10T11:00:00Z' }),
+    ], 'cursor-b'));
+    expect(out.events.map((e) => e.id)).toEqual(['c', 'b', 'a']);
+    expect(out.nextBefore).toBe('cursor-a');
+  });
+
+  it('merging caps the feed at FEED_CAP, dropping the oldest and pointing Show older at the new tail', () => {
+    // minute i, newest first: ids e000 (newest) ... e499 (oldest)
+    const stamp = (i: number) => new Date(Date.UTC(2026, 9, 10, 0, 0) - i * 60_000).toISOString();
+    const loaded = Array.from({ length: FEED_CAP }, (_, i) =>
+      ev({ id: `e${String(i).padStart(3, '0')}`, at: stamp(i) }));
+    const full: FeedState = { events: loaded, nextBefore: 'cursor-deep', olderLoaded: true };
+    const arrived = [ev({ id: 'n1', at: stamp(-2) }), ev({ id: 'n0', at: stamp(-1) })];
+    const out = mergeFeedPage(full, page([...arrived, loaded[0]], 'cursor-first'));
+    expect(out.events).toHaveLength(FEED_CAP);
+    expect(out.events[0].id).toBe('n1');
+    expect(out.events[FEED_CAP - 1].id).toBe('e497');             // e498 and e499 were dropped
+    expect(out.nextBefore).toBe(`${stamp(497)}~e497`);            // so they are the next page, not a hole
+    expect(out.olderLoaded).toBe(true);
+    // under the cap the cursor is untouched
+    const small = mergeFeedPage(older, page([ev({ id: 'c', at: '2026-10-10T12:00:00Z' }), older.events[0]]));
+    expect(small.nextBefore).toBe('cursor-a');
   });
 
   it('Show older appends the next page and moves the cursor', () => {
@@ -148,10 +206,11 @@ describe('feed paging', () => {
     ], null));
     expect(out!.events.map((e) => e.id)).toEqual(['b', 'a', 'z0']);
     expect(out!.nextBefore).toBeNull();
+    expect(out!.olderLoaded).toBe(true);
   });
 
   it('Show older is ignored when the feed was replaced while it was loading', () => {
-    const replaced: FeedState = { events: [ev({ id: 'x' })], nextBefore: 'cursor-x' };
+    const replaced: FeedState = { events: [ev({ id: 'x' })], nextBefore: 'cursor-x', olderLoaded: false };
     expect(appendOlderPage(replaced, 'cursor-a', page([ev({ id: 'z0' })]))).toBe(replaced);
   });
 });

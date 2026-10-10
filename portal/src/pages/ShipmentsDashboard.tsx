@@ -14,6 +14,11 @@
  * refresh is still running (unless it has hung past BUSY_LIMIT_MS), and a
  * per-panel sequence number keeps an older reply from overwriting a newer
  * one. A panel whose first load fails says so instead of "Loading…".
+ *
+ * The table's trucks are fetched filtered (live statuses, the chosen move)
+ * on every tick. The move picker needs every move a truck is on, so the
+ * unfiltered list is read only on mount and when the move changes — never
+ * per tick.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -23,7 +28,7 @@ import { useAuth } from '../auth/AuthContext';
 import ComboBox from '../components/ComboBox';
 import TrucksMap from '../components/trucks/TrucksMap';
 import {
-  getShipmentMap, getTrucksFeed, getTrucksSummary, listInitiatives, listTrucks,
+  getShipmentMap, getTrucksFeed, getTrucksSummary, listInitiatives, listShipmentTrucks, listTrucks,
   type TruckFeedEvent, type TruckItem, type TruckMapPoint, type TruckSummary,
 } from '../lib/api';
 import { statusChip } from '../lib/chips';
@@ -89,6 +94,8 @@ export default function ShipmentsDashboard() {
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
 
   const [trucks, setTrucks] = useState<TruckItem[] | null>(null);
+  // every truck, for the move picker's options only (not refreshed per tick)
+  const [moveTrucks, setMoveTrucks] = useState<TruckItem[] | null>(null);
   const [summary, setSummary] = useState<TruckSummary | null>(null);
   const [mapPoints, setMapPoints] = useState<TruckMapPoint[] | null>(null);
   const [feed, setFeed] = useState<FeedState | null>(null);
@@ -133,7 +140,7 @@ export default function ShipmentsDashboard() {
       );
     }
     void Promise.allSettled([
-      job('trucks', listTrucks(), setTrucks),
+      job('trucks', listShipmentTrucks(initiativeId), setTrucks),
       job('summary', getTrucksSummary(initiativeId), setSummary),
       job('map', getShipmentMap(initiativeId), setMapPoints),
       job('feed', getTrucksFeed({ initiativeId, limit: FEED_PAGE_SIZE }),
@@ -174,6 +181,15 @@ export default function ShipmentsDashboard() {
     return () => clearInterval(id);
   }, []);
 
+  // the picker's moves: on mount and when the move changes, not per tick
+  useEffect(() => {
+    let alive = true;
+    listTrucks()
+      .then((items) => { if (alive) setMoveTrucks(items); })
+      .catch(() => undefined); // keeps the last options
+    return () => { alive = false; };
+  }, [moveId]);
+
   // archived moves drop out of the picker (when the viewer can read moves)
   useEffect(() => {
     if (!canInitiatives) return undefined;
@@ -199,6 +215,7 @@ export default function ShipmentsDashboard() {
     // cleared in the same render as the new selection: the old move's
     // panels never show under the new move's name
     setMoveId(value);
+    setTrucks(null);
     setSummary(null);
     setMapPoints(null);
     setFeed(null);
@@ -222,8 +239,8 @@ export default function ShipmentsDashboard() {
   /* ── derived ─────────────────────────────────────────────── */
 
   const moveOptions = useMemo(
-    () => shipmentMoveOptions(trucks ?? [], archivedMoves),
-    [trucks, archivedMoves],
+    () => shipmentMoveOptions(moveTrucks ?? [], archivedMoves),
+    [moveTrucks, archivedMoves],
   );
   const rows = useMemo(() => {
     const list = shipmentTrucks(trucks ?? [], initiativeId);

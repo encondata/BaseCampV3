@@ -17,7 +17,7 @@ import type { BulkDiff } from '../components/bulk/BulkApplySummary';
 import type { TagKey } from '../labels/tagTypes';
 import type { Action, PermMap, ScopeInfo } from './access';
 import type { OrgItem } from './orgs';
-import { trucksFeedQuery, trucksMapQuery } from './shipments';
+import { trucksFeedQuery, trucksListQuery, trucksMapQuery } from './shipments';
 import { siblingOrigin } from './siblingOrigin';
 import type { Visibility } from './visibility';
 import type { WorkerItem } from './workers';
@@ -2668,6 +2668,13 @@ export async function clearTruckUpdates(id: string): Promise<void> {
 
 export async function getTrucksMap(trails: boolean): Promise<TruckMapPoint[]> {
   const resp = await apiFetch(`/trucks/map?trails=${trails}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Shipments dashboard table: only the live statuses, optionally one move. */
+export async function listShipmentTrucks(initiativeId: string | null): Promise<TruckItem[]> {
+  const resp = await apiFetch(`/trucks?${trucksListQuery(initiativeId)}`);
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

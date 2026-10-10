@@ -3,6 +3,7 @@ newest-first, move filter, compound-cursor paging, set-based queries."""
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from urllib.parse import quote
 
 from sqlalchemy import event, select
 
@@ -21,6 +22,7 @@ from serversherpa.db.models import (
     TruckContainer,
     TruckUpdate,
 )
+from serversherpa.trucks.feed import format_cursor
 from tests.test_initiatives_client_scope import client_login
 from tests.test_sites_api import login, make_login
 
@@ -310,6 +312,40 @@ async def test_real_bulk_import_commit_shapes_are_read(client, db, seeded_user):
     assert status["actor_name"] == "Ada Admin"
 
 
+async def test_import_event_ids_use_a_bounded_hash_of_the_container_name(
+        client, db, seeded_user):
+    """A 300-character container name must not make the cursor too long:
+    every "Show older" would 422. Ids stay unique within a row and the walk
+    pages straight through them."""
+    hdrs = await login(client)
+    t = await _truck(db, "Rig Long")
+    long_a, long_b = "A" * 300, "A" * 299 + "B"
+    row = _audit(db, t.id, 10, "update",
+                 {"containers": {"from": [long_a], "to": [long_b, "short", "A" * 150]}},
+                 id=uuid.UUID(int=0xD000))
+    for i in range(4):
+        _loc(db, t, 20 + i)
+        _loc(db, t, i)
+    await db.commit()
+
+    everything = (await _feed(client, hdrs, "?limit=200"))["events"]
+    mine = [e for e in everything if e["id"].startswith(f"audit:{row.id}")]
+    assert sorted((e["kind"], len(e["container_name"])) for e in mine) == [
+        ("load", 5), ("load", 150), ("load", 300), ("unload", 300)]
+    assert all(len(e["id"]) < 80 for e in mine)
+    assert len({e["id"] for e in mine}) == 4
+    expected = [e["id"] for e in everything]
+    for limit in (1, 2, 3):
+        seen, _ = await _walk(client, hdrs, limit)
+        assert seen == expected, limit
+    # stopping right on one of them still pages on (the cursor is short)
+    for e in mine:
+        cursor = format_cursor(datetime.fromisoformat(e["at"]), e["id"])
+        assert len(cursor) < 140
+        resp = await client.get(f"/trucks/feed?before={quote(cursor)}", headers=hdrs)
+        assert resp.status_code == 200, resp.text
+
+
 # ── scope ─────────────────────────────────────────────────────────
 
 async def test_filter_by_move(client, db, seeded_user):
@@ -410,6 +446,32 @@ async def test_paging_never_drops_or_repeats_events_tied_on_timestamp(
         seen, pages = await _walk(client, hdrs, limit)
         assert seen == expected, limit
         assert limit >= 50 or pages > 1
+
+
+async def test_cursor_predicate_carries_a_range_bound_on_the_timestamp(
+        client, db, seeded_user):
+    """`at <= cursor` alongside the tuple compare lets the (at) indexes bound
+    a deep page instead of scanning every newer row."""
+    hdrs = await login(client)
+    t = await _truck(db, "Deep")
+    for i in range(3):
+        _loc(db, t, i)
+        _audit(db, t.id, i, "kiosk_truck_load", {"container_name": f"K{i}"})
+    await db.commit()
+    cursor = (await _feed(client, hdrs, "?limit=1"))["next_before"]
+    statements = []
+
+    def record(conn, cur, statement, parameters, context, executemany):
+        statements.append(" ".join(statement.split()))
+
+    engine = get_engine().sync_engine
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        await _feed(client, hdrs, f"?before={quote(cursor)}")
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert any("truck_updates.recorded_at <=" in s for s in statements), statements
+    assert any("audit_log.at <=" in s for s in statements), statements
 
 
 async def test_next_before_is_null_when_exactly_exhausted(client, db, seeded_user):
