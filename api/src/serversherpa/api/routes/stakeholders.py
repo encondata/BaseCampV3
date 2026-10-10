@@ -185,7 +185,7 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
         return names, dict((await db.execute(q)).all())
 
     def _item(org, counts: dict, managers: dict, actor: AuthContext,
-              hierarchy: tuple[dict, dict] = ({}, {})) -> OrgItem:
+              hierarchy: tuple[dict, dict] | None = None) -> OrgItem:
         # `notes` is staff free text ABOUT the org — internal-only, so the
         # org's own client/vendor contacts (non-global anchors) never see it
         # through list/detail (same rule as person_notes in workers.py and
@@ -193,7 +193,7 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
         is_global = actor.access.is_global
         extra: dict = {}
         if is_partner:
-            parent_names, child_counts = hierarchy
+            parent_names, child_counts = hierarchy or ({}, {})
             visible = org.parent_id in parent_names
             extra = {
                 "parent_id": org.parent_id if visible else None,
@@ -277,6 +277,13 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
             hierarchy = await _hierarchy(db, kids, actor)
             return [_item(k, counts, managers, actor, hierarchy) for k in kids]
 
+    def _require_staff_for_parent(actor: AuthContext, data: dict) -> None:
+        """Parent changes are staff-only (display-only hierarchy): a
+        partner-scoped user may not see their parent, and must not be able to
+        clear or repoint it. Checked before any lock or lookup."""
+        if is_partner and "parent_id" in data and not actor.access.is_global:
+            raise _err(403, "forbidden")
+
     async def _set_parent(
         db: AsyncSession, org, parent_id: uuid.UUID | None, actor: AuthContext,
     ) -> None:
@@ -354,6 +361,7 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
         db: DbSession,
         actor: AuthContext = require_permission(resource, "add"),
     ) -> OrgItem:
+        _require_staff_for_parent(actor, body.model_dump(exclude_unset=True))
         org = model(name=body.name, source="manual", created_by=actor.person.id)
         db.add(org)
         try:
@@ -379,8 +387,9 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
         db: DbSession,
         actor: AuthContext = require_permission(resource, "change"),
     ) -> OrgItem:
-        org = await _get_org(db, org_id, actor)
         data = body.model_dump(exclude_unset=True)
+        _require_staff_for_parent(actor, data)
+        org = await _get_org(db, org_id, actor)
         # `notes` is staff-internal (redacted to None in _item for non-global
         # actors), so a scoped client/vendor contact holding `change` on its
         # own org must not blind-overwrite it. Refuse explicitly — even an

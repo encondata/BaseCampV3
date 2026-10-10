@@ -17,6 +17,7 @@
 - Archived parents are allowed. No depth limit. No access inheritance — partner-scoped users see parent/children only where already in scope (`parent_name`/`parent_id` null otherwise; `child_count` and children list scoped).
 - `GET /partners/{id}/children` returns `OrgItem` rows sorted with `natural()`; 404 when the partner isn't visible.
 - Parent changes audited by the existing PATCH snapshot/diff.
+- Parent changes are staff-only: on partner create/PATCH, a body containing a `parent_id` key from a non-global actor (`access.is_global` false) -> 403 `forbidden`, before any lock or lookup (partner users see the hierarchy but cannot change it).
 - Portal copy: field "Parent partner" with option "None"; detail row "Parent partner"; panel "Child partners"; button "Add child"; row action "Remove"; modal eyebrow "Partners", title "Add a child partner"; empty "No child partners."; list column "Parent" (optional, off by default, partner-only).
 - House idioms only (`ComboBox`, `init-panel`, `dir-list`/`ColHead`/`listGridStyle` + column floors, `RowActionsMenu`, modal header pattern, `pf-error`); natural sort; American English.
 - Never commit `api/src/serversherpa/_dev_reload.py`. Never `git stash`. Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.

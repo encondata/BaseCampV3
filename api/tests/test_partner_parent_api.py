@@ -6,7 +6,7 @@ import uuid
 
 from sqlalchemy import select, text
 
-from serversherpa.db.models import AuditLog, PersonRole
+from serversherpa.db.models import AuditLog, PermissionOverride, PersonRole
 from tests.test_stakeholders import _anchored_login, _headers
 
 
@@ -88,16 +88,55 @@ async def test_unknown_parent_is_422(client, seeded_user):
     assert names == ["Alpha"]
 
 
-async def test_out_of_scope_parent_is_422(client, db, seeded_user):
+async def test_unknown_and_out_of_scope_parents_get_equal_responses(
+        client, db, seeded_user):
+    """Parent changes are staff-only, so a partner-scoped user is refused
+    before any lookup: an out-of-scope parent and an unknown one produce
+    byte-identical bodies (no existence oracle). The staff path's own
+    `parent_not_found` (unknown id) is covered above."""
     h = await _headers(client)
     mine = await _mk(client, h, "Mine")
     other = await _mk(client, h, "Other")
     owner = await _anchored_login(db, client, "vendor_owner",
                                   "pp-owner@test.example.com",
                                   partner_id=mine["id"])
-    resp = await _set_parent(client, owner, mine["id"], other["id"])
-    assert resp.status_code == 422
-    assert _code(resp) == "parent_not_found"
+    out_of_scope = await _set_parent(client, owner, mine["id"], other["id"])
+    unknown = await _set_parent(client, owner, mine["id"], str(uuid.uuid4()))
+    assert out_of_scope.status_code == unknown.status_code == 403
+    assert out_of_scope.json() == unknown.json()
+    assert _code(out_of_scope) == "forbidden"
+
+
+async def test_partner_users_cannot_change_the_parent(client, db, seeded_user):
+    h = await _headers(client)
+    parent = await _mk(client, h, "Parent")
+    mine = await _mk(client, h, "Mine", parent_id=parent["id"])
+    owner = await _anchored_login(db, client, "vendor_owner",
+                                  "pp-owner2@test.example.com",
+                                  partner_id=mine["id"])
+    # an explicit null (what a form that cannot see its parent would send)
+    resp = await _set_parent(client, owner, mine["id"], None)
+    assert resp.status_code == 403
+    assert _code(resp) == "forbidden"
+    # create too, for a scoped user who has been granted partners:add
+    person_id = await db.scalar(text(
+        "SELECT person_id FROM user_accounts WHERE email='pp-owner2@test.example.com'"))
+    db.add(PermissionOverride(person_id=person_id, resource="partners",
+                              action="add", allow=True))
+    await db.commit()
+    resp = await client.post("/partners", headers=owner, json={
+        "name": "Sneaky", "parent_id": parent["id"]})
+    assert resp.status_code == 403
+    assert _code(resp) == "forbidden"
+    assert (await client.post("/partners", headers=owner,
+                              json={"name": "Fine"})).status_code == 201
+    # other edits without the key still work, and the parent is untouched
+    resp = await client.patch(f"/partners/{mine['id']}", headers=owner,
+                              json={"city": "Reno"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["city"] == "Reno"
+    row = (await client.get(f"/partners/{mine['id']}", headers=h)).json()
+    assert row["parent_id"] == parent["id"]
 
 
 async def test_direct_and_three_level_cycles_are_422(client, seeded_user):

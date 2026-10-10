@@ -54,6 +54,10 @@ Clients unchanged.
 - `GET /partners/{id}/children` → the partner's visible children as
   `OrgItem` rows, sorted naturally by name (`natural()`), same permission
   as `GET /partners/{id}` (404 when the partner itself isn't visible).
+- Parent changes are staff-only: a create or PATCH body containing a
+  `parent_id` key from a non-global actor (`access.is_global` false) → 403
+  `forbidden`, checked before any lock or lookup. Partner users see the
+  hierarchy where in scope but cannot change it.
 - Changes are audited by the existing PATCH snapshot/diff (`parent_id`
   added to the tracked fields).
 - Add child / Remove on the detail page are PATCHes of the child
