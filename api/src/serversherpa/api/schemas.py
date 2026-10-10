@@ -4005,6 +4005,12 @@ class TruckTrailPoint(BaseModel):
     lng: float
 
 
+class TruckEndSite(BaseModel):
+    name: str
+    latitude: float
+    longitude: float
+
+
 class TruckMapPoint(BaseModel):
     id: uuid.UUID
     name: str
@@ -4016,6 +4022,14 @@ class TruckMapPoint(BaseModel):
     seal_id: str | None = None
     last_update: TruckLastUpdate
     trail: list[TruckTrailPoint] = []
+    end_site: TruckEndSite | None = None
+
+
+class TruckSummary(BaseModel):
+    in_transit: int
+    active: int
+    at_destination: int
+    containers_on_board: int
 
 
 # ── warehouse ─────────────────────────────────────────────────────────

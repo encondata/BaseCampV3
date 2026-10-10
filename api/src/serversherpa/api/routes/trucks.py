@@ -4,15 +4,15 @@ resource; all actors are globally anchored (mirrors containers.py)."""
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import delete, func, select
 
 from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank, rows_from_request
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    TruckContainerOut, TruckCreateIn, TruckDetail, TruckItem,
-    TruckLastUpdate, TruckMapPoint, TruckTrailPoint, TruckUpdateCreateIn,
-    TruckUpdateIn, TruckUpdateOut,
+    TruckContainerOut, TruckCreateIn, TruckDetail, TruckEndSite, TruckItem,
+    TruckLastUpdate, TruckMapPoint, TruckSummary, TruckTrailPoint,
+    TruckUpdateCreateIn, TruckUpdateIn, TruckUpdateOut,
 )
 from serversherpa.db.models import (
     Container, ContainerAsset, Initiative, Site, StatusValue, Truck,
@@ -23,10 +23,16 @@ from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.trucks import bulk_import as bulk
 from serversherpa.trucks.bulk_create import TRUCK_FIELDS
 from serversherpa.trucks.location import LocationError, format_location, parse_location
+from serversherpa.trucks.trip import apply_status_change, start_trip_if_needed
 
 router = APIRouter(prefix="/trucks", tags=["trucks"])
 
 NON_NULLABLE_FIELDS = ("name", "status", "contact_info", "team_drive", "tracking_type")
+
+# Newest trail points kept per truck on /trucks/map (returned oldest -> newest).
+TRAIL_POINT_CAP = 500
+# Statuses the summary counts and whose containers count as "on board".
+SUMMARY_STATUSES = ("in_transit", "active", "at_destination")
 
 
 def _err(status: int, code: str, **extra) -> HTTPException:
@@ -167,42 +173,109 @@ async def list_trucks(
 # Declared ABOVE get_truck: /trucks/map must never be swallowed by
 # GET /trucks/{truck_id} (which would 422 on the non-UUID segment).
 
+def _split_statuses(raw: list[str]) -> list[str]:
+    """`statuses` may repeat (?statuses=a&statuses=b) or be comma-separated."""
+    return [p for item in raw for p in (x.strip() for x in item.split(",")) if p]
+
+
+async def _trails(db: DbSession, ids: list[uuid.UUID],
+                  trip_only: bool) -> dict[uuid.UUID, list[TruckTrailPoint]]:
+    """Every listed truck's newest TRAIL_POINT_CAP located points in ONE
+    query (ROW_NUMBER over each truck's reports), oldest -> newest. With
+    `trip_only`, only points since the truck's `trip_started_at` (all of them
+    when it is NULL)."""
+    if not ids:
+        return {}
+    ranked = (select(
+        TruckUpdate.truck_id, TruckUpdate.recorded_at, TruckUpdate.lat,
+        TruckUpdate.lng,
+        func.row_number().over(
+            partition_by=TruckUpdate.truck_id,
+            order_by=TruckUpdate.recorded_at.desc()).label("rn"))
+        .join(Truck, Truck.id == TruckUpdate.truck_id)
+        .where(TruckUpdate.truck_id.in_(ids),
+               TruckUpdate.lat.isnot(None), TruckUpdate.lng.isnot(None)))
+    if trip_only:
+        ranked = ranked.where(
+            Truck.trip_started_at.is_(None)
+            | (TruckUpdate.recorded_at >= Truck.trip_started_at))
+    ranked = ranked.subquery()
+    rows = (await db.execute(
+        select(ranked.c.truck_id, ranked.c.recorded_at, ranked.c.lat, ranked.c.lng)
+        .where(ranked.c.rn <= TRAIL_POINT_CAP)
+        .order_by(ranked.c.truck_id, ranked.c.recorded_at))).all()
+    out: dict[uuid.UUID, list[TruckTrailPoint]] = {}
+    for truck_id, at, lat, lng in rows:
+        out.setdefault(truck_id, []).append(
+            TruckTrailPoint(recorded_at=at, lat=lat, lng=lng))
+    return out
+
+
 @router.get("/map", response_model=list[TruckMapPoint])
 async def trucks_map(
-    db: DbSession, trails: bool = False,
+    db: DbSession, trails: bool = False, trip: bool = False,
+    initiative_id: uuid.UUID | None = None,
+    statuses: list[str] = Query(default=[]),
     actor: AuthContext = require_permission("trucks", "view"),
 ) -> list[TruckMapPoint]:
     latest = (select(TruckUpdate)
               .distinct(TruckUpdate.truck_id)
               .order_by(TruckUpdate.truck_id, TruckUpdate.recorded_at.desc())
               .subquery())
-    rows = (await db.execute(
-        select(Truck, latest.c.recorded_at, latest.c.lat, latest.c.lng,
-               latest.c.approximate_address)
-        .join(latest, latest.c.truck_id == Truck.id)
-        .where(Truck.archived_at.is_(None), Truck.status != "historical",
-               latest.c.lat.isnot(None), latest.c.lng.isnot(None))
-        .order_by(natural(Truck.name)))).all()
-    statuses = await _truck_statuses(db)
+    query = (select(Truck, latest.c.recorded_at, latest.c.lat, latest.c.lng,
+                    latest.c.approximate_address,
+                    Site.name, Site.latitude, Site.longitude)
+             .join(latest, latest.c.truck_id == Truck.id)
+             .outerjoin(Site, Site.id == Truck.end_site_id)
+             .where(Truck.archived_at.is_(None),
+                    latest.c.lat.isnot(None), latest.c.lng.isnot(None)))
+    wanted = _split_statuses(statuses)
+    if wanted:
+        query = query.where(Truck.status.in_(wanted))
+    else:
+        query = query.where(Truck.status != "historical")
+    if initiative_id is not None:
+        query = query.where(Truck.initiative_id == initiative_id)
+    rows = (await db.execute(query.order_by(natural(Truck.name)))).all()
+    statuses_vocab = await _truck_statuses(db)
+    # trip=true implies trails: the dashboard asks for nothing else
+    trail_by_truck = (await _trails(db, [r[0].id for r in rows], trip_only=trip)
+                      if trails or trip else {})
     out = []
-    for t, at, lat, lng, addr in rows:
-        label, color = statuses.get(t.status, (t.status, "#51606f"))
-        trail = []
-        if trails:
-            trail = [TruckTrailPoint(recorded_at=u.recorded_at, lat=u.lat, lng=u.lng)
-                     for u in await db.scalars(
-                         select(TruckUpdate).where(
-                             TruckUpdate.truck_id == t.id,
-                             TruckUpdate.lat.isnot(None))
-                         .order_by(TruckUpdate.recorded_at))]
+    for t, at, lat, lng, addr, end_name, end_lat, end_lng in rows:
+        label, color = statuses_vocab.get(t.status, (t.status, "#51606f"))
+        end_site = (TruckEndSite(name=end_name, latitude=end_lat, longitude=end_lng)
+                    if end_name is not None and end_lat is not None
+                    and end_lng is not None else None)
         out.append(TruckMapPoint(
             id=t.id, name=t.name, status=t.status, status_label=label,
             status_color=color, driver_name=t.driver_name,
             load_number=t.load_number, seal_id=t.seal_id,
             last_update=TruckLastUpdate(recorded_at=at, lat=lat, lng=lng,
                                         approximate_address=addr),
-            trail=trail))
+            trail=trail_by_truck.get(t.id, []), end_site=end_site))
     return out
+
+
+@router.get("/summary", response_model=TruckSummary)
+async def trucks_summary(
+    db: DbSession, initiative_id: uuid.UUID | None = None,
+    actor: AuthContext = require_permission("trucks", "view"),
+) -> TruckSummary:
+    """Headline counts for the Shipments dashboard (non-archived trucks)."""
+    scope = [Truck.archived_at.is_(None)]
+    if initiative_id is not None:
+        scope.append(Truck.initiative_id == initiative_id)
+    counts = dict((await db.execute(
+        select(Truck.status, func.count()).where(*scope)
+        .where(Truck.status.in_(SUMMARY_STATUSES)).group_by(Truck.status))).all())
+    on_board = await db.scalar(
+        select(func.count()).select_from(TruckContainer)
+        .join(Truck, Truck.id == TruckContainer.truck_id)
+        .where(*scope).where(Truck.status.in_(SUMMARY_STATUSES))) or 0
+    return TruckSummary(
+        in_transit=counts.get("in_transit", 0), active=counts.get("active", 0),
+        at_destination=counts.get("at_destination", 0), containers_on_board=on_board)
 
 
 # ── bulk import ────────────────────────────────────────────────────
@@ -334,6 +407,7 @@ async def create_truck(
         raise _err(422, "name_required")
     await _check_refs(db, {**data, "container_ids": body.container_ids})
     truck = Truck(**data, created_by=actor.person.id)
+    start_trip_if_needed(truck)
     db.add(truck)
     await db.flush()
     for container_id in dict.fromkeys(body.container_ids):
@@ -370,7 +444,10 @@ async def update_truck(
     fields = list(data.keys())
     before = snapshot(truck, fields)
     for field, value in data.items():
-        setattr(truck, field, value)
+        if field == "status":
+            apply_status_change(truck, value)
+        else:
+            setattr(truck, field, value)
     changes = diff(before, snapshot(truck, fields))
 
     if container_ids is not None:
