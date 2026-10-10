@@ -14,14 +14,18 @@ import ChangePasswordForm from '../components/ChangePasswordForm';
 import RegenerateCodesModal from '../components/totp/RegenerateCodesModal';
 import TotpEnrollModal from '../components/totp/TotpEnrollModal';
 import {
+  forgetAllMyTrustedBrowsers,
+  forgetMyTrustedBrowser,
   getMyActivityRequest,
   getProfileRequest,
   getSessionsRequest,
+  listMyTrustedBrowsers,
   revokeSessionRequest,
   updateProfileRequest,
   type MyActivityItem,
   type PersonDetail,
   type SessionInfo,
+  type TrustedBrowsers,
 } from '../lib/api';
 import { describeUserAgent, longDate, relativeTime } from '../lib/format';
 import MeNotifications from './me/MeNotifications';
@@ -64,6 +68,7 @@ export default function Profile() {
   const onPrefs = tab !== 'profile'; // any non-profile tab hides profile-only chrome
   const [profile, setProfile] = useState<PersonDetail | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [trusted, setTrusted] = useState<TrustedBrowsers | null>(null);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<Record<EditKey, string> | null>(null);
   const [saving, setSaving] = useState(false);
@@ -77,6 +82,7 @@ export default function Profile() {
   useEffect(() => {
     void getProfileRequest().then(setProfile).catch(() => {});
     void getSessionsRequest().then(setSessions).catch(() => {});
+    void listMyTrustedBrowsers().then(setTrusted).catch(() => {});
     void getMyActivityRequest().then(setActivity).catch(() => {});
   }, []);
 
@@ -119,6 +125,17 @@ export default function Profile() {
   const revoke = async (familyId: string) => {
     await revokeSessionRequest(familyId);
     setSessions((prev) => prev.filter((s) => s.family_id !== familyId));
+  };
+
+  const forgetTrusted = async (id: string) => {
+    await forgetMyTrustedBrowser(id);
+    setTrusted((prev) => prev && { ...prev, browsers: prev.browsers.filter((b) => b.id !== id) });
+  };
+
+  const forgetAllTrusted = async () => {
+    if (!window.confirm('Forget every remembered browser? Each one will ask for the two-factor code again.')) return;
+    await forgetAllMyTrustedBrowsers();
+    setTrusted((prev) => prev && { ...prev, browsers: [] });
   };
 
   if (!profile) {
@@ -342,6 +359,53 @@ export default function Profile() {
           </div>
         </div>
       </div>
+      {trusted && (totp?.enrolled || trusted.browsers.length > 0) && (
+        <div className="profile-full">
+          <div className="panel">
+            <div className="panel-head">
+              <h3>Remembered browsers</h3>
+              <span className="activity-tools">
+                <span className="result-count">{trusted.browsers.length} remembered</span>
+                {trusted.browsers.length > 0 && (
+                  <button className="mini-btn" onClick={() => void forgetAllTrusted()}>Forget all</button>
+                )}
+              </span>
+            </div>
+            <div className="panel-body">
+              <p className="page-hint" style={{ marginTop: 0 }}>
+                A remembered browser skips the two-factor code for {trusted.trust_days} days.
+                Forget one to ask for the code again.
+              </p>
+              {trusted.browsers.map((b) => (
+                <div className="session-item" key={b.id}>
+                  <div className="session-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+                         strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="2" y="4" width="20" height="13" rx="2" />
+                      <path d="M8 21h8M12 17v4" />
+                    </svg>
+                  </div>
+                  <div className="session-main cell">
+                    <div className="cell-top"><b>{describeUserAgent(b.user_agent)}</b></div>
+                    <div className="mono">
+                      remembered {relativeTime(b.created_at)} ·{' '}
+                      {b.last_used_at ? `last used ${relativeTime(b.last_used_at)}` : 'never used'} ·
+                      expires {relativeTime(b.expires_at)}
+                    </div>
+                  </div>
+                  {b.current && <span className="chip c-green"><span className="dot" />This browser</span>}
+                  <button className="mini-btn" onClick={() => void forgetTrusted(b.id)}>Forget</button>
+                </div>
+              ))}
+              {trusted.browsers.length === 0 && (
+                <p className="set-note" style={{ padding: 0 }}>
+                  No remembered browsers. When you tick Remember this browser at the code step, it shows up here.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       </>
       )}
 

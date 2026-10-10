@@ -141,6 +141,22 @@ export interface SessionInfo {
   current: boolean;
 }
 
+/** One remembered browser (skips the two-factor code until it expires).
+ *  `current` is only present on the self-service list. */
+export interface TrustedBrowser {
+  id: string;
+  user_agent: string | null;
+  created_at: string;
+  last_used_at: string | null;
+  expires_at: string;
+  current?: boolean;
+}
+
+export interface TrustedBrowsers {
+  trust_days: number;
+  browsers: TrustedBrowser[];
+}
+
 export interface TotpStatus {
   enrolled: boolean;
   enrolled_at: string | null;
@@ -529,6 +545,23 @@ export async function revokeSessionRequest(familyId: string): Promise<void> {
   if (!resp.ok && resp.status !== 404) throw await errorFrom(resp);
 }
 
+export async function listMyTrustedBrowsers(): Promise<TrustedBrowsers> {
+  const resp = await apiFetch('/auth/me/trusted-browsers');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** A browser that is already gone (404) counts as forgotten. */
+export async function forgetMyTrustedBrowser(id: string): Promise<void> {
+  const resp = await apiFetch(`/auth/me/trusted-browsers/${id}`, { method: 'DELETE' });
+  if (!resp.ok && resp.status !== 404) throw await errorFrom(resp);
+}
+
+export async function forgetAllMyTrustedBrowsers(): Promise<void> {
+  const resp = await apiFetch('/auth/me/trusted-browsers', { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
 export async function changePasswordRequest(
   currentPassword: string, newPassword: string,
 ): Promise<void> {
@@ -729,6 +762,22 @@ export async function setUserAccessGroups(
 
 export async function revokeAllUserSessions(personId: string): Promise<void> {
   const resp = await apiFetch(`/users/${personId}/sessions/revoke-all`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function listUserTrustedBrowsers(personId: string): Promise<TrustedBrowsers> {
+  const resp = await apiFetch(`/users/${personId}/trusted-browsers`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function forgetUserTrustedBrowser(personId: string, id: string): Promise<void> {
+  const resp = await apiFetch(`/users/${personId}/trusted-browsers/${id}`, { method: 'DELETE' });
+  if (!resp.ok && resp.status !== 404) throw await errorFrom(resp);
+}
+
+export async function forgetAllUserTrustedBrowsers(personId: string): Promise<void> {
+  const resp = await apiFetch(`/users/${personId}/trusted-browsers`, { method: 'DELETE' });
   if (!resp.ok) throw await errorFrom(resp);
 }
 

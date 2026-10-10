@@ -7,7 +7,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { MyActivityItem, UserDetailOut } from '../lib/api';
+import type { MyActivityItem, TrustedBrowsers, UserDetailOut } from '../lib/api';
 
 const auth = vi.hoisted(() => ({
   personId: 'me-1',
@@ -45,6 +45,9 @@ const api = vi.hoisted(() => ({
   putOverrides: vi.fn(async () => {}),
   adminResetTotp: vi.fn(async () => {}),
   adminSetTotpRequired: vi.fn(async () => {}),
+  listUserTrustedBrowsers: vi.fn(async (): Promise<TrustedBrowsers> => ({ trust_days: 7, browsers: [] })),
+  forgetUserTrustedBrowser: vi.fn(async () => {}),
+  forgetAllUserTrustedBrowsers: vi.fn(async () => {}),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -95,6 +98,7 @@ beforeEach(() => {
   auth.maxRank = 100;
   auth.perms = new Set(['users:view', 'users:change', 'access:view', 'access:change', 'audit:view']);
   api.getUserDetail.mockResolvedValue(DETAIL);
+  api.listUserTrustedBrowsers.mockResolvedValue({ trust_days: 7, browsers: [] });
 });
 afterEach(cleanup);
 
@@ -379,4 +383,79 @@ it('refetches history after a mutation once the History tab has been opened', as
   fireEvent.click(await screen.findByRole('button', { name: 'Sign out all sessions' }));
   await waitFor(() => expect(api.revokeAllUserSessions).toHaveBeenCalledWith('p1'));
   await waitFor(() => expect(api.getUserActivity).toHaveBeenCalledTimes(2));
+});
+
+const REMEMBERED: TrustedBrowsers = {
+  trust_days: 7,
+  browsers: [
+    { id: 'tb1', user_agent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/128.0 Safari/537.36',
+      created_at: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+      last_used_at: new Date(Date.now() - 3_600_000).toISOString(),
+      expires_at: new Date(Date.now() + 5 * 86_400_000).toISOString() },
+    { id: 'tb2', user_agent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Safari/604.1',
+      created_at: new Date(Date.now() - 4 * 86_400_000).toISOString(), last_used_at: null,
+      expires_at: new Date(Date.now() + 3 * 86_400_000).toISOString() },
+  ],
+};
+
+it('Remembered browsers lists rows with Forget and Forget all for users:change', async () => {
+  api.listUserTrustedBrowsers.mockResolvedValue(REMEMBERED);
+  renderAt('/people/users/p1');
+  const heading = await screen.findByRole('heading', { name: 'Remembered browsers', level: 3 });
+  const panel = heading.closest('.panel') as HTMLElement;
+  expect(api.listUserTrustedBrowsers).toHaveBeenCalledWith('p1');
+  expect(within(panel).getByText('2 remembered')).toBeTruthy();
+  expect(within(panel).getByText(/remembered 2d ago · last used 1h ago · expires in 5d/)).toBeTruthy();
+  expect(within(panel).getByText(/never used/)).toBeTruthy();
+  expect(within(panel).getAllByRole('button', { name: 'Forget' })).toHaveLength(2);
+  expect(within(panel).getByRole('button', { name: 'Forget all' })).toBeTruthy();
+  expect(within(panel).queryByText('This browser')).toBeNull();
+});
+
+it('Forget on a row calls the API with the person and row ids and drops the row (no confirm)', async () => {
+  api.listUserTrustedBrowsers.mockResolvedValue(REMEMBERED);
+  renderAt('/people/users/p1');
+  const panel = (await screen.findByRole('heading', { name: 'Remembered browsers', level: 3 })).closest('.panel') as HTMLElement;
+  fireEvent.click(within(panel).getAllByRole('button', { name: 'Forget' })[0]);
+  await waitFor(() => expect(api.forgetUserTrustedBrowser).toHaveBeenCalledWith('p1', 'tb1'));
+  await waitFor(() => expect(within(panel).getAllByRole('button', { name: 'Forget' })).toHaveLength(1));
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+it('Forget all opens the Two-factor confirm modal; Cancel leaves everything, confirming calls the API', async () => {
+  api.listUserTrustedBrowsers.mockResolvedValue(REMEMBERED);
+  renderAt('/people/users/p1');
+  const panel = (await screen.findByRole('heading', { name: 'Remembered browsers', level: 3 })).closest('.panel') as HTMLElement;
+  fireEvent.click(within(panel).getByRole('button', { name: 'Forget all' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Forget all remembered browsers' });
+  expect(within(dialog).getByText('Two-factor')).toBeTruthy();
+  expect(within(dialog).getByRole('heading', { name: 'Forget all remembered browsers' })).toBeTruthy();
+  expect(within(dialog).getByText(/Wan Worker/)).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(api.forgetAllUserTrustedBrowsers).not.toHaveBeenCalled();
+  fireEvent.click(within(panel).getByRole('button', { name: 'Forget all' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Forget all browsers' }));
+  await waitFor(() => expect(api.forgetAllUserTrustedBrowsers).toHaveBeenCalledWith('p1'));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(await within(panel).findByText('0 remembered')).toBeTruthy();
+  expect(within(panel).getByText(/No remembered browsers/)).toBeTruthy();
+});
+
+it('Remembered browsers is read-only without users:change on a visible sessions block', async () => {
+  auth.perms.delete('users:change');
+  api.listUserTrustedBrowsers.mockResolvedValue(REMEMBERED);
+  renderAt('/people/users/p1');
+  const panel = (await screen.findByRole('heading', { name: 'Remembered browsers', level: 3 })).closest('.panel') as HTMLElement;
+  expect(within(panel).getByText('2 remembered')).toBeTruthy();
+  expect(within(panel).queryByRole('button', { name: 'Forget' })).toBeNull();
+  expect(within(panel).queryByRole('button', { name: 'Forget all' })).toBeNull();
+});
+
+it('Remembered browsers is not requested or shown when the sessions block is hidden', async () => {
+  api.getUserDetail.mockResolvedValue({ ...DETAIL, sessions: null });
+  renderAt('/people/users/p1');
+  await screen.findByRole('heading', { level: 1, name: /Wan Worker/ });
+  expect(screen.queryByRole('heading', { name: 'Remembered browsers', level: 3 })).toBeNull();
+  expect(api.listUserTrustedBrowsers).not.toHaveBeenCalled();
 });
