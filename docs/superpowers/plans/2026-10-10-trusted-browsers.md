@@ -16,7 +16,7 @@
 - Routes exactly: `GET/DELETE /auth/me/trusted-browsers`, `DELETE /auth/me/trusted-browsers/{id}`, `GET/DELETE /users/{person_id}/trusted-browsers`, `DELETE /users/{person_id}/trusted-browsers/{id}`.
 - List response `{trust_days, browsers: [{id, user_agent, created_at, last_used_at, expires_at, current?}]}` (`current` only on the self-service route), newest first.
 - 404 code `trusted_browser_not_found`. Forgetting the current browser (or all) clears the `ss_trust` cookie with the same attributes the auth route sets it with.
-- Admin: GET needs `users:view` with the same visibility as `GET /users/{person_id}`; DELETEs need `users:change` and `_load_target` (as `sessions/revoke-all`).
+- Admin: GET needs `users:change`, a global actor, and either the person themself or a target whose rank the actor can touch (the same gate as the sessions block on `GET /users/{person_id}`; 403 `forbidden` otherwise, and the row must be visible to the actor, else 404); DELETEs need `users:change` and `_load_target` (as `sessions/revoke-all`).
 - Audit `totp.trust_forget` (`{"trusted_browser_id"}`) and `totp.trust_forget_all` (`{"count"}`), `entity_type="user_account"`, `entity_id=<person_id>`.
 - Never expose `token_hash`.
 - Portal copy exactly: panel title "Remembered browsers"; chip "This browser"; buttons "Forget", "Forget all"; empty "No remembered browsers. When you tick Remember this browser at the code step, it shows up here."; hint "A remembered browser skips the two-factor code for {N} days. Forget one to ask for the code again."

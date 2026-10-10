@@ -39,8 +39,12 @@ Self-service (signed-in user, in `api/routes/me.py`, prefix `/auth/me`):
 
 Admin (in `api/routes/users.py`):
 
-- `GET /users/{person_id}/trusted-browsers` (`users:view`, same visibility
-  as `GET /users/{person_id}`) → same shape without `current`.
+- `GET /users/{person_id}/trusted-browsers` → same shape without `current`.
+  User agents are as sensitive as the sessions block on `GET
+  /users/{person_id}`, so the gate is the same: `users:change`, a global
+  actor, and either the person themself or a target whose rank the actor
+  can touch (`can_touch_rank`); otherwise 403 `forbidden`. A person not
+  visible to the actor is still 404 `user_not_found`.
 - `DELETE /users/{person_id}/trusted-browsers/{id}` and
   `DELETE /users/{person_id}/trusted-browsers` (`users:change`, gated by
   `_load_target` exactly like `sessions/revoke-all` and `totp/reset`).
@@ -84,7 +88,7 @@ API: list shows only remembered rows of the caller (expired, revoked and
 other people's rows excluded), newest first, `current` flag from the cookie;
 forget one (own → 204 + revoked; other's / revoked / expired / unknown →
 404); forgetting the current one clears the cookie; forget all; audit rows;
-admin GET visibility matches user detail; admin DELETE gated by
+admin GET follows the sessions-block gate (403 without `users:change`, 403 for a higher-rank target, 200 for self); admin DELETE gated by
 `users:change` + `_load_target` (rank rule) — 403 for a peer of higher rank,
 404 for unknown; `trust_days` value. Sign-in still skips the code for a
 remembered browser and asks again after it's forgotten (one end-to-end test

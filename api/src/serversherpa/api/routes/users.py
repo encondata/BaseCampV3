@@ -286,10 +286,7 @@ async def get_user_detail(
     # founder's session IPs/user agents) ──
     target_max_rank = max((role.rank for _, role in grant_rows), default=0)
     sessions: list[UserSessionRow] | None = None
-    if actor.access.can("users", "change") and actor.access.is_global and (
-        person_id == actor.person.id
-        or can_touch_rank(actor.access.max_rank, target_max_rank)
-    ):
+    if _may_see_device_details(actor, person_id, target_max_rank):
         sessions = [UserSessionRow(**r) for r in await live_session_rows(db, person_id)]
 
     person_out = UserDetailPerson.model_validate(person)
@@ -445,13 +442,28 @@ def _err(status: int, code: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code})
 
 
-async def _actor_can_touch(db: DbSession, actor: AuthContext,
-                           person_id: uuid.UUID) -> None:
-    target_rank = (await db.scalar(
+async def _target_rank(db: DbSession, person_id: uuid.UUID) -> int:
+    return (await db.scalar(
         select(func.max(Role.rank))
         .join(PersonRole, PersonRole.role == Role.name)
         .where(PersonRole.person_id == person_id,
                PersonRole.revoked_at.is_(None)))) or 0
+
+
+def _may_see_device_details(actor: AuthContext, person_id: uuid.UUID,
+                            target_max_rank: int) -> bool:
+    """Who may read a person's session / remembered-browser details (IPs and
+    user agents): users:change, a global actor, and either the person
+    themself or a target whose rank the actor can touch."""
+    return bool(
+        actor.access.can("users", "change") and actor.access.is_global and (
+            person_id == actor.person.id
+            or can_touch_rank(actor.access.max_rank, target_max_rank)))
+
+
+async def _actor_can_touch(db: DbSession, actor: AuthContext,
+                           person_id: uuid.UUID) -> None:
+    target_rank = await _target_rank(db, person_id)
     if not can_touch_rank(actor.access.max_rank, target_rank):
         raise _err(403, "rank_too_low")
 
@@ -839,8 +851,12 @@ async def list_user_trusted_browsers(
     actor: AuthContext = require_permission("users", "view"),
 ) -> TrustedBrowsersOut:
     """The browsers that skip this person's two-factor code, newest first.
-    Row visibility matches GET /users/{person_id}."""
+    The user agents are as sensitive as the sessions block on the detail, so
+    the same gate applies: users:change, a global actor, and the person
+    themself or a target whose rank the actor can touch (403 otherwise)."""
     await _visible_user(db, actor, person_id)
+    if not _may_see_device_details(actor, person_id, await _target_rank(db, person_id)):
+        raise _err(403, "forbidden")
     return TrustedBrowsersOut(
         trust_days=get_settings().totp_trust_days,
         browsers=[TrustedBrowserOut.model_validate(r, from_attributes=True)

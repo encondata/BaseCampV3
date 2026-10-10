@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from serversherpa.db.models import AuditLog, Person, TrustedDevice, UserAccount
 from serversherpa.services import totp as totp_service
+from tests.test_access_roles_api import login_admin
 from tests.test_sites_api import login
 from tests.test_status_values_write import _make
 from tests.test_totp_api import _enroll_direct, _login, _next_code, _security
@@ -210,7 +211,7 @@ async def test_admin_list_matches_shape_without_current(client, db, seeded_user)
     assert "token_hash" not in resp.text
 
 
-async def test_admin_list_follows_user_detail_visibility(client, db, seeded_user):
+async def test_admin_list_visibility_and_missing_rows(client, db, seeded_user):
     await _remember(db, seeded_user.id)
     # a worker has no users:view -> 403, same as GET /users/{id}
     await _add_user(db, first="Wan", last="Worker", email="wan@test.example.com", role="worker")
@@ -226,6 +227,39 @@ async def test_admin_list_follows_user_detail_visibility(client, db, seeded_user
     for pid in (ghost.id, uuid.uuid4()):
         resp = await client.get(_adm(pid), headers=alice)
         assert resp.status_code == 404 and resp.json()["detail"]["code"] == "user_not_found"
+
+
+async def test_admin_list_needs_users_change(client, db, seeded_user):
+    # user agents are as sensitive as the detail's sessions block: a staffer
+    # whose users:change is overridden off can view the user but not this list
+    await _remember(db, seeded_user.id)
+    wan = await _add_user(db, first="Wan", last="Staff", email="wan@test.example.com",
+                          role="staff")
+    admin = await login_admin(client, db, seeded_user)
+    assert (await client.put(f"/access/overrides/{wan.id}", headers=admin,
+                             json={"overrides": {"users": {"change": False}}})).status_code == 200
+    wan_hdrs = H(await _token(client, email="wan@test.example.com"))
+    assert (await client.get(f"/users/{seeded_user.id}", headers=wan_hdrs)).status_code == 200
+    resp = await client.get(_adm(seeded_user.id), headers=wan_hdrs)
+    assert resp.status_code == 403 and resp.json()["detail"]["code"] == "forbidden"
+
+
+async def test_admin_list_needs_a_touchable_rank_but_self_is_fine(client, db, seeded_user):
+    boss = await _make(db, client, "super_admin", "tb-boss@test.example.com")
+    boss_id = (await client.get("/auth/me", headers=boss)).json()["person"]["id"]
+    await _remember(db, boss_id)
+    admin = await _make(db, client, "admin", "tb-admin@test.example.com")
+    admin_id = (await client.get("/auth/me", headers=admin)).json()["person"]["id"]
+    await _remember(db, admin_id)
+    # a lower-rank admin on a founder: 403 forbidden (the detail hides sessions too)
+    resp = await client.get(_adm(boss_id), headers=admin)
+    assert resp.status_code == 403 and resp.json()["detail"]["code"] == "forbidden"
+    assert (await client.get(f"/users/{boss_id}", headers=admin)).json()["sessions"] is None
+    # an actor viewing themself sees their own list
+    resp = await client.get(_adm(admin_id), headers=admin)
+    assert resp.status_code == 200 and len(resp.json()["browsers"]) == 1
+    # and a founder can read an admin's
+    assert (await client.get(_adm(admin_id), headers=boss)).status_code == 200
 
 
 async def test_admin_forget_one_revokes_audits_with_admin_as_actor(client, db, seeded_user):
