@@ -3,7 +3,6 @@
 
 import uuid
 from datetime import UTC, datetime
-
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, HTTPException, Response
@@ -13,7 +12,10 @@ from sqlalchemy.exc import IntegrityError
 from serversherpa.api.deps import CurrentUser, DbSession, raise_if_reused, require_password_length
 from serversherpa.api.routes.auth import TRUST_COOKIE, clear_trust_cookie
 from serversherpa.api.routes.notifications import (
-    _get_group, _member_count, _request_out, apply_member_overrides,
+    _get_group,
+    _member_count,
+    _request_out,
+    apply_member_overrides,
     effective_settings,
 )
 from serversherpa.api.schemas import (
@@ -22,28 +24,31 @@ from serversherpa.api.schemas import (
     MembershipRequestOut,
     MyActivityItem,
     MyNotificationGroupOut,
+    MyPendingRequestOut,
     MyTrustedBrowserOut,
     MyTrustedBrowsersOut,
-    MyPendingRequestOut,
     NotificationEffectiveSettings,
     NotificationMemberOverrides,
     PersonDetail,
     ProfileUpdateIn,
     SessionItem,
 )
+from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    AuthSession, NotificationGroup, NotificationGroupMember,
-    NotificationMembershipRequest, TrustedDevice,
+    AuthSession,
+    NotificationGroup,
+    NotificationGroupMember,
+    NotificationMembershipRequest,
+    TrustedDevice,
 )
 from serversherpa.db.ordering import natural
-from serversherpa.config import get_settings
 from serversherpa.notifications.requests import RequestError, cancel_request, create_request
 from serversherpa.security.passwords import verify_password
+from serversherpa.services import totp as totp_service
 from serversherpa.services.activity import ABOUT_ENTITY_TYPES, person_activity
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.auth import revoke_family
 from serversherpa.services.password_policy import apply_password
-from serversherpa.services import totp as totp_service
 from serversherpa.services.sessions import live_session_rows
 from serversherpa.services.storage import presign_get
 
