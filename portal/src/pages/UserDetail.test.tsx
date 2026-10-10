@@ -477,7 +477,7 @@ it('a failed row Forget shows an inline error under the list and keeps the row',
   const panel = (await screen.findByRole('heading', { name: 'Remembered browsers', level: 3 })).closest('.panel') as HTMLElement;
   fireEvent.click(within(panel).getAllByRole('button', { name: 'Forget' })[0]);
   const err = await within(panel).findByRole('alert');
-  expect(err.textContent).toBe('Could not forget the browsers. Try again.');
+  expect(err.textContent).toBe('Could not forget that browser. Try again.');
   expect(err.className).toContain('pf-error');
   expect(within(panel).getAllByRole('button', { name: 'Forget' })).toHaveLength(2);
 });
@@ -506,4 +506,31 @@ it('a failed Forget all keeps the modal open with an error beside the buttons, a
   fireEvent.click(within(panel).getByRole('button', { name: 'Forget all' }));
   dialog = await screen.findByRole('dialog', { name: 'Forget all remembered browsers' });
   expect(within(dialog).queryByRole('alert')).toBeNull();
+});
+
+it('Forget all clears a leftover row error', async () => {
+  api.listUserTrustedBrowsers.mockResolvedValue(REMEMBERED);
+  api.forgetUserTrustedBrowser.mockRejectedValueOnce(new Error('network'));
+  renderAt('/people/users/p1');
+  const panel = (await screen.findByRole('heading', { name: 'Remembered browsers', level: 3 })).closest('.panel') as HTMLElement;
+  fireEvent.click(within(panel).getAllByRole('button', { name: 'Forget' })[0]);
+  await within(panel).findByRole('alert');
+  fireEvent.click(within(panel).getByRole('button', { name: 'Forget all' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Forget all browsers' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(await within(panel).findByText('0 remembered')).toBeTruthy();
+  expect(within(panel).queryByRole('alert')).toBeNull();
+});
+
+it('Remembered browsers refetches after the page reloads (Sign out everywhere)', async () => {
+  api.listUserTrustedBrowsers.mockResolvedValueOnce(REMEMBERED);
+  renderAt('/people/users/p1');
+  const panel = (await screen.findByRole('heading', { name: 'Remembered browsers', level: 3 })).closest('.panel') as HTMLElement;
+  expect(within(panel).getByText('2 remembered')).toBeTruthy();
+  expect(api.listUserTrustedBrowsers).toHaveBeenCalledTimes(1);
+  api.listUserTrustedBrowsers.mockResolvedValueOnce({ trust_days: 7, browsers: [] });
+  fireEvent.click(screen.getByRole('button', { name: 'Sign out everywhere' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Sign out all sessions' }));
+  await waitFor(() => expect(api.listUserTrustedBrowsers).toHaveBeenCalledTimes(2));
+  expect(await screen.findByText('0 remembered')).toBeTruthy();
 });

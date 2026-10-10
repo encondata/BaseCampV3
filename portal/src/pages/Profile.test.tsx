@@ -240,7 +240,7 @@ it('Remembered browsers sits directly under Active sessions with rows, chip, hin
   expect(within(panel).getByText('2 remembered')).toBeTruthy();
   expect(within(panel).getByText('This browser')).toBeTruthy();
   expect(within(panel).getAllByRole('button', { name: 'Forget' })).toHaveLength(2);
-  expect(within(panel).getByRole('button', { name: 'Forget all' })).toBeTruthy();
+  expect(within(panel).getByRole('button', { name: 'Forget all' }).className).toBe('mini-btn danger');
   expect(within(panel).getByText(/remembered 2d ago · last used 1h ago · expires in 5d/)).toBeTruthy();
   expect(within(panel).getByText(/never used/)).toBeTruthy();
   expect(within(panel).getByText(
@@ -313,7 +313,7 @@ it('a failed Forget shows an inline error and keeps the row; a failed Forget all
   const panel = (await screen.findByRole('heading', { name: 'Remembered browsers', level: 3 })).closest('.panel') as HTMLElement;
   fireEvent.click(within(panel).getAllByRole('button', { name: 'Forget' })[0]);
   const err = await within(panel).findByRole('alert');
-  expect(err.textContent).toBe('Could not forget the browsers. Try again.');
+  expect(err.textContent).toBe('Could not forget that browser. Try again.');
   expect(err.className).toContain('pf-error');
   expect(within(panel).getAllByRole('button', { name: 'Forget' })).toHaveLength(2);
   // a retry clears the message

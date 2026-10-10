@@ -10,7 +10,7 @@
  * would 403. The buttons additionally need `canManage` (users:change on
  * someone else; self manages their own on /me).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import {
   forgetAllUserTrustedBrowsers, forgetUserTrustedBrowser, listUserTrustedBrowsers,
@@ -20,11 +20,14 @@ import { describeUserAgent, relativeTime } from '../../lib/format';
 import { forgetErrorMessage } from '../../lib/trustedBrowsers';
 
 export default function UserTrustedBrowsers({
-  personId, personName, canManage,
+  personId, personName, canManage, reloadKey = 0,
 }: {
   personId: string;
   personName: string;
   canManage: boolean;
+  /** Bumped by the page after each load, so Sign out everywhere / Reset 2FA
+   *  (which change what is remembered) refresh this block too. */
+  reloadKey?: number;
 }) {
   const [data, setData] = useState<TrustedBrowsers | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -32,12 +35,18 @@ export default function UserTrustedBrowsers({
   const [rowError, setRowError] = useState('');
   const [modalError, setModalError] = useState('');
 
+  // Another person starts from nothing; a reload of the same person keeps the
+  // current list on screen until the fresh one arrives.
+  const shownFor = useRef(personId);
   useEffect(() => {
     let live = true;
-    setData(null);
+    if (shownFor.current !== personId) {
+      shownFor.current = personId;
+      setData(null);
+    }
     void listUserTrustedBrowsers(personId).then((d) => { if (live) setData(d); }).catch(() => {});
     return () => { live = false; };
-  }, [personId]);
+  }, [personId, reloadKey]);
 
   if (!data) return null;
 
@@ -46,7 +55,7 @@ export default function UserTrustedBrowsers({
     try {
       await forgetUserTrustedBrowser(personId, id);
     } catch (err) {
-      setRowError(forgetErrorMessage(err));
+      setRowError(forgetErrorMessage(err, 'one'));
       return;
     }
     setData((prev) => prev && { ...prev, browsers: prev.browsers.filter((b) => b.id !== id) });
@@ -58,6 +67,7 @@ export default function UserTrustedBrowsers({
     try {
       await forgetAllUserTrustedBrowsers(personId);
       setData((prev) => prev && { ...prev, browsers: [] });
+      setRowError('');
       setConfirmOpen(false);
     } catch (err) {
       setModalError(forgetErrorMessage(err));

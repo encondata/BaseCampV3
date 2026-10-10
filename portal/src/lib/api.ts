@@ -546,19 +546,25 @@ export async function revokeSessionRequest(familyId: string): Promise<void> {
 }
 
 export async function listMyTrustedBrowsers(): Promise<TrustedBrowsers> {
-  const resp = await apiFetch('/auth/me/trusted-browsers');
+  // credentials: 'include' — ss_trust is a cross-origin cookie: without it the
+  // browser never sends it (no `current` flag) and ignores the clearing Set-Cookie.
+  const resp = await apiFetch('/auth/me/trusted-browsers', { credentials: 'include' });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
 
 /** A browser that is already gone (404) counts as forgotten. */
 export async function forgetMyTrustedBrowser(id: string): Promise<void> {
-  const resp = await apiFetch(`/auth/me/trusted-browsers/${id}`, { method: 'DELETE' });
+  const resp = await apiFetch(`/auth/me/trusted-browsers/${id}`, {
+    method: 'DELETE', credentials: 'include',
+  });
   if (!resp.ok && resp.status !== 404) throw await errorFrom(resp);
 }
 
 export async function forgetAllMyTrustedBrowsers(): Promise<void> {
-  const resp = await apiFetch('/auth/me/trusted-browsers', { method: 'DELETE' });
+  const resp = await apiFetch('/auth/me/trusted-browsers', {
+    method: 'DELETE', credentials: 'include',
+  });
   if (!resp.ok) throw await errorFrom(resp);
 }
 

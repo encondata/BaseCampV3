@@ -4,7 +4,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 
 import {
-  forgetAllMyTrustedBrowsers, forgetAllUserTrustedBrowsers, forgetMyTrustedBrowser,
+  forgetAllMyTrustedBrowsers, listMyTrustedBrowsers, forgetAllUserTrustedBrowsers, forgetMyTrustedBrowser,
   forgetUserTrustedBrowser,
 } from './api';
 
@@ -61,4 +61,19 @@ it('forget-all calls throw on failure and succeed on 204', async () => {
   mockFetch(404);
   await expect(forgetAllMyTrustedBrowsers()).rejects.toMatchObject({ status: 404 });
   await expect(forgetAllUserTrustedBrowsers('p1')).rejects.toMatchObject({ status: 404 });
+});
+
+it('the /me calls send credentials so ss_trust travels cross-origin', async () => {
+  const fetch = mockFetch(200, { trust_days: 7, browsers: [] });
+  await listMyTrustedBrowsers();
+  const get = fetch.mock.calls.find(([url]) => String(url).endsWith('/auth/me/trusted-browsers'));
+  expect((get?.[1] as RequestInit).credentials).toBe('include');
+
+  const one = mockFetch(204);
+  await forgetMyTrustedBrowser('tb1');
+  expect(deleteCall(one)[1].credentials).toBe('include');
+
+  const all = mockFetch(204);
+  await forgetAllMyTrustedBrowsers();
+  expect(deleteCall(all)[1].credentials).toBe('include');
 });

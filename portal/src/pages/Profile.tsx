@@ -134,7 +134,7 @@ export default function Profile() {
     try {
       await forgetMyTrustedBrowser(id);
     } catch (err) {
-      setTrustedError(forgetErrorMessage(err));
+      setTrustedError(forgetErrorMessage(err, 'one'));
       return;
     }
     setTrusted((prev) => prev && { ...prev, browsers: prev.browsers.filter((b) => b.id !== id) });
@@ -381,7 +381,7 @@ export default function Profile() {
               <span className="activity-tools">
                 <span className="result-count">{trusted.browsers.length} remembered</span>
                 {trusted.browsers.length > 0 && (
-                  <button className="mini-btn" onClick={() => void forgetAllTrusted()}>Forget all</button>
+                  <button className="mini-btn danger" onClick={() => void forgetAllTrusted()}>Forget all</button>
                 )}
               </span>
             </div>

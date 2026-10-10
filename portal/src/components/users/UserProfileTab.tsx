@@ -24,11 +24,13 @@ const SOURCE_LABEL: Record<string, string> = {
 // same DetailMode they compute for the rest of the page; this component
 // only needs canManageUsers to gate its own buttons.
 export default function UserProfileTab({
-  detail, canManageUsers, onEdit, onReset, onSignOutAll, onResetTotp, onToggleTotpRequired,
+  detail, canManageUsers, reloadKey, onEdit, onReset, onSignOutAll, onResetTotp, onToggleTotpRequired,
 }: {
   detail: UserDetailOut;
   mode: DetailMode;
   canManageUsers: boolean;
+  /** Bumped by the page after every load; refreshes the remembered-browsers block. */
+  reloadKey: number;
   onEdit: () => void;
   onReset: () => void;
   onSignOutAll: () => void;
@@ -239,7 +241,7 @@ export default function UserProfileTab({
       )}
       {sessions !== null && (
         <UserTrustedBrowsers personId={person.id} personName={person.display_name}
-                             canManage={canManage} />
+                             canManage={canManage} reloadKey={reloadKey} />
       )}
     </>
   );
