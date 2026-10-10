@@ -270,6 +270,9 @@ it('Forget all asks first; cancel does nothing, OK clears the list and shows the
   const panel = (await screen.findByRole('heading', { name: 'Remembered browsers', level: 3 })).closest('.panel') as HTMLElement;
   fireEvent.click(within(panel).getByRole('button', { name: 'Forget all' }));
   expect(confirm).toHaveBeenCalledTimes(1);
+  expect(confirm).toHaveBeenCalledWith(
+    'Forget every remembered browser? Each one will ask for the two-factor code again.',
+  );
   expect(api.forgetAllMyTrustedBrowsers).not.toHaveBeenCalled();
   confirm.mockReturnValue(true);
   fireEvent.click(within(panel).getByRole('button', { name: 'Forget all' }));
@@ -299,4 +302,27 @@ it('Remembered browsers is hidden when not enrolled and no rows, shown when not 
   api.listMyTrustedBrowsers.mockImplementation(async () => ({ trust_days: 7, browsers: [PHONE] }));
   renderAt('/me');
   expect(await screen.findByRole('heading', { name: 'Remembered browsers', level: 3 })).toBeTruthy();
+});
+
+it('a failed Forget shows an inline error and keeps the row; a failed Forget all keeps the list', async () => {
+  auth.totp = ENROLLED;
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  api.listMyTrustedBrowsers.mockImplementation(async () => ({ trust_days: 7, browsers: [MAC, PHONE] }));
+  api.forgetMyTrustedBrowser.mockRejectedValueOnce(new Error('network'));
+  renderAt('/me');
+  const panel = (await screen.findByRole('heading', { name: 'Remembered browsers', level: 3 })).closest('.panel') as HTMLElement;
+  fireEvent.click(within(panel).getAllByRole('button', { name: 'Forget' })[0]);
+  const err = await within(panel).findByRole('alert');
+  expect(err.textContent).toBe('Could not forget the browsers. Try again.');
+  expect(err.className).toContain('pf-error');
+  expect(within(panel).getAllByRole('button', { name: 'Forget' })).toHaveLength(2);
+  // a retry clears the message
+  fireEvent.click(within(panel).getAllByRole('button', { name: 'Forget' })[0]);
+  await waitFor(() => expect(within(panel).queryByRole('alert')).toBeNull());
+  expect(within(panel).getAllByRole('button', { name: 'Forget' })).toHaveLength(1);
+  api.forgetAllMyTrustedBrowsers.mockRejectedValueOnce(new Error('network'));
+  fireEvent.click(within(panel).getByRole('button', { name: 'Forget all' }));
+  expect((await within(panel).findByRole('alert')).textContent).toBe('Could not forget the browsers. Try again.');
+  expect(within(panel).getAllByRole('button', { name: 'Forget' })).toHaveLength(1);
+  confirm.mockRestore();
 });

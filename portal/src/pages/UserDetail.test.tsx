@@ -459,3 +459,51 @@ it('Remembered browsers is not requested or shown when the sessions block is hid
   expect(screen.queryByRole('heading', { name: 'Remembered browsers', level: 3 })).toBeNull();
   expect(api.listUserTrustedBrowsers).not.toHaveBeenCalled();
 });
+
+it('on the admin\'s own page the remembered browsers list shows without buttons', async () => {
+  auth.personId = 'p1';
+  api.listUserTrustedBrowsers.mockResolvedValue(REMEMBERED);
+  renderAt('/people/users/p1');
+  const panel = (await screen.findByRole('heading', { name: 'Remembered browsers', level: 3 })).closest('.panel') as HTMLElement;
+  expect(within(panel).getByText('2 remembered')).toBeTruthy();
+  expect(within(panel).queryByRole('button', { name: 'Forget' })).toBeNull();
+  expect(within(panel).queryByRole('button', { name: 'Forget all' })).toBeNull();
+});
+
+it('a failed row Forget shows an inline error under the list and keeps the row', async () => {
+  api.listUserTrustedBrowsers.mockResolvedValue(REMEMBERED);
+  api.forgetUserTrustedBrowser.mockRejectedValueOnce(new Error('network'));
+  renderAt('/people/users/p1');
+  const panel = (await screen.findByRole('heading', { name: 'Remembered browsers', level: 3 })).closest('.panel') as HTMLElement;
+  fireEvent.click(within(panel).getAllByRole('button', { name: 'Forget' })[0]);
+  const err = await within(panel).findByRole('alert');
+  expect(err.textContent).toBe('Could not forget the browsers. Try again.');
+  expect(err.className).toContain('pf-error');
+  expect(within(panel).getAllByRole('button', { name: 'Forget' })).toHaveLength(2);
+});
+
+it('a failed Forget all keeps the modal open with an error beside the buttons, and the API read-only message wins', async () => {
+  api.listUserTrustedBrowsers.mockResolvedValue(REMEMBERED);
+  api.forgetAllUserTrustedBrowsers.mockRejectedValueOnce(new Error('network'));
+  renderAt('/people/users/p1');
+  const panel = (await screen.findByRole('heading', { name: 'Remembered browsers', level: 3 })).closest('.panel') as HTMLElement;
+  fireEvent.click(within(panel).getByRole('button', { name: 'Forget all' }));
+  let dialog = await screen.findByRole('dialog', { name: 'Forget all remembered browsers' });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Forget all browsers' }));
+  const err = await within(dialog).findByRole('alert');
+  expect(err.textContent).toBe('Could not forget the browsers. Try again.');
+  expect(err.className).toContain('pf-error');
+  expect(err.closest('.modal-foot')).toBeTruthy();
+  expect(screen.getByRole('dialog', { name: 'Forget all remembered browsers' })).toBeTruthy();
+  expect(within(panel).getAllByRole('button', { name: 'Forget' })).toHaveLength(2);
+  // an API-provided message is shown instead of the generic one
+  api.forgetAllUserTrustedBrowsers.mockRejectedValueOnce(
+    Object.assign(new Error('The portal is read-only right now.'), { code: 'read_only_mode' }));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Forget all browsers' }));
+  await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('The portal is read-only right now.'));
+  // closing and reopening starts clean
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+  fireEvent.click(within(panel).getByRole('button', { name: 'Forget all' }));
+  dialog = await screen.findByRole('dialog', { name: 'Forget all remembered browsers' });
+  expect(within(dialog).queryByRole('alert')).toBeNull();
+});

@@ -28,6 +28,7 @@ import {
   type TrustedBrowsers,
 } from '../lib/api';
 import { describeUserAgent, longDate, relativeTime } from '../lib/format';
+import { forgetErrorMessage } from '../lib/trustedBrowsers';
 import MeNotifications from './me/MeNotifications';
 import MePreferences from './me/MePreferences';
 import '../styles/directory.css';
@@ -69,6 +70,7 @@ export default function Profile() {
   const [profile, setProfile] = useState<PersonDetail | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [trusted, setTrusted] = useState<TrustedBrowsers | null>(null);
+  const [trustedError, setTrustedError] = useState('');
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<Record<EditKey, string> | null>(null);
   const [saving, setSaving] = useState(false);
@@ -128,13 +130,25 @@ export default function Profile() {
   };
 
   const forgetTrusted = async (id: string) => {
-    await forgetMyTrustedBrowser(id);
+    setTrustedError('');
+    try {
+      await forgetMyTrustedBrowser(id);
+    } catch (err) {
+      setTrustedError(forgetErrorMessage(err));
+      return;
+    }
     setTrusted((prev) => prev && { ...prev, browsers: prev.browsers.filter((b) => b.id !== id) });
   };
 
   const forgetAllTrusted = async () => {
     if (!window.confirm('Forget every remembered browser? Each one will ask for the two-factor code again.')) return;
-    await forgetAllMyTrustedBrowsers();
+    setTrustedError('');
+    try {
+      await forgetAllMyTrustedBrowsers();
+    } catch (err) {
+      setTrustedError(forgetErrorMessage(err));
+      return;
+    }
     setTrusted((prev) => prev && { ...prev, browsers: [] });
   };
 
@@ -402,6 +416,7 @@ export default function Profile() {
                   No remembered browsers. When you tick Remember this browser at the code step, it shows up here.
                 </p>
               )}
+              {trustedError && <p className="pf-error" role="alert" style={{ margin: '8px 0 0' }}>{trustedError}</p>}
             </div>
           </div>
         </div>
