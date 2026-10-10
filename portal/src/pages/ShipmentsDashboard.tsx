@@ -10,7 +10,10 @@
  * coming back (unless refresh is Off). A move change clears the old move's
  * panels in the same render as the new selection (never the old move's
  * numbers under the new name) and a generation counter drops any reply
- * still in flight for the old move.
+ * still in flight for the old move. A tick is skipped while the previous
+ * refresh is still running (unless it has hung past BUSY_LIMIT_MS), and a
+ * per-panel sequence number keeps an older reply from overwriting a newer
+ * one. A panel whose first load fails says so instead of "Loading…".
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -34,10 +37,19 @@ import {
 } from '../lib/shipments';
 import '../styles/directory.css';
 import '../styles/dashboard.css';
+import '../styles/profile.css';
 import '../styles/trucks.css';
 
 const MAP_EMPTY =
   'No trucks with a recorded position yet. Add a location update on a truck to see it here.';
+
+/** A refresh still running after this long no longer blocks the next tick
+ *  (a hung request must not freeze a wall screen); sequence numbers keep
+ *  its late replies from overwriting newer ones. */
+const BUSY_LIMIT_MS = 120_000;
+
+type Panel = 'trucks' | 'summary' | 'map' | 'feed';
+const NO_FAILURES: Record<Panel, boolean> = { trucks: false, summary: false, map: false, feed: false };
 
 const nf = new Intl.NumberFormat();
 const skel = <span className="dash-skel" aria-label="loading" />;
@@ -86,27 +98,50 @@ export default function ShipmentsDashboard() {
   const [fullscreen, setFullscreen] = useState(false);
   const [sortKey, setSortKey] = useState('primary');
   const [sortDir, setSortDir] = useState<1 | -1>(1);
+  // a panel's latest fetch failed; shown only while it has no data yet
+  const [failed, setFailed] = useState<Record<Panel, boolean>>(NO_FAILURES);
 
   // bumped on every move change: replies for an older generation are dropped
   const gen = useRef(0);
+  // the refresh in flight (its generation and start), for the skip-a-tick guard
+  const busy = useRef<{ gen: number; since: number } | null>(null);
+  // refresh sequence: each panel applies only replies newer than its last one
+  const seq = useRef(0);
+  const applied = useRef<Record<Panel, number>>({ trucks: 0, summary: 0, map: 0, feed: 0 });
 
   const refreshAll = useCallback(() => {
     const g = gen.current;
+    const b = busy.current;
+    if (b && b.gen === g && Date.now() - b.since < BUSY_LIMIT_MS) return;
+    const run = { gen: g, since: Date.now() };
+    busy.current = run;
+    const n = ++seq.current;
     const live = () => g === gen.current;
+    const mark = (panel: Panel, value: boolean) =>
+      setFailed((prev) => (prev[panel] === value ? prev : { ...prev, [panel]: value }));
     let anyOk = false;
-    function job<T>(p: Promise<T>, apply: (v: T) => void): Promise<void> {
+    function job<T>(panel: Panel, p: Promise<T>, apply: (v: T) => void): Promise<void> {
       return p.then(
-        (v) => { if (live()) { apply(v); anyOk = true; } },
-        () => undefined, // a failed fetch keeps the last data
+        (v) => {
+          if (!live() || n < applied.current[panel]) return;
+          applied.current[panel] = n;
+          apply(v);
+          mark(panel, false);
+          anyOk = true;
+        },
+        () => { if (live()) mark(panel, true); }, // keeps the last data
       );
     }
     void Promise.allSettled([
-      job(listTrucks(), setTrucks),
-      job(getTrucksSummary(initiativeId), setSummary),
-      job(getShipmentMap(initiativeId), setMapPoints),
-      job(getTrucksFeed({ initiativeId, limit: FEED_PAGE_SIZE }),
+      job('trucks', listTrucks(), setTrucks),
+      job('summary', getTrucksSummary(initiativeId), setSummary),
+      job('map', getShipmentMap(initiativeId), setMapPoints),
+      job('feed', getTrucksFeed({ initiativeId, limit: FEED_PAGE_SIZE }),
         (page) => setFeed((prev) => mergeFeedPage(prev, page))),
-    ]).then(() => { if (anyOk && live()) setUpdatedAt(new Date()); });
+    ]).then(() => {
+      if (busy.current === run) busy.current = null;
+      if (anyOk && live()) setUpdatedAt(new Date());
+    });
   }, [initiativeId]);
 
   // mount + every move change
@@ -130,6 +165,13 @@ export default function ShipmentsDashboard() {
     };
     document.addEventListener('visibilitychange', onVisibility);
     return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
+
+  // relative times ("5m ago") stay fresh between data refreshes
+  const [, setClock] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setClock((c) => c + 1), 30_000);
+    return () => clearInterval(id);
   }, []);
 
   // archived moves drop out of the picker (when the viewer can read moves)
@@ -162,6 +204,7 @@ export default function ShipmentsDashboard() {
     setFeed(null);
     setOlderBusy(false);
     setOlderFailed(false);
+    setFailed(NO_FAILURES);
   };
 
   const showOlder = () => {
@@ -240,13 +283,17 @@ export default function ShipmentsDashboard() {
   const kpi = (label: string, value: number | undefined) => (
     <div className="dash-kpi">
       <span className="dash-kpi-label">{label}</span>
-      <span className="dash-kpi-value">{value === undefined ? skel : nf.format(value)}</span>
+      <span className="dash-kpi-value">
+        {value !== undefined ? nf.format(value) : failed.summary ? '—' : skel}
+      </span>
     </div>
   );
 
+  const panelError = (text: string) => <div className="pf-error shipdash-panel-error">{text}</div>;
+
   const map = (inModal: boolean) => (
     mapPoints === null
-      ? <div className="trucks-map-empty">Loading…</div>
+      ? <div className="trucks-map-empty">{failed.map ? panelError('Could not load the map.') : 'Loading…'}</div>
       : (
         <TrucksMap points={mapPoints} trails destinations onOpen={openTruck}
                    scrollWheelZoom={inModal} emptyText={MAP_EMPTY}
@@ -292,6 +339,7 @@ export default function ShipmentsDashboard() {
           {kpi('Loading', summary?.active)}
           {kpi('At destination', summary?.at_destination)}
           {kpi('Containers on board', summary?.containers_on_board)}
+          {summary === null && failed.summary && panelError('Could not load counts.')}
         </section>
 
         {/* ── live map ── */}
@@ -313,7 +361,9 @@ export default function ShipmentsDashboard() {
           <div className="dash-panel-head">
             <span className="dash-panel-title">Update feed</span>
           </div>
-          {feed === null && <div className="dash-panel-empty">Loading…</div>}
+          {feed === null && (failed.feed
+            ? panelError('Could not load updates.')
+            : <div className="dash-panel-empty">Loading…</div>)}
           {feed !== null && feed.events.length === 0 && (
             <div className="dash-panel-empty">No truck updates yet.</div>
           )}
@@ -356,7 +406,9 @@ export default function ShipmentsDashboard() {
               <Link className="dash-panel-link" to="/logistics/trucks">Trucks / Shipments</Link>
             </span>
           </div>
-          {trucks === null && <div className="dash-panel-empty">Loading…</div>}
+          {trucks === null && (failed.trucks
+            ? panelError('Could not load trucks.')
+            : <div className="dash-panel-empty">Loading…</div>)}
           {trucks !== null && (
             <div className="dir-list list-scroll">
               <div className="list-head" style={rowStyle}>

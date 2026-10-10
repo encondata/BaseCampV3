@@ -704,10 +704,12 @@ a.dash-kpi:hover {
 .shipdash-feed-row { grid-template-columns: 18px minmax(96px, 0.8fr) minmax(0, 1.7fr) auto; }
 .shipdash-feed-icon { width: 18px; height: 18px; color: var(--text-mute); }
 .shipdash-feed-icon svg { display: block; width: 18px; height: 18px; }
-.shipdash-feed-icon.k-location { color: var(--c-blue, #2f6fed); }
-.shipdash-feed-icon.k-status { color: var(--c-amber, #a36207); }
-.shipdash-feed-icon.k-load { color: var(--c-green, #178a4c); }
-.shipdash-feed-icon.k-unload { color: var(--c-red, #c2412d); }
+/* the status palette (directory.css on .portal-shell, brightened for dark
+   surfaces in portal-theme.css) */
+.shipdash-feed-icon.k-location { color: var(--c-blue); }
+.shipdash-feed-icon.k-status { color: var(--c-amber); }
+.shipdash-feed-icon.k-load { color: var(--c-green); }
+.shipdash-feed-icon.k-unload { color: var(--c-red); }
 .shipdash-feed-truck,
 .shipdash-feed-text {
   min-width: 0;
@@ -721,6 +723,9 @@ a.dash-kpi:hover {
 .shipdash-by { margin-left: 6px; }
 .shipdash-feed-more { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
 .shipdash-feed-more .page-hint { margin: 0; }
+
+/* a panel's first load failed (pf-error carries the color/size) */
+.dash-kpis > .shipdash-panel-error { grid-column: 1 / -1; }
 
 .shipdash-row-static { cursor: default; }
 .shipdash-row-static:hover { background: none; }

@@ -345,3 +345,125 @@ it('trucks table: live, non-archived trucks, naturally sorted, linked', async ()
   const after = table.getAllByRole('link').filter((a) => a.getAttribute('href')?.startsWith('/logistics/trucks/'));
   expect(after.map((a) => a.textContent)).toEqual(['Truck 10', 'Truck 2']);
 });
+
+/* ── review follow-ups ─────────────────────────────────────────── */
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+const countsText = () => panel('Counts').textContent ?? '';
+
+it('skips a tick while the previous refresh is still running', async () => {
+  const first = deferred<TruckSummary>();
+  api.getTrucksSummary.mockReturnValueOnce(first.promise);
+  renderPage();
+  await flush();
+  expect(api.getTrucksSummary).toHaveBeenCalledTimes(1);
+
+  await act(() => vi.advanceTimersByTimeAsync(60_000)); // two ticks, both skipped
+  expect(api.getTrucksSummary).toHaveBeenCalledTimes(1);
+  expect(api.listTrucks).toHaveBeenCalledTimes(1);
+
+  await act(async () => { first.resolve(SUMMARY); });
+  await act(() => vi.advanceTimersByTimeAsync(30_000));
+  expect(api.getTrucksSummary).toHaveBeenCalledTimes(2);
+});
+
+it('an older reply for the same move never overwrites a newer one', async () => {
+  const slow = deferred<TruckSummary>();
+  api.getTrucksSummary.mockReturnValueOnce(slow.promise);
+  renderPage();
+  await flush();
+  // a refresh stuck past the busy limit no longer blocks the cadence
+  await act(() => vi.advanceTimersByTimeAsync(150_000));
+  expect(api.getTrucksSummary.mock.calls.length).toBeGreaterThan(1);
+  expect(countsText()).toContain('7'); // the newer reply (SUMMARY)
+
+  await act(async () => { slow.resolve({ ...SUMMARY, containers_on_board: 99 }); });
+  expect(countsText()).not.toContain('99');
+  expect(countsText()).toContain('7');
+});
+
+it('drops the old move’s replies when they land after the switch', async () => {
+  const oldSummary = deferred<TruckSummary>();
+  const oldMap = deferred<TruckMapPoint[]>();
+  const oldFeed = deferred<TruckFeedPage>();
+  renderPage();
+  await flush(); // All moves loaded (trucks list feeds the picker)
+
+  // the next refresh for All moves is slow…
+  api.getTrucksSummary.mockReturnValueOnce(oldSummary.promise);
+  api.getShipmentMap.mockReturnValueOnce(oldMap.promise);
+  api.getTrucksFeed.mockReturnValueOnce(oldFeed.promise);
+  await act(() => vi.advanceTimersByTimeAsync(30_000));
+
+  // …and the user switches moves while it is in flight; the new move's
+  // own replies stay pending so only the old ones can land
+  api.getTrucksSummary.mockImplementation(() => new Promise(() => {}));
+  api.getShipmentMap.mockImplementation(() => new Promise(() => {}));
+  api.getTrucksFeed.mockImplementation(() => new Promise(() => {}));
+  fireEvent.focus(screen.getByRole('combobox', { name: 'Move' }));
+  fireEvent.mouseDown(screen.getByRole('button', { name: 'Austin move' }));
+  await flush();
+
+  await act(async () => {
+    oldSummary.resolve({ ...SUMMARY, containers_on_board: 99 });
+    oldMap.resolve([point(TRUCKS[0])]);
+    oldFeed.resolve({ events: [ev({ id: 'loc:stale', address: 'Stale City', source: 'manual' })], next_before: null });
+  });
+  expect(countsText()).not.toContain('99');
+  expect(screen.queryByText('Stale City · manual')).toBeNull();
+  expect(screen.queryByTestId('map')).toBeNull(); // still loading the new move's map
+});
+
+it('drops a Show older reply that lands after a move change', async () => {
+  const older = deferred<TruckFeedPage>();
+  renderPage();
+  await flush();
+  api.getTrucksFeed.mockReturnValueOnce(older.promise);
+  fireEvent.click(screen.getByRole('button', { name: 'Show older' }));
+
+  // the new move's first page carries the same cursor string, so only the
+  // generation check can tell the replies apart
+  api.getTrucksFeed.mockResolvedValue(FEED_1);
+  fireEvent.focus(screen.getByRole('combobox', { name: 'Move' }));
+  fireEvent.mouseDown(screen.getByRole('button', { name: 'Austin move' }));
+  await flush();
+  expect(within(panel('Update feed')).getByText('Newark, NJ · manual')).not.toBeNull();
+
+  await act(async () => { older.resolve(FEED_OLDER); });
+  expect(within(panel('Update feed')).queryByText('Albany, NY · seed')).toBeNull();
+});
+
+it('a failed first load shows an error in that panel, and the next good tick clears it', async () => {
+  api.getShipmentMap.mockRejectedValueOnce(new Error('down'));
+  api.getTrucksFeed.mockRejectedValueOnce(new Error('down'));
+  api.listTrucks.mockRejectedValueOnce(new Error('down'));
+  api.getTrucksSummary.mockRejectedValueOnce(new Error('down'));
+  renderPage();
+  await flush();
+  expect(within(panel('Live map')).getByText('Could not load the map.')).not.toBeNull();
+  expect(within(panel('Update feed')).getByText('Could not load updates.')).not.toBeNull();
+  expect(within(panel('Trucks')).getByText('Could not load trucks.')).not.toBeNull();
+  expect(within(panel('Counts')).getByText('Could not load counts.')).not.toBeNull();
+  expect(screen.queryByText('Loading…')).toBeNull();
+
+  await act(() => vi.advanceTimersByTimeAsync(30_000));
+  expect(screen.queryByText(/^Could not load/)).toBeNull();
+  expect(within(panel('Update feed')).getByText('Newark, NJ · manual')).not.toBeNull();
+  expect(countsText()).toContain('7');
+});
+
+it('relative times stay fresh with refresh Off', async () => {
+  renderPage();
+  await flush();
+  fireEvent.change(screen.getByLabelText('Auto-refresh'), { target: { value: '0' } });
+  expect(within(panel('Update feed')).getByText('30m ago')).not.toBeNull();
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(within(panel('Update feed')).getByText('31m ago')).not.toBeNull();
+  expect(api.getTrucksSummary).toHaveBeenCalledTimes(1);
+});
