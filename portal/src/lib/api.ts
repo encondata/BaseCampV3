@@ -1117,6 +1117,34 @@ export async function listPartnerWorkers(id: string): Promise<WorkerItem[]> {
   return resp.json();
 }
 
+/** GET /partners — the full rows (parent_id / parent_name / child_count
+ *  included), where `listPartners` returns only the slim id/name projection. */
+export async function listPartnerItems(): Promise<OrgItem[]> {
+  const resp = await apiFetch('/partners');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** GET /partners/{id}/children — the children visible to the caller, sorted
+ *  naturally by name. */
+export async function listPartnerChildren(id: string): Promise<OrgItem[]> {
+  const resp = await apiFetch(`/partners/${id}/children`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** PATCH /partners/{id} with only `parent_id` (null clears it). Staff only;
+ *  422 self_parent | parent_not_found | circular_parent. */
+export async function setPartnerParent(id: string, parentId: string | null): Promise<OrgItem> {
+  const resp = await apiFetch(`/partners/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ parent_id: parentId }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 export async function addContactLink(
   kind: OrgKind, orgId: string, personId: string, tier: ContactTier,
 ): Promise<void> {

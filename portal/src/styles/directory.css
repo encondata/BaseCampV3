@@ -1095,3 +1095,8 @@ button.combo-caret:hover { color: var(--text-dark); }
 .collapse-panel.open .collapse-chevron { transform: rotate(90deg); }
 .collapse-body { margin-top: 12px; }
 .supplied-modal-row:hover { background: var(--surface-2, #f5f7fa); }
+
+/* ── Add a child partner (partner detail) ──────────────────────────── */
+/* Sizes to its content: one ComboBox and a hint, so a narrow card; overflow
+   stays visible (the ComboBox menu also portals out of any .modal-card). */
+.modal-card.reports-modal-card.rgm-card.add-child-card { width: min(560px, 96vw); max-width: 96vw; overflow: visible; max-height: none; }

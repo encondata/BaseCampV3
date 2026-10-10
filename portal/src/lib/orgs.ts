@@ -32,6 +32,11 @@ export interface OrgItem {
   logo_url: string | null;
   archived_at: string | null;
   created_at: string;
+  /** partners only (PartnerItem): the parent partner, null when unset OR not
+   *  visible to the viewer; the parent's name; children visible to the viewer. */
+  parent_id?: string | null;
+  parent_name?: string | null;
+  child_count?: number;
 }
 
 /** Archived orgs don't hide — they surface as a fourth status alongside
@@ -110,6 +115,7 @@ export function orgCellText(
     case 'service_region': return o.service_region ?? '—';
     case 'status': return STATUS_META[effectiveStatus(o)]?.label ?? effectiveStatus(o);
     case 'manager': return o.account_manager?.display_name ?? '—';
+    case 'parent': return o.parent_name ?? '—';
     case 'contacts': return String(o.contact_count);
     case 'website': return o.website ?? '—';
     case 'phone': return o.phone ?? '—';
@@ -148,7 +154,44 @@ export const ORG_ERRORS: Record<string, string> = {
   tier_not_allowed: 'Partners do not have a tier.',
   service_region_not_allowed: 'Clients do not have a service region.',
   forbidden: 'You do not have permission to change this.',
+  self_parent: 'A partner cannot be its own parent.',
+  parent_not_found: 'Pick a valid parent partner.',
+  circular_parent: 'That would make a partner its own ancestor.',
 };
+
+/** Ids of every partner below `rootId` in the loaded list's parent_id links
+ *  (children, grandchildren, …). The API enforces the cycle rule; this just
+ *  keeps the picker from offering a choice that would be refused. */
+export function partnerDescendantIds(rows: OrgItem[], rootId: string): Set<string> {
+  const kids = new Map<string, string[]>();
+  for (const r of rows) {
+    if (!r.parent_id) continue;
+    const list = kids.get(r.parent_id) ?? [];
+    list.push(r.id);
+    kids.set(r.parent_id, list);
+  }
+  const out = new Set<string>();
+  const stack = [...(kids.get(rootId) ?? [])];
+  while (stack.length) {
+    const id = stack.pop()!;
+    if (out.has(id)) continue;
+    out.add(id);
+    stack.push(...(kids.get(id) ?? []));
+  }
+  return out;
+}
+
+/** Ids of every partner above `startId` (its parent, grandparent, …). */
+export function partnerAncestorIds(rows: OrgItem[], startId: string): Set<string> {
+  const parentOf = new Map(rows.map((r) => [r.id, r.parent_id ?? null]));
+  const out = new Set<string>();
+  let cur = parentOf.get(startId) ?? null;
+  while (cur && !out.has(cur)) {
+    out.add(cur);
+    cur = parentOf.get(cur) ?? null;
+  }
+  return out;
+}
 
 /* ── god-edit descriptors ──────────────────────────────────────────
  * Every field below round-trips through PATCH /clients|partners/{id} as
