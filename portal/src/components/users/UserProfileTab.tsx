@@ -1,7 +1,7 @@
 /**
  * UserProfileTab — the /me-shaped Profile tab for another user: Profile +
  * Account kv panels, then Memberships (worker profile, org affiliations,
- * notification groups) and Active sessions (admin view).
+ * notification groups), Active sessions and Remembered browsers (admin view).
  */
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -12,6 +12,7 @@ import { statusChip } from '../../lib/chips';
 import { describeUserAgent, longDate, relativeTime } from '../../lib/format';
 import { STATUS_META, type DetailMode } from '../../lib/users';
 import { Switch } from '../Switch';
+import UserTrustedBrowsers from './UserTrustedBrowsers';
 
 const SOURCE_LABEL: Record<string, string> = {
   manual: 'Added manually',
@@ -23,11 +24,13 @@ const SOURCE_LABEL: Record<string, string> = {
 // same DetailMode they compute for the rest of the page; this component
 // only needs canManageUsers to gate its own buttons.
 export default function UserProfileTab({
-  detail, canManageUsers, onEdit, onReset, onSignOutAll, onResetTotp, onToggleTotpRequired,
+  detail, canManageUsers, reloadKey, onEdit, onReset, onSignOutAll, onResetTotp, onToggleTotpRequired,
 }: {
   detail: UserDetailOut;
   mode: DetailMode;
   canManageUsers: boolean;
+  /** Bumped by the page after every load; refreshes the remembered-browsers block. */
+  reloadKey: number;
   onEdit: () => void;
   onReset: () => void;
   onSignOutAll: () => void;
@@ -235,6 +238,10 @@ export default function UserProfileTab({
             </div>
           </div>
         </div>
+      )}
+      {sessions !== null && (
+        <UserTrustedBrowsers personId={person.id} personName={person.display_name}
+                             canManage={canManage} reloadKey={reloadKey} />
       )}
     </>
   );

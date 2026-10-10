@@ -112,6 +112,7 @@ def enforce_session_scope(request: Request, user: AuthContext) -> None:
 
 MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # Never frozen: sign-in/out/refresh/password/preferences/session revocation,
+# forgetting your own remembered browsers,
 # and the admin toggle itself — whoever could turn read-only on can always
 # turn it off. Everything else under /auth/me (profile edits) freezes like
 # any other write. /kiosk/pair* is a sign-in (approve/deny on the phone) —
@@ -130,11 +131,15 @@ READ_ONLY_EXEMPT_PATHS = frozenset({
     "/kiosk/printer-events",
     "/auth/totp/verify", "/auth/totp/enroll/start", "/auth/totp/enroll/confirm",
     "/auth/totp/backup-codes/regenerate",
+    # forget-all remembered browsers (self-service): closing a hole, like
+    # revoking a session. The admin /users/{id}/trusted-browsers stay frozen.
+    "/auth/me/trusted-browsers",
     # a read made through POST (a batch of asset ids): a freeze mustn't
     # blank every image on every wiki page
     "/wiki/assets/urls",
 })
-READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/kiosk/pair")
+READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/auth/me/trusted-browsers/",
+                             "/kiosk/pair")
 # Paths with an id in them. `POST /wiki/nodes/{id}/view` is telemetry, not
 # a state change: the route answers 204 during a freeze and simply doesn't
 # count the view, so a reader opening a page never sees a read-only error.
@@ -171,7 +176,10 @@ async def enforce_read_only(db: AsyncSession, request: Request,
 # "you must change your password" screen) and GET /auth/me/sessions (self-
 # scoped list of what DELETE /auth/me/sessions/{id} lets it revoke) since
 # neither is a mutating route and so isn't already covered by
-# READ_ONLY_EXEMPT_PATHS. `/system/admin` is deliberately NOT inherited:
+# READ_ONLY_EXEMPT_PATHS. The self-service remembered-browser DELETEs are
+# inherited from that set: forgetting a browser only touches the person's
+# own rows and only makes sign-in stricter, like revoking a session.
+# `/system/admin` is deliberately NOT inherited:
 # read-only exempts it because whoever can turn read-only on can turn it
 # off, which says nothing about a temp-password admin session. Neither is
 # `/kiosk/printer-events`: read-only exempts it so an already-performed

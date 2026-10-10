@@ -32,6 +32,8 @@ from serversherpa.api.schemas import (
     ResetPasswordIn,
     RolesUpdateIn,
     TotpRequiredIn,
+    TrustedBrowserOut,
+    TrustedBrowsersOut,
     UserAccessBlock,
     UserAccessGroupRow,
     UserCreateIn,
@@ -45,6 +47,7 @@ from serversherpa.api.schemas import (
     UserSessionRow,
     UserWorkerCard,
 )
+from serversherpa.config import get_settings
 from serversherpa.db.models import (
     AccessGroup, AccessGroupMember, AuthSession, Client, NotificationGroup,
     NotificationGroupMember, NotificationMembershipRequest, Partner,
@@ -155,6 +158,23 @@ async def _org_refs(db: DbSession, client_ids: set, partner_ids: set) -> dict:
     return out
 
 
+async def _visible_user(
+    db: DbSession, actor: AuthContext, person_id: uuid.UUID,
+) -> tuple[Person, UserAccount]:
+    """The person + account if the actor may see that user row (users:view
+    scope, the same rule as the list and the detail); 404 otherwise."""
+    query = (select(Person, UserAccount)
+             .join(UserAccount, UserAccount.person_id == Person.id)
+             .where(Person.id == person_id))
+    cond = scope_conditions("users", actor.access, actor.person.id)
+    if cond is not None:
+        query = query.where(cond)
+    row = (await db.execute(query)).first()
+    if row is None:
+        raise _err(404, "user_not_found")
+    return row[0], row[1]
+
+
 @router.get("/{person_id}", response_model=UserDetailOut)
 async def get_user_detail(
     person_id: uuid.UUID,
@@ -167,16 +187,7 @@ async def get_user_detail(
     the actor must be able to touch the target's rank (or be viewing
     themself) — a rank-40 staffer should not be able to read a founder's
     session IPs and user agents."""
-    query = (select(Person, UserAccount)
-             .join(UserAccount, UserAccount.person_id == Person.id)
-             .where(Person.id == person_id))
-    cond = scope_conditions("users", actor.access, actor.person.id)
-    if cond is not None:
-        query = query.where(cond)
-    row = (await db.execute(query)).first()
-    if row is None:
-        raise _err(404, "user_not_found")
-    person, account = row
+    person, account = await _visible_user(db, actor, person_id)
     now = datetime.now(UTC)
 
     # ── roles: active grants with rank, org, granter ──
@@ -275,10 +286,7 @@ async def get_user_detail(
     # founder's session IPs/user agents) ──
     target_max_rank = max((role.rank for _, role in grant_rows), default=0)
     sessions: list[UserSessionRow] | None = None
-    if actor.access.can("users", "change") and actor.access.is_global and (
-        person_id == actor.person.id
-        or can_touch_rank(actor.access.max_rank, target_max_rank)
-    ):
+    if _may_see_device_details(actor, person_id, target_max_rank):
         sessions = [UserSessionRow(**r) for r in await live_session_rows(db, person_id)]
 
     person_out = UserDetailPerson.model_validate(person)
@@ -434,13 +442,28 @@ def _err(status: int, code: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code})
 
 
-async def _actor_can_touch(db: DbSession, actor: AuthContext,
-                           person_id: uuid.UUID) -> None:
-    target_rank = (await db.scalar(
+async def _target_rank(db: DbSession, person_id: uuid.UUID) -> int:
+    return (await db.scalar(
         select(func.max(Role.rank))
         .join(PersonRole, PersonRole.role == Role.name)
         .where(PersonRole.person_id == person_id,
                PersonRole.revoked_at.is_(None)))) or 0
+
+
+def _may_see_device_details(actor: AuthContext, person_id: uuid.UUID,
+                            target_max_rank: int) -> bool:
+    """Who may read a person's session / remembered-browser details (IPs and
+    user agents): users:change, a global actor, and either the person
+    themself or a target whose rank the actor can touch."""
+    return bool(
+        actor.access.can("users", "change") and actor.access.is_global and (
+            person_id == actor.person.id
+            or can_touch_rank(actor.access.max_rank, target_max_rank)))
+
+
+async def _actor_can_touch(db: DbSession, actor: AuthContext,
+                           person_id: uuid.UUID) -> None:
+    target_rank = await _target_rank(db, person_id)
     if not can_touch_rank(actor.access.max_rank, target_rank):
         raise _err(403, "rank_too_low")
 
@@ -818,6 +841,59 @@ async def revoke_all_user_sessions(
     await totp_service.revoke_trust(db, person_id)
     audit(db, actor_id=actor.person.id, entity_type="auth",
           entity_id=str(person_id), action="session.revoke_all", changes={})
+    await db.commit()
+
+
+@router.get("/{person_id}/trusted-browsers", response_model=TrustedBrowsersOut)
+async def list_user_trusted_browsers(
+    person_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("users", "view"),
+) -> TrustedBrowsersOut:
+    """The browsers that skip this person's two-factor code, newest first.
+    The user agents are as sensitive as the sessions block on the detail, so
+    the same gate applies: users:change, a global actor, and the person
+    themself or a target whose rank the actor can touch (403 otherwise)."""
+    await _visible_user(db, actor, person_id)
+    if not _may_see_device_details(actor, person_id, await _target_rank(db, person_id)):
+        raise _err(403, "forbidden")
+    return TrustedBrowsersOut(
+        trust_days=get_settings().totp_trust_days,
+        browsers=[TrustedBrowserOut.model_validate(r, from_attributes=True)
+                  for r in await totp_service.list_trust(db, person_id)])
+
+
+@router.delete("/{person_id}/trusted-browsers/{trusted_id}", status_code=204)
+async def forget_user_trusted_browser(
+    person_id: uuid.UUID,
+    trusted_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("users", "change"),
+) -> None:
+    """Make one of their remembered browsers ask for the code again."""
+    await _load_target(db, actor, person_id)
+    if not await totp_service.forget_trust(db, person_id, trusted_id):
+        raise _err(404, "trusted_browser_not_found")
+    audit(db, actor_id=actor.person.id, entity_type="user_account",
+          entity_id=str(person_id), action="totp.trust_forget",
+          changes={"trusted_browser_id": str(trusted_id)})
+    await db.commit()
+
+
+@router.delete("/{person_id}/trusted-browsers", status_code=204)
+async def forget_all_user_trusted_browsers(
+    person_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("users", "change"),
+) -> None:
+    """Make all of their remembered browsers ask for the code again."""
+    await _load_target(db, actor, person_id)
+    count = len(await totp_service.list_trust(db, person_id))
+    await totp_service.revoke_trust(db, person_id)
+    if count:
+        audit(db, actor_id=actor.person.id, entity_type="user_account",
+              entity_id=str(person_id), action="totp.trust_forget_all",
+              changes={"count": count})
     await db.commit()
 
 

@@ -108,6 +108,7 @@ export default function UserDetail() {
     setActivityError('');
   }, [personId]);
 
+  const [loadCount, setLoadCount] = useState(0);
   const reqSeq = useRef(0);
   const load = useCallback(async () => {
     const seq = ++reqSeq.current;
@@ -116,6 +117,7 @@ export default function UserDetail() {
       const next = await getUserDetail(personId);
       if (seq !== reqSeq.current) return;      // a newer load superseded this one
       setDetail(next);
+      setLoadCount((n) => n + 1);
       setMissing(false);
       if (activityRef.current !== null) void loadActivity();
     } catch (err) {
@@ -277,6 +279,7 @@ export default function UserDetail() {
 
       {effectiveTab === 'profile' && (
         <UserProfileTab detail={detail} mode={mode} canManageUsers={canManageUsers}
+                        reloadKey={loadCount}
                         onEdit={() => setAction({ kind: 'edit' })}
                         onReset={() => setAction({ kind: 'reset' })}
                         onSignOutAll={() => setAction({ kind: 'signout' })}

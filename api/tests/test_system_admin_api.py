@@ -371,3 +371,25 @@ async def test_background_never_names_workers(client, db):
     await _proc(db, "scan-matching-worker", beat_age=600)
     body = (await client.get("/system/status")).text
     assert "scan-matching" not in body and "worker" not in body.replace('"workers_paused"', "")
+
+
+async def test_read_only_allows_forgetting_my_remembered_browsers(client, db, seeded_user):
+    # like revoking a session, forgetting a remembered browser is how a
+    # person closes a hole during a freeze; the admin routes stay frozen
+    from tests.test_trusted_browsers_api import _remember
+    staff = await _make(db, client, "staff", "tb-staff@test.example.com")
+    me = await client.get("/auth/me", headers=staff)
+    pid = me.json()["person"]["id"]
+    _t, one = await _remember(db, pid)
+    await _remember(db, pid)
+    await _freeze(db, client)
+    assert (await client.delete(f"/auth/me/trusted-browsers/{one.id}",
+                                headers=staff)).status_code == 204
+    # an unknown id is a 404 from the route, not a 423 from the freeze
+    assert (await client.delete(f"/auth/me/trusted-browsers/{uuid4()}",
+                                headers=staff)).status_code == 404
+    assert (await client.delete("/auth/me/trusted-browsers",
+                                headers=staff)).status_code == 204
+    resp = await client.delete(f"/users/{pid}/trusted-browsers", headers=staff)
+    assert resp.status_code == 423
+    assert resp.json()["detail"]["code"] == "read_only_mode"

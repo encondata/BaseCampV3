@@ -3,14 +3,19 @@
 
 import uuid
 from datetime import UTC, datetime
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Cookie, HTTPException, Response
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.api.deps import CurrentUser, DbSession, raise_if_reused, require_password_length
+from serversherpa.api.routes.auth import TRUST_COOKIE, clear_trust_cookie
 from serversherpa.api.routes.notifications import (
-    _get_group, _member_count, _request_out, apply_member_overrides,
+    _get_group,
+    _member_count,
+    _request_out,
+    apply_member_overrides,
     effective_settings,
 )
 from serversherpa.api.schemas import (
@@ -20,20 +25,26 @@ from serversherpa.api.schemas import (
     MyActivityItem,
     MyNotificationGroupOut,
     MyPendingRequestOut,
+    MyTrustedBrowserOut,
+    MyTrustedBrowsersOut,
     NotificationEffectiveSettings,
     NotificationMemberOverrides,
     PersonDetail,
     ProfileUpdateIn,
     SessionItem,
 )
+from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    AuthSession, NotificationGroup, NotificationGroupMember,
+    AuthSession,
+    NotificationGroup,
+    NotificationGroupMember,
     NotificationMembershipRequest,
+    TrustedDevice,
 )
 from serversherpa.db.ordering import natural
-from serversherpa.config import get_settings
 from serversherpa.notifications.requests import RequestError, cancel_request, create_request
 from serversherpa.security.passwords import verify_password
+from serversherpa.services import totp as totp_service
 from serversherpa.services.activity import ABOUT_ENTITY_TYPES, person_activity
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.auth import revoke_family
@@ -127,6 +138,58 @@ async def revoke_session(
           entity_id=str(user.person.id), action="session.revoke",
           changes={"family_id": {"from": str(family_id), "to": None}})
     await db.commit()
+
+
+@router.get("/trusted-browsers", response_model=MyTrustedBrowsersOut)
+async def list_trusted_browsers(
+    user: CurrentUser, db: DbSession,
+    ss_trust: Annotated[str | None, Cookie(alias=TRUST_COOKIE)] = None,
+) -> MyTrustedBrowsersOut:
+    """Browsers that skip my two-factor code, newest first. `current` marks
+    the one making this request (its ss_trust cookie matches the row)."""
+    here = totp_service.trust_token_hash(ss_trust)
+    rows = await totp_service.list_trust(db, user.person.id)
+    return MyTrustedBrowsersOut(
+        trust_days=get_settings().totp_trust_days,
+        browsers=[MyTrustedBrowserOut(
+            id=r.id, user_agent=r.user_agent, created_at=r.created_at,
+            last_used_at=r.last_used_at, expires_at=r.expires_at,
+            current=here is not None and r.token_hash == here) for r in rows])
+
+
+@router.delete("/trusted-browsers/{trusted_id}", status_code=204)
+async def forget_trusted_browser(
+    trusted_id: uuid.UUID, user: CurrentUser, db: DbSession, response: Response,
+    ss_trust: Annotated[str | None, Cookie(alias=TRUST_COOKIE)] = None,
+) -> None:
+    """Forget one of my remembered browsers; forgetting this one also clears
+    its cookie."""
+    row = await db.get(TrustedDevice, trusted_id)
+    current = (row is not None and row.person_id == user.person.id
+               and row.token_hash == totp_service.trust_token_hash(ss_trust))
+    if not await totp_service.forget_trust(db, user.person.id, trusted_id):
+        raise HTTPException(status_code=404, detail={"code": "trusted_browser_not_found"})
+    audit(db, actor_id=user.person.id, entity_type="user_account",
+          entity_id=str(user.person.id), action="totp.trust_forget",
+          changes={"trusted_browser_id": str(trusted_id)})
+    await db.commit()
+    if current:
+        clear_trust_cookie(response)
+
+
+@router.delete("/trusted-browsers", status_code=204)
+async def forget_all_trusted_browsers(
+    user: CurrentUser, db: DbSession, response: Response,
+) -> None:
+    """Forget every remembered browser of mine and clear this one's cookie."""
+    count = len(await totp_service.list_trust(db, user.person.id))
+    await totp_service.revoke_trust(db, user.person.id)
+    if count:
+        audit(db, actor_id=user.person.id, entity_type="user_account",
+              entity_id=str(user.person.id), action="totp.trust_forget_all",
+              changes={"count": count})
+    await db.commit()
+    clear_trust_cookie(response)
 
 
 @router.post("/password", status_code=204)
