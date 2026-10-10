@@ -52,24 +52,33 @@ const CHILD_COLUMNS: ColumnDef[] = [
 const CHILD_ALL_KEYS = new Set(CHILD_COLUMNS.map((c) => c.key));
 const CHILD_DEFAULT_VISIBLE = new Set(CHILD_COLUMNS.map((c) => c.key));
 
-const errorText = (e: unknown) =>
-  e instanceof ApiError && ORG_ERRORS[e.code] ? ORG_ERRORS[e.code] : 'Could not save — try again.';
+// A known code gets its house message; any other ApiError speaks for itself
+// (read_only_mode carries its own wording); anything else is generic.
+const errorText = (e: unknown) => {
+  if (e instanceof ApiError) return ORG_ERRORS[e.code] ?? e.message;
+  return 'Could not save — try again.';
+};
 
-export default function ChildPartnersPanel({ partner, typeVocab, canEdit }: {
+export default function ChildPartnersPanel({ partner, typeVocab, canEdit, onChanged }: {
   partner: OrgItem;
   typeVocab: Map<string, StatusValue>;
   canEdit: boolean;
+  /** After an Add child / Remove succeeds, so the page can refresh the partner row
+   *  (its child_count). */
+  onChanged?: () => void;
 }) {
   const { preferences } = useAuth();
   const listGridScale = listScale(preferences?.list_size);
   const [children, setChildren] = useState<OrgItem[] | null>(null);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState('');
+  const [loadFailed, setLoadFailed] = useState(false);
   const [query, setQuery] = useState('');
 
   const load = useCallback(() => listPartnerChildren(partner.id)
-    .then(setChildren)
-    .catch(() => setChildren((prev) => prev ?? [])), [partner.id]);
+    .then((list) => { setLoadFailed(false); setChildren(list); })
+    .catch(() => { setLoadFailed(true); setChildren((prev) => prev ?? []); }),
+  [partner.id]);
 
   useEffect(() => {
     setChildren(null);
@@ -119,6 +128,7 @@ export default function ChildPartnersPanel({ partner, typeVocab, canEdit }: {
     try {
       await setPartnerParent(child.id, null);
       await load();
+      onChanged?.();
     } catch (e) {
       setError(errorText(e));
     }
@@ -157,7 +167,7 @@ export default function ChildPartnersPanel({ partner, typeVocab, canEdit }: {
 
   // The hierarchy is staff-managed: a viewer who can't edit sees the panel
   // only when there is something to read.
-  if (!canEdit && (children === null || children.length === 0)) return null;
+  if (!canEdit && !loadFailed && (children === null || children.length === 0)) return null;
 
   return (
     <div className="init-panel" style={{ marginTop: 18 }}>
@@ -173,8 +183,9 @@ export default function ChildPartnersPanel({ partner, typeVocab, canEdit }: {
         )}
       </div>
       {error && <p className="pf-error">{error}</p>}
+      {loadFailed && <p className="pf-error">Could not load child partners.</p>}
       {children === null && <p className="page-hint">Loading…</p>}
-      {children !== null && children.length === 0 && (
+      {children !== null && children.length === 0 && !loadFailed && (
         <p className="page-hint">No child partners.</p>
       )}
       {children !== null && children.length > 0 && (
@@ -247,7 +258,7 @@ export default function ChildPartnersPanel({ partner, typeVocab, canEdit }: {
         <AddChildModal
           partner={partner}
           onClose={() => setAdding(false)}
-          onAdded={() => { setAdding(false); void load(); }}
+          onAdded={() => { setAdding(false); void load(); onChanged?.(); }}
         />
       )}
     </div>

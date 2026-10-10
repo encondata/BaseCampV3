@@ -74,7 +74,7 @@ Clients unchanged.
   **None**. Create form gets the same field.
 - **Partner detail** (`pages/StakeholderDetail.tsx`):
   - Details `<dl>`: a **Parent partner** row linking to
-    `/partners/{parent_id}` (shown only when set and visible).
+    `/stakeholders/partners/{parent_id}` (shown only when set and visible).
   - A **Child partners** `init-panel` after Details: list (standard
     `dir-list`/`ColHead`/`listGridStyle` with floors per the list recipe,
     sized against `LIST_FIT.initPanel`) with Name (link), Types, Region,

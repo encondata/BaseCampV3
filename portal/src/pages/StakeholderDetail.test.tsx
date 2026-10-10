@@ -418,3 +418,42 @@ it('Add child: an API refusal shows its message in the modal and keeps it open',
   expect(await within(dialog).findByText('That would make a partner its own ancestor.')).not.toBeNull();
   expect(screen.queryByRole('dialog')).not.toBeNull();
 });
+
+it('a failed Remove shows the API message (unmapped codes fall back to ApiError.message)', async () => {
+  const { ApiError } = await import('../lib/api');
+  mockPartnerPage(partnerOrg(), [child({ id: 'c1', name: 'Branch One' })]);
+  api.setPartnerParent.mockRejectedValue(
+    new ApiError(503, 'read_only_mode', undefined, 'The portal is in read-only mode.'));
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  renderPartnerPage();
+  await screen.findByText('Branch One');
+  fireEvent.click(within(childPanel()).getByRole('button', { name: /Actions/ }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove' }));
+  expect(await within(childPanel()).findByText('The portal is in read-only mode.')).not.toBeNull();
+  expect(screen.getByText('Branch One')).not.toBeNull();   // the row is still there
+  vi.restoreAllMocks();
+});
+
+it('a failed child load shows an error, not the empty state', async () => {
+  mockPartnerPage(partnerOrg(), []);
+  api.listPartnerChildren.mockRejectedValue(new Error('network'));
+  renderPartnerPage();
+  const msg = await screen.findByText('Could not load child partners.');
+  expect(msg.className).toContain('pf-error');
+  expect(screen.queryByText('No child partners.')).toBeNull();
+});
+
+it('adding or removing a child re-reads the partner row (child_count stays fresh)', async () => {
+  mockPartnerPage(partnerOrg({ child_count: 1 }), [child({ id: 'c1', name: 'Branch One' })]);
+  api.setPartnerParent.mockResolvedValue(child({ id: 'c1', parent_id: null }));
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  renderPartnerPage();
+  await screen.findByText('Branch One');
+  expect(api.getOrg).toHaveBeenCalledTimes(1);
+  api.getOrg.mockResolvedValue(partnerOrg({ child_count: 0 }));
+  api.listPartnerChildren.mockResolvedValue([]);
+  fireEvent.click(within(childPanel()).getByRole('button', { name: /Actions/ }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove' }));
+  await waitFor(() => expect(api.getOrg).toHaveBeenCalledTimes(2));
+  vi.restoreAllMocks();
+});

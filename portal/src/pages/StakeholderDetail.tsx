@@ -213,6 +213,13 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
     return () => { alive = false; };
   }, [kind, id]);
 
+  // Re-read the org row in place (no loading flash) after the hierarchy
+  // changes, so child_count and parent_name stay fresh.
+  const refreshOrg = useCallback(() => {
+    if (!id) return;
+    void getOrg(kind, id).then(setOrg).catch(() => {});
+  }, [kind, id]);
+
   useEffect(() => {
     if (kind !== 'partner') return;
     void listPartnerTypes().then(setPartnerTypes).catch(() => {});
@@ -623,7 +630,8 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
 
       {/* ── Child partners (partners only) ───────────────────────────── */}
       {kind === 'partner' && (
-        <ChildPartnersPanel partner={org} typeVocab={typeVocab} canEdit={canEditHierarchy} />
+        <ChildPartnersPanel partner={org} typeVocab={typeVocab} canEdit={canEditHierarchy}
+                            onChanged={refreshOrg} />
       )}
 
       {/* ── Previous initiatives ────────────────────────────────────── */}
