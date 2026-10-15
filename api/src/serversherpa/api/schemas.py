@@ -1585,6 +1585,7 @@ class ContainerAssetRow(BaseModel):
     status_color: str
     added_at: datetime
     added_by_name: str | None = None
+    asset: AssetItem
 
 
 class ContainerAssetsAddIn(BaseModel):
