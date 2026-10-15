@@ -42,6 +42,11 @@ export default function TruckEditModal({ truck, onClose, onSaved }: Props) {
   const [form, setForm] = useState<TruckFormState>(
     () => formFromTruck(truck ? { ...truck, containers: [] } : null),
   );
+  // The tracking_type the form opened on: keys the form does not edit
+  // (e.g. the learned macropoint_order) are carried over on save.
+  const [baseTracking, setBaseTracking] = useState<Record<string, unknown> | null>(
+    () => truck?.tracking_type ?? null,
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [detailNotice, setDetailNotice] = useState('');
@@ -66,6 +71,7 @@ export default function TruckEditModal({ truck, onClose, onSaved }: Props) {
     void getTruck(truck.id).then((d) => {
       if (cancelled) return;
       setForm(formFromTruck(d));
+      setBaseTracking(d.tracking_type);
       setLoadingDetail(false);
     }).catch(() => {
       if (cancelled) return;
@@ -122,7 +128,7 @@ export default function TruckEditModal({ truck, onClose, onSaved }: Props) {
     }
     setSaving(true);
     try {
-      const payload = truckPayload(form);
+      const payload = truckPayload(form, baseTracking);
       if (truck) {
         await updateTruck(truck.id, payload);
       } else {

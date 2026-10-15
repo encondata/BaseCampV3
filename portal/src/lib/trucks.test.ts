@@ -169,6 +169,30 @@ describe('form round-trip', () => {
     expect(p.contact_info).toBe('');
   });
 
+  it('carries tracking_type keys the form does not edit (macropoint_order) through a save', () => {
+    const original = {
+      type: 'gps', update_type: 'API', tracker_id: 'TRK-1',
+      macropoint_order: 'VM0s7D8QTl5j92QfqQgTmQ__', future_key: { nested: 1 },
+    };
+    const form = formFromTruck({ ...detail, tracking_type: original });
+    form.update_type = 'MacroPoint';
+    const p = truckPayload(form, original);
+    expect(p.tracking_type).toEqual({
+      type: 'gps', update_type: 'MacroPoint', tracker_id: 'TRK-1',
+      macropoint_order: 'VM0s7D8QTl5j92QfqQgTmQ__', future_key: { nested: 1 },
+    });
+    expect(original.update_type).toBe('API');           // never mutated
+  });
+
+  it('a cleared form field still removes its key when other keys are carried', () => {
+    const original = { type: 'gps', tracker_id: 'TRK-1', macropoint_order: 'tok' };
+    const form = formFromTruck({ ...detail, tracking_type: original });
+    form.tracker_id = '  ';
+    form.type = '';
+    const p = truckPayload(form, original);
+    expect(p.tracking_type).toEqual({ macropoint_order: 'tok' });
+  });
+
   it('drops empty tracking keys but keeps present ones', () => {
     const form = formFromTruck(null);
     form.type = 'manual';
