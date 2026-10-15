@@ -1,0 +1,16 @@
+/* Trucks › Manual update (ManualUpdateModal / MacroPointPanel). */
+
+/* Roomy like the other rgm cards; the compound selector out-specifies
+   reports.css's `.modal-card.reports-modal-card.rgm-card` width. */
+.modal-card.reports-modal-card.rgm-card.manual-update-card { width: min(1100px, 96vw); max-width: 96vw; }
+/* same horizontal inset as .modal-body / .rgm-steps (chrome.css, reports.css) */
+.mu-tabs { padding: 12px 20px; }
+.mu-panel[hidden] { display: none; }
+.mp-input { display: flex; flex-direction: column; gap: 14px; }
+.mp-input textarea { width: 100%; resize: vertical; font-family: var(--font-mono); }
+.mp-review { display: flex; flex-direction: column; gap: 16px; }
+.mp-group { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; border-top: 1px solid var(--paper-line); }
+.mp-group-top { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(300px, 380px); gap: 16px; align-items: start; }
+.mp-group-id, .mp-group-truck { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.mp-dup { opacity: 0.6; }
+@media (max-width: 760px) { .mp-group-top { grid-template-columns: 1fr; } }

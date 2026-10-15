@@ -13,6 +13,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import StatusHover from '../components/StatusHover';
+import ManualUpdateModal from '../components/trucks/ManualUpdateModal';
 import TruckEditModal from '../components/trucks/TruckEditModal';
 import TrucksMap from '../components/trucks/TrucksMap';
 import { ADMIN_RANK } from '../lib/access';
@@ -138,6 +139,7 @@ export default function Trucks() {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
 
   const loadTrucks = (initial: boolean) => {
     if (initial) setTrucks(null);
@@ -336,8 +338,7 @@ export default function Trucks() {
           {(canBulk || canChange) && (
             <RowActionsMenu actions={[
               ...(canBulk ? [{ key: 'bulk', label: 'Bulk import', onSelect: () => navigate('/bulk/trucks') }] : []),
-              // Manual update is a placeholder until its flow is built.
-              ...(canChange ? [{ key: 'manual', label: 'Manual update', onSelect: () => {}, disabled: true }] : []),
+              ...(canChange ? [{ key: 'manual', label: 'Manual update', onSelect: () => setManualOpen(true) }] : []),
             ]} />
           )}
         </div>
@@ -459,6 +460,12 @@ export default function Trucks() {
           truck={null}
           onClose={() => setCreating(false)}
           onSaved={() => loadTrucks(false)}
+        />
+      )}
+      {manualOpen && (
+        <ManualUpdateModal
+          onClose={() => setManualOpen(false)}
+          onApplied={() => { loadTrucks(false); loadMap(trails); }}
         />
       )}
     </div>

@@ -167,7 +167,7 @@ it('changing the refresh option re-fetches on that cadence', async () => {
   expect(api.listTrucks.mock.calls.length).toBe(before + 2);
 });
 
-it('Actions menu offers Bulk import (to /bulk/trucks) and a disabled Manual update', async () => {
+it('Actions menu offers Bulk import (to /bulk/trucks) and Manual update opens the modal', async () => {
   const user = userEvent.setup();
   render(
     <MemoryRouter initialEntries={['/logistics/trucks']}>
@@ -182,7 +182,11 @@ it('Actions menu offers Bulk import (to /bulk/trucks) and a disabled Manual upda
 
   await user.click(screen.getByRole('button', { name: /^actions/i }));
   const manual = screen.getByRole('menuitem', { name: 'Manual update' }) as HTMLButtonElement;
-  expect(manual.disabled).toBe(true);
+  expect(manual.disabled).toBe(false);
+  await user.click(manual);
+  expect(screen.getByRole('dialog', { name: 'Manual update' })).not.toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+  await user.click(screen.getByRole('button', { name: /^actions/i }));
 
   await user.click(screen.getByRole('menuitem', { name: 'Bulk import' }));
   expect(await screen.findByText('Bulk trucks page')).not.toBeNull();
