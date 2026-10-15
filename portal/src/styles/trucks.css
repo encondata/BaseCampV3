@@ -58,13 +58,6 @@
 }
 .pill-check input { margin: 0; }
 
-/* Refresh-cadence control in the toolbar — layout only, inherits the
- * page's own font like every other toolbar control. */
-.trucks-refresh {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
 
 /* Fullscreen map modal — wide card, ~80vh map body. */
 .modal-card.trucks-fullscreen-card { width: min(1100px, 96vw); }
@@ -119,3 +112,8 @@
   align-items: center;
   gap: 8px;
 }
+
+/* Edit truck › Containers on truck: the name takes the slack so each
+   row's Remove button lines up on the right. */
+.truck-containers .mini-row .cell-top { flex: 1; min-width: 0; }
+.truck-containers { margin-bottom: 12px; }

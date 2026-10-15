@@ -320,9 +320,10 @@ export default function Trucks() {
                    onChange={(e) => setShowHistorical(e.target.checked)} />
             Show historical
           </label>
-          <label className="trucks-refresh">
+          <label className="tool-select-label">
             <span>Refresh</span>
-            <select value={refreshSec} onChange={(e) => setRefreshSec(Number(e.target.value))}>
+            <select className="tool-select" value={refreshSec}
+                    onChange={(e) => setRefreshSec(Number(e.target.value))}>
               {REFRESH_OPTIONS.map((o) => (
                 <option key={o.seconds} value={o.seconds}>{o.label}</option>
               ))}
