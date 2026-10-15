@@ -11,12 +11,15 @@ token, else (2) the one whose tracking_type.tracker_id equals the ID Number
 
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import Initiative, StatusValue, Truck, TruckEvent, TruckUpdate
 from serversherpa.db.ordering import natural, natural_key
+from serversherpa.services.audit import audit
 from serversherpa.trucks.location import format_location
 from serversherpa.trucks.macropoint.parse import (
     ParsedMessage,
@@ -24,6 +27,7 @@ from serversherpa.trucks.macropoint.parse import (
     normalize_id,
     parse_inputs,
 )
+from serversherpa.trucks.trip import apply_status_change
 
 ACTIVE_EXCLUDED = ("inactive", "historical")
 DEPART_FROM = frozenset({"created", "active"})
@@ -193,3 +197,140 @@ async def build_preview(db: AsyncSession, files: list[tuple[str, bytes]], text: 
     return {"groups": groups,
             "errors": [{"source": e.source, "reason": e.reason} for e in errors],
             "trucks": await _truck_options(db, trucks, labels)}
+
+
+def _detail(m: ParsedMessage) -> str:
+    if m.kind == "location":
+        loc = row_location(m)
+        return f"{loc} · {m.address}" if m.address else loc
+    return m.event or ""
+
+
+async def _insert(db: AsyncSession, truck: Truck, m: ParsedMessage,
+                  actor_id: uuid.UUID) -> bool:
+    """Insert one update/event; False when the truck already has it."""
+    if m.kind == "location":
+        stmt = pg_insert(TruckUpdate).values(
+            truck_id=truck.id, recorded_at=m.recorded_at, location=row_location(m),
+            lat=m.lat, lng=m.lng, approximate_address=m.address,
+            source="macropoint", source_ref=m.source_ref,
+        ).on_conflict_do_nothing(constraint="uq_truck_updates_truck_source_ref"
+                                 ).returning(TruckUpdate.id)
+    else:
+        stmt = pg_insert(TruckEvent).values(
+            truck_id=truck.id, recorded_at=m.recorded_at, event=m.event,
+            event_kind=m.event_kind, stop=m.stop, source="macropoint",
+            source_ref=m.source_ref, created_by=actor_id,
+        ).on_conflict_do_nothing(constraint="uq_truck_events_truck_source_ref"
+                                 ).returning(TruckEvent.id)
+    return (await db.execute(stmt)).scalar_one_or_none() is not None
+
+
+def _learn_link(db: AsyncSession, actor_id: uuid.UUID, truck: Truck,
+                group: Group) -> str | None:
+    """Fill the truck's blank tracking keys from the load; never overwrite.
+    Returns "linked_to_other_order" when the truck holds another token."""
+    current = dict(truck.tracking_type or {})
+    new = dict(current)
+    note = None
+    have = tracking_value(truck, "macropoint_order")
+    if group.order_token:
+        if not have:
+            new["macropoint_order"] = group.order_token
+        elif have != group.order_token:
+            note = "linked_to_other_order"
+    if not tracking_value(truck, "tracker_id"):
+        new["tracker_id"] = group.id_number
+    if not tracking_value(truck, "type"):
+        new["type"] = "MacroPoint"
+    if new != current:
+        truck.tracking_type = new               # a new dict, so the JSONB change persists
+        truck.updated_at = datetime.now(UTC)
+        audit(db, actor_id=actor_id, entity_type="truck", entity_id=str(truck.id),
+              action="update", changes={"tracking_type": {"from": current, "to": new}})
+    return note
+
+
+async def apply_messages(db: AsyncSession, actor_id: uuid.UUID,
+                         messages: list[ParsedMessage], errors: list[ParseError],
+                         assignments: dict[str, uuid.UUID | None]) -> dict:
+    """Write the assigned loads in one transaction. Loads left unassigned are
+    `skipped`; a truck that is no longer active makes its rows `error`."""
+    groups = group_messages(messages)
+    wanted = {tid for tid in assignments.values() if tid}
+    trucks = {t.id: t for t in await db.scalars(
+        select(Truck).where(Truck.id.in_(wanted)).with_for_update())} if wanted else {}
+    labels = await _status_labels(db)
+    rows: list[dict] = []
+
+    def add(**kw) -> None:
+        rows.append({"row": len(rows) + 1, "group_key": None, "id_number": None,
+                     "truck_id": None, "truck_name": None, "kind": None,
+                     "recorded_at": None, "detail": "", "status_change": None,
+                     "reason": None, "note": None, **kw})
+
+    for g in groups:
+        base = {"group_key": g.key, "id_number": g.id_number}
+        truck_id = assignments.get(g.key)
+        truck = trucks.get(truck_id) if truck_id else None
+        if truck_id is None:
+            for m in g.messages:
+                add(**base, source=m.source, kind=m.kind, recorded_at=m.recorded_at,
+                    detail=_detail(m), result="skipped", reason="no_truck")
+            continue
+        if truck is None or truck.archived_at is not None or truck.status in ACTIVE_EXCLUDED:
+            for m in g.messages:
+                add(**base, source=m.source, kind=m.kind, recorded_at=m.recorded_at,
+                    detail=_detail(m), result="error", reason="truck_not_active")
+            continue
+        base |= {"truck_id": truck.id, "truck_name": truck.name}
+        note = _learn_link(db, actor_id, truck, g)
+        counts = {"location": 0, "trip_event": 0}
+        for m in g.messages:
+            row = {**base, "source": m.source, "kind": m.kind,
+                   "recorded_at": m.recorded_at, "detail": _detail(m), "note": note}
+            if not await _insert(db, truck, m, actor_id):
+                add(**row, result="duplicate")
+                continue
+            counts[m.kind] += 1
+            to = status_target(truck.status, m)
+            if to:
+                old = truck.status
+                apply_status_change(truck, to, now=m.recorded_at)
+                truck.updated_at = datetime.now(UTC)
+                audit(db, actor_id=actor_id, entity_type="truck", entity_id=str(truck.id),
+                      action="update", changes={
+                          "status": {"from": old, "to": to},
+                          "source": {"from": None, "to": "MacroPoint"}})
+                row["status_change"] = f"{labels.get(old, old)} → {labels.get(to, to)}"
+            add(**row, result="added")
+        if counts["location"] or counts["trip_event"]:
+            audit(db, actor_id=actor_id, entity_type="truck", entity_id=str(truck.id),
+                  action="macropoint_update", changes={"updates": {
+                      "from": None,
+                      "to": f"{counts['location']} locations, "
+                            f"{counts['trip_event']} trip events"}})
+
+    for e in errors:
+        add(source=e.source, result="error", reason=e.reason)
+    await db.commit()
+
+    def count(result: str) -> int:
+        return sum(1 for r in rows if r["result"] == result)
+
+    return {"added": count("added"), "duplicates": count("duplicate"),
+            "skipped": count("skipped"), "errors": count("error"),
+            "status_changes": sum(1 for r in rows if r["status_change"]), "rows": rows}
+
+
+async def apply_updates(db: AsyncSession, actor_id: uuid.UUID,
+                        files: list[tuple[str, bytes]], text: str,
+                        assignments: dict[str, uuid.UUID | None]) -> dict:
+    """Re-parse the same input the preview saw (parsing is deterministic) and
+    apply it; the client never sends parsed rows."""
+    parsed = parse_inputs(files, text)
+    return await apply_messages(
+        db, actor_id,
+        [p for p in parsed if isinstance(p, ParsedMessage)],
+        [p for p in parsed if isinstance(p, ParseError)],
+        assignments)

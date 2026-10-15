@@ -4126,6 +4126,31 @@ class MacroPointPreviewOut(BaseModel):
     trucks: list[MacroPointTruckOption]
 
 
+class MacroPointResultRow(BaseModel):
+    row: int
+    source: str
+    group_key: str | None = None
+    id_number: str | None = None
+    truck_id: uuid.UUID | None = None
+    truck_name: str | None = None
+    kind: Literal["location", "trip_event"] | None = None
+    recorded_at: datetime | None = None
+    detail: str = ""
+    result: Literal["added", "duplicate", "skipped", "error"]
+    status_change: str | None = None
+    reason: str | None = None
+    note: str | None = None
+
+
+class MacroPointApplyOut(BaseModel):
+    added: int
+    duplicates: int
+    skipped: int
+    errors: int
+    status_changes: int
+    rows: list[MacroPointResultRow]
+
+
 # ── warehouse ─────────────────────────────────────────────────────────
 
 class AssetRef(BaseModel):

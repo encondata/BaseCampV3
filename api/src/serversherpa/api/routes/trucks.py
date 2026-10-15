@@ -1,6 +1,7 @@
 """Trucks — logistics truckloads on a move (V2 parity). Internal-only
 resource; all actors are globally anchored (mirrors containers.py)."""
 
+import json
 import uuid
 from datetime import UTC, datetime
 
@@ -11,7 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank, rows_from_request
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    MacroPointPreviewOut, TruckContainerOut, TruckCreateIn, TruckDetail, TruckEndSite, TruckFeedPage,
+    MacroPointApplyOut, MacroPointPreviewOut, TruckContainerOut, TruckCreateIn, TruckDetail, TruckEndSite, TruckFeedPage,
     TruckItem, TruckLastUpdate, TruckMapPoint, TruckSummary, TruckTrailPoint,
     TruckUpdateCreateIn, TruckUpdateIn, TruckUpdateOut,
 )
@@ -380,6 +381,29 @@ async def macropoint_preview(
     """Parse MacroPoint emails and show what applying would do. Writes nothing."""
     files, text, _ = await _macropoint_inputs(request)
     return await mp.build_preview(db, files, text)
+
+
+def _assignments(raw: str | None) -> dict[str, uuid.UUID | None]:
+    try:
+        data = json.loads(raw) if raw else {}
+        if not isinstance(data, dict):
+            raise ValueError
+        return {str(k): (uuid.UUID(v) if v else None) for k, v in data.items()}
+    except (ValueError, TypeError, AttributeError):
+        raise _err(422, "bad_assignments") from None
+
+
+@router.post("/manual-update/macropoint/apply", response_model=MacroPointApplyOut)
+async def macropoint_apply(
+    request: Request,
+    db: DbSession,
+    actor: AuthContext = require_permission("trucks", "change"),
+) -> dict:
+    """Apply MacroPoint emails: the same files/text as the preview plus
+    `assignments` = {group_key: truck_id | null}. One transaction."""
+    files, text, raw = await _macropoint_inputs(request)
+    assignments = _assignments(raw)
+    return await mp.apply_updates(db, actor.person.id, files, text, assignments)
 
 
 # ── bulk import ────────────────────────────────────────────────────
