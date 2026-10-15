@@ -333,10 +333,12 @@ export default function Trucks() {
               + New truck
             </button>
           )}
-          {canBulk && (
-            <button className="mini-btn accent" onClick={() => navigate('/bulk/trucks')}>
-              Bulk import…
-            </button>
+          {(canBulk || canChange) && (
+            <RowActionsMenu actions={[
+              ...(canBulk ? [{ key: 'bulk', label: 'Bulk import', onSelect: () => navigate('/bulk/trucks') }] : []),
+              // Manual update is a placeholder until its flow is built.
+              ...(canChange ? [{ key: 'manual', label: 'Manual update', onSelect: () => {}, disabled: true }] : []),
+            ]} />
           )}
         </div>
       </div>
