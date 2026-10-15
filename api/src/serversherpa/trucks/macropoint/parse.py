@@ -37,11 +37,11 @@ ZONES = {
     "HT": "Pacific/Honolulu",
 }
 
-_HEADER = re.compile(r"(Location|Trip Event) Update from\s+(.+?)\s*(?=-{3,}|\n|ID Number)")
+_HEADER = re.compile(r"(Location|Trip Event) Update from\s+([^\n]{1,120}?)\s*(?=-{3,}|\n|ID Number)")
 # An ID ends at the Date/Time field (run-together text), at a newline
 # (separate lines) or at the end of the text.
 _ID = re.compile(
-    r"ID Number\s*(?:'(?P<q>.*?)'|:\s*(?P<c>.*?))\s*(?=Date/Time|\n|$)", re.DOTALL)
+    r"ID Number\s*(?:'(?P<q>.{1,200}?)'|:\s*(?P<c>.{1,200}?))\s*(?=Date/Time|\n|$)", re.DOTALL)
 _TIME = re.compile(
     r"Date/Time:\s*(?P<mo>\d{1,2})/(?P<d>\d{1,2})/(?P<y>\d{4})\s*@\s*"
     r"(?P<h>\d{1,2}):(?P<mi>\d{2})\s*(?P<ap>[AP]M)\s*(?P<zone>[A-Z]{1,4}?)"
@@ -49,8 +49,8 @@ _TIME = re.compile(
 _LOCATION = re.compile(
     r"Location:\s*(?P<lat>-?\d+(?:\.\d+)?)\s*,\s*(?P<lng>-?\d+(?:\.\d+)?)")
 _ADDRESS = re.compile(
-    r"Approximate Address\(if available\):\s*(?P<a>.*?)\s*(?=Notes:|-{5,}|$)", re.DOTALL)
-_EVENT = re.compile(r"Event:\s*(?P<e>.+?)\s*(?=\(View All Updates\)|Notes:|\n|$)")
+    r"Approximate Address\(if available\):\s*(?P<a>.{0,500}?)\s*(?=Notes:|-{5,}|$)", re.DOTALL)
+_EVENT = re.compile(r"Event:\s*(?P<e>.{1,200}?)\s*(?=\(View All Updates\)|Notes:|\n|$)")
 _EVENT_PARTS = re.compile(r"^(Arrived|Departed) at (.+)$", re.IGNORECASE)
 _ORDER_TOKEN = re.compile(r"OrderSetup\.aspx\?[^\"'<>\s]*?Data=([^\"'&\s<>]+)", re.IGNORECASE)
 _STOPS = {"pickup": "pickup", "drop-off": "drop_off", "dropoff": "drop_off",
@@ -171,9 +171,11 @@ def parse_text(text: str, source: str, *,
     """Every MacroPoint email in `text`. Several emails are numbered
     "<source> #1", "#2", …; text with none is one `not_macropoint` error."""
     text = text.replace("\r\n", "\n").replace("\xa0", " ")
-    # Every field is squashed anyway; collapsing space/tab runs (never
-    # newlines) keeps the lazy-match patterns linear on huge whitespace runs.
+    # Every field is squashed anyway; collapsing space/tab runs and
+    # any whitespace run holding a newline (to one newline) keeps the
+    # lazy-match patterns linear on huge whitespace runs.
     text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"[ \t]*\n\s*", "\n", text)
     starts = [m.start() for m in _HEADER.finditer(text)]
     if not starts:
         return [ParseError(source, "not_macropoint")]

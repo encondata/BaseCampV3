@@ -193,3 +193,24 @@ def test_huge_whitespace_runs_do_not_hang():
     assert isinstance(msg, ParsedMessage)
     assert msg.id_number == "LOAD A"
     assert msg.address == "Main St Reno NV"
+
+
+_LOC_HEAD = ("Location Update from Landstar - ATL\nID Number : L1\n"
+             "Date/Time: 6/7/2024 @ 6:24 PM PT\nLocation: 35.1,-115.2 (View All Updates)\n"
+             "Approximate Address(if available): Main St")
+
+
+@pytest.mark.parametrize("gap", ["\n" * 200_000, " \n" * 100_000])
+def test_huge_newline_runs_in_address_do_not_hang(gap):
+    start = time.perf_counter()
+    [msg] = parse_text(f"{_LOC_HEAD}{gap}Reno NV", "Pasted text")
+    assert time.perf_counter() - start < 2.0
+    assert isinstance(msg, ParsedMessage)
+    assert msg.address.startswith("Main St")
+
+
+def test_many_repeated_headers_without_newlines_do_not_hang():
+    start = time.perf_counter()
+    out = parse_text("Location Update from X " * 20_000, "Pasted text")
+    assert time.perf_counter() - start < 2.0
+    assert isinstance(out, list)
