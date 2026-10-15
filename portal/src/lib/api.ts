@@ -2555,7 +2555,7 @@ export interface TruckSummary {
 export interface TruckFeedEvent {
   id: string;
   at: string;
-  kind: 'location' | 'status' | 'load' | 'unload';
+  kind: 'location' | 'status' | 'load' | 'unload' | 'trip';
   truck_id: string;
   truck_name: string;
   load_number: string | null;
@@ -2567,19 +2567,29 @@ export interface TruckFeedEvent {
   lng: number | null;
   address: string | null;
   source: string | null;
+  event: string | null;
   from_status: string | null;
   from_label: string | null;
   from_color: string | null;
   to_status: string | null;
   to_label: string | null;
   to_color: string | null;
-  via: 'kiosk' | 'portal' | 'import' | null;
+  via: 'kiosk' | 'portal' | 'import' | 'MacroPoint' | null;
   container_id: string | null;
   container_name: string | null;
   asset_count: number | null;
   from_truck: string | null;
   device: string | null;
 }
+
+export type MacroPointKind = 'location' | 'trip_event';
+export interface MacroPointRow { source: string; kind: MacroPointKind; recorded_at: string; location: string | null; address: string; event: string | null; status_to: string | null; status_to_label: string | null; duplicate: boolean }
+export interface MacroPointGroup { group_key: string; id_number: string; order_token: string | null; carrier: string; match: { truck_id: string | null; by: 'order' | 'tracker_id' | null; ambiguous_ids: string[] }; rows: MacroPointRow[]; new: number; duplicates: number }
+export interface MacroPointTruckOption { id: string; name: string; status: string; status_label: string; tracker_id: string | null; initiative_name: string | null }
+export interface MacroPointPreview { groups: MacroPointGroup[]; errors: { source: string; reason: string }[]; trucks: MacroPointTruckOption[] }
+export interface MacroPointResultRow { row: number; source: string; group_key: string | null; id_number: string | null; truck_id: string | null; truck_name: string | null; kind: MacroPointKind | null; recorded_at: string | null; detail: string; result: 'added' | 'duplicate' | 'skipped' | 'error'; status_change: string | null; reason: string | null; note: string | null }
+export interface MacroPointApplyResult { added: number; duplicates: number; skipped: number; errors: number; status_changes: number; rows: MacroPointResultRow[] }
+export interface TruckEvent { id: string; truck_id: string; recorded_at: string; event: string; event_kind: 'arrived' | 'departed' | null; stop: string | null; source: string }
 
 /** `next_before` is an opaque cursor: pass it back verbatim as `before`. */
 export interface TruckFeedPage {
@@ -2664,6 +2674,37 @@ export async function addTruckUpdate(
 export async function clearTruckUpdates(id: string): Promise<void> {
   const resp = await apiFetch(`/trucks/${id}/updates`, { method: 'DELETE' });
   if (!resp.ok) throw await errorFrom(resp);
+}
+
+function macroPointForm(files: File[], text: string): FormData {
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f, f.name);
+  if (text.trim()) fd.append('text', text);
+  return fd;
+}
+
+export async function previewMacroPoint(files: File[], text: string): Promise<MacroPointPreview> {
+  const resp = await apiFetch('/trucks/manual-update/macropoint/preview', {
+    method: 'POST', body: macroPointForm(files, text),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function applyMacroPoint(
+  files: File[], text: string, assignments: Record<string, string | null>,
+): Promise<MacroPointApplyResult> {
+  const fd = macroPointForm(files, text);
+  fd.append('assignments', JSON.stringify(assignments));
+  const resp = await apiFetch('/trucks/manual-update/macropoint/apply', { method: 'POST', body: fd });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listTruckEvents(id: string): Promise<TruckEvent[]> {
+  const resp = await apiFetch(`/trucks/${id}/events`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
 }
 
 export async function getTrucksMap(trails: boolean): Promise<TruckMapPoint[]> {

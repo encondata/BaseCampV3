@@ -15,7 +15,7 @@ function ev(over: Partial<TruckFeedEvent>): TruckFeedEvent {
     id: 'loc:1', at: '2026-10-10T12:00:00Z', kind: 'location',
     truck_id: 't1', truck_name: 'Truck 1', load_number: 'L-1',
     initiative_id: 'i1', initiative_name: 'Denver move', actor_name: null,
-    location: null, lat: null, lng: null, address: null, source: null,
+    location: null, lat: null, lng: null, address: null, source: null, event: null,
     from_status: null, from_label: null, from_color: null,
     to_status: null, to_label: null, to_color: null,
     via: null, container_id: null, container_name: null, asset_count: null,

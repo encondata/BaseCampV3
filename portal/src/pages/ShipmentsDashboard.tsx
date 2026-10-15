@@ -68,6 +68,7 @@ const KIND_ICON: Record<TruckFeedEvent['kind'], ReactNode> = {
   status: svg(<path d="M4 12h13M13 7l5 5-5 5" />),
   load: svg(<><path d="M3 10l9-5 9 5v9H3z" /><path d="M12 9v7M9 13l3 3 3-3" /></>),
   unload: svg(<><path d="M3 10l9-5 9 5v9H3z" /><path d="M12 16V9M9 12l3-3 3 3" /></>),
+  trip: svg(<path d="M5 21V4h11l-2 4 2 4H5" />),
 };
 
 function FeedText({ e }: { e: TruckFeedEvent }) {
