@@ -101,7 +101,7 @@ Pure functions, no DB:
 - `parse_eml(data: bytes, filename: str) -> list[ParsedMessage | ParseError]`
   — uses the stdlib `email` package (`policy.default`), picks the HTML body,
   normalizes it to text, extracts the order token from the raw HTML, and calls
-  `parse_text`. The `Date` header is kept as `sent_at`.
+  `parse_text`.
 - `parse_text(text: str, source: str) -> list[ParsedMessage | ParseError]` —
   splits on each `(Location|Trip Event) Update from` header (so pasted text
   with several emails yields several messages) and parses each block with
@@ -112,9 +112,9 @@ Pure functions, no DB:
   (`arrived` | `departed` | None), `stop` (`pickup` | `drop_off` | the named
   stop text), `notes`, `source` (filename or `Pasted text #n`), and
   `source_ref`.
-- **Time:** the body's local `Date/Time` in its zone, converted to UTC. When
-  an `.eml`'s `Date` header falls within 2 minutes of that, the header is used
-  instead (it carries seconds). Minute precision otherwise.
+- **Time:** the body's local `Date/Time` in its zone, converted to UTC,
+  minute precision. The `.eml` `Date` header is the send time (observed up to
+  2 minutes after the event) and is not used.
 - **`source_ref` (dedup key)** — must be identical for the same update whether
   it arrived as `.eml` or pasted text, so it does **not** include the order
   token: `sha256` of `macropoint|<kind>|<normalized id_number, casefolded>|
@@ -224,8 +224,9 @@ Thin route handlers in the existing trucks router (declared before the
                match: { truck_id|null, by: "order"|"tracker_id"|null,
                         ambiguous_ids: [] },
                rows: [{ source, kind, recorded_at, location, address,
-                        event, status_to|null, duplicate: bool }],
-               counts: { new, duplicate } }],
+                        event, status_to|null, status_to_label|null,
+                        duplicate: bool }],
+               new, duplicates }],
     errors: [{ source, reason }],
     trucks: [{ id, name, status, tracker_id, initiative_name }] }
   ```
@@ -236,8 +237,9 @@ Thin route handlers in the existing trucks router (declared before the
   `files[]` + `text` again, plus `assignments` (JSON `{group_key: truck_id|null}`).
   The server re-parses (deterministic) rather than trusting client-sent rows,
   applies as above in one transaction, and returns
-  `{ rows: [{ source, group_key, truck_name, kind, recorded_at, detail,
-  result, reason }], counts }`.
+  `{ added, duplicates, skipped, errors, status_changes, rows: [{ row, source,
+  group_key, id_number, truck_id, truck_name, kind, recorded_at, detail,
+  result, status_change, reason, note }] }`.
 - Both require `trucks:change` (global scope — the trucks resource is
   global-only), and are blocked by read-only mode like every write.
 - `DELETE /trucks/{id}/updates` ("Clear updates") also clears that truck's
