@@ -41,6 +41,7 @@ vi.mock('../auth/AuthContext', () => ({
 const api = vi.hoisted(() => ({
   getTruck: vi.fn(),
   listTruckUpdates: vi.fn(),
+  listTruckEvents: vi.fn(),
   addTruckUpdate: vi.fn(),
   clearTruckUpdates: vi.fn(),
 }));
@@ -86,6 +87,7 @@ beforeEach(() => {
   state.id = 't1';
   api.getTruck.mockResolvedValue(TRUCK);
   api.listTruckUpdates.mockResolvedValue(UPDATES);
+  api.listTruckEvents.mockResolvedValue([]);
 });
 
 afterEach(cleanup);
@@ -110,7 +112,7 @@ it('renders the hero, drivers, tracking, route link, containers, and updates fro
 
   expect(screen.getByText('Container A')).not.toBeNull();
 
-  const rows = container.querySelectorAll('table.data-table tbody tr');
+  const rows = container.querySelectorAll('table[aria-label="Location updates"] tbody tr');
   expect(rows).toHaveLength(2);
 });
 
@@ -208,4 +210,20 @@ it('falls back to the truck\'s last_update for the Trail panel when listTruckUpd
   await screen.findByText('Truck One');
   expect(screen.getByTestId('map')).not.toBeNull();
   expect(screen.queryByText('No location reported yet.')).toBeNull();
+});
+
+it('shows trip events and the relabeled tracking fields', async () => {
+  api.getTruck.mockResolvedValue({
+    ...TRUCK,
+    tracking_type: { tracker_id: 'JAMIE & PATRICK', macropoint_order: 'VM0s7D8Q' },
+  });
+  api.listTruckEvents.mockResolvedValue([
+    { id: 'e1', truck_id: 't1', recorded_at: '2024-10-15T15:11:00Z', event: 'Departed at Pickup',
+      event_kind: 'departed', stop: 'pickup', source: 'macropoint' },
+  ]);
+  renderPage();
+  expect(await screen.findByText('Departed at Pickup')).not.toBeNull();
+  expect(screen.getByText('Tracking name / ID')).not.toBeNull();
+  expect(screen.getByText('MacroPoint order')).not.toBeNull();
+  expect(screen.getByText('VM0s7D8Q')).not.toBeNull();
 });

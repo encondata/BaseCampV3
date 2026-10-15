@@ -70,6 +70,16 @@ describe('query strings', () => {
 });
 
 describe('feedEventText', () => {
+  it('words trip events and the MacroPoint via on status changes', () => {
+    expect(feedEventText(ev({ kind: 'trip', event: 'Departed at Pickup', source: 'macropoint' })))
+      .toBe('Departed at Pickup · macropoint');
+    expect(feedEventText(ev({ kind: 'trip', event: 'Arrived at Drop-Off', source: null })))
+      .toBe('Arrived at Drop-Off');
+    expect(feedEventText(ev({
+      kind: 'status', from_label: 'Active', to_label: 'In Transit', actor_name: 'Ada', via: 'MacroPoint',
+    }))).toBe('Active → In Transit by Ada · MacroPoint');
+  });
+
   it('location: address and source, falling back to the raw location then lat, lng', () => {
     expect(feedEventText(ev({ address: 'Newark, NJ', source: 'manual' }))).toBe('Newark, NJ · manual');
     expect(feedEventText(ev({ location: '40.7, -73.9', source: 'seed' }))).toBe('40.7, -73.9 · seed');

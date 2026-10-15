@@ -79,6 +79,7 @@ function FeedText({ e }: { e: TruckFeedEvent }) {
       <span className="shipdash-arrow" aria-hidden="true">→</span>
       {statusChip(e.to_label ?? e.to_status ?? '—', e.to_color)}
       {e.actor_name && <span className="shipdash-by">by {e.actor_name}</span>}
+      {e.via && <span className="shipdash-by">· {e.via}</span>}
     </>
   );
 }

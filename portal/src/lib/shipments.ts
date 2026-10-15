@@ -88,8 +88,11 @@ export function feedEventText(e: TruckFeedEvent): string {
     case 'status': {
       const from = e.from_label ?? e.from_status ?? '—';
       const to = e.to_label ?? e.to_status ?? '—';
-      return e.actor_name ? `${from} → ${to} by ${e.actor_name}` : `${from} → ${to}`;
+      const text = e.actor_name ? `${from} → ${to} by ${e.actor_name}` : `${from} → ${to}`;
+      return withVia(text, e.via);
     }
+    case 'trip':
+      return e.source ? `${e.event ?? ''} · ${e.source}` : (e.event ?? '');
     case 'load':
       return withVia(`Loaded ${containerText(e)}${assetsText(e.asset_count)}`, e.via);
     case 'unload':

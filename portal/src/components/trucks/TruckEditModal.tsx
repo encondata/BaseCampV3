@@ -210,7 +210,7 @@ export default function TruckEditModal({ truck, onClose, onSaved }: Props) {
                 <div><label>Update type</label>
                   <input value={form.update_type} disabled={saving}
                          onChange={(e) => setField('update_type', e.target.value)} /></div>
-                <div><label>Tracker id</label>
+                <div><label>Tracking name / ID</label>
                   <input value={form.tracker_id} disabled={saving}
                          onChange={(e) => setField('tracker_id', e.target.value)} /></div>
               </div>
