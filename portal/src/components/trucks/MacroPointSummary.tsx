@@ -39,7 +39,7 @@ export default function MacroPointSummary({ result }: { result: MacroPointApplyR
   ].join(' · ');
 
   return (
-    <div className="bulk-summary">
+    <div className="bulk-summary mp-summary">
       <div className="bulk-actions">
         <b>Applied: {counts}</b>
         <button className="mini-btn" type="button" onClick={download}>Download summary (.csv)</button>

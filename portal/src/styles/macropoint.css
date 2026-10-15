@@ -14,3 +14,15 @@
 .mp-group-id, .mp-group-truck { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .mp-dup { opacity: 0.6; }
 @media (max-width: 760px) { .mp-group-top { grid-template-columns: 1fr; } }
+
+/* MacroPointSummary's columns are Row / Source / Load / Truck / Time /
+   Update / Result / Notes. bulk.css tints the 3rd/4th cells for the sites
+   summary layout (Row / Site / Result / Changes), which here are Load and
+   Truck: reset those, and tint Result (7th) per outcome with the same
+   color tokens. `tr >` lifts the reset over bulk.css's row-class rules. */
+.mp-summary.bulk-summary tr > td:nth-child(3),
+.mp-summary.bulk-summary tr > td:nth-child(4) { color: inherit; }
+.mp-summary .bulk-row-create td:nth-child(7) { color: var(--c-green, #178a4c); }
+.mp-summary .bulk-row-unchanged td:nth-child(7),
+.mp-summary .bulk-row-skipped td:nth-child(7) { color: var(--muted, #51606f); }
+.mp-summary .bulk-row-error td:nth-child(7) { color: var(--c-red, #c03540); }
