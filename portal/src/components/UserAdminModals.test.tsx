@@ -9,7 +9,16 @@ vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({ maxRank: auth.maxRank, passwordMinLength: auth.passwordMinLength }),
 }));
 
+const sys = vi.hoisted(() => ({
+  status: { email_enabled: false } as { email_enabled: boolean; password_reset_ttl_minutes?: number },
+}));
+vi.mock('../lib/systemStatusContext', () => ({
+  useSystemStatus: () => ({ status: sys.status, refresh: () => {} }),
+}));
+
 const api = vi.hoisted(() => ({
+  adminResendInviteRequest: vi.fn(async () => {}),
+  adminSendResetLinkRequest: vi.fn(async () => {}),
   adminResetPasswordRequest: vi.fn(async () => {}),
   adminSetRolesRequest: vi.fn(async () => []),
   getAccessSummary: vi.fn(),
@@ -19,7 +28,7 @@ vi.mock('../lib/api', async (importActual) => ({
 }));
 
 const { ApiError } = await import('../lib/api');
-const { ManageRolesModal, ResetPasswordModal } = await import('./UserAdminModals');
+const { ManageRolesModal, ResetPasswordModal, resendInvite } = await import('./UserAdminModals');
 
 const role = (name: string, label: string, rank: number, scope_anchor: string) => ({
   name, label, rank, scope_anchor, color: null, description: '', is_system: true,
@@ -51,6 +60,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   auth.maxRank = 60;
   auth.passwordMinLength = 20;
+  sys.status = { email_enabled: false };
   api.getAccessSummary.mockResolvedValue(SUMMARY);
 });
 afterEach(cleanup);
@@ -59,6 +69,9 @@ afterEach(cleanup);
 
 it('Reset password: minLength and the generated value follow the session minimum', () => {
   render(<ResetPasswordModal user={USER} onClose={() => {}} onDone={() => {}} />);
+  // email off: no choice, today's flow
+  expect(screen.queryByRole('group', { name: 'Reset method' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Send link' })).toBeNull();
   const input = screen.getByLabelText('Temporary password') as HTMLInputElement;
   expect(input.minLength).toBe(20);
   expect(input.value.length).toBeGreaterThanOrEqual(22);
@@ -77,6 +90,64 @@ it('Reset password: a server password_too_short names its min_length', async () 
   render(<ResetPasswordModal user={USER} onClose={() => {}} onDone={() => {}} />);
   fireEvent.click(screen.getByRole('button', { name: 'Reset password' }));
   expect(await screen.findByText('Temporary passwords need at least 20 characters.')).toBeTruthy();
+});
+
+it('Reset password, email on: the emailed link is the default and "Send link" sends it', async () => {
+  sys.status = { email_enabled: true, password_reset_ttl_minutes: 15 };
+  const onDone = vi.fn();
+  render(<ResetPasswordModal user={{ ...USER, login_email: 'wan@x.test' }}
+                             onClose={() => {}} onDone={onDone} />);
+  expect(screen.getByRole('group', { name: 'Reset method' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Email a reset link' }).getAttribute('aria-pressed'))
+    .toBe('true');
+  expect(screen.queryByLabelText('Temporary password')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Send link' }));
+  await waitFor(() => expect(api.adminSendResetLinkRequest).toHaveBeenCalledWith('p1'));
+  expect(api.adminResetPasswordRequest).not.toHaveBeenCalled();
+  expect(await screen.findByText(
+    'Reset link sent to wan@x.test. It works once and expires in 15 minutes.')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+  expect(onDone).toHaveBeenCalled();
+});
+
+it('Reset password, email on: without known minutes the link "expires soon."', async () => {
+  sys.status = { email_enabled: true };
+  render(<ResetPasswordModal user={{ ...USER, login_email: 'wan@x.test' }}
+                             onClose={() => {}} onDone={() => {}} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Send link' }));
+  expect(await screen.findByText(
+    'Reset link sent to wan@x.test. It works once and expires soon.')).toBeTruthy();
+});
+
+it('Reset password, email on: "Set a temporary password" is today\'s flow', async () => {
+  sys.status = { email_enabled: true, password_reset_ttl_minutes: 15 };
+  render(<ResetPasswordModal user={USER} onClose={() => {}} onDone={() => {}} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Set a temporary password' }));
+  const input = screen.getByLabelText('Temporary password') as HTMLInputElement;
+  expect(screen.queryByRole('button', { name: 'Send link' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Reset password' }));
+  await waitFor(() => expect(api.adminResetPasswordRequest).toHaveBeenCalledWith('p1', input.value, true));
+  expect(api.adminSendResetLinkRequest).not.toHaveBeenCalled();
+});
+
+it('Reset password, email on: an invited account is told to resend the invite', async () => {
+  sys.status = { email_enabled: true, password_reset_ttl_minutes: 15 };
+  api.adminSendResetLinkRequest.mockRejectedValueOnce(new ApiError(409, 'invited'));
+  render(<ResetPasswordModal user={USER} onClose={() => {}} onDone={() => {}} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Send link' }));
+  expect(await screen.findByText(
+    "They haven't set a password yet. Resend their invite instead.")).toBeTruthy();
+});
+
+/* ── resend invite ── */
+
+it('resendInvite: "Invite sent to {email}." or a friendly error', async () => {
+  expect(await resendInvite('p1', 'wan@x.test')).toBe('Invite sent to wan@x.test.');
+  expect(api.adminResendInviteRequest).toHaveBeenCalledWith('p1');
+  api.adminResendInviteRequest.mockRejectedValueOnce(new ApiError(409, 'not_invited'));
+  expect(await resendInvite('p1', 'wan@x.test')).toBe("They've already set a password.");
+  api.adminResendInviteRequest.mockRejectedValueOnce(new ApiError(422, 'mail_not_configured'));
+  expect(await resendInvite('p1', 'wan@x.test')).toBe("Email isn't set up, so nothing can be sent.");
 });
 
 /* ── manage roles ── */

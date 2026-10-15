@@ -16,7 +16,9 @@ import {
   DemoteUserModal,
   ManageRolesModal,
   ResetPasswordModal,
+  resendInvite,
 } from '../components/UserAdminModals';
+import { INVITE_OPTIONS, SignInChoice } from '../components/users/SignInChoice';
 import {
   adminUpdateProfileRequest, apiFetch, ApiError, getAccessSummary, type AccessRole,
 } from '../lib/api';
@@ -27,6 +29,8 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
+import { useToast } from '../lib/notificationsContext';
+import { useSystemStatus } from '../lib/systemStatusContext';
 import { usePendingDeletes } from '../lib/pendingDeletes';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
@@ -50,6 +54,7 @@ import '../styles/settings.css';  /* .set-note */
 const PILLS = [
   { key: 'all', label: 'Everyone' },
   { key: 'active', label: 'Active' },
+  { key: 'invited', label: 'Invited' },
   { key: 'locked', label: 'Locked' },
   { key: 'disabled', label: 'Disabled' },
 ];
@@ -146,6 +151,7 @@ export default function Users() {
   const listGridScale = listScale(preferences?.list_size);
   const god = useGodEdit();
   const pd = usePendingDeletes(godMode);
+  const toast = useToast();
   const [manage, setManage] = useState<ManageAction | null>(null);
   const [query, setQuery] = useState('');
   const location = useLocation();
@@ -382,7 +388,13 @@ export default function Users() {
         key: 'edit', label: 'Edit profile',
         onSelect: () => setManage({ kind: 'edit', user: u }),
       }] : []),
-      ...(canManageUsers ? [{
+      // an invited account has no password to reset yet — resend the link
+      ...(canManageUsers ? [u.status === 'invited' ? {
+        key: 'resend', label: 'Resend invite',
+        onSelect: () => {
+          void resendInvite(u.person_id, u.login_email ?? u.display_name).then(toast);
+        },
+      } : {
         key: 'reset', label: 'Reset password',
         onSelect: () => setManage({ kind: 'reset', user: u }),
       }] : []),
@@ -604,9 +616,10 @@ export default function Users() {
                           <dt>Last sign-in</dt><dd className="mono">{relativeTime(u.last_login_at)}</dd>
                           <dt>Created</dt><dd className="mono">{longDate(u.account_created_at)}</dd>
                           <dt>Password</dt>
-                          <dd>{u.must_change_password
-                            ? <span className="chip c-amber"><span className="dot" />change required</span>
-                            : 'set'}</dd>
+                          <dd>{u.status === 'invited' ? 'not set yet'
+                            : u.must_change_password
+                              ? <span className="chip c-amber"><span className="dot" />change required</span>
+                              : 'set'}</dd>
                         </dl>
                         {(() => {
                           const isSelf = u.person_id === mePerson?.id;
@@ -698,6 +711,7 @@ export default function Users() {
 const ADD_ERRORS: Record<string, string> = {
   email_in_use: 'That login email is already in use.',
   login_details_required: 'Login email and temporary password are required to create an account.',
+  mail_not_configured: "Email isn't set up, so an invite can't be sent. Set a temporary password instead.",
   role_requires_org: 'That role needs a client or partner to scope to — grant it from the org contacts instead.',
   rank_too_low: 'You do not have sufficient rank to grant one of the selected roles.',
 };
@@ -747,6 +761,13 @@ function AddPersonModal({ onClose, onCreated }: {
   }, [maxRank, canViewAccess]);
   const [createAccount, setCreateAccount] = useState(true);
   const [mustChange, setMustChange] = useState(true);
+  const { status: system } = useSystemStatus();
+  const emailOn = !!system.email_enabled;
+  // unpicked follows the default (invite when email is on); the choice is
+  // hidden without email, so 'invite' can never be sent then
+  const [picked, setSignIn] = useState<'invite' | 'password' | null>(null);
+  const signIn = picked ?? (emailOn ? 'invite' : 'password');
+  const inviting = createAccount && emailOn && signIn === 'invite';
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -755,6 +776,10 @@ function AddPersonModal({ onClose, onCreated }: {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (inviting && !form.login_email.trim()) {
+      setError('A login email is required to send an invite.');
+      return;
+    }
     setSaving(true);
     setError('');
     try {
@@ -771,8 +796,9 @@ function AddPersonModal({ onClose, onCreated }: {
           roles: [...roles],
           create_account: createAccount,
           login_email: createAccount ? form.login_email.trim() : null,
-          temp_password: createAccount ? form.temp_password : null,
-          must_change_password: mustChange,
+          temp_password: createAccount && !inviting ? form.temp_password : null,
+          must_change_password: inviting ? false : mustChange,
+          ...(inviting ? { invite: true } : {}),
         }),
       });
       if (!resp.ok) {
@@ -858,7 +884,7 @@ function AddPersonModal({ onClose, onCreated }: {
                          style={{ marginRight: 7 }} />
                   Create a login account now
                 </label>
-                {createAccount && (
+                {createAccount && !inviting && (
                   <label style={{ margin: 0 }}>
                     <input type="checkbox" checked={mustChange}
                            onChange={(e) => setMustChange(e.target.checked)}
@@ -867,14 +893,21 @@ function AddPersonModal({ onClose, onCreated }: {
                   </label>
                 )}
               </div>
+              {createAccount && emailOn && (
+                <div className="full"><label>Sign-in</label>
+                  <SignInChoice label="Sign-in" options={INVITE_OPTIONS} value={signIn}
+                                onChange={setSignIn} disabled={saving} /></div>
+              )}
               {createAccount && (
                 <>
                   <div><label>Login email *</label>
                     <input type="email" value={form.login_email}
                            onChange={set('login_email')} required /></div>
-                  <div><label>Temporary password *</label>
-                    <input value={form.temp_password} onChange={set('temp_password')}
-                           required minLength={passwordMinLength} /></div>
+                  {!inviting && (
+                    <div><label>Temporary password *</label>
+                      <input value={form.temp_password} onChange={set('temp_password')}
+                             required minLength={passwordMinLength} /></div>
+                  )}
                 </>
               )}
               {!createAccount && (

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  applyUserPatch, ROLE_CLS, tempPasswordLength, tempPasswordTooShort, toManagedUser, toMemberItem,
+  applyUserPatch, ROLE_CLS, STATUS_META, tempPasswordLength, tempPasswordTooShort, toManagedUser, toMemberItem,
   USER_ERRORS, USER_GOD_FIELDS, userCellText, userSearchText, type UserItem,
 } from './users';
 import type { PersonDetail, UserDetailOut } from './api';
@@ -106,7 +106,8 @@ describe('userCellText', () => {
 
   it('status reads the STATUS_META label, falling back to the bare key for an unknown status', () => {
     expect(userCellText(user, 'status')).toBe('Active');
-    expect(userCellText(blank, 'status')).toBe('invited');
+    expect(userCellText(blank, 'status')).toBe('Invited');
+    expect(userCellText({ ...blank, status: 'pending' }, 'status')).toBe('pending');
   });
 
   it('job_title/contact_email/phone dash when unset', () => {
@@ -195,7 +196,11 @@ describe('user detail adapters', () => {
       person_id: 'p1', display_name: 'Wan Worker', first_name: 'Wan', last_name: 'Worker',
       preferred_name: null, job_title: 'Tech', contact_email: 'wan@x.test', phone: null,
       roles: ['staff'], status: 'active', max_rank: 40, avatar_url: null,
+      login_email: 'wan@x.test',
     });
+  });
+  it('invited accounts get an amber Invited chip', () => {
+    expect(STATUS_META.invited).toEqual({ label: 'Invited', cls: 'c-amber' });
   });
   it('toMemberItem carries login email and roles', () => {
     expect(toMemberItem(DETAIL)).toEqual({

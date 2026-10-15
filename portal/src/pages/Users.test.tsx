@@ -16,6 +16,16 @@ vi.mock('../auth/AuthContext', () => ({
   }),
 }));
 
+const sys = vi.hoisted(() => ({ email_enabled: false }));
+vi.mock('../lib/systemStatusContext', () => ({
+  useSystemStatus: () => ({ status: { email_enabled: sys.email_enabled }, refresh: () => {} }),
+}));
+const toast = vi.hoisted(() => vi.fn());
+vi.mock('../lib/notificationsContext', async (importActual) => ({
+  ...(await importActual<typeof import('../lib/notificationsContext')>()),
+  useToast: () => toast,
+}));
+
 const ROW = {
   person_id: 'p1', first_name: 'Wan', last_name: 'Worker', preferred_name: null, display_name: 'Wan Worker',
   job_title: null, phone: null, contact_email: null, login_email: 'wan@x.test', roles: ['staff'],
@@ -26,6 +36,8 @@ const ROW = {
 beforeEach(() => {
   auth.maxRank = 100;
   auth.passwordMinLength = 8;
+  sys.email_enabled = false;
+  toast.mockReset();
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([ROW]), { status: 200 })));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -295,4 +307,124 @@ it('Add person: when the role list fails, nothing is sent behind the scenes — 
   const post = vi.mocked(fetch).mock.calls.find(([url, init]) =>
     String(url).endsWith('/users') && (init as RequestInit | undefined)?.method === 'POST');
   expect(JSON.parse(String((post![1] as RequestInit).body)).roles).toEqual([]);
+});
+
+it('Add person, email off: no Sign-in choice; the temporary password is sent as today', async () => {
+  stubFetch(() => new Response(JSON.stringify({ person_id: 'p7', login_email: 'new@x.test' }), { status: 201 }));
+  const modal = await openAdd();
+  expect(within(modal).queryByRole('group', { name: 'Sign-in' })).toBeNull();
+  expect(within(modal).getByText('Must change password at first sign-in')).toBeTruthy();
+  const inputs = modal.querySelectorAll<HTMLInputElement>('.pf-form input');
+  fireEvent.change(inputs[0], { target: { value: 'New' } });
+  fireEvent.change(inputs[1], { target: { value: 'Person' } });
+  const login = within(modal).getByText('Login email *').parentElement!.querySelector('input')!;
+  fireEvent.change(login, { target: { value: 'new@x.test' } });
+  const temp = tempInput(modal).value;
+  fireEvent.click(within(modal).getByRole('button', { name: 'Create person' }));
+  await screen.findByText('DETAIL PAGE');
+  const post = vi.mocked(fetch).mock.calls.find(([url, init]) =>
+    String(url).endsWith('/users') && (init as RequestInit | undefined)?.method === 'POST');
+  const body = JSON.parse(String((post![1] as RequestInit).body));
+  expect(body).toMatchObject({ create_account: true, temp_password: temp, must_change_password: true });
+  expect(body).not.toHaveProperty('invite');
+});
+
+it('Add person, email on: invite is the default and the body has invite: true, no temp_password', async () => {
+  sys.email_enabled = true;
+  stubFetch(() => new Response(JSON.stringify({ person_id: 'p7', login_email: 'new@x.test' }), { status: 201 }));
+  const modal = await openAdd();
+  expect(within(modal).getByRole('group', { name: 'Sign-in' })).toBeTruthy();
+  expect(within(modal).getByRole('button', { name: 'Email an invite link' })
+    .getAttribute('aria-pressed')).toBe('true');
+  expect(within(modal).queryByText('Temporary password *')).toBeNull();
+  expect(within(modal).queryByText('Must change password at first sign-in')).toBeNull();
+  const inputs = modal.querySelectorAll<HTMLInputElement>('.pf-form input');
+  fireEvent.change(inputs[0], { target: { value: 'New' } });
+  fireEvent.change(inputs[1], { target: { value: 'Person' } });
+  const login = within(modal).getByText('Login email *').parentElement!.querySelector('input')!;
+  fireEvent.change(login, { target: { value: 'new@x.test' } });
+  fireEvent.click(within(modal).getByRole('button', { name: 'Create person' }));
+  await screen.findByText('DETAIL PAGE');
+  const post = vi.mocked(fetch).mock.calls.find(([url, init]) =>
+    String(url).endsWith('/users') && (init as RequestInit | undefined)?.method === 'POST');
+  const body = JSON.parse(String((post![1] as RequestInit).body));
+  expect(body).toMatchObject({
+    create_account: true, login_email: 'new@x.test', invite: true, temp_password: null,
+  });
+});
+
+it('Add person, email on: "Set a temporary password" shows the fields and sends temp_password', async () => {
+  sys.email_enabled = true;
+  stubFetch(() => new Response(JSON.stringify({ person_id: 'p7', login_email: 'new@x.test' }), { status: 201 }));
+  const modal = await openAdd();
+  fireEvent.click(within(modal).getByRole('button', { name: 'Set a temporary password' }));
+  expect(within(modal).getByText('Must change password at first sign-in')).toBeTruthy();
+  const temp = tempInput(modal).value;
+  const inputs = modal.querySelectorAll<HTMLInputElement>('.pf-form input');
+  fireEvent.change(inputs[0], { target: { value: 'New' } });
+  fireEvent.change(inputs[1], { target: { value: 'Person' } });
+  const login = within(modal).getByText('Login email *').parentElement!.querySelector('input')!;
+  fireEvent.change(login, { target: { value: 'new@x.test' } });
+  fireEvent.click(within(modal).getByRole('button', { name: 'Create person' }));
+  await screen.findByText('DETAIL PAGE');
+  const post = vi.mocked(fetch).mock.calls.find(([url, init]) =>
+    String(url).endsWith('/users') && (init as RequestInit | undefined)?.method === 'POST');
+  const body = JSON.parse(String((post![1] as RequestInit).body));
+  expect(body).toMatchObject({ temp_password: temp, must_change_password: true });
+  expect(body).not.toHaveProperty('invite');
+});
+
+/* ── Invited accounts ────────────────────────────────────────────── */
+
+const INVITED = {
+  ...ROW, person_id: 'p2', first_name: 'Ina', last_name: 'Invitee', display_name: 'Ina Invitee',
+  login_email: 'ina@x.test', status: 'invited', last_login_at: null,
+};
+
+function stubInvited() {
+  vi.stubGlobal('fetch', vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url).endsWith('/p2/invite') && init?.method === 'POST') return new Response(null, { status: 204 });
+    return new Response(JSON.stringify([ROW, INVITED]), { status: 200 });
+  }));
+}
+
+it('Invited: an amber chip, and an Invited filter with its count', async () => {
+  stubInvited();
+  renderUsers();
+  const row = (await screen.findByText('Ina Invitee')).closest('.dir-row') as HTMLElement;
+  const chip = within(row.querySelector('.row-main') as HTMLElement).getByText('Invited');
+  expect(chip.closest('.chip')?.className).toContain('c-amber');
+  const pill = screen.getByRole('button', { name: /^Invited/ });
+  expect(pill.querySelector('.n')?.textContent).toBe('1');
+  fireEvent.click(pill);
+  await waitFor(() => expect(screen.queryByText('Wan Worker')).toBeNull());
+  expect(screen.getByText('Ina Invitee')).toBeTruthy();
+});
+
+it('Invited: the row offers Resend invite instead of Reset password, and toasts on send', async () => {
+  stubInvited();
+  renderUsers();
+  const row = (await screen.findByText('Ina Invitee')).closest('.dir-row') as HTMLElement;
+  fireEvent.click(within(row).getByRole('button', { name: /actions/i }));
+  expect(await screen.findByRole('menuitem', { name: 'Resend invite' })).toBeTruthy();
+  expect(screen.queryByRole('menuitem', { name: 'Reset password' })).toBeNull();
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Resend invite' }));
+  await waitFor(() => expect(toast).toHaveBeenCalledWith('Invite sent to ina@x.test.'));
+  expect(vi.mocked(fetch).mock.calls.some(([url, init]) =>
+    String(url).endsWith('/users/p2/invite') && (init as RequestInit | undefined)?.method === 'POST',
+  )).toBe(true);
+});
+
+it('Invited: a refused resend toasts the friendly reason', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url).endsWith('/p2/invite') && init?.method === 'POST') {
+      return new Response(JSON.stringify({ detail: { code: 'not_invited' } }), { status: 409 });
+    }
+    return new Response(JSON.stringify([ROW, INVITED]), { status: 200 });
+  }));
+  renderUsers();
+  const row = (await screen.findByText('Ina Invitee')).closest('.dir-row') as HTMLElement;
+  fireEvent.click(within(row).getByRole('button', { name: /actions/i }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Resend invite' }));
+  await waitFor(() => expect(toast).toHaveBeenCalledWith("They've already set a password."));
 });

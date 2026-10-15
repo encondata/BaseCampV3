@@ -45,6 +45,7 @@ export function toManagedUser(d: UserDetailOut): ManagedUser {
     status: d.account.status,
     max_rank: d.max_rank,
     avatar_url: d.person.avatar_url,
+    login_email: d.account.login_email,
   };
 }
 
@@ -86,6 +87,7 @@ export interface UserItem {
  *  (below) can read the same label the status chip renders. */
 export const STATUS_META: Record<string, { label: string; cls: string }> = {
   active: { label: 'Active', cls: 'c-green' },
+  invited: { label: 'Invited', cls: 'c-amber' },
   locked: { label: 'Locked', cls: 'c-amber' },
   disabled: { label: 'Disabled', cls: 'c-red' },
 };

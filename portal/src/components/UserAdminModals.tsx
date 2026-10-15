@@ -1,7 +1,8 @@
 /**
  * Admin account-management modals for the Users directory:
- * edit profile, reset password, manage roles, and account-state
- * confirmations (disable / enable / unlock).
+ * edit profile, reset password (emailed link or temporary password),
+ * resend invite, manage roles, and account-state confirmations
+ * (disable / enable / unlock).
  */
 
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
@@ -11,8 +12,10 @@ import { canTouchRank, grantableRoles, rolesPayloadForGlobalChange } from '../li
 import {
   adminAccountStateRequest,
   adminDemoteRequest,
+  adminResendInviteRequest,
   adminResetPasswordRequest,
   adminResetTotp,
+  adminSendResetLinkRequest,
   adminSetRolesRequest,
   adminUpdateProfileRequest,
   ApiError,
@@ -20,8 +23,10 @@ import {
   type AccessRole,
 } from '../lib/api';
 import { generateTempPassword } from '../lib/format';
+import { useSystemStatus } from '../lib/systemStatusContext';
 import { tempPasswordLength, tempPasswordTooShort } from '../lib/users';
 import AvatarUpload from './AvatarUpload';
+import { RESET_OPTIONS, SignInChoice } from './users/SignInChoice';
 
 export interface ManagedUser {
   person_id: string;
@@ -36,6 +41,8 @@ export interface ManagedUser {
   status: string;
   max_rank: number;
   avatar_url: string | null;
+  /** Where invite and reset-link emails go. */
+  login_email?: string | null;
 }
 
 const GUARD_ERRORS: Record<string, string> = {
@@ -44,6 +51,13 @@ const GUARD_ERRORS: Record<string, string> = {
   role_requires_org: 'That role needs a client or partner to scope to — grant it from the org contacts instead.',
   email_in_use: 'That contact email is already in use.',
   password_recently_used: "That password was one of this person's recent ones. Choose a different one.",
+  user_not_found: 'This user no longer exists.',
+  forbidden: 'You do not have permission to change users.',
+  mail_not_configured: "Email isn't set up, so nothing can be sent.",
+  person_archived: 'This person is archived.',
+  account_disabled: 'Their account is disabled. Enable it first.',
+  invited: "They haven't set a password yet. Resend their invite instead.",
+  not_invited: "They've already set a password.",
 };
 
 function errText(err: unknown, passwordMinLength?: number): string {
@@ -167,16 +181,31 @@ export function AdminEditProfileModal({ user, onClose, onSaved, onAvatarChanged 
 
 /* ── reset password ─────────────────────────────────────────────── */
 
+/** "Reset link sent to {email}. It works once and expires in {n} minutes."
+ *  — n from /system/status when it's there, else "… expires soon." */
+export function resetLinkSentText(email: string, ttlMinutes: number | undefined): string {
+  const expiry = typeof ttlMinutes === 'number' && ttlMinutes > 0
+    ? `expires in ${ttlMinutes} minutes.` : 'expires soon.';
+  return `Reset link sent to ${email}. It works once and ${expiry}`;
+}
+
+const emailOf = (user: ManagedUser) => user.login_email ?? user.contact_email ?? user.display_name;
+
 export function ResetPasswordModal({ user, onClose, onDone }: {
   user: ManagedUser;
   onClose: () => void;
   onDone: () => void;
 }) {
   const { passwordMinLength } = useAuth();
+  const { status: system } = useSystemStatus();
+  const emailOn = !!system.email_enabled;
+  // unpicked follows the default: the emailed link when email is on
+  const [picked, setMethod] = useState<'link' | 'password' | null>(null);
+  const method = emailOn ? (picked ?? 'link') : 'password';
   const generate = () => generateTempPassword(tempPasswordLength(passwordMinLength));
   const [temp, setTemp] = useState(generate);
   const [mustChange, setMustChange] = useState(true);
-  const [phase, setPhase] = useState<'confirm' | 'done'>('confirm');
+  const [phase, setPhase] = useState<'confirm' | 'done' | 'sent'>('confirm');
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
@@ -185,8 +214,13 @@ export function ResetPasswordModal({ user, onClose, onDone }: {
     setSaving(true);
     setError('');
     try {
-      await adminResetPasswordRequest(user.person_id, temp, mustChange);
-      setPhase('done');
+      if (method === 'link') {
+        await adminSendResetLinkRequest(user.person_id);
+        setPhase('sent');
+      } else {
+        await adminResetPasswordRequest(user.person_id, temp, mustChange);
+        setPhase('done');
+      }
     } catch (err) {
       setError(errText(err, passwordMinLength));
     } finally {
@@ -204,7 +238,20 @@ export function ResetPasswordModal({ user, onClose, onDone }: {
   return (
     <Modal title={`Reset password — ${user.display_name}`} onClose={onClose}>
       <div className="modal-body">
-        {phase === 'confirm' ? (
+        {phase === 'confirm' && emailOn && (
+          <div style={{ marginBottom: 14 }}>
+            <SignInChoice label="Reset method" options={RESET_OPTIONS} value={method}
+                          onChange={(next) => { setMethod(next); setError(''); }}
+                          disabled={saving} />
+          </div>
+        )}
+        {phase === 'confirm' && method === 'link' && (
+          <p className="set-note" style={{ padding: 0, margin: 0 }}>
+            Emails {user.first_name} a one-time link to {emailOf(user)} to choose a new
+            password. Their current password and sign-ins keep working until they use it.
+          </p>
+        )}
+        {phase === 'confirm' && method === 'password' && (
           <>
             <p className="set-note" style={{ padding: 0, marginTop: 0 }}>
               This signs {user.first_name} out everywhere and replaces their
@@ -234,7 +281,13 @@ export function ResetPasswordModal({ user, onClose, onDone }: {
               </div>
             </div>
           </>
-        ) : (
+        )}
+        {phase === 'sent' && (
+          <p className="set-note" style={{ padding: 0, margin: 0 }}>
+            {resetLinkSentText(emailOf(user), system.password_reset_ttl_minutes)}
+          </p>
+        )}
+        {phase === 'done' && (
           <>
             <p className="set-note" style={{ padding: 0, marginTop: 0 }}>
               Done — {user.first_name}'s sessions are revoked. Their temporary
@@ -254,7 +307,15 @@ export function ResetPasswordModal({ user, onClose, onDone }: {
         )}
       </div>
       <div className="modal-foot">
-        {phase === 'confirm' ? (
+        {phase === 'confirm' && method === 'link' && (
+          <>
+            <button className="btn-solid" onClick={() => void run()} disabled={saving}>
+              {saving ? 'Sending…' : 'Send link'}
+            </button>
+            <button className="mini-btn" onClick={onClose} disabled={saving}>Cancel</button>
+          </>
+        )}
+        {phase === 'confirm' && method === 'password' && (
           <>
             <button className="btn-solid" onClick={() => void run()}
                     disabled={saving || temp.length < passwordMinLength}>
@@ -262,13 +323,28 @@ export function ResetPasswordModal({ user, onClose, onDone }: {
             </button>
             <button className="mini-btn" onClick={onClose} disabled={saving}>Cancel</button>
           </>
-        ) : (
+        )}
+        {phase !== 'confirm' && (
           <button className="btn-solid" onClick={onDone}>Done</button>
         )}
         {error && <span className="pf-error">{error}</span>}
       </div>
     </Modal>
   );
+}
+
+/* ── resend invite ──────────────────────────────────────────────── */
+
+/** Emails a fresh invite link and returns the toast to show:
+ *  "Invite sent to {email}." or the mapped error. */
+export async function resendInvite(personId: string, email: string): Promise<string> {
+  try {
+    await adminResendInviteRequest(personId);
+    return `Invite sent to ${email}.`;
+  } catch (err) {
+    const code = err instanceof ApiError ? err.code : '';
+    return GUARD_ERRORS[code] ?? "Couldn't send the invite — try again.";
+  }
 }
 
 /* ── manage roles ───────────────────────────────────────────────── */

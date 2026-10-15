@@ -13,6 +13,7 @@ import AvatarUpload from '../components/AvatarUpload';
 import GodDeleteButton from '../components/GodDeleteButton';
 import {
   AccountStateModal, AdminEditProfileModal, DemoteUserModal, ResetPasswordModal, ResetTotpModal,
+  resendInvite,
 } from '../components/UserAdminModals';
 import UserAccessTab from '../components/users/UserAccessTab';
 import UserProfileTab from '../components/users/UserProfileTab';
@@ -22,6 +23,7 @@ import {
   type MyActivityItem, type UserDetailOut,
 } from '../lib/api';
 import { longDate } from '../lib/format';
+import { useToast } from '../lib/notificationsContext';
 import { usePendingDeletes } from '../lib/pendingDeletes';
 import { type DetailMode, ROLE_CLS, STATUS_META, toManagedUser } from '../lib/users';
 import '../styles/directory.css';
@@ -58,6 +60,8 @@ export default function UserDetail() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const pd = usePendingDeletes(godMode);
+  const toast = useToast();
+  const [resending, setResending] = useState(false);
   // `can` is not guaranteed to be referentially stable across renders (it
   // isn't in these tests' auth mock), so the history effect below depends on
   // this boolean rather than on `can` itself.
@@ -240,7 +244,15 @@ export default function UserDetail() {
             {mode === 'manage' && canManageUsers && (
               <>
                 <button className="btn-solid" onClick={() => setAction({ kind: 'edit' })}>Edit profile</button>
-                <button className="mini-btn" onClick={() => setAction({ kind: 'reset' })}>Reset password</button>
+                {account.status === 'invited' ? (
+                  <button className="mini-btn" disabled={resending} onClick={() => {
+                    setResending(true);
+                    void resendInvite(person.id, account.login_email ?? person.display_name)
+                      .then(toast).finally(() => setResending(false));
+                  }}>Resend invite</button>
+                ) : (
+                  <button className="mini-btn" onClick={() => setAction({ kind: 'reset' })}>Reset password</button>
+                )}
                 {account.status === 'locked' && (
                   <button className="mini-btn" onClick={() => setAction({ kind: 'state', action: 'unlock' })}>Unlock</button>
                 )}

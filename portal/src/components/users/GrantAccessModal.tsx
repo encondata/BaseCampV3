@@ -8,7 +8,9 @@ import { useState, type FormEvent } from 'react';
 import { useAuth } from '../../auth/AuthContext';
 import { adminCreateAccountRequest, ApiError } from '../../lib/api';
 import { generateTempPassword } from '../../lib/format';
+import { useSystemStatus } from '../../lib/systemStatusContext';
 import { tempPasswordLength, tempPasswordTooShort } from '../../lib/users';
+import { INVITE_OPTIONS, SignInChoice } from './SignInChoice';
 import '../../styles/profile.css';   /* .pf-form, .btn-solid */
 import '../../styles/reports.css';   /* .rgm-head-text — the modal header */
 
@@ -17,6 +19,9 @@ const GRANT_ERRORS: Record<string, string> = {
   email_in_use: 'That login email is already in use.',
   rank_too_low: 'Their rank is at or above yours.',
   person_not_found: 'That person no longer exists.',
+  login_details_required: 'A login email is required to create an account.',
+  mail_not_configured: "Email isn't set up, so an invite can't be sent. Set a temporary password instead.",
+  person_archived: 'This person is archived.',
 };
 
 export interface GrantAccessPerson {
@@ -32,6 +37,14 @@ export function GrantAccessModal({ person, onClose, onDone }: {
   onDone: () => void;
 }) {
   const { passwordMinLength } = useAuth();
+  const { status: system } = useSystemStatus();
+  const emailOn = !!system.email_enabled;
+  // unpicked follows the default (invite when email is on), so a status
+  // that arrives after the dialog opens still lands on the right choice
+  const [picked, setSignIn] = useState<'invite' | 'password' | null>(null);
+  const signIn = picked ?? (emailOn ? 'invite' : 'password');
+  // the choice is hidden without email, so 'invite' can never be sent then
+  const inviting = emailOn && signIn === 'invite';
   const name = `${person.first_name} ${person.last_name}`.trim();
   const [loginEmail, setLoginEmail] = useState(person.email ?? '');
   const [tempPassword, setTempPassword] = useState(
@@ -44,14 +57,18 @@ export function GrantAccessModal({ person, onClose, onDone }: {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!loginEmail.trim()) {
+      setError(GRANT_ERRORS.login_details_required);
+      return;
+    }
     setSaving(true);
     setError('');
     try {
-      await adminCreateAccountRequest(person.person_id, {
-        login_email: loginEmail.trim(),
-        temp_password: tempPassword,
-        must_change_password: mustChange,
-      });
+      await adminCreateAccountRequest(person.person_id, inviting
+        ? { login_email: loginEmail.trim(), temp_password: null, must_change_password: false,
+            invite: true }
+        : { login_email: loginEmail.trim(), temp_password: tempPassword,
+            must_change_password: mustChange });
       onDone();
     } catch (err) {
       setError(!(err instanceof ApiError)
@@ -84,20 +101,29 @@ export function GrantAccessModal({ person, onClose, onDone }: {
         <form onSubmit={submit}>
           <div className="modal-body">
             <div className="pf-form">
+              {emailOn && (
+                <div className="full"><label>Sign-in</label>
+                  <SignInChoice label="Sign-in" options={INVITE_OPTIONS} value={signIn}
+                                onChange={setSignIn} disabled={saving} /></div>
+              )}
               <div><label htmlFor="ga-email">Login email *</label>
                 <input id="ga-email" type="email" value={loginEmail} required
                        onChange={(e) => setLoginEmail(e.target.value)} /></div>
-              <div><label htmlFor="ga-temp">Temporary password *</label>
-                <input id="ga-temp" value={tempPassword} required minLength={passwordMinLength}
-                       onChange={(e) => setTempPassword(e.target.value)} /></div>
-              <div className="full">
-                <label style={{ margin: 0 }}>
-                  <input type="checkbox" checked={mustChange}
-                         onChange={(e) => setMustChange(e.target.checked)}
-                         style={{ marginRight: 7 }} />
-                  Must change password at first sign-in
-                </label>
-              </div>
+              {!inviting && (
+                <>
+                  <div><label htmlFor="ga-temp">Temporary password *</label>
+                    <input id="ga-temp" value={tempPassword} required minLength={passwordMinLength}
+                           onChange={(e) => setTempPassword(e.target.value)} /></div>
+                  <div className="full">
+                    <label style={{ margin: 0 }}>
+                      <input type="checkbox" checked={mustChange}
+                             onChange={(e) => setMustChange(e.target.checked)}
+                             style={{ marginRight: 7 }} />
+                      Must change password at first sign-in
+                    </label>
+                  </div>
+                </>
+              )}
             </div>
           </div>
           <div className="modal-foot">

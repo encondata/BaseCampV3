@@ -29,7 +29,14 @@ vi.mock('../auth/AuthContext', () => ({
   }),
 }));
 
+const toast = vi.hoisted(() => vi.fn());
+vi.mock('../lib/notificationsContext', async (importActual) => ({
+  ...(await importActual<typeof import('../lib/notificationsContext')>()),
+  useToast: () => toast,
+}));
+
 const api = vi.hoisted(() => ({
+  adminResendInviteRequest: vi.fn(async () => {}),
   getUserDetail: vi.fn(),
   getUserActivity: vi.fn(async (): Promise<MyActivityItem[]> => []),
   getAccessSummary: vi.fn(async () => ({
@@ -534,4 +541,28 @@ it('Remembered browsers refetches after the page reloads (Sign out everywhere)',
   fireEvent.click(await screen.findByRole('button', { name: 'Sign out all sessions' }));
   await waitFor(() => expect(api.listUserTrustedBrowsers).toHaveBeenCalledTimes(2));
   expect(await screen.findByText('0 remembered')).toBeTruthy();
+});
+
+/* ── invited accounts ── */
+
+it('an invited account shows the Invited chip and Resend invite, and no Reset password anywhere', async () => {
+  api.getUserDetail.mockResolvedValue({
+    ...DETAIL,
+    account: { ...DETAIL.account, status: 'invited', must_change_password: false,
+      last_login_at: null, password_updated_at: null },
+  });
+  renderAt('/people/users/p1');
+  const heading = await screen.findByRole('heading', { level: 1, name: /Wan Worker/ });
+  expect(within(heading).getByText('Invited').closest('.chip')?.className).toContain('c-amber');
+  expect(screen.queryByRole('button', { name: 'Reset password' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Resend invite' }));
+  await waitFor(() => expect(api.adminResendInviteRequest).toHaveBeenCalledWith('p1'));
+  await waitFor(() => expect(toast).toHaveBeenCalledWith('Invite sent to wan@x.test.'));
+});
+
+it('an active account keeps Reset password (header and Account panel) and has no Resend invite', async () => {
+  renderAt('/people/users/p1');
+  await screen.findByRole('heading', { level: 1, name: /Wan Worker/ });
+  expect(screen.getAllByRole('button', { name: 'Reset password' })).toHaveLength(2);
+  expect(screen.queryByRole('button', { name: 'Resend invite' })).toBeNull();
 });

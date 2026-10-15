@@ -597,9 +597,16 @@ export async function requestPasswordReset(email: string): Promise<void> {
   await postPublic('/auth/password-reset/request', { email });
 }
 
-export async function checkPasswordResetToken(token: string): Promise<boolean> {
+export interface PasswordResetCheck {
+  valid: boolean;
+  /** The link's account has never had a password (an invite). */
+  first_password: boolean;
+}
+
+export async function checkPasswordResetToken(token: string): Promise<PasswordResetCheck> {
   const resp = await postPublic('/auth/password-reset/check', { token });
-  return ((await resp.json()) as { valid: boolean }).valid;
+  const body = (await resp.json()) as Partial<PasswordResetCheck>;
+  return { valid: !!body.valid, first_password: !!body.first_password };
 }
 
 export async function confirmPasswordReset(token: string, newPassword: string): Promise<void> {
@@ -620,16 +627,34 @@ export async function adminResetPasswordRequest(
 }
 
 /** Create a login account for an EXISTING person (no-account external
- *  contacts promoted to portal users). */
+ *  contacts promoted to portal users). With `invite`, the server ignores
+ *  `temp_password` and emails a one-time set-password link instead. */
 export async function adminCreateAccountRequest(
   personId: string,
-  body: { login_email: string; temp_password: string; must_change_password: boolean },
+  body: {
+    login_email: string; temp_password: string | null; must_change_password: boolean;
+    invite?: boolean;
+  },
 ): Promise<void> {
   const resp = await apiFetch(`/users/${personId}/account`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+/** Email a fresh invite link to an account that has never had a password
+ *  (the new link retires the old one). */
+export async function adminResendInviteRequest(personId: string): Promise<void> {
+  const resp = await apiFetch(`/users/${personId}/invite`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+/** Email the person the self-service reset link; their password and
+ *  sessions stay as they are until they use it. */
+export async function adminSendResetLinkRequest(personId: string): Promise<void> {
+  const resp = await apiFetch(`/users/${personId}/reset-link`, { method: 'POST' });
   if (!resp.ok) throw await errorFrom(resp);
 }
 

@@ -82,7 +82,10 @@ export default function UserProfileTab({
           <div className="panel">
             <div className="panel-head">
               <h3>Account</h3>
-              {canManage && <button className="mini-btn" onClick={onReset}>Reset password</button>}
+              {/* an invited account has no password yet — the header resends the invite */}
+              {canManage && account.status !== 'invited' && (
+                <button className="mini-btn" onClick={onReset}>Reset password</button>
+              )}
             </div>
             <div className="panel-body">
               <dl className="kv">
@@ -90,7 +93,8 @@ export default function UserProfileTab({
                 <dt>Status</dt>
                 <dd><span className={`chip ${status.cls}`}><span className="dot" />{status.label}</span></dd>
                 <dt>Password</dt>
-                <dd>{account.must_change_password
+                <dd>{account.status === 'invited' ? 'not set yet'
+                  : account.must_change_password
                   ? <span className="chip c-amber"><span className="dot" />change required</span>
                   : account.password_updated_at
                     ? `Last reset ${longDate(account.password_updated_at)}`
