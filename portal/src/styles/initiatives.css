@@ -749,6 +749,15 @@
 .imp-dropzone-remove:hover:not(:disabled) { border-color: var(--c-red-bd); color: var(--c-red); }
 .imp-dropzone-remove:disabled { opacity: 0.5; cursor: default; }
 
+/* Multi-file list under the dropzone (MultiFileDropzone). The scroller
+   (.imp-file-list) carries no radius; the radius sits on the static box. */
+.imp-multi { display: flex; flex-direction: column; gap: 10px; }
+.imp-file-box { border: 1px solid var(--paper-line); border-radius: 10px; padding: 8px 12px; }
+.imp-file-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 6px; }
+.imp-file-list { list-style: none; margin: 0; padding: 0; max-height: 180px; overflow-y: auto; }
+.imp-file-list li { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
+.imp-file-list .imp-dropzone-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ── options — vertical radio group + checkbox, each row a title + a
    one-line muted description instead of the old cramped all-caps pills. */
 .imp-options { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; }
