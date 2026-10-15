@@ -2,6 +2,7 @@
 detail response carries (status/model/client/site lookups plus placement).
 Set-based: the number of queries does not grow with the number of assets."""
 
+import uuid
 from collections.abc import Sequence
 
 from sqlalchemy import select
@@ -20,12 +21,12 @@ from serversherpa.db.models import (
 )
 
 
-async def asset_statuses(db: AsyncSession) -> dict:
+async def asset_statuses(db: AsyncSession) -> dict[str, tuple[str, str]]:
     return {s.key: (s.label, s.color) for s in await db.scalars(
         select(StatusValue).where(StatusValue.record_type == "asset"))}
 
 
-async def _model_refs(db: AsyncSession, model_ids: set) -> dict:
+async def _model_refs(db: AsyncSession, model_ids: set[uuid.UUID]) -> dict:
     if not model_ids:
         return {}
     cats = {c.key: (c.label, c.color)

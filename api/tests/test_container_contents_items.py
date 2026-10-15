@@ -4,9 +4,17 @@ GET /assets/{id} returns, built by the shared asset_items builder."""
 from sqlalchemy import event
 
 from serversherpa.db.engine import get_engine
-from serversherpa.db.models import Asset, AssetModel, Client, Site
+from serversherpa.db.models import (
+    Asset,
+    AssetModel,
+    Client,
+    PermissionOverride,
+    Person,
+    PersonRole,
+    Site,
+)
 
-from .test_assets_api import login
+from .test_assets_api import login, make_login
 
 OLD_FIELDS = ("asset_id", "serial_number", "name", "model_name", "status",
               "status_label", "status_color", "added_at", "added_by_name")
@@ -96,3 +104,38 @@ async def test_statement_count_is_flat_as_the_box_fills(client, db, seeded_user)
     await fill(8, "l")
     large = await measure(10)
     assert 0 < small == large, (small, large)
+
+
+async def test_asset_is_null_without_assets_view(client, db, seeded_user):
+    """containers:view alone gets the flat fields, never the full record."""
+    admin = await login(client)
+    cid = await _container(client, admin)
+    a = await _rich_asset(db)
+    await db.commit()
+    assert (await client.post(f"/containers/{cid}/assets", headers=admin,
+                              json={"asset_ids": [str(a.id)]})).status_code == 200
+
+    staffer = Person(first_name="No", last_name="Assets")
+    db.add(staffer)
+    await db.flush()
+    db.add(PersonRole(person_id=staffer.id, role="staff"))
+    db.add(PermissionOverride(person_id=staffer.id, resource="assets",
+                              action="view", allow=False))
+    await db.commit()
+    hdrs = await make_login(db, client, staffer, "noassets@test.example.com")
+
+    assert (await client.get("/assets", headers=hdrs)).status_code == 403
+    resp = await client.get(f"/containers/{cid}/assets", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    (row,) = resp.json()
+    assert row["asset"] is None
+    assert row["asset_id"] == str(a.id)
+    assert row["serial_number"] == "SN-1"
+    assert row["model_name"] == "Dell R741"
+    assert row["status_label"]
+    assert row["added_by_name"] is not None or row["added_at"]
+
+    # the super-user still gets the full record
+    full = (await client.get(f"/containers/{cid}/assets", headers=admin)).json()
+    one = (await client.get(f"/assets/{a.id}", headers=admin)).json()
+    assert full[0]["asset"] == one

@@ -9,14 +9,16 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import func, select
 
+from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     ContainerAssetRow, ContainerAssetsAddIn, ContainerBulkCreateIn,
     ContainerBulkCreateOut, ContainerCreateIn, ContainerItem, ContainerUpdateIn,
 )
-from serversherpa.assets.items import asset_items
+from serversherpa.assets.items import asset_items, asset_statuses
 from serversherpa.db.models import (
-    Asset, Container, ContainerAsset, Initiative, Person, Site, StatusValue,
+    Asset, AssetModel, Container, ContainerAsset, Initiative, Person, Site,
+    StatusValue,
 )
 from serversherpa.labels.tags import LABEL_TAG_KEYS
 from serversherpa.logistics import bulk_create, bulk_import as bulk
@@ -331,24 +333,39 @@ async def _asset_rows(db: DbSession, container_id: uuid.UUID,
         .join(Asset, Asset.id == ContainerAsset.asset_id)
         .where(ContainerAsset.container_id == container_id)
         .order_by(ContainerAsset.added_at))).all()
+    statuses = await asset_statuses(db)
+    model_ids = {a.model_id for _, a in rows if a.model_id}
+    models = dict((await db.execute(
+        select(AssetModel.id, AssetModel.make + " " + AssetModel.model)
+        .where(AssetModel.id.in_(model_ids)))).all()) if model_ids else {}
     person_ids = {m.added_by for m, _ in rows if m.added_by}
     people = dict((await db.execute(
         select(Person.id, Person.first_name + " " + Person.last_name)
         .where(Person.id.in_(person_ids)))).all()) if person_ids else {}
-    # one builder call for the whole box, never one per row
-    items = await asset_items(db, [asset for _, asset in rows], actor)
+
+    # The full asset record is more than containers:view entitles an actor
+    # to: attach it only where they may view that asset (permission + row
+    # scope, applied in SQL). One batched lookup however many rows.
+    visible = [asset for _, asset in rows]
+    if not actor.access.can("assets", "view"):
+        visible = []
+    elif visible and (cond := scope_conditions(
+            "assets", actor.access, actor.person.id)) is not None:
+        allowed = set(await db.scalars(select(Asset.id).where(
+            Asset.id.in_([a.id for a in visible]), cond)))
+        visible = [a for a in visible if a.id in allowed]
+    items = {i.id: i for i in await asset_items(db, visible, actor)}
+
     out = []
-    for (membership, _), item in zip(rows, items, strict=True):
+    for membership, asset in rows:
+        label, color = statuses.get(asset.status, (asset.status, "#51606f"))
         out.append(ContainerAssetRow(
-            asset_id=item.id, serial_number=item.serial_number,
-            name=item.name,
-            model_name=(f"{item.model.make} {item.model.model}"
-                        if item.model else None),
-            status=item.status, status_label=item.status_label,
-            status_color=item.status_color,
+            asset_id=asset.id, serial_number=asset.serial_number,
+            name=asset.name, model_name=models.get(asset.model_id),
+            status=asset.status, status_label=label, status_color=color,
             added_at=membership.added_at,
             added_by_name=people.get(membership.added_by),
-            asset=item))
+            asset=items.get(asset.id)))
     return out
 
 
