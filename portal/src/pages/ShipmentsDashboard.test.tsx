@@ -95,7 +95,7 @@ function ev(over: Partial<TruckFeedEvent>): TruckFeedEvent {
     id: 'loc:1', at: '2026-10-10T12:00:00Z', kind: 'location',
     truck_id: 't1', truck_name: 'Truck 10', load_number: 'L-1',
     initiative_id: 'i1', initiative_name: 'Denver move', actor_name: null,
-    location: null, lat: null, lng: null, address: null, source: null,
+    location: null, lat: null, lng: null, address: null, source: null, event: null,
     from_status: null, from_label: null, from_color: null,
     to_status: null, to_label: null, to_color: null,
     via: null, container_id: null, container_name: null, asset_count: null,
@@ -222,7 +222,7 @@ it('feed: one row per event with its text, truck link and relative time', async 
   renderPage();
   await flush();
   const feed = within(panel('Update feed'));
-  expect(feed.getByText('Newark, NJ · manual')).not.toBeNull();
+  expect(feed.getByText('Newark, NJ · Manual')).not.toBeNull();
   expect(feed.getByText('by Ada Lovelace')).not.toBeNull();
   expect(feed.getByText('Active')).not.toBeNull();
   expect(feed.getAllByText('In transit').length).toBeGreaterThan(0);
@@ -242,7 +242,7 @@ it('feed: Show older fetches with next_before and appends', async () => {
   expect(api.getTrucksFeed).toHaveBeenLastCalledWith({ initiativeId: null, limit: 50, before: 'cursor-1' });
   const feed = within(panel('Update feed'));
   expect(feed.getByText('Albany, NY · seed')).not.toBeNull();
-  expect(feed.getByText('Newark, NJ · manual')).not.toBeNull();
+  expect(feed.getByText('Newark, NJ · Manual')).not.toBeNull();
   expect(screen.queryByRole('button', { name: 'Show older' })).toBeNull(); // no more pages
 });
 
@@ -336,7 +336,7 @@ it('changing the move refetches with its id and clears the old move’s panels',
   expect(api.getTrucksFeed).toHaveBeenLastCalledWith({ initiativeId: 'i2', limit: 50 });
   // the old move's numbers and feed are gone while the new ones load
   expect(screen.getByText('Containers on board').parentElement!.textContent).not.toContain('7');
-  expect(within(panel('Update feed')).queryByText('Newark, NJ · manual')).toBeNull();
+  expect(within(panel('Update feed')).queryByText('Newark, NJ · Manual')).toBeNull();
   // the table filters to the move straight away (trucks come from one list)
   const table = within(panel('Trucks'));
   expect(table.queryByRole('link', { name: 'Truck 10' })).toBeNull();
@@ -463,7 +463,7 @@ it('drops the old move’s replies when they land after the switch', async () =>
     oldFeed.resolve({ events: [ev({ id: 'loc:stale', address: 'Stale City', source: 'manual' })], next_before: null });
   });
   expect(countsText()).not.toContain('99');
-  expect(screen.queryByText('Stale City · manual')).toBeNull();
+  expect(screen.queryByText('Stale City · Manual')).toBeNull();
   expect(screen.queryByTestId('map')).toBeNull(); // still loading the new move's map
 });
 
@@ -480,7 +480,7 @@ it('drops a Show older reply that lands after a move change', async () => {
   fireEvent.focus(screen.getByRole('combobox', { name: 'Move' }));
   fireEvent.mouseDown(screen.getByRole('button', { name: 'Austin move' }));
   await flush();
-  expect(within(panel('Update feed')).getByText('Newark, NJ · manual')).not.toBeNull();
+  expect(within(panel('Update feed')).getByText('Newark, NJ · Manual')).not.toBeNull();
 
   await act(async () => { older.resolve(FEED_OLDER); });
   expect(within(panel('Update feed')).queryByText('Albany, NY · seed')).toBeNull();
@@ -501,7 +501,7 @@ it('a failed first load shows an error in that panel, and the next good tick cle
 
   await act(() => vi.advanceTimersByTimeAsync(30_000));
   expect(screen.queryByText(/^Could not load/)).toBeNull();
-  expect(within(panel('Update feed')).getByText('Newark, NJ · manual')).not.toBeNull();
+  expect(within(panel('Update feed')).getByText('Newark, NJ · Manual')).not.toBeNull();
   expect(countsText()).toContain('7');
 });
 

@@ -1,8 +1,9 @@
 """Shipment update feed — truck location reports, status changes and
 containers loaded/unloaded, merged newest-first.
 
-Sources (two set-based queries, each joined to the truck and its move):
+Sources (three set-based queries, each joined to the truck and its move):
   * `truck_updates`            -> `location` events
+  * `truck_events`             -> `trip` events (id `trip:<uuid>`)
   * truck `audit_log` rows     -> `status`, `load`, `unload` events
       - `update` rows whose changes carry `status` (portal PATCH, bulk import)
       - `kiosk_truck_load` / `kiosk_truck_unload`        (via "kiosk")
@@ -45,6 +46,7 @@ from serversherpa.db.models import (
     Person,
     StatusValue,
     Truck,
+    TruckEvent,
     TruckUpdate,
 )
 
@@ -165,6 +167,21 @@ async def _location_rows(db: AsyncSession, limit: int, cursor, initiative_id):
     )).all()
 
 
+async def _trip_rows(db: AsyncSession, limit: int, cursor, initiative_id):
+    key = func.concat("trip:", cast(TruckEvent.id, String)).collate("C")
+    query = (select(TruckEvent, Truck.name, Truck.load_number,
+                    Truck.initiative_id, Initiative.name)
+             .join(Truck, Truck.id == TruckEvent.truck_id)
+             .outerjoin(Initiative, Initiative.id == Truck.initiative_id))
+    if initiative_id is not None:
+        query = query.where(Truck.initiative_id == initiative_id)
+    if cursor is not None:
+        query = query.where(_older_than(TruckEvent.recorded_at, key, cursor, audit=False))
+    return (await db.execute(
+        query.order_by(TruckEvent.recorded_at.desc(), key.desc()).limit(limit + 1)
+    )).all()
+
+
 async def _audit_rows(db: AsyncSession, limit: int, cursor, initiative_id):
     key = func.concat("audit:", cast(AuditLog.id, String)).collate("C")
     changes = AuditLog.changes
@@ -204,7 +221,9 @@ def _status_event(row: AuditLog, base: dict, vocab: dict) -> dict | None:
 
     from_label, from_color = lc(old)
     to_label, to_color = lc(new)
-    return {**base, "id": f"audit:{row.id}:status", "kind": "status",
+    source = row.changes.get("source")
+    via = source.get("to") if isinstance(source, dict) else None
+    return {**base, "id": f"audit:{row.id}:status", "kind": "status", "via": via,
             "from_status": old, "from_label": from_label, "from_color": from_color,
             "to_status": new, "to_label": to_label, "to_color": to_color}
 
@@ -277,6 +296,7 @@ async def build_feed(db: AsyncSession, *, limit: int, before: str | None,
     cursor = parse_cursor(before) if before else None
 
     loc_rows = await _location_rows(db, limit, cursor, initiative_id)
+    trip_rows = await _trip_rows(db, limit, cursor, initiative_id)
     audit_rows = await _audit_rows(db, limit, cursor, initiative_id)
 
     # A source with more than `limit` rows is cut at its limit-th row; events
@@ -287,6 +307,10 @@ async def build_feed(db: AsyncSession, *, limit: int, before: str | None,
         loc_rows = loc_rows[:limit]
         last = loc_rows[-1][0]
         watermarks.append((last.recorded_at, f"loc:{last.id}"))
+    if len(trip_rows) > limit:
+        trip_rows = trip_rows[:limit]
+        last = trip_rows[-1][0]
+        watermarks.append((last.recorded_at, f"trip:{last.id}"))
     if len(audit_rows) > limit:
         audit_rows = audit_rows[:limit]
         last = audit_rows[-1][0]
@@ -301,6 +325,11 @@ async def build_feed(db: AsyncSession, *, limit: int, before: str | None,
             "id": f"loc:{u.id}", "at": u.recorded_at, "kind": "location",
             "location": u.location, "lat": u.lat, "lng": u.lng,
             "address": u.approximate_address or None, "source": u.source})
+    for e, name, load_number, init_id, init_name in trip_rows:
+        events.append({
+            **_truck_fields(e.truck_id, name, load_number, init_id, init_name),
+            "id": f"trip:{e.id}", "at": e.recorded_at, "kind": "trip",
+            "event": e.event, "source": e.source})
     actor_of: dict[str, uuid.UUID | None] = {}
     audit_events: list[dict] = []
     for row, name, load_number, init_id, init_name, truck_id in audit_rows:

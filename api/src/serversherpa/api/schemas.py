@@ -4032,15 +4032,25 @@ class TruckSummary(BaseModel):
     containers_on_board: int
 
 
+class TruckEventOut(BaseModel):
+    id: uuid.UUID
+    truck_id: uuid.UUID
+    recorded_at: datetime
+    event: str
+    event_kind: str | None = None
+    stop: str | None = None
+    source: str = "manual"
+
+
 class TruckFeedEvent(BaseModel):
     """One shipment-feed event. `kind` picks which optional group is filled:
-    location (location/lat/lng/address/source), status (from_*/to_*),
-    load/unload (container_*/asset_count/via, + from_truck/device for kiosk
+    location (location/lat/lng/address/source), trip (event/source),
+    status (from_*/to_*), load/unload (container_*/asset_count/via, + from_truck/device for kiosk
     loads). `actor_name` is null for tracker location updates and when the
     audit row has no actor."""
     id: str
     at: datetime
-    kind: Literal["location", "status", "load", "unload"]
+    kind: Literal["location", "status", "load", "unload", "trip"]
     truck_id: uuid.UUID
     truck_name: str
     load_number: str | None = None
@@ -4053,6 +4063,8 @@ class TruckFeedEvent(BaseModel):
     lng: float | None = None
     address: str | None = None
     source: str | None = None
+    # trip
+    event: str | None = None
     # status
     from_status: str | None = None
     from_label: str | None = None
@@ -4061,7 +4073,7 @@ class TruckFeedEvent(BaseModel):
     to_label: str | None = None
     to_color: str | None = None
     # load / unload
-    via: Literal["kiosk", "portal", "import"] | None = None
+    via: Literal["kiosk", "portal", "import", "MacroPoint"] | None = None
     container_id: uuid.UUID | None = None
     container_name: str | None = None
     asset_count: int | None = None
@@ -4073,6 +4085,82 @@ class TruckFeedPage(BaseModel):
     events: list[TruckFeedEvent]
     # Opaque cursor: pass it back verbatim as `before`; null = no older events.
     next_before: str | None = None
+
+
+# ── MacroPoint manual update ─────────────────────────────────────────
+
+class MacroPointRowOut(BaseModel):
+    source: str
+    kind: Literal["location", "trip_event"]
+    recorded_at: datetime
+    location: str | None = None
+    address: str = ""
+    event: str | None = None
+    status_to: str | None = None
+    status_to_label: str | None = None
+    duplicate: bool = False
+
+
+class MacroPointMatchOut(BaseModel):
+    truck_id: uuid.UUID | None = None
+    by: Literal["order", "tracker_id"] | None = None
+    ambiguous_ids: list[uuid.UUID] = []
+
+
+class MacroPointGroupOut(BaseModel):
+    group_key: str
+    id_number: str
+    order_token: str | None = None
+    carrier: str
+    match: MacroPointMatchOut
+    rows: list[MacroPointRowOut]
+    new: int
+    duplicates: int
+
+
+class MacroPointErrorOut(BaseModel):
+    source: str
+    reason: str
+
+
+class MacroPointTruckOption(BaseModel):
+    id: uuid.UUID
+    name: str
+    status: str
+    status_label: str
+    tracker_id: str | None = None
+    initiative_name: str | None = None
+
+
+class MacroPointPreviewOut(BaseModel):
+    groups: list[MacroPointGroupOut]
+    errors: list[MacroPointErrorOut]
+    trucks: list[MacroPointTruckOption]
+
+
+class MacroPointResultRow(BaseModel):
+    row: int
+    source: str
+    group_key: str | None = None
+    id_number: str | None = None
+    truck_id: uuid.UUID | None = None
+    truck_name: str | None = None
+    kind: Literal["location", "trip_event"] | None = None
+    recorded_at: datetime | None = None
+    detail: str = ""
+    result: Literal["added", "duplicate", "skipped", "error"]
+    status_change: str | None = None
+    reason: str | None = None
+    note: str | None = None
+
+
+class MacroPointApplyOut(BaseModel):
+    added: int
+    duplicates: int
+    skipped: int
+    errors: int
+    status_changes: int
+    rows: list[MacroPointResultRow]
 
 
 # ── warehouse ─────────────────────────────────────────────────────────

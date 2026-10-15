@@ -708,6 +708,7 @@ a.dash-kpi:hover {
    surfaces in portal-theme.css) */
 .shipdash-feed-icon.k-location { color: var(--c-blue); }
 .shipdash-feed-icon.k-status { color: var(--c-amber); }
+.shipdash-feed-icon.k-trip { color: var(--c-green); }
 .shipdash-feed-icon.k-load { color: var(--c-green); }
 .shipdash-feed-icon.k-unload { color: var(--c-red); }
 .shipdash-feed-truck,

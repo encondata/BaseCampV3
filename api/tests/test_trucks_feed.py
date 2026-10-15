@@ -20,6 +20,7 @@ from serversherpa.db.models import (
     StatusValue,
     Truck,
     TruckContainer,
+    TruckEvent,
     TruckUpdate,
 )
 from serversherpa.trucks.feed import format_cursor
@@ -591,3 +592,34 @@ async def test_feed_query_count_is_flat_as_events_grow(client, db, seeded_user):
     large = await measure()
     assert small[1] == 8 and large[1] == 68
     assert 0 < small[0] == large[0], (small, large)
+
+
+async def test_trip_events_and_macropoint_status_via(client, db, seeded_user):
+    hdrs = await login(client)
+    t = await _truck(db, "Tripper")
+    db.add(TruckEvent(truck_id=t.id, recorded_at=at(2), event="Departed at Pickup",
+                      event_kind="departed", stop="pickup", source="macropoint"))
+    _loc(db, t, 1)
+    _audit(db, t.id, 3, "update", {"status": {"from": "active", "to": "in_transit"},
+                                   "source": {"from": None, "to": "MacroPoint"}})
+    await db.commit()
+    events = (await client.get("/trucks/feed", headers=hdrs)).json()["events"]
+    assert [e["kind"] for e in events] == ["status", "trip", "location"]
+    assert events[0]["via"] == "MacroPoint"
+    trip = events[1]
+    assert trip["id"].startswith("trip:")
+    assert (trip["event"], trip["source"]) == ("Departed at Pickup", "macropoint")
+
+
+async def test_trip_events_page_with_the_cursor(client, db, seeded_user):
+    hdrs = await login(client)
+    t = await _truck(db, "Pager")
+    for m in range(5):
+        db.add(TruckEvent(truck_id=t.id, recorded_at=at(m), event=f"Arrived at Stop {m}",
+                          source="macropoint"))
+    await db.commit()
+    first = (await client.get("/trucks/feed?limit=2", headers=hdrs)).json()
+    assert [e["event"] for e in first["events"]] == ["Arrived at Stop 4", "Arrived at Stop 3"]
+    nxt = first["next_before"]
+    second = (await client.get(f"/trucks/feed?limit=2&before={quote(nxt)}", headers=hdrs)).json()
+    assert [e["event"] for e in second["events"]] == ["Arrived at Stop 2", "Arrived at Stop 1"]

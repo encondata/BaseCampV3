@@ -16,11 +16,11 @@ import StatusHover from '../components/StatusHover';
 import TruckEditModal from '../components/trucks/TruckEditModal';
 import TrucksMap from '../components/trucks/TrucksMap';
 import {
-  addTruckUpdate, ApiError, clearTruckUpdates, getTruck, listTruckUpdates,
-  type TruckDetail as TruckDetailData, type TruckMapPoint, type TruckUpdate,
+  addTruckUpdate, ApiError, clearTruckUpdates, getTruck, listTruckEvents, listTruckUpdates,
+  type TruckDetail as TruckDetailData, type TruckEvent, type TruckMapPoint, type TruckUpdate,
 } from '../lib/api';
 import { statusChip as chip } from '../lib/chips';
-import { parseLocationText, TRUCK_ERRORS } from '../lib/trucks';
+import { parseLocationText, sourceLabel, TRUCK_ERRORS } from '../lib/trucks';
 import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/profile.css';
@@ -103,6 +103,7 @@ export default function TruckDetail() {
 
   const [truck, setTruck] = useState<TruckDetailData | null>(null);
   const [updates, setUpdates] = useState<TruckUpdate[] | null>(null);
+  const [events, setEvents] = useState<TruckEvent[] | null>(null);
   const [missing, setMissing] = useState(false);
   const [editing, setEditing] = useState(false);
   const [addingUpdate, setAddingUpdate] = useState(false);
@@ -150,7 +151,21 @@ export default function TruckDetail() {
     }
   }, [id]);
 
-  useEffect(() => { void loadTruck(); void loadUpdates(); }, [loadTruck, loadUpdates]);
+  const loadEvents = useCallback(async () => {
+    if (!id) return;
+    try {
+      const data = await listTruckEvents(id);
+      if (stale(id)) return;
+      setEvents(data);
+    } catch {
+      if (stale(id)) return;
+      setEvents([]);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    void loadTruck(); void loadUpdates(); void loadEvents();
+  }, [loadTruck, loadUpdates, loadEvents]);
 
   const locatedUpdates = useMemo(
     () => (updates ?? []).filter((u) => u.lat !== null && u.lng !== null),
@@ -211,6 +226,7 @@ export default function TruckDetail() {
     try {
       await clearTruckUpdates(truck.id);
       void loadUpdates();
+      void loadEvents();
     } catch (err) {
       setError(err instanceof ApiError ? (TRUCK_ERRORS[err.code] ?? err.message) : 'Could not clear updates — try again.');
     }
@@ -292,7 +308,10 @@ export default function TruckDetail() {
             <dl className="kv">
               <dt>Type</dt><dd>{trackingStr('type') || '—'}</dd>
               <dt>Update type</dt><dd>{trackingStr('update_type') || '—'}</dd>
-              <dt>Tracker id</dt><dd className="mono">{trackingStr('tracker_id') || '—'}</dd>
+              <dt>Tracking name / ID</dt><dd className="mono">{trackingStr('tracker_id') || '—'}</dd>
+              {trackingStr('macropoint_order') && (
+                <><dt>MacroPoint order</dt><dd className="mono">{trackingStr('macropoint_order')}</dd></>
+              )}
             </dl>
           </div>
         </div>
@@ -358,10 +377,29 @@ export default function TruckDetail() {
                   new Date(u.recorded_at).toLocaleString(),
                   u.location,
                   u.approximate_address || '—',
-                  u.source || '—',
+                  u.source ? sourceLabel(u.source) : '—',
                 ],
               }))}
               emptyText="No location updates yet."
+            />
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-head"><h3>Trip events</h3></div>
+          <div className="panel-body">
+            <DataTable
+              ariaLabel="Trip events"
+              columns={[
+                { key: 'when', label: 'When', mono: true },
+                { key: 'event', label: 'Event' },
+                { key: 'source', label: 'Source' },
+              ]}
+              rows={(events ?? []).map((e) => ({
+                key: e.id,
+                cells: [new Date(e.recorded_at).toLocaleString(), e.event, e.source ? sourceLabel(e.source) : '—'],
+              }))}
+              emptyText="No trip events yet."
             />
           </div>
         </div>

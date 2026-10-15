@@ -114,10 +114,27 @@ export function formFromTruck(t: TruckDetail | null): TruckFormState {
   };
 }
 
+const SOURCE_LABELS: Record<string, string> = { macropoint: 'MacroPoint', manual: 'Manual' };
+
+/** Display label of a location update's or trip event's `source` key —
+ *  the one place source keys become words (feed text, TruckDetail). */
+export function sourceLabel(key: string): string {
+  return SOURCE_LABELS[key] ?? key;
+}
+
+/** The tracking_type keys the truck form edits. */
+const FORM_TRACKING_KEYS = ['type', 'update_type', 'tracker_id'] as const;
+
 /** Payload for create AND patch — nulls stay in: PATCH needs them to
  *  clear fields, POST drops them server-side (exclude_none).
- *  contact_info stays '' (never null) since the column is NOT NULL. */
-export function truckPayload(f: TruckFormState): Record<string, unknown> {
+ *  contact_info stays '' (never null) since the column is NOT NULL.
+ *  PATCH replaces tracking_type wholesale, so keys the form does not edit
+ *  (e.g. the learned `macropoint_order`) are carried over from
+ *  `originalTracking`, the truck's tracking_type when the form opened. */
+export function truckPayload(
+  f: TruckFormState,
+  originalTracking?: Record<string, unknown> | null,
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const put = (key: string, raw: string) => {
     const v = raw.trim();
@@ -135,7 +152,8 @@ export function truckPayload(f: TruckFormState): Record<string, unknown> {
   const type = f.type.trim();
   const updateType = f.update_type.trim();
   const trackerId = f.tracker_id.trim();
-  const tracking: Record<string, string> = {};
+  const tracking: Record<string, unknown> = { ...(originalTracking ?? {}) };
+  for (const key of FORM_TRACKING_KEYS) delete tracking[key];
   if (type) tracking.type = type;
   if (updateType) tracking.update_type = updateType;
   if (trackerId) tracking.tracker_id = trackerId;

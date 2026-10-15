@@ -180,6 +180,22 @@ it('keeps the row\'s known fields when getTruck fails, and saves them (not blank
   })));
 });
 
+it('save keeps the learned macropoint_order; clearing Tracking name / ID removes only that key', async () => {
+  const user = userEvent.setup();
+  const tracking = { type: 'gps', tracker_id: 'TRK-9', macropoint_order: 'Dk4ScKJ-t64u-XiTR8UdjQ__' };
+  api.getTruck.mockResolvedValue({ ...TRUCK_DETAIL, tracking_type: tracking });
+  api.updateTruck.mockResolvedValue(TRUCK_DETAIL);
+  renderEdit();
+
+  const trackerInput = await screen.findByDisplayValue('TRK-9');
+  await user.clear(trackerInput);
+  await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+  await waitFor(() => expect(api.updateTruck).toHaveBeenCalledWith('t1', expect.objectContaining({
+    tracking_type: { type: 'gps', macropoint_order: 'Dk4ScKJ-t64u-XiTR8UdjQ__' },
+  })));
+});
+
 it('maps an unknown_status API error onto the status field guidance', async () => {
   const user = userEvent.setup();
   api.updateTruck.mockRejectedValue(new ApiError(422, 'unknown_status'));

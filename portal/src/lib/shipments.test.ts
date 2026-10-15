@@ -15,7 +15,7 @@ function ev(over: Partial<TruckFeedEvent>): TruckFeedEvent {
     id: 'loc:1', at: '2026-10-10T12:00:00Z', kind: 'location',
     truck_id: 't1', truck_name: 'Truck 1', load_number: 'L-1',
     initiative_id: 'i1', initiative_name: 'Denver move', actor_name: null,
-    location: null, lat: null, lng: null, address: null, source: null,
+    location: null, lat: null, lng: null, address: null, source: null, event: null,
     from_status: null, from_label: null, from_color: null,
     to_status: null, to_label: null, to_color: null,
     via: null, container_id: null, container_name: null, asset_count: null,
@@ -70,8 +70,19 @@ describe('query strings', () => {
 });
 
 describe('feedEventText', () => {
+  it('words trip events and the MacroPoint via on status changes', () => {
+    expect(feedEventText(ev({ kind: 'trip', event: 'Departed at Pickup', source: 'macropoint' })))
+      .toBe('Departed at Pickup · MacroPoint');
+    expect(feedEventText(ev({ kind: 'trip', event: 'Arrived at Drop-Off', source: null })))
+      .toBe('Arrived at Drop-Off');
+    expect(feedEventText(ev({
+      kind: 'status', from_label: 'Active', to_label: 'In Transit', actor_name: 'Ada', via: 'MacroPoint',
+    }))).toBe('Active → In Transit by Ada · MacroPoint');
+  });
+
   it('location: address and source, falling back to the raw location then lat, lng', () => {
-    expect(feedEventText(ev({ address: 'Newark, NJ', source: 'manual' }))).toBe('Newark, NJ · manual');
+    expect(feedEventText(ev({ address: 'Newark, NJ', source: 'manual' }))).toBe('Newark, NJ · Manual');
+    expect(feedEventText(ev({ address: 'Reno, NV', source: 'macropoint' }))).toBe('Reno, NV · MacroPoint');
     expect(feedEventText(ev({ location: '40.7, -73.9', source: 'seed' }))).toBe('40.7, -73.9 · seed');
     expect(feedEventText(ev({ lat: 40.7, lng: -73.9 }))).toBe('40.7, -73.9');
     expect(locationText(ev({}))).toBe('Location reported');
