@@ -6,11 +6,12 @@
  * lands in AssetEditModal.
  */
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import AssetEditModal from '../components/assets/AssetEditModal';
+import { ASSET_COLUMNS, ASSET_CSV_COLUMNS, AssetCell, assetSortValue } from '../components/assets/assetColumns';
 import AssetLocation from '../components/assets/AssetLocation';
 import GodDeleteButton from '../components/GodDeleteButton';
 import { RowActionsMenu, type RowAction } from '../components/hardware/RowActionsMenu';
@@ -31,7 +32,7 @@ import {
 } from '../lib/api';
 import {
   ASSET_ERRORS, ASSET_GOD_FIELDS, assetCellText, assetSearchText, duplicateSerials,
-  identityFirst, migrateIdentityColumns, placementText,
+  identityFirst, migrateIdentityColumns,
 } from '../lib/assets';
 import { initialOpenId } from '../lib/auditFormat';
 import {
@@ -51,100 +52,26 @@ import {
   listGridStyle,
   listScale,
   moveKey,
-  titleFor,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
-  type ColumnDef,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
-import StatusHover from '../components/StatusHover';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
 import '../styles/assets.css';
 import { displayRfid } from '../lib/format';
 
-// Fit: default columns + trailing ≤ LIST_FIT.page
-// (1172px — .portal-page at a 1512px window, nav expanded).
-const COLUMNS: ColumnDef[] = [
-  // The identity trio: the combined serial+name cell stays the default,
-  // with its two halves offered as separate columns for anyone who wants
-  // them side by side (or only one of them).
-  {
-    key: 'primary', label: 'Serial / Name', short: 'Serial/Name',
-    width: '2.2fr', default: true, min: 180,
-  },
-  { key: 'serial', label: 'Serial', width: '1.2fr', default: false, min: 100 },
-  { key: 'name', label: 'Name', width: '1.4fr', default: false, min: 140 },
-  { key: 'asset_id', label: 'Asset ID', width: '0.7fr', default: true, min: 100 },
-  { key: 'model', label: 'Make / Model', short: 'Model', width: '1.5fr', default: true },
-  { key: 'category', label: 'Category', width: '1fr', default: true },
-  { key: 'client', label: 'Client', width: '1.2fr', default: true },
-  { key: 'site', label: 'Site', width: '1.2fr', default: true },
-  { key: 'status', label: 'Status', width: '1.1fr', default: true },
-  { key: 'ru', label: 'RU', width: '0.5fr', default: false },
-  { key: 'location', label: 'Location', width: '1.4fr', default: false },
-  { key: 'pod', label: 'Pod #', width: '0.7fr', default: false },
-  { key: 'rfid', label: 'RFID', width: '1fr', default: false },
-  { key: 'last_seen', label: 'Last seen', width: '1fr', default: false, min: 96 },
-  { key: 'has_rails', label: 'Rails', width: '0.8fr', default: false, godOnly: true },
-];
-
 // Every column the page can offer (incl. godOnly) plus the one pseudo-
-// column that isn't a real COLUMNS entry — 'archived', the chevron-header
-// filter-only column — so a persisted filter/sort/visibility referencing
-// it survives usePersistentListState's rehydrate-time sanitization.
-// ('primary' needs no special case any more: it's a real column now, and
-// keeping that key is what lets an old saved sort/filter survive.)
-const ALL_COLUMN_KEYS = new Set<string>([...COLUMNS.map((c) => c.key), 'archived']);
-const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
-
-/** Sort value per column key — deliberately separate from `assetCellText`:
- *  that accessor's job is display/filter text (dashes for blanks, formatted
- *  dates), which would sort wrong (e.g. localized last-seen dates sort
- *  lexicographically by month, not chronologically). This stays lowercase/
- *  raw so naturalCompare orders rows the way a user expects. */
-function sortValueFor(a: AssetItem, key: string): string {
-  switch (key) {
-    case 'primary': return (a.serial_number ?? '').toLowerCase();
-    case 'serial': return (a.serial_number ?? '').toLowerCase();
-    case 'name': return (a.name ?? '').toLowerCase();
-    case 'asset_id': return a.legacy_id != null ? String(a.legacy_id).padStart(12, '0') : '';
-    case 'model': return a.model ? `${a.model.make} ${a.model.model}`.toLowerCase() : '';
-    case 'category': return (a.model?.category_label ?? '').toLowerCase();
-    case 'client': return (a.client_name ?? '').toLowerCase();
-    case 'site': return (a.site_name ?? '').toLowerCase();
-    case 'status': return a.status_label.toLowerCase();
-    case 'ru': return String(a.model?.ru_size ?? 0);
-    case 'location': return placementText(a).toLowerCase();
-    case 'rfid': return (a.rfid_tag ?? '').toLowerCase();
-    case 'pod': return (a.pod_number ?? '').toLowerCase();
-    case 'last_seen': return a.last_seen_at ?? '';
-    case 'has_rails': return a.has_rails === null ? '' : a.has_rails ? 'yes' : 'no';
-    case 'archived': return a.archived_at ? '1' : '0';
-    default: return '';
-  }
-}
-
-const CSV_COLUMNS: [string, (a: AssetItem) => string][] = [
-  ['Asset ID', (a) => (a.legacy_id != null ? String(a.legacy_id) : '')],
-  ['ID', (a) => a.id],
-  ['Serial', (a) => a.serial_number ?? ''],
-  ['Name', (a) => a.name ?? ''],
-  ['Make', (a) => a.model?.make ?? ''],
-  ['Model', (a) => a.model?.model ?? ''],
-  ['Category', (a) => a.model?.category_label ?? ''],
-  ['Client', (a) => a.client_name ?? ''],
-  ['Site', (a) => a.site_name ?? ''],
-  ['Location', (a) => placementText(a)],
-  ['Pod #', (a) => a.pod_number ?? ''],
-  ['Status', (a) => a.status_label],
-  ['RFID', (a) => a.rfid_tag ?? ''],
-  ['Has rails', (a) => (a.has_rails === null ? '' : String(a.has_rails))],
-  ['Last seen', (a) => a.last_seen_at ?? ''],
-  ['Created', (a) => a.created_at],
-];
+// column that isn't a real ASSET_COLUMNS entry — 'archived', the chevron-
+// header filter-only column — so a persisted filter/sort/visibility
+// referencing it survives usePersistentListState's rehydrate-time
+// sanitization. ('primary' needs no special case any more: it's a real
+// column now, and keeping that key is what lets an old saved sort/filter
+// survive.)
+const ALL_COLUMN_KEYS = new Set<string>([...ASSET_COLUMNS.map((c) => c.key), 'archived']);
+const DEFAULT_VISIBLE = new Set<string>(ASSET_COLUMNS.filter((c) => c.default).map((c) => c.key));
 
 export default function Assets() {
   const navigate = useNavigate();
@@ -252,7 +179,7 @@ export default function Assets() {
       if (!q) return true;
       return haystack(a).includes(q);
     });
-    return rows.sort((a, b) => naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
+    return rows.sort((a, b) => naturalCompare(assetSortValue(a, sortKey), assetSortValue(b, sortKey)) * sortDir);
   }, [assets, filters, query, sortKey, sortDir, haystack]);
 
   // Auto-close the open row when it drops out of `visible` — EXCEPT the one
@@ -297,7 +224,7 @@ export default function Assets() {
   // them, and identityFirst puts identity keys an old order never
   // mentioned at the front, where the combined cell always sat — not
   // appended last, which is applyColumnOrder's rule for unknown keys.
-  const orderedCols = identityFirst(applyColumnOrder(COLUMNS, colOrder), colOrder);
+  const orderedCols = identityFirst(applyColumnOrder(ASSET_COLUMNS, colOrder), colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, godMode);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
@@ -344,7 +271,7 @@ export default function Assets() {
                          onRowSaved={replaceRow} errorMap={ASSET_ERRORS} disabled={!canChange} />
               </div>
             ) : (
-              <div className="pn"><b>{a.serial_number ?? '—'}</b><span>{a.name ?? '—'}</span></div>
+              <AssetCell asset={a} colKey="primary" />
             )}
             {dupeChip(isDupe)}
           </>
@@ -356,8 +283,7 @@ export default function Assets() {
                      onRowSaved={replaceRow} errorMap={ASSET_ERRORS} disabled={!canChange} />
           );
         }
-        const text = a.serial_number ?? '—';
-        return <><span className="mono cell-line" title={titleFor(text)}>{text}</span>{dupeChip(isDupe)}</>;
+        return <><AssetCell asset={a} colKey="serial" />{dupeChip(isDupe)}</>;
       }
       case 'name': {
         if (god.editing && godFieldFor('primary2')) {
@@ -366,8 +292,7 @@ export default function Assets() {
                      onRowSaved={replaceRow} errorMap={ASSET_ERRORS} disabled={!canChange} />
           );
         }
-        const text = a.name ?? '—';
-        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+        return <AssetCell asset={a} colKey="name" />;
       }
       default:
         break;
@@ -381,67 +306,14 @@ export default function Assets() {
         );
       }
     }
-    switch (key) {
-      case 'asset_id': {
-        const text = a.legacy_id != null ? String(a.legacy_id) : '—';
-        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
-      }
-      case 'model': {
-        const text = a.model ? `${a.model.make} ${a.model.model}` : '—';
-        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
-      }
-      case 'category':
-        return a.model?.category_color
-          ? (
-            <span className="chip custom" style={{ '--chip': a.model.category_color } as CSSProperties}>
-              <span className="dot" />{a.model.category_label}
-            </span>
-          )
-          : <span className="chip tag">{a.model?.category_label ?? '—'}</span>;
-      case 'client': {
-        const text = a.client_name ?? 'House';
-        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
-      }
-      case 'site': {
-        const text = a.site_name ?? '—';
-        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
-      }
-      case 'status':
-        return (
-          <div className="chips">
-            <StatusHover entityType="asset" entityId={a.id} status={a.status}>
-              <span className="chip custom" style={{ '--chip': a.status_color } as CSSProperties}>
-                <span className="dot" />{a.status_label}
-              </span>
-            </StatusHover>
-            {a.archived_at && <span className="chip tag">Archived</span>}
-            {pd.pendingIds.has(a.id) && <span className="chip tag">Pending delete</span>}
-          </div>
-        );
-      case 'ru': {
-        const text = a.model?.ru_size != null ? String(a.model.ru_size) : '—';
-        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
-      }
-      case 'location': {
-        return <AssetLocation asset={a} className="cell-top cell-line" />;
-      }
-      case 'rfid':
-        return <span className="mono cell-line" title={a.rfid_tag ?? undefined}>{displayRfid(a.rfid_tag)}</span>;
-      case 'pod': {
-        const text = a.pod_number ?? '—';
-        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
-      }
-      case 'last_seen': {
-        const text = a.last_seen_at ? new Date(a.last_seen_at).toLocaleDateString() : '—';
-        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
-      }
-      case 'has_rails': {
-        const text = a.has_rails === null ? 'Unknown' : a.has_rails ? 'Yes' : 'No';
-        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
-      }
-      default:
-        return null;
-    }
+    // The status cell carries the page-only chips beside the shared one.
+    const statusExtras = key === 'status' ? (
+      <>
+        {a.archived_at && <span className="chip tag">Archived</span>}
+        {pd.pendingIds.has(a.id) && <span className="chip tag">Pending delete</span>}
+      </>
+    ) : undefined;
+    return <AssetCell asset={a} colKey={key} statusExtras={statusExtras} />;
   };
 
   return (
@@ -471,7 +343,7 @@ export default function Assets() {
           <FilterSummaryChip filters={filters} onClear={clearFilters} />
           <ColumnsButton columns={orderedCols} visible={visibleCols} onChange={setVisibleCols}
                          godMode={godMode} onReorder={setColOrder} />
-          <ExportButton onExport={() => exportCsv('assets', CSV_COLUMNS, visible)} />
+          <ExportButton onExport={() => exportCsv('assets', ASSET_CSV_COLUMNS, visible)} />
           <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canChange} />
           {canAdd && (
             <button className="btn-solid" onClick={() => setCreating(true)}>
