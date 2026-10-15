@@ -3,6 +3,7 @@ in both copy styles, the cross-format dedup key and the error reasons."""
 
 import time
 from datetime import UTC, datetime
+from email.message import EmailMessage
 from pathlib import Path
 
 import pytest
@@ -234,3 +235,45 @@ def test_huge_space_run_after_carrier_and_id_does_not_hang():
     assert time.perf_counter() - start < 2.0
     assert isinstance(msg, ParsedMessage)
     assert (msg.carrier, msg.id_number) == ("Landstar - ATL", "L1")
+
+
+def _html_eml(markup: str) -> bytes:
+    msg = EmailMessage()
+    msg["Subject"] = "Location Update"
+    msg.set_content(markup, subtype="html")
+    return msg.as_bytes()
+
+
+@pytest.mark.parametrize("junk", ["OrderSetup.aspx?", "<title", "<a", "<script"])
+def test_huge_repeated_html_fragments_do_not_hang(junk):
+    """~1 MB of one fragment repeated: the order-token and tag-stripping
+    patterns must stay linear (they were quadratic: minutes per file)."""
+    data = _html_eml(junk * (1_000_000 // len(junk)))
+    start = time.perf_counter()
+    out = parse_eml(data, "big.eml")
+    assert time.perf_counter() - start < 2.0
+    assert out == [ParseError("big.eml", "not_macropoint")]
+
+
+def test_order_token_forms():
+    def token(link: str) -> str | None:
+        body = (f'<p>Location Update from Landstar - ATL<br>ID Number \'L1\'<br>'
+                f'Date/Time: 6/7/2024 @ 6:24 PM PT<br>Location: 35.1,-115.2 '
+                f'(<a href="{link}">View All Updates</a>)</p>')
+        [msg] = parse_eml(_html_eml(body), "x.eml")
+        assert isinstance(msg, ParsedMessage), msg
+        return msg.order_token
+
+    base = "https://MacroPoint-Lite.com/Secure/OrderSetup.aspx?"
+    assert token(base + "Mode=CreateWithQuery&amp;Data=Tok_1") == "Tok_1"
+    assert token(base + "Mode=CreateWithQuery&Data=Tok_2") == "Tok_2"
+    assert token(base + "Data=Tok_3") == "Tok_3"
+    assert token(base + "UserData=nope") is None
+    assert token(base + "Mode=" + "x" * 1000 + "&Data=far") is None    # bounded scan
+
+
+def test_unclosed_title_is_dropped_to_the_end():
+    from serversherpa.trucks.macropoint.parse import html_to_text
+    assert html_to_text("<p>keep</p><title>gone") == "keep"
+    assert html_to_text("a<title>t</title >b") == "ab"
+    assert html_to_text("1 < 2 <b>bold</b>") == "1 < 2 bold"

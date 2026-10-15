@@ -52,7 +52,15 @@ _ADDRESS = re.compile(
     r"Approximate Address\(if available\):\s*(?P<a>.{0,500}?)\s*(?=Notes:|-{5,}|$)", re.DOTALL)
 _EVENT = re.compile(r"Event:\s*(?P<e>.{1,200}?)\s*(?=\(View All Updates\)|Notes:|\n|$)")
 _EVENT_PARTS = re.compile(r"^(Arrived|Departed) at (.+)$", re.IGNORECASE)
-_ORDER_TOKEN = re.compile(r"OrderSetup\.aspx\?[^\"'<>\s]*?Data=([^\"'&\s<>]+)", re.IGNORECASE)
+# The query scan is bounded so a run of repeated "OrderSetup.aspx?" stays
+# linear; `Data=` must start a parameter (`?`, `&` or the `;` of `&amp;`),
+# so `UserData=` is not a token.
+_ORDER_TOKEN = re.compile(
+    r"OrderSetup\.aspx\?(?:[^\"'<>\s]{0,400}?[&;])?Data=([^\"'&\s<>]+)", re.IGNORECASE)
+# An unclosed <script>/<style>/<title> runs to the end of the markup, and a
+# tag never spans another "<": both keep huge malformed markup linear.
+_DROP_BLOCKS = re.compile(r"(?is)<(script|style|title)\b.*?(?:</\1\s*>|\Z)")
+_TAG = re.compile(r"<[^<>]*>")
 _STOPS = {"pickup": "pickup", "drop-off": "drop_off", "dropoff": "drop_off",
           "drop off": "drop_off"}
 
@@ -105,8 +113,8 @@ def source_ref_for(kind: str, id_number: str, recorded_at: datetime, *,
 
 def html_to_text(markup: str) -> str:
     text = re.sub(r"(?i)<br\s*/?>", "\n", markup)
-    text = re.sub(r"(?is)<(script|style|title)\b.*?</\1>", "", text)
-    text = re.sub(r"<[^>]+>", "", text)
+    text = _DROP_BLOCKS.sub("", text)
+    text = _TAG.sub("", text)
     return html.unescape(text).replace("\xa0", " ")
 
 

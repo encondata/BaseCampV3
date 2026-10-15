@@ -115,6 +115,7 @@ async def test_input_limits(client, db, seeded_user, monkeypatch):
     assert resp.status_code == 413
     assert resp.json()["detail"]["code"] == "file_too_large"
 
+    monkeypatch.setattr(mp, "MAX_FILES", 10)          # five files: under the count cap
     monkeypatch.setattr(mp, "MAX_FILE_BYTES", 2 * 1024 * 1024)
     monkeypatch.setattr(mp, "MAX_TOTAL_BYTES", 3000)
     resp = await client.post(PREVIEW, headers=hdrs, files=form(JAMIE))
@@ -125,6 +126,28 @@ async def test_input_limits(client, db, seeded_user, monkeypatch):
     resp = await client.post(PREVIEW, headers=hdrs, files=form(text="x" * 11))
     assert resp.status_code == 413
     assert resp.json()["detail"]["code"] == "text_too_large"
+
+
+async def test_far_too_many_files_is_too_many_files(client, db, seeded_user, monkeypatch):
+    """More than MAX_FILES + 1 files trips Starlette's own max_files during
+    parsing; that must still read as too_many_files, not upload_too_large."""
+    from serversherpa.trucks.macropoint import apply as mp
+    hdrs = await login(client)
+    monkeypatch.setattr(mp, "MAX_FILES", 2)
+    resp = await client.post(PREVIEW, headers=hdrs, files=form(JAMIE[:4]))
+    assert resp.status_code == 413
+    assert resp.json()["detail"] == {"code": "too_many_files", "limit": 2}
+
+
+async def test_non_ascii_digit_content_length_is_length_required(client, db, seeded_user):
+    hdrs = await login(client)
+    body = (b'--b\r\nContent-Disposition: form-data; name="text"\r\n\r\nhello\r\n--b--\r\n')
+    resp = await client.post(
+        PREVIEW, content=body,
+        headers={**hdrs, "content-type": "multipart/form-data; boundary=b",
+                 "content-length": b"\xb2"})                   # latin-1 "²": isdigit() but not int()
+    assert resp.status_code == 411
+    assert resp.json()["detail"]["code"] == "length_required"
 
 
 async def test_declared_length_over_cap_is_refused_before_parsing(

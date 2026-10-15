@@ -9,6 +9,7 @@ token, else (2) the one whose tracking_type.tracker_id equals the ID Number
 (whitespace/case-insensitive). Several candidates at a step = ambiguous.
 """
 
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -163,7 +164,8 @@ async def _truck_options(db: AsyncSession, trucks: list[Truck],
 
 
 async def build_preview(db: AsyncSession, files: list[tuple[str, bytes]], text: str) -> dict:
-    parsed = parse_inputs(files, text)
+    # Parsing is CPU-bound (up to 500 files): keep it off the event loop.
+    parsed = await asyncio.to_thread(parse_inputs, files, text)
     messages = [p for p in parsed if isinstance(p, ParsedMessage)]
     errors = [p for p in parsed if isinstance(p, ParseError)]
     trucks = await active_trucks(db)
@@ -259,7 +261,8 @@ async def apply_messages(db: AsyncSession, actor_id: uuid.UUID,
     groups = group_messages(messages)
     wanted = {tid for tid in assignments.values() if tid}
     trucks = {t.id: t for t in await db.scalars(
-        select(Truck).where(Truck.id.in_(wanted)).with_for_update())} if wanted else {}
+        select(Truck).where(Truck.id.in_(wanted)).order_by(Truck.id)   # fixed lock order
+        .with_for_update())} if wanted else {}
     labels = await _status_labels(db)
     rows: list[dict] = []
 
@@ -328,7 +331,7 @@ async def apply_updates(db: AsyncSession, actor_id: uuid.UUID,
                         assignments: dict[str, uuid.UUID | None]) -> dict:
     """Re-parse the same input the preview saw (parsing is deterministic) and
     apply it; the client never sends parsed rows."""
-    parsed = parse_inputs(files, text)
+    parsed = await asyncio.to_thread(parse_inputs, files, text)
     return await apply_messages(
         db, actor_id,
         [p for p in parsed if isinstance(p, ParsedMessage)],

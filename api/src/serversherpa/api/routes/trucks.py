@@ -336,14 +336,18 @@ async def _macropoint_inputs(request: Request) -> tuple[list[tuple[str, bytes]],
     # before any size check below can run, so refuse an oversize body by its
     # declared length first. A chunked body has no length: require one.
     declared = request.headers.get("content-length")
-    if declared is None or not declared.isdigit():
+    if declared is None or not (declared.isascii() and declared.isdigit()):
         raise _err(411, "length_required")
     if int(declared) > mp.MAX_TOTAL_BYTES + mp.MAX_TEXT_BYTES + 64 * 1024:
         raise _err(413, "upload_too_large", limit=mp.MAX_TOTAL_BYTES)
     try:
         form = await request.form(max_files=mp.MAX_FILES + 1, max_fields=10,
                                   max_part_size=mp.MAX_TEXT_BYTES + 1024)
-    except StarletteHTTPException:
+    except StarletteHTTPException as exc:
+        # Starlette's own limits: max_files is hit before our count check
+        # when far more than MAX_FILES files arrive.
+        if "files" in str(exc.detail).lower():
+            raise _err(413, "too_many_files", limit=mp.MAX_FILES) from None
         raise _err(413, "upload_too_large") from None
     try:
         uploads = [u for u in form.getlist("files") if not isinstance(u, str)]
