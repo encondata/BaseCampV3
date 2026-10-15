@@ -41,8 +41,18 @@ export const MACROPOINT_ERRORS: Record<string, string> = {
   bad_assignments: 'Could not read the truck picks — try again.',
 };
 
-export function initialAssignments(preview: MacroPointPreview): Record<string, string> {
-  return Object.fromEntries(preview.groups.map((g) => [g.group_key, g.match.truck_id ?? '']));
+/** Each load's truck: the user's earlier pick (`picked`, from before a
+ *  Back + re-parse) when that load is still here and the truck is still
+ *  offered — a cleared pick ('') is kept too — else the server's match. */
+export function initialAssignments(
+  preview: MacroPointPreview, picked: Record<string, string> = {},
+): Record<string, string> {
+  const offered = new Set(preview.trucks.map((t) => t.id));
+  return Object.fromEntries(preview.groups.map((g) => {
+    const pick = picked[g.group_key];
+    const keep = pick !== undefined && (pick === '' || offered.has(pick));
+    return [g.group_key, keep ? pick : (g.match.truck_id ?? '')];
+  }));
 }
 
 export function assignmentsPayload(

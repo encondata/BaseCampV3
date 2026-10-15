@@ -103,6 +103,40 @@ it('shows a coded API error and keeps the input', async () => {
   expect((screen.getByLabelText('Pasted email text') as HTMLTextAreaElement).value).toBe('x');
 });
 
+it('Back and Parse again keeps the trucks the user picked', async () => {
+  api.previewMacroPoint.mockResolvedValue(preview);
+  api.applyMacroPoint.mockResolvedValue(result);
+  render(<ManualUpdateModal onClose={() => {}} onApplied={() => {}} />);
+  fireEvent.change(screen.getByLabelText('Pasted email text'), { target: { value: 'x' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Parse' }));
+  await screen.findByText(/2 loads/);
+
+  fireEvent.focus(screen.getByLabelText('Truck for Other Load'));
+  fireEvent.mouseDown(screen.getByText('Spare Truck'));
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Parse' }));
+  await screen.findByText(/2 loads/);
+  fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+
+  await screen.findByText(/Applied: 2 added/);
+  expect(api.applyMacroPoint).toHaveBeenCalledWith([], 'x', { 'order:tok': 't1', 'id:other': 't2' });
+});
+
+it('Back clears an apply error', async () => {
+  const { ApiError } = await import('../../lib/api');
+  api.previewMacroPoint.mockResolvedValue(preview);
+  api.applyMacroPoint.mockRejectedValue(new ApiError(413, 'too_many_files'));
+  render(<ManualUpdateModal onClose={() => {}} onApplied={() => {}} />);
+  fireEvent.change(screen.getByLabelText('Pasted email text'), { target: { value: 'x' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Parse' }));
+  await screen.findByText(/2 loads/);
+  fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+  await screen.findByText('Too many files — 500 at most per upload.');
+
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+  expect(screen.queryByText('Too many files — 500 at most per upload.')).toBeNull();
+});
+
 it('a mixed drop keeps the .eml files and reports the skipped ones', () => {
   render(<ManualUpdateModal onClose={() => {}} onApplied={() => {}} />);
   const input = document.querySelector('input[type="file"]') as HTMLInputElement;

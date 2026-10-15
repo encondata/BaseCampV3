@@ -34,6 +34,16 @@ describe('assignments', () => {
     };
     expect(initialAssignments(preview)).toEqual({ a: 't1', b: '' });
   });
+  it('keeps the picks of loads and trucks the new preview still has', () => {
+    const preview: MacroPointPreview = {
+      groups: [group('a', 't1'), group('b', null), group('c', 't1')],
+      errors: [], trucks: [truck('t1', 'Alpha'), truck('t2', 'Bravo')],
+    };
+    const picked = { a: 't2', b: 't2', c: '', gone: 't2' };
+    expect(initialAssignments(preview, picked)).toEqual({ a: 't2', b: 't2', c: '' });
+    // a picked truck that is no longer offered falls back to the match
+    expect(initialAssignments(preview, { a: 't9' })).toEqual({ a: 't1', b: '', c: 't1' });
+  });
   it('sends null for blank picks', () => {
     expect(assignmentsPayload([group('a', null), group('b', null)], { a: 't9', b: '' }))
       .toEqual({ a: 't9', b: null });

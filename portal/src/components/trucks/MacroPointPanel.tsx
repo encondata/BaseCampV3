@@ -45,6 +45,9 @@ export default function MacroPointPanel({ onClose, onApplied, onBusy }: Props) {
   const [rejected, setRejected] = useState<string[]>([]);
   const [preview, setPreview] = useState<MacroPointPreview | null>(null);
   const [chosen, setChosen] = useState<Record<string, string>>({});
+  // Trucks the user picked by hand (incl. a deliberate clear): a re-parse
+  // after Back keeps them for loads and trucks still in the new preview.
+  const [picked, setPicked] = useState<Record<string, string>>({});
   const [result, setResult] = useState<MacroPointApplyResult | null>(null);
   const [busy, setBusyState] = useState<'parse' | 'apply' | null>(null);
   const [error, setError] = useState('');
@@ -83,7 +86,7 @@ export default function MacroPointPanel({ onClose, onApplied, onBusy }: Props) {
     try {
       const p = await previewMacroPoint(files, text);
       setPreview(p);
-      setChosen(initialAssignments(p));
+      setChosen(initialAssignments(p, picked));
       setStep('review');
     } catch (err) {
       setError(errorText(err));
@@ -105,6 +108,11 @@ export default function MacroPointPanel({ onClose, onApplied, onBusy }: Props) {
     } finally {
       setBusy(null);
     }
+  };
+
+  const back = () => {
+    setError('');
+    setStep('input');
   };
 
   return (
@@ -163,7 +171,10 @@ export default function MacroPointPanel({ onClose, onApplied, onBusy }: Props) {
                       clearable
                       disabled={busy !== null}
                       value={chosen[g.group_key] ?? ''}
-                      onChange={(v) => setChosen((c) => ({ ...c, [g.group_key]: v }))}
+                      onChange={(v) => {
+                        setChosen((c) => ({ ...c, [g.group_key]: v }));
+                        setPicked((c) => ({ ...c, [g.group_key]: v }));
+                      }}
                       options={truckOptions(preview.trucks, g.match.ambiguous_ids)}
                     />
                     <span className="set-note">{matchHint(g)}</span>
@@ -225,7 +236,7 @@ export default function MacroPointPanel({ onClose, onApplied, onBusy }: Props) {
                     onClick={() => void apply()}>
               {busy === 'apply' ? 'Applying…' : 'Apply'}
             </button>
-            <button className="mini-btn" disabled={busy !== null} onClick={() => setStep('input')}>Back</button>
+            <button className="mini-btn" disabled={busy !== null} onClick={back}>Back</button>
           </>
         )}
         {step === 'summary' && (
