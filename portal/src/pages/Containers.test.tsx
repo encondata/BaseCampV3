@@ -151,6 +151,22 @@ it('shows — in the detail block for an untagged container', async () => {
   expect(dd.textContent).toBe('—');
 });
 
+it('expanding a row lists its contents as a standard list', async () => {
+  api.listContainerAssets.mockResolvedValue([{
+    asset_id: 'a1', serial_number: 'SN-PACKED', name: 'Packed-01', model_name: null,
+    status: 'active', status_label: 'Active', status_color: '#22aa55',
+    added_at: '2026-09-02T12:00:00Z', added_by_name: null, asset: null,
+  }]);
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(screen.queryByText('Rack Cart 1')).not.toBeNull());
+
+  await user.click(screen.getByText('Rack Cart 1'));
+  expect(await screen.findByText('SN-PACKED')).toBeTruthy();
+  expect(api.listContainerAssets).toHaveBeenCalledWith('c1');
+  expect(screen.getByPlaceholderText('Filter contents…')).toBeTruthy();
+});
+
 it('the Label tag column facet lists Priority and — (blank collapsed)', async () => {
   const user = userEvent.setup();
   mount();

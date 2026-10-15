@@ -10,20 +10,19 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useAuth } from '../auth/AuthContext';
 import BulkContainersModal from '../components/containers/BulkContainersModal';
 import ContainerBulkImport from '../components/containers/ContainerBulkImport';
+import ContainerContentsList from '../components/containers/ContainerContentsList';
 import ContainerEditModal from '../components/containers/ContainerEditModal';
 import GodDeleteButton from '../components/GodDeleteButton';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import { useToast } from '../lib/notificationsContext';
 import {
   ApiError,
-  listContainerAssets,
   listContainers,
   listContainerStatuses,
   listContainerTypes,
   listInitiatives,
   listSites,
   updateContainer,
-  type ContainerAssetRow,
   type ContainerItem,
   type InitiativeItem,
   type SiteItem,
@@ -196,6 +195,8 @@ export default function Containers() {
   );
 
   const [editingId, setEditingId] = useState<string | null>(null);
+  // Bumped on every Edit-dialog save so an open row's contents list refetches.
+  const [contentsVersion, setContentsVersion] = useState(0);
   const [creating, setCreating] = useState(false);
   const [importing, setImporting] = useState(false);
   const [bulkCreating, setBulkCreating] = useState(false);
@@ -559,6 +560,7 @@ export default function Containers() {
                           container={c}
                           canEdit={canChange}
                           onEdit={() => setEditingId(c.id)}
+                          contentsVersion={contentsVersion}
                           godVisible={godMode}
                           pending={pd.pendingIds.has(c.id)}
                           onMark={() => pd.mark('container', c.id, c.name)}
@@ -583,7 +585,7 @@ export default function Containers() {
           initiatives={initiatives}
           canChange={canChange}
           onClose={() => setEditingId(null)}
-          onSaved={() => load()}
+          onSaved={async () => { await load(); setContentsVersion((v) => v + 1); }}
         />
       )}
       {creating && (
@@ -623,17 +625,13 @@ export default function Containers() {
 /* ── row detail: read-only — the ONLY interactive element is Edit. ── */
 
 function ContainerRowDetail({
-  container, canEdit, onEdit, godVisible, pending, onMark, onUnmark,
+  container, canEdit, onEdit, contentsVersion, godVisible, pending, onMark, onUnmark,
 }: {
   container: ContainerItem; canEdit: boolean; onEdit: () => void;
+  contentsVersion: number;
   godVisible: boolean; pending: boolean;
   onMark: () => Promise<void>; onUnmark: () => Promise<void>;
 }) {
-  const [contents, setContents] = useState<ContainerAssetRow[] | null>(null);
-  useEffect(() => {
-    void listContainerAssets(container.id).then(setContents).catch(() => {});
-  }, [container.id]);
-
   return (
     <div className="detail-grid">
       <div className="detail-block">
@@ -662,18 +660,10 @@ function ContainerRowDetail({
       </div>
       <div className="detail-block" style={{ gridColumn: '1 / -1' }}>
         <p className="eyebrow-sm">Contents</p>
-        {contents === null && <p className="page-hint">Loading…</p>}
-        {contents?.length === 0 && <p className="page-hint">No assets in this container.</p>}
-        {contents && contents.length > 0 && (
-          <dl className="kv">
-            {contents.map((r) => (
-              <span key={r.asset_id} style={{ display: 'contents' }}>
-                <dt className="mono">{r.serial_number ?? '—'}</dt>
-                <dd>{r.name ?? r.model_name ?? '—'} · {r.status_label}</dd>
-              </span>
-            ))}
-          </dl>
-        )}
+        {/* Remounted (so it refetches) whenever the edit dialog saves: it adds
+            and removes packed assets without changing the container's id. */}
+        <ContainerContentsList key={contentsVersion} containerId={container.id}
+                               containerName={container.name} />
       </div>
       <NotesFilesPanel entityType="container" entityId={container.id} canWrite={canEdit} />
       {(canEdit || godVisible) && (

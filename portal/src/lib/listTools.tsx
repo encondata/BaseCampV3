@@ -8,6 +8,9 @@ import {
   useEffect, useLayoutEffect, useMemo, useRef, useState,
   type DragEvent, type ReactNode, type RefObject,
 } from 'react';
+import { createPortal } from 'react-dom';
+
+import '../styles/column-menu.css'; // .pop-menu.colmenu-portaled (the Columns menu is portaled)
 
 /* ── CSV export ─────────────────────────────────────────────────── */
 
@@ -444,6 +447,98 @@ export function activeFilterCount(filters: ColumnFilters): number {
   return Object.keys(filters).length;
 }
 
+/* ── portaled popover placement ─────────────────────────────────────
+ * Shared by ColumnMenu (lib/columnMenu.tsx) and ColumnsButton: the open
+ * menu is portaled with fixed coordinates taken from its trigger, so a scrolling or overflow-hidden list card / row expansion
+ * cannot clip it. Below the trigger, right-aligned to it (left-aligned
+ * when that would push it past the viewport's left edge); flipped upward
+ * when the space below cannot hold `height` and there is more room above.
+ * `maxHeight` clamps to whichever side's real space applies. Closes on an
+ * outside mousedown (trigger wrap and menu both count as inside) and once
+ * the trigger scrolls out of its list card; re-placed on resize/scroll. */
+
+export interface MenuPos {
+  top: number | 'auto'; left: number | 'auto'; right: number | 'auto'; bottom: number | 'auto';
+  maxHeight: number;
+}
+const MENU_GAP = 8;
+
+/** Portal host: the trigger's `.portal-shell` (the theme tokens — --surface,
+ *  --paper-line, --accent… — are defined there, so a body-level menu would
+ *  render unthemed; see components/useMenuPlacement.ts), else document.body. */
+const portalHost = (el: HTMLElement | null): HTMLElement =>
+  (el?.closest('.portal-shell') as HTMLElement | null) ?? document.body;
+
+export function usePortaledMenu(
+  open: boolean, onClose: () => void,
+  { width, height }: { width: number; height: number },
+) {
+  /** Attach to the trigger's wrapper (the `.pop-wrap`). */
+  const triggerRef = useRef<HTMLDivElement>(null);
+  /** Attach to the portaled menu element. */
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<MenuPos | null>(null);
+  /** Where to `createPortal` the menu; resolved each time it opens. */
+  const [host, setHost] = useState<HTMLElement | null>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      closeRef.current();
+    };
+    document.addEventListener('mousedown', onDown, true);
+    return () => document.removeEventListener('mousedown', onDown, true);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) { setPos(null); setHost(null); return; }
+    setHost(portalHost(triggerRef.current));
+    const place = () => {
+      const el = triggerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const card = el.closest('.dir-list');
+      if (card) {
+        const box = card.getBoundingClientRect();
+        if (rect.right < box.left || rect.left > box.right
+          || rect.bottom < box.top || rect.top > box.bottom) { closeRef.current(); return; }
+      }
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const spaceAbove = rect.top;
+      const openUp = spaceBelow < height + MENU_GAP && spaceAbove > spaceBelow;
+      const vertical = openUp
+        ? {
+          top: 'auto' as const, bottom: window.innerHeight - rect.top + MENU_GAP,
+          maxHeight: Math.max(120, spaceAbove - 2 * MENU_GAP),
+        }
+        : {
+          top: rect.bottom + MENU_GAP, bottom: 'auto' as const,
+          maxHeight: Math.max(120, spaceBelow - 2 * MENU_GAP),
+        };
+      if (rect.right - width < 0) setPos({ ...vertical, left: rect.left, right: 'auto' });
+      else setPos({ ...vertical, left: 'auto', right: window.innerWidth - rect.right });
+    };
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [open, width, height]);
+
+  return { triggerRef, menuRef, pos, host };
+}
+
+/** chrome.css .pop-menu min-width, and a worst-case height for the full
+ *  asset column set (~17 rows × 28px + title + padding) for the flip test. */
+const COLUMNS_MENU_WIDTH = 230;
+const COLUMNS_MENU_HEIGHT = 520;
+
 export function ColumnsButton({ columns, visible, onChange, godMode, onReorder }: {
   columns: ColumnDef[];
   visible: Set<string>;
@@ -456,7 +551,8 @@ export function ColumnsButton({ columns, visible, onChange, godMode, onReorder }
   onReorder?: (next: string[]) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useOutsideClose<HTMLDivElement>(() => setOpen(false));
+  const { triggerRef: ref, menuRef, pos, host } = usePortaledMenu(
+    open, () => setOpen(false), { width: COLUMNS_MENU_WIDTH, height: COLUMNS_MENU_HEIGHT });
   const { dragProps, dropClass } = useReorderDrag(
     (src, dst, before) => onReorder?.(moveKey(columns.map((c) => c.key), src, dst, before)),
     'y',
@@ -477,8 +573,12 @@ export function ColumnsButton({ columns, visible, onChange, godMode, onReorder }
              strokeLinecap="round"><path d="M9 3v18M15 3v18M3 5.5h18M3 5.5v13a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-13a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2Z" /></svg>
         Columns
       </button>
-      {open && (
-        <div className="pop-menu">
+      {open && pos && host && createPortal(
+        <div className="pop-menu colmenu-portaled" ref={menuRef}
+             style={{
+               top: pos.top, left: pos.left, right: pos.right, bottom: pos.bottom,
+               maxHeight: pos.maxHeight, overflowY: 'auto',
+             }}>
           <div className="pop-title">Visible columns</div>
           {offered.map((c) => {
             const on = visible.has(c.key);
@@ -501,7 +601,8 @@ export function ColumnsButton({ columns, visible, onChange, godMode, onReorder }
               </button>
             );
           })}
-        </div>
+        </div>,
+        host,
       )}
     </div>
   );

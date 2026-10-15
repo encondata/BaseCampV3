@@ -2344,6 +2344,10 @@ export interface ContainerAssetRow {
   model_name: string | null;
   status: string; status_label: string; status_color: string;
   added_at: string; added_by_name: string | null;
+  /** The full asset record, as `GET /assets/{id}` returns it for this
+   *  viewer. Null when the viewer cannot view that asset (no assets:view,
+   *  or outside their asset scope) — the flat fields above still apply. */
+  asset?: AssetItem | null;
 }
 
 export async function listContainers(
