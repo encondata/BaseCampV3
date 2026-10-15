@@ -8,7 +8,15 @@ import pytest
 from sqlalchemy import func, select
 
 from serversherpa.config import get_settings
-from serversherpa.db.models import AuditLog, AuthSession, EmailOutbox, Person, UserAccount
+from serversherpa.db.models import (
+    AuditLog,
+    AuthSession,
+    EmailOutbox,
+    PermissionOverride,
+    Person,
+    UserAccount,
+)
+from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from tests.test_access_roles_api import login_admin
 from tests.test_totp_api import _security
 from tests.test_users_api import _add_person, _add_user, _token
@@ -232,6 +240,8 @@ async def test_resend_invite_email_off(client, db, seeded_user, email_on, monkey
     resp = await client.post(f"/users/{body['person_id']}/invite", headers=headers)
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "mail_not_configured"
+    # the only invite is the one from creation; the resend sent nothing
+    assert len(await _outbox(db, "user_invite")) == 1
 
 
 async def test_resend_invite_rank_and_self(client, db, seeded_user, email_on):
@@ -309,6 +319,7 @@ async def test_reset_link_email_off(client, db, seeded_user, email_off):
     resp = await client.post(f"/users/{target.id}/reset-link", headers=headers)
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "mail_not_configured"
+    assert await _outbox(db, "password_reset") == []
 
 
 async def test_reset_link_rank_and_self(client, db, seeded_user, email_on):
@@ -319,6 +330,124 @@ async def test_reset_link_rank_and_self(client, db, seeded_user, email_on):
     assert resp.status_code == 403 and resp.json()["detail"]["code"] == "rank_too_low"
     resp = await client.post(f"/users/{seeded_user.id}/reset-link", headers=headers)
     assert resp.status_code == 403 and resp.json()["detail"]["code"] == "cannot_target_self"
+
+
+# ── who may be invited or sent a link ──────────────────────────────
+
+
+async def _worker_with_users_change(client, db, seeded_user):
+    worker = await _add_user(db, first="Wanda", last="Worker",
+                             email="wanda@test.example.com", role="worker")
+    db.add(PermissionOverride(person_id=worker.id, resource="users",
+                              action="change", allow=True, set_by=seeded_user.id))
+    await db.commit()
+    return {"Authorization": f"Bearer {await _token(client, email='wanda@test.example.com')}"}
+
+
+@pytest.mark.parametrize("endpoint", ["invite", "reset-link"])
+async def test_non_global_actor_forbidden(client, db, seeded_user, email_on, endpoint):
+    headers = await _worker_with_users_change(client, db, seeded_user)
+    target = await _add_user(db, first="Tara", last="Target",
+                             email="tara@test.example.com", role="worker")
+    resp = await client.post(f"/users/{target.id}/{endpoint}", headers=headers)
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "forbidden"
+    assert await _outbox(db, "user_invite") == []
+    assert await _outbox(db, "password_reset") == []
+
+
+async def _archived_invited(client, db, seeded_user):
+    headers, body = await _invite_new(client, db, seeded_user)
+    pid = body["person_id"]
+    person = await db.get(Person, pid)
+    person.archived_at = datetime.now(UTC)
+    await db.commit()
+    return headers, pid
+
+
+async def test_resend_invite_refused_for_archived(client, db, seeded_user, email_on):
+    headers, pid = await _archived_invited(client, db, seeded_user)
+    resp = await client.post(f"/users/{pid}/invite", headers=headers)
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "person_archived"
+    assert len(await _outbox(db, "user_invite")) == 1        # only the original
+    assert await _audit(db, pid, "account.invite_resent") == []
+
+
+async def test_reset_link_refused_for_archived(client, db, seeded_user, email_on):
+    tid = (await _target_with_session(client, db)).id
+    (await db.get(Person, tid)).archived_at = datetime.now(UTC)
+    await db.commit()
+    headers = {"Authorization": f"Bearer {await _token(client)}"}
+    resp = await client.post(f"/users/{tid}/reset-link", headers=headers)
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "person_archived"
+    assert await _outbox(db, "password_reset") == []
+    assert await _audit(db, tid, "password.reset_link_sent") == []
+
+
+@pytest.mark.parametrize("endpoint", ["invite", "reset-link"])
+async def test_kiosk_move_identity_not_found(client, db, seeded_user, email_on, endpoint):
+    kiosk = await _add_user(db, first="Kiosk", last="Move",
+                            email="kiosk-move@test.example.com", role="worker")
+    kid = kiosk.id
+    kiosk.source = KIOSK_MOVE_SOURCE
+    # no password: it would otherwise read as "invited" and pass the invite guards
+    (await db.get(UserAccount, kid)).password_hash = None
+    await db.commit()
+    headers = {"Authorization": f"Bearer {await _token(client)}"}
+    resp = await client.post(f"/users/{kid}/{endpoint}", headers=headers)
+    assert resp.status_code == 404 and resp.json()["detail"]["code"] == "user_not_found"
+    assert await _outbox(db, "user_invite") == []
+    assert await _outbox(db, "password_reset") == []
+
+
+async def test_invite_token_dies_when_admin_sets_temp_password(client, db, seeded_user, email_on):
+    headers, body = await _invite_new(client, db, seeded_user)
+    (row,) = await _outbox(db, "user_invite")
+    assert await _check(client, _raw(row)) == {"valid": True, "first_password": True}
+    resp = await client.post(f"/users/{body['person_id']}/reset-password", headers=headers,
+                             json={"temp_password": "TempPass-123456",
+                                   "must_change_password": True})
+    assert resp.status_code == 204, resp.text
+    assert (await _check(client, _raw(row)))["valid"] is False
+    done = await client.post("/auth/password-reset/confirm",
+                             json={"token": _raw(row), "new_password": "BrandNewPass9!"})
+    assert done.status_code != 204
+
+
+# ── "password changed" mail ────────────────────────────────────────
+
+
+async def test_invite_completion_sends_no_password_changed_mail(
+        client, db, seeded_user, email_on):
+    await _invite_new(client, db, seeded_user)
+    (row,) = await _outbox(db, "user_invite")
+    done = await client.post("/auth/password-reset/confirm",
+                             json={"token": _raw(row), "new_password": "BrandNewPass9!"})
+    assert done.status_code == 204, done.text
+    assert await _outbox(db, "password_changed") == []
+
+
+async def test_self_service_reset_sends_password_changed_mail(
+        client, db, seeded_user, email_on):
+    await client.post("/auth/password-reset/request", json={"email": "alice@test.example.com"})
+    (row,) = await _outbox(db, "password_reset")
+    done = await client.post("/auth/password-reset/confirm",
+                             json={"token": _raw(row), "new_password": "BrandNewPass9!"})
+    assert done.status_code == 204, done.text
+    assert len(await _outbox(db, "password_changed", "alice@test.example.com")) == 1
+
+
+async def test_admin_reset_link_completion_sends_password_changed_mail(
+        client, db, seeded_user, email_on):
+    target = await _target_with_session(client, db)
+    headers = {"Authorization": f"Bearer {await _token(client)}"}
+    assert (await client.post(f"/users/{target.id}/reset-link",
+                              headers=headers)).status_code == 204
+    (row,) = await _outbox(db, "password_reset", "rita@test.example.com")
+    done = await client.post("/auth/password-reset/confirm",
+                             json={"token": _raw(row), "new_password": "BrandNewPass9!"})
+    assert done.status_code == 204, done.text
+    assert len(await _outbox(db, "password_changed", "rita@test.example.com")) == 1
 
 
 # ── check / first_password ─────────────────────────────────────────

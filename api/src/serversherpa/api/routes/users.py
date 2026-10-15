@@ -581,6 +581,16 @@ async def create_account(
     return {"status": "created"}
 
 
+def _require_mailable(person: Person) -> None:
+    """Invite and reset-link emails only go to real, live people. A move's
+    hidden kiosk identity is not listed under /users, so it is not found
+    here either; an archived person's token would never validate."""
+    if person.source == KIOSK_MOVE_SOURCE:
+        raise _err(404, "user_not_found")
+    if person.archived_at is not None:
+        raise _err(422, "person_archived")
+
+
 @router.post("/{person_id}/reset-password", status_code=204)
 async def reset_password(
     person_id: uuid.UUID,
@@ -624,6 +634,7 @@ async def resend_invite(
     """Email a fresh invite link to an account that has never had a
     password. The new token retires the old link."""
     person, account, _ = await _load_target(db, actor, person_id)
+    _require_mailable(person)
     if account.disabled_at is not None:
         raise _err(409, "account_disabled")
     if account.password_hash is not None:
@@ -646,6 +657,7 @@ async def send_reset_link(
     sessions are untouched until they use it (completing it revokes the
     sessions)."""
     person, account, _ = await _load_target(db, actor, person_id)
+    _require_mailable(person)
     if account.disabled_at is not None:
         raise _err(409, "account_disabled")
     if account.password_hash is None:
