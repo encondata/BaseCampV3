@@ -29,7 +29,7 @@ function renderAt(hash: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  api.checkPasswordResetToken.mockResolvedValue(true);
+  api.checkPasswordResetToken.mockResolvedValue({ valid: true, first_password: false });
   api.confirmPasswordReset.mockResolvedValue(undefined);
 });
 afterEach(cleanup);
@@ -43,7 +43,7 @@ it('strips the token from the address bar and checks it', async () => {
 });
 
 it('shows the expired state for a dead link', async () => {
-  api.checkPasswordResetToken.mockResolvedValue(false);
+  api.checkPasswordResetToken.mockResolvedValue({ valid: false, first_password: false });
   renderAt('#token=old');
   expect(await screen.findByText('This link has expired or was already used')).toBeTruthy();
   expect(screen.getByRole('link', { name: 'Request a new link' }).getAttribute('href')).toBe('/login?forgot=1');
@@ -63,6 +63,31 @@ it('sets the password and offers sign-in', async () => {
   await user.click(screen.getByRole('button', { name: 'Set password' }));
   expect(api.confirmPasswordReset).toHaveBeenCalledWith('abc123', 'BrandNewPass9!');
   expect(await screen.findByText('Password changed')).toBeTruthy();
+  expect(screen.getByText('Every device was signed out. Sign in with your new password.')).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'Sign in' }).getAttribute('href')).toBe('/login');
+});
+
+it('a reset link keeps the reset wording', async () => {
+  renderAt('#token=abc123');
+  expect(await screen.findByText('Choose a new password')).toBeTruthy();
+  expect(screen.getByText("It can't be one you've used recently.")).toBeTruthy();
+  expect(screen.queryByText('Set your password')).toBeNull();
+});
+
+it('an invite link gets the first-password wording, form and success card', async () => {
+  api.checkPasswordResetToken.mockResolvedValue({ valid: true, first_password: true });
+  const user = userEvent.setup();
+  renderAt('#token=inv1');
+  expect(await screen.findByText('Set your password')).toBeTruthy();
+  expect(screen.getByText('Choose a password to finish setting up your account.')).toBeTruthy();
+  expect(screen.queryByText('Choose a new password')).toBeNull();
+  await user.type(screen.getByLabelText(/New password/), 'BrandNewPass9!');
+  await user.type(screen.getByLabelText('Confirm new password'), 'BrandNewPass9!');
+  await user.click(screen.getByRole('button', { name: 'Set password' }));
+  expect(api.confirmPasswordReset).toHaveBeenCalledWith('inv1', 'BrandNewPass9!');
+  expect(await screen.findByText("You're all set")).toBeTruthy();
+  expect(screen.getByText('Sign in with your new password.')).toBeTruthy();
+  expect(screen.queryByText('Password changed')).toBeNull();
   expect(screen.getByRole('link', { name: 'Sign in' }).getAttribute('href')).toBe('/login');
 });
 

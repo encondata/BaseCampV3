@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     password_reset_ttl_minutes: int = 15          # reset link lifetime
     password_reset_rate_limit: int = 5            # /request calls per IP per hour
     password_reset_confirm_rate_limit: int = 20   # /check + /confirm calls per IP per hour
+    # admin-sent account invites (POST /users with invite, POST /users/{id}/invite)
+    invite_ttl_minutes: int = 1440                # invite link lifetime (24 hours)
 
     # ── Scans ──────────────────────────────────────────────
     scans_history_default: int = Field(100, ge=1)  # history rows when caller omits limit

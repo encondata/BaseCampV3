@@ -13,6 +13,7 @@ import {
   externalCellText,
   EXTERNAL_GOD_FIELDS,
   externalSearchHay,
+  LOGIN_META,
   orgKey,
   parseOrgKey,
   planAddContact,
@@ -119,6 +120,12 @@ describe('externalCellText', () => {
   it('login reads the same LOGIN_META label the chip shows', () => {
     expect(externalCellText(withLinks, 'login')).toBe('Active');
     expect(externalCellText(blank, 'login')).toBe('No login');
+  });
+
+  it('an invited login reads "Invited" with the amber chip, like the Users list', () => {
+    const invited = person({ login_status: 'invited' });
+    expect(externalCellText(invited, 'login')).toBe('Invited');
+    expect(LOGIN_META.invited).toEqual({ label: 'Invited', cls: 'c-amber' });
   });
 
   it('unknown column keys return empty string', () => {

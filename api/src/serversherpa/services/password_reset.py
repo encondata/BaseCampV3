@@ -116,6 +116,7 @@ async def complete(db: AsyncSession, token: PasswordResetToken, account: UserAcc
     `require_password_length` and `raise_if_reused` first (the confirm
     route does)."""
     now = datetime.now(UTC)
+    first_password = account.password_hash is None   # an invite completing
     await apply_password(db, account, new_password, must_change=False, now=now)
     await _retire_unused(db, account.person_id, now)
     token.used_at = now
@@ -128,5 +129,6 @@ async def complete(db: AsyncSession, token: PasswordResetToken, account: UserAcc
                                  f"{person.first_name} {person.last_name}")
     audit(db, actor_id=account.person_id, entity_type="user_account",
           entity_id=str(account.person_id), action="password.reset_self", ip=ip)
-    await enqueue(db, "password_changed", account.email, person_id=account.person_id,
-                  name=person.first_name, login_url=portal_url("/login"))
+    if not first_password:   # "your password changed" is noise on a first one
+        await enqueue(db, "password_changed", account.email, person_id=account.person_id,
+                      name=person.first_name, login_url=portal_url("/login"))

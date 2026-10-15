@@ -15,6 +15,7 @@ import StatusHover from '../components/StatusHover';
 import CertsPanel from '../components/workers/CertsPanel';
 import LevelBadge from '../components/workers/LevelBadge';
 import ProfileForm from '../components/workers/ProfileForm';
+import { GrantAccessModal } from '../components/users/GrantAccessModal';
 import {
   apiFetch, listTimeEntries, listWorkerStatuses,
   type StatusValue, type TimeEntryItem,
@@ -62,9 +63,13 @@ const fmtDay = (iso: string): string =>
 
 export default function WorkerDetailPage() {
   const { personId } = useParams<{ personId: string }>();
-  const { can } = useAuth();
+  const { can, scope } = useAuth();
   const canManage = can('workers', 'change');
   const canViewTime = can('time');
+  // POST /users/{id}/account needs users:add and global access (the
+  // server's _require_global), same as granting from People › External.
+  const canGiveLogin = can('users', 'add') && scope?.global === true;
+  const [grantOpen, setGrantOpen] = useState(false);
 
   const [worker, setWorker] = useState<WorkerDetailItem | null>(null);
   const [entries, setEntries] = useState<TimeEntryItem[] | null>(null);
@@ -199,8 +204,25 @@ export default function WorkerDetailPage() {
               <span>added {longDate(worker.created_at)}</span>
             </div>
           </div>
+          {!worker.has_account && canGiveLogin && (
+            <div className="profile-actions">
+              <button className="btn-solid" onClick={() => setGrantOpen(true)}>
+                Give portal login
+              </button>
+            </div>
+          )}
         </div>
       </div>
+
+      {grantOpen && (
+        <GrantAccessModal
+          person={{ person_id: worker.person_id, first_name: worker.first_name,
+                    last_name: worker.last_name, email: worker.contact_email,
+                    display_name: worker.display_name }}
+          onClose={() => setGrantOpen(false)}
+          onDone={() => { setGrantOpen(false); void load(); }}
+        />
+      )}
 
       <div className="profile-grid">
         <div>

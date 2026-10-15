@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  applyUserPatch, ROLE_CLS, toManagedUser, toMemberItem, USER_ERRORS, USER_GOD_FIELDS,
-  userCellText, userSearchText, type UserItem,
+  applyUserPatch, ROLE_CLS, STATUS_META, tempPasswordLength, tempPasswordTooShort, toManagedUser, toMemberItem,
+  USER_ERRORS, USER_GOD_FIELDS, userCellText, userSearchText, type UserItem,
 } from './users';
 import type { PersonDetail, UserDetailOut } from './api';
 
@@ -106,7 +106,8 @@ describe('userCellText', () => {
 
   it('status reads the STATUS_META label, falling back to the bare key for an unknown status', () => {
     expect(userCellText(user, 'status')).toBe('Active');
-    expect(userCellText(blank, 'status')).toBe('invited');
+    expect(userCellText(blank, 'status')).toBe('Invited');
+    expect(userCellText({ ...blank, status: 'pending' }, 'status')).toBe('pending');
   });
 
   it('job_title/contact_email/phone dash when unset', () => {
@@ -165,16 +166,29 @@ const DETAIL: UserDetailOut = {
   },
   account: { login_email: 'wan@x.test', status: 'active', must_change_password: false,
     last_login_at: null, created_at: '2026-01-01T00:00:00Z', password_updated_at: null,
-    totp_enrolled: false, totp_enrolled_at: null, totp_required: false, totp_effective_required: false },
+    totp_enrolled: false, totp_enrolled_at: null, totp_required: false, totp_effective_required: false,
+    two_factor_enabled: true },
   roles: [{ role: 'staff', label: 'Staff', rank: 40, scope_anchor: 'global', org: null,
     granted_by: null, granted_at: '2026-01-01T00:00:00Z' }],
   max_rank: 40, worker: null, notification_groups: [], access: null, sessions: null,
 };
 
 describe('user detail adapters', () => {
-  it('ROLE_CLS maps the six roles', () => {
+  it('ROLE_CLS maps the global/self roles, not the retired client/vendor names', () => {
     expect(ROLE_CLS.admin).toBe('c-amber');
     expect(ROLE_CLS.worker).toBe('c-green');
+    expect(ROLE_CLS.client).toBeUndefined();
+    expect(ROLE_CLS.vendor).toBeUndefined();
+  });
+  it('temp passwords run past the server minimum, never below 14', () => {
+    expect(tempPasswordLength(8)).toBe(14);
+    expect(tempPasswordLength(20)).toBe(22);
+  });
+  it('the too-short message names the server minimum, else the session one', () => {
+    expect(tempPasswordTooShort({ code: 'password_too_short', min_length: 20 }, 8))
+      .toBe('Temporary passwords need at least 20 characters.');
+    expect(tempPasswordTooShort(undefined, 12))
+      .toBe('Temporary passwords need at least 12 characters.');
   });
   it('toManagedUser flattens person + account + roles', () => {
     const m = toManagedUser(DETAIL);
@@ -182,7 +196,11 @@ describe('user detail adapters', () => {
       person_id: 'p1', display_name: 'Wan Worker', first_name: 'Wan', last_name: 'Worker',
       preferred_name: null, job_title: 'Tech', contact_email: 'wan@x.test', phone: null,
       roles: ['staff'], status: 'active', max_rank: 40, avatar_url: null,
+      login_email: 'wan@x.test',
     });
+  });
+  it('invited accounts get an amber Invited chip', () => {
+    expect(STATUS_META.invited).toEqual({ label: 'Invited', cls: 'c-amber' });
   });
   it('toMemberItem carries login email and roles', () => {
     expect(toMemberItem(DETAIL)).toEqual({

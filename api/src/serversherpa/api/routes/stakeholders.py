@@ -923,6 +923,8 @@ async def list_external(
             login_status = "none"
         elif account.disabled_at is not None:
             login_status = "disabled"
+        elif account.password_hash is None:
+            login_status = "invited"
         else:
             login_status = "active"
         people_out.append(ExternalPersonItem(

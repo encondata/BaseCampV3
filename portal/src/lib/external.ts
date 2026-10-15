@@ -50,6 +50,7 @@ export function distinctFunctions(links: ExternalLinkItem[]): string[] {
  *  externalCellText (below) can read the same label the chip renders. */
 export const LOGIN_META: Record<string, { label: string; cls: string }> = {
   active: { label: 'Active', cls: 'c-green' },
+  invited: { label: 'Invited', cls: 'c-amber' },
   disabled: { label: 'Disabled', cls: 'c-red' },
   none: { label: 'No login', cls: 'tag' },
 };

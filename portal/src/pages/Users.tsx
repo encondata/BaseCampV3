@@ -16,22 +16,30 @@ import {
   DemoteUserModal,
   ManageRolesModal,
   ResetPasswordModal,
+  resendInvite,
 } from '../components/UserAdminModals';
-import { adminUpdateProfileRequest, apiFetch, ApiError } from '../lib/api';
-import { canTouchRank } from '../lib/access';
+import { INVITE_OPTIONS, SignInChoice } from '../components/users/SignInChoice';
+import {
+  adminUpdateProfileRequest, apiFetch, ApiError, getAccessSummary, type AccessRole,
+} from '../lib/api';
+import { canTouchRank, grantableRoles } from '../lib/access';
 import { initialOpenId } from '../lib/auditFormat';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
   usePersistentListState,
 } from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
+import { useToast } from '../lib/notificationsContext';
+import { useSystemStatus } from '../lib/systemStatusContext';
 import { usePendingDeletes } from '../lib/pendingDeletes';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
-  applyUserPatch, ROLE_CLS, STATUS_META, USER_ERRORS, USER_GOD_FIELDS, userCellText,
-  userSearchText, type UserItem,
+  applyUserPatch, ROLE_CLS, STATUS_META, tempPasswordLength, tempPasswordTooShort, USER_ERRORS,
+  USER_GOD_FIELDS, userCellText, userSearchText, type UserItem,
 } from '../lib/users';
-import { avatarGradient, initials, longDate, relativeTime } from '../lib/format';
+import {
+  avatarGradient, generateTempPassword, initials, longDate, relativeTime,
+} from '../lib/format';
 import {
   applyColumnOrder, ColHead, listGridStyle, listScale, moveKey, titleFor, useReorderDrag,
   useSearchHaystacks, visibleColumnsFor,
@@ -43,10 +51,10 @@ import '../styles/directory.css';
 import '../styles/profile.css';   /* .pf-form, .btn-solid */
 import '../styles/settings.css';  /* .set-note */
 
-const ALL_ROLES = ['admin', 'staff', 'worker', 'client', 'vendor', 'external'];
 const PILLS = [
   { key: 'all', label: 'Everyone' },
   { key: 'active', label: 'Active' },
+  { key: 'invited', label: 'Invited' },
   { key: 'locked', label: 'Locked' },
   { key: 'disabled', label: 'Disabled' },
 ];
@@ -143,6 +151,7 @@ export default function Users() {
   const listGridScale = listScale(preferences?.list_size);
   const god = useGodEdit();
   const pd = usePendingDeletes(godMode);
+  const toast = useToast();
   const [manage, setManage] = useState<ManageAction | null>(null);
   const [query, setQuery] = useState('');
   const location = useLocation();
@@ -379,7 +388,13 @@ export default function Users() {
         key: 'edit', label: 'Edit profile',
         onSelect: () => setManage({ kind: 'edit', user: u }),
       }] : []),
-      ...(canManageUsers ? [{
+      // an invited account has no password to reset yet — resend the link
+      ...(canManageUsers ? [u.status === 'invited' ? {
+        key: 'resend', label: 'Resend invite',
+        onSelect: () => {
+          void resendInvite(u.person_id, u.login_email ?? u.display_name).then(toast);
+        },
+      } : {
         key: 'reset', label: 'Reset password',
         onSelect: () => setManage({ kind: 'reset', user: u }),
       }] : []),
@@ -601,9 +616,10 @@ export default function Users() {
                           <dt>Last sign-in</dt><dd className="mono">{relativeTime(u.last_login_at)}</dd>
                           <dt>Created</dt><dd className="mono">{longDate(u.account_created_at)}</dd>
                           <dt>Password</dt>
-                          <dd>{u.must_change_password
-                            ? <span className="chip c-amber"><span className="dot" />change required</span>
-                            : 'set'}</dd>
+                          <dd>{u.status === 'invited' ? 'not set yet'
+                            : u.must_change_password
+                              ? <span className="chip c-amber"><span className="dot" />change required</span>
+                              : 'set'}</dd>
                         </dl>
                         {(() => {
                           const isSelf = u.person_id === mePerson?.id;
@@ -681,9 +697,8 @@ export default function Users() {
           onClose={() => setAddOpen(false)}
           onCreated={(created) => {
             setAddOpen(false);
-            if (created.login_email) { navigate(`/people/users/${created.person_id}`); return; }
-            deepLinkTarget.current = null;
-            void load().then(() => setOpenId(created.person_id));
+            // Without a login they aren't in this list — just close.
+            if (created.login_email) navigate(`/people/users/${created.person_id}`);
           }}
         />
       )}
@@ -696,27 +711,63 @@ export default function Users() {
 const ADD_ERRORS: Record<string, string> = {
   email_in_use: 'That login email is already in use.',
   login_details_required: 'Login email and temporary password are required to create an account.',
+  mail_not_configured: "Email isn't set up, so an invite can't be sent. Set a temporary password instead.",
   role_requires_org: 'That role needs a client or partner to scope to — grant it from the org contacts instead.',
   rank_too_low: 'You do not have sufficient rank to grant one of the selected roles.',
 };
 
-function generatePassword(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
-  const pick = () => chars[Math.floor(Math.random() * chars.length)];
-  return `${Array.from({ length: 14 }, pick).join('')}!`;
+/** Where someone added without a login can be found, by the roles chosen. */
+export function noLoginHint(roles: ReadonlySet<string>): string {
+  if (roles.has('worker')) {
+    return "Without a login they won't be in the Users list; you'll find them under People › Workers.";
+  }
+  if (roles.has('external')) {
+    return "Without a login they won't be in the Users list; you'll find them under People › External.";
+  }
+  return "Without a login or the Worker role they won't appear in any list. Add the Worker role, or create a login.";
 }
 
 function AddPersonModal({ onClose, onCreated }: {
   onClose: () => void;
   onCreated: (created: { person_id: string; login_email: string | null }) => void;
 }) {
-  const [form, setForm] = useState({
+  const { maxRank, passwordMinLength, can } = useAuth();
+  const canViewAccess = can('access', 'view');
+  const [form, setForm] = useState(() => ({
     first_name: '', last_name: '', preferred_name: '', contact_email: '',
-    phone: '', job_title: '', login_email: '', temp_password: generatePassword(),
-  });
+    phone: '', job_title: '', login_email: '',
+    temp_password: generateTempPassword(tempPasswordLength(passwordMinLength)),
+  }));
+  const [roleChoices, setRoleChoices] = useState<AccessRole[] | null>(null);
+  const [rolesError, setRolesError] = useState(false);
   const [roles, setRoles] = useState<Set<string>>(new Set(['staff']));
+
+  useEffect(() => {
+    let cancelled = false;
+    // the role list comes from Access control; without access to it, the
+    // person is added with no roles rather than a hidden default
+    const noRoles = () => { if (!cancelled) { setRoles(new Set()); setRolesError(true); } };
+    if (!canViewAccess) { noRoles(); return () => { cancelled = true; }; }
+    void getAccessSummary()
+      .then((summary) => {
+        if (cancelled) return;
+        const offered = grantableRoles(summary, maxRank);
+        setRoleChoices(offered);
+        // keep the default pick only if it's actually on offer
+        setRoles((prev) => new Set([...prev].filter((r) => offered.some((o) => o.name === r))));
+      })
+      .catch(noRoles);
+    return () => { cancelled = true; };
+  }, [maxRank, canViewAccess]);
   const [createAccount, setCreateAccount] = useState(true);
   const [mustChange, setMustChange] = useState(true);
+  const { status: system } = useSystemStatus();
+  const emailOn = !!system.email_enabled;
+  // unpicked follows the default (invite when email is on); the choice is
+  // hidden without email, so 'invite' can never be sent then
+  const [picked, setSignIn] = useState<'invite' | 'password' | null>(null);
+  const signIn = picked ?? (emailOn ? 'invite' : 'password');
+  const inviting = createAccount && emailOn && signIn === 'invite';
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -725,6 +776,10 @@ function AddPersonModal({ onClose, onCreated }: {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (inviting && !form.login_email.trim()) {
+      setError('A login email is required to send an invite.');
+      return;
+    }
     setSaving(true);
     setError('');
     try {
@@ -741,14 +796,18 @@ function AddPersonModal({ onClose, onCreated }: {
           roles: [...roles],
           create_account: createAccount,
           login_email: createAccount ? form.login_email.trim() : null,
-          temp_password: createAccount ? form.temp_password : null,
-          must_change_password: mustChange,
+          temp_password: createAccount && !inviting ? form.temp_password : null,
+          must_change_password: inviting ? false : mustChange,
+          ...(inviting ? { invite: true } : {}),
         }),
       });
       if (!resp.ok) {
-        let code = 'unknown';
-        try { code = (await resp.json())?.detail?.code ?? code; } catch { /* noop */ }
-        setError(ADD_ERRORS[code] ?? 'Could not create — check the fields and try again.');
+        let detail: { code?: string } | undefined;
+        try { detail = (await resp.json())?.detail; } catch { /* noop */ }
+        const code = detail?.code ?? 'unknown';
+        setError(code === 'password_too_short'
+          ? tempPasswordTooShort(detail, passwordMinLength)
+          : (ADD_ERRORS[code] ?? 'Could not create — check the fields and try again.'));
         return;
       }
       const created = await resp.json();
@@ -791,21 +850,30 @@ function AddPersonModal({ onClose, onCreated }: {
             </div>
 
             <div className="modal-section">Roles</div>
-            <div className="role-picks">
-              {ALL_ROLES.map((r) => (
-                <button key={r} type="button"
-                        className={`role-pick ${roles.has(r) ? 'on' : ''}`}
-                        disabled={r === 'client'}
-                        title={r === 'client' ? 'Needs client scoping — coming with client management' : undefined}
-                        onClick={() => setRoles((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(r)) next.delete(r); else next.add(r);
-                          return next;
-                        })}>
-                  {r}
-                </button>
-              ))}
-            </div>
+            {rolesError && (
+              <p className="set-note" style={{ padding: 0, margin: 0 }}>
+                Couldn&apos;t load the role list — this person will be added with no roles.
+              </p>
+            )}
+            {!rolesError && !roleChoices && (
+              <p className="set-note" style={{ padding: 0, margin: 0 }}>Loading roles…</p>
+            )}
+            {roleChoices && (
+              <div className="role-picks">
+                {roleChoices.map((r) => (
+                  <button key={r.name} type="button"
+                          className={`role-pick ${roles.has(r.name) ? 'on' : ''}`}
+                          aria-pressed={roles.has(r.name)}
+                          onClick={() => setRoles((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(r.name)) next.delete(r.name); else next.add(r.name);
+                            return next;
+                          })}>
+                    {r.label}
+                  </button>
+                ))}
+              </div>
+            )}
 
             <div className="modal-section">Login account</div>
             <div className="pf-form">
@@ -816,7 +884,7 @@ function AddPersonModal({ onClose, onCreated }: {
                          style={{ marginRight: 7 }} />
                   Create a login account now
                 </label>
-                {createAccount && (
+                {createAccount && !inviting && (
                   <label style={{ margin: 0 }}>
                     <input type="checkbox" checked={mustChange}
                            onChange={(e) => setMustChange(e.target.checked)}
@@ -825,26 +893,32 @@ function AddPersonModal({ onClose, onCreated }: {
                   </label>
                 )}
               </div>
+              {createAccount && emailOn && (
+                <div className="full"><label>Sign-in</label>
+                  <SignInChoice label="Sign-in" options={INVITE_OPTIONS} value={signIn}
+                                onChange={setSignIn} disabled={saving} /></div>
+              )}
               {createAccount && (
                 <>
                   <div><label>Login email *</label>
                     <input type="email" value={form.login_email}
                            onChange={set('login_email')} required /></div>
-                  <div><label>Temporary password *</label>
-                    <input value={form.temp_password} onChange={set('temp_password')}
-                           required minLength={10} /></div>
+                  {!inviting && (
+                    <div><label>Temporary password *</label>
+                      <input value={form.temp_password} onChange={set('temp_password')}
+                             required minLength={passwordMinLength} /></div>
+                  )}
                 </>
               )}
               {!createAccount && (
                 <p className="set-note full" style={{ padding: 0, margin: 0 }}>
-                  Without an account this person won't appear in the Users list —
-                  they'll show in the People directory when it lands.
+                  {noLoginHint(roles)}
                 </p>
               )}
             </div>
           </div>
           <div className="modal-foot">
-            <button className="btn-solid" type="submit" disabled={saving}>
+            <button className="btn-solid" type="submit" disabled={saving || (!roleChoices && !rolesError)}>
               {saving ? 'Creating…' : 'Create person'}
             </button>
             <button className="mini-btn" type="button" onClick={onClose} disabled={saving}>

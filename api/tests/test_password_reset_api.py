@@ -48,7 +48,7 @@ async def test_full_flow_requires_2fa_at_next_sign_in(client, db, seeded_user, e
     raw = await _latest_raw(db)
 
     check = await client.post("/auth/password-reset/check", json={"token": raw})
-    assert check.json() == {"valid": True}
+    assert check.json() == {"valid": True, "first_password": False}
     done = await client.post("/auth/password-reset/confirm",
                              json={"token": raw, "new_password": "BrandNewPass9!"})
     assert done.status_code == 204, done.text
@@ -56,7 +56,8 @@ async def test_full_flow_requires_2fa_at_next_sign_in(client, db, seeded_user, e
     reused = await client.post("/auth/password-reset/confirm",
                                json={"token": raw, "new_password": "AnotherPass9!x"})
     assert reused.status_code == 400 and reused.json()["detail"]["code"] == "reset_token_invalid"
-    assert (await client.post("/auth/password-reset/check", json={"token": raw})).json() == {"valid": False}
+    gone = await client.post("/auth/password-reset/check", json={"token": raw})
+    assert gone.json() == {"valid": False, "first_password": False}
 
     old = await client.post("/auth/login", json={"email": EMAIL, "password": "CorrectHorse9!"})
     assert old.status_code == 401
@@ -77,7 +78,8 @@ async def test_confirm_enforces_length_and_history(client, db, seeded_user, emai
                              json={"token": raw, "new_password": "CorrectHorse9!"})
     assert same.status_code == 422 and same.json()["detail"]["code"] == "password_recently_used"
     # a refused attempt doesn't burn the link
-    assert (await client.post("/auth/password-reset/check", json={"token": raw})).json() == {"valid": True}
+    still = await client.post("/auth/password-reset/check", json={"token": raw})
+    assert still.json() == {"valid": True, "first_password": False}
 
 
 async def test_bad_token_is_400(client, seeded_user):
@@ -134,7 +136,7 @@ async def test_malformed_email_gets_the_same_202(client, seeded_user):
 async def test_oversized_token_is_invalid_not_422(client, seeded_user):
     big = "x" * 300
     check = await client.post("/auth/password-reset/check", json={"token": big})
-    assert check.status_code == 200 and check.json() == {"valid": False}
+    assert check.status_code == 200 and check.json() == {"valid": False, "first_password": False}
     confirm = await client.post("/auth/password-reset/confirm",
                                 json={"token": big, "new_password": "A-brand-new-pass-123"})
     assert confirm.status_code == 400

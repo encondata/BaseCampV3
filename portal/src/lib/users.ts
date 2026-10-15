@@ -13,9 +13,22 @@ export type DetailMode = 'self' | 'readonly' | 'manage' | 'view';
 
 /** Role chip palette — shared by the Users list and the user detail page. */
 export const ROLE_CLS: Record<string, string> = {
-  admin: 'c-amber', staff: 'c-blue', worker: 'c-green',
-  client: 'c-violet', vendor: 'c-violet', external: 'c-blue',
+  admin: 'c-amber', staff: 'c-blue', worker: 'c-green', external: 'c-blue',
 };
+
+/** Generated temporary passwords run a little past the server's minimum
+ *  (`useAuth().passwordMinLength`) so they always pass it. */
+export function tempPasswordLength(minLength: number): number {
+  return Math.max(14, minLength + 2);
+}
+
+/** "Temporary passwords need at least {n} characters." — n is the server's
+ *  `min_length` from a `password_too_short` error, else the session value. */
+export function tempPasswordTooShort(detail: unknown, sessionMin: number): string {
+  const sent = (detail as { min_length?: unknown } | null | undefined)?.min_length;
+  const n = typeof sent === 'number' ? sent : sessionMin;
+  return `Temporary passwords need at least ${n} characters.`;
+}
 
 /** The shape UserAdminModals (edit / reset / roles / state) expect. */
 export function toManagedUser(d: UserDetailOut): ManagedUser {
@@ -32,6 +45,7 @@ export function toManagedUser(d: UserDetailOut): ManagedUser {
     status: d.account.status,
     max_rank: d.max_rank,
     avatar_url: d.person.avatar_url,
+    login_email: d.account.login_email,
   };
 }
 
@@ -73,6 +87,7 @@ export interface UserItem {
  *  (below) can read the same label the status chip renders. */
 export const STATUS_META: Record<string, { label: string; cls: string }> = {
   active: { label: 'Active', cls: 'c-green' },
+  invited: { label: 'Invited', cls: 'c-amber' },
   locked: { label: 'Locked', cls: 'c-amber' },
   disabled: { label: 'Disabled', cls: 'c-red' },
 };

@@ -2,7 +2,9 @@
  * /reset-password#token=… — the page a reset email links to. The token
  * rides in the fragment (never sent to a server or a Referer) and is
  * stripped from the address bar on load. A dead link offers a new one;
- * success sends the user to sign in, where 2FA still applies.
+ * success sends the user to sign in, where 2FA still applies. An invite
+ * link (the account has never had a password) gets set-your-password
+ * wording instead of reset wording.
  */
 
 import { useEffect, useState } from 'react';
@@ -21,6 +23,7 @@ export default function ResetPassword() {
   const [token] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('token') ?? '');
   const [phase, setPhase] = useState<Phase>(token ? 'checking' : 'invalid');
   const [minLength, setMinLength] = useState<number | undefined>(undefined);
+  const [firstPassword, setFirstPassword] = useState(false);
 
   useEffect(() => {
     if (window.location.hash) {
@@ -30,7 +33,11 @@ export default function ResetPassword() {
     if (!token) return;
     let live = true;
     checkPasswordResetToken(token)
-      .then((ok) => { if (live) setPhase(ok ? 'form' : 'invalid'); })
+      .then((check) => {
+        if (!live) return;
+        setFirstPassword(check.first_password);
+        setPhase(check.valid ? 'form' : 'invalid');
+      })
       .catch(() => { if (live) setPhase('invalid'); });
     return () => { live = false; };
   }, [token]);
@@ -46,6 +53,14 @@ export default function ResetPassword() {
     );
   }
 
+  if (phase === 'done' && firstPassword) {
+    return (
+      <AuthCard title="You're all set" lead="Sign in with your new password.">
+        <Link to="/login" style={linkStyle}>Sign in</Link>
+      </AuthCard>
+    );
+  }
+
   if (phase === 'done') {
     return (
       <AuthCard title="Password changed"
@@ -56,8 +71,10 @@ export default function ResetPassword() {
   }
 
   return (
-    <AuthCard title="Choose a new password"
-              lead="It can't be one you've used recently.">
+    <AuthCard title={firstPassword ? 'Set your password' : 'Choose a new password'}
+              lead={firstPassword
+                ? 'Choose a password to finish setting up your account.'
+                : "It can't be one you've used recently."}>
       <ChangePasswordForm resetToken={token} minLength={minLength} onSuccess={() => setPhase('done')} />
     </AuthCard>
   );

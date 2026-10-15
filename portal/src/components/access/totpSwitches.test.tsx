@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
-/** Require 2FA switches on the group and role cards call the PATCH endpoints. */
+/** Require 2FA switches on the group and role cards call the PATCH endpoints,
+ *  and say when the site's two-factor switch is off. */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({
@@ -52,4 +54,30 @@ it('role card switch locks in-flight so a double click only fires one PATCH', as
   expect(api.patchRole.mock.calls.length - callsBefore).toBe(1);
   resolvePatch();
   await waitFor(() => expect(sw.disabled).toBe(false));
+});
+
+const NOTE = /Not in effect — two-factor is off in/;
+const withTwoFactor = (on: boolean) => ({ ...(SUMMARY as object), two_factor_enabled: on }) as never;
+
+it('with two-factor off, the role and group switches stay usable and show the note', async () => {
+  render(<MemoryRouter>
+    <RolesTab summary={withTwoFactor(false)} canEdit maxRank={100} onChanged={() => {}} />
+    <GroupsTab summary={withTwoFactor(false)} canEdit onChanged={() => {}} initialGroupId="g1" />
+  </MemoryRouter>);
+  const switches = await screen.findAllByRole('checkbox', { name: /require 2fa/i });
+  expect(switches).toHaveLength(2);
+  for (const sw of switches) expect((sw as HTMLInputElement).disabled).toBe(false);
+  expect(screen.getAllByText(NOTE)).toHaveLength(2);
+  for (const link of screen.getAllByRole('link', { name: 'System settings › Security' })) {
+    expect(link.getAttribute('href')).toBe('/settings/security');
+  }
+});
+
+it('with two-factor on, no note on either card', async () => {
+  render(<MemoryRouter>
+    <RolesTab summary={withTwoFactor(true)} canEdit maxRank={100} onChanged={() => {}} />
+    <GroupsTab summary={withTwoFactor(true)} canEdit onChanged={() => {}} initialGroupId="g1" />
+  </MemoryRouter>);
+  expect(await screen.findAllByRole('checkbox', { name: /require 2fa/i })).toHaveLength(2);
+  expect(screen.queryByText(NOTE)).toBeNull();
 });
