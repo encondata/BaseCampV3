@@ -114,6 +114,9 @@ it('renders the hero, drivers, tracking, route link, containers, and updates fro
 
   const rows = container.querySelectorAll('table[aria-label="Location updates"] tbody tr');
   expect(rows).toHaveLength(2);
+  // Source column: known keys get their label, others show as stored
+  const sources = [...rows].map((r) => r.querySelectorAll('td')[3].textContent);
+  expect(sources).toEqual(expect.arrayContaining(['Manual', 'gps']));
 });
 
 it('adds a location update and re-lists', async () => {
@@ -223,6 +226,8 @@ it('shows trip events and the relabeled tracking fields', async () => {
   ]);
   renderPage();
   expect(await screen.findByText('Departed at Pickup')).not.toBeNull();
+  const trip = screen.getByText('Departed at Pickup').closest('tr')!;
+  expect(trip.querySelectorAll('td')[2].textContent).toBe('MacroPoint');
   expect(screen.getByText('Tracking name / ID')).not.toBeNull();
   expect(screen.getByText('MacroPoint order')).not.toBeNull();
   expect(screen.getByText('VM0s7D8Q')).not.toBeNull();

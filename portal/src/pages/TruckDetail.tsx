@@ -20,7 +20,7 @@ import {
   type TruckDetail as TruckDetailData, type TruckEvent, type TruckMapPoint, type TruckUpdate,
 } from '../lib/api';
 import { statusChip as chip } from '../lib/chips';
-import { parseLocationText, TRUCK_ERRORS } from '../lib/trucks';
+import { parseLocationText, sourceLabel, TRUCK_ERRORS } from '../lib/trucks';
 import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/profile.css';
@@ -377,7 +377,7 @@ export default function TruckDetail() {
                   new Date(u.recorded_at).toLocaleString(),
                   u.location,
                   u.approximate_address || '—',
-                  u.source || '—',
+                  u.source ? sourceLabel(u.source) : '—',
                 ],
               }))}
               emptyText="No location updates yet."
@@ -397,7 +397,7 @@ export default function TruckDetail() {
               ]}
               rows={(events ?? []).map((e) => ({
                 key: e.id,
-                cells: [new Date(e.recorded_at).toLocaleString(), e.event, e.source || '—'],
+                cells: [new Date(e.recorded_at).toLocaleString(), e.event, e.source ? sourceLabel(e.source) : '—'],
               }))}
               emptyText="No trip events yet."
             />

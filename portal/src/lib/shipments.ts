@@ -8,6 +8,7 @@ import type { ComboOption } from '../components/ComboBox';
 import type { TruckFeedEvent, TruckFeedPage, TruckItem } from './api';
 import type { ColumnDef } from './listTools';
 import { compareOrdinal, naturalCompare } from './naturalSort';
+import { sourceLabel } from './trucks';
 
 // No runtime import from ./api: api.ts imports the query builders below,
 // and pages' tests often mock ./api wholesale.
@@ -84,7 +85,7 @@ const withVia = (text: string, via: TruckFeedEvent['via']) => (via ? `${text} ·
 export function feedEventText(e: TruckFeedEvent): string {
   switch (e.kind) {
     case 'location':
-      return e.source ? `${locationText(e)} · ${e.source}` : locationText(e);
+      return e.source ? `${locationText(e)} · ${sourceLabel(e.source)}` : locationText(e);
     case 'status': {
       const from = e.from_label ?? e.from_status ?? '—';
       const to = e.to_label ?? e.to_status ?? '—';
@@ -92,7 +93,7 @@ export function feedEventText(e: TruckFeedEvent): string {
       return withVia(text, e.via);
     }
     case 'trip':
-      return e.source ? `${e.event ?? ''} · ${e.source}` : (e.event ?? '');
+      return e.source ? `${e.event ?? ''} · ${sourceLabel(e.source)}` : (e.event ?? '');
     case 'load':
       return withVia(`Loaded ${containerText(e)}${assetsText(e.asset_count)}`, e.via);
     case 'unload':

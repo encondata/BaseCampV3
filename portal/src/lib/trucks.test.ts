@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { TruckDetail, TruckItem } from './api';
 import {
   driversText, formFromTruck, parseLocationText, truckCellText,
-  truckPayload, truckSearchText, updateAge,
+  sourceLabel, truckPayload, truckSearchText, updateAge,
 } from './trucks';
 
 const row: TruckItem = {
@@ -198,5 +198,13 @@ describe('form round-trip', () => {
     form.type = 'manual';
     const p = truckPayload(form);
     expect(p.tracking_type).toEqual({ type: 'manual' });
+  });
+});
+
+describe('sourceLabel', () => {
+  it('names the known update sources and passes others through', () => {
+    expect(sourceLabel('macropoint')).toBe('MacroPoint');
+    expect(sourceLabel('manual')).toBe('Manual');
+    expect(sourceLabel('gps')).toBe('gps');
   });
 });

@@ -114,6 +114,14 @@ export function formFromTruck(t: TruckDetail | null): TruckFormState {
   };
 }
 
+const SOURCE_LABELS: Record<string, string> = { macropoint: 'MacroPoint', manual: 'Manual' };
+
+/** Display label of a location update's or trip event's `source` key —
+ *  the one place source keys become words (feed text, TruckDetail). */
+export function sourceLabel(key: string): string {
+  return SOURCE_LABELS[key] ?? key;
+}
+
 /** The tracking_type keys the truck form edits. */
 const FORM_TRACKING_KEYS = ['type', 'update_type', 'tracker_id'] as const;
 
