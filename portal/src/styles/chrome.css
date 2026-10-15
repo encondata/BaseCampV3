@@ -626,3 +626,10 @@ kbd {
   color: var(--c-blue, #1668a7);
   border-color: var(--c-blue-bd, #b9d4ee);
 }
+
+/* ── maps ─────────────────────────────────────────────────── */
+/* Leaflet's panes and controls carry z-index 400–1000; a stacking context
+   on every map keeps them inside it, so no map paints over a dialog or
+   popover (the truck page's Trail map drew over Edit truck). Guarded by
+   styles/leafletStacking.test.ts. */
+.leaflet-container { isolation: isolate; }
