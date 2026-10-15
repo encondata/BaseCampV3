@@ -37,9 +37,20 @@ export function formatDims(
   return `${l} × ${w} × ${h} ${unit}`;
 }
 
+/** An asset's Location as shown: "<container> · on <truck>", "<container>",
+ *  or the location text ('' when there is none — callers add their '—').
+ *  The one text every Location column sorts, filters, searches and exports
+ *  by, so it always matches what AssetLocation renders. */
+export function placementText(p: {
+  location_detail?: string | null; container_name?: string | null; truck_name?: string | null;
+}): string {
+  if (p.container_name) return p.truck_name ? `${p.container_name} · on ${p.truck_name}` : p.container_name;
+  return p.location_detail ?? '';
+}
+
 export function assetSearchText(a: AssetItem): string {
   return [a.legacy_id != null ? String(a.legacy_id) : null, a.serial_number, a.name, a.rfid_tag, a.pod_number,
-          a.location_detail, a.client_name, a.site_name, a.model?.make, a.model?.model]
+          placementText(a), a.client_name, a.site_name, a.model?.make, a.model?.model]
     .filter(Boolean).join(' ').toLowerCase();
 }
 
@@ -62,7 +73,7 @@ export function assetCellText(a: AssetItem, colKey: string): string {
     case 'client': return a.client_name ?? '';
     case 'site': return a.site_name ?? '';
     case 'model': return a.model ? `${a.model.make} ${a.model.model}` : '';
-    case 'location': return a.location_detail || '—';
+    case 'location': return placementText(a) || '—';
     case 'rfid': return displayRfid(a.rfid_tag);
     case 'pod': return a.pod_number ?? '—';
     case 'ru': return a.model?.ru_size != null ? String(a.model.ru_size) : '—';

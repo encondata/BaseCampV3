@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'r
 import { Link } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
+import AssetLocation from '../components/assets/AssetLocation';
 import {
   listAssetStatuses, listInitiativeAssets, listInitiatives,
   type InitiativeAssetRow, type InitiativeItem, type StatusValue,
@@ -312,6 +313,7 @@ export default function MoveDashboard() {
         );
       }
     }
+    if (key === 'location') return <AssetLocation asset={a.asset} className="cell-top cell-line" />;
     const text = moveAssetCellText(a, key);
     return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
   };

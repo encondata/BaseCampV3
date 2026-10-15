@@ -93,3 +93,13 @@ it('hides the scan panel without scans:view but keeps move history', async () =>
   expect(await screen.findByText('Move history')).toBeTruthy();
   expect(screen.queryByText('Scan History')).toBeNull();
 });
+
+it('Overview shows the Location as container and truck links', async () => {
+  api.getAsset.mockResolvedValue({
+    ...ASSET, container_id: 'c1', container_name: 'ATL1-W1M-DC-01', truck_id: 't1', truck_name: 'ATL1-T01',
+  });
+  renderAt('/assets/a1');
+  const c = await screen.findByRole('link', { name: 'ATL1-W1M-DC-01' });
+  expect(c.getAttribute('href')).toBe('/logistics/containers?open=c1');
+  expect(screen.getByRole('link', { name: 'ATL1-T01' }).getAttribute('href')).toBe('/logistics/trucks/t1');
+});

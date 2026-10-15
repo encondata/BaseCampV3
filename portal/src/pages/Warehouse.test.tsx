@@ -339,3 +339,16 @@ it('Warehouse container contents mini-list: column floors, shared template + min
   // .wh-mini-indent's 16px left indent, less 2px safety.
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1116);
 });
+
+it('a loose asset in a container on a truck links to both', async () => {
+  const placed: AssetRef = {
+    ...LOOSE_ASSET, location_detail: 'Dock',
+    container_id: 'c9', container_name: 'ATL1-W1M-DC-01', truck_id: 't1', truck_name: 'ATL1-T01',
+  };
+  api.getWarehouseInventory.mockResolvedValue({ ...INVENTORY_A, loose_assets: [placed] });
+  renderPage();
+  const row = (await screen.findByText('SN-LOOSE')).closest('.dir-row') as HTMLElement;
+  const c = within(row).getByRole('link', { name: 'ATL1-W1M-DC-01' });
+  expect(c.getAttribute('href')).toBe('/logistics/containers?open=c9');
+  expect(within(row).getByRole('link', { name: 'ATL1-T01' }).getAttribute('href')).toBe('/logistics/trucks/t1');
+});

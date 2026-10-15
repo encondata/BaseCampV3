@@ -9,6 +9,7 @@ import type {
 } from './api';
 import { boolTriToPatch, numberToPatch, type GodField } from './godEdit';
 import type { ColumnDef } from './listTools';
+import { placementText } from './assets';
 import { displayRfid } from './format';
 import { parseApiDay } from './timeline';
 
@@ -389,7 +390,7 @@ export function moveAssetCellText(row: InitiativeAssetRow, colKey: string): stri
     case 'vendor_involved': return yesNo(row.vendor_involved);
     case 'asset_status': return row.asset.status_label;
     case 'rfid_tag': return displayRfid(row.asset.rfid_tag);
-    case 'location': return row.asset.location_detail ?? BLANK;
+    case 'location': return placementText(row.asset) || BLANK;
     case 'pod_number': return row.asset.pod_number ?? BLANK;
     case 'client': return row.asset.client_name ?? BLANK;
     case 'added': return dayOf(row.created_at);

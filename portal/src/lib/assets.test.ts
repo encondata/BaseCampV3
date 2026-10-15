@@ -8,6 +8,7 @@ import {
   assetCellText, assetSearchText, assetPayload, duplicateSerials, formFromAsset, formFromModel,
   formatDims, formFactorLabel, identityFirst, mergeFieldRows, migrateIdentityColumns, modelCellText,
   modelPayload, modelSearchText, needsModelCreate, parseDims, partnerFor,
+  placementText,
 } from './assets';
 
 const asset = (over: Partial<AssetItem> = {}): AssetItem => ({
@@ -617,5 +618,34 @@ describe('mergeFieldRows', () => {
     expect(byKey.dims).toMatchObject({
       keep: '—', dup: '81.28 × 43.18 × 8.64 cm', result: '81.28 × 43.18 × 8.64 cm',
     });
+  });
+});
+
+describe('placementText', () => {
+  it('joins the container and truck', () => {
+    expect(placementText({ location_detail: 'Bay 3', container_name: 'C1', truck_name: 'T1' }))
+      .toBe('C1 · on T1');
+  });
+  it('is the container alone without a truck', () => {
+    expect(placementText({ location_detail: 'Bay 3', container_name: 'C1' })).toBe('C1');
+  });
+  it('is the location text without a container', () => {
+    expect(placementText({ location_detail: 'Rack 3' })).toBe('Rack 3');
+    expect(placementText({ location_detail: 'Rack 3', truck_name: 'T1' })).toBe('Rack 3');
+  });
+  it('is empty when there is nothing', () => {
+    expect(placementText({})).toBe('');
+    expect(placementText({ location_detail: null })).toBe('');
+  });
+});
+
+describe('asset Location text uses the placement', () => {
+  const placed = asset({
+    location_detail: 'Bay 3', container_id: 'c1', container_name: 'C1', truck_id: 't1', truck_name: 'T1',
+  } as Partial<AssetItem>);
+  it('cell text, search text', () => {
+    expect(assetCellText(placed, 'location')).toBe('C1 · on T1');
+    expect(assetSearchText(placed)).toContain('c1 · on t1');
+    expect(assetCellText(asset({ location_detail: '' }), 'location')).toBe('—');
   });
 });

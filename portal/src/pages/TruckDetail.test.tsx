@@ -232,3 +232,9 @@ it('shows trip events and the relabeled tracking fields', async () => {
   expect(screen.getByText('MacroPoint order')).not.toBeNull();
   expect(screen.getByText('VM0s7D8Q')).not.toBeNull();
 });
+
+it('links each container to the Containers page with ?open=', async () => {
+  renderPage();
+  const link = await screen.findByRole('link', { name: 'Container A' });
+  expect(link.getAttribute('href')).toBe('/logistics/containers?open=c1');
+});

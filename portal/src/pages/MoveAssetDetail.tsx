@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
+import AssetLocation from '../components/assets/AssetLocation';
 import AssetEditDialog from '../components/initiatives/AssetEditDialog';
 import ScanHistoryTable from '../components/scans/ScanHistoryTable';
 import {
@@ -131,7 +132,7 @@ export default function MoveAssetDetail() {
           <dd>{asset ? chip(asset.status_label, asset.status_color) : '—'}</dd>
           <dt>Client</dt><dd>{asset?.client_name ?? 'House'}</dd>
           <dt>Site</dt><dd>{asset?.site_name ?? '—'}</dd>
-          <dt>Location</dt><dd>{asset?.location_detail || '—'}</dd>
+          <dt>Location</dt><dd><AssetLocation asset={asset ?? {}} /></dd>
           <dt>Last seen</dt>
           <dd>{asset?.last_seen_at
             ? new Date(asset.last_seen_at).toLocaleString() : '—'}</dd>

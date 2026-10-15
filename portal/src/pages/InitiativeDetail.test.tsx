@@ -544,3 +544,21 @@ it('non-admins do not see the kiosk password line', async () => {
   await screen.findByText('switch-01');
   expect(screen.queryByText('Kiosk password')).toBeNull();
 });
+
+it('assets list: the Location cell links to the container and truck', async () => {
+  const { MOVE_ASSET_COLUMNS } = await import('../lib/initiatives');
+  prefs.list_prefs = { initiative_assets: {
+    visible: ['asset_name', 'location'], seen: MOVE_ASSET_COLUMNS.map((c) => c.key),
+    order: [], sortKey: 'asset_name', sortDir: 1,
+  } };
+  api.listInitiativeAssets.mockResolvedValue([{
+    ...ASSET,
+    asset: { ...ASSET.asset, container_id: 'c1', container_name: 'ATL1-W1M-DC-01', truck_id: 't1', truck_name: 'ATL1-T01' },
+  }]);
+  renderPage();
+  const row = await assetRow();
+  expect(within(row).getByRole('link', { name: 'ATL1-W1M-DC-01' }).getAttribute('href'))
+    .toBe('/logistics/containers?open=c1');
+  expect(within(row).getByRole('link', { name: 'ATL1-T01' }).getAttribute('href'))
+    .toBe('/logistics/trucks/t1');
+});

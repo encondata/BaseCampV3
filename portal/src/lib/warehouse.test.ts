@@ -346,3 +346,18 @@ describe('modelLabel', () => {
     expect(modelLabel({ make: 'Cisco', model: '9300' })).toBe('Cisco 9300');
   });
 });
+
+describe('loose asset placement', () => {
+  it('location text is the placement, so sort/search/CSV match the cell', () => {
+    const inv: WarehouseInventory = {
+      site, containers: [], loose_stock: [],
+      loose_assets: [{
+        ...assetInCrate, id: 'a9', location_detail: 'Dock',
+        container_id: 'c7', container_name: 'ATL1-W1M-DC-01', truck_id: 't2', truck_name: 'ATL1-T01',
+      }],
+    } as unknown as WarehouseInventory;
+    const [row] = flattenInventory(inv);
+    expect(row.location).toBe('ATL1-W1M-DC-01 · on ATL1-T01');
+    expect(inventorySearchText(row)).toContain('atl1-t01');
+  });
+});

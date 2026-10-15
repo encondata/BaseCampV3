@@ -413,7 +413,7 @@ export default function TruckDetail() {
               <div className="mini-list">
                 {truck.containers.map((c) => (
                   <div key={c.id} className="mini-row flex">
-                    <Link to={`/logistics/containers?focus=${c.id}`} className="cell-top">{c.name}</Link>
+                    <Link to={`/logistics/containers?open=${c.id}`} className="cell-top">{c.name}</Link>
                     {chip(c.status_label, c.status_color)}
                     <span className="mono">{c.asset_count}</span>
                   </div>
