@@ -3,9 +3,11 @@
  * drivers, tracking, move/site assignment, and container membership.
  * `truck === null` opens in create mode. In edit mode the incoming
  * `TruckItem` (from the list) lacks `containers`, so the modal fetches
- * the full `TruckDetail` on open to seed the containers picker — mirrors
- * ContainerEditModal's modal shape (pf-form, modal-card, ComboBox,
- * mini-list picker, error banner, save/cancel).
+ * the full `TruckDetail` on open to seed the containers on the truck —
+ * mirrors ContainerEditModal's modal shape (pf-form, modal-card, ComboBox,
+ * error banner, save/cancel). The containers section lists only the
+ * truck's own containers (Remove on each) plus one Add container search,
+ * scoped to the truck's move when it has one; both stage until Save.
  */
 
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
@@ -14,9 +16,10 @@ import {
   ApiError, createTruck, getTruck, listContainers, listInitiatives,
   listSites, listTruckStatuses, updateTruck,
   type ContainerItem, type InitiativeItem, type SiteItem,
-  type StatusValue, type TruckItem,
+  type StatusValue, type TruckContainerRow, type TruckItem,
 } from '../../lib/api';
 import { statusChip } from '../../lib/chips';
+import { naturalCompare } from '../../lib/sites';
 import {
   formFromTruck, TRUCK_ERRORS, truckPayload, type TruckFormState,
 } from '../../lib/trucks';
@@ -50,7 +53,9 @@ export default function TruckEditModal({ truck, onClose, onSaved }: Props) {
   const [initiatives, setInitiatives] = useState<InitiativeItem[]>([]);
   const [sites, setSites] = useState<SiteItem[]>([]);
   const [containers, setContainers] = useState<ContainerItem[]>([]);
-  const [containerFilter, setContainerFilter] = useState('');
+  // The truck's containers as getTruck reported them — the display
+  // fallback for one missing from listContainers().
+  const [onTruckRows, setOnTruckRows] = useState<TruckContainerRow[]>([]);
 
   useEffect(() => {
     void listTruckStatuses().then(setStatuses).catch(() => {});
@@ -66,6 +71,7 @@ export default function TruckEditModal({ truck, onClose, onSaved }: Props) {
     void getTruck(truck.id).then((d) => {
       if (cancelled) return;
       setForm(formFromTruck(d));
+      setOnTruckRows(d.containers);
       setLoadingDetail(false);
     }).catch(() => {
       if (cancelled) return;
@@ -82,11 +88,10 @@ export default function TruckEditModal({ truck, onClose, onSaved }: Props) {
   const setField = <K extends keyof TruckFormState>(key: K, value: TruckFormState[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
 
-  const toggleContainer = (id: string) => setForm((f) => ({
-    ...f,
-    container_ids: f.container_ids.includes(id)
-      ? f.container_ids.filter((x) => x !== id)
-      : [...f.container_ids, id],
+  const addContainer = (id: string) => setForm((f) => (
+    !id || f.container_ids.includes(id) ? f : { ...f, container_ids: [...f.container_ids, id] }));
+  const removeContainer = (id: string) => setForm((f) => ({
+    ...f, container_ids: f.container_ids.filter((x) => x !== id),
   }));
 
   // listTruckStatuses() may not include a status the truck already sits
@@ -106,12 +111,23 @@ export default function TruckEditModal({ truck, onClose, onSaved }: Props) {
     .filter((s) => !s.archived_at || s.id === form.start_site_id || s.id === form.end_site_id)
     .map((s) => ({ value: s.id, label: s.name })), [sites, form.start_site_id, form.end_site_id]);
 
-  const containerOptions = useMemo(() => {
-    const q = containerFilter.trim().toLowerCase();
-    return containers
-      .filter((c) => !c.archived_at || form.container_ids.includes(c.id))
-      .filter((c) => !q || c.name.toLowerCase().includes(q));
-  }, [containers, containerFilter, form.container_ids]);
+  // Rows for the containers on the truck, in the order they were added.
+  const onTruck = useMemo(() => {
+    const byId = new Map<string, TruckContainerRow>(onTruckRows.map((c) => [c.id, c]));
+    for (const c of containers) byId.set(c.id, c);
+    return form.container_ids.flatMap((id) => byId.get(id) ?? []);
+  }, [containers, onTruckRows, form.container_ids]);
+
+  // Add container: unarchived containers not already on the truck, from
+  // the truck's move when it has one (every move otherwise).
+  const addOptions = useMemo(() => containers
+    .filter((c) => !c.archived_at && !form.container_ids.includes(c.id))
+    .filter((c) => !form.initiative_id || c.initiative_id === form.initiative_id)
+    .sort((a, b) => naturalCompare(a.name, b.name))
+    .map((c) => ({
+      value: c.id, label: c.name,
+      sub: `${c.status_label} · ${c.asset_count} asset${c.asset_count === 1 ? '' : 's'}`,
+    })), [containers, form.container_ids, form.initiative_id]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -249,27 +265,34 @@ export default function TruckEditModal({ truck, onClose, onSaved }: Props) {
               <div className="modal-section">
                 Containers on truck{form.container_ids.length ? ` — ${form.container_ids.length}` : ''}
               </div>
-              <div className="pf-form">
-                <div style={{ gridColumn: '1 / -1' }}>
-                  <label>Filter containers</label>
-                  <input placeholder="Type to filter…" value={containerFilter} disabled={saving}
-                         onChange={(e) => setContainerFilter(e.target.value)} />
-                </div>
-              </div>
-              <div className="mini-list truck-container-picker">
-                {containerOptions.length === 0 && (
-                  <p className="page-hint">No containers match.</p>
+              <div className="mini-list truck-containers">
+                {onTruck.length === 0 && (
+                  <p className="page-hint">No containers on this truck yet.</p>
                 )}
-                {containerOptions.map((c) => (
-                  <label key={c.id} className="mini-row flex">
-                    <input type="checkbox" checked={form.container_ids.includes(c.id)}
-                           disabled={saving}
-                           onChange={() => toggleContainer(c.id)} />
+                {onTruck.map((c) => (
+                  <div key={c.id} className="mini-row flex">
                     <span className="cell-top">{c.name}</span>
                     {statusChip(c.status_label, c.status_color)}
                     <span className="mono">{c.asset_count}</span>
-                  </label>
+                    <button type="button" className="mini-btn" disabled={saving}
+                            aria-label={`Remove ${c.name}`}
+                            onClick={() => removeContainer(c.id)}>
+                      Remove
+                    </button>
+                  </div>
                 ))}
+              </div>
+              <div className="pf-form">
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <label>Add container</label>
+                  <ComboBox
+                    placeholder="Type to search containers…"
+                    value=""
+                    disabled={saving}
+                    onChange={addContainer}
+                    options={addOptions}
+                  />
+                </div>
               </div>
             </div>
             <div className="modal-foot">
