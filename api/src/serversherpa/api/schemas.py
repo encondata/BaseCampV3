@@ -4032,15 +4032,25 @@ class TruckSummary(BaseModel):
     containers_on_board: int
 
 
+class TruckEventOut(BaseModel):
+    id: uuid.UUID
+    truck_id: uuid.UUID
+    recorded_at: datetime
+    event: str
+    event_kind: str | None = None
+    stop: str | None = None
+    source: str = "manual"
+
+
 class TruckFeedEvent(BaseModel):
     """One shipment-feed event. `kind` picks which optional group is filled:
-    location (location/lat/lng/address/source), status (from_*/to_*),
-    load/unload (container_*/asset_count/via, + from_truck/device for kiosk
+    location (location/lat/lng/address/source), trip (event/source),
+    status (from_*/to_*), load/unload (container_*/asset_count/via, + from_truck/device for kiosk
     loads). `actor_name` is null for tracker location updates and when the
     audit row has no actor."""
     id: str
     at: datetime
-    kind: Literal["location", "status", "load", "unload"]
+    kind: Literal["location", "status", "load", "unload", "trip"]
     truck_id: uuid.UUID
     truck_name: str
     load_number: str | None = None
@@ -4053,6 +4063,8 @@ class TruckFeedEvent(BaseModel):
     lng: float | None = None
     address: str | None = None
     source: str | None = None
+    # trip
+    event: str | None = None
     # status
     from_status: str | None = None
     from_label: str | None = None
@@ -4061,7 +4073,7 @@ class TruckFeedEvent(BaseModel):
     to_label: str | None = None
     to_color: str | None = None
     # load / unload
-    via: Literal["kiosk", "portal", "import"] | None = None
+    via: Literal["kiosk", "portal", "import", "MacroPoint"] | None = None
     container_id: uuid.UUID | None = None
     container_name: str | None = None
     asset_count: int | None = None

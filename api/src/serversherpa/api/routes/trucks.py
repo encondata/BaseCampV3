@@ -12,13 +12,14 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank, rows_from_request
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    MacroPointApplyOut, MacroPointPreviewOut, TruckContainerOut, TruckCreateIn, TruckDetail, TruckEndSite, TruckFeedPage,
+    MacroPointApplyOut, MacroPointPreviewOut, TruckContainerOut, TruckCreateIn, TruckDetail, TruckEndSite,
+    TruckEventOut, TruckFeedPage,
     TruckItem, TruckLastUpdate, TruckMapPoint, TruckSummary, TruckTrailPoint,
     TruckUpdateCreateIn, TruckUpdateIn, TruckUpdateOut,
 )
 from serversherpa.db.models import (
     Container, ContainerAsset, Initiative, Site, StatusValue, Truck,
-    TruckContainer, TruckUpdate,
+    TruckContainer, TruckEvent, TruckUpdate,
 )
 from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit, diff, snapshot
@@ -650,6 +651,20 @@ async def list_truck_updates(
     return [_update_out(u) for u in rows]
 
 
+@router.get("/{truck_id}/events", response_model=list[TruckEventOut])
+async def list_truck_events(
+    truck_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("trucks", "view"),
+) -> list[TruckEventOut]:
+    """Trip events (e.g. MacroPoint Arrived/Departed), newest first."""
+    await _get_truck(db, truck_id)
+    rows = await db.scalars(
+        select(TruckEvent).where(TruckEvent.truck_id == truck_id)
+        .order_by(TruckEvent.recorded_at.desc()))
+    return [TruckEventOut.model_validate(e, from_attributes=True) for e in rows]
+
+
 @router.post("/{truck_id}/updates", response_model=TruckUpdateOut, status_code=201)
 async def create_truck_update(
     truck_id: uuid.UUID,
@@ -686,6 +701,7 @@ async def clear_truck_updates(
 ) -> None:
     await _get_truck(db, truck_id)
     await db.execute(delete(TruckUpdate).where(TruckUpdate.truck_id == truck_id))
+    await db.execute(delete(TruckEvent).where(TruckEvent.truck_id == truck_id))
     audit(db, actor_id=actor.person.id, entity_type="truck",
           entity_id=str(truck_id), action="clear_updates")
     await db.commit()
