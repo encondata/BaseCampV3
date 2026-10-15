@@ -1448,6 +1448,12 @@ class AssetItem(BaseModel):
     last_seen_at: datetime | None = None
     archived_at: datetime | None = None
     created_at: datetime
+    # where the asset sits now (assets/placement.py): None unless the actor
+    # may see its container / that container's truck
+    container_id: uuid.UUID | None = None
+    container_name: str | None = None
+    truck_id: uuid.UUID | None = None
+    truck_name: str | None = None
 
 
 class AssetCreateIn(BaseModel):
@@ -2161,6 +2167,12 @@ class InitiativeAssetSummary(BaseModel):
     status: str
     status_label: str
     status_color: str
+    # where the asset sits now (assets/placement.py): None unless the actor
+    # may see its container / that container's truck
+    container_id: uuid.UUID | None = None
+    container_name: str | None = None
+    truck_id: uuid.UUID | None = None
+    truck_name: str | None = None
 
 
 class InitiativeAssetOut(BaseModel):
@@ -4175,6 +4187,12 @@ class AssetRef(BaseModel):
     status_label: str
     status_color: str
     location_detail: str = ""
+    # where the asset sits now (assets/placement.py): None unless the actor
+    # may see its container / that container's truck
+    container_id: uuid.UUID | None = None
+    container_name: str | None = None
+    truck_id: uuid.UUID | None = None
+    truck_name: str | None = None
 
 
 class StockLineOut(BaseModel):

@@ -22,6 +22,7 @@ from serversherpa.api.schemas import (
     ImportJobOut,
 )
 from serversherpa.assets import bulk_update
+from serversherpa.assets.placement import asset_placements
 from serversherpa.db.models import (
     Asset,
     AssetCategory,
@@ -101,8 +102,9 @@ async def _model_refs(db: DbSession, model_ids: set[uuid.UUID]) -> dict:
 
 
 def _item(a: Asset, statuses: dict, models: dict, clients: dict,
-          sites: dict) -> dict:
+          sites: dict, places: dict) -> dict:
     label, color = statuses.get(a.status, (a.status, "#51606f"))
+    place = places.get(a.id)
     return {
         "id": a.id, "legacy_id": a.legacy_id,
         "serial_number": a.serial_number, "name": a.name,
@@ -115,10 +117,15 @@ def _item(a: Asset, statuses: dict, models: dict, clients: dict,
         "status": a.status, "status_label": label, "status_color": color,
         "has_rails": a.has_rails, "last_seen_at": a.last_seen_at,
         "archived_at": a.archived_at, "created_at": a.created_at,
+        "container_id": place.container_id if place else None,
+        "container_name": place.container_name if place else None,
+        "truck_id": place.truck_id if place else None,
+        "truck_name": place.truck_name if place else None,
     }
 
 
-async def _context(db: DbSession, assets: list[Asset]) -> tuple:
+async def _context(db: DbSession, assets: list[Asset],
+                   actor: AuthContext) -> tuple:
     statuses = await _statuses(db)
     models = await _model_refs(db, {a.model_id for a in assets if a.model_id})
     client_ids = {a.client_id for a in assets if a.client_id}
@@ -129,12 +136,15 @@ async def _context(db: DbSession, assets: list[Asset]) -> tuple:
     sites = dict((await db.execute(
         select(Site.id, Site.name).where(Site.id.in_(site_ids))
     )).all()) if site_ids else {}
-    return statuses, models, clients, sites
+    places = await asset_placements(
+        db, [a.id for a in assets], actor.access, actor.person.id)
+    return statuses, models, clients, sites, places
 
 
-async def _detail(db: DbSession, asset: Asset) -> AssetItem:
-    statuses, models, clients, sites = await _context(db, [asset])
-    return AssetItem(**_item(asset, statuses, models, clients, sites))
+async def _detail(db: DbSession, asset: Asset,
+                  actor: AuthContext) -> AssetItem:
+    ctx = await _context(db, [asset], actor)
+    return AssetItem(**_item(asset, *ctx))
 
 
 # ── bulk update ─────────────────────────────────────────────────────
@@ -346,9 +356,8 @@ async def list_assets(
     if cond is not None:
         query = query.where(cond)
     assets = (await db.scalars(query)).all()
-    statuses, models, clients, sites = await _context(db, list(assets))
-    return [AssetItem(**_item(a, statuses, models, clients, sites))
-            for a in assets]
+    ctx = await _context(db, list(assets), actor)
+    return [AssetItem(**_item(a, *ctx)) for a in assets]
 
 
 @router.get("/{asset_id}", response_model=AssetItem)
@@ -358,7 +367,7 @@ async def get_asset(
     actor: AuthContext = require_permission("assets", "view"),
 ) -> AssetItem:
     asset = await _get_asset(db, asset_id, actor)
-    return await _detail(db, asset)
+    return await _detail(db, asset, actor)
 
 
 @router.get("/{asset_id}/moves", response_model=list[AssetMoveRow])
@@ -449,7 +458,7 @@ async def create_asset(
     audit(db, actor_id=actor.person.id, entity_type="asset",
           entity_id=str(asset.id), action="create", changes=changes)
     await db.commit()
-    return await _detail(db, asset)
+    return await _detail(db, asset, actor)
 
 
 @router.patch("/{asset_id}", response_model=AssetItem)
@@ -495,7 +504,7 @@ async def update_asset(
             raise _err(409, "rule_failed", rule_name=err.rule_name,
                        reason=str(err.__cause__ or err)) from err
     await db.commit()
-    return await _detail(db, asset)
+    return await _detail(db, asset, actor)
 
 
 @router.post("/{asset_id}/archive", status_code=204)

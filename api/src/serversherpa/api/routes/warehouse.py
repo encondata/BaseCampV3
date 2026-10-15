@@ -15,6 +15,7 @@ from serversherpa.api.schemas import (
     AssetRef, StockLineCreateIn, StockLineOut, StockLineUpdateIn,
     WarehouseContainerOut, WarehouseInventoryOut, WarehouseSiteOut,
 )
+from serversherpa.assets.placement import asset_placements
 from serversherpa.db.models import (
     Asset, AssetModel, Container, ContainerAsset, Site, StatusValue, StockLine,
 )
@@ -113,13 +114,19 @@ async def _stock_out(db: DbSession, lines: list[StockLine]) -> list[StockLineOut
     return out
 
 
-def _asset_ref(a: Asset, statuses: dict, model_names: dict) -> AssetRef:
+def _asset_ref(a: Asset, statuses: dict, model_names: dict,
+               places: dict) -> AssetRef:
     label, color = statuses.get(a.status, (a.status, FALLBACK[1]))
+    place = places.get(a.id)
     return AssetRef(
         id=a.id, legacy_id=a.legacy_id, serial_number=a.serial_number,
         name=a.name, model_name=model_names.get(a.model_id) if a.model_id else None,
         status=a.status, status_label=label, status_color=color,
-        location_detail=a.location_detail)
+        location_detail=a.location_detail,
+        container_id=place.container_id if place else None,
+        container_name=place.container_name if place else None,
+        truck_id=place.truck_id if place else None,
+        truck_name=place.truck_name if place else None)
 
 
 @router.get("/sites", response_model=list[WarehouseSiteOut])
@@ -168,10 +175,12 @@ async def warehouse_inventory(
         .order_by(natural(StockLine.description))))
     lines_out = await _stock_out(db, lines)
 
+    places = await asset_placements(
+        db, [a.id for a in assets], actor.access, actor.person.id)
     by_container_assets: dict[uuid.UUID, list[AssetRef]] = {cid: [] for cid in cids}
     loose_assets: list[AssetRef] = []
     for a in assets:
-        ref = _asset_ref(a, vocab["asset"], model_names)
+        ref = _asset_ref(a, vocab["asset"], model_names, places)
         cid = membership.get(a.id)
         if cid in by_container_assets:
             by_container_assets[cid].append(ref)

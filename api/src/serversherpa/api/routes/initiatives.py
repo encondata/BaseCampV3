@@ -27,6 +27,7 @@ from serversherpa.api.schemas import (
     InitiativeNextColorOut, InitiativePersonAddIn, InitiativePersonRow,
     InitiativePersonUpdateIn, InitiativeUpdateIn, KioskPasswordOut, PlacementRecheckOut,
 )
+from serversherpa.assets.placement import asset_placements
 from serversherpa.db.models import (
     Asset, AssetCategory, AssetModel, Client, ImportJob, Initiative, InitiativeAsset,
     InitiativeLink, InitiativePerson, Partner, Person, Site, StatusValue,
@@ -880,7 +881,7 @@ NULLABLE_TEXT_ASSET_FIELDS = (
 
 
 async def _initiative_asset_rows(
-    db: DbSession, initiative_id: uuid.UUID,
+    db: DbSession, initiative_id: uuid.UUID, actor: AuthContext,
 ) -> list[InitiativeAssetOut]:
     rows = (await db.execute(
         select(InitiativeAsset, Asset)
@@ -904,9 +905,12 @@ async def _initiative_asset_rows(
     clients = dict((await db.execute(
         select(Client.id, Client.name).where(Client.id.in_(client_ids))
     )).all()) if client_ids else {}
+    places = await asset_placements(
+        db, [a.id for _, a in rows], actor.access, actor.person.id)
 
     out = []
     for ia, asset in rows:
+        place = places.get(asset.id)
         s_label, s_color = statuses.get(ia.status, (ia.status, "#51606f"))
         a_label, a_color = statuses.get(asset.status,
                                         (asset.status, "#51606f"))
@@ -942,7 +946,11 @@ async def _initiative_asset_rows(
                 location_detail=asset.location_detail,
                 client_name=clients.get(asset.client_id),
                 status=asset.status, status_label=a_label,
-                status_color=a_color)))
+                status_color=a_color,
+                container_id=place.container_id if place else None,
+                container_name=place.container_name if place else None,
+                truck_id=place.truck_id if place else None,
+                truck_name=place.truck_name if place else None)))
     return out
 
 
@@ -953,7 +961,7 @@ async def list_initiative_assets(
     actor: AuthContext = require_permission("initiatives", "view"),
 ) -> list[InitiativeAssetOut]:
     await _get_initiative(db, initiative_id, actor)
-    return await _initiative_asset_rows(db, initiative_id)
+    return await _initiative_asset_rows(db, initiative_id, actor)
 
 
 async def _already_attached(
@@ -1004,7 +1012,7 @@ async def add_initiative_assets(
         # the same (initiative, asset) pair — initiative_assets_uniq fired
         await db.rollback()
         raise _err(409, "assets_already_on_initiative") from None
-    return await _initiative_asset_rows(db, initiative_id)
+    return await _initiative_asset_rows(db, initiative_id, actor)
 
 
 @router.post("/{initiative_id}/assets/recheck-placement",
@@ -1111,7 +1119,7 @@ async def update_initiative_asset(
                 raise _err(409, "rule_failed", rule_name=err.rule_name,
                            reason=str(err.__cause__ or err)) from err
     await db.commit()
-    rows = await _initiative_asset_rows(db, assoc.initiative_id)
+    rows = await _initiative_asset_rows(db, assoc.initiative_id, actor)
     return next(r for r in rows if r.id == assoc_id)
 
 
