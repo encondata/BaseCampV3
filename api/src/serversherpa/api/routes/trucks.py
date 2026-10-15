@@ -330,33 +330,45 @@ async def _macropoint_inputs(request: Request) -> tuple[list[tuple[str, bytes]],
     `text` (pasted email text) and, for apply, `assignments` (JSON)."""
     if not request.headers.get("content-type", "").startswith("multipart/"):
         raise _err(422, "multipart_required")
+    # Starlette parses the whole multipart body (files spool to temp disk)
+    # before any size check below can run, so refuse an oversize body by its
+    # declared length first. A chunked body has no length: require one.
+    declared = request.headers.get("content-length")
+    if declared is None or not declared.isdigit():
+        raise _err(411, "length_required")
+    if int(declared) > mp.MAX_TOTAL_BYTES + mp.MAX_TEXT_BYTES + 64 * 1024:
+        raise _err(413, "upload_too_large", limit=mp.MAX_TOTAL_BYTES)
     try:
         form = await request.form(max_files=mp.MAX_FILES + 1, max_fields=10,
                                   max_part_size=mp.MAX_TEXT_BYTES + 1024)
     except StarletteHTTPException:
         raise _err(413, "upload_too_large") from None
-    uploads = [u for u in form.getlist("files") if not isinstance(u, str)]
-    if len(uploads) > mp.MAX_FILES:
-        raise _err(413, "too_many_files", limit=mp.MAX_FILES)
-    files: list[tuple[str, bytes]] = []
-    total = 0
-    for upload in uploads:
-        data = await upload.read(mp.MAX_FILE_BYTES + 1)
-        if len(data) > mp.MAX_FILE_BYTES:
-            raise _err(413, "file_too_large", file=upload.filename, limit=mp.MAX_FILE_BYTES)
-        total += len(data)
-        if total > mp.MAX_TOTAL_BYTES:
-            raise _err(413, "upload_too_large", limit=mp.MAX_TOTAL_BYTES)
-        files.append((upload.filename or "upload.eml", data))
-    text = form.get("text") or ""
-    if not isinstance(text, str):
-        raise _err(422, "bad_text")
-    if len(text.encode("utf-8")) > mp.MAX_TEXT_BYTES:
-        raise _err(413, "text_too_large", limit=mp.MAX_TEXT_BYTES)
-    if not files and not text.strip():
-        raise _err(422, "nothing_to_parse")
-    raw = form.get("assignments")
-    return files, text, raw if isinstance(raw, str) else None
+    try:
+        uploads = [u for u in form.getlist("files") if not isinstance(u, str)]
+        if len(uploads) > mp.MAX_FILES:
+            raise _err(413, "too_many_files", limit=mp.MAX_FILES)
+        files: list[tuple[str, bytes]] = []
+        total = 0
+        for upload in uploads:
+            data = await upload.read(mp.MAX_FILE_BYTES + 1)
+            if len(data) > mp.MAX_FILE_BYTES:
+                raise _err(413, "file_too_large", file=upload.filename,
+                           limit=mp.MAX_FILE_BYTES)
+            total += len(data)
+            if total > mp.MAX_TOTAL_BYTES:
+                raise _err(413, "upload_too_large", limit=mp.MAX_TOTAL_BYTES)
+            files.append((upload.filename or "upload.eml", data))
+        text = form.get("text") or ""
+        if not isinstance(text, str):
+            raise _err(422, "bad_text")
+        if len(text.encode("utf-8")) > mp.MAX_TEXT_BYTES:
+            raise _err(413, "text_too_large", limit=mp.MAX_TEXT_BYTES)
+        if not files and not text.strip():
+            raise _err(422, "nothing_to_parse")
+        raw = form.get("assignments")
+        return files, text, raw if isinstance(raw, str) else None
+    finally:
+        await form.close()
 
 
 @router.post("/manual-update/macropoint/preview", response_model=MacroPointPreviewOut)

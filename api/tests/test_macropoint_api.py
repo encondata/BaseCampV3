@@ -124,3 +124,36 @@ async def test_input_limits(client, db, seeded_user, monkeypatch):
     resp = await client.post(PREVIEW, headers=hdrs, files=form(text="x" * 11))
     assert resp.status_code == 413
     assert resp.json()["detail"]["code"] == "text_too_large"
+
+
+async def test_declared_length_over_cap_is_refused_before_parsing(
+        client, db, seeded_user, monkeypatch):
+    from serversherpa.trucks.macropoint import apply as mp
+    hdrs = await login(client)
+    monkeypatch.setattr(mp, "MAX_TOTAL_BYTES", 1000)
+    monkeypatch.setattr(mp, "MAX_TEXT_BYTES", 10)
+
+    async def no_parse(self, *a, **k):                      # body must never be parsed
+        raise AssertionError("request.form() was called")
+
+    monkeypatch.setattr("starlette.requests.Request.form", no_parse)
+    body = b"x" * (1000 + 10 + 64 * 1024 + 1)
+    resp = await client.post(
+        PREVIEW, headers=hdrs,
+        files=[("files", ("big.eml", body, "message/rfc822"))])
+    assert resp.status_code == 413
+    assert resp.json()["detail"]["code"] == "upload_too_large"
+
+
+async def test_missing_content_length_is_refused(client, db, seeded_user):
+    hdrs = await login(client)
+
+    async def chunks():
+        yield b"--b\r\n"
+        yield b'Content-Disposition: form-data; name="text"\r\n\r\nhello\r\n--b--\r\n'
+
+    resp = await client.post(
+        PREVIEW, content=chunks(),
+        headers={**hdrs, "content-type": "multipart/form-data; boundary=b"})
+    assert resp.status_code == 411
+    assert resp.json()["detail"]["code"] == "length_required"
