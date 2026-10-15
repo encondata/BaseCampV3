@@ -119,3 +119,8 @@
   align-items: center;
   gap: 8px;
 }
+
+/* Edit truck › Containers on truck: the name takes the slack so each
+   row's Remove button lines up on the right. */
+.truck-containers .mini-row .cell-top { flex: 1; min-width: 0; }
+.truck-containers { margin-bottom: 12px; }
