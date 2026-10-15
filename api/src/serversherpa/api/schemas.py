@@ -1585,6 +1585,8 @@ class ContainerAssetRow(BaseModel):
     status_color: str
     added_at: datetime
     added_by_name: str | None = None
+    # the full record; null where the actor may not view that asset
+    asset: AssetItem | None = None
 
 
 class ContainerAssetsAddIn(BaseModel):
