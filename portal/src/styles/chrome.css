@@ -269,6 +269,42 @@ kbd {
   padding: 1px 6px;
 }
 
+/* Every control in a list toolbar shares .btn-ghost's / .mini-btn's box:
+   34px tall, 9px corners, 12.5px display text — the primary "+ New …"
+   button, the checkbox pill (Show historical / Show cancelled, the map's
+   Trails) and a select (.tool-select, with its .tool-select-label). */
+.dir-toolbar .btn-solid { height: 34px; padding: 0 14px; font-size: 12.5px; }
+.dir-toolbar .pill-check,
+.trucks-map-ctrls .pill-check {
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 9px;
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  color: var(--text-dark);
+}
+.tool-select-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  color: var(--text-mute);
+}
+.tool-select {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  background: var(--surface, #fff);
+  color: var(--text-dark);
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.tool-select:hover { border-color: var(--amber); }
+.tool-select:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+
 /* ── command palette (kbar) ───────────────────────────────── */
 
 .kbar-scrim {

@@ -58,13 +58,6 @@
 }
 .pill-check input { margin: 0; }
 
-/* Refresh-cadence control in the toolbar — layout only, inherits the
- * page's own font like every other toolbar control. */
-.trucks-refresh {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
 
 /* Fullscreen map modal — wide card, ~80vh map body. */
 .modal-card.trucks-fullscreen-card { width: min(1100px, 96vw); }
