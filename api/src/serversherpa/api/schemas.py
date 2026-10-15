@@ -4075,6 +4075,57 @@ class TruckFeedPage(BaseModel):
     next_before: str | None = None
 
 
+# ── MacroPoint manual update ─────────────────────────────────────────
+
+class MacroPointRowOut(BaseModel):
+    source: str
+    kind: Literal["location", "trip_event"]
+    recorded_at: datetime
+    location: str | None = None
+    address: str = ""
+    event: str | None = None
+    status_to: str | None = None
+    status_to_label: str | None = None
+    duplicate: bool = False
+
+
+class MacroPointMatchOut(BaseModel):
+    truck_id: uuid.UUID | None = None
+    by: Literal["order", "tracker_id"] | None = None
+    ambiguous_ids: list[uuid.UUID] = []
+
+
+class MacroPointGroupOut(BaseModel):
+    group_key: str
+    id_number: str
+    order_token: str | None = None
+    carrier: str
+    match: MacroPointMatchOut
+    rows: list[MacroPointRowOut]
+    new: int
+    duplicates: int
+
+
+class MacroPointErrorOut(BaseModel):
+    source: str
+    reason: str
+
+
+class MacroPointTruckOption(BaseModel):
+    id: uuid.UUID
+    name: str
+    status: str
+    status_label: str
+    tracker_id: str | None = None
+    initiative_name: str | None = None
+
+
+class MacroPointPreviewOut(BaseModel):
+    groups: list[MacroPointGroupOut]
+    errors: list[MacroPointErrorOut]
+    trucks: list[MacroPointTruckOption]
+
+
 # ── warehouse ─────────────────────────────────────────────────────────
 
 class AssetRef(BaseModel):

@@ -6,11 +6,12 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import Row, delete, func, select, true
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank, rows_from_request
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    TruckContainerOut, TruckCreateIn, TruckDetail, TruckEndSite, TruckFeedPage,
+    MacroPointPreviewOut, TruckContainerOut, TruckCreateIn, TruckDetail, TruckEndSite, TruckFeedPage,
     TruckItem, TruckLastUpdate, TruckMapPoint, TruckSummary, TruckTrailPoint,
     TruckUpdateCreateIn, TruckUpdateIn, TruckUpdateOut,
 )
@@ -24,6 +25,7 @@ from serversherpa.trucks import bulk_import as bulk
 from serversherpa.trucks.bulk_create import TRUCK_FIELDS
 from serversherpa.trucks.feed import FeedCursorError, build_feed
 from serversherpa.trucks.location import LocationError, format_location, parse_location
+from serversherpa.trucks.macropoint import apply as mp
 from serversherpa.trucks.trip import apply_status_change, start_trip_if_needed
 
 router = APIRouter(prefix="/trucks", tags=["trucks"])
@@ -321,6 +323,51 @@ async def trucks_feed(
     except FeedCursorError as exc:
         raise _err(422, "bad_cursor") from exc
     return TruckFeedPage(**page)
+
+
+async def _macropoint_inputs(request: Request) -> tuple[list[tuple[str, bytes]], str, str | None]:
+    """The multipart body of the MacroPoint routes: `files` (0..n .eml),
+    `text` (pasted email text) and, for apply, `assignments` (JSON)."""
+    if not request.headers.get("content-type", "").startswith("multipart/"):
+        raise _err(422, "multipart_required")
+    try:
+        form = await request.form(max_files=mp.MAX_FILES + 1, max_fields=10,
+                                  max_part_size=mp.MAX_TEXT_BYTES + 1024)
+    except StarletteHTTPException:
+        raise _err(413, "upload_too_large") from None
+    uploads = [u for u in form.getlist("files") if not isinstance(u, str)]
+    if len(uploads) > mp.MAX_FILES:
+        raise _err(413, "too_many_files", limit=mp.MAX_FILES)
+    files: list[tuple[str, bytes]] = []
+    total = 0
+    for upload in uploads:
+        data = await upload.read(mp.MAX_FILE_BYTES + 1)
+        if len(data) > mp.MAX_FILE_BYTES:
+            raise _err(413, "file_too_large", file=upload.filename, limit=mp.MAX_FILE_BYTES)
+        total += len(data)
+        if total > mp.MAX_TOTAL_BYTES:
+            raise _err(413, "upload_too_large", limit=mp.MAX_TOTAL_BYTES)
+        files.append((upload.filename or "upload.eml", data))
+    text = form.get("text") or ""
+    if not isinstance(text, str):
+        raise _err(422, "bad_text")
+    if len(text.encode("utf-8")) > mp.MAX_TEXT_BYTES:
+        raise _err(413, "text_too_large", limit=mp.MAX_TEXT_BYTES)
+    if not files and not text.strip():
+        raise _err(422, "nothing_to_parse")
+    raw = form.get("assignments")
+    return files, text, raw if isinstance(raw, str) else None
+
+
+@router.post("/manual-update/macropoint/preview", response_model=MacroPointPreviewOut)
+async def macropoint_preview(
+    request: Request,
+    db: DbSession,
+    actor: AuthContext = require_permission("trucks", "change"),
+) -> dict:
+    """Parse MacroPoint emails and show what applying would do. Writes nothing."""
+    files, text, _ = await _macropoint_inputs(request)
+    return await mp.build_preview(db, files, text)
 
 
 # ── bulk import ────────────────────────────────────────────────────
