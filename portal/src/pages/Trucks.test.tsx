@@ -9,7 +9,7 @@
 
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { TruckItem, TruckMapPoint, UiPreferences } from '../lib/api';
@@ -26,10 +26,11 @@ vi.mock('react-leaflet', () => ({
   useMap: () => ({ fitBounds: vi.fn() }),
 }));
 
-const auth = vi.hoisted(() => ({ can: (_r: string, _a?: string): boolean => true }));
+const auth = vi.hoisted(() => ({ can: (_r: string, _a?: string): boolean => true, maxRank: 100 }));
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     can: auth.can,
+    maxRank: auth.maxRank,
     godMode: false,
     preferences: {
       accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default', motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default', list_view: 'expanded',
@@ -97,6 +98,7 @@ function renderPage() {
 
 beforeEach(() => {
   auth.can = () => true;
+  auth.maxRank = 100;
   api.listTrucks.mockResolvedValue(TRUCKS);
   api.getTrucksMap.mockImplementation(async () => TRUCKS.map(point));
   api.archiveTruck.mockResolvedValue(undefined);
@@ -163,4 +165,45 @@ it('changing the refresh option re-fetches on that cadence', async () => {
 
   await act(() => vi.advanceTimersByTimeAsync(15_000));
   expect(api.listTrucks.mock.calls.length).toBe(before + 2);
+});
+
+it('Actions menu offers Bulk import (to /bulk/trucks) and a disabled Manual update', async () => {
+  const user = userEvent.setup();
+  render(
+    <MemoryRouter initialEntries={['/logistics/trucks']}>
+      <Routes>
+        <Route path="/logistics/trucks" element={<Trucks />} />
+        <Route path="/bulk/trucks" element={<div>Bulk trucks page</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  await screen.findByText('Truck One');
+  expect(screen.queryByRole('button', { name: /bulk import/i })).toBeNull();
+
+  await user.click(screen.getByRole('button', { name: /^actions/i }));
+  const manual = screen.getByRole('menuitem', { name: 'Manual update' }) as HTMLButtonElement;
+  expect(manual.disabled).toBe(true);
+
+  await user.click(screen.getByRole('menuitem', { name: 'Bulk import' }));
+  expect(await screen.findByText('Bulk trucks page')).not.toBeNull();
+});
+
+it('below admin rank the Actions menu has only Manual update', async () => {
+  auth.maxRank = 40;
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findByText('Truck One');
+
+  await user.click(screen.getByRole('button', { name: /^actions/i }));
+  expect(screen.getByRole('menuitem', { name: 'Manual update' })).not.toBeNull();
+  expect(screen.queryByRole('menuitem', { name: 'Bulk import' })).toBeNull();
+});
+
+it('without change or bulk rights there is no Actions menu', async () => {
+  auth.can = (_r, a) => a === 'view';
+  auth.maxRank = 40;
+  renderPage();
+  await screen.findByText('Truck One');
+
+  expect(screen.queryByRole('button', { name: /^actions/i })).toBeNull();
 });
