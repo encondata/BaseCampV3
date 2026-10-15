@@ -717,7 +717,8 @@ function AddPersonModal({ onClose, onCreated }: {
   onClose: () => void;
   onCreated: (created: { person_id: string; login_email: string | null }) => void;
 }) {
-  const { maxRank, passwordMinLength } = useAuth();
+  const { maxRank, passwordMinLength, can } = useAuth();
+  const canViewAccess = can('access', 'view');
   const [form, setForm] = useState(() => ({
     first_name: '', last_name: '', preferred_name: '', contact_email: '',
     phone: '', job_title: '', login_email: '',
@@ -729,6 +730,10 @@ function AddPersonModal({ onClose, onCreated }: {
 
   useEffect(() => {
     let cancelled = false;
+    // the role list comes from Access control; without access to it, the
+    // person is added with no roles rather than a hidden default
+    const noRoles = () => { if (!cancelled) { setRoles(new Set()); setRolesError(true); } };
+    if (!canViewAccess) { noRoles(); return () => { cancelled = true; }; }
     void getAccessSummary()
       .then((summary) => {
         if (cancelled) return;
@@ -737,9 +742,9 @@ function AddPersonModal({ onClose, onCreated }: {
         // keep the default pick only if it's actually on offer
         setRoles((prev) => new Set([...prev].filter((r) => offered.some((o) => o.name === r))));
       })
-      .catch(() => { if (!cancelled) setRolesError(true); });
+      .catch(noRoles);
     return () => { cancelled = true; };
-  }, [maxRank]);
+  }, [maxRank, canViewAccess]);
   const [createAccount, setCreateAccount] = useState(true);
   const [mustChange, setMustChange] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -821,7 +826,7 @@ function AddPersonModal({ onClose, onCreated }: {
             <div className="modal-section">Roles</div>
             {rolesError && (
               <p className="set-note" style={{ padding: 0, margin: 0 }}>
-                Couldn&apos;t load the role list — you can add roles later from Manage roles.
+                Couldn&apos;t load the role list — this person will be added with no roles.
               </p>
             )}
             {!rolesError && !roleChoices && (
@@ -880,7 +885,7 @@ function AddPersonModal({ onClose, onCreated }: {
             </div>
           </div>
           <div className="modal-foot">
-            <button className="btn-solid" type="submit" disabled={saving}>
+            <button className="btn-solid" type="submit" disabled={saving || (!roleChoices && !rolesError)}>
               {saving ? 'Creating…' : 'Create person'}
             </button>
             <button className="mini-btn" type="button" onClick={onClose} disabled={saving}>

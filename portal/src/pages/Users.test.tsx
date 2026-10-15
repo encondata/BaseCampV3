@@ -270,3 +270,29 @@ it('Add person: a server password_too_short names its minimum', async () => {
   fireEvent.click(within(modal).getByRole('button', { name: 'Create person' }));
   expect(await within(modal).findByText('Temporary passwords need at least 20 characters.')).toBeTruthy();
 });
+
+it('Add person: when the role list fails, nothing is sent behind the scenes — no hidden default role', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.endsWith('/access/summary')) return new Response('{}', { status: 403 });
+    if (u.endsWith('/users') && init?.method === 'POST') {
+      return new Response(JSON.stringify({ person_id: 'p8', login_email: null }), { status: 201 });
+    }
+    return new Response(JSON.stringify([ROW]), { status: 200 });
+  }));
+  renderUsers();
+  await screen.findByText('Wan Worker');
+  fireEvent.click(screen.getByRole('button', { name: '+ Add person' }));
+  const modal = document.querySelector('.modal-card') as HTMLElement;
+  expect(await within(modal).findByText(
+    "Couldn't load the role list — this person will be added with no roles.")).toBeTruthy();
+  const inputs = modal.querySelectorAll<HTMLInputElement>('.pf-form input');
+  fireEvent.change(inputs[0], { target: { value: 'New' } });
+  fireEvent.change(inputs[1], { target: { value: 'Person' } });
+  fireEvent.click(accountBox(modal));
+  fireEvent.click(within(modal).getByRole('button', { name: 'Create person' }));
+  await waitFor(() => expect(document.querySelector('.modal-card')).toBeNull());
+  const post = vi.mocked(fetch).mock.calls.find(([url, init]) =>
+    String(url).endsWith('/users') && (init as RequestInit | undefined)?.method === 'POST');
+  expect(JSON.parse(String((post![1] as RequestInit).body)).roles).toEqual([]);
+});
