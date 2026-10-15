@@ -2038,6 +2038,10 @@ export interface AssetItem {
   location_detail: string; status: string; status_label: string;
   status_color: string; has_rails: boolean | null;
   last_seen_at: string | null; archived_at: string | null; created_at: string;
+  /** Where the asset is now: the container it sits in and, when that container
+   *  is on a truck, the truck. All null/absent when it is in neither. */
+  container_id?: string | null; container_name?: string | null;
+  truck_id?: string | null; truck_name?: string | null;
 }
 
 export interface AssetModelItem {
@@ -2754,6 +2758,10 @@ export interface AssetRef {
   status_label: string;
   status_color: string;
   location_detail: string;
+  /** Where the asset is now: the container it sits in and, when that container
+   *  is on a truck, the truck. All null/absent when it is in neither. */
+  container_id?: string | null; container_name?: string | null;
+  truck_id?: string | null; truck_name?: string | null;
 }
 
 export interface StockLine {
@@ -3253,6 +3261,10 @@ export interface InitiativeAssetSummary {
   model_category: string | null; model_category_label: string | null;
   model_category_color: string | null;
   status: string; status_label: string; status_color: string;
+  /** Where the asset is now: the container it sits in and, when that container
+   *  is on a truck, the truck. All null/absent when it is in neither. */
+  container_id?: string | null; container_name?: string | null;
+  truck_id?: string | null; truck_name?: string | null;
 }
 
 /** One asset's join row on a move — mirrors the API's InitiativeAssetOut

@@ -11,6 +11,7 @@ import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import AssetEditModal from '../components/assets/AssetEditModal';
+import AssetLocation from '../components/assets/AssetLocation';
 import GodDeleteButton from '../components/GodDeleteButton';
 import { RowActionsMenu, type RowAction } from '../components/hardware/RowActionsMenu';
 import NotesFilesPanel from '../components/NotesFilesPanel';
@@ -30,7 +31,7 @@ import {
 } from '../lib/api';
 import {
   ASSET_ERRORS, ASSET_GOD_FIELDS, assetCellText, assetSearchText, duplicateSerials,
-  identityFirst, migrateIdentityColumns,
+  identityFirst, migrateIdentityColumns, placementText,
 } from '../lib/assets';
 import { initialOpenId } from '../lib/auditFormat';
 import {
@@ -116,7 +117,7 @@ function sortValueFor(a: AssetItem, key: string): string {
     case 'site': return (a.site_name ?? '').toLowerCase();
     case 'status': return a.status_label.toLowerCase();
     case 'ru': return String(a.model?.ru_size ?? 0);
-    case 'location': return a.location_detail.toLowerCase();
+    case 'location': return placementText(a).toLowerCase();
     case 'rfid': return (a.rfid_tag ?? '').toLowerCase();
     case 'pod': return (a.pod_number ?? '').toLowerCase();
     case 'last_seen': return a.last_seen_at ?? '';
@@ -136,7 +137,7 @@ const CSV_COLUMNS: [string, (a: AssetItem) => string][] = [
   ['Category', (a) => a.model?.category_label ?? ''],
   ['Client', (a) => a.client_name ?? ''],
   ['Site', (a) => a.site_name ?? ''],
-  ['Location', (a) => a.location_detail],
+  ['Location', (a) => placementText(a)],
   ['Pod #', (a) => a.pod_number ?? ''],
   ['Status', (a) => a.status_label],
   ['RFID', (a) => a.rfid_tag ?? ''],
@@ -422,8 +423,7 @@ export default function Assets() {
         return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
       }
       case 'location': {
-        const text = a.location_detail || '—';
-        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+        return <AssetLocation asset={a} className="cell-top cell-line" />;
       }
       case 'rfid':
         return <span className="mono cell-line" title={a.rfid_tag ?? undefined}>{displayRfid(a.rfid_tag)}</span>;
@@ -624,7 +624,7 @@ function AssetRowDetail({
         <dl className="kv">
           <dt>Client</dt><dd>{asset.client_name ?? 'House'}</dd>
           <dt>Site</dt><dd>{asset.site_name ?? '—'}</dd>
-          <dt>Location</dt><dd>{asset.location_detail || '—'}</dd>
+          <dt>Location</dt><dd><AssetLocation asset={asset} /></dd>
           <dt>Last seen</dt>
           <dd>{asset.last_seen_at ? new Date(asset.last_seen_at).toLocaleString() : '—'}</dd>
         </dl>

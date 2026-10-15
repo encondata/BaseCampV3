@@ -225,3 +225,58 @@ it('Assets list: column floors, shared template + minimum, sideways-scroll card'
   expect(row.style.minWidth).toBe(head.style.minWidth);
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });
+
+const PLACED: AssetItem = {
+  ...ASSETS[0], location_detail: 'Bay 3',
+  container_id: 'c1', container_name: 'ATL1-W1M-DC-01', truck_id: 't1', truck_name: 'ATL1-T01 (Wave 1)',
+};
+const PLACED_TEXT = 'ATL1-W1M-DC-01 · on ATL1-T01 (Wave 1)';
+const showLocation = () => {
+  auth.listPrefs = { assets: { visible: ['primary', 'location'], order: [], sortKey: 'primary', sortDir: 1 } };
+};
+
+it('the Location cell links to the container and truck without opening the row', async () => {
+  showLocation();
+  api.listAssets.mockResolvedValue([PLACED]);
+  mount();
+  const row = (await screen.findByText('SN-ALPHA')).closest('.dir-row') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  const c = within(main).getByRole('link', { name: 'ATL1-W1M-DC-01' });
+  const t = within(main).getByRole('link', { name: 'ATL1-T01 (Wave 1)' });
+  expect(c.getAttribute('href')).toBe('/logistics/containers?open=c1');
+  expect(t.getAttribute('href')).toBe('/logistics/trucks/t1');
+  expect(c.closest('.cell-top.cell-line')?.getAttribute('title')).toBe(PLACED_TEXT);
+  fireEvent.click(c);
+  expect(row.classList.contains('open')).toBe(false);
+});
+
+it('the expanded row shows the same Location links', async () => {
+  showLocation();
+  api.listAssets.mockResolvedValue([PLACED]);
+  mount();
+  const row = (await screen.findByText('SN-ALPHA')).closest('.dir-row') as HTMLElement;
+  fireEvent.click(row.querySelector('.row-main') as HTMLElement);
+  await waitFor(() => expect(row.classList.contains('open')).toBe(true));
+  const dd = Array.from(row.querySelectorAll('dt')).find((d) => d.textContent === 'Location')!
+    .nextElementSibling as HTMLElement;
+  expect(within(dd).getByRole('link', { name: 'ATL1-W1M-DC-01' }).getAttribute('href'))
+    .toBe('/logistics/containers?open=c1');
+  expect(within(dd).getByRole('link', { name: 'ATL1-T01 (Wave 1)' }).getAttribute('href'))
+    .toBe('/logistics/trucks/t1');
+});
+
+it('search and sort use the shown placement text', async () => {
+  showLocation();
+  auth.listPrefs = { assets: { visible: ['primary', 'location'], order: [], sortKey: 'location', sortDir: 1 } };
+  const other: AssetItem = { ...ASSETS[0], id: 'a2', serial_number: 'SN-BETA', location_detail: 'Bay 1' };
+  api.listAssets.mockResolvedValue([other, PLACED]);
+  mount();
+  await screen.findByText('SN-ALPHA');
+  const serials = () => Array.from(document.querySelectorAll('.dir-row .cell-primary'))
+    .map((c) => c.textContent);
+  // 'ATL1-…' sorts before 'Bay 1' by the placement text (by the raw 'Bay 3' vs 'Bay 1' it would not).
+  expect(serials()[0]).toContain('SN-ALPHA');
+  await userEvent.type(screen.getByPlaceholderText('Filter this list…'), 'wave 1');
+  await waitFor(() => expect(screen.queryByText('SN-BETA')).toBeNull());
+  expect(screen.queryByText('SN-ALPHA')).not.toBeNull();
+});

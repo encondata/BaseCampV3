@@ -15,6 +15,7 @@ import {
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
+import AssetLocation from '../components/assets/AssetLocation';
 import CollapsePanel from '../components/CollapsePanel';
 import ComboBox, { type ComboOption } from '../components/ComboBox';
 import AssetEditDialog from '../components/initiatives/AssetEditDialog';
@@ -656,6 +657,7 @@ export default function InitiativeDetail() {
         );
       }
     }
+    if (key === 'location') return <AssetLocation asset={a.asset} className="cell-top cell-line" />;
     const text = moveAssetCellText(a, key);
     return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
   };

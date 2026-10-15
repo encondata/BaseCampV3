@@ -15,6 +15,7 @@ import { useAuth } from '../auth/AuthContext';
 import ComboBox from '../components/ComboBox';
 import ContainerEditModal from '../components/containers/ContainerEditModal';
 import AssetEditModal from '../components/assets/AssetEditModal';
+import AssetLocation from '../components/assets/AssetLocation';
 import StockLineModal from '../components/warehouse/StockLineModal';
 import StockMoveModal from '../components/warehouse/StockMoveModal';
 import { RowActionsMenu, type RowAction } from '../components/hardware/RowActionsMenu';
@@ -373,6 +374,7 @@ export default function Warehouse() {
         return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
       }
       case 'location': {
+        if (r.asset) return <AssetLocation asset={r.asset} className="cell-sub cell-line" />;
         const text = r.location || '—';
         return <span className="cell-sub cell-line" title={titleFor(text)}>{text}</span>;
       }

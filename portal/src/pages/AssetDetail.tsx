@@ -8,6 +8,7 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import AssetEditModal from '../components/assets/AssetEditModal';
+import AssetLocation from '../components/assets/AssetLocation';
 import AssetMoveHistory from '../components/assets/AssetMoveHistory';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import ScanHistoryTable from '../components/scans/ScanHistoryTable';
@@ -145,7 +146,7 @@ export default function AssetDetail() {
               </dd>
               <dt>Client</dt><dd>{asset.client_name ?? 'House'}</dd>
               <dt>Site</dt><dd>{asset.site_name ?? '—'}</dd>
-              <dt>Location</dt><dd>{asset.location_detail || '—'}</dd>
+              <dt>Location</dt><dd><AssetLocation asset={asset} /></dd>
               <dt>Last seen</dt>
               <dd>{asset.last_seen_at ? new Date(asset.last_seen_at).toLocaleString() : '—'}</dd>
               <dt>Created</dt><dd>{new Date(asset.created_at).toLocaleDateString()}</dd>

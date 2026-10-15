@@ -6,7 +6,7 @@
  * refresh cadence are exercised in the browser/manually.
  */
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
@@ -16,6 +16,7 @@ import { LIST_FIT } from '../lib/listTools';
 const auth = vi.hoisted(() => ({
   can: (_resource: string, _action?: string) => true,
 }));
+const mockPrefs = vi.hoisted(() => ({ list_prefs: {} as Record<string, unknown> }));
 
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
@@ -28,7 +29,7 @@ vi.mock('../auth/AuthContext', () => ({
       accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default',
       motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default',
       notif: { sound: 'chime', categories: { approvals: 'email', reports: 'email', wiki: 'email', security: 'email' } },
-      list_prefs: {},
+      list_prefs: mockPrefs.list_prefs,
     } as unknown as UiPreferences,
     updatePreferences: vi.fn(() => Promise.resolve()),
   }),
@@ -147,4 +148,24 @@ it('asset roster: column floors, shared template + minimum, sideways-scroll card
   // LIST_FIT.dashPanel: .dash-panel (dashboard.css: 18px 20px 20px padding,
   // 1px border) takes 42px off the measured 1174px page width.
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.dashPanel);
+});
+
+it('roster Location cell links to the container and truck', async () => {
+  const { MOVE_ASSET_COLUMNS } = await import('../lib/initiatives');
+  mockPrefs.list_prefs = { move_dashboard_assets: {
+    visible: ['asset_name', 'location'], seen: MOVE_ASSET_COLUMNS.map((c) => c.key),
+    order: [], sortKey: 'asset_name', sortDir: 1,
+  } };
+  const a = asset();
+  a.asset = { ...a.asset, container_id: 'c1', container_name: 'ATL1-W1M-DC-01', truck_id: 't1', truck_name: 'ATL1-T01' };
+  api.listInitiatives.mockResolvedValue([move()]);
+  api.listInitiativeAssets.mockResolvedValue([a]);
+  api.listAssetStatuses.mockResolvedValue([]);
+  render(<MemoryRouter><MoveDashboard /></MemoryRouter>);
+  const row = (await screen.findByText('switch-01')).closest('.dir-row') as HTMLElement;
+  expect(within(row).getByRole('link', { name: 'ATL1-W1M-DC-01' }).getAttribute('href'))
+    .toBe('/logistics/containers?open=c1');
+  expect(within(row).getByRole('link', { name: 'ATL1-T01' }).getAttribute('href'))
+    .toBe('/logistics/trucks/t1');
+  mockPrefs.list_prefs = {};
 });

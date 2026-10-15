@@ -3,6 +3,7 @@
  * (the lib/trucks.ts pattern), unit-testable without jsdom.
  */
 import type { AssetRef, StockLine, WarehouseContainer, WarehouseInventory } from './api';
+import { placementText } from './assets';
 import { relativeTime } from './format';
 import { naturalCompare } from './sites';
 
@@ -59,7 +60,7 @@ function assetRow(a: AssetRef): InventoryRow {
     primary, secondary,
     model: a.model_name ?? '',
     qtyText: '1',
-    location: a.location_detail,
+    location: placementText(a),
     status: { key: a.status, label: a.status_label, color: a.status_color },
     updated: null,
     container: null, asset: a, stock: null,

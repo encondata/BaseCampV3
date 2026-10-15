@@ -1165,3 +1165,15 @@ describe('the shared collapsed set', () => {
     expect(() => writeCollapsed(new Set(['a']))).not.toThrow();
   });
 });
+
+describe('moveAssetCellText location placement', () => {
+  it('shows the container and truck, else the location text, else the blank', () => {
+    const placed = assetRow();
+    placed.asset = { ...placed.asset, container_id: 'c1', container_name: 'C1', truck_id: 't1', truck_name: 'T1' };
+    expect(moveAssetCellText(placed, 'location')).toBe('C1 · on T1');
+    expect(moveAssetCellText(assetRow(), 'location')).toBe('Row 3');
+    const blank = assetRow();
+    blank.asset = { ...blank.asset, location_detail: null };
+    expect(moveAssetCellText(blank, 'location')).toBe('—');
+  });
+});
