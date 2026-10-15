@@ -29,11 +29,11 @@ export default function AssetLocation({ asset, className }: {
   }
   return (
     <span className={className} title={text}>
-      <Link to={`/logistics/containers?open=${container_id}`} onClick={stop}>{container_name}</Link>
+      <Link to={`/logistics/containers?open=${container_id}`} className="asset-loc-link" onClick={stop}>{container_name}</Link>
       {truck_id && truck_name && (
         <>
           {' · on '}
-          <Link to={`/logistics/trucks/${truck_id}`} onClick={stop}>{truck_name}</Link>
+          <Link to={`/logistics/trucks/${truck_id}`} className="asset-loc-link" onClick={stop}>{truck_name}</Link>
         </>
       )}
     </span>

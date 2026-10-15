@@ -20,6 +20,8 @@ it('renders the container and truck as links with the right hrefs', () => {
   expect(c.getAttribute('href')).toBe('/logistics/containers?open=c1');
   expect(t.getAttribute('href')).toBe('/logistics/trucks/t1');
   expect(container.textContent).toBe('ATL1-W1M-DC-01 · on ATL1-T01 (Wave 1)');
+  expect(c.classList.contains('asset-loc-link')).toBe(true);
+  expect(t.classList.contains('asset-loc-link')).toBe(true);
 });
 
 it('renders only the container link when there is no truck', () => {

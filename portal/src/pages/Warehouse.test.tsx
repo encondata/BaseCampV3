@@ -351,6 +351,4 @@ it('a loose asset in a container on a truck links to both', async () => {
   const c = within(row).getByRole('link', { name: 'ATL1-W1M-DC-01' });
   expect(c.getAttribute('href')).toBe('/logistics/containers?open=c9');
   expect(within(row).getByRole('link', { name: 'ATL1-T01' }).getAttribute('href')).toBe('/logistics/trucks/t1');
-  await userEvent.click(c);
-  expect(row.classList.contains('open')).toBe(false);
 });

@@ -669,3 +669,8 @@ kbd {
    popover (the truck page's Trail map drew over Edit truck). Guarded by
    styles/leafletStacking.test.ts. */
 .leaflet-container { isolation: isolate; }
+
+/* Container / truck links inside an asset's Location (AssetLocation) — the
+   same in-row link look as .idet-people-list a.cell-top. */
+.asset-loc-link { color: var(--c-blue); text-decoration: none; }
+.asset-loc-link:hover { text-decoration: underline; }
