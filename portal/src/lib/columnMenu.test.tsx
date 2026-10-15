@@ -146,6 +146,25 @@ describe('ColumnMenu', () => {
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
   });
 
+  it('portals into the trigger\'s .portal-shell (themed), else document.body', async () => {
+    const user = userEvent.setup();
+    const props = {
+      colKey: 'site', label: 'Site', allRows: rows, filters: {}, text,
+      filter: undefined, onFilter: vi.fn(), sortDir: null, onSort: vi.fn(),
+    } as const;
+    const { container, unmount } = render(
+      <div className="portal-shell"><ColumnMenu {...props} /></div>,
+    );
+    await user.click(screen.getByRole('button', { name: 'Site column menu' }));
+    expect(document.querySelector('.colmenu-menu')!.parentElement)
+      .toBe(container.querySelector('.portal-shell'));
+    unmount();
+
+    render(<ColumnMenu {...props} />);
+    await user.click(screen.getByRole('button', { name: 'Site column menu' }));
+    expect(document.querySelector('.colmenu-menu')!.parentElement).toBe(document.body);
+  });
+
   it('the trigger carries the filtered class only when a filter is active', () => {
     const { rerender } = render(
       <ColumnMenu colKey="site" label="Site" allRows={rows} filters={{}} text={text}

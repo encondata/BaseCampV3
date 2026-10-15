@@ -17,8 +17,8 @@
  * page's list state never touches another page's entry or any other
  * preference field.
  *
- * The open menu is portaled to `document.body` (fixed position from the
- * trigger's rect) so a scrolling list card cannot clip it; see
+ * The open menu is portaled to the trigger's `.portal-shell` (else `document.body`;
+ * fixed position from the trigger's rect) so a scrolling list card cannot clip it; see
  * RowActionsMenu for the same pattern.
  */
 
@@ -130,7 +130,7 @@ export function ColumnMenu<T>({
   // to yet.
   const [typed, setTyped] = useState(filter?.text ?? '');
   const [localValues, setLocalValues] = useState(filter?.values);
-  const { triggerRef: ref, menuRef, pos } = usePortaledMenu(
+  const { triggerRef: ref, menuRef, pos, host } = usePortaledMenu(
     open, () => setOpen(false), { width: MENU_MIN_WIDTH, height: MENU_MAX_HEIGHT });
 
   // Escape closes the menu, matching RowActionsMenu.
@@ -215,7 +215,7 @@ export function ColumnMenu<T>({
           <path d="M3 5h18l-7 8.5V19l-4 2v-7.5L3 5z" />
         </svg>
       </button>
-      {open && pos && createPortal(
+      {open && pos && host && createPortal(
         <div className="pop-menu colmenu-menu colmenu-portaled" ref={menuRef}
              style={{
                top: pos.top, left: pos.left, right: pos.right, bottom: pos.bottom,
@@ -259,7 +259,7 @@ export function ColumnMenu<T>({
             </button>
           </div>
         </div>,
-        document.body,
+        host,
       )}
     </div>
   );

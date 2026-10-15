@@ -449,8 +449,7 @@ export function activeFilterCount(filters: ColumnFilters): number {
 
 /* ── portaled popover placement ─────────────────────────────────────
  * Shared by ColumnMenu (lib/columnMenu.tsx) and ColumnsButton: the open
- * menu is portaled to document.body with fixed coordinates taken from its
- * trigger, so a scrolling or overflow-hidden list card / row expansion
+ * menu is portaled with fixed coordinates taken from its trigger, so a scrolling or overflow-hidden list card / row expansion
  * cannot clip it. Below the trigger, right-aligned to it (left-aligned
  * when that would push it past the viewport's left edge); flipped upward
  * when the space below cannot hold `height` and there is more room above.
@@ -464,6 +463,12 @@ export interface MenuPos {
 }
 const MENU_GAP = 8;
 
+/** Portal host: the trigger's `.portal-shell` (the theme tokens — --surface,
+ *  --paper-line, --accent… — are defined there, so a body-level menu would
+ *  render unthemed; see components/useMenuPlacement.ts), else document.body. */
+const portalHost = (el: HTMLElement | null): HTMLElement =>
+  (el?.closest('.portal-shell') as HTMLElement | null) ?? document.body;
+
 export function usePortaledMenu(
   open: boolean, onClose: () => void,
   { width, height }: { width: number; height: number },
@@ -473,6 +478,8 @@ export function usePortaledMenu(
   /** Attach to the portaled menu element. */
   const menuRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<MenuPos | null>(null);
+  /** Where to `createPortal` the menu; resolved each time it opens. */
+  const [host, setHost] = useState<HTMLElement | null>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
 
@@ -488,7 +495,8 @@ export function usePortaledMenu(
   }, [open]);
 
   useEffect(() => {
-    if (!open) { setPos(null); return; }
+    if (!open) { setPos(null); setHost(null); return; }
+    setHost(portalHost(triggerRef.current));
     const place = () => {
       const el = triggerRef.current;
       if (!el) return;
@@ -523,7 +531,7 @@ export function usePortaledMenu(
     };
   }, [open, width, height]);
 
-  return { triggerRef, menuRef, pos };
+  return { triggerRef, menuRef, pos, host };
 }
 
 /** chrome.css .pop-menu min-width, and a worst-case height for the full
@@ -543,7 +551,7 @@ export function ColumnsButton({ columns, visible, onChange, godMode, onReorder }
   onReorder?: (next: string[]) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const { triggerRef: ref, menuRef, pos } = usePortaledMenu(
+  const { triggerRef: ref, menuRef, pos, host } = usePortaledMenu(
     open, () => setOpen(false), { width: COLUMNS_MENU_WIDTH, height: COLUMNS_MENU_HEIGHT });
   const { dragProps, dropClass } = useReorderDrag(
     (src, dst, before) => onReorder?.(moveKey(columns.map((c) => c.key), src, dst, before)),
@@ -565,7 +573,7 @@ export function ColumnsButton({ columns, visible, onChange, godMode, onReorder }
              strokeLinecap="round"><path d="M9 3v18M15 3v18M3 5.5h18M3 5.5v13a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-13a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2Z" /></svg>
         Columns
       </button>
-      {open && pos && createPortal(
+      {open && pos && host && createPortal(
         <div className="pop-menu colmenu-portaled" ref={menuRef}
              style={{
                top: pos.top, left: pos.left, right: pos.right, bottom: pos.bottom,
@@ -594,7 +602,7 @@ export function ColumnsButton({ columns, visible, onChange, godMode, onReorder }
             );
           })}
         </div>,
-        document.body,
+        host,
       )}
     </div>
   );

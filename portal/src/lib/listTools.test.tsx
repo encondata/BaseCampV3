@@ -249,11 +249,12 @@ describe('ColumnsButton reorder', () => {
 
   it('still toggles visibility on click, and shows no grip without onReorder', () => {
     const onChange = vi.fn();
-    const { container } = render(
+    render(
       <ColumnsButton columns={BTN_COLS} visible={new Set(['a'])} onChange={onChange} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Columns' }));
-    expect(container.querySelector('.pop-grip')).toBeNull();
+    expect(document.querySelector('.pop-menu')).not.toBeNull();
+    expect(document.querySelector('.pop-grip')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'b' }));
     expect(onChange).toHaveBeenCalledWith(new Set(['a', 'b']));
   });
@@ -275,6 +276,17 @@ describe('ColumnsButton portaled menu', () => {
     expect(menu.parentElement).toBe(document.body);
     expect(menu.classList.contains('colmenu-portaled')).toBe(true);
     expect(menu.style.maxHeight).not.toBe('');
+  });
+
+  it('portals into the trigger\'s .portal-shell so the theme tokens apply', () => {
+    const { container } = render(
+      <div className="portal-shell">
+        <ColumnsButton columns={BTN_COLS} visible={new Set(['a'])} onChange={vi.fn()} />
+      </div>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Columns' }));
+    const menu = document.querySelector('.pop-menu') as HTMLElement;
+    expect(menu.parentElement).toBe(container.querySelector('.portal-shell'));
   });
 
   it('closes on an outside mousedown but not on one inside the menu', () => {
