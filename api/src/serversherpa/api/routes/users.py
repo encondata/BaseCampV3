@@ -581,12 +581,17 @@ async def create_account(
     return {"status": "created"}
 
 
-def _require_mailable(person: Person) -> None:
-    """Invite and reset-link emails only go to real, live people. A move's
-    hidden kiosk identity is not listed under /users, so it is not found
-    here either; an archived person's token would never validate."""
+def _refuse_kiosk_identity(person: Person) -> None:
+    """A move's hidden kiosk identity is not listed under /users, so no
+    account action finds it."""
     if person.source == KIOSK_MOVE_SOURCE:
         raise _err(404, "user_not_found")
+
+
+def _require_mailable(person: Person) -> None:
+    """Invite and reset-link emails only go to real, live people. An
+    archived person's token would never validate."""
+    _refuse_kiosk_identity(person)
     if person.archived_at is not None:
         raise _err(422, "person_archived")
 
@@ -599,7 +604,8 @@ async def reset_password(
     actor: AuthContext = require_permission("users", "change"),
 ) -> None:
     require_password_length(body.temp_password)
-    _, account, _ = await _load_target(db, actor, person_id)
+    person, account, _ = await _load_target(db, actor, person_id)
+    _refuse_kiosk_identity(person)
     try:
         await raise_if_reused(db, account, body.temp_password)
     except HTTPException:

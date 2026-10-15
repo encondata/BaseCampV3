@@ -12,6 +12,9 @@ vi.mock('../../lib/systemStatusContext', () => ({
   useSystemStatus: () => ({ status: { email_enabled: sys.email_enabled }, refresh: () => {} }),
 }));
 
+const toast = vi.hoisted(() => vi.fn());
+vi.mock('../../lib/notificationsContext', () => ({ useToast: () => toast }));
+
 const api = vi.hoisted(() => ({ adminCreateAccountRequest: vi.fn(async () => {}) }));
 vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()), ...api,
@@ -109,4 +112,42 @@ it('email on: mail_not_configured from the server is explained', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Create account' }));
   expect(await screen.findByText(
     "Email isn't set up, so an invite can't be sent. Set a temporary password instead.")).toBeTruthy();
+});
+
+it('email on: an invite confirms with a toast naming the login email', async () => {
+  sys.email_enabled = true;
+  const onDone = vi.fn();
+  render(<GrantAccessModal person={PERSON} onClose={() => {}} onDone={onDone} />);
+  fireEvent.change(screen.getByLabelText('Login email *'), { target: { value: ' login@x.test ' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Create account' }));
+  await waitFor(() => expect(onDone).toHaveBeenCalled());
+  expect(toast).toHaveBeenCalledWith('Invite sent to login@x.test.');
+});
+
+it('the temporary-password path shows no invite toast', async () => {
+  sys.email_enabled = true;
+  const onDone = vi.fn();
+  render(<GrantAccessModal person={PERSON} onClose={() => {}} onDone={onDone} />);
+  fireEvent.click(choice('Set a temporary password'));
+  fireEvent.click(screen.getByRole('button', { name: 'Create account' }));
+  await waitFor(() => expect(onDone).toHaveBeenCalled());
+  expect(toast).not.toHaveBeenCalled();
+});
+
+it('a failed invite shows no toast', async () => {
+  sys.email_enabled = true;
+  api.adminCreateAccountRequest.mockRejectedValueOnce(new ApiError(409, 'account_exists'));
+  render(<GrantAccessModal person={PERSON} onClose={() => {}} onDone={() => {}} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Create account' }));
+  await screen.findByText('This person already has a login account.');
+  expect(toast).not.toHaveBeenCalled();
+});
+
+it('the title uses the preferred display name, falling back to first last', () => {
+  const { unmount } = render(
+    <GrantAccessModal person={{ ...PERSON, display_name: 'Annie Ext' }} onClose={() => {}} onDone={() => {}} />);
+  expect(screen.getByRole('heading', { name: 'Grant portal access — Annie Ext' })).toBeTruthy();
+  unmount();
+  render(<GrantAccessModal person={{ ...PERSON, display_name: null }} onClose={() => {}} onDone={() => {}} />);
+  expect(screen.getByRole('heading', { name: 'Grant portal access — Ana Ext' })).toBeTruthy();
 });

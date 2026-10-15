@@ -28,15 +28,17 @@ async def _mk_person(db, first="Carl", last="Contact", email=None):
     return person
 
 
-async def _mk_login_person(db, first, last, email, *, disabled=False):
+async def _mk_login_person(db, first, last, email, *, disabled=False,
+                           invited=False):
     person = Person(first_name=first, last_name=last, email=email)
     db.add(person)
     await db.flush()
     db.add(UserAccount(
         person_id=person.id, email=email,
-        password_hash=hash_password(
+        # an invited account has never had a password
+        password_hash=None if invited else hash_password(
             PW, pepper=get_settings().password_pepper.get_secret_value()),
-        password_updated_at=datetime.now(UTC),
+        password_updated_at=None if invited else datetime.now(UTC),
         disabled_at=datetime.now(UTC) if disabled else None,
     ))
     await db.commit()
@@ -128,6 +130,26 @@ async def test_external_login_status_variants(client, seeded_user, db):
     assert has_login_by_name["No Login"] is False
     assert has_login_by_name["Active Login"] is True
     assert has_login_by_name["Disabled Login"] is True
+
+
+async def test_external_invited_login_status(client, seeded_user, db):
+    """No password and not disabled reads "invited"; disabled wins."""
+    headers = await _headers(client)
+    org = (await client.post("/clients", headers=headers,
+                             json={"name": "Acme"})).json()
+    invited = await _mk_login_person(
+        db, "Invited", "Login", "invited@acme.example.com", invited=True)
+    both = await _mk_login_person(
+        db, "Both", "Login", "both@acme.example.com", invited=True, disabled=True)
+    for p in (invited, both):
+        assert (await client.post(f"/clients/{org['id']}/contacts",
+                                  headers=headers,
+                                  json={"person_id": str(p.id)})).status_code == 201
+    rows = {r["display_name"]: r
+            for r in (await client.get("/external", headers=headers)).json()["people"]}
+    assert rows["Invited Login"]["login_status"] == "invited"
+    assert rows["Invited Login"]["has_login"] is True
+    assert rows["Both Login"]["login_status"] == "disabled"
 
 
 async def test_external_includes_external_role_holders_with_no_org_link(

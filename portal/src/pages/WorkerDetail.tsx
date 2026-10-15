@@ -217,7 +217,8 @@ export default function WorkerDetailPage() {
       {grantOpen && (
         <GrantAccessModal
           person={{ person_id: worker.person_id, first_name: worker.first_name,
-                    last_name: worker.last_name, email: worker.contact_email }}
+                    last_name: worker.last_name, email: worker.contact_email,
+                    display_name: worker.display_name }}
           onClose={() => setGrantOpen(false)}
           onDone={() => { setGrantOpen(false); void load(); }}
         />

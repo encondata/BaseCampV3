@@ -1087,7 +1087,7 @@ export interface ExternalPersonItem {
   phone: string | null;
   avatar_url: string | null;
   has_login: boolean;
-  login_status: 'none' | 'active' | 'disabled';
+  login_status: 'none' | 'active' | 'invited' | 'disabled';
   links: ExternalLinkItem[];
 }
 

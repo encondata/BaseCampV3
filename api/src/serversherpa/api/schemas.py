@@ -776,7 +776,7 @@ class ExternalPersonItem(BaseModel):
     phone: str | None
     avatar_url: str | None
     has_login: bool
-    login_status: Literal["none", "active", "disabled"]
+    login_status: Literal["none", "active", "invited", "disabled"]
     links: list[ExternalLinkItem]
 
 

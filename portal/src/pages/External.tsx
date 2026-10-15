@@ -84,6 +84,7 @@ interface OrgRef { id: string; name: string; kind: OrgKind }
 const PILLS = [
   { key: 'all', label: 'All' },
   { key: 'active', label: 'Active login' },
+  { key: 'invited', label: 'Invited login' },
   { key: 'disabled', label: 'Disabled login' },
   { key: 'none', label: 'No login' },
 ];

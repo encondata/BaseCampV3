@@ -400,6 +400,22 @@ async def test_kiosk_move_identity_not_found(client, db, seeded_user, email_on, 
     assert await _outbox(db, "password_reset") == []
 
 
+async def test_kiosk_move_identity_reset_password_not_found(client, db, seeded_user):
+    """The temporary-password reset follows the same rule as the mail
+    endpoints: a move's hidden kiosk identity is not found."""
+    kiosk = await _add_user(db, first="Kiosk", last="Move",
+                            email="kiosk-move2@test.example.com", role="worker")
+    kid = kiosk.id
+    kiosk.source = KIOSK_MOVE_SOURCE
+    await db.commit()
+    headers = {"Authorization": f"Bearer {await _token(client)}"}
+    resp = await client.post(f"/users/{kid}/reset-password", headers=headers,
+                             json={"temp_password": "NewTempPass-123456",
+                                   "must_change_password": True})
+    assert resp.status_code == 404 and resp.json()["detail"]["code"] == "user_not_found"
+    assert await _audit(db, kid, "password.reset") == []
+
+
 async def test_invite_token_dies_when_admin_sets_temp_password(client, db, seeded_user, email_on):
     headers, body = await _invite_new(client, db, seeded_user)
     (row,) = await _outbox(db, "user_invite")

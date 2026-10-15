@@ -353,6 +353,23 @@ it('Add person, email on: invite is the default and the body has invite: true, n
   });
 });
 
+it('Add person, email on: a blank login email with invite chosen shows the guard and posts nothing', async () => {
+  sys.email_enabled = true;
+  stubFetch(() => new Response(JSON.stringify({ person_id: 'p7', login_email: null }), { status: 201 }));
+  const modal = await openAdd();
+  const inputs = modal.querySelectorAll<HTMLInputElement>('.pf-form input');
+  fireEvent.change(inputs[0], { target: { value: 'New' } });
+  fireEvent.change(inputs[1], { target: { value: 'Person' } });
+  const login = within(modal).getByText('Login email *').parentElement!.querySelector('input')!;
+  expect(login.value).toBe('');
+  // bypass the browser's own required check to reach the dialog's guard
+  fireEvent.submit(login.closest('form')!);
+  expect(await within(modal).findByText('A login email is required to send an invite.')).toBeTruthy();
+  const posted = vi.mocked(fetch).mock.calls.some(([url, init]) =>
+    String(url).endsWith('/users') && (init as RequestInit | undefined)?.method === 'POST');
+  expect(posted).toBe(false);
+});
+
 it('Add person, email on: "Set a temporary password" shows the fields and sends temp_password', async () => {
   sys.email_enabled = true;
   stubFetch(() => new Response(JSON.stringify({ person_id: 'p7', login_email: 'new@x.test' }), { status: 201 }));

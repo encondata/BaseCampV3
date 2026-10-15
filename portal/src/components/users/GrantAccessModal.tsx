@@ -8,6 +8,7 @@ import { useState, type FormEvent } from 'react';
 import { useAuth } from '../../auth/AuthContext';
 import { adminCreateAccountRequest, ApiError } from '../../lib/api';
 import { generateTempPassword } from '../../lib/format';
+import { useToast } from '../../lib/notificationsContext';
 import { useSystemStatus } from '../../lib/systemStatusContext';
 import { tempPasswordLength, tempPasswordTooShort } from '../../lib/users';
 import { INVITE_OPTIONS, SignInChoice } from './SignInChoice';
@@ -29,6 +30,9 @@ export interface GrantAccessPerson {
   first_name: string;
   last_name: string;
   email: string | null;
+  /** The preferred-name form the page already shows; the title falls back
+   *  to "first last" without it. */
+  display_name?: string | null;
 }
 
 export function GrantAccessModal({ person, onClose, onDone }: {
@@ -38,6 +42,7 @@ export function GrantAccessModal({ person, onClose, onDone }: {
 }) {
   const { passwordMinLength } = useAuth();
   const { status: system } = useSystemStatus();
+  const toast = useToast();
   const emailOn = !!system.email_enabled;
   // unpicked follows the default (invite when email is on), so a status
   // that arrives after the dialog opens still lands on the right choice
@@ -45,7 +50,8 @@ export function GrantAccessModal({ person, onClose, onDone }: {
   const signIn = picked ?? (emailOn ? 'invite' : 'password');
   // the choice is hidden without email, so 'invite' can never be sent then
   const inviting = emailOn && signIn === 'invite';
-  const name = `${person.first_name} ${person.last_name}`.trim();
+  const name = person.display_name?.trim()
+    || `${person.first_name} ${person.last_name}`.trim();
   const [loginEmail, setLoginEmail] = useState(person.email ?? '');
   const [tempPassword, setTempPassword] = useState(
     () => generateTempPassword(tempPasswordLength(passwordMinLength)));
@@ -69,6 +75,7 @@ export function GrantAccessModal({ person, onClose, onDone }: {
             invite: true }
         : { login_email: loginEmail.trim(), temp_password: tempPassword,
             must_change_password: mustChange });
+      if (inviting) toast(`Invite sent to ${loginEmail.trim()}.`);
       onDone();
     } catch (err) {
       setError(!(err instanceof ApiError)
