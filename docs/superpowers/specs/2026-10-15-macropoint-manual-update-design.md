@@ -75,8 +75,15 @@ Observed variants the parser must handle:
 - IDs contain `&`, `/`, `#`, hyphens and a trailing ` -`; whitespace
   around values and inside Notes is heavy and irregular.
 - The "View All Updates" link carries `…OrderSetup.aspx?Mode=CreateWithQuery&Data=<token>`.
-  Across all 30 loads in the samples, every ID Number had exactly one token,
-  shared by its Location and Trip Event emails. This is the **order token**.
+  Across the Landstar loads in the samples, every ID Number had exactly one
+  token, shared by its Location and Trip Event emails. This is the **order
+  token**. Tokens may contain `!` (`TU7xeFzI44nw4JRZWxxw!A__`).
+- Newer emails (all Longboard ones, 2026) link to
+  `visibility.macropoint.com/shipments?l=<value>` instead, and that value is
+  **different in every message** — it is not a load key. Those emails have
+  no order token and group/match by ID Number only.
+- Addresses carry doubled spaces (`CA-99  Bakersfield`); Notes may be the
+  literal `None`.
 - Pasted text (copied from Outlook/Gmail) loses the link, so it has no order
   token; it may also include mail headers (From/Sent/To/Subject) and several
   emails pasted back to back.
@@ -174,8 +181,9 @@ These are the only match candidates and the only dropdown options.
     - anything else: no status change.
     - A duplicate trip event never changes status.
     - Each status change is audited as an `update` with
-      `changes={"status": {from, to}}` and `"via": "macropoint"` so the
-      existing Shipments feed shows it.
+      `changes={"status": {from, to}, "source": {"from": None, "to": "MacroPoint"}}`
+      so the existing Shipments feed shows it (and the audit UI shows the
+      source as an ordinary from/to field).
 - Row results: `added`, `added + status → <label>`, `duplicate`, `skipped`,
   `error` (with reason). Parse errors from the preview also appear in the
   summary as `error` rows.
@@ -185,16 +193,18 @@ These are the only match candidates and the only dropdown options.
 (Check every worktree and the dev DB's `alembic_version` before numbering;
 0096 is the current head on main.)
 
-- `truck_updates.source_ref TEXT NULL`; unique index
-  `ux_truck_updates_truck_source_ref (truck_id, source_ref) WHERE source_ref IS NOT NULL`.
-  Per-truck so that re-assigning a load to the correct truck after a mistake
-  still works.
+- `truck_updates.source_ref TEXT NULL`; unique constraint
+  `uq_truck_updates_truck_source_ref (truck_id, source_ref)` — a plain
+  (non-partial) constraint, since NULLs are distinct in Postgres manual rows
+  never collide, and a plain target keeps `ON CONFLICT` free of the
+  generic-plan trap. Per-truck so that re-assigning a load to the correct
+  truck after a mistake still works.
 - New table `truck_events`:
   `id uuid pk`, `truck_id → trucks ON DELETE CASCADE`, `recorded_at timestamptz`,
   `event text` (raw, e.g. "Departed at Pickup"), `event_kind text NULL`
   (`arrived`/`departed`), `stop text NULL` (`pickup`/`drop_off`/named stop),
   `source text default 'manual'`, `source_ref text NULL`, `created_by → people`,
-  `created_at default now()`; unique `(truck_id, source_ref) WHERE source_ref IS NOT NULL`;
+  `created_at default now()`; unique constraint `(truck_id, source_ref)`;
   index `(truck_id, recorded_at DESC)` and `(recorded_at DESC)` for the feed.
 - Model `TruckEvent` in `db/models.py`. No change to the `trucks` table — the
   learned link lives in the existing `tracking_type` JSONB
@@ -238,8 +248,9 @@ Thin route handlers in the existing trucks router (declared before the
 
 Add a third source: `truck_events` → `trip` events
 (`id: "trip:<uuid>"`, `at = recorded_at`, `text = event`). Status changes from
-apply already surface through the audit source; teach the audit mapping that
-`via: "macropoint"` on the changes renders as via "MacroPoint". Cursor/paging
+apply already surface through the audit source; a status event whose audit
+changes carry `source.to` gets `via` = that value ("MacroPoint"), shown after
+the actor. Cursor/paging
 rules unchanged. `trucks/feed.py` docstring updated.
 
 ### Portal
@@ -251,9 +262,9 @@ rules unchanged. `trucks/feed.py` docstring updated.
   `role="tablist"` with MacroPoint / Copeland / 3rd-Party; wide card sized to
   its content. Copeland and 3rd-Party panels: a short "coming soon" note.
 - `components/trucks/MacroPointPanel.tsx`, three steps:
-  1. **Input** — `FileDropzone` extended with an optional `multiple` mode
-     (a list of files with per-file remove; existing single-file callers
-     unchanged), accept `.eml`; plus a textarea "Or paste email text". Button
+  1. **Input** — a new `components/MultiFileDropzone.tsx` (same
+     `imp-dropzone` look and `formatBytes` as `FileDropzone`, but a file list
+     with per-file remove; `FileDropzone` itself is untouched), accept `.eml`; plus a textarea "Or paste email text". Button
      **Parse**.
   2. **Review** — one card per group: ID Number, carrier, counts
      ("12 new · 3 already recorded"), a `ComboBox` of active trucks
@@ -264,8 +275,11 @@ rules unchanged. `trucks/feed.py` docstring updated.
      viewer's zone, Location/Event, Address, "→ In transit" status preview,
      Duplicate tag). A separate list shows parse errors by source. Buttons
      **Back** / **Apply**.
-  3. **Summary** — `BulkApplySummary` with per-row results and CSV download
-     (`macropoint-update-summary`); **Done** closes the modal and refreshes
+  3. **Summary** — `components/trucks/MacroPointSummary.tsx` in the
+     `BulkApplySummary` layout (`bulk-summary` classes, `DataTable`,
+     `exportCsv`; `BulkApplySummary`'s fixed created/updated/skipped/unchanged
+     set has no duplicate or error result) with per-row results and CSV
+     download (`macropoint-update-summary`); **Done** closes the modal and refreshes
      the trucks list/map.
 - `components/trucks/TruckEditModal.tsx` and `pages/TruckDetail.tsx`: relabel
   "Tracker id" → "Tracking name / ID"; show `macropoint_order` read-only on
@@ -307,7 +321,8 @@ rules unchanged. `trucks/feed.py` docstring updated.
   updates/events, learns the link without overwriting, skips blank
   assignments, forward-only status (no regression from `at_destination`),
   `trip_started_at` = event time, re-apply is all `duplicate`; permission
-  (403 without `trucks:change`); size limits; read-only mode blocks; clear
+  (403 without `trucks:change`); size limits (read-only mode is enforced by
+  the global write choke point and is not re-tested here); clear
   updates clears events; feed includes `trip` events and paging still holds.
 - **Portal tests:** modal tabs, multi-file dropzone, parse → review →
   summary flow with mocked API, ComboBox lists only the returned active
