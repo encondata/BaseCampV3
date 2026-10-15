@@ -881,7 +881,9 @@ class TruckContainer(Base):
 
 class TruckUpdate(Base):
     """One location report. `location` is V2's raw "lat, lng" text; lat/lng
-    are the parsed numbers the map uses (NULL when unparsable)."""
+    are the parsed numbers the map uses (NULL when unparsable). `source_ref`
+    is the dedup key of an imported report (MacroPoint), unique per truck;
+    NULL for hand-entered rows."""
 
     __tablename__ = "truck_updates"
 
@@ -895,6 +897,31 @@ class TruckUpdate(Base):
     lng: Mapped[float | None]
     approximate_address: Mapped[str] = mapped_column(server_default="")
     source: Mapped[str] = mapped_column(server_default="manual")
+    source_ref: Mapped[str | None]
+
+
+class TruckEvent(Base):
+    """A tracked trip event with no coordinates — e.g. MacroPoint "Departed
+    at Pickup". `event` is the raw text; `event_kind` (arrived/departed) and
+    `stop` (pickup/drop_off/a named stop) are parsed from it when it has the
+    "<Arrived|Departed> at <stop>" shape. `source_ref` dedups like
+    TruckUpdate.source_ref."""
+
+    __tablename__ = "truck_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    truck_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("trucks.id", ondelete="CASCADE"))
+    recorded_at: Mapped[datetime]
+    event: Mapped[str]
+    event_kind: Mapped[str | None]
+    stop: Mapped[str | None]
+    source: Mapped[str] = mapped_column(server_default="manual")
+    source_ref: Mapped[str | None]
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
 class StockLine(Base):
