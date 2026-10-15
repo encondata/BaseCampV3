@@ -284,3 +284,10 @@ it('sizes its grid with the shared floors and fits the page', async () => {
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
   expect(document.querySelector('.dir-list.list-scroll')).not.toBeNull();
 });
+
+it('a locked row with no model reads — in the Make / Model column', async () => {
+  api.listContainerAssets.mockResolvedValue([row(null, { asset_id: 'z8', model_name: null })]);
+  mount();
+  await waitFor(() => expect(bodyRows()).toHaveLength(1));
+  expect(cellText(bodyRows()[0], 'Make / Model')).toBe('—');
+});

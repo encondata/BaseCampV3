@@ -3,10 +3,18 @@
 
 /* ── contents list (the row expansion's embedded standard list) ─────
  * Rows with an asset open its page; rows without one (no access) are
- * plain, so the pointer and hover wash of a clickable row are off. */
+ * plain, so the pointer and hover wash of a clickable row are off.
+ * The list sits inside the OPEN container's .dir-row, and directory.css's
+ * `.dir-row.open .row-main` tint is a descendant selector that would reach
+ * these nested rows (and outrank their `.row-main:hover`). Reset it here so
+ * they look like a normal list's rows: clear at rest, the standard hover
+ * wash (directory.css `.row-main:hover`) on clickable rows only. */
 .cc-toolbar { margin: 0 0 12px; }
+.dir-row.open .cc-list .row-main { background: transparent; }
+.dir-row.open .cc-list .dir-row:not(.cc-static) .row-main:hover {
+  background: rgba(var(--accent-rgb), 0.045);
+}
 .cc-static .row-main { cursor: default; }
-.cc-static .row-main:hover { background: none; }
 .cc-packed { display: flex; flex-direction: column; min-width: 0; }
 
 .contents-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }

@@ -42,7 +42,7 @@ export function contentsCellText(r: ContainerAssetRow, key: string): string {
   switch (key) {
     case 'serial': return r.serial_number ?? '—';
     case 'name': return r.name ?? '—';
-    case 'model': return modelText(r);
+    case 'model': return r.model_name ?? '—';
     case 'status': return r.status_label;
     default: return '—';
   }
