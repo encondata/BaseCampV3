@@ -10,20 +10,19 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useAuth } from '../auth/AuthContext';
 import BulkContainersModal from '../components/containers/BulkContainersModal';
 import ContainerBulkImport from '../components/containers/ContainerBulkImport';
+import ContainerContentsList from '../components/containers/ContainerContentsList';
 import ContainerEditModal from '../components/containers/ContainerEditModal';
 import GodDeleteButton from '../components/GodDeleteButton';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import { useToast } from '../lib/notificationsContext';
 import {
   ApiError,
-  listContainerAssets,
   listContainers,
   listContainerStatuses,
   listContainerTypes,
   listInitiatives,
   listSites,
   updateContainer,
-  type ContainerAssetRow,
   type ContainerItem,
   type InitiativeItem,
   type SiteItem,
@@ -629,11 +628,6 @@ function ContainerRowDetail({
   godVisible: boolean; pending: boolean;
   onMark: () => Promise<void>; onUnmark: () => Promise<void>;
 }) {
-  const [contents, setContents] = useState<ContainerAssetRow[] | null>(null);
-  useEffect(() => {
-    void listContainerAssets(container.id).then(setContents).catch(() => {});
-  }, [container.id]);
-
   return (
     <div className="detail-grid">
       <div className="detail-block">
@@ -662,18 +656,7 @@ function ContainerRowDetail({
       </div>
       <div className="detail-block" style={{ gridColumn: '1 / -1' }}>
         <p className="eyebrow-sm">Contents</p>
-        {contents === null && <p className="page-hint">Loading…</p>}
-        {contents?.length === 0 && <p className="page-hint">No assets in this container.</p>}
-        {contents && contents.length > 0 && (
-          <dl className="kv">
-            {contents.map((r) => (
-              <span key={r.asset_id} style={{ display: 'contents' }}>
-                <dt className="mono">{r.serial_number ?? '—'}</dt>
-                <dd>{r.name ?? r.model_name ?? '—'} · {r.status_label}</dd>
-              </span>
-            ))}
-          </dl>
-        )}
+        <ContainerContentsList containerId={container.id} />
       </div>
       <NotesFilesPanel entityType="container" entityId={container.id} canWrite={canEdit} />
       {(canEdit || godVisible) && (

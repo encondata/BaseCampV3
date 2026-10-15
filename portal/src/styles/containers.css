@@ -1,6 +1,14 @@
 /* Containers page + ContainerEditModal contents list. Imported by the
  * Containers page (Task 8), same as assets.css is imported by Assets.tsx. */
 
+/* ── contents list (the row expansion's embedded standard list) ─────
+ * Rows with an asset open its page; rows without one (no access) are
+ * plain, so the pointer and hover wash of a clickable row are off. */
+.cc-toolbar { margin: 0 0 12px; }
+.cc-static .row-main { cursor: default; }
+.cc-static .row-main:hover { background: none; }
+.cc-packed { display: flex; flex-direction: column; min-width: 0; }
+
 .contents-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 /* A bordered content-card tile, not a divided list row — like
  * .imp-missing-row, `padding`/`border` are its own card chrome, not a
