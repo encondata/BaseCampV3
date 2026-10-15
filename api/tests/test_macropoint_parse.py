@@ -1,6 +1,7 @@
 """MacroPoint email parser — every field of each sample kind, pasted text
 in both copy styles, the cross-format dedup key and the error reasons."""
 
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -179,3 +180,16 @@ def test_parse_inputs_files_then_text():
 def test_api_client_is_a_placeholder():
     with pytest.raises(NotImplementedError):
         MacroPointClient().fetch_updates("token")
+
+
+def test_huge_whitespace_runs_do_not_hang():
+    pad = " " * 200_000
+    text = (f"Location Update from Landstar - ATL\nID Number : LOAD{pad}A\n"
+            f"Date/Time: 6/7/2024 @ 6:24 PM PT\nLocation: 35.1,-115.2 (View All Updates)\n"
+            f"Approximate Address(if available): Main St{pad}Reno NV Notes:\n")
+    start = time.perf_counter()
+    [msg] = parse_text(text, "Pasted text")
+    assert time.perf_counter() - start < 1.0
+    assert isinstance(msg, ParsedMessage)
+    assert msg.id_number == "LOAD A"
+    assert msg.address == "Main St Reno NV"

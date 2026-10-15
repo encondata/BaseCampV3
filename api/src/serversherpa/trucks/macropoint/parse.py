@@ -171,6 +171,9 @@ def parse_text(text: str, source: str, *,
     """Every MacroPoint email in `text`. Several emails are numbered
     "<source> #1", "#2", …; text with none is one `not_macropoint` error."""
     text = text.replace("\r\n", "\n").replace("\xa0", " ")
+    # Every field is squashed anyway; collapsing space/tab runs (never
+    # newlines) keeps the lazy-match patterns linear on huge whitespace runs.
+    text = re.sub(r"[ \t]{2,}", " ", text)
     starts = [m.start() for m in _HEADER.finditer(text)]
     if not starts:
         return [ParseError(source, "not_macropoint")]
