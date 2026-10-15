@@ -68,10 +68,12 @@ export function describeUserAgent(ua: string | null): string {
   return `${browser} on ${os}`;
 }
 
-/** Random temp password: 14 chars + symbol, unambiguous alphabet. */
-export function generateTempPassword(): string {
+/** Random temp password of exactly `length` characters: crypto-random
+ *  picks from an unambiguous alphabet, ending in one symbol. Callers size
+ *  it from the server's minimum (`tempPasswordLength` in lib/users.ts). */
+export function generateTempPassword(length = 14): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
-  const buf = new Uint32Array(14);
+  const buf = new Uint32Array(Math.max(1, length - 1));
   crypto.getRandomValues(buf);
   return Array.from(buf, (v) => chars[v % chars.length]).join('') + '!';
 }

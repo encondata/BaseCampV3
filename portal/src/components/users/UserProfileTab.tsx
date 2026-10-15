@@ -12,6 +12,7 @@ import { statusChip } from '../../lib/chips';
 import { describeUserAgent, longDate, relativeTime } from '../../lib/format';
 import { STATUS_META, type DetailMode } from '../../lib/users';
 import { Switch } from '../Switch';
+import TwoFactorOffNote from '../TwoFactorOffNote';
 import UserTrustedBrowsers from './UserTrustedBrowsers';
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -124,6 +125,7 @@ export default function UserProfileTab({
                       <span aria-hidden="true">Require 2FA</span>
                     </span>
                   )}
+                  {canManage && account.two_factor_enabled === false && <TwoFactorOffNote />}
                   {canManage && account.totp_enrolled && (
                     <button className="mini-btn danger" onClick={onResetTotp}>Reset 2FA</button>
                   )}

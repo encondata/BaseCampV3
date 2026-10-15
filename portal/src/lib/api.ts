@@ -683,7 +683,7 @@ export interface UserDetailPerson extends PersonDetail {
 
 export interface UserDetailAccount {
   login_email: string | null;
-  status: string;
+  status: string;                 // active | invited | locked | disabled
   must_change_password: boolean;
   last_login_at: string | null;
   created_at: string;
@@ -692,6 +692,8 @@ export interface UserDetailAccount {
   totp_enrolled_at: string | null;
   totp_required: boolean;
   totp_effective_required: boolean;
+  /** The site's two-factor master switch; "Require 2FA" has no effect while off. */
+  two_factor_enabled: boolean;
 }
 
 export interface UserRoleGrant {
@@ -834,6 +836,8 @@ export interface AccessResourceOut {
 }
 
 export interface AccessSummary {
+  /** The site's two-factor master switch; role/group "Require 2FA" has no effect while off. */
+  two_factor_enabled: boolean;
   stats: {
     members: number; roles: number; groups: number;
     gated_resources: number; overrides: number;

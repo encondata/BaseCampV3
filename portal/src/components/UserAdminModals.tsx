@@ -4,10 +4,10 @@
  * confirmations (disable / enable / unlock).
  */
 
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
-import { canTouchRank } from '../lib/access';
+import { canTouchRank, grantableRoles, rolesPayloadForGlobalChange } from '../lib/access';
 import {
   adminAccountStateRequest,
   adminDemoteRequest,
@@ -17,8 +17,10 @@ import {
   adminUpdateProfileRequest,
   ApiError,
   getAccessSummary,
+  type AccessRole,
 } from '../lib/api';
 import { generateTempPassword } from '../lib/format';
+import { tempPasswordLength, tempPasswordTooShort } from '../lib/users';
 import AvatarUpload from './AvatarUpload';
 
 export interface ManagedUser {
@@ -42,11 +44,13 @@ const GUARD_ERRORS: Record<string, string> = {
   role_requires_org: 'That role needs a client or partner to scope to — grant it from the org contacts instead.',
   email_in_use: 'That contact email is already in use.',
   password_recently_used: "That password was one of this person's recent ones. Choose a different one.",
-  password_too_short: 'That password is too short.',
 };
 
-function errText(err: unknown): string {
+function errText(err: unknown, passwordMinLength?: number): string {
   const code = err instanceof ApiError ? err.code : '';
+  if (code === 'password_too_short' && passwordMinLength !== undefined) {
+    return tempPasswordTooShort((err as ApiError).detail, passwordMinLength);
+  }
   return GUARD_ERRORS[code] ?? 'Action failed — try again.';
 }
 
@@ -168,7 +172,9 @@ export function ResetPasswordModal({ user, onClose, onDone }: {
   onClose: () => void;
   onDone: () => void;
 }) {
-  const [temp, setTemp] = useState(generateTempPassword);
+  const { passwordMinLength } = useAuth();
+  const generate = () => generateTempPassword(tempPasswordLength(passwordMinLength));
+  const [temp, setTemp] = useState(generate);
   const [mustChange, setMustChange] = useState(true);
   const [phase, setPhase] = useState<'confirm' | 'done'>('confirm');
   const [saving, setSaving] = useState(false);
@@ -182,7 +188,7 @@ export function ResetPasswordModal({ user, onClose, onDone }: {
       await adminResetPasswordRequest(user.person_id, temp, mustChange);
       setPhase('done');
     } catch (err) {
-      setError(errText(err));
+      setError(errText(err, passwordMinLength));
     } finally {
       setSaving(false);
     }
@@ -210,9 +216,9 @@ export function ResetPasswordModal({ user, onClose, onDone }: {
                 <label htmlFor="rp-temp">Temporary password</label>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <input id="rp-temp" value={temp} style={{ fontFamily: 'var(--font-mono)' }}
-                         onChange={(e) => setTemp(e.target.value)} minLength={12} />
-                  <button className="mini-btn" type="button"
-                          onClick={() => setTemp(generateTempPassword())}>↻</button>
+                         onChange={(e) => setTemp(e.target.value)} minLength={passwordMinLength} />
+                  <button className="mini-btn" type="button" aria-label="Generate a new password"
+                          onClick={() => setTemp(generate())}>↻</button>
                   <button className="mini-btn" type="button" onClick={copy}>
                     {copied ? 'Copied' : 'Copy'}
                   </button>
@@ -251,7 +257,7 @@ export function ResetPasswordModal({ user, onClose, onDone }: {
         {phase === 'confirm' ? (
           <>
             <button className="btn-solid" onClick={() => void run()}
-                    disabled={saving || temp.length < 12}>
+                    disabled={saving || temp.length < passwordMinLength}>
               {saving ? 'Resetting…' : 'Reset password'}
             </button>
             <button className="mini-btn" onClick={onClose} disabled={saving}>Cancel</button>
@@ -267,17 +273,20 @@ export function ResetPasswordModal({ user, onClose, onDone }: {
 
 /* ── manage roles ───────────────────────────────────────────────── */
 
-const ALL_ROLES = ['admin', 'staff', 'worker', 'client', 'vendor', 'external'];
-
 export function ManageRolesModal({ user, onClose, onSaved }: {
   user: ManagedUser;
   onClose: () => void;
   onSaved: () => void;
 }) {
   const { maxRank } = useAuth();
-  const [roles, setRoles] = useState<Set<string>>(new Set(user.roles));
-  const [roleRanks, setRoleRanks] = useState<Record<string, number>>({});
-  const [ranksLoaded, setRanksLoaded] = useState(false);
+  // The roles held when the dialog opened — a parent re-render that hands a
+  // fresh `user` object must not refetch or reset the picks.
+  const [heldRoles] = useState(user.roles);
+  const [summaryRoles, setSummaryRoles] = useState<AccessRole[] | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  // Only the global/self roles this dialog edits; org (client/partner)
+  // roles are shown read-only and never sent.
+  const [picked, setPicked] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -286,25 +295,64 @@ export function ManageRolesModal({ user, onClose, onSaved }: {
     void getAccessSummary()
       .then((summary) => {
         if (cancelled) return;
-        setRoleRanks(Object.fromEntries(summary.roles.map((r) => [r.name, r.rank])));
+        setSummaryRoles(summary.roles);
+        const editable = new Set(summary.roles
+          .filter((r) => r.scope_anchor === 'global' || r.scope_anchor === 'self')
+          .map((r) => r.name));
+        setPicked(new Set(heldRoles.filter((r) => editable.has(r))));
       })
-      .finally(() => { if (!cancelled) setRanksLoaded(true); });
+      .catch(() => { if (!cancelled) setLoadError(true); });
     return () => { cancelled = true; };
-  }, []);
+  }, [heldRoles]);
+
+  const byName = useMemo(
+    () => new Map((summaryRoles ?? []).map((r) => [r.name, r])), [summaryRoles]);
+  const anchorByRole = useMemo<Record<string, string | undefined>>(
+    () => Object.fromEntries((summaryRoles ?? []).map((r) => [r.name, r.scope_anchor])),
+    [summaryRoles]);
+
+  // Offered: what the actor can grant, highest rank first. A held global/
+  // self role above the actor's rank (only possible when they can't touch
+  // the row at all) still shows, disabled, ahead of the rest.
+  const chips = useMemo(() => {
+    if (!summaryRoles) return [];
+    const offered = grantableRoles({ roles: summaryRoles }, maxRank);
+    const offeredNames = new Set(offered.map((r) => r.name));
+    const heldAbove = summaryRoles
+      .filter((r) => !offeredNames.has(r.name)
+        && (r.scope_anchor === 'global' || r.scope_anchor === 'self')
+        && heldRoles.includes(r.name))
+      .sort((a, b) => b.rank - a.rank);
+    return [...heldAbove, ...offered];
+  }, [summaryRoles, maxRank, heldRoles]);
+  const orgRoles = useMemo(() => heldRoles
+    .map((name) => byName.get(name))
+    .filter((r): r is AccessRole => r !== undefined
+      && (r.scope_anchor === 'client' || r.scope_anchor === 'partner')),
+  [heldRoles, byName]);
 
   // The row's own rank gates whether this actor can touch the member at
   // all; per-role rank gates whether a *new* grant is allowed (revoking an
   // already-held role is always permitted once the row itself is touchable
   // — mirrors the server's `set_roles` check).
   const actorCanTouch = canTouchRank(maxRank, user.max_rank);
-  const canGrant = (r: string) =>
-    ranksLoaded && roleRanks[r] !== undefined && canTouchRank(maxRank, roleRanks[r]);
+  const canGrant = (r: AccessRole) => canTouchRank(maxRank, r.rank);
 
   const save = async () => {
     setSaving(true);
     setError('');
+    // Globals in rank order, then the picked self roles and any held role
+    // the summary doesn't know; org roles are dropped — the server keeps
+    // them when they're missing from the payload.
+    const globals = chips.filter((r) => r.scope_anchor === 'global' && picked.has(r.name))
+      .map((r) => r.name);
+    const current = [
+      ...chips.filter((r) => r.scope_anchor === 'self' && picked.has(r.name)).map((r) => r.name),
+      ...heldRoles.filter((r) => anchorByRole[r] === undefined),
+    ];
     try {
-      await adminSetRolesRequest(user.person_id, [...roles]);
+      await adminSetRolesRequest(
+        user.person_id, rolesPayloadForGlobalChange(current, anchorByRole, globals));
       onSaved();
     } catch (err) {
       setError(errText(err));
@@ -315,41 +363,60 @@ export function ManageRolesModal({ user, onClose, onSaved }: {
   return (
     <Modal title={`Roles — ${user.display_name}`} onClose={onClose}>
       <div className="modal-body">
-        <div className="role-picks">
-          {ALL_ROLES.map((r) => {
-            const held = roles.has(r);
-            const disabled =
-              r === 'client' ||
-              !actorCanTouch ||
-              (!held && !canGrant(r));
-            const title = r === 'client'
-              ? 'Needs client scoping — coming with client management'
-              : !actorCanTouch
+        {loadError && (
+          <p className="set-note" style={{ padding: 0, margin: 0 }}>
+            Couldn&apos;t load the role list — close this and try again.
+          </p>
+        )}
+        {!loadError && !summaryRoles && (
+          <p className="set-note" style={{ padding: 0, margin: 0 }}>Loading roles…</p>
+        )}
+        {summaryRoles && (
+          <div className="role-picks">
+            {chips.map((r) => {
+              const held = picked.has(r.name);
+              const disabled = !actorCanTouch || (!held && !canGrant(r));
+              const title = !actorCanTouch
                 ? `${user.display_name}'s rank is at or above yours`
                 : (!held && !canGrant(r))
                   ? 'Your rank is too low to grant this role'
                   : undefined;
-            return (
-              <button key={r} type="button"
-                      className={`role-pick ${held ? 'on' : ''}`}
-                      disabled={disabled}
-                      title={title}
-                      onClick={() => setRoles((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(r)) next.delete(r); else next.add(r);
-                        return next;
-                      })}>
-                {r}
-              </button>
-            );
-          })}
-        </div>
+              return (
+                <button key={r.name} type="button"
+                        className={`role-pick ${held ? 'on' : ''}`}
+                        aria-pressed={held}
+                        disabled={disabled}
+                        title={title}
+                        onClick={() => setPicked((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(r.name)) next.delete(r.name); else next.add(r.name);
+                          return next;
+                        })}>
+                  {r.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {orgRoles.length > 0 && (
+          <div className="org-roles" style={{ marginTop: 14 }}>
+            <div className="chips">
+              {orgRoles.map((r) => (
+                <span key={r.name} className="chip tag" aria-readonly="true">{r.label}</span>
+              ))}
+            </div>
+            <p className="set-note" style={{ padding: '6px 0 0', margin: 0 }}>
+              Managed from the client&apos;s or partner&apos;s contacts page.
+            </p>
+          </div>
+        )}
         <p className="set-note" style={{ padding: '12px 0 0' }}>
           Revoked roles keep their grant history — nothing is deleted.
         </p>
       </div>
       <div className="modal-foot">
-        <button className="btn-solid" onClick={() => void save()} disabled={saving || !actorCanTouch}>
+        <button className="btn-solid" onClick={() => void save()}
+                disabled={saving || !actorCanTouch || !summaryRoles}>
           {saving ? 'Saving…' : 'Save roles'}
         </button>
         <button className="mini-btn" onClick={onClose} disabled={saving}>Cancel</button>

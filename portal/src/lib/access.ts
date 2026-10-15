@@ -1,6 +1,8 @@
 /** Client-side mirror of the API's access model. The server is always the
  *  authority — these helpers only decide what the UI offers. */
 
+import { naturalCompare } from './naturalSort';
+
 export type Action = 'view' | 'add' | 'change' | 'delete';
 export type PermMap = Record<string, Record<Action, boolean>>;
 export interface ScopeInfo { global: boolean; client_ids: string[]; partner_ids: string[] }
@@ -73,11 +75,29 @@ export const RANK_LABELS: [number, string][] = [
 export function rolesPayloadForGlobalChange(
   currentRoles: string[],
   anchorByRole: Record<string, string | undefined>,
-  newGlobalRole: string,
+  newGlobalRole: string | string[],
 ): string[] {
   const kept = currentRoles.filter((r) => {
     const anchor = anchorByRole[r];
     return anchor !== 'global' && anchor !== 'client' && anchor !== 'partner';
   });
-  return newGlobalRole ? [newGlobalRole, ...kept] : kept;
+  const chosen = Array.isArray(newGlobalRole)
+    ? newGlobalRole : newGlobalRole ? [newGlobalRole] : [];
+  return [...chosen, ...kept];
+}
+
+/** The role shape grantableRoles reads (AccessRole in lib/api.ts). */
+export interface RoleLike { name: string; label: string; rank: number; scope_anchor: string }
+
+/** Roles the "Add person" and "Manage roles" dialogs offer: global- and
+ *  self-anchored roles the actor can grant (canTouchRank), highest rank
+ *  first. Client/partner roles are never offered — the org contacts pages
+ *  own those grants. */
+export function grantableRoles<R extends RoleLike>(
+  summary: { roles: readonly R[] }, actorMaxRank: number,
+): R[] {
+  return summary.roles
+    .filter((r) => (r.scope_anchor === 'global' || r.scope_anchor === 'self')
+      && canTouchRank(actorMaxRank, r.rank))
+    .sort((a, b) => (b.rank - a.rank) || naturalCompare(a.label, b.label));
 }

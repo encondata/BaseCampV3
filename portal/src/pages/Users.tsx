@@ -17,8 +17,10 @@ import {
   ManageRolesModal,
   ResetPasswordModal,
 } from '../components/UserAdminModals';
-import { adminUpdateProfileRequest, apiFetch, ApiError } from '../lib/api';
-import { canTouchRank } from '../lib/access';
+import {
+  adminUpdateProfileRequest, apiFetch, ApiError, getAccessSummary, type AccessRole,
+} from '../lib/api';
+import { canTouchRank, grantableRoles } from '../lib/access';
 import { initialOpenId } from '../lib/auditFormat';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
@@ -28,10 +30,12 @@ import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { usePendingDeletes } from '../lib/pendingDeletes';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
-  applyUserPatch, ROLE_CLS, STATUS_META, USER_ERRORS, USER_GOD_FIELDS, userCellText,
-  userSearchText, type UserItem,
+  applyUserPatch, ROLE_CLS, STATUS_META, tempPasswordLength, tempPasswordTooShort, USER_ERRORS,
+  USER_GOD_FIELDS, userCellText, userSearchText, type UserItem,
 } from '../lib/users';
-import { avatarGradient, initials, longDate, relativeTime } from '../lib/format';
+import {
+  avatarGradient, generateTempPassword, initials, longDate, relativeTime,
+} from '../lib/format';
 import {
   applyColumnOrder, ColHead, listGridStyle, listScale, moveKey, titleFor, useReorderDrag,
   useSearchHaystacks, visibleColumnsFor,
@@ -43,7 +47,6 @@ import '../styles/directory.css';
 import '../styles/profile.css';   /* .pf-form, .btn-solid */
 import '../styles/settings.css';  /* .set-note */
 
-const ALL_ROLES = ['admin', 'staff', 'worker', 'client', 'vendor', 'external'];
 const PILLS = [
   { key: 'all', label: 'Everyone' },
   { key: 'active', label: 'Active' },
@@ -681,9 +684,8 @@ export default function Users() {
           onClose={() => setAddOpen(false)}
           onCreated={(created) => {
             setAddOpen(false);
-            if (created.login_email) { navigate(`/people/users/${created.person_id}`); return; }
-            deepLinkTarget.current = null;
-            void load().then(() => setOpenId(created.person_id));
+            // Without a login they aren't in this list — just close.
+            if (created.login_email) navigate(`/people/users/${created.person_id}`);
           }}
         />
       )}
@@ -700,21 +702,44 @@ const ADD_ERRORS: Record<string, string> = {
   rank_too_low: 'You do not have sufficient rank to grant one of the selected roles.',
 };
 
-function generatePassword(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
-  const pick = () => chars[Math.floor(Math.random() * chars.length)];
-  return `${Array.from({ length: 14 }, pick).join('')}!`;
+/** Where someone added without a login can be found, by the roles chosen. */
+export function noLoginHint(roles: ReadonlySet<string>): string {
+  if (roles.has('worker')) {
+    return "Without a login they won't be in the Users list; you'll find them under People › Workers.";
+  }
+  if (roles.has('external')) {
+    return "Without a login they won't be in the Users list; you'll find them under People › External.";
+  }
+  return "Without a login or the Worker role they won't appear in any list. Add the Worker role, or create a login.";
 }
 
 function AddPersonModal({ onClose, onCreated }: {
   onClose: () => void;
   onCreated: (created: { person_id: string; login_email: string | null }) => void;
 }) {
-  const [form, setForm] = useState({
+  const { maxRank, passwordMinLength } = useAuth();
+  const [form, setForm] = useState(() => ({
     first_name: '', last_name: '', preferred_name: '', contact_email: '',
-    phone: '', job_title: '', login_email: '', temp_password: generatePassword(),
-  });
+    phone: '', job_title: '', login_email: '',
+    temp_password: generateTempPassword(tempPasswordLength(passwordMinLength)),
+  }));
+  const [roleChoices, setRoleChoices] = useState<AccessRole[] | null>(null);
+  const [rolesError, setRolesError] = useState(false);
   const [roles, setRoles] = useState<Set<string>>(new Set(['staff']));
+
+  useEffect(() => {
+    let cancelled = false;
+    void getAccessSummary()
+      .then((summary) => {
+        if (cancelled) return;
+        const offered = grantableRoles(summary, maxRank);
+        setRoleChoices(offered);
+        // keep the default pick only if it's actually on offer
+        setRoles((prev) => new Set([...prev].filter((r) => offered.some((o) => o.name === r))));
+      })
+      .catch(() => { if (!cancelled) setRolesError(true); });
+    return () => { cancelled = true; };
+  }, [maxRank]);
   const [createAccount, setCreateAccount] = useState(true);
   const [mustChange, setMustChange] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -746,9 +771,12 @@ function AddPersonModal({ onClose, onCreated }: {
         }),
       });
       if (!resp.ok) {
-        let code = 'unknown';
-        try { code = (await resp.json())?.detail?.code ?? code; } catch { /* noop */ }
-        setError(ADD_ERRORS[code] ?? 'Could not create — check the fields and try again.');
+        let detail: { code?: string } | undefined;
+        try { detail = (await resp.json())?.detail; } catch { /* noop */ }
+        const code = detail?.code ?? 'unknown';
+        setError(code === 'password_too_short'
+          ? tempPasswordTooShort(detail, passwordMinLength)
+          : (ADD_ERRORS[code] ?? 'Could not create — check the fields and try again.'));
         return;
       }
       const created = await resp.json();
@@ -791,21 +819,30 @@ function AddPersonModal({ onClose, onCreated }: {
             </div>
 
             <div className="modal-section">Roles</div>
-            <div className="role-picks">
-              {ALL_ROLES.map((r) => (
-                <button key={r} type="button"
-                        className={`role-pick ${roles.has(r) ? 'on' : ''}`}
-                        disabled={r === 'client'}
-                        title={r === 'client' ? 'Needs client scoping — coming with client management' : undefined}
-                        onClick={() => setRoles((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(r)) next.delete(r); else next.add(r);
-                          return next;
-                        })}>
-                  {r}
-                </button>
-              ))}
-            </div>
+            {rolesError && (
+              <p className="set-note" style={{ padding: 0, margin: 0 }}>
+                Couldn&apos;t load the role list — you can add roles later from Manage roles.
+              </p>
+            )}
+            {!rolesError && !roleChoices && (
+              <p className="set-note" style={{ padding: 0, margin: 0 }}>Loading roles…</p>
+            )}
+            {roleChoices && (
+              <div className="role-picks">
+                {roleChoices.map((r) => (
+                  <button key={r.name} type="button"
+                          className={`role-pick ${roles.has(r.name) ? 'on' : ''}`}
+                          aria-pressed={roles.has(r.name)}
+                          onClick={() => setRoles((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(r.name)) next.delete(r.name); else next.add(r.name);
+                            return next;
+                          })}>
+                    {r.label}
+                  </button>
+                ))}
+              </div>
+            )}
 
             <div className="modal-section">Login account</div>
             <div className="pf-form">
@@ -832,13 +869,12 @@ function AddPersonModal({ onClose, onCreated }: {
                            onChange={set('login_email')} required /></div>
                   <div><label>Temporary password *</label>
                     <input value={form.temp_password} onChange={set('temp_password')}
-                           required minLength={10} /></div>
+                           required minLength={passwordMinLength} /></div>
                 </>
               )}
               {!createAccount && (
                 <p className="set-note full" style={{ padding: 0, margin: 0 }}>
-                  Without an account this person won't appear in the Users list —
-                  they'll show in the People directory when it lands.
+                  {noLoginHint(roles)}
                 </p>
               )}
             </div>

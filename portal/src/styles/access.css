@@ -200,6 +200,8 @@
   color: var(--text-mute);
 }
 .totp-require { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
+/* "Not in effect — two-factor is off…" beside a Require 2FA switch (TwoFactorOffNote) */
+.set-note.totp-off-note { padding: 0; margin: 0; }
 
 .av-stack { display: flex; align-items: center; margin-top: 12px; min-height: 26px; flex-wrap: wrap; }
 .av-sm {

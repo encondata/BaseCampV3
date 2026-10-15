@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  applyUserPatch, ROLE_CLS, toManagedUser, toMemberItem, USER_ERRORS, USER_GOD_FIELDS,
-  userCellText, userSearchText, type UserItem,
+  applyUserPatch, ROLE_CLS, tempPasswordLength, tempPasswordTooShort, toManagedUser, toMemberItem,
+  USER_ERRORS, USER_GOD_FIELDS, userCellText, userSearchText, type UserItem,
 } from './users';
 import type { PersonDetail, UserDetailOut } from './api';
 
@@ -165,16 +165,29 @@ const DETAIL: UserDetailOut = {
   },
   account: { login_email: 'wan@x.test', status: 'active', must_change_password: false,
     last_login_at: null, created_at: '2026-01-01T00:00:00Z', password_updated_at: null,
-    totp_enrolled: false, totp_enrolled_at: null, totp_required: false, totp_effective_required: false },
+    totp_enrolled: false, totp_enrolled_at: null, totp_required: false, totp_effective_required: false,
+    two_factor_enabled: true },
   roles: [{ role: 'staff', label: 'Staff', rank: 40, scope_anchor: 'global', org: null,
     granted_by: null, granted_at: '2026-01-01T00:00:00Z' }],
   max_rank: 40, worker: null, notification_groups: [], access: null, sessions: null,
 };
 
 describe('user detail adapters', () => {
-  it('ROLE_CLS maps the six roles', () => {
+  it('ROLE_CLS maps the global/self roles, not the retired client/vendor names', () => {
     expect(ROLE_CLS.admin).toBe('c-amber');
     expect(ROLE_CLS.worker).toBe('c-green');
+    expect(ROLE_CLS.client).toBeUndefined();
+    expect(ROLE_CLS.vendor).toBeUndefined();
+  });
+  it('temp passwords run past the server minimum, never below 14', () => {
+    expect(tempPasswordLength(8)).toBe(14);
+    expect(tempPasswordLength(20)).toBe(22);
+  });
+  it('the too-short message names the server minimum, else the session one', () => {
+    expect(tempPasswordTooShort({ code: 'password_too_short', min_length: 20 }, 8))
+      .toBe('Temporary passwords need at least 20 characters.');
+    expect(tempPasswordTooShort(undefined, 12))
+      .toBe('Temporary passwords need at least 12 characters.');
   });
   it('toManagedUser flattens person + account + roles', () => {
     const m = toManagedUser(DETAIL);

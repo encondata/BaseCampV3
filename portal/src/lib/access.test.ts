@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  ACTIONS, ROUTE_RESOURCE, canTouchRank, computeCan,
+  ACTIONS, ROUTE_RESOURCE, canTouchRank, computeCan, grantableRoles,
   rolesPayloadForGlobalChange, type PermMap,
 } from './access';
 
@@ -60,6 +60,33 @@ describe('rolesPayloadForGlobalChange', () => {
     expect(rolesPayloadForGlobalChange(
       ['mystery_role', 'staff'], anchors, 'admin',
     )).toEqual(['admin', 'mystery_role']);
+  });
+
+  it('takes several global roles (Manage roles) in the order given', () => {
+    expect(rolesPayloadForGlobalChange(
+      ['worker', 'client_viewer'], anchors, ['admin', 'staff'],
+    )).toEqual(['admin', 'staff', 'worker']);
+    expect(rolesPayloadForGlobalChange(['client_viewer'], anchors, [])).toEqual([]);
+  });
+});
+
+describe('grantableRoles', () => {
+  const role = (name: string, rank: number, scope_anchor: string) =>
+    ({ name, label: name.toUpperCase(), rank, scope_anchor });
+  const summary = { roles: [
+    role('worker', 10, 'self'), role('client_admin', 20, 'client'), role('admin', 60, 'global'),
+    role('staff', 40, 'global'), role('vendor_admin', 20, 'partner'), role('super_admin', 80, 'global'),
+    role('external', 5, 'self'),
+  ] };
+
+  it('offers global and self roles below the actor, highest rank first', () => {
+    expect(grantableRoles(summary, 60).map((r) => r.name))
+      .toEqual(['staff', 'worker', 'external']);
+  });
+
+  it('top rank may grant everything global/self, never client/partner roles', () => {
+    expect(grantableRoles(summary, 100).map((r) => r.name))
+      .toEqual(['super_admin', 'admin', 'staff', 'worker', 'external']);
   });
 });
 

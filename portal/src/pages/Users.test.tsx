@@ -5,11 +5,12 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { LIST_FIT } from '../lib/listTools';
 
-const auth = vi.hoisted(() => ({ maxRank: 100 }));
+const auth = vi.hoisted(() => ({ maxRank: 100, passwordMinLength: 8 }));
 
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     person: { id: 'me-1', display_name: 'Me' }, roles: ['admin'], maxRank: auth.maxRank, godMode: false,
+    passwordMinLength: auth.passwordMinLength,
     can: () => true,
     preferences: { list_prefs: {}, list_size: 'default' }, updatePreferences: vi.fn(),
   }),
@@ -24,6 +25,7 @@ const ROW = {
 
 beforeEach(() => {
   auth.maxRank = 100;
+  auth.passwordMinLength = 8;
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([ROW]), { status: 200 })));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -151,4 +153,120 @@ it('Users list: column floors, shared template + minimum, sideways-scroll card',
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
+});
+
+/* ── Add person ──────────────────────────────────────────────────── */
+
+const role = (name: string, label: string, rank: number, scope_anchor: string) => ({
+  name, label, rank, scope_anchor, color: null, description: '', is_system: true,
+  member_count: 0, matrix: {}, totp_required: false,
+});
+const SUMMARY = {
+  two_factor_enabled: true,
+  stats: { members: 0, roles: 6, groups: 0, gated_resources: 0, overrides: 0 },
+  resources: [], groups: [],
+  roles: [
+    role('admin', 'Admin', 60, 'global'), role('staff', 'Staff', 40, 'global'),
+    role('client_admin', 'Client admin', 20, 'client'), role('vendor_admin', 'Vendor admin', 20, 'partner'),
+    role('worker', 'Worker', 10, 'self'), role('external', 'External', 5, 'self'),
+  ],
+};
+
+/** fetch stub: the summary, POST /users, and the list for everything else. */
+function stubFetch(postUsers: () => Response) {
+  vi.stubGlobal('fetch', vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.endsWith('/access/summary')) return new Response(JSON.stringify(SUMMARY), { status: 200 });
+    if (u.endsWith('/users') && init?.method === 'POST') return postUsers();
+    return new Response(JSON.stringify([ROW]), { status: 200 });
+  }));
+}
+
+function renderUsers() {
+  return render(
+    <MemoryRouter initialEntries={['/people/users']}>
+      <Routes>
+        <Route path="/people/users" element={<Users />} />
+        <Route path="/people/users/:personId" element={<div>DETAIL PAGE</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+async function openAdd() {
+  renderUsers();
+  await screen.findByText('Wan Worker');
+  fireEvent.click(screen.getByRole('button', { name: '+ Add person' }));
+  await screen.findByRole('button', { name: 'Staff' });
+  return document.querySelector('.modal-card') as HTMLElement;
+}
+
+const accountBox = (modal: HTMLElement) =>
+  within(modal).getByText('Create a login account now').querySelector('input') as HTMLInputElement;
+const tempInput = (modal: HTMLElement) =>
+  within(modal).getByText('Temporary password *').parentElement!.querySelector('input') as HTMLInputElement;
+
+it('Add person: the temporary password follows the session minimum', async () => {
+  auth.passwordMinLength = 20;
+  stubFetch(() => new Response('{}', { status: 201 }));
+  const modal = await openAdd();
+  expect(tempInput(modal).minLength).toBe(20);
+  expect(tempInput(modal).value.length).toBeGreaterThanOrEqual(22);
+});
+
+it('Add person: role chips come from the summary — labels, no client/vendor, nothing at or above the actor', async () => {
+  auth.maxRank = 60;
+  stubFetch(() => new Response('{}', { status: 201 }));
+  const modal = await openAdd();
+  const chips = [...modal.querySelectorAll('.role-pick')].map((b) => b.textContent);
+  expect(chips).toEqual(['Staff', 'Worker', 'External']);
+  expect(within(modal).getByRole('button', { name: 'Staff' }).getAttribute('aria-pressed')).toBe('true');
+});
+
+it('Add person: the no-login hint follows the chosen roles', async () => {
+  stubFetch(() => new Response('{}', { status: 201 }));
+  const modal = await openAdd();
+  fireEvent.click(accountBox(modal));
+  expect(within(modal).getByText(
+    "Without a login or the Worker role they won't appear in any list. Add the Worker role, or create a login.",
+  )).toBeTruthy();
+  fireEvent.click(within(modal).getByRole('button', { name: 'External' }));
+  expect(within(modal).getByText(
+    "Without a login they won't be in the Users list; you'll find them under People › External.",
+  )).toBeTruthy();
+  fireEvent.click(within(modal).getByRole('button', { name: 'Worker' }));
+  expect(within(modal).getByText(
+    "Without a login they won't be in the Users list; you'll find them under People › Workers.",
+  )).toBeTruthy();
+});
+
+it('Add person: creating without a login sends the chosen roles and just closes the dialog', async () => {
+  stubFetch(() => new Response(JSON.stringify({ person_id: 'p7', login_email: null }), { status: 201 }));
+  const modal = await openAdd();
+  const inputs = modal.querySelectorAll<HTMLInputElement>('.pf-form input');
+  fireEvent.change(inputs[0], { target: { value: 'New' } });
+  fireEvent.change(inputs[1], { target: { value: 'Person' } });
+  fireEvent.click(within(modal).getByRole('button', { name: 'Worker' }));
+  fireEvent.click(accountBox(modal));
+  fireEvent.click(within(modal).getByRole('button', { name: 'Create person' }));
+  await waitFor(() => expect(document.querySelector('.modal-card')).toBeNull());
+  const post = vi.mocked(fetch).mock.calls.find(([url, init]) =>
+    String(url).endsWith('/users') && (init as RequestInit | undefined)?.method === 'POST');
+  const body = JSON.parse(String((post![1] as RequestInit).body));
+  expect(body).toMatchObject({ roles: ['staff', 'worker'], create_account: false, login_email: null });
+  expect(screen.queryByText('DETAIL PAGE')).toBeNull();
+  expect(screen.getByText('Wan Worker')).toBeTruthy();
+});
+
+it('Add person: a server password_too_short names its minimum', async () => {
+  stubFetch(() => new Response(
+    JSON.stringify({ detail: { code: 'password_too_short', min_length: 20 } }), { status: 422 }));
+  const modal = await openAdd();
+  const inputs = modal.querySelectorAll<HTMLInputElement>('.pf-form input');
+  fireEvent.change(inputs[0], { target: { value: 'New' } });
+  fireEvent.change(inputs[1], { target: { value: 'Person' } });
+  const login = within(modal).getByText('Login email *').parentElement!.querySelector('input')!;
+  fireEvent.change(login, { target: { value: 'new@x.test' } });
+  fireEvent.click(within(modal).getByRole('button', { name: 'Create person' }));
+  expect(await within(modal).findByText('Temporary passwords need at least 20 characters.')).toBeTruthy();
 });

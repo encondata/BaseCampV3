@@ -18,10 +18,10 @@ import GodDeleteButton from '../components/GodDeleteButton';
 import InlineTextField from '../components/InlineTextField';
 import TagInput from '../components/TagInput';
 import TierSelect from '../components/TierSelect';
+import { GrantAccessModal } from '../components/users/GrantAccessModal';
 import {
   addContactLink,
   adminAccountStateRequest,
-  adminCreateAccountRequest,
   adminUpdateProfileRequest,
   apiFetch,
   ApiError,
@@ -138,13 +138,6 @@ const LINK_ERRORS: Record<string, string> = {
 const NEW_CONTACT_ERRORS: Record<string, string> = {
   email_in_use: 'That email is already in use.',
   ...LINK_ERRORS,
-};
-
-const GRANT_ERRORS: Record<string, string> = {
-  account_exists: 'This person already has a login account.',
-  email_in_use: 'That login email is already in use.',
-  rank_too_low: 'Their rank is at or above yours.',
-  person_not_found: 'That person no longer exists.',
 };
 
 export default function External() {
@@ -832,91 +825,6 @@ function EditPersonModal({
           onDone={() => { setGrantOpen(false); onChanged(); }}
         />
       )}
-    </div>
-  );
-}
-
-/* ── grant portal access (create account for existing person) ────── */
-
-function generatePassword(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
-  const bytes = crypto.getRandomValues(new Uint32Array(14));
-  const pick = (byte: number) => chars[byte % chars.length];
-  return `${Array.from(bytes, pick).join('')}!`;
-}
-
-function GrantAccessModal({ person, onClose, onDone }: {
-  person: ExternalPersonItem;
-  onClose: () => void;
-  onDone: () => void;
-}) {
-  const [loginEmail, setLoginEmail] = useState(person.email ?? '');
-  const [tempPassword, setTempPassword] = useState(generatePassword());
-  const [mustChange, setMustChange] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    setSaving(true);
-    setError('');
-    try {
-      await adminCreateAccountRequest(person.person_id, {
-        login_email: loginEmail.trim(),
-        temp_password: tempPassword,
-        must_change_password: mustChange,
-      });
-      onDone();
-    } catch (err) {
-      setError(err instanceof ApiError
-        ? (GRANT_ERRORS[err.code] ?? 'Could not create the account — check the fields.')
-        : 'Network error.');
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="modal-scrim" onMouseDown={(e) => {
-      if (e.target === e.currentTarget) onClose();
-    }}>
-      <div className="modal-card">
-        <div className="modal-head">
-          <h3>Grant portal access — {person.display_name}</h3>
-          <button className="modal-close" aria-label="Close" onClick={onClose}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
-                 strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
-          </button>
-        </div>
-        <form onSubmit={submit}>
-          <div className="modal-body">
-            <div className="pf-form">
-              <div><label>Login email *</label>
-                <input type="email" value={loginEmail} required
-                       onChange={(e) => setLoginEmail(e.target.value)} /></div>
-              <div><label>Temporary password *</label>
-                <input value={tempPassword} required minLength={10}
-                       onChange={(e) => setTempPassword(e.target.value)} /></div>
-              <div className="full">
-                <label style={{ margin: 0 }}>
-                  <input type="checkbox" checked={mustChange}
-                         onChange={(e) => setMustChange(e.target.checked)}
-                         style={{ marginRight: 7 }} />
-                  Must change password at first sign-in
-                </label>
-              </div>
-            </div>
-          </div>
-          <div className="modal-foot">
-            <button className="btn-solid" type="submit" disabled={saving}>
-              {saving ? 'Creating…' : 'Create account'}
-            </button>
-            <button className="mini-btn" type="button" onClick={onClose} disabled={saving}>
-              Cancel
-            </button>
-            {error && <span className="pf-error">{error}</span>}
-          </div>
-        </form>
-      </div>
     </div>
   );
 }

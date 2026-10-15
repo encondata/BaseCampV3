@@ -15,6 +15,7 @@ import {
 } from '../../lib/api';
 import ComboBox, { type ComboOption } from '../ComboBox';
 import { Switch } from '../Switch';
+import TwoFactorOffNote from '../TwoFactorOffNote';
 import MatrixTable from './MatrixTable';
 import RoleReviewModal from './RoleReviewModal';
 
@@ -205,6 +206,7 @@ export default function RolesTab({ summary, canEdit, maxRank, onChanged }: Props
                     onChange={(v) => void setTotp(v)} />
             <span aria-hidden="true">Require 2FA</span>
           </span>
+          {summary.two_factor_enabled === false && <TwoFactorOffNote />}
           <div className="mtx-actions">
             {err && <span className="pf-error">{err}</span>}
             {canEdit && (

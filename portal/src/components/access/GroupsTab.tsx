@@ -15,6 +15,7 @@ import {
 import { avatarGradient, initials } from '../../lib/format';
 import ComboBox, { type ComboOption } from '../ComboBox';
 import { Switch } from '../Switch';
+import TwoFactorOffNote from '../TwoFactorOffNote';
 
 interface Props {
   summary: AccessSummary;
@@ -91,6 +92,7 @@ export default function GroupsTab({ summary, canEdit, onChanged, initialGroupId 
       {group ? (
         <GroupDetail key={group.id} group={group} canEdit={canEdit}
                      gates={gatesFor(group)}
+                     twoFactorOff={summary.two_factor_enabled === false}
                      onChanged={onChanged}
                      onDeleted={() => setSelectedId(null)} />
       ) : (
@@ -152,10 +154,12 @@ export default function GroupsTab({ summary, canEdit, onChanged, initialGroupId 
 
 /* ── group detail panel (inline membership management) ──────────── */
 
-function GroupDetail({ group, canEdit, gates, onChanged, onDeleted }: {
+function GroupDetail({ group, canEdit, gates, twoFactorOff, onChanged, onDeleted }: {
   group: AccessGroupOut;
   canEdit: boolean;
   gates: number;
+  /** The site's two-factor master switch is off — the Require 2FA switch has no effect yet. */
+  twoFactorOff: boolean;
   onChanged: () => void;
   onDeleted: () => void;
 }) {
@@ -231,6 +235,7 @@ function GroupDetail({ group, canEdit, gates, onChanged, onDeleted }: {
                   onChange={(v) => void setTotp(v)} />
           <span aria-hidden="true">Require 2FA</span>
         </span>
+        {twoFactorOff && <TwoFactorOffNote />}
         <div className="mtx-actions">
           {error && <span className="pf-error">{error}</span>}
           {canEdit && (

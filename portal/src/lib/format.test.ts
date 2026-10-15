@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { displayRfid, displayScanValue } from './format';
+import { displayRfid, displayScanValue, generateTempPassword } from './format';
 
 describe('displayRfid', () => {
   it('drops the zero padding of an EPC', () => {
@@ -26,5 +26,16 @@ describe('displayScanValue', () => {
     expect(displayScanValue('000012', 'barcode')).toBe('000012');
     expect(displayScanValue('000012', 'manual')).toBe('000012');
     expect(displayScanValue('000012', null)).toBe('000012');
+  });
+});
+
+describe('generateTempPassword', () => {
+  it('is 14 characters by default and takes a length', () => {
+    expect(generateTempPassword()).toHaveLength(14);
+    expect(generateTempPassword(22)).toHaveLength(22);
+  });
+
+  it('uses the unambiguous alphabet and ends in a symbol', () => {
+    expect(generateTempPassword(30)).toMatch(/^[A-HJ-NP-Za-km-np-z2-9]{29}!$/);
   });
 });
