@@ -135,6 +135,9 @@ class PasswordResetConfirmIn(BaseModel):
 
 class PasswordResetCheckOut(BaseModel):
     valid: bool
+    # the token's account has never had a password (an invite, or a reset
+    # requested before the invite was used): the page says "Set your password"
+    first_password: bool = False
 
 
 class ScopeOut(BaseModel):
@@ -473,8 +476,11 @@ class AccountCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     login_email: EmailStr
-    temp_password: str = Field(min_length=1)  # real bar: settings.password_min_length
+    # required unless `invite`; ignored when `invite` (the route enforces it)
+    temp_password: str | None = Field(None, min_length=1)  # real bar: settings.password_min_length
     must_change_password: bool = True
+    # email a one-time set-password link instead of setting a temporary password
+    invite: bool = False
 
 
 class RolesUpdateIn(BaseModel):
@@ -530,7 +536,7 @@ class UserItem(BaseModel):
     contact_email: str | None      # people.email
     login_email: str | None        # user_accounts.email (None only on create without account)
     roles: list[str]
-    status: str                    # active | locked | disabled | no_account
+    status: str                    # active | invited | locked | disabled | no_account
     must_change_password: bool
     last_login_at: datetime | None
     account_created_at: datetime | None
@@ -566,8 +572,11 @@ class UserCreateIn(BaseModel):
     roles: list[str] = []
     create_account: bool = True
     login_email: EmailStr | None = None
+    # required with create_account unless `invite`; ignored when `invite`
     temp_password: str | None = Field(None, min_length=1)  # real bar: settings.password_min_length
     must_change_password: bool = True
+    # with create_account: email a one-time set-password link instead
+    invite: bool = False
 
 
 # ── stakeholders (clients & partners) ──────────────────────────────
@@ -852,7 +861,7 @@ class UserDetailPerson(PersonDetail):
 
 class UserDetailAccount(BaseModel):
     login_email: str | None
-    status: str                          # active | locked | disabled
+    status: str                          # active | invited | locked | disabled
     must_change_password: bool
     last_login_at: datetime | None
     created_at: datetime
@@ -861,6 +870,7 @@ class UserDetailAccount(BaseModel):
     totp_enrolled_at: datetime | None
     totp_required: bool                  # the per-user flag only
     totp_effective_required: bool        # user flag OR group OR role OR site policy
+    two_factor_enabled: bool             # the site's two-factor master switch
 
 
 class TotpRequiredIn(BaseModel):

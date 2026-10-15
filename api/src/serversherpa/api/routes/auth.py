@@ -193,10 +193,13 @@ async def password_reset_check(
 ) -> PasswordResetCheckOut:
     _limit(reset_confirm_limiter, request)
     if len(body.token) > MAX_RESET_TOKEN_LEN:
-        return PasswordResetCheckOut(valid=False)
-    valid = await password_reset.find_valid(db, body.token) is not None
+        return PasswordResetCheckOut(valid=False, first_password=False)
+    found = await password_reset.find_valid(db, body.token)
+    # from the same lookup that validated the token: has this account ever
+    # had a password? (an invite, or a reset asked for before it was used)
+    first_password = found is not None and found[1].password_hash is None
     await db.rollback()          # release the FOR UPDATE lock
-    return PasswordResetCheckOut(valid=valid)
+    return PasswordResetCheckOut(valid=found is not None, first_password=first_password)
 
 
 @router.post("/password-reset/confirm", status_code=204)

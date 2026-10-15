@@ -55,8 +55,10 @@ from serversherpa.db.models import (
     ResourceGroupGate, Role, UserAccount, WorkerLevel, WorkerProfile,
 )
 from serversherpa.db.ordering import natural
+from serversherpa.mail import email_enabled
 from serversherpa.notifications import reset_requests
 from serversherpa.notifications.requests import resolve_copies
+from serversherpa.services import invites
 from serversherpa.services import totp as totp_service
 from serversherpa.services.activity import person_activity
 from serversherpa.services.audit import audit, diff, snapshot
@@ -73,6 +75,9 @@ router = APIRouter(prefix="/users", tags=["users"])
 def _status(account: UserAccount, now: datetime) -> str:
     if account.disabled_at is not None:
         return "disabled"
+    if account.password_hash is None:
+        # never had a password: an invite (or a link) not used yet
+        return "invited"
     if account.locked_until is not None and account.locked_until > now:
         return "locked"
     return "active"
@@ -302,7 +307,8 @@ async def get_user_detail(
             totp_enrolled=account.totp_confirmed_at is not None,
             totp_enrolled_at=account.totp_confirmed_at,
             totp_required=account.totp_required,
-            totp_effective_required=policy.required),
+            totp_effective_required=policy.required,
+            two_factor_enabled=policy.enabled),
         roles=[UserRoleGrant(
             role=role.name, label=role.label or role.name, rank=role.rank,
             scope_anchor=role.scope_anchor,
@@ -342,9 +348,13 @@ async def create_user(
     actor: AuthContext = require_permission("users", "add"),
 ) -> UserItem:
     await _require_global(actor)
-    if body.create_account and (not body.login_email or not body.temp_password):
+    invite = body.create_account and body.invite
+    if body.create_account and (not body.login_email
+                                or (not invite and not body.temp_password)):
         raise HTTPException(status_code=422, detail={"code": "login_details_required"})
-    if body.create_account and body.temp_password:
+    if invite and not email_enabled():
+        raise _err(422, "mail_not_configured")
+    if body.create_account and not invite:
         require_password_length(body.temp_password)
 
     desired = set(body.roles)
@@ -385,24 +395,33 @@ async def create_user(
             created_by=actor.person.id,
         )
         db.add(account)
+        if invite:
+            # no password until the link is used; completing it applies
+            # the password with must_change=False
+            account.must_change_password = False
         try:
             # the account row must exist before password_history FKs to it
             await db.flush()
         except IntegrityError:
             await db.rollback()
             raise HTTPException(status_code=409, detail={"code": "email_in_use"}) from None
-        await apply_password(db, account, body.temp_password,
-                             must_change=body.must_change_password, now=now)
+        if invite:
+            await invites.send_invite(db, person, account, now=now)
+        else:
+            await apply_password(db, account, body.temp_password,
+                                 must_change=body.must_change_password, now=now)
 
     for role in dict.fromkeys(body.roles):  # dedupe, keep order
         db.add(PersonRole(person_id=person.id, role=role, granted_by=actor.person.id))
 
+    changes = {"first_name": {"from": None, "to": person.first_name},
+               "last_name": {"from": None, "to": person.last_name},
+               "roles": {"from": None, "to": list(dict.fromkeys(body.roles))},
+               "account": {"from": None, "to": bool(body.create_account)}}
+    if invite:
+        changes["invited"] = {"from": None, "to": True}
     audit(db, actor_id=actor.person.id, entity_type="person",
-          entity_id=str(person.id), action="create",
-          changes={"first_name": {"from": None, "to": person.first_name},
-                   "last_name": {"from": None, "to": person.last_name},
-                   "roles": {"from": None, "to": list(dict.fromkeys(body.roles))},
-                   "account": {"from": None, "to": bool(body.create_account)}})
+          entity_id=str(person.id), action="create", changes=changes)
 
     try:
         await db.commit()
@@ -421,7 +440,7 @@ async def create_user(
         contact_email=person.email,
         login_email=account.email if account else None,
         roles=list(dict.fromkeys(body.roles)),
-        status="active" if account else "no_account",
+        status=_status(account, now) if account else "no_account",
         must_change_password=account.must_change_password if account else False,
         last_login_at=None,
         account_created_at=account.created_at if account else None,
@@ -510,7 +529,12 @@ async def create_account(
     promoted to portal users). `_load_target` doesn't fit here — it
     requires an account row, which is exactly what's missing."""
     await _require_global(actor)
-    require_password_length(body.temp_password)
+    if not body.invite and not body.temp_password:
+        raise _err(422, "login_details_required")
+    if body.invite and not email_enabled():
+        raise _err(422, "mail_not_configured")
+    if not body.invite:
+        require_password_length(body.temp_password)
     if person_id == actor.person.id:
         raise _err(403, "cannot_target_self")
     person = await db.get(Person, person_id)
@@ -527,6 +551,8 @@ async def create_account(
         email=body.login_email,
         created_by=actor.person.id,
     )
+    if body.invite:
+        account.must_change_password = False
     db.add(account)
     try:
         # the account row must exist before password_history FKs to it
@@ -534,13 +560,19 @@ async def create_account(
     except IntegrityError:
         await db.rollback()
         raise _err(409, "email_in_use") from None
-    await apply_password(db, account, body.temp_password,
-                         must_change=body.must_change_password, now=datetime.now(UTC))
-    audit(db, actor_id=actor.person.id, entity_type="user_account",
-          entity_id=str(person_id), action="account.create",
-          changes={"login_email": {"from": None, "to": body.login_email},
+    now = datetime.now(UTC)
+    if body.invite:
+        await invites.send_invite(db, person, account, now=now)
+        changes = {"login_email": {"from": None, "to": body.login_email},
+                   "invited": {"from": None, "to": True}}
+    else:
+        await apply_password(db, account, body.temp_password,
+                             must_change=body.must_change_password, now=now)
+        changes = {"login_email": {"from": None, "to": body.login_email},
                    "must_change_password":
-                   {"from": None, "to": body.must_change_password}})
+                   {"from": None, "to": body.must_change_password}}
+    audit(db, actor_id=actor.person.id, entity_type="user_account",
+          entity_id=str(person_id), action="account.create", changes=changes)
     try:
         await db.commit()
     except IntegrityError:
@@ -580,6 +612,49 @@ async def reset_password(
           entity_id=str(person_id), action="password.reset",
           changes={"must_change_password":
                    {"from": None, "to": body.must_change_password}})
+    await db.commit()
+
+
+@router.post("/{person_id}/invite", status_code=204)
+async def resend_invite(
+    person_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("users", "change"),
+) -> None:
+    """Email a fresh invite link to an account that has never had a
+    password. The new token retires the old link."""
+    person, account, _ = await _load_target(db, actor, person_id)
+    if account.disabled_at is not None:
+        raise _err(409, "account_disabled")
+    if account.password_hash is not None:
+        raise _err(409, "not_invited")
+    if not email_enabled():
+        raise _err(422, "mail_not_configured")
+    await invites.send_invite(db, person, account, now=datetime.now(UTC))
+    audit(db, actor_id=actor.person.id, entity_type="user_account",
+          entity_id=str(person_id), action="account.invite_resent")
+    await db.commit()
+
+
+@router.post("/{person_id}/reset-link", status_code=204)
+async def send_reset_link(
+    person_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("users", "change"),
+) -> None:
+    """Email the person the self-service reset link. Their password and
+    sessions are untouched until they use it (completing it revokes the
+    sessions)."""
+    person, account, _ = await _load_target(db, actor, person_id)
+    if account.disabled_at is not None:
+        raise _err(409, "account_disabled")
+    if account.password_hash is None:
+        raise _err(409, "invited")
+    if not email_enabled():
+        raise _err(422, "mail_not_configured")
+    await invites.send_reset_link(db, person, account, now=datetime.now(UTC))
+    audit(db, actor_id=actor.person.id, entity_type="user_account",
+          entity_id=str(person_id), action="password.reset_link_sent")
     await db.commit()
 
 

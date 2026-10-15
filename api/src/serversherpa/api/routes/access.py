@@ -23,6 +23,8 @@ from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.storage import presign_get
+from serversherpa.services.totp import SECURITY_SECTION
+from serversherpa.system.config_store import read_section
 
 router = APIRouter(prefix="/access", tags=["access"])
 
@@ -71,6 +73,7 @@ async def summary(
         .where(PersonRole.revoked_at.is_(None)))).scalar_one()
     n_overrides = (await db.execute(
         select(func.count()).select_from(PermissionOverride))).scalar_one()
+    security = await read_section(db, SECURITY_SECTION)
 
     def matrix_for(name: str) -> dict:
         m = matrices.get(name, {})
@@ -78,6 +81,9 @@ async def summary(
                 for res in REGISTRY}
 
     return {
+        # the site's two-factor master switch: role/group "Require 2FA"
+        # switches have no effect while it's off
+        "two_factor_enabled": bool(security.get("two_factor_enabled")),
         "stats": {"members": n_members, "roles": len(roles),
                   "groups": len(groups), "gated_resources": len(gates),
                   "overrides": n_overrides},
