@@ -195,6 +195,8 @@ export default function Containers() {
   );
 
   const [editingId, setEditingId] = useState<string | null>(null);
+  // Bumped on every Edit-dialog save so an open row's contents list refetches.
+  const [contentsVersion, setContentsVersion] = useState(0);
   const [creating, setCreating] = useState(false);
   const [importing, setImporting] = useState(false);
   const [bulkCreating, setBulkCreating] = useState(false);
@@ -558,6 +560,7 @@ export default function Containers() {
                           container={c}
                           canEdit={canChange}
                           onEdit={() => setEditingId(c.id)}
+                          contentsVersion={contentsVersion}
                           godVisible={godMode}
                           pending={pd.pendingIds.has(c.id)}
                           onMark={() => pd.mark('container', c.id, c.name)}
@@ -582,7 +585,7 @@ export default function Containers() {
           initiatives={initiatives}
           canChange={canChange}
           onClose={() => setEditingId(null)}
-          onSaved={() => load()}
+          onSaved={async () => { await load(); setContentsVersion((v) => v + 1); }}
         />
       )}
       {creating && (
@@ -622,9 +625,10 @@ export default function Containers() {
 /* ── row detail: read-only — the ONLY interactive element is Edit. ── */
 
 function ContainerRowDetail({
-  container, canEdit, onEdit, godVisible, pending, onMark, onUnmark,
+  container, canEdit, onEdit, contentsVersion, godVisible, pending, onMark, onUnmark,
 }: {
   container: ContainerItem; canEdit: boolean; onEdit: () => void;
+  contentsVersion: number;
   godVisible: boolean; pending: boolean;
   onMark: () => Promise<void>; onUnmark: () => Promise<void>;
 }) {
@@ -656,7 +660,10 @@ function ContainerRowDetail({
       </div>
       <div className="detail-block" style={{ gridColumn: '1 / -1' }}>
         <p className="eyebrow-sm">Contents</p>
-        <ContainerContentsList containerId={container.id} />
+        {/* Remounted (so it refetches) whenever the edit dialog saves: it adds
+            and removes packed assets without changing the container's id. */}
+        <ContainerContentsList key={contentsVersion} containerId={container.id}
+                               containerName={container.name} />
       </div>
       <NotesFilesPanel entityType="container" entityId={container.id} canWrite={canEdit} />
       {(canEdit || godVisible) && (

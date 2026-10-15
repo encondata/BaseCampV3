@@ -85,3 +85,15 @@ export const CONTENTS_CSV_COLUMNS: [string, (r: ContainerAssetRow) => string][] 
   ['Packed', (r) => r.added_at],
   ['Packed by', (r) => r.added_by_name ?? ''],
 ];
+
+/** CSV file stem naming the container: `container-contents-<name>` with the
+ *  name lower-cased, every run of other characters one dash, ends trimmed,
+ *  capped at 40 characters. */
+export function contentsFilename(containerName: string): string {
+  const slug = containerName.toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+    .replace(/-+$/, '');
+  return slug ? `container-contents-${slug}` : 'container-contents';
+}

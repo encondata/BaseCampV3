@@ -259,6 +259,34 @@ describe('ColumnsButton reorder', () => {
   });
 });
 
+describe('ColumnsButton portaled menu', () => {
+  const BTN_COLS: ColumnDef[] = [col('a'), col('b'), col('c')];
+
+  it('renders the menu under document.body, not inside the (clippable) list', () => {
+    const { container } = render(
+      <div style={{ overflow: 'hidden' }}>
+        <ColumnsButton columns={BTN_COLS} visible={new Set(['a'])} onChange={vi.fn()} />
+      </div>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Columns' }));
+    const menu = document.querySelector('.pop-menu') as HTMLElement;
+    expect(menu).not.toBeNull();
+    expect(container.contains(menu)).toBe(false);
+    expect(menu.parentElement).toBe(document.body);
+    expect(menu.classList.contains('colmenu-portaled')).toBe(true);
+    expect(menu.style.maxHeight).not.toBe('');
+  });
+
+  it('closes on an outside mousedown but not on one inside the menu', () => {
+    render(<ColumnsButton columns={BTN_COLS} visible={new Set(['a'])} onChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Columns' }));
+    fireEvent.mouseDown(screen.getByText('Visible columns'));
+    expect(document.querySelector('.pop-menu')).not.toBeNull();
+    fireEvent.mouseDown(document.body);
+    expect(document.querySelector('.pop-menu')).toBeNull();
+  });
+});
+
 describe('csvCell quoting (existing behavior)', () => {
   it('passes plain values through untouched', () => {
     expect(csvCell('hello')).toBe('hello');

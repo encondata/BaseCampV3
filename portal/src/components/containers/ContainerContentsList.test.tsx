@@ -85,7 +85,7 @@ const { default: ContainerContentsList } = await import('./ContainerContentsList
 const mount = () => render(
   <MemoryRouter initialEntries={['/c']}>
     <Routes>
-      <Route path="/c" element={<ContainerContentsList containerId="c1" />} />
+      <Route path="/c" element={<ContainerContentsList containerId="c1" containerName="Rack Cart #1" />} />
       <Route path="/assets/:assetId" element={<div>ASSET PAGE</div>} />
     </Routes>
   </MemoryRouter>,
@@ -205,7 +205,9 @@ it('Export writes the visible rows', async () => {
   const prevCreate = URL.createObjectURL, prevRevoke = URL.revokeObjectURL;
   URL.createObjectURL = createUrl as unknown as typeof URL.createObjectURL;
   URL.revokeObjectURL = vi.fn();
-  const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  let downloadName = '';
+  const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click')
+    .mockImplementation(function (this: HTMLAnchorElement) { downloadName = this.download; });
   const user = userEvent.setup();
   mount();
   await screen.findByText('SN-2');
@@ -214,6 +216,7 @@ it('Export writes the visible rows', async () => {
 
   await user.click(screen.getByRole('button', { name: /Export/ }));
   expect(createUrl).toHaveBeenCalledTimes(1);
+  expect(downloadName).toMatch(/^container-contents-rack-cart-1-\d{4}-\d{2}-\d{2}\.csv$/);
   const text = await new Promise<string>((resolve) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));

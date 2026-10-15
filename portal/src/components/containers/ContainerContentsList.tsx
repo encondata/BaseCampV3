@@ -19,7 +19,7 @@ import {
 } from '../../lib/columnMenu';
 import {
   CONTENTS_ALL_KEYS, CONTENTS_COLUMNS, CONTENTS_CSV_COLUMNS, CONTENTS_DEFAULT_VISIBLE,
-  contentsCellText, contentsSearchText, contentsSortValue, packedDate,
+  contentsCellText, contentsFilename, contentsSearchText, contentsSortValue, packedDate,
 } from '../../lib/containerContents';
 import {
   applyColumnOrder, ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle,
@@ -62,7 +62,11 @@ function ContentsCell({ row, colKey }: { row: ContainerAssetRow; colKey: string 
   }
 }
 
-export default function ContainerContentsList({ containerId }: { containerId: string }) {
+export default function ContainerContentsList({ containerId, containerName }: {
+  containerId: string;
+  /** Names the CSV file. */
+  containerName: string;
+}) {
   const navigate = useNavigate();
   const { preferences } = useAuth();
   const listGridScale = listScale(preferences?.list_size);
@@ -111,7 +115,8 @@ export default function ContainerContentsList({ containerId }: { containerId: st
   const grid = listGridStyle(shownCols, [], undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
   const exportRows = useCallback(
-    () => exportCsv('container-contents', CONTENTS_CSV_COLUMNS, visible), [visible]);
+    () => exportCsv(contentsFilename(containerName), CONTENTS_CSV_COLUMNS, visible),
+    [containerName, visible]);
 
   if (failed) return <p className="page-hint">Failed to load contents.</p>;
   if (rows === null) return <p className="page-hint">Loading…</p>;
