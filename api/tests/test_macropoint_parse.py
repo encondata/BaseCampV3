@@ -214,3 +214,23 @@ def test_many_repeated_headers_without_newlines_do_not_hang():
     out = parse_text("Location Update from X " * 20_000, "Pasted text")
     assert time.perf_counter() - start < 2.0
     assert isinstance(out, list)
+
+
+@pytest.mark.parametrize("gap", ["\r" * 500_000, "\u3000" * 500_000, "\f" * 500_000])
+def test_other_whitespace_runs_in_address_do_not_hang(gap):
+    start = time.perf_counter()
+    [msg] = parse_text(f"{_LOC_HEAD}{gap}Reno NV", "Pasted text")
+    assert time.perf_counter() - start < 2.0
+    assert isinstance(msg, ParsedMessage)
+    assert msg.address.startswith("Main St")
+
+
+def test_huge_space_run_after_carrier_and_id_does_not_hang():
+    pad = " " * 500_000
+    text = (f"Location Update from Landstar - ATL{pad}\nID Number : L1{pad}\n"
+            "Date/Time: 6/7/2024 @ 6:24 PM PT\nLocation: 35.1,-115.2 (View All Updates)\n")
+    start = time.perf_counter()
+    [msg] = parse_text(text, "Pasted text")
+    assert time.perf_counter() - start < 2.0
+    assert isinstance(msg, ParsedMessage)
+    assert (msg.carrier, msg.id_number) == ("Landstar - ATL", "L1")
