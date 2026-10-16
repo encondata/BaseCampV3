@@ -346,3 +346,17 @@ class RoutingTransport(httpx.AsyncBaseTransport):
     def open_ports(self, ip: str) -> tuple[int, ...]:
         inner = self.hosts.get(ip)
         return () if inner is None or inner.reader.mode == "unreachable" else inner.reader.ports
+
+
+def tag_event(epc: str, *, antenna=1, peak_rssi=-52, reads=1, event_num=1,
+              timestamp="2026-10-16T14:03:22.512+0000", **extra_data) -> dict:
+    """A Zebra SIMPLE tag event, as the reader's httpPost endpoint sends it."""
+    data = {"idHex": epc, "antenna": antenna, "peakRssi": peak_rssi, "reads": reads,
+            "eventNum": event_num, "format": "epc"}
+    data.update(extra_data)
+    return {"type": "SIMPLE", "timestamp": timestamp, "data": data}
+
+
+def tag_batch(n: int, prefix="E28011606000020D6A1B") -> list[dict]:
+    """n tag events with distinct EPCs (prefix + 4 hex digits)."""
+    return [tag_event(prefix + f"{i:04X}", event_num=i) for i in range(n)]
