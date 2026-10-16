@@ -33,6 +33,7 @@ from serversherpa.api.schemas import (
     KioskPeopleSyncOut, KioskPersonOut, KioskPrinterEventIn,
     KioskRfidEnrollIn, KioskRfidEnrollOut, KioskScanBatchIn,
     KioskScanBatchOut, KioskScanRejected, KioskSetupIn, KioskSetupOut, KioskSetupReadOut, KioskSetupReaderOut,
+    KioskStationKeyIn, KioskStationKeyOut,
     KioskSignOutIn, KioskTimeclockEntry, KioskTimeclockLastEntry,
     KioskTimeclockPerson, KioskTimeclockStatusOut, KioskTruckContainerIn,
     KioskTruckContainerOut, KioskTruckContainerRow, KioskTruckOut,
@@ -56,6 +57,7 @@ from serversherpa.labels.generate.values import (
 from serversherpa.services import auth as auth_service
 from serversherpa.services import kiosk_pairing as pairing
 from serversherpa.services import move_password as move_password_service
+from serversherpa.services import station_keys
 from serversherpa.services import timeclock
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.password_policy import load_policy
@@ -662,6 +664,9 @@ async def kiosk_setup(
                       "rfid_reader_model", "rfid_reader_versions"):
             _stamp(field, None)
         device.rfid_paired_at = None
+        # a Label Station uploads through the signed-in session, not a key
+        await station_keys.revoke(db, device, actor_id=actor.person.id,
+                                  reason="label_station")
 
     device.current_initiative_id = initiative.id
     device.site_id = site.id
@@ -680,6 +685,27 @@ async def kiosk_setup(
                          initiative_name=initiative.name,
                          site_id=site.id, site_name=site.name, site_role=site_role,
                          scan_status=scan_type.key, scan_status_label=scan_type.label)
+
+
+@router.post("/station-key", response_model=KioskStationKeyOut)
+async def issue_station_key(
+    body: KioskStationKeyIn, db: DbSession,
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskStationKeyOut:
+    """Issue (or replace) this RFID station's upload key. The raw key is
+    returned once; only its sha256 is stored. A move-password session may
+    issue only for the move the kiosk is set up for."""
+    device = await db.scalar(select(Device).where(Device.serial == body.serial))
+    if device is None or device.device_type != "kiosk":
+        raise _err(404, "device_not_found")
+    _require_move(actor, device.current_initiative_id)
+    if actor.session.initiative_id is not None:
+        via = "move_password"
+    else:
+        via = device.session_login_method or "password"
+    key = await station_keys.issue(db, device, actor_id=actor.person.id, via=via)
+    await db.commit()
+    return KioskStationKeyOut(key=key)
 
 
 @router.get("/setup", response_model=KioskSetupReadOut)

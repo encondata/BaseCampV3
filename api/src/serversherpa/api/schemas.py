@@ -3051,6 +3051,14 @@ class KioskReaderIn(BaseModel):
     versions: dict[str, Annotated[str, Field(max_length=64)]] = Field(max_length=10)
 
 
+class KioskStationKeyIn(BaseModel):
+    serial: str = Field(min_length=1, max_length=120)
+
+
+class KioskStationKeyOut(BaseModel):
+    key: str
+
+
 class KioskSetupIn(BaseModel):
     serial: str = Field(min_length=1, max_length=120)
     initiative_id: uuid.UUID
