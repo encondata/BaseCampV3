@@ -24,11 +24,12 @@ async def send_invite(db: AsyncSession, person: Person, account: UserAccount, *,
 
 
 async def send_reset_link(db: AsyncSession, person: Person, account: UserAccount, *, now: datetime) -> None:
-    """The self-service reset email, sent by an admin: same token lifetime,
-    same template and variables as password_reset.request_reset."""
+    """A reset link sent by an admin: the same token lifetime and link as a
+    self-service reset, in its own email that says an administrator sent it
+    (the self-service one says the person asked for it)."""
     minutes = get_settings().password_reset_ttl_minutes
     raw = await password_reset.issue_token(db, person.id, minutes=minutes, now=now)
-    await enqueue(db, "password_reset", account.email, person_id=person.id,
+    await enqueue(db, "admin_password_reset", account.email, person_id=person.id,
                   name=person.first_name,
                   link=password_reset.portal_url(f"/reset-password#token={raw}"),
                   ttl_minutes=minutes)
