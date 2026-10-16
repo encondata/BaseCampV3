@@ -24,7 +24,7 @@ This work turns the laptop's raw reads into scans the portal accepts. It leaves 
 - **No change to barcode scanning or the existing upload queue (`outbox`).**
 - **No new dashboard widgets.**
 - **No retention.** Rows stay until Wipe, as with raw reads.
-- **Not in this design** (next projects):
+- **Not in this design** (next projects). *This design covers project 1 (processing, station key, uploads) together with project 2 (the client-wide asset list), because off-move matching needs that list; project 3, the alert, follows as its own design:*
   - The on-screen "Asset Not Part Of Move" flash and alarm, on the RFID Station and later on barcode scanning and label printing. It uses the client-wide list this design adds.
   - The off-move status rule. Jimmy will add a status rule for off-move scans to trigger notifications or other actions. This design only provides the flag for it to key on.
 
@@ -61,12 +61,14 @@ This work turns the laptop's raw reads into scans the portal accepts. It leaves 
 | 2 | the move's container | `container` | 0 |
 | 3 | a person's badge (the people list is not per move) | `person` | 0 |
 | 4 | the client asset list | `asset` | **1**; `off_move_initiative_id` and `_name` are recorded |
-| — | no match | the read stays only in `raw_tag_reads` | — |
+| — | no match | see "Unmatched reads" below | — |
 
 **Reads that are skipped and stay only in `raw_tag_reads`:**
 
 - reads with no move (the laptop wasn't set up when they arrived);
 - reads whose move is **no longer the laptop's setup move**. *(Claude's call. Only the current move's data is kept up to date, so older reads can't be matched reliably, and they must not block newer ones.)*
+
+**Unmatched reads:** a read for the current move that matches nothing is remembered in a small `rfid_unmatched (raw_read_id PRIMARY KEY, received_at)` table. After every successful sync (person or station key), the processor re-checks the unmatched reads from the **last 24 hours** against the fresh data. A read that matches now becomes a pending scan as usual; reads older than 24 hours are dropped from `rfid_unmatched` and stay only in `raw_tag_reads`. *(Claude's call, so a tag assigned in the portal after the last sync isn't lost.)* Wipe clears it.
 
 **Waiting for data:** if the read's move **is** the current setup move but its cache isn't there yet (set up, not synced), the processor **stops at that read without advancing**. It tries again on the next tick, so nothing is skipped just because the data hadn't downloaded.
 
@@ -94,14 +96,13 @@ One row per match, with these columns:
 
 **Portal:**
 
-1. Generate a 32-byte random key and store only its sha256 on the Device, in `station_key_hash`, `station_key_issued_at`, `station_key_issued_by` (person) and `station_key_issued_via` (`password`, `link` or `move_password`).
-2. Add the device's current setup move to a new `device_station_moves (device_id, initiative_id, first_issued_at)` table, if it isn't there already.
-3. Return the raw key once.
-4. Audit `station_key_issue` with the move and how the person signed in.
+1. Generate a 32-byte random key and store only its sha256 on the Device, in `station_key_hash`, `station_key_initiative_id` (the device's current setup move), `station_key_issued_at`, `station_key_issued_by` (person) and `station_key_issued_via` (`password`, `link` or `move_password`).
+2. Return the raw key once.
+3. Audit `station_key_issue` with the move and how the person signed in.
 
 **Edge:** stores the key **encrypted with `edge.key`**, the same way cloud tokens are kept.
 
-**Re-issue:** issuing again replaces the key, keeps the moves table, and adds the new move.
+**Re-issue:** a new setup issues a new key for the new move, replacing the old key. The key only ever covers one move. *(Jimmy: moves are weeks apart and completed only well after scanning ends, so a backlog from the previous move isn't a concern.)*
 
 **Label Station setup:** revokes the key (§3.3).
 
@@ -115,8 +116,7 @@ One row per match, with these columns:
 - **Whole-batch refusals:**
   - 401 `station_key_invalid`: no such Device, the key doesn't match (constant-time compare), or there is no key;
   - 401 `station_key_revoked`.
-- **Per-scan rejection:** the scan's `initiative_id` must be one of the device's `device_station_moves` **and** still active (its status is not in `HISTORICAL_INITIATIVE_STATUSES`: completed, cancelled; archived moves count as inactive too). Otherwise that scan alone is rejected, `move_locked` or `move_inactive`.
-  - So a backlog from an earlier move still uploads after the laptop moves on, while that move is active. *(Jimmy: moves are weeks apart and are completed only well after scanning ends.)*
+- **Per-scan rejection:** the scan's `initiative_id` must be the key's `station_key_initiative_id` (else `move_locked`), and that move must still be active, meaning its status is not in `HISTORICAL_INITIATIVE_STATUSES` (completed, cancelled) and it isn't archived (else `move_inactive`). Only that scan is rejected; the rest of the batch lands.
 - **Storage:** rows are written exactly as `/kiosk/scans` writes them, through one shared implementation, except:
   - `operator_id` = **NULL**
   - `device_id` = the Device name (the kiosk's name)
@@ -191,6 +191,7 @@ The key is revoked (its hash cleared, an audit `station_key_revoke` row written)
   - match order and normalization;
   - a read with no move, and one for an older move (both skipped);
   - waiting for the current move's missing cache, then resuming after sync;
+  - an unmatched read that matches after the next sync becomes a pending scan; one older than 24 hours is dropped from the re-check list;
   - the cursor surviving a restart;
   - Wipe.
 - **Uploader:**
@@ -207,10 +208,10 @@ The key is revoked (its hash cleared, an audit `station_key_revoke` row written)
 
 **Portal:**
 
-- **Issuing:** by a real account and by a move-password session; the moves table; audit rows.
+- **Issuing:** by a real account and by a move-password session (scoped to its move); re-issue replaces the key and its move; audit rows.
 - **`/kiosk/station/scans`:**
   - the operator is NULL and the device is the kiosk's name;
-  - move rules (an older move that's still active is accepted; a never-set-up move is `move_locked`; a completed or cancelled one is `move_inactive`);
+  - move rules (any move other than the key's move is `move_locked`; the key's move once completed, cancelled or archived is `move_inactive`);
   - bad, missing or revoked keys;
   - idempotent;
   - at most 50;
