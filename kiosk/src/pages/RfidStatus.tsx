@@ -23,6 +23,9 @@ import { useSyncStatus } from '../lib/sync';
 const POLL_MS = 5000;
 const CLOCK_MS = 1000;
 const NEW_ROW_MS = 2000;
+// An unknown tag (not on the move) leaves Live Tag Reads this long after it
+// first appears; matched tags stay (Jimmy, 2026-10-16).
+const UNKNOWN_ROW_MS = 5000;
 
 
 type ReaderState = 'loading' | 'reading' | 'stopped' | 'unreachable';
@@ -140,6 +143,8 @@ export default function RfidStatus() {
   const seq = useRef(0);
   const prevKeys = useRef<Set<number> | null>(null);
   const freshTimer = useRef<number | undefined>(undefined);
+  // read id -> when an unknown tag first showed (Date.now())
+  const unknownSince = useRef(new Map<number, number>());
 
   const refresh = useCallback(async () => {
     // Only the newest request may write: a slow older answer is dropped.
@@ -163,6 +168,10 @@ export default function RfidStatus() {
         (r) => {
           if (!latest()) return;
           const keys = new Set(r.recent.map((x) => x.id));
+          const since = unknownSince.current;
+          for (const id of [...since.keys()]) if (!keys.has(id)) since.delete(id);
+          const seenAt = Date.now();
+          for (const x of r.recent) if (!x.asset && !since.has(x.id)) since.set(x.id, seenAt);
           const prev = prevKeys.current;
           prevKeys.current = keys;
           setReads(r);
@@ -227,6 +236,12 @@ export default function RfidStatus() {
   const stopDisabled = busy !== null;
 
   const assets = sync.assets;
+  // re-evaluated on every clock tick, so an unknown tag goes within a second of its 5 s
+  const visibleReads = reads === null ? null : reads.recent.filter((r) => {
+    if (r.asset) return true;
+    const since = unknownSince.current.get(r.id);
+    return since === undefined || now.getTime() - since < UNKNOWN_ROW_MS;
+  });
   const moveKnown = reads !== null && reads.move_total !== null && reads.move_seen !== null;
   const moveTotal = moveKnown ? reads.move_total as number : null;
   const moveSeen = moveKnown ? reads.move_seen as number : null;
@@ -280,12 +295,12 @@ export default function RfidStatus() {
                 </tr>
               </thead>
               <tbody>
-                {reads !== null && reads.recent.length === 0 && (
+                {visibleReads !== null && visibleReads.length === 0 && (
                   <tr>
                     <td colSpan={4} className="rfid-dash-empty">No tag reads yet.</td>
                   </tr>
                 )}
-                {reads?.recent.map((r) => (
+                {visibleReads?.map((r) => (
                   <tr key={r.id} className={fresh.has(r.id) ? 'is-new' : undefined}>
                     <td title={r.epc}>{displayEpc(r.epc)}</td>
                     {r.asset ? (
