@@ -972,6 +972,9 @@ async def sync_client_assets(
     """Every asset on the OTHER moves of this move's client (one row per
     asset-and-move pair), so a laptop can tell a sighting from a stranger.
     A move with no client gets []; another client's assets never appear.
+    Only moves count (not projects or events); archived moves and archived
+    assets are left out; completed and cancelled moves are KEPT, since an
+    asset from a finished move is still an off-move sighting.
     Same lock as the other sync routes (403 `move_locked`)."""
     _require_move(actor, initiative_id)
     return await _client_assets_body(db, initiative_id)
@@ -991,7 +994,10 @@ async def _client_assets_body(
             .join(InitiativeAsset, InitiativeAsset.asset_id == Asset.id)
             .join(Initiative, Initiative.id == InitiativeAsset.initiative_id)
             .where(Initiative.client_id == initiative.client_id,
-                   Initiative.id != initiative.id)
+                   Initiative.id != initiative.id,
+                   Initiative.initiative_type == "move",
+                   Initiative.archived_at.is_(None),
+                   Asset.archived_at.is_(None))
             .order_by(Asset.legacy_id, natural(Initiative.name), Initiative.id))).all()
         assets = [KioskClientAssetOut(
             id=a.id, asset_id=str(a.legacy_id) if a.legacy_id is not None else "",
@@ -1015,6 +1021,7 @@ async def station_sync_assets(
     request: Request, db: DbSession, serial: str = Query(...),
     initiative_id: uuid.UUID = Query(...),
 ) -> KioskAssetsSyncOut:
+    """Station-key twin of /sync/assets, for the key move only."""
     await _station_sync_device(request, db, serial, initiative_id)
     return await _assets_body(db, initiative_id)
 
@@ -1024,6 +1031,7 @@ async def station_sync_containers(
     request: Request, db: DbSession, serial: str = Query(...),
     initiative_id: uuid.UUID = Query(...),
 ) -> KioskContainersSyncOut:
+    """Station-key twin of /sync/containers, for the key move only."""
     await _station_sync_device(request, db, serial, initiative_id)
     return await _containers_body(db, initiative_id)
 
@@ -1033,6 +1041,9 @@ async def station_sync_people(
     request: Request, db: DbSession, serial: str = Query(...),
     initiative_id: uuid.UUID = Query(...),
 ) -> KioskPeopleSyncOut:
+    """Station-key twin of /sync/people, for the key move only. Same data and
+    the same accepted-risk note as /kiosk/sync/people, served under the
+    station key instead of a person session."""
     await _station_sync_device(request, db, serial, initiative_id)
     return await _people_body(db)
 
@@ -1042,6 +1053,7 @@ async def station_sync_client_assets(
     request: Request, db: DbSession, serial: str = Query(...),
     initiative_id: uuid.UUID = Query(...),
 ) -> KioskClientAssetsSyncOut:
+    """Station-key twin of /sync/client-assets, for the key move only."""
     await _station_sync_device(request, db, serial, initiative_id)
     return await _client_assets_body(db, initiative_id)
 

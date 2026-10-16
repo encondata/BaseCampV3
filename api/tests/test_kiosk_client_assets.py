@@ -148,3 +148,36 @@ async def test_station_sync_needs_key(client, db, seeded_user):
         assert none.json()["detail"]["code"] == "station_key_invalid"
         bad = await client.get(f"/kiosk/station/sync/{path}?{q}", headers=_auth("nope"))
         assert bad.status_code == 401
+
+
+async def test_client_assets_filters_and_overlap(client, db, seeded_user):
+    from datetime import UTC, datetime
+    cx = Client(name="Client Filter")
+    db.add(cx)
+    await db.flush()
+    sel = _move("F Sel", cx.id)
+    project = Initiative(name="F Project", initiative_type="project",
+                         status="in_progress", client_id=cx.id)
+    event = Initiative(name="F Event", initiative_type="event",
+                       status="in_progress", client_id=cx.id)
+    arch_move = _move("F Archived", cx.id)
+    arch_move.archived_at = datetime.now(UTC)
+    done = Initiative(name="F Done", initiative_type="move", status="completed",
+                      client_id=cx.id)
+    other = _move("F Other", cx.id)
+    db.add_all([sel, project, event, arch_move, done, other])
+    await db.flush()
+    names = ["a-project", "a-event", "a-archmove", "a-archasset", "a-done", "a-shared"]
+    a = {n: Asset(name=n, serial_number="F-" + n) for n in names}
+    a["a-archasset"].archived_at = datetime.now(UTC)
+    db.add_all(a.values())
+    await db.flush()
+    for mv, n in [(project, "a-project"), (event, "a-event"), (arch_move, "a-archmove"),
+                  (other, "a-archasset"), (done, "a-done"), (sel, "a-shared"),
+                  (other, "a-shared")]:
+        db.add(InitiativeAsset(initiative_id=mv.id, asset_id=a[n].id))
+    await db.commit()
+    hdrs = await login(client)
+    r = await client.get(f"/kiosk/sync/client-assets?initiative_id={sel.id}", headers=hdrs)
+    got = sorted((x["name"], x["initiative_name"]) for x in r.json()["assets"])
+    assert got == [("a-done", "F Done"), ("a-shared", "F Other")]
