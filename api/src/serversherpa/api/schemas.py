@@ -2906,6 +2906,10 @@ class DeviceItem(BaseModel):
     approved_by_name: str | None = None
     secret_mismatch: bool = False
     agent_source_ip: str | None = None
+    # fixed readers only (derived in routes/devices.py); None for others
+    make: str | None = None
+    reader_status: Literal["reading", "standby", "offline"] | None = None
+    antennas_total: int | None = None
 
 
 class DevicePatch(BaseModel):

@@ -475,3 +475,97 @@ async def test_mutations_permission_denied(client, db, seeded_user):
     resp = await client.post(f"/devices/{device.id}/deregister",
                              headers=hdrs)
     assert resp.status_code == 403
+
+
+async def _reader_list(client, hdrs):
+    resp = await client.get("/devices", headers=hdrs,
+                            params={"device_type": "fixed_reader"})
+    assert resp.status_code == 200, resp.text
+    return {i["name"]: i for i in resp.json()}
+
+
+async def test_reader_status_reading_standby(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    now = datetime.now(UTC)
+    db.add_all([
+        Device(device_type="fixed_reader", name="rd-reading", last_seen_at=now,
+               raw_info={"make": "Zebra", "reading": True,
+                         "antennas_total": 4}),
+        Device(device_type="fixed_reader", name="rd-standby", last_seen_at=now,
+               raw_info={"make": "Zebra", "reading": False}),
+    ])
+    await db.commit()
+    by = await _reader_list(client, hdrs)
+    assert by["rd-reading"]["reader_status"] == "reading"
+    assert by["rd-reading"]["make"] == "Zebra"
+    assert by["rd-reading"]["antennas_total"] == 4
+    assert by["rd-standby"]["reader_status"] == "standby"
+    assert by["rd-standby"]["antennas_total"] is None
+
+
+async def test_reader_status_offline_after_3_minutes(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    now = datetime.now(UTC)
+    db.add_all([
+        Device(device_type="fixed_reader", name="rd-stale",
+               last_seen_at=now - timedelta(minutes=4),
+               raw_info={"reading": True}),
+        Device(device_type="fixed_reader", name="rd-never",
+               raw_info={"reading": True}),
+    ])
+    await db.commit()
+    by = await _reader_list(client, hdrs)
+    assert by["rd-stale"]["reader_status"] == "offline"
+    assert by["rd-never"]["reader_status"] == "offline"
+
+
+def test_reader_status_boundary_uses_passed_now():
+    from serversherpa.api.routes.devices import reader_status_for
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    d = Device(device_type="fixed_reader", name="x", raw_info={})
+    d.last_seen_at = now - timedelta(minutes=3)
+    assert reader_status_for(d, now) == "standby"
+    d.last_seen_at = now - timedelta(minutes=3, seconds=1)
+    assert reader_status_for(d, now) == "offline"
+
+
+async def test_reported_tags_used_while_fresh_else_scan_counts(
+        client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    now = datetime.now(UTC)
+    kiosk_raw = {"reported_tags_24h": 1832, "via_kiosk_id": str(uuid.uuid4())}
+    db.add_all([
+        Device(device_type="fixed_reader", name="rd-fresh", last_seen_at=now,
+               raw_info=dict(kiosk_raw)),
+        Device(device_type="fixed_reader", name="rd-old",
+               last_seen_at=now - timedelta(minutes=4),
+               raw_info=dict(kiosk_raw)),
+        # no via_kiosk_id: the reported count is ignored even while fresh
+        Device(device_type="fixed_reader", name="rd-hand", last_seen_at=now,
+               raw_info={"reported_tags_24h": 999}),
+    ])
+    db.add_all([RawScan(scanned_value=f"R{i}", scan_type="rfid",
+                        scanned_at=now - timedelta(hours=1),
+                        device_id=name)
+                for name in ("rd-old", "rd-hand") for i in (1, 2)])
+    await db.commit()
+    by = await _reader_list(client, hdrs)
+    assert by["rd-fresh"]["tags_read_24h"] == 1832
+    assert by["rd-old"]["tags_read_24h"] == 2
+    assert by["rd-hand"]["tags_read_24h"] == 2
+
+
+async def test_non_reader_devices_have_null_reader_fields(
+        client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    db.add(Device(device_type="router", name="rt-1",
+                  last_seen_at=datetime.now(UTC),
+                  raw_info={"make": "Zebra", "reading": True,
+                            "antennas_total": 4}))
+    await db.commit()
+    resp = await client.get("/devices", headers=hdrs,
+                            params={"device_type": "router"})
+    item = resp.json()[0]
+    assert item["make"] is None
+    assert item["reader_status"] is None
+    assert item["antennas_total"] is None
