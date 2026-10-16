@@ -381,6 +381,37 @@ describe('RfidStatus tag data', () => {
     expect(screen.getByText('E2801160600002')).toBeTruthy();
   });
 
+  it('an unknown tag leaves the table 5 s after it appears; matched tags stay', async () => {
+    await renderPage();
+    // the default data: E2801160600002 is matched, E2801160600003 is unknown
+    expect(screen.getByText('E2801160600003')).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+    expect(screen.getByText('E2801160600003')).toBeTruthy();
+    // a new unknown read arrives with the next poll (t = 5 s) and gets its own 5 s
+    api.getRfidReads.mockResolvedValue(reads({ recent: [
+      { id: 3, epc: 'E2801160600009', received_at: '2026-10-02T19:03:10Z', antenna: 1, peak_rssi: -50, asset: null },
+      ...reads().recent,
+    ] }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(screen.queryByText('E2801160600003')).toBeNull();
+    expect(screen.getByText('E2801160600009')).toBeTruthy();
+    expect(screen.getByText('E2801160600002')).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.queryByText('E2801160600009')).toBeNull();
+    expect(screen.getByText('E2801160600002')).toBeTruthy();
+  });
+
+  it('shows the empty state once only expired unknown tags are left', async () => {
+    api.getRfidReads.mockResolvedValue(reads({ recent: [
+      { id: 7, epc: 'E2801160600011', received_at: '2026-10-02T19:03:10Z', antenna: 1, peak_rssi: -50, asset: null },
+    ] }));
+    await renderPage();
+    expect(screen.queryByText('No tag reads yet.')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+    expect(screen.queryByText('E2801160600011')).toBeNull();
+    expect(screen.getByText('No tag reads yet.')).toBeTruthy();
+  });
+
   it('highlights a new row for 2 s', async () => {
     await renderPage();
     const fresh = reads({ recent: [
@@ -397,8 +428,9 @@ describe('RfidStatus tag data', () => {
   });
 
   it('rows sharing epc and received_at render separately, keyed by id', async () => {
+    // matched rows, so the 5 s unknown-tag expiry doesn't apply here
     const dup = (id: number) => ({ id, epc: 'E2801160600077', received_at: '2026-10-02T19:03:00Z',
-      antenna: 1, peak_rssi: -50, asset: null });
+      antenna: 1, peak_rssi: -50, asset: { serial_number: 'SN-77', name: 'host-77', make_model: 'Dell R640' } });
     api.getRfidReads.mockResolvedValue(reads({ recent: [dup(11), dup(10)] }));
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     await renderPage();
