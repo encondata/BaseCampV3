@@ -1213,23 +1213,13 @@ class Device(Base):
     agent_source_ip: Mapped[str | None]
     # RFID station key (migration 0098): only the sha256 of the per-device
     # upload secret is stored; the raw key is shown once at issue.
-    station_key_hash: Mapped[str | None] = mapped_column(unique=True)
+    station_key_hash: Mapped[str | None] = mapped_column()
+    station_key_initiative_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("initiatives.id", ondelete="SET NULL"))   # the ONE move the key covers
     station_key_issued_at: Mapped[datetime | None]
-    station_key_issued_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    station_key_issued_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
     station_key_issued_via: Mapped[str | None]   # password | link | move_password
-
-
-class DeviceStationMove(Base):
-    """Every move a kiosk was ever issued a station key for (migration 0098);
-    kept when the key is revoked or replaced."""
-
-    __tablename__ = "device_station_moves"
-
-    device_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True)
-    initiative_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("initiatives.id", ondelete="CASCADE"), primary_key=True)
-    first_issued_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
 class DeviceDhcpLease(Base):

@@ -698,6 +698,15 @@ async def issue_station_key(
     device = await db.scalar(select(Device).where(Device.serial == body.serial))
     if device is None or device.device_type != "kiosk":
         raise _err(404, "device_not_found")
+    if (device.sub_type != "laptop" or device.station_type != "rfid"
+            or device.current_initiative_id is None):
+        raise _err(409, "not_rfid_station")
+    if registration_state(device.token_expires_at, datetime.now(UTC)) not in ("ok", "soon"):
+        raise _err(409, "kiosk_not_registered")
+    if device.setup_clear_id is not None:
+        raise _err(409, "setup_clear_pending")
+    if device.session_person_id != actor.person.id:
+        raise _err(403, "not_signed_in_here")
     _require_move(actor, device.current_initiative_id)
     if actor.session.initiative_id is not None:
         via = "move_password"

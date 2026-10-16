@@ -1,5 +1,5 @@
-"""RFID station keys: a per-kiosk upload secret (sha256 only), the moves each
-kiosk was ever keyed for, and the Off move flag on raw/processed scans.
+"""RFID station keys: a per-kiosk upload secret (sha256 only), the one move it
+covers, and the Off move flag on raw/processed scans.
 
 Revision ID: 0098
 Revises: 0097
@@ -21,22 +21,14 @@ TS = sa.TIMESTAMP(timezone=True)
 
 def upgrade() -> None:
     op.add_column("devices", sa.Column("station_key_hash", sa.Text, nullable=True))
-    op.create_unique_constraint("uq_devices_station_key_hash", "devices",
-                                ["station_key_hash"])
+    op.add_column("devices", sa.Column(
+        "station_key_initiative_id", UUID(as_uuid=True),
+        sa.ForeignKey("initiatives.id", ondelete="SET NULL"), nullable=True))
     op.add_column("devices", sa.Column("station_key_issued_at", TS, nullable=True))
     op.add_column("devices", sa.Column(
         "station_key_issued_by", UUID(as_uuid=True),
-        sa.ForeignKey("people.id"), nullable=True))
+        sa.ForeignKey("people.id", ondelete="SET NULL"), nullable=True))
     op.add_column("devices", sa.Column("station_key_issued_via", sa.Text, nullable=True))
-    op.create_table(
-        "device_station_moves",
-        sa.Column("device_id", UUID(as_uuid=True),
-                  sa.ForeignKey("devices.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("initiative_id", UUID(as_uuid=True),
-                  sa.ForeignKey("initiatives.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("first_issued_at", TS, nullable=False, server_default=sa.text("now()")),
-        sa.PrimaryKeyConstraint("device_id", "initiative_id"),
-    )
     for table in ("raw_scans", "processed_scans"):
         op.add_column(table, sa.Column("off_move", sa.Boolean, nullable=False,
                                        server_default=sa.text("false")))
@@ -45,9 +37,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     for table in ("processed_scans", "raw_scans"):
         op.drop_column(table, "off_move")
-    op.drop_table("device_station_moves")
     op.drop_column("devices", "station_key_issued_via")
     op.drop_column("devices", "station_key_issued_by")
     op.drop_column("devices", "station_key_issued_at")
-    op.drop_constraint("uq_devices_station_key_hash", "devices", type_="unique")
+    op.drop_column("devices", "station_key_initiative_id")
     op.drop_column("devices", "station_key_hash")

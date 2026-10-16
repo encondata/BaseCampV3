@@ -11,10 +11,9 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import Device, DeviceStationMove
+from serversherpa.db.models import Device
 from serversherpa.services.audit import audit
 
 
@@ -24,20 +23,16 @@ def _hash(raw_key: str) -> str:
 
 async def issue(db: AsyncSession, device: Device, *,
                 actor_id: uuid.UUID | None, via: str) -> str:
-    """Mint a new key for `device`, replacing any old one. Records the
-    device's current move in device_station_moves (kept across re-issues)."""
+    """Mint a new key for `device`, replacing any old one. The key covers
+    only the device's current setup move."""
     raw = secrets.token_urlsafe(32)
     now = datetime.now(UTC)
     device.station_key_hash = _hash(raw)
+    device.station_key_initiative_id = device.current_initiative_id
     device.station_key_issued_at = now
     device.station_key_issued_by = actor_id
     device.station_key_issued_via = via
     device.updated_at = now
-    if device.current_initiative_id is not None:
-        await db.execute(
-            pg_insert(DeviceStationMove)
-            .values(device_id=device.id, initiative_id=device.current_initiative_id)
-            .on_conflict_do_nothing())
     audit(db, actor_id=actor_id, entity_type="device", entity_id=str(device.id),
           action="station_key_issue",
           changes={"initiative_id": (str(device.current_initiative_id)
@@ -49,11 +44,12 @@ async def issue(db: AsyncSession, device: Device, *,
 
 async def revoke(db: AsyncSession, device: Device, *,
                  actor_id: uuid.UUID | None, reason: str) -> bool:
-    """Clear the key (moves are kept). Returns whether a key existed; an
+    """Clear the key and the move it covered. Returns whether a key existed; an
     audit row is written only then."""
     if device.station_key_hash is None:
         return False
     device.station_key_hash = None
+    device.station_key_initiative_id = None
     device.station_key_issued_at = None
     device.station_key_issued_by = None
     device.station_key_issued_via = None
