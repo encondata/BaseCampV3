@@ -135,3 +135,18 @@ async def test_tag_data_receiving_event_once_then_after_quiet(app, ingest_client
     clock.now = 401
     await ingest_client.post(path(), json=tag_event("E280AC"))
     assert len(events()) == 2
+
+
+async def test_put_on_the_real_path_is_404(app, ingest_client):
+    r = await ingest_client.put(path(), json=tag_event("E280AA"))
+    assert r.status_code == 404 and r.content == b""
+    assert rows(app) == []
+
+
+async def test_rejected_serial_never_forges_a_log_line(app, ingest_client, caplog):
+    caplog.set_level(logging.DEBUG)
+    r = await ingest_client.post(path(serial="evil%0aFAKE%20LINE" + "a" * 500),
+                                 json=tag_event("E280AA"))
+    assert r.status_code == 404
+    ours = [x.getMessage() for x in caplog.records if x.name.startswith("edge")]
+    assert ours and all("\n" not in m and len(m) < 200 for m in ours)

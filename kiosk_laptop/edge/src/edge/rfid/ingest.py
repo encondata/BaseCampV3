@@ -38,7 +38,11 @@ def create_ingest_app(state, *, clock=time.monotonic) -> Starlette:
         row = pairing.current_row(store)
         if (row is None or row["serial"] != serial
                 or not hmac.compare_digest((row["token"] or "").encode(), token.encode())):
-            log.info("rejected tag data for reader %s", serial)
+            # the serial is attacker-controlled path text: quote it (no raw newlines) and cap it
+            if row is not None and row["serial"] == serial:
+                log.info("rejected tag data for reader %r (bad token)", serial[:64])
+            else:
+                log.debug("rejected tag data for reader %r", serial[:64])
             return _not_found()
 
         declared = request.headers.get("content-length")
