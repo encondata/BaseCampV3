@@ -16,10 +16,15 @@ from sqlalchemy.orm import joinedload
 from serversherpa.access.resolver import AccessInfo, resolve_access
 from serversherpa.config import get_settings
 from serversherpa.db.engine import get_db
-from serversherpa.db.models import AuthSession, Person, UserAccount
+from serversherpa.db.models import AuthSession, Device, Person, UserAccount
 from serversherpa.security.tokens import TokenError, decode_access_token
+from serversherpa.services import station_keys
 from serversherpa.services.password_policy import (
-    PasswordReused, assert_not_reused, expires_at, length_problem, load_policy,
+    PasswordReused,
+    assert_not_reused,
+    expires_at,
+    length_problem,
+    load_policy,
 )
 
 _bearer = HTTPBearer(auto_error=False)
@@ -394,3 +399,17 @@ async def totp_actor(
 
 
 TotpChallengeOrUser = Annotated[TotpActor, Depends(totp_actor)]
+
+
+async def station_device(request: Request, db: AsyncSession, serial: str) -> Device:
+    """The kiosk Device `serial` when the request carries its station key
+    (`Authorization: Station <key>`). A bad, missing or revoked key is one
+    401 `station_key_invalid`. The key is never logged."""
+    scheme, _, raw = (request.headers.get("authorization") or "").partition(" ")
+    raw = raw.strip()
+    device = None
+    if scheme == "Station" and raw:
+        device = await station_keys.verify(db, serial, raw)
+    if device is None:
+        raise _unauthorized("station_key_invalid")
+    return device

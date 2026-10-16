@@ -18,7 +18,7 @@ from sqlalchemy.orm import aliased, joinedload
 
 from serversherpa.access.resolver import resolve_access
 from serversherpa.api.deps import (
-    AuthContext, DbSession, client_ip, rate_limit_ip, require_permission,
+    AuthContext, DbSession, client_ip, rate_limit_ip, require_permission, station_device,
 )
 from serversherpa.api.routes.auth import (
     _scope_out, person_out, session_response, totp_status_out,
@@ -32,7 +32,8 @@ from serversherpa.api.schemas import (
     KioskEdgeMovePasswordsOut, KioskMoveOut,
     KioskPeopleSyncOut, KioskPersonOut, KioskPrinterEventIn,
     KioskRfidEnrollIn, KioskRfidEnrollOut, KioskScanBatchIn,
-    KioskScanBatchOut, KioskScanRejected, KioskSetupIn, KioskSetupOut, KioskSetupReadOut, KioskSetupReaderOut,
+    KioskScanBatchOut, KioskScanIn, KioskScanRejected, KioskStationScanBatchIn,
+    KioskStationScanBatchOut, KioskSetupIn, KioskSetupOut, KioskSetupReadOut, KioskSetupReaderOut,
     KioskStationKeyIn, KioskStationKeyOut,
     KioskSignOutIn, KioskTimeclockEntry, KioskTimeclockLastEntry,
     KioskTimeclockPerson, KioskTimeclockStatusOut, KioskTruckContainerIn,
@@ -994,12 +995,30 @@ async def ingest_scans(
     device = await db.scalar(select(Device).where(Device.serial == body.serial))
     if device is None or device.device_type != "kiosk":
         raise _err(404, "device_not_found")
-    now = datetime.now(UTC)
+    return await _store_scan_batch(
+        db, device, body.scans, operator_id=actor.person.id,
+        allowed_moves=None, locked=actor.session.initiative_id,
+        inactive_moves=set())
 
+
+async def _store_scan_batch(
+    db: AsyncSession, device: Device, scans: list[KioskScanIn], *,
+    operator_id: uuid.UUID | None, allowed_moves: set[uuid.UUID] | None,
+    locked: uuid.UUID | None, inactive_moves: set[uuid.UUID],
+) -> KioskScanBatchOut:
+    """Validate and store one scan batch for `device`; shared by the
+    person route (POST /kiosk/scans) and the station-key route.
+
+    `locked` is a move-password session's move; `allowed_moves` is the
+    set of moves a station key covers. A scan's move is its own
+    `initiative_id`, else the device's setup move. Outside `locked` /
+    `allowed_moves` it is `move_locked`; in `inactive_moves` (completed,
+    cancelled or archived) it is `move_inactive`. Commits."""
+    now = datetime.now(UTC)
     # One lookup per reference kind for the whole batch, not per scan.
-    site_ids = {s.site_id for s in body.scans if s.site_id is not None}
-    initiative_ids = {s.initiative_id for s in body.scans if s.initiative_id is not None}
-    status_keys = {s.scan_status for s in body.scans if s.scan_status is not None}
+    site_ids = {s.site_id for s in scans if s.site_id is not None}
+    initiative_ids = {s.initiative_id for s in scans if s.initiative_id is not None}
+    status_keys = {s.scan_status for s in scans if s.scan_status is not None}
     known_sites = set(await db.scalars(
         select(Site.id).where(Site.id.in_(site_ids)))) if site_ids else set()
     known_initiatives = set(await db.scalars(
@@ -1009,17 +1028,16 @@ async def ingest_scans(
         select(StatusValue.key).where(
             StatusValue.record_type == "asset",
             StatusValue.key.in_(status_keys)))) if status_keys else set()
-    scan_type_keys = {s.scan_type for s in body.scans}
+    scan_type_keys = {s.scan_type for s in scans}
     known_scan_types = set(await db.scalars(
         select(StatusValue.key).where(
             StatusValue.record_type == "scan",
             StatusValue.key.in_(scan_type_keys)))) if scan_type_keys else set()
 
-    locked = actor.session.initiative_id
     accepted: list[uuid.UUID] = []
     rejected: list[KioskScanRejected] = []
     rows: list[dict] = []
-    for scan in body.scans:
+    for scan in scans:
         if scan.scan_type not in known_scan_types:
             code = "bad_scan_type"
         elif scan.site_id is not None and scan.site_id not in known_sites:
@@ -1032,6 +1050,12 @@ async def ingest_scans(
         elif (locked is not None
                 and (scan.initiative_id or device.current_initiative_id) != locked):
             code = "move_locked"
+        elif (allowed_moves is not None
+                and (scan.initiative_id or device.current_initiative_id)
+                not in allowed_moves):
+            code = "move_locked"
+        elif (scan.initiative_id or device.current_initiative_id) in inactive_moves:
+            code = "move_inactive"
         else:
             code = ""
         if code:
@@ -1046,7 +1070,8 @@ async def ingest_scans(
             "scan_status": checkpoint,
             "scanned_at": scan.scanned_at,
             "device_id": device.name,
-            "operator_id": actor.person.id,
+            "operator_id": operator_id,
+            "off_move": scan.off_move,
             "site_id": scan.site_id or device.site_id,
             "initiative_id": scan.initiative_id or device.current_initiative_id,
             "source": "kiosk",
@@ -1065,11 +1090,39 @@ async def ingest_scans(
     # last_seen_at only: updated_at means "this kiosk's configuration
     # changed", and ingesting scans does not change it.
     device.last_seen_at = now
-    audit(db, actor_id=actor.person.id, entity_type="device",
+    audit(db, actor_id=operator_id, entity_type="device",
           entity_id=str(device.id), action="kiosk_scans",
           changes={"accepted": len(accepted), "rejected": len(rejected)})
     await db.commit()
     return KioskScanBatchOut(accepted=accepted, rejected=rejected)
+
+
+@router.post("/station/scans", response_model=KioskStationScanBatchOut)
+async def station_ingest_scans(
+    body: KioskStationScanBatchIn, request: Request, db: DbSession,
+) -> KioskStationScanBatchOut:
+    """RFID scans an unattended laptop kiosk uploads under its station
+    key (`Authorization: Station <key>`), no person session needed. Stored
+    exactly like `POST /kiosk/scans` but with no operator. The key covers
+    one move: a scan for any other is `move_locked`, and one for that move
+    once it is completed, cancelled or archived is `move_inactive`. The
+    reply carries the device's pending Clear Setup id, like the heartbeat,
+    so the laptop learns it was cleared even with nobody signed in."""
+    device = await station_device(request, db, body.serial)
+    move = device.station_key_initiative_id
+    allowed = {move} if move is not None else set()
+    inactive: set[uuid.UUID] = set()
+    if move is not None:
+        init = await db.get(Initiative, move)
+        if init is not None and (init.status in HISTORICAL_INITIATIVE_STATUSES
+                                 or init.archived_at is not None):
+            inactive.add(move)
+    out = await _store_scan_batch(
+        db, device, body.scans, operator_id=None, allowed_moves=allowed,
+        locked=None, inactive_moves=inactive)
+    return KioskStationScanBatchOut(
+        accepted=out.accepted, rejected=out.rejected,
+        clear_setup=device.setup_clear_id)
 
 
 # ── RFID enroll (kiosk:view) ─────────────────────────────────────────

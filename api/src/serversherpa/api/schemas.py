@@ -3149,6 +3149,7 @@ class KioskScanIn(BaseModel):
     site_id: uuid.UUID | None = None
     initiative_id: uuid.UUID | None = None
     scan_status: str | None = Field(default=None, max_length=120)
+    off_move: bool = False
 
     @field_validator("scanned_value")
     @classmethod
@@ -3164,14 +3165,26 @@ class KioskScanBatchIn(BaseModel):
     scans: list[KioskScanIn] = Field(min_length=1, max_length=100)
 
 
+class KioskStationScanBatchIn(BaseModel):
+    """A station-key upload: at most 50 scans per batch."""
+
+    serial: str = Field(min_length=1, max_length=120)
+    scans: list[KioskScanIn] = Field(min_length=1, max_length=50)
+
+
 class KioskScanRejected(BaseModel):
     client_scan_id: uuid.UUID
-    code: Literal["bad_site", "bad_initiative", "bad_status", "bad_scan_type", "move_locked"]
+    code: Literal["bad_site", "bad_initiative", "bad_status", "bad_scan_type",
+                  "move_locked", "move_inactive"]
 
 
 class KioskScanBatchOut(BaseModel):
     accepted: list[uuid.UUID]
     rejected: list[KioskScanRejected]
+
+
+class KioskStationScanBatchOut(KioskScanBatchOut):
+    clear_setup: uuid.UUID | None = None
 
 
 # ── kiosk printer maintenance ──
