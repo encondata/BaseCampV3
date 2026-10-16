@@ -65,9 +65,9 @@ async def apply_reader_report(
             return await _upsert(db, kiosk, parsed, actor_id)
     except ValidationError:
         log.warning("kiosk reader report dropped (invalid), serial=%s", serial)
-    except Exception:  # noqa: BLE001 - a reader never fails the heartbeat
-        log.warning("kiosk reader report dropped (error), serial=%s", serial,
-                    exc_info=False)
+    except Exception as exc:  # noqa: BLE001 - a reader never fails the heartbeat
+        log.warning("kiosk reader report dropped (%s), serial=%s",
+                    type(exc).__name__, serial)
     return None
 
 
@@ -75,38 +75,68 @@ async def _upsert(db: AsyncSession, kiosk: Device, r: KioskReaderReport,
                   actor_id: uuid.UUID | None) -> Device | None:
     now = datetime.now(UTC)
     reader = await db.scalar(select(Device).where(Device.serial == r.serial))
-    if reader is not None and reader.device_type != "fixed_reader":
-        log.warning("kiosk reader report ignored (serial held by %s), serial=%s",
-                    reader.device_type, r.serial)
+    if reader is not None and (
+            reader.device_type != "fixed_reader"
+            or not (reader.raw_info or {}).get("via_kiosk_id")):
+        # Another family's row, or a fixed reader not created through a
+        # kiosk (hand-made / another source): never taken over.
+        log.warning("kiosk reader report ignored (serial not claimable), serial=%s",
+                    r.serial)
         return None
     created = reader is None
+    before: dict = {}
     if created:
         reader = Device(device_type="fixed_reader", serial=r.serial,
                         name=r.name or f"FX9600 {r.serial}", raw_info={})
         db.add(reader)
-    reader.model = r.model
-    reader.version = r.firmware
-    reader.mac = r.mac
-    reader.lan_ip = str(r.ip) if r.ip is not None else None
-    reader.uptime_seconds = r.uptime_seconds
-    reader.antennas_connected = r.antennas_connected
+    else:
+        before = {"site_id": reader.site_id,
+                  "initiative_id": reader.current_initiative_id,
+                  "via_kiosk": (reader.raw_info or {}).get("via_kiosk_name")}
+    present = r.model_fields_set
+    # Only fields the report carries are applied; an absent field keeps
+    # what is stored (a partial snapshot must not wipe good data).
+    for src, col, conv in (
+            ("model", "model", None), ("firmware", "version", None),
+            ("mac", "mac", None), ("ip", "lan_ip", str),
+            ("uptime_seconds", "uptime_seconds", None),
+            ("antennas_connected", "antennas_connected", None)):
+        v = getattr(r, src)
+        if src in present and v is not None:
+            setattr(reader, col, conv(v) if conv else v)
     reader.connection_type = "local_api"
     reader.scan_status = kiosk.scan_status
     reader.site_id = kiosk.site_id
     reader.current_initiative_id = kiosk.current_initiative_id
     if r.reachable is not False:
         reader.last_seen_at = now
-    reader.raw_info = {
-        **(reader.raw_info or {}),
-        "make": r.make, "reading": r.reading, "reachable": r.reachable,
-        "reported_tags_24h": r.tags_24h, "antennas_total": r.antennas_total,
-        "reported_at": (r.taken_at or now).isoformat(),
-        "via_kiosk_id": str(kiosk.id), "via_kiosk_name": kiosk.name,
-    }
+    raw = dict(reader.raw_info or {})
+    for src, key in (("make", "make"), ("reading", "reading"),
+                     ("tags_24h", "reported_tags_24h"),
+                     ("antennas_total", "antennas_total")):
+        v = getattr(r, src)
+        if src in present and v is not None:
+            raw[key] = v
+    raw["reachable"] = r.reachable
+    raw["reported_at"] = (r.taken_at or now).isoformat()
+    raw["via_kiosk_id"] = str(kiosk.id)
+    raw["via_kiosk_name"] = kiosk.name
+    reader.raw_info = raw
     reader.updated_at = now
     await db.flush()
     if created:
         audit(db, actor_id=actor_id, entity_type="device", entity_id=str(reader.id),
               action="self_register",
               changes={"serial": r.serial, "name": reader.name, "via_kiosk": kiosk.name})
+    else:
+        after = {"site_id": reader.site_id,
+                 "initiative_id": reader.current_initiative_id,
+                 "via_kiosk": kiosk.name}
+        if (before["site_id"], before["initiative_id"]) != (
+                after["site_id"], after["initiative_id"]):
+            j = lambda v: str(v) if isinstance(v, uuid.UUID) else v  # noqa: E731
+            audit(db, actor_id=actor_id, entity_type="device",
+                  entity_id=str(reader.id), action="reader_reassigned",
+                  changes={k: {"from": j(before[k]), "to": j(after[k])}
+                           for k in ("site_id", "initiative_id", "via_kiosk")})
     return reader

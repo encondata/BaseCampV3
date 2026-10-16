@@ -85,9 +85,11 @@ async def test_reader_with_only_serial_is_accepted(client, db, seeded_user):
 
 async def test_bad_mac_is_dropped_not_422(client, db, seeded_user):
     hdrs, kid = await _station(client, db)
+    before = (await _device(db, kid)).last_seen_at
     r = await _beat(client, hdrs, {**REPORT, "mac": "not-a-mac"})
     assert r.status_code == 200, r.text
-    assert (await _device(db, kid)).last_seen_at is not None
+    after = (await _device(db, kid)).last_seen_at
+    assert after is not None and (before is None or after > before)
     assert await _readers(db) == []
 
 
@@ -107,23 +109,80 @@ async def test_serial_owned_by_other_type_is_ignored(client, db, seeded_user):
     hdrs, kid = await _station(client, db)
     db.add(Device(device_type="router", name="rtr", serial=RSERIAL, model="GL"))
     await db.commit()
+    before = (await _device(db, kid)).last_seen_at
     r = await _beat(client, hdrs, REPORT)
     assert r.status_code == 200, r.text
-    assert (await _device(db, kid)).last_seen_at is not None
+    after = (await _device(db, kid)).last_seen_at
+    assert after is not None and (before is None or after > before)
     assert await _readers(db) == []
     rtr = await db.scalar(select(Device).where(Device.serial == RSERIAL))
     assert rtr.device_type == "router" and rtr.model == "GL" and rtr.mac is None
 
 
-async def test_existing_fixed_reader_keeps_its_name(client, db, seeded_user):
-    hdrs, kid = await _station(client, db)
-    db.add(Device(device_type="fixed_reader", name="Dock door 3", serial=RSERIAL))
+async def test_hand_made_fixed_reader_is_not_taken_over(client, db, seeded_user):
+    hdrs, _ = await _station(client, db)
+    db.add(Device(device_type="fixed_reader", name="Dock door 3", serial=RSERIAL,
+                  mac="AA:BB:CC:00:00:01"))
     await db.commit()
-    await _beat(client, hdrs, REPORT)
-    kiosk_site = (await _device(db, kid)).site_id
+    assert (await _beat(client, hdrs, REPORT)).status_code == 200
     (fr,) = await _readers(db)
-    assert fr.name == "Dock door 3" and fr.mac == "C4:7D:CC:64:7D:23"
-    assert fr.site_id == kiosk_site
+    assert fr.name == "Dock door 3" and fr.mac == "AA:BB:CC:00:00:01"
+    assert fr.site_id is None and fr.scan_status is None and fr.last_seen_at is None
+
+
+async def test_partial_snapshot_keeps_stored_values(client, db, seeded_user):
+    hdrs, _ = await _station(client, db)
+    await _beat(client, hdrs, REPORT)
+    (fr,) = await _readers(db)
+    seen = fr.last_seen_at
+    await _beat(client, hdrs, {"serial": RSERIAL, "reachable": False})
+    (fr,) = await _readers(db)
+    assert fr.mac == "C4:7D:CC:64:7D:23" and fr.lan_ip == "10.10.48.119"
+    assert fr.version == "3.32.37.0" and fr.model == "FX9600"
+    assert fr.raw_info["make"] == "Zebra" and fr.raw_info["reachable"] is False
+    assert fr.last_seen_at == seen
+
+
+async def test_reassignment_is_audited(client, db, seeded_user):
+    hdrs, _ = await _station(client, db)
+    await _beat(client, hdrs, REPORT)
+    await _beat(client, hdrs, REPORT)
+    (fr,) = await _readers(db)
+    rid = str(fr.id)
+    n = lambda: db.scalars(select(AuditLog).where(  # noqa: E731
+        AuditLog.action == "reader_reassigned", AuditLog.entity_id == rid))
+    assert (await n()).all() == []
+    other = Device(device_type="kiosk", name="Second Laptop", serial="kiosk-2",
+                   sub_type="laptop", station_type="rfid", rfid_reader_serial=RSERIAL)
+    db.add(other)
+    await db.commit()
+    await client.post("/kiosk/heartbeat", headers=hdrs, json={
+        "serial": "kiosk-2", "name": "Second Laptop", "mode": "laptop", "reader": REPORT})
+    (a,) = (await n()).all()
+    assert a.changes["via_kiosk"] == {"from": "Station Target", "to": "Second Laptop"}
+    assert a.changes["site_id"]["to"] is None and a.changes["site_id"]["from"]
+
+
+async def test_failed_upsert_does_not_touch_the_beat(client, db, seeded_user, monkeypatch):
+    from sqlalchemy.exc import IntegrityError
+
+    from serversherpa.services import fixed_readers
+
+    hdrs, kid = await _station(client, db)
+    before = (await _device(db, kid)).last_seen_at
+
+    async def boom(db_, kiosk, r, actor_id):
+        db_.add(Device(device_type="fixed_reader", name="x", serial=r.serial))
+        raise IntegrityError("stmt", {}, Exception("dup"))
+
+    monkeypatch.setattr(fixed_readers, "_upsert", boom)
+    assert (await _beat(client, hdrs, REPORT)).status_code == 200
+    after = (await _device(db, kid)).last_seen_at
+    assert after is not None and (before is None or after > before)
+    assert await _readers(db) == []
+    monkeypatch.undo()
+    assert (await _beat(client, hdrs, REPORT)).status_code == 200
+    assert len(await _readers(db)) == 1
 
 
 async def test_unreachable_snapshot_creates_offline_record(client, db, seeded_user):

@@ -77,7 +77,9 @@ On an accepted `reader`, the heartbeat upserts the `Device` with `device_type = 
 `devices.serial` is unique across **all** device types. *(Claude's calls, from the builder check:)*
 
 - **Another device type already holds that serial:** `reader` is ignored and logged. The heartbeat still succeeds.
-- **A fixed reader with that serial already exists** (for example, added by hand): it is adopted and updated as below, **except that its `name` is kept**. Scan counts join on the device name, so renaming it would silently zero its portal scan history. The host-name rule below applies only when the record is created.
+- **A fixed reader with that serial already exists:** *(Claude's call, from review.)* It is updated only if it was created through a kiosk (`raw_info.via_kiosk_id` is set). A hand-made fixed reader, or one from another source, is left untouched and the report is ignored and logged (serial only), so a laptop cannot take over another scope's reader. `name` is create-only, which also keeps scan-count joins intact.
+- **Partial snapshots never wipe data:** *(Claude's call, from review.)* On update, only fields present in the report are applied (also for the `raw_info` keys); `reachable` and `reported_at` always update.
+- **Reassignment is audited:** *(Claude's call, from review.)* When an existing reader's site or initiative changes (it moved to another kiosk or move), an audit row `reader_reassigned` records `site_id`, `initiative_id` and `via_kiosk` from/to. Plain telemetry updates are not audited.
 - **A reader that has never answered still gets a record.** It shows Offline until a reachable snapshot arrives.
 
 | Device field | Value |
