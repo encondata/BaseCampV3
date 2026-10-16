@@ -3111,6 +3111,25 @@ class KioskAssetsSyncOut(BaseModel):
     assets: list[KioskAssetOut]
 
 
+class KioskClientAssetOut(BaseModel):
+    """One asset on another move of the selected move's client: just enough
+    to say what it is and which move it belongs to (rfid sighting)."""
+    id: uuid.UUID
+    asset_id: str
+    name: str | None
+    rfid: str | None
+    serial_number: str | None
+    initiative_id: uuid.UUID
+    initiative_name: str
+
+
+class KioskClientAssetsSyncOut(BaseModel):
+    initiative_id: uuid.UUID
+    client_id: uuid.UUID | None
+    generated_at: datetime
+    assets: list[KioskClientAssetOut]
+
+
 class KioskPersonOut(BaseModel):
     """One cached person. The name parts ride along with display_name so
     the kiosk can match a typed name in any order ("tina t", "timeclock

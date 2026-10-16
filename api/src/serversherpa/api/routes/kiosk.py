@@ -25,7 +25,8 @@ from serversherpa.api.routes.auth import (
 )
 from serversherpa.api.routes.labels import vocab_usage as _vocab_usage
 from serversherpa.api.schemas import (
-    HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut, KioskClockInIn,
+    HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut,
+    KioskClientAssetOut, KioskClientAssetsSyncOut, KioskClockInIn,
     KioskClockOutIn, KioskContainerAssetIn, KioskContainerAssetOut,
     KioskContainerAssetRow, KioskContainerOut, KioskContainerRef,
     KioskContainersSyncOut, KioskContainerStateOut, KioskEdgeMovePassword,
@@ -795,6 +796,10 @@ async def sync_assets(
     the rest of this router (see /kiosk/setup-options' scope note); a
     move-password session may sync only its own move (403 `move_locked`)."""
     _require_move(actor, initiative_id)
+    return await _assets_body(db, initiative_id)
+
+
+async def _assets_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskAssetsSyncOut:
     initiative = await db.get(Initiative, initiative_id)
     if initiative is None:
         raise _err(404, "initiative_not_found")
@@ -871,6 +876,10 @@ async def sync_people(
     of this router. Contacts with neither a worker profile nor an
     account (client-side people) are never included. One response, no
     paging: the list is a few hundred rows at most."""
+    return await _people_body(db)
+
+
+async def _people_body(db: AsyncSession) -> KioskPeopleSyncOut:
     rows = (await db.execute(
         select(Person,
                WorkerProfile.person_id.isnot(None),
@@ -918,6 +927,10 @@ async def sync_containers(
     (including 403 `move_locked` for another move under a move password).
     Gated on kiosk:view, like the rest of this router."""
     _require_move(actor, initiative_id)
+    return await _containers_body(db, initiative_id)
+
+
+async def _containers_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskContainersSyncOut:
     initiative = await db.get(Initiative, initiative_id)
     if initiative is None:
         raise _err(404, "initiative_not_found")
@@ -948,6 +961,90 @@ async def sync_containers(
             status_label=status_label or c.status,
             site_id=c.site_id, site_name=site_name,
             asset_count=counts.get(c.id, 0)) for c, site_name, status_label in rows])
+
+
+@router.get("/sync/client-assets", response_model=KioskClientAssetsSyncOut)
+async def sync_client_assets(
+    db: DbSession,
+    initiative_id: uuid.UUID = Query(...),
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskClientAssetsSyncOut:
+    """Every asset on the OTHER moves of this move's client (one row per
+    asset-and-move pair), so a laptop can tell a sighting from a stranger.
+    A move with no client gets []; another client's assets never appear.
+    Same lock as the other sync routes (403 `move_locked`)."""
+    _require_move(actor, initiative_id)
+    return await _client_assets_body(db, initiative_id)
+
+
+async def _client_assets_body(
+        db: AsyncSession, initiative_id: uuid.UUID) -> KioskClientAssetsSyncOut:
+    initiative = await db.get(Initiative, initiative_id)
+    if initiative is None:
+        raise _err(404, "initiative_not_found")
+    if initiative.initiative_type != "move":
+        raise _err(422, "bad_initiative")
+    assets: list[KioskClientAssetOut] = []
+    if initiative.client_id is not None:
+        rows = (await db.execute(
+            select(Asset, Initiative.id, Initiative.name)
+            .join(InitiativeAsset, InitiativeAsset.asset_id == Asset.id)
+            .join(Initiative, Initiative.id == InitiativeAsset.initiative_id)
+            .where(Initiative.client_id == initiative.client_id,
+                   Initiative.id != initiative.id)
+            .order_by(Asset.legacy_id, natural(Initiative.name), Initiative.id))).all()
+        assets = [KioskClientAssetOut(
+            id=a.id, asset_id=str(a.legacy_id) if a.legacy_id is not None else "",
+            name=a.name, rfid=a.rfid_tag, serial_number=a.serial_number,
+            initiative_id=iid, initiative_name=iname) for a, iid, iname in rows]
+    return KioskClientAssetsSyncOut(
+        initiative_id=initiative.id, client_id=initiative.client_id,
+        generated_at=datetime.now(UTC), assets=assets)
+
+
+async def _station_sync_device(request: Request, db: AsyncSession,
+                               serial: str, initiative_id: uuid.UUID) -> None:
+    """Station sync serves only the move the key was issued for."""
+    device = await station_device(request, db, serial)
+    if device.station_key_initiative_id != initiative_id:
+        raise _err(403, "move_locked")
+
+
+@router.get("/station/sync/assets", response_model=KioskAssetsSyncOut)
+async def station_sync_assets(
+    request: Request, db: DbSession, serial: str = Query(...),
+    initiative_id: uuid.UUID = Query(...),
+) -> KioskAssetsSyncOut:
+    await _station_sync_device(request, db, serial, initiative_id)
+    return await _assets_body(db, initiative_id)
+
+
+@router.get("/station/sync/containers", response_model=KioskContainersSyncOut)
+async def station_sync_containers(
+    request: Request, db: DbSession, serial: str = Query(...),
+    initiative_id: uuid.UUID = Query(...),
+) -> KioskContainersSyncOut:
+    await _station_sync_device(request, db, serial, initiative_id)
+    return await _containers_body(db, initiative_id)
+
+
+@router.get("/station/sync/people", response_model=KioskPeopleSyncOut)
+async def station_sync_people(
+    request: Request, db: DbSession, serial: str = Query(...),
+    initiative_id: uuid.UUID = Query(...),
+) -> KioskPeopleSyncOut:
+    await _station_sync_device(request, db, serial, initiative_id)
+    return await _people_body(db)
+
+
+@router.get("/station/sync/client-assets", response_model=KioskClientAssetsSyncOut)
+async def station_sync_client_assets(
+    request: Request, db: DbSession, serial: str = Query(...),
+    initiative_id: uuid.UUID = Query(...),
+) -> KioskClientAssetsSyncOut:
+    await _station_sync_device(request, db, serial, initiative_id)
+    return await _client_assets_body(db, initiative_id)
+
 
 # ── scan ingest (kiosk:view) ─────────────────────────────────────────
 

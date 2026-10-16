@@ -34,7 +34,7 @@ _last_sweep: datetime | None = None
 
 _COPY_FIELDS = ("scanned_value", "scan_type", "status", "scanned_at",
                 "device_id", "operator_id", "site_id", "location_detail",
-                "source")
+                "source", "off_move")
 
 
 async def _stamp_error(maker, raw_id: int, err: Exception) -> None:
@@ -84,7 +84,8 @@ async def process_raw_scan(maker, raw_id: int) -> str:
                 if (asset.last_seen_at is None
                         or asset.last_seen_at < raw.scanned_at):
                     asset.last_seen_at = raw.scanned_at
-            await apply_rules(db, processed)
+            if not raw.off_move:    # an off-move scan is only a sighting
+                await apply_rules(db, processed)
             await db.delete(raw)
             await db.commit()
             return "matched"
