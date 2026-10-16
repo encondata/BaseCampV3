@@ -288,10 +288,17 @@ async def test_reset_link(client, db, seeded_user, email_on):
     headers = {"Authorization": f"Bearer {await _token(client)}"}
     resp = await client.post(f"/users/{tid}/reset-link", headers=headers)
     assert resp.status_code == 204, resp.text
-    rows = await _outbox(db, "password_reset", "rita@test.example.com")
+    rows = await _outbox(db, "admin_password_reset", "rita@test.example.com")
     assert len(rows) == 1 and "/reset-password#token=" in rows[0].text_body
     assert "Rita" in rows[0].text_body
     assert f"{get_settings().password_reset_ttl_minutes} minutes" in rows[0].text_body
+    # an admin sent it: the email says so, and never claims the person asked
+    for body in (rows[0].text_body, rows[0].html_body):
+        assert "An administrator sent you a link" in body
+        assert "Someone asked" not in body and "If it was you" not in body
+    assert rows[0].subject == "Set a new ServerSherpa password"
+    # the self-service template isn't used for it
+    assert await _outbox(db, "password_reset") == []
     # nothing changes until the link is used
     assert await _live_sessions(db, tid) == 1
     assert (await _account(db, tid)).password_hash == before
@@ -319,7 +326,7 @@ async def test_reset_link_email_off(client, db, seeded_user, email_off):
     resp = await client.post(f"/users/{target.id}/reset-link", headers=headers)
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "mail_not_configured"
-    assert await _outbox(db, "password_reset") == []
+    assert await _outbox(db, "admin_password_reset") == []
 
 
 async def test_reset_link_rank_and_self(client, db, seeded_user, email_on):
@@ -353,7 +360,7 @@ async def test_non_global_actor_forbidden(client, db, seeded_user, email_on, end
     assert resp.status_code == 403
     assert resp.json()["detail"]["code"] == "forbidden"
     assert await _outbox(db, "user_invite") == []
-    assert await _outbox(db, "password_reset") == []
+    assert await _outbox(db, "admin_password_reset") == []
 
 
 async def _archived_invited(client, db, seeded_user):
@@ -380,7 +387,7 @@ async def test_reset_link_refused_for_archived(client, db, seeded_user, email_on
     headers = {"Authorization": f"Bearer {await _token(client)}"}
     resp = await client.post(f"/users/{tid}/reset-link", headers=headers)
     assert resp.status_code == 422 and resp.json()["detail"]["code"] == "person_archived"
-    assert await _outbox(db, "password_reset") == []
+    assert await _outbox(db, "admin_password_reset") == []
     assert await _audit(db, tid, "password.reset_link_sent") == []
 
 
@@ -397,7 +404,7 @@ async def test_kiosk_move_identity_not_found(client, db, seeded_user, email_on, 
     resp = await client.post(f"/users/{kid}/{endpoint}", headers=headers)
     assert resp.status_code == 404 and resp.json()["detail"]["code"] == "user_not_found"
     assert await _outbox(db, "user_invite") == []
-    assert await _outbox(db, "password_reset") == []
+    assert await _outbox(db, "admin_password_reset") == []
 
 
 async def test_kiosk_move_identity_reset_password_not_found(client, db, seeded_user):
@@ -459,7 +466,7 @@ async def test_admin_reset_link_completion_sends_password_changed_mail(
     headers = {"Authorization": f"Bearer {await _token(client)}"}
     assert (await client.post(f"/users/{target.id}/reset-link",
                               headers=headers)).status_code == 204
-    (row,) = await _outbox(db, "password_reset", "rita@test.example.com")
+    (row,) = await _outbox(db, "admin_password_reset", "rita@test.example.com")
     done = await client.post("/auth/password-reset/confirm",
                              json={"token": _raw(row), "new_password": "BrandNewPass9!"})
     assert done.status_code == 204, done.text
