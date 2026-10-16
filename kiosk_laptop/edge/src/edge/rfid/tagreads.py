@@ -8,8 +8,11 @@ transaction so a retry after a failure can't duplicate half of it.
 import json
 import math
 import re
+from datetime import UTC, datetime, time
+from zoneinfo import ZoneInfo
 
-from ..db import Store, now_iso
+from .. import laptop_setup
+from ..db import Store, iso, now_iso
 
 _HEX = re.compile(r"[0-9A-F]{1,128}")
 _WHITESPACE = re.compile(r"\s+")
@@ -125,3 +128,79 @@ def store_batch(store: Store, *, reader_serial: str, rows: list[dict],
             c.execute(_INSERT, params)
             c.execute(_UPSERT, params)
     return len(rows)
+
+
+RECENT_LIMIT = 50
+
+# One entry: ((id(store), cache key, stored_at, body length), index, total).
+_asset_index: dict[tuple, tuple[dict[str, dict], int]] = {}
+
+
+def _zone(tz):
+    try:
+        return ZoneInfo(tz) if isinstance(tz, str) and tz else UTC
+    except (ValueError, OSError, KeyError):  # ZoneInfoNotFoundError is a KeyError
+        return UTC
+
+
+def local_midnight_iso(tz, now: datetime | None = None) -> str:
+    """Local midnight in `tz` as a UTC string formatted like db.now_iso(), so the
+    cutoff compares correctly against stored `last_seen` / `received_at`."""
+    zone = _zone(tz)
+    local = (now or datetime.now(UTC)).astimezone(zone)
+    return iso(datetime.combine(local.date(), time.min, tzinfo=zone))
+
+
+def _assets(store: Store, move_id: str) -> tuple[dict[str, dict], int] | None:
+    """(normalized rfid -> asset summary, asset count) from the cached sync body."""
+    key = f"/kiosk/sync/assets?initiative_id={move_id}"
+    meta = store.one("SELECT stored_at, length(body) AS n FROM cache WHERE key = ?", (key,))
+    if meta is None:
+        return None
+    stamp = (id(store), key, meta["stored_at"], meta["n"])
+    hit = _asset_index.get(stamp)
+    if hit is not None:
+        return hit
+    row = store.one("SELECT body FROM cache WHERE key = ?", (key,))
+    try:
+        assets = json.loads(row["body"]).get("assets") if row else None
+    except (ValueError, AttributeError):
+        assets = None
+    if not isinstance(assets, list):
+        return None
+    index: dict[str, dict] = {}
+    for a in assets:
+        if not isinstance(a, dict):
+            continue
+        epc = normalize_epc(a.get("rfid"))
+        if epc is not None:
+            index.setdefault(epc, {"serial_number": a.get("serial_number"),
+                                   "name": a.get("name"), "make_model": a.get("make_model")})
+    result = (index, len(assets))
+    _asset_index.clear()
+    _asset_index[stamp] = result
+    return result
+
+
+def reads_summary(store: Store, *, tz: str = "UTC", limit: int = RECENT_LIMIT,
+                  now: datetime | None = None) -> dict:
+    """The RFID dashboard's data (spec section 5)."""
+    cutoff = local_midnight_iso(tz, now)
+    tags_today = store.one("SELECT COUNT(*) AS n FROM rfid_tags_seen WHERE last_seen >= ?",
+                           (cutoff,))["n"]
+    setup = laptop_setup.load(store)
+    found = _assets(store, setup["initiative_id"]) if setup and setup.get("initiative_id") \
+        else None
+    index: dict[str, dict] = {}
+    move_total = move_seen = None
+    if found is not None:
+        index, move_total = found
+        seen = {r["epc"] for r in store.all("SELECT epc FROM rfid_tags_seen")}
+        move_seen = sum(1 for epc in index if epc in seen)
+    rows = store.all("SELECT epc, received_at, antenna, peak_rssi FROM raw_tag_reads "
+                     "ORDER BY id DESC LIMIT ?", (limit,))
+    recent = [{"epc": r["epc"], "received_at": r["received_at"], "antenna": r["antenna"],
+               "peak_rssi": r["peak_rssi"], "asset": index.get(r["epc"])} for r in rows]
+    last = store.one("SELECT MAX(received_at) AS t FROM raw_tag_reads")["t"]
+    return {"tags_today": tags_today, "move_total": move_total, "move_seen": move_seen,
+            "recent": recent, "last_received_at": last}
