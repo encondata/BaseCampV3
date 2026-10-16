@@ -295,6 +295,9 @@ class ZiotcClient:
     async def version(self) -> dict:
         return await self._json("/cloud/version")
 
+    async def network(self) -> dict:
+        return await self._json("/cloud/network")
+
     async def status(self) -> dict:
         return await self._json("/cloud/status")
 
