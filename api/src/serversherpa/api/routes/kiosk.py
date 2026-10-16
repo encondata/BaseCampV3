@@ -18,7 +18,7 @@ from sqlalchemy.orm import aliased, joinedload
 
 from serversherpa.access.resolver import resolve_access
 from serversherpa.api.deps import (
-    AuthContext, DbSession, client_ip, rate_limit_ip, require_permission, station_device,
+    AuthContext, DbSession, client_ip, enforce_read_only_config, rate_limit_ip, require_permission, station_device,
 )
 from serversherpa.api.routes.auth import (
     _scope_out, person_out, session_response, totp_status_out,
@@ -1005,6 +1005,8 @@ async def _store_scan_batch(
     db: AsyncSession, device: Device, scans: list[KioskScanIn], *,
     operator_id: uuid.UUID | None, allowed_moves: set[uuid.UUID] | None,
     locked: uuid.UUID | None, inactive_moves: set[uuid.UUID],
+    allowed_sites: set[uuid.UUID] | None = None, rfid_only: bool = False,
+    audit_via: str | None = None,
 ) -> KioskScanBatchOut:
     """Validate and store one scan batch for `device`; shared by the
     person route (POST /kiosk/scans) and the station-key route.
@@ -1013,7 +1015,9 @@ async def _store_scan_batch(
     set of moves a station key covers. A scan's move is its own
     `initiative_id`, else the device's setup move. Outside `locked` /
     `allowed_moves` it is `move_locked`; in `inactive_moves` (completed,
-    cancelled or archived) it is `move_inactive`. Commits."""
+    cancelled or archived) it is `move_inactive`. `rfid_only` rejects
+    other scan types (`bad_scan_type`); `allowed_sites`, when given, must
+    contain a scan's effective site (`bad_site`). Commits."""
     now = datetime.now(UTC)
     # One lookup per reference kind for the whole batch, not per scan.
     site_ids = {s.site_id for s in scans if s.site_id is not None}
@@ -1038,9 +1042,13 @@ async def _store_scan_batch(
     rejected: list[KioskScanRejected] = []
     rows: list[dict] = []
     for scan in scans:
-        if scan.scan_type not in known_scan_types:
+        if scan.scan_type not in known_scan_types or (
+                rfid_only and scan.scan_type != "rfid"):
             code = "bad_scan_type"
         elif scan.site_id is not None and scan.site_id not in known_sites:
+            code = "bad_site"
+        elif allowed_sites is not None and (
+                (scan.site_id or device.site_id) not in allowed_sites):
             code = "bad_site"
         elif (scan.initiative_id is not None
                 and scan.initiative_id not in known_initiatives):
@@ -1092,7 +1100,8 @@ async def _store_scan_batch(
     device.last_seen_at = now
     audit(db, actor_id=operator_id, entity_type="device",
           entity_id=str(device.id), action="kiosk_scans",
-          changes={"accepted": len(accepted), "rejected": len(rejected)})
+          changes={"accepted": len(accepted), "rejected": len(rejected),
+                   **({"via": audit_via} if audit_via else {})})
     await db.commit()
     return KioskScanBatchOut(accepted=accepted, rejected=rejected)
 
@@ -1109,17 +1118,23 @@ async def station_ingest_scans(
     reply carries the device's pending Clear Setup id, like the heartbeat,
     so the laptop learns it was cleared even with nobody signed in."""
     device = await station_device(request, db, body.serial)
+    await enforce_read_only_config(db, request)
     move = device.station_key_initiative_id
     allowed = {move} if move is not None else set()
     inactive: set[uuid.UUID] = set()
+    sites: set[uuid.UUID] = set()
     if move is not None:
         init = await db.get(Initiative, move)
+        if init is not None:
+            sites = {x for x in (init.origin_site_id, init.destination_site_id)
+                     if x is not None}
         if init is not None and (init.status in HISTORICAL_INITIATIVE_STATUSES
                                  or init.archived_at is not None):
             inactive.add(move)
     out = await _store_scan_batch(
         db, device, body.scans, operator_id=None, allowed_moves=allowed,
-        locked=None, inactive_moves=inactive)
+        locked=None, inactive_moves=inactive, allowed_sites=sites,
+        rfid_only=True, audit_via="station_key")
     return KioskStationScanBatchOut(
         accepted=out.accepted, rejected=out.rejected,
         clear_setup=device.setup_clear_id)

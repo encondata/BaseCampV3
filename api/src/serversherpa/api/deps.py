@@ -160,9 +160,16 @@ async def enforce_read_only(db: AsyncSession, request: Request,
                             user: AuthContext) -> None:
     """Read-only maintenance mode: reject mutating calls from everyone but
     developers with 423. Only mutating methods pay the one-row lookup."""
+    if "developer" in user.roles:
+        return
+    await enforce_read_only_config(db, request)
+
+
+async def enforce_read_only_config(db: AsyncSession, request: Request) -> None:
+    """The read-only check without a person: for routes authenticated some
+    other way (the station key). Same 423 `read_only_mode` as above."""
     if (request.method not in MUTATING_METHODS
-            or _read_only_exempt(request.url.path)
-            or "developer" in user.roles):
+            or _read_only_exempt(request.url.path)):
         return
     from serversherpa.system.admin_config import read_admin_config
 
