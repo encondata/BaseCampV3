@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { passesColumnFilters } from './columnMenu';
+
 import type { ProcessedScanRow, RawScanRow } from './api';
 import {
   matchedHref, processedScanCellText, processedScanSearchText,
@@ -17,7 +19,7 @@ const row: ProcessedScanRow = {
   match_type_label: 'Asset', match_type_color: '#178a4c',
   asset_id: 'a1', container_id: null, person_id: null,
   matched_name: 'srv-9', processed_at: '2026-08-27T09:01:00Z',
-  archived_at: null, created_at: '2026-08-27T09:01:00Z',
+  archived_at: null, created_at: '2026-08-27T09:01:00Z', off_move: false,
 };
 
 describe('processedScanSearchText', () => {
@@ -154,5 +156,23 @@ describe('scan value column trims rfid padding only', () => {
     expect(processedScanCellText({ ...row, scanned_value: '0000', scan_type: 'rfid' }, 'primary')).toBe('0');
     expect(rawScanCellText({ ...rawRow, scanned_value: '000000000000000000100418', scan_type: 'rfid' }, 'primary')).toBe('100418');
     expect(rawScanCellText({ ...rawRow, scanned_value: '000123', scan_type: 'barcode' }, 'primary')).toBe('000123');
+  });
+});
+
+describe('off move', () => {
+  const flagged: ProcessedScanRow = { ...row, id: 'p2', off_move: true };
+
+  it('reads Yes/No in the Off move column and finds flagged rows by text', () => {
+    expect(processedScanCellText(row, 'off_move')).toBe('No');
+    expect(processedScanCellText(flagged, 'off_move')).toBe('Yes');
+    expect(processedScanSearchText(flagged)).toContain('off move');
+    expect(processedScanSearchText(row)).not.toContain('off move');
+  });
+
+  it('the column filter narrows the list to flagged rows', () => {
+    const rows = [row, flagged];
+    const kept = rows.filter((r) =>
+      passesColumnFilters(r, { off_move: { values: ['Yes'] } }, processedScanCellText));
+    expect(kept.map((r) => r.id)).toEqual(['p2']);
   });
 });

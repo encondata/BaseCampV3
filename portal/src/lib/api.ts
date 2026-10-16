@@ -2924,6 +2924,7 @@ export interface ProcessedScanRow {
   asset_id: string | null; container_id: string | null;
   person_id: string | null; matched_name: string | null;
   processed_at: string; archived_at: string | null; created_at: string;
+  off_move: boolean;
 }
 
 export interface RawScanQuery {
@@ -3009,6 +3010,7 @@ export interface AssetScanRow {
   operator_id: string | null; operator_name: string | null;
   site_id: string | null; site_name: string | null;
   location_detail: string; source: string;
+  off_move: boolean;
 }
 
 export async function listAssetScans(

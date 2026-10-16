@@ -31,6 +31,7 @@ export const PROCESSED_SCAN_COLUMNS: ColumnDef[] = [
   { key: 'site', label: 'Site', width: '1fr', default: true },
   { key: 'location', label: 'Location', width: '1.2fr', default: false },
   { key: 'source', label: 'Source', width: '0.7fr', default: false },
+  { key: 'off_move', label: 'Off move', width: '0.7fr', default: false },
 ];
 
 /* ── Raw scans ───────────────────────────────────────────────────── */

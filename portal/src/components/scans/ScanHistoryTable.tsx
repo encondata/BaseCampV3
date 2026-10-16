@@ -46,7 +46,10 @@ export default function ScanHistoryTable({ assetId, limit, capHint }: {
         rows={scans.map((s) => ({
           key: s.id,
           cells: [
-            statusChip(s.status_label, s.status_color) ?? '—',
+            <div className="chips">
+              {statusChip(s.status_label, s.status_color) ?? '—'}
+              {s.off_move && <span className="chip c-amber">Off move</span>}
+            </div>,
             <span className="scan-when">{new Date(s.scanned_at).toLocaleString()}</span>,
             <span className="chip custom"
                   style={{ '--chip': s.scan_type_color } as CSSProperties}>

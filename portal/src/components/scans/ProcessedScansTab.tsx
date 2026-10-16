@@ -74,6 +74,7 @@ function sortValueFor(s: ProcessedScanRow, key: string): string {
     case 'location': return s.location_detail.toLowerCase();
     case 'source': return s.source.toLowerCase();
     case 'archived': return s.archived_at ? '1' : '0';
+    case 'off_move': return s.off_move ? '1' : '0';
     default: return '';
   }
 }
@@ -92,6 +93,7 @@ const CSV_COLUMNS: [string, (s: ProcessedScanRow) => string][] = [
   ['Site', (s) => s.site_name ?? ''],
   ['Location', (s) => s.location_detail],
   ['Source', (s) => s.source],
+  ['Off move', (s) => (s.off_move ? 'Yes' : 'No')],
 ];
 
 export default function ProcessedScansTab({ onCount }: {
@@ -221,6 +223,7 @@ export default function ProcessedScansTab({ onCount }: {
             <span className="chip custom" style={{ '--chip': s.match_type_color } as CSSProperties}>
               <span className="dot" />{s.match_type_label}
             </span>
+            {s.off_move && <span className="chip c-amber">Off move</span>}
             {s.archived_at && <span className="chip tag">Archived</span>}
             {pd.pendingIds.has(s.id) && <span className="chip tag">Pending delete</span>}
           </div>
@@ -272,6 +275,10 @@ export default function ProcessedScansTab({ onCount }: {
         const text = s.source || '—';
         return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
       }
+      case 'off_move':
+        return s.off_move
+          ? <span className="chip c-amber">Off move</span>
+          : <span className="cell-top">—</span>;
       default:
         return null;
     }
@@ -402,6 +409,7 @@ function ProcessedScanRowDetail({ scan, godVisible, pending, onMark, onUnmark }:
           <dt>Site</dt><dd>{scan.site_name ?? '—'}</dd>
           <dt>Location</dt><dd>{scan.location_detail || '—'}</dd>
           <dt>Source</dt><dd>{scan.source || '—'}</dd>
+          {scan.off_move && (<><dt>Off move</dt><dd>Asset belongs to another move</dd></>)}
         </dl>
       </div>
       <div className="detail-block">

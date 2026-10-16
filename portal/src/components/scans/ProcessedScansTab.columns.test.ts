@@ -14,4 +14,10 @@ describe('ProcessedScansTab columns', () => {
     const defaults = [PRIMARY_COL, ...COLUMNS.filter((c) => c.default)];
     expect(listGridStyle(defaults, ['30px']).minWidth).toBeLessThanOrEqual(LIST_FIT.page);
   });
+
+  it('offers a hideable Off move column that is off by default', () => {
+    const col = COLUMNS.find((c) => c.key === 'off_move');
+    expect(col).toBeDefined();
+    expect(col!.default).toBe(false);
+  });
 });

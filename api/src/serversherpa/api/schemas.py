@@ -1678,6 +1678,7 @@ class ProcessedScanItem(BaseModel):
     processed_at: datetime
     archived_at: datetime | None = None
     created_at: datetime
+    off_move: bool = False
 
 
 class ProcessedScanPatch(BaseModel):
@@ -1732,6 +1733,7 @@ class AssetScanItem(BaseModel):
     site_name: str | None = None
     location_detail: str
     source: str
+    off_move: bool = False
 
 
 class NoteOut(BaseModel):
