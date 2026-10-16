@@ -328,6 +328,9 @@ class HeartbeatIn(BaseModel):
     login_method: Literal["password", "link"] | None = None
     # Clear Setup acknowledgment: the request id this kiosk has just applied.
     setup_cleared: uuid.UUID | None = None
+    # RFID Station's reader snapshot. Deliberately loose: validated by
+    # KioskReaderReport inside the route so a bad one never fails the beat.
+    reader: dict[str, Any] | None = None
 
     @field_validator("serial", "name")
     @classmethod
