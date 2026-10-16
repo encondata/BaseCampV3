@@ -82,10 +82,17 @@ def reader_status_for(d: Device, now: datetime) -> str | None:
     device type. `now` is passed in so the boundary is testable."""
     if d.device_type != "fixed_reader":
         return None
-    if d.last_seen_at is None or now - d.last_seen_at > READER_STALE_AFTER:
+    seen = d.last_seen_at
+    if seen is not None and seen.tzinfo is None:
+        seen = seen.replace(tzinfo=UTC)
+    if seen is None or now - seen > READER_STALE_AFTER:
         return "offline"
     return "reading" if (d.raw_info or {}).get("reading") is True \
         else "standby"
+
+
+def _real_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
 
 
 def _row_to_item(row, now: datetime) -> dict:
@@ -102,12 +109,16 @@ def _row_to_item(row, now: datetime) -> dict:
     tags_read_24h = (raw_n or 0) + (proc_n or 0)
     if (is_reader and raw.get("via_kiosk_id")
             and reader_status != "offline"
-            and raw.get("reported_tags_24h") is not None):
+            and _real_int(raw.get("reported_tags_24h"))
+            and raw["reported_tags_24h"] >= 0):
         tags_read_24h = raw["reported_tags_24h"]
     return {
-        "make": raw.get("make") if is_reader else None,
+        "make": (raw["make"] if is_reader and isinstance(raw.get("make"), str)
+                 and len(raw["make"]) <= 64 else None),
         "reader_status": reader_status,
-        "antennas_total": raw.get("antennas_total") if is_reader else None,
+        "antennas_total": (raw["antennas_total"] if is_reader
+                           and _real_int(raw.get("antennas_total"))
+                           and raw["antennas_total"] > 0 else None),
         "id": d.id, "device_type": d.device_type, "name": d.name,
         "serial": d.serial, "mac": d.mac,
         "site_id": d.site_id, "site_name": site_name,

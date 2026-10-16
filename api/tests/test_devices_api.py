@@ -569,3 +569,30 @@ async def test_non_reader_devices_have_null_reader_fields(
     assert item["make"] is None
     assert item["reader_status"] is None
     assert item["antennas_total"] is None
+
+
+async def test_junk_raw_info_does_not_break_the_list(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    now = datetime.now(UTC)
+    db.add(Device(device_type="fixed_reader", name="rd-junk", last_seen_at=now,
+                  raw_info={"make": 5, "antennas_total": "x",
+                            "reported_tags_24h": "lots", "reading": "yes",
+                            "via_kiosk_id": str(uuid.uuid4())}))
+    db.add(RawScan(scanned_value="J1", scan_type="rfid",
+                   scanned_at=now - timedelta(hours=1), device_id="rd-junk"))
+    db.add(Device(device_type="kiosk", name="k-1"))
+    await db.commit()
+    resp = await client.get("/devices", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    item = next(i for i in resp.json() if i["name"] == "rd-junk")
+    assert item["make"] is None and item["antennas_total"] is None
+    assert item["reader_status"] == "standby"
+    assert item["tags_read_24h"] == 1
+
+
+def test_reader_status_tolerates_naive_last_seen():
+    from serversherpa.api.routes.devices import reader_status_for
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    d = Device(device_type="fixed_reader", name="x", raw_info={})
+    d.last_seen_at = datetime(2026, 1, 1, 11, 59)
+    assert reader_status_for(d, now) == "standby"
