@@ -172,3 +172,27 @@ async def test_vanished_pairing_row_degrades_to_unreachable(app, client, monkeyp
 
     monkeypatch.setattr(reader_report.pairing, "open_current", gone)
     assert (await build_snapshot(app.state, now=NOW))["reachable"] is False
+
+
+async def test_hung_reader_client_is_closed_when_the_budget_cancels(app, client, monkeypatch):
+    # wait_for cancels open_reader mid-version(): the client it made must still be closed
+    import httpx
+    from edge.rfid import ziotc
+
+    await paired_station(app, client)
+    closed = []
+    real_aclose = ziotc.ZiotcClient.aclose
+
+    async def tracking_aclose(self):
+        closed.append(self)
+        await real_aclose(self)
+
+    class Hang(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            await asyncio.sleep(30)
+
+    monkeypatch.setattr(ziotc.ZiotcClient, "aclose", tracking_aclose)
+    monkeypatch.setattr(reader_report, "REPORT_LOCK_BUDGET_S", 0.2)
+    app.state.reader_transport = Hang()
+    await asyncio.wait_for(build_snapshot(app.state, now=NOW), 3)
+    assert len(closed) >= 1

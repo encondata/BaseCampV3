@@ -410,6 +410,10 @@ async def open_reader(store: Store, ip: str, *, transport=None,
             if exc.code != "reader_unreachable" or i == len(order) - 1:
                 raise
             _log_fallback(ip, order[i], order[i + 1])
+        except BaseException:
+            # cancelled (a caller's time budget) or anything else: don't leak the client
+            await client.aclose()
+            raise
     raise ReaderError("reader_unreachable", f"Can't reach {ip}.")  # no endpoints: unreachable
 
 
