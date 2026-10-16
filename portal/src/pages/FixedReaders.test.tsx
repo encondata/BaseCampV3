@@ -256,3 +256,15 @@ it('CSV export includes Make and Status columns', async () => {
   expect(byName.Status).toBe('Reading');
   spy.mockRestore();
 });
+
+it('Uptime and Connection are off by default but listed in the Columns menu', async () => {
+  const user = userEvent.setup();
+  render(<FixedReaders />);
+  const row = (await screen.findByText('dock-reader-1')).closest('.dir-row') as HTMLElement;
+  expect(within(row).queryByText('12d 0h')).toBeNull();
+  expect(within(row).queryByText('API')).toBeNull();
+  await user.click(screen.getByRole('button', { name: /Columns/i }));
+  const menu = document.querySelector('.pop-menu') as HTMLElement;
+  expect(within(menu).getByText('Uptime', { selector: '.pop-item' })).not.toBeNull();
+  expect(within(menu).getByText('Connection', { selector: '.pop-item' })).not.toBeNull();
+});

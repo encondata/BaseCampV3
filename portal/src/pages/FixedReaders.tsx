@@ -24,7 +24,8 @@ import {
   usePersistentListState, type CellText,
 } from '../lib/columnMenu';
 import {
-  connectionLabel, deviceCellText, readerStatusChipClass, readerStatusLabel, deviceSearchText, deviceSortValue,
+  connectionLabel, deviceCellText, deviceSearchText, deviceSortValue,
+  readerStatusChipClass, readerStatusLabel,
 } from '../lib/devices';
 import {
   ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
@@ -38,21 +39,23 @@ import '../styles/settings.css';  /* .set-note */
 import '../styles/hardware.css';
 
 // Fit: default columns + trailing ≤ LIST_FIT.page (1172px — the page-level
-// ceiling, measured 1174 at 1512px). model/uptime/tags_24h/antennas are fixed at their
-// derived floor (short numeric/duration values, never need to grow);
-// connection carries a short label so its fixed track can sit at the 72px
-// absolute floor instead of its ~104px derived-from-"Connection" one.
+// ceiling, measured 1174 at 1512px). Every fixed px track sits at or above
+// its column floor (72px absolute minimum); narrow columns (Make, Model,
+// Tags, Ants, Scan, Conn) use short header labels to stay at that floor.
+// Uptime and Connection are off by default (still in the Columns menu and
+// the CSV) to make room for Status and Make; MAC keeps 132px so a full
+// 17-character mono address fits, IP 100px, Name 140px.
 const COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Name', width: '1.3fr', default: true, min: 110 },
+  { key: 'name', label: 'Name', width: '1.3fr', default: true, min: 140 },
   { key: 'status', label: 'Status', width: '84px', default: true },
-  { key: 'make', label: 'Make', width: '60px', default: true },
-  { key: 'model', label: 'Model', width: '64px', default: true },
-  { key: 'mac', label: 'MAC', width: '1fr', default: true, min: 80 },
-  { key: 'ip', label: 'IP', width: '1fr', default: true, min: 80 },
-  { key: 'uptime', label: 'Uptime', width: '64px', default: true },
-  { key: 'tags_24h', label: 'Tags (24h)', short: 'Tags', width: '60px', default: true },
-  { key: 'antennas', label: 'Antennas', short: 'Ants', width: '64px', default: true },
-  { key: 'connection', label: 'Connection', short: 'Conn', width: '72px', default: true },
+  { key: 'make', label: 'Make', width: '72px', default: true },
+  { key: 'model', label: 'Model', width: '72px', default: true },
+  { key: 'mac', label: 'MAC', width: '1fr', default: true, min: 132 },
+  { key: 'ip', label: 'IP', width: '1fr', default: true, min: 100 },
+  { key: 'uptime', label: 'Uptime', width: '72px', default: false },
+  { key: 'tags_24h', label: 'Tags (24h)', short: 'Tags', width: '72px', default: true },
+  { key: 'antennas', label: 'Antennas', short: 'Ants', width: '72px', default: true },
+  { key: 'connection', label: 'Connection', short: 'Conn', width: '72px', default: false },
   { key: 'scan_status', label: 'Scan Type', short: 'Scan', width: '1fr', default: true },
   { key: 'site', label: 'Site', width: '1fr', default: true },
   { key: 'last_seen', label: 'Last seen', width: '1fr', default: false, min: 96 },
