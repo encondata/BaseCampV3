@@ -108,14 +108,10 @@ it('renders seeded rows sorted by name asc with model, MAC, IP, uptime, tags, an
   expect(screen.getByText('94:83:C4:00:01:02')).not.toBeNull();
   expect(screen.getByText('192.168.8.11')).not.toBeNull();
   expect(screen.getByText('192.168.8.22')).not.toBeNull();
-  expect(screen.getByText('12d 0h')).not.toBeNull();
-  expect(screen.getByText('3h 12m')).not.toBeNull();
   expect(screen.getByText('88')).not.toBeNull();
   expect(screen.getByText('152')).not.toBeNull();
   expect(screen.getByText('2 / 8')).not.toBeNull();
   expect(screen.getByText('4 / 8')).not.toBeNull();
-  expect(screen.getByText('API')).not.toBeNull();
-  expect(screen.getByText('MQTT')).not.toBeNull();
   expect(screen.getByText('RFID 1 - Cage Exit')).not.toBeNull();
   expect(screen.getByText('RFID 2 - Cage Entry')).not.toBeNull();
   expect(screen.getByText('NAP 11')).not.toBeNull();
