@@ -103,13 +103,23 @@ async def _upsert(db: AsyncSession, kiosk: Device, r: KioskReaderReport,
             ("antennas_connected", "antennas_connected", None)):
         v = getattr(r, src)
         if src in present and v is not None:
+            if col == "mac":
+                other = await db.scalar(select(Device.id).where(
+                    Device.mac == v, Device.id != reader.id))
+                if other is not None:
+                    log.warning("kiosk reader mac not set (held by device %s), "
+                                "serial=%s", other, r.serial)
+                    continue
             setattr(reader, col, conv(v) if conv else v)
     reader.connection_type = "local_api"
     reader.scan_status = kiosk.scan_status
     reader.site_id = kiosk.site_id
     reader.current_initiative_id = kiosk.current_initiative_id
     if r.reachable is not False:
-        reader.last_seen_at = now
+        taken = r.taken_at
+        if taken is not None and taken.tzinfo is None:
+            taken = taken.replace(tzinfo=UTC)
+        reader.last_seen_at = min(taken, now) if taken else now
     raw = dict(reader.raw_info or {})
     for src, key in (("make", "make"), ("reading", "reading"),
                      ("tags_24h", "reported_tags_24h"),

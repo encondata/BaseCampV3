@@ -91,6 +91,10 @@ SCHEMA_STEPS: list[str] = [
         last_antenna INTEGER, last_rssi REAL, reader_serial TEXT NOT NULL);
     CREATE INDEX rfid_tags_seen_last ON rfid_tags_seen (last_seen)
     """,
+    # the reader report's per-serial 24 h COUNT (reader_serial = ? AND received_at >= ?)
+    """
+    CREATE INDEX raw_tag_reads_serial_received ON raw_tag_reads (reader_serial, received_at)
+    """,
 ]
 
 

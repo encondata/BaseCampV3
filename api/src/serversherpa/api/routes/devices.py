@@ -87,6 +87,9 @@ def reader_status_for(d: Device, now: datetime) -> str | None:
         seen = seen.replace(tzinfo=UTC)
     if seen is None or now - seen > READER_STALE_AFTER:
         return "offline"
+    if (d.raw_info or {}).get("reachable") is False:
+        # the laptop could not reach the reader: Offline at once
+        return "offline"
     return "reading" if (d.raw_info or {}).get("reading") is True \
         else "standby"
 

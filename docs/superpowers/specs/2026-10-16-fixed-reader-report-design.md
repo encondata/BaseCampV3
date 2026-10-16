@@ -24,6 +24,7 @@ The page should answer one question: **is this reader alive and reading?** Jimmy
 - **No reporting while nobody is signed in.** The only scheduled call from the laptop to the portal is the kiosk heartbeat, and it only runs while someone is signed in. The reader shows **Offline** until someone signs in again. Jimmy accepted this until the **station key** from `2026-10-16-rfid-scan-processing-design.md` exists. That key will let this report go up unattended; this work should be easy to move onto it.
 - No change for readers that don't come through a kiosk. Their Tags (24h) keeps using portal scan counts, as today.
 - No page layout, filter or Delete changes beyond the two new columns.
+- Known limit: until the station key exists, reader records are written by the kiosk heartbeat under the existing kiosk trust model (any `kiosk:view` session can heartbeat a kiosk serial). Writes are limited to new or kiosk-created rows and are audited.
 - No migration. *(Claude's call: the new values live in the device's existing `raw_info` JSON.)*
 
 ## 2. What the laptop reads
@@ -146,7 +147,7 @@ These fields are added, or derived, for every fixed reader:
 - A second heartbeat updates it with no new audit.
 - A serial that doesn't match the kiosk's paired reader is ignored.
 - A Label station is ignored.
-- A bad MAC or IP gives 422.
+- A bad MAC or IP drops the report (logged, serial only) and the beat still succeeds.
 - Scan type and site follow the kiosk's setup.
 - **`reader_status`:** reading, standby, and offline after 3 minutes.
 - **`tags_read_24h`:** the reported count while fresh, falling back to scan counts when stale or not kiosk-attached.

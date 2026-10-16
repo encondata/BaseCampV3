@@ -596,3 +596,24 @@ def test_reader_status_tolerates_naive_last_seen():
     d = Device(device_type="fixed_reader", name="x", raw_info={})
     d.last_seen_at = datetime(2026, 1, 1, 11, 59)
     assert reader_status_for(d, now) == "standby"
+
+
+async def test_unreachable_reader_is_offline_at_once(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    now = datetime.now(UTC)
+    kiosk_raw = {"reported_tags_24h": 1832, "via_kiosk_id": str(uuid.uuid4())}
+    db.add_all([
+        Device(device_type="fixed_reader", name="rd-up", last_seen_at=now,
+               raw_info={**kiosk_raw, "reading": True, "reachable": True}),
+        Device(device_type="fixed_reader", name="rd-down", last_seen_at=now,
+               raw_info={**kiosk_raw, "reading": True, "reachable": False}),
+    ])
+    db.add_all([RawScan(scanned_value=f"U{i}", scan_type="rfid",
+                        scanned_at=now - timedelta(hours=1), device_id="rd-down")
+                for i in (1, 2)])
+    await db.commit()
+    by = await _reader_list(client, hdrs)
+    assert by["rd-up"]["reader_status"] == "reading"
+    assert by["rd-up"]["tags_read_24h"] == 1832
+    assert by["rd-down"]["reader_status"] == "offline"
+    assert by["rd-down"]["tags_read_24h"] == 2

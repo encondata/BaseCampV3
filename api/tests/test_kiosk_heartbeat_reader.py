@@ -204,3 +204,37 @@ async def test_reader_moves_to_another_kiosk(client, db, seeded_user):
     assert r.status_code == 200, r.text
     (fr,) = await _readers(db)
     assert fr.raw_info["via_kiosk_name"] == "Second Laptop"
+
+
+async def test_mac_held_by_another_device_is_not_set(client, db, seeded_user, caplog):
+    hdrs, _ = await _station(client, db)
+    db.add(Device(device_type="router", name="rtr", serial="RTR-1", model="GL",
+                  mac=REPORT["mac"]))
+    await db.commit()
+    with caplog.at_level("WARNING"):
+        r = await _beat(client, hdrs, REPORT)
+    assert r.status_code == 200, r.text
+    (fr,) = await _readers(db)
+    assert fr.serial == RSERIAL and fr.mac is None
+    assert fr.lan_ip == "10.10.48.119" and fr.raw_info["reported_tags_24h"] == 1832
+    rtr = await db.scalar(select(Device).where(Device.serial == "RTR-1"))
+    assert rtr.mac == REPORT["mac"]
+    assert any(RSERIAL in m and str(rtr.id) in m for m in caplog.messages)
+
+
+async def test_last_seen_never_later_than_taken_at(client, db, seeded_user):
+    from datetime import UTC, datetime, timedelta
+    hdrs, _ = await _station(client, db)
+    taken = datetime.now(UTC) - timedelta(minutes=2)
+    await _beat(client, hdrs, {**REPORT, "taken_at": taken.isoformat()})
+    (fr,) = await _readers(db)
+    seen = fr.last_seen_at.replace(tzinfo=UTC) if fr.last_seen_at.tzinfo is None \
+        else fr.last_seen_at
+    assert abs((seen - taken).total_seconds()) < 1
+    # a taken_at in the future is capped at now
+    future = datetime.now(UTC) + timedelta(hours=1)
+    await _beat(client, hdrs, {**REPORT, "taken_at": future.isoformat()})
+    (fr,) = await _readers(db)
+    seen = fr.last_seen_at.replace(tzinfo=UTC) if fr.last_seen_at.tzinfo is None \
+        else fr.last_seen_at
+    assert seen <= datetime.now(UTC)
