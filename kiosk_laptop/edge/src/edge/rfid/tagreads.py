@@ -133,7 +133,7 @@ def store_batch(store: Store, *, reader_serial: str, rows: list[dict],
 RECENT_LIMIT = 50
 
 # One entry: ((id(store), cache key, stored_at, body length), index, total).
-_asset_index: dict[tuple, tuple[dict[str, dict], int]] = {}
+_asset_index: dict[tuple, tuple[dict[str, dict], int] | None] = {}
 
 
 def _zone(tz):
@@ -154,19 +154,21 @@ def local_midnight_iso(tz, now: datetime | None = None) -> str:
 def _assets(store: Store, move_id: str) -> tuple[dict[str, dict], int] | None:
     """(normalized rfid -> asset summary, asset count) from the cached sync body."""
     key = f"/kiosk/sync/assets?initiative_id={move_id}"
-    meta = store.one("SELECT stored_at, length(body) AS n FROM cache WHERE key = ?", (key,))
+    meta = store.one("SELECT stored_at, length(CAST(body AS BLOB)) AS n FROM cache "
+                     "WHERE key = ?", (key,))
     if meta is None:
         return None
     stamp = (id(store), key, meta["stored_at"], meta["n"])
-    hit = _asset_index.get(stamp)
-    if hit is not None:
-        return hit
+    if stamp in _asset_index:  # a malformed body is memoized too (as None)
+        return _asset_index[stamp]
     row = store.one("SELECT body FROM cache WHERE key = ?", (key,))
     try:
         assets = json.loads(row["body"]).get("assets") if row else None
     except (ValueError, AttributeError):
         assets = None
     if not isinstance(assets, list):
+        _asset_index.clear()
+        _asset_index[stamp] = None
         return None
     index: dict[str, dict] = {}
     for a in assets:
@@ -195,8 +197,13 @@ def reads_summary(store: Store, *, tz: str = "UTC", limit: int = RECENT_LIMIT,
     move_total = move_seen = None
     if found is not None:
         index, move_total = found
-        seen = {r["epc"] for r in store.all("SELECT epc FROM rfid_tags_seen")}
-        move_seen = sum(1 for epc in index if epc in seen)
+        epcs = list(index)
+        move_seen = 0
+        for i in range(0, len(epcs), 500):  # primary-key lookups, never a table scan
+            chunk = epcs[i:i + 500]
+            move_seen += store.one(
+                f"SELECT COUNT(*) AS n FROM rfid_tags_seen WHERE epc IN ({','.join('?' * len(chunk))})",
+                tuple(chunk))["n"]
     rows = store.all("SELECT epc, received_at, antenna, peak_rssi FROM raw_tag_reads "
                      "ORDER BY id DESC LIMIT ?", (limit,))
     recent = [{"epc": r["epc"], "received_at": r["received_at"], "antenna": r["antenna"],

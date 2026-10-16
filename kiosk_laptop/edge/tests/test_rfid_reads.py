@@ -13,6 +13,13 @@ CACHE_KEY = "/kiosk/sync/assets?initiative_id=m-1"
 NOW = datetime(2026, 10, 16, 15, 0, tzinfo=UTC)
 
 
+@pytest.fixture(autouse=True)
+def clear_memo():
+    tagreads._asset_index.clear()
+    yield
+    tagreads._asset_index.clear()
+
+
 @pytest.fixture
 def store(tmp_path):
     s = Store(tmp_path / "edge.db")
@@ -141,3 +148,31 @@ def test_index_refreshes_when_cache_changes(store):
     assert reads_summary(store, now=NOW)["recent"][0]["asset"]["name"] == "Old"
     seed_cache(store, [asset("AA01", name="New")], stored_at="2026-10-16T11:00:00+00:00")
     assert reads_summary(store, now=NOW)["recent"][0]["asset"]["name"] == "New"
+
+
+def test_move_seen_with_many_unrelated_tags(store):
+    seed_setup(store)
+    seed_cache(store, [asset("AA01"), asset("BB02"), asset("CC03")])
+    for i in range(1200):
+        seen_at(store, f"F{i:05X}", now_iso())
+    seen_at(store, "AA01", now_iso())
+    seen_at(store, "CC03", now_iso())
+    out = reads_summary(store, now=NOW)
+    assert out["move_total"] == 3 and out["move_seen"] == 2
+
+
+def test_move_seen_over_chunk_boundary(store):
+    seed_setup(store)
+    seed_cache(store, [asset(f"A{i:04X}") for i in range(1100)])
+    for i in range(0, 1100, 2):
+        seen_at(store, f"A{i:04X}", now_iso())
+    assert reads_summary(store, now=NOW)["move_seen"] == 550
+
+
+def test_malformed_cache_is_memoized_as_null(store):
+    seed_setup(store)
+    store.run("INSERT INTO cache (key, status, body, stored_at) VALUES (?, 200, ?, ?)",
+              (CACHE_KEY, '{"assets": "nope"}', "2026-10-16T10:00:00+00:00"))
+    assert reads_summary(store, now=NOW)["move_total"] is None
+    assert len(tagreads._asset_index) == 1
+    assert reads_summary(store, now=NOW)["move_total"] is None
