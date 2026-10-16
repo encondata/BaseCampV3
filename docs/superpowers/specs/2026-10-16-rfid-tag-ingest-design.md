@@ -125,7 +125,7 @@ CREATE INDEX rfid_tags_seen_last ON rfid_tags_seen (last_seen);
 ```json
 {"tags_today": 42,
  "move_total": 500, "move_seen": 37,
- "recent": [{"epc": "E28011…", "received_at": "…", "antenna": 1, "peak_rssi": -52,
+ "recent": [{"id": 1234, "epc": "E28011…", "received_at": "…", "antenna": 1, "peak_rssi": -52,
              "asset": {"serial_number": "CZJ…", "name": "NAP11-ESX-027", "make_model": "HPE ProLiant DL380 Gen10"} }],
  "last_received_at": "…"}
 ```

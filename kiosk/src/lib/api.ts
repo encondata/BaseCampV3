@@ -968,6 +968,8 @@ export async function getRfidEvents(limit = 50): Promise<{ events: RfidEvent[] }
 
 /** One recent tag read, matched to an asset by its RFID tag when known. */
 export interface RfidRead {
+  /** raw_tag_reads.id: unique per stored read, newest first. */
+  id: number;
   epc: string;
   received_at: string;
   antenna: number | null;

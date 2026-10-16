@@ -117,7 +117,7 @@ def test_asset_match_ignores_case_and_spaces(store):
     out = reads_summary(store, now=NOW)
     assert out["recent"][0]["asset"] == {"serial_number": "S1", "name": "N1",
                                          "make_model": "HPE"}
-    assert set(out["recent"][0]) == {"epc", "received_at", "antenna", "peak_rssi", "asset"}
+    assert set(out["recent"][0]) == {"id", "epc", "received_at", "antenna", "peak_rssi", "asset"}
 
 
 def test_unknown_tag_has_null_asset(store):
@@ -133,6 +133,9 @@ def test_recent_is_newest_50(store):
     recent = reads_summary(store, now=NOW)["recent"]
     assert len(recent) == 50
     assert recent[0]["epc"] == "AA3B"
+    ids = [r["id"] for r in recent]
+    assert all(isinstance(i, int) for i in ids)
+    assert ids == sorted(set(ids), reverse=True)
 
 
 @pytest.mark.parametrize("tz", ["Not/AZone", "", None, 5])

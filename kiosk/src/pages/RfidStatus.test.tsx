@@ -44,9 +44,9 @@ const EVENTS: RfidEvent[] = [
 const reads = (over: Partial<RfidReads> = {}): RfidReads => ({
   tags_today: 42, move_total: 500, move_seen: 37, last_received_at: '2026-10-02T19:03:00Z',
   recent: [
-    { epc: 'E2801160600002', received_at: '2026-10-02T19:03:00Z', antenna: 1, peak_rssi: -52,
+    { id: 2, epc: 'E2801160600002', received_at: '2026-10-02T19:03:00Z', antenna: 1, peak_rssi: -52,
       asset: { serial_number: 'SN-1001', name: 'host-a', make_model: 'Dell R740' } },
-    { epc: 'E2801160600003', received_at: '2026-10-02T19:02:59Z', antenna: 2, peak_rssi: -60,
+    { id: 1, epc: 'E2801160600003', received_at: '2026-10-02T19:02:59Z', antenna: 2, peak_rssi: -60,
       asset: null },
   ],
   ...over,
@@ -373,7 +373,7 @@ describe('RfidStatus tag data', () => {
   it('highlights a new row for 2 s', async () => {
     await renderPage();
     const fresh = reads({ recent: [
-      { epc: 'E2801160600009', received_at: '2026-10-02T19:03:10Z', antenna: 1, peak_rssi: -50, asset: null },
+      { id: 3, epc: 'E2801160600009', received_at: '2026-10-02T19:03:10Z', antenna: 1, peak_rssi: -50, asset: null },
       ...reads().recent,
     ] });
     api.getRfidReads.mockResolvedValue(fresh);
@@ -383,6 +383,21 @@ describe('RfidStatus tag data', () => {
     expect(screen.getByText('E2801160600002').closest('tr')!.className).not.toContain('is-new');
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
     expect(row().className).not.toContain('is-new');
+  });
+
+  it('rows sharing epc and received_at render separately, keyed by id', async () => {
+    const dup = (id: number) => ({ id, epc: 'E2801160600077', received_at: '2026-10-02T19:03:00Z',
+      antenna: 1, peak_rssi: -50, asset: null });
+    api.getRfidReads.mockResolvedValue(reads({ recent: [dup(11), dup(10)] }));
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await renderPage();
+    api.getRfidReads.mockResolvedValue(reads({ recent: [dup(12), dup(11), dup(10)] }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    const rows = screen.getAllByText('E2801160600077').map((el) => el.closest('tr') as HTMLElement);
+    expect(rows).toHaveLength(3);
+    expect(rows.map((r) => r.className.includes('is-new'))).toEqual([true, false, false]);
+    expect(err).not.toHaveBeenCalled();
+    err.mockRestore();
   });
 
   it('renders a tag_data_receiving event and no Waiting for tag data text', async () => {

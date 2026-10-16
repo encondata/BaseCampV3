@@ -24,7 +24,6 @@ const POLL_MS = 5000;
 const CLOCK_MS = 1000;
 const NEW_ROW_MS = 2000;
 
-const readKey = (r: { epc: string; received_at: string }) => `${r.epc}|${r.received_at}`;
 
 type ReaderState = 'loading' | 'reading' | 'stopped' | 'unreachable';
 
@@ -130,10 +129,10 @@ export default function RfidStatus() {
   const [busy, setBusy] = useState<'start' | 'stop' | null>(null);
   const [actionError, setActionError] = useState<{ action: 'start' | 'stop'; err: unknown } | null>(null);
   const [reads, setReads] = useState<RfidReads | null>(null);
-  const [fresh, setFresh] = useState<ReadonlySet<string>>(new Set());
+  const [fresh, setFresh] = useState<ReadonlySet<number>>(new Set());
   const alive = useRef(true);
   const seq = useRef(0);
-  const prevKeys = useRef<Set<string> | null>(null);
+  const prevKeys = useRef<Set<number> | null>(null);
   const freshTimer = useRef<number | undefined>(undefined);
 
   const refresh = useCallback(async () => {
@@ -157,7 +156,7 @@ export default function RfidStatus() {
       getRfidReads(Intl.DateTimeFormat().resolvedOptions().timeZone).then(
         (r) => {
           if (!latest()) return;
-          const keys = new Set(r.recent.map(readKey));
+          const keys = new Set(r.recent.map((x) => x.id));
           const prev = prevKeys.current;
           prevKeys.current = keys;
           setReads(r);
@@ -281,7 +280,7 @@ export default function RfidStatus() {
                   </tr>
                 )}
                 {reads?.recent.map((r) => (
-                  <tr key={readKey(r)} className={fresh.has(readKey(r)) ? 'is-new' : undefined}>
+                  <tr key={r.id} className={fresh.has(r.id) ? 'is-new' : undefined}>
                     <td>{r.epc}</td>
                     {r.asset ? (
                       <>

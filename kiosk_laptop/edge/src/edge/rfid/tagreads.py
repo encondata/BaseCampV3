@@ -204,9 +204,9 @@ def reads_summary(store: Store, *, tz: str = "UTC", limit: int = RECENT_LIMIT,
             move_seen += store.one(
                 f"SELECT COUNT(*) AS n FROM rfid_tags_seen WHERE epc IN ({','.join('?' * len(chunk))})",
                 tuple(chunk))["n"]
-    rows = store.all("SELECT epc, received_at, antenna, peak_rssi FROM raw_tag_reads "
+    rows = store.all("SELECT id, epc, received_at, antenna, peak_rssi FROM raw_tag_reads "
                      "ORDER BY id DESC LIMIT ?", (limit,))
-    recent = [{"epc": r["epc"], "received_at": r["received_at"], "antenna": r["antenna"],
+    recent = [{"id": r["id"], "epc": r["epc"], "received_at": r["received_at"], "antenna": r["antenna"],
                "peak_rssi": r["peak_rssi"], "asset": index.get(r["epc"])} for r in rows]
     last = store.one("SELECT MAX(received_at) AS t FROM raw_tag_reads")["t"]
     return {"tags_today": tags_today, "move_total": move_total, "move_seen": move_seen,
