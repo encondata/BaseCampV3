@@ -60,6 +60,7 @@ def create_ingest_app(state, *, clock=time.monotonic) -> Starlette:
         except (ValueError, RecursionError):  # includes UnicodeDecodeError
             return JSONResponse({"error": "bad_json"}, status_code=400)
 
+        started = time.perf_counter()
         try:
             stored = tagreads.store_batch(store, reader_serial=serial, rows=batch,
                                           setup=laptop_setup.load(store))
@@ -71,10 +72,14 @@ def create_ingest_app(state, *, clock=time.monotonic) -> Starlette:
             now = clock()
             last = last_accepted[0]
             if last is None or now - last >= QUIET_SECONDS:
-                events.record(store, "tag_data_receiving", "Tag data receiving",
-                              f"{row['model'] or 'Reader'} · {stored} reads")
+                try:  # the batch is already committed: a failed note must not make the reader resend it
+                    events.record(store, "tag_data_receiving", "Tag data receiving",
+                                  f"{row['model'] or 'Reader'} · {stored} reads")
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("recording the tag-data event failed: %s", type(exc).__name__)
             last_accepted[0] = now
-        log.debug("reader %s: stored %d, skipped %d", serial, stored, skipped)
+        log.debug("reader %s: stored %d, skipped %d in %.1f ms", serial, stored, skipped,
+                  (time.perf_counter() - started) * 1000)
         return JSONResponse({"stored": stored, "skipped": skipped})
 
     methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]

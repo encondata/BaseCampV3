@@ -153,6 +153,17 @@ def test_index_refreshes_when_cache_changes(store):
     assert reads_summary(store, now=NOW)["recent"][0]["asset"]["name"] == "New"
 
 
+def test_same_second_cache_rewrite_refreshes_index(store, monkeypatch):
+    from edge.routes import proxy
+    monkeypatch.setattr(proxy, "now_iso", lambda: "2026-10-16T10:00:00+00:00")
+    seed_setup(store)
+    proxy.store_cache(store, CACHE_KEY, 200, json.dumps({"assets": [asset("AA01", name="Old")]}))
+    read(store, "AA01")
+    assert reads_summary(store, now=NOW)["recent"][0]["asset"]["name"] == "Old"
+    proxy.store_cache(store, CACHE_KEY, 200, json.dumps({"assets": [asset("AA01", name="New")]}))
+    assert reads_summary(store, now=NOW)["recent"][0]["asset"]["name"] == "New"
+
+
 def test_move_seen_with_many_unrelated_tags(store):
     seed_setup(store)
     seed_cache(store, [asset("AA01"), asset("BB02"), asset("CC03")])

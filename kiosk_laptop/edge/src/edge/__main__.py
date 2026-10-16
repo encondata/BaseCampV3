@@ -8,6 +8,7 @@ Queued work stays and uploads once its owner signs in online."""
 
 import argparse
 import asyncio
+import contextlib
 import sqlite3
 import sys
 from pathlib import Path
@@ -41,7 +42,9 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "serve":
         from edge.serve import serve  # imported here: reset-key needs none of the web stack
-        asyncio.run(serve(host=args.host, port=args.port, ingest_port=args.ingest_port))
+        # uvicorn re-raises the captured Ctrl+C after a clean shutdown; SystemExit still propagates
+        with contextlib.suppress(KeyboardInterrupt):
+            asyncio.run(serve(host=args.host, port=args.port, ingest_port=args.ingest_port))
         return
     data_dir = Path(args.data_dir)
     # DB first, key last: if the cleanup fails, the old key (and the tokens

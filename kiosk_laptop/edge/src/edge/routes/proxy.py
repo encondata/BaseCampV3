@@ -26,6 +26,7 @@ from edge import laptop_setup
 from edge.db import Store, now_iso
 from edge.deps import current_session, err
 from edge.identity import Identity
+from edge.rfid.tagreads import note_cache_write
 from edge.sessions import EdgeSession
 from edge.upstream import CloudOffline
 
@@ -45,6 +46,7 @@ def store_cache(store: Store, key: str, status: int, body: str) -> None:
     store.run("INSERT INTO cache (key, status, body, stored_at) VALUES (?, ?, ?, ?) "
               "ON CONFLICT(key) DO UPDATE SET status = excluded.status, body = excluded.body, "
               "stored_at = excluded.stored_at", (key, status, body, now_iso()))
+    note_cache_write()
 
 
 def rewrite_body(path: str, body: bytes, identity: Identity) -> bytes:

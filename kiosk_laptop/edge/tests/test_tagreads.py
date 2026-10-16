@@ -4,7 +4,7 @@ import pytest
 
 from edge.db import Store
 from edge.rfid.tagreads import normalize_epc, parse_events, store_batch
-from fake_reader import tag_event
+from tests.fake_reader import tag_event
 
 
 @pytest.fixture

@@ -110,6 +110,25 @@ async def test_write_failure_rolls_back_and_returns_500(app, ingest_client, monk
     assert app.state.store.all("SELECT * FROM rfid_tags_seen") == []
 
 
+async def test_event_record_failure_still_returns_200_once(app, ingest_client, monkeypatch, caplog):
+    def boom(*a, **k):
+        raise RuntimeError("store closed")
+    monkeypatch.setattr(ingest.events, "record", boom)
+    r = await ingest_client.post(path(), json=tag_batch(2))
+    assert r.status_code == 200 and r.json() == {"stored": 2, "skipped": 0}
+    assert len(rows(app)) == 2
+    assert any("RuntimeError" in m.getMessage() and m.levelno == logging.WARNING
+               for m in caplog.records)
+
+
+async def test_debug_line_has_duration_not_token(app, ingest_client, caplog):
+    caplog.set_level(logging.DEBUG, logger="edge.rfid.ingest")
+    await ingest_client.post(path(), json=tag_event("E280AA"))
+    msgs = [r.getMessage() for r in caplog.records if r.name == "edge.rfid.ingest"]
+    assert any(" ms" in m and "stored 1" in m for m in msgs)
+    assert all(TOKEN not in m for m in msgs)
+
+
 async def test_token_never_logged(app, ingest_client, caplog):
     caplog.set_level(logging.DEBUG)
     await ingest_client.post(path(), json=tag_event("E280AA"))

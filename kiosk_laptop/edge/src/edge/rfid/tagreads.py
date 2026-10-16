@@ -132,8 +132,17 @@ def store_batch(store: Store, *, reader_serial: str, rows: list[dict],
 
 RECENT_LIMIT = 50
 
-# One entry: ((id(store), cache key, stored_at, body length), index, total).
+# One entry: ((id(store), cache key, rowid, stored_at, cache generation), index, total).
 _asset_index: dict[tuple, tuple[dict[str, dict], int] | None] = {}
+
+# stored_at has one-second resolution and an upsert keeps the rowid, so every
+# writer of the cache table calls note_cache_write() to invalidate the memo.
+_cache_generation = 0
+
+
+def note_cache_write() -> None:
+    global _cache_generation
+    _cache_generation += 1
 
 
 def _zone(tz):
@@ -154,11 +163,10 @@ def local_midnight_iso(tz, now: datetime | None = None) -> str:
 def _assets(store: Store, move_id: str) -> tuple[dict[str, dict], int] | None:
     """(normalized rfid -> asset summary, asset count) from the cached sync body."""
     key = f"/kiosk/sync/assets?initiative_id={move_id}"
-    meta = store.one("SELECT stored_at, length(CAST(body AS BLOB)) AS n FROM cache "
-                     "WHERE key = ?", (key,))
+    meta = store.one("SELECT rowid AS id, stored_at FROM cache WHERE key = ?", (key,))
     if meta is None:
         return None
-    stamp = (id(store), key, meta["stored_at"], meta["n"])
+    stamp = (id(store), key, meta["id"], meta["stored_at"], _cache_generation)
     if stamp in _asset_index:  # a malformed body is memoized too (as None)
         return _asset_index[stamp]
     row = store.one("SELECT body FROM cache WHERE key = ?", (key,))
