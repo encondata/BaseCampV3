@@ -144,3 +144,31 @@ async def test_reporter_loop_survives_errors(app, client, monkeypatch):
     finally:
         await reporter.stop()
     assert calls >= 2 and app.state.reader_snapshot["serial"] == SERIAL
+
+
+async def test_hung_reader_is_bounded_and_frees_the_lock(app, client, monkeypatch):
+    import httpx
+
+    reader = await paired_station(app, client)
+    app.state.reader_snapshot = await build_snapshot(app.state, now=NOW)
+
+    class Hang(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            await asyncio.sleep(30)
+
+    monkeypatch.setattr(reader_report, "REPORT_LOCK_BUDGET_S", 0.2)
+    app.state.reader_transport = Hang()
+    snap = await asyncio.wait_for(build_snapshot(app.state, now=NOW), 3)
+    assert snap["reachable"] is False and snap["mac"] == "C4:7D:CC:64:7D:23"
+    assert not app.state.pair_lock.locked()
+
+
+async def test_vanished_pairing_row_degrades_to_unreachable(app, client, monkeypatch):
+    await paired_station(app, client)
+
+    async def gone(*a, **kw):
+        from edge.deps import err
+        raise err(409, "reader_required")
+
+    monkeypatch.setattr(reader_report.pairing, "open_current", gone)
+    assert (await build_snapshot(app.state, now=NOW))["reachable"] is False

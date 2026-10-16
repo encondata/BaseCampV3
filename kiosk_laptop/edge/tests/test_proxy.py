@@ -198,11 +198,15 @@ def _snapshot(taken_at):
             "taken_at": taken_at}
 
 
-async def _heartbeat(app, client, cloud):
+FORGED = {"serial": "forged", "mac": "00:00:00:00:00:00", "reachable": True}
+
+
+async def _heartbeat(app, client, cloud, **extra):
     _online_as(app)
     route = cloud.post("/kiosk/heartbeat").respond(200, json={"registration": "ok"})
     await client.post("/kiosk/heartbeat", headers=make_session(app),
-                      json={"serial": "browser", "name": "Browser", "mode": "web", "version": "1"})
+                      json={"serial": "browser", "name": "Browser", "mode": "web", "version": "1",
+                            **extra})
     return json.loads(route.calls[0].request.content)
 
 
@@ -228,3 +232,36 @@ async def test_no_reader_on_heartbeat_for_label_station(app, client, cloud):
     laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "label")
     app.state.reader_snapshot = _snapshot(now_iso())
     assert "reader" not in await _heartbeat(app, client, cloud)
+
+
+async def test_broken_snapshot_never_breaks_the_heartbeat(app, client, cloud, monkeypatch):
+    from edge.routes import proxy
+
+    def boom(state):
+        raise ValueError("corrupt")
+
+    monkeypatch.setattr(proxy, "current_snapshot", boom)
+    sent = await _heartbeat(app, client, cloud)
+    assert "reader" not in sent and sent["mode"] == "laptop"
+
+
+async def test_browser_sent_reader_never_reaches_the_cloud(app, client, cloud):
+    from datetime import UTC, datetime, timedelta
+    from edge.db import iso
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "rfid")
+    app.state.reader_snapshot = None
+    assert "reader" not in await _heartbeat(app, client, cloud, reader=FORGED)
+    app.state.reader_snapshot = _snapshot(iso(datetime.now(UTC) - timedelta(minutes=4)))
+    assert "reader" not in await _heartbeat(app, client, cloud, reader=FORGED)
+    from edge.db import now_iso
+    app.state.reader_snapshot = _snapshot(now_iso())
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "label")
+    assert "reader" not in await _heartbeat(app, client, cloud, reader=FORGED)
+
+
+async def test_fresh_snapshot_replaces_browser_reader(app, client, cloud):
+    from edge.db import now_iso
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "rfid")
+    app.state.reader_snapshot = _snapshot(now_iso())
+    sent = await _heartbeat(app, client, cloud, reader=FORGED)
+    assert sent["reader"]["serial"] == "22131010562035" and "mac" not in sent["reader"]

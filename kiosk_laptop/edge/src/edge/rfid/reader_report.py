@@ -19,6 +19,8 @@ import logging
 import re
 from datetime import UTC, datetime, timedelta
 
+import httpx
+
 from edge import laptop_setup
 from edge.db import iso, now_iso
 from edge.rfid import pairing, ziotc
@@ -27,6 +29,10 @@ from edge.rfid.ziotc import ReaderError
 log = logging.getLogger("edge.rfid.reader_report")
 
 INTERVAL_S = 60
+# The reporter holds pair_lock while it reads; a hung reader mustn't stall the
+# dashboard's start/stop or pairing for long.
+REPORT_LOCK_BUDGET_S = 8
+READER_TIMEOUT = httpx.Timeout(3.0, connect=2.0)
 FRESH_FOR = timedelta(minutes=3)
 MAX_LEN = 64
 MAC = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
@@ -70,6 +76,37 @@ def _tags_24h(store, serial: str, now: datetime) -> int:
     return int(row["n"])
 
 
+async def _read(state, serial: str) -> dict:
+    """The three reader calls, each tried on its own. Raises when the reader
+    can't be opened (no version)."""
+    snap: dict = {"serial": serial, "make": "Zebra"}
+    client, version, _row = await pairing.open_current(
+        state.store, transport=state.reader_transport, timeout=READER_TIMEOUT)
+    async with client:
+        _put(snap, "model", _text(version.get("model")))
+        _put(snap, "firmware", _text(version.get("readerApplication")))
+        try:
+            net = await client.network()
+        except ReaderError:
+            pass
+        else:
+            _put(snap, "name", _text(net.get("hostName")))
+            _put(snap, "mac", _mac(net.get("macAddress")))
+            _put(snap, "ip", _ipv4(net.get("ipAddress")))
+        try:
+            status = await client.status()
+        except ReaderError:
+            pass
+        else:
+            _put(snap, "uptime_seconds", parse_uptime(status.get("uptime")))
+            antennas = status.get("antennas")
+            if isinstance(antennas, dict):
+                snap["antennas_connected"] = sum(1 for v in antennas.values() if v == "connected")
+                snap["antennas_total"] = len(antennas)
+            snap["reading"] = ziotc.is_reading(status)
+    return snap
+
+
 async def build_snapshot(state, *, now: datetime | None = None) -> dict | None:
     """The reader snapshot, or None when there is no pairing or this laptop
     isn't an RFID Station."""
@@ -82,36 +119,12 @@ async def build_snapshot(state, *, now: datetime | None = None) -> dict | None:
     serial = row["serial"]
     snap: dict = {"serial": serial, "make": "Zebra"}
     reachable = True
-    async with state.pair_lock:
-        try:
-            client, version, _row = await pairing.open_current(
-                store, transport=state.reader_transport)
-        except ReaderError:
-            reachable = False
-        else:
-            async with client:
-                _put(snap, "model", _text(version.get("model")))
-                _put(snap, "firmware", _text(version.get("readerApplication")))
-                try:
-                    net = await client.network()
-                except ReaderError:
-                    pass
-                else:
-                    _put(snap, "name", _text(net.get("hostName")))
-                    _put(snap, "mac", _mac(net.get("macAddress")))
-                    _put(snap, "ip", _ipv4(net.get("ipAddress")))
-                try:
-                    status = await client.status()
-                except ReaderError:
-                    pass
-                else:
-                    _put(snap, "uptime_seconds", parse_uptime(status.get("uptime")))
-                    antennas = status.get("antennas")
-                    if isinstance(antennas, dict):
-                        snap["antennas_connected"] = sum(
-                            1 for v in antennas.values() if v == "connected")
-                        snap["antennas_total"] = len(antennas)
-                    snap["reading"] = ziotc.is_reading(status)
+    try:
+        async with state.pair_lock:
+            snap = await asyncio.wait_for(_read(state, serial), REPORT_LOCK_BUDGET_S)
+    except Exception as exc:  # unreachable, timed out, or the pairing row vanished
+        log.info("reader %s not reachable for the snapshot: %s", serial, type(exc).__name__)
+        reachable = False
     if not reachable:
         previous = getattr(state, "reader_snapshot", None)
         if isinstance(previous, dict) and previous.get("serial") == serial:

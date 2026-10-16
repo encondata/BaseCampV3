@@ -16,6 +16,7 @@ session ended" and signs them out. The heartbeat in that state answers 503
 `edge_offline`, so the kiosk keeps its last registration state."""
 
 import json
+import logging
 from urllib.parse import parse_qs
 
 import httpx
@@ -30,6 +31,8 @@ from edge.rfid.reader_report import current_snapshot
 from edge.rfid.tagreads import note_cache_write
 from edge.sessions import EdgeSession
 from edge.upstream import CloudOffline
+
+log = logging.getLogger("edge.routes.proxy")
 
 CACHEABLE = ("/kiosk/sync/", "/kiosk/setup-options", "/kiosk/labels/vocab", "/system/status")
 ANONYMOUS_OK = ("/system/status",)
@@ -68,6 +71,7 @@ def rewrite_body(path: str, body: bytes, identity: Identity, reader: dict | None
         data["name"] = identity.name
     if path == "/kiosk/heartbeat":
         data["mode"] = "laptop"
+        data.pop("reader", None)  # only the edge's own snapshot may ride a heartbeat
         if reader is not None:
             data["reader"] = reader
     return json.dumps(data).encode()
@@ -128,7 +132,12 @@ async def forward(request: Request, path: str) -> Response:
     cacheable = method == "GET" and path.startswith(CACHEABLE)
     if cacheable and session is None and not path.startswith(ANONYMOUS_OK):
         raise err(401, "not_authenticated")
-    reader = current_snapshot(st) if path == HEARTBEAT else None
+    reader = None
+    if path == HEARTBEAT:
+        try:
+            reader = current_snapshot(st)
+        except Exception as exc:  # a bad snapshot or setup row never breaks the heartbeat
+            log.warning("reader snapshot unavailable for the heartbeat: %s", type(exc).__name__)
     body = rewrite_body(path, await request.body(), st.identity, reader)
     headers = {"content-type": request.headers.get("content-type", "application/json")} \
         if body else {}
