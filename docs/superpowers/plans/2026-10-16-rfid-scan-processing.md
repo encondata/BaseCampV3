@@ -60,7 +60,7 @@
 
 1. **The internet drops mid-batch and comes back.** The batch is retried with the same `client_scan_id`s and the portal stores nothing twice. (Task 2 `test_station_scans_idempotent`; Task 7 `test_resend_after_timeout_is_idempotent`.)
 2. **A station runs with nobody signed in for days.** Sync uses the station key, and uploads continue. (Task 5 `test_sync_falls_back_to_station_key`; Task 7 `test_uploads_with_no_person_session`.)
-3. **The laptop is re-set-up for move B with move-A scans still queued.** They still upload while A is active and are rejected `move_inactive` once A is completed. (Task 2 `test_earlier_active_move_accepted_completed_rejected`.)
+3. **The laptop is re-set-up for move B with move-A scans still queued.** The new key covers B only, so the A scans are rejected `move_locked` and shown as rejected, never silently lost (spec 452243df: Jimmy says a backlog across moves isn't a concern). (Task 2 `test_key_move_rules`; Task 7 `test_rejected_rows_never_retried`.)
 4. **An asset from another client of the same portal.** It never appears in the client asset list. (Task 3 `test_client_assets_only_the_moves_client`.)
 5. **A Clear Setup or de-register on an unattended laptop.** Uploads stop on the next batch, and the laptop drops its key. (Task 1 `test_clear_setup_request_revokes_key`; Task 7 `test_clear_setup_in_reply_drops_key`.)
 
@@ -77,8 +77,7 @@
 - Test: `api/tests/test_kiosk_station_key.py` (new)
 
 **Migration:**
-- `devices` gets `station_key_hash text NULL UNIQUE`, `station_key_issued_at timestamptz NULL`, `station_key_issued_by uuid NULL REFERENCES people(id)`, and `station_key_issued_via text NULL`.
-- `device_station_moves (device_id uuid REFERENCES devices(id) ON DELETE CASCADE, initiative_id uuid REFERENCES initiatives(id) ON DELETE CASCADE, first_issued_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (device_id, initiative_id))`.
+- `devices` gets `station_key_hash text NULL`, `station_key_initiative_id uuid NULL REFERENCES initiatives(id) ON DELETE SET NULL`, `station_key_issued_at timestamptz NULL`, `station_key_issued_by uuid NULL REFERENCES people(id) ON DELETE SET NULL`, and `station_key_issued_via text NULL`. *(Spec 452243df: the key covers ONE move; there is no moves table.)*
 - `raw_scans.off_move` and `processed_scans.off_move` are `boolean NOT NULL DEFAULT false`.
 - Downgrade drops them all.
 - Bump the head assertion in any migration test that pins the head (grep `api/tests` for `"0097"`).
@@ -87,17 +86,22 @@
 - `issue(db, device, *, actor_id, via) -> str`:
   - make a raw key with `secrets.token_urlsafe(32)`;
   - store `sha256(key).hexdigest()`;
-  - upsert `DeviceStationMove(device.id, device.current_initiative_id)` when it isn't null;
+  - set `station_key_initiative_id = device.current_initiative_id`;
   - audit `station_key_issue` with `{"initiative_id", "via"}`;
   - return the raw key.
-- `revoke(db, device, *, actor_id, reason: str) -> bool`: clears the hash and issued fields (moves are kept), audits `station_key_revoke` with `{"reason"}`, and returns whether a key existed.
+- `revoke(db, device, *, actor_id, reason: str) -> bool`: clears the hash, `station_key_initiative_id` and the issued fields, audits `station_key_revoke` with `{"reason"}`, and returns whether a key existed.
 - `verify(db, serial, raw_key) -> Device | None`: hash the key, then `hmac.compare_digest` against the device's hash (look the device up by serial first). Return None for no device, a non-kiosk device, or no hash.
 
 **Route `POST /kiosk/station-key`:**
 - Body `{serial}`. Requires `kiosk:view`.
-- Device not found: 404 `device_not_found`.
-- `via` = `"move_password"` when `actor.session.initiative_id` is set, otherwise the session's login method (read how `/kiosk/heartbeat` records `login_method`). Default `"password"`.
-- A move-password session whose locked move differs from `device.current_initiative_id` gets 403 `move_locked`.
+- Device not found or not a kiosk: 404 `device_not_found`.
+- **Guards (security review), each a 409 or 403 with its own code:**
+  - the device must be a laptop (`sub_type == "laptop"`) set up as an RFID station (`station_type == "rfid"`) with a current setup move: else 409 `not_rfid_station`;
+  - its registration must be `ok` or `soon` (`registration_state`): else 409 `kiosk_not_registered`;
+  - no pending Clear Setup: else 409 `setup_clear_pending`;
+  - the caller must be the person signed in on this kiosk (`device.session_person_id == actor.person.id`): else 403 `not_signed_in_here`;
+  - a move-password session whose locked move differs from `device.current_initiative_id`: 403 `move_locked`.
+- `via` = `"move_password"` when `actor.session.initiative_id` is set; otherwise `device.session_login_method` **only if** `device.session_person_id == actor.person.id`; else `"password"`.
 - Answer: `{"key": raw}`.
 
 **Revocation hooks:**
@@ -111,7 +115,8 @@
 **Tests in `test_kiosk_station_key.py`:**
 - `test_issue_by_password_session_returns_key_and_stores_hash`: the raw key isn't in the DB, `len(hash) == 64`, and the moves table has the current move.
 - `test_issue_by_move_password_session_scoped_to_its_move`: `via == "move_password"`. When the device is set up for another move, the answer is 403 `move_locked`.
-- `test_reissue_replaces_hash_and_keeps_moves`: two moves end up in `device_station_moves`.
+- `test_reissue_replaces_hash_and_move`: after re-setup for move B and a re-issue, the old key no longer verifies and `station_key_initiative_id` is B.
+- `test_issue_guards`: a non-RFID or label device gives 409 `not_rfid_station`; an expired registration gives 409 `kiosk_not_registered`; a pending Clear Setup gives 409 `setup_clear_pending`; a caller who isn't the kiosk's signed-in person gives 403 `not_signed_in_here`.
 - `test_verify_constant_time_and_unknowns`: the right key returns the device; a wrong key, an unknown serial and a revoked key return None.
 - `test_deregister_revokes_key`, `test_clear_setup_request_revokes_key` and `test_label_setup_revokes_key`, each with an audit row carrying its reason.
 - `test_audit_rows_never_contain_the_key`.
@@ -136,7 +141,7 @@
 - Test: `api/tests/test_kiosk_station_scans.py` (new)
 
 **Interfaces:**
-- **Consumes (Task 1):** `station_keys.verify` and `DeviceStationMove`.
+- **Consumes (Task 1):** `station_keys.verify` and `devices.station_key_initiative_id`.
 - **Produces `station_device(request, db) -> Device`:**
   - reads `Authorization: Station <key>` and the body's `serial`, or the `serial` query param for GET routes;
   - a bad or missing key gets 401 `station_key_invalid`;
@@ -145,7 +150,7 @@
 **`_store_scan_batch(db, device, scans, *, operator_id: uuid.UUID | None, allowed_moves: set[uuid.UUID] | None, locked: uuid.UUID | None, inactive_moves: set[uuid.UUID]) -> KioskScanBatchOut`:**
 - Keeps every existing behavior of `ingest_scans`: per-row codes, idempotency on `client_scan_id`, read-only 423, and the field mapping.
 - Writes `off_move` onto `raw_scans`.
-- The station route passes `operator_id=None`, `allowed_moves` = the device's `device_station_moves`, and `inactive_moves` = those whose initiative is historical or archived.
+- The station route passes `operator_id=None`, `allowed_moves` = `{device.station_key_initiative_id}`, and `inactive_moves` = that move if it is historical or archived.
 - **Per scan,** using the scan's `initiative_id`, or else `device.current_initiative_id`:
   - not in `allowed_moves`: `move_locked`;
   - in `inactive_moves`: `move_inactive`.
@@ -161,11 +166,10 @@
 **Tests in `test_kiosk_station_scans.py`:**
 - `test_station_scans_store_kiosk_name_and_no_operator`: `raw_scans.device_id == device.name`, `operator_id is None`, `scan_type == "rfid"`.
 - `test_station_scans_idempotent`: posting the same `client_scan_id` twice gives both accepted and one row.
-- `test_earlier_active_move_accepted_completed_rejected`:
-  - issue the key for move A, then re-setup for B and re-issue;
-  - an A scan is accepted;
-  - after A's status is set to `completed`, an A scan is rejected with `move_inactive`;
-  - a scan for move C (never set up) is rejected with `move_locked`.
+- `test_key_move_rules`:
+  - with the key issued for move A, an A scan is accepted and a scan for move B is rejected `move_locked`;
+  - after A's status is set to `completed` (and separately when A is archived), an A scan is rejected `move_inactive`;
+  - after re-setup for B and re-issue, an A scan is `move_locked` and a B scan is accepted.
 - `test_bad_missing_revoked_key_401`.
 - `test_more_than_50_is_422`.
 - `test_off_move_flag_stored`.
@@ -281,8 +285,9 @@
 
 **Files:**
 - Create: `kiosk_laptop/edge/src/edge/rfid/processing.py`
-- Modify: `kiosk_laptop/edge/src/edge/db.py`: an appended SCHEMA_STEP with `pending_rfid_scans` (all columns in spec §2.3; `raw_read_id INTEGER NOT NULL UNIQUE`, `client_scan_id TEXT NOT NULL UNIQUE`, an index on `(upload_state, next_attempt_at)`) and `rfid_processing_meta (id INTEGER PRIMARY KEY CHECK (id = 1), last_raw_id INTEGER NOT NULL)`.
+- Modify: `kiosk_laptop/edge/src/edge/db.py`: an appended SCHEMA_STEP with `pending_rfid_scans` (all columns in spec §2.3; `raw_read_id INTEGER NOT NULL UNIQUE`, `client_scan_id TEXT NOT NULL UNIQUE`, an index on `(upload_state, next_attempt_at)`), `rfid_processing_meta (id INTEGER PRIMARY KEY CHECK (id = 1), last_raw_id INTEGER NOT NULL)` and `rfid_unmatched (raw_read_id INTEGER PRIMARY KEY, received_at TEXT NOT NULL)` (spec §2.2 "Unmatched reads").
 - Modify: `kiosk_laptop/edge/src/edge/background.py`: run `processing.run_once` every 2 s.
+- Modify: `kiosk_laptop/edge/src/edge/sync.py`: call `processing.recheck_unmatched(store)` after every successful sync.
 - Modify: `kiosk_laptop/edge/src/edge/rfid/ingest.py`: wake the processor after a stored batch (an `asyncio.Event` on `app.state`, set by ingest and awaited with a timeout by the loop).
 - Modify: `kiosk_laptop/edge/src/edge/routes/edge.py`:
   - Wipe clears `pending_rfid_scans` and sets the cursor to `(SELECT COALESCE(MAX(id), 0) FROM raw_tag_reads)` after the raw tables are cleared;
@@ -290,7 +295,8 @@
 - Test: `kiosk_laptop/edge/tests/test_rfid_processing.py` (new), plus Wipe additions.
 
 **Interfaces:**
-- `run_once(store) -> int` returns the number of pending scans inserted.
+- `run_once(store) -> int` returns the number of pending scans inserted. An unmatched read for the **current** move is inserted into `rfid_unmatched`.
+- `recheck_unmatched(store, *, now=None) -> int`: called by the syncer after every successful sync (person or station key). It deletes `rfid_unmatched` rows whose `received_at` is older than **24 h**, re-matches the rest against the fresh data, turns matches into pending scans (removing them from `rfid_unmatched`), and returns the count.
 - It reads `laptop_setup.load(store)["initiative_id"]` for the current setup move.
 - Indexes come from the cache bodies for `/kiosk/sync/assets`, `/containers` and `/client-assets` (keyed by the move) and `/kiosk/sync/people`, memoized on `(cache key, stored_at, tagreads cache-write counter)`.
 - Match order and `off_move` follow spec §2.2. The `off_move_initiative_*` fields come from the client-asset row.
@@ -304,7 +310,10 @@
 - `test_cursor_survives_restart`.
 - `test_scanned_at_is_received_at`.
 - `test_500_row_pass_limit`.
-- `test_wipe_resets_cursor_and_clears_pending`.
+- `test_unmatched_read_rechecked_after_sync`: an unmatched current-move read lands in `rfid_unmatched`; after the cache gains that tag and `recheck_unmatched` runs, it becomes a pending scan and leaves `rfid_unmatched`.
+- `test_unmatched_older_than_24h_dropped`.
+- `test_sync_calls_recheck` (the syncer calls it after success, not after failure).
+- `test_wipe_resets_cursor_and_clears_pending` (also clears `rfid_unmatched`).
 - `test_wipe_guard_counts_pending_rfid_scans`.
 
 - [ ] Write the tests; run them; they fail.
