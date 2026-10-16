@@ -61,6 +61,7 @@ const DEVICES: DeviceItem[] = [
     scan_status: 'rfid_1_cage_exit', scan_status_label: 'RFID 1 - Cage Exit',
     scan_status_color: '#31F527', tags_read_24h: 152,
     version: null, sub_type: null,
+    make: null, reader_status: null, antennas_total: null,
     current_initiative_id: null, current_initiative_name: null,
     session_person_id: null, session_person_name: null,
     session_login_method: null, session_started_at: null,
@@ -78,6 +79,7 @@ const DEVICES: DeviceItem[] = [
     scan_status: 'rfid_2_cage_entry', scan_status_label: 'RFID 2 - Cage Entry',
     scan_status_color: '#F5A623', tags_read_24h: 88,
     version: null, sub_type: null,
+    make: null, reader_status: null, antennas_total: null,
     current_initiative_id: null, current_initiative_name: null,
     session_person_id: null, session_person_name: null,
     session_login_method: null, session_started_at: null,
@@ -192,4 +194,65 @@ it('fixed readers list: column floors, shared template + minimum, sideways-scrol
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
+});
+
+const KIOSK_READER: DeviceItem = {
+  ...DEVICES[0], id: 'd3', name: 'kiosk-reader-3', serial: 'FX9600-S3',
+  mac: '94:83:C4:00:01:03', lan_ip: '192.168.8.33',
+  antennas_connected: 2, antennas_total: 4, connection_type: 'local_api',
+  make: 'Zebra', reader_status: 'reading',
+};
+const OFFLINE_READER: DeviceItem = {
+  ...DEVICES[1], id: 'd4', name: 'old-reader-4', serial: 'FX9600-S4',
+  mac: '94:83:C4:00:01:04', lan_ip: '192.168.8.44',
+  make: 'Zebra', reader_status: 'offline',
+};
+
+it('shows Make and a Status chip, and antennas over antennas_total', async () => {
+  api.listDevices.mockResolvedValue([KIOSK_READER, ...DEVICES]);
+  render(<FixedReaders />);
+  const row = (await screen.findByText('kiosk-reader-3')).closest('.dir-row') as HTMLElement;
+  expect(within(row).getByText('Zebra')).not.toBeNull();
+  const chip = within(row).getByText('Reading');
+  expect(chip.className).toContain('c-green');
+  expect(within(row).getByText('2 / 4')).not.toBeNull();
+  const plain = screen.getByText('dock-reader-1').closest('.dir-row') as HTMLElement;
+  expect(within(plain).getByText('2 / 8')).not.toBeNull();
+});
+
+it('renders Standby slate and Offline red chips', async () => {
+  api.listDevices.mockResolvedValue([
+    { ...KIOSK_READER, reader_status: 'standby' }, OFFLINE_READER]);
+  render(<FixedReaders />);
+  await screen.findByText('old-reader-4');
+  expect(screen.getByText('Standby').className).toContain('c-slate');
+  expect(screen.getByText('Offline').className).toContain('c-red');
+});
+
+it('Status facet filters to Offline', async () => {
+  api.listDevices.mockResolvedValue([KIOSK_READER, OFFLINE_READER]);
+  const user = userEvent.setup();
+  render(<FixedReaders />);
+  await screen.findByText('old-reader-4');
+  await user.click(screen.getByRole('button', { name: /Filter/i }));
+  const menu = document.querySelector('.pop-menu') as HTMLElement;
+  expect(within(menu).getByText('Status')).not.toBeNull();
+  await user.click(within(menu).getByText('Offline', { selector: '.pop-item' }));
+  await waitFor(() => expect(screen.queryByText('kiosk-reader-3')).toBeNull());
+  expect(screen.getByText('old-reader-4')).not.toBeNull();
+});
+
+it('CSV export includes Make and Status columns', async () => {
+  api.listDevices.mockResolvedValue([KIOSK_READER]);
+  const lt = await import('../lib/listTools');
+  const spy = vi.spyOn(lt, 'exportCsv').mockImplementation(() => {});
+  const user = userEvent.setup();
+  render(<FixedReaders />);
+  await screen.findByText('kiosk-reader-3');
+  await user.click(screen.getByRole('button', { name: /Export/i }));
+  const [, cols, rows] = spy.mock.calls[0] as [string, [string, (d: DeviceItem) => string][], DeviceItem[]];
+  const byName = Object.fromEntries(cols.map(([n, f]) => [n, f(rows[0])]));
+  expect(byName.Make).toBe('Zebra');
+  expect(byName.Status).toBe('Reading');
+  spy.mockRestore();
 });

@@ -33,6 +33,22 @@ export function vpnChipClass(status: string | null): string {
   return '';
 }
 
+const READER_STATUS_LABELS: Record<string, string> = {
+  reading: 'Reading', standby: 'Standby', offline: 'Offline',
+};
+
+export function readerStatusLabel(status: string | null | undefined): string {
+  if (status == null) return '—';
+  return READER_STATUS_LABELS[status] ?? status;
+}
+
+export function readerStatusChipClass(status: string | null | undefined): string {
+  if (status === 'reading') return ' c-green';
+  if (status === 'standby') return ' c-slate';
+  if (status === 'offline') return ' c-red';
+  return '';
+}
+
 export function connectionLabel(type: string | null): string {
   if (type == null) return '—';
   if (type === 'api') return 'API';
@@ -186,9 +202,10 @@ export function deviceCellText(d: DeviceItem, key: string): string {
     case 'token_expires':
       return d.token_expires_at ? new Date(d.token_expires_at).toLocaleDateString() : '—';
     case 'model': return d.model ?? '—';
+    case 'make': return d.make ?? '—';
     case 'ip': return d.lan_ip ?? '—';
     case 'tags_24h': return String(d.tags_read_24h);
-    case 'antennas': return d.antennas_connected == null ? '—' : `${d.antennas_connected} / 8`;
+    case 'antennas': return d.antennas_connected == null ? '—' : `${d.antennas_connected} / ${d.antennas_total ?? 8}`;
     case 'connection': return connectionLabel(d.connection_type);
     case 'scan_status': return d.scan_status_label ?? (d.scan_status ?? '—');
     case 'sub_type': return stationTypeLabel(d);
@@ -201,7 +218,9 @@ export function deviceCellText(d: DeviceItem, key: string): string {
     case 'login_method': return loginMethodLabel(d.session_login_method);
     case 'approval':
       return approvalLabel(d.approval_state) + (d.secret_mismatch ? ' · Secret changed' : '');
-    case 'status': return routerStatusLabel(routerStatus(d.last_seen_at));
+    case 'status':
+      if (d.device_type === 'fixed_reader') return readerStatusLabel(d.reader_status);
+      return routerStatusLabel(routerStatus(d.last_seen_at));
     default: return '';
   }
 }
@@ -209,7 +228,7 @@ export function deviceCellText(d: DeviceItem, key: string): string {
 export function deviceSearchText(d: DeviceItem): string {
   return [
     d.name, d.wan_ip, d.lan_ip, d.mac, d.serial, d.site_name, vpnLabel(d.vpn_status),
-    d.model, d.scan_status_label, d.version, stationTypeLabel(d),
+    d.model, d.make, d.reader_status ? readerStatusLabel(d.reader_status) : null, d.scan_status_label, d.version, stationTypeLabel(d),
     d.current_initiative_name, d.session_person_name,
   ].filter(Boolean).join(' ');
 }
@@ -224,7 +243,9 @@ export function deviceSortValue(d: DeviceItem, key: string): string | number {
     case 'uptime': return d.uptime_seconds ?? -1;
     case 'last_seen': return timeValue(d.last_seen_at);
     case 'connected': return d.device_type === 'router' ? routerClientTotal(d) : d.connected_count;
-    case 'status': return timeValue(d.last_seen_at);
+    case 'status':
+      if (d.device_type === 'fixed_reader') return readerStatusLabel(d.reader_status).toLowerCase();
+      return timeValue(d.last_seen_at);
     case 'token_expires': return timeValue(d.token_expires_at);
     case 'tags_24h': return d.tags_read_24h;
     case 'antennas': return d.antennas_connected ?? -1;
