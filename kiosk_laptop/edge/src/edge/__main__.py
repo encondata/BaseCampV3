@@ -1,9 +1,14 @@
-"""`python -m edge reset-key [--data-dir /data]` — replace an unreadable
+"""`python -m edge serve [--host H] [--port 8090] [--ingest-port 8091]` runs the
+kiosk and the tag listener in one process.
+
+`python -m edge reset-key [--data-dir /data]` — replace an unreadable
 edge.key. Everything encrypted under the old key (cloud tokens) and every
 offline verifier and edge session is deleted; people sign in online again.
 Queued work stays and uploads once its owner signs in online."""
 
 import argparse
+import asyncio
+import contextlib
 import sqlite3
 import sys
 from pathlib import Path
@@ -28,9 +33,19 @@ def _clear_sessions(db: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="edge")
-    parser.add_argument("command", choices=["reset-key"])
+    parser.add_argument("command", choices=["reset-key", "serve"])
     parser.add_argument("--data-dir", default="/data")
+    parser.add_argument("--host", default="0.0.0.0", help="serve: address to listen on")
+    parser.add_argument("--port", type=int, default=8090, help="serve: kiosk port")
+    parser.add_argument("--ingest-port", type=int, default=8091,
+                        help="serve: tag-data listener port")
     args = parser.parse_args()
+    if args.command == "serve":
+        from edge.serve import serve  # imported here: reset-key needs none of the web stack
+        # uvicorn re-raises the captured Ctrl+C after a clean shutdown; SystemExit still propagates
+        with contextlib.suppress(KeyboardInterrupt):
+            asyncio.run(serve(host=args.host, port=args.port, ingest_port=args.ingest_port))
+        return
     data_dir = Path(args.data_dir)
     # DB first, key last: if the cleanup fails, the old key (and the tokens
     # it can read) stay as they were and the command can simply be re-run.

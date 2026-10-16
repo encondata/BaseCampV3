@@ -8,7 +8,7 @@ import re
 from fastapi import APIRouter, Depends, Request
 
 from edge.deps import err, require_session
-from edge.rfid import checks, events, pairing, ziotc
+from edge.rfid import checks, events, pairing, tagreads, ziotc
 from edge.rfid.ziotc import ReaderError
 from edge.sessions import EdgeSession
 
@@ -182,3 +182,8 @@ async def check(name: str, request: Request,
     if name not in checks.CHECK_NAMES:
         raise err(404, "unknown_check")
     return await checks.run(name, request.app.state, session)
+
+
+@router.get("/reads")
+async def reads(request: Request, tz: str = "UTC") -> dict:
+    return tagreads.reads_summary(request.app.state.store, tz=tz)

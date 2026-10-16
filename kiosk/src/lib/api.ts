@@ -966,6 +966,30 @@ export async function getRfidEvents(limit = 50): Promise<{ events: RfidEvent[] }
   return jsonFrom<{ events: RfidEvent[] }>(await apiFetch(`/edge/rfid/events?limit=${limit}`));
 }
 
+/** One recent tag read, matched to an asset by its RFID tag when known. */
+export interface RfidRead {
+  /** raw_tag_reads.id: unique per stored read, newest first. */
+  id: number;
+  epc: string;
+  received_at: string;
+  antenna: number | null;
+  peak_rssi: number | null;
+  asset: { serial_number: string | null; name: string | null; make_model: string | null } | null;
+}
+
+/** The dashboard's tag-read summary: today's unique tags, move progress, newest reads. */
+export interface RfidReads {
+  tags_today: number;
+  move_total: number | null;
+  move_seen: number | null;
+  recent: RfidRead[];
+  last_received_at: string | null;
+}
+
+export async function getRfidReads(tz: string): Promise<RfidReads> {
+  return jsonFrom<RfidReads>(await apiFetch(`/edge/rfid/reads?tz=${encodeURIComponent(tz)}`));
+}
+
 export async function startReader(): Promise<{ reading: boolean }> {
   return jsonFrom<{ reading: boolean }>(await apiFetch('/edge/rfid/start', { method: 'POST' }));
 }

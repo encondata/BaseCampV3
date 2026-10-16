@@ -59,9 +59,13 @@ async def test_wipe_clears_auth_and_move_data_when_outbox_empty(app, client):
     app.state.upstream.save_session("p-1", refresh_token="r", access_token="a", expires_in=900)
     store.run("INSERT INTO cache VALUES ('/kiosk/sync/people', 200, '{}', 'now')")
     store.run("INSERT INTO move_passwords VALUES ('m', 'M', 'v', '{}', 'now', 'v1')")
+    store.run("INSERT INTO raw_tag_reads (received_at, reader_serial, epc, raw_json) "
+              "VALUES ('now', 'R1', 'AA01', '{}')")
+    store.run("INSERT INTO rfid_tags_seen VALUES ('AA01', 'now', 'now', 1, NULL, NULL, 'R1')")
     r = await client.post("/edge/wipe", json={}, headers=make_session(app, max_rank=60))
     assert r.json() == {"cleared_move_data": True}
-    for table in ("cloud_sessions", "offline_logins", "edge_sessions", "move_passwords", "cache"):
+    for table in ("cloud_sessions", "offline_logins", "edge_sessions", "move_passwords", "cache",
+                  "raw_tag_reads", "rfid_tags_seen"):
         assert store.one(f"SELECT COUNT(*) AS n FROM {table}")["n"] == 0
     assert (app.state.settings.data_dir / "identity.json").exists()
 

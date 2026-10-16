@@ -1,8 +1,8 @@
 /**
  * The RFID Reader Dashboard (/rfid_status) — where Kiosk Setup's Start
  * Reader lands on a laptop RFID station. Six status tiles, the live tag
- * reads table (empty until a tag source is connected), the edge's event
- * log, and one big START / STOP pair. Reader status and events refresh 5 s
+ * reads table (tags the reader posted to the edge), the edge's event
+ * log, and one big START / STOP pair. Reader status, tag reads and events refresh 5 s
  * after the previous refresh settles (never overlapping); the clock ticks
  * every second. Web mode, or a laptop with no paired
  * reader, goes home.
@@ -13,8 +13,8 @@ import { Navigate } from 'react-router-dom';
 
 import { codeOf, readerErrorText } from '../components/setup/readerSetup';
 import {
-  getReaderStatus, getRfidEvents, startReader, stopReader,
-  type ReaderStatus, type RfidEvent,
+  getReaderStatus, getRfidEvents, getRfidReads, startReader, stopReader,
+  type ReaderStatus, type RfidEvent, type RfidReads,
 } from '../lib/api';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { isLaptop } from '../lib/platform';
@@ -22,6 +22,8 @@ import { useSyncStatus } from '../lib/sync';
 
 const POLL_MS = 5000;
 const CLOCK_MS = 1000;
+const NEW_ROW_MS = 2000;
+
 
 type ReaderState = 'loading' | 'reading' | 'stopped' | 'unreachable';
 
@@ -91,6 +93,7 @@ function eventIcon(ev: RfidEvent): ReactNode {
         : <span className="rfid-dash-dot is-green" />;
     case 'reader_stopped': return <span className="rfid-dash-dot is-red" />;
     case 'reader_started': return ICON.gear;
+    case 'tag_data_receiving': return ICON.broadcast;
     case 'scan_type_selected': return ICON.document;
     case 'move_loaded': return ICON.sliders;
     case 'reader_connected':
@@ -125,8 +128,12 @@ export default function RfidStatus() {
   const [now, setNow] = useState(() => new Date());
   const [busy, setBusy] = useState<'start' | 'stop' | null>(null);
   const [actionError, setActionError] = useState<{ action: 'start' | 'stop'; err: unknown } | null>(null);
+  const [reads, setReads] = useState<RfidReads | null>(null);
+  const [fresh, setFresh] = useState<ReadonlySet<number>>(new Set());
   const alive = useRef(true);
   const seq = useRef(0);
+  const prevKeys = useRef<Set<number> | null>(null);
+  const freshTimer = useRef<number | undefined>(undefined);
 
   const refresh = useCallback(async () => {
     // Only the newest request may write: a slow older answer is dropped.
@@ -145,6 +152,24 @@ export default function RfidStatus() {
         (r) => { if (latest()) setEvents(r.events); },
         () => {},
       ),
+      // A failed reads fetch keeps the last data on screen.
+      getRfidReads(Intl.DateTimeFormat().resolvedOptions().timeZone).then(
+        (r) => {
+          if (!latest()) return;
+          const keys = new Set(r.recent.map((x) => x.id));
+          const prev = prevKeys.current;
+          prevKeys.current = keys;
+          setReads(r);
+          // The first response is the baseline; later arrivals glow briefly.
+          const added = prev ? [...keys].filter((k) => !prev.has(k)) : [];
+          if (added.length > 0) {
+            setFresh(new Set(added));
+            window.clearTimeout(freshTimer.current);
+            freshTimer.current = window.setTimeout(() => setFresh(new Set()), NEW_ROW_MS);
+          }
+        },
+        () => {},
+      ),
     ]);
   }, []);
 
@@ -161,6 +186,7 @@ export default function RfidStatus() {
     return () => {
       alive.current = false;
       window.clearTimeout(timer);
+      window.clearTimeout(freshTimer.current);
       window.clearInterval(clock);
     };
   }, [laptop, refresh]);
@@ -195,6 +221,11 @@ export default function RfidStatus() {
   const stopDisabled = busy !== null;
 
   const assets = sync.assets;
+  const moveKnown = reads !== null && reads.move_total !== null && reads.move_seen !== null;
+  const moveTotal = moveKnown ? reads.move_total as number : null;
+  const moveSeen = moveKnown ? reads.move_seen as number : null;
+  const movePct = moveTotal ? Math.min(100, ((moveSeen as number) / moveTotal) * 100) : 0;
+  const movePctText = movePct.toFixed(1);
   const antennas = status?.antennas ?? [];
   const readerSub = reader
     ? `${reader.model} · ${antennasLabel(antennas)}`
@@ -206,12 +237,15 @@ export default function RfidStatus() {
       <h1 className="sr-only">RFID reader</h1>
 
       <div className="rfid-dash-tiles">
-        <Tile icon={ICON.tag} label="Tags read today" value="—" sub="Waiting for tag data" />
+        <Tile icon={ICON.tag} label="Tags read today"
+              value={reads ? reads.tags_today : '—'} sub="Unique tags" />
         <Tile icon={ICON.barcode} label="Move progress"
-              value={`— / ${assets === undefined ? '—' : assets}`} sub="Waiting for tag data">
+              value={moveKnown ? `${moveSeen} / ${moveTotal}` : `— / ${assets === undefined ? '—' : assets}`}
+              sub={moveKnown ? `${movePctText}% complete` : 'Waiting for move data'}>
           <div className="rfid-dash-bar" role="progressbar" aria-label="Move progress"
-               aria-valuemin={0} aria-valuemax={assets ?? 0} aria-valuenow={0}>
-            <span style={{ width: '0%' }} />
+               aria-valuemin={0} aria-valuemax={moveKnown ? moveTotal as number : (assets ?? 0)}
+               aria-valuenow={moveKnown ? moveSeen as number : 0}>
+            <span style={{ width: moveKnown ? `${movePctText}%` : '0%' }} />
           </div>
         </Tile>
         <Tile icon={ICON.clock} label="Local time"
@@ -240,11 +274,25 @@ export default function RfidStatus() {
                 </tr>
               </thead>
               <tbody>
-                <tr>
-                  <td colSpan={4} className="rfid-dash-empty">
-                    No tag reads yet — live reads arrive when tag data is connected.
-                  </td>
-                </tr>
+                {reads !== null && reads.recent.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="rfid-dash-empty">No tag reads yet.</td>
+                  </tr>
+                )}
+                {reads?.recent.map((r) => (
+                  <tr key={r.id} className={fresh.has(r.id) ? 'is-new' : undefined}>
+                    <td>{r.epc}</td>
+                    {r.asset ? (
+                      <>
+                        <td>{r.asset.serial_number}</td>
+                        <td>{r.asset.name}</td>
+                        <td>{r.asset.make_model}</td>
+                      </>
+                    ) : (
+                      <td colSpan={3} className="rfid-dash-unknown">Unknown tag</td>
+                    )}
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

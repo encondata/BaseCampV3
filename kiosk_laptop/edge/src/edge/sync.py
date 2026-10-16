@@ -14,6 +14,7 @@ from collections.abc import Callable
 from urllib.parse import quote
 
 from edge.db import Store, now_iso
+from edge.rfid.tagreads import note_cache_write
 from edge.upstream import CloudOffline, Upstream
 
 
@@ -95,6 +96,7 @@ class Syncer:
                 c.execute("INSERT INTO cache (key, status, body, stored_at) VALUES (?, 200, ?, ?) "
                           "ON CONFLICT(key) DO UPDATE SET status = 200, body = excluded.body, "
                           "stored_at = excluded.stored_at", (path, body, now_iso()))
+                note_cache_write()
             if rows is not None:
                 c.execute("DELETE FROM move_passwords")
                 for row in rows:

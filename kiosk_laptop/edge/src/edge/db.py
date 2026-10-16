@@ -70,6 +70,27 @@ SCHEMA_STEPS: list[str] = [
     CREATE TABLE rfid_events (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
         kind TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '')
     """,
+    # raw FX9600 tag reads (the laptop's only store for them) and a per-tag summary
+    """
+    CREATE TABLE raw_tag_reads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        received_at TEXT NOT NULL,
+        read_at TEXT,
+        reader_serial TEXT NOT NULL,
+        epc TEXT NOT NULL,
+        antenna INTEGER, peak_rssi REAL, reads INTEGER, channel REAL, phase REAL,
+        event_num INTEGER, event_type TEXT,
+        initiative_id TEXT, site_id TEXT, scan_status TEXT,
+        raw_json TEXT NOT NULL);
+    CREATE INDEX raw_tag_reads_received ON raw_tag_reads (received_at);
+    CREATE INDEX raw_tag_reads_epc ON raw_tag_reads (epc);
+    CREATE TABLE rfid_tags_seen (
+        epc TEXT PRIMARY KEY,
+        first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+        total_reads INTEGER NOT NULL,
+        last_antenna INTEGER, last_rssi REAL, reader_serial TEXT NOT NULL);
+    CREATE INDEX rfid_tags_seen_last ON rfid_tags_seen (last_seen)
+    """,
 ]
 
 

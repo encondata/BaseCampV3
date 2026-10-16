@@ -138,8 +138,10 @@ and the kiosk points the reader's tag data at this laptop.
   that in the reader's web console before pairing. The kiosk signs in to it
   with the reader's admin account.
 - Port **8091** is published on every network interface for the reader's tag
-  data. Handling tag data comes in a later release: nothing listens on 8091
-  yet, so reads go nowhere for now. Pairing only points the reader at it.
+  data. The kiosk listens there (in the same process as the kiosk on 8090) and
+  stores every tag read on the laptop, in `raw_tag_reads` in `edge.db`.
+  Wipe clears those reads. Only the paired reader, with its secret in the
+  address, is answered; anything else gets a 404.
 - The reader and the laptop must be on the same network. The kiosk scans the
   laptop's own subnets for readers, on port 443 (HTTPS) and port 80 (HTTP).
   It sends no password to a device until that device looks like a Zebra
