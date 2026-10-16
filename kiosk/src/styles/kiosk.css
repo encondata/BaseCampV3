@@ -833,6 +833,8 @@
 .rfid-dash-panel .local-table-wrap { flex: 1 1 auto; min-height: 0; overflow: auto; }
 .rfid-dash-table { width: 100%; }
 .rfid-dash-table td:nth-child(1), .rfid-dash-table td:nth-child(2) { font-family: var(--font-mono); font-size: 12px; }
+.rfid-dash-table td.rfid-dash-unknown { font-family: inherit; font-size: 13px; color: var(--text-mute); }
+.rfid-dash-table tr.is-new td { background: var(--paper-line); }
 .rfid-dash-empty { margin: 0; padding: 18px 10px; color: var(--text-mute); font-size: 13px; text-align: center; }
 .rfid-dash-foot { margin: 10px 0 0; font-family: var(--font-mono); font-size: 11px; color: var(--text-mute); }
 

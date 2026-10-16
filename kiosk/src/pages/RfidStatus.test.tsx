@@ -6,7 +6,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({
-  getReaderStatus: vi.fn(), getRfidEvents: vi.fn(), startReader: vi.fn(), stopReader: vi.fn(),
+  getReaderStatus: vi.fn(), getRfidEvents: vi.fn(), getRfidReads: vi.fn(), startReader: vi.fn(), stopReader: vi.fn(),
 }));
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
@@ -19,7 +19,7 @@ vi.mock('../lib/sync', async (importOriginal) => {
   return { ...actual, useSyncStatus: () => sync.value };
 });
 
-import { ApiError, type ReaderStatus, type RfidEvent } from '../lib/api';
+import { ApiError, type ReaderStatus, type RfidEvent, type RfidReads } from '../lib/api';
 import { writeKioskSetup } from '../lib/kioskSetup';
 import RfidStatus, { antennasLabel } from './RfidStatus';
 
@@ -40,6 +40,17 @@ const EVENTS: RfidEvent[] = [
   { id: 2, at: '2026-10-02T19:02:00Z', kind: 'move_loaded', title: 'Move loaded', detail: 'NAP11 Hall Migration' },
   { id: 1, at: '2026-10-02T19:01:00Z', kind: 'portal_check_in', title: 'Portal check-in successful', detail: 'Portal reachable' },
 ];
+
+const reads = (over: Partial<RfidReads> = {}): RfidReads => ({
+  tags_today: 42, move_total: 500, move_seen: 37, last_received_at: '2026-10-02T19:03:00Z',
+  recent: [
+    { epc: 'E2801160600002', received_at: '2026-10-02T19:03:00Z', antenna: 1, peak_rssi: -52,
+      asset: { serial_number: 'SN-1001', name: 'host-a', make_model: 'Dell R740' } },
+    { epc: 'E2801160600003', received_at: '2026-10-02T19:02:59Z', antenna: 2, peak_rssi: -60,
+      asset: null },
+  ],
+  ...over,
+});
 
 async function flush() {
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
@@ -70,6 +81,7 @@ beforeEach(() => {
   sync.value = { phase: 'done', assets: 500 };
   api.getReaderStatus.mockReset().mockResolvedValue(status());
   api.getRfidEvents.mockReset().mockResolvedValue({ events: EVENTS });
+  api.getRfidReads.mockReset().mockResolvedValue(reads());
   api.startReader.mockReset().mockResolvedValue({ reading: true });
   api.stopReader.mockReset().mockResolvedValue({ reading: false });
 });
@@ -97,16 +109,18 @@ describe('RfidStatus', () => {
     expect(within(tile('Scan type')).getByText('RFID 1 - Cage Exit')).toBeTruthy();
     expect(within(tile('Scan type')).getByText('Station: RFID · Laptop')).toBeTruthy();
     expect(within(tile('Reader status')).getByText('FX9600 · Antennas 1 – 4')).toBeTruthy();
-    expect(within(tile('Tags read today')).getByText('Waiting for tag data')).toBeTruthy();
+    expect(within(tile('Tags read today')).getByText('Unique tags')).toBeTruthy();
   });
 
-  it('MOVE PROGRESS shows — / 500 from the sync summary', async () => {
+  it('MOVE PROGRESS shows — / 500 from the sync summary when move counts are null', async () => {
+    api.getRfidReads.mockResolvedValue(reads({ move_total: null, move_seen: null }));
     await renderPage();
     expect(within(tile('Move progress')).getByText('— / 500')).toBeTruthy();
   });
 
   it('MOVE PROGRESS shows a dash when the asset count is unknown', async () => {
     sync.value = { phase: 'idle' };
+    api.getRfidReads.mockResolvedValue(reads({ move_total: null, move_seen: null }));
     await renderPage();
     expect(within(tile('Move progress')).getByText('— / —')).toBeTruthy();
   });
@@ -199,10 +213,17 @@ describe('RfidStatus', () => {
   });
 
   it('shows the Live Tag Reads empty state', async () => {
+    api.getRfidReads.mockResolvedValue(reads({ recent: [], tags_today: 0 }));
+    await renderPage();
+    expect(screen.getByText('No tag reads yet.')).toBeTruthy();
+    expect(screen.getByText('Live view only · Older rows leave this screen.')).toBeTruthy();
+  });
+
+  it('shows the Live Tag Reads table', async () => {
     await renderPage();
     expect(screen.getByText('Live Tag Reads')).toBeTruthy();
-    expect(screen.getByText('No tag reads yet — live reads arrive when tag data is connected.'))
-      .toBeTruthy();
+    expect(screen.queryByText('No tag reads yet.')).toBeNull();
+    expect(screen.getByText('E2801160600002')).toBeTruthy();
     expect(screen.getByText('Live view only · Older rows leave this screen.')).toBeTruthy();
   });
 
@@ -294,6 +315,83 @@ describe('RfidStatus', () => {
     await renderPage();
     expect(screen.getByText('HOME PAGE')).toBeTruthy();
     expect(api.getReaderStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe('RfidStatus tag data', () => {
+  it('tiles show the day count and move progress with a bar', async () => {
+    await renderPage();
+    expect(within(tile('Tags read today')).getByText('42')).toBeTruthy();
+    const move = tile('Move progress');
+    expect(within(move).getByText('37 / 500')).toBeTruthy();
+    expect(within(move).getByText('7.4% complete')).toBeTruthy();
+    const bar = within(move).getByRole('progressbar');
+    expect(bar.getAttribute('aria-valuenow')).toBe('37');
+    expect(bar.getAttribute('aria-valuemax')).toBe('500');
+    expect((bar.firstElementChild as HTMLElement).style.width).toBe('7.4%');
+  });
+
+  it('null move counts show Waiting for move data', async () => {
+    api.getRfidReads.mockResolvedValue(reads({ move_total: null, move_seen: null }));
+    await renderPage();
+    expect(within(tile('Move progress')).getByText('Waiting for move data')).toBeTruthy();
+    expect(within(tile('Move progress')).getByText('— / 500')).toBeTruthy();
+  });
+
+  it('Tags read today shows a dash before the first reads response', async () => {
+    api.getRfidReads.mockReturnValue(new Promise(() => {}));
+    await renderPage();
+    expect(within(tile('Tags read today')).getByText('—')).toBeTruthy();
+  });
+
+  it('rows show a matched asset and an unknown tag', async () => {
+    await renderPage();
+    const rows = screen.getAllByRole('row');
+    const matched = within(rows[1]);
+    expect(matched.getByText('E2801160600002')).toBeTruthy();
+    expect(matched.getByText('SN-1001')).toBeTruthy();
+    expect(matched.getByText('host-a')).toBeTruthy();
+    expect(matched.getByText('Dell R740')).toBeTruthy();
+    expect(within(rows[2]).getByText('Unknown tag')).toBeTruthy();
+  });
+
+  it('passes the time zone and polls reads again after 5000 ms', async () => {
+    await renderPage();
+    expect(api.getRfidReads).toHaveBeenCalledWith(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(api.getRfidReads).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed reads fetch keeps the last data', async () => {
+    await renderPage();
+    api.getRfidReads.mockRejectedValue(new Error('x'));
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(within(tile('Tags read today')).getByText('42')).toBeTruthy();
+    expect(screen.getByText('E2801160600002')).toBeTruthy();
+  });
+
+  it('highlights a new row for 2 s', async () => {
+    await renderPage();
+    const fresh = reads({ recent: [
+      { epc: 'E2801160600009', received_at: '2026-10-02T19:03:10Z', antenna: 1, peak_rssi: -50, asset: null },
+      ...reads().recent,
+    ] });
+    api.getRfidReads.mockResolvedValue(fresh);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    const row = () => screen.getByText('E2801160600009').closest('tr') as HTMLElement;
+    expect(row().className).toContain('is-new');
+    expect(screen.getByText('E2801160600002').closest('tr')!.className).not.toContain('is-new');
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(row().className).not.toContain('is-new');
+  });
+
+  it('renders a tag_data_receiving event and no Waiting for tag data text', async () => {
+    api.getRfidEvents.mockResolvedValue({ events: [
+      { id: 9, at: '2026-10-02T19:05:00Z', kind: 'tag_data_receiving', title: 'Tag data receiving', detail: '' },
+    ] });
+    await renderPage();
+    expect(screen.getByText('Tag data receiving')).toBeTruthy();
+    expect(screen.queryByText('Waiting for tag data')).toBeNull();
   });
 });
 
