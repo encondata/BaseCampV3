@@ -31,6 +31,12 @@ const STATE_TEXT: Record<ReaderState, string> = {
   loading: 'Checking…', reading: 'Reading', stopped: 'Stopped', unreachable: 'Unreachable',
 };
 
+/** A tag ID as crews read it: the EPC without its leading zeros ("0" if it
+ *  is all zeros). Display only — storage and asset matching use the full EPC. */
+export function displayEpc(epc: string): string {
+  return epc.replace(/^0+(?=.)/, '');
+}
+
 /** "Antennas 1 – 4" for a contiguous run, "Antennas 1, 3" otherwise. */
 export function antennasLabel(antennas: string[]): string {
   if (antennas.length === 0) return 'No antennas connected';
@@ -281,7 +287,7 @@ export default function RfidStatus() {
                 )}
                 {reads?.recent.map((r) => (
                   <tr key={r.id} className={fresh.has(r.id) ? 'is-new' : undefined}>
-                    <td>{r.epc}</td>
+                    <td title={r.epc}>{displayEpc(r.epc)}</td>
                     {r.asset ? (
                       <>
                         <td>{r.asset.serial_number}</td>
