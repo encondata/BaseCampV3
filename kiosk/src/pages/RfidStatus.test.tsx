@@ -21,7 +21,7 @@ vi.mock('../lib/sync', async (importOriginal) => {
 
 import { ApiError, type ReaderStatus, type RfidEvent, type RfidReads } from '../lib/api';
 import { writeKioskSetup } from '../lib/kioskSetup';
-import RfidStatus, { antennasLabel } from './RfidStatus';
+import RfidStatus, { antennasLabel, displayEpc } from './RfidStatus';
 
 const SETUP = {
   initiativeId: 'init-1', initiativeName: 'NAP11 Hall Migration',
@@ -217,6 +217,17 @@ describe('RfidStatus', () => {
     await renderPage();
     expect(screen.getByText('No tag reads yet.')).toBeTruthy();
     expect(screen.getByText('Live view only · Older rows leave this screen.')).toBeTruthy();
+  });
+
+  it('shows a tag ID without its leading zeros, the full EPC on hover', async () => {
+    api.getRfidReads.mockResolvedValue(reads({ recent: [
+      { id: 5, epc: '000000000000000000700297', received_at: '2026-10-02T19:03:00Z', antenna: 1,
+        peak_rssi: -52, asset: null },
+    ] }));
+    await renderPage();
+    const cell = screen.getByText('700297');
+    expect(cell.getAttribute('title')).toBe('000000000000000000700297');
+    expect(screen.queryByText('000000000000000000700297')).toBeNull();
   });
 
   it('shows the Live Tag Reads table', async () => {
@@ -415,5 +426,13 @@ describe('antennasLabel', () => {
     expect(antennasLabel(['1', '2', '3', '4'])).toBe('Antennas 1 – 4');
     expect(antennasLabel(['1', '3'])).toBe('Antennas 1, 3');
     expect(antennasLabel([])).toBe('No antennas connected');
+  });
+});
+
+describe('displayEpc', () => {
+  it('strips leading zeros, keeping a lone zero', () => {
+    expect(displayEpc('000000000000000000700297')).toBe('700297');
+    expect(displayEpc('E28011606000020D6A1B2004')).toBe('E28011606000020D6A1B2004');
+    expect(displayEpc('000000000000000000000000')).toBe('0');
   });
 });
