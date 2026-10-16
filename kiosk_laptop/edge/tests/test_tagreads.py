@@ -3,7 +3,6 @@ import json
 import pytest
 
 from edge.db import Store
-from edge.rfid import tagreads
 from edge.rfid.tagreads import normalize_epc, parse_events, store_batch
 from fake_reader import tag_event
 
@@ -42,9 +41,8 @@ def test_mixed_batch_stores_good_events():
 
 
 def test_non_numeric_fields_become_null():
-    event = tag_event("AA01", antenna="x", peakRssi=None, timestamp="t" * 65)
+    event = tag_event("AA01", antenna="x", timestamp="t" * 65)
     event["data"]["peakRssi"] = None
-    event["data"].pop("peak_rssi", None)
     rows, _ = parse_events(event)
     assert rows[0]["antenna"] is None and rows[0]["peak_rssi"] is None
     assert rows[0]["read_at"] is None
@@ -69,8 +67,10 @@ def test_store_batch_writes_rows_and_summary(store):
 
 def test_summary_keeps_first_seen_across_batches(store):
     rows, _ = parse_events(tag_event("AA01"))
-    store_batch(store, reader_serial="R1", rows=rows, setup=None, received_at="2026-10-16T14:00:00+00:00")
-    store_batch(store, reader_serial="R1", rows=rows, setup=None, received_at="2026-10-16T15:00:00+00:00")
+    store_batch(store, reader_serial="R1", rows=rows, setup=None,
+                received_at="2026-10-16T14:00:00+00:00")
+    store_batch(store, reader_serial="R1", rows=rows, setup=None,
+                received_at="2026-10-16T15:00:00+00:00")
     seen = store.one("SELECT * FROM rfid_tags_seen")
     assert seen["first_seen"] == "2026-10-16T14:00:00+00:00"
     assert seen["last_seen"] == "2026-10-16T15:00:00+00:00"
@@ -101,10 +101,20 @@ def test_raw_json_round_trips(store):
     assert json.loads(store.one("SELECT raw_json FROM raw_tag_reads")["raw_json"]) == event
 
 
-def test_failed_batch_rolls_back(store, monkeypatch):
+def test_failed_batch_rolls_back(store):
     rows, _ = parse_events([tag_event("AA01"), tag_event("BB02")])
     rows[1]["epc"] = None  # NOT NULL violation on the second insert
     with pytest.raises(Exception):
         store_batch(store, reader_serial="R1", rows=rows, setup=None)
     assert store.one("SELECT COUNT(*) AS n FROM raw_tag_reads")["n"] == 0
     assert store.one("SELECT COUNT(*) AS n FROM rfid_tags_seen")["n"] == 0
+
+
+def test_out_of_range_numbers_become_null_and_batch_stores(store):
+    huge = tag_event("AA01", antenna=10**400, reads=2**70)
+    rows, skipped = parse_events([huge, tag_event("BB02")])
+    assert skipped == 0 and len(rows) == 2
+    assert store_batch(store, reader_serial="R1", rows=rows, setup=None) == 2
+    r = store.one("SELECT * FROM raw_tag_reads WHERE epc = 'AA01'")
+    assert r["antenna"] is None and r["reads"] is None
+    assert store.one("SELECT total_reads FROM rfid_tags_seen WHERE epc = 'AA01'")[0] == 1

@@ -26,12 +26,22 @@ def normalize_epc(value) -> str | None:
 def _number(value) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value) if math.isfinite(value) else None
+    try:
+        return float(value) if math.isfinite(value) else None
+    except (OverflowError, ValueError):
+        return None
 
 
 def _integer(value) -> int | None:
+    """An int that fits SQLite's signed 64-bit INTEGER, else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, int):
+        return value if -(2**63) <= value <= 2**63 - 1 else None
     number = _number(value)
-    return int(number) if number is not None else None
+    if number is None or not -(2**63) <= number < 2**63:
+        return None
+    return int(number)
 
 
 def _text(value, limit: int) -> str | None:
