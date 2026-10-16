@@ -55,7 +55,16 @@ async def serve(*, host: str = "0.0.0.0", port: int = 8090, ingest_port: int = 8
         if ready is not None:
             ready.set()
 
-    tasks = [asyncio.create_task(main.serve()), asyncio.create_task(ingest.serve())]
+    async def run(server: uvicorn.Server) -> int:
+        # uvicorn calls sys.exit(3) when it can't bind; a SystemExit escaping a task
+        # would skip the other server's (and the main app's) shutdown
+        try:
+            await server.serve()
+        except SystemExit as exc:
+            return exc.code if isinstance(exc.code, int) else 1
+        return 0
+
+    tasks = [asyncio.create_task(run(main)), asyncio.create_task(run(ingest))]
     announcer = asyncio.create_task(announce())
     try:
         # when either server exits (or fails), stop the other
@@ -71,3 +80,6 @@ async def serve(*, host: str = "0.0.0.0", port: int = 8090, ingest_port: int = 8
     for r in results:
         if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
             raise r
+    code = next((r for r in results if isinstance(r, int) and r), 0)
+    if code:
+        raise SystemExit(code)  # the process still exits with uvicorn's failure code

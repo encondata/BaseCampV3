@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import signal
 import socket
 import subprocess
 import sys
@@ -8,6 +9,15 @@ import httpx
 import pytest
 
 from edge import serve as serve_mod
+from edge.db import Store
+
+
+@pytest.fixture(autouse=True)
+def keep_signal_handlers():
+    saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    yield
+    for sig, handler in saved.items():
+        signal.signal(sig, handler)
 
 
 def free_port() -> int:
@@ -95,3 +105,21 @@ def test_cli_has_serve():
                          capture_output=True, text=True, timeout=60)
     assert out.returncode == 0
     assert "--ingest-port" in out.stdout
+
+
+@pytest.mark.parametrize("busy", ["ingest", "main"])
+async def test_port_in_use_exits_3_after_clean_shutdown(settings, monkeypatch, busy):
+    closed = []
+    real_close = Store.close
+    # the main app's lifespan shutdown ends by closing the store
+    monkeypatch.setattr(Store, "close", lambda self: (closed.append(1), real_close(self))[1])
+    port, ingest = free_port(), free_port()
+    with socket.socket() as blocker:
+        blocker.bind(("127.0.0.1", ingest if busy == "ingest" else port))
+        blocker.listen()
+        with pytest.raises(SystemExit) as exc:
+            await asyncio.wait_for(
+                serve_mod.serve(host="127.0.0.1", port=port, ingest_port=ingest,
+                                settings=settings), 15)
+    assert exc.value.code == 3
+    assert closed
