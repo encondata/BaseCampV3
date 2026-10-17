@@ -226,6 +226,8 @@ export async function removeUploadedSound(id: string): Promise<void> {
 type AudioCtor = new () => AudioContext;
 
 let ctx: AudioContext | null = null;
+/** The latest `resume()` still in flight (settled either way), or null. */
+let resuming: Promise<void> | null = null;
 const objectUrls = new Map<string, string>();
 
 /** One shared context, created on the first play (never at import time:
@@ -240,7 +242,13 @@ function audioContext(): AudioContext | null {
       if (!Ctor) return null;
       ctx = new Ctor();
     }
-    if (ctx.state === 'suspended') void Promise.resolve(ctx.resume()).catch(() => undefined);
+    if (ctx.state === 'suspended') {
+      const pending: Promise<void> = Promise.resolve(ctx.resume()).then(
+        () => undefined, () => undefined,
+      );
+      resuming = pending;
+      void pending.then(() => { if (resuming === pending) resuming = null; });
+    }
     return ctx;
   } catch {
     return null;
@@ -421,10 +429,19 @@ export function soundBlocked(): boolean {
   }
 }
 
+/** Resolves once the latest `resume()` has settled (at once when none is
+ *  pending), so `soundBlocked()` reads the real state rather than the
+ *  moment before a resume lands. A browser holding the context back for
+ *  a gesture may leave it pending, so callers also re-check on a timer. */
+export function soundSettled(): Promise<void> {
+  return resuming ?? Promise.resolve();
+}
+
 /** Test helper: drops the shared context and the object-URL cache so a
  *  case can swap the audio API out from under the module. */
 export function resetSoundAudioForTest(): void {
   ctx = null;
+  resuming = null;
   objectUrls.forEach((url) => {
     try { URL.revokeObjectURL(url); } catch { /* no URL API */ }
   });

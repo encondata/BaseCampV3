@@ -21,10 +21,14 @@ const soundMock = vi.hoisted(() => ({
   stop: vi.fn(),
   startSiren: vi.fn(),
   soundBlocked: vi.fn(() => false),
+  soundSettled: vi.fn(() => Promise.resolve()),
 }));
 vi.mock('../lib/sound', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/sound')>();
-  return { ...actual, startSiren: soundMock.startSiren, soundBlocked: soundMock.soundBlocked };
+  return {
+    ...actual, startSiren: soundMock.startSiren, soundBlocked: soundMock.soundBlocked,
+    soundSettled: soundMock.soundSettled,
+  };
 });
 
 // KioskShell's own dependencies, for the mount test.
@@ -97,6 +101,7 @@ beforeEach(() => {
   apiMock.dismissOffMoveAlarm.mockResolvedValue({ dismissed: 1 });
   soundMock.startSiren.mockImplementation(() => soundMock.stop);
   soundMock.soundBlocked.mockReturnValue(false);
+  soundMock.soundSettled.mockImplementation(() => Promise.resolve());
   writeKioskSetup(SETUP);
 });
 
@@ -142,6 +147,7 @@ it('space_dismisses_with_latest_id', async () => {
   render(<OffMoveAlarm />);
   await flush();
   expect(screen.getByRole('alertdialog')).toBeTruthy();
+  await tick(1000);   // past the opening guard
 
   // A held key's repeats do nothing, but still don't scroll the page.
   const repeat = new KeyboardEvent('keydown', { key: ' ', code: 'Space', repeat: true, cancelable: true });
@@ -318,4 +324,142 @@ it('not_mounted_on_label_station_or_web', async () => {
   } finally {
     auth.status = 'authed';
   }
+});
+
+const SPACE = () => new KeyboardEvent('keydown', { key: ' ', code: 'Space', cancelable: true });
+const ENTER = () => new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', cancelable: true });
+const NOTICE = { name: /Tap to enable sound/ };
+
+it('a context that starts running shortly after the siren never shows the sound notice', async () => {
+  let suspended = true;
+  let settle: () => void = () => undefined;
+  soundMock.soundBlocked.mockImplementation(() => suspended);
+  soundMock.soundSettled.mockImplementation(() => new Promise<void>((done) => {
+    settle = () => { suspended = false; done(); };
+  }));
+  apiMock.getOffMoveAlarm.mockResolvedValue(state([row(1)]));
+  render(<OffMoveAlarm />);
+  await flush();
+  expect(screen.getByRole('alertdialog')).toBeTruthy();
+  expect(screen.queryByRole('button', NOTICE)).toBeNull();
+  await tick(100);
+  expect(screen.queryByRole('button', NOTICE)).toBeNull();
+  await act(async () => { settle(); await Promise.resolve(); });
+  for (let i = 0; i < 5; i += 1) {
+    await tick(500);
+    expect(screen.queryByRole('button', NOTICE)).toBeNull();
+  }
+});
+
+it('a context that stays suspended shows the sound notice', async () => {
+  soundMock.soundBlocked.mockReturnValue(true);
+  soundMock.soundSettled.mockImplementation(() => new Promise<void>(() => undefined));
+  apiMock.getOffMoveAlarm.mockResolvedValue(state([row(1)]));
+  render(<OffMoveAlarm />);
+  await flush();
+  expect(screen.queryByRole('button', NOTICE)).toBeNull();
+  await tick(300);
+  expect(screen.getByRole('button', NOTICE)).toBeTruthy();
+});
+
+it('one Space closes only the top takeover, never a preview under a live alarm too', async () => {
+  const onClose = vi.fn();
+  apiMock.getOffMoveAlarm.mockResolvedValue(state([row(9)]));
+  render(
+    <>
+      <OffMoveAlarm preview={{ rows: [row(1)], mode: 'until_dismissed', timed_seconds: 10, onClose }} />
+      <OffMoveAlarm />
+    </>,
+  );
+  await flush();
+  expect(screen.getAllByRole('alertdialog')).toHaveLength(2);
+  await tick(1000);
+  const later = vi.fn();
+  window.addEventListener('keydown', later, true);
+  try {
+    act(() => { window.dispatchEvent(SPACE()); });
+    expect(apiMock.dismissOffMoveAlarm).toHaveBeenCalledWith(9);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
+    expect(later).not.toHaveBeenCalled();      // stopImmediatePropagation
+
+    act(() => { window.dispatchEvent(SPACE()); });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(apiMock.dismissOffMoveAlarm).toHaveBeenCalledTimes(1);
+  } finally {
+    window.removeEventListener('keydown', later, true);
+  }
+});
+
+it('enter_and_space_are_ignored_for_the_first_second_but_a_tap_still_works', async () => {
+  apiMock.getOffMoveAlarm.mockResolvedValue(state([row(2)]));
+  render(<OffMoveAlarm />);
+  await flush();
+  await tick(500);
+
+  // A keyboard-wedge scan landing as the takeover opens: swallowed, not a dismiss.
+  const space = SPACE();
+  act(() => { window.dispatchEvent(space); });
+  expect(space.defaultPrevented).toBe(true);
+  const enter = ENTER();
+  act(() => { window.dispatchEvent(enter); });
+  expect(enter.defaultPrevented).toBe(true);
+  expect(apiMock.dismissOffMoveAlarm).not.toHaveBeenCalled();
+  expect(screen.getByRole('alertdialog')).toBeTruthy();
+
+  // After the first second Enter is left to the focused button again.
+  await tick(600);
+  const enterLater = ENTER();
+  act(() => { window.dispatchEvent(enterLater); });
+  expect(enterLater.defaultPrevented).toBe(false);
+  act(() => { window.dispatchEvent(SPACE()); });
+  expect(apiMock.dismissOffMoveAlarm).toHaveBeenCalledWith(2);
+  cleanup();
+
+  // A tap inside the first second dismisses.
+  apiMock.dismissOffMoveAlarm.mockClear();
+  apiMock.getOffMoveAlarm.mockResolvedValue(state([row(3)]));
+  render(<OffMoveAlarm />);
+  await flush();
+  fireEvent.click(screen.getByRole('button', { name: /dismiss/i }));
+  expect(apiMock.dismissOffMoveAlarm).toHaveBeenCalledWith(3);
+});
+
+it('shell content behind the takeover is inert while it is open', async () => {
+  window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1', name: 'Kiosk 0001' } };
+  apiMock.getOffMoveAlarm.mockResolvedValue(state([row(1)]));
+  const { container } = render(
+    <MemoryRouter><KioskShell><button type="button">Under</button></KioskShell></MemoryRouter>,
+  );
+  await flush();
+  const dialog = screen.getByRole('alertdialog');
+  for (const sel of ['.kiosk-top', '.kiosk-main', '.kiosk-foot']) {
+    expect(container.querySelector(sel)?.hasAttribute('inert')).toBe(true);
+  }
+  for (let el: Element | null = dialog; el; el = el.parentElement) {
+    expect(el.hasAttribute('inert')).toBe(false);
+  }
+
+  fireEvent.click(within(dialog).getByRole('button', { name: /dismiss/i }));
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  expect(container.querySelectorAll('[inert]')).toHaveLength(0);
+});
+
+it('a preview deep in a page makes everything but itself inert, and restores it', async () => {
+  const onClose = vi.fn();
+  const { container } = render(
+    <div>
+      <p className="other">elsewhere</p>
+      <section>
+        <button type="button" className="under">Under</button>
+        <OffMoveAlarm preview={{ rows: [row(1)], mode: 'until_dismissed', timed_seconds: 10, onClose }} />
+      </section>
+    </div>,
+  );
+  await flush();
+  expect(container.querySelector('.other')?.hasAttribute('inert')).toBe(true);
+  expect(container.querySelector('.under')?.hasAttribute('inert')).toBe(true);
+  expect(container.querySelector('section')?.hasAttribute('inert')).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: /dismiss/i }));
+  expect(container.querySelectorAll('[inert]')).toHaveLength(0);
 });

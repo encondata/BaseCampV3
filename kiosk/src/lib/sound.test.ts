@@ -12,7 +12,7 @@ import { closeDb, count } from './localDb';
 import {
   BUILTIN_SOUNDS, DEFAULT_SOUND_SETTINGS, MAX_SOUND_BYTES, addUploadedSound, listUploadedSounds,
   playScanSound, readSoundSettings, removeUploadedSound, resetSoundAudioForTest,
-  soundBlocked, startSiren, subscribeSoundSettings, writeSoundSettings,
+  soundBlocked, soundSettled, startSiren, subscribeSoundSettings, writeSoundSettings,
 } from './sound';
 
 interface Started { type: string; freq: number }
@@ -257,4 +257,38 @@ it('soundBlocked is true while the context stays suspended after resume()', () =
   resetSoundAudioForTest();
   startSiren(1)();
   expect(soundBlocked()).toBe(false);
+});
+
+it('soundSettled waits for the pending resume(), then soundBlocked reads the settled state', async () => {
+  let finish: () => void = () => undefined;
+  const slow = class extends FakeAudioContext {
+    resume = vi.fn(() => new Promise<void>((done) => {
+      finish = () => { this.state = 'running'; done(); };
+    }));
+  };
+  (window as unknown as { AudioContext: unknown }).AudioContext = slow;
+  resetSoundAudioForTest();
+  const stop = startSiren(1);
+  expect(soundBlocked()).toBe(true);          // resume() still pending
+  let settled = false;
+  const waiting = soundSettled().then(() => { settled = true; });
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  finish();
+  await waiting;
+  expect(soundBlocked()).toBe(false);
+  stop();
+});
+
+it('soundSettled resolves at once with no context or a rejected resume()', async () => {
+  resetSoundAudioForTest();
+  await soundSettled();                       // nothing has tried to play
+  const blocking = class extends FakeAudioContext {
+    resume = vi.fn(() => Promise.reject(new Error('NotAllowedError')));
+  };
+  (window as unknown as { AudioContext: unknown }).AudioContext = blocking;
+  resetSoundAudioForTest();
+  startSiren(1)();
+  await soundSettled();
+  expect(soundBlocked()).toBe(true);
 });

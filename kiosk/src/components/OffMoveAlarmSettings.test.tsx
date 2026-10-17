@@ -169,8 +169,14 @@ it('test_alarm_shows_preview_with_sample_row_and_writes_nothing', async () => {
   expect(cells).toEqual(['Dell PowerEdge R740', 'sample-server', 'SAMPLE123', '100000']);
   expect(soundMock.startSiren).toHaveBeenCalledTimes(1);
 
-  // Space dismisses the preview.
-  fireEvent.keyDown(window, { key: ' ', code: 'Space' });
+  // Space dismisses the preview (after the takeover's first second).
+  vi.useFakeTimers();
+  try {
+    vi.advanceTimersByTime(1000);
+    fireEvent.keyDown(window, { key: ' ', code: 'Space' });
+  } finally {
+    vi.useRealTimers();
+  }
   await flush();
   expect(screen.queryByRole('alertdialog')).toBeNull();
   expect(soundMock.stop).toHaveBeenCalled();
@@ -215,4 +221,63 @@ it('save_failure_keeps_previous_value_and_shows_error', async () => {
   await flush();
   expect(seconds().value).toBe('10');
   expect(screen.getByRole('alert').textContent).toMatch(/Couldn't save/);
+});
+
+it('controls_stay_disabled_until_the_settings_load', async () => {
+  let finish: (s: unknown) => void = () => undefined;
+  apiMock.getAlarmSettings.mockImplementation(() => new Promise((done) => { finish = done; }));
+  render(<OffMoveAlarmSettings />);
+  await flush();
+  expect((radio('Until dismissed') as HTMLButtonElement).disabled).toBe(true);
+  expect((radio('Timed') as HTMLButtonElement).disabled).toBe(true);
+  expect(seconds().disabled).toBe(true);
+  fireEvent.click(radio('Timed'));
+  expect(apiMock.saveAlarmSettings).not.toHaveBeenCalled();
+
+  await act(async () => { finish({ mode: 'timed', timed_seconds: 30 }); });
+  await flush();
+  expect((radio('Timed') as HTMLButtonElement).disabled).toBe(false);
+  expect(seconds().disabled).toBe(false);
+  expect(seconds().value).toBe('30');
+});
+
+it('a_load_failure_leaves_the_controls_disabled_with_the_error', async () => {
+  apiMock.getAlarmSettings.mockRejectedValue(new Error('401'));
+  render(<OffMoveAlarmSettings />);
+  await flush();
+  expect(screen.getByRole('alert').textContent).toMatch(/Couldn't read the alarm settings/);
+  expect((radio('Until dismissed') as HTMLButtonElement).disabled).toBe(true);
+  expect((radio('Timed') as HTMLButtonElement).disabled).toBe(true);
+  expect(seconds().disabled).toBe(true);
+  fireEvent.click(radio('Timed'));
+  await flush();
+  expect(apiMock.saveAlarmSettings).not.toHaveBeenCalled();
+  // Test alarm still works: it writes nothing.
+  expect((screen.getByRole('button', { name: 'Test alarm' }) as HTMLButtonElement).disabled)
+    .toBe(false);
+});
+
+it('a_stale_save_result_never_overwrites_a_newer_save', async () => {
+  const pending: { ok: (s: unknown) => void; fail: (e: unknown) => void }[] = [];
+  apiMock.saveAlarmSettings.mockImplementation(() => new Promise((ok, fail) => {
+    pending.push({ ok, fail });
+  }));
+  render(<OffMoveAlarmSettings />);
+  await flush();
+
+  fireEvent.click(radio('Timed'));                 // save 1
+  fireEvent.click(radio('Until dismissed'));       // save 2 (newer)
+  expect(apiMock.saveAlarmSettings).toHaveBeenCalledTimes(2);
+  await act(async () => { pending[1].ok({ mode: 'until_dismissed', timed_seconds: 10 }); });
+  await act(async () => { pending[0].ok({ mode: 'timed', timed_seconds: 10 }); });
+  await flush();
+  expect(radio('Until dismissed').getAttribute('aria-checked')).toBe('true');
+
+  fireEvent.click(radio('Timed'));                 // save 3
+  fireEvent.click(radio('Until dismissed'));       // save 4 (newer)
+  await act(async () => { pending[3].ok({ mode: 'until_dismissed', timed_seconds: 10 }); });
+  await act(async () => { pending[2].fail(new Error('offline')); });
+  await flush();
+  expect(radio('Until dismissed').getAttribute('aria-checked')).toBe('true');
+  expect(screen.queryByRole('alert')).toBeNull();
 });

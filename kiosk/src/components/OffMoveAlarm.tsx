@@ -17,6 +17,10 @@
  * siren is silence when the browser won't play — with a "Tap to enable
  * sound" notice when it is the autoplay policy holding it back.
  *
+ * While open, everything outside the takeover is `inert`, the newest open
+ * takeover alone answers the keyboard, and Enter and Space are ignored for
+ * the first second (a barcode scan landing as it opens is not a dismiss).
+ *
  * `preview` is the Sound tab's Test alarm: the same takeover with the rows
  * and timing it is given, no polling, and no dismiss sent to the edge.
  */
@@ -28,12 +32,44 @@ import {
   type AlarmMode, type OffMoveAlarmRow, type OffMoveAlarmState,
 } from '../lib/api';
 import { useKioskSetup } from '../lib/kioskSetup';
-import { readSoundSettings, soundBlocked, startSiren } from '../lib/sound';
+import { readSoundSettings, soundBlocked, soundSettled, startSiren } from '../lib/sound';
 
 /** How often the edge is asked for open alarms. */
 export const ALARM_POLL_MS = 1000;
 /** How often the timed countdown repaints. */
 const COUNTDOWN_TICK_MS = 250;
+/** How long after opening Enter and Space are swallowed: a keyboard-wedge
+ *  barcode scan landing as the takeover opens must not dismiss it. */
+export const KEY_GUARD_MS = 1000;
+/** The first "is the sound blocked?" check waits for the siren's resume()
+ *  to settle, or this long when the browser leaves it pending. */
+const SOUND_CHECK_GRACE_MS = 300;
+
+/* ── Open takeovers: the newest one owns the keyboard ──────────────── */
+
+/** Open takeovers' root elements, oldest first. Only the last one (on top)
+ *  answers Space, and everything outside it is inert. */
+const openTakeovers: HTMLElement[] = [];
+/** The elements this module made inert (never one someone else did). */
+const madeInert = new Set<Element>();
+
+/** Marks every element outside the top takeover (each sibling of it and
+ *  of its ancestors) inert, so Tab, Enter and Escape can't reach the page
+ *  underneath; with none open, undoes exactly what it set. */
+function syncInert(): void {
+  madeInert.forEach((el) => el.removeAttribute('inert'));
+  madeInert.clear();
+  const top = openTakeovers[openTakeovers.length - 1];
+  if (!top) return;
+  for (let node: Element = top; node.parentElement && node !== document.body;
+    node = node.parentElement) {
+    for (const sibling of Array.from(node.parentElement.children)) {
+      if (sibling === node || sibling.hasAttribute('inert')) continue;
+      sibling.setAttribute('inert', '');
+      madeInert.add(sibling);
+    }
+  }
+}
 
 /** A local Test alarm: the rows to show and the timing to show them with
  *  (the Sound tab passes the station's current settings). `onClose` runs
@@ -129,13 +165,22 @@ export default function OffMoveAlarm({ preview }: OffMoveAlarmProps) {
   }, [isPreview, previewClosed, expired, onClose]);
 
   // ── Siren: one per opening; a re-alarm while open keeps it going ──
+  // The notice is only shown once resume() has had its chance: checked
+  // when it settles (or after a short grace, if the browser holds it), then
+  // every second — never in the instant before a resume lands.
   const stopSiren = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (!open) return undefined;
+    let live = true;
+    const check = () => { if (live) setBlocked(soundBlocked()); };
     stopSiren.current = startSiren(readSoundSettings().volume);
-    setBlocked(soundBlocked());
-    const id = setInterval(() => setBlocked(soundBlocked()), ALARM_POLL_MS);
+    setBlocked(false);
+    void soundSettled().then(check);
+    const grace = setTimeout(check, SOUND_CHECK_GRACE_MS);
+    const id = setInterval(check, ALARM_POLL_MS);
     return () => {
+      live = false;
+      clearTimeout(grace);
       clearInterval(id);
       stopSiren.current?.();
       stopSiren.current = null;
@@ -147,7 +192,7 @@ export default function OffMoveAlarm({ preview }: OffMoveAlarmProps) {
   const enableSound = () => {
     stopSiren.current?.();
     stopSiren.current = startSiren(readSoundSettings().volume);
-    setBlocked(soundBlocked());
+    void soundSettled().then(() => setBlocked(soundBlocked()));
   };
 
   const dismiss = useCallback(() => {
@@ -163,19 +208,43 @@ export default function OffMoveAlarm({ preview }: OffMoveAlarmProps) {
   }, [isPreview, previewClosed, onClose, latestId]);
 
   // ── Space dismisses; a held key's repeats only stop the scroll ────
+  // Only the top takeover answers, and it stops the key there, so one press
+  // can't close a Test alarm preview and a live alarm together. For the
+  // first second after opening, Enter and Space are swallowed outright (a
+  // wedge scan's trailing Enter would press the focused Dismiss); taps
+  // still work.
   const dismissRef = useRef(dismiss);
   dismissRef.current = dismiss;
+  const rootRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!open) return undefined;
+    const root = rootRef.current;
+    const openedAt = Date.now();
+    if (root) {
+      openTakeovers.push(root);
+      syncInert();
+    }
     const onKey = (e: KeyboardEvent) => {
-      if (e.code !== 'Space' && e.key !== ' ') return;
+      if (root && openTakeovers[openTakeovers.length - 1] !== root) return;
+      const space = e.code === 'Space' || e.key === ' ';
+      const enter = e.key === 'Enter';
+      if (!space && !enter) return;
+      const guarded = Date.now() - openedAt < KEY_GUARD_MS;
+      if (enter && !guarded) return;   // left to the focused button
       e.preventDefault();
-      e.stopPropagation();
-      if (e.repeat) return;
+      e.stopImmediatePropagation();
+      if (guarded || e.repeat) return;
       dismissRef.current();
     };
     window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      if (root) {
+        const at = openTakeovers.indexOf(root);
+        if (at >= 0) openTakeovers.splice(at, 1);
+        syncInert();
+      }
+    };
   }, [open]);
 
   const buttonRef = useRef<HTMLButtonElement | null>(null);
@@ -189,7 +258,7 @@ export default function OffMoveAlarm({ preview }: OffMoveAlarmProps) {
   const count = rows.length;
 
   return (
-    <div className="offmove-alarm" role="alertdialog" aria-modal="true"
+    <div ref={rootRef} className="offmove-alarm" role="alertdialog" aria-modal="true"
          aria-labelledby={titleId} aria-describedby={subId}>
       <h1 id={titleId} className="offmove-alarm-title">
         <span aria-hidden="true">⚠ </span>Asset Not Part Of Move

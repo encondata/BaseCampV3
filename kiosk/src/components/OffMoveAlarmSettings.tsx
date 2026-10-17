@@ -6,12 +6,14 @@
  *  every screen on this laptop agrees. Switching the mode saves at once
  *  with the current seconds; the seconds save on blur or Enter when they
  *  are a whole number from 3 to 600. A failed save keeps the last saved
- *  value and says so.
+ *  value and says so. The controls stay disabled until the settings load
+ *  (a failed read leaves them so, with its error), and only the newest
+ *  save's result is applied.
  *
  *  Test alarm opens the real takeover in preview mode with one sample row:
  *  it sounds the siren but never reads or writes the edge's alarms. */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
 import {
@@ -61,6 +63,12 @@ function AlarmSettingsSection() {
   const [invalid, setInvalid] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  /** False until the edge's settings arrive: before that (or after a failed
+   *  read) the controls show defaults, and a save would overwrite the real
+   *  settings with them. */
+  const [loaded, setLoaded] = useState(false);
+  /** Bumped by every save; a result for an older save is ignored. */
+  const saveSeq = useRef(0);
 
   useEffect(() => {
     let live = true;
@@ -69,6 +77,7 @@ function AlarmSettingsSection() {
         if (!live) return;
         setSaved(s);
         setSecondsText(String(s.timed_seconds));
+        setLoaded(true);
       },
       () => { if (live) setError("Couldn't read the alarm settings from this laptop."); },
     );
@@ -76,12 +85,15 @@ function AlarmSettingsSection() {
   }, []);
 
   const save = (next: AlarmSettings) => {
+    if (!loaded) return;
     setError(null);
     const previous = saved;
+    const seq = ++saveSeq.current;
     setSaved(next);
     saveAlarmSettings(next).then(
-      (s) => setSaved(s),
+      (s) => { if (seq === saveSeq.current) setSaved(s); },
       () => {
+        if (seq !== saveSeq.current) return;
         setSaved(previous);
         setSecondsText(String(previous.timed_seconds));
         setInvalid(false);
@@ -126,6 +138,7 @@ function AlarmSettingsSection() {
               role="radio"
               aria-checked={m.id === saved.mode}
               className={m.id === saved.mode ? 'on' : ''}
+              disabled={!loaded}
               onClick={() => pickMode(m.id)}
             >
               {m.label}
@@ -154,7 +167,7 @@ function AlarmSettingsSection() {
             aria-label="Alarm seconds"
             aria-describedby="alarm-seconds-hint"
             aria-invalid={invalid || undefined}
-            disabled={!timed}
+            disabled={!loaded || !timed}
             value={secondsText}
             onChange={(e) => setSecondsText(e.target.value)}
             onBlur={commitSeconds}
