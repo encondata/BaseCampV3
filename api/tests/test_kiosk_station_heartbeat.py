@@ -53,7 +53,11 @@ async def test_station_heartbeat_stamps_last_seen_and_version(client, db, seeded
     assert r.status_code == 200, r.text
     assert r.json() == {"registration": "ok",
                         "token_expires_at": r.json()["token_expires_at"],
-                        "clear_setup": None}
+                        "clear_setup": None,
+                        # kiosk settings sync (test_kiosk_config_sync.py)
+                        "server_time": r.json()["server_time"],
+                        "config_version": 0, "config": None,
+                        "scan_status": None, "scan_status_label": None}
     live = await _get(db, device)
     assert live.last_seen_at > old_seen
     assert live.version == "2.0"

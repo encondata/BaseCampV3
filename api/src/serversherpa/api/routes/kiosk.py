@@ -8,9 +8,10 @@ import hashlib
 import ipaddress
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Annotated
 
 from argon2 import PasswordHasher
-from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Response, UploadFile
 from sqlalchemy import case, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +19,9 @@ from sqlalchemy.orm import aliased, joinedload
 
 from serversherpa.access.resolver import resolve_access
 from serversherpa.api.deps import (
-    AuthContext, DbSession, client_ip, enforce_read_only_config, rate_limit_ip, require_permission, station_device,
+    AuthContext, DbSession, authenticate_token, client_ip, enforce_forced_password_change,
+    enforce_read_only, enforce_read_only_config, enforce_session_scope, rate_limit_ip,
+    require_permission, station_device,
 )
 from serversherpa.api.routes.auth import (
     _scope_out, person_out, session_response, totp_status_out,
@@ -32,7 +35,7 @@ from serversherpa.api.schemas import (
     KioskContainersSyncOut, KioskContainerStateOut, KioskEdgeMovePassword,
     KioskEdgeMovePasswordsOut, KioskMoveOut,
     KioskPeopleSyncOut, KioskPersonOut, KioskPrinterEventIn,
-    KioskRfidEnrollIn, KioskRfidEnrollOut, KioskScanBatchIn,
+    KioskRfidEnrollIn, KioskRfidEnrollOut, KioskScanBatchIn, KioskSoundOut,
     KioskScanBatchOut, KioskScanIn, KioskScanRejected, KioskStationScanBatchIn,
     KioskStationHeartbeatIn, KioskStationHeartbeatOut,
     KioskStationScanBatchOut, KioskSetupIn, KioskSetupOut, KioskSetupReadOut, KioskSetupReaderOut,
@@ -49,7 +52,7 @@ from serversherpa.api.schemas import (
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
     Asset, AssetModel, AuditLog, Client, Container, ContainerAsset, Device, Initiative,
-    InitiativeAsset, KioskPairRequest, LabelPlaceholder, LabelVocab, Person,
+    InitiativeAsset, KioskPairRequest, KioskSound, LabelPlaceholder, LabelVocab, Person,
     RawScan, Site, StatusValue, TimeEntry, Truck, TruckContainer, UserAccount,
     WorkerProfile,
 )
@@ -58,6 +61,7 @@ from serversherpa.labels.generate.values import (
     CONTAINER_KEYS, AssetRow, Sites, make_model_text, placeholder_values,
 )
 from serversherpa.services import auth as auth_service
+from serversherpa.services import kiosk_config
 from serversherpa.services import kiosk_pairing as pairing
 from serversherpa.services import move_password as move_password_service
 from serversherpa.services import station_keys
@@ -69,7 +73,7 @@ from serversherpa.services.kiosk_registration import (  # noqa: F401 (re-exporte
     registration_state,
 )
 from serversherpa.services.password_policy import load_policy
-from serversherpa.services.storage import presign_get
+from serversherpa.services.storage import get_object, presign_get, put_object
 
 router = APIRouter(prefix="/kiosk", tags=["kiosk"])
 
@@ -424,7 +428,10 @@ async def heartbeat(
     remain available for admins. A pending Clear Setup id is returned as
     `clear_setup` until a beat sends it back as `setup_cleared`."""
     now = datetime.now(UTC)
-    device = await db.scalar(select(Device).where(Device.serial == body.serial))
+    # FOR UPDATE: the config merge below reads then bumps config_version, so
+    # a concurrent portal edit must wait for this beat (and vice versa).
+    device = await db.scalar(select(Device).where(Device.serial == body.serial)
+                             .with_for_update())
     if device is None:
         sub_type = kiosk_sub_type(body.mode, body.raw_info)
         device = Device(device_type="kiosk", name=body.name, serial=body.serial,
@@ -483,12 +490,39 @@ async def heartbeat(
                            "requested_by": str(requested_by) if requested_by else None})
     # body.reader is accepted and ignored: reader telemetry arrives only on
     # POST /kiosk/station/heartbeat, under the station key.
+    sync = await _sync_config(db, device, body.config, body.config_changed_at,
+                              body.config_applied_version, now=now)
     await db.commit()
     return HeartbeatOut(device_id=device.id, name=device.name,
                         registration=registration_state(device.token_expires_at, now),
                         token_expires_at=device.token_expires_at,
                         clear_setup=device.setup_clear_id,
-                        client_ip=client_ip(request))
+                        client_ip=client_ip(request), **sync)
+
+
+async def _sync_config(db: AsyncSession, device: Device, config: dict | None,
+                       changed_at: datetime | None, applied_version: int | None,
+                       *, now: datetime) -> dict:
+    """Kiosk settings sync on a check-in (the device row is already locked
+    FOR UPDATE). A report is merged by kiosk_config's newest-wins rule; the
+    applied version is recorded whenever the beat sends it. Returns the
+    reply's server_time / config_version / config / scan type fields.
+
+    A kiosk claiming a version the portal never issued (above
+    config_version) is treated as behind, so it is sent the document."""
+    if config is not None:
+        await kiosk_config.accept_kiosk_report(db, device, config, changed_at, now=now)
+    if applied_version is not None:
+        device.config_applied_version = applied_version
+    effective = applied_version
+    if effective is not None and effective > (device.config_version or 0):
+        effective = None
+    label = None
+    if device.scan_status:
+        scan_type = await db.get(StatusValue, ("asset", device.scan_status))
+        label = scan_type.label if scan_type else None
+    return {"server_time": now, **kiosk_config.reply_fields(device, effective),
+            "scan_status": device.scan_status, "scan_status_label": label}
 
 
 @router.post("/sign-out", status_code=204)
@@ -1293,6 +1327,10 @@ async def station_heartbeat(
     reply carries the pending Clear Setup id."""
     device = await station_device(request, db, body.serial)
     await enforce_read_only_config(db, request)
+    # re-read under FOR UPDATE for the config merge (see /kiosk/heartbeat)
+    device = await db.scalar(select(Device).where(Device.id == device.id)
+                             .with_for_update()
+                             .execution_options(populate_existing=True))
     now = datetime.now(UTC)
     device.last_seen_at = now
     device.updated_at = now
@@ -1300,11 +1338,13 @@ async def station_heartbeat(
         device.version = body.version
     if body.reader is not None:
         await apply_reader_report(db, kiosk=device, report=body.reader, actor_id=None)
+    sync = await _sync_config(db, device, body.config, body.config_changed_at,
+                              body.config_applied_version, now=now)
     await db.commit()
     return KioskStationHeartbeatOut(
         registration=registration_state(device.token_expires_at, now),
         token_expires_at=device.token_expires_at,
-        clear_setup=device.setup_clear_id)
+        clear_setup=device.setup_clear_id, **sync)
 
 
 # ── RFID enroll (kiosk:view) ─────────────────────────────────────────
@@ -2050,3 +2090,99 @@ async def list_label_vocab(
         item.usage_count = usage.get((r.kind, r.key), 0)
         out.append(item)
     return out
+
+
+# ── kiosk sounds (kiosk:view or station key) ─────────────────────────
+
+KIOSK_SOUND_MAX_BYTES = 2 * 1024 * 1024   # matches the kiosk's MAX_SOUND_BYTES
+
+
+async def _kiosk_caller(request: Request, db: AsyncSession,
+                        serial: str | None) -> tuple[AuthContext | None, Device | None]:
+    """Who is calling a kiosk-sound route: a person session with kiosk:view
+    (`Authorization: Bearer ...`), or an RFID Station's key
+    (`Authorization: Station <key>`) for the kiosk `serial`. Returns
+    (actor, None) or (None, device). The session path runs the same checks
+    as every other route (kiosk session scope, forced password change,
+    read-only); the station path runs the station-key check and the
+    read-only check without a person, like /kiosk/station/*."""
+    scheme, _, raw = (request.headers.get("authorization") or "").partition(" ")
+    raw = raw.strip()
+    if scheme == "Station":
+        if not serial:
+            raise HTTPException(status_code=401, detail={"code": "station_key_invalid"},
+                                headers={"WWW-Authenticate": "Bearer"})
+        device = await station_device(request, db, serial)
+        await enforce_read_only_config(db, request)
+        return None, device
+    if scheme.lower() != "bearer" or not raw:
+        raise HTTPException(status_code=401, detail={"code": "missing_token"},
+                            headers={"WWW-Authenticate": "Bearer"})
+    user = await authenticate_token(db, raw)
+    enforce_session_scope(request, user)
+    await enforce_forced_password_change(db, request, user)
+    await enforce_read_only(db, request, user)
+    if not user.access.can("kiosk", "view"):
+        raise HTTPException(status_code=403, detail={"code": "forbidden"})
+    return user, None
+
+
+@router.post("/sounds", response_model=KioskSoundOut, status_code=201)
+async def upload_kiosk_sound(
+    request: Request, db: DbSession,
+    file: Annotated[UploadFile, File()],
+    serial: Annotated[str | None, Form(max_length=120)] = None,
+) -> KioskSoundOut:
+    """Upload a sound a kiosk config can name by its portal id. Audio only
+    (`audio/*`), 2 MB max. Stored in Spaces under `kiosk-sounds/<uuid>`.
+    `serial` (optional with a session, required with a station key) records
+    which kiosk sent it."""
+    actor, station = await _kiosk_caller(request, db, serial)
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    if not content_type.startswith("audio/") or len(content_type) > 100:
+        raise _err(422, "not_audio")
+    data = await file.read(KIOSK_SOUND_MAX_BYTES + 1)
+    if len(data) == 0:
+        raise _err(422, "empty_file")
+    if len(data) > KIOSK_SOUND_MAX_BYTES:
+        raise _err(413, "file_too_large", max_bytes=KIOSK_SOUND_MAX_BYTES)
+    device = station
+    if device is None and serial:
+        device = await db.scalar(select(Device).where(
+            Device.serial == serial.strip(), Device.device_type == "kiosk"))
+    name = (file.filename or "").strip()[:200] or "sound"
+    key = f"kiosk-sounds/{uuid.uuid4()}"
+    await put_object(key, data, content_type)
+    sound = KioskSound(name=name, content_type=content_type, size=len(data),
+                       storage_key=key,
+                       uploaded_by=actor.person.id if actor else None,
+                       uploaded_from_device=device.id if device else None)
+    db.add(sound)
+    await db.flush()
+    audit(db, actor_id=actor.person.id if actor else None, entity_type="kiosk_sound",
+          entity_id=str(sound.id), action="create",
+          changes={"name": name, "content_type": content_type, "size": len(data),
+                   "device_id": str(device.id) if device else None,
+                   "via": "station_key" if station else "session"})
+    await db.commit()
+    return KioskSoundOut(id=sound.id, name=sound.name,
+                         content_type=sound.content_type, size=sound.size)
+
+
+@router.get("/sounds/{sound_id}")
+async def download_kiosk_sound(
+    sound_id: uuid.UUID, request: Request, db: DbSession,
+    serial: Annotated[str | None, Query(max_length=120)] = None,
+) -> Response:
+    """The sound's bytes, streamed by the API (no presigned URL, so a
+    browser kiosk needs no bucket CORS). The Content-Type is the stored
+    `audio/*` type, with nosniff so it can never be read as anything else.
+    404 `sound_not_found` for an unknown id."""
+    await _kiosk_caller(request, db, serial)
+    sound = await db.get(KioskSound, sound_id)
+    if sound is None:
+        raise _err(404, "sound_not_found")
+    data = await get_object(sound.storage_key)
+    return Response(content=data, media_type=sound.content_type,
+                    headers={"X-Content-Type-Options": "nosniff",
+                             "Cache-Control": "private, max-age=86400"})

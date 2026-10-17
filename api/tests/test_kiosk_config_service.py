@@ -302,6 +302,33 @@ async def test_newer_but_identical_report_is_not_a_change(db):
     assert len(await _audits(db, d)) == 1
 
 
+async def test_report_differing_only_in_json_type_is_a_change(db):
+    """`true` and `1` (or `1` and `1.0`) are equal in Python but not in the
+    stored JSON: the comparison is on canonical JSON, so a kiosk that sends
+    a pass-through value with a new type is stored as a new version."""
+    d = await _kiosk(db)
+    first = _with()
+    first["android_rfid"] = {"beep": True, "power": 270}
+    assert await accept_kiosk_report(db, d, first, NOW, now=NOW)
+    second = _with()
+    second["android_rfid"] = {"beep": 1, "power": 270.0}
+    later = NOW + timedelta(minutes=1)
+    assert await accept_kiosk_report(db, d, second, later, now=later) is True
+    await db.commit()
+    assert d.config_version == 2
+    assert d.config["android_rfid"]["beep"] == 1
+    assert d.config["android_rfid"]["beep"] is not True
+
+
+async def test_report_differing_only_in_key_order_is_not_a_change(db):
+    d = await _kiosk(db)
+    assert await accept_kiosk_report(db, d, _with(), NOW, now=NOW)
+    reordered = {k: _with()[k] for k in reversed(list(_with()))}
+    later = NOW + timedelta(minutes=1)
+    assert await accept_kiosk_report(db, d, reordered, later, now=later) is False
+    assert d.config_version == 1
+
+
 async def test_kiosk_report_bad_values_defaulted_rest_kept(db):
     d = await _kiosk(db)
     doc = _with(flash_ms=99999)

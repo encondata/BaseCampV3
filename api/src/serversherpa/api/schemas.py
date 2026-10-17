@@ -318,6 +318,28 @@ class PairInfoOut(BaseModel):
     expires_at: datetime
 
 
+KIOSK_CONFIG_MAX_BYTES = 64 * 1024
+
+
+def _kiosk_config_bounded(v: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A kiosk config document is at most 64 KB of JSON."""
+    if v is not None and len(json.dumps(v).encode()) > KIOSK_CONFIG_MAX_BYTES:
+        raise ValueError("config too large")
+    return v
+
+
+class KioskConfigReplyMixin(BaseModel):
+    """Config + clock + scan type fields on both check-in replies.
+    `config` is the whole document only when the kiosk is behind
+    (`config_applied_version` missing or below `config_version`)."""
+
+    server_time: datetime
+    config_version: int = 0
+    config: dict[str, Any] | None = None
+    scan_status: str | None = None
+    scan_status_label: str | None = None
+
+
 class HeartbeatIn(BaseModel):
     serial: str = Field(min_length=1, max_length=120)
     name: str = Field(min_length=1, max_length=80)
@@ -332,6 +354,17 @@ class HeartbeatIn(BaseModel):
     # Station's reader snapshot don't get a 422. Reader telemetry arrives
     # only on POST /kiosk/station/heartbeat (station key).
     reader: dict[str, Any] | None = None
+    # Kiosk settings sync (spec 2026-10-17): the kiosk's whole config
+    # document, when it last changed (portal-corrected kiosk time; null for
+    # an unstamped first report), and the portal config version it applied.
+    config: dict[str, Any] | None = None
+    config_changed_at: datetime | None = None
+    config_applied_version: int | None = Field(default=None, ge=0)
+
+    @field_validator("config")
+    @classmethod
+    def _config_bounded(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        return _kiosk_config_bounded(v)
 
     @field_validator("serial", "name")
     @classmethod
@@ -349,7 +382,7 @@ class HeartbeatIn(BaseModel):
         return v
 
 
-class HeartbeatOut(BaseModel):
+class HeartbeatOut(KioskConfigReplyMixin):
     device_id: uuid.UUID
     name: str
     registration: Literal["ok", "soon", "expired", "none"]
@@ -3229,9 +3262,27 @@ class KioskStationHeartbeatIn(BaseModel):
     serial: str = Field(min_length=1, max_length=120)
     version: str | None = Field(default=None, max_length=40)
     reader: dict[str, Any] | None = None
+    # kiosk settings sync, exactly as on HeartbeatIn
+    config: dict[str, Any] | None = None
+    config_changed_at: datetime | None = None
+    config_applied_version: int | None = Field(default=None, ge=0)
+
+    @field_validator("config")
+    @classmethod
+    def _config_bounded(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        return _kiosk_config_bounded(v)
 
 
-class KioskStationHeartbeatOut(BaseModel):
+class KioskSoundOut(BaseModel):
+    """An uploaded kiosk sound; configs name it by `id`."""
+
+    id: uuid.UUID
+    name: str
+    content_type: str
+    size: int
+
+
+class KioskStationHeartbeatOut(KioskConfigReplyMixin):
     registration: Literal["ok", "soon", "expired", "none"]
     token_expires_at: datetime | None
     clear_setup: uuid.UUID | None = None

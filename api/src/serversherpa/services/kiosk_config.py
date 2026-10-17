@@ -24,6 +24,7 @@ Nothing here commits; callers own the transaction (like services/audit).
 """
 
 import copy
+import json
 import math
 import uuid
 from datetime import UTC, datetime
@@ -272,6 +273,12 @@ def field_diff(before: dict | None, after: dict | None) -> dict:
             for key in sorted(b.keys() | a.keys()) if b.get(key) != a.get(key)}
 
 
+def _canonical(doc: dict) -> str:
+    """The document as stored JSON sees it: `true` and `1` (or `1` and
+    `1.0`) differ, key order doesn't."""
+    return json.dumps(doc, sort_keys=True)
+
+
 def _store(db: AsyncSession, device: Device, new: dict, *, source: str,
            changed_at: datetime, actor_id: uuid.UUID | None) -> None:
     fields = field_diff(device.config, new)
@@ -302,7 +309,7 @@ async def accept_kiosk_report(db: AsyncSession, device: Device, doc: dict | None
             return False
     new = normalize(doc, known_sounds=await known_sound_ids(db), strict=False)
     new = _carry_passthrough(new, device.config, doc)
-    if device.config is not None and new == device.config:
+    if device.config is not None and _canonical(new) == _canonical(device.config):
         return False
     _store(db, device, new, source="kiosk", changed_at=stamp, actor_id=None)
     return True
