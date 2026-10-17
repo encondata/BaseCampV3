@@ -16,7 +16,7 @@ import {
 } from '../../lib/api';
 import { useKioskSetup } from '../../lib/kioskSetup';
 import { isLaptop } from '../../lib/platform';
-import { antennasLabel, readerState, type ReaderState } from '../../pages/RfidStatus';
+import { antennasLabel, readerState, type ReaderState } from '../../lib/readerState';
 import DeviceCard, { type DevicePill } from './DeviceCard';
 
 const STATUS_MS = 5000;

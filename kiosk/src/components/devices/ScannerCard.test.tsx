@@ -108,6 +108,32 @@ describe('ScannerCard', () => {
     expect(screen.getByTestId('scanner-last').textContent).toContain('100212');
   });
 
+  it('a space inside a fast burst does not press a focused button', async () => {
+    render(<ScannerCard />);
+    const clear = screen.getByRole('button', { name: 'Clear' });
+    const results: boolean[] = [];
+    for (const key of ['A', 'B', ' ', 'C', 'Enter']) {
+      results.push(fireEvent.keyDown(clear, { key }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    }
+    expect(results[2]).toBe(false);
+    expect(screen.getByTestId('scanner-last').textContent).toContain('AB C');
+  });
+
+  it('a space in a text field or at human speed is left alone', async () => {
+    const onEnter = vi.fn();
+    render(<><Field onEnter={onEnter} /><ScannerCard /></>);
+    const input = screen.getByLabelText('Other field');
+    expect(fireEvent.keyDown(input, { key: 'A' })).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    expect(fireEvent.keyDown(input, { key: ' ' })).toBe(true);
+    const clear = screen.getByRole('button', { name: 'Clear' });
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(fireEvent.keyDown(clear, { key: 'x' })).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(fireEvent.keyDown(clear, { key: ' ' })).toBe(true);
+  });
+
   it('clear_resets_scanner_to_scan_to_test', async () => {
     render(<ScannerCard />);
     expect((screen.getByRole('button', { name: 'Clear' }) as HTMLButtonElement).disabled).toBe(true);

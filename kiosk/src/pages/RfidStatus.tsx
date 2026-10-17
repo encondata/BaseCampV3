@@ -17,6 +17,7 @@ import {
   type ReaderStatus, type RfidEvent, type RfidReads,
 } from '../lib/api';
 import { useKioskSetup } from '../lib/kioskSetup';
+import { antennasLabel, readerState, type ReaderState } from '../lib/readerState';
 import { isLaptop } from '../lib/platform';
 import { useSyncStatus } from '../lib/sync';
 import { useFitRows } from '../lib/useFitRows';
@@ -29,8 +30,6 @@ const NEW_ROW_MS = 2000;
 const UNKNOWN_ROW_MS = 5000;
 
 
-export type ReaderState = 'loading' | 'reading' | 'stopped' | 'unreachable';
-
 const STATE_TEXT: Record<ReaderState, string> = {
   loading: 'Checking…', reading: 'Reading', stopped: 'Stopped', unreachable: 'Unreachable',
 };
@@ -39,17 +38,6 @@ const STATE_TEXT: Record<ReaderState, string> = {
  *  is all zeros). Display only — storage and asset matching use the full EPC. */
 export function displayEpc(epc: string): string {
   return epc.replace(/^0+(?=.)/, '');
-}
-
-/** "Antennas 1 – 4" for a contiguous run, "Antennas 1, 3" otherwise. */
-export function antennasLabel(antennas: string[]): string {
-  if (antennas.length === 0) return 'No antennas connected';
-  if (antennas.length === 1) return `Antenna ${antennas[0]}`;
-  const nums = antennas.map(Number);
-  const contiguous = nums.every((n, i) => Number.isInteger(n) && (i === 0 || n === nums[i - 1] + 1));
-  return contiguous
-    ? `Antennas ${antennas[0]} – ${antennas[antennas.length - 1]}`
-    : `Antennas ${antennas.join(', ')}`;
 }
 
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -64,13 +52,6 @@ function dateText(d: Date): string {
   const zone = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' })
     .formatToParts(d).find((p) => p.type === 'timeZoneName')?.value;
   return zone ? `${day} · ${zone}` : day;
-}
-
-export function readerState(status: ReaderStatus | null, failed: boolean): ReaderState {
-  if (failed) return 'unreachable';
-  if (!status) return 'loading';
-  if (status.reachable === false) return 'unreachable';
-  return status.reading ? 'reading' : 'stopped';
 }
 
 // ── icons (inline, currentColor) ────────────────────────────────────

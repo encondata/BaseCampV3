@@ -68,6 +68,9 @@ export default function ScannerCard() {
       // Shift and other non-character keys neither count nor break a burst.
       if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
       if (b && fast) {
+        // A scanned space would press a focused button; in a text field it
+        // only types, and the field is restored when the scan ends.
+        if (e.key === ' ' && !textField(e.target)) e.preventDefault();
         b.chars += e.key;
         b.lastAt = now;
         return;

@@ -21,7 +21,8 @@ vi.mock('../lib/sync', async (importOriginal) => {
 
 import { ApiError, type ReaderStatus, type RfidEvent, type RfidReads } from '../lib/api';
 import { writeKioskSetup } from '../lib/kioskSetup';
-import RfidStatus, { antennasLabel, displayEpc } from './RfidStatus';
+import { antennasLabel } from '../lib/readerState';
+import RfidStatus, { displayEpc } from './RfidStatus';
 
 const SETUP = {
   initiativeId: 'init-1', initiativeName: 'NAP11 Hall Migration',
