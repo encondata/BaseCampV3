@@ -19,14 +19,14 @@ vi.mock('../lib/api', async (importOriginal) => {
 
 const soundMock = vi.hoisted(() => ({
   stop: vi.fn(),
-  startSiren: vi.fn(),
+  startAlarmSound: vi.fn(),
   soundBlocked: vi.fn(() => false),
   soundSettled: vi.fn(() => Promise.resolve()),
 }));
 vi.mock('../lib/sound', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/sound')>();
   return {
-    ...actual, startSiren: soundMock.startSiren, soundBlocked: soundMock.soundBlocked,
+    ...actual, startAlarmSound: soundMock.startAlarmSound, soundBlocked: soundMock.soundBlocked,
     soundSettled: soundMock.soundSettled,
   };
 });
@@ -99,7 +99,7 @@ beforeEach(() => {
   }));
   apiMock.getOffMoveAlarm.mockResolvedValue(EMPTY);
   apiMock.dismissOffMoveAlarm.mockResolvedValue({ dismissed: 1 });
-  soundMock.startSiren.mockImplementation(() => soundMock.stop);
+  soundMock.startAlarmSound.mockImplementation(() => soundMock.stop);
   soundMock.soundBlocked.mockReturnValue(false);
   soundMock.soundSettled.mockImplementation(() => Promise.resolve());
   writeKioskSetup(SETUP);
@@ -181,17 +181,17 @@ it('siren_starts_with_alarm_and_stops_on_dismiss', async () => {
   writeSoundSettings({ volume: 0.4 });
   render(<OffMoveAlarm />);
   await flush();
-  expect(soundMock.startSiren).not.toHaveBeenCalled();
+  expect(soundMock.startAlarmSound).not.toHaveBeenCalled();
 
   apiMock.getOffMoveAlarm.mockResolvedValue(state([row(1)]));
   await tick(1000);
-  expect(soundMock.startSiren).toHaveBeenCalledTimes(1);
-  expect(soundMock.startSiren).toHaveBeenCalledWith(0.4);
+  expect(soundMock.startAlarmSound).toHaveBeenCalledTimes(1);
+  expect(soundMock.startAlarmSound).toHaveBeenCalledWith();
 
   // A re-alarm while the takeover is up keeps the same siren going.
   apiMock.getOffMoveAlarm.mockResolvedValue(state([row(1), row(2)]));
   await tick(1000);
-  expect(soundMock.startSiren).toHaveBeenCalledTimes(1);
+  expect(soundMock.startAlarmSound).toHaveBeenCalledTimes(1);
   expect(soundMock.stop).not.toHaveBeenCalled();
 
   fireEvent.click(screen.getByRole('button', { name: /dismiss/i }));
@@ -201,7 +201,7 @@ it('siren_starts_with_alarm_and_stops_on_dismiss', async () => {
   apiMock.getOffMoveAlarm.mockResolvedValue(state([row(5)]));
   await tick(1000);
   expect(screen.getByRole('alertdialog')).toBeTruthy();
-  expect(soundMock.startSiren).toHaveBeenCalledTimes(2);
+  expect(soundMock.startAlarmSound).toHaveBeenCalledTimes(2);
 });
 
 it('timed_mode_shows_countdown_and_hides_after_expires_at', async () => {
@@ -249,7 +249,7 @@ it('blocked_sound_shows_tap_to_enable_notice', async () => {
   soundMock.soundBlocked.mockReturnValue(false);
   fireEvent.click(notice);
   // The tap restarts the siren inside a user gesture, and is not a dismiss.
-  expect(soundMock.startSiren).toHaveBeenCalledTimes(2);
+  expect(soundMock.startAlarmSound).toHaveBeenCalledTimes(2);
   expect(apiMock.dismissOffMoveAlarm).not.toHaveBeenCalled();
   expect(screen.getByRole('alertdialog')).toBeTruthy();
   await tick(1000);
@@ -280,7 +280,7 @@ it('preview shows the given rows, never polls or dismisses on the edge, and clos
   await flush();
   expect(screen.getByRole('alertdialog')).toBeTruthy();
   expect(screen.getByRole('button', { name: /Dismiss \(3s\)/ })).toBeTruthy();
-  expect(soundMock.startSiren).toHaveBeenCalledTimes(1);
+  expect(soundMock.startAlarmSound).toHaveBeenCalledTimes(1);
 
   await tick(3500);
   expect(onClose).toHaveBeenCalledTimes(1);

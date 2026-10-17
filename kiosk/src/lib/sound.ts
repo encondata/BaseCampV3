@@ -45,11 +45,18 @@ export type SoundChoice =
   | { kind: 'builtin'; id: BuiltinSoundId }
   | { kind: 'upload'; id: string };
 
+/** The Asset Not Part Of Move alarm's sound: the looping siren, or any
+ *  scan sound (built-in or upload) played over and over. Never "none" —
+ *  the alarm has to be heard. */
+export type AlarmSoundChoice = { kind: 'siren' } | Exclude<SoundChoice, { kind: 'none' }>;
+
 export interface SoundSettings {
   good: SoundChoice;
   not_found: SoundChoice;
   /** A scan that changed nothing — a repeat. */
   duplicate: SoundChoice;
+  /** The off-move alarm (laptop RFID Station). */
+  alarm: AlarmSoundChoice;
   /** 0–1, applied to built-ins (gain) and uploads (`audio.volume`) alike. */
   volume: number;
 }
@@ -69,6 +76,7 @@ export const DEFAULT_SOUND_SETTINGS: SoundSettings = {
   // are neither the chime's rising pair nor the buzz, and "that came
   // through twice" is exactly what a repeat scan means.
   duplicate: { kind: 'builtin', id: 'double_beep' },
+  alarm: { kind: 'siren' },
   volume: 0.8,
 };
 
@@ -90,6 +98,13 @@ function isChoice(value: unknown): value is SoundChoice {
   if (v.kind === 'builtin') return typeof v.id === 'string' && BUILTIN_IDS.has(v.id);
   if (v.kind === 'upload') return typeof v.id === 'string' && v.id.length > 0;
   return false;
+}
+
+function isAlarmChoice(value: unknown): value is AlarmSoundChoice {
+  if (value !== null && typeof value === 'object' && (value as { kind?: unknown }).kind === 'siren') {
+    return true;
+  }
+  return isChoice(value) && value.kind !== 'none';
 }
 
 function clampVolume(value: unknown): number {
@@ -123,6 +138,7 @@ function read(): SoundSettings {
           ? parsed.not_found : DEFAULT_SOUND_SETTINGS.not_found,
         duplicate: isChoice(parsed?.duplicate)
           ? parsed.duplicate : DEFAULT_SOUND_SETTINGS.duplicate,
+        alarm: isAlarmChoice(parsed?.alarm) ? parsed.alarm : DEFAULT_SOUND_SETTINGS.alarm,
         volume: clampVolume(parsed?.volume),
       };
     } catch {
@@ -218,7 +234,9 @@ export async function removeUploadedSound(id: string): Promise<void> {
   if (settings.duplicate.kind === 'upload' && settings.duplicate.id === id) {
     patch.duplicate = { kind: 'none' };
   }
-  if (patch.good || patch.not_found || patch.duplicate) writeSoundSettings(patch);
+  // The alarm falls back to the siren, never to silence.
+  if (settings.alarm.kind === 'upload' && settings.alarm.id === id) patch.alarm = { kind: 'siren' };
+  if (patch.good || patch.not_found || patch.duplicate || patch.alarm) writeSoundSettings(patch);
 }
 
 /* ── Playback ──────────────────────────────────────────────────────── */
@@ -416,6 +434,54 @@ export function startSiren(volume: number): () => void {
     stop();
   }
   return stop;
+}
+
+/** A built-in repeats with this much quiet after its last note. */
+const ALARM_REPEAT_GAP_MS = 350;
+
+function builtinLength(id: BuiltinSoundId): number {
+  return Math.max(...BUILTIN_TONES[id].map((t) => t.at + t.ms));
+}
+
+/** Starts the off-move alarm's sound (the stored choice and volume unless
+ *  given) and loops it until the returned function is called: the siren
+ *  as itself, a built-in replayed back to back, an upload on `loop`.
+ *  Never throws; stopping twice is harmless. */
+export function startAlarmSound(choice?: AlarmSoundChoice, volume?: number): () => void {
+  const settings = read();
+  const which = choice ?? settings.alarm;
+  const level = volume ?? settings.volume;
+  if (which.kind === 'siren') return startSiren(level);
+  let stopped = false;
+  if (which.kind === 'builtin') {
+    let timer: ReturnType<typeof setInterval> | undefined;
+    try {
+      playBuiltin(which.id, level);
+      timer = setInterval(() => {
+        try { playBuiltin(which.id, level); } catch { /* silence, never a crash */ }
+      }, builtinLength(which.id) + ALARM_REPEAT_GAP_MS);
+    } catch {
+      /* the alarm carries on silent */
+    }
+    return () => {
+      if (stopped) return;
+      stopped = true;
+      if (timer !== undefined) clearInterval(timer);
+    };
+  }
+  let el: HTMLAudioElement | null = null;
+  void uploadUrl(which.id).then((url) => {
+    if (!url || stopped) return;
+    el = new Audio(url);
+    el.loop = true;
+    el.volume = clampVolume(level);
+    return el.play();
+  }).catch(() => undefined);
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    try { el?.pause(); } catch { /* already gone */ }
+  };
 }
 
 /** True when the shared context exists but is still suspended after

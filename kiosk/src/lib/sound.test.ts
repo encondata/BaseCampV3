@@ -12,7 +12,8 @@ import { closeDb, count } from './localDb';
 import {
   BUILTIN_SOUNDS, DEFAULT_SOUND_SETTINGS, MAX_SOUND_BYTES, addUploadedSound, listUploadedSounds,
   playScanSound, readSoundSettings, removeUploadedSound, resetSoundAudioForTest,
-  soundBlocked, soundSettled, startSiren, subscribeSoundSettings, writeSoundSettings,
+  soundBlocked, soundSettled, startAlarmSound, startSiren, subscribeSoundSettings,
+  writeSoundSettings,
 } from './sound';
 
 interface Started { type: string; freq: number }
@@ -81,6 +82,7 @@ it('defaults to a chime, a buzz, and a double beep for a repeat scan', () => {
     good: { kind: 'builtin', id: 'chime' },
     not_found: { kind: 'builtin', id: 'buzz' },
     duplicate: { kind: 'builtin', id: 'double_beep' },
+    alarm: { kind: 'siren' },
     volume: 0.8,
   });
   expect(BUILTIN_SOUNDS.map((s) => s.id))
@@ -95,6 +97,7 @@ it('a stored file written before the duplicate sound reads back with the default
     good: { kind: 'builtin', id: 'beep' },
     not_found: { kind: 'none' },
     duplicate: DEFAULT_SOUND_SETTINGS.duplicate,
+    alarm: { kind: 'siren' },
     volume: 0.5,
   });
 
@@ -291,4 +294,95 @@ it('soundSettled resolves at once with no context or a rejected resume()', async
   startSiren(1)();
   await soundSettled();
   expect(soundBlocked()).toBe(true);
+});
+
+it('the alarm sound is stored, falls back to the siren, and never reads back as none', () => {
+  writeSoundSettings({ alarm: { kind: 'builtin', id: 'beep' } });
+  expect(readSoundSettings().alarm).toEqual({ kind: 'builtin', id: 'beep' });
+  localStorage.setItem('ss.kiosk.sound', JSON.stringify({ alarm: { kind: 'none' } }));
+  expect(readSoundSettings().alarm).toEqual({ kind: 'siren' });
+  localStorage.setItem('ss.kiosk.sound', JSON.stringify({ alarm: { kind: 'builtin', id: 'nope' } }));
+  expect(readSoundSettings().alarm).toEqual({ kind: 'siren' });
+});
+
+it('removing the upload the alarm uses puts the alarm back on the siren', async () => {
+  const { id } = await addUploadedSound(wav());
+  writeSoundSettings({ alarm: { kind: 'upload', id } });
+  await removeUploadedSound(id);
+  expect(readSoundSettings().alarm).toEqual({ kind: 'siren' });
+});
+
+it('the alarm sound defaults to the siren', () => {
+  const stop = startAlarmSound();
+  // the siren is a sawtooth tone driven by a square LFO
+  expect(started.map((s) => s.type).sort()).toEqual(['sawtooth', 'square']);
+  stop();
+  expect(stopped).toBe(2);
+});
+
+it('a built-in alarm sound repeats until stopped', () => {
+  vi.useFakeTimers();
+  try {
+    writeSoundSettings({ alarm: { kind: 'builtin', id: 'beep' } });
+    const stop = startAlarmSound();
+    expect(started).toHaveLength(1);
+    vi.advanceTimersByTime(470); // 120 ms beep + 350 ms gap
+    expect(started).toHaveLength(2);
+    vi.advanceTimersByTime(470 * 3);
+    expect(started).toHaveLength(5);
+    stop();
+    stop(); // a second stop is harmless
+    vi.advanceTimersByTime(5000);
+    expect(started).toHaveLength(5);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('an uploaded alarm sound plays on loop and pauses on stop', async () => {
+  const played: { loop: boolean; paused: boolean }[] = [];
+  class FakeAudio {
+    loop = false;
+    volume = 1;
+    paused = false;
+    constructor() { played.push(this); }
+    play() { return Promise.resolve(); }
+    pause() { this.paused = true; }
+  }
+  const realAudio = globalThis.Audio;
+  const realUrl = URL.createObjectURL;
+  (globalThis as unknown as { Audio: unknown }).Audio = FakeAudio;
+  URL.createObjectURL = () => 'blob:alarm';
+  try {
+    const { id } = await addUploadedSound(wav());
+    const stop = startAlarmSound({ kind: 'upload', id });
+    await vi.waitFor(() => expect(played).toHaveLength(1));
+    expect(played[0].loop).toBe(true);
+    stop();
+    expect(played[0].paused).toBe(true);
+  } finally {
+    (globalThis as unknown as { Audio: unknown }).Audio = realAudio;
+    URL.createObjectURL = realUrl;
+  }
+});
+
+it('stopping an uploaded alarm sound before it loads never starts it', async () => {
+  const played: unknown[] = [];
+  const realAudio = globalThis.Audio;
+  const realUrl = URL.createObjectURL;
+  (globalThis as unknown as { Audio: unknown }).Audio = class {
+    constructor() { played.push(this); }
+    play() { return Promise.resolve(); }
+    pause() { /* noop */ }
+  };
+  URL.createObjectURL = () => 'blob:alarm';
+  try {
+    const { id } = await addUploadedSound(wav());
+    startAlarmSound({ kind: 'upload', id })();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(played).toHaveLength(0);
+  } finally {
+    (globalThis as unknown as { Audio: unknown }).Audio = realAudio;
+    URL.createObjectURL = realUrl;
+  }
 });
