@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from edge import laptop_setup, outbox
 from edge.deps import current_session, err, require_admin, require_session
 from edge.identity import rename
+from edge.rfid import uploader
 from edge.rfid.tagreads import note_cache_write
 from edge.sessions import EdgeSession
 
@@ -44,6 +45,7 @@ def _status(request: Request, session: EdgeSession | None) -> dict:
         "sync": {"initiative_id": meta["initiative_id"], "synced_at": meta["synced_at"],
                  "last_error": meta["last_error"]},
         "outbox": outbox.counts(st.store),
+        "rfid_uploads": uploader.counts(st.store),
         "waiting": outbox.waiting(st.store) if session else [],
         "session": {"offline": session.offline} if session else None,
         "identity": {"serial": st.identity.serial, "name": st.identity.name},

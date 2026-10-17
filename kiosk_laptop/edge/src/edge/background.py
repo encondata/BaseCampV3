@@ -5,14 +5,16 @@ portal for one at most once a minute, as a person signed in here with a
 usable cloud session. One bad iteration is logged, never fatal.
 
 A second loop, independent of the internet, matches raw RFID tag reads into
-pending scans every 2 s, and at once when the ingest stores a batch."""
+pending scans every 2 s, and at once when the ingest stores a batch. A third
+uploads pending RFID scans under the station key every 5 s, and at once when
+the processor inserts some (it does its own internet probing, spec §4)."""
 
 import asyncio
 import contextlib
 import logging
 import time
 
-from edge.rfid import processing, station_key
+from edge.rfid import processing, station_key, uploader
 
 log = logging.getLogger("edge.background")
 
@@ -24,6 +26,8 @@ class Background:
         self.last_key_try = float("-inf")
         self._task: asyncio.Task | None = None
         self._process_task: asyncio.Task | None = None
+        self._upload_task: asyncio.Task | None = None
+        self.uploader = uploader.Uploader(state.store, state)
 
     async def tick(self, now: float) -> None:
         st = self.state
@@ -66,6 +70,8 @@ class Background:
             try:
                 result = processing.process(self.state.store)
                 more = result.scanned == processing.PASS_LIMIT and not result.waiting
+                if result.inserted:
+                    self.state.rfid_upload_wake.set()
             except Exception:
                 log.exception("rfid processing pass failed")
             if more:  # a backlog: yield to the ingest, then the next 500
@@ -74,12 +80,28 @@ class Background:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(wake.wait(), timeout=processing.INTERVAL_S)
 
+    async def _upload_loop(self) -> None:
+        wake = self.state.rfid_upload_wake
+        while True:
+            wake.clear()  # before the batch: rows inserted during it wake the next one
+            sent = 0
+            try:
+                sent = await self.uploader.drain_once()
+            except Exception:
+                log.exception("rfid upload batch failed")
+            if sent == uploader.BATCH and self.uploader.last_ok:  # a backlog: next batch now
+                await asyncio.sleep(0)
+                continue
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(wake.wait(), timeout=uploader.INTERVAL_S)
+
     def start(self) -> None:
         self._task = asyncio.create_task(self._loop())
         self._process_task = asyncio.create_task(self._process_loop())
+        self._upload_task = asyncio.create_task(self._upload_loop())
 
     async def stop(self) -> None:
-        for task in (self._task, self._process_task):
+        for task in (self._task, self._process_task, self._upload_task):
             if task:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):

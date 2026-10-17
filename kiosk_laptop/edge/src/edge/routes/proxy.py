@@ -23,7 +23,6 @@ import httpx
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
-from edge import laptop_setup
 from edge.db import Store, now_iso
 from edge.deps import current_session, err
 from edge.identity import Identity
@@ -114,17 +113,14 @@ def _offline_answer(store, session, method, path, query, cacheable) -> Response:
 
 def _apply_clear_setup(store: Store, resp: httpx.Response) -> None:
     """Clear Setup from the portal arrives on a heartbeat reply. The browser
-    drops its own setup; the edge drops the laptop's shared copy too, or the
-    shell would load it straight back (GET /edge/setup), and the station key
-    (the portal revoked it when Clear Setup was requested). The reader
-    pairing stays: Kiosk Setup reuses it."""
+    drops its own setup; the edge drops the laptop's shared copy and the
+    station key (`station_key.apply_clear_setup`)."""
     try:
         data = resp.json()
     except ValueError:
         return
     if isinstance(data, dict) and data.get("clear_setup"):
-        laptop_setup.clear(store)
-        station_key.clear(store)
+        station_key.apply_clear_setup(store)
 
 
 async def forward(request: Request, path: str) -> Response:

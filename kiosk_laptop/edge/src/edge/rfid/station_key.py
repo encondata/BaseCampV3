@@ -55,6 +55,16 @@ def clear(store: Store) -> None:
     store.run("DELETE FROM station_key")
 
 
+def apply_clear_setup(store: Store) -> None:
+    """Clear Setup from the portal (on a heartbeat reply, or an RFID upload
+    reply on an unattended laptop): drop the laptop's shared setup, or the
+    shell would load it straight back (GET /edge/setup), and the station key
+    (the portal revoked it when Clear Setup was requested). The reader
+    pairing stays: Kiosk Setup reuses it."""
+    laptop_setup.clear(store)
+    clear(store)
+
+
 def is_rfid_setup(store: Store) -> bool:
     return _rfid_initiative(store) is not None
 
