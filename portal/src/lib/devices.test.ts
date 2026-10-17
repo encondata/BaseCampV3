@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { DeviceItem } from './api';
 import {
@@ -292,5 +292,16 @@ describe('routerDisplayName', () => {
   it('returns the input when nothing readable is left', () => {
     expect(routerDisplayName('')).toBe('');
     expect(routerDisplayName('__--')).toBe('__--');
+  });
+});
+
+describe('Last seen as an age', () => {
+  afterEach(() => { vi.useRealTimers(); });
+  it('shows how long ago, not the date', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-31T13:00:00Z'));
+    expect(deviceCellText(R, 'last_seen')).toBe('3 hours');
+    vi.setSystemTime(new Date('2026-09-30T10:00:00Z'));
+    expect(deviceCellText(R, 'last_seen')).toBe('30 days');
   });
 });

@@ -16,6 +16,27 @@ export function relativeTime(iso: string | null): string {
   return new Date(iso).toLocaleDateString();
 }
 
+/** How long ago, in whole units and without "ago" ("just now", "5 minutes",
+ *  "3 hours", "30 days") — the hardware pages' Last seen. A future time (a
+ *  clock a little ahead) reads "just now". Pair it with fullDateTime on hover. */
+export function ageText(iso: string | null, nowMs: number = Date.now()): string {
+  if (!iso) return 'never';
+  const secs = Math.max(0, Math.floor((nowMs - Date.parse(iso)) / 1000));
+  const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  if (secs < 60) return 'just now';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return unit(mins, 'minute');
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return unit(hours, 'hour');
+  return unit(Math.floor(hours / 24), 'day');
+}
+
+/** The full local date and time ("never" when unset) — the hover for ageText
+ *  and what CSV exports carry. */
+export function fullDateTime(iso: string | null): string {
+  return iso ? new Date(iso).toLocaleString() : 'never';
+}
+
 export function longDate(iso: string | null): string {
   if (!iso) return '—';
   return longDateOf(new Date(iso));

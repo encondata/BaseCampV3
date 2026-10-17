@@ -27,6 +27,7 @@ import {
   connectionLabel, deviceCellText, deviceSearchText, deviceSortValue,
   readerStatusChipClass, readerStatusLabel,
 } from '../lib/devices';
+import { fullDateTime } from '../lib/format';
 import {
   ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
   listGridStyle, listScale, moveKey, passesFacets, titleFor, useReorderDrag, useSearchHaystacks,
@@ -80,7 +81,7 @@ const CSV_COLUMNS: [string, (d: DeviceItem) => string][] = [
   ['Connection', (d) => deviceCellText(d, 'connection')],
   ['Scan Type', (d) => deviceCellText(d, 'scan_status')],
   ['Site', (d) => deviceCellText(d, 'site')],
-  ['Last seen', (d) => deviceCellText(d, 'last_seen')],
+  ['Last seen', (d) => fullDateTime(d.last_seen_at)],
 ];
 
 const msgFor = (err: unknown): string =>
@@ -214,6 +215,13 @@ export default function FixedReaders() {
               <span className="dot" />{deviceCellText(d, 'scan_status')}
             </span>
           );
+      case 'last_seen':
+        // the age ("3 hours"); the full date and time on hover
+        return (
+          <span className="cell-line" title={fullDateTime(d.last_seen_at)}>
+            {deviceCellText(d, key)}
+          </span>
+        );
       default: {
         const text = deviceCellText(d, key);
         return <span className="cell-line" title={titleFor(text)}>{text}</span>;
