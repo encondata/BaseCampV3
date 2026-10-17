@@ -508,3 +508,63 @@ async def test_reset_with_stale_expected_version_is_409(client, db, seeded_user)
     assert (await _fresh(db, device.id)).config["appearance"]["flash_ms"] == 900
     r = await client.post(f"/devices/{device.id}/config/reset?expected_version=2", headers=hdrs)
     assert r.status_code == 200 and r.json()["config_version"] == 3
+
+
+# ── platforms that can't sync yet (phase 1) ──────────────────────────
+
+@pytest.mark.parametrize("sub_type", ["android", "zebra", "ios"])
+async def test_unreported_android_or_ios_kiosk_refuses_edits(client, db, seeded_user, sub_type):
+    """Android and iOS kiosks don't sync in phase 1: until one has reported a
+    config, PUT and reset are 409 not_reported and nothing is stored."""
+    device = await _kiosk(db, sub_type=sub_type)
+    hdrs = await _super_admin_headers(db, client)
+    r = await client.put(f"/devices/{device.id}/config", headers=hdrs, json=_doc(flash_ms=500))
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "not_reported"
+    r = await client.post(f"/devices/{device.id}/config/reset", headers=hdrs)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "not_reported"
+    d = await _fresh(db, device.id)
+    assert d.config is None and d.config_version == 0
+    assert await _config_audits(db, device.id) == 0
+
+
+async def test_reported_android_kiosk_can_be_edited(client, db, seeded_user):
+    device = await _kiosk(db, sub_type="android", config=_doc(), config_version=1,
+                          config_reported_at=datetime.now(UTC))
+    hdrs = await _super_admin_headers(db, client)
+    r = await client.put(f"/devices/{device.id}/config", headers=hdrs, json=_doc(flash_ms=500))
+    assert r.status_code == 200, r.text
+    assert r.json()["config_version"] == 2
+
+
+# ── portal sound upload: auth and size before the body is parsed ─────
+
+async def test_portal_sound_upload_checks_rank_before_parsing(client, db, seeded_user, store,
+                                                              monkeypatch):
+    from starlette.requests import Request
+    parsed = []
+    real_form = Request.form
+
+    def spy(self, *a, **kw):
+        parsed.append(True)
+        return real_form(self, *a, **kw)
+
+    monkeypatch.setattr(Request, "form", spy)
+    admin = await login_admin(client, db, seeded_user)
+    r = await client.post("/kiosk-sounds", headers=admin, files=_file())
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "forbidden_rank"
+    assert (await client.post("/kiosk-sounds", files=_file())).status_code == 401
+    assert parsed == []
+    hdrs = await _super_admin_headers(db, client)
+    big = await client.post("/kiosk-sounds", headers=hdrs,
+                            files=_file(b"x" * (3 * 1024 * 1024)))
+    assert big.status_code == 413 and big.json()["detail"]["code"] == "file_too_large"
+    assert parsed == []
+
+    async def chunks():
+        yield b"--b\r\n"
+
+    nolen = await client.post("/kiosk-sounds", content=chunks(),
+                              headers={**hdrs, "Content-Type": "multipart/form-data; boundary=b"})
+    assert nolen.status_code == 411 and nolen.json()["detail"]["code"] == "length_required"
+    assert parsed == [] and not store

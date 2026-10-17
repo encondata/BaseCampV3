@@ -134,8 +134,10 @@ async def test_permission(client, db, seeded_user, store):
 
 async def test_station_key_upload_and_download(client, db, seeded_user, store):
     device, _, key = await _station(db)
+    # a station names itself in the query string: the key is checked before
+    # the multipart body is parsed
     r = await client.post("/kiosk/sounds", headers=_auth(key), files=_file(),
-                          data={"serial": SERIAL})
+                          params={"serial": SERIAL})
     assert r.status_code == 201, r.text
     row = await db.get(KioskSound, uuid.UUID(r.json()["id"]))
     assert row.uploaded_by is None and row.uploaded_from_device == device.id
@@ -147,11 +149,80 @@ async def test_station_key_upload_and_download(client, db, seeded_user, store):
 async def test_station_key_needs_a_valid_key_and_serial(client, db, seeded_user, store):
     _, _, key = await _station(db)
     bad = await client.post("/kiosk/sounds", headers=_auth("nope"), files=_file(),
-                            data={"serial": SERIAL})
+                            params={"serial": SERIAL})
     assert bad.status_code == 401
     assert bad.json()["detail"]["code"] == "station_key_invalid"
     no_serial = await client.post("/kiosk/sounds", headers=_auth(key), files=_file())
     assert no_serial.status_code == 401
+    # a serial in the form body doesn't count for a station key
+    form_serial = await client.post("/kiosk/sounds", headers=_auth(key), files=_file(),
+                                    data={"serial": SERIAL})
+    assert form_serial.status_code == 401
     assert (await client.get(f"/kiosk/sounds/{uuid.uuid4()}",
                              headers=_auth(key))).status_code == 401
+    assert not store
+
+
+# ── auth and size are checked before the multipart body is parsed ────
+
+@pytest.fixture
+def parsed(monkeypatch):
+    """Records every Request.form() call (the multipart parse that spools
+    file parts to disk)."""
+    from starlette.requests import Request
+    calls: list[bool] = []
+    real_form = Request.form
+
+    def spy(self, *a, **kw):
+        calls.append(True)
+        return real_form(self, *a, **kw)
+
+    monkeypatch.setattr(Request, "form", spy)
+    return calls
+
+
+async def test_unauthenticated_upload_is_refused_before_parsing(client, db, seeded_user,
+                                                                store, parsed):
+    r = await client.post("/kiosk/sounds", files=_file(b"x" * (3 * MAX)))
+    assert r.status_code == 401
+    bad_key = await client.post("/kiosk/sounds", headers=_auth("nope"),
+                                params={"serial": SERIAL}, files=_file())
+    assert bad_key.status_code == 401
+    cv = await _client_viewer(db, client, "cv2@test.example.com")
+    assert (await client.post("/kiosk/sounds", headers=cv, files=_file())).status_code == 403
+    assert parsed == [] and not store
+
+
+async def test_oversized_body_is_413_before_parsing(client, db, seeded_user, store, parsed):
+    hdrs = await login(client)
+    r = await client.post("/kiosk/sounds", headers=hdrs, files=_file(b"x" * (MAX + 128 * 1024)))
+    assert r.status_code == 413
+    assert r.json()["detail"]["code"] == "file_too_large"
+    assert r.json()["detail"]["max_bytes"] == MAX
+    assert parsed == [] and not store
+
+
+async def test_body_without_a_length_is_411(client, db, seeded_user, store, parsed):
+    hdrs = await login(client)
+
+    async def chunks():
+        yield b"--b\r\n"
+
+    r = await client.post("/kiosk/sounds", content=chunks(), headers={
+        **hdrs, "Content-Type": "multipart/form-data; boundary=b"})
+    assert r.status_code == 411
+    assert r.json()["detail"]["code"] == "length_required"
+    assert parsed == [] and not store
+
+
+async def test_upload_without_a_file_part_is_422(client, db, seeded_user, store):
+    hdrs = await login(client)
+    r = await client.post("/kiosk/sounds", headers=hdrs, data={"serial": "x"},
+                          files={"other": ("a.mp3", b"x", "audio/mpeg")})
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "file_required"
+    r = await client.post("/kiosk/sounds", headers=hdrs,
+                          files=[("file", ("a.mp3", b"x", "audio/mpeg")),
+                                 ("file", ("b.mp3", b"y", "audio/mpeg"))])
+    assert r.status_code == 422
     assert not store

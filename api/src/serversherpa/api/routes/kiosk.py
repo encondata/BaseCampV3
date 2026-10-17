@@ -12,11 +12,14 @@ from typing import Annotated
 
 from argon2 import PasswordHasher
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import case, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, joinedload
+from starlette.datastructures import FormData
+from starlette.datastructures import UploadFile as StarletteUploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from serversherpa.access.resolver import resolve_access
 from serversherpa.api.deps import (
@@ -548,17 +551,22 @@ async def _sync_config(db: AsyncSession, device: Device, config: dict | None,
     reply's server_time / config_version / config / scan type fields.
 
     A kiosk claiming a version the portal never issued (above
-    config_version) is treated as behind, so it is sent the document; the
-    recorded applied version is clamped to config_version."""
+    config_version: its row was recreated by Clear Offline, a delete or a
+    database revert) is treated as behind, so it is sent the document, and
+    its applied version is recorded as null, so the page shows pending (a
+    clamp would read as in sync). The kiosk takes a reply version below the
+    one it sent as a reset and applies it."""
     if config is not None:
         await kiosk_config.accept_kiosk_report(db, device, config, changed_at, now=now,
                                                actor_id=actor_id)
     version = device.config_version or 0
     effective = applied_version
     if applied_version is not None:
-        device.config_applied_version = min(applied_version, version)
         if applied_version > version:
+            device.config_applied_version = None
             effective = None
+        else:
+            device.config_applied_version = applied_version
     return {"server_time": now, **kiosk_config.reply_fields(device, effective),
             **(await _scan_fields(db, device))}
 
@@ -2187,7 +2195,39 @@ async def _kiosk_caller(request: Request, db: AsyncSession,
     return user, None
 
 
-async def save_kiosk_sound(db: AsyncSession, file: UploadFile, *,
+# the multipart body around a 2 MB file: boundaries, part headers, serial
+KIOSK_SOUND_MAX_BODY = KIOSK_SOUND_MAX_BYTES + 64 * 1024
+
+
+async def sound_upload_file(request: Request) -> tuple[FormData, StarletteUploadFile]:
+    """The `file` part of a sound upload, parsed only after the caller is
+    authenticated (callers check auth first). Starlette spools the whole
+    multipart body to disk before any size check can run, so the declared
+    length is checked up front: none (a chunked body) is 411
+    length_required, over KIOSK_SOUND_MAX_BODY is 413 file_too_large. The
+    parse itself allows one file and small fields. Shared by the kiosk and
+    portal upload routes; the caller closes the returned form."""
+    if not request.headers.get("content-type", "").startswith("multipart/"):
+        raise _err(422, "multipart_required")
+    declared = request.headers.get("content-length")
+    if declared is None or not (declared.isascii() and declared.isdigit()):
+        raise _err(411, "length_required")
+    if int(declared) > KIOSK_SOUND_MAX_BODY:
+        raise _err(413, "file_too_large", max_bytes=KIOSK_SOUND_MAX_BYTES)
+    try:
+        form = await request.form(max_files=1, max_fields=4, max_part_size=4096)
+    except StarletteHTTPException:
+        # Starlette's own limits (a second file, too many or too big fields)
+        # or a body that isn't valid multipart
+        raise _err(422, "bad_upload") from None
+    file = form.get("file")
+    if not isinstance(file, StarletteUploadFile):
+        await form.close()
+        raise _err(422, "file_required")
+    return form, file
+
+
+async def save_kiosk_sound(db: AsyncSession, file: StarletteUploadFile, *,
                            actor_id: uuid.UUID | None, device: Device | None,
                            via: str) -> KioskSound:
     """Validate and store one uploaded kiosk sound: audio only (`audio/*`),
@@ -2238,22 +2278,32 @@ async def delete_kiosk_sound_object(key: str) -> None:
 @router.post("/sounds", response_model=KioskSoundOut, status_code=201)
 async def upload_kiosk_sound(
     request: Request, db: DbSession,
-    file: Annotated[UploadFile, File()],
-    serial: Annotated[str | None, Form(max_length=120)] = None,
+    serial: Annotated[str | None, Query(max_length=120)] = None,
 ) -> KioskSoundOut:
     """Upload a sound a kiosk config can name by its portal id. Audio only
     (`audio/*`), 2 MB max. Stored in Spaces under `kiosk-sounds/<uuid>`.
-    `serial` (optional with a session, required with a station key) records
-    which kiosk sent it."""
+    Multipart: `file` (required) and `serial` (optional with a session:
+    records which kiosk sent it). A station key names its kiosk in the
+    query string (`?serial=`), so the caller is authenticated before the
+    body is parsed (see sound_upload_file)."""
     actor, station = await _kiosk_caller(request, db, serial)
-    device = station
-    if device is None and serial:
-        device = await db.scalar(select(Device).where(
-            Device.serial == serial.strip(), Device.device_type == "kiosk"))
-    sound = await save_kiosk_sound(
-        db, file, actor_id=actor.person.id if actor else None, device=device,
-        via="station_key" if station else "session")
-    await db.commit()
+    form, file = await sound_upload_file(request)
+    try:
+        device = station
+        form_serial = form.get("serial")
+        if form_serial is not None and (not isinstance(form_serial, str)
+                                        or len(form_serial) > 120):
+            raise _err(422, "bad_serial")
+        named = (form_serial or serial or "").strip()
+        if device is None and named:
+            device = await db.scalar(select(Device).where(
+                Device.serial == named, Device.device_type == "kiosk"))
+        sound = await save_kiosk_sound(
+            db, file, actor_id=actor.person.id if actor else None, device=device,
+            via="station_key" if station else "session")
+        await db.commit()
+    finally:
+        await form.close()
     return KioskSoundOut(id=sound.id, name=sound.name,
                          content_type=sound.content_type, size=sound.size)
 

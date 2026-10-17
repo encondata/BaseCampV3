@@ -9,7 +9,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, File, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Body, HTTPException, Query, Request, Response
 from sqlalchemy import Integer, and_, func, or_, select, update
 from sqlalchemy.orm import aliased
 
@@ -17,6 +17,7 @@ from serversherpa.access.defaults import GATE_BYPASS_RANK, SUPER_ADMIN_RANK
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.routes.kiosk import (
     allowed_scan_types, delete_kiosk_sound_object, kiosk_sound_response, save_kiosk_sound,
+    sound_upload_file,
 )
 from serversherpa.api.schemas import (
     ClearOfflineKioskItem, ClearOfflineKiosksIn, ClearOfflineKiosksOut,
@@ -662,9 +663,19 @@ async def get_device(
     return await _detail_for(db, device_id)
 
 
+# sub_types whose kiosk app doesn't sync settings yet (phase 1): editable
+# only once the kiosk has reported a config (zebra is the Android app too)
+NOT_SYNCED_UNTIL_REPORTED = frozenset({"android", "zebra", "ios"})
+
+
 async def _store_portal_config(db: DbSession, device_id: uuid.UUID, doc: Any,
                                actor: AuthContext, expected_version: int | None = None) -> dict:
     device = await _locked_kiosk(db, device_id)
+    if device.sub_type in NOT_SYNCED_UNTIL_REPORTED and device.config_reported_at is None:
+        # Android and iOS kiosks sync in a later phase: until one reports a
+        # config, an edit could never reach it (the page disables editing)
+        await db.rollback()
+        raise _err(409, "not_reported")
     if expected_version is not None and expected_version != device.config_version:
         # the editor was built on an older version (a kiosk report or another
         # edit landed since): refuse rather than revert the newer change
@@ -818,16 +829,20 @@ async def list_kiosk_sounds(
 
 @sounds_router.post("", response_model=KioskSoundOut, status_code=201)
 async def upload_kiosk_sound_portal(
-    db: DbSession,
-    file: Annotated[UploadFile, File()],
+    request: Request, db: DbSession,
     actor: AuthContext = require_permission("scanning_hardware", "change"),
 ) -> KioskSoundOut:
     """A super admin uploads a sound (same rules as the kiosk upload:
-    audio/*, 2 MB max, Spaces under kiosk-sounds/<uuid>)."""
+    audio/*, 2 MB max, Spaces under kiosk-sounds/<uuid>). The multipart
+    `file` is parsed only after the rank check (sound_upload_file)."""
     _require_super_admin(actor)
-    sound = await save_kiosk_sound(db, file, actor_id=actor.person.id,
-                                   device=None, via="portal")
-    await db.commit()
+    form, file = await sound_upload_file(request)
+    try:
+        sound = await save_kiosk_sound(db, file, actor_id=actor.person.id,
+                                       device=None, via="portal")
+        await db.commit()
+    finally:
+        await form.close()
     return KioskSoundOut(id=sound.id, name=sound.name,
                          content_type=sound.content_type, size=sound.size)
 

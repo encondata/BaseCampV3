@@ -336,7 +336,7 @@ async def test_station_keyed_device_ignores_person_heartbeat_config(client, db, 
     assert d.config_applied_version is None and d.config_reported_at is None
 
 
-async def test_applied_version_is_clamped_to_config_version(client, db, seeded_user):
+async def test_applied_version_above_config_version_is_stored_as_null(client, db, seeded_user):
     hdrs = await login(client)
     await _beat(client, hdrs)
     d = await _device(db)
@@ -344,7 +344,36 @@ async def test_applied_version_is_clamped_to_config_version(client, db, seeded_u
     d.config_version = 2
     await db.commit()
     await _beat(client, hdrs, config_applied_version=9)
-    assert (await _device(db)).config_applied_version == 2
+    # a version the portal never issued is not recorded (it would read as
+    # "in sync" after a clamp): stored as null, so the page shows pending
+    d = await _device(db)
+    assert d.config_applied_version is None
+    from serversherpa.api.routes.devices import sync_state_for
+    d.config_reported_at = datetime.now(UTC)
+    assert sync_state_for(d) == "pending"
+
+
+async def test_recreated_device_row_resyncs_a_kiosk_ahead_of_it(client, db, seeded_user):
+    """Clear Offline / delete / a DB revert recreates the row at version 0
+    while the kiosk still holds applied_version 7: its report becomes v1, the
+    reply carries the doc (7 is not a version the portal issued), and the
+    page shows pending until the kiosk applies v1."""
+    hdrs = await login(client)
+    r = await _beat(client, hdrs, config=_doc(flash_ms=321),
+                    config_changed_at=_iso(datetime.now(UTC)), config_applied_version=7)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["config_version"] == 1
+    assert body["config"]["appearance"]["flash_ms"] == 321
+    d = await _device(db)
+    assert d.config_applied_version is None
+    from serversherpa.api.routes.devices import sync_state_for
+    assert sync_state_for(d) == "pending"
+    # the kiosk applies v1 and says so: in sync
+    r = await _beat(client, hdrs, config_applied_version=1)
+    assert r.json()["config"] is None
+    d = await _device(db)
+    assert d.config_applied_version == 1 and sync_state_for(d) == "in_sync"
 
 
 async def test_scan_type_echoed_on_reply(client, db, seeded_user):
