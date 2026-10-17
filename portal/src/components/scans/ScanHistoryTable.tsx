@@ -8,7 +8,7 @@ import { useEffect, useState, type CSSProperties } from 'react';
 
 import DataTable from '../DataTable';
 import { listAssetScans, type AssetScanRow } from '../../lib/api';
-import { statusChip } from '../../lib/chips';
+import { offMoveChip, statusChip } from '../../lib/chips';
 
 export default function ScanHistoryTable({ assetId, limit, capHint }: {
   assetId: string; limit?: number; capHint?: number;
@@ -48,7 +48,7 @@ export default function ScanHistoryTable({ assetId, limit, capHint }: {
           cells: [
             <div className="chips">
               {statusChip(s.status_label, s.status_color) ?? '—'}
-              {s.off_move && <span className="chip c-amber">Off move</span>}
+              {s.off_move && offMoveChip()}
             </div>,
             <span className="scan-when">{new Date(s.scanned_at).toLocaleString()}</span>,
             <span className="chip custom"

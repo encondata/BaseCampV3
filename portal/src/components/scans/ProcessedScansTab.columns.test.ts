@@ -6,13 +6,13 @@ import { describe, expect, it } from 'vitest';
 
 import { LIST_FIT, listGridStyle } from '../../lib/listTools';
 import {
-  PROCESSED_SCAN_COLUMNS as COLUMNS, PROCESSED_SCAN_PRIMARY_COL as PRIMARY_COL,
+  PROCESSED_SCAN_COLUMNS as COLUMNS, PROCESSED_SCAN_PRIMARY_COL as PRIMARY_COL, PROCESSED_SCAN_TRAILING,
 } from '../../lib/scanColumns';
 
 describe('ProcessedScansTab columns', () => {
   it('default columns fit .portal-page at a 1512px window, nav expanded', () => {
     const defaults = [PRIMARY_COL, ...COLUMNS.filter((c) => c.default)];
-    expect(listGridStyle(defaults, ['30px']).minWidth).toBeLessThanOrEqual(LIST_FIT.page);
+    expect(listGridStyle(defaults, [PROCESSED_SCAN_TRAILING]).minWidth).toBeLessThanOrEqual(LIST_FIT.page);
   });
 
   it('offers a hideable Off move column that is off by default', () => {

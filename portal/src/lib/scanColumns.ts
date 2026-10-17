@@ -34,6 +34,10 @@ export const PROCESSED_SCAN_COLUMNS: ColumnDef[] = [
   { key: 'off_move', label: 'Off move', width: '0.7fr', default: false },
 ];
 
+// Trailing track: room for the two pseudo-column filter menus (Off move,
+// Archived) at 20px each, in place of the usual 30px chevron-only track.
+export const PROCESSED_SCAN_TRAILING = '52px';
+
 /* ── Raw scans ───────────────────────────────────────────────────── */
 
 // The always-shown scanned-value cell — a fixed leading track outside the
