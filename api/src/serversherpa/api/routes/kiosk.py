@@ -53,7 +53,7 @@ from serversherpa.db.models import (
     RawScan, Site, StatusValue, TimeEntry, Truck, TruckContainer, UserAccount,
     WorkerProfile,
 )
-from serversherpa.db.ordering import natural
+from serversherpa.db.ordering import natural, natural_key
 from serversherpa.labels.generate.values import (
     CONTAINER_KEYS, AssetRow, Sites, make_model_text, placeholder_values,
 )
@@ -968,12 +968,16 @@ async def sync_client_assets(
     initiative_id: uuid.UUID = Query(...),
     actor: AuthContext = require_permission("kiosk", "view"),
 ) -> KioskClientAssetsSyncOut:
-    """Every asset on the OTHER moves of this move's client (one row per
-    asset-and-move pair), so a laptop can tell a sighting from a stranger.
-    A move with no client gets []; another client's assets never appear.
-    Only moves count (not projects or events); archived moves and archived
-    assets are left out; completed and cancelled moves are KEPT, since an
-    asset from a finished move is still an off-move sighting.
+    """Every asset of this move's client that is NOT on this move, so a
+    laptop can tell a sighting from a stranger: one row per asset-and-move
+    pair for the client's OTHER moves, plus one row (null move fields) per
+    other client asset (`Asset.client_id`) not already listed: on no move,
+    or only on archived moves, projects/events or another client's moves. Each row carries
+    the asset model's make and model. An asset also on this move never
+    appears. A move with no client gets []; another client's assets never
+    appear. Only moves count (not projects or events); archived moves and
+    archived assets are left out; completed and cancelled moves are KEPT,
+    since an asset from a finished move is still an off-move sighting.
     Same lock as the other sync routes (403 `move_locked`)."""
     _require_move(actor, initiative_id)
     return await _client_assets_body(db, initiative_id)
@@ -988,20 +992,42 @@ async def _client_assets_body(
         raise _err(422, "bad_initiative")
     assets: list[KioskClientAssetOut] = []
     if initiative.client_id is not None:
-        rows = (await db.execute(
-            select(Asset, Initiative.id, Initiative.name)
+        on_selected = select(InitiativeAsset.asset_id).where(
+            InitiativeAsset.initiative_id == initiative.id)
+        other_moves = (await db.execute(
+            select(Asset, AssetModel.make, AssetModel.model,
+                   Initiative.id, Initiative.name)
             .join(InitiativeAsset, InitiativeAsset.asset_id == Asset.id)
             .join(Initiative, Initiative.id == InitiativeAsset.initiative_id)
+            .outerjoin(AssetModel, AssetModel.id == Asset.model_id)
             .where(Initiative.client_id == initiative.client_id,
                    Initiative.id != initiative.id,
                    Initiative.initiative_type == "move",
                    Initiative.archived_at.is_(None),
-                   Asset.archived_at.is_(None))
-            .order_by(Asset.legacy_id, natural(Initiative.name), Initiative.id))).all()
+                   Asset.archived_at.is_(None),
+                   Asset.id.not_in(on_selected)))).all()
+        # Every other live client asset not already listed with one of the
+        # client's other moves: no links at all, or only archived moves,
+        # projects/events, or another client's moves. Null move fields.
+        listed = {a.id for a, *_ in other_moves}
+        no_move = [r for r in (await db.execute(
+            select(Asset, AssetModel.make, AssetModel.model)
+            .outerjoin(AssetModel, AssetModel.id == Asset.model_id)
+            .where(Asset.client_id == initiative.client_id,
+                   Asset.archived_at.is_(None),
+                   Asset.id.not_in(on_selected)))).all()
+            if r[0].id not in listed]
+        rows = ([(a, mk, md, iid, iname) for a, mk, md, iid, iname in other_moves]
+                + [(a, mk, md, None, None) for a, mk, md in no_move])
+        # legacy_id first (nulls last, like the SQL order), then move name.
+        rows.sort(key=lambda r: (
+            r[0].legacy_id is None, r[0].legacy_id or 0,
+            r[4] is None, natural_key(r[4] or ""), str(r[3] or ""), str(r[0].id)))
         assets = [KioskClientAssetOut(
             id=a.id, asset_id=str(a.legacy_id) if a.legacy_id is not None else "",
             name=a.name, rfid=a.rfid_tag, serial_number=a.serial_number,
-            initiative_id=iid, initiative_name=iname) for a, iid, iname in rows]
+            make=mk, model=md, initiative_id=iid, initiative_name=iname)
+            for a, mk, md, iid, iname in rows]
     return KioskClientAssetsSyncOut(
         initiative_id=initiative.id, client_id=initiative.client_id,
         generated_at=datetime.now(UTC), assets=assets)

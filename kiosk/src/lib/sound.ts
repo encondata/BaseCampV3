@@ -226,6 +226,8 @@ export async function removeUploadedSound(id: string): Promise<void> {
 type AudioCtor = new () => AudioContext;
 
 let ctx: AudioContext | null = null;
+/** The latest `resume()` still in flight (settled either way), or null. */
+let resuming: Promise<void> | null = null;
 const objectUrls = new Map<string, string>();
 
 /** One shared context, created on the first play (never at import time:
@@ -240,7 +242,13 @@ function audioContext(): AudioContext | null {
       if (!Ctor) return null;
       ctx = new Ctor();
     }
-    if (ctx.state === 'suspended') void Promise.resolve(ctx.resume()).catch(() => undefined);
+    if (ctx.state === 'suspended') {
+      const pending: Promise<void> = Promise.resolve(ctx.resume()).then(
+        () => undefined, () => undefined,
+      );
+      resuming = pending;
+      void pending.then(() => { if (resuming === pending) resuming = null; });
+    }
     return ctx;
   } catch {
     return null;
@@ -350,10 +358,90 @@ export function playScanSound(which: 'good' | 'not_found' | 'duplicate'): void {
   }
 }
 
+/* ── Alarm siren ───────────────────────────────────────────────────── */
+
+/** The two siren pitches (Hz) and how often they swap: a square-wave LFO
+ *  pushes one oscillator between them, so the loop needs no timers. */
+const SIREN_LOW = 620;
+const SIREN_HIGH = 960;
+const SIREN_SWAPS_PER_S = 2.5;
+
+/** Starts the Asset Not Part Of Move siren at `volume` (0–1): a two-tone
+ *  wail that loops until the returned function is called. Never throws —
+ *  with no Web Audio API, or a context that fails, it is silence and the
+ *  returned stop is a no-op. Stopping twice is harmless. */
+export function startSiren(volume: number): () => void {
+  const nodes: { stop?: (when?: number) => void; disconnect?: () => void }[] = [];
+  let stopped = false;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    for (const node of nodes) {
+      try { node.stop?.(); } catch { /* already stopped */ }
+      try { node.disconnect?.(); } catch { /* already disconnected */ }
+    }
+  };
+  try {
+    const audio = audioContext();
+    if (!audio) return stop;
+    const tone = audio.createOscillator();
+    nodes.push(tone);
+    const lfo = audio.createOscillator();
+    nodes.push(lfo);
+    const depth = audio.createGain();
+    nodes.push(depth);
+    const out = audio.createGain();
+    nodes.push(out);
+
+    const now = audio.currentTime;
+    const floor = 0.0001;
+    const peak = Math.max(floor, clampVolume(volume) * 0.5);
+    tone.type = 'sawtooth';
+    tone.frequency.setValueAtTime((SIREN_LOW + SIREN_HIGH) / 2, now);
+    // A square LFO at half the swap rate: each half-cycle is one pitch.
+    lfo.type = 'square';
+    lfo.frequency.setValueAtTime(SIREN_SWAPS_PER_S / 2, now);
+    depth.gain.setValueAtTime((SIREN_HIGH - SIREN_LOW) / 2, now);
+    out.gain.setValueAtTime(floor, now);
+    out.gain.exponentialRampToValueAtTime(peak, now + 0.02);
+
+    lfo.connect(depth);
+    depth.connect(tone.frequency);
+    tone.connect(out);
+    out.connect(audio.destination);
+    lfo.start(now);
+    tone.start(now);
+  } catch {
+    // A half-built siren is torn down; the alarm carries on silent.
+    stop();
+  }
+  return stop;
+}
+
+/** True when the shared context exists but is still suspended after
+ *  `resume()` — the browser wants a tap or key press before it plays.
+ *  False with no context at all (nothing has tried to play). */
+export function soundBlocked(): boolean {
+  try {
+    return ctx !== null && ctx.state === 'suspended';
+  } catch {
+    return false;
+  }
+}
+
+/** Resolves once the latest `resume()` has settled (at once when none is
+ *  pending), so `soundBlocked()` reads the real state rather than the
+ *  moment before a resume lands. A browser holding the context back for
+ *  a gesture may leave it pending, so callers also re-check on a timer. */
+export function soundSettled(): Promise<void> {
+  return resuming ?? Promise.resolve();
+}
+
 /** Test helper: drops the shared context and the object-URL cache so a
  *  case can swap the audio API out from under the module. */
 export function resetSoundAudioForTest(): void {
   ctx = null;
+  resuming = null;
   objectUrls.forEach((url) => {
     try { URL.revokeObjectURL(url); } catch { /* no URL API */ }
   });

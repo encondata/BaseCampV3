@@ -12,12 +12,13 @@ import { closeDb, count } from './localDb';
 import {
   BUILTIN_SOUNDS, DEFAULT_SOUND_SETTINGS, MAX_SOUND_BYTES, addUploadedSound, listUploadedSounds,
   playScanSound, readSoundSettings, removeUploadedSound, resetSoundAudioForTest,
-  subscribeSoundSettings, writeSoundSettings,
+  soundBlocked, soundSettled, startSiren, subscribeSoundSettings, writeSoundSettings,
 } from './sound';
 
 interface Started { type: string; freq: number }
 
 const started: Started[] = [];
+let stopped = 0;
 let contexts = 0;
 
 class FakeParam {
@@ -37,7 +38,7 @@ class FakeOscillator extends FakeNode {
   frequency = new FakeParam(440);
   started = false;
   start() { this.started = true; started.push({ type: this.type, freq: this.frequency.value }); }
-  stop() { /* noop */ }
+  stop() { stopped += 1; }
 }
 
 class FakeGain extends FakeNode { gain = new FakeParam(1); }
@@ -65,6 +66,7 @@ beforeEach(() => {
   localStorage.clear();
   resetSoundAudioForTest();
   started.length = 0;
+  stopped = 0;
   contexts = 0;
   installAudio();
 });
@@ -208,4 +210,85 @@ it('a choice pointing at a deleted upload plays nothing and does not throw', asy
   expect(() => playScanSound('good')).not.toThrow();
   await Promise.resolve();
   expect(started).toEqual([]);
+});
+
+it('the siren starts oscillators at the given volume and its stop function stops them', () => {
+  const stop = startSiren(0.6);
+  expect(started.length).toBeGreaterThan(0);
+  expect(stopped).toBe(0);
+  stop();
+  expect(stopped).toBe(started.length);
+  stop(); // a second stop is harmless
+  expect(stopped).toBe(started.length);
+});
+
+it('the siren never throws: no audio API, or a context that fails mid-build', () => {
+  delete (window as unknown as { AudioContext?: unknown }).AudioContext;
+  resetSoundAudioForTest();
+  let stop: () => void = () => undefined;
+  expect(() => { stop = startSiren(1); }).not.toThrow();
+  expect(() => stop()).not.toThrow();
+  expect(soundBlocked()).toBe(false);
+
+  installAudio();
+  resetSoundAudioForTest();
+  const spy = vi.spyOn(FakeAudioContext.prototype, 'createGain').mockImplementation(() => {
+    throw new Error('boom');
+  });
+  try {
+    expect(() => { stop = startSiren(1); }).not.toThrow();
+    expect(() => stop()).not.toThrow();
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+it('soundBlocked is true while the context stays suspended after resume()', () => {
+  const blocking = class extends FakeAudioContext {
+    resume = vi.fn(() => Promise.reject(new Error('NotAllowedError')));
+  };
+  (window as unknown as { AudioContext: unknown }).AudioContext = blocking;
+  resetSoundAudioForTest();
+  const stop = startSiren(1);
+  expect(soundBlocked()).toBe(true);
+  stop();
+
+  installAudio();
+  resetSoundAudioForTest();
+  startSiren(1)();
+  expect(soundBlocked()).toBe(false);
+});
+
+it('soundSettled waits for the pending resume(), then soundBlocked reads the settled state', async () => {
+  let finish: () => void = () => undefined;
+  const slow = class extends FakeAudioContext {
+    resume = vi.fn(() => new Promise<void>((done) => {
+      finish = () => { this.state = 'running'; done(); };
+    }));
+  };
+  (window as unknown as { AudioContext: unknown }).AudioContext = slow;
+  resetSoundAudioForTest();
+  const stop = startSiren(1);
+  expect(soundBlocked()).toBe(true);          // resume() still pending
+  let settled = false;
+  const waiting = soundSettled().then(() => { settled = true; });
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  finish();
+  await waiting;
+  expect(soundBlocked()).toBe(false);
+  stop();
+});
+
+it('soundSettled resolves at once with no context or a rejected resume()', async () => {
+  resetSoundAudioForTest();
+  await soundSettled();                       // nothing has tried to play
+  const blocking = class extends FakeAudioContext {
+    resume = vi.fn(() => Promise.reject(new Error('NotAllowedError')));
+  };
+  (window as unknown as { AudioContext: unknown }).AudioContext = blocking;
+  resetSoundAudioForTest();
+  startSiren(1)();
+  await soundSettled();
+  expect(soundBlocked()).toBe(true);
 });

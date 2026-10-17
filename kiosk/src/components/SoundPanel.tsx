@@ -8,6 +8,9 @@
  *  is good at. A Play button beside each one previews the current
  *  choice, because a sound is not something a label can describe.
  *
+ *  On a signed-in laptop RFID Station the Off-move alarm settings sit
+ *  right under the volume, since the alarm plays at that volume.
+ *
  *  Uploads live in IndexedDB `sounds` on this kiosk only: nothing is
  *  sent anywhere, and "Clear local data" leaves them alone. */
 
@@ -18,6 +21,7 @@ import {
   removeUploadedSound, useSoundSettings, type BuiltinSoundId, type SoundChoice,
   type SoundSettings, type UploadedSound,
 } from '../lib/sound';
+import OffMoveAlarmSettings from './OffMoveAlarmSettings';
 
 /** `none` / `builtin:chime` / `upload:{uuid}` — one `<option>` value per
  *  choice, parsed straight back into the stored shape. */
@@ -144,6 +148,7 @@ export default function SoundPanel() {
           <span className="sound-volume-value mono">{`${volume}%`}</span>
         </label>
       </div>
+      <OffMoveAlarmSettings />
       <div className="settings-row">
         <div>
           <span className="settings-row-label">Uploaded sounds</span>

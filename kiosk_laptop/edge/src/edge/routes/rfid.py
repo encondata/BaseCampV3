@@ -4,11 +4,13 @@ finish without the cloud, so an offline sign-in mustn't change a reader
 (503 edge_offline). Scanning stays open."""
 
 import re
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
 
+from edge import laptop_setup
 from edge.deps import err, require_session
-from edge.rfid import checks, events, pairing, tagreads, ziotc
+from edge.rfid import alarm, checks, events, pairing, tagreads, ziotc
 from edge.rfid.ziotc import ReaderError
 from edge.sessions import EdgeSession
 
@@ -187,3 +189,45 @@ async def check(name: str, request: Request,
 @router.get("/reads")
 async def reads(request: Request, tz: str = "UTC") -> dict:
     return tagreads.reads_summary(request.app.state.store, tz=tz)
+
+
+# The "Asset Not Part Of Move" alarm. Like /events (read) and /stop (write),
+# these need any edge session, online or offline.
+
+def _is_rfid_station(store) -> bool:
+    return (laptop_setup.load(store) or {}).get("station_type") == "rfid"
+
+
+def _int(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+@router.get("/alarm")
+async def open_alarm(request: Request) -> dict:
+    store = request.app.state.store
+    if not _is_rfid_station(store):
+        return alarm.empty(alarm.settings(store))
+    return alarm.open_alarm(store, datetime.now(UTC))
+
+
+@router.post("/alarm/dismiss")
+async def dismiss_alarm(request: Request) -> dict:
+    up_to_id = _int((await _json_object(request)).get("up_to_id"))
+    if up_to_id is None:
+        raise err(422, "bad_request")
+    return {"dismissed": alarm.dismiss(request.app.state.store, up_to_id)}
+
+
+@router.get("/alarm/settings")
+async def alarm_settings(request: Request) -> dict:
+    return alarm.settings(request.app.state.store)
+
+
+@router.put("/alarm/settings")
+async def save_alarm_settings(request: Request) -> dict:
+    body = await _json_object(request)
+    try:
+        return alarm.save_settings(request.app.state.store, body.get("mode"),
+                                   body.get("timed_seconds"))
+    except ValueError:
+        raise err(422, "invalid_alarm_settings") from None

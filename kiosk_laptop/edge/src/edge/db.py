@@ -138,6 +138,16 @@ SCHEMA_STEPS: list[str] = [
     """
     CREATE TABLE station_status (id INTEGER PRIMARY KEY CHECK (id = 1), paused TEXT)
     """,
+    # the RFID station's "Asset Not Part Of Move" alarm: its settings (one row),
+    # each asset's last alarm (the 1-hour repeat window) and the alarm on screen
+    """
+    CREATE TABLE alarm_settings (id INTEGER PRIMARY KEY CHECK (id = 1), mode TEXT NOT NULL,
+        timed_seconds INTEGER NOT NULL);
+    CREATE TABLE alarm_last (asset_id TEXT PRIMARY KEY, alarmed_at TEXT NOT NULL);
+    CREATE TABLE alarm_open (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        asset_id TEXT NOT NULL UNIQUE, make_model TEXT, name TEXT, serial TEXT, rfid TEXT,
+        raised_at TEXT NOT NULL)
+    """,
 ]
 
 

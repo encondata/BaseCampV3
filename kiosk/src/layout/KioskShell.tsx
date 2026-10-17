@@ -14,6 +14,7 @@ import { registrationLabel } from '@portal/lib/devices';
 import { applyPreferences, DEFAULT_PREFERENCES } from '@portal/lib/settings';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
+import OffMoveAlarm from '../components/OffMoveAlarm';
 import ScanFlash from '../components/ScanFlash';
 import type { RegistrationState } from '../lib/api';
 import { kioskVersion } from '../lib/config';
@@ -22,7 +23,7 @@ import { FEATURES } from '../lib/features';
 import { getIdentity } from '../lib/identity';
 import { stationLabel, useKioskSetup } from '../lib/kioskSetup';
 import { hydrateLaptopSetup } from '../lib/laptopSetup';
-import { platform } from '../lib/platform';
+import { isLaptop, platform } from '../lib/platform';
 import { useEdgeStatus } from '../lib/edgeStatus';
 import { useSyncStatus } from '../lib/sync';
 
@@ -207,6 +208,10 @@ export default function KioskShell({ children }: { children: ReactNode }) {
       {/* One overlay for the whole kiosk: scan feedback fires from the
           Scanning page but has to paint over the shell, not inside it. */}
       <ScanFlash />
+      {/* The Asset Not Part Of Move takeover, over every page of an RFID
+          Station laptop. Only while signed in: every alarm route needs an
+          edge session, so a signed-out page would only poll 401s. */}
+      {authed && isLaptop() && kioskSetup?.stationType === 'rfid' && <OffMoveAlarm />}
     </div>
   );
 }

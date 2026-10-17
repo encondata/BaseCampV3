@@ -990,6 +990,66 @@ export async function getRfidReads(tz: string): Promise<RfidReads> {
   return jsonFrom<RfidReads>(await apiFetch(`/edge/rfid/reads?tz=${encodeURIComponent(tz)}`));
 }
 
+/* ── Asset Not Part Of Move alarm (edge, RFID Station only) ─────────── */
+
+/** Until someone dismisses it, or for `timed_seconds` after the last raise. */
+export type AlarmMode = 'until_dismissed' | 'timed';
+
+/** The station's alarm settings, kept on the edge. `timed_seconds` is
+ *  3–600 and is always sent, even in `until_dismissed` mode. */
+export interface AlarmSettings {
+  mode: AlarmMode;
+  timed_seconds: number;
+}
+
+/** One open alarm row: an off-move asset read by this station. Any field
+ *  but `id` and `raised_at` may be null (an older portal sends no make/model). */
+export interface OffMoveAlarmRow {
+  id: number;
+  make_model: string | null;
+  name: string | null;
+  serial: string | null;
+  rfid: string | null;
+  raised_at: string;
+}
+
+/** GET /edge/rfid/alarm. `alarms` is ordered by id; `latest_id` is the
+ *  highest shown (null when none); `expires_at` is set only in timed mode
+ *  while alarms are open. A laptop that isn't an RFID Station answers
+ *  with no alarms. */
+export interface OffMoveAlarmState extends AlarmSettings {
+  alarms: OffMoveAlarmRow[];
+  latest_id: number | null;
+  expires_at: string | null;
+}
+
+export async function getOffMoveAlarm(): Promise<OffMoveAlarmState> {
+  return jsonFrom<OffMoveAlarmState>(await apiFetch('/edge/rfid/alarm'));
+}
+
+/** Clears the open alarms with id <= `upToId` — the latest the screen
+ *  showed, so an asset raised after the last poll stays open. */
+export async function dismissOffMoveAlarm(upToId: number): Promise<{ dismissed: number }> {
+  return jsonFrom<{ dismissed: number }>(await apiFetch('/edge/rfid/alarm/dismiss', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ up_to_id: upToId }),
+  }));
+}
+
+export async function getAlarmSettings(): Promise<AlarmSettings> {
+  return jsonFrom<AlarmSettings>(await apiFetch('/edge/rfid/alarm/settings'));
+}
+
+/** Saves the mode and seconds; 422 `invalid_alarm_settings` when out of range. */
+export async function saveAlarmSettings(s: AlarmSettings): Promise<AlarmSettings> {
+  return jsonFrom<AlarmSettings>(await apiFetch('/edge/rfid/alarm/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: s.mode, timed_seconds: s.timed_seconds }),
+  }));
+}
+
 export async function startReader(): Promise<{ reading: boolean }> {
   return jsonFrom<{ reading: boolean }>(await apiFetch('/edge/rfid/start', { method: 'POST' }));
 }
