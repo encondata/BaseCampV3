@@ -9,7 +9,9 @@
  * Settings sync rides the same beat (kioskConfig.ts): each beat carries
  * the applied config version and, when one is due, the whole config; the
  * reply's clock, config and scan type are handled after it. On a laptop
- * those helpers do nothing (the edge adds the fields itself).
+ * the edge adds the fields itself and handles the reply (laptopConfig.ts
+ * syncs the browsers with the edge); only the reply's scan type is applied
+ * here.
  */
 
 import { heartbeatRequest, type RegistrationState } from './api';

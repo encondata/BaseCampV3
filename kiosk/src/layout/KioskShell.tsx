@@ -22,6 +22,7 @@ import { useDevMode } from '../lib/devMode';
 import { FEATURES } from '../lib/features';
 import { getIdentity } from '../lib/identity';
 import { stationLabel, useKioskSetup } from '../lib/kioskSetup';
+import { startLaptopConfigSync } from '../lib/laptopConfig';
 import { hydrateLaptopSetup } from '../lib/laptopSetup';
 import { isLaptop, platform } from '../lib/platform';
 import { useEdgeStatus } from '../lib/edgeStatus';
@@ -102,6 +103,11 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (authed) void hydrateLaptopSetup(lockedMove);
   }, [authed, lockedMove]);
+
+  // A laptop's settings live on the edge (GET/PUT /edge/config need a
+  // signed-in edge session): poll its copy and send this browser's edits.
+  // A no-op in web mode.
+  useEffect(() => (authed ? startLaptopConfigSync() : undefined), [authed]);
 
   const identity = getIdentity();
   const { mode, label: modeLabel } = platform();

@@ -238,7 +238,9 @@ async def test_station_heartbeat_without_snapshot_omits_reader(app, client, clou
     route = station_route(cloud)
     await reader_report.send_station_heartbeat(app.state, None)
     body = json.loads(route.calls[-1].request.content)
-    assert body == {"serial": app.state.identity.serial, "version": app.state.settings.version}
+    # the kiosk config's applied version always rides along (config_sync.py)
+    assert body == {"serial": app.state.identity.serial, "version": app.state.settings.version,
+                    "config_applied_version": None}
 
 
 async def test_no_station_heartbeat_without_key(app, client, cloud):
@@ -314,7 +316,8 @@ async def test_station_heartbeat_omits_an_unusable_version(app, client, cloud, v
     route = station_route(cloud)
     app.state.settings = dataclasses.replace(app.state.settings, version=version)
     await reader_report.send_station_heartbeat(app.state, None)
-    assert json.loads(route.calls[-1].request.content) == {"serial": app.state.identity.serial}
+    assert json.loads(route.calls[-1].request.content) == {"serial": app.state.identity.serial,
+                                                           "config_applied_version": None}
 
 
 async def test_station_heartbeat_keeps_a_version_of_exactly_40(app, client, cloud):

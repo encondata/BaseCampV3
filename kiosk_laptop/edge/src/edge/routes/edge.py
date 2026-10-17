@@ -6,7 +6,7 @@ import json
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from edge import laptop_setup, outbox
+from edge import config_sync, laptop_setup, outbox
 from edge.deps import current_session, err, require_admin, require_session
 from edge.identity import rename
 from edge.rfid import uploader
@@ -85,6 +85,32 @@ async def shared_setup(request: Request, _: EdgeSession = Depends(require_sessio
     """The laptop's finished Kiosk Setup, for any browser; null before the
     first one (or after Wipe)."""
     return laptop_setup.load(request.app.state.store)
+
+
+@router.get("/config")
+async def get_config(request: Request, _: EdgeSession = Depends(require_session)) -> dict:
+    """The laptop's kiosk config for its browsers: `{doc, version, changed_at}`
+    (doc null until a browser seeds it or the portal sends one)."""
+    return config_sync.get(request.app.state.store)
+
+
+@router.put("/config")
+async def put_config(request: Request, _: EdgeSession = Depends(require_session)) -> dict:
+    """`{doc, base_version?, seed?}` from a browser (config_sync.put). 409
+    `config_changed` carries the current copy when base_version is stale."""
+    body = await _json_object(request)
+    doc = body.get("doc")
+    base = body.get("base_version")
+    seed = body.get("seed", False)
+    if not isinstance(doc, dict) or not isinstance(seed, bool) \
+            or (base is not None and (not isinstance(base, int) or isinstance(base, bool))):
+        raise err(422, "bad_request")
+    if not config_sync.fits(doc):
+        raise err(422, "config_too_large")
+    try:
+        return config_sync.put(request.app.state.store, doc, base, seed=seed)
+    except config_sync.ConfigConflict as exc:
+        raise err(409, "config_changed", **exc.current) from None
 
 
 @router.post("/outbox/retry")

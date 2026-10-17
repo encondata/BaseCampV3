@@ -28,8 +28,9 @@
  *
  * Laptop mode: the edge owns the laptop's config (it adds the sync fields
  * to the beats it proxies), so the heartbeat and tracking entry points do
- * nothing there. `collectConfig` / `applyConfig` stay usable for the
- * laptop's own `/edge/config` path.
+ * nothing there, apart from the reply's scan type. laptopConfig.ts uses
+ * `collectConfig` / `applyConfig` for the laptop's own `/edge/config` path;
+ * there `applied_version` holds the edge's version last applied.
  *
  * Sync state lives in localStorage (`ss.kiosk.configSync`), not in the
  * IndexedDB `meta` store, which "Clear local data" empties.
@@ -138,6 +139,12 @@ let generation = 0;
 /** True while `applyConfig` writes the stores: those writes aren't
  *  local changes. */
 let applying = false;
+
+/** True while `applyConfig` writes the stores (laptopConfig.ts skips
+ *  those writes the same way). */
+export function isApplyingConfig(): boolean {
+  return applying;
+}
 
 /** This kiosk's best idea of the portal's current time (ms). */
 export function correctedNow(): number {
@@ -396,7 +403,13 @@ export async function configBeatFields(): Promise<ConfigBeat | null> {
 export function handleConfigReply(
   result: HeartbeatResult, beat: ConfigBeat | null,
 ): { rebeat: boolean } {
-  if (isLaptop() || !beat) return { rebeat: false };
+  if (isLaptop()) {
+    // The edge syncs the laptop's config; the scan type still applies to
+    // this browser's own copy of the setup.
+    guarded(() => applyScanType(result.scan_status, result.scan_status_label));
+    return { rebeat: false };
+  }
+  if (!beat) return { rebeat: false };
   let rebeat = false;
   guarded(() => {
     const receivedAt = Date.now();

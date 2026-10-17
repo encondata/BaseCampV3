@@ -963,6 +963,32 @@ export async function getEdgeSetup(): Promise<EdgeSetup | null> {
   return jsonFrom<EdgeSetup | null>(await apiFetch('/edge/setup'));
 }
 
+/** The laptop's kiosk config as the edge holds it for every browser:
+ *  `version` counts changes on the edge (not the portal's version). */
+export interface EdgeConfig {
+  doc: Record<string, unknown> | null;
+  version: number;
+  changed_at: string | null;
+}
+
+export async function getEdgeConfig(): Promise<EdgeConfig> {
+  return jsonFrom<EdgeConfig>(await apiFetch('/edge/config'));
+}
+
+/** Writes this browser's document. `seed`: only when the edge has none
+ *  (not a change). Otherwise `base_version` is the edge version it started
+ *  from; a stale one is 409 `config_changed` with the current copy in the
+ *  error's detail (`doc`, `version`, `changed_at`). */
+export async function putEdgeConfig(body: {
+  doc: Record<string, unknown>; base_version?: number; seed?: boolean;
+}): Promise<EdgeConfig> {
+  return jsonFrom<EdgeConfig>(await apiFetch('/edge/config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }));
+}
+
 // ── RFID Network check and reader reading (laptop edge) ─────────────
 
 export type CheckName = 'reader' | 'router' | 'portal' | 'registration' | 'setup' | 'uploads';

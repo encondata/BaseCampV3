@@ -109,6 +109,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     app.state.reader_transport = None  # tests hand in a fake reader's transport
     app.state.pair_lock = asyncio.Lock()
     app.state.station_key_lock = asyncio.Lock()  # one station-key issue at a time
+    app.state.config_lock = asyncio.Lock()  # one config-carrying check-in at a time
     app.state.reader_snapshot = None  # ReaderReporter's latest (rfid/reader_report.py)
     app.state.gateway_knock = checks.knock
     app.state.syncer = Syncer(app.state.store, app.state.upstream,
