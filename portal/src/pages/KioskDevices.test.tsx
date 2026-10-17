@@ -19,6 +19,7 @@
 
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { ApiError, type DeviceItem, type UiPreferences } from '../lib/api';
@@ -137,7 +138,7 @@ afterEach(cleanup);
 const { default: KioskDevices } = await import('./KioskDevices');
 
 it('kiosk devices list: column floors, shared template + minimum, sideways-scroll card', async () => {
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   const row = (await screen.findByText('kiosk-dock-1')).closest('.dir-row') as HTMLElement;
   const card = row.closest('.dir-list') as HTMLElement;
   expect(card.classList.contains('list-scroll')).toBe(true);
@@ -150,7 +151,7 @@ it('kiosk devices list: column floors, shared template + minimum, sideways-scrol
 });
 
 it('renders seeded rows sorted by name asc, with the type tag, current move, and scan-type chip', async () => {
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
 
   expect(await screen.findByText('kiosk-dock-1')).not.toBeNull();
   expect(screen.getByText('kiosk-lobby-2')).not.toBeNull();
@@ -172,7 +173,7 @@ it('renders registration chips for all four states', async () => {
     kiosk({ id: 'r4', name: 'reg-none', token_expires_at: null }),
   ];
   api.listDevices.mockResolvedValue(REG_DEVICES);
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
 
   const okRow = (await screen.findByText('reg-ok')).closest('.dir-row') as HTMLElement;
   const okChip = within(okRow).getByText('Registered');
@@ -193,12 +194,12 @@ it('renders registration chips for all four states', async () => {
 
 it('hides "+ New kiosk" without add, shows it and opens the create modal with add', async () => {
   auth.can = () => false;
-  const { rerender } = render(<KioskDevices />);
+  const { rerender } = render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   await screen.findByText('kiosk-dock-1');
   expect(screen.queryByRole('button', { name: '+ New kiosk' })).toBeNull();
 
   auth.can = () => true;
-  rerender(<KioskDevices />);
+  rerender(<MemoryRouter><KioskDevices /></MemoryRouter>);
   const user = userEvent.setup();
   const addBtn = await screen.findByRole('button', { name: '+ New kiosk' });
   await user.click(addBtn);
@@ -208,7 +209,7 @@ it('hides "+ New kiosk" without add, shows it and opens the create modal with ad
 
 it('the edit modal offers every sub-type the kiosk heartbeat can derive', async () => {
   const user = userEvent.setup();
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
 
   const row = (await screen.findByText('kiosk-dock-1')).closest('.dir-row') as HTMLElement;
   await user.click(within(row).getByRole('button', { name: /Actions/ }));
@@ -228,7 +229,7 @@ it('contextual actions: unregistered row shows Register only; registered row sho
   ];
   api.listDevices.mockResolvedValue(REG_DEVICES);
   const user = userEvent.setup();
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
 
   // Menuitems are asserted via `screen`, not `within(row)`: RowActionsMenu
   // portals the open menu to document.body (escaping .dir-list's
@@ -255,7 +256,7 @@ it('Register flow: click Register, confirm the days modal, calls registerDevice 
   ];
   api.listDevices.mockResolvedValue(REG_DEVICES);
   const user = userEvent.setup();
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
 
   const row = (await screen.findByText('unregistered-kiosk')).closest('.dir-row') as HTMLElement;
   await user.click(within(row).getByRole('button', { name: /Actions/ }));
@@ -276,7 +277,7 @@ it('De-Register: confirm calls deregisterDevice and reloads', async () => {
   api.listDevices.mockResolvedValue(REG_DEVICES);
   const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
   const user = userEvent.setup();
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
 
   const row = (await screen.findByText('registered-kiosk')).closest('.dir-row') as HTMLElement;
   await user.click(within(row).getByRole('button', { name: /Actions/ }));
@@ -293,7 +294,7 @@ it('De-Register: confirm calls deregisterDevice and reloads', async () => {
 it('hides row actions when can(scanning_hardware, change) is false', async () => {
   auth.can = (resource, action) => !(resource === 'scanning_hardware' && action === 'change');
   const user = userEvent.setup();
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   const row = (await screen.findByText('kiosk-dock-1')).closest('.dir-row') as HTMLElement;
   await user.click(within(row).getByRole('button', { name: /Actions/ }));
   expect(within(row).queryByRole('menuitem', { name: 'Edit' })).toBeNull();
@@ -305,7 +306,7 @@ it('hides row actions when can(scanning_hardware, change) is false', async () =>
 it('viewer with no change/delete grants sees NO Actions button', async () => {
   auth.can = (resource, action) => !(resource === 'scanning_hardware'
     && (action === 'change' || action === 'delete'));
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   const row = (await screen.findByText('kiosk-dock-1')).closest('.dir-row') as HTMLElement;
   expect(within(row).queryByRole('button', { name: /Actions/ })).toBeNull();
 });
@@ -313,7 +314,7 @@ it('viewer with no change/delete grants sees NO Actions button', async () => {
 it('clicking Delete + confirm calls deleteDevice and reloads', async () => {
   const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
   const user = userEvent.setup();
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   await screen.findByText('kiosk-dock-1');
 
   const row = screen.getByText('kiosk-dock-1').closest('.dir-row') as HTMLElement;
@@ -339,7 +340,7 @@ it('renders the signed-in user; login-method chip is hidden by default', async (
     kiosk({ id: 's2', name: 'kiosk-signed-out' }),
   ];
   api.listDevices.mockResolvedValue(SESSION_DEVICES);
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
 
   const signedInRow = (await screen.findByText('kiosk-signed-in')).closest('.dir-row') as HTMLElement;
   expect(within(signedInRow).getByText('Claude Dev')).not.toBeNull();
@@ -353,7 +354,7 @@ it('renders the signed-in user; login-method chip is hidden by default', async (
 
 it('shows the load-error banner when listDevices rejects', async () => {
   api.listDevices.mockRejectedValue(new Error('boom'));
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
 
   expect(await screen.findByText(/Couldn.t load kiosks/i)).not.toBeNull();
 });
@@ -362,13 +363,13 @@ it('shows the load-error banner when listDevices rejects', async () => {
 
 it('hides the clear button below rank 60', async () => {
   auth.maxRank = 40;
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   await screen.findByText('kiosk-dock-1');
   expect(screen.queryByRole('button', { name: /Clear offline/ })).toBeNull();
 });
 
 it('shows the clear button for an admin', async () => {
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   await screen.findByText('kiosk-dock-1');
   expect(screen.getByRole('button', { name: /Clear offline/ })).not.toBeNull();
 });
@@ -378,7 +379,7 @@ it('opens the modal with the dry-run matches', async () => {
     dry_run: true, kiosks: [MATCH], skipped: [], not_found: 0,
   });
   const user = userEvent.setup();
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   await screen.findByText('kiosk-dock-1');
 
   await user.click(screen.getByRole('button', { name: /Clear offline/ }));
@@ -393,7 +394,7 @@ it('confirms with the previewed ids and reports what the server actually did', a
     // the server re-checks: MATCH_B came back to life between the two calls
     .mockResolvedValueOnce({ dry_run: false, kiosks: [MATCH], skipped: [MATCH_B], not_found: 0 });
   const user = userEvent.setup();
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   await screen.findByText('kiosk-dock-1');
 
   await user.click(screen.getByRole('button', { name: /Clear offline/ }));
@@ -416,7 +417,7 @@ it('surfaces ids that no longer existed at all, so the count reconciles', async 
     .mockResolvedValueOnce({ dry_run: true, kiosks: [MATCH, MATCH_B], skipped: [], not_found: 0 })
     .mockResolvedValueOnce({ dry_run: false, kiosks: [MATCH], skipped: [], not_found: 1 });
   const user = userEvent.setup();
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   await screen.findByText('kiosk-dock-1');
 
   await user.click(screen.getByRole('button', { name: /Clear offline/ }));
@@ -430,7 +431,7 @@ it('says nothing was deleted when every previewed kiosk came back', async () => 
     .mockResolvedValueOnce({ dry_run: true, kiosks: [MATCH], skipped: [], not_found: 0 })
     .mockResolvedValueOnce({ dry_run: false, kiosks: [], skipped: [MATCH], not_found: 0 });
   const user = userEvent.setup();
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   await screen.findByText('kiosk-dock-1');
 
   await user.click(screen.getByRole('button', { name: /Clear offline/ }));
@@ -444,7 +445,7 @@ it('opens the modal on an empty preview rather than silently doing nothing', asy
     dry_run: true, kiosks: [], skipped: [], not_found: 0,
   });
   const user = userEvent.setup();
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   await screen.findByText('kiosk-dock-1');
 
   await user.click(screen.getByRole('button', { name: /Clear offline/ }));
@@ -460,7 +461,7 @@ it('explains a preview that read-only maintenance mode rejected, and opens no mo
     new ApiError(423, 'read_only_mode', undefined, READ_ONLY_MESSAGE),
   );
   const user = userEvent.setup();
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   await screen.findByText('kiosk-dock-1');
 
   await user.click(screen.getByRole('button', { name: /Clear offline/ }));
@@ -473,7 +474,7 @@ it('explains a preview that read-only maintenance mode rejected, and opens no mo
 it('explains any other failed preview instead of opening an empty modal', async () => {
   api.clearOfflineKiosks.mockRejectedValueOnce(new Error('boom'));
   const user = userEvent.setup();
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   await screen.findByText('kiosk-dock-1');
 
   await user.click(screen.getByRole('button', { name: /Clear offline/ }));
@@ -487,7 +488,7 @@ it('reports deleted, skipped, and not-found together', async () => {
     .mockResolvedValueOnce({ dry_run: true, kiosks: [MATCH, MATCH_B, MATCH_C], skipped: [], not_found: 0 })
     .mockResolvedValueOnce({ dry_run: false, kiosks: [MATCH], skipped: [MATCH_B], not_found: 1 });
   const user = userEvent.setup();
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   await screen.findByText('kiosk-dock-1');
 
   await user.click(screen.getByRole('button', { name: /Clear offline/ }));
@@ -503,7 +504,7 @@ it('reports a not-found-only result when nothing was deleted or skipped', async 
     .mockResolvedValueOnce({ dry_run: true, kiosks: [MATCH, MATCH_B], skipped: [], not_found: 0 })
     .mockResolvedValueOnce({ dry_run: false, kiosks: [], skipped: [], not_found: 2 });
   const user = userEvent.setup();
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   await screen.findByText('kiosk-dock-1');
 
   await user.click(screen.getByRole('button', { name: /Clear offline/ }));
@@ -521,7 +522,7 @@ it('caps the confirm batch at 500 ids and tells the operator to rerun for the re
     .mockResolvedValueOnce({ dry_run: true, kiosks: many, skipped: [], not_found: 0 })
     .mockResolvedValueOnce({ dry_run: false, kiosks: many.slice(0, 500), skipped: [], not_found: 0 });
   const user = userEvent.setup();
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   await screen.findByText('kiosk-dock-1');
 
   await user.click(screen.getByRole('button', { name: /Clear offline/ }));
@@ -541,7 +542,7 @@ it('disables the Clear offline button and blocks a second click while the previe
       () => new Promise((resolve) => { resolvePreview = resolve; }),
     );
     const user = userEvent.setup();
-    render(<KioskDevices />);
+    render(<MemoryRouter><KioskDevices /></MemoryRouter>);
     await screen.findByText('kiosk-dock-1');
 
     const btn = screen.getByRole('button', { name: /Clear offline/ });
@@ -563,7 +564,7 @@ it('clears a lingering clear-offline notice once another action runs', async () 
     .mockResolvedValueOnce({ dry_run: false, kiosks: [MATCH], skipped: [], not_found: 0 });
   const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
   const user = userEvent.setup();
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   await screen.findByText('kiosk-dock-1');
 
   await user.click(screen.getByRole('button', { name: /Clear offline/ }));
@@ -602,7 +603,7 @@ it('stationTypeLabel maps station and sub type', async () => {
 
 it('Type column and filter options use the station labels', async () => {
   api.listDevices.mockResolvedValue(STATION_DEVICES);
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   await screen.findByText('station-rfid');
   expect(screen.getByText('RFID \u00b7 Laptop')).not.toBeNull();
   expect(screen.getByText('Label Station \u00b7 Laptop')).not.toBeNull();
@@ -620,7 +621,7 @@ const open = async (name: string) => {
 
 it('every kiosk row has a chevron and a Station table; no switcher without a reader', async () => {
   api.listDevices.mockResolvedValue(STATION_DEVICES);
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   const row = await open('station-label');
   expect(row.querySelector('.chevron-cell')).not.toBeNull();
   const t = within(row).getByRole('table', { name: 'Station' });
@@ -634,7 +635,7 @@ it('every kiosk row has a chevron and a Station table; no switcher without a rea
 
 it('RFID kiosk gets a Station/Reader switcher and a Reader table with the paired time', async () => {
   api.listDevices.mockResolvedValue(STATION_DEVICES);
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   const row = await open('station-rfid');
   expect(within(row).getByRole('tablist')).not.toBeNull();
   expect(within(row).getByRole('table', { name: 'Station' })).not.toBeNull();
@@ -654,7 +655,7 @@ it('Reader table falls back to dashes for missing versions and paired time', asy
     id: 's9', name: 'station-bare', sub_type: 'laptop', station_type: 'rfid',
     rfid_reader: { ip: '10.0.0.5', serial: null, model: null, versions: null, paired_at: null },
   })]);
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   const row = await open('station-bare');
   await userEvent.click(within(row).getByRole('tab', { name: 'Reader' }));
   const t = within(row).getByRole('table', { name: 'Paired reader' });
@@ -663,7 +664,7 @@ it('Reader table falls back to dashes for missing versions and paired time', asy
 
 it('Type cell, filter and search agree for a null sub_type', async () => {
   api.listDevices.mockResolvedValue([kiosk({ id: 'n1', name: 'no-type', sub_type: null })]);
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   const row = (await screen.findByText('no-type')).closest('.dir-row') as HTMLElement;
   const { stationTypeLabel, deviceCellText } = await import('../lib/devices');
   expect(stationTypeLabel({ station_type: null, sub_type: null })).toBe('\u2014');
@@ -685,7 +686,7 @@ it('Clear Setup confirms with the spec copy, posts, and reloads', async () => {
   api.listDevices.mockResolvedValue([kiosk({ id: 'k1', name: 'kiosk-dock-1' })]);
   api.requestClearSetup.mockResolvedValue(kiosk({ id: 'k1' }));
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   const { user } = await openActions('kiosk-dock-1');
   await user.click(await screen.findByRole('menuitem', { name: 'Clear Setup' }));
   expect(confirm).toHaveBeenCalledWith(
@@ -698,7 +699,7 @@ it('Clear Setup confirms with the spec copy, posts, and reloads', async () => {
 it('declining the confirm does nothing', async () => {
   api.listDevices.mockResolvedValue([kiosk({ id: 'k1', name: 'kiosk-dock-1' })]);
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   const { user } = await openActions('kiosk-dock-1');
   await user.click(await screen.findByRole('menuitem', { name: 'Clear Setup' }));
   expect(confirm).toHaveBeenCalledTimes(1);
@@ -714,7 +715,7 @@ it('a pending clear shows the chip with who/when and offers Cancel instead', asy
     setup_clear_requested_by_name: 'Jimmy Henderson',
   })]);
   api.cancelClearSetup.mockResolvedValue(kiosk({ id: 'k1' }));
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   const chip = await screen.findByText('Setup clear pending');
   expect(chip.className).toContain('c-amber');
   expect(chip.getAttribute('title')).toMatch(/^Requested by Jimmy Henderson, /);
@@ -732,7 +733,7 @@ it('a pending clear shows the chip with who/when and offers Cancel instead', asy
 
 it('a kiosk with nothing pending shows no chip and no Cancel item', async () => {
   api.listDevices.mockResolvedValue([kiosk({ id: 'k1', name: 'kiosk-dock-1' })]);
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   await openActions('kiosk-dock-1');
   expect(screen.queryByText('Setup clear pending')).toBeNull();
   expect(screen.queryByRole('menuitem', { name: 'Cancel clear setup' })).toBeNull();
@@ -743,7 +744,7 @@ it('not_a_kiosk shows the friendly error', async () => {
   api.listDevices.mockResolvedValue([kiosk({ id: 'k1', name: 'kiosk-dock-1' })]);
   api.requestClearSetup.mockRejectedValue(new ApiError(409, 'not_a_kiosk'));
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   const { user } = await openActions('kiosk-dock-1');
   await user.click(await screen.findByRole('menuitem', { name: 'Clear Setup' }));
   expect(await screen.findByText('Only kiosks can have their setup cleared.')).not.toBeNull();
@@ -753,10 +754,16 @@ it('not_a_kiosk shows the friendly error', async () => {
 it('Clear Setup is hidden without change permission', async () => {
   auth.can = (resource, action) => !(resource === 'scanning_hardware' && action === 'change');
   api.listDevices.mockResolvedValue([kiosk({ id: 'k1', name: 'kiosk-dock-1' })]);
-  render(<KioskDevices />);
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
   // delete is still granted, so the Actions menu exists but offers Delete only
   await openActions('kiosk-dock-1');
   expect(screen.getByRole('menuitem', { name: 'Delete' })).not.toBeNull();
   expect(screen.queryByRole('menuitem', { name: 'Clear Setup' })).toBeNull();
   expect(screen.queryByRole('menuitem', { name: 'Cancel clear setup' })).toBeNull();
+});
+
+it('links each kiosk name to its details page', async () => {
+  render(<MemoryRouter><KioskDevices /></MemoryRouter>);
+  const link = await screen.findByRole('link', { name: 'kiosk-dock-1' });
+  expect(link.getAttribute('href')).toBe('/hardware/kiosks/d1');
 });
