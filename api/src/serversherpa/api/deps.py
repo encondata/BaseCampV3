@@ -411,12 +411,24 @@ TotpChallengeOrUser = Annotated[TotpActor, Depends(totp_actor)]
 async def station_device(request: Request, db: AsyncSession, serial: str) -> Device:
     """The kiosk Device `serial` when the request carries its station key
     (`Authorization: Station <key>`). A bad, missing or revoked key is one
-    401 `station_key_invalid`. The key is never logged."""
+    401 `station_key_invalid`. The key is never logged.
+
+    Requesting Clear Setup revokes the key at once (an unattended laptop
+    sends no heartbeats), so this refusal is the only reply such a laptop
+    gets: while a Clear Setup is pending for `serial`'s kiosk, the 401 for
+    a refused `Station` key also carries its opaque id (`clear_setup`) and
+    nothing else about the device, and the laptop clears its setup (spec
+    §3.3)."""
     scheme, _, raw = (request.headers.get("authorization") or "").partition(" ")
     raw = raw.strip()
-    device = None
-    if scheme == "Station" and raw:
-        device = await station_keys.verify(db, serial, raw)
-    if device is None:
+    if not (scheme == "Station" and raw):
         raise _unauthorized("station_key_invalid")
+    device = await station_keys.verify(db, serial, raw)
+    if device is None:
+        exc = _unauthorized("station_key_invalid")
+        pending = await db.scalar(select(Device.setup_clear_id).where(
+            Device.serial == serial, Device.device_type == "kiosk"))
+        if pending is not None:
+            exc.detail = {"code": "station_key_invalid", "clear_setup": str(pending)}
+        raise exc
     return device

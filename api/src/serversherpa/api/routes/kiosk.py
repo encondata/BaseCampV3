@@ -1119,7 +1119,7 @@ async def _store_scan_batch(
     operator_id: uuid.UUID | None, allowed_moves: set[uuid.UUID] | None,
     locked: uuid.UUID | None, inactive_moves: set[uuid.UUID],
     allowed_sites: set[uuid.UUID] | None = None, rfid_only: bool = False,
-    audit_via: str | None = None,
+    audit_via: str | None = None, off_move_allowed: bool = False,
 ) -> KioskScanBatchOut:
     """Validate and store one scan batch for `device`; shared by the
     person route (POST /kiosk/scans) and the station-key route.
@@ -1130,7 +1130,9 @@ async def _store_scan_batch(
     `allowed_moves` it is `move_locked`; in `inactive_moves` (completed,
     cancelled or archived) it is `move_inactive`. `rfid_only` rejects
     other scan types (`bad_scan_type`); `allowed_sites`, when given, must
-    contain a scan's effective site (`bad_site`). Commits."""
+    contain a scan's effective site (`bad_site`, checked after the move
+    checks). `off_move` is stored only when `off_move_allowed` (a station
+    upload); the person route always stores False. Commits."""
     now = datetime.now(UTC)
     # One lookup per reference kind for the whole batch, not per scan.
     site_ids = {s.site_id for s in scans if s.site_id is not None}
@@ -1160,9 +1162,6 @@ async def _store_scan_batch(
             code = "bad_scan_type"
         elif scan.site_id is not None and scan.site_id not in known_sites:
             code = "bad_site"
-        elif allowed_sites is not None and (
-                (scan.site_id or device.site_id) not in allowed_sites):
-            code = "bad_site"
         elif (scan.initiative_id is not None
                 and scan.initiative_id not in known_initiatives):
             code = "bad_initiative"
@@ -1177,6 +1176,13 @@ async def _store_scan_batch(
             code = "move_locked"
         elif (scan.initiative_id or device.current_initiative_id) in inactive_moves:
             code = "move_inactive"
+        elif allowed_sites is not None and (
+                (scan.site_id or device.site_id) not in allowed_sites):
+            # After the move checks, so another move's scan reads
+            # move_locked. The sites are the key move's origin/destination
+            # as they are NOW: editing them makes station scans at the old
+            # site reject as bad_site.
+            code = "bad_site"
         else:
             code = ""
         if code:
@@ -1192,7 +1198,7 @@ async def _store_scan_batch(
             "scanned_at": scan.scanned_at,
             "device_id": device.name,
             "operator_id": operator_id,
-            "off_move": scan.off_move,
+            "off_move": scan.off_move and off_move_allowed,
             "site_id": scan.site_id or device.site_id,
             "initiative_id": scan.initiative_id or device.current_initiative_id,
             "source": "kiosk",
@@ -1247,7 +1253,7 @@ async def station_ingest_scans(
     out = await _store_scan_batch(
         db, device, body.scans, operator_id=None, allowed_moves=allowed,
         locked=None, inactive_moves=inactive, allowed_sites=sites,
-        rfid_only=True, audit_via="station_key")
+        rfid_only=True, audit_via="station_key", off_move_allowed=True)
     return KioskStationScanBatchOut(
         accepted=out.accepted, rejected=out.rejected,
         clear_setup=device.setup_clear_id)

@@ -167,12 +167,70 @@ async def test_off_move_flag_stored(client, db, seeded_user):
 
 
 async def test_reply_carries_clear_setup(client, db, seeded_user):
+    """A 200 reply still carries a pending Clear Setup id (harmless: the key
+    is normally revoked by the request itself)."""
     device, _, key = await _station(db)
     rid = uuid.uuid4()
     (await db.get(Device, device.id)).setup_clear_id = rid
     await db.commit()
     r = await _post(client, key, [_scan("EPC-CLR")])
     assert r.status_code == 200 and r.json()["clear_setup"] == str(rid)
+
+
+async def test_clear_setup_request_reaches_the_unattended_station(client, db, seeded_user):
+    """The real flow (spec 3.3): an admin's Clear Setup revokes the key at
+    request time, so the station's next upload is refused 401, and the
+    refusal carries the pending Clear Setup id (and nothing else about the
+    device). Nothing is stored."""
+    device, _, key = await _station(db)
+    admin = await _admin(db, client)
+    r = await client.post(f"/devices/{device.id}/clear-setup", headers=admin)
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    pending = (await db.get(Device, device.id)).setup_clear_id
+    assert pending is not None
+    r = await _post(client, key, [_scan("EPC-CLR-401")])
+    assert r.status_code == 401
+    assert r.json()["detail"] == {"code": "station_key_invalid",
+                                  "clear_setup": str(pending)}
+    assert await _rows(db, "EPC-CLR-401") == []
+    # the station sync routes say the same
+    r = await client.get("/kiosk/station/sync/people", headers=_auth(key),
+                         params={"serial": SERIAL, "initiative_id": str(uuid.uuid4())})
+    assert r.status_code == 401 and r.json()["detail"]["clear_setup"] == str(pending)
+    # cancelled: a plain refusal again
+    assert (await client.post(f"/devices/{device.id}/clear-setup/cancel",
+                              headers=admin)).status_code == 200
+    r = await _post(client, key, [_scan("EPC-CLR-401")])
+    assert r.status_code == 401 and r.json()["detail"] == {"code": "station_key_invalid"}
+
+
+async def test_plain_401_carries_no_clear_setup(client, db, seeded_user):
+    await _station(db)
+    r = await _post(client, "wrong-key", [_scan("EPC-NOCLR")])
+    assert r.status_code == 401 and r.json()["detail"] == {"code": "station_key_invalid"}
+    r = await _post(client, "wrong-key", [_scan("EPC-NOCLR")], serial="no-such-serial")
+    assert r.json()["detail"] == {"code": "station_key_invalid"}
+
+
+async def test_other_moves_scan_is_move_locked_not_bad_site(client, db, seeded_user):
+    """The move checks come before the station's site check: a scan for
+    another move at another site reads move_locked."""
+    _, a, key = await _station(db)
+    b_site = Site(name=f"St B Site {uuid.uuid4().hex[:6]}")
+    db.add(b_site)
+    await db.flush()
+    b = Initiative(name="Key Move B Site", initiative_type="move", status="in_progress",
+                   origin_site_id=b_site.id)
+    db.add(b)
+    await db.commit()
+    r = await _post(client, key, [_scan("EPC-B-SITE", initiative_id=str(b.id),
+                                        site_id=str(b_site.id))])
+    assert [x["code"] for x in r.json()["rejected"]] == ["move_locked"]
+    (await db.get(Initiative, a.id)).status = "completed"
+    await db.commit()
+    r = await _post(client, key, [_scan("EPC-A-SITE", site_id=str(b_site.id))])
+    assert [x["code"] for x in r.json()["rejected"]] == ["move_inactive"]
 
 
 async def test_person_scans_route_unchanged(client, db, seeded_user):
