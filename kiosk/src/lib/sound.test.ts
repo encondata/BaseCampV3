@@ -528,3 +528,25 @@ it('stopping an uploaded alarm sound before it loads never starts it', async () 
     URL.createObjectURL = realUrl;
   }
 });
+
+it('a legacy upload that keeps failing logs once per failure streak', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    await putRows('sounds', [legacyRow('local-a')]);
+    writeSoundSettings({ good: { kind: 'upload', id: 'local-a' } });
+    api.uploadKioskSound.mockReset();
+    api.uploadKioskSound.mockRejectedValue(new ApiError(503, 'unavailable'));
+    expect(await uploadLocalSounds()).toBe(false);
+    expect(await uploadLocalSounds()).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+    // A success ends the streak; the next failure logs again.
+    api.uploadKioskSound.mockResolvedValueOnce({ id: 'p1', name: 'x', content_type: 'audio/wav', size: 8 });
+    expect(await uploadLocalSounds()).toBe(true);
+    await putRows('sounds', [legacyRow('local-b')]);
+    writeSoundSettings({ good: { kind: 'upload', id: 'local-b' } });
+    expect(await uploadLocalSounds()).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(2);
+  } finally {
+    warn.mockRestore();
+  }
+});

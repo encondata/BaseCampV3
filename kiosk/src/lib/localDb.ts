@@ -12,7 +12,8 @@
  *   - `outbox` (keyPath `client_scan_id`; index `status`) — v2: scans
  *     waiting to reach the API (see `outbox.ts`).
  *   - `sounds` (keyPath `id`) — v3: sound files uploaded on the Sound
- *     tab (`sound.ts`), blob and all. They live on this kiosk only.
+ *     tab (`sound.ts`) or downloaded from the portal, blob and all: the
+ *     offline copies of portal sounds, keyed by portal id.
  *   - `containers` (keyPath `id`; indexes `rfid_tag`, `name`) — v4: the
  *     move's crates, so the Containers screen can recognize a scanned
  *     container without a round trip (`containerMatch.ts`).
@@ -44,7 +45,7 @@ export type StoreName =
  *  would be the one thing that still recognized the previous move.
  *  `outbox` and `sounds` are deliberately NOT here: clearing the cached
  *  roster must never throw away scans that have not reached the API yet,
- *  nor the sound files someone uploaded to this kiosk. */
+ *  nor this kiosk's offline copies of its sounds. */
 export const STORES: StoreName[] = ['assets', 'people', 'containers', 'trucks', 'meta'];
 
 export const ALL_STORES: StoreName[] = [...STORES, 'outbox', 'sounds'];

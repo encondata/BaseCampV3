@@ -185,7 +185,7 @@ export default function Settings() {
                 <span className="settings-row-label">Good scan flash</span>
                 <p className="settings-row-hint">
                   The color the whole screen flashes when a scan matches this kiosk&apos;s
-                  local move data. Stored on this kiosk only.
+                  local move data. Synced with the portal.
                 </p>
               </div>
               <HslPicker
@@ -200,7 +200,7 @@ export default function Settings() {
                 <span className="settings-row-label">Not-found scan flash</span>
                 <p className="settings-row-hint">
                   The color the whole screen flashes when a scan matches nothing.
-                  Stored on this kiosk only.
+                  Synced with the portal.
                 </p>
               </div>
               <HslPicker
@@ -263,7 +263,7 @@ export default function Settings() {
             <div>
               <label htmlFor="dev-mode-switch" className="settings-row-label">Developer mode</label>
               <p className="settings-row-hint">
-                Shows diagnostics and developer tools on this kiosk. Stored on this kiosk only.
+                Shows diagnostics and developer tools on this kiosk. Synced with the portal.
               </p>
             </div>
             <Switch

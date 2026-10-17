@@ -376,6 +376,63 @@ describe('beat fields and replies', () => {
   });
 });
 
+describe('review fixes', () => {
+  it('a reply config that arrives while dirty becomes the base, so the next report carries its sections', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-20T12:00:00Z'));
+    installConfigTracking();
+    writeDevMode(true);                                   // offline edit, no clock yet
+    const held = (await configBeatFields())!;
+    expect(held.awaitingClock).toBe(true);
+    const { rebeat } = handleConfigReply(reply({
+      server_time: '2026-10-17T12:00:00Z', config: PORTAL_DOC, config_version: 4,
+    }) as never, held);
+    expect(rebeat).toBe(true);
+    // The stores and the applied version are untouched: the local edit is pending.
+    expect(readDevMode()).toBe(true);
+    expect(readCheckpoint('truckLoad')).toBe('on_truck');
+    expect(readConfigState().applied_version).toBeNull();
+    const next = (await configBeatFields())!;
+    expect(next.reported).toBe(true);
+    const sent = next.fields.config as Record<string, unknown>;
+    expect(JSON.stringify(sent.alarm)).toBe(JSON.stringify(PORTAL_DOC.alarm));
+    expect(JSON.stringify(sent.ios)).toBe(JSON.stringify(PORTAL_DOC.ios));
+    expect(JSON.stringify(sent.android_rfid)).toBe(JSON.stringify(PORTAL_DOC.android_rfid));
+    expect(JSON.stringify(sent.future_thing)).toBe(JSON.stringify(PORTAL_DOC.future_thing));
+    expect((sent.developer as { dev_mode: boolean }).dev_mode).toBe(true);
+    expect((sent.checkpoints as { truck_load: string }).truck_load).toBe('on_truck');
+  });
+
+  it('a stale reply from an overlapping beat never rolls back a newer applied config', async () => {
+    const a = (await configBeatFields())!;
+    const b = (await configBeatFields())!;
+    const v3 = { ...PORTAL_DOC, developer: { dev_mode: true } };
+    const v2 = { ...PORTAL_DOC, developer: { dev_mode: false }, ios: { camera_position: 'back' } };
+    handleConfigReply(reply({ config: v3, config_version: 3 }) as never, b);
+    expect(readConfigState().applied_version).toBe(3);
+    handleConfigReply(reply({ config: v2, config_version: 2 }) as never, a);
+    expect(readDevMode()).toBe(true);
+    expect(readConfigState().applied_version).toBe(3);
+    expect(collectConfig().ios).toEqual(PORTAL_DOC.ios);
+    // The same version again is ignored too.
+    writeDevMode(false);
+    localStorage.setItem('ss.kiosk.configSync', JSON.stringify({ ...readConfigState(), dirty: false }));
+    const c = (await configBeatFields())!;
+    handleConfigReply(reply({ config: v3, config_version: 3 }) as never, c);
+    expect(readDevMode()).toBe(false);
+  });
+
+  it('a scan type with no label uses its key as the label', async () => {
+    writeKioskSetup({
+      initiativeId: 'i', initiativeName: 'Move', siteId: 's', siteName: 'Site',
+      siteRole: 'source', scanStatus: 'on_truck', scanLabel: 'On truck',
+    });
+    const beat = (await configBeatFields())!;
+    handleConfigReply(reply({ scan_status: 'staged', scan_status_label: null }) as never, beat);
+    expect(readKioskSetup()).toMatchObject({ scanStatus: 'staged', scanLabel: 'staged' });
+  });
+});
+
 describe('through the heartbeat', () => {
   it('the first beat reports, later beats only acknowledge, a dirty beat reports again', async () => {
     // Only the beat interval is faked: IndexedDB needs real timers.

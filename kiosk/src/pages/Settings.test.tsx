@@ -499,3 +499,21 @@ it('the Devices tab shows the device cards, not the placeholder', () => {
   expect(screen.getByRole('heading', { name: 'Barcode scanner' })).toBeTruthy();
   expect(screen.queryByText('This section is not available yet.')).toBeNull();
 });
+
+it('settings that sync with the portal say so, not "stored on this kiosk only"', async () => {
+  for (const tab of ['appearance', 'sound']) {
+    renderAt(`/settings?tab=${tab}`);
+    expect(document.body.textContent).not.toContain('Stored on this kiosk only');
+    expect(document.body.textContent).toContain('Synced with the portal.');
+    cleanup();
+  }
+  auth.isAdmin = true;
+  auth.isDeveloper = true;
+  localStorage.setItem('ss.kiosk.devMode', 'true');
+  renderAt('/settings?tab=developer');
+  expect(screen.getByText(/Shows diagnostics and developer tools on this kiosk\. Synced with the portal\./))
+    .toBeTruthy();
+  // The setup-state testing aid is not part of the config: it stays local.
+  expect(screen.getByText(/Testing aid until real setup logic sets this\. Stored on this kiosk only\./))
+    .toBeTruthy();
+});

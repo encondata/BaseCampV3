@@ -388,7 +388,9 @@ export async function configBeatFields(): Promise<ConfigBeat | null> {
 /** Handles a heartbeat reply for the beat `beat` described: keeps the
  *  portal's clock offset, settles the report, applies a received config
  *  (unless a local change is still waiting to be reported, which the
- *  portal judges by its stamp first), and updates the setup's scan type.
+ *  portal judges by its stamp first; the document still becomes the base
+ *  then), ignores a config at or below the applied version (a stale reply
+ *  from an overlapping beat), and updates the setup's scan type.
  *  Returns `rebeat: true` when a held-back report can now go out. Never
  *  throws. */
 export function handleConfigReply(
@@ -418,8 +420,20 @@ export function handleConfigReply(
       });
     }
     const st = readConfigState();
-    if (isObj(result.config) && !st.dirty && generation === beat.generation) {
-      applyConfig(result.config, finiteOrNull(result.config_version));
+    const version = finiteOrNull(result.config_version);
+    // A reply from an older, overlapping beat never rolls back a newer
+    // applied config.
+    const stale = version !== null && st.applied_version !== null && version <= st.applied_version;
+    if (isObj(result.config) && !stale) {
+      if (!st.dirty && generation === beat.generation) {
+        applyConfig(result.config, version);
+      } else {
+        // A local change is still waiting to be reported: the stores and
+        // the applied version stay, but the received document becomes the
+        // base, so the stamped report carries the portal's other sections
+        // (alarm, android_rfid, ios, unknown) rather than dropping them.
+        writeState({ base: clone(result.config) });
+      }
     }
   });
   guarded(() => applyScanType(result.scan_status, result.scan_status_label));
@@ -428,8 +442,10 @@ export function handleConfigReply(
 
 /** The portal's scan type for this kiosk, written into the saved setup
  *  when it differs — no rerun of Kiosk Setup. */
-function applyScanType(status: unknown, label: unknown): void {
-  if (typeof status !== 'string' || !status || typeof label !== 'string') return;
+function applyScanType(status: unknown, rawLabel: unknown): void {
+  if (typeof status !== 'string' || !status) return;
+  // No label (a key missing from the vocabulary): the key stands in.
+  const label = typeof rawLabel === 'string' && rawLabel ? rawLabel : status;
   const setup = readKioskSetup();
   if (!setup || (setup.scanStatus === status && setup.scanLabel === label)) return;
   writeKioskSetup({ ...setup, scanStatus: status, scanLabel: label });

@@ -111,7 +111,7 @@ export default function SoundPanel() {
       <div>
         <span className="settings-row-label">Alarm sound</span>
         <p className="settings-row-hint">
-          Loops while the alarm is up. Stored on this kiosk only.
+          Loops while the alarm is up. Synced with the portal.
         </p>
       </div>
       <div className="sound-choice">
@@ -181,16 +181,16 @@ export default function SoundPanel() {
     <>
       {choiceRow(
         'good', 'Good scan sound',
-        "Played when a scan matches this kiosk's local move data. Stored on this kiosk only.",
+        "Played when a scan matches this kiosk's local move data. Synced with the portal.",
       )}
       {choiceRow(
         'not_found', 'Not-found scan sound',
-        'Played when a scan matches nothing. Stored on this kiosk only.',
+        'Played when a scan matches nothing. Synced with the portal.',
       )}
       {choiceRow(
         'duplicate', 'Duplicate scan sound',
         'Played when a scan changes nothing — an asset already in this container,'
-        + ' or a container already on this truck. Stored on this kiosk only.',
+        + ' or a container already on this truck. Synced with the portal.',
       )}
       <div className="settings-row">
         <div>

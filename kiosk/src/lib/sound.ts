@@ -306,6 +306,8 @@ function remapChoices(map: Map<string, string>, fallback: boolean): void {
 }
 
 let uploadingLocal: Promise<boolean> | null = null;
+/** A failure streak has been logged (reset by the next success). */
+let uploadStallLogged = false;
 
 /** Moves every local-only upload to the portal: each row is uploaded,
  *  stored again under its portal id, every choice naming it is remapped,
@@ -324,12 +326,22 @@ export function uploadLocalSounds(): Promise<boolean> {
         try {
           portalId = (await uploadKioskSound(row.blob, row.name, serial)).id;
         } catch (err) {
-          if (uploadErrorCode(err) === 'upload_failed') continue;
+          if (uploadErrorCode(err) === 'upload_failed') {
+            // Offline or a server error: the row waits (and the settings
+            // report with it). Logged once per failure streak.
+            if (!uploadStallLogged) {
+              uploadStallLogged = true;
+              console.warn('kiosk: a local sound could not be moved to the portal yet; '
+                + 'the settings report waits for it', err);
+            }
+            continue;
+          }
           await deleteRows('sounds', [row.id]);
           forgetObjectUrl(row.id);
           remapChoices(new Map([[row.id, '']]), true);
           continue;
         }
+        uploadStallLogged = false;
         await putRows('sounds', [{ ...row, id: portalId, portal: true }]);
         remapChoices(new Map([[row.id, portalId]]), false);
         await deleteRows('sounds', [row.id]);
@@ -723,4 +735,5 @@ export function resetSoundAudioForTest(): void {
   downloading.clear();
   failedAt.clear();
   uploadingLocal = null;
+  uploadStallLogged = false;
 }
