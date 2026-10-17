@@ -350,6 +350,22 @@ it('a stale save shows the changed note; Reload keeps the draft and saves on the
   }, 4);
 });
 
+it('a 409 not_reported save says the kiosk has to report first', async () => {
+  const user = userEvent.setup();
+  api.putDeviceConfig.mockRejectedValueOnce(new ApiError(409, 'not_reported', {
+    code: 'not_reported',
+  }));
+  renderAt('/hardware/kiosks/k1/settings');
+  await screen.findByRole('heading', { name: 'Appearance' });
+  await user.click(screen.getByRole('button', { name: 'Edit appearance' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Edit appearance' });
+  await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+  expect(await within(dialog).findByText(
+    "This kiosk hasn't reported its settings yet. They can be edited after its first report."))
+    .not.toBeNull();
+  expect(within(dialog).queryByRole('button', { name: 'Reload' })).toBeNull();
+});
+
 it('a stale reset offers Reload; the reset modal has a close button', async () => {
   const user = userEvent.setup();
   api.resetDeviceConfig.mockRejectedValueOnce(new ApiError(409, 'config_changed', {

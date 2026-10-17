@@ -16,6 +16,10 @@ export interface FieldErrorState {
 }
 
 export const STALE_MESSAGE = "This kiosk's settings changed since you opened them.";
+/** 409 not_reported: an Android or iOS kiosk can be edited only once it has
+ *  reported its settings (they sync in a later phase). */
+export const NOT_REPORTED_MESSAGE =
+  "This kiosk hasn't reported its settings yet. They can be edited after its first report.";
 
 /** True when `field` (from the server) belongs to the control at `path`. */
 export const fieldMatches = (field: string | null, path: string) =>
@@ -25,6 +29,9 @@ export function errorFromApi(err: unknown): FieldErrorState {
   if (err instanceof ApiError) {
     if (err.status === 409 && err.code === 'config_changed') {
       return { field: null, message: STALE_MESSAGE, stale: true };
+    }
+    if (err.status === 409 && err.code === 'not_reported') {
+      return { field: null, message: NOT_REPORTED_MESSAGE };
     }
     const d = err.detail as { field?: unknown; message?: unknown } | undefined;
     if (err.status === 422 && d && typeof d === 'object') {
