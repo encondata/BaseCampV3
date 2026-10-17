@@ -18,13 +18,16 @@ the client asset list only; trucks, label vocab, setup options and move
 passwords keep their cached copies until a person syncs."""
 
 import json
+import logging
 from collections.abc import Callable
 from urllib.parse import quote
 
 from edge.db import Store, now_iso
-from edge.rfid import station_key
+from edge.rfid import processing, station_key
 from edge.rfid.tagreads import note_cache_write
 from edge.upstream import CloudOffline, Upstream
+
+log = logging.getLogger("edge.sync")
 
 
 def sync_paths(initiative_id: str) -> list[str]:
@@ -126,6 +129,7 @@ class Syncer:
                               "session_json, updated_at, version) VALUES (?, ?, ?, ?, ?, ?)", row)
             c.execute("UPDATE sync_meta SET synced_at = ?, last_error = ? WHERE id = 1",
                       (now_iso(), error))
+        self._recheck_rfid()
         return self.meta()
 
     async def _run_as_station(self, initiative: str) -> dict:
@@ -152,7 +156,16 @@ class Syncer:
                 note_cache_write()
             c.execute("UPDATE sync_meta SET synced_at = ?, last_error = NULL WHERE id = 1",
                       (now_iso(),))
+        self._recheck_rfid()
         return self.meta()
+
+    def _recheck_rfid(self) -> None:
+        """Fresh move data: re-match the last 24 h of unmatched RFID reads.
+        The sync already committed, so a failure here is logged, never fatal."""
+        try:
+            processing.recheck_unmatched(self.store)
+        except Exception:
+            log.exception("re-checking unmatched RFID reads failed")
 
     def actor(self) -> str | None:
         """The person a cloud call made for the laptop acts as (see `_actor`)."""

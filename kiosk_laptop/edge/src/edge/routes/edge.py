@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from edge import laptop_setup, outbox
 from edge.deps import current_session, err, require_admin, require_session
 from edge.identity import rename
+from edge.rfid.tagreads import note_cache_write
 from edge.sessions import EdgeSession
 
 router = APIRouter(prefix="/edge")
@@ -16,7 +17,8 @@ router = APIRouter(prefix="/edge")
 AUTH_TABLES = ("cloud_sessions", "offline_logins", "edge_sessions", "login_failures",
                "move_passwords")
 MOVE_TABLES = ("cache", "outbox", "laptop_setup", "rfid_events",
-              "raw_tag_reads", "rfid_tags_seen", "station_key")
+              "raw_tag_reads", "rfid_tags_seen", "station_key", "pending_rfid_scans",
+              "rfid_unmatched")
 
 
 async def _json_object(request: Request, *, empty_ok: bool = False) -> dict:
@@ -94,14 +96,21 @@ async def retry(request: Request, _: EdgeSession = Depends(require_session)) -> 
 async def wipe(request: Request, _: EdgeSession = Depends(require_admin)) -> JSONResponse:
     st = request.app.state
     body = await _json_object(request, empty_ok=True)
-    pending = outbox.pending_count(st.store)
+    # unsent data: queued kiosk writes and RFID scans not yet uploaded
+    pending = outbox.pending_count(st.store) + st.store.one(
+        "SELECT COUNT(*) AS n FROM pending_rfid_scans WHERE upload_state = 'pending'")["n"]
     if pending and body.get("confirm") != "WIPE":
         raise err(409, "outbox_not_empty", pending=pending)
     with st.store.tx() as c:
         for table in AUTH_TABLES + MOVE_TABLES:
             c.execute(f"DELETE FROM {table}")
+        # the processor starts after whatever raw reads remain (none: ids keep counting up)
+        c.execute("INSERT INTO rfid_processing_meta (id, last_raw_id) "
+                  "VALUES (1, (SELECT COALESCE(MAX(id), 0) FROM raw_tag_reads)) "
+                  "ON CONFLICT (id) DO UPDATE SET last_raw_id = excluded.last_raw_id")
         c.execute("UPDATE sync_meta SET initiative_id = NULL, actor_person_id = NULL, "
                   "synced_at = NULL, last_error = NULL WHERE id = 1")
+    note_cache_write()  # the cache table was emptied: drop memoized tag indexes
     response = JSONResponse({"cleared_move_data": True})
     response.delete_cookie("ss_refresh", path="/auth")
     return response

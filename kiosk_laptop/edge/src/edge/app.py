@@ -93,6 +93,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     app.state.outbox = OutboxWorker(app.state.store, app.state.upstream,
                                     lambda: app.state.identity.serial)
     app.state.outbox_wake = asyncio.Event()
+    app.state.rfid_wake = asyncio.Event()  # set by the 8091 ingest: run the processor now
     outbox.requeue_sending(app.state.store)
     app.state.discovery = Discovery(
         app.state.store, settings.data_dir,

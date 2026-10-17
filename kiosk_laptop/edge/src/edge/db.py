@@ -100,6 +100,39 @@ SCHEMA_STEPS: list[str] = [
     CREATE TABLE station_key (id INTEGER PRIMARY KEY CHECK (id = 1), key_enc TEXT NOT NULL,
         stored_at TEXT NOT NULL)
     """,
+    # RFID scan processing: one pending scan per matched raw read (uploaded by
+    # edge.rfid.uploader), the processor's cursor, and current-move reads that
+    # matched nothing (re-checked after each sync for 24 h)
+    """
+    CREATE TABLE pending_rfid_scans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        raw_read_id INTEGER NOT NULL UNIQUE,
+        client_scan_id TEXT NOT NULL UNIQUE,
+        epc TEXT NOT NULL,
+        matched_kind TEXT NOT NULL,
+        matched_id TEXT NOT NULL,
+        off_move INTEGER NOT NULL DEFAULT 0,
+        off_move_initiative_id TEXT,
+        off_move_initiative_name TEXT,
+        scanned_at TEXT NOT NULL,
+        initiative_id TEXT, site_id TEXT, scan_status TEXT,
+        upload_state TEXT NOT NULL DEFAULT 'pending',
+        was_accepted INTEGER NOT NULL DEFAULT 0,
+        accepted_at TEXT,
+        reject_code TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT,
+        waiting_for_internet INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TEXT NOT NULL);
+    CREATE INDEX pending_rfid_scans_due ON pending_rfid_scans (upload_state, next_attempt_at);
+    CREATE TABLE rfid_processing_meta (
+        id INTEGER PRIMARY KEY CHECK (id = 1), last_raw_id INTEGER NOT NULL);
+    INSERT INTO rfid_processing_meta (id, last_raw_id) VALUES (1, 0);
+    CREATE TABLE rfid_unmatched (
+        raw_read_id INTEGER PRIMARY KEY, received_at TEXT NOT NULL);
+    CREATE INDEX rfid_unmatched_received ON rfid_unmatched (received_at)
+    """,
 ]
 
 

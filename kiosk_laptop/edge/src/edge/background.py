@@ -2,14 +2,17 @@
 queued) check the cloud; when it answers, drain the outbox, and refresh the
 move every sync interval. An RFID Station with no station key asks the
 portal for one at most once a minute, as a person signed in here with a
-usable cloud session. One bad iteration is logged, never fatal."""
+usable cloud session. One bad iteration is logged, never fatal.
+
+A second loop, independent of the internet, matches raw RFID tag reads into
+pending scans every 2 s, and at once when the ingest stores a batch."""
 
 import asyncio
 import contextlib
 import logging
 import time
 
-from edge.rfid import station_key
+from edge.rfid import processing, station_key
 
 log = logging.getLogger("edge.background")
 
@@ -20,6 +23,7 @@ class Background:
         self.last_sync = float("-inf")
         self.last_key_try = float("-inf")
         self._task: asyncio.Task | None = None
+        self._process_task: asyncio.Task | None = None
 
     async def tick(self, now: float) -> None:
         st = self.state
@@ -54,11 +58,29 @@ class Background:
                 await asyncio.wait_for(self.state.outbox_wake.wait(),
                                        timeout=self.state.settings.probe_interval_s)
 
+    async def _process_loop(self) -> None:
+        wake = self.state.rfid_wake
+        while True:
+            wake.clear()  # before the pass: a batch stored during it wakes the next one
+            more = False
+            try:
+                result = processing.process(self.state.store)
+                more = result.scanned == processing.PASS_LIMIT and not result.waiting
+            except Exception:
+                log.exception("rfid processing pass failed")
+            if more:  # a backlog: yield to the ingest, then the next 500
+                await asyncio.sleep(0)
+                continue
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(wake.wait(), timeout=processing.INTERVAL_S)
+
     def start(self) -> None:
         self._task = asyncio.create_task(self._loop())
+        self._process_task = asyncio.create_task(self._process_loop())
 
     async def stop(self) -> None:
-        if self._task:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
+        for task in (self._task, self._process_task):
+            if task:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
