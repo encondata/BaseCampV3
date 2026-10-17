@@ -43,6 +43,7 @@ MAC = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
 UPTIME = re.compile(r"^(\d+):(\d+):(\d+)$")
 FRESH_KEYS = ("reachable", "tags_24h", "taken_at")
 STATION_HEARTBEAT = "/kiosk/station/heartbeat"
+MAX_VERSION = 40  # the portal schema's limit on `version`
 
 
 def parse_uptime(value) -> int | None:
@@ -165,7 +166,10 @@ async def send_station_heartbeat(state, snap: dict | None) -> None:
     key is never logged). `request_as_station` handles 401 (drop the key),
     403 `kiosk_not_registered` (pause) and 200 (resume); a 200 carrying
     `clear_setup` applies Clear Setup, as a person heartbeat reply does."""
-    body: dict = {"serial": state.identity.serial, "version": state.settings.version}
+    body: dict = {"serial": state.identity.serial}
+    version = state.settings.version
+    if version and len(version) <= MAX_VERSION:  # the portal caps it; never risk a 422
+        body["version"] = version
     if snap is not None:
         body["reader"] = snap
     try:

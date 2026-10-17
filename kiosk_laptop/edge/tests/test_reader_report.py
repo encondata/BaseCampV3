@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -303,3 +304,24 @@ async def test_loop_survives_offline_and_errors(app, client, cloud, monkeypatch)
         await reporter.stop()
     from edge.rfid import station_key
     assert station_key.has_key(app.state.store)
+
+
+@pytest.mark.parametrize("version", ["", "v" * 41])
+async def test_station_heartbeat_omits_an_unusable_version(app, client, cloud, version):
+    import json
+    laptop_setup.save(app.state.store, {"initiative_id": "i-1"}, "rfid")
+    store_key(app)
+    route = station_route(cloud)
+    app.state.settings = dataclasses.replace(app.state.settings, version=version)
+    await reader_report.send_station_heartbeat(app.state, None)
+    assert json.loads(route.calls[-1].request.content) == {"serial": app.state.identity.serial}
+
+
+async def test_station_heartbeat_keeps_a_version_of_exactly_40(app, client, cloud):
+    import json
+    laptop_setup.save(app.state.store, {"initiative_id": "i-1"}, "rfid")
+    store_key(app)
+    route = station_route(cloud)
+    app.state.settings = dataclasses.replace(app.state.settings, version="v" * 40)
+    await reader_report.send_station_heartbeat(app.state, None)
+    assert json.loads(route.calls[-1].request.content)["version"] == "v" * 40

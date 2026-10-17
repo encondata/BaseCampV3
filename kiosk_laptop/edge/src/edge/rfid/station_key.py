@@ -67,6 +67,14 @@ def has_key(store: Store) -> bool:
 
 def clear(store: Store) -> None:
     store.run("DELETE FROM station_key")
+    _clear_pause(store)
+
+
+def _clear_pause(store: Store) -> None:
+    """The key is gone, so there is nothing left to be paused: drop the flag
+    silently (no event), or a later 200 would report an "Uploads resumed"
+    for a pause that no longer means anything."""
+    store.run("UPDATE station_status SET paused = NULL WHERE id = 1")
 
 
 def apply_clear_setup(store: Store) -> None:
@@ -226,6 +234,7 @@ async def request_as_station(upstream: Upstream, method: str, path: str,
         if not dropped:  # a newer key (a new setup) arrived meanwhile: this refusal is stale
             log.info("stale station refusal (%s): newer key kept", path.split("?", 1)[0])
             return resp
+        _clear_pause(upstream.store)
         log.warning("station key refused (%s): dropped", path.split("?", 1)[0])
         if _clear_setup_id(resp) is not None:
             apply_clear_setup(upstream.store)

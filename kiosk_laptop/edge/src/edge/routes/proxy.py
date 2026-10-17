@@ -16,7 +16,6 @@ session ended" and signs them out. The heartbeat in that state answers 503
 `edge_offline`, so the kiosk keeps its last registration state."""
 
 import json
-import logging
 from urllib.parse import parse_qs
 
 import httpx
@@ -31,7 +30,6 @@ from edge.rfid.tagreads import note_cache_write
 from edge.sessions import EdgeSession
 from edge.upstream import CloudOffline
 
-log = logging.getLogger("edge.routes.proxy")
 
 CACHEABLE = ("/kiosk/sync/", "/kiosk/setup-options", "/kiosk/labels/vocab", "/system/status")
 ANONYMOUS_OK = ("/system/status",)

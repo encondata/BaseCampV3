@@ -437,3 +437,41 @@ async def test_other_403_is_not_a_pause(app, cloud):
     assert station_key.is_paused(store) is False
     assert store.all("SELECT 1 FROM rfid_events") == []
     assert station_key.load_key(store, app.state.keys) == RAW
+
+
+async def test_401_drop_clears_the_pause_flag_silently(app, cloud):
+    store = app.state.store
+    station_key.store_key(store, app.state.keys, RAW)
+    cloud.get("/kiosk/station/sync/people").respond(403, json=NOT_REGISTERED)
+    await station_key.station_request(app.state, "GET", "/kiosk/station/sync/people")
+    assert station_key.is_paused(store) is True
+    cloud.get("/kiosk/station/sync/people").respond(
+        401, json={"detail": {"code": "station_key_invalid"}})
+    await station_key.station_request(app.state, "GET", "/kiosk/station/sync/people")
+    assert station_key.load_key(store, app.state.keys) is None
+    assert station_key.is_paused(store) is False
+    assert len(_station_events(store, "Uploads paused")) == 1
+    assert _station_events(store, "Uploads resumed") == []
+
+
+async def test_clear_clears_the_pause_flag_and_a_later_200_records_no_resume(app, cloud):
+    store = app.state.store
+    station_key.store_key(store, app.state.keys, RAW)
+    cloud.get("/kiosk/station/sync/people").respond(403, json=NOT_REGISTERED)
+    await station_key.station_request(app.state, "GET", "/kiosk/station/sync/people")
+    station_key.clear(store)
+    assert station_key.is_paused(store) is False
+    station_key.store_key(store, app.state.keys, RAW)
+    cloud.post("/kiosk/station/heartbeat").respond(200, json={})
+    await station_key.station_request(app.state, "POST", "/kiosk/station/heartbeat", json={})
+    assert _station_events(store, "Uploads resumed") == []
+    assert len(_station_events(store, "Uploads paused")) == 1
+
+
+async def test_apply_clear_setup_clears_the_pause_flag(app, cloud):
+    store = app.state.store
+    station_key.store_key(store, app.state.keys, RAW)
+    cloud.get("/kiosk/station/sync/people").respond(403, json=NOT_REGISTERED)
+    await station_key.station_request(app.state, "GET", "/kiosk/station/sync/people")
+    station_key.apply_clear_setup(store)
+    assert station_key.is_paused(store) is False
