@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Request, Response
 
 from edge import laptop_setup, outbox
 from edge.deps import err, require_session
-from edge.rfid import events, pairing
+from edge.rfid import events, pairing, station_key
 from edge.routes.auth import passthrough
 from edge.routes.proxy import rewrite_body
 from edge.sessions import EdgeSession
@@ -93,7 +93,10 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
     that follows then reads what the edge just stored. The result is also
     kept for every browser (GET /edge/setup), and a Label Station drops the
     reader pairing — the reader row (password index, token) stays, so
-    pairing it again later reuses them."""
+    pairing it again later reuses them. Any new setup drops the station
+    key (it covered the previous setup); an RFID Station then asks the
+    portal for a new one for this move, and a failed issue is retried by
+    the background loop."""
     st = request.app.state
     body, station = with_station(await request.body(), st.store)
     body = rewrite_body("/kiosk/setup", body, st.identity)
@@ -113,6 +116,12 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
                 async with st.pair_lock:
                     await pairing.release(previous, st.identity, transport=st.reader_transport)
             st.store.run("DELETE FROM rfid_pairing")
+            # Without a key these can never upload: say why instead of
+            # leaving them pending forever.
+            st.store.run("UPDATE pending_rfid_scans SET upload_state = 'rejected', "
+                         "reject_code = 'station_changed', waiting_for_internet = 0, "
+                         "next_attempt_at = NULL WHERE upload_state = 'pending'")
+        station_key.clear(st.store)  # a key covers one setup; only RFID gets a new one
         if isinstance(result, dict):
             laptop_setup.save(st.store, result, station)
             events.record(st.store, "move_loaded", "Move loaded",
@@ -120,6 +129,8 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
             events.record(st.store, "scan_type_selected", "Scan type selected",
                           f"{result.get('scan_status_label') or ''} · "
                           f"{'RFID Station' if station == 'rfid' else 'Label Station'}")
+            if station == "rfid":
+                await station_key.issue(st, session.person_id)
         st.syncer.set_target(str(result["initiative_id"]), session.person_id)
         await st.syncer.run()
     return passthrough(resp)

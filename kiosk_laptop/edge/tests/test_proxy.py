@@ -265,3 +265,55 @@ async def test_fresh_snapshot_replaces_browser_reader(app, client, cloud):
     app.state.reader_snapshot = _snapshot(now_iso())
     sent = await _heartbeat(app, client, cloud, reader=FORGED)
     assert sent["reader"]["serial"] == "22131010562035" and "mac" not in sent["reader"]
+
+
+async def test_heartbeat_clear_setup_clears_key(app, client, cloud):
+    from edge import laptop_setup
+    from edge.rfid import station_key
+    _online_as(app)
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "rfid")
+    station_key.store_key(app.state.store, app.state.keys, "the-station-key")
+    cloud.post("/kiosk/heartbeat").respond(200, json={"registration": "ok", "clear_setup": "c-1"})
+    r = await client.post("/kiosk/heartbeat", headers=make_session(app), json={"serial": "x"})
+    assert r.status_code == 200
+    assert station_key.load_key(app.state.store, app.state.keys) is None
+
+
+async def test_heartbeat_without_clear_setup_keeps_key(app, client, cloud):
+    from edge.rfid import station_key
+    _online_as(app)
+    station_key.store_key(app.state.store, app.state.keys, "the-station-key")
+    cloud.post("/kiosk/heartbeat").respond(200, json={"registration": "ok", "clear_setup": None})
+    await client.post("/kiosk/heartbeat", headers=make_session(app), json={"serial": "x"})
+    assert station_key.load_key(app.state.store, app.state.keys) == "the-station-key"
+
+
+async def test_browser_cannot_reach_station_key_routes(app, client, cloud):
+    """The station key and the station routes are the edge's own business:
+    a browser call never reaches the portal (it would hand the raw key to
+    the browser and replace the laptop's stored one)."""
+    _online_as(app)
+    issue = cloud.post("/kiosk/station-key").respond(200, json={"key": "leaked"})
+    station = cloud.route(url__regex=r".*/kiosk/station/.*").respond(200, json={})
+    hdrs = make_session(app)
+    r = await client.post("/kiosk/station-key", headers=hdrs, json={"serial": "x"})
+    assert r.status_code == 404 and "leaked" not in r.text
+    for method, path in (("GET", "/kiosk/station/sync/assets?serial=x&initiative_id=m-1"),
+                         ("POST", "/kiosk/station/scans"),
+                         ("GET", "/kiosk/station")):
+        r = await client.request(method, path, headers=hdrs, json={} if method == "POST" else None)
+        assert r.status_code == 404, path
+    r = await client.post("/kiosk/station-key")  # anonymous too
+    assert r.status_code == 404
+    assert not issue.called and not station.called
+
+
+async def test_repeated_slashes_cannot_reach_station_key_routes(app, client, cloud):
+    _online_as(app)
+    upstream = cloud.route(url__regex=r".*station.*").respond(200, json={"key": "leaked"})
+    hdrs = make_session(app)
+    for path in ("/kiosk//station-key", "//kiosk/station-key", "/kiosk///station/scans",
+                 "/kiosk//station", "/kiosk/station//sync/assets"):
+        r = await client.post(path, headers=hdrs, json={})
+        assert r.status_code == 404, path
+    assert not upstream.called

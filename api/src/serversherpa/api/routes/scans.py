@@ -79,6 +79,7 @@ def _raw_context(s: RawScan | ProcessedScan, scan_types: dict,
         "operator_name": people.get(s.operator_id),
         "site_id": s.site_id, "site_name": sites.get(s.site_id),
         "location_detail": s.location_detail, "source": s.source,
+        "off_move": s.off_move,
     }
 
 
@@ -164,10 +165,15 @@ async def raw_scan_daily_stats(
 async def list_processed_scans(
     db: DbSession,
     actor: AuthContext = require_permission("scans", "view"),
+    off_move: bool | None = None,
 ) -> list[ProcessedScanItem]:
-    scans = list(await db.scalars(
-        select(ProcessedScan).order_by(ProcessedScan.scanned_at.desc(),
-                                       ProcessedScan.id)))
+    """All processed scans, newest first. ``off_move=true`` keeps only the
+    sightings of assets that belong to another move; ``false`` the rest."""
+    stmt = select(ProcessedScan).order_by(ProcessedScan.scanned_at.desc(),
+                                          ProcessedScan.id)
+    if off_move is not None:
+        stmt = stmt.where(ProcessedScan.off_move.is_(off_move))
+    scans = list(await db.scalars(stmt))
     scan_types, match_types, asset_statuses = await _vocab(db)
     people = await _people_names(
         db, {s.operator_id for s in scans} | {s.person_id for s in scans})

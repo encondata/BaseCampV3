@@ -15,6 +15,11 @@
  */
 import type { CSSProperties, ReactElement } from 'react';
 
+/** The amber "Off move" chip — an asset scanned that belongs to another move. */
+export function offMoveChip(): ReactElement {
+  return <span className="chip c-amber">Off move</span>;
+}
+
 export function statusChip(
   label: string | null | undefined,
   color: string | null | undefined,

@@ -1681,6 +1681,7 @@ class ProcessedScanItem(BaseModel):
     processed_at: datetime
     archived_at: datetime | None = None
     created_at: datetime
+    off_move: bool = False
 
 
 class ProcessedScanPatch(BaseModel):
@@ -1735,6 +1736,7 @@ class AssetScanItem(BaseModel):
     site_name: str | None = None
     location_detail: str
     source: str
+    off_move: bool = False
 
 
 class NoteOut(BaseModel):
@@ -3058,6 +3060,14 @@ class KioskReaderIn(BaseModel):
     versions: dict[str, Annotated[str, Field(max_length=64)]] = Field(max_length=10)
 
 
+class KioskStationKeyIn(BaseModel):
+    serial: str = Field(min_length=1, max_length=120)
+
+
+class KioskStationKeyOut(BaseModel):
+    key: str
+
+
 class KioskSetupIn(BaseModel):
     serial: str = Field(min_length=1, max_length=120)
     initiative_id: uuid.UUID
@@ -3110,6 +3120,25 @@ class KioskAssetsSyncOut(BaseModel):
     assets: list[KioskAssetOut]
 
 
+class KioskClientAssetOut(BaseModel):
+    """One asset on another move of the selected move's client: just enough
+    to say what it is and which move it belongs to (rfid sighting)."""
+    id: uuid.UUID
+    asset_id: str
+    name: str | None
+    rfid: str | None
+    serial_number: str | None
+    initiative_id: uuid.UUID
+    initiative_name: str
+
+
+class KioskClientAssetsSyncOut(BaseModel):
+    initiative_id: uuid.UUID
+    client_id: uuid.UUID | None
+    generated_at: datetime
+    assets: list[KioskClientAssetOut]
+
+
 class KioskPersonOut(BaseModel):
     """One cached person. The name parts ride along with display_name so
     the kiosk can match a typed name in any order ("tina t", "timeclock
@@ -3148,6 +3177,7 @@ class KioskScanIn(BaseModel):
     site_id: uuid.UUID | None = None
     initiative_id: uuid.UUID | None = None
     scan_status: str | None = Field(default=None, max_length=120)
+    off_move: bool = False
 
     @field_validator("scanned_value")
     @classmethod
@@ -3163,14 +3193,26 @@ class KioskScanBatchIn(BaseModel):
     scans: list[KioskScanIn] = Field(min_length=1, max_length=100)
 
 
+class KioskStationScanBatchIn(BaseModel):
+    """A station-key upload: at most 50 scans per batch."""
+
+    serial: str = Field(min_length=1, max_length=120)
+    scans: list[KioskScanIn] = Field(min_length=1, max_length=50)
+
+
 class KioskScanRejected(BaseModel):
     client_scan_id: uuid.UUID
-    code: Literal["bad_site", "bad_initiative", "bad_status", "bad_scan_type", "move_locked"]
+    code: Literal["bad_site", "bad_initiative", "bad_status", "bad_scan_type",
+                  "move_locked", "move_inactive"]
 
 
 class KioskScanBatchOut(BaseModel):
     accepted: list[uuid.UUID]
     rejected: list[KioskScanRejected]
+
+
+class KioskStationScanBatchOut(KioskScanBatchOut):
+    clear_setup: uuid.UUID | None = None
 
 
 # ── kiosk printer maintenance ──

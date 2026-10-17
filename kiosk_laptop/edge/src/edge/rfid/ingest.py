@@ -69,6 +69,9 @@ def create_ingest_app(state, *, clock=time.monotonic) -> Starlette:
             return JSONResponse({"error": "store_failed"}, status_code=500)
 
         if stored > 0:
+            wake = getattr(state, "rfid_wake", None)
+            if wake is not None:
+                wake.set()  # match the new reads now, not on the next 2 s tick
             now = clock()
             last = last_accepted[0]
             if last is None or now - last >= QUIET_SECONDS:

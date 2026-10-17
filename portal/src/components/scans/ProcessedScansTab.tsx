@@ -25,7 +25,7 @@ import {
   PROCESSED_SCAN_GOD_FIELDS, SCANS_ERRORS,
 } from '../../lib/scans';
 import { initialOpenId } from '../../lib/auditFormat';
-import { statusChip } from '../../lib/chips';
+import { offMoveChip, statusChip } from '../../lib/chips';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
   usePersistentListState,
@@ -51,6 +51,7 @@ import {
 import { VirtualRows } from '../../lib/virtualRows';
 import {
   PROCESSED_SCAN_COLUMNS as COLUMNS, PROCESSED_SCAN_PRIMARY_COL as PRIMARY_COL,
+  PROCESSED_SCAN_TRAILING,
 } from '../../lib/scanColumns';
 import { displayScanValue } from '../../lib/format';
 
@@ -74,6 +75,7 @@ function sortValueFor(s: ProcessedScanRow, key: string): string {
     case 'location': return s.location_detail.toLowerCase();
     case 'source': return s.source.toLowerCase();
     case 'archived': return s.archived_at ? '1' : '0';
+    case 'off_move': return s.off_move ? '1' : '0';
     default: return '';
   }
 }
@@ -92,6 +94,7 @@ const CSV_COLUMNS: [string, (s: ProcessedScanRow) => string][] = [
   ['Site', (s) => s.site_name ?? ''],
   ['Location', (s) => s.location_detail],
   ['Source', (s) => s.source],
+  ['Off move', (s) => (s.off_move ? 'Yes' : 'No')],
 ];
 
 export default function ProcessedScansTab({ onCount }: {
@@ -201,7 +204,7 @@ export default function ProcessedScansTab({ onCount }: {
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['30px'], undefined, listGridScale);
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], [PROCESSED_SCAN_TRAILING], undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: god.editing ? undefined : grid.minWidth };
 
   const cellFor = (s: ProcessedScanRow, key: string) => {
@@ -221,6 +224,7 @@ export default function ProcessedScansTab({ onCount }: {
             <span className="chip custom" style={{ '--chip': s.match_type_color } as CSSProperties}>
               <span className="dot" />{s.match_type_label}
             </span>
+            {s.off_move && offMoveChip()}
             {s.archived_at && <span className="chip tag">Archived</span>}
             {pd.pendingIds.has(s.id) && <span className="chip tag">Pending delete</span>}
           </div>
@@ -272,6 +276,10 @@ export default function ProcessedScansTab({ onCount }: {
         const text = s.source || '—';
         return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
       }
+      case 'off_move':
+        return s.off_move
+          ? offMoveChip()
+          : <span className="cell-top">—</span>;
       default:
         return null;
     }
@@ -322,12 +330,22 @@ export default function ProcessedScansTab({ onCount }: {
                             onSort={(dir) => setSort(c.key, dir)} />
               </ColHead>
             ))}
-            <ColumnMenu colKey="archived" label="Archived"
-                        allRows={scans ?? []} filters={filters}
-                        text={processedScanCellText}
-                        filter={filters.archived} onFilter={setFilter}
-                        sortDir={sortKey === 'archived' ? sortDir : null}
-                        onSort={(dir) => setSort('archived', dir)} />
+            <span style={{ display: 'inline-flex', gap: 2 }}>
+              {!shownCols.some((c) => c.key === 'off_move') && (
+                <ColumnMenu colKey="off_move" label="Off move"
+                            allRows={scans ?? []} filters={filters}
+                            text={processedScanCellText}
+                            filter={filters.off_move} onFilter={setFilter}
+                            sortDir={sortKey === 'off_move' ? sortDir : null}
+                            onSort={(dir) => setSort('off_move', dir)} />
+              )}
+              <ColumnMenu colKey="archived" label="Archived"
+                          allRows={scans ?? []} filters={filters}
+                          text={processedScanCellText}
+                          filter={filters.archived} onFilter={setFilter}
+                          sortDir={sortKey === 'archived' ? sortDir : null}
+                          onSort={(dir) => setSort('archived', dir)} />
+            </span>
           </div>
 
           {scans && visible.length === 0 && (
@@ -402,6 +420,7 @@ function ProcessedScanRowDetail({ scan, godVisible, pending, onMark, onUnmark }:
           <dt>Site</dt><dd>{scan.site_name ?? '—'}</dd>
           <dt>Location</dt><dd>{scan.location_detail || '—'}</dd>
           <dt>Source</dt><dd>{scan.source || '—'}</dd>
+          {scan.off_move && (<><dt>Off move</dt><dd>Asset belongs to another move</dd></>)}
         </dl>
       </div>
       <div className="detail-block">

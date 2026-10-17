@@ -146,3 +146,34 @@ async def test_run_forever_heartbeats_and_stops(db):
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_worker_off_move_scan_is_a_sighting(db):
+    a = Asset(serial_number="SN-OFF", status="unknown")
+    b = Asset(serial_number="SN-ON", status="unknown")
+    rule = StatusRule(name="Caged", trigger_status="rfid_4_into_cage",
+                      trigger_match_type="asset")
+    rule.actions.append(StatusRuleAction(
+        position=1, action_type="set_asset_status", params={"status": "in_container"}))
+    off = _raw("SN-OFF")
+    off.off_move = True
+    on = _raw("SN-ON")
+    db.add_all([a, b, rule, off, on])
+    await db.commit()
+
+    assert await worker.process_raw_scan(get_sessionmaker(), off.id) == "matched"
+    assert await worker.process_raw_scan(get_sessionmaker(), on.id) == "matched"
+
+    async with get_sessionmaker()() as check:
+        p_off = (await check.scalars(select(ProcessedScan).where(
+            ProcessedScan.scanned_value == "SN-OFF"))).one()
+        assert p_off.off_move is True and p_off.asset_id == a.id
+        p_on = (await check.scalars(select(ProcessedScan).where(
+            ProcessedScan.scanned_value == "SN-ON"))).one()
+        assert p_on.off_move is False
+        assert (await check.get(Asset, a.id)).status == "unknown"      # no status change
+        assert (await check.get(Asset, a.id)).last_seen_at is not None  # still a sighting
+        assert (await check.get(Asset, b.id)).status == "in_container"   # normal scan changes it
+        runs = (await check.scalars(select(StatusRuleExecution))).all()
+        assert [r.processed_scan_id for r in runs] == [p_on.id]        # no rule for the off-move scan
+        assert (await check.scalars(select(RawScan))).all() == []

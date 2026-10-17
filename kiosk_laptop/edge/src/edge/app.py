@@ -5,12 +5,14 @@ probe/drain/sync loop and, on shutdown, stops it and closes the upstream
 client and the store.
 
 Routing: the edge's own routers and /config.js come first; the catch-all
-proxies /auth, /kiosk and /system to the cloud (never /edge, and never a
+proxies /auth, /kiosk and /system to the cloud (never /edge, never the
+station-key routes /kiosk/station-key and /kiosk/station/*, and never a
 path with a `.`/`..` segment, an encoded slash or an encoded `%`) and serves the kiosk's
 web files for everything else. Only local Host names are answered."""
 
 import asyncio
 import json
+import re
 from contextlib import asynccontextmanager
 from urllib.parse import unquote
 
@@ -37,6 +39,10 @@ from edge.sync import Syncer
 from edge.upstream import Upstream
 
 API_PREFIXES = ("/auth/", "/kiosk/", "/system/", "/edge/")
+# The station key is the edge's own: issuing one hands the raw key to the
+# caller and replaces the laptop's, and the station routes take that key.
+# A browser never reaches them through the proxy.
+EDGE_ONLY = ("/kiosk/station-key", "/kiosk/station/")
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]", "edge.test")  # edge.test: the test client
 
 
@@ -93,6 +99,8 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     app.state.outbox = OutboxWorker(app.state.store, app.state.upstream,
                                     lambda: app.state.identity.serial)
     app.state.outbox_wake = asyncio.Event()
+    app.state.rfid_wake = asyncio.Event()  # set by the 8091 ingest: run the processor now
+    app.state.rfid_upload_wake = asyncio.Event()  # set by the processor: upload now
     outbox.requeue_sending(app.state.store)
     app.state.discovery = Discovery(
         app.state.store, settings.data_dir,
@@ -100,6 +108,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
         transport=lambda ip: app.state.reader_transport)
     app.state.reader_transport = None  # tests hand in a fake reader's transport
     app.state.pair_lock = asyncio.Lock()
+    app.state.station_key_lock = asyncio.Lock()  # one station-key issue at a time
     app.state.reader_snapshot = None  # ReaderReporter's latest (rfid/reader_report.py)
     app.state.gateway_knock = checks.knock
     app.state.syncer = Syncer(app.state.store, app.state.upstream,
@@ -132,6 +141,9 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
             return Response(status_code=404)  # never proxied
         if path.startswith("/edge/"):
             return Response(status_code=404)  # the laptop's own namespace: never proxied
+        squashed = re.sub(r"/{2,}", "/", path)  # `/kiosk//station-key` is the same route
+        if squashed == "/kiosk/station" or squashed.startswith(EDGE_ONLY):
+            return Response(status_code=404)  # the station key's routes: the edge's own calls only
         if path.startswith(API_PREFIXES):
             return await proxy.forward(request, path)
         if request.method != "GET":

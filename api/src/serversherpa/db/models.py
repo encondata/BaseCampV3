@@ -1003,6 +1003,9 @@ class RawScan(Base):
     initiative_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("initiatives.id", ondelete="SET NULL"),
         comment="the move this scan belongs to (the kiosk's current move)")
+    # RFID sightings of an asset from another of the client's moves
+    # (migration 0098): recorded, but the scan worker applies no status.
+    off_move: Mapped[bool] = mapped_column(server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
@@ -1050,6 +1053,7 @@ class ProcessedScan(Base):
         ForeignKey("people.id"))
     processed_at: Mapped[datetime]
     archived_at: Mapped[datetime | None]
+    off_move: Mapped[bool] = mapped_column(server_default=text("false"))  # migration 0098
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
@@ -1207,6 +1211,15 @@ class Device(Base):
     pending_secret_hash: Mapped[str | None]
     secret_mismatch: Mapped[bool] = mapped_column(server_default=text("false"))
     agent_source_ip: Mapped[str | None]
+    # RFID station key (migration 0098): only the sha256 of the per-device
+    # upload secret is stored; the raw key is shown once at issue.
+    station_key_hash: Mapped[str | None] = mapped_column()
+    station_key_initiative_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("initiatives.id", ondelete="SET NULL"))   # the ONE move the key covers
+    station_key_issued_at: Mapped[datetime | None]
+    station_key_issued_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    station_key_issued_via: Mapped[str | None]   # password | link | move_password
 
 
 class DeviceDhcpLease(Base):

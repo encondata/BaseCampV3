@@ -118,3 +118,11 @@ def test_version_from_env(monkeypatch):
     monkeypatch.setenv("EDGE_CLOUD_API_URL", "http://cloud.test")
     monkeypatch.setenv("EDGE_VERSION", "1.2.3")
     assert load_settings().version == "1.2.3"
+
+
+async def test_wipe_clears_key(app, client):
+    from edge.rfid import station_key
+    station_key.store_key(app.state.store, app.state.keys, "the-station-key")
+    r = await client.post("/edge/wipe", json={}, headers=make_session(app, max_rank=60))
+    assert r.status_code == 200
+    assert app.state.store.one("SELECT COUNT(*) AS n FROM station_key")["n"] == 0

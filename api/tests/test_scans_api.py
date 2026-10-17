@@ -140,6 +140,37 @@ async def test_processed_list_denormalizes_each_match_type(client, db, seeded_us
     assert by_type["person"]["person_id"] == str(badge.id)
 
 
+async def test_processed_list_off_move_flag_and_filter(client, db, seeded_user):
+    hdrs = await login(client)
+    asset = Asset(name="srv-off", serial_number="SN-OFF")
+    db.add(asset)
+    await db.flush()
+    db.add_all([
+        ProcessedScan(
+            scanned_value=value, scan_type="rfid", match_type="asset",
+            asset_id=asset.id, off_move=off,
+            scanned_at=T0 + timedelta(minutes=i),
+            processed_at=T0 + timedelta(minutes=i + 1))
+        for i, (value, off) in enumerate(
+            [("EPC-IN", False), ("EPC-OFF", True)])])
+    await db.commit()
+
+    rows = (await client.get("/scans/processed", headers=hdrs)).json()
+    assert {r["scanned_value"]: r["off_move"] for r in rows} == {
+        "EPC-IN": False, "EPC-OFF": True}
+
+    resp = await client.get("/scans/processed?off_move=true", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert [r["scanned_value"] for r in resp.json()] == ["EPC-OFF"]
+
+    resp = await client.get("/scans/processed?off_move=false", headers=hdrs)
+    assert [r["scanned_value"] for r in resp.json()] == ["EPC-IN"]
+
+    hist = (await client.get(f"/scans/asset/{asset.id}", headers=hdrs)).json()
+    assert {r["scanned_value"]: r["off_move"] for r in hist} == {
+        "EPC-IN": False, "EPC-OFF": True}
+
+
 async def test_scans_view_gate(client, db, seeded_user):
     # worker role has no scans grant at all
     w = Person(first_name="Wk", last_name="NoScan")

@@ -21,6 +21,7 @@ from serversherpa.db.models import (
     StatusValue,
 )
 from serversherpa.db.ordering import natural
+from serversherpa.services import station_keys
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.router_agent import resolve_router_copies
 
@@ -408,6 +409,7 @@ async def deregister_device(
     device.updated_at = datetime.now(UTC)
     audit(db, actor_id=actor.person.id, entity_type="device",
           entity_id=str(device.id), action="deregister", changes={})
+    await station_keys.revoke(db, device, actor_id=actor.person.id, reason="deregistered")
     await db.commit()
     return await _item_for(db, device.id)
 
@@ -437,6 +439,8 @@ async def request_clear_setup(
     audit(db, actor_id=actor.person.id, entity_type="device",
           entity_id=str(device.id), action="clear_setup_requested",
           changes={"request_id": str(device.setup_clear_id)})
+    # effective at request time: an unattended laptop sends no heartbeats
+    await station_keys.revoke(db, device, actor_id=actor.person.id, reason="clear_setup")
     await db.commit()
     return await _item_for(db, device.id)
 

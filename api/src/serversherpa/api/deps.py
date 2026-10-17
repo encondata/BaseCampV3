@@ -16,10 +16,15 @@ from sqlalchemy.orm import joinedload
 from serversherpa.access.resolver import AccessInfo, resolve_access
 from serversherpa.config import get_settings
 from serversherpa.db.engine import get_db
-from serversherpa.db.models import AuthSession, Person, UserAccount
+from serversherpa.db.models import AuthSession, Device, Person, UserAccount
 from serversherpa.security.tokens import TokenError, decode_access_token
+from serversherpa.services import station_keys
 from serversherpa.services.password_policy import (
-    PasswordReused, assert_not_reused, expires_at, length_problem, load_policy,
+    PasswordReused,
+    assert_not_reused,
+    expires_at,
+    length_problem,
+    load_policy,
 )
 
 _bearer = HTTPBearer(auto_error=False)
@@ -155,9 +160,16 @@ async def enforce_read_only(db: AsyncSession, request: Request,
                             user: AuthContext) -> None:
     """Read-only maintenance mode: reject mutating calls from everyone but
     developers with 423. Only mutating methods pay the one-row lookup."""
+    if "developer" in user.roles:
+        return
+    await enforce_read_only_config(db, request)
+
+
+async def enforce_read_only_config(db: AsyncSession, request: Request) -> None:
+    """The read-only check without a person: for routes authenticated some
+    other way (the station key). Same 423 `read_only_mode` as above."""
     if (request.method not in MUTATING_METHODS
-            or _read_only_exempt(request.url.path)
-            or "developer" in user.roles):
+            or _read_only_exempt(request.url.path)):
         return
     from serversherpa.system.admin_config import read_admin_config
 
@@ -394,3 +406,29 @@ async def totp_actor(
 
 
 TotpChallengeOrUser = Annotated[TotpActor, Depends(totp_actor)]
+
+
+async def station_device(request: Request, db: AsyncSession, serial: str) -> Device:
+    """The kiosk Device `serial` when the request carries its station key
+    (`Authorization: Station <key>`). A bad, missing or revoked key is one
+    401 `station_key_invalid`. The key is never logged.
+
+    Requesting Clear Setup revokes the key at once (an unattended laptop
+    sends no heartbeats), so this refusal is the only reply such a laptop
+    gets: while a Clear Setup is pending for `serial`'s kiosk, the 401 for
+    a refused `Station` key also carries its opaque id (`clear_setup`) and
+    nothing else about the device, and the laptop clears its setup (spec
+    §3.3)."""
+    scheme, _, raw = (request.headers.get("authorization") or "").partition(" ")
+    raw = raw.strip()
+    if not (scheme == "Station" and raw):
+        raise _unauthorized("station_key_invalid")
+    device = await station_keys.verify(db, serial, raw)
+    if device is None:
+        exc = _unauthorized("station_key_invalid")
+        pending = await db.scalar(select(Device.setup_clear_id).where(
+            Device.serial == serial, Device.device_type == "kiosk"))
+        if pending is not None:
+            exc.detail = {"code": "station_key_invalid", "clear_setup": str(pending)}
+        raise exc
+    return device

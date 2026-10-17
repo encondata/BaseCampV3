@@ -326,3 +326,18 @@ async def test_the_matcher_picks_up_an_ingested_scan(client, db, seeded_user, mo
     assert processed.match_type == "asset"
     assert processed.source == "kiosk"
     assert processed.status == checkpoint_key
+
+
+async def test_person_route_ignores_off_move(client, db, seeded_user):
+    """off_move only means something from an RFID station: the person route
+    stores every scan as on the move."""
+    hdrs = await login(client)
+    await _seed_device(db)
+    await db.commit()
+    resp = await client.post("/kiosk/scans", headers=hdrs, json={
+        "serial": SERIAL, "scans": [_scan("EPC-PERSON-OFF", off_move=True)]})
+    assert resp.status_code == 200, resp.text
+    assert len(resp.json()["accepted"]) == 1
+    db.expire_all()
+    row = await db.scalar(select(RawScan).where(RawScan.scanned_value == "EPC-PERSON-OFF"))
+    assert row.off_move is False

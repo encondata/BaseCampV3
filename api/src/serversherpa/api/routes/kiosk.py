@@ -18,21 +18,24 @@ from sqlalchemy.orm import aliased, joinedload
 
 from serversherpa.access.resolver import resolve_access
 from serversherpa.api.deps import (
-    AuthContext, DbSession, client_ip, rate_limit_ip, require_permission,
+    AuthContext, DbSession, client_ip, enforce_read_only_config, rate_limit_ip, require_permission, station_device,
 )
 from serversherpa.api.routes.auth import (
     _scope_out, person_out, session_response, totp_status_out,
 )
 from serversherpa.api.routes.labels import vocab_usage as _vocab_usage
 from serversherpa.api.schemas import (
-    HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut, KioskClockInIn,
+    HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut,
+    KioskClientAssetOut, KioskClientAssetsSyncOut, KioskClockInIn,
     KioskClockOutIn, KioskContainerAssetIn, KioskContainerAssetOut,
     KioskContainerAssetRow, KioskContainerOut, KioskContainerRef,
     KioskContainersSyncOut, KioskContainerStateOut, KioskEdgeMovePassword,
     KioskEdgeMovePasswordsOut, KioskMoveOut,
     KioskPeopleSyncOut, KioskPersonOut, KioskPrinterEventIn,
     KioskRfidEnrollIn, KioskRfidEnrollOut, KioskScanBatchIn,
-    KioskScanBatchOut, KioskScanRejected, KioskSetupIn, KioskSetupOut, KioskSetupReadOut, KioskSetupReaderOut,
+    KioskScanBatchOut, KioskScanIn, KioskScanRejected, KioskStationScanBatchIn,
+    KioskStationScanBatchOut, KioskSetupIn, KioskSetupOut, KioskSetupReadOut, KioskSetupReaderOut,
+    KioskStationKeyIn, KioskStationKeyOut,
     KioskSignOutIn, KioskTimeclockEntry, KioskTimeclockLastEntry,
     KioskTimeclockPerson, KioskTimeclockStatusOut, KioskTruckContainerIn,
     KioskTruckContainerOut, KioskTruckContainerRow, KioskTruckOut,
@@ -56,6 +59,7 @@ from serversherpa.labels.generate.values import (
 from serversherpa.services import auth as auth_service
 from serversherpa.services import kiosk_pairing as pairing
 from serversherpa.services import move_password as move_password_service
+from serversherpa.services import station_keys
 from serversherpa.services import timeclock
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.fixed_readers import apply_reader_report
@@ -666,6 +670,9 @@ async def kiosk_setup(
                       "rfid_reader_model", "rfid_reader_versions"):
             _stamp(field, None)
         device.rfid_paired_at = None
+        # a Label Station uploads through the signed-in session, not a key
+        await station_keys.revoke(db, device, actor_id=actor.person.id,
+                                  reason="label_station")
 
     device.current_initiative_id = initiative.id
     device.site_id = site.id
@@ -684,6 +691,36 @@ async def kiosk_setup(
                          initiative_name=initiative.name,
                          site_id=site.id, site_name=site.name, site_role=site_role,
                          scan_status=scan_type.key, scan_status_label=scan_type.label)
+
+
+@router.post("/station-key", response_model=KioskStationKeyOut)
+async def issue_station_key(
+    body: KioskStationKeyIn, db: DbSession,
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskStationKeyOut:
+    """Issue (or replace) this RFID station's upload key. The raw key is
+    returned once; only its sha256 is stored. A move-password session may
+    issue only for the move the kiosk is set up for."""
+    device = await db.scalar(select(Device).where(Device.serial == body.serial))
+    if device is None or device.device_type != "kiosk":
+        raise _err(404, "device_not_found")
+    if (device.sub_type != "laptop" or device.station_type != "rfid"
+            or device.current_initiative_id is None):
+        raise _err(409, "not_rfid_station")
+    if registration_state(device.token_expires_at, datetime.now(UTC)) not in ("ok", "soon"):
+        raise _err(409, "kiosk_not_registered")
+    if device.setup_clear_id is not None:
+        raise _err(409, "setup_clear_pending")
+    if device.session_person_id != actor.person.id:
+        raise _err(403, "not_signed_in_here")
+    _require_move(actor, device.current_initiative_id)
+    if actor.session.initiative_id is not None:
+        via = "move_password"
+    else:
+        via = device.session_login_method or "password"
+    key = await station_keys.issue(db, device, actor_id=actor.person.id, via=via)
+    await db.commit()
+    return KioskStationKeyOut(key=key)
 
 
 @router.get("/setup", response_model=KioskSetupReadOut)
@@ -763,6 +800,10 @@ async def sync_assets(
     the rest of this router (see /kiosk/setup-options' scope note); a
     move-password session may sync only its own move (403 `move_locked`)."""
     _require_move(actor, initiative_id)
+    return await _assets_body(db, initiative_id)
+
+
+async def _assets_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskAssetsSyncOut:
     initiative = await db.get(Initiative, initiative_id)
     if initiative is None:
         raise _err(404, "initiative_not_found")
@@ -839,6 +880,10 @@ async def sync_people(
     of this router. Contacts with neither a worker profile nor an
     account (client-side people) are never included. One response, no
     paging: the list is a few hundred rows at most."""
+    return await _people_body(db)
+
+
+async def _people_body(db: AsyncSession) -> KioskPeopleSyncOut:
     rows = (await db.execute(
         select(Person,
                WorkerProfile.person_id.isnot(None),
@@ -886,6 +931,10 @@ async def sync_containers(
     (including 403 `move_locked` for another move under a move password).
     Gated on kiosk:view, like the rest of this router."""
     _require_move(actor, initiative_id)
+    return await _containers_body(db, initiative_id)
+
+
+async def _containers_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskContainersSyncOut:
     initiative = await db.get(Initiative, initiative_id)
     if initiative is None:
         raise _err(404, "initiative_not_found")
@@ -916,6 +965,102 @@ async def sync_containers(
             status_label=status_label or c.status,
             site_id=c.site_id, site_name=site_name,
             asset_count=counts.get(c.id, 0)) for c, site_name, status_label in rows])
+
+
+@router.get("/sync/client-assets", response_model=KioskClientAssetsSyncOut)
+async def sync_client_assets(
+    db: DbSession,
+    initiative_id: uuid.UUID = Query(...),
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskClientAssetsSyncOut:
+    """Every asset on the OTHER moves of this move's client (one row per
+    asset-and-move pair), so a laptop can tell a sighting from a stranger.
+    A move with no client gets []; another client's assets never appear.
+    Only moves count (not projects or events); archived moves and archived
+    assets are left out; completed and cancelled moves are KEPT, since an
+    asset from a finished move is still an off-move sighting.
+    Same lock as the other sync routes (403 `move_locked`)."""
+    _require_move(actor, initiative_id)
+    return await _client_assets_body(db, initiative_id)
+
+
+async def _client_assets_body(
+        db: AsyncSession, initiative_id: uuid.UUID) -> KioskClientAssetsSyncOut:
+    initiative = await db.get(Initiative, initiative_id)
+    if initiative is None:
+        raise _err(404, "initiative_not_found")
+    if initiative.initiative_type != "move":
+        raise _err(422, "bad_initiative")
+    assets: list[KioskClientAssetOut] = []
+    if initiative.client_id is not None:
+        rows = (await db.execute(
+            select(Asset, Initiative.id, Initiative.name)
+            .join(InitiativeAsset, InitiativeAsset.asset_id == Asset.id)
+            .join(Initiative, Initiative.id == InitiativeAsset.initiative_id)
+            .where(Initiative.client_id == initiative.client_id,
+                   Initiative.id != initiative.id,
+                   Initiative.initiative_type == "move",
+                   Initiative.archived_at.is_(None),
+                   Asset.archived_at.is_(None))
+            .order_by(Asset.legacy_id, natural(Initiative.name), Initiative.id))).all()
+        assets = [KioskClientAssetOut(
+            id=a.id, asset_id=str(a.legacy_id) if a.legacy_id is not None else "",
+            name=a.name, rfid=a.rfid_tag, serial_number=a.serial_number,
+            initiative_id=iid, initiative_name=iname) for a, iid, iname in rows]
+    return KioskClientAssetsSyncOut(
+        initiative_id=initiative.id, client_id=initiative.client_id,
+        generated_at=datetime.now(UTC), assets=assets)
+
+
+async def _station_sync_device(request: Request, db: AsyncSession,
+                               serial: str, initiative_id: uuid.UUID) -> None:
+    """Station sync serves only the move the key was issued for."""
+    device = await station_device(request, db, serial)
+    if device.station_key_initiative_id != initiative_id:
+        raise _err(403, "move_locked")
+
+
+@router.get("/station/sync/assets", response_model=KioskAssetsSyncOut)
+async def station_sync_assets(
+    request: Request, db: DbSession, serial: str = Query(...),
+    initiative_id: uuid.UUID = Query(...),
+) -> KioskAssetsSyncOut:
+    """Station-key twin of /sync/assets, for the key move only."""
+    await _station_sync_device(request, db, serial, initiative_id)
+    return await _assets_body(db, initiative_id)
+
+
+@router.get("/station/sync/containers", response_model=KioskContainersSyncOut)
+async def station_sync_containers(
+    request: Request, db: DbSession, serial: str = Query(...),
+    initiative_id: uuid.UUID = Query(...),
+) -> KioskContainersSyncOut:
+    """Station-key twin of /sync/containers, for the key move only."""
+    await _station_sync_device(request, db, serial, initiative_id)
+    return await _containers_body(db, initiative_id)
+
+
+@router.get("/station/sync/people", response_model=KioskPeopleSyncOut)
+async def station_sync_people(
+    request: Request, db: DbSession, serial: str = Query(...),
+    initiative_id: uuid.UUID = Query(...),
+) -> KioskPeopleSyncOut:
+    """Station-key twin of /sync/people, for the key move only. Same data and
+    the same accepted-risk note as /kiosk/sync/people, served under the
+    station key instead of a person session."""
+    await _station_sync_device(request, db, serial, initiative_id)
+    return await _people_body(db)
+
+
+@router.get("/station/sync/client-assets", response_model=KioskClientAssetsSyncOut)
+async def station_sync_client_assets(
+    request: Request, db: DbSession, serial: str = Query(...),
+    initiative_id: uuid.UUID = Query(...),
+) -> KioskClientAssetsSyncOut:
+    """Station-key twin of /sync/client-assets, for the key move only."""
+    await _station_sync_device(request, db, serial, initiative_id)
+    return await _client_assets_body(db, initiative_id)
+
 
 # ── scan ingest (kiosk:view) ─────────────────────────────────────────
 
@@ -963,12 +1108,36 @@ async def ingest_scans(
     device = await db.scalar(select(Device).where(Device.serial == body.serial))
     if device is None or device.device_type != "kiosk":
         raise _err(404, "device_not_found")
-    now = datetime.now(UTC)
+    return await _store_scan_batch(
+        db, device, body.scans, operator_id=actor.person.id,
+        allowed_moves=None, locked=actor.session.initiative_id,
+        inactive_moves=set())
 
+
+async def _store_scan_batch(
+    db: AsyncSession, device: Device, scans: list[KioskScanIn], *,
+    operator_id: uuid.UUID | None, allowed_moves: set[uuid.UUID] | None,
+    locked: uuid.UUID | None, inactive_moves: set[uuid.UUID],
+    allowed_sites: set[uuid.UUID] | None = None, rfid_only: bool = False,
+    audit_via: str | None = None, off_move_allowed: bool = False,
+) -> KioskScanBatchOut:
+    """Validate and store one scan batch for `device`; shared by the
+    person route (POST /kiosk/scans) and the station-key route.
+
+    `locked` is a move-password session's move; `allowed_moves` is the
+    set of moves a station key covers. A scan's move is its own
+    `initiative_id`, else the device's setup move. Outside `locked` /
+    `allowed_moves` it is `move_locked`; in `inactive_moves` (completed,
+    cancelled or archived) it is `move_inactive`. `rfid_only` rejects
+    other scan types (`bad_scan_type`); `allowed_sites`, when given, must
+    contain a scan's effective site (`bad_site`, checked after the move
+    checks). `off_move` is stored only when `off_move_allowed` (a station
+    upload); the person route always stores False. Commits."""
+    now = datetime.now(UTC)
     # One lookup per reference kind for the whole batch, not per scan.
-    site_ids = {s.site_id for s in body.scans if s.site_id is not None}
-    initiative_ids = {s.initiative_id for s in body.scans if s.initiative_id is not None}
-    status_keys = {s.scan_status for s in body.scans if s.scan_status is not None}
+    site_ids = {s.site_id for s in scans if s.site_id is not None}
+    initiative_ids = {s.initiative_id for s in scans if s.initiative_id is not None}
+    status_keys = {s.scan_status for s in scans if s.scan_status is not None}
     known_sites = set(await db.scalars(
         select(Site.id).where(Site.id.in_(site_ids)))) if site_ids else set()
     known_initiatives = set(await db.scalars(
@@ -978,18 +1147,18 @@ async def ingest_scans(
         select(StatusValue.key).where(
             StatusValue.record_type == "asset",
             StatusValue.key.in_(status_keys)))) if status_keys else set()
-    scan_type_keys = {s.scan_type for s in body.scans}
+    scan_type_keys = {s.scan_type for s in scans}
     known_scan_types = set(await db.scalars(
         select(StatusValue.key).where(
             StatusValue.record_type == "scan",
             StatusValue.key.in_(scan_type_keys)))) if scan_type_keys else set()
 
-    locked = actor.session.initiative_id
     accepted: list[uuid.UUID] = []
     rejected: list[KioskScanRejected] = []
     rows: list[dict] = []
-    for scan in body.scans:
-        if scan.scan_type not in known_scan_types:
+    for scan in scans:
+        if scan.scan_type not in known_scan_types or (
+                rfid_only and scan.scan_type != "rfid"):
             code = "bad_scan_type"
         elif scan.site_id is not None and scan.site_id not in known_sites:
             code = "bad_site"
@@ -1001,6 +1170,19 @@ async def ingest_scans(
         elif (locked is not None
                 and (scan.initiative_id or device.current_initiative_id) != locked):
             code = "move_locked"
+        elif (allowed_moves is not None
+                and (scan.initiative_id or device.current_initiative_id)
+                not in allowed_moves):
+            code = "move_locked"
+        elif (scan.initiative_id or device.current_initiative_id) in inactive_moves:
+            code = "move_inactive"
+        elif allowed_sites is not None and (
+                (scan.site_id or device.site_id) not in allowed_sites):
+            # After the move checks, so another move's scan reads
+            # move_locked. The sites are the key move's origin/destination
+            # as they are NOW: editing them makes station scans at the old
+            # site reject as bad_site.
+            code = "bad_site"
         else:
             code = ""
         if code:
@@ -1015,7 +1197,8 @@ async def ingest_scans(
             "scan_status": checkpoint,
             "scanned_at": scan.scanned_at,
             "device_id": device.name,
-            "operator_id": actor.person.id,
+            "operator_id": operator_id,
+            "off_move": scan.off_move and off_move_allowed,
             "site_id": scan.site_id or device.site_id,
             "initiative_id": scan.initiative_id or device.current_initiative_id,
             "source": "kiosk",
@@ -1034,11 +1217,46 @@ async def ingest_scans(
     # last_seen_at only: updated_at means "this kiosk's configuration
     # changed", and ingesting scans does not change it.
     device.last_seen_at = now
-    audit(db, actor_id=actor.person.id, entity_type="device",
+    audit(db, actor_id=operator_id, entity_type="device",
           entity_id=str(device.id), action="kiosk_scans",
-          changes={"accepted": len(accepted), "rejected": len(rejected)})
+          changes={"accepted": len(accepted), "rejected": len(rejected),
+                   **({"via": audit_via} if audit_via else {})})
     await db.commit()
     return KioskScanBatchOut(accepted=accepted, rejected=rejected)
+
+
+@router.post("/station/scans", response_model=KioskStationScanBatchOut)
+async def station_ingest_scans(
+    body: KioskStationScanBatchIn, request: Request, db: DbSession,
+) -> KioskStationScanBatchOut:
+    """RFID scans an unattended laptop kiosk uploads under its station
+    key (`Authorization: Station <key>`), no person session needed. Stored
+    exactly like `POST /kiosk/scans` but with no operator. The key covers
+    one move: a scan for any other is `move_locked`, and one for that move
+    once it is completed, cancelled or archived is `move_inactive`. The
+    reply carries the device's pending Clear Setup id, like the heartbeat,
+    so the laptop learns it was cleared even with nobody signed in."""
+    device = await station_device(request, db, body.serial)
+    await enforce_read_only_config(db, request)
+    move = device.station_key_initiative_id
+    allowed = {move} if move is not None else set()
+    inactive: set[uuid.UUID] = set()
+    sites: set[uuid.UUID] = set()
+    if move is not None:
+        init = await db.get(Initiative, move)
+        if init is not None:
+            sites = {x for x in (init.origin_site_id, init.destination_site_id)
+                     if x is not None}
+        if init is not None and (init.status in HISTORICAL_INITIATIVE_STATUSES
+                                 or init.archived_at is not None):
+            inactive.add(move)
+    out = await _store_scan_batch(
+        db, device, body.scans, operator_id=None, allowed_moves=allowed,
+        locked=None, inactive_moves=inactive, allowed_sites=sites,
+        rfid_only=True, audit_via="station_key", off_move_allowed=True)
+    return KioskStationScanBatchOut(
+        accepted=out.accepted, rejected=out.rejected,
+        clear_setup=device.setup_clear_id)
 
 
 # ── RFID enroll (kiosk:view) ─────────────────────────────────────────
