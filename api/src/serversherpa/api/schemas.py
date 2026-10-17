@@ -3122,15 +3122,20 @@ class KioskAssetsSyncOut(BaseModel):
 
 
 class KioskClientAssetOut(BaseModel):
-    """One asset on another move of the selected move's client: just enough
-    to say what it is and which move it belongs to (rfid sighting)."""
+    """One asset of the selected move's client that is not on the selected
+    move: just enough to say what it is (make/model from its asset model)
+    and which move it belongs to (rfid sighting). An asset on another move
+    appears once per move; an asset on no move at all appears once with
+    null initiative_id/initiative_name."""
     id: uuid.UUID
     asset_id: str
     name: str | None
     rfid: str | None
     serial_number: str | None
-    initiative_id: uuid.UUID
-    initiative_name: str
+    make: str | None = None
+    model: str | None = None
+    initiative_id: uuid.UUID | None = None
+    initiative_name: str | None = None
 
 
 class KioskClientAssetsSyncOut(BaseModel):
