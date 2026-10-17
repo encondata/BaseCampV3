@@ -381,26 +381,28 @@ async def pair(store: Store, identity: Identity, ip: str, laptop_ip: str, *,
         raise
 
 
-async def open_current(store: Store, *, transport=None
+async def open_current(store: Store, *, transport=None, timeout: httpx.Timeout | None = None
                        ) -> tuple[ziotc.ZiotcClient, dict, "object"]:
     """The paired reader opened like `open_reader`: (client, version, row).
     No pairing is 409 reader_required. The caller closes the client."""
     row = current_row(store)
     if row is None:
         raise err(409, "reader_required")
-    client, version = await open_reader(store, row["ip"], transport=transport)
+    client, version = await open_reader(store, row["ip"], transport=transport, timeout=timeout)
     return client, version, row
 
 
 async def open_reader(store: Store, ip: str, *, transport=None,
-                      found_at: tuple[str, int] | None = None
+                      found_at: tuple[str, int] | None = None,
+                      timeout: httpx.Timeout | None = None
                       ) -> tuple[ziotc.ZiotcClient, dict]:
     """A signed-in client and the reader's /cloud/version, on the first
     endpoint that answers (see `endpoints`). The caller closes the client."""
     order = endpoints(store, ip, found_at)
     for i, (scheme, port) in enumerate(order):
         client = ziotc.ZiotcClient(ip, scheme=scheme, port=port, transport=transport,
-                                   password_first=password_first(store, ip))
+                                   password_first=password_first(store, ip),
+                                   **({"timeout": timeout} if timeout else {}))
         try:
             return client, await client.version()
         except ReaderError as exc:
@@ -408,6 +410,10 @@ async def open_reader(store: Store, ip: str, *, transport=None,
             if exc.code != "reader_unreachable" or i == len(order) - 1:
                 raise
             _log_fallback(ip, order[i], order[i + 1])
+        except BaseException:
+            # cancelled (a caller's time budget) or anything else: don't leak the client
+            await client.aclose()
+            raise
     raise ReaderError("reader_unreachable", f"Can't reach {ip}.")  # no endpoints: unreachable
 
 

@@ -4953,6 +4953,10 @@ export interface DeviceItem {
   scan_status: string | null; scan_status_label: string | null;
   scan_status_color: string | null;
   tags_read_24h: number;
+  /** Fixed readers only (null otherwise): maker, derived status, antenna count. */
+  make?: string | null;
+  reader_status?: 'reading' | 'standby' | 'offline' | null;
+  antennas_total?: number | null;
   version: string | null; sub_type: string | null;
   current_initiative_id: string | null; current_initiative_name: string | null;
   session_person_id: string | null; session_person_name: string | null;
