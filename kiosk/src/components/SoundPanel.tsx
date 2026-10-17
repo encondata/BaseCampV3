@@ -11,8 +11,9 @@
  *  On a signed-in laptop RFID Station the Off-move alarm settings sit
  *  right under the volume, since the alarm plays at that volume.
  *
- *  Uploads live in IndexedDB `sounds` on this kiosk only: nothing is
- *  sent anywhere, and "Clear local data" leaves them alone. */
+ *  Uploads go to the portal first (sound.ts), with a copy kept in
+ *  IndexedDB `sounds` for offline play; "Clear local data" leaves the
+ *  copies alone. */
 
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 
@@ -55,6 +56,7 @@ function uploadError(err: unknown): string {
   const code = err instanceof Error ? err.message : '';
   if (code === 'too_large') return 'That file is too large (2 MB max).';
   if (code === 'not_audio') return "That doesn't look like an audio file.";
+  if (code === 'upload_failed') return "Couldn't upload that sound to the portal. Check the connection and try again.";
   return "Couldn't save that sound to this kiosk.";
 }
 
@@ -214,7 +216,7 @@ export default function SoundPanel() {
           <span className="settings-row-label">Uploaded sounds</span>
           <p className="settings-row-hint">
             MP3, WAV, or OGG up to {Math.round(MAX_SOUND_BYTES / 1024 / 1024)} MB.
-            Stored on this kiosk only.
+            Uploaded to the portal, with a copy kept on this kiosk.
           </p>
           {error && <p className="form-error" role="alert">{error}</p>}
         </div>

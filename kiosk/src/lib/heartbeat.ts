@@ -5,11 +5,17 @@
  * Failures (offline, read-only mode's 423, a 403) keep the last state
  * and are retried on the next tick. A reply's `clear_setup` id is applied
  * once via setupClear.ts and acknowledged on an immediate re-beat.
+ *
+ * Settings sync rides the same beat (kioskConfig.ts): each beat carries
+ * the applied config version and, when one is due, the whole config; the
+ * reply's clock, config and scan type are handled after it. On a laptop
+ * those helpers do nothing (the edge adds the fields itself).
  */
 
 import { heartbeatRequest, type RegistrationState } from './api';
 import { kioskVersion } from './config';
 import { getIdentity } from './identity';
+import { configBeatFields, handleConfigReply, installConfigTracking } from './kioskConfig';
 import { platform } from './platform';
 import { applySetupClear, pendingAck, settleAck } from './setupClear';
 
@@ -33,7 +39,10 @@ export function startHeartbeat(
   // it RESOLVES successfully — a failed beat leaves it set so the next
   // tick (or now()) retries until the server has recorded the sign-in.
   let pendingSignIn = signIn;
+  installConfigTracking();
   const beat = async () => {
+    if (stopped) return;
+    const config = await configBeatFields();
     if (stopped) return;
     const { serial, name } = getIdentity();
     const asSignIn = pendingSignIn;
@@ -43,6 +52,7 @@ export function startHeartbeat(
         serial, name, mode: platform().mode, version: kioskVersion(),
         ...(asSignIn ? { sign_in: true, login_method: asSignIn.method } : {}),
         ...(ack ? { setup_cleared: ack } : {}),
+        ...(config ? config.fields : {}),
       });
       if (asSignIn) pendingSignIn = undefined;
       // A stopped handle applies nothing. Handles overlap on logout->login
@@ -60,6 +70,8 @@ export function startHeartbeat(
         onClearSetup?.(asked);
         void beat();                        // acknowledge right away
       }
+      // A report held back for the portal's clock goes out right away.
+      if (handleConfigReply(result, config).rebeat) void beat();
       onState(result.registration);
     } catch {
       /* keep the last known state (and any pending sign-in); next tick retries */

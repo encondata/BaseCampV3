@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import App from './App';
+import { installConfigTracking } from './lib/kioskConfig';
 // Portal design system first (tokens, shell, login theme, primitives), then
 // the kiosk's own rules. Order matters: kiosk.css only adds and scopes.
 import '@portal/styles/base.css';
@@ -16,6 +17,10 @@ import '@portal/styles/profile.css';
 import '@portal/styles/reports.css';
 import '@portal/styles/printers.css';
 import './styles/kiosk.css';
+
+// Settings edits count as local changes from the first render on, so a
+// change made before the heartbeat starts is still reported to the portal.
+installConfigTracking();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
