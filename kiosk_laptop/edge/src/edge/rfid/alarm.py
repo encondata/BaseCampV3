@@ -35,6 +35,7 @@ def raise_for(c, items: list[dict], now: datetime) -> list[dict]:
     """Alarm each item whose asset hasn't alarmed in the last hour; returns those."""
     at = iso(now)
     window_start = iso(now - timedelta(seconds=REPEAT_S))
+    _drop_expired(c, now)
     raised = []
     for item in items:
         asset_id = str(item["asset_id"])
@@ -54,6 +55,26 @@ def raise_for(c, items: list[dict], now: datetime) -> list[dict]:
                    item.get("serial"), item.get("rfid"), at))
         raised.append(item)
     return raised
+
+
+def _drop_expired(c, now: datetime) -> None:
+    """Timed mode: an open alarm whose window already ran out (no screen polled
+    to expire it) must not come back with the next raise."""
+    row = c.execute("SELECT mode, timed_seconds FROM alarm_settings WHERE id = 1").fetchone()
+    if row is None or row["mode"] != "timed":
+        return
+    newest = c.execute("SELECT MAX(raised_at) AS at FROM alarm_open").fetchone()["at"]
+    if newest is None:
+        return
+    if now > datetime.fromisoformat(newest) + timedelta(seconds=row["timed_seconds"]):
+        c.execute("DELETE FROM alarm_open")
+
+
+def clear_state(c) -> None:
+    """Forget open alarms and the once-an-hour memory (the setup move changed
+    or was cleared). Settings stay."""
+    c.execute("DELETE FROM alarm_open")
+    c.execute("DELETE FROM alarm_last")
 
 
 def record_event(store: Store, raised: list[dict]) -> None:

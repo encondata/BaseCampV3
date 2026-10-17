@@ -129,8 +129,8 @@ def _match(indexes: dict[str, dict[str, dict]], epc: str) -> Match | None:
     return None
 
 
-def _current_move(store: Store) -> str | None:
-    setup = laptop_setup.load(store)
+def _current_move(setup: dict | None) -> str | None:
+    """The setup move from a loaded laptop setup (None when not set up)."""
     return (setup or {}).get("initiative_id") or None
 
 
@@ -176,7 +176,7 @@ def process(store: Store, now: datetime | None = None) -> PassResult:
     if not rows:
         return PassResult(0, 0, False)
     setup = laptop_setup.load(store) or {}
-    current = setup.get("initiative_id") or None
+    current = _current_move(setup)
     alarms_on = setup.get("station_type") == "rfid"
     indexes = None
     matches: list[tuple] = []
@@ -241,7 +241,7 @@ def recheck_unmatched(store: Store, *, now: datetime | None = None) -> int:
     no longer for the setup move), re-match the rest against the fresh data,
     and turn matches into pending scans. Returns how many were inserted."""
     cutoff = iso((now or datetime.now(UTC)) - timedelta(hours=RECHECK_HOURS))
-    current = _current_move(store)
+    current = _current_move(laptop_setup.load(store))
     with store.tx() as c:
         c.execute("DELETE FROM rfid_unmatched WHERE received_at < ?", (cutoff,))
         c.execute("DELETE FROM rfid_unmatched WHERE NOT EXISTS (SELECT 1 FROM raw_tag_reads r "

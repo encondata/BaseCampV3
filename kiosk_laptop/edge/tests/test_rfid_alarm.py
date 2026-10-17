@@ -368,3 +368,75 @@ async def test_wipe_clears_open_alarms_but_keeps_settings(app, client):
     assert r.status_code == 200
     assert open_rows(store) == [] and store.all("SELECT * FROM alarm_last") == []
     assert alarm.settings(store) == {"mode": "timed", "timed_seconds": 20}
+
+
+# ------------------------------------------------- stale timed rows on raise
+
+def test_timed_raise_drops_rows_already_expired_when_no_screen_polled(store):
+    alarm.save_settings(store, "timed", 10)
+    station_seed(store, client_asset(1), client_asset(2))
+    read(store, "EE01", received_at=FRESH)
+    run(store)                                     # raised at NOW, nobody polls
+    later = NOW + timedelta(seconds=60)
+    read(store, "EE02", received_at=iso(later))
+    run(store, later)
+    assert [r["name"] for r in open_rows(store)] == ["Server 2"]
+    out = alarm.open_alarm(store, later)
+    assert [a["name"] for a in out["alarms"]] == ["Server 2"]
+
+
+def test_timed_raise_keeps_rows_still_inside_the_window(store):
+    alarm.save_settings(store, "timed", 10)
+    station_seed(store, client_asset(1), client_asset(2))
+    read(store, "EE01", received_at=FRESH)
+    run(store)
+    t2 = NOW + timedelta(seconds=10)               # exactly at expiry: still up
+    read(store, "EE02", received_at=iso(t2))
+    run(store, t2)
+    assert [r["name"] for r in open_rows(store)] == ["Server 1", "Server 2"]
+
+
+def test_until_dismissed_raise_keeps_old_rows(store):
+    station_seed(store, client_asset(1), client_asset(2))
+    read(store, "EE01", received_at=FRESH)
+    run(store)
+    later = NOW + timedelta(minutes=5)
+    read(store, "EE02", received_at=iso(later))
+    run(store, later)
+    assert [r["name"] for r in open_rows(store)] == ["Server 1", "Server 2"]
+
+
+# ------------------------------------------------- setup move change / clear
+
+def _alarm_state(store):
+    return (len(open_rows(store)), len(store.all("SELECT * FROM alarm_last")))
+
+
+def _raised(store):
+    station_seed(store, client_asset(1))
+    read(store, "EE01", received_at=FRESH)
+    run(store)
+    assert _alarm_state(store) == (1, 1)
+
+
+def test_saving_setup_for_another_move_clears_alarms(store):
+    from edge import laptop_setup
+    _raised(store)
+    laptop_setup.save(store, {**SETUP, "initiative_id": "m-other"}, "label")
+    assert _alarm_state(store) == (0, 0)
+
+
+def test_saving_setup_for_the_same_move_keeps_alarms(store):
+    from edge import laptop_setup
+    _raised(store)
+    laptop_setup.save(store, {**SETUP, "initiative_id": MOVE}, "label")
+    assert _alarm_state(store) == (1, 1)
+
+
+def test_clear_setup_clears_alarms_but_keeps_settings(store):
+    from edge.rfid import station_key
+    alarm.save_settings(store, "timed", 20)
+    _raised(store)
+    station_key.apply_clear_setup(store)
+    assert _alarm_state(store) == (0, 0)
+    assert alarm.settings(store) == {"mode": "timed", "timed_seconds": 20}
