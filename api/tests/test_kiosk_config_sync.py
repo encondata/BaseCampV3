@@ -16,8 +16,12 @@ from serversherpa.services.kiosk_config import DEFAULT_CONFIG
 from tests.test_kiosk_station_key import SERIAL
 from tests.test_kiosk_station_scans import _auth, _station
 from tests.test_sites_api import login
+from tests.test_status_values_write import _make
 
-BODY = {"serial": "kiosk-web-sync", "name": "Dock 9", "mode": "web", "version": "0.1.0"}
+# sign_in: config syncs only for the person signed in at this kiosk, and a
+# sign-in beat is what records that person
+BODY = {"serial": "kiosk-web-sync", "name": "Dock 9", "mode": "web", "version": "0.1.0",
+        "sign_in": True}
 
 
 def _doc(**appearance) -> dict:
@@ -165,11 +169,26 @@ async def test_older_report_does_not_overwrite_portal_edit(client, db, seeded_us
 
 
 async def test_far_future_stamp_is_judged_on_server_time(client, db, seeded_user):
+    from serversherpa.services.kiosk_config import apply_portal_edit
+
+    uid = seeded_user.id
     hdrs = await login(client)
     await _beat(client, hdrs, config=_doc(flash_ms=600),
                 config_changed_at=_iso(datetime.now(UTC) + timedelta(days=3)))
     d = await _device(db)
     assert d.config_changed_at <= datetime.now(UTC)
+    assert d.config["appearance"]["flash_ms"] == 600
+    # a portal edit made after that beat replaces the doc: the kiosk's clock
+    # being days ahead did not lock the portal out
+    await apply_portal_edit(db, d, _doc(flash_ms=1700), actor_id=uid,
+                            now=datetime.now(UTC))
+    await db.commit()
+    d = await _device(db)
+    assert d.config["appearance"]["flash_ms"] == 1700
+    assert d.config_source == "portal" and d.config_version == 2
+    # and the kiosk, still behind, is sent the portal's doc
+    r = await _beat(client, hdrs, sign_in=False, config_applied_version=1)
+    assert r.json()["config"]["appearance"]["flash_ms"] == 1700
 
 
 async def test_oversized_config_is_422(client, db, seeded_user):
@@ -181,7 +200,8 @@ async def test_oversized_config_is_422(client, db, seeded_user):
     assert await _device(db) is None
 
 
-async def test_config_audited_without_a_person(client, db, seeded_user):
+async def test_config_audited_with_the_signed_in_person(client, db, seeded_user):
+    uid = seeded_user.id
     hdrs = await login(client)
     await _beat(client, hdrs, config=_doc(flash_ms=900),
                 config_changed_at=_iso(datetime.now(UTC)))
@@ -189,6 +209,61 @@ async def test_config_audited_without_a_person(client, db, seeded_user):
     (a,) = (await db.scalars(select(AuditLog).where(
         AuditLog.entity_id == str(d.id), AuditLog.action == "config_change"))).all()
     assert a.changes["source"] == "kiosk"
+    # the person signed in at the kiosk made the report
+    assert a.actor_person_id == uid
+    assert d.config_changed_by == uid
+
+
+async def test_other_persons_session_cannot_read_or_write_config(client, db, seeded_user):
+    """Only the person signed in at this kiosk syncs its config: another
+    kiosk:view session naming the serial gets no doc and changes nothing."""
+    hdrs = await login(client)
+    await _beat(client, hdrs, config=_doc(flash_ms=900),
+                config_changed_at=_iso(datetime.now(UTC)))
+    d = await _device(db)
+    assert d.config_version == 1
+    other = await _make(db, client, "worker", "other@test.example.com")
+    r = await client.post("/kiosk/heartbeat", headers=other, json={
+        **BODY, "sign_in": False, "config": _doc(flash_ms=1999),
+        "config_changed_at": _iso(datetime.now(UTC) + timedelta(seconds=1)),
+        "config_applied_version": 0})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["config"] is None and body["config_version"] == 1
+    assert body["scan_status"] is None
+    d = await _device(db)
+    assert d.config["appearance"]["flash_ms"] == 900 and d.config_version == 1
+    assert d.config_applied_version is None
+
+
+async def test_station_keyed_device_ignores_person_heartbeat_config(client, db, seeded_user):
+    """A device holding a station key syncs only on the station route."""
+    _, _, _key = await _station(db, person_id=seeded_user.id)
+    hdrs = await login(client)
+    d = await _device(db, SERIAL)
+    d.config = _doc(flash_ms=1234)
+    d.config_version = 2
+    await db.commit()
+    r = await client.post("/kiosk/heartbeat", headers=hdrs, json={
+        "serial": SERIAL, "name": "Station 1", "mode": "laptop",
+        "config": _doc(flash_ms=555), "config_changed_at": _iso(datetime.now(UTC)),
+        "config_applied_version": 1})
+    assert r.status_code == 200, r.text
+    assert r.json()["config"] is None and r.json()["config_version"] == 2
+    d = await _device(db, SERIAL)
+    assert d.config["appearance"]["flash_ms"] == 1234 and d.config_version == 2
+    assert d.config_applied_version is None and d.config_reported_at is None
+
+
+async def test_applied_version_is_clamped_to_config_version(client, db, seeded_user):
+    hdrs = await login(client)
+    await _beat(client, hdrs)
+    d = await _device(db)
+    d.config = _doc()
+    d.config_version = 2
+    await db.commit()
+    await _beat(client, hdrs, config_applied_version=9)
+    assert (await _device(db)).config_applied_version == 2
 
 
 async def test_scan_type_echoed_on_reply(client, db, seeded_user):
@@ -288,3 +363,37 @@ async def test_station_heartbeat_locks_the_device_row(client, db, seeded_user):
         event.remove(engine, "before_cursor_execute", listener)
     assert r.status_code == 200
     assert [s for s in statements if "FROM devices" in s and "FOR UPDATE" in s], statements
+
+
+async def test_station_route_rechecks_the_key_after_the_locked_read(client, db, seeded_user,
+                                                                     monkeypatch):
+    """A key revoked (or a device repurposed) between the key check and the
+    locked re-read is refused with 401, never synced."""
+    import serversherpa.api.routes.kiosk as kiosk_routes
+
+    _, _, key = await _station(db)
+    real = kiosk_routes.station_device
+
+    async def revoke_after_verify(request, session, serial):
+        device = await real(request, session, serial)
+        from sqlalchemy import update
+        await session.execute(update(Device).where(Device.id == device.id)
+                              .values(station_key_hash=None))
+        return device
+
+    monkeypatch.setattr(kiosk_routes, "station_device", revoke_after_verify)
+    r = await _station_beat(client, key, config=_doc(flash_ms=800),
+                            config_changed_at=_iso(datetime.now(UTC)))
+    assert r.status_code == 401
+    assert r.json()["detail"]["code"] == "station_key_invalid"
+    assert (await _device(db, SERIAL)).config is None
+
+
+async def test_station_report_has_no_actor(client, db, seeded_user):
+    _, _, key = await _station(db)
+    await _station_beat(client, key, config=_doc(flash_ms=800),
+                        config_changed_at=_iso(datetime.now(UTC)))
+    d = await _device(db, SERIAL)
+    (a,) = (await db.scalars(select(AuditLog).where(
+        AuditLog.entity_id == str(d.id), AuditLog.action == "config_change"))).all()
+    assert a.actor_person_id is None

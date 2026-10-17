@@ -25,6 +25,7 @@ Nothing here commits; callers own the transaction (like services/audit).
 
 import copy
 import json
+import logging
 import math
 import uuid
 from datetime import UTC, datetime
@@ -73,6 +74,15 @@ DEFAULT_CONFIG: dict = {
 # The sections normalize() validates; every other top-level key passes through.
 VALIDATED_SECTIONS = ("appearance", "sound", "checkpoints", "developer", "alarm")
 _OWN_KEYS = frozenset({"schema", *VALIDATED_SECTIONS})
+
+
+log = logging.getLogger(__name__)
+
+# Caps on the stored (merged) document: a report is bounded at 64 KB on the
+# wire, but stored sections carried forward could push the merged one past
+# it, and every check-in reply may carry the whole thing.
+MAX_STORED_BYTES = 64 * 1024
+MAX_EXTRA_SECTIONS = 16
 
 
 class ConfigError(ValueError):
@@ -279,6 +289,16 @@ def _canonical(doc: dict) -> str:
     return json.dumps(doc, sort_keys=True)
 
 
+def _cap_problem(doc: dict) -> str | None:
+    """Why `doc` is too big to store, or None."""
+    extra = sum(1 for key in doc if key not in _OWN_KEYS)
+    if extra > MAX_EXTRA_SECTIONS:
+        return f"may have at most {MAX_EXTRA_SECTIONS} extra sections"
+    if len(_canonical(doc).encode()) > MAX_STORED_BYTES:
+        return f"must be at most {MAX_STORED_BYTES // 1024} KB"
+    return None
+
+
 def _store(db: AsyncSession, device: Device, new: dict, *, source: str,
            changed_at: datetime, actor_id: uuid.UUID | None) -> None:
     fields = field_diff(device.config, new)
@@ -293,9 +313,12 @@ def _store(db: AsyncSession, device: Device, new: dict, *, source: str,
 
 
 async def accept_kiosk_report(db: AsyncSession, device: Device, doc: dict | None,
-                              changed_at: datetime | None, *, now: datetime) -> bool:
+                              changed_at: datetime | None, *, now: datetime,
+                              actor_id: uuid.UUID | None = None) -> bool:
     """Apply a kiosk's full-config report; True when it was stored as the
-    new version. Always records `config_reported_at = now`."""
+    new version. Always records `config_reported_at = now`. `actor_id` is
+    the person signed in at the kiosk (None for a station-key report). A
+    merged document over the size caps is not stored (logged)."""
     now = _utc(now)
     device.config_reported_at = now
     if changed_at is None:
@@ -311,7 +334,12 @@ async def accept_kiosk_report(db: AsyncSession, device: Device, doc: dict | None
     new = _carry_passthrough(new, device.config, doc)
     if device.config is not None and _canonical(new) == _canonical(device.config):
         return False
-    _store(db, device, new, source="kiosk", changed_at=stamp, actor_id=None)
+    problem = _cap_problem(new)
+    if problem is not None:
+        log.warning("kiosk config report from device %s not stored: config %s",
+                    device.id, problem)
+        return False
+    _store(db, device, new, source="kiosk", changed_at=stamp, actor_id=actor_id)
     return True
 
 
@@ -321,6 +349,9 @@ async def apply_portal_edit(db: AsyncSession, device: Device, doc: dict | None, 
     on a bad value, nothing changed)."""
     new = normalize(doc, known_sounds=await known_sound_ids(db), strict=True)
     new = _carry_passthrough(new, device.config, doc)
+    problem = _cap_problem(new)
+    if problem is not None:
+        raise ConfigError("config", problem)
     _store(db, device, new, source="portal", changed_at=_utc(now), actor_id=actor_id)
 
 

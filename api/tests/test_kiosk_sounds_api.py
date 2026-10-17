@@ -25,6 +25,10 @@ def store(monkeypatch):
         blobs[key] = (data, content_type)
 
     async def get_object(key):
+        if key not in blobs:
+            from botocore.exceptions import ClientError
+            raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "gone"}},
+                              "GetObject")
         return blobs[key][0]
 
     monkeypatch.setattr("serversherpa.api.routes.kiosk.put_object", put_object)
@@ -107,6 +111,15 @@ async def test_stored_sound_downloads(client, db, seeded_user, store):
 async def test_unknown_sound_is_404(client, db, seeded_user, store):
     hdrs = await login(client)
     r = await client.get(f"/kiosk/sounds/{uuid.uuid4()}", headers=hdrs)
+    assert r.status_code == 404
+    assert r.json()["detail"]["code"] == "sound_not_found"
+
+
+async def test_missing_blob_is_404(client, db, seeded_user, store):
+    hdrs = await login(client)
+    sid = (await client.post("/kiosk/sounds", headers=hdrs, files=_file())).json()["id"]
+    store.clear()
+    r = await client.get(f"/kiosk/sounds/{sid}", headers=hdrs)
     assert r.status_code == 404
     assert r.json()["detail"]["code"] == "sound_not_found"
 

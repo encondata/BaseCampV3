@@ -329,6 +329,70 @@ async def test_report_differing_only_in_key_order_is_not_a_change(db):
     assert d.config_version == 1
 
 
+async def test_kiosk_report_records_its_actor(db):
+    d = await _kiosk(db)
+    p = await _person(db)
+    assert await accept_kiosk_report(db, d, _with(flash_ms=900), NOW, now=NOW, actor_id=p.id)
+    await db.commit()
+    (a,) = await _audits(db, d)
+    assert a.actor_person_id == p.id
+    assert d.config_changed_by == p.id and d.config_source == "kiosk"
+
+
+def _blob(kb: int) -> dict:
+    return {"blob": "x" * (kb * 1024)}
+
+
+async def test_kiosk_report_over_64kb_after_merge_is_not_stored(db):
+    """Each document fits the 64 KB request cap, but the stored sections
+    carried forward push the merged one over it: the stored config stays."""
+    d = await _kiosk(db)
+    first = _with()
+    first["android_rfid"] = _blob(40)
+    assert await accept_kiosk_report(db, d, first, NOW, now=NOW)
+    second = _with(flash_ms=900)
+    second["ios"] = _blob(40)       # android_rfid omitted -> carried forward
+    later = NOW + timedelta(minutes=1)
+    assert await accept_kiosk_report(db, d, second, later, now=later) is False
+    await db.commit()
+    assert d.config_version == 1
+    assert d.config["appearance"]["flash_ms"] == 350 and "ios" not in d.config
+    assert d.config_reported_at == later
+
+
+async def test_portal_edit_over_64kb_after_merge_is_refused(db):
+    d = await _kiosk(db)
+    first = _with()
+    first["android_rfid"] = _blob(40)
+    assert await accept_kiosk_report(db, d, first, NOW, now=NOW)
+    edit = _with()
+    edit["ios"] = _blob(40)
+    with pytest.raises(ConfigError) as exc:
+        await apply_portal_edit(db, d, edit, actor_id=None, now=NOW + timedelta(minutes=1))
+    assert exc.value.field == "config"
+    assert d.config_version == 1 and "ios" not in d.config
+
+
+def _sections(n: int) -> dict:
+    doc = _with()
+    for i in range(n):
+        doc[f"extra_{i}"] = {"v": i}
+    return doc
+
+
+async def test_more_than_16_unknown_sections_is_refused(db):
+    d = await _kiosk(db)
+    assert await accept_kiosk_report(db, d, _sections(16), NOW, now=NOW)
+    assert d.config_version == 1
+    later = NOW + timedelta(minutes=1)
+    assert await accept_kiosk_report(db, d, _sections(17), later, now=later) is False
+    assert d.config_version == 1 and "extra_16" not in d.config
+    with pytest.raises(ConfigError) as exc:
+        await apply_portal_edit(db, d, _sections(17), actor_id=None, now=later)
+    assert exc.value.field == "config"
+    assert d.config_version == 1
+
+
 async def test_kiosk_report_bad_values_defaulted_rest_kept(db):
     d = await _kiosk(db)
     doc = _with(flash_ms=99999)

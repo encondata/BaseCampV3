@@ -283,7 +283,15 @@ async def get_current_user(
 ) -> AuthContext:
     if credentials is None:
         raise _unauthorized("missing_token")
-    user = await authenticate_token(db, credentials.credentials)
+    return await authenticate_request(db, request, credentials.credentials)
+
+
+async def authenticate_request(db: AsyncSession, request: Request, token: str) -> AuthContext:
+    """The whole bearer-session check for `request`: the token, kiosk
+    session scope, a forced password change, and read-only mode. Shared by
+    get_current_user and routes that also accept another credential (the
+    kiosk sound routes take a session or a station key)."""
+    user = await authenticate_token(db, token)
     enforce_session_scope(request, user)
     await enforce_forced_password_change(db, request, user)
     await enforce_read_only(db, request, user)

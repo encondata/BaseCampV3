@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from argon2 import PasswordHasher
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Response, UploadFile
 from sqlalchemy import case, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -19,9 +20,8 @@ from sqlalchemy.orm import aliased, joinedload
 
 from serversherpa.access.resolver import resolve_access
 from serversherpa.api.deps import (
-    AuthContext, DbSession, authenticate_token, client_ip, enforce_forced_password_change,
-    enforce_read_only, enforce_read_only_config, enforce_session_scope, rate_limit_ip,
-    require_permission, station_device,
+    AuthContext, DbSession, authenticate_request, client_ip, enforce_read_only_config,
+    rate_limit_ip, require_permission, station_device,
 )
 from serversherpa.api.routes.auth import (
     _scope_out, person_out, session_response, totp_status_out,
@@ -490,8 +490,19 @@ async def heartbeat(
                            "requested_by": str(requested_by) if requested_by else None})
     # body.reader is accepted and ignored: reader telemetry arrives only on
     # POST /kiosk/station/heartbeat, under the station key.
-    sync = await _sync_config(db, device, body.config, body.config_changed_at,
-                              body.config_applied_version, now=now)
+    # Config syncs only for the person signed in at this kiosk (a sign-in
+    # beat recorded them above), and never here for a station-keyed device,
+    # which syncs on /kiosk/station/heartbeat. Anyone else with kiosk:view
+    # who names this serial neither reads nor writes its config.
+    own_kiosk = device.session_person_id == actor.person.id
+    if own_kiosk and device.station_key_hash is None:
+        sync = await _sync_config(db, device, body.config, body.config_changed_at,
+                                  body.config_applied_version, now=now,
+                                  actor_id=actor.person.id)
+    else:
+        sync = {"server_time": now, "config_version": device.config_version or 0,
+                "config": None, **(await _scan_fields(db, device) if own_kiosk
+                                   else {"scan_status": None, "scan_status_label": None})}
     await db.commit()
     return HeartbeatOut(device_id=device.id, name=device.name,
                         registration=registration_state(device.token_expires_at, now),
@@ -500,29 +511,36 @@ async def heartbeat(
                         client_ip=client_ip(request), **sync)
 
 
+async def _scan_fields(db: AsyncSession, device: Device) -> dict:
+    label = None
+    if device.scan_status:
+        scan_type = await db.get(StatusValue, ("asset", device.scan_status))
+        label = scan_type.label if scan_type else None
+    return {"scan_status": device.scan_status, "scan_status_label": label}
+
+
 async def _sync_config(db: AsyncSession, device: Device, config: dict | None,
                        changed_at: datetime | None, applied_version: int | None,
-                       *, now: datetime) -> dict:
+                       *, now: datetime, actor_id: uuid.UUID | None) -> dict:
     """Kiosk settings sync on a check-in (the device row is already locked
     FOR UPDATE). A report is merged by kiosk_config's newest-wins rule; the
     applied version is recorded whenever the beat sends it. Returns the
     reply's server_time / config_version / config / scan type fields.
 
     A kiosk claiming a version the portal never issued (above
-    config_version) is treated as behind, so it is sent the document."""
+    config_version) is treated as behind, so it is sent the document; the
+    recorded applied version is clamped to config_version."""
     if config is not None:
-        await kiosk_config.accept_kiosk_report(db, device, config, changed_at, now=now)
-    if applied_version is not None:
-        device.config_applied_version = applied_version
+        await kiosk_config.accept_kiosk_report(db, device, config, changed_at, now=now,
+                                               actor_id=actor_id)
+    version = device.config_version or 0
     effective = applied_version
-    if effective is not None and effective > (device.config_version or 0):
-        effective = None
-    label = None
-    if device.scan_status:
-        scan_type = await db.get(StatusValue, ("asset", device.scan_status))
-        label = scan_type.label if scan_type else None
+    if applied_version is not None:
+        device.config_applied_version = min(applied_version, version)
+        if applied_version > version:
+            effective = None
     return {"server_time": now, **kiosk_config.reply_fields(device, effective),
-            "scan_status": device.scan_status, "scan_status_label": label}
+            **(await _scan_fields(db, device))}
 
 
 @router.post("/sign-out", status_code=204)
@@ -1327,10 +1345,18 @@ async def station_heartbeat(
     reply carries the pending Clear Setup id."""
     device = await station_device(request, db, body.serial)
     await enforce_read_only_config(db, request)
-    # re-read under FOR UPDATE for the config merge (see /kiosk/heartbeat)
+    # re-read under FOR UPDATE for the config merge (see /kiosk/heartbeat),
+    # then recheck what station_device verified: a key revoked or replaced,
+    # or a device repurposed, in between is refused
+    key_hash = device.station_key_hash
     device = await db.scalar(select(Device).where(Device.id == device.id)
                              .with_for_update()
                              .execution_options(populate_existing=True))
+    if (device is None or device.station_key_hash is None
+            or device.station_key_hash != key_hash
+            or device.sub_type != "laptop" or device.station_type != "rfid"):
+        raise HTTPException(status_code=401, detail={"code": "station_key_invalid"},
+                            headers={"WWW-Authenticate": "Bearer"})
     now = datetime.now(UTC)
     device.last_seen_at = now
     device.updated_at = now
@@ -1339,7 +1365,7 @@ async def station_heartbeat(
     if body.reader is not None:
         await apply_reader_report(db, kiosk=device, report=body.reader, actor_id=None)
     sync = await _sync_config(db, device, body.config, body.config_changed_at,
-                              body.config_applied_version, now=now)
+                              body.config_applied_version, now=now, actor_id=None)
     await db.commit()
     return KioskStationHeartbeatOut(
         registration=registration_state(device.token_expires_at, now),
@@ -2118,10 +2144,7 @@ async def _kiosk_caller(request: Request, db: AsyncSession,
     if scheme.lower() != "bearer" or not raw:
         raise HTTPException(status_code=401, detail={"code": "missing_token"},
                             headers={"WWW-Authenticate": "Bearer"})
-    user = await authenticate_token(db, raw)
-    enforce_session_scope(request, user)
-    await enforce_forced_password_change(db, request, user)
-    await enforce_read_only(db, request, user)
+    user = await authenticate_request(db, request, raw)
     if not user.access.can("kiosk", "view"):
         raise HTTPException(status_code=403, detail={"code": "forbidden"})
     return user, None
@@ -2182,7 +2205,12 @@ async def download_kiosk_sound(
     sound = await db.get(KioskSound, sound_id)
     if sound is None:
         raise _err(404, "sound_not_found")
-    data = await get_object(sound.storage_key)
+    try:
+        data = await get_object(sound.storage_key)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+            raise _err(404, "sound_not_found") from None
+        raise
     return Response(content=data, media_type=sound.content_type,
                     headers={"X-Content-Type-Options": "nosniff",
                              "Cache-Control": "private, max-age=86400"})
