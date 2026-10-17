@@ -19,6 +19,7 @@ import {
 import { useKioskSetup } from '../lib/kioskSetup';
 import { isLaptop } from '../lib/platform';
 import { useSyncStatus } from '../lib/sync';
+import { useFitRows } from '../lib/useFitRows';
 
 const POLL_MS = 5000;
 const CLOCK_MS = 1000;
@@ -145,6 +146,9 @@ export default function RfidStatus() {
   const freshTimer = useRef<number | undefined>(undefined);
   // read id -> when an unknown tag first showed (Date.now())
   const unknownSince = useRef(new Map<number, number>());
+  // Both panels show only the rows that fit; they never scroll.
+  const readsBox = useRef<HTMLDivElement>(null);
+  const eventsBox = useRef<HTMLUListElement>(null);
 
   const refresh = useCallback(async () => {
     // Only the newest request may write: a slow older answer is dropped.
@@ -205,6 +209,9 @@ export default function RfidStatus() {
       window.clearInterval(clock);
     };
   }, [laptop, refresh]);
+
+  useFitRows(readsBox, [reads, fresh, now]);
+  useFitRows(eventsBox, [events]);
 
   if (!laptop) return <Navigate to="/" replace />;
   if (status && status.reader === null) return <Navigate to="/" replace />;
@@ -284,7 +291,7 @@ export default function RfidStatus() {
         <section className="rfid-dash-panel rfid-dash-reads" aria-labelledby="rfid-dash-reads-title">
           <h2 id="rfid-dash-reads-title" className="rfid-dash-panel-title">Live Tag Reads</h2>
           <p className="rfid-dash-panel-sub">Newest first.</p>
-          <div className="local-table-wrap">
+          <div className="local-table-wrap" ref={readsBox}>
             <table className="local-table rfid-dash-table">
               <thead>
                 <tr>
@@ -301,7 +308,7 @@ export default function RfidStatus() {
                   </tr>
                 )}
                 {visibleReads?.map((r) => (
-                  <tr key={r.id} className={fresh.has(r.id) ? 'is-new' : undefined}>
+                  <tr key={r.id} data-fit-row className={fresh.has(r.id) ? 'is-new' : undefined}>
                     <td title={r.epc}>{displayEpc(r.epc)}</td>
                     {r.asset ? (
                       <>
@@ -327,9 +334,9 @@ export default function RfidStatus() {
             <p className="rfid-dash-empty">No activity yet.</p>
           )}
           {events !== null && events.length > 0 && (
-            <ul className="rfid-dash-event-list">
+            <ul className="rfid-dash-event-list" ref={eventsBox}>
               {events.map((ev) => (
-                <li key={ev.id} className="rfid-dash-event">
+                <li key={ev.id} data-fit-row className="rfid-dash-event">
                   <span className="rfid-dash-event-icon">{eventIcon(ev)}</span>
                   <span className="rfid-dash-event-time mono">{clockText(new Date(ev.at))}</span>
                   <span className="rfid-dash-event-body">
