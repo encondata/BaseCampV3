@@ -971,7 +971,8 @@ async def sync_client_assets(
     """Every asset of this move's client that is NOT on this move, so a
     laptop can tell a sighting from a stranger: one row per asset-and-move
     pair for the client's OTHER moves, plus one row (null move fields) per
-    client asset (`Asset.client_id`) on no move at all. Each row carries
+    other client asset (`Asset.client_id`) not already listed: on no move,
+    or only on archived moves, projects/events or another client's moves. Each row carries
     the asset model's make and model. An asset also on this move never
     appears. A move with no client gets []; another client's assets never
     appear. Only moves count (not projects or events); archived moves and
@@ -993,7 +994,6 @@ async def _client_assets_body(
     if initiative.client_id is not None:
         on_selected = select(InitiativeAsset.asset_id).where(
             InitiativeAsset.initiative_id == initiative.id)
-        on_any_move = select(InitiativeAsset.asset_id)
         other_moves = (await db.execute(
             select(Asset, AssetModel.make, AssetModel.model,
                    Initiative.id, Initiative.name)
@@ -1006,12 +1006,17 @@ async def _client_assets_body(
                    Initiative.archived_at.is_(None),
                    Asset.archived_at.is_(None),
                    Asset.id.not_in(on_selected)))).all()
-        no_move = (await db.execute(
+        # Every other live client asset not already listed with one of the
+        # client's other moves: no links at all, or only archived moves,
+        # projects/events, or another client's moves. Null move fields.
+        listed = {a.id for a, *_ in other_moves}
+        no_move = [r for r in (await db.execute(
             select(Asset, AssetModel.make, AssetModel.model)
             .outerjoin(AssetModel, AssetModel.id == Asset.model_id)
             .where(Asset.client_id == initiative.client_id,
                    Asset.archived_at.is_(None),
-                   Asset.id.not_in(on_any_move)))).all()
+                   Asset.id.not_in(on_selected)))).all()
+            if r[0].id not in listed]
         rows = ([(a, mk, md, iid, iname) for a, mk, md, iid, iname in other_moves]
                 + [(a, mk, md, None, None) for a, mk, md in no_move])
         # legacy_id first (nulls last, like the SQL order), then move name.

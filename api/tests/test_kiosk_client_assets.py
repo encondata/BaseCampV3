@@ -271,3 +271,58 @@ async def test_asset_on_the_selected_move_is_never_listed_even_if_also_unassigne
         client, db, seeded_user):
     sel, _ = await _unassigned_seed(db)
     assert "u-on-sel" not in {r["name"] for r in await _get(client, sel)}
+
+
+async def _orphan_link_seed(db):
+    """Client assets whose only links are not this client's live moves."""
+    from datetime import UTC, datetime
+    cx, cy = Client(name="Client OL"), Client(name="Client OL2")
+    db.add_all([cx, cy])
+    await db.flush()
+    sel = _move("OL Sel", cx.id)
+    arch = _move("OL Archived", cx.id)
+    arch.archived_at = datetime.now(UTC)
+    project = Initiative(name="OL Project", initiative_type="project",
+                         status="in_progress", client_id=cx.id)
+    event = Initiative(name="OL Event", initiative_type="event",
+                       status="in_progress", client_id=cx.id)
+    ymove = _move("OL Y Move", cy.id)
+    other = _move("OL Other", cx.id)
+    db.add_all([sel, arch, project, event, ymove, other])
+    await db.flush()
+    names = ["ol-arch", "ol-project", "ol-event", "ol-ymove", "ol-other"]
+    a = {n: Asset(name=n, serial_number="OL-" + n, client_id=cx.id) for n in names}
+    db.add_all(a.values())
+    await db.flush()
+    db.add_all([
+        InitiativeAsset(initiative_id=arch.id, asset_id=a["ol-arch"].id),
+        InitiativeAsset(initiative_id=project.id, asset_id=a["ol-project"].id),
+        InitiativeAsset(initiative_id=event.id, asset_id=a["ol-event"].id),
+        InitiativeAsset(initiative_id=ymove.id, asset_id=a["ol-ymove"].id),
+        InitiativeAsset(initiative_id=other.id, asset_id=a["ol-other"].id),
+        # ol-other is also on an archived move: still listed once, with OL Other.
+        InitiativeAsset(initiative_id=arch.id, asset_id=a["ol-other"].id),
+    ])
+    await db.commit()
+    return sel.id
+
+
+async def test_client_asset_only_on_an_archived_move_is_listed(client, db, seeded_user):
+    rows = await _get(client, await _orphan_link_seed(db))
+    got = [(r["initiative_id"], r["initiative_name"]) for r in rows if r["name"] == "ol-arch"]
+    assert got == [(None, None)]
+
+
+async def test_client_asset_only_on_a_project_or_event_is_listed(client, db, seeded_user):
+    rows = await _get(client, await _orphan_link_seed(db))
+    for name in ("ol-project", "ol-event"):
+        got = [(r["initiative_id"], r["initiative_name"]) for r in rows if r["name"] == name]
+        assert got == [(None, None)], name
+
+
+async def test_client_asset_on_another_clients_move_is_listed_once(client, db, seeded_user):
+    rows = await _get(client, await _orphan_link_seed(db))
+    got = [(r["initiative_id"], r["initiative_name"]) for r in rows if r["name"] == "ol-ymove"]
+    assert got == [(None, None)]
+    other = [r["initiative_name"] for r in rows if r["name"] == "ol-other"]
+    assert other == ["OL Other"]
