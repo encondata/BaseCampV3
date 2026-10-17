@@ -311,3 +311,38 @@ async def test_router_lan_ip_ignores_stale_interfaces_when_paired(app, client):
     path.write_text(json.dumps(data))
     fake_knock(app, open_ports=(80,))
     assert (await run(client, app, "router"))["info"]["lan_ip"] is None
+
+
+# ── uploads (Scan uploads ready) ──
+
+async def test_uploads_check(app, client, cloud):
+    from edge.rfid import station_key
+    await seed_setup(app)
+    route = cloud.post("/kiosk/station-key").respond(
+        409, json={"detail": {"code": "kiosk_not_registered"}})
+    # no key and no cloud session: a fail, and no issue attempt
+    body = await run(client, app, "uploads")
+    assert (body["ok"], body["state"]) == (False, "fail")
+    assert body["detail"] == "Uploads aren't authorized yet — try again"
+    assert not route.called
+    # a cloud session: one issue attempt, which fails
+    h = await sign_in(app)
+    body = await run(client, app, "uploads", headers=h)
+    assert body["state"] == "fail" and route.call_count == 1
+    # the attempt succeeds: ok
+    route.respond(200, json={"key": "the-station-key"})
+    body = await run(client, app, "uploads", headers=h)
+    assert body["state"] == "ok" and route.call_count == 2
+    assert "the-station-key" not in json.dumps(body)
+    # a stored key: ok with no further attempt
+    body = await run(client, app, "uploads", headers=h)
+    assert body["ok"] is True and route.call_count == 2
+    assert station_key.load_key(app.state.store, app.state.keys) == "the-station-key"
+
+
+async def test_uploads_check_offline_session_makes_no_attempt(app, client, cloud):
+    await seed_setup(app)
+    app.state.upstream.save_session("p-1", refresh_token="r", access_token="a", expires_in=900)
+    route = cloud.post("/kiosk/station-key").respond(200, json={"key": "k"})
+    body = await run(client, app, "uploads", headers=make_session(app, offline=True))
+    assert body["state"] == "fail" and not route.called

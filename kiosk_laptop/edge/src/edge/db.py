@@ -95,6 +95,11 @@ SCHEMA_STEPS: list[str] = [
     """
     CREATE INDEX raw_tag_reads_serial_received ON raw_tag_reads (reader_serial, received_at)
     """,
+    # the portal-issued RFID station key, Fernet-encrypted with edge.key (one row)
+    """
+    CREATE TABLE station_key (id INTEGER PRIMARY KEY CHECK (id = 1), key_enc TEXT NOT NULL,
+        stored_at TEXT NOT NULL)
+    """,
 ]
 
 

@@ -16,7 +16,7 @@ router = APIRouter(prefix="/edge")
 AUTH_TABLES = ("cloud_sessions", "offline_logins", "edge_sessions", "login_failures",
                "move_passwords")
 MOVE_TABLES = ("cache", "outbox", "laptop_setup", "rfid_events",
-              "raw_tag_reads", "rfid_tags_seen")
+              "raw_tag_reads", "rfid_tags_seen", "station_key")
 
 
 async def _json_object(request: Request, *, empty_ok: bool = False) -> dict:

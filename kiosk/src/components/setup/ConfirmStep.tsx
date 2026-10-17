@@ -1,7 +1,7 @@
 /**
  * Step 9 of the RFID path: Confirm & verify. Summarizes the setup, runs the
- * reader, portal and setup checks one after another, and only then offers
- * Start Reader. Any failure leaves Back and Run again.
+ * reader, portal, setup and scan-uploads checks one after another, and only
+ * then offers Start Reader. Any failure leaves Back and Run again.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -22,6 +22,7 @@ const ITEMS: { name: CheckName; label: string }[] = [
   { name: 'reader', label: 'Reader online' },
   { name: 'portal', label: 'Portal reachable' },
   { name: 'setup', label: "Portal has this kiosk's setup" },
+  { name: 'uploads', label: 'Scan uploads ready' },
 ];
 
 export default function ConfirmStep({ setup, reader, onBack, onStarted, onPairAgain }: Props) {

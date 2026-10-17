@@ -50,11 +50,38 @@ describe('ConfirmStep', () => {
     expect(screen.getAllByText('—')).toHaveLength(2);
   });
 
-  it('runs reader, portal, setup in order; Start Reader enables when all pass', async () => {
+  it('runs reader, portal, setup, uploads in order; Start Reader enables when all pass', async () => {
     setup();
     await settle();
-    expect(apiMock.runCheck.mock.calls.map((c) => c[0])).toEqual(['reader', 'portal', 'setup']);
-    expect(screen.getAllByLabelText('passed')).toHaveLength(3);
+    expect(apiMock.runCheck.mock.calls.map((c) => c[0]))
+      .toEqual(['reader', 'portal', 'setup', 'uploads']);
+    expect(screen.getAllByLabelText('passed')).toHaveLength(4);
+    expect((screen.getByRole('button', { name: 'Start Reader' }) as HTMLButtonElement).disabled)
+      .toBe(false);
+  });
+
+  it('shows four rows, the last one Scan uploads ready', async () => {
+    setup();
+    await settle();
+    for (const label of ['Reader online', 'Portal reachable', "Portal has this kiosk's setup",
+      'Scan uploads ready']) {
+      expect(screen.getByText(label)).toBeTruthy();
+    }
+  });
+
+  it('Start Reader stays disabled until uploads is ok', async () => {
+    const failed = { name: 'uploads' as const, ok: false, state: 'fail' as const,
+                     detail: "Uploads aren't authorized yet — try again" };
+    apiMock.runCheck.mockImplementation((n: CheckName) => Promise.resolve(
+      n === 'uploads' ? failed : ok(n)));
+    setup();
+    await settle();
+    expect(screen.getByText("Uploads aren't authorized yet — try again")).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Start Reader' }) as HTMLButtonElement).disabled)
+      .toBe(true);
+    apiMock.runCheck.mockImplementation((n: CheckName) => Promise.resolve(ok(n)));
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Run again' }));
+    await settle();
     expect((screen.getByRole('button', { name: 'Start Reader' }) as HTMLButtonElement).disabled)
       .toBe(false);
   });
@@ -122,7 +149,7 @@ describe('ConfirmStep', () => {
     apiMock.runCheck.mockImplementation((n: CheckName) => Promise.resolve(ok(n)));
     await userEvent.setup().click(screen.getByRole('button', { name: 'Run again' }));
     await settle();
-    expect(apiMock.runCheck).toHaveBeenCalledTimes(6);
+    expect(apiMock.runCheck).toHaveBeenCalledTimes(8);
     expect((screen.getByRole('button', { name: 'Start Reader' }) as HTMLButtonElement).disabled)
       .toBe(false);
     expect(screen.queryByRole('button', { name: 'Run again' })).toBeNull();

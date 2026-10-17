@@ -9,13 +9,13 @@ from urllib.parse import urlparse
 from fastapi import HTTPException
 
 from edge import hostnet, laptop_setup
-from edge.rfid import events, pairing, ziotc
+from edge.rfid import events, pairing, station_key, ziotc
 from edge.rfid.ziotc import ReaderError
 from edge.upstream import CloudOffline
 
 log = logging.getLogger(__name__)
 
-CHECK_NAMES = ("reader", "router", "portal", "registration", "setup")
+CHECK_NAMES = ("reader", "router", "portal", "registration", "setup", "uploads")
 GATEWAY_PORTS = (53, 80, 443)
 GATEWAY_TIMEOUT_S = 1.5
 OFFLINE = "Can't reach the portal"
@@ -197,5 +197,17 @@ async def _setup(name, st, session) -> dict:
     return result(name, "ok", "Portal has this kiosk's setup", info)
 
 
+async def _uploads(name, st, session) -> dict:
+    """Scan uploads ready: a station key is stored. Without one, a person
+    with a usable cloud session gets one issue attempt (the background loop
+    keeps retrying either way). The key itself never appears here."""
+    if not station_key.has_key(st.store) and not session.offline \
+            and st.upstream.has_session(session.person_id):
+        await station_key.issue(st, session.person_id)
+    if station_key.load_key(st.store, st.keys) is not None:
+        return result(name, "ok", "Scan uploads are authorized")
+    return result(name, "fail", "Uploads aren't authorized yet — try again")
+
+
 CHECKS = {"reader": _reader, "router": _router, "portal": _portal,
-          "registration": _registration, "setup": _setup}
+          "registration": _registration, "setup": _setup, "uploads": _uploads}

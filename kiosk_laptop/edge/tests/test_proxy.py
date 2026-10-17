@@ -265,3 +265,24 @@ async def test_fresh_snapshot_replaces_browser_reader(app, client, cloud):
     app.state.reader_snapshot = _snapshot(now_iso())
     sent = await _heartbeat(app, client, cloud, reader=FORGED)
     assert sent["reader"]["serial"] == "22131010562035" and "mac" not in sent["reader"]
+
+
+async def test_heartbeat_clear_setup_clears_key(app, client, cloud):
+    from edge import laptop_setup
+    from edge.rfid import station_key
+    _online_as(app)
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "rfid")
+    station_key.store_key(app.state.store, app.state.keys, "the-station-key")
+    cloud.post("/kiosk/heartbeat").respond(200, json={"registration": "ok", "clear_setup": "c-1"})
+    r = await client.post("/kiosk/heartbeat", headers=make_session(app), json={"serial": "x"})
+    assert r.status_code == 200
+    assert station_key.load_key(app.state.store, app.state.keys) is None
+
+
+async def test_heartbeat_without_clear_setup_keeps_key(app, client, cloud):
+    from edge.rfid import station_key
+    _online_as(app)
+    station_key.store_key(app.state.store, app.state.keys, "the-station-key")
+    cloud.post("/kiosk/heartbeat").respond(200, json={"registration": "ok", "clear_setup": None})
+    await client.post("/kiosk/heartbeat", headers=make_session(app), json={"serial": "x"})
+    assert station_key.load_key(app.state.store, app.state.keys) == "the-station-key"

@@ -927,7 +927,7 @@ export async function getEdgeSetup(): Promise<EdgeSetup | null> {
 
 // ── RFID Network check and reader reading (laptop edge) ─────────────
 
-export type CheckName = 'reader' | 'router' | 'portal' | 'registration' | 'setup';
+export type CheckName = 'reader' | 'router' | 'portal' | 'registration' | 'setup' | 'uploads';
 
 export interface CheckResult {
   name: CheckName;

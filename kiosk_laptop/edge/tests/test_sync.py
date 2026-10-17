@@ -193,3 +193,91 @@ async def test_not_signed_in_here_is_skipped_without_error(app, cloud):
     meta = await app.state.syncer.run()
     assert meta["last_error"] is None
     assert app.state.store.one("SELECT 1 FROM move_passwords WHERE initiative_id='m-1'")
+
+
+# ── the client asset list and the station-key fallback (rfid scan processing §2.1, §3.2) ──
+
+STATION_NAMES = ("assets", "containers", "people", "client-assets")
+
+
+def _person_key(name, initiative="m-1"):
+    return next(p for p in sync_paths(initiative) if p.startswith(f"/kiosk/sync/{name}"))
+
+
+async def test_client_assets_cached(app, cloud):
+    app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    app.state.syncer.set_target("m-1", "p-1")
+    assert "/kiosk/sync/client-assets?initiative_id=m-1" in sync_paths("m-1")
+    _mock_sync(cloud)
+    meta = await app.state.syncer.run()
+    assert meta["last_error"] is None
+    row = app.state.store.one("SELECT body FROM cache WHERE key = ?",
+                              ("/kiosk/sync/client-assets?initiative_id=m-1",))
+    assert json.loads(row["body"]) == {"path": "/kiosk/sync/client-assets?initiative_id=m-1"}
+
+
+def _mock_station(cloud, status=200):
+    return {name: cloud.get(f"/kiosk/station/sync/{name}").respond(
+        status, json={"station": name}) for name in STATION_NAMES}
+
+
+async def test_sync_falls_back_to_station_key(app, cloud):
+    from edge.rfid import station_key
+    store = app.state.store
+    station_key.store_key(store, app.state.keys, "the-station-key")
+    app.state.syncer.set_target("m-1", "p-gone")                   # nobody has a cloud session
+    store.run("INSERT INTO cache VALUES ('/kiosk/labels/vocab', 200, 'vocab', 'then')")
+    store.run("INSERT INTO move_passwords VALUES ('m-1', 'Move', 'v', '{}', 'now', 'v1')")
+    station = _mock_station(cloud)
+    person = cloud.get(url__regex=r"/kiosk/sync/.*").respond(200, json={})
+    moves = cloud.get(url__regex=r"/kiosk/edge/move-passwords.*").respond(200, json={})
+    meta = await app.state.syncer.run()
+    assert meta["last_error"] is None and meta["synced_at"]
+    assert not person.called and not moves.called
+    for name, route in station.items():
+        req = route.calls[0].request
+        assert req.headers["authorization"] == "Station the-station-key"
+        assert req.url.params["serial"] == app.state.identity.serial
+        assert req.url.params["initiative_id"] == "m-1"
+        body = store.one("SELECT body FROM cache WHERE key = ?", (_person_key(name),))["body"]
+        assert json.loads(body) == {"station": name}               # the SAME cache keys
+    assert _person_key("people") == "/kiosk/sync/people"
+    # reads the station routes don't cover keep their cached copies
+    assert store.one("SELECT body FROM cache WHERE key='/kiosk/labels/vocab'")["body"] == "vocab"
+    assert store.one("SELECT 1 FROM move_passwords WHERE initiative_id='m-1'")
+    assert "the-station-key" not in json.dumps(meta)
+
+
+async def test_station_sync_failure_keeps_old_snapshot(app, cloud):
+    from edge.rfid import station_key
+    store = app.state.store
+    station_key.store_key(store, app.state.keys, "the-station-key")
+    app.state.syncer.set_target("m-1", None)
+    key = _person_key("assets")
+    store.run("INSERT INTO cache VALUES (?, 200, 'old', 'then')", (key,))
+    _mock_station(cloud)
+    cloud.get("/kiosk/station/sync/client-assets").respond(
+        403, json={"detail": {"code": "move_locked"}})
+    meta = await app.state.syncer.run()
+    assert meta["last_error"] == "http_403:/kiosk/station/sync/client-assets"
+    assert store.one("SELECT body FROM cache WHERE key=?", (key,))["body"] == "old"
+
+
+async def test_station_sync_offline(app, cloud):
+    from edge.rfid import station_key
+    station_key.store_key(app.state.store, app.state.keys, "the-station-key")
+    app.state.syncer.set_target("m-1", None)
+    cloud.get(url__regex=r"/kiosk/station/sync/.*").mock(side_effect=httpx.ConnectError("down"))
+    assert (await app.state.syncer.run())["last_error"] == "offline"
+
+
+async def test_person_session_still_syncs_as_the_person_with_a_key_stored(app, cloud):
+    from edge.rfid import station_key
+    station_key.store_key(app.state.store, app.state.keys, "the-station-key")
+    app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    app.state.syncer.set_target("m-1", "p-1")
+    route = _mock_sync(cloud)
+    station = _mock_station(cloud)
+    meta = await app.state.syncer.run()
+    assert meta["last_error"] is None and route.called
+    assert not any(r.called for r in station.values())
