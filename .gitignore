@@ -51,3 +51,8 @@ xcuserdata/
 *.xcuserstate
 IOS_Kiosk_App/**/DerivedData/
 IOS_Kiosk_App/.derived/
+
+# Software factory runtime state (local to this machine; see factory/README.md)
+factory/board.json
+factory/board.lock
+factory/jobs/
