@@ -23,7 +23,7 @@ you) comes out. The whole thing is markdown plus one skill:
 /factory rework 004-last-move-column Use the initiative end date, not start
 ```
 
-Dashboard: `cd factory && python3 -m http.server 8765` (or the `factory-dashboard`
+Dashboard: `cd factory && python3 -m http.server 8765 --bind 127.0.0.1` (or the `factory-dashboard`
 entry in `.claude/launch.json`), then open
 http://localhost:8765/dashboard.html.
 
