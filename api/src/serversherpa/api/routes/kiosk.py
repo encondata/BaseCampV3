@@ -73,7 +73,7 @@ from serversherpa.services.kiosk_registration import (  # noqa: F401 (re-exporte
     registration_state,
 )
 from serversherpa.services.password_policy import load_policy
-from serversherpa.services.storage import get_object, presign_get, put_object
+from serversherpa.services.storage import delete_object, get_object, presign_get, put_object
 
 router = APIRouter(prefix="/kiosk", tags=["kiosk"])
 
@@ -628,6 +628,23 @@ async def _active_scan_types(db: AsyncSession) -> list[StatusValue]:
         select(StatusValue)
         .where(StatusValue.record_type == "asset", StatusValue.is_active.is_(True))
         .order_by(StatusValue.sort_order, natural(StatusValue.label)))).all())
+
+
+def is_rfid_station(device: Device) -> bool:
+    """An RFID Station: a laptop kiosk set up with station type rfid."""
+    return device.sub_type == "laptop" and device.station_type == "rfid"
+
+
+async def allowed_scan_types(db: AsyncSession, device: Device) -> list[StatusValue]:
+    """The scan types this kiosk may be set to, by Kiosk Setup's rule: the
+    active asset status values, and on an RFID Station only those whose
+    label contains "RFID" (any case). None without a current move."""
+    if device.current_initiative_id is None:
+        return []
+    types = await _active_scan_types(db)
+    if is_rfid_station(device):
+        types = [t for t in types if "rfid" in t.label.lower()]
+    return types
 
 
 @router.get("/setup-options", response_model=SetupOptionsOut)
@@ -2170,6 +2187,54 @@ async def _kiosk_caller(request: Request, db: AsyncSession,
     return user, None
 
 
+async def save_kiosk_sound(db: AsyncSession, file: UploadFile, *,
+                           actor_id: uuid.UUID | None, device: Device | None,
+                           via: str) -> KioskSound:
+    """Validate and store one uploaded kiosk sound: audio only (`audio/*`),
+    2 MB max, in Spaces under `kiosk-sounds/<uuid>`, with its kiosk_sounds
+    row and an audit row. Shared by the kiosk upload and the portal's
+    /kiosk-sounds upload. The caller commits."""
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    if not content_type.startswith("audio/") or len(content_type) > 100:
+        raise _err(422, "not_audio")
+    data = await file.read(KIOSK_SOUND_MAX_BYTES + 1)
+    if len(data) == 0:
+        raise _err(422, "empty_file")
+    if len(data) > KIOSK_SOUND_MAX_BYTES:
+        raise _err(413, "file_too_large", max_bytes=KIOSK_SOUND_MAX_BYTES)
+    name = (file.filename or "").strip()[:200] or "sound"
+    key = f"kiosk-sounds/{uuid.uuid4()}"
+    await put_object(key, data, content_type)
+    sound = KioskSound(name=name, content_type=content_type, size=len(data),
+                       storage_key=key, uploaded_by=actor_id,
+                       uploaded_from_device=device.id if device else None)
+    db.add(sound)
+    await db.flush()
+    audit(db, actor_id=actor_id, entity_type="kiosk_sound",
+          entity_id=str(sound.id), action="create",
+          changes={"name": name, "content_type": content_type, "size": len(data),
+                   "device_id": str(device.id) if device else None, "via": via})
+    return sound
+
+
+async def kiosk_sound_response(sound: KioskSound) -> Response:
+    """The sound's bytes as an `audio/*` response with nosniff; 404
+    `sound_not_found` when the storage object is gone."""
+    try:
+        data = await get_object(sound.storage_key)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+            raise _err(404, "sound_not_found") from None
+        raise
+    return Response(content=data, media_type=sound.content_type,
+                    headers={"X-Content-Type-Options": "nosniff",
+                             "Cache-Control": "private, max-age=86400"})
+
+
+async def delete_kiosk_sound_object(key: str) -> None:
+    await delete_object(key)
+
+
 @router.post("/sounds", response_model=KioskSoundOut, status_code=201)
 async def upload_kiosk_sound(
     request: Request, db: DbSession,
@@ -2181,32 +2246,13 @@ async def upload_kiosk_sound(
     `serial` (optional with a session, required with a station key) records
     which kiosk sent it."""
     actor, station = await _kiosk_caller(request, db, serial)
-    content_type = (file.content_type or "").split(";")[0].strip().lower()
-    if not content_type.startswith("audio/") or len(content_type) > 100:
-        raise _err(422, "not_audio")
-    data = await file.read(KIOSK_SOUND_MAX_BYTES + 1)
-    if len(data) == 0:
-        raise _err(422, "empty_file")
-    if len(data) > KIOSK_SOUND_MAX_BYTES:
-        raise _err(413, "file_too_large", max_bytes=KIOSK_SOUND_MAX_BYTES)
     device = station
     if device is None and serial:
         device = await db.scalar(select(Device).where(
             Device.serial == serial.strip(), Device.device_type == "kiosk"))
-    name = (file.filename or "").strip()[:200] or "sound"
-    key = f"kiosk-sounds/{uuid.uuid4()}"
-    await put_object(key, data, content_type)
-    sound = KioskSound(name=name, content_type=content_type, size=len(data),
-                       storage_key=key,
-                       uploaded_by=actor.person.id if actor else None,
-                       uploaded_from_device=device.id if device else None)
-    db.add(sound)
-    await db.flush()
-    audit(db, actor_id=actor.person.id if actor else None, entity_type="kiosk_sound",
-          entity_id=str(sound.id), action="create",
-          changes={"name": name, "content_type": content_type, "size": len(data),
-                   "device_id": str(device.id) if device else None,
-                   "via": "station_key" if station else "session"})
+    sound = await save_kiosk_sound(
+        db, file, actor_id=actor.person.id if actor else None, device=device,
+        via="station_key" if station else "session")
     await db.commit()
     return KioskSoundOut(id=sound.id, name=sound.name,
                          content_type=sound.content_type, size=sound.size)
@@ -2225,12 +2271,4 @@ async def download_kiosk_sound(
     sound = await db.get(KioskSound, sound_id)
     if sound is None:
         raise _err(404, "sound_not_found")
-    try:
-        data = await get_object(sound.storage_key)
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
-            raise _err(404, "sound_not_found") from None
-        raise
-    return Response(content=data, media_type=sound.content_type,
-                    headers={"X-Content-Type-Options": "nosniff",
-                             "Cache-Control": "private, max-age=86400"})
+    return await kiosk_sound_response(sound)

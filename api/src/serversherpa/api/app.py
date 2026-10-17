@@ -120,6 +120,7 @@ def create_app() -> FastAPI:
     app.include_router(scans.router)
     app.include_router(status_rules.router)
     app.include_router(devices.router)
+    app.include_router(devices.sounds_router)
     app.include_router(kiosk.router)
     app.include_router(router_agent.router)
     app.include_router(initiatives.router)

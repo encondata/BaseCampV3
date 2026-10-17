@@ -2948,6 +2948,54 @@ class DeviceItem(BaseModel):
     antennas_total: int | None = None
 
 
+class DeviceSetupOut(BaseModel):
+    """What Kiosk Setup stamped on the device (read-only in the portal,
+    except the scan type)."""
+
+    initiative_id: uuid.UUID | None
+    initiative_name: str | None
+    site_id: uuid.UUID | None
+    site_name: str | None
+    site_role: Literal["source", "destination"] | None
+    station_type: str | None
+    scan_status: str | None
+    scan_status_label: str | None
+
+
+class ScanTypeOption(BaseModel):
+    key: str
+    label: str
+    color: str | None
+
+
+class DeviceDetail(DeviceItem):
+    """GET /devices/{id}: the list row plus the kiosk config and its sync
+    state, the setup and the scan types the portal may pick."""
+
+    config: dict | None
+    config_version: int
+    config_changed_at: datetime | None
+    config_source: Literal["kiosk", "portal"] | None
+    config_changed_by_name: str | None
+    config_reported_at: datetime | None
+    config_applied_version: int | None
+    sync_state: Literal["in_sync", "pending", "waiting_first_report"]
+    setup: DeviceSetupOut
+    scan_type_options: list[ScanTypeOption]
+
+
+class DeviceScanTypeIn(BaseModel):
+    scan_status: str = Field(min_length=1, max_length=100)
+
+
+class DeviceConfigHistoryItem(BaseModel):
+    at: datetime
+    source: Literal["kiosk", "portal"] | None
+    version: int | None
+    by_name: str | None
+    changes: dict
+
+
 class DevicePatch(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -3280,6 +3328,14 @@ class KioskSoundOut(BaseModel):
     name: str
     content_type: str
     size: int
+
+
+class KioskSoundItem(KioskSoundOut):
+    """GET /kiosk-sounds row; `in_use` when any device config names it."""
+
+    created_at: datetime
+    uploaded_by_name: str | None
+    in_use: bool
 
 
 class KioskStationHeartbeatOut(KioskConfigReplyMixin):
