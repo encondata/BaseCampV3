@@ -103,10 +103,16 @@ export function useZebraPrinter(usbOverride?: UsbApi | null): ZebraPrinter {
   }, [usb, drop]);
 
   // Leaving the page releases the interface and closes the device (V2).
-  useEffect(() => () => {
-    const held = deviceRef.current;
-    deviceRef.current = null;
-    if (held) void closePrinter(held);
+  // `mounted` is set on mount too, so StrictMode's dev remount is mounted.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      const held = deviceRef.current;
+      deviceRef.current = null;
+      if (held) void closePrinter(held);
+    };
   }, []);
 
   const connect = useCallback(async () => {
@@ -121,6 +127,8 @@ export function useZebraPrinter(usbOverride?: UsbApi | null): ZebraPrinter {
     try {
       const next = await requestZebraDevice(usb);
       await openPrinter(next);
+      // Unmounted while the open was in flight: nobody would close it.
+      if (!mounted.current) { await closePrinter(next); return; }
       adopt(next);
     } catch (err) {
       drop({ type: 'error', message: err instanceof Error && err.message ? err.message : 'Failed to connect to printer' });
@@ -134,6 +142,7 @@ export function useZebraPrinter(usbOverride?: UsbApi | null): ZebraPrinter {
     }
     try {
       await openPrinter(nextDevice);
+      if (!mounted.current) { await closePrinter(nextDevice); return; }
       adopt(nextDevice);
     } catch (err) {
       drop({ type: 'error', message: err instanceof Error && err.message ? err.message : 'Failed to connect to printer' });

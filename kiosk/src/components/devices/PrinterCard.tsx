@@ -109,6 +109,15 @@ export default function PrinterCard() {
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
+  // Every printer call goes through one chain, so no two overlap: a `~HI`
+  // sent while a `~HS` is still out can read the `~HS` answer as its own.
+  const chain = useRef<Promise<unknown>>(Promise.resolve());
+  const serial = useRef(<T,>(call: () => Promise<T>): Promise<T> => {
+    const next = chain.current.then(call);
+    chain.current = next.catch(() => undefined);
+    return next;
+  }).current;
+
   // On opening: connect to the first printer the browser already allows.
   useEffect(() => {
     if (!supported) return undefined;
@@ -139,7 +148,7 @@ export default function PrinterCard() {
     const pollStatus = async () => {
       if (cancelled) return;
       try {
-        const s = await printerRef.current.status();
+        const s = await serial(() => printerRef.current.status());
         if (!cancelled && s) setStatus(s);
       } catch {
         // Keep the last status; the hook drops a lost connection itself.
@@ -148,7 +157,7 @@ export default function PrinterCard() {
     };
     void (async () => {
       try {
-        const id = await printerRef.current.identify();
+        const id = await serial(() => printerRef.current.identify());
         if (!cancelled) setIdentity(id);
       } catch {
         // Identity rows stay hidden.
@@ -164,7 +173,7 @@ export default function PrinterCard() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [connected]);
+  }, [connected, serial]);
 
   // Connect failures and unplugs from the hook show on the card.
   useEffect(() => {
@@ -176,9 +185,9 @@ export default function PrinterCard() {
 
   const refresh = async () => {
     try {
-      const id = await printer.identify();
+      const id = await serial(() => printerRef.current.identify());
       if (alive.current) setIdentity(id);
-      const s = await printer.status();
+      const s = await serial(() => printerRef.current.status());
       if (alive.current && s) setStatus(s);
     } catch (err) {
       if (alive.current) {
@@ -191,7 +200,8 @@ export default function PrinterCard() {
     setPrinting(true);
     setMessage(null);
     try {
-      await printer.send(testLabelZpl(getIdentity().name, new Date(), identity?.dpi ?? 203));
+      const zpl = testLabelZpl(getIdentity().name, new Date(), identity?.dpi ?? 203);
+      await serial(() => printerRef.current.send(zpl));
       if (alive.current) setMessage({ ok: true, text: 'Test label sent.' });
     } catch (err) {
       if (alive.current) {
@@ -279,7 +289,7 @@ export default function PrinterCard() {
       )}
       {others.length > 0 && (
         <p className="device-note">
-          Other printers this browser can use:{' '}
+          {connected ? 'Other printers' : 'Printers'} this browser can use:{' '}
           {others.map((d, i) => (
             <button key={i} type="button" className="mini-btn" onClick={() => switchTo(d)}>
               {d.productName || 'Zebra printer'}

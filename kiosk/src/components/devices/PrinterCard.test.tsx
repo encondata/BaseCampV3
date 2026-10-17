@@ -224,6 +224,36 @@ describe('PrinterCard', () => {
     expect(fns.status).toHaveBeenCalledTimes(first + 3);
   });
 
+  it('printer calls run one at a time: Refresh waits for a pending ~HS poll', async () => {
+    fns.knownDevices.mockResolvedValue([dev('ZD621')]);
+    const calls: string[] = [];
+    let release: (() => void) | null = null;
+    fns.identify.mockImplementation(async () => { calls.push('HI'); return IDENT; });
+    fns.status.mockImplementation(async () => {
+      calls.push('HS');
+      if (calls.filter((c) => c === 'HS').length === 2) {
+        await new Promise<void>((r) => { release = r; });
+        calls.push('HS done');
+      }
+      return OK;
+    });
+    await renderCard();
+    expect(calls).toEqual(['HI', 'HS']);
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(calls).toEqual(['HI', 'HS', 'HS']);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Print test label' }));
+    await flush();
+    // Nothing else goes to the printer while that ~HS is still out.
+    expect(calls).toEqual(['HI', 'HS', 'HS']);
+    expect(fns.send).not.toHaveBeenCalled();
+    await act(async () => { release!(); await vi.advanceTimersByTimeAsync(0); });
+    expect(calls).toEqual(['HI', 'HS', 'HS', 'HS done', 'HI', 'HS']);
+    expect(fns.send).toHaveBeenCalledTimes(1);
+    expect(dd('Model')?.textContent).toBe('ZD621-203dpi');
+    expect(dd('Firmware')?.textContent).toBe('V93.21.18Z');
+  });
+
   it('Refresh reads identity and status again', async () => {
     fns.knownDevices.mockResolvedValue([dev('ZD621')]);
     await renderCard();
@@ -282,6 +312,12 @@ describe('PrinterCard', () => {
     await renderCard();
     const note = document.querySelector('.device-note') as HTMLElement;
     expect(note.textContent).toContain('Other printers this browser can use:');
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    await flush();
+    expect((document.querySelector('.device-note') as HTMLElement).textContent)
+      .toMatch(/^Printers this browser can use:/);
+    fireEvent.click(screen.getByRole('button', { name: 'ZD621' }));
+    await flush();
     expect(screen.queryByRole('button', { name: 'ZD621' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'ZD421' }));
     await flush();
