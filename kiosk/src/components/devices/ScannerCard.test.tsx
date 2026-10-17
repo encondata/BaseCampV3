@@ -58,6 +58,32 @@ describe('ScannerCard', () => {
     expect(screen.getByTestId('scanner-last').textContent).toContain('ABc1');
   });
 
+  it('a two-character scan is still a scan', async () => {
+    render(<ScannerCard />);
+    await typeKeys(document.body, ['4', '2', 'Enter'], 10);
+    expect(screen.getByTestId('scanner-last').textContent).toBe('Last scan: 42 · just now');
+  });
+
+  it('key repeat from a held-down key is not a scan', async () => {
+    const onEnter = vi.fn();
+    render(<><Field onEnter={onEnter} /><ScannerCard /></>);
+    const input = screen.getByLabelText('Other field') as HTMLInputElement;
+    input.focus();
+    fireEvent.keyDown(input, { key: 'a' });
+    fireEvent.change(input, { target: { value: 'a' } });
+    for (let i = 0; i < 5; i += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+      if (fireEvent.keyDown(input, { key: 'a', repeat: true })) {
+        fireEvent.change(input, { target: { value: `${input.value}a` } });
+      }
+    }
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(input.value).toBe('aaaaaa');
+    expect(onEnter).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('scanner-last')).toBeNull();
+  });
+
   it('slow_typing_in_a_field_is_not_captured', async () => {
     const onEnter = vi.fn();
     render(<><Field onEnter={onEnter} /><ScannerCard /></>);

@@ -3,6 +3,7 @@
  *  Offline), the details list (missing values hide their rows), Check
  *  reader, web mode, and the 5 s / 30 s polls. */
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -228,6 +229,31 @@ describe('ReaderCard', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
     expect(api.getReaderStatus).toHaveBeenCalledTimes(7);
     expect(api.getReaderDevice).toHaveBeenCalledTimes(2);
+  });
+
+  it('under StrictMode polls status once per 5 s and stops on unmount', async () => {
+    const { unmount } = render(
+      <StrictMode>
+        <MemoryRouter initialEntries={['/settings']}>
+          <Routes><Route path="/settings" element={<ReaderCard />} /></Routes>
+        </MemoryRouter>
+      </StrictMode>,
+    );
+    await flush();
+    const base = api.getReaderStatus.mock.calls.length;
+    const baseDevice = api.getReaderDevice.mock.calls.length;
+    for (let i = 1; i <= 4; i += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(api.getReaderStatus).toHaveBeenCalledTimes(base + i);
+    }
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(api.getReaderDevice).toHaveBeenCalledTimes(baseDevice + 1);
+    const before = api.getReaderStatus.mock.calls.length;
+    const beforeDevice = api.getReaderDevice.mock.calls.length;
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(before);
+    expect(api.getReaderDevice).toHaveBeenCalledTimes(beforeDevice);
   });
 
   it('button_rows_use_the_bottom_pinned_actions_slot', async () => {

@@ -55,18 +55,24 @@ export default function ReaderCard() {
   const [device, setDevice] = useState<ReaderDevice | null>(null);
   const [checking, setChecking] = useState(false);
   const [check, setCheck] = useState<CheckView>(null);
+  // Only for Check reader. Set on mount as well as cleared on unmount, so
+  // StrictMode's dev-mode remount doesn't leave the card deaf to its answer.
   const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   useEffect(() => {
     if (!laptop) return undefined;
-    alive.current = true;
+    // Per effect run, not a shared ref: under StrictMode the first run's
+    // in-flight polls must not reschedule into timers its cleanup missed.
+    let cancelled = false;
     let statusTimer: number | undefined;
     let deviceTimer: number | undefined;
     // Each poll waits for the previous one to settle, so calls never overlap.
     const pollStatus = async () => {
+      if (cancelled) return;
       try {
         const s = await getReaderStatus();
-        if (!alive.current) return;
+        if (cancelled) return;
         setFailed(false);
         setPaired(s.reader !== null);
         if (s.busy) {
@@ -76,25 +82,26 @@ export default function ReaderCard() {
           setStatus(s);
         }
       } catch {
-        if (!alive.current) return;
+        if (cancelled) return;
         setBusy(false);
         setFailed(true);
       }
-      if (alive.current) statusTimer = window.setTimeout(() => { void pollStatus(); }, STATUS_MS);
+      if (!cancelled) statusTimer = window.setTimeout(() => { void pollStatus(); }, STATUS_MS);
     };
     const pollDevice = async () => {
+      if (cancelled) return;
       try {
         const d = await getReaderDevice();
-        if (alive.current) setDevice(d);
+        if (!cancelled) setDevice(d);
       } catch {
         // Keep the last details on screen; the status poll reports Offline.
       }
-      if (alive.current) deviceTimer = window.setTimeout(() => { void pollDevice(); }, DEVICE_MS);
+      if (!cancelled) deviceTimer = window.setTimeout(() => { void pollDevice(); }, DEVICE_MS);
     };
     void pollStatus();
     void pollDevice();
     return () => {
-      alive.current = false;
+      cancelled = true;
       window.clearTimeout(statusTimer);
       window.clearTimeout(deviceTimer);
     };

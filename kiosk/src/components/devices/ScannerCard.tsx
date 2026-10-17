@@ -14,7 +14,7 @@ import DeviceCard from './DeviceCard';
 /** Keys closer together than this are a scanner, not a person. */
 const BURST_GAP_MS = 50;
 /** A burst shorter than this is a fast keypress, not a scan. */
-const MIN_SCAN_CHARS = 3;
+const MIN_SCAN_CHARS = 2;
 const AGE_TICK_MS = 15_000;
 
 type TextField = HTMLInputElement | HTMLTextAreaElement;
@@ -51,6 +51,8 @@ export default function ScannerCard() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // A held-down key repeats; a scanner never sends repeats.
+      if (e.repeat) return;
       const now = Date.now();
       const b = burst.current;
       const fast = b !== null && now - b.lastAt < BURST_GAP_MS;
