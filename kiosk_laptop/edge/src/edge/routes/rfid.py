@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Request
 from edge import laptop_setup
 from edge.deps import err, require_session
 from edge.rfid import alarm, checks, events, pairing, tagreads, ziotc
+from edge.rfid.reader_report import current_snapshot
 from edge.rfid.ziotc import ReaderError
 from edge.sessions import EdgeSession
 
@@ -82,6 +83,22 @@ async def pair(request: Request) -> dict:
 @router.get("/reader")
 async def reader(request: Request) -> dict | None:
     return pairing.current(request.app.state.store)
+
+
+@router.get("/device")
+async def device(request: Request) -> dict:
+    """What the kiosk Devices tab shows for the paired reader. Reads only the
+    edge's own store and cached snapshot; it never contacts the reader."""
+    st = request.app.state
+    row = pairing.current_row(st.store)
+    if row is None:
+        return {"reader": None}
+    last = st.store.one("SELECT MAX(received_at) AS at FROM raw_tag_reads "
+                        "WHERE reader_serial = ?", (row["serial"],))
+    return {"reader": {"serial": row["serial"], "model": row["model"], "ip": row["ip"],
+                       "paired_at": row["paired_at"]},
+            "snapshot": current_snapshot(st),
+            "last_read_at": last["at"] if last else None}
 
 
 def _token(st) -> str | None:

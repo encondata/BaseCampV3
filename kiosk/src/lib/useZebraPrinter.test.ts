@@ -124,6 +124,25 @@ describe('useZebraPrinter', () => {
   });
 });
 
+describe('a printer opened after unmount', () => {
+  it.each(['connect', 'connectTo'] as const)('is closed, not adopted (%s)', async (how) => {
+    const dev = fakeDevice();
+    let finishOpen: (() => void) | null = null;
+    dev.open = () => new Promise<void>((r) => { finishOpen = () => { (dev as { opened: boolean }).opened = true; dev.log.push('open'); r(); }; });
+    const usb = fakeUsb(dev);
+    const { result, unmount } = renderHook(() => useZebraPrinter(usb));
+    let pending: Promise<void> = Promise.resolve();
+    act(() => { pending = how === 'connect' ? result.current.connect() : result.current.connectTo(dev); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(finishOpen).not.toBeNull();
+    unmount();
+    finishOpen!();
+    await pending;
+    await new Promise((r) => setTimeout(r, 0));
+    expect(dev.log).toEqual(['open', 'claim', 'release', 'close']);
+  });
+});
+
 describe('printer tools additions', () => {
   it('query sends the command, returns the reply, and logs both', async () => {
     const dev = fakeDevice(); dev.reply = '\x02ZD421-203dpi ZPL,V92.21.16Z,8,8192KB,X\x03';

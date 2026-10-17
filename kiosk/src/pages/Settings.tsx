@@ -10,13 +10,14 @@
  *  Container pack / unpack, Truck load / unload) — admin-gated on
  *  purpose, because each decides what every scan of its kind on this
  *  kiosk records and a worker should not be able to change what the
- *  move's data says. The remaining tab bodies are placeholders for now. The active tab lives in the `tab` search
+ *  move's data says. Devices shows the RFID reader, label printer and barcode scanner cards. The remaining tab bodies are placeholders for now. The active tab lives in the `tab` search
  *  param, so a link can deep-link straight to a section. */
 
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
+import DevicesPanel from '../components/devices/DevicesPanel';
 import EdgePanel from '../components/EdgePanel';
 import HslPicker from '../components/HslPicker';
 import LocalDataInspector from '../components/LocalDataInspector';
@@ -176,6 +177,7 @@ export default function Settings() {
         <p className="page-hint">{active.blurb}</p>
         {active.id === 'this-kiosk' && <ThisKioskPanel />}
         {active.id === 'edge' && <EdgePanel />}
+        {active.id === 'devices' && <DevicesPanel />}
         {active.id === 'appearance' && (
           <>
             <div className="settings-row">
@@ -319,7 +321,7 @@ export default function Settings() {
         )}
         {active.id === 'developer' && <LocalDataInspector />}
         {active.id !== 'this-kiosk' && active.id !== 'appearance' && active.id !== 'sound'
-          && active.id !== 'admin' && active.id !== 'edge' && (
+          && active.id !== 'admin' && active.id !== 'edge' && active.id !== 'devices' && (
           <div className="kiosk-placeholder">
             <p>This section is not available yet.</p>
           </div>
