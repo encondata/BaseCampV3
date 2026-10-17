@@ -328,6 +328,9 @@ class HeartbeatIn(BaseModel):
     login_method: Literal["password", "link"] | None = None
     # Clear Setup acknowledgment: the request id this kiosk has just applied.
     setup_cleared: uuid.UUID | None = None
+    # RFID Station's reader snapshot. Deliberately loose: validated by
+    # KioskReaderReport inside the route so a bad one never fails the beat.
+    reader: dict[str, Any] | None = None
 
     @field_validator("serial", "name")
     @classmethod
@@ -2905,6 +2908,10 @@ class DeviceItem(BaseModel):
     approved_by_name: str | None = None
     secret_mismatch: bool = False
     agent_source_ip: str | None = None
+    # fixed readers only (derived in routes/devices.py); None for others
+    make: str | None = None
+    reader_status: Literal["reading", "standby", "offline"] | None = None
+    antennas_total: int | None = None
 
 
 class DevicePatch(BaseModel):

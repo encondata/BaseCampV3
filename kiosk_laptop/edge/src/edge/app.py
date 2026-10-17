@@ -32,6 +32,7 @@ from edge.routes import proxy
 from edge.routes import rfid as rfid_routes
 from edge.rfid import checks
 from edge.rfid.discovery import Discovery
+from edge.rfid.reader_report import ReaderReporter
 from edge.sync import Syncer
 from edge.upstream import Upstream
 
@@ -59,12 +60,18 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     async def lifespan(app: FastAPI):
         runner = Background(app.state) if settings.background else None
         app.state.background = runner
+        # the reader snapshot needs no internet, so it doesn't ride Background's probe loop
+        reporter = ReaderReporter(app.state) if settings.background else None
         try:
             if runner:
                 runner.start()
+            if reporter:
+                reporter.start()
             yield
         finally:
             try:
+                if reporter:
+                    await reporter.stop()
                 if runner:
                     await runner.stop()
             finally:
@@ -93,6 +100,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
         transport=lambda ip: app.state.reader_transport)
     app.state.reader_transport = None  # tests hand in a fake reader's transport
     app.state.pair_lock = asyncio.Lock()
+    app.state.reader_snapshot = None  # ReaderReporter's latest (rfid/reader_report.py)
     app.state.gateway_knock = checks.knock
     app.state.syncer = Syncer(app.state.store, app.state.upstream,
                               lambda: app.state.identity.serial)

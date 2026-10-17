@@ -20,7 +20,8 @@ change until `PUT /cloud/stop` (the real reader's exact refusal isn't known;
 the edge case is from field experience). `stops` and `starts` record stop and start calls
 (`starts` keeps each JSON body); `/cloud/status` reports `radioActivity` (the real FX9600's
 spelling; Zebra's OpenAPI example misspells it `radioActivitiy`) from `reading`.
-`PUT /cloud/start` while reading answers the real reader's 422, "Start currently
+`/cloud/network` answers `network` (the real FX9600's shape), or a 404 when
+`network_fails` is set. `PUT /cloud/start` while reading answers the real reader's 422, "Start currently
 ongoing. Issue a stop prior to issuing a start."
 
 Unauthenticated, the fake answers like ZIOTC does in the OpenAPI examples:
@@ -83,7 +84,7 @@ VERSION = {
 }
 
 STATUS = {
-    "uptime": "26 days 01:11:17", "systemTime": "2020-01-08T15:36:53+00:00",
+    "uptime": "357:6:17", "systemTime": "2020-01-08T15:36:53+00:00",
     "ram": {"total": "26098076", "free": "195612672", "used": "65368064"},
     "cpu": {"user": "42", "system": "32"},
     "radioConnection": "connected",
@@ -93,6 +94,11 @@ STATUS = {
     "powerNegotiation": "DISABLED", "ntp": {"offset": 120, "reach": 377},
     "interfaceConnectionStatus": {"data": []},
 }
+
+
+NETWORK = {"dhcp": True, "dnsAddress": "10.10.48.1", "gatewayAddress": "10.10.48.1",
+           "hostName": "FX9600647D23", "ipAddress": "10.10.48.119",
+           "macAddress": "C4:7D:CC:64:7D:23", "subnetMask": "255.255.254.0"}
 
 
 def default_config() -> dict:
@@ -135,6 +141,8 @@ class FakeReader:
         self.login_style = login_style  # json_message | json_token | text
         self.version = {**VERSION, "model": model, "serialNumber": serial}
         self.status = copy.deepcopy(STATUS)
+        self.network = copy.deepcopy(NETWORK)
+        self.network_fails = False  # /cloud/network answers 404, like older firmware
         self.config = default_config()
         # index of each password tried (None: one not on our list); only
         # requests that carried credentials count
@@ -210,6 +218,15 @@ class FakeReader:
         @app.get("/cloud/version")
         async def version(request: Request):
             return reader.version if bearer_ok(request) else unauthorized()
+
+        @app.get("/cloud/network")
+        async def network(request: Request):
+            if not bearer_ok(request):
+                return unauthorized()
+            if reader.network_fails:
+                return JSONResponse({"code": 7, "message": "/cloud/network is not a valid URI"},
+                                    status_code=404)
+            return reader.network
 
         @app.get("/cloud/status")
         async def status(request: Request):

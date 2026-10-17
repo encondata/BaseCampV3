@@ -62,6 +62,7 @@ from serversherpa.services import move_password as move_password_service
 from serversherpa.services import station_keys
 from serversherpa.services import timeclock
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.services.fixed_readers import apply_reader_report
 from serversherpa.services.password_policy import load_policy
 from serversherpa.services.storage import presign_get
 
@@ -484,6 +485,9 @@ async def heartbeat(
                   entity_id=str(device.id), action="setup_cleared",
                   changes={"request_id": str(body.setup_cleared),
                            "requested_by": str(requested_by) if requested_by else None})
+    if body.reader is not None:
+        await apply_reader_report(db, kiosk=device, report=body.reader,
+                                  actor_id=actor.person.id)
     await db.commit()
     return HeartbeatOut(device_id=device.id, name=device.name,
                         registration=registration_state(device.token_expires_at, now),

@@ -74,7 +74,32 @@ def _device_query():
             .outerjoin(Approver, Approver.id == Device.approved_by))
 
 
-def _row_to_item(row) -> dict:
+# A fixed reader whose last_seen_at is older than this shows Offline.
+READER_STALE_AFTER = timedelta(minutes=3)
+
+
+def reader_status_for(d: Device, now: datetime) -> str | None:
+    """reading / standby / offline for a fixed reader; None for any other
+    device type. `now` is passed in so the boundary is testable."""
+    if d.device_type != "fixed_reader":
+        return None
+    seen = d.last_seen_at
+    if seen is not None and seen.tzinfo is None:
+        seen = seen.replace(tzinfo=UTC)
+    if seen is None or now - seen > READER_STALE_AFTER:
+        return "offline"
+    if (d.raw_info or {}).get("reachable") is False:
+        # the laptop could not reach the reader: Offline at once
+        return "offline"
+    return "reading" if (d.raw_info or {}).get("reading") is True \
+        else "standby"
+
+
+def _real_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _row_to_item(row, now: datetime) -> dict:
     (d, site_name, connected, ss_label, ss_color, raw_n, proc_n,
      initiative_name, session_preferred, session_first, session_last,
      clear_preferred, clear_first, clear_last,
@@ -82,9 +107,28 @@ def _row_to_item(row) -> dict:
     session_person_name = (
         f"{session_preferred or session_first} {session_last}"
         if session_last is not None else None)
+    is_reader = d.device_type == "fixed_reader"
+    raw = d.raw_info or {}
+    reader_status = reader_status_for(d, now)
+    mac = d.mac
+    if (mac is None and is_reader and isinstance(raw.get("mac"), str)
+            and len(raw["mac"]) <= 32):
+        mac = raw["mac"]
+    tags_read_24h = (raw_n or 0) + (proc_n or 0)
+    if (is_reader and raw.get("via_kiosk_id")
+            and reader_status != "offline"
+            and _real_int(raw.get("reported_tags_24h"))
+            and raw["reported_tags_24h"] >= 0):
+        tags_read_24h = raw["reported_tags_24h"]
     return {
+        "make": (raw["make"] if is_reader and isinstance(raw.get("make"), str)
+                 and len(raw["make"]) <= 64 else None),
+        "reader_status": reader_status,
+        "antennas_total": (raw["antennas_total"] if is_reader
+                           and _real_int(raw.get("antennas_total"))
+                           and raw["antennas_total"] > 0 else None),
         "id": d.id, "device_type": d.device_type, "name": d.name,
-        "serial": d.serial, "mac": d.mac,
+        "serial": d.serial, "mac": mac,
         "site_id": d.site_id, "site_name": site_name,
         "wan_ip": d.wan_ip, "lan_ip": d.lan_ip,
         "model": d.model, "version": d.version,
@@ -95,7 +139,7 @@ def _row_to_item(row) -> dict:
         "connection_type": d.connection_type,
         "scan_status": d.scan_status,
         "scan_status_label": ss_label, "scan_status_color": ss_color,
-        "tags_read_24h": (raw_n or 0) + (proc_n or 0),
+        "tags_read_24h": tags_read_24h,
         "vpn_status": d.vpn_status,
         "token_expires_at": d.token_expires_at,
         "connected_count": connected or 0,
@@ -130,7 +174,7 @@ async def _item_for(db: DbSession, device_id: uuid.UUID) -> dict:
     """One device re-read through the same joined shape as the list."""
     row = (await db.execute(
         _device_query().where(Device.id == device_id))).one()
-    return _row_to_item(row)
+    return _row_to_item(row, datetime.now(UTC))
 
 
 _PATCH_FIELDS = {"name", "sub_type", "mac", "lan_ip", "version",
@@ -159,7 +203,8 @@ async def list_devices(
     if device_type is not None:
         query = query.where(Device.device_type == device_type)
     rows = (await db.execute(query)).all()
-    return [_row_to_item(row) for row in rows]
+    now = datetime.now(UTC)
+    return [_row_to_item(row, now) for row in rows]
 
 
 # Hardcoded to match the button's own label; deliberately not configurable.
