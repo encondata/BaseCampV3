@@ -415,3 +415,52 @@ async def test_sound_in_use_cannot_be_deleted(client, db, seeded_user, store):
     assert r.status_code == 409 and r.json()["detail"]["code"] == "in_use"
     assert len(store) == 1
     assert await db.get(KioskSound, uuid.UUID(sid)) is not None
+
+
+# ── no-op saves, null body, non-kiosk detail ─────────────────────────
+
+async def _config_audits(db, device_id):
+    return len((await db.scalars(select(AuditLog).where(
+        AuditLog.entity_id == str(device_id), AuditLog.action == "config_change"))).all())
+
+
+async def test_identical_put_is_a_no_op(client, db, seeded_user):
+    device = await _kiosk(db)
+    hdrs = await _super_admin_headers(db, client)
+    first = (await client.put(f"/devices/{device.id}/config", headers=hdrs,
+                              json=_doc(flash_ms=500))).json()
+    r = await client.put(f"/devices/{device.id}/config", headers=hdrs, json=_doc(flash_ms=500))
+    assert r.status_code == 200, r.text
+    assert r.json()["config_version"] == 1
+    assert r.json()["config_changed_at"] == first["config_changed_at"]
+    assert await _config_audits(db, device.id) == 1
+
+
+async def test_second_reset_is_a_no_op(client, db, seeded_user):
+    device = await _kiosk(db, config=_doc(flash_ms=900), config_version=2)
+    hdrs = await _super_admin_headers(db, client)
+    assert (await client.post(f"/devices/{device.id}/config/reset",
+                              headers=hdrs)).json()["config_version"] == 3
+    r = await client.post(f"/devices/{device.id}/config/reset", headers=hdrs)
+    assert r.status_code == 200 and r.json()["config_version"] == 3
+    assert await _config_audits(db, device.id) == 1
+
+
+async def test_null_body_is_bad_config(client, db, seeded_user):
+    device = await _kiosk(db)
+    hdrs = await _super_admin_headers(db, client)
+    r = await client.put(f"/devices/{device.id}/config", headers=hdrs | {
+        "Content-Type": "application/json"}, content=b"null")
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {"code": "bad_config", "field": "config",
+                                  "message": r.json()["detail"]["message"]}
+    assert (await _fresh(db, device.id)).config_version == 0
+
+
+async def test_non_kiosk_detail_has_no_sync_state(client, db, seeded_user):
+    router = Device(device_type="router", name="gl-2")
+    db.add(router)
+    await db.commit()
+    hdrs = await login_staff(client, seeded_user)
+    body = (await client.get(f"/devices/{router.id}", headers=hdrs)).json()
+    assert body["sync_state"] is None and body["scan_type_options"] == []

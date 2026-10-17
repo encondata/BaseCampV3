@@ -2979,7 +2979,7 @@ class DeviceDetail(DeviceItem):
     config_changed_by_name: str | None
     config_reported_at: datetime | None
     config_applied_version: int | None
-    sync_state: Literal["in_sync", "pending", "waiting_first_report"]
+    sync_state: Literal["in_sync", "pending", "waiting_first_report"] | None
     setup: DeviceSetupOut
     scan_type_options: list[ScanTypeOption]
 

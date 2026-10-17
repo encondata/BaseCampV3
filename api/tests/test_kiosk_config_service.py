@@ -56,9 +56,15 @@ def test_default_config_values():
 # ── normalize ────────────────────────────────────────────────────────
 
 def test_normalize_none_and_empty_give_defaults():
+    assert normalize(None, known_sounds=set(), strict=False) == DEFAULT_CONFIG
     for strict in (True, False):
-        assert normalize(None, known_sounds=set(), strict=strict) == DEFAULT_CONFIG
         assert normalize({}, known_sounds=set(), strict=strict) == DEFAULT_CONFIG
+
+
+def test_strict_normalize_refuses_none():
+    with pytest.raises(ConfigError) as exc:
+        normalize(None, known_sounds=set(), strict=True)
+    assert exc.value.field == "config"
 
 
 def test_normalize_fills_missing_fields_and_sections():
@@ -469,6 +475,18 @@ async def test_portal_edit_keeps_passthrough_sections(db):
     await apply_portal_edit(db, d, copy.deepcopy(DEFAULT_CONFIG), actor_id=p.id,
                             now=NOW + timedelta(minutes=1))
     assert d.config["android_rfid"] == {"power": 270}
+
+
+async def test_identical_portal_edit_is_a_no_op(db):
+    d = await _kiosk(db)
+    p = await _person(db)
+    assert await apply_portal_edit(db, d, _with(flash_ms=1000), actor_id=p.id, now=NOW)
+    later = NOW + timedelta(minutes=5)
+    # same content, keys in another order: nothing stored, changed_at kept
+    edit = dict(reversed(list(_with(flash_ms=1000).items())))
+    assert await apply_portal_edit(db, d, edit, actor_id=p.id, now=later) is False
+    assert d.config_version == 1 and d.config_changed_at == NOW
+    assert len(await _audits(db, d)) == 1
 
 
 # ── reply_fields ─────────────────────────────────────────────────────

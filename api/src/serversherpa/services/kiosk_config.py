@@ -194,10 +194,12 @@ def normalize(doc: dict | None, *, known_sounds: set[str], strict: bool) -> dict
     Missing sections and fields get their defaults; unknown sections and
     unknown fields inside known sections are kept as they are. A bad value
     raises ConfigError when `strict` (portal edits) and is replaced by its
-    default otherwise (kiosk reports), keeping everything else."""
-    if doc is None:
-        doc = {}
+    default otherwise (kiosk reports), keeping everything else. A
+    non-dict `doc` (None included) is ConfigError("config") when strict
+    and all defaults otherwise."""
     if not isinstance(doc, dict):
+        # strict: a portal edit must send a document (null included);
+        # lenient: a kiosk's missing or broken report reads as defaults
         if strict:
             raise ConfigError("config", "must be a settings document")
         doc = {}
@@ -347,15 +349,21 @@ async def accept_kiosk_report(db: AsyncSession, device: Device, doc: dict | None
 
 
 async def apply_portal_edit(db: AsyncSession, device: Device, doc: dict | None, *,
-                            actor_id: uuid.UUID | None, now: datetime) -> None:
+                            actor_id: uuid.UUID | None, now: datetime) -> bool:
     """Store a super admin's edit as the new version (strict: ConfigError
-    on a bad value, nothing changed)."""
+    on a bad value, nothing changed). Returns False, storing nothing, when
+    the result equals the stored config: a no-op save must not move
+    config_changed_at forward, or a kiosk's unreported local edit could
+    lose the merge to it."""
     new = normalize(doc, known_sounds=await known_sound_ids(db), strict=True)
     new = _carry_passthrough(new, device.config, doc)
     problem = _cap_problem(new)
     if problem is not None:
         raise ConfigError("config", problem)
+    if device.config is not None and _canonical(new) == _canonical(device.config):
+        return False
     _store(db, device, new, source="portal", changed_at=_utc(now), actor_id=actor_id)
+    return True
 
 
 def reply_fields(device: Device, applied_version: int | None) -> dict:

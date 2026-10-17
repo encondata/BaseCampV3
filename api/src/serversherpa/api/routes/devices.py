@@ -627,7 +627,7 @@ async def _detail_for(db: DbSession, device_id: uuid.UUID) -> dict:
         "config_changed_by_name": _display(changed_by) if changed_by else None,
         "config_reported_at": d.config_reported_at,
         "config_applied_version": d.config_applied_version,
-        "sync_state": sync_state_for(d),
+        "sync_state": sync_state_for(d) if d.device_type == "kiosk" else None,
         "setup": {
             "initiative_id": d.current_initiative_id,
             "initiative_name": initiative.name if initiative else None,
@@ -679,11 +679,13 @@ async def _store_portal_config(db: DbSession, device_id: uuid.UUID, doc: Any,
                          .with_for_update(read=True))
     now = datetime.now(UTC)
     try:
-        await kiosk_config.apply_portal_edit(db, device, doc, actor_id=actor.person.id, now=now)
+        changed = await kiosk_config.apply_portal_edit(
+            db, device, doc, actor_id=actor.person.id, now=now)
     except ConfigError as exc:
         await db.rollback()
         raise _err(422, "bad_config", field=exc.field, message=exc.message) from None
-    device.updated_at = now
+    if changed:
+        device.updated_at = now
     await db.commit()
     return await _detail_for(db, device_id)
 
@@ -691,12 +693,14 @@ async def _store_portal_config(db: DbSession, device_id: uuid.UUID, doc: Any,
 @router.put("/{device_id}/config", response_model=DeviceDetail)
 async def put_device_config(
     device_id: uuid.UUID, db: DbSession,
-    doc: Annotated[Any, Body()],
+    doc: Annotated[Any, Body()] = None,
     actor: AuthContext = require_permission("scanning_hardware", "change"),
 ) -> dict:
     """Replace the kiosk's whole config document (strictly validated: a bad
     value is 422 bad_config with its dotted `field`). Sections the portal
-    doesn't own (android_rfid, ios, unknown) are kept when left out."""
+    doesn't own (android_rfid, ios, unknown) are kept when left out. A
+    null or non-object body is 422 bad_config (field "config"). Content
+    equal to the stored config is a no-op: no version bump, no audit."""
     _require_super_admin(actor)
     return await _store_portal_config(db, device_id, doc, actor)
 
