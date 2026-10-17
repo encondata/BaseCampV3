@@ -3,6 +3,7 @@
  *  narrow ones; the scanner card spans the full width. Each card polls or
  *  listens only while this panel is mounted. */
 
+import PrinterCard from './PrinterCard';
 import ReaderCard from './ReaderCard';
 import ScannerCard from './ScannerCard';
 
@@ -10,8 +11,7 @@ export default function DevicesPanel() {
   return (
     <div className="devices-grid">
       <ReaderCard />
-      {/* ── Label printer slot (Task 3): render <PrinterCard /> here, between
-           the reader and the scanner. ── */}
+      <PrinterCard />
       <ScannerCard />
     </div>
   );

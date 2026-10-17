@@ -1020,4 +1020,6 @@
 .device-scan-area { margin-bottom: 10px; padding: 10px 12px; border: 1px dashed var(--paper-line); border-radius: 8px; font-size: 13px; color: var(--text-mute); }
 .device-scan-area p { margin: 0; }
 .device-scan-last { margin-top: 4px; font-family: var(--font-mono); font-weight: 600; color: var(--text-dark); overflow-wrap: anywhere; }
+.device-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+.device-note { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 10px; font-size: 12.5px; color: var(--text-mute); }
 .device-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--paper-line); }

@@ -35,6 +35,9 @@ export interface ZebraPrinter {
   supported: boolean;
   connected: boolean;
   productName: string | null;
+  /** The held printer, so a caller can tell it apart from the other
+   *  allowed ones in `knownDevices()`. Optional for hand-built fakes. */
+  device?: UsbDeviceLike | null;
   notice: PrinterNotice | null;
   clearNotice(): void;
   connect(): Promise<void>;
@@ -202,6 +205,7 @@ export function useZebraPrinter(usbOverride?: UsbApi | null): ZebraPrinter {
     supported: usb !== null,
     connected: device !== null,
     productName: device?.productName ?? null,
+    device,
     notice,
     clearNotice: () => setNotice(null),
     connect, connectTo, disconnect, ensureOpen, send, waitForIdle,
