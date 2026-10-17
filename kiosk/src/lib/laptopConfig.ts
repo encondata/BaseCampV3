@@ -27,7 +27,7 @@ import { subscribeCheckpoints } from './checkpointSettings';
 import { subscribeDevMode } from './devMode';
 import {
   OWNED_SECTIONS, SOUND_UPLOAD_WAIT_MS, applyConfig, collectConfig, isApplyingConfig,
-  readConfigState, type ConfigDoc,
+  ownedSectionsAreDefault, readConfigState, type ConfigDoc,
 } from './kioskConfig';
 import { isLaptop } from './platform';
 import { remappingSounds, subscribeSoundSettings, uploadLocalSounds } from './sound';
@@ -93,11 +93,16 @@ function mergeLocal(
   return out as ConfigDoc;
 }
 
-/** Applies an edge copy unless this browser already holds that version, or
- *  a local edit is waiting to be sent (that edit goes first). */
+/** Applies an edge copy unless this browser already holds that version
+ *  with that document, or a local edit is waiting to be sent (that edit
+ *  goes first). The document is compared too: an edge whose store was
+ *  reset counts its versions from 1 again, so a matching number alone
+ *  proves nothing. */
 function adopt(current: EdgeConfig): void {
   if (!isObj(current.doc) || readPending()) return;
-  if (current.version === readConfigState().applied_version) return;
+  const st = readConfigState();
+  if (current.version === st.applied_version
+      && JSON.stringify(current.doc) === JSON.stringify(st.base)) return;
   applyConfig(current.doc, current.version);
 }
 
@@ -178,6 +183,10 @@ export async function pollEdgeConfig(): Promise<void> {
     // older than what this browser now holds. The next poll looks again.
     if (gen !== generation || readConfigState().applied_version !== appliedBefore) return;
     if (current.doc === null) {
+      // A browser nobody customized has nothing to hand over: seeding the
+      // defaults would overwrite a customized browser's settings (and the
+      // laptop's on the portal). Wait for one, or for the portal's copy.
+      if (ownedSectionsAreDefault(collectConfig())) return;
       if (!await soundsReady()) return;
       const seedGen = generation;
       const seeded = await putEdgeConfig({ doc: collectConfig(), seed: true });

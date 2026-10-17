@@ -37,15 +37,17 @@
  */
 
 import type { HeartbeatConfigFields, HeartbeatResult } from './api';
-import { readAppearance, subscribeAppearance, writeAppearance, type Appearance, type Hsl } from './appearance';
 import {
-  readCheckpoint, subscribeCheckpoints, writeCheckpoint, type CheckpointId,
+  DEFAULT_APPEARANCE, readAppearance, subscribeAppearance, writeAppearance, type Appearance, type Hsl,
+} from './appearance';
+import {
+  defaultCheckpoint, readCheckpoint, subscribeCheckpoints, writeCheckpoint, type CheckpointId,
 } from './checkpointSettings';
 import { readDevMode, subscribeDevMode, writeDevMode } from './devMode';
 import { readKioskSetup, writeKioskSetup } from './kioskSetup';
 import { isLaptop } from './platform';
 import {
-  cacheChosenSounds, parseAlarmChoice, parseSoundChoice, readSoundSettings, remappingSounds,
+  DEFAULT_SOUND_SETTINGS, cacheChosenSounds, parseAlarmChoice, parseSoundChoice, readSoundSettings, remappingSounds,
   subscribeSoundSettings, uploadLocalSounds, writeSoundSettings, type SoundSettings,
 } from './sound';
 
@@ -199,6 +201,38 @@ function asHsl(value: unknown): Hsl | null {
     typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= max;
   return ok(value.h, 360) && ok(value.s, 100) && ok(value.l, 100)
     ? { h: value.h as number, s: value.s as number, l: value.l as number } : null;
+}
+
+function canon(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canon).join(',')}]`;
+  if (isObj(value)) {
+    return `{${Object.keys(value).sort()
+      .map((k) => `${JSON.stringify(k)}:${canon(value[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/** The owned sections' fields as a fresh kiosk has them (the stores'
+ *  defaults; mirrors the portal's DEFAULT_CONFIG). */
+export function defaultOwnedConfig(): Record<(typeof OWNED_SECTIONS)[number], Record<string, unknown>> {
+  const checkpoints: Record<string, unknown> = {};
+  for (const [key, id] of CHECKPOINTS) checkpoints[key] = defaultCheckpoint(id);
+  return {
+    appearance: clone(DEFAULT_APPEARANCE) as unknown as Record<string, unknown>,
+    sound: clone(DEFAULT_SOUND_SETTINGS) as unknown as Record<string, unknown>,
+    checkpoints,
+    developer: { dev_mode: false },
+  };
+}
+
+/** True when every store-backed field of `doc`'s owned sections equals the
+ *  default: a browser nobody has customized (unknown keys don't count). */
+export function ownedSectionsAreDefault(doc: Record<string, unknown>): boolean {
+  const defaults = defaultOwnedConfig();
+  return OWNED_SECTIONS.every((name) => {
+    const sec = isObj(doc[name]) ? doc[name] as Record<string, unknown> : {};
+    return Object.entries(defaults[name]).every(([key, value]) => canon(sec[key]) === canon(value));
+  });
 }
 
 /** Runs `fn`, swallowing anything it throws: one bad section must never
@@ -434,9 +468,21 @@ export function handleConfigReply(
     }
     const st = readConfigState();
     const version = finiteOrNull(result.config_version);
-    // A reply from an older, overlapping beat never rolls back a newer
-    // applied config.
-    const stale = version !== null && st.applied_version !== null && version <= st.applied_version;
+    // A version below the one this beat sent can only mean the portal's
+    // row was recreated (Clear Offline, a delete, a database revert) and
+    // restarted its versions: take it. A reply from an older, overlapping
+    // beat can never be below what its own beat sent.
+    const sent = finiteOrNull(beat.fields.config_applied_version);
+    const reset = version !== null && sent !== null && version < sent;
+    // Otherwise a reply at or below the applied version is from an older,
+    // overlapping beat and never rolls back a newer applied config.
+    const stale = !reset && version !== null && st.applied_version !== null
+      && version <= st.applied_version;
+    if (reset && !isObj(result.config)) {
+      // Nothing stored there yet: acknowledge its version and report the
+      // whole config on the next beat rather than up to an hour later.
+      writeState({ applied_version: version, last_report_at: null });
+    }
     if (isObj(result.config) && !stale) {
       if (!st.dirty && generation === beat.generation) {
         applyConfig(result.config, version);

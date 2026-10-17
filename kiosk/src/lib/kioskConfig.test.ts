@@ -25,7 +25,7 @@ import { readDevMode, writeDevMode } from './devMode';
 import { startHeartbeat } from './heartbeat';
 import {
   REPORT_INTERVAL_MS, applyConfig, collectConfig, configBeatFields, handleConfigReply,
-  installConfigTracking, readConfigState, resetConfigSyncForTest,
+  installConfigTracking, ownedSectionsAreDefault, readConfigState, resetConfigSyncForTest,
 } from './kioskConfig';
 import { readKioskSetup, writeKioskSetup } from './kioskSetup';
 import { closeDb, putRows } from './localDb';
@@ -105,6 +105,18 @@ afterEach(() => {
 describe('collect and apply', () => {
   it('a fresh kiosk collects the defaults', () => {
     expect(collectConfig()).toEqual(DEFAULT_DOC);
+  });
+
+  it('knows a browser nobody customized (unknown keys and key order do not count)', () => {
+    expect(ownedSectionsAreDefault(collectConfig())).toBe(true);
+    expect(ownedSectionsAreDefault(DEFAULT_DOC)).toBe(true);
+    expect(ownedSectionsAreDefault({
+      ...DEFAULT_DOC,
+      sound: { ...DEFAULT_DOC.sound, good: { id: 'chime', kind: 'builtin' }, extra: 1 },
+    })).toBe(true);
+    writeCheckpoint('truckLoad', 'loaded');
+    expect(ownedSectionsAreDefault(collectConfig())).toBe(false);
+    expect(ownedSectionsAreDefault(PORTAL_DOC)).toBe(false);
   });
 
   it('round-trips a whole document, unknown and other-platform sections byte-for-byte', () => {
@@ -420,6 +432,35 @@ describe('review fixes', () => {
     const c = (await configBeatFields())!;
     handleConfigReply(reply({ config: v3, config_version: 3 }) as never, c);
     expect(readDevMode()).toBe(false);
+  });
+
+  it('a reply below the version its beat sent is a reset (the row was recreated): applied', async () => {
+    installConfigTracking();
+    const first = (await configBeatFields())!;
+    handleConfigReply(reply({ config: PORTAL_DOC, config_version: 7 }) as never, first);
+    expect(readConfigState().applied_version).toBe(7);
+    const beat = (await configBeatFields())!;
+    expect(beat.fields.config_applied_version).toBe(7);
+    // Clear Offline / delete / DB revert: the portal restarted at version 1
+    const v1 = { ...PORTAL_DOC, developer: { dev_mode: false } };
+    handleConfigReply(reply({ config: v1, config_version: 1 }) as never, beat);
+    expect(readDevMode()).toBe(false);
+    expect(readConfigState().applied_version).toBe(1);
+    expect((await configBeatFields())!.fields.config_applied_version).toBe(1);
+  });
+
+  it('a reset reply with no document resets the applied version and reports on the next beat', async () => {
+    installConfigTracking();
+    const first = (await configBeatFields())!;
+    handleConfigReply(reply({ config: PORTAL_DOC, config_version: 7 }) as never, first);
+    const beat = (await configBeatFields())!;
+    expect(beat.reported).toBe(false);
+    handleConfigReply(reply({ config: null, config_version: 0 }) as never, beat);
+    expect(readDevMode()).toBe(true);                 // nothing to apply: stores kept
+    expect(readConfigState().applied_version).toBe(0);
+    const next = (await configBeatFields())!;
+    expect(next.reported).toBe(true);
+    expect(next.fields.config_applied_version).toBe(0);
   });
 
   it('a scan type with no label uses its key as the label', async () => {

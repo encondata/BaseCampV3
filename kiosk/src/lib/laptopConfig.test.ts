@@ -81,6 +81,7 @@ afterEach(() => {
 
 describe('laptop config through the edge', () => {
   it('seeds the edge from this browser when it has no config yet, unstamped', async () => {
+    writeAppearance({ flash_ms: 500 });                // a customized browser
     api.getEdgeConfig.mockResolvedValue({ doc: null, version: 0, changed_at: null });
     await pollEdgeConfig();
     expect(api.putEdgeConfig).toHaveBeenCalledTimes(1);
@@ -100,6 +101,7 @@ describe('laptop config through the edge', () => {
   });
 
   it('applying from the edge is never sent back as an edit', async () => {
+    writeDevMode(true);                                // customized, so it seeds
     api.getEdgeConfig.mockResolvedValue({ doc: null, version: 0, changed_at: null });
     const stop = startLaptopConfigSync(60_000);
     await vi.waitFor(() => expect(api.putEdgeConfig).toHaveBeenCalledTimes(1));   // the seed
@@ -111,6 +113,29 @@ describe('laptop config through the edge', () => {
     writeAppearance({ flash_ms: 500 });                          // a real edit is sent
     await vi.waitFor(() => expect(api.putEdgeConfig).toHaveBeenCalledTimes(2));
     stop();
+  });
+
+  it('a browser still on the defaults never seeds the edge', async () => {
+    api.getEdgeConfig.mockResolvedValue({ doc: null, version: 0, changed_at: null });
+    await pollEdgeConfig();
+    expect(api.putEdgeConfig).not.toHaveBeenCalled();
+    expect(readConfigState().applied_version).toBeNull();
+    // it takes the edge's copy once another browser or the portal provides it
+    api.getEdgeConfig.mockResolvedValue({ doc: PORTAL_DOC, version: 2, changed_at: null });
+    await pollEdgeConfig();
+    expect(readAppearance().flash_ms).toBe(900);
+    expect(api.putEdgeConfig).not.toHaveBeenCalled();
+  });
+
+  it('a different document at the version it holds is applied (the edge was reset)', async () => {
+    api.getEdgeConfig.mockResolvedValue({ doc: PORTAL_DOC, version: 5, changed_at: null });
+    await pollEdgeConfig();
+    api.getEdgeConfig.mockResolvedValue({
+      doc: { ...PORTAL_DOC, developer: { dev_mode: true } }, version: 5, changed_at: null,
+    });
+    await pollEdgeConfig();
+    expect(readDevMode()).toBe(true);
+    expect(readConfigState().applied_version).toBe(5);
   });
 
   it('a later version replaces the stores', async () => {
