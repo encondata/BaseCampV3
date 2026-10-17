@@ -116,12 +116,12 @@ One row per match, with these columns:
 - **Whole-batch refusals:**
   - 401 `station_key_invalid`: no such Device, the key doesn't match (constant-time compare), or there is no key;
   - 401 `station_key_revoked`.
-- **Per-scan rejection:** the scan's `initiative_id` must be the key's `station_key_initiative_id` (else `move_locked`), and that move must still be active, meaning its status is not in `HISTORICAL_INITIATIVE_STATUSES` (completed, cancelled) and it isn't archived (else `move_inactive`). Only that scan is rejected; the rest of the batch lands.
+- **Per-scan rejection:** the scan's `initiative_id` must be the key's `station_key_initiative_id` (else `move_locked`), and that move must still be active, meaning its status is not in `HISTORICAL_INITIATIVE_STATUSES` (completed, cancelled) and it isn't archived (else `move_inactive`). A scan whose site isn't the key move's origin or destination (as they are now) is `bad_site`; that check comes after the move checks, so another move's scan reads `move_locked`. Editing a move's origin or destination makes station scans at the old site reject as `bad_site`. Only that scan is rejected; the rest of the batch lands.
 - **Storage:** rows are written exactly as `/kiosk/scans` writes them, through one shared implementation, except:
   - `operator_id` = **NULL**
   - `device_id` = the Device name (the kiosk's name)
   - `source` = `"kiosk"`
-  - plus the Off move flag (§5)
+  - plus the Off move flag (§5). The person route (`POST /kiosk/scans`) always stores `off_move = false`: the flag only means something from a station.
 - **Idempotent** on `client_scan_id`. The answer is `{accepted[], rejected[], clear_setup}`, where `clear_setup` carries a pending Clear Setup id so an unattended laptop can act on it.
 - **Side effect:** stamps the Device's `last_seen_at`.
 
@@ -140,7 +140,9 @@ The key is revoked (its hash cleared, an audit `station_key_revoke` row written)
 - An **expired** 30-day kiosk registration doesn't revoke it, since that registration only renews when someone signs in. *(Claude's call.)*
 - A **completed or cancelled move** stops that move's scans being accepted, without revoking the key.
 
-**Clear Setup on the laptop:** when an upload reply carries `clear_setup`, the edge applies Clear Setup as it does from a heartbeat. It drops the shared setup and the stored key, and stops uploading. Rows stay `pending` with `last_error`.
+**The 401 carries a pending Clear Setup:** because requesting Clear Setup revokes the key, an unattended laptop's next station request is refused. While a Clear Setup is pending for that serial's kiosk, the 401 `station_key_invalid` detail also carries `clear_setup` (the opaque request id, nothing else about the device).
+
+**Clear Setup on the laptop:** when a station 401 (upload or sync) or an upload reply carries `clear_setup`, the edge applies Clear Setup as it does from a heartbeat. It drops the shared setup and the stored key, and stops uploading. Rows stay `pending` with `last_error`.
 
 ## 4. Uploading (`edge.rfid.uploader`)
 
@@ -160,17 +162,23 @@ The key is revoked (its hash cleared, an audit `station_key_revoke` row written)
 
 | Answer | What happens |
 |---|---|
-| 200 | Accepted ids get `accepted`, `was_accepted = 1`, `accepted_at = now`. Rejected ids get `rejected` and `reject_code`, and are **never retried**. |
-| 401, or no key stored | Rows stay `pending` with `last_error`. The uploader pauses until a key is stored. This doesn't count as an attempt. |
+| 200 | Accepted ids get `accepted`, `was_accepted = 1`, `accepted_at = now`. Rejected ids get `rejected` and `reject_code`, and are **never retried**. The internet is evidently up, so rows waiting for it are due at once. |
+| 401, or no key stored | Rows stay `pending` with `last_error` (set once with no key, not rewritten every tick). The uploader pauses until a key is stored. This doesn't count as an attempt. |
 | Network error, timeout, 5xx, 429, or any other 4xx | A failed attempt. |
 
 **Retry schedule (Jimmy):**
 
 - Attempts 1 to 5 back off **30 s, 1 min, 2 min, 5 min, 10 min**. *(The exact gaps are Claude's call; Jimmy asked for "expanding".)*
 - From then on, the gap is **30 min**.
-- **Before a 30-minute retry**, the uploader probes `GET /system/status`:
+- **The probe gates every retry once a row has 5 failed attempts** (so it covers the 6th send, after the 10-minute gap, and every 30-minute retry after it). Before such a send, the uploader probes `GET /system/status`:
   - a 200 means there's internet, so it sends;
   - anything else means no internet. It doesn't use up an attempt, and it sets `waiting_for_internet = 1` on those rows. It probes every 30 s, and once the portal answers it sends at once and clears the flag.
+
+**Label Station setup:** the key is cleared, so remaining `pending` rows can never upload. They become `rejected` with `reject_code = station_changed`, so they stop blocking and the table says why. Rows already accepted or rejected are untouched.
+
+**Browsers never reach the key:** the edge's proxy answers 404 for `/kiosk/station-key` and `/kiosk/station/*` before any upstream call; only the edge itself calls them.
+
+**Older portal:** a 404 for `/kiosk/sync/client-assets` (a portal without that route) syncs as an empty client list; any other failure fails the sync as before.
 
 **Edge status:** `/edge/status` gains an `rfid_uploads` block (`pending`, `waiting_for_internet`, `accepted`, `rejected`). This is for Edge settings and troubleshooting, not a dashboard widget.
 
