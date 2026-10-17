@@ -60,11 +60,16 @@ async def revoke(db: AsyncSession, device: Device, *,
 
 
 async def verify(db: AsyncSession, serial: str, raw_key: str) -> Device | None:
-    """The kiosk Device for `serial` when `raw_key` matches its key, else
-    None (no device, not a kiosk, no key, or a wrong key)."""
+    """The kiosk Device for `serial` when `raw_key` matches its key and the
+    device is still an RFID laptop station, else None (no device, not a
+    kiosk, no key, a wrong key, or no longer `laptop` / `rfid`). Eligibility
+    is checked only after the hash matches. Registration is not checked here;
+    deps.station_device refuses a lapsed one with a 403 that keeps the key."""
     device = await db.scalar(select(Device).where(Device.serial == serial))
     if device is None or device.device_type != "kiosk" or not device.station_key_hash:
         return None
     if not hmac.compare_digest(_hash(raw_key), device.station_key_hash):
+        return None
+    if device.sub_type != "laptop" or device.station_type != "rfid":
         return None
     return device

@@ -34,6 +34,7 @@ from serversherpa.api.schemas import (
     KioskPeopleSyncOut, KioskPersonOut, KioskPrinterEventIn,
     KioskRfidEnrollIn, KioskRfidEnrollOut, KioskScanBatchIn,
     KioskScanBatchOut, KioskScanIn, KioskScanRejected, KioskStationScanBatchIn,
+    KioskStationHeartbeatIn, KioskStationHeartbeatOut,
     KioskStationScanBatchOut, KioskSetupIn, KioskSetupOut, KioskSetupReadOut, KioskSetupReaderOut,
     KioskStationKeyIn, KioskStationKeyOut,
     KioskSignOutIn, KioskTimeclockEntry, KioskTimeclockLastEntry,
@@ -63,6 +64,10 @@ from serversherpa.services import station_keys
 from serversherpa.services import timeclock
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.fixed_readers import apply_reader_report
+from serversherpa.services.kiosk_registration import (  # noqa: F401 (re-exported)
+    REGISTRATION_SOON,
+    registration_state,
+)
 from serversherpa.services.password_policy import load_policy
 from serversherpa.services.storage import presign_get
 
@@ -381,16 +386,7 @@ async def deny_pair(
 
 # ── heartbeat (kiosk:view) ──────────────────────────────────────────
 
-REGISTRATION_SOON = timedelta(days=7)   # same threshold as the Kiosk Devices page
 KIOSK_AUTO_REGISTER_DAYS = 30   # matches the portal's Register default (devices.py::register_device)
-
-
-def registration_state(token_expires_at: datetime | None, now: datetime) -> str:
-    if token_expires_at is None:
-        return "none"
-    if token_expires_at <= now:
-        return "expired"
-    return "soon" if token_expires_at - now <= REGISTRATION_SOON else "ok"
 
 
 def kiosk_sub_type(mode: str, raw_info: dict) -> str:
@@ -485,9 +481,8 @@ async def heartbeat(
                   entity_id=str(device.id), action="setup_cleared",
                   changes={"request_id": str(body.setup_cleared),
                            "requested_by": str(requested_by) if requested_by else None})
-    if body.reader is not None:
-        await apply_reader_report(db, kiosk=device, report=body.reader,
-                                  actor_id=actor.person.id)
+    # body.reader is accepted and ignored: reader telemetry arrives only on
+    # POST /kiosk/station/heartbeat, under the station key.
     await db.commit()
     return HeartbeatOut(device_id=device.id, name=device.name,
                         registration=registration_state(device.token_expires_at, now),
@@ -1256,6 +1251,33 @@ async def station_ingest_scans(
         rfid_only=True, audit_via="station_key", off_move_allowed=True)
     return KioskStationScanBatchOut(
         accepted=out.accepted, rejected=out.rejected,
+        clear_setup=device.setup_clear_id)
+
+
+@router.post("/station/heartbeat", response_model=KioskStationHeartbeatOut)
+async def station_heartbeat(
+    body: KioskStationHeartbeatIn, request: Request, db: DbSession,
+) -> KioskStationHeartbeatOut:
+    """An RFID Station's telemetry under its station key
+    (`Authorization: Station <key>`), no person session needed. Stamps
+    `last_seen_at` (and `version` when sent) and applies the paired reader's
+    snapshot with no person actor. It never renews registration and never
+    touches the session fields or `raw_info`; a bad reader never fails the
+    beat. Read-only mode refuses it with 423, like `/kiosk/heartbeat`. The
+    reply carries the pending Clear Setup id."""
+    device = await station_device(request, db, body.serial)
+    await enforce_read_only_config(db, request)
+    now = datetime.now(UTC)
+    device.last_seen_at = now
+    device.updated_at = now
+    if body.version is not None:
+        device.version = body.version
+    if body.reader is not None:
+        await apply_reader_report(db, kiosk=device, report=body.reader, actor_id=None)
+    await db.commit()
+    return KioskStationHeartbeatOut(
+        registration=registration_state(device.token_expires_at, now),
+        token_expires_at=device.token_expires_at,
         clear_setup=device.setup_clear_id)
 
 

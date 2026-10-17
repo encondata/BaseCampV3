@@ -328,8 +328,9 @@ class HeartbeatIn(BaseModel):
     login_method: Literal["password", "link"] | None = None
     # Clear Setup acknowledgment: the request id this kiosk has just applied.
     setup_cleared: uuid.UUID | None = None
-    # RFID Station's reader snapshot. Deliberately loose: validated by
-    # KioskReaderReport inside the route so a bad one never fails the beat.
+    # Accepted and ignored, so older edges that still attach the RFID
+    # Station's reader snapshot don't get a 422. Reader telemetry arrives
+    # only on POST /kiosk/station/heartbeat (station key).
     reader: dict[str, Any] | None = None
 
     @field_validator("serial", "name")
@@ -3212,6 +3213,22 @@ class KioskScanBatchOut(BaseModel):
 
 
 class KioskStationScanBatchOut(KioskScanBatchOut):
+    clear_setup: uuid.UUID | None = None
+
+
+class KioskStationHeartbeatIn(BaseModel):
+    """An RFID Station's telemetry beat under its station key. `reader` is
+    deliberately loose: validated by KioskReaderReport inside the route so a
+    bad one never fails the beat."""
+
+    serial: str = Field(min_length=1, max_length=120)
+    version: str | None = Field(default=None, max_length=40)
+    reader: dict[str, Any] | None = None
+
+
+class KioskStationHeartbeatOut(BaseModel):
+    registration: Literal["ok", "soon", "expired", "none"]
+    token_expires_at: datetime | None
     clear_setup: uuid.UUID | None = None
 
 

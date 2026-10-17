@@ -15,16 +15,16 @@ The page should answer one question: **is this reader alive and reading?** Jimmy
 
 ### Goals
 
-- **Laptop:** an RFID Station reports its paired reader to the portal about every minute while someone is signed in at the laptop.
+- **Laptop:** an RFID Station reports its paired reader to the portal about every minute, including with nobody signed in (via the station-key heartbeat, `2026-10-16-station-key-telemetry-design.md`).
 - **Portal:** creates or updates one **fixed reader** device record per reader, keyed by the reader's serial, and shows it on Fixed Readers. The page gains **Make** and **Status** columns.
 - **Tags (24h):** for a kiosk-attached reader this is the **laptop's count of raw reads in the last 24 hours**, every tag the reader reported, matched or not. It's a pulse showing the reader is reading, not a count of assets scanned in.
 
 ### Non-goals
 
-- **No reporting while nobody is signed in.** The only scheduled call from the laptop to the portal is the kiosk heartbeat, and it only runs while someone is signed in. The reader shows **Offline** until someone signs in again. Jimmy accepted this until the **station key** from `2026-10-16-rfid-scan-processing-design.md` exists. That key will let this report go up unattended; this work should be easy to move onto it.
+- *(Superseded by `2026-10-16-station-key-telemetry-design.md`.)* Reporting with nobody signed in is now covered: telemetry rides the station-key heartbeat, so the reader no longer goes Offline when the last person signs out.
 - No change for readers that don't come through a kiosk. Their Tags (24h) keeps using portal scan counts, as today.
 - No page layout, filter or Delete changes beyond the two new columns.
-- Known limit: until the station key exists, reader records are written by the kiosk heartbeat under the existing kiosk trust model (any `kiosk:view` session can heartbeat a kiosk serial). Writes are limited to new or kiosk-created rows and are audited.
+- Known limit (superseded by `2026-10-16-station-key-telemetry-design.md`): reader telemetry now arrives only on `POST /kiosk/station/heartbeat` under the station key, sent by the edge every minute even when nobody is signed in. The portal ignores `reader` on the person heartbeat. Writes are still limited to new or kiosk-created rows and are audited.
 - No migration. *(Claude's call: the new values live in the device's existing `raw_info` JSON.)*
 
 ## 2. What the laptop reads
@@ -56,7 +56,7 @@ The real FX9600, checked 2026-10-16:
 
 ## 3. How it reaches the portal
 
-The kiosk browser's heartbeat already passes through the edge proxy, which rewrites it to the laptop's identity. When the laptop is an RFID Station with a fresh snapshot (taken in the last 3 minutes), the edge adds `"reader": <snapshot>` to the heartbeat body. Without one, the body is unchanged.
+*(Superseded: the snapshot now goes up on the station-key heartbeat, `2026-10-16-station-key-telemetry-design.md`, with or without anyone signed in; the proxy no longer adds it and the portal ignores `reader` on the person heartbeat. The rules below still describe the payload and validation.)* The kiosk browser's heartbeat originally passed through the edge proxy, which rewrote it to the laptop's identity. When the laptop is an RFID Station with a fresh snapshot (taken in the last 3 minutes), the edge adds `"reader": <snapshot>` to the heartbeat body. Without one, the body is unchanged.
 
 `HeartbeatIn` gains an optional `reader`.
 

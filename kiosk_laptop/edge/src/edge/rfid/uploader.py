@@ -12,8 +12,10 @@ Answers:
   `clear_setup` in the reply applies Clear Setup as the heartbeat does
   (drops the shared setup and the key), which stops uploading.
 - no key, 401 (the key is dropped by `station_key`; a 401 carrying
-  `clear_setup` also applies Clear Setup), 423 read-only mode: no attempt
-  is spent; 401 and 423 back off 60 s. With no key, a row is marked
+  `clear_setup` also applies Clear Setup), 403 `kiosk_not_registered` (the
+  laptop's kiosk registration lapsed: the key is kept and `station_key`
+  records the pause), 423 read-only mode: no attempt is spent; 401, that
+  403 and 423 back off 60 s. With no key, a row is marked
   `no_station_key` once, not rewritten on every tick.
 - anything else (network error, timeout, 5xx, 429, other 4xx): a failed
   attempt, retried after GAPS[attempt] (30 s ... 10 min, then 30 min).
@@ -48,7 +50,7 @@ INTERVAL_S = 5.0
 GAPS = (30, 60, 120, 300, 600, 1800)
 PROBE_AFTER = 5          # attempts after which a send waits for a probe
 WAIT_S = 30              # probe interval while waiting for internet
-PAUSE_S = 60             # 401 / 423: no attempt spent
+PAUSE_S = 60             # 401 / 403 kiosk_not_registered / 423: no attempt spent
 NO_KEY = "no_station_key"
 _SAFE_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
@@ -167,14 +169,15 @@ class Uploader:
         if resp is None:  # the key went away between the check and the send
             self._update("UPDATE pending_rfid_scans SET last_error = ?", (NO_KEY,), ids)
             return 0
-        if resp.status_code in (401, 423):
-            code = _code(resp)
+        code = _code(resp)
+        if resp.status_code in (401, 423) or (
+                resp.status_code == 403 and code == station_key.NOT_REGISTERED):
             self._update("UPDATE pending_rfid_scans SET last_error = ?, next_attempt_at = ?",
                          (code, self._at(PAUSE_S)), ids)
             log.info("rfid upload paused: portal answered %s", resp.status_code)
             return 0
         if resp.status_code != 200:
-            self._failed(rows, _code(resp))
+            self._failed(rows, code)
             return len(rows)
         try:
             data = resp.json()

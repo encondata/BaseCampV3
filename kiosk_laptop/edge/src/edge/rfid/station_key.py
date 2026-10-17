@@ -8,6 +8,13 @@ once a minute while someone signed in here has a usable cloud session and
 the setup is still RFID). Stored only encrypted with edge.key; cleared on a
 Label setup, a Clear Setup from the portal, and Wipe.
 
+A 403 `kiosk_not_registered` on any station route (the laptop's kiosk
+registration lapsed) keeps the key: renewing on the portal's Kiosk Devices
+page brings uploads back with no sign-in. The edge marks itself paused in
+`station_status` and records one "Uploads paused" System Event on that
+transition, and one "Uploads resumed" on the next 200 from any station
+route. The flag is in the store, so a restart never repeats an event.
+
 The key never appears in a log line, an edge response, `last_error` or an
 event: failures are logged by HTTP status (or exception type) only."""
 
@@ -20,12 +27,19 @@ from cryptography.fernet import InvalidToken
 from edge import laptop_setup
 from edge.crypto import Keys, decrypt, encrypt
 from edge.db import Store, now_iso
+from edge.rfid import events
 from edge.upstream import CloudOffline, Upstream
 
 log = logging.getLogger("edge.rfid.station_key")
 
 ISSUE_PATH = "/kiosk/station-key"
 RETRY_S = 60.0
+NOT_REGISTERED = "kiosk_not_registered"
+EVENT_KIND = "station"
+PAUSED_TITLE = "Uploads paused"
+PAUSED_DETAIL = ("This laptop's kiosk registration has expired. "
+                 "Sign in here or renew it on Kiosk Devices.")
+RESUMED_TITLE = "Uploads resumed"
 
 
 def store_key(store: Store, keys: Keys, raw: str) -> None:
@@ -53,6 +67,14 @@ def has_key(store: Store) -> bool:
 
 def clear(store: Store) -> None:
     store.run("DELETE FROM station_key")
+    _clear_pause(store)
+
+
+def _clear_pause(store: Store) -> None:
+    """The key is gone, so there is nothing left to be paused: drop the flag
+    silently (no event), or a later 200 would report an "Uploads resumed"
+    for a pause that no longer means anything."""
+    store.run("UPDATE station_status SET paused = NULL WHERE id = 1")
 
 
 def apply_clear_setup(store: Store) -> None:
@@ -63,6 +85,33 @@ def apply_clear_setup(store: Store) -> None:
     pairing stays: Kiosk Setup reuses it."""
     laptop_setup.clear(store)
     clear(store)
+
+
+def is_paused(store: Store) -> bool:
+    """The portal refused this laptop's station calls because its kiosk
+    registration lapsed, and no station route has answered 200 since."""
+    row = store.one("SELECT paused FROM station_status WHERE id = 1")
+    return row is not None and row["paused"] is not None
+
+
+def _pause(store: Store) -> None:
+    """Mark paused; the event is recorded only on the transition (the
+    conditional upsert changes no row when already paused)."""
+    changed = store.run(
+        "INSERT INTO station_status (id, paused) VALUES (1, ?) "
+        "ON CONFLICT (id) DO UPDATE SET paused = excluded.paused "
+        "WHERE station_status.paused IS NULL", (NOT_REGISTERED,))
+    if changed:
+        log.warning("station uploads paused: kiosk registration lapsed")
+        events.record(store, EVENT_KIND, PAUSED_TITLE, PAUSED_DETAIL)
+
+
+def _resume(store: Store) -> None:
+    changed = store.run("UPDATE station_status SET paused = NULL "
+                        "WHERE id = 1 AND paused IS NOT NULL")
+    if changed:
+        log.info("station uploads resumed")
+        events.record(store, EVENT_KIND, RESUMED_TITLE)
 
 
 def is_rfid_setup(store: Store) -> bool:
@@ -169,7 +218,9 @@ async def request_as_station(upstream: Upstream, method: str, path: str,
     while the request was in flight. A 401 carrying `clear_setup` (a Clear
     Setup requested for this laptop) also applies Clear Setup, as a
     heartbeat reply would, but only when it dropped the key that was sent:
-    a stale refusal never wipes a newer setup and key."""
+    a stale refusal never wipes a newer setup and key. A 403
+    `kiosk_not_registered` keeps the key and pauses (one event per
+    transition); a 200 resumes."""
     row = upstream.store.one("SELECT key_enc FROM station_key WHERE id = 1")
     raw = load_key(upstream.store, upstream.keys)
     if raw is None or row is None:
@@ -183,11 +234,16 @@ async def request_as_station(upstream: Upstream, method: str, path: str,
         if not dropped:  # a newer key (a new setup) arrived meanwhile: this refusal is stale
             log.info("stale station refusal (%s): newer key kept", path.split("?", 1)[0])
             return resp
+        _clear_pause(upstream.store)
         log.warning("station key refused (%s): dropped", path.split("?", 1)[0])
         if _clear_setup_id(resp) is not None:
             apply_clear_setup(upstream.store)
             log.info("clear setup received with a station refusal: setup and station key dropped")
-    elif resp.status_code != 200:
+    elif resp.status_code == 403 and _code(resp) == NOT_REGISTERED:
+        _pause(upstream.store)  # the key is kept: renewing the registration resumes
+    elif resp.status_code == 200:
+        _resume(upstream.store)
+    else:
         log.info("station %s %s answered %s", method, path.split("?", 1)[0], resp.status_code)
     return resp
 

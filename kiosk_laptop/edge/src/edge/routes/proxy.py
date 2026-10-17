@@ -16,7 +16,6 @@ session ended" and signs them out. The heartbeat in that state answers 503
 `edge_offline`, so the kiosk keeps its last registration state."""
 
 import json
-import logging
 from urllib.parse import parse_qs
 
 import httpx
@@ -27,12 +26,10 @@ from edge.db import Store, now_iso
 from edge.deps import current_session, err
 from edge.identity import Identity
 from edge.rfid import station_key
-from edge.rfid.reader_report import current_snapshot
 from edge.rfid.tagreads import note_cache_write
 from edge.sessions import EdgeSession
 from edge.upstream import CloudOffline
 
-log = logging.getLogger("edge.routes.proxy")
 
 CACHEABLE = ("/kiosk/sync/", "/kiosk/setup-options", "/kiosk/labels/vocab", "/system/status")
 ANONYMOUS_OK = ("/system/status",)
@@ -53,10 +50,10 @@ def store_cache(store: Store, key: str, status: int, body: str) -> None:
     note_cache_write()
 
 
-def rewrite_body(path: str, body: bytes, identity: Identity, reader: dict | None = None
-                 ) -> bytes:
-    """The laptop's identity is the edge's, whatever the browser thinks. On a
-    heartbeat, `reader` (the fresh reader snapshot, when there is one) rides along."""
+def rewrite_body(path: str, body: bytes, identity: Identity) -> bytes:
+    """The laptop's identity is the edge's, whatever the browser thinks. A
+    `reader` on the person heartbeat is dropped: the reader snapshot rides
+    only the station heartbeat (`reader_report.send_station_heartbeat`)."""
     if not body:
         return body
     try:
@@ -71,9 +68,7 @@ def rewrite_body(path: str, body: bytes, identity: Identity, reader: dict | None
         data["name"] = identity.name
     if path == "/kiosk/heartbeat":
         data["mode"] = "laptop"
-        data.pop("reader", None)  # only the edge's own snapshot may ride a heartbeat
-        if reader is not None:
-            data["reader"] = reader
+        data.pop("reader", None)  # telemetry goes only under the station key
     return json.dumps(data).encode()
 
 
@@ -131,13 +126,7 @@ async def forward(request: Request, path: str) -> Response:
     cacheable = method == "GET" and path.startswith(CACHEABLE)
     if cacheable and session is None and not path.startswith(ANONYMOUS_OK):
         raise err(401, "not_authenticated")
-    reader = None
-    if path == HEARTBEAT:
-        try:
-            reader = current_snapshot(st)
-        except Exception as exc:  # a bad snapshot or setup row never breaks the heartbeat
-            log.warning("reader snapshot unavailable for the heartbeat: %s", type(exc).__name__)
-    body = rewrite_body(path, await request.body(), st.identity, reader)
+    body = rewrite_body(path, await request.body(), st.identity)
     headers = {"content-type": request.headers.get("content-type", "application/json")} \
         if body else {}
     target = cache_key(path, query)

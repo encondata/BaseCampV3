@@ -19,6 +19,7 @@ from serversherpa.db.engine import get_db
 from serversherpa.db.models import AuthSession, Device, Person, UserAccount
 from serversherpa.security.tokens import TokenError, decode_access_token
 from serversherpa.services import station_keys
+from serversherpa.services.kiosk_registration import registration_state
 from serversherpa.services.password_policy import (
     PasswordReused,
     assert_not_reused,
@@ -410,8 +411,14 @@ TotpChallengeOrUser = Annotated[TotpActor, Depends(totp_actor)]
 
 async def station_device(request: Request, db: AsyncSession, serial: str) -> Device:
     """The kiosk Device `serial` when the request carries its station key
-    (`Authorization: Station <key>`). A bad, missing or revoked key is one
-    401 `station_key_invalid`. The key is never logged.
+    (`Authorization: Station <key>`) and the kiosk is still an RFID laptop.
+    A bad, missing or revoked key, or a kiosk that is no longer an RFID
+    laptop, is one 401 `station_key_invalid`. The key is never logged.
+
+    A matching key on a kiosk whose registration has lapsed (or was never
+    made) is a 403 `kiosk_not_registered`, and the key is kept: renewing on
+    Kiosk Devices brings uploads back with no sign-in. A wrong key never
+    reaches this check, so it learns nothing about registration.
 
     Requesting Clear Setup revokes the key at once (an unattended laptop
     sends no heartbeats), so this refusal is the only reply such a laptop
@@ -431,4 +438,6 @@ async def station_device(request: Request, db: AsyncSession, serial: str) -> Dev
         if pending is not None:
             exc.detail = {"code": "station_key_invalid", "clear_setup": str(pending)}
         raise exc
+    if registration_state(device.token_expires_at, datetime.now(UTC)) not in ("ok", "soon"):
+        raise HTTPException(status_code=403, detail={"code": "kiosk_not_registered"})
     return device
