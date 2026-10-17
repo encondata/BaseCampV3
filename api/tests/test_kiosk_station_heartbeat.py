@@ -133,14 +133,16 @@ async def test_station_heartbeat_never_renews_registration(client, db, seeded_us
     assert (await _get(db, device)).token_expires_at == expires
 
 
-async def test_station_heartbeat_allowed_in_read_only_mode(client, db, seeded_user):
+async def test_station_heartbeat_blocked_in_read_only_mode(client, db, seeded_user):
     device, _, key = await _station(db)
+    await _set(db, device, version="1.0")
     admin = await _admin(db, client)
     assert (await client.put("/system/admin", headers=admin,
                              json={"read_only": True})).status_code == 200
     r = await _beat(client, key, version="3.0")
-    assert r.status_code == 200, r.text
-    assert (await _get(db, device)).version == "3.0"
+    assert r.status_code == 423
+    assert r.json()["detail"]["code"] == "read_only_mode"
+    assert (await _get(db, device)).version == "1.0"
 
 
 async def test_station_heartbeat_returns_clear_setup(client, db, seeded_user):

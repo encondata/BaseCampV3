@@ -124,11 +124,6 @@ MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # any other write. /kiosk/pair* is a sign-in (approve/deny on the phone) —
 # never frozen. /kiosk/heartbeat is NOT exempt.
 #
-# /kiosk/station/heartbeat is exempt: an unattended RFID Station's beat
-# writes only telemetry (last seen, version, its paired reader's snapshot),
-# never registration, sessions or setup, so a freeze has nothing to protect
-# there and refusing it would only make the station look offline.
-#
 # /kiosk/printer-events is exempt for a different reason: the printer was
 # already factory reset out in the warehouse, and the only thing this call
 # writes is the append-only audit row that records it. Refusing it during a
@@ -139,7 +134,7 @@ MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 READ_ONLY_EXEMPT_PATHS = frozenset({
     "/auth/login", "/auth/refresh", "/auth/logout",
     "/auth/me/preferences", "/auth/me/password", "/system/admin",
-    "/kiosk/printer-events", "/kiosk/station/heartbeat",
+    "/kiosk/printer-events",
     "/auth/totp/verify", "/auth/totp/enroll/start", "/auth/totp/enroll/confirm",
     "/auth/totp/backup-codes/regenerate",
     # forget-all remembered browsers (self-service): closing a hole, like

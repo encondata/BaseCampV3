@@ -1263,9 +1263,10 @@ async def station_heartbeat(
     `last_seen_at` (and `version` when sent) and applies the paired reader's
     snapshot with no person actor. It never renews registration and never
     touches the session fields or `raw_info`; a bad reader never fails the
-    beat. Exempt from read-only mode (READ_ONLY_EXEMPT_PATHS): it writes
-    only telemetry. The reply carries the pending Clear Setup id."""
+    beat. Read-only mode refuses it with 423, like `/kiosk/heartbeat`. The
+    reply carries the pending Clear Setup id."""
     device = await station_device(request, db, body.serial)
+    await enforce_read_only_config(db, request)
     now = datetime.now(UTC)
     device.last_seen_at = now
     device.updated_at = now
