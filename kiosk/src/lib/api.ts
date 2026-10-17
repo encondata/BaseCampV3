@@ -1061,3 +1061,35 @@ export async function stopReader(): Promise<{ reading: boolean }> {
 export async function getReaderStatus(): Promise<ReaderStatus> {
   return jsonFrom<ReaderStatus>(await apiFetch('/edge/rfid/status'));
 }
+
+/** The reader snapshot the edge builds every minute. Any key may be absent
+ *  (the reader didn't report it). */
+export interface ReaderSnapshot {
+  serial?: string | null;
+  make?: string | null;
+  model?: string | null;
+  name?: string | null;
+  mac?: string | null;
+  ip?: string | null;
+  firmware?: string | null;
+  uptime_seconds?: number | null;
+  antennas_connected?: number | null;
+  antennas_total?: number | null;
+  reading?: boolean | null;
+  tags_24h?: number | null;
+  reachable?: boolean | null;
+  taken_at?: string | null;
+}
+
+/** GET /edge/rfid/device: the paired reader, its latest snapshot (null when
+ *  stale or missing, even while paired), and the newest tag read's time.
+ *  Unpaired answers `{reader: null}` only. Never contacts the reader. */
+export interface ReaderDevice {
+  reader: { serial: string; model: string; ip: string; paired_at: string } | null;
+  snapshot?: ReaderSnapshot | null;
+  last_read_at?: string | null;
+}
+
+export async function getReaderDevice(): Promise<ReaderDevice> {
+  return jsonFrom<ReaderDevice>(await apiFetch('/edge/rfid/device'));
+}

@@ -481,3 +481,11 @@ it('the Admin tab says so when the checkpoint list cannot be loaded', async () =
     "Couldn't load the checkpoint list. The stored choice still applies.",
   )).toBeTruthy();
 });
+
+it('the Devices tab shows the device cards, not the placeholder', () => {
+  renderAt('/settings?tab=devices');
+  expect(screen.getByRole('tab', { name: 'Devices' }).getAttribute('aria-selected')).toBe('true');
+  expect(screen.getByRole('heading', { name: 'RFID reader' })).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Barcode scanner' })).toBeTruthy();
+  expect(screen.queryByText('This section is not available yet.')).toBeNull();
+});

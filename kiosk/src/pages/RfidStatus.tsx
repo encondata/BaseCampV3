@@ -29,7 +29,7 @@ const NEW_ROW_MS = 2000;
 const UNKNOWN_ROW_MS = 5000;
 
 
-type ReaderState = 'loading' | 'reading' | 'stopped' | 'unreachable';
+export type ReaderState = 'loading' | 'reading' | 'stopped' | 'unreachable';
 
 const STATE_TEXT: Record<ReaderState, string> = {
   loading: 'Checking…', reading: 'Reading', stopped: 'Stopped', unreachable: 'Unreachable',
@@ -66,7 +66,7 @@ function dateText(d: Date): string {
   return zone ? `${day} · ${zone}` : day;
 }
 
-function readerState(status: ReaderStatus | null, failed: boolean): ReaderState {
+export function readerState(status: ReaderStatus | null, failed: boolean): ReaderState {
   if (failed) return 'unreachable';
   if (!status) return 'loading';
   if (status.reachable === false) return 'unreachable';

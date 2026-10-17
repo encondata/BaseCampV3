@@ -998,3 +998,26 @@
 .portal-shell[data-theme='dark'] .rfid-dash-panel { background: var(--surface); }
 .portal-shell[data-theme='dark'] .rfid-dash-btn { color: var(--paper-2); }
 .portal-shell[data-theme='dark'] .rfid-dash-btn:disabled { opacity: .5; filter: saturate(.6); }
+
+/* ── Settings › Devices ──────────────────────────────────────────────
+   One card per device type: two columns on wide screens, one on narrow
+   ones; the scanner card (.is-wide) spans the row. Every card is a flex
+   column whose button row is pinned to the bottom (margin-top: auto), so
+   buttons on side-by-side cards line up. */
+.devices-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; margin-top: 18px; max-width: clamp(20rem, 62vw, 62rem); }
+@media (min-width: 960px) {
+  .devices-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.device-card { display: flex; flex-direction: column; min-width: 0; padding: 16px 18px; background: var(--paper); border: 1px solid var(--paper-line); border-radius: 12px; }
+.device-card.is-wide { grid-column: 1 / -1; }
+.device-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.device-card-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--text-dark); }
+.device-card .local-kv { margin: 0 0 10px; }
+.device-card .local-kv dd { overflow-wrap: anywhere; }
+.device-card .local-kv .mono { font-family: var(--font-mono); font-size: 12px; }
+.device-check { margin: 0 0 10px; padding: 8px 10px; border-radius: 8px; font-size: 12.5px; background: var(--paper-2); color: var(--text-dark); }
+.device-check.is-fail { color: var(--c-red); }
+.device-scan-area { margin-bottom: 10px; padding: 10px 12px; border: 1px dashed var(--paper-line); border-radius: 8px; font-size: 13px; color: var(--text-mute); }
+.device-scan-area p { margin: 0; }
+.device-scan-last { margin-top: 4px; font-family: var(--font-mono); font-weight: 600; color: var(--text-dark); overflow-wrap: anywhere; }
+.device-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--paper-line); }
