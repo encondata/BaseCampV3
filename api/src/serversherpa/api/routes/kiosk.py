@@ -63,6 +63,10 @@ from serversherpa.services import station_keys
 from serversherpa.services import timeclock
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.fixed_readers import apply_reader_report
+from serversherpa.services.kiosk_registration import (  # noqa: F401 (re-exported)
+    REGISTRATION_SOON,
+    registration_state,
+)
 from serversherpa.services.password_policy import load_policy
 from serversherpa.services.storage import presign_get
 
@@ -381,16 +385,7 @@ async def deny_pair(
 
 # ── heartbeat (kiosk:view) ──────────────────────────────────────────
 
-REGISTRATION_SOON = timedelta(days=7)   # same threshold as the Kiosk Devices page
 KIOSK_AUTO_REGISTER_DAYS = 30   # matches the portal's Register default (devices.py::register_device)
-
-
-def registration_state(token_expires_at: datetime | None, now: datetime) -> str:
-    if token_expires_at is None:
-        return "none"
-    if token_expires_at <= now:
-        return "expired"
-    return "soon" if token_expires_at - now <= REGISTRATION_SOON else "ok"
 
 
 def kiosk_sub_type(mode: str, raw_info: dict) -> str:
