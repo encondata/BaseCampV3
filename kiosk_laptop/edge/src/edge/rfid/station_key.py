@@ -56,8 +56,8 @@ def clear(store: Store) -> None:
 
 
 def apply_clear_setup(store: Store) -> None:
-    """Clear Setup from the portal (on a heartbeat reply, or an RFID upload
-    reply on an unattended laptop): drop the laptop's shared setup, or the
+    """Clear Setup from the portal (on a heartbeat reply, or a station 401
+    or RFID upload reply on an unattended laptop): drop the laptop's shared setup, or the
     shell would load it straight back (GET /edge/setup), and the station key
     (the portal revoked it when Clear Setup was requested). The reader
     pairing stays: Kiosk Setup reuses it."""
@@ -149,13 +149,26 @@ def _code(resp: httpx.Response) -> str | None:
         return None
 
 
+def _clear_setup_id(resp: httpx.Response) -> str | None:
+    """The pending Clear Setup id the portal puts on a station 401 (spec
+    §3.3): requesting Clear Setup revoked the key, so the refusal is the only
+    reply an unattended laptop gets."""
+    try:
+        value = resp.json()["detail"]["clear_setup"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    return value if isinstance(value, str) and value else None
+
+
 async def request_as_station(upstream: Upstream, method: str, path: str,
                              **kw) -> httpx.Response | None:
     """`upstream.request` with `Authorization: Station <key>`; None with no
     key. CloudOffline propagates like any upstream call. A 401 means the
     portal no longer knows this key (revoked, replaced): it is dropped, so
     the background retry asks for a new one, unless a newer key was stored
-    while the request was in flight."""
+    while the request was in flight. A 401 carrying `clear_setup` (a Clear
+    Setup requested for this laptop) also applies Clear Setup, as a
+    heartbeat reply would."""
     row = upstream.store.one("SELECT key_enc FROM station_key WHERE id = 1")
     raw = load_key(upstream.store, upstream.keys)
     if raw is None or row is None:
@@ -166,6 +179,9 @@ async def request_as_station(upstream: Upstream, method: str, path: str,
     if resp.status_code == 401:
         upstream.store.run("DELETE FROM station_key WHERE key_enc = ?", (row["key_enc"],))
         log.warning("station key refused (%s): dropped", path.split("?", 1)[0])
+        if _clear_setup_id(resp) is not None:
+            apply_clear_setup(upstream.store)
+            log.info("clear setup received with a station refusal: setup and station key dropped")
     elif resp.status_code != 200:
         log.info("station %s %s answered %s", method, path.split("?", 1)[0], resp.status_code)
     return resp

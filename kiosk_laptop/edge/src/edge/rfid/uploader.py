@@ -7,18 +7,22 @@ row's `client_scan_id`, so the portal never stores a scan twice.
 
 Answers:
 - 200: accepted ids are `accepted` (`was_accepted`, `accepted_at`); rejected
-  ids are `rejected` with their code and never retried. A `clear_setup` in
-  the reply applies Clear Setup as the heartbeat does (drops the shared
-  setup and the key), which stops uploading.
-- no key, 401 (the key is dropped by `station_key`), 423 read-only mode:
-  no attempt is spent; 401 and 423 back off 60 s.
+  ids are `rejected` with their code and never retried. Rows waiting for
+  internet are due again at once (the internet is evidently up). A
+  `clear_setup` in the reply applies Clear Setup as the heartbeat does
+  (drops the shared setup and the key), which stops uploading.
+- no key, 401 (the key is dropped by `station_key`; a 401 carrying
+  `clear_setup` also applies Clear Setup), 423 read-only mode: no attempt
+  is spent; 401 and 423 back off 60 s. With no key, a row is marked
+  `no_station_key` once, not rewritten on every tick.
 - anything else (network error, timeout, 5xx, 429, other 4xx): a failed
   attempt, retried after GAPS[attempt] (30 s ... 10 min, then 30 min).
 
-Before sending rows that already failed 5 times (their next gap is 30 min),
-the uploader probes `GET /system/status`: no 200 means no internet, so the
-rows wait (`waiting_for_internet = 1`) and are probed again every 30 s
-without spending attempts.
+The internet probe gates every retry once a row has failed 5 times (so it
+covers the 6th send, after the 10-minute gap, and every 30-minute retry
+after it): before sending such rows the uploader probes `GET /system/status`.
+No 200 means no internet, so the rows wait (`waiting_for_internet = 1`) and
+are probed again every 30 s without spending attempts.
 
 `last_error` is a short code or an exception type name, never anything that
 could carry the key."""
@@ -135,8 +139,10 @@ class Uploader:
         if not rows:
             return 0
         if not station_key.has_key(self.store):
-            self._update("UPDATE pending_rfid_scans SET last_error = ?", (NO_KEY,),
-                         [r["id"] for r in rows])
+            # every pending row says why, once: an idle no-key tick writes nothing
+            self.store.run("UPDATE pending_rfid_scans SET last_error = ? "
+                           "WHERE upload_state = 'pending' AND last_error IS NOT ?",
+                           (NO_KEY, NO_KEY))
             return 0
         late = [r["id"] for r in rows if r["attempts"] >= PROBE_AFTER]
         if late:
@@ -180,11 +186,19 @@ class Uploader:
             self._failed(rows, "bad_answer")
             return len(rows)
         self._apply(rows, accepted, rejected)
+        self._internet_is_up()
         self.last_ok = not clear
         if clear:
             station_key.apply_clear_setup(self.store)
             log.info("clear setup received with an rfid upload: setup and station key dropped")
         return len(rows)
+
+    def _internet_is_up(self) -> None:
+        """A 200 proves the internet is up: rows waiting for it are due now
+        (they still pass the probe gate before they go)."""
+        self.store.run("UPDATE pending_rfid_scans SET waiting_for_internet = 0, "
+                       "next_attempt_at = ? WHERE upload_state = 'pending' "
+                       "AND waiting_for_internet = 1", (self._at(),))
 
     def _apply(self, rows: list, accepted: set[str], rejected: dict[str, str]) -> None:
         now = self._at()

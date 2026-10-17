@@ -296,7 +296,7 @@ async def test_423_read_only_does_not_spend_attempts(app, cloud):
     assert r["next_attempt_at"] == at(clock.t + 60)
 
 
-async def test_clear_setup_in_reply_drops_key(app, cloud):
+async def test_clear_setup_in_200_reply_drops_key(app, cloud):
     with_key(app)
     laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "rfid")
     first = add_scans(app.state.store, 50)
@@ -311,6 +311,65 @@ async def test_clear_setup_in_reply_drops_key(app, cloud):
     assert await up.drain_once() == 0              # uploads stop: no key
     assert route.call_count == 1
     assert all(rows(app.state.store)[s]["upload_state"] == "pending" for s in rest)
+
+
+async def test_clear_setup_in_reply_drops_key(app, cloud):
+    """The real unattended flow (spec 3.3): Clear Setup revoked the key when it
+    was requested, so the next upload is refused 401 and the refusal carries
+    the pending Clear Setup id. The laptop clears its setup, drops the key,
+    and uploads stop."""
+    with_key(app)
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "rfid")
+    ids = add_scans(app.state.store, 5)
+    route = cloud.post(PATH).respond(401, json={"detail": {
+        "code": "station_key_invalid", "clear_setup": str(uuid.uuid4())}})
+    clock = Clock()
+    up = uploader(app, clock)
+    assert await up.drain_once() == 0
+    assert not station_key.has_key(app.state.store)
+    assert laptop_setup.load(app.state.store) is None
+    clock.t += 10_000
+    assert await up.drain_once() == 0              # uploads stop: no key
+    assert route.call_count == 1
+    assert all(rows(app.state.store)[s]["upload_state"] == "pending" for s in ids)
+
+
+async def test_plain_401_keeps_the_setup(app, cloud):
+    with_key(app)
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "rfid")
+    add_scans(app.state.store, 1)
+    cloud.post(PATH).respond(401, json={"detail": {"code": "station_key_invalid"}})
+    assert await uploader(app).drain_once() == 0
+    assert not station_key.has_key(app.state.store)
+    assert laptop_setup.load(app.state.store) is not None
+
+
+async def test_no_key_second_tick_writes_nothing(app, cloud):
+    add_scans(app.state.store, 60)
+    up = uploader(app)
+    assert await up.drain_once() == 0
+    conn = app.state.store.conn
+    before = conn.total_changes
+    assert await up.drain_once() == 0
+    assert conn.total_changes == before
+    assert all(r["last_error"] == "no_station_key" for r in rows(app.state.store).values())
+
+
+async def test_200_ends_waiting_for_internet(app, cloud):
+    with_key(app)
+    clock = Clock()
+    [fresh] = add_scans(app.state.store, 1)
+    [waiting] = add_scans(app.state.store, 1, attempts=5, waiting_for_internet=1,
+                          next_attempt_at=at(clock.t + 30))
+    cloud.post(PATH).mock(side_effect=accept_all)
+    up = uploader(app, clock)
+    assert await up.drain_once() == 1
+    assert rows(app.state.store)[fresh]["upload_state"] == "accepted"
+    r = rows(app.state.store)[waiting]
+    assert r["waiting_for_internet"] == 0 and r["attempts"] == 5
+    assert [x["client_scan_id"] for x in up.due_rows()] == [waiting]
+    assert await up.drain_once() == 1
+    assert rows(app.state.store)[waiting]["upload_state"] == "accepted"
 
 
 async def test_resend_after_timeout_is_idempotent(app, cloud):

@@ -116,6 +116,11 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
                 async with st.pair_lock:
                     await pairing.release(previous, st.identity, transport=st.reader_transport)
             st.store.run("DELETE FROM rfid_pairing")
+            # Without a key these can never upload: say why instead of
+            # leaving them pending forever.
+            st.store.run("UPDATE pending_rfid_scans SET upload_state = 'rejected', "
+                         "reject_code = 'station_changed', waiting_for_internet = 0, "
+                         "next_attempt_at = NULL WHERE upload_state = 'pending'")
         station_key.clear(st.store)  # a key covers one setup; only RFID gets a new one
         if isinstance(result, dict):
             laptop_setup.save(st.store, result, station)

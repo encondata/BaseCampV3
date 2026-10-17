@@ -290,3 +290,53 @@ async def test_not_signed_in_here_logs_at_info(app, cloud, caplog):
     assert await station_key.issue(app.state, "p-1") is False
     recs = [r for r in caplog.records if r.name == "edge.rfid.station_key"]
     assert recs and all(r.levelno == logging.INFO for r in recs)
+
+
+async def test_station_401_with_clear_setup_clears_the_laptop(app, cloud):
+    _rfid_setup(app)
+    station_key.store_key(app.state.store, app.state.keys, RAW)
+    cloud.get("/kiosk/station/sync/people").respond(
+        401, json={"detail": {"code": "station_key_invalid", "clear_setup": "c-1"}})
+    resp = await station_key.station_request(app.state, "GET", "/kiosk/station/sync/people")
+    assert resp.status_code == 401
+    assert station_key.load_key(app.state.store, app.state.keys) is None
+    assert laptop_setup.load(app.state.store) is None
+
+
+async def test_station_sync_401_with_clear_setup_clears_the_laptop(app, cloud):
+    _rfid_setup(app)
+    station_key.store_key(app.state.store, app.state.keys, RAW)
+    app.state.syncer.set_target("m-1", None)
+    cloud.get(url__regex=r".*/kiosk/station/sync/.*").respond(
+        401, json={"detail": {"code": "station_key_invalid", "clear_setup": "c-1"}})
+    meta = await app.state.syncer.run()
+    assert meta["last_error"].startswith("http_401")
+    assert not station_key.has_key(app.state.store)
+    assert laptop_setup.load(app.state.store) is None
+
+
+async def test_label_setup_rejects_leftover_pending_scans(app, client, cloud):
+    from tests.test_rfid_uploader import add_scans, rows
+    store = app.state.store
+    ready(app, cloud)
+    station_key.store_key(store, app.state.keys, RAW)
+    pending = add_scans(store, 2)
+    [accepted] = add_scans(store, 1, upload_state="accepted", was_accepted=1)
+    [rejected] = add_scans(store, 1, upload_state="rejected", reject_code="move_locked")
+    assert (await setup(client, app, station_type="label")).status_code == 200
+    after = rows(store)
+    for sid in pending:
+        assert after[sid]["upload_state"] == "rejected"
+        assert after[sid]["reject_code"] == "station_changed"
+    assert after[accepted]["upload_state"] == "accepted" and after[accepted]["reject_code"] is None
+    assert after[rejected]["reject_code"] == "move_locked"
+
+
+async def test_rfid_setup_keeps_pending_scans(app, client, cloud):
+    from tests.test_rfid_uploader import add_scans, rows
+    await paired(app, client)
+    ready(app, cloud)
+    cloud.post("/kiosk/station-key").respond(200, json={"key": RAW})
+    [sid] = add_scans(app.state.store, 1)
+    assert (await setup(client, app, station_type="rfid")).status_code == 200
+    assert rows(app.state.store)[sid]["upload_state"] == "pending"
