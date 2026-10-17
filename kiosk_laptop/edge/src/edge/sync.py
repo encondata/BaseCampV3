@@ -50,6 +50,14 @@ def station_sync_paths(initiative_id: str, serial: str) -> list[tuple[str, str]]
 
 
 SKIP_CODES = {"move_locked", "not_signed_in_here"}
+CLIENT_ASSETS = "/kiosk/sync/client-assets"
+NO_CLIENT_ASSETS = json.dumps({"assets": []})
+
+
+def _old_portal_client_assets(path: str, resp) -> bool:
+    """A portal from before the client asset list answers 404 for it: an
+    empty list, so the rest of the move still syncs."""
+    return resp.status_code == 404 and path.split("?", 1)[0] == CLIENT_ASSETS
 
 
 def _skipped(resp) -> bool:
@@ -97,6 +105,9 @@ class Syncer:
                 resp = await self.upstream.as_person(actor, "GET", path)
                 if resp is None:
                     return await self._run_as_station(initiative)
+                if _old_portal_client_assets(path, resp):
+                    pulled.append((path, NO_CLIENT_ASSETS))
+                    continue
                 if resp.status_code != 200:
                     return self._error(f"http_{resp.status_code}:{path}")
                 pulled.append((path, resp.text))
@@ -143,6 +154,9 @@ class Syncer:
                 resp = await station_key.request_as_station(self.upstream, "GET", path)
                 if resp is None:
                     return self._error("needs_sign_in")
+                if _old_portal_client_assets(key, resp):
+                    pulled.append((key, NO_CLIENT_ASSETS))
+                    continue
                 if resp.status_code != 200:
                     return self._error(f"http_{resp.status_code}:{path.split('?', 1)[0]}")
                 pulled.append((key, resp.text))

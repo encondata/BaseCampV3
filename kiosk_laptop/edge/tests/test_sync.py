@@ -281,3 +281,34 @@ async def test_person_session_still_syncs_as_the_person_with_a_key_stored(app, c
     meta = await app.state.syncer.run()
     assert meta["last_error"] is None and route.called
     assert not any(r.called for r in station.values())
+
+
+async def test_client_assets_404_from_an_old_portal_is_an_empty_list(app, cloud):
+    app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    app.state.syncer.set_target("m-1", "p-1")
+    _mock_sync(cloud)
+    key = "/kiosk/sync/client-assets?initiative_id=m-1"
+    cloud.get(key).respond(404, json={"detail": "Not Found"})
+    meta = await app.state.syncer.run()
+    assert meta["last_error"] is None and meta["synced_at"]
+    assert json.loads(app.state.store.one("SELECT body FROM cache WHERE key = ?",
+                                          (key,))["body"]) == {"assets": []}
+    assert app.state.store.one("SELECT 1 FROM cache WHERE key = ?", (_person_key("assets"),))
+
+
+async def test_other_404_still_fails_the_sync(app, cloud):
+    app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    app.state.syncer.set_target("m-1", "p-1")
+    _mock_sync(cloud)
+    cloud.get("/kiosk/sync/containers?initiative_id=m-1").respond(404)
+    meta = await app.state.syncer.run()
+    assert meta["last_error"].startswith("http_404")
+
+
+async def test_client_assets_500_still_fails_the_sync(app, cloud):
+    app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    app.state.syncer.set_target("m-1", "p-1")
+    _mock_sync(cloud)
+    cloud.get("/kiosk/sync/client-assets?initiative_id=m-1").respond(500)
+    meta = await app.state.syncer.run()
+    assert meta["last_error"] == "http_500:/kiosk/sync/client-assets?initiative_id=m-1"
