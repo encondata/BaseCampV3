@@ -34,6 +34,7 @@ from serversherpa.api.schemas import (
     KioskPeopleSyncOut, KioskPersonOut, KioskPrinterEventIn,
     KioskRfidEnrollIn, KioskRfidEnrollOut, KioskScanBatchIn,
     KioskScanBatchOut, KioskScanIn, KioskScanRejected, KioskStationScanBatchIn,
+    KioskStationHeartbeatIn, KioskStationHeartbeatOut,
     KioskStationScanBatchOut, KioskSetupIn, KioskSetupOut, KioskSetupReadOut, KioskSetupReaderOut,
     KioskStationKeyIn, KioskStationKeyOut,
     KioskSignOutIn, KioskTimeclockEntry, KioskTimeclockLastEntry,
@@ -480,9 +481,8 @@ async def heartbeat(
                   entity_id=str(device.id), action="setup_cleared",
                   changes={"request_id": str(body.setup_cleared),
                            "requested_by": str(requested_by) if requested_by else None})
-    if body.reader is not None:
-        await apply_reader_report(db, kiosk=device, report=body.reader,
-                                  actor_id=actor.person.id)
+    # body.reader is accepted and ignored: reader telemetry arrives only on
+    # POST /kiosk/station/heartbeat, under the station key.
     await db.commit()
     return HeartbeatOut(device_id=device.id, name=device.name,
                         registration=registration_state(device.token_expires_at, now),
@@ -1251,6 +1251,32 @@ async def station_ingest_scans(
         rfid_only=True, audit_via="station_key", off_move_allowed=True)
     return KioskStationScanBatchOut(
         accepted=out.accepted, rejected=out.rejected,
+        clear_setup=device.setup_clear_id)
+
+
+@router.post("/station/heartbeat", response_model=KioskStationHeartbeatOut)
+async def station_heartbeat(
+    body: KioskStationHeartbeatIn, request: Request, db: DbSession,
+) -> KioskStationHeartbeatOut:
+    """An RFID Station's telemetry under its station key
+    (`Authorization: Station <key>`), no person session needed. Stamps
+    `last_seen_at` (and `version` when sent) and applies the paired reader's
+    snapshot with no person actor. It never renews registration and never
+    touches the session fields or `raw_info`; a bad reader never fails the
+    beat. Exempt from read-only mode (READ_ONLY_EXEMPT_PATHS): it writes
+    only telemetry. The reply carries the pending Clear Setup id."""
+    device = await station_device(request, db, body.serial)
+    now = datetime.now(UTC)
+    device.last_seen_at = now
+    device.updated_at = now
+    if body.version is not None:
+        device.version = body.version
+    if body.reader is not None:
+        await apply_reader_report(db, kiosk=device, report=body.reader, actor_id=None)
+    await db.commit()
+    return KioskStationHeartbeatOut(
+        registration=registration_state(device.token_expires_at, now),
+        token_expires_at=device.token_expires_at,
         clear_setup=device.setup_clear_id)
 
 

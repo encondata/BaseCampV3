@@ -1,9 +1,14 @@
-"""Kiosk heartbeat `reader`: an RFID Station's paired reader is upserted as a
-fixed_reader Device. A bad or unacceptable report never changes the beat."""
+"""Station heartbeat `reader`: an RFID Station's paired reader is upserted as a
+fixed_reader Device. A bad or unacceptable report never changes the beat.
+Reader telemetry arrives only under the station key; the person heartbeat
+accepts `reader` but ignores it."""
+
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
 from serversherpa.db.models import AuditLog, Device
+from serversherpa.services import station_keys
 from tests.test_kiosk_setup_api import SERIAL
 from tests.test_kiosk_station_setup import READER, _device, _setup_body
 from tests.test_sites_api import login
@@ -19,7 +24,18 @@ REPORT = {
 }
 
 
+async def _key(db, device_id):
+    """Register `device_id` and mint its station key -> the Station auth header."""
+    db.expire_all()
+    live = await db.get(Device, device_id)
+    live.token_expires_at = datetime.now(UTC) + timedelta(days=30)
+    key = await station_keys.issue(db, live, actor_id=None, via="password")
+    await db.commit()
+    return {"Authorization": f"Station {key}"}
+
+
 async def _station(client, db, station_type="rfid"):
+    """A set-up station with a key -> (Station auth header, kiosk id)."""
     hdrs = await login(client)
     body, device_id = await _setup_body(db)
     payload = {**body, "station_type": station_type}
@@ -27,7 +43,7 @@ async def _station(client, db, station_type="rfid"):
         payload["reader"] = READER
     r = await client.post("/kiosk/setup", headers=hdrs, json=payload)
     assert r.status_code == 200, r.text
-    return hdrs, device_id
+    return await _key(db, device_id), device_id
 
 
 async def _readers(db):
@@ -35,7 +51,13 @@ async def _readers(db):
     return (await db.scalars(select(Device).where(Device.device_type == "fixed_reader"))).all()
 
 
-async def _beat(client, hdrs, reader):
+async def _beat(client, hdrs, reader, serial=SERIAL):
+    return await client.post("/kiosk/station/heartbeat", headers=hdrs,
+                             json={"serial": serial, "reader": reader})
+
+
+async def _person_beat(client, reader):
+    hdrs = await login(client)
     return await client.post("/kiosk/heartbeat", headers=hdrs, json={**BEAT, "reader": reader})
 
 
@@ -100,10 +122,32 @@ async def test_serial_not_paired_is_ignored(client, db, seeded_user):
     assert await _readers(db) == []
 
 
-async def test_label_station_reader_ignored(client, db, seeded_user):
+async def test_label_station_cannot_report_a_reader(client, db, seeded_user):
     hdrs, _ = await _station(client, db, station_type="label")
-    assert (await _beat(client, hdrs, REPORT)).status_code == 200
+    r = await _beat(client, hdrs, REPORT)
+    assert r.status_code == 401
+    assert r.json()["detail"] == {"code": "station_key_invalid"}
     assert await _readers(db) == []
+
+
+async def test_person_heartbeat_reader_creates_nothing(client, db, seeded_user):
+    await _station(client, db)
+    r = await _person_beat(client, REPORT)
+    assert r.status_code == 200, r.text
+    assert await _readers(db) == []
+
+
+async def test_person_heartbeat_reader_updates_nothing(client, db, seeded_user):
+    hdrs, _ = await _station(client, db)
+    assert (await _beat(client, hdrs, REPORT)).status_code == 200
+    (fr,) = await _readers(db)
+    seen, raw = fr.last_seen_at, dict(fr.raw_info)
+    r = await _person_beat(client, {**REPORT, "tags_24h": 9999, "reading": False,
+                                    "ip": "10.0.0.9", "name": "Renamed"})
+    assert r.status_code == 200, r.text
+    (fr,) = await _readers(db)
+    assert fr.name == "FX9600647D23" and fr.lan_ip == "10.10.48.119"
+    assert fr.raw_info == raw and fr.last_seen_at == seen
 
 
 async def test_serial_owned_by_other_type_is_ignored(client, db, seeded_user):
@@ -157,9 +201,11 @@ async def test_reassignment_is_audited(client, db, seeded_user):
     other = Device(device_type="kiosk", name="Second Laptop", serial="kiosk-2",
                    sub_type="laptop", station_type="rfid", rfid_reader_serial=RSERIAL)
     db.add(other)
+    await db.flush()
+    other_id = other.id
     await db.commit()
-    await client.post("/kiosk/heartbeat", headers=hdrs, json={
-        "serial": "kiosk-2", "name": "Second Laptop", "mode": "laptop", "reader": REPORT})
+    r = await _beat(client, await _key(db, other_id), REPORT, serial="kiosk-2")
+    assert r.status_code == 200, r.text
     (a,) = (await n()).all()
     assert a.changes["via_kiosk"] == {"from": "Station Target", "to": "Second Laptop"}
     assert a.changes["site_id"]["to"] is None and a.changes["site_id"]["from"]
@@ -200,9 +246,10 @@ async def test_reader_moves_to_another_kiosk(client, db, seeded_user):
     other = Device(device_type="kiosk", name="Second Laptop", serial="kiosk-2",
                    sub_type="laptop", station_type="rfid", rfid_reader_serial=RSERIAL)
     db.add(other)
+    await db.flush()
+    other_id = other.id
     await db.commit()
-    r = await client.post("/kiosk/heartbeat", headers=hdrs, json={
-        "serial": "kiosk-2", "name": "Second Laptop", "mode": "laptop", "reader": REPORT})
+    r = await _beat(client, await _key(db, other_id), REPORT, serial="kiosk-2")
     assert r.status_code == 200, r.text
     (fr,) = await _readers(db)
     assert fr.raw_info["via_kiosk_name"] == "Second Laptop"
@@ -246,7 +293,7 @@ async def test_reported_mac_is_stored_normalized(client, db, seeded_user):
 async def test_devices_api_returns_reader_mac(client, db, seeded_user):
     hdrs, _ = await _station(client, db)
     await _beat(client, hdrs, REPORT)
-    r = await client.get("/devices?device_type=fixed_reader", headers=hdrs)
+    r = await client.get("/devices?device_type=fixed_reader", headers=await login(client))
     assert r.status_code == 200, r.text
     (item,) = r.json()
     assert item["mac"] == "C4:7D:CC:64:7D:23"
