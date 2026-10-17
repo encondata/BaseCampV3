@@ -102,7 +102,8 @@ SCHEMA_STEPS: list[str] = [
     """,
     # RFID scan processing: one pending scan per matched raw read (uploaded by
     # edge.rfid.uploader), the processor's cursor, and current-move reads that
-    # matched nothing (re-checked after each sync for 24 h)
+    # matched nothing (re-checked after each sync for 24 h). The cursor starts
+    # after any reads already stored, so an upgrade never uploads old reads.
     """
     CREATE TABLE pending_rfid_scans (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,7 +129,8 @@ SCHEMA_STEPS: list[str] = [
     CREATE INDEX pending_rfid_scans_due ON pending_rfid_scans (upload_state, next_attempt_at);
     CREATE TABLE rfid_processing_meta (
         id INTEGER PRIMARY KEY CHECK (id = 1), last_raw_id INTEGER NOT NULL);
-    INSERT INTO rfid_processing_meta (id, last_raw_id) VALUES (1, 0);
+    INSERT INTO rfid_processing_meta (id, last_raw_id)
+        SELECT 1, COALESCE(MAX(id), 0) FROM raw_tag_reads;
     CREATE TABLE rfid_unmatched (
         raw_read_id INTEGER PRIMARY KEY, received_at TEXT NOT NULL);
     CREATE INDEX rfid_unmatched_received ON rfid_unmatched (received_at)

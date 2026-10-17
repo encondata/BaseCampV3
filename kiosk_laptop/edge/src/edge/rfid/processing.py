@@ -25,9 +25,9 @@ from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
 
 from edge import laptop_setup
+from edge import sync as edge_sync  # module ref: edge.sync imports this module
 from edge.db import Store, iso, now_iso
 from edge.rfid import tagreads
-from edge import sync as edge_sync  # module ref: edge.sync imports this module
 
 log = logging.getLogger("edge.rfid.processing")
 
@@ -58,9 +58,10 @@ class Match(NamedTuple):
     off_move_initiative_name: str | None = None
 
 
-# cache key -> (stamp, index or None). Stamp: (id(store), key, rowid, stored_at,
-# tagreads' cache-write counter), like tagreads' asset index.
-_memo: dict[str, tuple[tuple, dict[str, dict] | None]] = {}
+# source name -> (stamp, index). Stamp: (id(store), cache key, rowid, stored_at,
+# tagreads' cache-write counter), like tagreads' asset index. Keyed by source
+# name, so a new setup move's index replaces the old move's in memory.
+_memo: dict[str, tuple[tuple, dict[str, dict]]] = {}
 
 
 def _cache_key(name: str, move_id: str) -> str:
@@ -76,7 +77,7 @@ def _index(store: Store, name: str, move_id: str) -> dict[str, dict] | None:
     if meta is None:
         return None
     stamp = (id(store), key, meta["id"], meta["stored_at"], tagreads._cache_generation)
-    hit = _memo.get(key)
+    hit = _memo.get(name)
     if hit is not None and hit[0] == stamp:
         return hit[1]
     list_field, tag_field = _SOURCES[name]
@@ -95,7 +96,7 @@ def _index(store: Store, name: str, move_id: str) -> dict[str, dict] | None:
         epc = tagreads.normalize_epc(item.get(tag_field))
         if epc is not None:
             index.setdefault(epc, item)  # the first item with a tag wins
-    _memo[key] = (stamp, index)
+    _memo[name] = (stamp, index)
     return index
 
 

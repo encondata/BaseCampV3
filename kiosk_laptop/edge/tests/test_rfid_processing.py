@@ -156,6 +156,42 @@ def test_waits_until_every_source_is_cached(store):
     assert processing.run_once(store) == 0 and cursor(store) == 0
 
 
+def test_upgrade_starts_after_existing_reads(tmp_path, monkeypatch):
+    from edge import db
+    steps = db.SCHEMA_STEPS
+    monkeypatch.setattr(db, "SCHEMA_STEPS", steps[:-1])      # the image before this step
+    s = Store(tmp_path / "edge.db")
+    seed_rows, _ = parse_events([tag_event("AA01"), tag_event("AA01")])
+    store_batch(s, reader_serial="R1", rows=seed_rows, setup=SETUP, received_at=RECEIVED)
+    s.close()
+    monkeypatch.setattr(db, "SCHEMA_STEPS", steps)
+    s = Store(tmp_path / "edge.db")                          # upgrade: the new step runs
+    try:
+        assert cursor(s) == 2
+        seed(s, assets=[{"id": "a-1", "rfid": "AA01"}])
+        assert processing.run_once(s) == 0 and pending(s) == []
+        rid = read(s, "AA01")
+        assert processing.run_once(s) == 1
+        assert [r["raw_read_id"] for r in pending(s)] == [rid]
+    finally:
+        s.close()
+
+
+def test_fresh_install_cursor_is_zero(store):
+    assert cursor(store) == 0
+
+
+def test_memo_keeps_one_index_per_source(store):
+    seed(store, assets=[{"id": "a-1", "rfid": "AA01"}])
+    read(store, "AA01")
+    processing.run_once(store)
+    seed(store, assets=[{"id": "a-2", "rfid": "AA01"}], move="m-2")
+    read(store, "AA01", setup={**SETUP, "initiative_id": "m-2"})
+    processing.run_once(store)
+    assert sorted(processing._memo) == sorted(processing._SOURCES)
+    assert all("m-1" not in stamp[1] for stamp, _ in processing._memo.values())
+
+
 def test_cursor_survives_restart(tmp_path):
     s = Store(tmp_path / "edge.db")
     seed(s, assets=[{"id": "a-1", "rfid": "AA01"}])
@@ -306,10 +342,11 @@ async def test_wipe_resets_cursor_and_clears_pending(app, client):
 async def test_wipe_guard_counts_pending_rfid_scans(app, client):
     store = app.state.store
     seed(store, assets=[{"id": "a-1", "rfid": "AA01"}])
-    read(store, "AA01")
+    accepted = read(store, "AA01")
     read(store, "AA01")
     processing.run_once(store)
-    store.run("UPDATE pending_rfid_scans SET upload_state = 'accepted' WHERE raw_read_id = 1")
+    store.run("UPDATE pending_rfid_scans SET upload_state = 'accepted' WHERE raw_read_id = ?",
+              (accepted,))
     outbox.enqueue_scans(store, "p-1", "Jane", [{"client_scan_id": "s1"}])
     admin = make_session(app, max_rank=60)
     r = await client.post("/edge/wipe", json={}, headers=admin)
