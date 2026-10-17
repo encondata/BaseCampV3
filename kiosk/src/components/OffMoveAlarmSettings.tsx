@@ -13,7 +13,7 @@
  *  Test alarm opens the real takeover in preview mode with one sample row:
  *  it sounds the siren but never reads or writes the edge's alarms. */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
 import {
@@ -50,14 +50,16 @@ function parseSeconds(text: string): number | null {
   return n >= MIN_SECONDS && n <= MAX_SECONDS ? n : null;
 }
 
-export default function OffMoveAlarmSettings() {
+/** `soundRow`: the Sound tab's alarm-sound picker, shown in this section
+ *  (and so behind the same gate) right under the mode. */
+export default function OffMoveAlarmSettings({ soundRow }: { soundRow?: ReactNode } = {}) {
   const { status } = useKioskAuth();
   const [setup] = useKioskSetup();
   if (status !== 'authed' || !isLaptop() || setup?.stationType !== 'rfid') return null;
-  return <AlarmSettingsSection />;
+  return <AlarmSettingsSection soundRow={soundRow} />;
 }
 
-function AlarmSettingsSection() {
+function AlarmSettingsSection({ soundRow }: { soundRow?: ReactNode }) {
   const [saved, setSaved] = useState<AlarmSettings>(DEFAULTS);
   const [secondsText, setSecondsText] = useState(String(DEFAULTS.timed_seconds));
   const [invalid, setInvalid] = useState(false);
@@ -146,6 +148,7 @@ function AlarmSettingsSection() {
           ))}
         </div>
       </div>
+      {soundRow}
       <div className="settings-row">
         <div>
           <label htmlFor="alarm-seconds" className="settings-row-label">Timed alarm length</label>

@@ -14,12 +14,12 @@
  *  Uploads live in IndexedDB `sounds` on this kiosk only: nothing is
  *  sent anywhere, and "Clear local data" leaves them alone. */
 
-import { useEffect, useState, type ChangeEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 
 import {
   BUILTIN_SOUNDS, MAX_SOUND_BYTES, addUploadedSound, listUploadedSounds, playSoundChoice,
-  removeUploadedSound, useSoundSettings, type BuiltinSoundId, type SoundChoice,
-  type SoundSettings, type UploadedSound,
+  removeUploadedSound, startAlarmSound, useSoundSettings, type AlarmSoundChoice,
+  type BuiltinSoundId, type SoundChoice, type SoundSettings, type UploadedSound,
 } from '../lib/sound';
 import OffMoveAlarmSettings from './OffMoveAlarmSettings';
 
@@ -37,6 +37,18 @@ function parseChoice(value: string): SoundChoice {
   if (kind === 'builtin') return { kind: 'builtin', id: id as BuiltinSoundId };
   if (kind === 'upload' && id) return { kind: 'upload', id };
   return { kind: 'none' };
+}
+
+/** How long the alarm-sound Play button lets the alarm run. */
+const ALARM_PLAY_MS = 3000;
+
+function alarmValue(choice: AlarmSoundChoice): string {
+  return choice.kind === 'siren' ? 'siren' : choiceValue(choice);
+}
+
+function parseAlarm(value: string): AlarmSoundChoice {
+  const choice = parseChoice(value);
+  return choice.kind === 'none' ? { kind: 'siren' } : choice;
 }
 
 function uploadError(err: unknown): string {
@@ -77,7 +89,55 @@ export default function SoundPanel() {
     removeUploadedSound(id).then(refresh, () => setError("Couldn't remove that sound."));
   };
 
-  const choiceRow = (which: keyof Omit<SoundSettings, 'volume'>, label: string, hint: string) => {
+  // The alarm-sound Play button: a few seconds of the loop, then quiet.
+  const stopAlarm = useRef<{ stop: () => void; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const endAlarmPreview = () => {
+    if (!stopAlarm.current) return;
+    clearTimeout(stopAlarm.current.timer);
+    stopAlarm.current.stop();
+    stopAlarm.current = null;
+  };
+  useEffect(() => endAlarmPreview, []);
+  const playAlarm = () => {
+    endAlarmPreview();
+    const stop = startAlarmSound(settings.alarm);
+    stopAlarm.current = { stop, timer: setTimeout(endAlarmPreview, ALARM_PLAY_MS) };
+  };
+
+  const alarmRow = (
+    <div className="settings-row">
+      <div>
+        <span className="settings-row-label">Alarm sound</span>
+        <p className="settings-row-hint">
+          Loops while the alarm is up. Stored on this kiosk only.
+        </p>
+      </div>
+      <div className="sound-choice">
+        <select
+          aria-label="Alarm sound"
+          value={alarmValue(settings.alarm)}
+          onChange={(e) => setSettings({ alarm: parseAlarm(e.target.value) })}
+        >
+          <option value="siren">Siren</option>
+          {BUILTIN_SOUNDS.map((s) => (
+            <option key={s.id} value={`builtin:${s.id}`}>{s.label}</option>
+          ))}
+          {uploads.length > 0 && (
+            <optgroup label="Uploaded">
+              {uploads.map((u) => (
+                <option key={u.id} value={`upload:${u.id}`}>{u.name}</option>
+              ))}
+            </optgroup>
+          )}
+        </select>
+        <button type="button" className="mini-btn" onClick={playAlarm}>Play</button>
+      </div>
+    </div>
+  );
+
+  const choiceRow = (
+    which: keyof Omit<SoundSettings, 'volume' | 'alarm'>, label: string, hint: string,
+  ) => {
     const choice = settings[which];
     return (
       <div className="settings-row">
@@ -148,7 +208,7 @@ export default function SoundPanel() {
           <span className="sound-volume-value mono">{`${volume}%`}</span>
         </label>
       </div>
-      <OffMoveAlarmSettings />
+      <OffMoveAlarmSettings soundRow={alarmRow} />
       <div className="settings-row">
         <div>
           <span className="settings-row-label">Uploaded sounds</span>

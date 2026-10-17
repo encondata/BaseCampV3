@@ -32,7 +32,7 @@ import {
   type AlarmMode, type OffMoveAlarmRow, type OffMoveAlarmState,
 } from '../lib/api';
 import { useKioskSetup } from '../lib/kioskSetup';
-import { readSoundSettings, soundBlocked, soundSettled, startSiren } from '../lib/sound';
+import { soundBlocked, soundSettled, startAlarmSound } from '../lib/sound';
 
 /** How often the edge is asked for open alarms. */
 export const ALARM_POLL_MS = 1000;
@@ -173,7 +173,7 @@ export default function OffMoveAlarm({ preview }: OffMoveAlarmProps) {
     if (!open) return undefined;
     let live = true;
     const check = () => { if (live) setBlocked(soundBlocked()); };
-    stopSiren.current = startSiren(readSoundSettings().volume);
+    stopSiren.current = startAlarmSound();
     setBlocked(false);
     void soundSettled().then(check);
     const grace = setTimeout(check, SOUND_CHECK_GRACE_MS);
@@ -191,7 +191,7 @@ export default function OffMoveAlarm({ preview }: OffMoveAlarmProps) {
    *  resumes the suspended context. It is not a dismiss. */
   const enableSound = () => {
     stopSiren.current?.();
-    stopSiren.current = startSiren(readSoundSettings().volume);
+    stopSiren.current = startAlarmSound();
     void soundSettled().then(() => setBlocked(soundBlocked()));
   };
 

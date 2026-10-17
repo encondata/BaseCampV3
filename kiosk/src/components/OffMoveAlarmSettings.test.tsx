@@ -16,10 +16,10 @@ vi.mock('../lib/api', async (importOriginal) => {
   return { ...actual, ...apiMock };
 });
 
-const soundMock = vi.hoisted(() => ({ stop: vi.fn(), startSiren: vi.fn() }));
+const soundMock = vi.hoisted(() => ({ stop: vi.fn(), startAlarmSound: vi.fn() }));
 vi.mock('../lib/sound', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/sound')>();
-  return { ...actual, startSiren: soundMock.startSiren, soundBlocked: () => false };
+  return { ...actual, startAlarmSound: soundMock.startAlarmSound, soundBlocked: () => false };
 });
 
 const auth = vi.hoisted(() => ({ status: 'authed' as 'authed' | 'anon' }));
@@ -55,7 +55,7 @@ beforeEach(() => {
   writeKioskSetup(SETUP);
   apiMock.getAlarmSettings.mockResolvedValue({ mode: 'until_dismissed', timed_seconds: 10 });
   apiMock.saveAlarmSettings.mockImplementation(async (s) => s);
-  soundMock.startSiren.mockImplementation(() => soundMock.stop);
+  soundMock.startAlarmSound.mockImplementation(() => soundMock.stop);
 });
 
 afterEach(() => {
@@ -167,7 +167,7 @@ it('test_alarm_shows_preview_with_sample_row_and_writes_nothing', async () => {
   const dialog = screen.getByRole('alertdialog', { name: /Asset Not Part Of Move/ });
   const cells = within(dialog).getAllByRole('cell').map((c) => c.textContent);
   expect(cells).toEqual(['Dell PowerEdge R740', 'sample-server', 'SAMPLE123', '100000']);
-  expect(soundMock.startSiren).toHaveBeenCalledTimes(1);
+  expect(soundMock.startAlarmSound).toHaveBeenCalledTimes(1);
 
   // Space dismisses the preview (after the takeover's first second).
   vi.useFakeTimers();
@@ -280,4 +280,16 @@ it('a_stale_save_result_never_overwrites_a_newer_save', async () => {
   await flush();
   expect(radio('Until dismissed').getAttribute('aria-checked')).toBe('true');
   expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('shows the alarm sound picker inside the section, behind the same gate', async () => {
+  render(<OffMoveAlarmSettings soundRow={<div>Alarm sound picker</div>} />);
+  await flush();
+  expect(screen.getByText('Alarm sound picker')).toBeTruthy();
+  cleanup();
+
+  writeKioskSetup({ ...SETUP, stationType: 'label' });
+  render(<OffMoveAlarmSettings soundRow={<div>Alarm sound picker</div>} />);
+  await flush();
+  expect(screen.queryByText('Alarm sound picker')).toBeNull();
 });
