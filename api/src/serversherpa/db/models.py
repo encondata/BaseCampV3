@@ -294,6 +294,10 @@ class AuthSession(Base):
     client: Mapped[str] = mapped_column(server_default="portal")
     # The move a move-password kiosk session is locked to (NULL otherwise).
     initiative_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("initiatives.id"))
+    # The kiosk serial a kiosk session belongs to: bound by its first
+    # /kiosk/heartbeat (first binding wins), carried through rotation. Config
+    # sync over the person heartbeat serves only this serial.
+    kiosk_serial: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 

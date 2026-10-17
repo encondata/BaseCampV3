@@ -51,7 +51,7 @@ from serversherpa.api.schemas import (
 )
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    Asset, AssetModel, AuditLog, Client, Container, ContainerAsset, Device, Initiative,
+    Asset, AssetModel, AuditLog, AuthSession, Client, Container, ContainerAsset, Device, Initiative,
     InitiativeAsset, KioskPairRequest, KioskSound, LabelPlaceholder, LabelVocab, Person,
     RawScan, Site, StatusValue, TimeEntry, Truck, TruckContainer, UserAccount,
     WorkerProfile,
@@ -490,11 +490,13 @@ async def heartbeat(
                            "requested_by": str(requested_by) if requested_by else None})
     # body.reader is accepted and ignored: reader telemetry arrives only on
     # POST /kiosk/station/heartbeat, under the station key.
-    # Config syncs only for the person signed in at this kiosk (a sign-in
-    # beat recorded them above), and never here for a station-keyed device,
-    # which syncs on /kiosk/station/heartbeat. Anyone else with kiosk:view
-    # who names this serial neither reads nor writes its config.
-    own_kiosk = device.session_person_id == actor.person.id
+    # Config and scan-type sync serve only the kiosk this sign-in session
+    # belongs to: a kiosk session (move-password ones included) is bound to
+    # the serial of its first beat, and never syncs for any other serial,
+    # sign-in or not. Portal sessions never sync. A station-keyed device
+    # syncs config only on /kiosk/station/heartbeat (scan type still comes
+    # back to its own session).
+    own_kiosk = await _bind_kiosk_session(db, actor, body.serial)
     if own_kiosk and device.station_key_hash is None:
         sync = await _sync_config(db, device, body.config, body.config_changed_at,
                                   body.config_applied_version, now=now,
@@ -509,6 +511,24 @@ async def heartbeat(
                         token_expires_at=device.token_expires_at,
                         clear_setup=device.setup_clear_id,
                         client_ip=client_ip(request), **sync)
+
+
+async def _bind_kiosk_session(db: AsyncSession, actor: AuthContext, serial: str) -> bool:
+    """True when the caller's session is a kiosk session that belongs to
+    `serial`. An unbound kiosk session is bound to `serial` here, in the
+    heartbeat's transaction, by a guarded UPDATE: under concurrency the
+    first binding wins and the loser reads it back."""
+    session = actor.session
+    if session.client != "kiosk":
+        return False
+    if session.kiosk_serial is None:
+        await db.execute(
+            update(AuthSession)
+            .where(AuthSession.id == session.id, AuthSession.kiosk_serial.is_(None))
+            .values(kiosk_serial=serial)
+            .execution_options(synchronize_session=False))
+        await db.refresh(session, ["kiosk_serial"])
+    return session.kiosk_serial == serial
 
 
 async def _scan_fields(db: AsyncSession, device: Device) -> dict:

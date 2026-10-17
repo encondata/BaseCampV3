@@ -1,7 +1,9 @@
 """Kiosk settings in the portal: one config document per kiosk on devices
 (version, when and where it last changed, when the kiosk last reported and
-which version it has applied), and kiosk_sounds for uploaded sounds kept in
-the Spaces bucket.
+which version it has applied), kiosk_sounds for uploaded sounds kept in
+the Spaces bucket, and auth_sessions.kiosk_serial: the one kiosk a kiosk
+sign-in session belongs to (bound on its first heartbeat), so config sync
+over the person heartbeat serves only that kiosk.
 
 Revision ID: 0099
 Revises: 0098
@@ -35,6 +37,7 @@ def upgrade() -> None:
     op.create_check_constraint(
         "ck_devices_config_source", "devices",
         "config_source IS NULL OR config_source IN ('kiosk', 'portal')")
+    op.add_column("auth_sessions", sa.Column("kiosk_serial", sa.Text, nullable=True))
 
     op.create_table(
         "kiosk_sounds",
@@ -53,6 +56,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_column("auth_sessions", "kiosk_serial")
     op.drop_table("kiosk_sounds")
     op.drop_constraint("ck_devices_config_source", "devices", type_="check")
     for col in ("config_applied_version", "config_reported_at", "config_changed_by",

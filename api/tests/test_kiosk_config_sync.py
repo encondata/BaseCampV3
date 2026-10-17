@@ -6,6 +6,7 @@ server time, the portal's config version, the whole document only when the
 kiosk is behind, and the device's scan type."""
 
 import copy
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import event, select
@@ -15,13 +16,36 @@ from serversherpa.db.models import AuditLog, Device
 from serversherpa.services.kiosk_config import DEFAULT_CONFIG
 from tests.test_kiosk_station_key import SERIAL
 from tests.test_kiosk_station_scans import _auth, _station
-from tests.test_sites_api import login
-from tests.test_status_values_write import _make
+from tests.test_sites_api import login as portal_login
+from tests.test_status_values_write import PW, _make
 
-# sign_in: config syncs only for the person signed in at this kiosk, and a
-# sign-in beat is what records that person
-BODY = {"serial": "kiosk-web-sync", "name": "Dock 9", "mode": "web", "version": "0.1.0",
-        "sign_in": True}
+BODY = {"serial": "kiosk-web-sync", "name": "Dock 9", "mode": "web", "version": "0.1.0"}
+
+
+async def login(client, email="alice@test.example.com", pw="CorrectHorse9!"):
+    """A kiosk sign-in session (client="kiosk"): config sync over the person
+    heartbeat serves only kiosk sessions, bound to one serial."""
+    r = await client.post("/auth/login", json={"email": email, "password": pw,
+                                               "client": "kiosk"})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+async def _kiosk_worker(db, client, email):
+    await _make(db, client, "worker", email)
+    return await login(client, email=email, pw=PW)
+
+
+async def _session_serial(db, hdrs):
+    """The kiosk_serial on the session behind `hdrs` (via its JWT sid)."""
+    import jwt
+
+    from serversherpa.db.models import AuthSession
+
+    token = hdrs["Authorization"].removeprefix("Bearer ")
+    sid = jwt.decode(token, options={"verify_signature": False})["sid"]
+    db.expire_all()
+    return (await db.get(AuthSession, uuid.UUID(sid))).kiosk_serial
 
 
 def _doc(**appearance) -> dict:
@@ -187,8 +211,17 @@ async def test_far_future_stamp_is_judged_on_server_time(client, db, seeded_user
     assert d.config["appearance"]["flash_ms"] == 1700
     assert d.config_source == "portal" and d.config_version == 2
     # and the kiosk, still behind, is sent the portal's doc
-    r = await _beat(client, hdrs, sign_in=False, config_applied_version=1)
+    r = await _beat(client, hdrs, config_applied_version=1)
     assert r.json()["config"]["appearance"]["flash_ms"] == 1700
+    # an older-stamped kiosk report doesn't overwrite the portal edit
+    r = await _beat(client, hdrs, config=_doc(flash_ms=300),
+                    config_changed_at=_iso(datetime.now(UTC) - timedelta(minutes=5)))
+    assert r.json()["config"]["appearance"]["flash_ms"] == 1700
+    # nor does an unstamped one
+    r = await _beat(client, hdrs, config=_doc(flash_ms=301))
+    assert r.json()["config"]["appearance"]["flash_ms"] == 1700
+    d = await _device(db)
+    assert d.config["appearance"]["flash_ms"] == 1700 and d.config_version == 2
 
 
 async def test_oversized_config_is_422(client, db, seeded_user):
@@ -214,42 +247,90 @@ async def test_config_audited_with_the_signed_in_person(client, db, seeded_user)
     assert d.config_changed_by == uid
 
 
-async def test_other_persons_session_cannot_read_or_write_config(client, db, seeded_user):
-    """Only the person signed in at this kiosk syncs its config: another
-    kiosk:view session naming the serial gets no doc and changes nothing."""
+async def test_session_bound_to_another_kiosk_gets_nothing(client, db, seeded_user):
+    """A second person's kiosk session, bound to kiosk A, that sends a
+    sign-in beat naming kiosk B gets no config and no scan fields, and B's
+    config is unchanged."""
     hdrs = await login(client)
     await _beat(client, hdrs, config=_doc(flash_ms=900),
                 config_changed_at=_iso(datetime.now(UTC)))
-    d = await _device(db)
-    assert d.config_version == 1
-    other = await _make(db, client, "worker", "other@test.example.com")
+    b = await _device(db)
+    b.scan_status = "pre_stage"
+    await db.commit()
+    assert b.config_version == 1
+    other = await _kiosk_worker(db, client, "other@test.example.com")
+    a_beat = await client.post("/kiosk/heartbeat", headers=other, json={
+        **BODY, "serial": "kiosk-web-A", "name": "Dock A"})
+    assert a_beat.status_code == 200
+    assert await _session_serial(db, other) == "kiosk-web-A"
     r = await client.post("/kiosk/heartbeat", headers=other, json={
-        **BODY, "sign_in": False, "config": _doc(flash_ms=1999),
+        **BODY, "sign_in": True, "config": _doc(flash_ms=1999),
         "config_changed_at": _iso(datetime.now(UTC) + timedelta(seconds=1)),
         "config_applied_version": 0})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["config"] is None and body["config_version"] == 1
+    assert body["scan_status"] is None and body["scan_status_label"] is None
+    b = await _device(db)
+    assert b.config["appearance"]["flash_ms"] == 900 and b.config_version == 1
+    assert b.config_applied_version is None
+    # the binding never moves
+    assert await _session_serial(db, other) == "kiosk-web-A"
+
+
+async def test_unbound_kiosk_session_binds_on_first_beat(client, db, seeded_user):
+    hdrs = await login(client)
+    assert await _session_serial(db, hdrs) is None
+    r = await _beat(client, hdrs, config=_doc(flash_ms=900),
+                    config_changed_at=_iso(datetime.now(UTC)))
+    assert r.json()["config_version"] == 1
+    assert await _session_serial(db, hdrs) == BODY["serial"]
+    assert (await _device(db)).config["appearance"]["flash_ms"] == 900
+
+
+async def test_binding_survives_token_refresh(client, db, seeded_user):
+    r = await client.post("/auth/login", json={
+        "email": "alice@test.example.com", "password": "CorrectHorse9!", "client": "kiosk"})
+    hdrs = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    await _beat(client, hdrs)
+    refreshed = await client.post("/auth/refresh")
+    assert refreshed.status_code == 200, refreshed.text
+    new = {"Authorization": f"Bearer {refreshed.json()['access_token']}"}
+    assert await _session_serial(db, new) == BODY["serial"]
+
+
+async def test_portal_session_never_syncs(client, db, seeded_user):
+    hdrs = await portal_login(client)
+    r = await _beat(client, hdrs, sign_in=True, config=_doc(flash_ms=900),
+                    config_changed_at=_iso(datetime.now(UTC)), config_applied_version=0)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["config"] is None and body["config_version"] == 0
     assert body["scan_status"] is None
     d = await _device(db)
-    assert d.config["appearance"]["flash_ms"] == 900 and d.config_version == 1
+    assert d.config is None and d.config_reported_at is None
     assert d.config_applied_version is None
+    assert await _session_serial(db, hdrs) is None
 
 
 async def test_station_keyed_device_ignores_person_heartbeat_config(client, db, seeded_user):
-    """A device holding a station key syncs only on the station route."""
+    """A device holding a station key syncs config only on the station
+    route; its own signed-in kiosk session still gets the scan type."""
     _, _, _key = await _station(db, person_id=seeded_user.id)
     hdrs = await login(client)
     d = await _device(db, SERIAL)
     d.config = _doc(flash_ms=1234)
     d.config_version = 2
+    d.scan_status = "pre_stage"
     await db.commit()
     r = await client.post("/kiosk/heartbeat", headers=hdrs, json={
-        "serial": SERIAL, "name": "Station 1", "mode": "laptop",
+        "serial": SERIAL, "name": "Station 1", "mode": "laptop", "sign_in": True,
         "config": _doc(flash_ms=555), "config_changed_at": _iso(datetime.now(UTC)),
         "config_applied_version": 1})
     assert r.status_code == 200, r.text
-    assert r.json()["config"] is None and r.json()["config_version"] == 2
+    body = r.json()
+    assert body["config"] is None and body["config_version"] == 2
+    assert body["scan_status"] == "pre_stage" and body["scan_status_label"] == "Pre-Stage"
     d = await _device(db, SERIAL)
     assert d.config["appearance"]["flash_ms"] == 1234 and d.config_version == 2
     assert d.config_applied_version is None and d.config_reported_at is None

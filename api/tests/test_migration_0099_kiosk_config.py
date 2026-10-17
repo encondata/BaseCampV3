@@ -37,6 +37,13 @@ async def test_device_config_columns(db):
     assert {r[0]: (r[1], r[2], r[3]) for r in rows} == CONFIG_COLUMNS
 
 
+async def test_auth_sessions_kiosk_serial_column(db):
+    row = (await db.execute(text(
+        "SELECT data_type, is_nullable, column_default FROM information_schema.columns "
+        "WHERE table_name='auth_sessions' AND column_name='kiosk_serial'"))).one()
+    assert tuple(row) == ("text", "YES", None)
+
+
 async def test_device_config_defaults_and_source_check(db):
     d = Device(device_type="kiosk", name="K1", serial="k-0099-1", sub_type="web")
     db.add(d)
@@ -113,6 +120,10 @@ def test_downgrade_and_upgrade_again(throwaway_url):
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_name='devices' AND column_name LIKE 'config%'")}
         table = conn.execute("SELECT to_regclass('kiosk_sounds')").fetchone()[0]
+        kiosk_serial = conn.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name='auth_sessions' AND column_name='kiosk_serial'").fetchone()
     assert cols == set()
+    assert kiosk_serial is None
     assert table is None
     _alembic(throwaway_url, "upgrade", "head")

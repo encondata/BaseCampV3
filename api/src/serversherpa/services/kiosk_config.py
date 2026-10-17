@@ -83,6 +83,9 @@ log = logging.getLogger(__name__)
 # it, and every check-in reply may carry the whole thing.
 MAX_STORED_BYTES = 64 * 1024
 MAX_EXTRA_SECTIONS = 16
+# Spec sections other platforms own: passed through, and not counted
+# against MAX_EXTRA_SECTIONS (which bounds truly unknown sections).
+PLATFORM_SECTIONS = frozenset({"android_rfid", "ios"})
 
 
 class ConfigError(ValueError):
@@ -291,7 +294,7 @@ def _canonical(doc: dict) -> str:
 
 def _cap_problem(doc: dict) -> str | None:
     """Why `doc` is too big to store, or None."""
-    extra = sum(1 for key in doc if key not in _OWN_KEYS)
+    extra = sum(1 for key in doc if key not in _OWN_KEYS and key not in PLATFORM_SECTIONS)
     if extra > MAX_EXTRA_SECTIONS:
         return f"may have at most {MAX_EXTRA_SECTIONS} extra sections"
     if len(_canonical(doc).encode()) > MAX_STORED_BYTES:

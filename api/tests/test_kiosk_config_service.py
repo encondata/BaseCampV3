@@ -381,9 +381,15 @@ def _sections(n: int) -> dict:
 
 
 async def test_more_than_16_unknown_sections_is_refused(db):
+    """16 truly unknown sections fit; the spec's platform sections
+    (android_rfid, ios) don't count against the cap."""
     d = await _kiosk(db)
-    assert await accept_kiosk_report(db, d, _sections(16), NOW, now=NOW)
+    doc = _sections(16)
+    doc["android_rfid"] = {"power": 270}
+    doc["ios"] = {"haptics": True}
+    assert await accept_kiosk_report(db, d, doc, NOW, now=NOW)
     assert d.config_version == 1
+    assert d.config["ios"] == {"haptics": True} and "extra_15" in d.config
     later = NOW + timedelta(minutes=1)
     assert await accept_kiosk_report(db, d, _sections(17), later, now=later) is False
     assert d.config_version == 1 and "extra_16" not in d.config
