@@ -32,7 +32,8 @@ class KioskReaderReport(BaseModel):
     name: _Str64 | None = None
     firmware: _Str64 | None = None
     mac: Annotated[str, StringConstraints(
-        pattern=r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")] | None = None
+        strip_whitespace=True,
+        pattern=r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")] | None = None
     ip: IPv4Address | None = None
     uptime_seconds: _Count | None = None
     antennas_connected: _Count | None = None
@@ -98,18 +99,11 @@ async def _upsert(db: AsyncSession, kiosk: Device, r: KioskReaderReport,
     # what is stored (a partial snapshot must not wipe good data).
     for src, col, conv in (
             ("model", "model", None), ("firmware", "version", None),
-            ("mac", "mac", None), ("ip", "lan_ip", str),
+            ("ip", "lan_ip", str),
             ("uptime_seconds", "uptime_seconds", None),
             ("antennas_connected", "antennas_connected", None)):
         v = getattr(r, src)
         if src in present and v is not None:
-            if col == "mac":
-                other = await db.scalar(select(Device.id).where(
-                    Device.mac == v, Device.id != reader.id))
-                if other is not None:
-                    log.warning("kiosk reader mac not set (held by device %s), "
-                                "serial=%s", other, r.serial)
-                    continue
             setattr(reader, col, conv(v) if conv else v)
     reader.connection_type = "local_api"
     reader.scan_status = kiosk.scan_status
@@ -121,6 +115,11 @@ async def _upsert(db: AsyncSession, kiosk: Device, r: KioskReaderReport,
             taken = taken.replace(tzinfo=UTC)
         reader.last_seen_at = min(taken, now) if taken else now
     raw = dict(reader.raw_info or {})
+    # The reported MAC is telemetry, never identity: it lives in raw_info,
+    # not devices.mac (unique; routers register by it), so a kiosk report
+    # can't squat a router's MAC.
+    if "mac" in present and r.mac is not None:
+        raw["mac"] = r.mac.strip().upper().replace("-", ":")
     for src, key in (("make", "make"), ("reading", "reading"),
                      ("tags_24h", "reported_tags_24h"),
                      ("antennas_total", "antennas_total")):

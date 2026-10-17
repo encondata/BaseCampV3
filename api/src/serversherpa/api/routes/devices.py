@@ -109,6 +109,10 @@ def _row_to_item(row, now: datetime) -> dict:
     is_reader = d.device_type == "fixed_reader"
     raw = d.raw_info or {}
     reader_status = reader_status_for(d, now)
+    mac = d.mac
+    if (mac is None and is_reader and isinstance(raw.get("mac"), str)
+            and len(raw["mac"]) <= 32):
+        mac = raw["mac"]
     tags_read_24h = (raw_n or 0) + (proc_n or 0)
     if (is_reader and raw.get("via_kiosk_id")
             and reader_status != "offline"
@@ -123,7 +127,7 @@ def _row_to_item(row, now: datetime) -> dict:
                            and _real_int(raw.get("antennas_total"))
                            and raw["antennas_total"] > 0 else None),
         "id": d.id, "device_type": d.device_type, "name": d.name,
-        "serial": d.serial, "mac": d.mac,
+        "serial": d.serial, "mac": mac,
         "site_id": d.site_id, "site_name": site_name,
         "wan_ip": d.wan_ip, "lan_ip": d.lan_ip,
         "model": d.model, "version": d.version,

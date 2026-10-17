@@ -88,7 +88,7 @@ On an accepted `reader`, the heartbeat upserts the `Device` with `device_type = 
 | `name` | `reader.name` (the reader's host name), falling back to `"FX9600 " + serial` |
 | `model` | `reader.model` |
 | `version` | `reader.firmware` |
-| `mac` | `reader.mac` |
+| `mac` | not set: the reported MAC is kept in `raw_info["mac"]` (normalized; shown on the page), never in the device's MAC identity column, so a kiosk report can't squat a router's MAC |
 | `lan_ip` | `reader.ip` |
 | `uptime_seconds` | `reader.uptime_seconds` |
 | `antennas_connected` | `reader.antennas_connected` |
