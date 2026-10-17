@@ -195,3 +195,98 @@ async def test_key_never_logged(app, client, cloud, caplog):
     for text in (caplog.text, status.text, setup_body.text, events.text,
                  json.dumps(app.state.syncer.meta())):
         assert RAW not in text
+
+
+# ── fix round: serialized issue, stale answers, 401 drops the key ──
+
+async def test_concurrent_issues_make_one_call(app, cloud):
+    import asyncio
+    _rfid_setup(app)
+    app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    answers = iter(["key-one", "key-two"])
+
+    async def slow(request):
+        await asyncio.sleep(0.01)
+        return httpx.Response(200, json={"key": next(answers)})
+    route = cloud.post("/kiosk/station-key").mock(side_effect=slow)
+    results = await asyncio.gather(station_key.issue(app.state, "p-1"),
+                                   station_key.issue(app.state, "p-1"))
+    assert route.call_count == 1 and results == [True, True]
+    assert station_key.load_key(app.state.store, app.state.keys) == "key-one"
+
+
+async def test_stale_move_answer_is_discarded(app, cloud):
+    _rfid_setup(app, "m-A")
+    app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+
+    def moved_on(request):
+        _rfid_setup(app, "m-B")             # the laptop was set up for move B meanwhile
+        return httpx.Response(200, json={"key": "move-a-key"})
+    cloud.post("/kiosk/station-key").mock(side_effect=moved_on)
+    assert await station_key.issue(app.state, "p-1") is False
+    assert station_key.load_key(app.state.store, app.state.keys) is None
+
+
+async def test_station_401_drops_the_key(app, cloud):
+    station_key.store_key(app.state.store, app.state.keys, RAW)
+    cloud.get("/kiosk/station/sync/people").respond(
+        401, json={"detail": {"code": "station_key_invalid"}})
+    resp = await station_key.station_request(app.state, "GET", "/kiosk/station/sync/people")
+    assert resp.status_code == 401
+    assert station_key.load_key(app.state.store, app.state.keys) is None
+
+
+async def test_station_401_keeps_a_key_replaced_meanwhile(app, cloud):
+    station_key.store_key(app.state.store, app.state.keys, "old-key")
+
+    def replaced(request):
+        station_key.store_key(app.state.store, app.state.keys, "new-key")
+        return httpx.Response(401, json={"detail": {"code": "station_key_invalid"}})
+    cloud.get("/kiosk/station/sync/people").mock(side_effect=replaced)
+    await station_key.station_request(app.state, "GET", "/kiosk/station/sync/people")
+    assert station_key.load_key(app.state.store, app.state.keys) == "new-key"
+
+
+async def test_station_sync_401_drops_key_then_retry_reissues(app, cloud, monkeypatch):
+    store = app.state.store
+    _rfid_setup(app)
+    station_key.store_key(store, app.state.keys, RAW)
+    app.state.syncer.set_target("m-1", None)
+    cloud.get(url__regex=r"/kiosk/station/sync/.*").respond(
+        401, json={"detail": {"code": "station_key_revoked"}})
+    meta = await app.state.syncer.run()
+    assert meta["last_error"].startswith("http_401:") and RAW not in json.dumps(meta)
+    assert station_key.needs_key(store)
+    cloud.get("/system/status").respond(200, json={})
+    app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    make_session(app, person_id="p-1")
+    monkeypatch.setattr(app.state.syncer, "run", _no_sync)
+    cloud.post("/kiosk/station-key").respond(200, json={"key": "fresh"})
+    await Background(app.state).tick(now=1000.0)
+    assert station_key.load_key(store, app.state.keys) == "fresh"
+
+
+async def test_background_skips_an_ending_cloud_session(app, cloud, monkeypatch):
+    cloud.get("/system/status").respond(200, json={})
+    monkeypatch.setattr(app.state.syncer, "run", _no_sync)
+    _rfid_setup(app)
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    app.state.syncer.set_target("m-1", "p-1")
+    up.mark_ending("p-1")
+    # the logout can't reach the cloud, so the session stays ending through the tick
+    cloud.post("/auth/logout").mock(side_effect=httpx.ConnectError("down"))
+    route = cloud.post("/kiosk/station-key").respond(200, json={"key": RAW})
+    await Background(app.state).tick(now=1000.0)
+    assert up.ending_people() == ["p-1"]
+    assert not route.called
+
+
+async def test_not_signed_in_here_logs_at_info(app, cloud, caplog):
+    caplog.set_level(logging.DEBUG, logger="edge.rfid.station_key")
+    _rfid_setup(app)
+    app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    cloud.post("/kiosk/station-key").respond(403, json={"detail": {"code": "not_signed_in_here"}})
+    assert await station_key.issue(app.state, "p-1") is False
+    recs = [r for r in caplog.records if r.name == "edge.rfid.station_key"]
+    assert recs and all(r.levelno == logging.INFO for r in recs)

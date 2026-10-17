@@ -202,7 +202,7 @@ async def _uploads(name, st, session) -> dict:
     with a usable cloud session gets one issue attempt (the background loop
     keeps retrying either way). The key itself never appears here."""
     if not station_key.has_key(st.store) and not session.offline \
-            and st.upstream.has_session(session.person_id):
+            and station_key.usable_session(st.store, session.person_id):
         await station_key.issue(st, session.person_id)
     if station_key.load_key(st.store, st.keys) is not None:
         return result(name, "ok", "Scan uploads are authorized")

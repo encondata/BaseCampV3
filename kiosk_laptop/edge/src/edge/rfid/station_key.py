@@ -11,6 +11,7 @@ Label setup, a Clear Setup from the portal, and Wipe.
 The key never appears in a log line, an edge response, `last_error` or an
 event: failures are logged by HTTP status (or exception type) only."""
 
+import asyncio
 import logging
 
 import httpx
@@ -55,8 +56,29 @@ def clear(store: Store) -> None:
 
 
 def is_rfid_setup(store: Store) -> bool:
+    return _rfid_initiative(store) is not None
+
+
+def _rfid_initiative(store: Store) -> str | None:
+    """The move of the laptop's RFID Station setup; None for any other setup."""
     setup = laptop_setup.load(store)
-    return isinstance(setup, dict) and setup.get("station_type") == "rfid"
+    if isinstance(setup, dict) and setup.get("station_type") == "rfid":
+        return str(setup.get("initiative_id"))
+    return None
+
+
+def usable_session(store: Store, person_id: str | None) -> bool:
+    """A cloud session the edge may act on (not being logged out)."""
+    return person_id is not None and store.one(
+        "SELECT 1 FROM cloud_sessions WHERE person_id = ? AND ending = 0",
+        (person_id,)) is not None
+
+
+def _lock(st) -> asyncio.Lock:
+    lock = getattr(st, "station_key_lock", None)
+    if lock is None:
+        lock = st.station_key_lock = asyncio.Lock()
+    return lock
 
 
 def needs_key(store: Store) -> bool:
@@ -64,7 +86,20 @@ def needs_key(store: Store) -> bool:
 
 
 async def issue(st, person_id: str) -> bool:
-    """Ask the portal for a key as `person_id` and store it. Never raises."""
+    """Ask the portal for a key as `person_id` and store it. Never raises.
+
+    One issue at a time: a second caller (the Confirm check racing the
+    background retry) finds the first one's key and makes no call, so a key
+    the portal already replaced is never stored. The answer is kept only if
+    the laptop is still an RFID Station for the move it was asked for."""
+    async with _lock(st):
+        if has_key(st.store):
+            return True
+        return await _issue(st, person_id)
+
+
+async def _issue(st, person_id: str) -> bool:
+    initiative = _rfid_initiative(st.store)
     try:
         resp = await st.upstream.as_person(person_id, "POST", ISSUE_PATH,
                                            json={"serial": st.identity.serial})
@@ -78,7 +113,8 @@ async def issue(st, person_id: str) -> bool:
         log.info("station key not issued: no usable cloud session")
         return False
     if resp.status_code != 200:
-        log.warning("station key not issued: portal answered %s", resp.status_code)
+        level = logging.INFO if _code(resp) == "not_signed_in_here" else logging.WARNING
+        log.log(level, "station key not issued: portal answered %s", resp.status_code)
         return False
     try:
         raw = resp.json()["key"]
@@ -87,27 +123,41 @@ async def issue(st, person_id: str) -> bool:
     if not isinstance(raw, str) or not raw:
         log.warning("station key not issued: unexpected answer")
         return False
-    if not is_rfid_setup(st.store):
-        # the laptop became a Label Station while this was in flight
-        log.info("station key discarded: the setup is no longer an RFID Station")
+    if initiative is None or _rfid_initiative(st.store) != initiative:
+        # set up again (another move, or a Label Station) while this was in flight
+        log.info("station key discarded: the setup changed while it was issued")
         return False
     store_key(st.store, st.keys, raw)
     log.info("station key stored")
     return True
 
 
+def _code(resp: httpx.Response) -> str | None:
+    try:
+        return resp.json()["detail"]["code"]
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
 async def request_as_station(upstream: Upstream, method: str, path: str,
                              **kw) -> httpx.Response | None:
     """`upstream.request` with `Authorization: Station <key>`; None with no
-    key. CloudOffline propagates like any upstream call."""
+    key. CloudOffline propagates like any upstream call. A 401 means the
+    portal no longer knows this key (revoked, replaced): it is dropped, so
+    the background retry asks for a new one, unless a newer key was stored
+    while the request was in flight."""
+    row = upstream.store.one("SELECT key_enc FROM station_key WHERE id = 1")
     raw = load_key(upstream.store, upstream.keys)
-    if raw is None:
+    if raw is None or row is None:
         return None
     headers = dict(kw.pop("headers", None) or {})
     headers["Authorization"] = f"Station {raw}"
     resp = await upstream.request(method, path, headers=headers, **kw)
-    if resp.status_code != 200:
-        log.info("station %s %s answered %s", method, path, resp.status_code)
+    if resp.status_code == 401:
+        upstream.store.run("DELETE FROM station_key WHERE key_enc = ?", (row["key_enc"],))
+        log.warning("station key refused (%s): dropped", path.split("?", 1)[0])
+    elif resp.status_code != 200:
+        log.info("station %s %s answered %s", method, path.split("?", 1)[0], resp.status_code)
     return resp
 
 

@@ -36,7 +36,7 @@ class Background:
         if now - self.last_key_try < station_key.RETRY_S or not station_key.needs_key(st.store):
             return
         person = st.syncer.actor()
-        if person is None:
+        if not station_key.usable_session(st.store, person):
             return
         self.last_key_try = now
         await station_key.issue(st, person)

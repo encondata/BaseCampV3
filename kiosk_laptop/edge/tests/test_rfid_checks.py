@@ -346,3 +346,12 @@ async def test_uploads_check_offline_session_makes_no_attempt(app, client, cloud
     route = cloud.post("/kiosk/station-key").respond(200, json={"key": "k"})
     body = await run(client, app, "uploads", headers=make_session(app, offline=True))
     assert body["state"] == "fail" and not route.called
+
+
+async def test_uploads_check_ending_cloud_session_makes_no_attempt(app, client, cloud):
+    await seed_setup(app)
+    h = await sign_in(app)
+    app.state.upstream.mark_ending("p-1")
+    route = cloud.post("/kiosk/station-key").respond(200, json={"key": "k"})
+    body = await run(client, app, "uploads", headers=h)
+    assert body["state"] == "fail" and not route.called
