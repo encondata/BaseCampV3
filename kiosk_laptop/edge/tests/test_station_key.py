@@ -357,3 +357,83 @@ async def test_stale_401_with_clear_setup_keeps_a_newer_setup_and_key(app, cloud
     await station_key.station_request(app.state, "GET", "/kiosk/station/sync/people")
     assert station_key.load_key(app.state.store, app.state.keys) == "new-key"
     assert laptop_setup.load(app.state.store)["initiative_id"] == "m-2"
+
+
+# ── a lapsed kiosk registration pauses uploads (station-key telemetry spec §4) ──
+
+PAUSED_DETAIL = ("This laptop's kiosk registration has expired. "
+                 "Sign in here or renew it on Kiosk Devices.")
+NOT_REGISTERED = {"detail": {"code": "kiosk_not_registered"}}
+
+
+def _station_events(store, title):
+    return [r for r in store.all("SELECT kind, title, detail FROM rfid_events ORDER BY id")
+            if r["title"] == title]
+
+
+async def test_not_registered_403_keeps_key_and_records_one_event(app, cloud):
+    store = app.state.store
+    station_key.store_key(store, app.state.keys, RAW)
+    cloud.get("/kiosk/station/sync/people").respond(403, json=NOT_REGISTERED)
+    for _ in range(2):
+        resp = await station_key.station_request(app.state, "GET", "/kiosk/station/sync/people")
+        assert resp.status_code == 403
+    assert station_key.load_key(store, app.state.keys) == RAW
+    paused = _station_events(store, "Uploads paused")
+    assert len(paused) == 1
+    assert paused[0]["kind"] == "station" and paused[0]["detail"] == PAUSED_DETAIL
+    assert station_key.is_paused(store) is True
+
+
+async def test_200_after_pause_records_resumed_once(app, cloud):
+    store = app.state.store
+    station_key.store_key(store, app.state.keys, RAW)
+    cloud.get("/kiosk/station/sync/people").respond(403, json=NOT_REGISTERED)
+    await station_key.station_request(app.state, "GET", "/kiosk/station/sync/people")
+    cloud.post("/kiosk/station/heartbeat").respond(200, json={})
+    for _ in range(2):            # a 200 from any station route resumes
+        await station_key.station_request(app.state, "POST", "/kiosk/station/heartbeat",
+                                          json={})
+    resumed = _station_events(store, "Uploads resumed")
+    assert len(resumed) == 1 and resumed[0]["kind"] == "station"
+    assert station_key.is_paused(store) is False
+    assert len(_station_events(store, "Uploads paused")) == 1
+
+
+async def test_200_without_pause_records_nothing(app, cloud):
+    store = app.state.store
+    station_key.store_key(store, app.state.keys, RAW)
+    cloud.get("/kiosk/station/sync/people").respond(200, json={})
+    await station_key.station_request(app.state, "GET", "/kiosk/station/sync/people")
+    assert store.all("SELECT 1 FROM rfid_events") == []
+    assert station_key.is_paused(store) is False
+
+
+async def test_pause_survives_restart(app, settings, cloud):
+    from edge.app import create_app
+    store = app.state.store
+    station_key.store_key(store, app.state.keys, RAW)
+    cloud.get("/kiosk/station/sync/people").respond(403, json=NOT_REGISTERED)
+    await station_key.station_request(app.state, "GET", "/kiosk/station/sync/people")
+    await app.state.upstream.aclose()
+    store.close()
+    again = create_app(settings)                 # a fresh edge over the same data dir
+    try:
+        assert station_key.is_paused(again.state.store) is True
+        await station_key.station_request(again.state, "GET", "/kiosk/station/sync/people")
+        assert len(_station_events(again.state.store, "Uploads paused")) == 1
+        assert station_key.load_key(again.state.store, again.state.keys) == RAW
+    finally:
+        await again.state.upstream.aclose()
+        again.state.store.close()
+
+
+async def test_other_403_is_not_a_pause(app, cloud):
+    store = app.state.store
+    station_key.store_key(store, app.state.keys, RAW)
+    cloud.get("/kiosk/station/sync/people").respond(
+        403, json={"detail": {"code": "move_locked"}})
+    await station_key.station_request(app.state, "GET", "/kiosk/station/sync/people")
+    assert station_key.is_paused(store) is False
+    assert store.all("SELECT 1 FROM rfid_events") == []
+    assert station_key.load_key(store, app.state.keys) == RAW

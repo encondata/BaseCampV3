@@ -296,6 +296,20 @@ async def test_423_read_only_does_not_spend_attempts(app, cloud):
     assert r["next_attempt_at"] == at(clock.t + 60)
 
 
+async def test_uploader_spends_no_attempt_on_not_registered(app, cloud):
+    with_key(app)
+    [sid] = add_scans(app.state.store, 1, attempts=2)
+    cloud.post(PATH).respond(403, json={"detail": {"code": "kiosk_not_registered"}})
+    clock = Clock()
+    assert await uploader(app, clock).drain_once() == 0
+    r = rows(app.state.store)[sid]
+    assert r["attempts"] == 2 and r["upload_state"] == "pending"
+    assert r["last_error"] == "kiosk_not_registered"
+    assert r["next_attempt_at"] == at(clock.t + 60)
+    assert station_key.has_key(app.state.store)        # a lapse never drops the key
+    assert station_key.is_paused(app.state.store)
+
+
 async def test_clear_setup_in_200_reply_drops_key(app, cloud):
     with_key(app)
     laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "rfid")

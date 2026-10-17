@@ -9,7 +9,8 @@ def test_schema_created_and_versioned(tmp_path):
     store = Store(tmp_path / "edge.db")
     tables = {r["name"] for r in store.all("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"edge_sessions", "cloud_sessions", "offline_logins", "login_failures",
-            "move_passwords", "cache", "sync_meta", "outbox", "schema_version"} <= tables
+            "move_passwords", "cache", "sync_meta", "outbox", "schema_version",
+            "station_status"} <= tables
     assert store.one("SELECT version FROM schema_version")["version"] == len(SCHEMA_STEPS)
     store.close()
     # reopening is a no-op upgrade
@@ -69,3 +70,11 @@ def test_an_older_image_never_lowers_the_schema_version(tmp_path, monkeypatch):
     again = Store(tmp_path / "edge.db")   # would fail on a duplicate column if re-run
     assert again.one("SELECT version FROM schema_version")["version"] == len(SCHEMA_STEPS)
     again.close()
+
+
+def test_schema_step_adds_station_status(tmp_path):
+    store = Store(tmp_path / "edge.db")
+    store.run("INSERT INTO station_status (id, paused) VALUES (1, 'kiosk_not_registered')")
+    assert store.one("SELECT paused FROM station_status")["paused"] == "kiosk_not_registered"
+    with pytest.raises(sqlite3.IntegrityError):         # one row only
+        store.run("INSERT INTO station_status (id, paused) VALUES (2, NULL)")

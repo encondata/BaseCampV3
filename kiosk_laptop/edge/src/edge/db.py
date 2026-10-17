@@ -135,6 +135,9 @@ SCHEMA_STEPS: list[str] = [
         raw_read_id INTEGER PRIMARY KEY, received_at TEXT NOT NULL);
     CREATE INDEX rfid_unmatched_received ON rfid_unmatched (received_at)
     """,
+    """
+    CREATE TABLE station_status (id INTEGER PRIMARY KEY CHECK (id = 1), paused TEXT)
+    """,
 ]
 
 

@@ -159,7 +159,8 @@ def test_waits_until_every_source_is_cached(store):
 def test_upgrade_starts_after_existing_reads(tmp_path, monkeypatch):
     from edge import db
     steps = db.SCHEMA_STEPS
-    monkeypatch.setattr(db, "SCHEMA_STEPS", steps[:-1])      # the image before this step
+    step = next(i for i, sql in enumerate(steps) if "rfid_processing_meta" in sql)
+    monkeypatch.setattr(db, "SCHEMA_STEPS", steps[:step])    # the image before this step
     s = Store(tmp_path / "edge.db")
     seed_rows, _ = parse_events([tag_event("AA01"), tag_event("AA01")])
     store_batch(s, reader_serial="R1", rows=seed_rows, setup=SETUP, received_at=RECEIVED)
