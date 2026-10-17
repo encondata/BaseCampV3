@@ -76,7 +76,7 @@
 **Files:**
 - Modify: `api/src/serversherpa/api/schemas.py`. Add `KioskStationHeartbeatIn(serial: str [same limits as HeartbeatIn.serial], version: str | None [same limits as HeartbeatIn.version], reader: dict[str, Any] | None = None)` and `KioskStationHeartbeatOut(registration: str, token_expires_at: datetime | None, clear_setup: uuid.UUID | None)`. Change the comment on `HeartbeatIn.reader` to say it is accepted and ignored (for older edges).
 - Modify: `api/src/serversherpa/api/routes/kiosk.py`. Add the new route next to `station_ingest_scans`. Remove the `apply_reader_report` call from `heartbeat`.
-- Modify: `api/src/serversherpa/api/deps.py`. Add `/kiosk/station/heartbeat` to `READ_ONLY_EXEMPT_PATHS`, because it is telemetry like `/kiosk/heartbeat`. Check how `/kiosk/heartbeat` is exempted today and match it.
+- Modify: `api/src/serversherpa/api/deps.py`. No change: like `/kiosk/heartbeat` (not exempt), the route calls `enforce_read_only_config` and returns 423 during a freeze.
 - Test: `api/tests/test_kiosk_station_heartbeat.py` (new). Also update the existing fixed-reader heartbeat tests (grep `api/tests` for `"reader"`) so they post through the station route. The person-route tests now assert the reader row is not created or updated.
 
 **Interfaces:**
@@ -90,7 +90,7 @@
   - `test_station_heartbeat_needs_key`: no header → 401 `station_key_invalid`.
   - `test_station_heartbeat_lapsed_is_403`
   - `test_station_heartbeat_never_renews_registration`: the kiosk has 3 days left (`soon`); after the beat, `token_expires_at` is unchanged.
-  - `test_station_heartbeat_allowed_in_read_only_mode`
+  - `test_station_heartbeat_blocked_in_read_only_mode` (423)
   - `test_person_heartbeat_ignores_reader`: `POST /kiosk/heartbeat` with a valid `reader` → 200; no reader Device row is created.
   - `test_station_heartbeat_returns_clear_setup`: the pending id is echoed while the key is valid. (The Clear Setup request itself revokes the key, so set `setup_clear_id` directly in the test.)
 - [ ] **Step 2: Run them; they fail.**
