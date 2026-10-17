@@ -11,4 +11,6 @@ export interface SectionProps {
    *  whole document (with this section replaced) is stored; rejects with
    *  the ApiError otherwise. */
   onSave?: (section: string, value: unknown) => Promise<void>;
+  /** Re-fetch the kiosk (after a stale-version 409). */
+  onReload?: () => Promise<void>;
 }

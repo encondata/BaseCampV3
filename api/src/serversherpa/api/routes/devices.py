@@ -663,8 +663,14 @@ async def get_device(
 
 
 async def _store_portal_config(db: DbSession, device_id: uuid.UUID, doc: Any,
-                               actor: AuthContext) -> dict:
+                               actor: AuthContext, expected_version: int | None = None) -> dict:
     device = await _locked_kiosk(db, device_id)
+    if expected_version is not None and expected_version != device.config_version:
+        # the editor was built on an older version (a kiosk report or another
+        # edit landed since): refuse rather than revert the newer change
+        current = device.config_version   # read before the rollback expires it
+        await db.rollback()
+        raise _err(409, "config_changed", config_version=current)
     named = []
     for raw in kiosk_config.sound_ids_in(doc):
         try:
@@ -694,26 +700,32 @@ async def _store_portal_config(db: DbSession, device_id: uuid.UUID, doc: Any,
 async def put_device_config(
     device_id: uuid.UUID, db: DbSession,
     doc: Annotated[Any, Body()] = None,
+    expected_version: Annotated[int | None, Query(ge=0)] = None,
     actor: AuthContext = require_permission("scanning_hardware", "change"),
 ) -> dict:
     """Replace the kiosk's whole config document (strictly validated: a bad
     value is 422 bad_config with its dotted `field`). Sections the portal
     doesn't own (android_rfid, ios, unknown) are kept when left out. A
     null or non-object body is 422 bad_config (field "config"). Content
-    equal to the stored config is a no-op: no version bump, no audit."""
+    equal to the stored config is a no-op: no version bump, no audit.
+    `expected_version` (optional query param): the config_version the editor
+    was built on; when the stored version differs the answer is 409
+    config_changed (with the current config_version) and nothing changes."""
     _require_super_admin(actor)
-    return await _store_portal_config(db, device_id, doc, actor)
+    return await _store_portal_config(db, device_id, doc, actor, expected_version)
 
 
 @router.post("/{device_id}/config/reset", response_model=DeviceDetail)
 async def reset_device_config(
     device_id: uuid.UUID, db: DbSession,
+    expected_version: Annotated[int | None, Query(ge=0)] = None,
     actor: AuthContext = require_permission("scanning_hardware", "change"),
 ) -> dict:
-    """Store DEFAULT_CONFIG as a portal edit (other platforms' sections kept)."""
+    """Store DEFAULT_CONFIG as a portal edit (other platforms' sections kept).
+    `expected_version` works as on PUT: a stale one is 409 config_changed."""
     _require_super_admin(actor)
     return await _store_portal_config(
-        db, device_id, copy.deepcopy(kiosk_config.DEFAULT_CONFIG), actor)
+        db, device_id, copy.deepcopy(kiosk_config.DEFAULT_CONFIG), actor, expected_version)
 
 
 @router.patch("/{device_id}/scan-type", response_model=DeviceDetail)

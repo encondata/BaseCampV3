@@ -201,6 +201,9 @@ export function syncLine(
   return '—';
 }
 
+/** GET /devices/{id}/config/history's default page size. */
+export const HISTORY_LIMIT = 200;
+
 /** The newest recorded change that touched `section`. */
 export function lastSectionChange(
   section: string, history: DeviceConfigHistoryItem[],
@@ -215,7 +218,12 @@ export function sectionSource(
   section: string, history: DeviceConfigHistoryItem[], nowMs: number = Date.now(),
 ): string {
   const h = lastSectionChange(section, history);
-  if (!h) return 'No changes recorded';
+  if (!h) {
+    // the history route returns at most HISTORY_LIMIT rows: a full page that
+    // never touches this section says nothing about older changes
+    return history.length >= HISTORY_LIMIT
+      ? `Unchanged in the last ${HISTORY_LIMIT} changes` : 'No changes recorded';
+  }
   const where = h.source === 'portal' ? 'on the portal' : h.source === 'kiosk' ? 'on the kiosk' : '';
   const by = h.by_name ? ` by ${h.by_name}` : '';
   return `changed${where ? ` ${where}` : ''}${by} · ${agoText(h.at, nowMs)}`;

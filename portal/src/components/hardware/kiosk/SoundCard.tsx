@@ -84,7 +84,8 @@ function SoundValue({ sref, sounds, volume }: { sref: SoundRef; sounds: KioskSou
   );
 }
 
-function SoundModal({ value, sounds, showAlarm, kioskName, onSave, onClose }: {
+function SoundModal({ value, onReload, sounds, showAlarm, kioskName, onSave, onClose }: {
+  onReload?: () => Promise<void>;
   value: SoundSection; sounds: KioskSoundItem[]; showAlarm: boolean; kioskName: string;
   onSave: (next: SoundSection) => Promise<void>; onClose: () => void;
 }) {
@@ -96,7 +97,7 @@ function SoundModal({ value, sounds, showAlarm, kioskName, onSave, onClose }: {
       title="Edit sound" kioskName={kioskName}
       description="The sound the kiosk plays for each scan result, and how loud."
       fields={['sound.good', 'sound.not_found', 'sound.duplicate', 'sound.alarm', 'sound.volume']}
-      onClose={onClose}
+      onClose={onClose} onReload={onReload}
       onSave={() => onSave(draft)}
     >
       {(error) => (
@@ -126,7 +127,7 @@ function SoundModal({ value, sounds, showAlarm, kioskName, onSave, onClose }: {
 }
 
 export default function SoundCard({
-  config, kioskName, source, onSave, sounds, showAlarm, canUpload, onSoundsChanged,
+  config, kioskName, source, onSave, onReload, sounds, showAlarm, canUpload, onSoundsChanged,
 }: SectionProps & {
   sounds: KioskSoundItem[];
   showAlarm: boolean;
@@ -182,7 +183,7 @@ export default function SoundCard({
       </dl>
       {note && <p className="set-note" role="status" style={{ padding: 0, marginTop: 10 }}>{note}</p>}
       {editing && onSave && (
-        <SoundModal value={s} sounds={sounds} showAlarm={showAlarm} kioskName={kioskName}
+        <SoundModal value={s} onReload={onReload} sounds={sounds} showAlarm={showAlarm} kioskName={kioskName}
           onClose={() => setEditing(false)}
           onSave={async (next) => { await onSave('sound', next); setEditing(false); }} />
       )}

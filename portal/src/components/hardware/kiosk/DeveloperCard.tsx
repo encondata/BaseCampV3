@@ -8,7 +8,8 @@ import SectionEditModal, { FieldError } from './SectionEditModal';
 import SettingsCard from './SettingsCard';
 import type { SectionProps } from './types';
 
-function DeveloperModal({ value, kioskName, onSave, onClose }: {
+function DeveloperModal({ value, onReload, kioskName, onSave, onClose }: {
+  onReload?: () => Promise<void>;
   value: DeveloperSection; kioskName: string;
   onSave: (next: DeveloperSection) => Promise<void>; onClose: () => void;
 }) {
@@ -18,7 +19,7 @@ function DeveloperModal({ value, kioskName, onSave, onClose }: {
       title="Edit developer" kioskName={kioskName}
       description="Developer mode shows the kiosk's diagnostic tools to developers signed in on it."
       fields={['developer.dev_mode']}
-      onClose={onClose}
+      onClose={onClose} onReload={onReload}
       onSave={() => onSave(draft)}
     >
       {(error) => (
@@ -38,7 +39,7 @@ function DeveloperModal({ value, kioskName, onSave, onClose }: {
   );
 }
 
-export default function DeveloperCard({ config, kioskName, source, onSave }: SectionProps) {
+export default function DeveloperCard({ config, kioskName, source, onSave, onReload }: SectionProps) {
   const [editing, setEditing] = useState(false);
   const d = sectionOf(config, 'developer');
   return (
@@ -48,7 +49,7 @@ export default function DeveloperCard({ config, kioskName, source, onSave }: Sec
         <dd>{d.dev_mode ? <span className="chip c-amber">On</span> : <span className="chip tag">Off</span>}</dd>
       </dl>
       {editing && onSave && (
-        <DeveloperModal value={d} kioskName={kioskName} onClose={() => setEditing(false)}
+        <DeveloperModal value={d} onReload={onReload} kioskName={kioskName} onClose={() => setEditing(false)}
           onSave={async (next) => { await onSave('developer', next); setEditing(false); }} />
       )}
     </SettingsCard>

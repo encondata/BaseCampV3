@@ -5172,8 +5172,15 @@ export async function getDevice(id: string): Promise<DeviceDetail> {
 
 /** PUT the WHOLE document. A 422 carries `detail.field` (dotted, e.g.
  *  `appearance.flash_ms`) and `detail.message`. */
-export async function putDeviceConfig(id: string, config: KioskConfigDoc): Promise<DeviceDetail> {
-  const resp = await apiFetch(`/devices/${id}/config`, {
+const expectedQs = (v?: number) => (v === undefined ? '' : `?expected_version=${v}`);
+
+/** `expectedVersion`: the config_version the editor was built on. A stale one
+ *  is 409 `config_changed` (detail.config_version is the current one) and
+ *  nothing is stored, so a slow editor can't revert a newer kiosk change. */
+export async function putDeviceConfig(
+  id: string, config: KioskConfigDoc, expectedVersion?: number,
+): Promise<DeviceDetail> {
+  const resp = await apiFetch(`/devices/${id}/config${expectedQs(expectedVersion)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
@@ -5182,8 +5189,8 @@ export async function putDeviceConfig(id: string, config: KioskConfigDoc): Promi
   return resp.json();
 }
 
-export async function resetDeviceConfig(id: string): Promise<DeviceDetail> {
-  const resp = await apiFetch(`/devices/${id}/config/reset`, { method: 'POST' });
+export async function resetDeviceConfig(id: string, expectedVersion?: number): Promise<DeviceDetail> {
+  const resp = await apiFetch(`/devices/${id}/config/reset${expectedQs(expectedVersion)}`, { method: 'POST' });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

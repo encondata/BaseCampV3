@@ -15,7 +15,8 @@ import type { SectionProps } from './types';
 
 const MODE_LABELS: Record<string, string> = { until_dismissed: 'Until dismissed', timed: 'Timed' };
 
-function AlarmModal({ value, kioskName, onSave, onClose }: {
+function AlarmModal({ value, onReload, kioskName, onSave, onClose }: {
+  onReload?: () => Promise<void>;
   value: AlarmSection; kioskName: string;
   onSave: (next: AlarmSection) => Promise<void>; onClose: () => void;
 }) {
@@ -26,7 +27,7 @@ function AlarmModal({ value, kioskName, onSave, onClose }: {
       title="Edit off-move alarm" kioskName={kioskName}
       description="How long the alarm sounds when the station reads a tag that isn't on its move."
       fields={['alarm.mode', 'alarm.timed_seconds']}
-      onClose={onClose}
+      onClose={onClose} onReload={onReload}
       onSave={() => onSave({ ...value, mode, timed_seconds: numberOrRaw(seconds) as number })}
     >
       {(error) => (
@@ -61,7 +62,7 @@ function AlarmModal({ value, kioskName, onSave, onClose }: {
 }
 
 export default function AlarmCard({
-  config, kioskName, source, onSave, sounds,
+  config, kioskName, source, onSave, onReload, sounds,
 }: SectionProps & { sounds: KioskSoundItem[] }) {
   const [editing, setEditing] = useState(false);
   const a = sectionOf(config, 'alarm');
@@ -74,7 +75,7 @@ export default function AlarmCard({
         <dt>Sound</dt><dd>{soundLabel(sound, sounds)}</dd>
       </dl>
       {editing && onSave && (
-        <AlarmModal value={a} kioskName={kioskName} onClose={() => setEditing(false)}
+        <AlarmModal value={a} onReload={onReload} kioskName={kioskName} onClose={() => setEditing(false)}
           onSave={async (next) => { await onSave('alarm', next); setEditing(false); }} />
       )}
     </SettingsCard>

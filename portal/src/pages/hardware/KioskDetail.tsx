@@ -86,7 +86,9 @@ export default function KioskDetail() {
       const rows = await getDeviceConfigHistory(id);
       if (seq === histSeq.current) setHistory(rows);
     } catch {
-      if (seq === histSeq.current) { setHistory([]); setHistoryError("Couldn't load the history."); }
+      // history stays null: the Settings cards show no source line rather
+      // than a wrong "No changes recorded", and the History tab shows this
+      if (seq === histSeq.current) { setHistory(null); setHistoryError("Couldn't load the history."); }
     }
   }, [id]);
 
@@ -111,6 +113,13 @@ export default function KioskDetail() {
     setDetail(next);
     void loadHistory();
     loadSounds();   // in_use flags follow the stored config
+  };
+
+  /** After a stale-version 409: fresh detail and history, editors stay open. */
+  const reload = async () => {
+    const next = await getDevice(id);
+    setDetail(next);
+    void loadHistory();
   };
 
   const back = <Link to="/hardware/kiosks" className="idet-back">← Kiosk Devices</Link>;
@@ -189,7 +198,8 @@ export default function KioskDetail() {
       {tab === 'overview' && <KioskOverviewTab detail={detail} />}
       {tab === 'settings' && (
         <KioskSettingsTab detail={detail} history={history} sounds={sounds} statuses={statuses}
-                          canEdit={canEdit} onSaved={onSaved} onSoundsChanged={loadSounds} />
+                          canEdit={canEdit} onSaved={onSaved} onSoundsChanged={loadSounds}
+                          onReload={reload} />
       )}
       {tab === 'devices' && <KioskDevicesTab detail={detail} />}
       {tab === 'setup' && <KioskSetupTab detail={detail} canEdit={canEdit} onSaved={onSaved} />}

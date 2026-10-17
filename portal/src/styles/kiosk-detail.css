@@ -34,6 +34,15 @@
   overflow: visible; max-height: none;
 }
 .modal-card.reports-modal-card.rgm-card.kd-confirm-card { width: min(520px, 96vw); max-width: 96vw; }
+/* The body scrolls inside the card so Save and Cancel stay on screen on a
+ * short viewport. Rounded, so its scrollbar joins chrome.css's in-the-corners
+ * list (guardrail: roundedScrollbars.test.ts). ComboBox menus portal out of
+ * the modal, so this overflow never clips them. */
+.kd-modal-scroll {
+  max-height: max(160px, calc(88vh - 210px));
+  overflow-y: auto;
+  border-radius: 12px;
+}
 .kd-field { min-width: 0; }
 .kd-field .pf-error { margin: 6px 0 0; }
 .kd-modal-error { margin: 0 0 12px; }
@@ -53,3 +62,7 @@
 /* ── Setup & move: the scan type picker ───────────────────────────── */
 .kd-scan-pick { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .kd-scan-pick .combo-wrap { flex: 0 1 320px; }
+
+/* the stale-version note (409 config_changed) with its Reload button */
+.kd-stale { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 0 0 12px; }
+.kd-stale .pf-error { margin: 0; }

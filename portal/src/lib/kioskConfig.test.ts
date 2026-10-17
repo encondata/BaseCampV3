@@ -78,3 +78,14 @@ describe('soundLabel', () => {
     expect(soundLabel({ kind: 'siren' }, sounds)).toBe('Siren');
   });
 });
+
+describe('sectionSource at the history cap', () => {
+  it('says unchanged in the last 200 when a full page never touches the section', () => {
+    const full: DeviceConfigHistoryItem[] = Array.from({ length: 200 }, (_, i) => ({
+      at: '2026-10-17T10:00:00Z', source: 'kiosk', version: 200 - i, by_name: null,
+      changes: { 'sound.volume': { from: 0.5, to: 0.6 } },
+    }));
+    expect(sectionSource('appearance', full, NOW)).toBe('Unchanged in the last 200 changes');
+    expect(sectionSource('appearance', full.slice(0, 199), NOW)).toBe('No changes recorded');
+  });
+});

@@ -24,7 +24,8 @@ function options(statuses: StatusValue[] | null, current: string[]): ComboOption
   return out;
 }
 
-function CheckpointsModal({ value, statuses, kioskName, onSave, onClose }: {
+function CheckpointsModal({ value, onReload, statuses, kioskName, onSave, onClose }: {
+  onReload?: () => Promise<void>;
   value: CheckpointsSection; statuses: StatusValue[] | null; kioskName: string;
   onSave: (next: CheckpointsSection) => Promise<void>; onClose: () => void;
 }) {
@@ -35,7 +36,7 @@ function CheckpointsModal({ value, statuses, kioskName, onSave, onClose }: {
       title="Edit checkpoints" kioskName={kioskName}
       description="The scan type each kiosk screen records: what an enroll, pack, unpack, load or unload marks an asset as."
       fields={CHECKPOINTS.map((c) => `checkpoints.${c.key}`)}
-      onClose={onClose}
+      onClose={onClose} onReload={onReload}
       onSave={() => onSave(draft)}
     >
       {(error) => (
@@ -55,7 +56,7 @@ function CheckpointsModal({ value, statuses, kioskName, onSave, onClose }: {
 }
 
 export default function CheckpointsCard({
-  config, kioskName, source, onSave, statuses,
+  config, kioskName, source, onSave, onReload, statuses,
 }: SectionProps & { statuses: StatusValue[] | null }) {
   const [editing, setEditing] = useState(false);
   const c = sectionOf(config, 'checkpoints');
@@ -69,7 +70,7 @@ export default function CheckpointsCard({
         ))}
       </dl>
       {editing && onSave && (
-        <CheckpointsModal value={c} statuses={statuses} kioskName={kioskName}
+        <CheckpointsModal value={c} onReload={onReload} statuses={statuses} kioskName={kioskName}
           onClose={() => setEditing(false)}
           onSave={async (next) => { await onSave('checkpoints', next); setEditing(false); }} />
       )}

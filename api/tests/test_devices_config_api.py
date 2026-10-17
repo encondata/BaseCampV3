@@ -464,3 +464,47 @@ async def test_non_kiosk_detail_has_no_sync_state(client, db, seeded_user):
     hdrs = await login_staff(client, seeded_user)
     body = (await client.get(f"/devices/{router.id}", headers=hdrs)).json()
     assert body["sync_state"] is None and body["scan_type_options"] == []
+
+
+# ── expected_version: a stale portal save never reverts a newer change ──
+
+async def test_put_with_stale_expected_version_is_409_and_changes_nothing(client, db, seeded_user):
+    stored = _doc(flash_ms=900)
+    device = await _kiosk(db, config=stored, config_version=4, config_source="kiosk",
+                          config_reported_at=datetime.now(UTC), config_applied_version=4)
+    hdrs = await _super_admin_headers(db, client)
+    r = await client.put(f"/devices/{device.id}/config?expected_version=3", headers=hdrs,
+                         json=_doc(flash_ms=500))
+    assert r.status_code == 409
+    assert r.json()["detail"] == {"code": "config_changed", "config_version": 4}
+    fresh = await _fresh(db, device.id)
+    assert fresh.config_version == 4
+    assert fresh.config["appearance"]["flash_ms"] == 900
+    audits = (await db.scalars(select(AuditLog).where(
+        AuditLog.entity_id == str(device.id), AuditLog.action == "config_change"))).all()
+    assert audits == []
+
+
+async def test_put_with_current_expected_version_saves(client, db, seeded_user):
+    device = await _kiosk(db, config=_doc(), config_version=4, config_source="kiosk",
+                          config_reported_at=datetime.now(UTC), config_applied_version=4)
+    hdrs = await _super_admin_headers(db, client)
+    r = await client.put(f"/devices/{device.id}/config?expected_version=4", headers=hdrs,
+                         json=_doc(flash_ms=500))
+    assert r.status_code == 200, r.text
+    assert r.json()["config_version"] == 5
+    # leaving it out keeps the old behavior
+    r = await client.put(f"/devices/{device.id}/config", headers=hdrs, json=_doc(flash_ms=600))
+    assert r.status_code == 200 and r.json()["config_version"] == 6
+
+
+async def test_reset_with_stale_expected_version_is_409(client, db, seeded_user):
+    device = await _kiosk(db, config=_doc(flash_ms=900), config_version=2, config_source="kiosk",
+                          config_reported_at=datetime.now(UTC), config_applied_version=2)
+    hdrs = await _super_admin_headers(db, client)
+    r = await client.post(f"/devices/{device.id}/config/reset?expected_version=1", headers=hdrs)
+    assert r.status_code == 409
+    assert r.json()["detail"] == {"code": "config_changed", "config_version": 2}
+    assert (await _fresh(db, device.id)).config["appearance"]["flash_ms"] == 900
+    r = await client.post(f"/devices/{device.id}/config/reset?expected_version=2", headers=hdrs)
+    assert r.status_code == 200 and r.json()["config_version"] == 3

@@ -30,7 +30,8 @@ function Swatch({ color }: { color: Hsl }) {
   );
 }
 
-function AppearanceModal({ value, kioskName, onSave, onClose }: {
+function AppearanceModal({ value, onReload, kioskName, onSave, onClose }: {
+  onReload?: () => Promise<void>;
   value: AppearanceSection; kioskName: string;
   onSave: (next: AppearanceSection) => Promise<void>; onClose: () => void;
 }) {
@@ -41,7 +42,7 @@ function AppearanceModal({ value, kioskName, onSave, onClose }: {
       title="Edit appearance" kioskName={kioskName}
       description="The colors the kiosk screen flashes on each scan result, and for how long."
       fields={['appearance.good_scan', 'appearance.not_found_scan', 'appearance.duplicate_scan', 'appearance.flash_ms']}
-      onClose={onClose}
+      onClose={onClose} onReload={onReload}
       onSave={() => onSave({ ...draft, flash_ms: numberOrRaw(flash) as number })}
     >
       {(error) => (
@@ -69,7 +70,7 @@ function AppearanceModal({ value, kioskName, onSave, onClose }: {
   );
 }
 
-export default function AppearanceCard({ config, kioskName, source, onSave }: SectionProps) {
+export default function AppearanceCard({ config, kioskName, source, onSave, onReload }: SectionProps) {
   const [editing, setEditing] = useState(false);
   const a = sectionOf(config, 'appearance');
   return (
@@ -83,7 +84,7 @@ export default function AppearanceCard({ config, kioskName, source, onSave }: Se
         <dt>Flash length</dt><dd className="mono">{a.flash_ms} ms</dd>
       </dl>
       {editing && onSave && (
-        <AppearanceModal value={a} kioskName={kioskName} onClose={() => setEditing(false)}
+        <AppearanceModal value={a} onReload={onReload} kioskName={kioskName} onClose={() => setEditing(false)}
           onSave={async (next) => { await onSave('appearance', next); setEditing(false); }} />
       )}
     </SettingsCard>

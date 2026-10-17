@@ -17,21 +17,22 @@ import AppearanceCard from './AppearanceCard';
 import CheckpointsCard from './CheckpointsCard';
 import DeveloperCard from './DeveloperCard';
 import PlatformSectionCard from './PlatformSectionCard';
-import { errorFromApi } from './SectionEditModal';
+import { StaleNote, errorFromApi, type FieldErrorState } from './SectionEditModal';
 import SoundCard from './SoundCard';
 
-function ResetConfirm({ kioskName, onConfirm, onClose }: {
+function ResetConfirm({ kioskName, onConfirm, onClose, onReload }: {
   kioskName: string; onConfirm: () => Promise<void>; onClose: () => void;
+  onReload: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<FieldErrorState | null>(null);
   const go = async () => {
     setBusy(true);
-    setError('');
+    setError(null);
     try {
       await onConfirm();
     } catch (err) {
-      setError(errorFromApi(err).message);
+      setError(errorFromApi(err));
       setBusy(false);
     }
   };
@@ -47,8 +48,18 @@ function ResetConfirm({ kioskName, onConfirm, onClose }: {
               defaults. The kiosk picks this up at its next check-in.
             </p>
           </div>
+          <button type="button" className="modal-close" aria-label="Close" onClick={onClose} disabled={busy}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+                 strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
+          </button>
         </div>
-        {error && <div className="modal-body"><p className="pf-error" role="alert">{error}</p></div>}
+        {error && (
+          <div className="modal-body">
+            {error.stale
+              ? <StaleNote onReload={onReload} onReloaded={() => setError(null)} />
+              : <p className="pf-error" role="alert">{error.message}</p>}
+          </div>
+        )}
         <div className="modal-foot">
           <button type="button" className="btn-solid" disabled={busy} onClick={() => void go()}>
             {busy ? 'Resetting…' : 'Reset settings'}
@@ -61,7 +72,7 @@ function ResetConfirm({ kioskName, onConfirm, onClose }: {
 }
 
 export default function KioskSettingsTab({
-  detail, history, sounds, statuses, canEdit, onSaved, onSoundsChanged,
+  detail, history, sounds, statuses, canEdit, onSaved, onSoundsChanged, onReload,
 }: {
   detail: DeviceDetail;
   /** null while it loads: the source lines wait for it. */
@@ -72,6 +83,8 @@ export default function KioskSettingsTab({
   canEdit: boolean;
   onSaved: (next: DeviceDetail) => void;
   onSoundsChanged: () => void;
+  /** Re-fetch the kiosk detail (after a stale-version 409). */
+  onReload: () => Promise<void>;
 }) {
   const [resetting, setResetting] = useState(false);
   const config = configFor(detail.config);
@@ -82,8 +95,10 @@ export default function KioskSettingsTab({
   const onSave = editable
     ? async (section: string, value: unknown) => {
       // Start from what's stored (or the defaults), replace one section.
+      // expected_version: a kiosk report (or another edit) landing after this
+      // detail was loaded makes the save a 409 instead of a silent revert
       const doc = withSection(detail.config ?? configFor(null), section, value);
-      onSaved(await putDeviceConfig(detail.id, doc));
+      onSaved(await putDeviceConfig(detail.id, doc, detail.config_version));
     }
     : undefined;
 
@@ -92,7 +107,7 @@ export default function KioskSettingsTab({
     return history === null ? null : sectionSource(section, history);
   };
 
-  const common = { config, kioskName: detail.name, onSave };
+  const common = { config, kioskName: detail.name, onSave, onReload };
 
   return (
     <section aria-label="Settings">
@@ -132,8 +147,11 @@ export default function KioskSettingsTab({
       </div>
 
       {resetting && (
-        <ResetConfirm kioskName={detail.name} onClose={() => setResetting(false)}
-          onConfirm={async () => { onSaved(await resetDeviceConfig(detail.id)); setResetting(false); }} />
+        <ResetConfirm kioskName={detail.name} onClose={() => setResetting(false)} onReload={onReload}
+          onConfirm={async () => {
+            onSaved(await resetDeviceConfig(detail.id, detail.config_version));
+            setResetting(false);
+          }} />
       )}
     </section>
   );

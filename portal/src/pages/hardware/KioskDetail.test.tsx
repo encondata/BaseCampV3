@@ -216,7 +216,7 @@ it('an edit saves the whole document with only that section changed', async () =
   expect(api.putDeviceConfig).toHaveBeenCalledWith('k1', {
     ...CONFIG,
     appearance: { ...CONFIG.appearance, flash_ms: 600 },
-  });
+  }, 3);
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 });
 
@@ -248,7 +248,7 @@ it('reset asks for confirmation first', async () => {
   const dialog = await screen.findByRole('dialog', { name: 'Reset to defaults' });
   expect(api.resetDeviceConfig).not.toHaveBeenCalled();
   await user.click(within(dialog).getByRole('button', { name: 'Reset settings' }));
-  await waitFor(() => expect(api.resetDeviceConfig).toHaveBeenCalledWith('k1'));
+  await waitFor(() => expect(api.resetDeviceConfig).toHaveBeenCalledWith('k1', 3));
 });
 
 it.each([
@@ -310,4 +310,80 @@ it('an Android kiosk that has never reported shows the not-reported note and no 
   expect(screen.getAllByText(/Settings not reported by this app version yet/).length).toBeGreaterThan(0);
   expect(screen.queryByRole('button', { name: /^Edit/ })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Reset to defaults' })).toBeNull();
+});
+
+it('a stale save shows the changed note; Reload keeps the draft and saves on the fresh version', async () => {
+  const user = userEvent.setup();
+  // the kiosk reported a new volume (version 4) while the editor was open
+  const fresh = structuredClone(CONFIG);
+  (fresh.sound as { volume: number }).volume = 0.5;
+  api.putDeviceConfig.mockRejectedValueOnce(new ApiError(409, 'config_changed', {
+    code: 'config_changed', config_version: 4,
+  }));
+  renderAt('/hardware/kiosks/k1/settings');
+  await screen.findByRole('heading', { name: 'Appearance' });
+  api.getDevice.mockResolvedValue(detail({ config: fresh, config_version: 4, sync_state: 'in_sync' }));
+
+  await user.click(screen.getByRole('button', { name: 'Edit appearance' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Edit appearance' });
+  expect(dialog.querySelector('.modal-body')?.classList.contains('kd-modal-scroll')).toBe(true);
+  const flash = within(dialog).getByLabelText('Flash length (ms)');
+  await user.clear(flash);
+  await user.type(flash, '600');
+  await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+  expect(await within(dialog).findByText("This kiosk's settings changed since you opened them."))
+    .not.toBeNull();
+  expect(api.putDeviceConfig).toHaveBeenCalledTimes(1);
+
+  await user.click(within(dialog).getByRole('button', { name: 'Reload' }));
+  await waitFor(() => expect(api.getDevice).toHaveBeenCalledTimes(2));
+  // the draft survives the reload
+  expect((within(screen.getByRole('dialog', { name: 'Edit appearance' }))
+    .getByLabelText('Flash length (ms)') as HTMLInputElement).value).toBe('600');
+  await user.click(within(screen.getByRole('dialog', { name: 'Edit appearance' }))
+    .getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.putDeviceConfig).toHaveBeenCalledTimes(2));
+  // built on the fresh document: the kiosk's newer volume is kept
+  expect(api.putDeviceConfig).toHaveBeenLastCalledWith('k1', {
+    ...fresh,
+    appearance: { ...CONFIG.appearance, flash_ms: 600 },
+  }, 4);
+});
+
+it('a stale reset offers Reload; the reset modal has a close button', async () => {
+  const user = userEvent.setup();
+  api.resetDeviceConfig.mockRejectedValueOnce(new ApiError(409, 'config_changed', {
+    code: 'config_changed', config_version: 4,
+  }));
+  renderAt('/hardware/kiosks/k1/settings');
+  await screen.findByRole('heading', { name: 'Appearance' });
+  await user.click(screen.getByRole('button', { name: 'Reset to defaults' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Reset to defaults' });
+  await user.click(within(dialog).getByRole('button', { name: 'Reset settings' }));
+  expect(await within(dialog).findByText("This kiosk's settings changed since you opened them."))
+    .not.toBeNull();
+  api.getDevice.mockResolvedValue(detail({ config_version: 4 }));
+  api.resetDeviceConfig.mockResolvedValue(detail({ config_version: 5 }));
+  await user.click(within(dialog).getByRole('button', { name: 'Reload' }));
+  await waitFor(() => expect(api.getDevice).toHaveBeenCalledTimes(2));
+  await user.click(within(screen.getByRole('dialog', { name: 'Reset to defaults' }))
+    .getByRole('button', { name: 'Reset settings' }));
+  await waitFor(() => expect(api.resetDeviceConfig).toHaveBeenLastCalledWith('k1', 4));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+  await user.click(screen.getByRole('button', { name: 'Reset to defaults' }));
+  const again = await screen.findByRole('dialog', { name: 'Reset to defaults' });
+  await user.click(within(again).getByRole('button', { name: 'Close' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+it('a history load failure leaves the source lines off and the History tab shows the error', async () => {
+  const user = userEvent.setup();
+  api.getDeviceConfigHistory.mockRejectedValue(new ApiError(500, 'boom'));
+  renderAt('/hardware/kiosks/k1/settings');
+  await screen.findByRole('heading', { name: 'Appearance' });
+  await waitFor(() => expect(api.getDeviceConfigHistory).toHaveBeenCalled());
+  expect(screen.queryByText(/changed on the|No changes recorded/)).toBeNull();
+  await user.click(screen.getByRole('tab', { name: 'History' }));
+  expect(await screen.findByText("Couldn't load the history.")).not.toBeNull();
 });
