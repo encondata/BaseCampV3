@@ -455,6 +455,107 @@
   .scan-flash { animation-name: scan-flash-hold; }
 }
 
+/* ── Asset Not Part Of Move takeover ─────────────────────────────────
+   Rendered by KioskShell on an RFID Station laptop, above everything
+   (modals' scrims sit in the 2000s). The whole screen flashes between
+   the two reds every 0.8 s, like the approved mockup; 0.8 s is well under
+   the 3-flashes-a-second photosensitivity line. prefers-reduced-motion
+   holds the brighter red instead, and the siren still sounds. The colors
+   are fixed, not themed: an alarm reads the same in light and dark. */
+.offmove-alarm {
+  --alarm-red: #b3121b;
+  --alarm-red-dark: #5e0a0f;
+  --alarm-ink: #8a0d14;
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: clamp(18px, 4vw, 48px);
+  color: #fff;
+  background: var(--alarm-red);
+  animation: offmove-alarm-flash 0.8s infinite;
+  overflow: auto;
+}
+@keyframes offmove-alarm-flash {
+  0%, 100% { background: var(--alarm-red); }
+  50% { background: var(--alarm-red-dark); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .offmove-alarm { animation: none; }
+}
+.offmove-alarm-title {
+  margin: 0;
+  font-size: clamp(28px, 5vw, 56px);
+  line-height: 1.1;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+.offmove-alarm-sub { margin: 0; font-size: clamp(14px, 1.6vw, 20px); opacity: .9; }
+.offmove-alarm-table-wrap { overflow-x: auto; }
+.offmove-alarm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: clamp(14px, 1.6vw, 20px);
+  background: rgba(0, 0, 0, .28);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.offmove-alarm-table th {
+  text-align: left;
+  padding: 10px 14px;
+  font-size: .72em;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  opacity: .8;
+  background: rgba(0, 0, 0, .25);
+}
+.offmove-alarm-table td {
+  padding: 12px 14px;
+  border-top: 1px solid rgba(255, 255, 255, .12);
+}
+.offmove-alarm-table .mono { font-family: var(--font-mono); }
+.offmove-alarm-foot {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: center;
+  font-size: clamp(14px, 1.4vw, 18px);
+}
+.offmove-alarm-dismiss {
+  background: #fff;
+  color: var(--alarm-ink);
+  font: inherit;
+  font-weight: 700;
+  font-size: clamp(16px, 1.8vw, 22px);
+  padding: 14px 28px;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.offmove-alarm-dismiss:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+.offmove-alarm-dismiss kbd {
+  font: inherit;
+  font-size: .8em;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 1px 8px;
+  margin: 0 6px;
+}
+.offmove-alarm-sound {
+  background: rgba(0, 0, 0, .35);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  padding: 10px 18px;
+  border: 1px solid rgba(255, 255, 255, .7);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
 /* ── Appearance tab: HSL color picker ───────────────────────────────── */
 .hsl-picker { display: flex; align-items: center; gap: 16px; flex: 0 0 auto; flex-wrap: wrap; }
 /* The picker is wide, and .settings-row's label column is `min-width: 0`
