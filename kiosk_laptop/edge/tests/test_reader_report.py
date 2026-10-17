@@ -196,3 +196,110 @@ async def test_hung_reader_client_is_closed_when_the_budget_cancels(app, client,
     app.state.reader_transport = Hang()
     await asyncio.wait_for(build_snapshot(app.state, now=NOW), 3)
     assert len(closed) >= 1
+
+
+# ── the snapshot rides the station heartbeat (station key telemetry spec §4) ──
+
+STATION = "/kiosk/station/heartbeat"
+KEY = "the-station-key"
+
+
+def store_key(app):
+    from edge.rfid import station_key
+    station_key.store_key(app.state.store, app.state.keys, KEY)
+
+
+def station_route(cloud, **kw):
+    if "side_effect" in kw:
+        return cloud.post(STATION).mock(side_effect=kw["side_effect"])
+    return cloud.post(STATION).respond(200, json={"registration": "ok", "clear_setup": None})
+
+
+async def test_station_heartbeat_sent_with_key_and_snapshot(app, client, cloud):
+    import json
+    await paired_station(app, client)
+    store_key(app)
+    route = station_route(cloud)
+    app.state.reader_snapshot = await build_snapshot(app.state)
+    await reader_report.send_station_heartbeat(app.state, current_snapshot(app.state))
+    req = route.calls[-1].request
+    assert req.headers["authorization"] == f"Station {KEY}"
+    body = json.loads(req.content)
+    assert body["serial"] == app.state.identity.serial
+    assert body["version"] == app.state.settings.version
+    assert body["reader"]["serial"] == SERIAL and body["reader"]["model"] == "FX9600"
+
+
+async def test_station_heartbeat_without_snapshot_omits_reader(app, client, cloud):
+    import json
+    laptop_setup.save(app.state.store, {"initiative_id": "i-1"}, "rfid")
+    store_key(app)
+    route = station_route(cloud)
+    await reader_report.send_station_heartbeat(app.state, None)
+    body = json.loads(route.calls[-1].request.content)
+    assert body == {"serial": app.state.identity.serial, "version": app.state.settings.version}
+
+
+async def test_no_station_heartbeat_without_key(app, client, cloud):
+    await paired_station(app, client)
+    route = station_route(cloud)
+    app.state.reader_snapshot = await build_snapshot(app.state)
+    await reader_report.send_station_heartbeat(app.state, current_snapshot(app.state))
+    assert not route.called
+
+
+async def test_station_heartbeat_sent_with_nobody_signed_in(app, client, cloud):
+    # the reporter loop itself, with no edge or cloud session at all
+    await paired_station(app, client)
+    store_key(app)
+    route = station_route(cloud)
+    assert app.state.store.one("SELECT COUNT(*) AS n FROM cloud_sessions")["n"] == 0
+    reporter = ReaderReporter(app.state)
+    reporter.start()
+    try:
+        for _ in range(100):
+            if route.called:
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        await reporter.stop()
+    import json
+    req = route.calls[0].request
+    assert req.headers["authorization"] == f"Station {KEY}"
+    assert json.loads(req.content)["reader"]["serial"] == SERIAL
+
+
+async def test_station_heartbeat_clear_setup_applies(app, client, cloud):
+    from edge.rfid import station_key
+    laptop_setup.save(app.state.store, {"initiative_id": "i-1"}, "rfid")
+    store_key(app)
+    cloud.post(STATION).respond(200, json={"registration": "ok", "clear_setup": "c-1"})
+    await reader_report.send_station_heartbeat(app.state, None)
+    assert laptop_setup.load(app.state.store) is None
+    assert not station_key.has_key(app.state.store)
+
+
+async def test_loop_survives_offline_and_errors(app, client, cloud, monkeypatch):
+    import httpx
+    await paired_station(app, client)
+    store_key(app)
+    route = station_route(cloud, side_effect=[
+        httpx.ConnectError("down"),                    # CloudOffline
+        RuntimeError("boom"),                          # anything else
+        httpx.Response(200, json={"registration": "ok", "clear_setup": None}),
+        httpx.Response(200, json={"registration": "ok", "clear_setup": None}),
+    ])
+    monkeypatch.setattr(reader_report, "INTERVAL_S", 0.01)
+    reporter = ReaderReporter(app.state)
+    reporter.start()
+    try:
+        for _ in range(200):
+            if route.call_count >= 4:
+                break
+            await asyncio.sleep(0.02)
+        assert route.call_count >= 4
+        assert not reporter._task.done()
+    finally:
+        await reporter.stop()
+    from edge.rfid import station_key
+    assert station_key.has_key(app.state.store)

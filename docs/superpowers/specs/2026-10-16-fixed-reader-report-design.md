@@ -24,7 +24,7 @@ The page should answer one question: **is this reader alive and reading?** Jimmy
 - **No reporting while nobody is signed in.** The only scheduled call from the laptop to the portal is the kiosk heartbeat, and it only runs while someone is signed in. The reader shows **Offline** until someone signs in again. Jimmy accepted this until the **station key** from `2026-10-16-rfid-scan-processing-design.md` exists. That key will let this report go up unattended; this work should be easy to move onto it.
 - No change for readers that don't come through a kiosk. Their Tags (24h) keeps using portal scan counts, as today.
 - No page layout, filter or Delete changes beyond the two new columns.
-- Known limit: until the station key exists, reader records are written by the kiosk heartbeat under the existing kiosk trust model (any `kiosk:view` session can heartbeat a kiosk serial). Writes are limited to new or kiosk-created rows and are audited.
+- Known limit (superseded by `2026-10-16-station-key-telemetry-design.md`): reader telemetry now arrives only on `POST /kiosk/station/heartbeat` under the station key, sent by the edge every minute even when nobody is signed in. The portal ignores `reader` on the person heartbeat. Writes are still limited to new or kiosk-created rows and are audited.
 - No migration. *(Claude's call: the new values live in the device's existing `raw_info` JSON.)*
 
 ## 2. What the laptop reads

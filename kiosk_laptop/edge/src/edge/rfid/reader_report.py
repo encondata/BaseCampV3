@@ -2,10 +2,13 @@
 
 Every minute the edge reads the reader's version, network and status (under
 `pair_lock`, like `/edge/rfid/status`), counts the last 24 hours of raw tag
-reads, and keeps the result in `state.reader_snapshot`. The proxy attaches a
-fresh snapshot to the kiosk heartbeat; the portal turns it into a fixed
-reader record. It runs on its own loop, not Background's, because it needs
-the reader and not the internet.
+reads, and keeps the result in `state.reader_snapshot`. Then, when a station key is
+stored, it sends `POST /kiosk/station/heartbeat` under that key with the
+edge's serial, version and the fresh snapshot (station key telemetry spec
+§4), whether or not anyone is signed in; the portal turns the snapshot into
+a fixed reader record. The person heartbeat never carries it. It runs on its
+own loop, not Background's, because it needs the reader first; a failed
+beat (offline or otherwise) is logged and the loop carries on.
 
 Each reader call is tried on its own: a failure leaves that call's fields
 out. A value that wouldn't pass the portal's limits (a string over 64
@@ -23,8 +26,9 @@ import httpx
 
 from edge import laptop_setup
 from edge.db import iso, now_iso
-from edge.rfid import pairing, ziotc
+from edge.rfid import pairing, station_key, ziotc
 from edge.rfid.ziotc import ReaderError
+from edge.upstream import CloudOffline
 
 log = logging.getLogger("edge.rfid.reader_report")
 
@@ -38,6 +42,7 @@ MAX_LEN = 64
 MAC = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
 UPTIME = re.compile(r"^(\d+):(\d+):(\d+)$")
 FRESH_KEYS = ("reachable", "tags_24h", "taken_at")
+STATION_HEARTBEAT = "/kiosk/station/heartbeat"
 
 
 def parse_uptime(value) -> int | None:
@@ -153,6 +158,36 @@ def current_snapshot(state, *, now: datetime | None = None) -> dict | None:
     return snap if (now or datetime.now(UTC)) - taken <= FRESH_FOR else None
 
 
+async def send_station_heartbeat(state, snap: dict | None) -> None:
+    """The station heartbeat: serial, version and `snap` (left out when None)
+    under the station key. Nothing is sent without a key. Never raises:
+    offline or any failure is logged (status or exception type only; the
+    key is never logged). `request_as_station` handles 401 (drop the key),
+    403 `kiosk_not_registered` (pause) and 200 (resume); a 200 carrying
+    `clear_setup` applies Clear Setup, as a person heartbeat reply does."""
+    body: dict = {"serial": state.identity.serial, "version": state.settings.version}
+    if snap is not None:
+        body["reader"] = snap
+    try:
+        resp = await station_key.request_as_station(state.upstream, "POST", STATION_HEARTBEAT,
+                                                    json=body)
+    except CloudOffline:
+        log.info("station heartbeat not sent: portal unreachable")
+        return
+    except Exception as exc:  # noqa: BLE001 — the reporter loop must never break
+        log.warning("station heartbeat failed: %s", type(exc).__name__)
+        return
+    if resp is None or resp.status_code != 200:
+        return
+    try:
+        data = resp.json()
+    except ValueError:
+        return
+    if isinstance(data, dict) and data.get("clear_setup"):
+        station_key.apply_clear_setup(state.store)
+        log.info("clear setup received on the station heartbeat: setup and station key dropped")
+
+
 class ReaderReporter:
     def __init__(self, state) -> None:
         self.state = state
@@ -164,6 +199,10 @@ class ReaderReporter:
                 self.state.reader_snapshot = await build_snapshot(self.state)
             except Exception as exc:  # never fatal; type only (the reader's token is a secret)
                 log.warning("reader snapshot failed: %s", type(exc).__name__)
+            try:
+                await send_station_heartbeat(self.state, current_snapshot(self.state))
+            except Exception as exc:  # never fatal
+                log.warning("station heartbeat failed: %s", type(exc).__name__)
             await asyncio.sleep(INTERVAL_S)
 
     def start(self) -> None:
