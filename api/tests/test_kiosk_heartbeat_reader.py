@@ -47,7 +47,8 @@ async def test_reader_creates_fixed_reader(client, db, seeded_user):
     want = (k.scan_status, k.site_id, k.current_initiative_id)
     (fr,) = await _readers(db)
     assert fr.serial == RSERIAL and fr.name == "FX9600647D23"
-    assert fr.mac == "C4:7D:CC:64:7D:23" and fr.lan_ip == "10.10.48.119"
+    assert fr.mac is None and fr.raw_info["mac"] == "C4:7D:CC:64:7D:23"
+    assert fr.lan_ip == "10.10.48.119"
     assert fr.model == "FX9600" and fr.version == "3.32.37.0"
     assert fr.uptime_seconds == 1285577 and fr.antennas_connected == 2
     assert fr.connection_type == "local_api"
@@ -137,7 +138,8 @@ async def test_partial_snapshot_keeps_stored_values(client, db, seeded_user):
     seen = fr.last_seen_at
     await _beat(client, hdrs, {"serial": RSERIAL, "reachable": False})
     (fr,) = await _readers(db)
-    assert fr.mac == "C4:7D:CC:64:7D:23" and fr.lan_ip == "10.10.48.119"
+    assert fr.mac is None and fr.raw_info["mac"] == "C4:7D:CC:64:7D:23"
+    assert fr.lan_ip == "10.10.48.119"
     assert fr.version == "3.32.37.0" and fr.model == "FX9600"
     assert fr.raw_info["make"] == "Zebra" and fr.raw_info["reachable"] is False
     assert fr.last_seen_at == seen
@@ -206,20 +208,48 @@ async def test_reader_moves_to_another_kiosk(client, db, seeded_user):
     assert fr.raw_info["via_kiosk_name"] == "Second Laptop"
 
 
-async def test_mac_held_by_another_device_is_not_set(client, db, seeded_user, caplog):
+async def test_reported_mac_never_squats_a_router(client, db, seeded_user):
     hdrs, _ = await _station(client, db)
     db.add(Device(device_type="router", name="rtr", serial="RTR-1", model="GL",
                   mac=REPORT["mac"]))
     await db.commit()
-    with caplog.at_level("WARNING"):
-        r = await _beat(client, hdrs, REPORT)
+    r = await _beat(client, hdrs, REPORT)
     assert r.status_code == 200, r.text
     (fr,) = await _readers(db)
     assert fr.serial == RSERIAL and fr.mac is None
+    assert fr.raw_info["mac"] == REPORT["mac"]
     assert fr.lan_ip == "10.10.48.119" and fr.raw_info["reported_tags_24h"] == 1832
     rtr = await db.scalar(select(Device).where(Device.serial == "RTR-1"))
     assert rtr.mac == REPORT["mac"]
-    assert any(RSERIAL in m and str(rtr.id) in m for m in caplog.messages)
+
+
+async def test_router_can_hold_the_reported_mac_later(client, db, seeded_user):
+    hdrs, _ = await _station(client, db)
+    assert (await _beat(client, hdrs, REPORT)).status_code == 200
+    db.add(Device(device_type="router", name="rtr", serial="RTR-2", model="GL",
+                  mac=REPORT["mac"]))
+    await db.commit()  # no unique conflict caused by the reader
+    rtr = await db.scalar(select(Device).where(Device.serial == "RTR-2"))
+    assert rtr.mac == REPORT["mac"]
+
+
+async def test_reported_mac_is_stored_normalized(client, db, seeded_user):
+    hdrs, _ = await _station(client, db)
+    await _beat(client, hdrs, {**REPORT, "mac": " c4:7d:cc:64:7d:23 "})
+    (fr,) = await _readers(db)
+    assert fr.raw_info["mac"] == "C4:7D:CC:64:7D:23" and fr.mac is None
+    await _beat(client, hdrs, {**REPORT, "mac": "aa:bb:cc:dd:ee:ff"})
+    (fr,) = await _readers(db)
+    assert fr.raw_info["mac"] == "AA:BB:CC:DD:EE:FF"
+
+
+async def test_devices_api_returns_reader_mac(client, db, seeded_user):
+    hdrs, _ = await _station(client, db)
+    await _beat(client, hdrs, REPORT)
+    r = await client.get("/devices?device_type=fixed_reader", headers=hdrs)
+    assert r.status_code == 200, r.text
+    (item,) = r.json()
+    assert item["mac"] == "C4:7D:CC:64:7D:23"
 
 
 async def test_last_seen_never_later_than_taken_at(client, db, seeded_user):
