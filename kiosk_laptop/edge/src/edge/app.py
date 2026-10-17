@@ -5,7 +5,8 @@ probe/drain/sync loop and, on shutdown, stops it and closes the upstream
 client and the store.
 
 Routing: the edge's own routers and /config.js come first; the catch-all
-proxies /auth, /kiosk and /system to the cloud (never /edge, and never a
+proxies /auth, /kiosk and /system to the cloud (never /edge, never the
+station-key routes /kiosk/station-key and /kiosk/station/*, and never a
 path with a `.`/`..` segment, an encoded slash or an encoded `%`) and serves the kiosk's
 web files for everything else. Only local Host names are answered."""
 
@@ -37,6 +38,10 @@ from edge.sync import Syncer
 from edge.upstream import Upstream
 
 API_PREFIXES = ("/auth/", "/kiosk/", "/system/", "/edge/")
+# The station key is the edge's own: issuing one hands the raw key to the
+# caller and replaces the laptop's, and the station routes take that key.
+# A browser never reaches them through the proxy.
+EDGE_ONLY = ("/kiosk/station-key", "/kiosk/station/")
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]", "edge.test")  # edge.test: the test client
 
 
@@ -135,6 +140,8 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
             return Response(status_code=404)  # never proxied
         if path.startswith("/edge/"):
             return Response(status_code=404)  # the laptop's own namespace: never proxied
+        if path == "/kiosk/station" or path.startswith(EDGE_ONLY):
+            return Response(status_code=404)  # the station key's routes: the edge's own calls only
         if path.startswith(API_PREFIXES):
             return await proxy.forward(request, path)
         if request.method != "GET":
