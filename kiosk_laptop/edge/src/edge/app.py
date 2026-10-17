@@ -12,6 +12,7 @@ web files for everything else. Only local Host names are answered."""
 
 import asyncio
 import json
+import re
 from contextlib import asynccontextmanager
 from urllib.parse import unquote
 
@@ -140,7 +141,8 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
             return Response(status_code=404)  # never proxied
         if path.startswith("/edge/"):
             return Response(status_code=404)  # the laptop's own namespace: never proxied
-        if path == "/kiosk/station" or path.startswith(EDGE_ONLY):
+        squashed = re.sub(r"/{2,}", "/", path)  # `/kiosk//station-key` is the same route
+        if squashed == "/kiosk/station" or squashed.startswith(EDGE_ONLY):
             return Response(status_code=404)  # the station key's routes: the edge's own calls only
         if path.startswith(API_PREFIXES):
             return await proxy.forward(request, path)

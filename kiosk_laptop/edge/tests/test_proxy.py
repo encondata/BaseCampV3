@@ -306,3 +306,14 @@ async def test_browser_cannot_reach_station_key_routes(app, client, cloud):
     r = await client.post("/kiosk/station-key")  # anonymous too
     assert r.status_code == 404
     assert not issue.called and not station.called
+
+
+async def test_repeated_slashes_cannot_reach_station_key_routes(app, client, cloud):
+    _online_as(app)
+    upstream = cloud.route(url__regex=r".*station.*").respond(200, json={"key": "leaked"})
+    hdrs = make_session(app)
+    for path in ("/kiosk//station-key", "//kiosk/station-key", "/kiosk///station/scans",
+                 "/kiosk//station", "/kiosk/station//sync/assets"):
+        r = await client.post(path, headers=hdrs, json={})
+        assert r.status_code == 404, path
+    assert not upstream.called

@@ -340,3 +340,20 @@ async def test_rfid_setup_keeps_pending_scans(app, client, cloud):
     [sid] = add_scans(app.state.store, 1)
     assert (await setup(client, app, station_type="rfid")).status_code == 200
     assert rows(app.state.store)[sid]["upload_state"] == "pending"
+
+
+async def test_stale_401_with_clear_setup_keeps_a_newer_setup_and_key(app, cloud):
+    """A request in flight under an old key: the laptop was set up again
+    meanwhile (new key), so its stale refusal clears nothing."""
+    _rfid_setup(app)
+    station_key.store_key(app.state.store, app.state.keys, "old-key")
+
+    def replaced(request):
+        _rfid_setup(app, "m-2")
+        station_key.store_key(app.state.store, app.state.keys, "new-key")
+        return httpx.Response(401, json={"detail": {"code": "station_key_invalid",
+                                                    "clear_setup": "c-1"}})
+    cloud.get("/kiosk/station/sync/people").mock(side_effect=replaced)
+    await station_key.station_request(app.state, "GET", "/kiosk/station/sync/people")
+    assert station_key.load_key(app.state.store, app.state.keys) == "new-key"
+    assert laptop_setup.load(app.state.store)["initiative_id"] == "m-2"

@@ -168,7 +168,8 @@ async def request_as_station(upstream: Upstream, method: str, path: str,
     the background retry asks for a new one, unless a newer key was stored
     while the request was in flight. A 401 carrying `clear_setup` (a Clear
     Setup requested for this laptop) also applies Clear Setup, as a
-    heartbeat reply would."""
+    heartbeat reply would, but only when it dropped the key that was sent:
+    a stale refusal never wipes a newer setup and key."""
     row = upstream.store.one("SELECT key_enc FROM station_key WHERE id = 1")
     raw = load_key(upstream.store, upstream.keys)
     if raw is None or row is None:
@@ -177,7 +178,11 @@ async def request_as_station(upstream: Upstream, method: str, path: str,
     headers["Authorization"] = f"Station {raw}"
     resp = await upstream.request(method, path, headers=headers, **kw)
     if resp.status_code == 401:
-        upstream.store.run("DELETE FROM station_key WHERE key_enc = ?", (row["key_enc"],))
+        dropped = upstream.store.run("DELETE FROM station_key WHERE key_enc = ?",
+                                     (row["key_enc"],))
+        if not dropped:  # a newer key (a new setup) arrived meanwhile: this refusal is stale
+            log.info("stale station refusal (%s): newer key kept", path.split("?", 1)[0])
+            return resp
         log.warning("station key refused (%s): dropped", path.split("?", 1)[0])
         if _clear_setup_id(resp) is not None:
             apply_clear_setup(upstream.store)
