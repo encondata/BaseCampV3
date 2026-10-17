@@ -129,4 +129,4 @@ If its reviews are not all PASS, say so and suggest `/factory rework`.
 
 After every step, tell the human one line: the job, the stage, and what
 happens next. Point them at the dashboard:
-`cd factory && python3 -m http.server 8765 --bind 127.0.0.1`, then http://localhost:8765/dashboard.html.
+`python3 factory/serve.py` (from the repo root), then http://localhost:8765/dashboard.html.

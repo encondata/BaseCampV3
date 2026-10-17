@@ -13,6 +13,7 @@ you) comes out. The whole thing is markdown plus one skill:
 | `factory/board.json` | live state; drives the dashboard (local, git-ignored) |
 | `factory/jobs/<id>/` | one folder per job: `spec.md`, `build.md`, `round-N/review-*.md`, `decision.md` (local, git-ignored) |
 | `factory/dashboard.html` | the visual board |
+| `factory/serve.py` | serves the dashboard on localhost:8765, this machine only, without logging every poll |
 
 ## Use it
 
@@ -23,7 +24,7 @@ you) comes out. The whole thing is markdown plus one skill:
 /factory rework 004-last-move-column Use the initiative end date, not start
 ```
 
-Dashboard: `cd factory && python3 -m http.server 8765 --bind 127.0.0.1` (or the `factory-dashboard`
+Dashboard: run `python3 factory/serve.py` from the repo root (or the `factory-dashboard`
 entry in `.claude/launch.json`), then open
 http://localhost:8765/dashboard.html.
 
