@@ -2,6 +2,7 @@
  *  the rendered cell text exactly (house search/CSV contract). */
 
 import type { DeviceItem } from './api';
+import { ageText } from './format';
 
 export function formatUptime(seconds: number | null | undefined): string {
   if (seconds == null) return '—';
@@ -193,8 +194,7 @@ export function deviceCellText(d: DeviceItem, key: string): string {
     case 'mac': return d.mac ?? '—';
     case 'serial': return d.serial ?? '—';
     case 'uptime': return formatUptime(d.uptime_seconds);
-    case 'last_seen':
-      return d.last_seen_at ? new Date(d.last_seen_at).toLocaleString() : 'never';
+    case 'last_seen': return ageText(d.last_seen_at);
     case 'site': return d.site_name ?? '—';
     case 'vpn': return vpnLabel(d.vpn_status);
     case 'connected':

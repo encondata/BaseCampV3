@@ -142,3 +142,16 @@ it('shows no truncation note when the batch was not capped', () => {
                                   onConfirm={() => {}} onClose={() => {}} />);
   expect(screen.queryByText(/Showing the first/)).toBeNull();
 });
+
+it('shows the last-seen age with the full date and time on hover', () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-09-16T10:00:00Z'));
+  try {
+    render(<ClearOfflineKiosksModal kiosks={ROWS} totalMatched={ROWS.length} busy={false}
+                                    onConfirm={() => {}} onClose={() => {}} />);
+    const age = screen.getByText('2 days');
+    expect(age.getAttribute('title')).toBe(new Date('2026-09-14T10:00:00Z').toLocaleString());
+  } finally {
+    vi.useRealTimers();
+  }
+});

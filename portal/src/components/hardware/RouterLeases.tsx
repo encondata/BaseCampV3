@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 
 import DataTable from '../DataTable';
 import { listDeviceLeases, type DeviceLease } from '../../lib/api';
+import { ageText, fullDateTime } from '../../lib/format';
 
 type View = 'active' | 'reserved';
 
@@ -78,7 +79,9 @@ export default function RouterLeases({ deviceId }: { deviceId: string }) {
               l.hostname ?? '—',
               l.ip ?? '—',
               l.mac,
-              l.last_seen_at ? new Date(l.last_seen_at).toLocaleString() : '—',
+              l.last_seen_at
+                ? <span title={fullDateTime(l.last_seen_at)}>{ageText(l.last_seen_at)}</span>
+                : '—',
             ],
           }))}
         />

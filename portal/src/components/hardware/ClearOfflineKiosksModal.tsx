@@ -15,7 +15,7 @@ import { useEffect } from 'react';
 import DataTable, { type DataTableRow } from '../DataTable';
 import type { ClearOfflineKioskItem } from '../../lib/api';
 import { subTypeLabel } from '../../lib/devices';
-import { relativeTime } from '../../lib/format';
+import { ageText, fullDateTime } from '../../lib/format';
 
 interface Props {
   kiosks: ClearOfflineKioskItem[];
@@ -66,9 +66,11 @@ export default function ClearOfflineKiosksModal({
         <b key="name" className="cell-top">{k.name}</b>,
         <span key="type" className="chip tag">{subTypeLabel(k.sub_type)}</span>,
         <span key="registration" className={cls}>{label}</span>,
-        // relativeTime's own null answer is a lowercase "never" mid-sentence;
-        // this is a cell of its own, so it reads as a value.
-        <span key="last_seen">{k.last_seen_at ? relativeTime(k.last_seen_at) : 'Never'}</span>,
+        // the age ("30 days"), the full date and time on hover; a cell of
+        // its own, so a missing time reads as a value: "Never"
+        <span key="last_seen" title={k.last_seen_at ? fullDateTime(k.last_seen_at) : undefined}>
+          {k.last_seen_at ? ageText(k.last_seen_at) : 'Never'}
+        </span>,
       ],
     };
   });

@@ -3,10 +3,11 @@
  *  detail-surface rules). A pending or revoked router's reports are held,
  *  so it shows only what identifies it — enough to decide on approval. */
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 
 import DataTable from '../DataTable';
 import type { DeviceItem } from '../../lib/api';
+import { ageText, fullDateTime } from '../../lib/format';
 import {
   approvalLabel, bandLabel, formatUptime, routerVpn, routerWifi,
 } from '../../lib/devices';
@@ -19,7 +20,7 @@ const dash = (v: unknown): string =>
 
 function RouterIdentity({ device }: { device: DeviceItem }) {
   const info = device.raw_info ?? {};
-  const rows: [string, string][] = [
+  const rows: [string, ReactNode][] = [
     ['Approval', approvalLabel(device.approval_state)],
     ['WAN MAC', dash(device.mac)],
     ['Model', dash(info.model ?? device.model)],
@@ -27,7 +28,7 @@ function RouterIdentity({ device }: { device: DeviceItem }) {
     ['Hostname', dash(info.hostname)],
     ['Agent version', dash(info.agent_version)],
     ['Reporting from', dash(device.agent_source_ip)],
-    ['Last seen', device.last_seen_at ? new Date(device.last_seen_at).toLocaleString() : 'never'],
+    ['Last seen', <span title={fullDateTime(device.last_seen_at)}>{ageText(device.last_seen_at)}</span>],
   ];
   return (
     <div>

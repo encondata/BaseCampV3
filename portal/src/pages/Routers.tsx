@@ -30,6 +30,7 @@ import {
   approvalLabel, deviceCellText, deviceSearchText, deviceSortValue, routerDisplayName,
   routerStatus, routerStatusLabel, vpnChipClass, vpnLabel,
 } from '../lib/devices';
+import { fullDateTime } from '../lib/format';
 import {
   ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
   listGridStyle, listScale, moveKey, passesFacets, titleFor, useReorderDrag, useSearchHaystacks,
@@ -85,7 +86,7 @@ const CSV_COLUMNS: [string, (d: DeviceItem) => string][] = [
   ['Uptime', (d) => deviceCellText(d, 'uptime')],
   ['Model', (d) => deviceCellText(d, 'model')],
   ['Serial', (d) => deviceCellText(d, 'serial')],
-  ['Last seen', (d) => deviceCellText(d, 'last_seen')],
+  ['Last seen', (d) => fullDateTime(d.last_seen_at)],
   ['Site', (d) => deviceCellText(d, 'site')],
   ['Reporting from', (d) => d.agent_source_ip ?? ''],
 ];
@@ -303,6 +304,13 @@ export default function Routers() {
         const text = routerDisplayName(d.name);
         return <span className="cell-line" title={d.name}>{text}</span>;
       }
+      case 'last_seen':
+        // the age ("3 hours"); the full date and time on hover
+        return (
+          <span className="cell-line" title={fullDateTime(d.last_seen_at)}>
+            {deviceCellText(d, key)}
+          </span>
+        );
       default: {
         const text = deviceCellText(d, key);
         return <span className="cell-line" title={titleFor(text)}>{text}</span>;
