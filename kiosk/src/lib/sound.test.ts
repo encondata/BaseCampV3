@@ -8,12 +8,22 @@ import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import { closeDb, count } from './localDb';
+const api = vi.hoisted(() => ({
+  uploadKioskSound: vi.fn(),
+  downloadKioskSound: vi.fn(),
+}));
+vi.mock('./api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./api')>();
+  return { ...actual, ...api };
+});
+
+import { ApiError } from './api';
+import { closeDb, count, getAll, putRows } from './localDb';
 import {
-  BUILTIN_SOUNDS, DEFAULT_SOUND_SETTINGS, MAX_SOUND_BYTES, addUploadedSound, listUploadedSounds,
-  playScanSound, readSoundSettings, removeUploadedSound, resetSoundAudioForTest,
-  soundBlocked, soundSettled, startAlarmSound, startSiren, subscribeSoundSettings,
-  writeSoundSettings,
+  BUILTIN_SOUNDS, DEFAULT_SOUND_SETTINGS, MAX_SOUND_BYTES, addUploadedSound, ensureSoundCached,
+  listUploadedSounds, localOnlyChoiceIds, playScanSound, readSoundSettings, removeUploadedSound,
+  resetSoundAudioForTest, soundBlocked, soundSettled, startAlarmSound, startSiren,
+  subscribeSoundSettings, uploadLocalSounds, writeSoundSettings,
 } from './sound';
 
 interface Started { type: string; freq: number }
@@ -61,7 +71,17 @@ function installAudio() {
 const wav = (bytes = 8) =>
   new File([new Uint8Array(bytes)], 'ding.wav', { type: 'audio/wav' });
 
+let portalIds = 0;
+
 beforeEach(() => {
+  portalIds = 0;
+  api.uploadKioskSound.mockReset();
+  api.uploadKioskSound.mockImplementation((file: Blob, name: string) => {
+    portalIds += 1;
+    return Promise.resolve({ id: `p${portalIds}`, name, content_type: file.type, size: file.size });
+  });
+  api.downloadKioskSound.mockReset();
+  api.downloadKioskSound.mockRejectedValue(new ApiError(0, 'network'));
   closeDb();
   (globalThis as unknown as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
   localStorage.clear();
@@ -208,11 +228,133 @@ it('removing an upload drops the row and resets any choice that used it', async 
   expect(readSoundSettings().not_found).toEqual({ kind: 'builtin', id: 'bonk' });
 });
 
-it('a choice pointing at a deleted upload plays nothing and does not throw', async () => {
+it('a choice naming a sound this kiosk lacks plays the slot default and never throws', async () => {
   writeSoundSettings({ good: { kind: 'upload', id: 'gone' } });
   expect(() => playScanSound('good')).not.toThrow();
-  await Promise.resolve();
-  expect(started).toEqual([]);
+  await vi.waitFor(() => expect(started.length).toBe(2));
+  expect(started[0].type).toBe('sine');                      // the default chime
+  await vi.waitFor(() => expect(api.downloadKioskSound).toHaveBeenCalledWith('gone'));
+});
+
+it('uploads go to the portal first and are kept under the portal id', async () => {
+  const added = await addUploadedSound(wav());
+  expect(api.uploadKioskSound).toHaveBeenCalledTimes(1);
+  expect(api.uploadKioskSound.mock.calls[0][1]).toBe('ding.wav');
+  expect(api.uploadKioskSound.mock.calls[0][2]).toMatch(/^kiosk-web-/);
+  expect(added.id).toBe('p1');
+  const rows = await getAll<{ id: string; portal?: boolean }>('sounds');
+  expect(rows).toEqual([expect.objectContaining({ id: 'p1', portal: true })]);
+});
+
+it('an upload the portal cannot take stores nothing locally', async () => {
+  api.uploadKioskSound.mockRejectedValueOnce(new ApiError(0, 'network'));
+  await expect(addUploadedSound(wav())).rejects.toThrow('upload_failed');
+  api.uploadKioskSound.mockRejectedValueOnce(new ApiError(413, 'file_too_large'));
+  await expect(addUploadedSound(wav())).rejects.toThrow('too_large');
+  api.uploadKioskSound.mockRejectedValueOnce(new ApiError(422, 'empty_file'));
+  await expect(addUploadedSound(wav())).rejects.toThrow('not_audio');
+  expect(await count('sounds')).toBe(0);
+});
+
+const legacyRow = (id: string) => ({
+  id, name: `${id}.wav`, type: 'audio/wav', size: 8,
+  blob: new Blob([new Uint8Array(8)], { type: 'audio/wav' }), created_at: '2026-01-01T00:00:00Z',
+});
+
+it('local-only uploads move to the portal and every choice is remapped', async () => {
+  await putRows('sounds', [legacyRow('local-a'), legacyRow('local-b')]);
+  writeSoundSettings({
+    good: { kind: 'upload', id: 'local-a' },
+    duplicate: { kind: 'upload', id: 'local-a' },
+    alarm: { kind: 'upload', id: 'local-b' },
+  });
+  expect(await localOnlyChoiceIds()).toEqual(['local-a', 'local-a', 'local-b']);
+
+  expect(await uploadLocalSounds()).toBe(true);
+
+  const ids = (await getAll<{ id: string; portal?: boolean }>('sounds')).map((r) => [r.id, r.portal]);
+  expect(ids.sort()).toEqual([['p1', true], ['p2', true]]);
+  const s = readSoundSettings();
+  const byName = new Map(api.uploadKioskSound.mock.calls.map((c, i) => [c[1], `p${i + 1}`]));
+  expect(s.good).toEqual({ kind: 'upload', id: byName.get('local-a.wav') });
+  expect(s.duplicate).toEqual({ kind: 'upload', id: byName.get('local-a.wav') });
+  expect(s.alarm).toEqual({ kind: 'upload', id: byName.get('local-b.wav') });
+  expect(await localOnlyChoiceIds()).toEqual([]);
+
+  // Portal rows are never uploaded again.
+  expect(await uploadLocalSounds()).toBe(true);
+  expect(api.uploadKioskSound).toHaveBeenCalledTimes(2);
+});
+
+it('a local upload that cannot reach the portal yet keeps its choice and reports false', async () => {
+  await putRows('sounds', [legacyRow('local-a')]);
+  writeSoundSettings({ good: { kind: 'upload', id: 'local-a' } });
+  api.uploadKioskSound.mockRejectedValueOnce(new ApiError(0, 'network'));
+  expect(await uploadLocalSounds()).toBe(false);
+  expect(readSoundSettings().good).toEqual({ kind: 'upload', id: 'local-a' });
+  expect(await localOnlyChoiceIds()).toEqual(['local-a']);
+});
+
+it('a local upload the portal refuses is dropped and its slots go back to their defaults', async () => {
+  await putRows('sounds', [legacyRow('local-a')]);
+  writeSoundSettings({ not_found: { kind: 'upload', id: 'local-a' }, alarm: { kind: 'upload', id: 'local-a' } });
+  api.uploadKioskSound.mockRejectedValueOnce(new ApiError(422, 'not_audio'));
+  expect(await uploadLocalSounds()).toBe(true);
+  expect(readSoundSettings().not_found).toEqual(DEFAULT_SOUND_SETTINGS.not_found);
+  expect(readSoundSettings().alarm).toEqual({ kind: 'siren' });
+  expect(await count('sounds')).toBe(0);
+});
+
+it('a portal sound downloads once, is cached, and the slot plays the default until then', async () => {
+  const played: string[] = [];
+  const realAudio = globalThis.Audio;
+  const realUrl = URL.createObjectURL;
+  (globalThis as unknown as { Audio: unknown }).Audio = class {
+    volume = 1;
+    constructor(url: string) { played.push(url); }
+    play() { return Promise.resolve(); }
+  };
+  URL.createObjectURL = () => 'blob:portal';
+  let finish: (b: Blob) => void = () => undefined;
+  api.downloadKioskSound.mockReset();
+  api.downloadKioskSound.mockImplementation(() => new Promise<Blob>((done) => { finish = done; }));
+  try {
+    writeSoundSettings({ good: { kind: 'upload', id: 'p9' } });
+    playScanSound('good');
+    await vi.waitFor(() => expect(api.downloadKioskSound).toHaveBeenCalledWith('p9'));
+    expect(started.map((t) => t.type)).toEqual(['sine', 'sine']);     // default chime
+    expect(played).toEqual([]);
+
+    playScanSound('good');                                            // still downloading
+    await vi.waitFor(() => expect(started).toHaveLength(4));
+    expect(api.downloadKioskSound).toHaveBeenCalledTimes(1);          // single-flight
+
+    finish(new Blob([new Uint8Array(4)], { type: 'audio/mpeg' }));
+    await vi.waitFor(async () => expect(await count('sounds')).toBe(1));
+    expect(await ensureSoundCached('p9')).toBe(true);
+
+    started.length = 0;
+    playScanSound('good');
+    await vi.waitFor(() => expect(played).toEqual(['blob:portal']));
+    expect(started).toEqual([]);
+    expect(api.downloadKioskSound).toHaveBeenCalledTimes(1);
+  } finally {
+    (globalThis as unknown as { Audio: unknown }).Audio = realAudio;
+    URL.createObjectURL = realUrl;
+  }
+});
+
+it('a missing uploaded alarm sound sounds the siren while it downloads', async () => {
+  const stop = startAlarmSound({ kind: 'upload', id: 'p7' });
+  await vi.waitFor(() => expect(started.map((s) => s.type).sort()).toEqual(['sawtooth', 'square']));
+  stop();
+  expect(stopped).toBe(2);
+});
+
+it('a failed download is not retried until the retry window passes', async () => {
+  expect(await ensureSoundCached('p5')).toBe(false);
+  expect(await ensureSoundCached('p5')).toBe(false);
+  expect(api.downloadKioskSound).toHaveBeenCalledTimes(1);
 });
 
 it('the siren starts oscillators at the given volume and its stop function stops them', () => {
@@ -384,5 +526,27 @@ it('stopping an uploaded alarm sound before it loads never starts it', async () 
   } finally {
     (globalThis as unknown as { Audio: unknown }).Audio = realAudio;
     URL.createObjectURL = realUrl;
+  }
+});
+
+it('a legacy upload that keeps failing logs once per failure streak', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    await putRows('sounds', [legacyRow('local-a')]);
+    writeSoundSettings({ good: { kind: 'upload', id: 'local-a' } });
+    api.uploadKioskSound.mockReset();
+    api.uploadKioskSound.mockRejectedValue(new ApiError(503, 'unavailable'));
+    expect(await uploadLocalSounds()).toBe(false);
+    expect(await uploadLocalSounds()).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+    // A success ends the streak; the next failure logs again.
+    api.uploadKioskSound.mockResolvedValueOnce({ id: 'p1', name: 'x', content_type: 'audio/wav', size: 8 });
+    expect(await uploadLocalSounds()).toBe(true);
+    await putRows('sounds', [legacyRow('local-b')]);
+    writeSoundSettings({ good: { kind: 'upload', id: 'local-b' } });
+    expect(await uploadLocalSounds()).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(2);
+  } finally {
+    warn.mockRestore();
   }
 });

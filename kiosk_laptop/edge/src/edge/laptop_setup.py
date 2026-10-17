@@ -42,3 +42,22 @@ def clear(store: Store) -> None:
     with store.tx() as c:
         c.execute("DELETE FROM laptop_setup")
         alarm.clear_state(c)
+
+
+def set_scan_type(store: Store, status, label) -> bool:
+    """The portal's scan type for this laptop (a check-in reply), written into
+    the shared setup when it differs; a missing label uses the key. No setup
+    yet: nothing to change. True when it changed."""
+    if not isinstance(status, str) or not status:
+        return False
+    label = label if isinstance(label, str) and label else status
+    with store.tx() as c:
+        row = c.execute("SELECT setup_json FROM laptop_setup WHERE id = 1").fetchone()
+        if row is None:
+            return False
+        setup = json.loads(row["setup_json"])
+        if setup.get("scan_status") == status and setup.get("scan_status_label") == label:
+            return False
+        setup["scan_status"], setup["scan_status_label"] = status, label
+        c.execute("UPDATE laptop_setup SET setup_json = ? WHERE id = 1", (json.dumps(setup),))
+    return True

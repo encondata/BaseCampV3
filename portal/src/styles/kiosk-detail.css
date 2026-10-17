@@ -1,0 +1,68 @@
+/* Kiosk details page (/hardware/kiosks/:id). Layout and color only — the
+ * type scale comes from profile.css (.panel, .kv, .pf-form), directory.css
+ * (.segmented, chips, lists) and reports.css (the modal header). */
+
+/* ── Settings tab: one panel per section, two columns ─────────────── */
+.kd-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
+  gap: 18px;
+  align-items: start;
+}
+.kd-cards .panel + .panel { margin-top: 0; }
+.kd-card-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.kd-card-title h3 { margin: 0; }
+.kd-card-title .set-note { padding: 0; }
+.kd-card-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+
+.kd-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px; margin: 0 0 14px;
+}
+.kd-toolbar .page-hint { margin: 0; }
+
+/* a color value: swatch + hsl() text */
+.kd-swatch {
+  display: inline-block; width: 18px; height: 18px; border-radius: 5px;
+  border: 1px solid var(--paper-line); vertical-align: middle; margin-right: 8px;
+}
+.kd-sound { display: inline-flex; align-items: center; gap: 8px; }
+
+/* ── Edit modals: content-sized cards ─────────────────────────────── */
+.modal-card.reports-modal-card.rgm-card.kd-modal-card {
+  width: min(720px, 96vw); max-width: 96vw;
+  overflow: visible; max-height: none;
+}
+.modal-card.reports-modal-card.rgm-card.kd-confirm-card { width: min(520px, 96vw); max-width: 96vw; }
+/* The body scrolls inside the card so Save and Cancel stay on screen on a
+ * short viewport. Rounded, so its scrollbar joins chrome.css's in-the-corners
+ * list (guardrail: roundedScrollbars.test.ts). ComboBox menus portal out of
+ * the modal, so this overflow never clips them. */
+.kd-modal-scroll {
+  max-height: max(160px, calc(88vh - 210px));
+  overflow-y: auto;
+  border-radius: 12px;
+}
+.kd-field { min-width: 0; }
+.kd-field .pf-error { margin: 6px 0 0; }
+.kd-modal-error { margin: 0 0 12px; }
+
+/* the three-channel color control (the kiosk's own Appearance picker) */
+.kd-hsl { display: grid; grid-template-columns: 44px 1fr; gap: 12px; align-items: center; }
+.kd-hsl-swatch { width: 44px; height: 44px; border-radius: 10px; border: 1px solid var(--paper-line); }
+.kd-hsl-channels { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.kd-hsl-channel { display: grid; grid-template-columns: 74px 1fr 44px; gap: 8px; align-items: center; color: var(--text-mute); }
+.pf-form .kd-hsl input[type='range'],
+.pf-form .kd-range input[type='range'] {
+  padding: 0; border: 0; background: transparent; box-shadow: none; accent-color: var(--accent);
+}
+.kd-range { display: grid; grid-template-columns: 1fr 52px; gap: 10px; align-items: center; }
+.kd-switch-line { display: flex; align-items: center; gap: 12px; }
+
+/* ── Setup & move: the scan type picker ───────────────────────────── */
+.kd-scan-pick { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.kd-scan-pick .combo-wrap { flex: 0 1 320px; }
+
+/* the stale-version note (409 config_changed) with its Reload button */
+.kd-stale { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 0 0 12px; }
+.kd-stale .pf-error { margin: 0; }

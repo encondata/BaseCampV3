@@ -5116,6 +5116,125 @@ export async function listDeviceLeases(deviceId: string): Promise<DeviceLease[]>
   return resp.json();
 }
 
+/* ── kiosk details page: config, scan type, history, sounds ──────── */
+
+/** A kiosk's whole settings document (`schema: 1`). Sections the portal
+ *  doesn't know are kept as-is, so it stays an open record; the typed
+ *  sections live in lib/kioskConfig.ts. Mirrors DEFAULT_CONFIG in
+ *  api/src/serversherpa/services/kiosk_config.py. */
+export type KioskConfigDoc = Record<string, unknown>;
+
+export type KioskSyncState = 'in_sync' | 'pending' | 'waiting_first_report';
+
+export interface DeviceSetup {
+  initiative_id: string | null; initiative_name: string | null;
+  site_id: string | null; site_name: string | null;
+  site_role: 'source' | 'destination' | null;
+  station_type: 'label' | 'rfid' | null;
+  scan_status: string | null; scan_status_label: string | null;
+}
+
+export interface ScanTypeOption { key: string; label: string; color: string | null }
+
+/** GET /devices/{id}: a list row plus the config, sync and setup fields. */
+export interface DeviceDetail extends DeviceItem {
+  config: KioskConfigDoc | null;
+  config_version: number;
+  config_changed_at: string | null;
+  config_source: 'kiosk' | 'portal' | null;
+  config_changed_by_name: string | null;
+  config_reported_at: string | null;
+  config_applied_version: number | null;
+  /** null for a device that isn't a kiosk. */
+  sync_state: KioskSyncState | null;
+  setup: DeviceSetup;
+  scan_type_options: ScanTypeOption[];
+}
+
+export interface DeviceConfigHistoryItem {
+  at: string;
+  source: 'kiosk' | 'portal' | null;
+  version: number | null;
+  by_name: string | null;
+  changes: Record<string, { from: unknown; to: unknown }>;
+}
+
+export interface KioskSoundItem {
+  id: string; name: string; content_type: string; size: number;
+  created_at: string; uploaded_by_name: string | null; in_use: boolean;
+}
+
+export async function getDevice(id: string): Promise<DeviceDetail> {
+  const resp = await apiFetch(`/devices/${id}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** PUT the WHOLE document. A 422 carries `detail.field` (dotted, e.g.
+ *  `appearance.flash_ms`) and `detail.message`. */
+const expectedQs = (v?: number) => (v === undefined ? '' : `?expected_version=${v}`);
+
+/** `expectedVersion`: the config_version the editor was built on. A stale one
+ *  is 409 `config_changed` (detail.config_version is the current one) and
+ *  nothing is stored, so a slow editor can't revert a newer kiosk change. */
+export async function putDeviceConfig(
+  id: string, config: KioskConfigDoc, expectedVersion?: number,
+): Promise<DeviceDetail> {
+  const resp = await apiFetch(`/devices/${id}/config${expectedQs(expectedVersion)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function resetDeviceConfig(id: string, expectedVersion?: number): Promise<DeviceDetail> {
+  const resp = await apiFetch(`/devices/${id}/config/reset${expectedQs(expectedVersion)}`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function setDeviceScanType(id: string, scanStatus: string): Promise<DeviceDetail> {
+  const resp = await apiFetch(`/devices/${id}/scan-type`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scan_status: scanStatus }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getDeviceConfigHistory(id: string): Promise<DeviceConfigHistoryItem[]> {
+  const resp = await apiFetch(`/devices/${id}/config/history`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listKioskSounds(): Promise<KioskSoundItem[]> {
+  const resp = await apiFetch('/kiosk-sounds');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function uploadKioskSound(
+  file: File,
+): Promise<{ id: string; name: string; content_type: string; size: number }> {
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  // no Content-Type header — the browser sets the multipart boundary
+  const resp = await apiFetch('/kiosk-sounds', { method: 'POST', body: fd });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** The uploaded sound's bytes, fetched with the bearer token for Play. */
+export async function getKioskSoundBlob(id: string): Promise<Blob> {
+  const resp = await apiFetch(`/kiosk-sounds/${id}/file`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.blob();
+}
+
 /* ── kiosk pairing — the phone side of the kiosk's "Link with phone" ─ */
 
 export type PairStatus = 'pending' | 'approved' | 'denied' | 'expired';

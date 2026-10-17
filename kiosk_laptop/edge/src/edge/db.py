@@ -148,6 +148,16 @@ SCHEMA_STEPS: list[str] = [
         asset_id TEXT NOT NULL UNIQUE, make_model TEXT, name TEXT, serial TEXT, rfid TEXT,
         raised_at TEXT NOT NULL)
     """,
+    # the laptop's kiosk config (one row), synced with the portal on the check-ins
+    # (edge/config_sync.py): `version` counts changes here (what browsers poll),
+    # `applied_version` is the portal's config_version last applied, and
+    # `changed_at_local` holds a change made before the portal's clock was known
+    """
+    CREATE TABLE device_config (id INTEGER PRIMARY KEY CHECK (id = 1), doc TEXT,
+        version INTEGER NOT NULL DEFAULT 0, changed_at TEXT, changed_at_local TEXT,
+        dirty INTEGER NOT NULL DEFAULT 0, applied_version INTEGER, server_offset_ms INTEGER,
+        reported_at TEXT)
+    """,
 ]
 
 

@@ -24,7 +24,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
-from edge import laptop_setup
+from edge import config_sync, laptop_setup
 from edge.db import iso, now_iso
 from edge.rfid import pairing, station_key, ziotc
 from edge.rfid.ziotc import ReaderError
@@ -165,28 +165,41 @@ async def send_station_heartbeat(state, snap: dict | None) -> None:
     offline or any failure is logged (status or exception type only; the
     key is never logged). `request_as_station` handles 401 (drop the key),
     403 `kiosk_not_registered` (pause) and 200 (resume); a 200 carrying
-    `clear_setup` applies Clear Setup, as a person heartbeat reply does."""
+    `clear_setup` applies Clear Setup, as a person heartbeat reply does.
+    The laptop's kiosk config rides this beat (config_sync.py): the applied
+    version always, the whole document when a report is due, and the
+    reply's config, clock and scan type handled."""
     body: dict = {"serial": state.identity.serial}
     version = state.settings.version
     if version and len(version) <= MAX_VERSION:  # the portal caps it; never risk a 422
         body["version"] = version
     if snap is not None:
         body["reader"] = snap
-    try:
-        resp = await station_key.request_as_station(state.upstream, "POST", STATION_HEARTBEAT,
-                                                    json=body)
-    except CloudOffline:
-        log.info("station heartbeat not sent: portal unreachable")
+    if not station_key.has_key(state.store):
         return
-    except Exception as exc:  # noqa: BLE001 — the reporter loop must never break
-        log.warning("station heartbeat failed: %s", type(exc).__name__)
-        return
-    if resp is None or resp.status_code != 200:
-        return
-    try:
-        data = resp.json()
-    except ValueError:
-        return
+    # the laptop's kiosk config syncs here on a station-keyed laptop (config_sync.py)
+    async with config_sync.lock(state):
+        beat = config_sync.prepare_beat(state.store)
+        body.update(beat.fields)
+        try:
+            resp = await station_key.request_as_station(state.upstream, "POST",
+                                                        STATION_HEARTBEAT, json=body)
+        except CloudOffline:
+            log.info("station heartbeat not sent: portal unreachable")
+            return
+        except Exception as exc:  # noqa: BLE001 — the reporter loop must never break
+            log.warning("station heartbeat failed: %s", type(exc).__name__)
+            return
+        if resp is None or resp.status_code != 200:
+            return
+        try:
+            data = resp.json()
+        except ValueError:
+            return
+        try:
+            config_sync.handle_reply(state.store, beat, data)
+        except Exception as exc:  # noqa: BLE001 — never break the beat over the config
+            log.warning("station heartbeat config reply failed: %s", type(exc).__name__)
     if isinstance(data, dict) and data.get("clear_setup"):
         station_key.apply_clear_setup(state.store)
         log.info("clear setup received on the station heartbeat: setup and station key dropped")

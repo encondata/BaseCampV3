@@ -15,6 +15,7 @@ from fastapi import (
 )
 from sqlalchemy import update, delete, func, select
 
+from serversherpa.access.defaults import SUPER_ADMIN_RANK
 from serversherpa.api.deps import (
     AuthContext, DbSession, authenticate_token, password_change_owed, require_permission,
 )
@@ -44,7 +45,6 @@ from serversherpa.system.registry import derive_status
 
 router = APIRouter(prefix="/system", tags=["system"])
 
-SUPER_ADMIN_RANK = 80
 _LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40,
            "CRITICAL": 50}
 _KIND_ORDER = {"service": 0, "worker": 1, "probe": 2}

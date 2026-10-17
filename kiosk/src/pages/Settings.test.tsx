@@ -20,10 +20,20 @@ vi.mock('../lib/localDb', async (importOriginal) => {
   return { ...actual, clearDb: syncMock.clearDb };
 });
 
-const apiMock = vi.hoisted(() => ({ getSetupOptions: vi.fn() }));
+const apiMock = vi.hoisted(() => {
+  let n = 0;
+  return {
+    getSetupOptions: vi.fn(),
+    // Sounds go to the portal first; each upload gets a fresh portal id.
+    uploadKioskSound: vi.fn((file: Blob, name: string) => {
+      n += 1;
+      return Promise.resolve({ id: `portal-${n}`, name, content_type: file.type, size: file.size });
+    }),
+  };
+});
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
-  return { ...actual, getSetupOptions: apiMock.getSetupOptions };
+  return { ...actual, getSetupOptions: apiMock.getSetupOptions, uploadKioskSound: apiMock.uploadKioskSound };
 });
 
 const auth = vi.hoisted(() => ({
@@ -339,7 +349,7 @@ it('the Sound tab picks a sound per scan outcome, previews it, and persists the 
 
 it('the Sound tab uploads a sound, offers it as a choice, and removes it', async () => {
   renderAt('/settings?tab=sound');
-  expect(screen.getByText('MP3, WAV, or OGG up to 2 MB. Stored on this kiosk only.')).toBeTruthy();
+  expect(screen.getByText('MP3, WAV, or OGG up to 2 MB. Uploaded to the portal, with a copy kept on this kiosk.')).toBeTruthy();
 
   const file = new File([new Uint8Array(2048)], 'ding.wav', { type: 'audio/wav' });
   await userEvent.upload(screen.getByLabelText('Upload sound'), file);
@@ -488,4 +498,22 @@ it('the Devices tab shows the device cards, not the placeholder', () => {
   expect(screen.getByRole('heading', { name: 'RFID reader' })).toBeTruthy();
   expect(screen.getByRole('heading', { name: 'Barcode scanner' })).toBeTruthy();
   expect(screen.queryByText('This section is not available yet.')).toBeNull();
+});
+
+it('settings that sync with the portal say so, not "stored on this kiosk only"', async () => {
+  for (const tab of ['appearance', 'sound']) {
+    renderAt(`/settings?tab=${tab}`);
+    expect(document.body.textContent).not.toContain('Stored on this kiosk only');
+    expect(document.body.textContent).toContain('Synced with the portal.');
+    cleanup();
+  }
+  auth.isAdmin = true;
+  auth.isDeveloper = true;
+  localStorage.setItem('ss.kiosk.devMode', 'true');
+  renderAt('/settings?tab=developer');
+  expect(screen.getByText(/Shows diagnostics and developer tools on this kiosk\. Synced with the portal\./))
+    .toBeTruthy();
+  // The setup-state testing aid is not part of the config: it stays local.
+  expect(screen.getByText(/Testing aid until real setup logic sets this\. Stored on this kiosk only\./))
+    .toBeTruthy();
 });

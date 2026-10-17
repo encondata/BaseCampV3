@@ -8,17 +8,23 @@ import hashlib
 import ipaddress
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Annotated
 
 from argon2 import PasswordHasher
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import case, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, joinedload
+from starlette.datastructures import FormData
+from starlette.datastructures import UploadFile as StarletteUploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from serversherpa.access.resolver import resolve_access
 from serversherpa.api.deps import (
-    AuthContext, DbSession, client_ip, enforce_read_only_config, rate_limit_ip, require_permission, station_device,
+    AuthContext, DbSession, authenticate_request, client_ip, enforce_read_only_config,
+    rate_limit_ip, require_permission, station_device,
 )
 from serversherpa.api.routes.auth import (
     _scope_out, person_out, session_response, totp_status_out,
@@ -32,7 +38,7 @@ from serversherpa.api.schemas import (
     KioskContainersSyncOut, KioskContainerStateOut, KioskEdgeMovePassword,
     KioskEdgeMovePasswordsOut, KioskMoveOut,
     KioskPeopleSyncOut, KioskPersonOut, KioskPrinterEventIn,
-    KioskRfidEnrollIn, KioskRfidEnrollOut, KioskScanBatchIn,
+    KioskRfidEnrollIn, KioskRfidEnrollOut, KioskScanBatchIn, KioskSoundOut,
     KioskScanBatchOut, KioskScanIn, KioskScanRejected, KioskStationScanBatchIn,
     KioskStationHeartbeatIn, KioskStationHeartbeatOut,
     KioskStationScanBatchOut, KioskSetupIn, KioskSetupOut, KioskSetupReadOut, KioskSetupReaderOut,
@@ -48,8 +54,8 @@ from serversherpa.api.schemas import (
 )
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    Asset, AssetModel, AuditLog, Client, Container, ContainerAsset, Device, Initiative,
-    InitiativeAsset, KioskPairRequest, LabelPlaceholder, LabelVocab, Person,
+    Asset, AssetModel, AuditLog, AuthSession, Client, Container, ContainerAsset, Device, Initiative,
+    InitiativeAsset, KioskPairRequest, KioskSound, LabelPlaceholder, LabelVocab, Person,
     RawScan, Site, StatusValue, TimeEntry, Truck, TruckContainer, UserAccount,
     WorkerProfile,
 )
@@ -58,6 +64,7 @@ from serversherpa.labels.generate.values import (
     CONTAINER_KEYS, AssetRow, Sites, make_model_text, placeholder_values,
 )
 from serversherpa.services import auth as auth_service
+from serversherpa.services import kiosk_config
 from serversherpa.services import kiosk_pairing as pairing
 from serversherpa.services import move_password as move_password_service
 from serversherpa.services import station_keys
@@ -69,7 +76,7 @@ from serversherpa.services.kiosk_registration import (  # noqa: F401 (re-exporte
     registration_state,
 )
 from serversherpa.services.password_policy import load_policy
-from serversherpa.services.storage import presign_get
+from serversherpa.services.storage import delete_object, get_object, presign_get, put_object
 
 router = APIRouter(prefix="/kiosk", tags=["kiosk"])
 
@@ -424,7 +431,10 @@ async def heartbeat(
     remain available for admins. A pending Clear Setup id is returned as
     `clear_setup` until a beat sends it back as `setup_cleared`."""
     now = datetime.now(UTC)
-    device = await db.scalar(select(Device).where(Device.serial == body.serial))
+    # FOR UPDATE: the config merge below reads then bumps config_version, so
+    # a concurrent portal edit must wait for this beat (and vice versa).
+    device = await db.scalar(select(Device).where(Device.serial == body.serial)
+                             .with_for_update())
     if device is None:
         sub_type = kiosk_sub_type(body.mode, body.raw_info)
         device = Device(device_type="kiosk", name=body.name, serial=body.serial,
@@ -483,12 +493,82 @@ async def heartbeat(
                            "requested_by": str(requested_by) if requested_by else None})
     # body.reader is accepted and ignored: reader telemetry arrives only on
     # POST /kiosk/station/heartbeat, under the station key.
+    # Config and scan-type sync serve only the kiosk this sign-in session
+    # belongs to: a kiosk session (move-password ones included) is bound to
+    # the serial of its first beat, and never syncs for any other serial,
+    # sign-in or not. Portal sessions never sync. A station-keyed device
+    # syncs config only on /kiosk/station/heartbeat (scan type still comes
+    # back to its own session).
+    own_kiosk = await _bind_kiosk_session(db, actor, body.serial)
+    if own_kiosk and device.station_key_hash is None:
+        sync = await _sync_config(db, device, body.config, body.config_changed_at,
+                                  body.config_applied_version, now=now,
+                                  actor_id=actor.person.id)
+    else:
+        sync = {"server_time": now, "config_version": device.config_version or 0,
+                "config": None, **(await _scan_fields(db, device) if own_kiosk
+                                   else {"scan_status": None, "scan_status_label": None})}
     await db.commit()
     return HeartbeatOut(device_id=device.id, name=device.name,
                         registration=registration_state(device.token_expires_at, now),
                         token_expires_at=device.token_expires_at,
                         clear_setup=device.setup_clear_id,
-                        client_ip=client_ip(request))
+                        client_ip=client_ip(request), **sync)
+
+
+async def _bind_kiosk_session(db: AsyncSession, actor: AuthContext, serial: str) -> bool:
+    """True when the caller's session is a kiosk session that belongs to
+    `serial`. An unbound kiosk session is bound to `serial` here, in the
+    heartbeat's transaction, by a guarded UPDATE: under concurrency the
+    first binding wins and the loser reads it back."""
+    session = actor.session
+    if session.client != "kiosk":
+        return False
+    if session.kiosk_serial is None:
+        await db.execute(
+            update(AuthSession)
+            .where(AuthSession.id == session.id, AuthSession.kiosk_serial.is_(None))
+            .values(kiosk_serial=serial)
+            .execution_options(synchronize_session=False))
+        await db.refresh(session, ["kiosk_serial"])
+    return session.kiosk_serial == serial
+
+
+async def _scan_fields(db: AsyncSession, device: Device) -> dict:
+    label = None
+    if device.scan_status:
+        scan_type = await db.get(StatusValue, ("asset", device.scan_status))
+        label = scan_type.label if scan_type else None
+    return {"scan_status": device.scan_status, "scan_status_label": label}
+
+
+async def _sync_config(db: AsyncSession, device: Device, config: dict | None,
+                       changed_at: datetime | None, applied_version: int | None,
+                       *, now: datetime, actor_id: uuid.UUID | None) -> dict:
+    """Kiosk settings sync on a check-in (the device row is already locked
+    FOR UPDATE). A report is merged by kiosk_config's newest-wins rule; the
+    applied version is recorded whenever the beat sends it. Returns the
+    reply's server_time / config_version / config / scan type fields.
+
+    A kiosk claiming a version the portal never issued (above
+    config_version: its row was recreated by Clear Offline, a delete or a
+    database revert) is treated as behind, so it is sent the document, and
+    its applied version is recorded as null, so the page shows pending (a
+    clamp would read as in sync). The kiosk takes a reply version below the
+    one it sent as a reset and applies it."""
+    if config is not None:
+        await kiosk_config.accept_kiosk_report(db, device, config, changed_at, now=now,
+                                               actor_id=actor_id)
+    version = device.config_version or 0
+    effective = applied_version
+    if applied_version is not None:
+        if applied_version > version:
+            device.config_applied_version = None
+            effective = None
+        else:
+            device.config_applied_version = applied_version
+    return {"server_time": now, **kiosk_config.reply_fields(device, effective),
+            **(await _scan_fields(db, device))}
 
 
 @router.post("/sign-out", status_code=204)
@@ -556,6 +636,23 @@ async def _active_scan_types(db: AsyncSession) -> list[StatusValue]:
         select(StatusValue)
         .where(StatusValue.record_type == "asset", StatusValue.is_active.is_(True))
         .order_by(StatusValue.sort_order, natural(StatusValue.label)))).all())
+
+
+def is_rfid_station(device: Device) -> bool:
+    """An RFID Station: a laptop kiosk set up with station type rfid."""
+    return device.sub_type == "laptop" and device.station_type == "rfid"
+
+
+async def allowed_scan_types(db: AsyncSession, device: Device) -> list[StatusValue]:
+    """The scan types this kiosk may be set to, by Kiosk Setup's rule: the
+    active asset status values, and on an RFID Station only those whose
+    label contains "RFID" (any case). None without a current move."""
+    if device.current_initiative_id is None:
+        return []
+    types = await _active_scan_types(db)
+    if is_rfid_station(device):
+        types = [t for t in types if "rfid" in t.label.lower()]
+    return types
 
 
 @router.get("/setup-options", response_model=SetupOptionsOut)
@@ -1293,6 +1390,18 @@ async def station_heartbeat(
     reply carries the pending Clear Setup id."""
     device = await station_device(request, db, body.serial)
     await enforce_read_only_config(db, request)
+    # re-read under FOR UPDATE for the config merge (see /kiosk/heartbeat),
+    # then recheck what station_device verified: a key revoked or replaced,
+    # or a device repurposed, in between is refused
+    key_hash = device.station_key_hash
+    device = await db.scalar(select(Device).where(Device.id == device.id)
+                             .with_for_update()
+                             .execution_options(populate_existing=True))
+    if (device is None or device.station_key_hash is None
+            or device.station_key_hash != key_hash
+            or device.sub_type != "laptop" or device.station_type != "rfid"):
+        raise HTTPException(status_code=401, detail={"code": "station_key_invalid"},
+                            headers={"WWW-Authenticate": "Bearer"})
     now = datetime.now(UTC)
     device.last_seen_at = now
     device.updated_at = now
@@ -1300,11 +1409,13 @@ async def station_heartbeat(
         device.version = body.version
     if body.reader is not None:
         await apply_reader_report(db, kiosk=device, report=body.reader, actor_id=None)
+    sync = await _sync_config(db, device, body.config, body.config_changed_at,
+                              body.config_applied_version, now=now, actor_id=None)
     await db.commit()
     return KioskStationHeartbeatOut(
         registration=registration_state(device.token_expires_at, now),
         token_expires_at=device.token_expires_at,
-        clear_setup=device.setup_clear_id)
+        clear_setup=device.setup_clear_id, **sync)
 
 
 # ── RFID enroll (kiosk:view) ─────────────────────────────────────────
@@ -2050,3 +2161,164 @@ async def list_label_vocab(
         item.usage_count = usage.get((r.kind, r.key), 0)
         out.append(item)
     return out
+
+
+# ── kiosk sounds (kiosk:view or station key) ─────────────────────────
+
+KIOSK_SOUND_MAX_BYTES = 2 * 1024 * 1024   # matches the kiosk's MAX_SOUND_BYTES
+
+
+async def _kiosk_caller(request: Request, db: AsyncSession,
+                        serial: str | None) -> tuple[AuthContext | None, Device | None]:
+    """Who is calling a kiosk-sound route: a person session with kiosk:view
+    (`Authorization: Bearer ...`), or an RFID Station's key
+    (`Authorization: Station <key>`) for the kiosk `serial`. Returns
+    (actor, None) or (None, device). The session path runs the same checks
+    as every other route (kiosk session scope, forced password change,
+    read-only); the station path runs the station-key check and the
+    read-only check without a person, like /kiosk/station/*."""
+    scheme, _, raw = (request.headers.get("authorization") or "").partition(" ")
+    raw = raw.strip()
+    if scheme == "Station":
+        if not serial:
+            raise HTTPException(status_code=401, detail={"code": "station_key_invalid"},
+                                headers={"WWW-Authenticate": "Bearer"})
+        device = await station_device(request, db, serial)
+        await enforce_read_only_config(db, request)
+        return None, device
+    if scheme.lower() != "bearer" or not raw:
+        raise HTTPException(status_code=401, detail={"code": "missing_token"},
+                            headers={"WWW-Authenticate": "Bearer"})
+    user = await authenticate_request(db, request, raw)
+    if not user.access.can("kiosk", "view"):
+        raise HTTPException(status_code=403, detail={"code": "forbidden"})
+    return user, None
+
+
+# the multipart body around a 2 MB file: boundaries, part headers, serial
+KIOSK_SOUND_MAX_BODY = KIOSK_SOUND_MAX_BYTES + 64 * 1024
+
+
+async def sound_upload_file(request: Request) -> tuple[FormData, StarletteUploadFile]:
+    """The `file` part of a sound upload, parsed only after the caller is
+    authenticated (callers check auth first). Starlette spools the whole
+    multipart body to disk before any size check can run, so the declared
+    length is checked up front: none (a chunked body) is 411
+    length_required, over KIOSK_SOUND_MAX_BODY is 413 file_too_large. The
+    parse itself allows one file and small fields. Shared by the kiosk and
+    portal upload routes; the caller closes the returned form."""
+    if not request.headers.get("content-type", "").startswith("multipart/"):
+        raise _err(422, "multipart_required")
+    declared = request.headers.get("content-length")
+    if declared is None or not (declared.isascii() and declared.isdigit()):
+        raise _err(411, "length_required")
+    if int(declared) > KIOSK_SOUND_MAX_BODY:
+        raise _err(413, "file_too_large", max_bytes=KIOSK_SOUND_MAX_BYTES)
+    try:
+        form = await request.form(max_files=1, max_fields=4, max_part_size=4096)
+    except StarletteHTTPException:
+        # Starlette's own limits (a second file, too many or too big fields)
+        # or a body that isn't valid multipart
+        raise _err(422, "bad_upload") from None
+    file = form.get("file")
+    if not isinstance(file, StarletteUploadFile):
+        await form.close()
+        raise _err(422, "file_required")
+    return form, file
+
+
+async def save_kiosk_sound(db: AsyncSession, file: StarletteUploadFile, *,
+                           actor_id: uuid.UUID | None, device: Device | None,
+                           via: str) -> KioskSound:
+    """Validate and store one uploaded kiosk sound: audio only (`audio/*`),
+    2 MB max, in Spaces under `kiosk-sounds/<uuid>`, with its kiosk_sounds
+    row and an audit row. Shared by the kiosk upload and the portal's
+    /kiosk-sounds upload. The caller commits."""
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    if not content_type.startswith("audio/") or len(content_type) > 100:
+        raise _err(422, "not_audio")
+    data = await file.read(KIOSK_SOUND_MAX_BYTES + 1)
+    if len(data) == 0:
+        raise _err(422, "empty_file")
+    if len(data) > KIOSK_SOUND_MAX_BYTES:
+        raise _err(413, "file_too_large", max_bytes=KIOSK_SOUND_MAX_BYTES)
+    name = (file.filename or "").strip()[:200] or "sound"
+    key = f"kiosk-sounds/{uuid.uuid4()}"
+    await put_object(key, data, content_type)
+    sound = KioskSound(name=name, content_type=content_type, size=len(data),
+                       storage_key=key, uploaded_by=actor_id,
+                       uploaded_from_device=device.id if device else None)
+    db.add(sound)
+    await db.flush()
+    audit(db, actor_id=actor_id, entity_type="kiosk_sound",
+          entity_id=str(sound.id), action="create",
+          changes={"name": name, "content_type": content_type, "size": len(data),
+                   "device_id": str(device.id) if device else None, "via": via})
+    return sound
+
+
+async def kiosk_sound_response(sound: KioskSound) -> Response:
+    """The sound's bytes as an `audio/*` response with nosniff; 404
+    `sound_not_found` when the storage object is gone."""
+    try:
+        data = await get_object(sound.storage_key)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+            raise _err(404, "sound_not_found") from None
+        raise
+    return Response(content=data, media_type=sound.content_type,
+                    headers={"X-Content-Type-Options": "nosniff",
+                             "Cache-Control": "private, max-age=86400"})
+
+
+async def delete_kiosk_sound_object(key: str) -> None:
+    await delete_object(key)
+
+
+@router.post("/sounds", response_model=KioskSoundOut, status_code=201)
+async def upload_kiosk_sound(
+    request: Request, db: DbSession,
+    serial: Annotated[str | None, Query(max_length=120)] = None,
+) -> KioskSoundOut:
+    """Upload a sound a kiosk config can name by its portal id. Audio only
+    (`audio/*`), 2 MB max. Stored in Spaces under `kiosk-sounds/<uuid>`.
+    Multipart: `file` (required) and `serial` (optional with a session:
+    records which kiosk sent it). A station key names its kiosk in the
+    query string (`?serial=`), so the caller is authenticated before the
+    body is parsed (see sound_upload_file)."""
+    actor, station = await _kiosk_caller(request, db, serial)
+    form, file = await sound_upload_file(request)
+    try:
+        device = station
+        form_serial = form.get("serial")
+        if form_serial is not None and (not isinstance(form_serial, str)
+                                        or len(form_serial) > 120):
+            raise _err(422, "bad_serial")
+        named = (form_serial or serial or "").strip()
+        if device is None and named:
+            device = await db.scalar(select(Device).where(
+                Device.serial == named, Device.device_type == "kiosk"))
+        sound = await save_kiosk_sound(
+            db, file, actor_id=actor.person.id if actor else None, device=device,
+            via="station_key" if station else "session")
+        await db.commit()
+    finally:
+        await form.close()
+    return KioskSoundOut(id=sound.id, name=sound.name,
+                         content_type=sound.content_type, size=sound.size)
+
+
+@router.get("/sounds/{sound_id}")
+async def download_kiosk_sound(
+    sound_id: uuid.UUID, request: Request, db: DbSession,
+    serial: Annotated[str | None, Query(max_length=120)] = None,
+) -> Response:
+    """The sound's bytes, streamed by the API (no presigned URL, so a
+    browser kiosk needs no bucket CORS). The Content-Type is the stored
+    `audio/*` type, with nosniff so it can never be read as anything else.
+    404 `sound_not_found` for an unknown id."""
+    await _kiosk_caller(request, db, serial)
+    sound = await db.get(KioskSound, sound_id)
+    if sound is None:
+        raise _err(404, "sound_not_found")
+    return await kiosk_sound_response(sound)

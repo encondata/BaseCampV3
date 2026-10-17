@@ -294,6 +294,10 @@ class AuthSession(Base):
     client: Mapped[str] = mapped_column(server_default="portal")
     # The move a move-password kiosk session is locked to (NULL otherwise).
     initiative_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("initiatives.id"))
+    # The kiosk serial a kiosk session belongs to: bound by its first
+    # /kiosk/heartbeat (first binding wins), carried through rotation. Config
+    # sync over the person heartbeat serves only this serial.
+    kiosk_serial: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
@@ -1220,6 +1224,36 @@ class Device(Base):
     station_key_issued_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("people.id", ondelete="SET NULL"))
     station_key_issued_via: Mapped[str | None]   # password | link | move_password
+    # Kiosk settings in the portal (migration 0099): one whole config
+    # document, newest whole config wins (services/kiosk_config.py).
+    # config NULL = the kiosk has never reported and the portal never edited.
+    config: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    config_version: Mapped[int] = mapped_column(server_default=text("0"))
+    config_changed_at: Mapped[datetime | None]
+    config_source: Mapped[str | None]            # kiosk | portal
+    config_changed_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    config_reported_at: Mapped[datetime | None]  # last report of any kind
+    config_applied_version: Mapped[int | None]   # what the kiosk says it runs
+
+
+class KioskSound(Base):
+    """An uploaded kiosk sound kept in the Spaces bucket (migration 0099).
+    Configs name it by id (`{"kind": "upload", "id": <id>}`)."""
+
+    __tablename__ = "kiosk_sounds"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    name: Mapped[str]
+    content_type: Mapped[str]
+    size: Mapped[int]
+    storage_key: Mapped[str] = mapped_column(unique=True)
+    uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    uploaded_from_device: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("devices.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
 class DeviceDhcpLease(Base):

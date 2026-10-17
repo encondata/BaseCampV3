@@ -15,6 +15,7 @@
  *  deregisterDevice. Row actions live behind the shared RowActionsMenu.
  *  Clear Setup queues a setup reset the kiosk applies on its next check-in;
  *  while pending, the row shows a chip and Actions offers Cancel.
+ *  Each name links to the kiosk's details page (/hardware/kiosks/:id).
  *  Row action gating mirrors the API's permission split — 'add' for
  *  create, 'change' for edit/register/deregister, 'delete' for delete.
  *
@@ -26,6 +27,7 @@
 
 import { compareValues, naturalCompare } from '../lib/naturalSort';
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { Link } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import { ADMIN_RANK } from '../lib/access';
@@ -435,14 +437,20 @@ export default function KioskDevices() {
       }
       case 'name': {
         const text = deviceCellText(d, key);
-        const nameLine = <span className="cell-line" title={titleFor(text)}>{text}</span>;
+        // The name opens the kiosk's details page; the click must not also
+        // toggle the row's expansion.
+        const nameLine = (
+          <Link to={`/hardware/kiosks/${d.id}`} className="cell-line link-plain" title={titleFor(text)}
+                onClick={(e) => e.stopPropagation()}>{text}</Link>
+        );
         if (!d.setup_clear_requested_at) return nameLine;
         // The chip is a SIBLING of the ellipsizing name: inside .cell-line
         // (nowrap + overflow hidden) a long name or the narrow Name floor
         // would clip it away. The name shrinks; the chip keeps its size.
         return (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-            <span className="cell-line" style={{ minWidth: 0 }} title={titleFor(text)}>{text}</span>
+            <Link to={`/hardware/kiosks/${d.id}`} className="cell-line link-plain" style={{ minWidth: 0 }}
+                  title={titleFor(text)} onClick={(e) => e.stopPropagation()}>{text}</Link>
             <span className="chip c-amber" style={{ flexShrink: 0 }} title={clearChipTitle(d)}>
               Setup clear pending
             </span>

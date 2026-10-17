@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
 
-from edge import laptop_setup
+from edge import config_sync, laptop_setup
 from edge.deps import err, require_session
 from edge.rfid import alarm, checks, events, pairing, tagreads, ziotc
 from edge.rfid.reader_report import current_snapshot
@@ -243,8 +243,10 @@ async def alarm_settings(request: Request) -> dict:
 @router.put("/alarm/settings")
 async def save_alarm_settings(request: Request) -> dict:
     body = await _json_object(request)
+    store = request.app.state.store
     try:
-        return alarm.save_settings(request.app.state.store, body.get("mode"),
-                                   body.get("timed_seconds"))
+        saved = alarm.save_settings(store, body.get("mode"), body.get("timed_seconds"))
     except ValueError:
         raise err(422, "invalid_alarm_settings") from None
+    config_sync.note_alarm_edit(store)  # the config's `alarm` follows, as a local change
+    return saved

@@ -36,6 +36,7 @@ import Initiatives from './pages/Initiatives';
 import InitiativeDetailPage from './pages/InitiativeDetail';
 import InitiativeTimeline from './pages/InitiativeTimeline';
 import KioskDevices from './pages/KioskDevices';
+import KioskDetail from './pages/hardware/KioskDetail';
 import LabelTemplateEditor from './pages/LabelTemplateEditor';
 import LabelTemplates from './pages/LabelTemplates';
 import LinkKiosk from './pages/LinkKiosk';
@@ -196,6 +197,10 @@ export default function App() {
                   <ProtectedRoute resource="scanning_hardware"><FixedReaders /></ProtectedRoute>} />
                 <Route path="/hardware/kiosks" element={
                   <ProtectedRoute resource="scanning_hardware"><KioskDevices /></ProtectedRoute>} />
+                <Route path="/hardware/kiosks/:id" element={
+                  <ProtectedRoute resource="scanning_hardware"><KioskDetail /></ProtectedRoute>} />
+                <Route path="/hardware/kiosks/:id/:tab" element={
+                  <ProtectedRoute resource="scanning_hardware"><KioskDetail /></ProtectedRoute>} />
                 <Route path="/hardware/routers" element={
                   <ProtectedRoute resource="scanning_hardware"><Routers /></ProtectedRoute>} />
                 <Route path="/settings" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />

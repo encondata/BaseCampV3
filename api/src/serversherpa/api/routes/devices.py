@@ -3,33 +3,53 @@ register, delete, and approve/revoke for agent routers. Hard delete,
 audited. The router agent's own report endpoint lives in
 routes/router_agent.py."""
 
+import copy
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException
-from sqlalchemy import and_, func, or_, select, update
+from fastapi import APIRouter, Body, HTTPException, Query, Request, Response
+from sqlalchemy import Integer, and_, func, or_, select, update
 from sqlalchemy.orm import aliased
 
-from serversherpa.access.defaults import GATE_BYPASS_RANK
+from serversherpa.access.defaults import GATE_BYPASS_RANK, SUPER_ADMIN_RANK
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
+from serversherpa.api.routes.kiosk import (
+    allowed_scan_types, delete_kiosk_sound_object, kiosk_sound_response, save_kiosk_sound,
+    sound_upload_file,
+)
 from serversherpa.api.schemas import (
     ClearOfflineKioskItem, ClearOfflineKiosksIn, ClearOfflineKiosksOut,
-    DeviceCreate, DeviceItem, DeviceLeaseItem, DevicePatch, DeviceRegisterIn,
+    DeviceConfigHistoryItem, DeviceCreate, DeviceDetail, DeviceItem, DeviceLeaseItem,
+    DevicePatch, DeviceRegisterIn, DeviceScanTypeIn, KioskSoundItem, KioskSoundOut,
 )
 from serversherpa.db.models import (
-    Device, DeviceDhcpLease, Initiative, Person, ProcessedScan, RawScan, Site,
-    StatusValue,
+    AuditLog, Device, DeviceDhcpLease, Initiative, KioskSound, Person, ProcessedScan,
+    RawScan, Site, StatusValue,
 )
 from serversherpa.db.ordering import natural
-from serversherpa.services import station_keys
+from serversherpa.services import kiosk_config, station_keys
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.services.kiosk_config import ConfigError
 from serversherpa.services.router_agent import resolve_router_copies
 
 router = APIRouter(prefix="/devices", tags=["devices"])
+sounds_router = APIRouter(prefix="/kiosk-sounds", tags=["devices"])
+log = logging.getLogger(__name__)
 
 
-def _err(status: int, code: str) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": code})
+def _err(status: int, code: str, **extra) -> HTTPException:
+    return HTTPException(status_code=status, detail={"code": code, **extra})
+
+
+def _require_super_admin(actor: AuthContext) -> None:
+    """Every write on the kiosk details page: scanning_hardware:change (the
+    route's guard) AND rank 80+. The matrix is runtime-editable, so the
+    permission alone could reach admins; the rank floor keeps kiosk settings
+    super-admin only (the /kiosks/clear-offline idiom)."""
+    if actor.access.max_rank < SUPER_ADMIN_RANK:
+        raise _err(403, "forbidden_rank")
 
 
 SessionPerson = aliased(Person)
@@ -566,3 +586,302 @@ async def delete_device(
                    "serial": device.serial})
     await db.delete(device)
     await db.commit()
+
+
+# ── kiosk details page (GET: view; writes: change + rank 80) ─────────
+
+def sync_state_for(device: Device) -> str:
+    """waiting_first_report until the kiosk has reported at all; in_sync
+    only when it has applied exactly the current version; else pending."""
+    if device.config_reported_at is None:
+        return "waiting_first_report"
+    if device.config_applied_version == (device.config_version or 0):
+        return "in_sync"
+    return "pending"
+
+
+async def _detail_for(db: DbSession, device_id: uuid.UUID) -> dict:
+    """The list row plus config, sync state, setup and scan type options."""
+    row = (await db.execute(
+        _device_query().where(Device.id == device_id))).one_or_none()
+    if row is None:
+        raise _err(404, "device_not_found")
+    item = _row_to_item(row, datetime.now(UTC))
+    d: Device = row[0]
+    changed_by = (await db.get(Person, d.config_changed_by)
+                  if d.config_changed_by else None)
+    initiative = (await db.get(Initiative, d.current_initiative_id)
+                  if d.current_initiative_id else None)
+    site_role = None
+    if initiative is not None and d.site_id is not None:
+        if d.site_id == initiative.origin_site_id:
+            site_role = "source"
+        elif d.site_id == initiative.destination_site_id:
+            site_role = "destination"
+    options = (await allowed_scan_types(db, d)
+               if d.device_type == "kiosk" else [])
+    return item | {
+        "config": d.config,
+        "config_version": d.config_version or 0,
+        "config_changed_at": d.config_changed_at,
+        "config_source": d.config_source,
+        "config_changed_by_name": _display(changed_by) if changed_by else None,
+        "config_reported_at": d.config_reported_at,
+        "config_applied_version": d.config_applied_version,
+        "sync_state": sync_state_for(d) if d.device_type == "kiosk" else None,
+        "setup": {
+            "initiative_id": d.current_initiative_id,
+            "initiative_name": initiative.name if initiative else None,
+            "site_id": d.site_id, "site_name": item["site_name"],
+            "site_role": site_role, "station_type": d.station_type,
+            "scan_status": d.scan_status,
+            "scan_status_label": item["scan_status_label"],
+        },
+        "scan_type_options": [{"key": t.key, "label": t.label, "color": t.color}
+                              for t in options],
+    }
+
+
+async def _locked_kiosk(db: DbSession, device_id: uuid.UUID) -> Device:
+    """The kiosk row read FOR UPDATE, so a portal write and a heartbeat's
+    merge can't both write the same config version."""
+    device = await db.scalar(
+        select(Device).where(Device.id == device_id).with_for_update()
+        .execution_options(populate_existing=True))
+    if device is None:
+        raise _err(404, "device_not_found")
+    if device.device_type != "kiosk":
+        raise _err(409, "not_a_kiosk")
+    return device
+
+
+@router.get("/{device_id}", response_model=DeviceDetail)
+async def get_device(
+    device_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("scanning_hardware", "view"),
+) -> dict:
+    return await _detail_for(db, device_id)
+
+
+# sub_types whose kiosk app doesn't sync settings yet (phase 1): editable
+# only once the kiosk has reported a config (zebra is the Android app too)
+NOT_SYNCED_UNTIL_REPORTED = frozenset({"android", "zebra", "ios"})
+
+
+async def _store_portal_config(db: DbSession, device_id: uuid.UUID, doc: Any,
+                               actor: AuthContext, expected_version: int | None = None) -> dict:
+    device = await _locked_kiosk(db, device_id)
+    if device.sub_type in NOT_SYNCED_UNTIL_REPORTED and device.config_reported_at is None:
+        # Android and iOS kiosks sync in a later phase: until one reports a
+        # config, an edit could never reach it (the page disables editing)
+        await db.rollback()
+        raise _err(409, "not_reported")
+    if expected_version is not None and expected_version != device.config_version:
+        # the editor was built on an older version (a kiosk report or another
+        # edit landed since): refuse rather than revert the newer change
+        current = device.config_version   # read before the rollback expires it
+        await db.rollback()
+        raise _err(409, "config_changed", config_version=current)
+    named = []
+    for raw in kiosk_config.sound_ids_in(doc):
+        try:
+            named.append(uuid.UUID(raw))
+        except ValueError:
+            pass    # not an id at all: normalize refuses it
+    if named:
+        # FOR SHARE: a concurrent sound delete waits for this edit, then
+        # sees the config naming it (409 in_use) — or deletes first, and
+        # this edit's validation no longer knows the id (422)
+        await db.execute(select(KioskSound.id).where(KioskSound.id.in_(named))
+                         .with_for_update(read=True))
+    now = datetime.now(UTC)
+    try:
+        changed = await kiosk_config.apply_portal_edit(
+            db, device, doc, actor_id=actor.person.id, now=now)
+    except ConfigError as exc:
+        await db.rollback()
+        raise _err(422, "bad_config", field=exc.field, message=exc.message) from None
+    if changed:
+        device.updated_at = now
+    await db.commit()
+    return await _detail_for(db, device_id)
+
+
+@router.put("/{device_id}/config", response_model=DeviceDetail)
+async def put_device_config(
+    device_id: uuid.UUID, db: DbSession,
+    doc: Annotated[Any, Body()] = None,
+    expected_version: Annotated[int | None, Query(ge=0)] = None,
+    actor: AuthContext = require_permission("scanning_hardware", "change"),
+) -> dict:
+    """Replace the kiosk's whole config document (strictly validated: a bad
+    value is 422 bad_config with its dotted `field`). Sections the portal
+    doesn't own (android_rfid, ios, unknown) are kept when left out. A
+    null or non-object body is 422 bad_config (field "config"). Content
+    equal to the stored config is a no-op: no version bump, no audit.
+    `expected_version` (optional query param): the config_version the editor
+    was built on; when the stored version differs the answer is 409
+    config_changed (with the current config_version) and nothing changes."""
+    _require_super_admin(actor)
+    return await _store_portal_config(db, device_id, doc, actor, expected_version)
+
+
+@router.post("/{device_id}/config/reset", response_model=DeviceDetail)
+async def reset_device_config(
+    device_id: uuid.UUID, db: DbSession,
+    expected_version: Annotated[int | None, Query(ge=0)] = None,
+    actor: AuthContext = require_permission("scanning_hardware", "change"),
+) -> dict:
+    """Store DEFAULT_CONFIG as a portal edit (other platforms' sections kept).
+    `expected_version` works as on PUT: a stale one is 409 config_changed."""
+    _require_super_admin(actor)
+    return await _store_portal_config(
+        db, device_id, copy.deepcopy(kiosk_config.DEFAULT_CONFIG), actor, expected_version)
+
+
+@router.patch("/{device_id}/scan-type", response_model=DeviceDetail)
+async def patch_device_scan_type(
+    device_id: uuid.UUID, body: DeviceScanTypeIn, db: DbSession,
+    actor: AuthContext = require_permission("scanning_hardware", "change"),
+) -> dict:
+    """Change the kiosk's scan type, limited to Kiosk Setup's options (see
+    routes/kiosk.allowed_scan_types). The kiosk picks it up on its next
+    check-in."""
+    _require_super_admin(actor)
+    device = await _locked_kiosk(db, device_id)
+    if device.current_initiative_id is None:
+        raise _err(422, "no_move")
+    allowed = {t.key for t in await allowed_scan_types(db, device)}
+    if body.scan_status not in allowed:
+        raise _err(422, "bad_scan_status")
+    if device.scan_status != body.scan_status:
+        before = device.scan_status
+        device.scan_status = body.scan_status
+        device.updated_at = datetime.now(UTC)
+        audit(db, actor_id=actor.person.id, entity_type="device",
+              entity_id=str(device.id), action="scan_type_change",
+              changes={"source": "portal",
+                       "scan_status": {"from": before, "to": body.scan_status}})
+    await db.commit()
+    return await _detail_for(db, device_id)
+
+
+@router.get("/{device_id}/config/history", response_model=list[DeviceConfigHistoryItem])
+async def device_config_history(
+    device_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("scanning_hardware", "view"),
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+) -> list[dict]:
+    """Accepted config changes from the audit log, newest first. Rows from
+    one transaction share `at`, so the stored version breaks ties."""
+    if await db.get(Device, device_id) is None:
+        raise _err(404, "device_not_found")
+    version = AuditLog.changes["version"].astext.cast(Integer)
+    rows = (await db.execute(
+        select(AuditLog, Person)
+        .outerjoin(Person, Person.id == AuditLog.actor_person_id)
+        .where(AuditLog.entity_type == "device",
+               AuditLog.entity_id == str(device_id),
+               AuditLog.action == "config_change")
+        .order_by(AuditLog.at.desc(), version.desc().nulls_last())
+        .limit(limit))).all()
+    out = []
+    for a, person in rows:
+        changes = a.changes or {}
+        v = changes.get("version")
+        out.append({
+            "at": a.at,
+            "source": changes.get("source"),
+            "version": v if isinstance(v, int) and not isinstance(v, bool) else None,
+            "by_name": _display(person) if person else None,
+            "changes": changes.get("fields") or {},
+        })
+    return out
+
+
+# ── kiosk sounds in the portal ───────────────────────────────────────
+
+async def _sounds_in_use(db: DbSession) -> set[str]:
+    configs = (await db.scalars(
+        select(Device.config).where(Device.config.is_not(None)))).all()
+    used: set[str] = set()
+    for doc in configs:
+        used |= kiosk_config.sound_ids_in(doc)
+    return used
+
+
+@sounds_router.get("", response_model=list[KioskSoundItem])
+async def list_kiosk_sounds(
+    db: DbSession,
+    actor: AuthContext = require_permission("scanning_hardware", "view"),
+) -> list[dict]:
+    rows = (await db.execute(
+        select(KioskSound, Person)
+        .outerjoin(Person, Person.id == KioskSound.uploaded_by)
+        .order_by(natural(KioskSound.name), KioskSound.created_at, KioskSound.id))).all()
+    used = await _sounds_in_use(db)
+    return [{"id": s.id, "name": s.name, "content_type": s.content_type,
+             "size": s.size, "created_at": s.created_at,
+             "uploaded_by_name": _display(p) if p else None,
+             "in_use": str(s.id) in used}
+            for s, p in rows]
+
+
+@sounds_router.post("", response_model=KioskSoundOut, status_code=201)
+async def upload_kiosk_sound_portal(
+    request: Request, db: DbSession,
+    actor: AuthContext = require_permission("scanning_hardware", "change"),
+) -> KioskSoundOut:
+    """A super admin uploads a sound (same rules as the kiosk upload:
+    audio/*, 2 MB max, Spaces under kiosk-sounds/<uuid>). The multipart
+    `file` is parsed only after the rank check (sound_upload_file)."""
+    _require_super_admin(actor)
+    form, file = await sound_upload_file(request)
+    try:
+        sound = await save_kiosk_sound(db, file, actor_id=actor.person.id,
+                                       device=None, via="portal")
+        await db.commit()
+    finally:
+        await form.close()
+    return KioskSoundOut(id=sound.id, name=sound.name,
+                         content_type=sound.content_type, size=sound.size)
+
+
+@sounds_router.get("/{sound_id}/file")
+async def kiosk_sound_file(
+    sound_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("scanning_hardware", "view"),
+) -> Response:
+    """The sound's bytes for the portal's Play button."""
+    sound = await db.get(KioskSound, sound_id)
+    if sound is None:
+        raise _err(404, "sound_not_found")
+    return await kiosk_sound_response(sound)
+
+
+@sounds_router.delete("/{sound_id}", status_code=204)
+async def delete_kiosk_sound(
+    sound_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("scanning_hardware", "change"),
+) -> None:
+    """Delete a sound no device config names (409 in_use otherwise). The
+    sound row is locked first, so a portal edit naming it (which locks it
+    FOR SHARE while validating) can't slip in between check and delete."""
+    _require_super_admin(actor)
+    sound = await db.scalar(
+        select(KioskSound).where(KioskSound.id == sound_id).with_for_update())
+    if sound is None:
+        raise _err(404, "sound_not_found")
+    if str(sound.id) in await _sounds_in_use(db):
+        raise _err(409, "in_use")
+    key = sound.storage_key
+    audit(db, actor_id=actor.person.id, entity_type="kiosk_sound",
+          entity_id=str(sound.id), action="delete",
+          changes={"name": sound.name, "storage_key": key})
+    await db.delete(sound)
+    await db.commit()
+    try:
+        await delete_kiosk_sound_object(key)
+    except Exception:   # the row is gone; a leftover blob is only storage
+        log.warning("kiosk sound %s deleted but its object %s was not", sound_id, key,
+                    exc_info=True)

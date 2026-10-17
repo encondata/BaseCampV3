@@ -246,12 +246,28 @@ export interface HeartbeatResult {
   /** The address the cloud saw this kiosk's request come from (its WAN IP). */
   client_ip?: string | null;
   clear_setup?: string | null;
+  /** The portal's clock (ISO, UTC): the kiosk keeps its offset from it. */
+  server_time?: string | null;
+  /** The portal's current config version (0: nothing stored yet). */
+  config_version?: number | null;
+  /** The whole stored config, sent while this kiosk is behind. */
+  config?: Record<string, unknown> | null;
+  /** The device's scan type, when the portal may share it with this kiosk. */
+  scan_status?: string | null;
+  scan_status_label?: string | null;
+}
+
+/** The settings-sync fields a beat may carry (kioskConfig.ts). */
+export interface HeartbeatConfigFields {
+  config?: Record<string, unknown>;
+  config_changed_at?: string | null;
+  config_applied_version: number | null;
 }
 
 export async function heartbeatRequest(body: {
   serial: string; name: string; mode: string; version: string | null; sign_in?: boolean;
   login_method?: 'password' | 'link'; setup_cleared?: string;
-}): Promise<HeartbeatResult> {
+} & Partial<HeartbeatConfigFields>): Promise<HeartbeatResult> {
   const { sign_in, ...rest } = body;
   const resp = await apiFetch('/kiosk/heartbeat', {
     method: 'POST',
@@ -259,6 +275,28 @@ export async function heartbeatRequest(body: {
     body: JSON.stringify(sign_in ? { ...rest, sign_in } : rest),
   });
   return jsonFrom<HeartbeatResult>(resp);
+}
+
+// ── kiosk sounds (portal-backed) ───────────────────────────────────
+
+export interface KioskSoundOut { id: string; name: string; content_type: string; size: number }
+
+/** Uploads a sound to the portal (`POST /kiosk/sounds`); the config then
+ *  names it by the returned id. Rejects with an ApiError (413
+ *  `file_too_large`, 422 `not_audio` / `empty_file`, 0 `network`). */
+export async function uploadKioskSound(file: Blob, name: string, serial: string): Promise<KioskSoundOut> {
+  const form = new FormData();
+  form.append('file', file, name);
+  form.append('serial', serial);
+  const resp = await apiFetch('/kiosk/sounds', { method: 'POST', body: form });
+  return jsonFrom<KioskSoundOut>(resp);
+}
+
+/** Downloads a portal sound's bytes (`GET /kiosk/sounds/{id}`). */
+export async function downloadKioskSound(id: string): Promise<Blob> {
+  const resp = await apiFetch(`/kiosk/sounds/${encodeURIComponent(id)}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.blob();
 }
 
 /** Clears this kiosk's signed-in session on the server. Never throws —
@@ -923,6 +961,32 @@ export interface EdgeSetup {
 /** The laptop's shared setup, or null when it has never been set up. */
 export async function getEdgeSetup(): Promise<EdgeSetup | null> {
   return jsonFrom<EdgeSetup | null>(await apiFetch('/edge/setup'));
+}
+
+/** The laptop's kiosk config as the edge holds it for every browser:
+ *  `version` counts changes on the edge (not the portal's version). */
+export interface EdgeConfig {
+  doc: Record<string, unknown> | null;
+  version: number;
+  changed_at: string | null;
+}
+
+export async function getEdgeConfig(): Promise<EdgeConfig> {
+  return jsonFrom<EdgeConfig>(await apiFetch('/edge/config'));
+}
+
+/** Writes this browser's document. `seed`: only when the edge has none
+ *  (not a change). Otherwise `base_version` is the edge version it started
+ *  from; a stale one is 409 `config_changed` with the current copy in the
+ *  error's detail (`doc`, `version`, `changed_at`). */
+export async function putEdgeConfig(body: {
+  doc: Record<string, unknown>; base_version?: number; seed?: boolean;
+}): Promise<EdgeConfig> {
+  return jsonFrom<EdgeConfig>(await apiFetch('/edge/config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }));
 }
 
 // ── RFID Network check and reader reading (laptop edge) ─────────────

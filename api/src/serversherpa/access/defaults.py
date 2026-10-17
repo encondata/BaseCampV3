@@ -5,6 +5,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 GATE_BYPASS_RANK = 60
+SUPER_ADMIN_RANK = 80
 TOP_RANK = 100
 
 FULL = ("view", "add", "change", "delete")

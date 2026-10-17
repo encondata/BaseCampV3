@@ -272,6 +272,7 @@ async def refresh(
         user_agent=user_agent,
         client=session.client,          # a kiosk session stays kiosk-scoped forever
         initiative_id=session.initiative_id,   # and a move session stays on its move
+        kiosk_serial=session.kiosk_serial,     # and a bound kiosk session on its kiosk
     ))
     # successor row must hit the DB before the old row can point at it
     await db.flush()
