@@ -111,6 +111,46 @@ async def test_seed_stores_once_unstamped_with_the_alarm_mirrored(app, client):
     assert again == out
 
 
+DEFAULTS = {
+    "schema": 1,
+    "appearance": {"good_scan": {"h": 150, "s": 60, "l": 45},
+                   "not_found_scan": {"h": 0, "s": 70, "l": 50},
+                   "duplicate_scan": {"h": 38, "s": 92, "l": 50}, "flash_ms": 350},
+    "sound": {"good": {"kind": "builtin", "id": "chime"},
+              "not_found": {"kind": "builtin", "id": "buzz"},
+              "duplicate": {"kind": "builtin", "id": "double_beep"},
+              "alarm": {"kind": "siren"}, "volume": 0.8},
+    "checkpoints": {"enroll": "pre_stage", "container_pack": "in_container",
+                    "container_unpack": "un_pack", "truck_load": "on_truck",
+                    "truck_unload": "received"},
+    "developer": {"dev_mode": False},
+}
+
+
+async def test_defaults_only_seed_gives_way_to_a_customized_seed(app, client):
+    """A browser nobody customized seeded the edge (an older build): until
+    that copy is reported or the portal's arrives, a customized browser's
+    seed replaces it, still unstamped and not dirty."""
+    first = await _seed(app, client, DEFAULTS)
+    assert first["version"] == 1
+    custom = {**DEFAULTS, "appearance": {**DEFAULTS["appearance"], "flash_ms": 700}}
+    out = await _seed(app, client, custom)
+    assert out["version"] == 2 and out["changed_at"] is None
+    assert out["doc"]["appearance"]["flash_ms"] == 700
+    assert _row(app)["dirty"] == 0
+    # a customized copy is never replaced by another seed
+    again = await _seed(app, client, {**DEFAULTS, "developer": {"dev_mode": True}})
+    assert again == out
+
+
+async def test_reported_defaults_seed_is_kept(app, client, cloud):
+    await _seed(app, client, DEFAULTS)
+    await _person_beat(app, client, cloud)                 # the first report goes out
+    custom = {**DEFAULTS, "appearance": {**DEFAULTS["appearance"], "flash_ms": 700}}
+    out = await _seed(app, client, custom)
+    assert out["doc"]["appearance"]["flash_ms"] == 350 and out["version"] == 1
+
+
 async def test_edit_round_trips_whole_and_marks_dirty(app, client):
     await _seed(app, client)
     _clock_known(app)
@@ -276,15 +316,45 @@ async def test_reply_while_a_local_edit_lands_keeps_the_edit_and_takes_other_sec
     assert doc["future_thing"] == PORTAL["future_thing"]
 
 
-async def test_stale_reply_config_is_ignored(app, client, cloud):
+async def test_reply_below_the_applied_version_is_a_reset_and_applied(app, client, cloud):
+    """Beats are serialized (config_lock), so a reply can't be from an older,
+    overlapping beat: a lower version means the portal's row was recreated
+    (Clear Offline, a delete, a DB revert) and restarted its versions."""
     await _seed(app, client)
     await _person_beat(app, client, cloud, reply=_beat_reply(config=PORTAL, config_version=3))
     before = _row(app)
-    older = {**PORTAL, "developer": {"dev_mode": True}}
-    await _person_beat(app, client, cloud, reply=_beat_reply(config=older, config_version=2))
+    restarted = {**PORTAL, "developer": {"dev_mode": True}}
+    sent = await _person_beat(app, client, cloud,
+                              reply=_beat_reply(config=restarted, config_version=1))
+    assert sent["config_applied_version"] == 3
     after = _row(app)
-    assert after["doc"] == before["doc"] and after["applied_version"] == 3
-    assert after["version"] == before["version"]
+    assert after["applied_version"] == 1
+    assert json.loads(after["doc"])["developer"] == {"dev_mode": True}
+    assert after["version"] == before["version"] + 1
+    sent = await _person_beat(app, client, cloud, reply=_beat_reply(config_version=1))
+    assert sent["config_applied_version"] == 1
+
+
+async def test_reset_reply_without_a_document_reports_on_the_next_beat(app, client, cloud):
+    await _seed(app, client)
+    await _person_beat(app, client, cloud, reply=_beat_reply(config=PORTAL, config_version=3))
+    sent = await _person_beat(app, client, cloud, reply=_beat_reply(config_version=3))
+    assert "config" not in sent
+    # the row was recreated: version 0, nothing stored yet
+    await _person_beat(app, client, cloud, reply=_beat_reply(config_version=0))
+    assert _row(app)["applied_version"] == 0
+    sent = await _person_beat(app, client, cloud, reply=_beat_reply(config_version=1))
+    assert sent["config_applied_version"] == 0
+    assert sent["config"]["appearance"] == PORTAL["appearance"]
+
+
+async def test_same_version_reply_is_not_reapplied(app, client, cloud):
+    await _seed(app, client)
+    await _person_beat(app, client, cloud, reply=_beat_reply(config=PORTAL, config_version=3))
+    before = _row(app)
+    await _person_beat(app, client, cloud, reply=_beat_reply(
+        config={**PORTAL, "developer": {"dev_mode": True}}, config_version=3))
+    assert _row(app)["doc"] == before["doc"] and _row(app)["version"] == before["version"]
 
 
 async def test_station_key_moves_config_sync_off_the_person_heartbeat(app, client, cloud):
@@ -411,3 +481,52 @@ async def test_only_sound_routes_take_the_station_key(app, client, cloud, path):
     route = cloud.route(url__regex=r".*/kiosk/sound.*").respond(200, json={})
     r = await client.get(path, headers=make_session(app, offline=True))
     assert r.status_code == 503 and not route.called
+
+
+async def test_sound_upload_never_uses_the_station_key(app, client, cloud):
+    """Uploads go only as the person: with no usable cloud session they
+    answer 503 here, the station key is never sent, and it survives."""
+    station_key.store_key(app.state.store, app.state.keys, "the-key")
+    route = cloud.post("/kiosk/sounds").respond(401, json={"detail": {"code": "x"}})
+    body, ctype = _multipart()
+    r = await client.post("/kiosk/sounds", content=body,
+                          headers={**make_session(app, offline=True), "content-type": ctype})
+    assert r.status_code == 503 and r.json()["detail"]["code"] == "edge_offline"
+    assert not route.called
+    assert station_key.has_key(app.state.store)
+
+
+async def test_refused_cloud_session_never_falls_back_to_the_station_key(app, client, cloud):
+    station_key.store_key(app.state.store, app.state.keys, "the-key")
+    _online_as(app)
+    up = cloud.post("/kiosk/sounds").respond(401, json={"detail": {"code": "token_expired"}})
+    down = cloud.get(url__regex=r".*/kiosk/sounds/s-1.*").respond(
+        401, json={"detail": {"code": "token_expired"}})
+    cloud.post("/auth/refresh").respond(401, json={"detail": {"code": "refresh_invalid"}})
+    body, ctype = _multipart()
+    r = await client.post("/kiosk/sounds", content=body,
+                          headers={**make_session(app), "content-type": ctype})
+    assert r.status_code == 503
+    _online_as(app)
+    r = await client.get("/kiosk/sounds/s-1", headers=make_session(app))
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "cloud_sign_in_required"
+    for call in [*up.calls, *down.calls]:
+        assert not call.request.headers["authorization"].startswith("Station")
+    assert station_key.has_key(app.state.store)
+
+
+async def test_config_reply_error_never_breaks_the_browser_heartbeat(app, client, cloud,
+                                                                     monkeypatch):
+    await _seed(app, client)
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "label")
+
+    def boom(*a, **kw):
+        raise RuntimeError("bad reply")
+
+    monkeypatch.setattr(config_sync, "handle_reply", boom)
+    _online_as(app)
+    cloud.post(HEARTBEAT).respond(200, json=_beat_reply(clear_setup="c-1"))
+    r = await client.post(HEARTBEAT, headers=make_session(app),
+                          json={"serial": "browser", "name": "B", "mode": "web"})
+    assert r.status_code == 200
+    assert laptop_setup.load(app.state.store) is None      # Clear Setup still applied

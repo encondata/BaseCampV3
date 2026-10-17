@@ -28,8 +28,9 @@ on the check-ins it already makes, with the web kiosk's rules
 - **A reply's config** newer than the applied version is applied (its
   `alarm` to `alarm_settings`) when nothing local is pending. While a local
   change is pending, the reply's other sections are taken and the local
-  sections kept; the stamped report then settles it on the portal. A reply
-  at or below the applied version (an overlapping beat) is ignored.
+  sections kept; the stamped report then settles it on the portal. Beats
+  never overlap, so a reply below the applied version means the portal's
+  row was recreated (versions restarted): it is taken like any other.
 
 Which check-in carries it: an RFID Station with a station key syncs only on
 its station heartbeat (the portal ignores config on a station-keyed device's
@@ -50,6 +51,22 @@ MAX_BYTES = 65536  # the portal's limit on a reported document
 BROWSER_SECTIONS = ("appearance", "sound", "checkpoints", "developer")
 LOCAL_SECTIONS = (*BROWSER_SECTIONS, "alarm")
 BEAT_FIELDS = ("config", "config_changed_at", "config_applied_version")
+# The browser sections' fields on a fresh kiosk (the kiosk stores' defaults,
+# the portal's DEFAULT_CONFIG): a seed holding only these is a browser nobody
+# customized, which a customized browser's seed may replace.
+BROWSER_DEFAULTS = {
+    "appearance": {"good_scan": {"h": 150, "s": 60, "l": 45},
+                   "not_found_scan": {"h": 0, "s": 70, "l": 50},
+                   "duplicate_scan": {"h": 38, "s": 92, "l": 50}, "flash_ms": 350},
+    "sound": {"good": {"kind": "builtin", "id": "chime"},
+              "not_found": {"kind": "builtin", "id": "buzz"},
+              "duplicate": {"kind": "builtin", "id": "double_beep"},
+              "alarm": {"kind": "siren"}, "volume": 0.8},
+    "checkpoints": {"enroll": "pre_stage", "container_pack": "in_container",
+                    "container_unpack": "un_pack", "truck_load": "on_truck",
+                    "truck_unload": "received"},
+    "developer": {"dev_mode": False},
+}
 
 
 class ConfigConflict(Exception):
@@ -116,6 +133,29 @@ def _doc(row: dict) -> dict | None:
     return json.loads(row["doc"]) if row["doc"] else None
 
 
+def browser_defaults_only(doc: dict | None) -> bool:
+    """Every browser-owned field of `doc` equals the default (a field that
+    is missing does not)."""
+    if not isinstance(doc, dict):
+        return False
+    for name, fields in BROWSER_DEFAULTS.items():
+        section = doc.get(name)
+        if not isinstance(section, dict):
+            return False
+        for key, value in fields.items():
+            if key not in section or _canon(section[key]) != _canon(value):
+                return False
+    return True
+
+
+def _replaceable_seed(row: dict, stored: dict | None) -> bool:
+    """A defaults-only seed nothing has built on yet: never reported, no
+    portal config applied, no local change."""
+    return stored is not None and row["reported_at"] is None \
+        and row["applied_version"] is None and not row["dirty"] \
+        and row["changed_at_local"] is None and browser_defaults_only(stored)
+
+
 def _view(row: dict) -> dict:
     return {"doc": _doc(row), "version": row["version"], "changed_at": row["changed_at"]}
 
@@ -180,7 +220,10 @@ def put(store: Store, doc: dict, base_version: int | None, *, seed: bool = False
         row = _row(c)
         stored = _doc(row)
         if seed:
-            if stored is None:
+            # stored only when there is none, or when the stored one is an
+            # unreported defaults-only seed and this one is customized
+            if stored is None or (_replaceable_seed(row, stored)
+                                  and not browser_defaults_only(doc)):
                 _write(c, doc=json.dumps(_with_alarm(c, {**doc, "schema": 1})),
                        version=row["version"] + 1)
             return _view(_row(c))
@@ -278,8 +321,16 @@ def handle_reply(store: Store, beat: Beat, data) -> None:
         row = _row(c)
         cfg, version = data.get("config"), _int(data.get("config_version"))
         applied = row["applied_version"]
-        if isinstance(cfg, dict) and version is not None \
-                and (applied is None or version > applied):
+        # Beats are serialized (lock), so a reply is never from an older,
+        # overlapping beat: any version other than the applied one is taken,
+        # including a lower one (the portal's row was recreated by Clear
+        # Offline, a delete or a database revert, and restarted its versions).
+        if not isinstance(cfg, dict) and version is not None and applied is not None \
+                and version < applied:
+            # reset, nothing stored there yet: acknowledge it and report the
+            # whole config on the next beat
+            _write(c, applied_version=version, reported_at=None)
+        if isinstance(cfg, dict) and version is not None and version != applied:
             stored = _doc(row)
             if not row["dirty"]:
                 _apply_alarm(c, cfg.get("alarm"))

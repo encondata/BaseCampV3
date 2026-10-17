@@ -18,11 +18,15 @@ session ended" and signs them out. The heartbeat in that state answers 503
 The laptop's kiosk config rides the person heartbeat here (config_sync.py):
 the edge replaces whatever config fields the browser sent with its own and
 handles the reply, unless the laptop holds a station key (then only the
-station heartbeat syncs it). Sounds (`/kiosk/sounds…`) go as the person, or
-under the station key when the person has no cloud session; an upload's
+station heartbeat syncs it). Sounds (`/kiosk/sounds…`) go as the person.
+Only a download (GET /kiosk/sounds/{id}) by a signed-in person with no cloud
+session at all (an offline sign-in) goes under the station key instead; an
+upload never does (503 `edge_offline` without a usable cloud session), and a
+person whose cloud session the portal refused never falls back. An upload's
 `serial` form field is always the edge's."""
 
 import json
+import logging
 import re
 from urllib.parse import parse_qs, quote
 
@@ -38,6 +42,8 @@ from edge.rfid import station_key
 from edge.rfid.tagreads import note_cache_write
 from edge.sessions import EdgeSession
 from edge.upstream import CloudOffline
+
+log = logging.getLogger(__name__)
 
 
 CACHEABLE = ("/kiosk/sync/", "/kiosk/setup-options", "/kiosk/labels/vocab", "/system/status")
@@ -106,12 +112,17 @@ def is_sound_path(path: str) -> bool:
     return path == SOUNDS or path.startswith(SOUNDS + "/")
 
 
-async def _as_station(st, method: str, path: str, body: bytes, headers: dict):
-    """A sound call under the station key (None without one): the station
-    key names its kiosk by serial, in the query for a download."""
-    target = f"{path}?serial={quote(st.identity.serial)}" if method == "GET" else path
-    return await station_key.request_as_station(st.upstream, method, target, content=body,
-                                                headers=headers)
+def is_sound_download(method: str, path: str) -> bool:
+    """GET /kiosk/sounds/{id}: the only call the station key may stand in for."""
+    return method == "GET" and path.startswith(SOUNDS + "/")
+
+
+async def _download_as_station(st, path: str, headers: dict):
+    """A sound download under the station key (None without one): the
+    station key names its kiosk by serial in the query. Never used for an
+    upload or any other write: a malformed upload's 401 would drop the key."""
+    target = f"{path}?serial={quote(st.identity.serial)}"
+    return await station_key.request_as_station(st.upstream, "GET", target, headers=headers)
 
 
 async def _person_heartbeat(st, person_id: str, target: str, body: bytes, headers: dict):
@@ -130,11 +141,14 @@ async def _person_heartbeat(st, person_id: str, target: str, body: bytes, header
                 data = resp.json()
             except ValueError:
                 data = None
-            if beat is not None:
-                config_sync.handle_reply(st.store, beat, data)
-            elif isinstance(data, dict):  # scan type still applies on a station-keyed laptop
-                laptop_setup.set_scan_type(st.store, data.get("scan_status"),
-                                           data.get("scan_status_label"))
+            try:
+                if beat is not None:
+                    config_sync.handle_reply(st.store, beat, data)
+                elif isinstance(data, dict):  # scan type still applies on a station-keyed laptop
+                    laptop_setup.set_scan_type(st.store, data.get("scan_status"),
+                                               data.get("scan_status_label"))
+            except Exception as exc:  # noqa: BLE001 — never break the beat over the config
+                log.warning("person heartbeat config reply failed: %s", type(exc).__name__)
         return resp
 
 
@@ -209,10 +223,14 @@ async def forward(request: Request, path: str) -> Response:
                 else:
                     resp = await st.upstream.as_person(session.person_id, method, target,
                                                        content=body, headers=headers)
-            if resp is None and sound:
-                resp = await _as_station(st, method, path, body, headers)
+            if resp is None and sound and not is_sound_download(method, path):
+                # an upload goes only as the person; never under the station key
+                raise err(503, "edge_offline")
             if resp is None and has_cloud:
                 raise _no_cloud_session(path)  # the cloud refused this person's session
+            if resp is None and sound:
+                # a download with no cloud session at all (an offline sign-in)
+                resp = await _download_as_station(st, path, {})
             if resp is None:
                 if method != "GET" and path in OFFLINE_OK_WRITES:
                     return Response(status_code=204)
