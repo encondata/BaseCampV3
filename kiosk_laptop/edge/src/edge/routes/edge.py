@@ -19,7 +19,7 @@ AUTH_TABLES = ("cloud_sessions", "offline_logins", "edge_sessions", "login_failu
                "move_passwords")
 MOVE_TABLES = ("cache", "outbox", "laptop_setup", "rfid_events",
               "raw_tag_reads", "rfid_tags_seen", "station_key", "pending_rfid_scans",
-              "rfid_unmatched")
+              "rfid_unmatched", "alarm_open", "alarm_last")
 
 
 async def _json_object(request: Request, *, empty_ok: bool = False) -> dict:

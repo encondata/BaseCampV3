@@ -13,6 +13,10 @@ off-move sighting). Each raw read becomes at most one pending scan
   WITHOUT advancing the cursor; the next tick tries again.
 - A current-move read that matches nothing goes into `rfid_unmatched`, which
   `recheck_unmatched` re-matches after every successful sync for 24 h.
+- On an RFID station, a fresh off-move match (received at most
+  `alarm.FRESH_S` before the pass) raises the "Asset Not Part Of Move" alarm
+  in the pass's own transaction. Late matches (a backlog, the re-check) never
+  alarm.
 
 Everything here is synchronous and short: it runs on the event loop the
 8091 ingest shares, against the one SQLite store, and never touches the
@@ -27,7 +31,7 @@ from typing import NamedTuple
 from edge import laptop_setup
 from edge import sync as edge_sync  # module ref: edge.sync imports this module
 from edge.db import Store, iso, now_iso
-from edge.rfid import tagreads
+from edge.rfid import alarm, tagreads
 
 log = logging.getLogger("edge.rfid.processing")
 
@@ -56,6 +60,7 @@ class Match(NamedTuple):
     off_move: int = 0
     off_move_initiative_id: str | None = None
     off_move_initiative_name: str | None = None
+    item: dict | None = None    # the client-assets item behind an off-move match
 
 
 # source name -> (stamp, index). Stamp: (id(store), cache key, rowid, stored_at,
@@ -120,13 +125,27 @@ def _match(indexes: dict[str, dict[str, dict]], epc: str) -> Match | None:
     if item is not None:
         move = item.get("initiative_id")
         return Match("asset", str(item["id"]), 1, str(move) if move is not None else None,
-                     item.get("initiative_name"))
+                     item.get("initiative_name"), item)
     return None
 
 
 def _current_move(store: Store) -> str | None:
     setup = laptop_setup.load(store)
     return (setup or {}).get("initiative_id") or None
+
+
+def _alarm_item(match: Match) -> dict:
+    item = match.item or {}
+    return {"asset_id": match.matched_id, "make": item.get("make"), "model": item.get("model"),
+            "name": item.get("name"), "serial": item.get("serial_number"),
+            "rfid": item.get("rfid")}
+
+
+def _fresh(received_at: str, now: datetime) -> bool:
+    try:
+        return datetime.fromisoformat(iso(received_at)) >= now - timedelta(seconds=alarm.FRESH_S)
+    except (TypeError, ValueError):
+        return False
 
 
 _INSERT = """
@@ -148,14 +167,17 @@ def _cursor(store: Store) -> int:
     return row["last_raw_id"] if row else 0
 
 
-def process(store: Store) -> PassResult:
+def process(store: Store, now: datetime | None = None) -> PassResult:
     """One pass of at most PASS_LIMIT raw reads after the cursor."""
+    now = now or datetime.now(UTC)
     last = _cursor(store)
     rows = store.all("SELECT id, epc, received_at, initiative_id, site_id, scan_status "
                      "FROM raw_tag_reads WHERE id > ? ORDER BY id LIMIT ?", (last, PASS_LIMIT))
     if not rows:
         return PassResult(0, 0, False)
-    current = _current_move(store)
+    setup = laptop_setup.load(store) or {}
+    current = setup.get("initiative_id") or None
+    alarms_on = setup.get("station_type") == "rfid"
     indexes = None
     matches: list[tuple] = []
     misses: list[tuple] = []
@@ -181,14 +203,31 @@ def process(store: Store) -> PassResult:
         return PassResult(0, 0, waiting)
     inserted = 0
     created_at = now_iso()
+    raised: list[dict] = []
     with store.tx() as c:
+        to_alarm = []
         for raw, match in matches:
-            inserted += _insert(c, raw, match, created_at)
+            added = _insert(c, raw, match, created_at)
+            inserted += added
+            if added and alarms_on and match.off_move and _fresh(raw["received_at"], now):
+                to_alarm.append(_alarm_item(match))
+        if to_alarm:
+            # an alarm failure rolls back only the alarm, never the pass
+            c.execute("SAVEPOINT alarm")
+            try:
+                raised = alarm.raise_for(c, to_alarm, now)
+                c.execute("RELEASE alarm")
+            except Exception:
+                log.exception("raising the off-move alarm failed")
+                c.execute("ROLLBACK TO alarm")
+                c.execute("RELEASE alarm")
+                raised = []
         c.executemany("INSERT OR IGNORE INTO rfid_unmatched (raw_read_id, received_at) "
                       "VALUES (?, ?)", misses)
         c.execute("INSERT INTO rfid_processing_meta (id, last_raw_id) VALUES (1, ?) "
                   "ON CONFLICT (id) DO UPDATE SET last_raw_id = excluded.last_raw_id",
                   (advanced,))
+    alarm.record_event(store, raised)
     return PassResult(inserted, scanned, waiting)
 
 

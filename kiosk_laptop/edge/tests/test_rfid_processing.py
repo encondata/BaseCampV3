@@ -427,3 +427,52 @@ async def test_processor_loop_survives_a_failing_pass(settings, cloud, monkeypat
     finally:
         await bg.stop()
     assert len(calls) >= 2
+
+
+def _station(store):
+    store.run("UPDATE laptop_setup SET setup_json = ? WHERE id = 1",
+              (json.dumps({**SETUP, "station_type": "rfid"}),))
+
+
+def test_fresh_off_move_match_hands_its_item_to_the_alarm(store, monkeypatch):
+    from edge.rfid import alarm
+    seen = []
+    real = alarm.raise_for
+
+    def spy(c, items, now):
+        seen.append((items, now, c.in_transaction))
+        return real(c, items, now)
+    monkeypatch.setattr(alarm, "raise_for", spy)
+    seed(store, client=[{"id": "x-1", "asset_id": "A-1", "rfid": "EE05", "name": "Srv",
+                         "serial_number": "S1", "make": "HP", "model": "DL380",
+                         "initiative_id": None, "initiative_name": None}])
+    _station(store)
+    now = datetime(2026, 10, 16, 14, 0, 10, tzinfo=UTC)
+    read(store, "EE05")
+    assert processing.process(store, now=now).inserted == 1
+    assert seen == [([{"asset_id": "x-1", "make": "HP", "model": "DL380", "name": "Srv",
+                       "serial": "S1", "rfid": "EE05"}], now, True)]
+
+
+def test_a_failing_alarm_never_stops_processing(store, monkeypatch):
+    from edge.rfid import alarm
+
+    def boom(c, items, now):
+        c.execute("INSERT INTO alarm_last (asset_id, alarmed_at) VALUES ('x', 'y')")
+        raise RuntimeError("bad")
+    monkeypatch.setattr(alarm, "raise_for", boom)
+    seed(store, client=[{"id": "x-1", "rfid": "EE05"}])
+    _station(store)
+    rid = read(store, "EE05")
+    now = datetime(2026, 10, 16, 14, 0, 10, tzinfo=UTC)
+    assert processing.process(store, now=now).inserted == 1
+    assert cursor(store) == rid and len(pending(store)) == 1
+    assert store.all("SELECT * FROM alarm_last") == []       # the alarm's writes rolled back
+
+
+def test_process_defaults_now_to_the_clock(store):
+    seed(store, client=[{"id": "x-1", "rfid": "EE05"}])
+    _station(store)
+    read(store, "EE05")                       # RECEIVED is long ago: stale, no alarm
+    assert processing.process(store).inserted == 1
+    assert store.all("SELECT * FROM alarm_open") == []
