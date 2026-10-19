@@ -84,7 +84,7 @@ def test_schema_step_adds_device_config(tmp_path):
     cols = {r["name"] for r in store.all("PRAGMA table_info(device_config)")}
     assert {"doc", "version", "changed_at", "dirty", "applied_version", "server_offset_ms",
             "reported_at"} <= cols
-    assert "device_config" in SCHEMA_STEPS[-1]
+    assert any("CREATE TABLE device_config" in step for step in SCHEMA_STEPS)
     store.close()
 
 

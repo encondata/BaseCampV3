@@ -29,6 +29,13 @@ WORKDIR /app
 COPY kiosk_laptop/edge/pyproject.toml ./edge/pyproject.toml
 COPY kiosk_laptop/edge/src ./edge/src
 RUN pip install --no-cache-dir ./edge
+# The portal's own label code (serversherpa.labels: label values, render, pick),
+# imported as is so a Label Station's labels match the portal's byte for byte.
+# Only the package marker and labels/ come in; the API itself is not installed
+# (labels/generate needs sqlalchemy, so the edge never imports it).
+COPY api/src/serversherpa/__init__.py /app/shared/serversherpa/__init__.py
+COPY api/src/serversherpa/labels /app/shared/serversherpa/labels
+ENV PYTHONPATH=/app/shared
 COPY --from=web /app/kiosk/dist /app/web
 EXPOSE 8090 8091
 # python's urllib, so the slim image needs no curl

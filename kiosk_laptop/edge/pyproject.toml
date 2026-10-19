@@ -26,8 +26,9 @@ where = ["src"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 # tests import their helpers as `tests.*`; `pytest` (unlike `python -m pytest`)
-# does not put this folder on sys.path by itself
-pythonpath = ["."]
+# does not put this folder on sys.path by itself; ../../api/src is the
+# portal's label code (serversherpa.labels), which the edge imports as is
+pythonpath = [".", "../../api/src"]
 
 [tool.ruff]
 line-length = 100

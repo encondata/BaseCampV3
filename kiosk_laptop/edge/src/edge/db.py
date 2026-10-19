@@ -158,6 +158,18 @@ SCHEMA_STEPS: list[str] = [
         dirty INTEGER NOT NULL DEFAULT 0, applied_version INTEGER, server_offset_ms INTEGER,
         reported_at TEXT)
     """,
+    # the Label Station's finished labels, one per asset on the move (edge/labels/
+    # generate.py): `fingerprint` covers every input, so only changed assets are
+    # re-rendered; `label_run` is the generator's one progress row
+    """
+    CREATE TABLE station_labels (asset_id TEXT PRIMARY KEY, label_kind TEXT, dpi INTEGER,
+        template_id TEXT, template_version INTEGER, template_name TEXT, fingerprint TEXT,
+        zpl TEXT, error TEXT, generated_at TEXT);
+    CREATE TABLE label_run (id INTEGER PRIMARY KEY CHECK (id = 1),
+        state TEXT NOT NULL DEFAULT 'idle', reason TEXT, total INTEGER NOT NULL DEFAULT 0,
+        done INTEGER NOT NULL DEFAULT 0, pending INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT, finished_at TEXT)
+    """,
 ]
 
 
