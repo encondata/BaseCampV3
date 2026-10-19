@@ -133,4 +133,6 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
                 await station_key.issue(st, session.person_id)
         st.syncer.set_target(str(result["initiative_id"]), session.person_id)
         await st.syncer.run()
+        if station == "label":
+            st.label_runner.request("setup")
     return passthrough(resp)

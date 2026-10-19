@@ -12,6 +12,7 @@ Setup or a change of station type; the config document's `label_station`
 section mirrors them (config_sync), marked dirty whenever they change."""
 
 import json
+from collections.abc import Callable
 
 from edge.db import Store, now_iso
 from edge.rfid import alarm, pairing
@@ -149,19 +150,30 @@ def normalize_label_station(body, printer_ip) -> dict:
             "peel": peel}
 
 
-def save_label_station(store: Store, settings: dict) -> dict:
+REGENERATE_KEYS = ("dpi", "label_kind", "printer")  # offsets and peel apply when sending
+
+
+def save_label_station(store: Store, settings: dict, *,
+                       on_regenerate: Callable[[], None] | None = None) -> dict:
     """Store normalized settings in the shared setup. Raises LookupError when
-    the laptop isn't set up as a Label Station."""
+    the laptop isn't set up as a Label Station. `on_regenerate` is called
+    when the labels' inputs changed (DPI, label kind or printer)."""
+    regenerate = False
     with store.tx() as c:
         row = c.execute("SELECT setup_json FROM laptop_setup WHERE id = 1").fetchone()
         setup = json.loads(row["setup_json"]) if row else None
         if setup is None or setup.get("station_type") != "label":
             raise LookupError("not_label_station")
-        if setup.get("label_station") != settings:
+        previous = setup.get("label_station")
+        if previous != settings:
+            regenerate = not isinstance(previous, dict) or any(
+                previous.get(k) != settings.get(k) for k in REGENERATE_KEYS)
             setup["label_station"] = settings
             c.execute("UPDATE laptop_setup SET setup_json = ? WHERE id = 1",
                       (json.dumps(setup),))
             _note_config(c)
+    if regenerate and on_regenerate is not None:
+        on_regenerate()
     return settings
 
 

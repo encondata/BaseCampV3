@@ -128,6 +128,7 @@ async def wipe(request: Request, _: EdgeSession = Depends(require_admin)) -> JSO
         if had_label_station:  # the config's mirror drops it too
             config_sync.note_label_station(c)
     note_cache_write()  # the cache table was emptied: drop memoized tag indexes
+    st.label_runner.forget()
     response = JSONResponse({"cleared_move_data": True})
     response.delete_cookie("ss_refresh", path="/auth")
     return response

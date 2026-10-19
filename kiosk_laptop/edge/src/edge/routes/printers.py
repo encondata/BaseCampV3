@@ -183,6 +183,8 @@ async def put_label_station(request: Request) -> dict:
     except laptop_setup.BadLabelStation as exc:
         raise err(422, exc.code) from None
     try:
-        return laptop_setup.save_label_station(st.store, settings)
+        return laptop_setup.save_label_station(
+            st.store, settings,
+            on_regenerate=lambda: st.label_runner.request("updates"))
     except LookupError:
         raise err(409, "not_label_station") from None

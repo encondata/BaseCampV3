@@ -100,6 +100,7 @@ class Syncer:
         self.store = store
         self.upstream = upstream
         self.serial = serial_getter
+        self.after_sync: Callable[[], None] | None = None  # called after a sync lands
         store.run("INSERT OR IGNORE INTO sync_meta (id) VALUES (1)")
 
     def set_target(self, initiative_id: str, actor_person_id: str) -> None:
@@ -169,6 +170,7 @@ class Syncer:
             c.execute("UPDATE sync_meta SET synced_at = ?, last_error = ? WHERE id = 1",
                       (now_iso(), error))
         self._recheck_rfid()
+        self._notify()
         return self.meta()
 
     async def _run_as_station(self, initiative: str) -> dict:
@@ -204,7 +206,16 @@ class Syncer:
             c.execute("UPDATE sync_meta SET synced_at = ?, last_error = ? WHERE id = 1",
                       (now_iso(), error))
         self._recheck_rfid()
+        self._notify()
         return self.meta()
+
+    def _notify(self) -> None:
+        if self.after_sync is None:
+            return
+        try:
+            self.after_sync()
+        except Exception:
+            log.exception("after-sync hook failed")
 
     def _recheck_rfid(self) -> None:
         """Fresh move data: re-match the last 24 h of unmatched RFID reads.

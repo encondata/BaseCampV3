@@ -48,6 +48,10 @@ class Plan(NamedTuple):
     template_json: dict | None = None
     label_kind: str = ""
     dpi: int = 0
+    # False when the cache holds no usable asset data (no assets read yet, or
+    # one from a portal without `label_context`): `assets` is then empty for
+    # want of data, not because the move has none, so nothing may be pruned
+    has_asset_data: bool = True
 
 
 def _fingerprint(parts: list) -> str:
@@ -101,19 +105,35 @@ def _label_asset(a: dict) -> LabelAsset:
         destination_position=a.get("destination_position"))
 
 
-def build_plan(store: Store) -> Plan | None:
+def _setting(raw, override, valid) -> object | None:
+    value = override if override is not None else raw
+    return value if valid(value) else None
+
+
+def build_plan(store: Store, *, label_kind: str | None = None,
+               dpi: int | None = None) -> Plan | None:
     """The station's label work from the cached move, or None when this
-    laptop isn't a Label Station with its label settings saved. A cached
+    laptop isn't a Label Station with usable label settings. `label_kind`
+    and `dpi` override the saved ones (setup previews a choice before
+    saving it); with both given, no saved settings are needed. A cached
     asset list without `label_context` (a portal from before it) gives no
-    jobs: the values can't be rebuilt faithfully without it."""
+    jobs and `has_asset_data` False: the values can't be rebuilt faithfully
+    without it."""
     setup = laptop_setup.load(store)
     if not setup or setup.get("station_type") != "label":
         return None
     station = setup.get("label_station")
     initiative = setup.get("initiative_id")
-    if not isinstance(station, dict) or not initiative:
+    if not initiative:
         return None
-    label_kind, dpi = station["label_kind"], int(station["dpi"])
+    if not isinstance(station, dict):
+        station = {}
+    label_kind = _setting(station.get("label_kind"), label_kind,
+                          lambda v: v in laptop_setup.LABEL_KINDS)
+    dpi = _setting(station.get("dpi"), dpi,
+                   lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0)
+    if label_kind is None or dpi is None:
+        return None
     paths = sync_paths(initiative)
     assets_body = _cached(store, next(p for p in paths if p.startswith("/kiosk/sync/assets?")))
     templates_body = _cached(
@@ -131,13 +151,15 @@ def build_plan(store: Store) -> Plan | None:
     rules = (template_json or {}).get("generation_rules") or None
 
     context = (assets_body or {}).get("label_context")
+    asset_rows = (assets_body or {}).get("assets")
+    has_data = isinstance(context, dict) and isinstance(asset_rows, list)
     jobs: list[AssetJob] = []
-    if isinstance(context, dict):
+    if has_data:
         move = LabelMove(name=context.get("move_name"), day=_day(context.get("move_day")),
                          source_site=context.get("source_site"),
                          destination_site=context.get("destination_site"))
         catalog_keys = list(context.get("catalog_keys") or [])
-        for a in (assets_body or {}).get("assets") or []:
+        for a in asset_rows:
             if not isinstance(a, dict) or not a.get("id"):
                 continue
             values = asset_label_values(_label_asset(a), move, catalog_keys,
@@ -148,7 +170,7 @@ def build_plan(store: Store) -> Plan | None:
             else:
                 fingerprint = _fingerprint(["no_template", dpi, label_kind])
             jobs.append(AssetJob(str(a["id"]), values, fingerprint))
-    return Plan(template, notes, jobs, template_json, label_kind, dpi)
+    return Plan(template, notes, jobs, template_json, label_kind, dpi, has_data)
 
 
 def changed_jobs(store: Store, plan: Plan) -> list[AssetJob]:
@@ -196,7 +218,10 @@ def apply(store: Store, plan: Plan, job: AssetJob, zpl: str | None, error: str |
 
 
 def prune(store: Store, plan: Plan) -> int:
-    """Drop the labels of assets no longer on the move; returns how many."""
+    """Drop the labels of assets no longer on the move; returns how many.
+    A plan without asset data prunes nothing (it would drop every label)."""
+    if not plan.has_asset_data:
+        return 0
     keep = {job.asset_id for job in plan.assets}
     with store.tx() as c:
         gone = [r["asset_id"] for r in c.execute("SELECT asset_id FROM station_labels")
