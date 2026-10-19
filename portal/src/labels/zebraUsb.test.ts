@@ -342,3 +342,22 @@ describe('WebUSB read queue (a timed-out transferIn still receives the next pack
     expect(dev.transferInCalls).toBe(2);   // a fresh read was issued after close
   });
 });
+
+describe('parseDirectory with attribute flags', () => {
+  // A ZT220's real ^HWE:*.* reply (2026-10-19): a stored font carries a
+  // flag column ("K") after its size, which used to hide it from the list.
+  const ZT220 = '\r\n- DIR E:*.* \r\n* E:85620388.TTF   1045960          \r\n'
+    + '* E:TEXT.ZPL         5          \r\n* E:TT0003M_.TTF    160676       K  \r\n\r\n'
+    + '-  32346624 bytes free E: ONBOARD FLASH \r\n';
+
+  it('lists an object whose size is followed by a flag', () => {
+    expect(parseDirectory(ZT220)).toEqual({
+      objects: [
+        { name: '85620388.TTF', bytes: 1045960 },
+        { name: 'TEXT.ZPL', bytes: 5 },
+        { name: 'TT0003M_.TTF', bytes: 160676 },
+      ],
+      bytesFree: 32346624,
+    });
+  });
+});
