@@ -11,13 +11,19 @@
 # edge (edge/hostnet.py), atomically:
 #   {"updated_at": "2026-10-01T18:00:00Z",
 #    "interfaces": [{"name": "en0", "ipv4": "10.10.48.57", "prefix": 24}],
-#    "gateway": "10.10.48.1"}
+#    "gateway": "10.10.48.1",
+#    "self_addresses": ["10.10.48.57", "172.17.0.1"]}
 # Built-in tools only: `ip -j -4 addr` plus /sys/class/net/<name>/device for
 # the real adapters (Linux); `ifconfig` plus `networksetup
 # -listallhardwareports` (macOS). Skips loopback, link-local, multicast,
 # adapters that are down, and Docker/VPN/bridge adapters. "gateway" is the
 # default route's next hop (`route -n get default` / `ip -j -4 route show
 # default`), omitted when there is none or it isn't a usable IPv4 address.
+# "self_addresses" is every IPv4 address the laptop owns, from the same tool
+# output with nothing skipped but loopback and malformed ones: Docker/VPN/
+# bridge adapters (docker0, br-*, veth*, bridge100) and adapters that are
+# down included. The edge's printer guard refuses all of them, so a printer
+# address can never lead back to the laptop.
 # Prints nothing; exits 1 (keeping the old file, which then goes stale) when it
 # can't read or write.
 #
@@ -49,14 +55,15 @@ data_dir() {
 
 utc_now() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 
-# parse_linux: `ip -j -4 addr` on stdin -> "name<TAB>ipv4<TAB>prefix" for each
-# address of an interface that is up (UP flag, operstate not DOWN). A small
-# JSON tokenizer: top array > interface object > addr_info array > address.
+# parse_linux [all]: `ip -j -4 addr` on stdin -> "name<TAB>ipv4<TAB>prefix" for
+# each address of an interface that is up (UP flag, operstate not DOWN), or
+# of every interface with "all". A small JSON tokenizer: top array >
+# interface object > addr_info array > address.
 parse_linux() {
-  awk '
+  awk -v all="$([ "${1:-}" = all ] && echo 1 || echo 0)" '
     { s = s $0 "\n" }
     function flush_iface(   i) {
-      if (name != "" && up && oper != "DOWN")
+      if (name != "" && (all || (up && oper != "DOWN")))
         for (i = 1; i <= n; i++) printf "%s\t%s\n", name, addrs[i]
     }
     END {
@@ -120,11 +127,12 @@ physical_only() {
 # real adapters' device names, one per line.
 hardware_devices() { awk '/^Device: / { print $2 }'; }
 
-# parse_macos "DEVICES": `ifconfig` on stdin -> "name<TAB>ipv4<TAB>prefix" for
-# each IPv4 address of an interface that is UP and not "status: inactive",
-# and (when DEVICES isn't empty) one of DEVICES. Netmasks are hex or dotted.
+# parse_macos "DEVICES" [all]: `ifconfig` on stdin -> "name<TAB>ipv4<TAB>prefix"
+# for each IPv4 address of an interface that is UP and not "status:
+# inactive" (any interface with "all"), and (when DEVICES isn't empty) one of
+# DEVICES. Netmasks are hex or dotted.
 parse_macos() {
-  awk -v devs=" $(printf '%s' "${1:-}" | tr '\n' ' ') " '
+  awk -v devs=" $(printf '%s' "${1:-}" | tr '\n' ' ') " -v all="$([ "${2:-}" = all ] && echo 1 || echo 0)" '
     function bits(v,   b) { b = 0; while (v > 0) { b += v % 2; v = int(v / 2) } return b }
     function prefix(m,   i, p, o, k) {
       p = 0
@@ -136,7 +144,7 @@ parse_macos() {
       return p
     }
     function flush(   i) {
-      if (dev != "" && up && active && (devs ~ /^ *$/ || index(devs, " " dev " ")))
+      if (dev != "" && (all || (up && active)) && (devs ~ /^ *$/ || index(devs, " " dev " ")))
         for (i = 1; i <= n; i++) printf "%s\t%s\n", dev, ips[i]
     }
     /^[^ \t]/ {
@@ -172,14 +180,33 @@ usable_only() {
   '
 }
 
-# to_json STAMP [GATEWAY]: "name<TAB>ipv4<TAB>prefix" lines on stdin -> the
-# file's JSON, with a "gateway" key after the interfaces when GATEWAY isn't empty.
+# self_only: "name<TAB>ipv4<TAB>..." lines on stdin -> each well-formed IPv4
+# address once, one per line, leaving out unspecified, broadcast and loopback.
+self_only() {
+  awk -F '\t' '
+    {
+      if (split($2, o, ".") != 4) next
+      for (i = 1; i <= 4; i++) if (o[i] !~ /^[0-9]+$/ || o[i] + 0 > 255) next
+      if ($2 == "0.0.0.0" || $2 == "255.255.255.255" || o[1] + 0 == 127) next
+      if (!seen[$2]++) print $2
+    }
+  '
+}
+
+# to_json STAMP [GATEWAY [SELF]]: "name<TAB>ipv4<TAB>prefix" lines on stdin ->
+# the file's JSON, with a "gateway" key after the interfaces when GATEWAY
+# isn't empty, then "self_addresses" (SELF split on spaces) when SELF is given.
 to_json() {
-  awk -F '\t' -v stamp="$1" -v gw="${2:-}" '
+  awk -F '\t' -v stamp="$1" -v gw="${2:-}" -v hasself="$([ $# -ge 3 ] && echo 1 || echo 0)" -v selfs="${3:-}" '
     function esc(v) { gsub(/\\/, "\\\\", v); gsub(/"/, "\\\"", v); return v }
     { items = items (NR > 1 ? ", " : "") sprintf("{\"name\": \"%s\", \"ipv4\": \"%s\", \"prefix\": %d}", esc($1), $2, $3) }
     END {
       extra = (gw != "") ? sprintf(", \"gateway\": \"%s\"", esc(gw)) : ""
+      if (hasself) {
+        n = split(selfs, ips, " "); list = ""
+        for (i = 1; i <= n; i++) list = list (list != "" ? ", " : "") sprintf("\"%s\"", esc(ips[i]))
+        extra = extra sprintf(", \"self_addresses\": [%s]", list)
+      }
       printf "{\"updated_at\": \"%s\", \"interfaces\": [%s]%s}\n", stamp, items, extra
     }
   '
@@ -230,23 +257,35 @@ write_host_network() {
   return 1
 }
 
-# collect: this OS's tool output, parsed (fails when the tool does).
-collect() {
-  local raw devices
+# read_tool: this OS's address listing, raw (fails when the tool does).
+read_tool() {
+  if [ "$OS" = Darwin ]; then ifconfig 2>/dev/null; else ip -j -4 addr 2>/dev/null; fi
+}
+
+# lan_list: read_tool's output on stdin, parsed down to the real adapters
+# that are up (usable_only then drops the rest).
+lan_list() {
+  local devices
   if [ "$OS" = Darwin ]; then
-    raw=$(ifconfig 2>/dev/null) || return 1
     devices=$(networksetup -listallhardwareports 2>/dev/null | hardware_devices)
-    printf '%s\n' "$raw" | parse_macos "$devices"
+    parse_macos "$devices"
   else
-    raw=$(ip -j -4 addr 2>/dev/null) || return 1
-    printf '%s\n' "$raw" | parse_linux | physical_only
+    parse_linux | physical_only
   fi
 }
 
+# self_list: read_tool's output on stdin -> every address the laptop owns,
+# space-separated.
+self_list() {
+  if [ "$OS" = Darwin ]; then parse_macos "" all; else parse_linux all; fi | self_only | tr '\n' ' '
+}
+
 main() {
-  local found
-  found=$(collect) || return 1
-  write_host_network "$(data_dir)" "$(printf '%s' "$found" | usable_only | to_json "$(utc_now)" "$(gateway)")"
+  local raw found self
+  raw=$(read_tool) || return 1
+  found=$(printf '%s\n' "$raw" | lan_list)
+  self=$(printf '%s\n' "$raw" | self_list)
+  write_host_network "$(data_dir)" "$(printf '%s' "$found" | usable_only | to_json "$(utc_now)" "$(gateway)" "$self")"
 }
 
 # Called on the last line so a partially written script runs nothing.

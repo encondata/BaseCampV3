@@ -1,22 +1,26 @@
 /**
- * Rows for the RFID connectivity checks (Network check, and the final
- * check): a spinner while a row runs, a green check when it passed, a red
- * X with its detail when it failed, a muted dot until it has run.
+ * Rows for the setup checks (the RFID Network check and final check, and
+ * the Label Station's printer checks): a spinner while a row runs, a green
+ * check when it passed, a red X with its detail when it failed, a muted
+ * dot until it has run.
  */
 
-import type { CheckName, CheckResult } from '../../lib/api';
+import type { CheckName } from '../../lib/api';
 
-interface Props {
-  items: { name: CheckName; label: string }[];
-  results: Partial<Record<CheckName, CheckResult>>;
-  running: CheckName | null;
+/** The part of a check's result a row shows. */
+export interface CheckRowResult { state: 'ok' | 'fail' | 'unknown'; detail?: string }
+
+interface Props<N extends string> {
+  items: { name: N; label: string }[];
+  results: Partial<Record<N, CheckRowResult>>;
+  running: N | null;
 }
 
-export default function CheckList({ items, results, running }: Props) {
+export default function CheckList<N extends string = CheckName>({ items, results, running }: Props<N>) {
   return (
     <ul className="check-list">
       {items.map(({ name, label }) => {
-        const result = results[name];
+        const result: CheckRowResult | undefined = results[name];
         return (
           <li key={name} className="check-row">
             <span className="check-mark">

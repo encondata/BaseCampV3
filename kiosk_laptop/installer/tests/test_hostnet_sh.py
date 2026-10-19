@@ -455,3 +455,61 @@ def test_main_on_linux_drops_virtual_adapters_without_a_device(tmp_path):
 
 def test_sysfs_root_defaults_to_sys_class_net(tmp_path):
     assert hn(tmp_path, 'printf %s "$SYSFS_NET"', env={"KIOSK_SYSFS_NET": ""}).stdout == "/sys/class/net"
+
+
+# ── self_addresses: every IPv4 address the laptop owns ────────────────
+# The edge's printer guard refuses all of them, Docker bridges and down
+# adapters included; "interfaces" stays LAN-only.
+def test_parse_linux_all_keeps_down_and_virtual_interfaces(tmp_path):
+    got = rows(hn(tmp_path, "parse_linux all", stdin=IP_JSON).stdout)
+    names = {g[0] for g in got}
+    assert {"docker0", "br-1a2b3c4d", "veth9f0e1d2", "wlp2s0", "eth1", "enp0s31f6"} <= names
+
+
+def test_parse_macos_all_keeps_inactive_and_down_interfaces(tmp_path):
+    got = rows(hn(tmp_path, 'parse_macos "" all', stdin=IFCONFIG).stdout)
+    names = {g[0] for g in got}
+    assert {"en1", "en5", "bridge0", "en0"} <= names
+
+
+def test_self_only_lists_each_owned_address_once(tmp_path):
+    text = ("docker0\t172.17.0.1\t16\nen0\t10.10.48.57\t24\nen0\t10.10.48.57\t24\n"
+            "lo\t127.0.0.1\t8\nx\t0.0.0.0\t0\nbad\t10.0.0.256\t24\nvEthernet (WSL)\t172.25.160.1\t20\n")
+    assert hn(tmp_path, "self_only", stdin=text).stdout.split() == \
+        ["172.17.0.1", "10.10.48.57", "172.25.160.1"]
+
+
+def test_to_json_with_self_addresses(tmp_path):
+    r = hn(tmp_path, 'to_json 2026-10-01T18:00:00Z 10.10.48.1 "172.17.0.1 10.10.48.57"',
+           stdin="en0\t10.10.48.57\t24\n")
+    data = json.loads(r.stdout)
+    assert data["self_addresses"] == ["172.17.0.1", "10.10.48.57"]
+    assert list(data) == ["updated_at", "interfaces", "gateway", "self_addresses"]
+    assert json.loads(hn(tmp_path, 'to_json 2026-10-01T18:00:00Z "" ""', stdin="").stdout) == \
+        {"updated_at": "2026-10-01T18:00:00Z", "interfaces": [], "self_addresses": []}
+
+
+def test_main_on_linux_lists_docker_bridges_as_self_addresses(tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    ipj = tmp_path / "ip.json"; ipj.write_text(IP_JSON)
+    r = hn(tmp_path, f'OS=Linux; ip() {{ [ "$*" = "-j -4 addr" ] && cat "{ipj}"; }}; main; echo rc=$?',
+           env={"KIOSK_DATA_DIR": str(data), "KIOSK_SYSFS_NET": str(fake_sysfs(tmp_path))})
+    assert r.stdout == "rc=0\n", r.stderr
+    out = json.loads((data / "host-network.json").read_text())
+    assert [i["ipv4"] for i in out["interfaces"]] == ["10.10.48.57", "10.10.50.9", "192.168.42.10"]
+    assert {"172.17.0.1", "172.18.0.1", "172.19.0.5", "10.10.48.57", "192.168.1.20",
+            "192.168.5.5", "10.8.0.2"} <= set(out["self_addresses"])
+    assert "127.0.0.1" not in out["self_addresses"]
+
+
+def test_main_on_macos_lists_every_owned_address(tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    ifc = tmp_path / "ifconfig.txt"; ifc.write_text(IFCONFIG)
+    ports = tmp_path / "ports.txt"; ports.write_text(PORTS)
+    r = hn(tmp_path, f'OS=Darwin; ifconfig() {{ cat "{ifc}"; }}; '
+                     f'networksetup() {{ cat "{ports}"; }}; main; echo rc=$?',
+           env={"KIOSK_DATA_DIR": str(data)})
+    assert r.stdout == "rc=0\n", r.stderr
+    out = json.loads((data / "host-network.json").read_text())
+    assert {"192.168.64.1", "10.99.0.1", "192.168.1.20", "192.168.7.7", "10.8.0.2",
+            "10.10.48.57"} <= set(out["self_addresses"])

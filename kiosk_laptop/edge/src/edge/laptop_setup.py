@@ -3,12 +3,24 @@ phone on the LAN loads the laptop's setup instead of starting blank.
 
 Saved after the cloud accepts `/kiosk/setup`: the fields the kiosk caches
 (move, site and role, scan type with its label, station type) plus, for an
-RFID station, the paired reader's summary (never its token). Wipe clears it."""
+RFID station, the paired reader's summary (never its token). Wipe clears it.
+
+A Label Station's label settings (`label_station`: label kind, printer, DPI
+and offsets) are saved with PUT /edge/label-station once the setup exists.
+They survive setting up again as a Label Station and are dropped by Clear
+Setup or a change of station type; the config document's `label_station`
+section mirrors them (config_sync), marked dirty whenever they change."""
 
 import json
 
 from edge.db import Store, now_iso
 from edge.rfid import alarm, pairing
+
+LABEL_KINDS = ("top", "front")
+PRINTER_TYPES = ("usb", "network")
+MAX_TEXT = 128          # a printer's model or serial
+DPI_RANGE = (1, 1200)
+OFFSET_RANGE = (-9999, 9999)  # dots; the ^LS range
 
 SETUP_FIELDS = ("initiative_id", "initiative_name", "site_id", "site_name", "site_role",
                 "scan_status", "scan_status_label")
@@ -22,12 +34,17 @@ def save(store: Store, result: dict, station_type: str | None) -> dict:
     setup["updated_at"] = now_iso()
     with store.tx() as c:
         row = c.execute("SELECT setup_json FROM laptop_setup WHERE id = 1").fetchone()
-        before = json.loads(row["setup_json"]).get("initiative_id") if row else None
-        if before != setup["initiative_id"]:
+        previous = json.loads(row["setup_json"]) if row else {}
+        if previous.get("initiative_id") != setup["initiative_id"]:
             alarm.clear_state(c)   # the old move's alarms mean nothing on the new one
+        # a Label Station set up again keeps its printer; any other change drops it
+        kept = previous.get("station_type") == "label" and setup["station_type"] == "label"
+        setup["label_station"] = previous.get("label_station") if kept else None
         c.execute("INSERT INTO laptop_setup (id, setup_json, updated_at) VALUES (1, ?, ?) "
                   "ON CONFLICT (id) DO UPDATE SET setup_json = excluded.setup_json, "
                   "updated_at = excluded.updated_at", (json.dumps(setup), setup["updated_at"]))
+        if previous.get("label_station") != setup["label_station"]:
+            _note_config(c)
     return setup
 
 
@@ -40,8 +57,94 @@ def clear(store: Store) -> None:
     """Forget the shared setup (Clear Setup from the portal, or Wipe), and
     with it the setup move's off-move alarms."""
     with store.tx() as c:
+        had = label_station_in(c) is not None
         c.execute("DELETE FROM laptop_setup")
         alarm.clear_state(c)
+        if had:
+            _note_config(c)
+
+
+# ── the Label Station's settings ────────────────────────────────────
+
+class BadLabelStation(ValueError):
+    """A PUT /edge/label-station body that can't be stored; `code` is the 422's."""
+
+    def __init__(self, code: str = "bad_request") -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def _note_config(c) -> None:
+    from edge import config_sync  # config_sync imports this module
+    config_sync.note_label_station(c)
+
+
+def label_station_in(c) -> dict | None:
+    """The stored settings, read on an open transaction."""
+    row = c.execute("SELECT setup_json FROM laptop_setup WHERE id = 1").fetchone()
+    return json.loads(row["setup_json"]).get("label_station") if row else None
+
+
+def label_station(store: Store) -> dict | None:
+    setup = load(store)
+    return setup.get("label_station") if setup else None
+
+
+def _int_in(value, bounds: tuple[int, int]) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) \
+        and bounds[0] <= value <= bounds[1]
+
+
+def _text(value, *, required: bool) -> str | None:
+    if value is None and not required:
+        return None
+    if not isinstance(value, str) or len(value) > MAX_TEXT or (required and not value.strip()):
+        raise BadLabelStation()
+    return value
+
+
+def normalize_label_station(body, printer_ip) -> dict:
+    """The settings as stored: `{label_kind, printer: {type, ip, model,
+    serial}, dpi, offset_x, offset_y}`. `printer_ip(value)` is the transport's
+    address check: a network printer's `ip` must pass it (`bad_printer_ip`),
+    and a USB printer has none. Raises BadLabelStation."""
+    if not isinstance(body, dict) or body.get("label_kind") not in LABEL_KINDS:
+        raise BadLabelStation()
+    printer = body.get("printer")
+    if not isinstance(printer, dict) or printer.get("type") not in PRINTER_TYPES:
+        raise BadLabelStation()
+    ip = printer.get("ip")
+    if printer["type"] == "network":
+        if not printer_ip(ip):
+            raise BadLabelStation("bad_printer_ip")
+    elif ip is not None:
+        raise BadLabelStation()
+    model = _text(printer.get("model"), required=False)
+    serial = _text(printer.get("serial"), required=False)
+    if not _int_in(body.get("dpi"), DPI_RANGE):
+        raise BadLabelStation()
+    for key in ("offset_x", "offset_y"):
+        if not _int_in(body.get(key), OFFSET_RANGE):
+            raise BadLabelStation()
+    return {"label_kind": body["label_kind"],
+            "printer": {"type": printer["type"], "ip": ip, "model": model, "serial": serial},
+            "dpi": body["dpi"], "offset_x": body["offset_x"], "offset_y": body["offset_y"]}
+
+
+def save_label_station(store: Store, settings: dict) -> dict:
+    """Store normalized settings in the shared setup. Raises LookupError when
+    the laptop isn't set up as a Label Station."""
+    with store.tx() as c:
+        row = c.execute("SELECT setup_json FROM laptop_setup WHERE id = 1").fetchone()
+        setup = json.loads(row["setup_json"]) if row else None
+        if setup is None or setup.get("station_type") != "label":
+            raise LookupError("not_label_station")
+        if setup.get("label_station") != settings:
+            setup["label_station"] = settings
+            c.execute("UPDATE laptop_setup SET setup_json = ? WHERE id = 1",
+                      (json.dumps(setup),))
+            _note_config(c)
+    return settings
 
 
 def set_scan_type(store: Store, status, label) -> bool:

@@ -8,6 +8,7 @@ import DataTable from '../../DataTable';
 import type { DeviceDetail } from '../../../lib/api';
 import { subTypeLabel } from '../../../lib/devices';
 import { fullDateTime } from '../../../lib/format';
+import { configFor, labelStationOf } from '../../../lib/kioskConfig';
 import { naturalCompare } from '../../../lib/naturalSort';
 
 const dash = (v: unknown) => (v === null || v === undefined || v === '' ? '—' : String(v));
@@ -26,6 +27,9 @@ export default function KioskDevicesTab({ detail: d }: { detail: DeviceDetail })
   const otherKeys = keys.filter((k) => !printerKeys.includes(k));
   const reader = d.rfid_reader ?? null;
   const versions = Object.entries(reader?.versions ?? {}).sort((a, b) => naturalCompare(a[0], b[0]));
+
+  const station = labelStationOf(configFor(d.config));
+  const dots = (n: unknown) => (typeof n === 'number' ? `${n} dots` : '—');
 
   return (
     <div className="profile-grid">
@@ -79,6 +83,27 @@ export default function KioskDevicesTab({ detail: d }: { detail: DeviceDetail })
           ) : <p className="set-note" style={{ padding: 0 }}>No printer reported.</p>}
         </div>
       </div>
+
+      {station && (
+        <div className="panel">
+          <div className="panel-head"><h3>Label Station</h3></div>
+          <div className="panel-body">
+            <dl className="kv">
+              <dt>Label</dt><dd>{station.label_kind === 'front' ? 'Front' : 'Top'}</dd>
+              <dt>Printer type</dt><dd>{station.printer.type === 'network' ? 'Network' : 'USB'}</dd>
+              <dt>Model</dt><dd>{dash(station.printer.model)}</dd>
+              {station.printer.type === 'network' && (
+                <>
+                  <dt>IP</dt><dd className="mono">{dash(station.printer.ip)}</dd>
+                </>
+              )}
+              <dt>DPI</dt><dd>{typeof station.dpi === 'number' ? `${station.dpi} dpi` : '—'}</dd>
+              <dt>Horizontal offset</dt><dd>{dots(station.offset_x)}</dd>
+              <dt>Vertical offset</dt><dd>{dots(station.offset_y)}</dd>
+            </dl>
+          </div>
+        </div>
+      )}
 
       <div className="panel">
         <div className="panel-head"><h3>Reported device info</h3></div>

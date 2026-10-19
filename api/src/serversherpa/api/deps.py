@@ -143,6 +143,9 @@ READ_ONLY_EXEMPT_PATHS = frozenset({
     # a read made through POST (a batch of asset ids): a freeze mustn't
     # blank every image on every wiki page
     "/wiki/assets/urls",
+    # renders one mock-data test label and stores nothing: a Label Station's
+    # setup must still be able to print a test label during a freeze
+    "/kiosk/labels/test-render",
 })
 READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/auth/me/trusted-browsers/",
                              "/kiosk/pair")

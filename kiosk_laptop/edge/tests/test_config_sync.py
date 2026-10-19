@@ -246,7 +246,8 @@ async def test_first_report_is_unstamped_then_reply_is_applied(app, client, clou
     assert row["applied_version"] == 1 and row["reported_at"] is not None and row["dirty"] == 0
     got = (await client.get("/edge/config", headers=make_session(app))).json()
     assert got["version"] == 2
-    assert json.dumps(got["doc"]) == json.dumps(stored)
+    # the edge owns label_station: a portal copy without it gets the setup's (none)
+    assert json.dumps(got["doc"]) == json.dumps({**stored, "label_station": None})
     assert alarm.settings(app.state.store) == {"mode": "timed", "timed_seconds": 42}
     # the next beat carries no report, only the applied version
     sent = await _person_beat(app, client, cloud, reply=_beat_reply(config_version=1))

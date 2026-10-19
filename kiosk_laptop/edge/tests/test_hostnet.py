@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
+from edge import hostnet
 from edge.app import create_app
 from edge.hostnet import (DynamicHosts, HostInterface, laptop_ip_for, read_host_network,
                           scan_targets)
@@ -155,3 +156,21 @@ def test_read_gateway(tmp_path):
         assert read_gateway(tmp_path, now=NOW) is None
     path.write_text("{nope")
     assert read_gateway(tmp_path, now=NOW) is None
+
+
+def test_read_self_addresses(tmp_path):
+    """Every address the laptop owns (Docker bridges included), stale or not:
+    a stale file still names addresses that were the laptop's."""
+    assert hostnet.read_self_addresses(tmp_path) == frozenset()
+    (tmp_path / hostnet.FILE_NAME).write_text(json.dumps({
+        "updated_at": "2020-01-01T00:00:00Z",
+        "interfaces": [{"name": "en0", "ipv4": "10.0.0.5", "prefix": 24}],
+        "self_addresses": ["172.17.0.1", "10.0.0.5", "not-an-ip", 12, None, "10.0.0.09",
+                           " 1.2.3.4"],
+    }))
+    assert hostnet.read_self_addresses(tmp_path) == frozenset({"172.17.0.1", "10.0.0.5"})
+    (tmp_path / hostnet.FILE_NAME).write_text(json.dumps({
+        "updated_at": "2020-01-01T00:00:00Z", "interfaces": [], "self_addresses": "172.17.0.1"}))
+    assert hostnet.read_self_addresses(tmp_path) == frozenset()
+    (tmp_path / hostnet.FILE_NAME).write_text("{")
+    assert hostnet.read_self_addresses(tmp_path) == frozenset()

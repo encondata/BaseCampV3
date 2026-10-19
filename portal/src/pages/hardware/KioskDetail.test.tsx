@@ -403,3 +403,65 @@ it('a history load failure leaves the source lines off and the History tab shows
   await user.click(screen.getByRole('tab', { name: 'History' }));
   expect(await screen.findByText("Couldn't load the history.")).not.toBeNull();
 });
+
+const LABEL_STATION = {
+  label_kind: 'front',
+  printer: { type: 'network', ip: '10.0.0.40', model: 'ZT411', serial: 'S1' },
+  dpi: 300, offset_x: -12, offset_y: 4,
+};
+
+it('the Devices tab shows a read-only Label Station card from config.label_station', async () => {
+  api.getDevice.mockResolvedValue(detail({ config: { ...structuredClone(CONFIG), label_station: LABEL_STATION } }));
+  renderAt('/hardware/kiosks/k1/devices');
+  const head = await screen.findByRole('heading', { name: 'Label Station' });
+  const card = head.closest('.panel') as HTMLElement;
+  expect(within(card).getByText('Front')).not.toBeNull();
+  expect(within(card).getByText('Network')).not.toBeNull();
+  expect(within(card).getByText('ZT411')).not.toBeNull();
+  expect(within(card).getByText('10.0.0.40')).not.toBeNull();
+  expect(within(card).getByText('300 dpi')).not.toBeNull();
+  expect(within(card).getByText('-12 dots')).not.toBeNull();
+  expect(within(card).getByText('4 dots')).not.toBeNull();
+  expect(within(card).queryByRole('button')).toBeNull();
+});
+
+it('a USB Label Station shows no IP row', async () => {
+  api.getDevice.mockResolvedValue(detail({ config: {
+    ...structuredClone(CONFIG),
+    label_station: { ...LABEL_STATION, label_kind: 'top', printer: { type: 'usb', ip: null, model: 'ZD621', serial: null } },
+  } }));
+  renderAt('/hardware/kiosks/k1/devices');
+  const head = await screen.findByRole('heading', { name: 'Label Station' });
+  const card = head.closest('.panel') as HTMLElement;
+  expect(within(card).getByText('Top')).not.toBeNull();
+  expect(within(card).getByText('USB')).not.toBeNull();
+  expect(within(card).queryByText('IP')).toBeNull();
+});
+
+it('the Label Station card is hidden when the section is absent or null', async () => {
+  renderAt('/hardware/kiosks/k1/devices');
+  await screen.findByText('FX9600');
+  expect(screen.queryByRole('heading', { name: 'Label Station' })).toBeNull();
+  cleanup();
+  api.getDevice.mockResolvedValue(detail({ config: { ...structuredClone(CONFIG), label_station: null } }));
+  renderAt('/hardware/kiosks/k1/devices');
+  await screen.findByText('FX9600');
+  expect(screen.queryByRole('heading', { name: 'Label Station' })).toBeNull();
+});
+
+it('an edit elsewhere sends label_station back untouched', async () => {
+  const user = userEvent.setup();
+  const config = { ...structuredClone(CONFIG), label_station: LABEL_STATION };
+  api.getDevice.mockResolvedValue(detail({ config }));
+  renderAt('/hardware/kiosks/k1/settings');
+  await screen.findByRole('heading', { name: 'Appearance' });
+  await user.click(screen.getByRole('button', { name: 'Edit appearance' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Edit appearance' });
+  const flash = within(dialog).getByLabelText('Flash length (ms)');
+  await user.clear(flash);
+  await user.type(flash, '600');
+  await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.putDeviceConfig).toHaveBeenCalledTimes(1));
+  const sent = api.putDeviceConfig.mock.calls[0][1] as Record<string, unknown>;
+  expect(JSON.stringify(sent.label_station)).toBe(JSON.stringify(LABEL_STATION));
+});

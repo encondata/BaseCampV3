@@ -48,8 +48,14 @@ it('a laptop browser with no setup loads the laptop\'s, then downloads the move 
   expect(syncMock.runSync).toHaveBeenCalledWith('i-1', 'NAP11 Hall Migration');
 });
 
+const LABEL_STATION = {
+  label_kind: 'top', printer: { type: 'usb', ip: null, model: 'ZT411', serial: 'S1' },
+  dpi: 203, offset_x: 0, offset_y: 0,
+};
+
 it('a label station carries no reader', async () => {
-  apiMock.getEdgeSetup.mockResolvedValue({ ...SHARED, station_type: 'label', reader: null });
+  apiMock.getEdgeSetup.mockResolvedValue({
+    ...SHARED, station_type: 'label', reader: null, label_station: LABEL_STATION });
   await hydrateLaptopSetup();
   expect(readKioskSetup()?.stationType).toBe('label');
   expect(readKioskSetup()?.reader).toBeUndefined();
@@ -119,4 +125,28 @@ it('a move-password session takes its own move\'s setup', async () => {
 
 it('a session that is unlocked hydrates as before', async () => {
   expect(await hydrateLaptopSetup(null)).toBe(true);
+});
+
+it('a Label Station still on its printer step (no label_station yet) is not taken as complete', async () => {
+  // Its setup is saved at Site, before steps 4-5: a reload or a second
+  // browser then must not skip the printer step.
+  apiMock.getEdgeSetup.mockResolvedValue({
+    ...SHARED, station_type: 'label', reader: null, label_station: null });
+  expect(await hydrateLaptopSetup()).toBe(false);
+  expect(readKioskSetup()).toBeNull();
+  expect(readSetupState()).toBe('incomplete');
+  expect(syncMock.runSync).not.toHaveBeenCalled();
+});
+
+it('a Label Station with no label_station key at all is not taken as complete either', async () => {
+  apiMock.getEdgeSetup.mockResolvedValue({ ...SHARED, station_type: 'label', reader: null });
+  expect(await hydrateLaptopSetup()).toBe(false);
+  expect(readSetupState()).toBe('incomplete');
+});
+
+it('a Label Station whose printer was saved is taken as complete', async () => {
+  apiMock.getEdgeSetup.mockResolvedValue({
+    ...SHARED, station_type: 'label', reader: null, label_station: LABEL_STATION });
+  expect(await hydrateLaptopSetup()).toBe(true);
+  expect(readSetupState()).toBe('complete');
 });

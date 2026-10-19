@@ -83,9 +83,10 @@ log = logging.getLogger(__name__)
 # it, and every check-in reply may carry the whole thing.
 MAX_STORED_BYTES = 64 * 1024
 MAX_EXTRA_SECTIONS = 16
-# Spec sections other platforms own: passed through, and not counted
-# against MAX_EXTRA_SECTIONS (which bounds truly unknown sections).
-PLATFORM_SECTIONS = frozenset({"android_rfid", "ios"})
+# Spec sections other platforms own (label_station: the laptop's Label
+# Station settings): passed through, and not counted against
+# MAX_EXTRA_SECTIONS (which bounds truly unknown sections).
+PLATFORM_SECTIONS = frozenset({"android_rfid", "ios", "label_station"})
 
 
 class ConfigError(ValueError):

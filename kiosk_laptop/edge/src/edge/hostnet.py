@@ -66,6 +66,32 @@ def read_host_network(data_dir, *, now: datetime | None = None) -> tuple[list[Ho
         return [], False
 
 
+def read_self_addresses(data_dir) -> frozenset[str]:
+    """Every IPv4 address the laptop owns, from the file's `self_addresses`
+    (the host helper lists all of them, Docker bridges and down adapters
+    included; `interfaces` is LAN-only). Stale or not: a stale file still
+    names addresses that were the laptop's. Only exact dotted quads count.
+    Never raises: a missing file or field is empty."""
+    try:
+        data = json.loads((Path(data_dir) / FILE_NAME).read_text())
+        values = data.get("self_addresses")
+        if not isinstance(values, list):
+            return frozenset()
+        found = set()
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            try:
+                ip = ipaddress.IPv4Address(value)
+            except ValueError:
+                continue
+            if str(ip) == value:
+                found.add(value)
+        return frozenset(found)
+    except Exception:
+        return frozenset()
+
+
 def read_gateway(data_dir, *, now: datetime | None = None) -> str | None:
     """The default gateway from a fresh host-network.json, or None. Never raises."""
     try:

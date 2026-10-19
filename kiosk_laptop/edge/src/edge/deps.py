@@ -1,6 +1,8 @@
 """Request helpers shared by the edge routes."""
 
-from fastapi import HTTPException, Request
+import json
+
+from fastapi import Depends, HTTPException, Request
 
 from edge import sessions
 from edge.sessions import EdgeSession
@@ -31,6 +33,53 @@ def require_session(request: Request) -> EdgeSession:
     if session is None:
         raise err(401, "not_authenticated")
     return session
+
+
+def online(session: EdgeSession = Depends(require_session)) -> EdgeSession:
+    """A session made while the cloud was reachable: work that needs the
+    cloud refuses an offline sign-in (503 edge_offline)."""
+    if session.offline:
+        raise err(503, "edge_offline")
+    return session
+
+
+class TooLarge(Exception):
+    pass
+
+
+async def _capped(request: Request, max_bytes: int) -> bytes:
+    length = request.headers.get("content-length")
+    if length is not None and length.isdigit() and int(length) > max_bytes:
+        raise TooLarge()
+    out = bytearray()
+    async for chunk in request.stream():
+        out += chunk
+        if len(out) > max_bytes:
+            raise TooLarge()
+    return bytes(out)
+
+
+async def json_object(request: Request, *, empty_ok: bool = False,
+                      max_bytes: int | None = None) -> dict:
+    """The body as a JSON object; anything else is 422 bad_request. With
+    `max_bytes`, a larger body (by Content-Length, or while reading) is 413
+    request_too_large before it is parsed."""
+    if max_bytes is None:
+        raw = await request.body()
+    else:
+        try:
+            raw = await _capped(request, max_bytes)
+        except TooLarge:
+            raise err(413, "request_too_large") from None
+    if empty_ok and not raw.strip():
+        return {}
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        raise err(422, "bad_request") from None
+    if not isinstance(body, dict):
+        raise err(422, "bad_request")
+    return body
 
 
 def require_admin(request: Request) -> EdgeSession:

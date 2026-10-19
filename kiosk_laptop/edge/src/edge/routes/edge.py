@@ -1,13 +1,13 @@
 """/edge/* — the laptop's own endpoints: identity, status for the footer and
 the Edge settings tab, and the operator/admin actions."""
 
-import json
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from edge import config_sync, laptop_setup, outbox
 from edge.deps import current_session, err, require_admin, require_session
+from edge.deps import json_object as _json_object
 from edge.identity import rename
 from edge.rfid import uploader
 from edge.rfid.tagreads import note_cache_write
@@ -20,20 +20,6 @@ AUTH_TABLES = ("cloud_sessions", "offline_logins", "edge_sessions", "login_failu
 MOVE_TABLES = ("cache", "outbox", "laptop_setup", "rfid_events",
               "raw_tag_reads", "rfid_tags_seen", "station_key", "pending_rfid_scans",
               "rfid_unmatched", "alarm_open", "alarm_last")
-
-
-async def _json_object(request: Request, *, empty_ok: bool = False) -> dict:
-    """The body as a JSON object; anything else is 422 bad_request."""
-    raw = await request.body()
-    if empty_ok and not raw.strip():
-        return {}
-    try:
-        body = json.loads(raw)
-    except ValueError:
-        raise err(422, "bad_request") from None
-    if not isinstance(body, dict):
-        raise err(422, "bad_request")
-    return body
 
 
 def _status(request: Request, session: EdgeSession | None) -> dict:
@@ -130,6 +116,7 @@ async def wipe(request: Request, _: EdgeSession = Depends(require_admin)) -> JSO
     if pending and body.get("confirm") != "WIPE":
         raise err(409, "outbox_not_empty", pending=pending)
     with st.store.tx() as c:
+        had_label_station = laptop_setup.label_station_in(c) is not None
         for table in AUTH_TABLES + MOVE_TABLES:
             c.execute(f"DELETE FROM {table}")
         # the processor starts after whatever raw reads remain (none: ids keep counting up)
@@ -138,6 +125,8 @@ async def wipe(request: Request, _: EdgeSession = Depends(require_admin)) -> JSO
                   "ON CONFLICT (id) DO UPDATE SET last_raw_id = excluded.last_raw_id")
         c.execute("UPDATE sync_meta SET initiative_id = NULL, actor_person_id = NULL, "
                   "synced_at = NULL, last_error = NULL WHERE id = 1")
+        if had_label_station:  # the config's mirror drops it too
+            config_sync.note_label_station(c)
     note_cache_write()  # the cache table was emptied: drop memoized tag indexes
     response = JSONResponse({"cleared_move_data": True})
     response.delete_cookie("ss_refresh", path="/auth")
