@@ -58,7 +58,8 @@ def _fingerprint(parts: list) -> str:
     return hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
 
 
-def _cached(store: Store, key: str) -> dict | None:
+def cached(store: Store, key: str) -> dict | None:
+    """A cached sync body (a JSON object), or None."""
     row = store.one("SELECT body FROM cache WHERE key = ?", (key,))
     if row is None:
         return None
@@ -135,8 +136,8 @@ def build_plan(store: Store, *, label_kind: str | None = None,
     if label_kind is None or dpi is None:
         return None
     paths = sync_paths(initiative)
-    assets_body = _cached(store, next(p for p in paths if p.startswith("/kiosk/sync/assets?")))
-    templates_body = _cached(
+    assets_body = cached(store, next(p for p in paths if p.startswith("/kiosk/sync/assets?")))
+    templates_body = cached(
         store, next(p for p in paths if p.startswith("/kiosk/sync/label-templates?")))
 
     by_id: dict[str, dict] = {}

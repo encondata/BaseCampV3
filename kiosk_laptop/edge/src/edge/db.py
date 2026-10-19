@@ -14,6 +14,12 @@ from pathlib import Path
 # rollback an older image keeps running on a database a newer image already
 # migrated, so nothing an older image reads or writes may be renamed,
 # dropped or tightened, and `schema_version` never goes down.
+#
+# One sanctioned exception: the step that rebuilds pending_rfid_scans (Label
+# Station Labeled scans) to LOOSEN `raw_read_id` from NOT NULL to nullable,
+# which SQLite can only do by copying the table. It keeps every column an
+# older image uses, with the same names and meaning; only a constraint got
+# looser. Don't take it as precedent: new steps stay additive.
 SCHEMA_STEPS: list[str] = [
     """
     CREATE TABLE edge_sessions (
