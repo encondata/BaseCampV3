@@ -89,6 +89,12 @@ def _skipped(resp) -> bool:
         return False
 
 
+def _join(*codes: str | None) -> str | None:
+    """Distinct non-empty error codes, comma-joined (None when there are none)."""
+    seen = list(dict.fromkeys(c for c in codes if c))
+    return ", ".join(seen) or None
+
+
 class Syncer:
     def __init__(self, store: Store, upstream: Upstream, serial_getter: Callable[[], str]) -> None:
         self.store = store
@@ -129,7 +135,7 @@ class Syncer:
                     pulled.append((path, empty))
                     continue
                 if resp.status_code != 200 and _soft(path):
-                    error = f"label_templates_http_{resp.status_code}"
+                    error = _join(error, f"label_templates_http_{resp.status_code}")
                     continue
                 if resp.status_code != 200:
                     return self._error(f"http_{resp.status_code}:{path}")
@@ -146,9 +152,9 @@ class Syncer:
                              json.dumps(m["session"]), now_iso(), m.get("version"))
                             for m in data.get("moves", [])]
             except (ValueError, KeyError, TypeError, AttributeError):
-                error = error or "bad_move_passwords"
+                error = _join(error, "bad_move_passwords")
         elif moves is not None and not _skipped(moves):
-            error = error or f"move_passwords_http_{moves.status_code}"
+            error = _join(error, f"move_passwords_http_{moves.status_code}")
         with self.store.tx() as c:
             for path, body in pulled:
                 c.execute("INSERT INTO cache (key, status, body, stored_at) VALUES (?, 200, ?, ?) "
@@ -182,7 +188,7 @@ class Syncer:
                     pulled.append((key, empty))
                     continue
                 if resp.status_code != 200 and _soft(key):
-                    error = f"label_templates_http_{resp.status_code}"
+                    error = _join(error, f"label_templates_http_{resp.status_code}")
                     continue
                 if resp.status_code != 200:
                     return self._error(f"http_{resp.status_code}:{path.split('?', 1)[0]}")

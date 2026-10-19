@@ -29,7 +29,7 @@ import {
   ApiError, fetchAssetsSync, fetchContainersSync, fetchLabelTemplatesSync, fetchPeopleSync,
   fetchTrucksSync,
 } from './api';
-import { count, readMeta, replaceAll, replaceAllMulti } from './localDb';
+import { count, readMeta, replaceAllMulti } from './localDb';
 
 export type SyncPhase = 'idle' | 'running' | 'done' | 'error';
 
@@ -140,13 +140,6 @@ export async function runSync(initiativeId: string, initiativeName: string): Pro
   }
 
   if (myRun !== currentRun) return;
-  let previousMove: unknown = null;
-  try {
-    previousMove = (await readMeta(META_KEY))?.initiativeId ?? null;
-  } catch {
-    /* unreadable here means the write below fails too and reports 'storage' */
-  }
-  if (myRun !== currentRun) return;
   try {
     const syncedAt = new Date().toISOString();
     // assets, people, containers, trucks, and the meta pointer land in
@@ -176,7 +169,7 @@ export async function runSync(initiativeId: string, initiativeName: string): Pro
       count('assets'), count('people'), count('containers'), count('trucks'),
     ]);
     if (myRun !== currentRun) return;
-    await syncLabelTemplates(initiativeId, previousMove !== initiativeId, () => myRun === currentRun);
+    await syncLabelTemplates(initiativeId, () => myRun === currentRun);
     if (myRun !== currentRun) return;
     hydrated = true;
     setStatus({
@@ -189,26 +182,39 @@ export async function runSync(initiativeId: string, initiativeName: string): Pro
   }
 }
 
+/** The meta row recording which move the stored template set belongs to. */
+export const LABEL_TEMPLATES_META_KEY = 'label_templates';
+
 /**
  * The soft step: fetch the move's label template set and replace the
  * stored one. Never throws — a fetch or storage failure is logged and the
  * previous set stays, so templates can never fail the move sync. The one
- * exception is a sync that switched moves (`moveChanged`): the previous
- * set belongs to the other move, so it is dropped rather than kept.
- * `current` guards against a superseded run writing over a newer one.
+ * exception is a set that belongs to another move: it is judged by the
+ * set's own `label_templates` meta row (written in the same transaction
+ * as the rows), not the `sync` row, which can run ahead of it after a
+ * crash between the two writes. `current` guards against a superseded run
+ * writing over a newer one.
  */
 async function syncLabelTemplates(
-  initiativeId: string, moveChanged: boolean, current: () => boolean,
+  initiativeId: string, current: () => boolean,
 ): Promise<void> {
   try {
     const body = await fetchLabelTemplatesSync(initiativeId);
     if (!current()) return;
-    await replaceAll('label_templates', body.templates);
+    await replaceAllMulti(
+      [{ store: 'label_templates', rows: body.templates }],
+      { key: LABEL_TEMPLATES_META_KEY, value: { initiativeId } },
+    );
   } catch (err) {
     console.warn('label template sync failed; the move sync still counts', err);
-    if (!moveChanged || !current()) return;
+    if (!current()) return;
     try {
-      await replaceAll('label_templates', []);
+      const owner = (await readMeta(LABEL_TEMPLATES_META_KEY))?.initiativeId;
+      if (owner === initiativeId) return;
+      await replaceAllMulti(
+        [{ store: 'label_templates', rows: [] }],
+        { key: LABEL_TEMPLATES_META_KEY, value: { initiativeId } },
+      );
     } catch (clearErr) {
       console.warn('could not drop the previous move\'s label templates', clearErr);
     }

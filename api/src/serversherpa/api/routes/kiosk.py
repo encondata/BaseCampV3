@@ -1123,7 +1123,11 @@ async def _label_templates_body(
             # label runner): it is listed with no code and the reason.
             logger.warning("kiosk label template %s could not convert: %s",
                            template.id, type(exc).__name__, exc_info=True)
-            code, error = "", str(exc) or type(exc).__name__
+            # Only a ValueError carries a deliberate, safe message; anything
+            # else may hold internals, so just its class name goes out.
+            code = ""
+            error = ((str(exc) or type(exc).__name__) if isinstance(exc, ValueError)
+                     else type(exc).__name__)
         templates.append(KioskLabelTemplateOut(
             id=template.id, name=template.name, label_type=template.label_type,
             size_key=template.size_key, dpi_key=template.dpi_key,

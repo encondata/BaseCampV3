@@ -24,7 +24,8 @@ vi.mock('./api', async (importOriginal) => {
 });
 
 import { ApiError } from './api';
-import { clearDb, closeDb, count, getAll, readMeta, replaceAll } from './localDb';
+import { clearDb, closeDb, count, getAll, readMeta, replaceAll, writeMeta } from './localDb';
+import { clearKioskSetup, writeKioskSetup } from './kioskSetup';
 import { getLabelTemplates } from './labelTemplates';
 import { readSyncStatus, resetSyncStatus, runSync } from './sync';
 
@@ -327,6 +328,37 @@ it('a failed template fetch for a different move drops the previous move\'s set'
   expect(readSyncStatus().phase).toBe('done');
   expect(await getLabelTemplates()).toEqual([]);         // never Move A's templates on Move B
   warn.mockRestore();
+});
+
+it('a stale sync meta row never keeps another move\'s templates', async () => {
+  mockMove();
+  await runSync('i-1', 'Move A');
+  // a crash after the move commit but before the template write
+  await writeMeta('sync', { initiativeId: 'i-2', initiativeName: 'Move B' });
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  apiMock.fetchLabelTemplatesSync.mockRejectedValue(new ApiError(500, 'server_error'));
+
+  await runSync('i-2', 'Move B');
+
+  expect(await getAll('label_templates')).toEqual([]);
+  warn.mockRestore();
+});
+
+it('getLabelTemplates is empty when the set belongs to another move than the setup', async () => {
+  mockMove();
+  await runSync('i-1', 'Move A');
+  const setup = {
+    initiativeName: 'x', siteId: 's', siteName: 's', siteRole: 'source' as const,
+    scanStatus: 'x', scanLabel: 'x',
+  };
+  try {
+    writeKioskSetup({ ...setup, initiativeId: 'i-2' });
+    expect(await getLabelTemplates()).toEqual([]);
+    writeKioskSetup({ ...setup, initiativeId: 'i-1' });
+    expect((await getLabelTemplates()).length).toBe(2);
+  } finally {
+    clearKioskSetup();
+  }
 });
 
 it('a second sync replaces the set, removing a template that no longer matches', async () => {

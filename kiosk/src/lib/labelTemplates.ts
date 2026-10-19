@@ -7,11 +7,18 @@
 import { sortNatural } from '@portal/lib/naturalSort';
 
 import type { KioskLabelTemplate } from './api';
-import { getAll } from './localDb';
+import { readKioskSetup } from './kioskSetup';
+import { getAll, readMeta } from './localDb';
 
 /** Every stored template, in natural name order (the order the API sends;
- *  IndexedDB hands rows back by id). Rejects when the database can't be
- *  opened, like the other `localDb` reads. */
+ *  IndexedDB hands rows back by id). Empty when the stored set belongs to
+ *  a move other than the one the kiosk is set up for. Rejects when the
+ *  database can't be opened, like the other `localDb` reads. */
 export async function getLabelTemplates(): Promise<KioskLabelTemplate[]> {
+  const setup = readKioskSetup();
+  if (setup) {
+    const owner = (await readMeta('label_templates'))?.initiativeId;
+    if (owner !== undefined && owner !== setup.initiativeId) return [];
+  }
   return sortNatural(await getAll<KioskLabelTemplate>('label_templates'), (t) => t.name);
 }

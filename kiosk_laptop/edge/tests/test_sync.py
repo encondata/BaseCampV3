@@ -401,3 +401,14 @@ async def test_station_failed_label_templates_keep_old_set(app, cloud):
     assert store.one("SELECT body FROM cache WHERE key = ?", (LABEL_TEMPLATES,))["body"] == "old-set"
     assets = store.one("SELECT body FROM cache WHERE key = ?", (_person_key("assets"),))["body"]
     assert json.loads(assets) == {"station": "assets"}
+
+
+async def test_label_template_and_move_password_errors_are_both_reported(app, cloud):
+    _as_person(app)
+    for path in sync_paths("m-1"):
+        cloud.get(path).respond(200, json={"path": path})
+    cloud.get(LABEL_TEMPLATES).respond(500)
+    cloud.get(url__regex=r"/kiosk/edge/move-passwords.*").respond(
+        200, json={"moves": [{"initiative_id": "m-1"}]})
+    meta = await app.state.syncer.run()
+    assert meta["last_error"] == "label_templates_http_500, bad_move_passwords"

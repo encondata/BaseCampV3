@@ -183,7 +183,7 @@ async def test_unexpected_conversion_failure_never_fails_the_sync(
 
     def flaky(template, size_meta, dpi_meta):
         if template.name == "Front Boom":
-            raise KeyError("dots")
+            raise KeyError("secret detail")
         return real(template, size_meta, dpi_meta)
 
     monkeypatch.setattr(kiosk_routes, "template_code", flaky)
@@ -191,7 +191,9 @@ async def test_unexpected_conversion_failure_never_fails_the_sync(
         r = await _get(client, hdrs, move.id)
     assert r.status_code == 200, r.text
     rows = _by_name(r.json())
-    assert rows["Front Boom"]["code"] == "" and rows["Front Boom"]["error"]
+    assert rows["Front Boom"]["code"] == ""
+    assert rows["Front Boom"]["error"] == "KeyError"      # class name, never the message
+    assert "secret detail" not in r.text
     assert rows["Front Fine"]["error"] is None
     assert str(boom_id) in caplog.text and "KeyError" in caplog.text
 
