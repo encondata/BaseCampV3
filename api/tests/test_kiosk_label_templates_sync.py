@@ -116,8 +116,9 @@ async def test_selection_rules_reasons_and_order(client, db, seeded_user):
     assert names == sorted(names, key=natural_key)
     got = {x["name"]: x["reasons"] for x in body["templates"]}
     assert got == {
-        "Front 4x2 203dpi": ["front"],
+        "Front 4x2 203dpi": ["front", "global"],
         "Front Elsewhere": ["front"],
+        "Unlinked Top": ["global"],
         "Front At Destination": ["destination_site", "front"],
         "Dest Top": ["destination_site"],
         "Src Rail": ["source_site"],
@@ -221,7 +222,7 @@ async def test_fallback_name_match_ignores_case(client, db, seeded_user):
     assert rows["GENERIC RACK AND ru"]["reasons"] == ["fallback", "generic"]
 
 
-async def test_no_fallback_when_destination_has_a_template(client, db, seeded_user):
+async def test_generic_family_always_sent_even_with_destination_template(client, db, seeded_user):
     hdrs = await login(client)
     move, _src, dst, _ = await _move(db)
     rack = _tpl("Generic Rack and RU", label_type="rail")
@@ -231,7 +232,8 @@ async def test_no_fallback_when_destination_has_a_template(client, db, seeded_us
     await _link(db, dest_front, dst)
     await db.commit()
     rows = _by_name((await _get(client, hdrs, move.id)).json())
-    assert rows["Generic Rack and RU"]["reasons"] == ["generic"]
+    # the Label Station's pick order ends on it, so it is sent regardless
+    assert rows["Generic Rack and RU"]["reasons"] == ["fallback", "generic"]
 
 
 async def test_fallback_applies_when_move_has_no_destination(client, db, seeded_user):
@@ -246,6 +248,49 @@ async def test_fallback_applies_when_move_has_no_destination(client, db, seeded_
     rows = _by_name((await _get(client, hdrs, move.id)).json())
     assert rows["Generic Rack and RU"]["reasons"] == ["fallback", "generic"]
     assert rows["Src Top"]["reasons"] == ["source_site"]
+
+
+async def test_global_top_and_front_are_sent(client, db, seeded_user):
+    hdrs = await login(client)
+    move, _src, _dst, other = await _move(db)
+    top, front, rail, linked = (_tpl("Asset Top"), _tpl("Asset Front", label_type="front"),
+                                _tpl("Plain Rail", label_type="rail"),
+                                _tpl("Linked Elsewhere Top"))
+    db.add_all([top, front, rail, linked])
+    await db.flush()
+    await _link(db, linked, other)
+    await db.commit()
+    rows = _by_name((await _get(client, hdrs, move.id)).json())
+    assert "global" in rows["Asset Top"]["reasons"]
+    assert rows["Asset Top"]["scope"] == "global"
+    assert rows["Asset Front"]["reasons"] == ["front", "global"]
+    assert "Plain Rail" not in rows and "Linked Elsewhere Top" not in rows
+
+
+async def test_design_and_kind_and_scope(client, db, seeded_user):
+    hdrs = await login(client)
+    move, src, dst, other = await _move(db)
+    design = _tpl("Design Both", kind="design", code=None, design=DESIGN)
+    code = _tpl("Code Dest")
+    srcs = _tpl("Code Src")
+    away = _tpl("Front Away", label_type="front")
+    db.add_all([design, code, srcs, away])
+    await db.flush()
+    await _link(db, design, src)
+    await _link(db, design, dst)
+    await _link(db, code, dst)
+    await _link(db, code, other)
+    await _link(db, srcs, src)
+    await _link(db, away, other)
+    await db.commit()
+    rows = _by_name((await _get(client, hdrs, move.id)).json())
+    assert rows["Design Both"]["kind"] == "design"
+    assert rows["Design Both"]["design"] == DESIGN
+    assert rows["Design Both"]["scope"] == "both"
+    assert rows["Code Dest"]["kind"] == "code" and rows["Code Dest"]["design"] is None
+    assert rows["Code Dest"]["scope"] == "destination"
+    assert rows["Code Src"]["scope"] == "source"
+    assert rows["Front Away"]["scope"] == "other"
 
 
 async def test_no_source_site_matches_nothing_for_rule_three(client, db, seeded_user):
@@ -302,7 +347,7 @@ async def test_code_template_is_returned_verbatim(client, db, seeded_user):
     assert set(row) == {
         "id", "name", "family", "label_type", "size_key", "dpi_key", "language_key", "version",
         "updated_at", "move_site_names", "reasons", "code", "generation_rules",
-        "width_in", "height_in", "dots", "error"}
+        "width_in", "height_in", "dots", "error", "kind", "design", "scope"}
     assert (row["size_key"], row["language_key"], row["version"]) == ("4x2", "zpl", 1)
 
 
@@ -502,5 +547,5 @@ async def test_fallback_matches_dpi_variants_and_lists_their_family(client, db, 
     await db.commit()
     rows = _by_name((await _get(client, hdrs, move.id)).json())
     for name in ("Generic Rack and RU - 203DPI", "Generic Rack and RU - 300DPI"):
-        assert rows[name]["reasons"] == ["fallback", "generic"]
+        assert rows[name]["reasons"] == ["fallback", "generic", "global"]
         assert rows[name]["family"] == "Generic Rack and RU"

@@ -33,7 +33,7 @@ from serversherpa.api.routes.auth import (
 from serversherpa.api.routes.labels import vocab_usage as _vocab_usage
 from serversherpa.api.schemas import (
     HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut,
-    KioskClientAssetOut, KioskClientAssetsSyncOut, KioskClockInIn,
+    KioskLabelContextOut, KioskClientAssetOut, KioskClientAssetsSyncOut, KioskClockInIn,
     KioskClockOutIn, KioskContainerAssetIn, KioskContainerAssetOut,
     KioskContainerAssetRow, KioskContainerOut, KioskContainerRef,
     KioskContainersSyncOut, KioskContainerStateOut, KioskEdgeMovePassword,
@@ -87,6 +87,7 @@ from serversherpa.services.kiosk_registration import (  # noqa: F401 (re-exporte
 )
 from serversherpa.services.password_policy import load_policy
 from serversherpa.services.storage import delete_object, get_object, presign_get, put_object
+from serversherpa.services.timezone import stored_day
 
 router = APIRouter(prefix="/kiosk", tags=["kiosk"])
 logger = logging.getLogger("serversherpa.api.routes.kiosk")
@@ -923,6 +924,11 @@ def _ru_text(ru) -> str | None:
     return format(ru.normalize(), "f")
 
 
+def _ru_raw(ru) -> str | None:
+    """The stored RU exactly ("14.50"), so the edge rebuilds the Decimal."""
+    return None if ru is None else str(ru)
+
+
 async def _assets_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskAssetsSyncOut:
     initiative = await db.get(Initiative, initiative_id)
     if initiative is None:
@@ -974,20 +980,29 @@ async def _assets_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskAsset
         make_model = make_model_text(make or "", model_name or "")
         label = placeholder_values(asset_row, initiative, sites, catalog_keys)
         assets.append(KioskAssetOut(
-            id=asset.id, asset_id=asset_id, name=asset.name,
+            id=asset.id, asset_id=asset_id, legacy_id=asset.legacy_id, name=asset.name,
             rfid=asset.rfid_tag, serial_number=asset.serial_number,
             make=make, model=model_name, make_model=make_model,
             container_id=packed_in.get(asset.id),
             source_rack=ia.source_rack, source_ru=_ru_text(ia.source_ru),
+            source_ru_raw=_ru_raw(ia.source_ru),
             source_position=ia.source_position, source_pod=ia.source_pod,
             destination_rack=ia.destination_rack, destination_ru=_ru_text(ia.destination_ru),
+            destination_ru_raw=_ru_raw(ia.destination_ru),
             destination_position=ia.destination_position, destination_pod=ia.destination_pod,
             priority_wave=ia.priority_wave, disposition=ia.disposition,
             label=label))
 
     return KioskAssetsSyncOut(
         initiative_id=initiative.id, initiative_name=initiative.name,
-        generated_at=datetime.now(UTC), assets=assets)
+        generated_at=datetime.now(UTC), assets=assets,
+        label_context=KioskLabelContextOut(
+            move_name=initiative.name,
+            move_day=(stored_day(initiative.scheduled_start)
+                      if initiative.scheduled_start is not None else None),
+            source_site=origin.name if origin else None,
+            destination_site=destination.name if destination else None,
+            catalog_keys=catalog_keys))
 
 
 @router.get("/sync/people", response_model=KioskPeopleSyncOut)
@@ -1128,7 +1143,7 @@ async def _label_templates_body(
         select(LabelVocab).where(LabelVocab.kind.in_(("size", "dpi"))))).scalars()}
 
     templates: list[KioskLabelTemplateOut] = []
-    for template, reasons, move_site_names in picked:
+    for template, reasons, move_site_names, scope in picked:
         size_meta = vocab.get(("size", template.size_key), {})
         dpi_meta = vocab.get(("dpi", template.dpi_key), {})
         try:
@@ -1152,7 +1167,10 @@ async def _label_templates_body(
             reasons=sorted(reasons), code=code,
             generation_rules=template.generation_rules or {},
             width_in=size_meta.get("width_in"), height_in=size_meta.get("height_in"),
-            dots=dpi_meta.get("dots"), error=error))
+            dots=dpi_meta.get("dots"), error=error,
+            kind=template.kind,
+            design=(template.design if template.kind == "design" else None),
+            scope=scope))
 
     return KioskLabelTemplatesSyncOut(
         initiative_id=initiative.id, generated_at=datetime.now(UTC), templates=templates)
@@ -1223,7 +1241,7 @@ async def _move_font_names(db: AsyncSession, initiative: Initiative) -> set[str]
     sync lists it with its error."""
     vocab = await _label_vocab(db)
     names: set[str] = set()
-    for template, _reasons, _sites in await move_template_set(db, initiative):
+    for template, _reasons, _sites, _scope in await move_template_set(db, initiative):
         try:
             code = template_code(template, vocab.get(("size", template.size_key), {}),
                                  vocab.get(("dpi", template.dpi_key), {}))
@@ -1297,7 +1315,7 @@ async def kiosk_label_test_render(
     _require_move(actor, body.initiative_id)
     initiative = await _label_move(db, body.initiative_id)
     template: LabelTemplate | None = next(
-        (t for t, _r, _s in await move_template_set(db, initiative) if t.id == body.template_id),
+        (t for t, _r, _s, _sc in await move_template_set(db, initiative) if t.id == body.template_id),
         None)
     if template is None:
         raise _err(404, "template_not_found")

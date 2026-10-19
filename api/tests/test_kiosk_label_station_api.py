@@ -19,7 +19,7 @@ from serversherpa.labels.generate.engine import render_label
 from serversherpa.labels.template_fonts import fonts_used
 from serversherpa.services import move_password as mp_svc
 from tests.test_auth_kiosk_login import _client_viewer
-from tests.test_kiosk_label_templates_sync import DESIGN, SIZE_META, _move, _tpl
+from tests.test_kiosk_label_templates_sync import DESIGN, SIZE_META, _link, _move, _tpl
 from tests.test_kiosk_station_key import PW
 from tests.test_sites_api import login
 
@@ -83,13 +83,13 @@ async def _content(client, hdrs, font_id, initiative_id):
 
 async def test_font_list_returns_library_fonts_and_missing_names(client, db, seeded_user):
     hdrs = await login(client)
-    move, *_ = await _move(db)
+    move, _src, _dst, other = await _move(db)
     db.add_all([
         _tpl("Front Fonts", label_type="front",
              code="^XA^A@N,25,,E:AAA.TTF^FDx^FS^CWQ,E:BBB.TTF^A@N,9,9,E:GONE.TTF^XZ"),
         _tpl("Generic Missing", code="^XA^A@N,25,,E:NOPE.TTF^FDx^FS^XZ"),
         # outside the move's set: its font never shows up
-        _tpl("Unlinked Top", code="^XA^A@N,25,,E:OTHER.TTF^XZ"),
+        unlinked := _tpl("Unlinked Top", code="^XA^A@N,25,,E:OTHER.TTF^XZ"),
         _tpl("Inactive Front", label_type="front", is_active=False,
              code="^XA^A@N,25,,E:INACT.TTF^XZ"),
     ])
@@ -98,6 +98,8 @@ async def test_font_list_returns_library_fonts_and_missing_names(client, db, see
     await _font(db, "GONE.TTF", deleted=True)
     await _font(db, "OTHER.TTF")
     await _font(db, "INACT.TTF")
+    await db.flush()
+    await _link(db, unlinked, other)
     await db.commit()
 
     r = await _fonts(client, hdrs, move.id)
@@ -124,14 +126,16 @@ async def test_font_list_for_a_move_without_fonts_is_empty(client, db, seeded_us
 async def test_content_streams_a_move_font_and_404s_any_other(
         client, db, seeded_user, monkeypatch):
     hdrs = await login(client)
-    move, *_ = await _move(db)
+    move, _src, _dst, away = await _move(db)
     db.add_all([
         _tpl("Front Fonts", label_type="front", code="^XA^A@N,25,,E:AAA.TTF^XZ"),
-        _tpl("Unlinked Top", code="^XA^A@N,25,,E:OTHER.TTF^XZ"),
+        unlinked := _tpl("Unlinked Top", code="^XA^A@N,25,,E:OTHER.TTF^XZ"),
     ])
     aaa = await _font(db, "AAA.TTF")
     other = await _font(db, "OTHER.TTF", b"other-bytes")
     gone = await _font(db, "AAA.TTF", b"old", deleted=True)
+    await db.flush()
+    await _link(db, unlinked, away)
     await db.commit()
     _fake_storage(monkeypatch, {"label-fonts/AAA.TTF": TTF,
                                 "label-fonts/OTHER.TTF": b"other-bytes"})
@@ -304,10 +308,12 @@ async def test_test_render_dpi_mismatch_is_422(client, db, seeded_user):
 
 async def test_test_render_inactive_or_outside_template_is_404(client, db, seeded_user):
     hdrs = await login(client)
-    move, *_ = await _move(db)
+    move, _src, _dst, other = await _move(db)
     inactive = _tpl("Front Inactive", label_type="front", is_active=False)
     outside = _tpl("Unlinked Top")
     db.add_all([inactive, outside])
+    await db.flush()
+    await _link(db, outside, other)
     await db.commit()
     for template_id in (inactive.id, outside.id, uuid.uuid4()):
         r = await client.post(RENDER_URL, headers=hdrs, json={

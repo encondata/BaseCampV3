@@ -3185,6 +3185,7 @@ class KioskAssetOut(BaseModel):
 
     id: uuid.UUID
     asset_id: str            # Asset.legacy_id, the human Asset ID ("" if unset)
+    legacy_id: int | None = None
     name: str | None = None
     rfid: str | None = None
     serial_number: str | None = None
@@ -3197,10 +3198,12 @@ class KioskAssetOut(BaseModel):
     # stored number as text ("14", "14.5"), without the label's "U" prefix.
     source_rack: str | None = None
     source_ru: str | None = None
+    source_ru_raw: str | None = None        # str(Decimal), e.g. "14.50"
     source_position: str | None = None
     source_pod: str | None = None
     destination_rack: str | None = None
     destination_ru: str | None = None
+    destination_ru_raw: str | None = None
     destination_position: str | None = None
     destination_pod: str | None = None
     priority_wave: str | None = None
@@ -3208,11 +3211,22 @@ class KioskAssetOut(BaseModel):
     label: dict[str, str]
 
 
+class KioskLabelContextOut(BaseModel):
+    """The move-level inputs an edge needs to rebuild each asset's label
+    values (labels/label_values.py `LabelMove`) plus the active catalog keys."""
+    move_name: str | None = None
+    move_day: date | None = None
+    source_site: str | None = None
+    destination_site: str | None = None
+    catalog_keys: list[str]
+
+
 class KioskAssetsSyncOut(BaseModel):
     initiative_id: uuid.UUID
     initiative_name: str
     generated_at: datetime
     assets: list[KioskAssetOut]
+    label_context: KioskLabelContextOut | None = None
 
 
 class KioskClientAssetOut(BaseModel):
@@ -3527,6 +3541,12 @@ class KioskLabelTemplateOut(BaseModel):
     height_in: float | None = None
     dots: int | None = None
     error: str | None = None
+    # `kind` is "code" or "design"; `design` is the stored design JSON for a
+    # design template (the edge compiles it), else None. `scope` is how the
+    # template's site links relate to this move (labels/pick.py's Scope).
+    kind: str = "code"
+    design: dict | None = None
+    scope: Literal["destination", "source", "both", "global", "other"] = "global"
 
 
 class KioskLabelTemplatesSyncOut(BaseModel):
