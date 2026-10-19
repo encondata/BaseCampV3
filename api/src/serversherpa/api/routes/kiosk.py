@@ -6,6 +6,7 @@ docs/superpowers/specs/2026-09-13-kiosk-web-design.md"""
 
 import hashlib
 import ipaddress
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -65,7 +66,7 @@ from serversherpa.labels.generate.values import (
     CONTAINER_KEYS, AssetRow, Sites, make_model_text, placeholder_values,
 )
 from serversherpa.labels.kiosk_templates import (
-    move_template_set, template_code, template_site_names,
+    move_template_set, template_code,
 )
 from serversherpa.services import auth as auth_service
 from serversherpa.services import kiosk_config
@@ -83,6 +84,7 @@ from serversherpa.services.password_policy import load_policy
 from serversherpa.services.storage import delete_object, get_object, presign_get, put_object
 
 router = APIRouter(prefix="/kiosk", tags=["kiosk"])
+logger = logging.getLogger("serversherpa.api.routes.kiosk")
 
 
 def _err(status: int, code: str, **extra) -> HTTPException:
@@ -1107,25 +1109,26 @@ async def _label_templates_body(
         raise _err(422, "bad_initiative")
 
     picked = await move_template_set(db, initiative)
-    site_names = await template_site_names(db, [t.id for t, _ in picked])
     vocab = {(v.kind, v.key): v.meta or {} for v in (await db.execute(
         select(LabelVocab).where(LabelVocab.kind.in_(("size", "dpi"))))).scalars()}
 
     templates: list[KioskLabelTemplateOut] = []
-    for template, reasons in picked:
+    for template, reasons, move_site_names in picked:
         size_meta = vocab.get(("size", template.size_key), {})
         dpi_meta = vocab.get(("dpi", template.dpi_key), {})
         try:
             code, error = template_code(template, size_meta, dpi_meta), None
-        except ValueError as e:
-            # One bad design never fails the sync: it is listed with no
-            # code and the reason, like the portal's compile errors.
-            code, error = "", str(e) or "could not convert the design"
+        except Exception as exc:
+            # One bad template never fails the sync (same guard as the
+            # label runner): it is listed with no code and the reason.
+            logger.warning("kiosk label template %s could not convert: %s",
+                           template.id, type(exc).__name__, exc_info=True)
+            code, error = "", str(exc) or type(exc).__name__
         templates.append(KioskLabelTemplateOut(
             id=template.id, name=template.name, label_type=template.label_type,
             size_key=template.size_key, dpi_key=template.dpi_key,
             language_key=template.language_key, version=template.version,
-            updated_at=template.updated_at, site_names=site_names.get(template.id, []),
+            updated_at=template.updated_at, move_site_names=move_site_names,
             reasons=sorted(reasons), code=code,
             generation_rules=template.generation_rules or {},
             width_in=size_meta.get("width_in"), height_in=size_meta.get("height_in"),

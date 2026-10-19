@@ -37,9 +37,13 @@ class TemplateConvertError(ValueError):
 
 async def move_template_set(
     db: AsyncSession, initiative: Initiative,
-) -> list[tuple[LabelTemplate, set[str]]]:
-    """Every active template the move's kiosk needs, with the set of
-    reasons each was picked, ordered by natural(name)."""
+) -> list[tuple[LabelTemplate, set[str], list[str]]]:
+    """Every active template the move's kiosk needs, ordered by
+    natural(name), each with the set of reasons it was picked and
+    `move_site_names`: the names of the move's OWN origin/destination
+    sites the template is linked to (natural-sorted). Links to any other
+    site are never named — a Front/Generic/Container template linked only
+    elsewhere is still picked, with an empty list."""
     templates = (await db.execute(
         select(LabelTemplate)
         .where(LabelTemplate.is_active.is_(True))
@@ -47,18 +51,24 @@ async def move_template_set(
     if not templates:
         return []
 
-    links: dict[uuid.UUID, set[uuid.UUID]] = {}
-    for template_id, site_id in (await db.execute(
-            select(LabelTemplateSite.template_id, LabelTemplateSite.site_id)
-            .where(LabelTemplateSite.template_id.in_([t.id for t in templates])))).all():
-        links.setdefault(template_id, set()).add(site_id)
-
     origin_id = initiative.origin_site_id
     destination_id = initiative.destination_site_id
+    move_sites = {sid for sid in (origin_id, destination_id) if sid is not None}
+
+    links: dict[uuid.UUID, set[uuid.UUID]] = {}
+    move_names: dict[uuid.UUID, list[str]] = {}
+    for template_id, site_id, site_name in (await db.execute(
+            select(LabelTemplateSite.template_id, LabelTemplateSite.site_id, Site.name)
+            .join(Site, Site.id == LabelTemplateSite.site_id)
+            .where(LabelTemplateSite.template_id.in_([t.id for t in templates])))).all():
+        links.setdefault(template_id, set()).add(site_id)
+        if site_id in move_sites:
+            move_names.setdefault(template_id, []).append(site_name)
+
     destination_has_template = destination_id is not None and any(
         destination_id in sites for sites in links.values())
 
-    picked: list[tuple[LabelTemplate, set[str]]] = []
+    picked: list[tuple[LabelTemplate, set[str], list[str]]] = []
     for template in templates:
         sites = links.get(template.id, set())
         name = template.name.lower()
@@ -76,23 +86,9 @@ async def move_template_set(
         if name == FALLBACK_NAME and not destination_has_template:
             reasons.add("fallback")
         if reasons:
-            picked.append((template, reasons))
+            picked.append((template, reasons,
+                           sorted(move_names.get(template.id, []), key=natural_key)))
     return picked
-
-
-async def template_site_names(
-    db: AsyncSession, template_ids: list[uuid.UUID],
-) -> dict[uuid.UUID, list[str]]:
-    """Each template's linked site names, natural-sorted."""
-    if not template_ids:
-        return {}
-    names: dict[uuid.UUID, list[str]] = {}
-    for template_id, site_name in (await db.execute(
-            select(LabelTemplateSite.template_id, Site.name)
-            .join(Site, Site.id == LabelTemplateSite.site_id)
-            .where(LabelTemplateSite.template_id.in_(template_ids)))).all():
-        names.setdefault(template_id, []).append(site_name)
-    return {tid: sorted(n, key=natural_key) for tid, n in names.items()}
 
 
 def template_code(template: LabelTemplate, size_meta: dict, dpi_meta: dict) -> str:

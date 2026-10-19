@@ -126,9 +126,13 @@ async def test_selection_rules_reasons_and_order(client, db, seeded_user):
         "Container Info 4x6 203dpi": ["container"],
     }
     rows = _by_name(body)
-    assert rows["Dest Top"]["site_names"] == ["Dst Hall"]
-    assert rows["Front Elsewhere"]["site_names"] == ["Elsewhere Hall"]
-    assert rows["my GENERIC rail"]["site_names"] == []
+    assert rows["Dest Top"]["move_site_names"] == ["Dst Hall"]
+    assert rows["Src Rail"]["move_site_names"] == ["Src Hall"]
+    # linked only to another site: still sent (Front rule), but that
+    # site's name never reaches the kiosk
+    assert rows["Front Elsewhere"]["move_site_names"] == []
+    assert "Elsewhere Hall" not in r.text
+    assert rows["my GENERIC rail"]["move_site_names"] == []
 
 
 async def test_template_linked_to_both_sites_lists_both_reasons(client, db, seeded_user):
@@ -142,7 +146,54 @@ async def test_template_linked_to_both_sites_lists_both_reasons(client, db, seed
     await db.commit()
     rows = _by_name((await _get(client, hdrs, move.id)).json())
     assert rows["Both Ends Top"]["reasons"] == ["destination_site", "source_site"]
-    assert rows["Both Ends Top"]["site_names"] == ["Dst Hall", "Src Hall"]
+    assert rows["Both Ends Top"]["move_site_names"] == ["Dst Hall", "Src Hall"]
+
+
+async def test_move_site_names_leave_out_other_sites(client, db, seeded_user):
+    """A template linked to the destination AND an unrelated site lists
+    only the destination; the unrelated site's name is never sent."""
+    hdrs = await login(client)
+    move, _src, dst, other = await _move(db)
+    shared = _tpl("Shared Front", label_type="front")
+    generic = _tpl("Generic Elsewhere")
+    db.add_all([shared, generic])
+    await db.flush()
+    await _link(db, shared, dst)
+    await _link(db, shared, other)
+    await _link(db, generic, other)
+    await db.commit()
+    r = await _get(client, hdrs, move.id)
+    rows = _by_name(r.json())
+    assert rows["Shared Front"]["move_site_names"] == ["Dst Hall"]
+    assert rows["Generic Elsewhere"]["move_site_names"] == []
+    assert rows["Generic Elsewhere"]["reasons"] == ["generic"]
+    assert "Elsewhere Hall" not in r.text
+
+
+async def test_unexpected_conversion_failure_never_fails_the_sync(
+        client, db, seeded_user, monkeypatch, caplog):
+    from serversherpa.api.routes import kiosk as kiosk_routes
+    hdrs = await login(client)
+    move, *_ = await _move(db)
+    boom = _tpl("Front Boom", label_type="front")
+    db.add_all([boom, _tpl("Front Fine", label_type="front")])
+    await db.commit()
+    boom_id = boom.id
+    real = kiosk_routes.template_code
+
+    def flaky(template, size_meta, dpi_meta):
+        if template.name == "Front Boom":
+            raise KeyError("dots")
+        return real(template, size_meta, dpi_meta)
+
+    monkeypatch.setattr(kiosk_routes, "template_code", flaky)
+    with caplog.at_level("WARNING"):
+        r = await _get(client, hdrs, move.id)
+    assert r.status_code == 200, r.text
+    rows = _by_name(r.json())
+    assert rows["Front Boom"]["code"] == "" and rows["Front Boom"]["error"]
+    assert rows["Front Fine"]["error"] is None
+    assert str(boom_id) in caplog.text and "KeyError" in caplog.text
 
 
 async def test_fallback_when_destination_has_no_template(client, db, seeded_user):
@@ -248,7 +299,7 @@ async def test_code_template_is_returned_verbatim(client, db, seeded_user):
     assert row["generation_rules"] == {"length_limits": {"asset_name": 20}}
     assert set(row) == {
         "id", "name", "label_type", "size_key", "dpi_key", "language_key", "version",
-        "updated_at", "site_names", "reasons", "code", "generation_rules",
+        "updated_at", "move_site_names", "reasons", "code", "generation_rules",
         "width_in", "height_in", "dots", "error"}
     assert (row["size_key"], row["language_key"], row["version"]) == ("4x2", "zpl", 1)
 

@@ -3503,7 +3503,9 @@ class KioskLabelTemplateOut(BaseModel):
     template is still listed. `reasons` is the sorted set of rules that
     picked it: destination_site, source_site, front, generic, container,
     fallback. `width_in`/`height_in`/`dots` come from the size and DPI
-    vocabulary (None when the key has no vocabulary row)."""
+    vocabulary (None when the key has no vocabulary row).
+    `move_site_names` names only the move's own origin/destination sites
+    the template is linked to; links to other sites are never named."""
 
     id: uuid.UUID
     name: str
@@ -3513,7 +3515,7 @@ class KioskLabelTemplateOut(BaseModel):
     language_key: str
     version: int
     updated_at: datetime
-    site_names: list[str]
+    move_site_names: list[str]
     reasons: list[str]
     code: str
     generation_rules: dict
