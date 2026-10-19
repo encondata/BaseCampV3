@@ -36,7 +36,8 @@ from serversherpa.api.schemas import (
     KioskClockOutIn, KioskContainerAssetIn, KioskContainerAssetOut,
     KioskContainerAssetRow, KioskContainerOut, KioskContainerRef,
     KioskContainersSyncOut, KioskContainerStateOut, KioskEdgeMovePassword,
-    KioskEdgeMovePasswordsOut, KioskMoveOut,
+    KioskEdgeMovePasswordsOut, KioskLabelTemplateOut, KioskLabelTemplatesSyncOut,
+    KioskMoveOut,
     KioskPeopleSyncOut, KioskPersonOut, KioskPrinterEventIn,
     KioskRfidEnrollIn, KioskRfidEnrollOut, KioskScanBatchIn, KioskSoundOut,
     KioskScanBatchOut, KioskScanIn, KioskScanRejected, KioskStationScanBatchIn,
@@ -62,6 +63,9 @@ from serversherpa.db.models import (
 from serversherpa.db.ordering import natural, natural_key
 from serversherpa.labels.generate.values import (
     CONTAINER_KEYS, AssetRow, Sites, make_model_text, placeholder_values,
+)
+from serversherpa.labels.kiosk_templates import (
+    move_template_set, template_code, template_site_names,
 )
 from serversherpa.services import auth as auth_service
 from serversherpa.services import kiosk_config
@@ -1072,6 +1076,65 @@ async def _containers_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskC
             asset_count=counts.get(c.id, 0)) for c, site_name, status_label in rows])
 
 
+@router.get("/sync/label-templates", response_model=KioskLabelTemplatesSyncOut)
+async def sync_label_templates(
+    db: DbSession,
+    initiative_id: uuid.UUID = Query(...),
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskLabelTemplatesSyncOut:
+    """The move's label template set, for a Label Printing kiosk to print
+    offline: every active Front, Container and Container Info template,
+    every template linked to the move's origin or destination site, every
+    "generic"-named template, and "Generic Rack and RU" as the fallback
+    when no active template is linked to the destination
+    (labels/kiosk_templates.py). Each template once, with every reason it
+    matched; design templates come down as printer code with their
+    {placeholder} tokens intact. The full set every call, no paging.
+
+    Same contract as /sync/containers: 404 `initiative_not_found`, 422
+    `bad_initiative` for a non-move, 403 `move_locked` for another move
+    under a move password. Gated on kiosk:view."""
+    _require_move(actor, initiative_id)
+    return await _label_templates_body(db, initiative_id)
+
+
+async def _label_templates_body(
+        db: AsyncSession, initiative_id: uuid.UUID) -> KioskLabelTemplatesSyncOut:
+    initiative = await db.get(Initiative, initiative_id)
+    if initiative is None:
+        raise _err(404, "initiative_not_found")
+    if initiative.initiative_type != "move":
+        raise _err(422, "bad_initiative")
+
+    picked = await move_template_set(db, initiative)
+    site_names = await template_site_names(db, [t.id for t, _ in picked])
+    vocab = {(v.kind, v.key): v.meta or {} for v in (await db.execute(
+        select(LabelVocab).where(LabelVocab.kind.in_(("size", "dpi"))))).scalars()}
+
+    templates: list[KioskLabelTemplateOut] = []
+    for template, reasons in picked:
+        size_meta = vocab.get(("size", template.size_key), {})
+        dpi_meta = vocab.get(("dpi", template.dpi_key), {})
+        try:
+            code, error = template_code(template, size_meta, dpi_meta), None
+        except ValueError as e:
+            # One bad design never fails the sync: it is listed with no
+            # code and the reason, like the portal's compile errors.
+            code, error = "", str(e) or "could not convert the design"
+        templates.append(KioskLabelTemplateOut(
+            id=template.id, name=template.name, label_type=template.label_type,
+            size_key=template.size_key, dpi_key=template.dpi_key,
+            language_key=template.language_key, version=template.version,
+            updated_at=template.updated_at, site_names=site_names.get(template.id, []),
+            reasons=sorted(reasons), code=code,
+            generation_rules=template.generation_rules or {},
+            width_in=size_meta.get("width_in"), height_in=size_meta.get("height_in"),
+            dots=dpi_meta.get("dots"), error=error))
+
+    return KioskLabelTemplatesSyncOut(
+        initiative_id=initiative.id, generated_at=datetime.now(UTC), templates=templates)
+
+
 @router.get("/sync/client-assets", response_model=KioskClientAssetsSyncOut)
 async def sync_client_assets(
     db: DbSession,
@@ -1169,6 +1232,16 @@ async def station_sync_containers(
     """Station-key twin of /sync/containers, for the key move only."""
     await _station_sync_device(request, db, serial, initiative_id)
     return await _containers_body(db, initiative_id)
+
+
+@router.get("/station/sync/label-templates", response_model=KioskLabelTemplatesSyncOut)
+async def station_sync_label_templates(
+    request: Request, db: DbSession, serial: str = Query(...),
+    initiative_id: uuid.UUID = Query(...),
+) -> KioskLabelTemplatesSyncOut:
+    """Station-key twin of /sync/label-templates, for the key move only."""
+    await _station_sync_device(request, db, serial, initiative_id)
+    return await _label_templates_body(db, initiative_id)
 
 
 @router.get("/station/sync/people", response_model=KioskPeopleSyncOut)

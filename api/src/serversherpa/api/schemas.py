@@ -3494,6 +3494,41 @@ class KioskContainersSyncOut(BaseModel):
     containers: list[KioskContainerOut]
 
 
+class KioskLabelTemplateOut(BaseModel):
+    """One label template the kiosk keeps for its move, with everything it
+    needs to fill in and print a label offline. `code` is printer code with
+    its {placeholder} tokens intact: a `code` template's stored code as is,
+    a `design` template converted on the server at its own size and DPI.
+    When a design can't convert, `code` is "" and `error` says why; the
+    template is still listed. `reasons` is the sorted set of rules that
+    picked it: destination_site, source_site, front, generic, container,
+    fallback. `width_in`/`height_in`/`dots` come from the size and DPI
+    vocabulary (None when the key has no vocabulary row)."""
+
+    id: uuid.UUID
+    name: str
+    label_type: str
+    size_key: str
+    dpi_key: str
+    language_key: str
+    version: int
+    updated_at: datetime
+    site_names: list[str]
+    reasons: list[str]
+    code: str
+    generation_rules: dict
+    width_in: float | None = None
+    height_in: float | None = None
+    dots: int | None = None
+    error: str | None = None
+
+
+class KioskLabelTemplatesSyncOut(BaseModel):
+    initiative_id: uuid.UUID
+    generated_at: datetime
+    templates: list[KioskLabelTemplateOut]
+
+
 class KioskContainerAssetIn(BaseModel):
     """One asset the kiosk just scanned into (or out of) a container.
 
