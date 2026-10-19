@@ -7,8 +7,11 @@ on the check-ins it already makes, with the web kiosk's rules
 
 - **The whole document** passes through. The browsers own `appearance`,
   `sound`, `checkpoints` and `developer` (their stores); the edge owns
-  `alarm`, which always mirrors `alarm_settings`; every other section is
-  kept as the portal sent it.
+  `alarm`, which always mirrors `alarm_settings`, and `label_station`,
+  which always mirrors the Label Station's settings in the shared setup
+  (null when there are none, so a cleared station clears the portal's copy;
+  read-only here: neither a browser nor the portal changes it); every other
+  section is kept as the portal sent it.
 - **Browsers** read it at GET /edge/config (polled every 60 s; `version`
   counts changes here) and write it with PUT /edge/config. The first browser
   to find no document seeds it from its own stores, unstamped and not dirty,
@@ -49,7 +52,7 @@ from edge.rfid import alarm
 REPORT_INTERVAL = timedelta(minutes=60)
 MAX_BYTES = 65536  # the portal's limit on a reported document
 BROWSER_SECTIONS = ("appearance", "sound", "checkpoints", "developer")
-LOCAL_SECTIONS = (*BROWSER_SECTIONS, "alarm")
+LOCAL_SECTIONS = (*BROWSER_SECTIONS, "alarm", "label_station")
 BEAT_FIELDS = ("config", "config_changed_at", "config_applied_version")
 # The browser sections' fields on a fresh kiosk (the kiosk stores' defaults,
 # the portal's DEFAULT_CONFIG): a seed holding only these is a browser nobody
@@ -187,9 +190,12 @@ def _apply_alarm(c, section) -> None:
 
 
 def _with_alarm(c, doc: dict) -> dict:
-    """`doc` with its `alarm` mirroring alarm_settings (other alarm keys kept)."""
+    """`doc` with the sections the edge owns: its `alarm` mirroring
+    alarm_settings (other alarm keys kept) and `label_station` mirroring the
+    shared setup's Label Station settings."""
     section = doc.get("alarm") if isinstance(doc.get("alarm"), dict) else {}
-    return {**doc, "alarm": {**section, **_alarm_conf(c)}}
+    return {**doc, "alarm": {**section, **_alarm_conf(c)},
+            "label_station": laptop_setup.label_station_in(c)}
 
 
 def _changed(c, row: dict, doc: dict | None) -> None:
@@ -249,6 +255,21 @@ def note_alarm_edit(store: Store) -> None:
         new = _with_alarm(c, stored)
         if _canon(new) != _canon(stored):
             _changed(c, row, new)
+
+
+def note_label_station(c) -> None:
+    """The Label Station's settings changed (saved, or dropped by Clear Setup
+    or a station type change), on the caller's transaction: the document's
+    `label_station` follows, as a local change. With no document yet the
+    change is still marked, as for the alarm."""
+    row = _row(c)
+    stored = _doc(row)
+    if stored is None:
+        _changed(c, row, None)
+        return
+    new = _with_alarm(c, stored)
+    if _canon(new) != _canon(stored):
+        _changed(c, row, new)
 
 
 # ── the check-ins ───────────────────────────────────────────────────

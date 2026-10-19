@@ -27,9 +27,11 @@ from edge.db import Store
 from edge.hostnet import DynamicHosts, HostCheckMiddleware, parse_host
 from edge.identity import load_or_create
 from edge.outbox import OutboxWorker
+from edge.printers import Printers
 from edge.routes import auth as auth_routes
 from edge.routes import edge as edge_routes
 from edge.routes import kiosk as kiosk_routes
+from edge.routes import printers as printer_routes
 from edge.routes import proxy
 from edge.routes import rfid as rfid_routes
 from edge.rfid import checks
@@ -83,6 +85,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
             finally:
                 try:
                     await app.state.discovery.aclose()
+                    await app.state.printers.aclose()
                     await app.state.upstream.aclose()
                 finally:
                     app.state.store.close()
@@ -107,6 +110,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
         identity=lambda: app.state.identity,
         transport=lambda ip: app.state.reader_transport)
     app.state.reader_transport = None  # tests hand in a fake reader's transport
+    app.state.printers = Printers(settings.data_dir)  # network Zebra printers, port 9100
     app.state.pair_lock = asyncio.Lock()
     app.state.station_key_lock = asyncio.Lock()  # one station-key issue at a time
     app.state.config_lock = asyncio.Lock()  # one config-carrying check-in at a time
@@ -119,6 +123,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     app.include_router(edge_routes.router)
     app.include_router(kiosk_routes.router)
     app.include_router(rfid_routes.router)
+    app.include_router(printer_routes.router)
 
     @app.get("/config.js")
     async def config_js(request: Request) -> Response:
