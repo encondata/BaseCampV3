@@ -1256,7 +1256,16 @@ export interface PrinterScan {
   state: 'running' | 'done' | 'failed';
   probed: number;
   total: number;
-  printers: { ip: string }[];
+  printers: FoundPrinter[];
+}
+
+/** One 9100 host the scan found, with what its `~HI` said (nulls when it
+ *  didn't answer one). */
+export interface FoundPrinter {
+  ip: string;
+  model: string | null;
+  firmware: string | null;
+  dpi: number | null;
 }
 
 /** Starts a scan of the laptop's subnets for TCP 9100 (cancelling a running one). */

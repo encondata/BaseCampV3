@@ -104,7 +104,10 @@ beforeEach(() => {
   apiMock.startPrinterScan.mockReset().mockResolvedValue({ scan_id: 's1' });
   apiMock.getPrinterScan.mockReset().mockResolvedValue({
     scan_id: 's1', state: 'done', probed: 254, total: 254,
-    printers: [{ ip: '10.0.0.40' }, { ip: '10.0.0.41' }],
+    printers: [
+      { ip: '10.0.0.40', model: 'ZD621-203dpi', firmware: 'V93.21.18Z', dpi: 203 },
+      { ip: '10.0.0.41', model: null, firmware: null, dpi: null },
+    ],
   });
   apiMock.printerQuery.mockReset().mockImplementation(async (_ip: string, command: string) => ({
     response: reply(command), truncated: false,
@@ -183,7 +186,7 @@ describe('network', () => {
     await user.click(screen.getByRole('option', { name: /Network printer/ }));
     await user.click(screen.getByRole('button', { name: 'Scan the network' }));
     expect(apiMock.startPrinterScan).toHaveBeenCalled();
-    await user.click(await screen.findByRole('button', { name: '10.0.0.41' }));
+    await user.click(await screen.findByRole('button', { name: /^10\.0\.0\.41/ }));
     await allGreen();
     expect(apiMock.printerQuery).toHaveBeenCalledWith('10.0.0.41', '~HI');
     await user.click(finishButton());
@@ -403,4 +406,19 @@ it('picks up saved offsets that arrive after the step opened', async () => {
   await user.click(finishButton());
   await waitFor(() => expect(onFinish).toHaveBeenCalled());
   expect(apiMock.putLabelStation).toHaveBeenCalledWith(expect.objectContaining({ offset_x: 9, offset_y: -2 }));
+});
+
+
+it('found network printers show their model, firmware and DPI with the IP', async () => {
+  const user = userEvent.setup();
+  renderStep();
+  await user.click(screen.getByRole('option', { name: /Network printer/ }));
+  await user.click(screen.getByRole('button', { name: 'Scan the network' }));
+  const found = await screen.findByRole('group', { name: 'Printers found' });
+  const first = within(found).getByRole('button', { name: /10\.0\.0\.40/ });
+  expect(first.textContent).toContain('ZD621-203dpi');
+  expect(first.textContent).toContain('V93.21.18Z');
+  expect(first.textContent).toContain('203 DPI');
+  const silent = within(found).getByRole('button', { name: /10\.0\.0\.41/ });
+  expect(silent.textContent).toContain("Didn't say what it is");
 });
