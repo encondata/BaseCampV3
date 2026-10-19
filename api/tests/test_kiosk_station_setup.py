@@ -356,3 +356,24 @@ async def test_get_setup_needs_kiosk_view(client, db, seeded_user):
     r = await client.get("/kiosk/setup", headers=cv, params={"serial": SERIAL})
     assert r.status_code == 403
     assert (await client.get("/kiosk/setup", params={"serial": SERIAL})).status_code == 401
+
+
+async def test_label_station_always_records_labeled(client, db, seeded_user):
+    """A Label Station has one scan type, Labeled: whatever scan type a
+    client sends, the setup saves `labeled` (Jimmy, 2026-10-19)."""
+    hdrs = await login(client)
+    body, device_id = await _setup_body(db)
+    r = await client.post("/kiosk/setup", headers=hdrs, json={**body, "station_type": "label"})
+    assert r.status_code == 200, r.text
+    assert r.json()["scan_status"] == "labeled"
+    assert r.json()["scan_status_label"] == "Labeled"
+    assert (await _device(db, device_id)).scan_status == "labeled"
+
+
+async def test_label_station_offers_only_labeled_as_its_scan_type(client, db, seeded_user):
+    from serversherpa.api.routes.kiosk import allowed_scan_types
+    hdrs = await login(client)
+    body, device_id = await _setup_body(db)
+    await client.post("/kiosk/setup", headers=hdrs, json={**body, "station_type": "label"})
+    device = await _device(db, device_id)
+    assert [t.key for t in await allowed_scan_types(db, device)] == ["labeled"]

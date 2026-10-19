@@ -55,11 +55,16 @@ const STEP_LABEL: Record<Step, string> = {
   network: 'Network check', move: 'Move', site: 'Site', scan: 'Scan type', confirm: 'Confirm & verify',
 };
 
+/** A Label Station records one scan type only (Jimmy, 2026-10-19), so
+ *  its path has no Scan type step. The portal saves the same key anyway. */
+const LABEL_STATION_SCAN_STATUS = 'labeled';
+
 /** The steps this kiosk walks. Web mode skips the station type: RFID
  *  needs the laptop edge, and a web kiosk behaves exactly as before. */
 function pathFor(laptop: boolean, stationType: StationType | ''): Step[] {
   if (!laptop) return ['move', 'site', 'scan'];
   if (stationType === 'rfid') return ['type', 'reader', 'connect', 'pair', 'network', 'move', 'site', 'scan', 'confirm'];
+  if (stationType === 'label') return ['type', 'move', 'site'];
   return ['type', 'move', 'site', 'scan'];
 }
 
@@ -246,10 +251,12 @@ export default function KioskSetup() {
 
   const selectSite = (id: string) => {
     setSiteId(id);
-    setStep('scan');
+    // A Label Station has nothing to choose: save Labeled straight away.
+    if (laptop && stationType === 'label') void finish(LABEL_STATION_SCAN_STATUS, id);
+    else setStep('scan');
   };
 
-  const finish = async (scanKey: string) => {
+  const finish = async (scanKey: string, chosenSiteId: string = siteId) => {
     setScanStatus(scanKey);
     setSubmitting(true);
     setSubmitError('');
@@ -258,7 +265,7 @@ export default function KioskSetup() {
       // The edge adds the paired reader itself for an RFID station.
       const station = laptop && stationType ? stationType : undefined;
       const result = await submitKioskSetup({
-        serial: identity.serial, initiative_id: initiativeId, site_id: siteId,
+        serial: identity.serial, initiative_id: initiativeId, site_id: chosenSiteId,
         scan_status: scanKey, ...(station ? { station_type: station } : {}),
       });
       const saved: KioskSetupSelection = {
