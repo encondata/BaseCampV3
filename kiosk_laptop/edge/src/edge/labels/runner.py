@@ -33,6 +33,9 @@ class LabelRunner:
         self.render = render
         self.wake = wake
         self._pending: Reason | None = None
+        # bumped by forget(): a run that started before a wipe writes nothing more
+        self._generation = 0
+        self._retry = False  # a failed run: requested again after this pass, without a wake
         row = store.one("SELECT state, reason, pending FROM label_run WHERE id = 1")
         if row is not None and (row["state"] == "running" or row["pending"]):
             reason = row["reason"] if row["reason"] in ("setup", "updates") else "updates"
@@ -43,13 +46,14 @@ class LabelRunner:
     def pending(self) -> Reason | None:
         return self._pending
 
-    def request(self, reason: Reason) -> None:
-        """Ask for a run; 'setup' wins over 'updates' while both wait."""
+    def request(self, reason: Reason, *, wake: bool = True) -> None:
+        """Ask for a run; 'setup' wins over 'updates' while both wait.
+        `wake=False` leaves it for the label loop's next timed pass."""
         if self._pending != "setup":
             self._pending = reason
         self.store.run("INSERT INTO label_run (id, pending) VALUES (1, 1) "
                        "ON CONFLICT (id) DO UPDATE SET pending = 1")
-        if self.wake is not None:
+        if wake and self.wake is not None:
             self.wake.set()
 
     def request_if_label_station(self, reason: Reason = "updates") -> None:
@@ -58,8 +62,11 @@ class LabelRunner:
             self.request(reason)
 
     def forget(self) -> None:
-        """Wipe emptied the tables: nothing is pending any more."""
+        """Wipe emptied the tables: nothing is pending any more, and a run in
+        progress stops without writing another row."""
         self._pending = None
+        self._retry = False
+        self._generation += 1
 
     def running(self) -> bool:
         row = self.store.one("SELECT state FROM label_run WHERE id = 1")
@@ -70,8 +77,13 @@ class LabelRunner:
             reason, self._pending = self._pending, None
             self.store.run("UPDATE label_run SET pending = 0 WHERE id = 1")
             await self._run(reason)
+        if self._retry:
+            # one retry per failure, on the loop's next timed pass (never at once)
+            self._retry = False
+            self.request("updates", wake=False)
 
     async def _run(self, reason: Reason) -> None:
+        generation = self._generation
         plan = generate.build_plan(self.store)
         if plan is None or not plan.has_asset_data:
             return  # not a Label Station, or nothing synced to build from
@@ -90,14 +102,22 @@ class LabelRunner:
         try:
             for done, job in enumerate(changed, start=1):
                 zpl, error = await asyncio.to_thread(self.render, plan.template_json, job)
+                if self._generation != generation:
+                    return  # wiped mid-run: the tables are empty and stay so
                 generate.apply(self.store, plan, job, zpl, error)
                 self.store.run("UPDATE label_run SET done = ? WHERE id = 1", (done,))
+            if self._generation != generation:
+                return
             generate.prune(self.store, plan)
         except Exception:
             # never leave the station stuck behind the regeneration screen;
-            # the next request tries again (a cancel at shutdown stays
-            # 'running', so the next start finishes the run)
+            # one retry is requested, paced by the label loop's wait (a
+            # cancel at shutdown stays 'running', so the next start finishes it)
             log.exception("label run failed")
+            if self._generation == generation:
+                self._retry = True
+        if self._generation != generation:
+            return
         self.store.run("UPDATE label_run SET state = 'idle', finished_at = ? WHERE id = 1",
                        (now_iso(),))
 

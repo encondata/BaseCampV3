@@ -35,6 +35,18 @@ def require_session(request: Request) -> EdgeSession:
     return session
 
 
+def setup_move(request: Request, session: EdgeSession = Depends(require_session)) -> EdgeSession:
+    """A session for routes serving the laptop's set-up move: one locked to
+    another move (a move-password sign-in) is 403 move_locked, as the cached
+    sync reads answer it."""
+    if session.move_id is not None:
+        from edge import laptop_setup  # laptop_setup -> rfid.pairing imports this module
+        setup = laptop_setup.load(request.app.state.store) or {}
+        if str(setup.get("initiative_id")) != session.move_id:
+            raise err(403, "move_locked")
+    return session
+
+
 def online(session: EdgeSession = Depends(require_session)) -> EdgeSession:
     """A session made while the cloud was reachable: work that needs the
     cloud refuses an offline sign-in (503 edge_offline)."""

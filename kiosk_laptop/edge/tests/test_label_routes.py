@@ -99,3 +99,21 @@ async def test_plan_route_previews_before_settings_are_saved(app, client):
     laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "rfid")
     r = await client.get("/edge/labels/plan?dpi=203&kind=top", headers=headers)
     assert r.status_code == 404
+
+
+async def test_a_session_locked_to_another_move_is_move_locked(app, client):
+    _seed(app)
+    app.state.label_runner.request("setup")
+    await app.state.label_runner.run_pending()
+    other = make_session(app, kiosk_move={"initiative_id": "m-2", "name": "Other"})
+    same = make_session(app, kiosk_move={"initiative_id": "m-1", "name": "Move 1"})
+    for path in ("/edge/labels/status", "/edge/labels/plan", "/edge/labels/asset/a-1"):
+        r = await client.get(path, headers=other)
+        assert r.status_code == 403 and r.json()["detail"]["code"] == "move_locked", path
+        r = await client.get(path, headers=same)
+        assert r.status_code == 200, path
+
+    # no setup at all: a move-locked session sees nothing either
+    laptop_setup.clear(app.state.store)
+    r = await client.get("/edge/labels/status", headers=same)
+    assert r.status_code == 403

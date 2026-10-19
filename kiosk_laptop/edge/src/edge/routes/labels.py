@@ -1,11 +1,12 @@
 """/edge/labels/* — the Label Station's generated labels (edge/labels/):
 the run's progress for the regeneration screen, the template a setup
-choice would use, and one asset's finished label for the Printing Station."""
+choice would use, and one asset's finished label for the Printing Station.
+A session locked to another move is 403 move_locked (deps.setup_move)."""
 
 from fastapi import APIRouter, Depends, Request
 
 from edge import laptop_setup
-from edge.deps import err, require_session
+from edge.deps import err, setup_move
 from edge.labels import generate
 from edge.sessions import EdgeSession
 
@@ -13,7 +14,7 @@ router = APIRouter(prefix="/edge/labels")
 
 
 @router.get("/status")
-async def status(request: Request, _: EdgeSession = Depends(require_session)) -> dict:
+async def status(request: Request, _: EdgeSession = Depends(setup_move)) -> dict:
     """`state` is 'running' only while a run that renders labels is in progress."""
     store = request.app.state.store
     row = store.one("SELECT state, reason, total, done FROM label_run WHERE id = 1")
@@ -37,7 +38,7 @@ def _dpi(raw: str | None) -> int | None:
 
 @router.get("/plan")
 async def plan(request: Request, dpi: str | None = None, kind: str | None = None,
-               _: EdgeSession = Depends(require_session)) -> dict:
+               _: EdgeSession = Depends(setup_move)) -> dict:
     """The template the station's labels would use, with a note per earlier
     template that isn't available at this DPI. `dpi` / `kind` override the
     saved settings (setup asks before saving them)."""
@@ -55,7 +56,7 @@ async def plan(request: Request, dpi: str | None = None, kind: str | None = None
 
 @router.get("/asset/{asset_id}")
 async def asset_label(request: Request, asset_id: str,
-                      _: EdgeSession = Depends(require_session)) -> dict:
+                      _: EdgeSession = Depends(setup_move)) -> dict:
     st = request.app.state
     if st.label_runner.running():
         raise err(409, "labels_regenerating")

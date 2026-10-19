@@ -265,3 +265,51 @@ async def test_background_label_loop_runs_a_request(app):
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+
+async def test_wipe_mid_run_writes_nothing_more(app, client):
+    store = _seed(app)
+    runner = app.state.label_runner
+    runner.forget()
+    rendered = []
+
+    def render(template_json, job):
+        rendered.append(job.asset_id)
+        if len(rendered) == 1:
+            # Wipe lands while the first label renders (render runs in a thread;
+            # this stands in for the route: tables emptied, then forget())
+            for table in ("station_labels", "label_run", "laptop_setup", "cache"):
+                store.run(f"DELETE FROM {table}")
+            runner.forget()
+        return generate.render_job(template_json, job)
+
+    runner.render = render
+    runner.request("setup")
+    await runner.run_pending()
+    assert rendered == ["a-1"]
+    assert _labels(store) == {} and _run_row(store) == {}
+    assert runner.pending is None
+
+
+async def test_a_failed_run_is_retried_once_on_the_next_pass(app):
+    store = _seed(app)
+    wake = asyncio.Event()
+    runner = LabelRunner(store, wake=wake)
+    calls = []
+
+    def render(template_json, job):
+        calls.append(job.asset_id)
+        raise RuntimeError("disk full")
+
+    runner.render = render
+    runner.request("setup")
+    wake.clear()
+    await runner.run_pending()
+    assert calls == ["a-1"]  # one failed run, not a tight loop
+    assert _run_row(store)["state"] == "idle"
+    assert runner.pending == "updates" and not wake.is_set()  # waits for the timed pass
+    assert _run_row(store)["pending"] == 1
+
+    runner.render = generate.render_job
+    await runner.run_pending()
+    assert set(_labels(store)) == {"a-1", "a-2"} and runner.pending is None
