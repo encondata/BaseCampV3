@@ -466,7 +466,10 @@ async def test_bad_query_bodies_are_422(app, client, fake, body):
     assert r.status_code == 422
 
 
-@pytest.mark.parametrize("command", ["~HI", "~HS", "^XA^HWE:*.*^XZ"])
+PEELER_PRESENT = '! U1 getvar "sensor.peeler_present"\r\n'
+
+
+@pytest.mark.parametrize("command", ["~HI", "~HS", "^XA^HWE:*.*^XZ", PEELER_PRESENT])
 async def test_the_kiosk_queries_are_allowed(app, client, fake, monkeypatch, command):
     monkeypatch.setattr(printers, "IDLE_S", 0.2)
     use_fake(app, fake)
@@ -477,7 +480,19 @@ async def test_the_kiosk_queries_are_allowed(app, client, fake, monkeypatch, com
 
 
 @pytest.mark.parametrize("command", ["^XA^JUF^XZ", "~JC", "~WC", "^XA^HH^XZ", "~HI ", "~hi",
-                                     "~HI\n", "~HI~JC", "^XA^HWB:*.*^XZ", "^XA^IDE:FONT.TTF^XZ"])
+                                     "~HI\n", "~HI~JC", "^XA^HWB:*.*^XZ", "^XA^IDE:FONT.TTF^XZ",
+                                     # near-variants of the two SGD getvars
+                                     '! U1 getvar "sensor.peeler_present"',
+                                     '! U1 getvar "sensor.peeler_present"\n',
+                                     '! U1 getvar "media.printmode"\r\n',  # not read
+                                     '! U1 getvar "media.printmode"\r',
+                                     '! U1 getvar "sensor.peeler"\r\n',
+                                     '! U1 getvar "media.type"\r\n',
+                                     '! U1 setvar "media.printmode" "peel off"\r\n',
+                                     '! U1 setvar "sensor.peeler_present"\r\n',
+                                     '! u1 getvar "media.printmode"\r\n',
+                                     '! U1 getvar "sensor.peeler_present"\r\n~JC',
+                                     '! U1 getvar "sensor.peeler_present"\r\n\r\n'])
 async def test_other_commands_are_refused_before_the_printer(app, client, fake, command):
     use_fake(app, fake)
     r = await client.post("/edge/printers/query", headers=make_session(app),

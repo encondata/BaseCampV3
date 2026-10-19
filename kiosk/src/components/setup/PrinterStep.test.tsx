@@ -8,6 +8,7 @@ import { ApiError, type KioskLabelTemplate } from '../../lib/api';
 /** One fake Zebra printer, answered the same way over USB and the edge. */
 const printerState = vi.hoisted(() => ({
   dpmm: 8, paperOut: false, headOpen: false, paused: false, fonts: [] as string[],
+  peeler: '"Not Present"' as string | Error,
 }));
 
 function reply(command: string): string {
@@ -16,6 +17,10 @@ function reply(command: string): string {
   if (command === '~HS') {
     return `\x02030,${s.paperOut ? 1 : 0},${s.paused ? 1 : 0},1218,000,0,0,0,000,0,0,0\x03\r\n`
       + `\x02001,0,${s.headOpen ? 1 : 0},0,1,2,6,0,00000000,1,000\x03\r\n\x021234,0\x03`;
+  }
+  if (command === '! U1 getvar "sensor.peeler_present"\r\n') {
+    if (s.peeler instanceof Error) throw s.peeler;
+    return s.peeler;
   }
   if (command === '^XA^HWE:*.*^XZ') {
     return `- DIR E:*.*\r\n${s.fonts.map((f) => `* E:${f} 1000`).join('\r\n')}\r\n-500000 bytes free\r\n`;
@@ -92,7 +97,10 @@ function template(over: Partial<KioskLabelTemplate>): KioskLabelTemplate {
 }
 
 beforeEach(() => {
-  Object.assign(printerState, { dpmm: 8, paperOut: false, headOpen: false, paused: false, fonts: [] });
+  Object.assign(printerState, {
+    dpmm: 8, paperOut: false, headOpen: false, paused: false, fonts: [],
+    peeler: '"Not Present"',
+  });
   auth.kioskMove = null;
   usb.known = [{ productName: 'ZD421', serialNumber: 'USB1' }];
   usb.sent = [];
@@ -146,7 +154,9 @@ async function failed(label: string) {
 }
 
 async function allGreen() {
-  for (const l of ['Printer answers', 'DPI matches the templates', 'Ready to print', 'Fonts installed']) await passed(l);
+  for (const l of ['Printer answers', 'DPI matches the templates', 'Ready to print', 'Peeler', 'Fonts installed']) {
+    await passed(l);
+  }
 }
 
 const finishButton = () => screen.getByRole('button', { name: 'Finish' }) as HTMLButtonElement;
@@ -166,7 +176,7 @@ describe('USB', () => {
     await waitFor(() => expect(onFinish).toHaveBeenCalled());
     expect(apiMock.putLabelStation).toHaveBeenCalledWith({
       label_kind: 'top', printer: { type: 'usb', ip: null, model: 'ZT411', serial: 'USB1' },
-      dpi: 203, offset_x: 0, offset_y: 0,
+      dpi: 203, offset_x: 0, offset_y: 0, peel: false,
     });
   });
 
@@ -314,13 +324,54 @@ describe('checks', () => {
   });
 });
 
+describe('peeler', () => {
+  const peelerRow = () => row('Peeler');
+
+  it.each([
+    ['"Present"', 'Peeler fitted · labels peel off', true],
+    ['"Not Present"', 'No peeler · labels tear off', false],
+    ['"?"', "Printer doesn't report a peeler · labels tear off", false],
+    ['', "Printer doesn't report a peeler · labels tear off", false],
+    [new Error('read timeout'), "Printer doesn't report a peeler · labels tear off", false],
+  ])('reply %j shows "%s" and saves peel %s', async (reply, detail, peel) => {
+    const user = userEvent.setup();
+    printerState.peeler = reply;
+    const { onFinish } = renderStep();
+    await user.click(await screen.findByRole('button', { name: 'Use ZD421' }));
+    await allGreen();
+    expect(within(peelerRow()).getByText(detail)).toBeTruthy();
+    expect(finishButton().disabled).toBe(false);
+    await user.click(finishButton());
+    await waitFor(() => expect(onFinish).toHaveBeenCalled());
+    expect(apiMock.putLabelStation).toHaveBeenCalledWith(expect.objectContaining({ peel }));
+  });
+
+  it('runs after the status check, through the edge for a network printer, and never writes settings', async () => {
+    const user = userEvent.setup();
+    printerState.peeler = '"Present"';
+    renderStep();
+    await user.click(screen.getByRole('option', { name: /Network printer/ }));
+    await user.click(await screen.findByRole('button', { name: /^10\.0\.0\.40/ }));
+    await allGreen();
+    const commands = apiMock.printerQuery.mock.calls.map(([, c]) => c as string);
+    const hs = commands.indexOf('~HS');
+    const peeler = commands.indexOf('! U1 getvar "sensor.peeler_present"\r\n');
+    expect(hs).toBeGreaterThanOrEqual(0);
+    expect(peeler).toBeGreaterThan(hs);
+    expect(commands.filter((c) => c.includes('getvar'))).toEqual(['! U1 getvar "sensor.peeler_present"\r\n']);
+    expect(apiMock.printerSend).not.toHaveBeenCalled();
+    expect(commands.join('\n')).not.toMatch(/setvar|\^JUS/);
+    expect(within(peelerRow()).getByText('Peeler fitted · labels peel off')).toBeTruthy();
+  });
+});
+
 describe('finishing', () => {
   it('Finish anyway shows for a user session when a check fails, and saves', async () => {
     const user = userEvent.setup();
     printerState.paused = true;
     const { onFinish } = renderStep({ initial: {
       label_kind: 'top', printer: { type: 'usb', ip: null, model: 'ZT411', serial: 'USB1' },
-      dpi: 203, offset_x: 7, offset_y: -3,
+      dpi: 203, offset_x: 7, offset_y: -3, peel: false,
     } });
     await user.click(await screen.findByRole('button', { name: 'Use ZD421' }));
     await failed('Ready to print');
@@ -398,7 +449,7 @@ it('picks up saved offsets that arrive after the step opened', async () => {
   const { onFinish, rerender } = renderStep();
   rerender({ initial: {
     label_kind: 'top', printer: { type: 'usb', ip: null, model: 'ZT411', serial: 'USB1' },
-    dpi: 203, offset_x: 9, offset_y: -2,
+    dpi: 203, offset_x: 9, offset_y: -2, peel: false,
   } });
   await user.click(await screen.findByRole('button', { name: 'Use ZD421' }));
   await allGreen();

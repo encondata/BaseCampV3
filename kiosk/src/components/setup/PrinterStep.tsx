@@ -8,6 +8,8 @@
  * - DPI: at least one downloaded template of the station's kind is at the
  *   printer's DPI;
  * - Ready to print: `~HS` reports no paper out, head open or pause;
+ * - Peeler: whether a peeler is fitted (SGD `sensor.peeler_present`). It
+ *   never fails; it decides whether labels print peel-off or tear-off;
  * - Fonts: every E: font those templates use is on the printer. A missing
  *   font that's in the portal's library installs from here; one that isn't
  *   stays red with what to do.
@@ -16,7 +18,8 @@
  * "Finish anyway" is for a person signed in with a user account and never
  * shows to a move-password session. Either saves the station's settings
  * on the edge (`PUT /edge/label-station`), including the offsets set in
- * the test labels modal.
+ * the test labels modal and whether to print peel-off. Setup never writes
+ * printer settings: the print mode goes on each label instead.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -40,13 +43,14 @@ import PrinterHealth from '../printers/PrinterHealth';
 import CheckList, { type CheckRowResult } from './CheckList';
 import TestLabelModal, { type Offsets } from './TestLabelModal';
 
-type CheckKey = 'answers' | 'dpi' | 'status' | 'fonts';
+type CheckKey = 'answers' | 'dpi' | 'status' | 'peeler' | 'fonts';
 type PrinterType = 'usb' | 'network';
 
-const ITEMS: { name: CheckKey; label: string }[] = [
+const ITEMS: { name: CheckKey; label: string; showOkDetail?: boolean }[] = [
   { name: 'answers', label: 'Printer answers' },
   { name: 'dpi', label: 'DPI matches the templates' },
   { name: 'status', label: 'Ready to print' },
+  { name: 'peeler', label: 'Peeler', showOkDetail: true },
   { name: 'fonts', label: 'Fonts installed' },
 ];
 
@@ -65,6 +69,13 @@ const IPV4_RE = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 function isIpv4(text: string): boolean {
   const m = IPV4_RE.exec(text);
   return m !== null && m.slice(1).every((p) => Number(p) <= 255);
+}
+
+/** The Peeler row's detail: what the printer said, and how labels print. */
+function peelerDetail(present: boolean | null): string {
+  if (present === true) return 'Peeler fitted · labels peel off';
+  if (present === false) return 'No peeler · labels tear off';
+  return "Printer doesn't report a peeler · labels tear off";
 }
 
 function codeOf(err: unknown): string {
@@ -116,6 +127,8 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
   const [installError, setInstallError] = useState('');
   const [offsets, setOffsets] = useState<Offsets>({ x: initial?.offset_x ?? 0, y: initial?.offset_y ?? 0 });
   const [testOpen, setTestOpen] = useState(false);
+  // Print peel-off: the Peeler check found one. Tear off until it runs.
+  const [peel, setPeel] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   // Set once the test labels modal changes the offsets: saved settings that
@@ -171,6 +184,7 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
     setResults({});
     setIdentity(null);
     setHostStatus(null);
+    setPeel(false);
     setFontFix(null);
     if (!keepInstallError) setInstallError('');
 
@@ -208,6 +222,13 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
       const problems = statusProblems(st);
       put('status', problems.length ? { state: 'fail', detail: problems.join(' ') } : { state: 'ok' });
     }
+
+    // Informational: never fails the step. peeler() reports null on errors.
+    setRunning('peeler');
+    const { present } = await p.peeler();
+    if (!live()) return;
+    setPeel(present === true);
+    put('peeler', { state: 'ok', detail: peelerDetail(present) });
 
     setRunning('fonts');
     const needed = neededFonts(templatesOfKind(ts, labelKind));
@@ -254,6 +275,7 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
     setRunning(null);
     setIdentity(null);
     setHostStatus(null);
+    setPeel(false);
     setFontFix(null);
     if (printer && templates) void runChecks(printer, templates);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -333,6 +355,7 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
         dpi: identity.dpi,
         offset_x: offsets.x,
         offset_y: offsets.y,
+        peel,
       });
       onFinish();
     } catch (err) {
@@ -489,7 +512,7 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
       {testOpen && printer && identity && (
         <TestLabelModal printer={printer} dpi={identity.dpi} labelKind={labelKind}
                         templates={templates ?? []} initiativeId={initiativeId}
-                        offsets={offsets}
+                        offsets={offsets} peel={peel}
                         onOffsets={(o) => { offsetsTouched.current = true; setOffsets(o); }} onClose={() => setTestOpen(false)} />
       )}
     </>

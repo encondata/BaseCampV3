@@ -327,6 +327,7 @@
 @keyframes check-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .check-spinner { animation-duration: 3s; } }
 .check-row .form-error { margin: 0; flex-basis: 100%; padding-left: 28px; }
+.check-row .check-note { margin: 0; flex-basis: 100%; padding-left: 28px; color: var(--text-mute); }
 .check-info { margin: 12px 0; }
 .setup-wizard .form-error { max-width: clamp(20rem, 62vw, 62rem); }
 .setup-summary {

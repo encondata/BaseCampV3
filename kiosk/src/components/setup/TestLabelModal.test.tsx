@@ -12,7 +12,7 @@ vi.mock('../../lib/api', async (importOriginal) => {
 });
 
 import type { KioskLabelTemplate } from '../../lib/api';
-import type { StationPrinter } from '../../lib/stationPrinter';
+import { withPrintMode, type StationPrinter } from '../../lib/stationPrinter';
 import TestLabelModal from './TestLabelModal';
 
 function template(over: Partial<KioskLabelTemplate>): KioskLabelTemplate {
@@ -32,14 +32,15 @@ function fakePrinter(): StationPrinter & { sent: string[] } {
   const sent: string[] = [];
   return {
     kind: 'network', ip: '10.0.0.40', serial: null, sent,
-    identify: vi.fn(), status: vi.fn(), query: vi.fn(),
+    identify: vi.fn(), status: vi.fn(), peeler: vi.fn(), query: vi.fn(),
     send: vi.fn(async (zpl: string) => { sent.push(zpl); }),
     sendFont: vi.fn(),
   };
 }
 
-const shifted = (zpl: string, x: number, y: number) => applyPrintSettings(
-  zpl, { ...DEFAULT_PRINT_SETTINGS, horizontalOffset: x, verticalOffset: y }, { singleCopy: true });
+/** What goes to the printer: the offsets shift, then the print mode. */
+const shifted = (zpl: string, x: number, y: number, peel = false) => withPrintMode(applyPrintSettings(
+  zpl, { ...DEFAULT_PRINT_SETTINGS, horizontalOffset: x, verticalOffset: y }, { singleCopy: true }), peel);
 
 beforeEach(() => {
   apiMock.postTestRender.mockReset().mockResolvedValue({ zpl: '^XA^PW812^FDrendered^FS^XZ', template_name: 'Generic Rack and RU' });
@@ -51,7 +52,7 @@ function renderModal(over: Partial<Parameters<typeof TestLabelModal>[0]> = {}) {
   const onOffsets = vi.fn();
   const props = {
     printer, dpi: 203, labelKind: 'top' as const, templates: TEMPLATES, initiativeId: 'i-1',
-    offsets: { x: 12, y: -4 }, onOffsets, onClose: vi.fn(), ...over,
+    offsets: { x: 12, y: -4 }, peel: false, onOffsets, onClose: vi.fn(), ...over,
   };
   render(<TestLabelModal {...props} />);
   return { printer: props.printer as ReturnType<typeof fakePrinter>, onOffsets };
@@ -93,6 +94,30 @@ it('prints the mock label from test-render with offsets applied', async () => {
   await waitFor(() => expect(printer.sent).toHaveLength(1));
   expect(apiMock.postTestRender).toHaveBeenCalledWith({ initiative_id: 'i-1', template_id: 'g203', dpi_key: '203' });
   expect(printer.sent[0]).toBe(shifted('^XA^PW812^FDrendered^FS^XZ', 12, -4));
+});
+
+it('prints peel-off (^MMP) on a station with a peeler, for both test labels', async () => {
+  const user = userEvent.setup();
+  const { printer } = renderModal({ peel: true });
+  await user.click(screen.getByRole('button', { name: 'Print test label' }));
+  await waitFor(() => expect(printer.sent).toHaveLength(1));
+  expect(printer.sent[0]).toBe(shifted(alignmentTestZpl(812, 406, '4x2', 203), 12, -4, true));
+  expect(printer.sent[0]).toMatch(/^\^XA\^MMP/);
+  expect(printer.sent[0]).not.toContain('^MMT');
+  await user.click(screen.getByRole('radio', { name: /Mock-data label/ }));
+  await user.click(screen.getByRole('button', { name: 'Reprint' }));
+  await waitFor(() => expect(printer.sent).toHaveLength(2));
+  expect(printer.sent[1]).toBe(shifted('^XA^PW812^FDrendered^FS^XZ', 12, -4, true));
+  expect(printer.sent[1]).toContain('^XA^MMP');
+});
+
+it('prints tear-off (^MMT) without a peeler, and never saves the mode', async () => {
+  const user = userEvent.setup();
+  const { printer } = renderModal({ peel: false });
+  await user.click(screen.getByRole('button', { name: 'Print test label' }));
+  await waitFor(() => expect(printer.sent).toHaveLength(1));
+  expect(printer.sent[0]).toMatch(/^\^XA\^MMT/);
+  expect(printer.sent[0]).not.toMatch(/\^MMP|\^JUS|setvar/);
 });
 
 it('skips a mock template that only exists at another DPI, with a note', async () => {

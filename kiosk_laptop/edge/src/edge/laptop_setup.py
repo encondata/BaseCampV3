@@ -5,8 +5,8 @@ Saved after the cloud accepts `/kiosk/setup`: the fields the kiosk caches
 (move, site and role, scan type with its label, station type) plus, for an
 RFID station, the paired reader's summary (never its token). Wipe clears it.
 
-A Label Station's label settings (`label_station`: label kind, printer, DPI
-and offsets) are saved with PUT /edge/label-station once the setup exists.
+A Label Station's label settings (`label_station`: label kind, printer, DPI,
+offsets and peel-off printing) are saved with PUT /edge/label-station once the setup exists.
 They survive setting up again as a Label Station and are dropped by Clear
 Setup or a change of station type; the config document's `label_station`
 section mirrors them (config_sync), marked dirty whenever they change."""
@@ -50,7 +50,20 @@ def save(store: Store, result: dict, station_type: str | None) -> dict:
 
 def load(store: Store) -> dict | None:
     row = store.one("SELECT setup_json FROM laptop_setup WHERE id = 1")
-    return json.loads(row["setup_json"]) if row else None
+    if not row:
+        return None
+    setup = json.loads(row["setup_json"])
+    if "label_station" in setup:
+        setup["label_station"] = _with_defaults(setup["label_station"])
+    return setup
+
+
+def _with_defaults(settings):
+    """Settings saved before a key existed read with its default: `peel`
+    false (tear off)."""
+    if isinstance(settings, dict) and "peel" not in settings:
+        return {**settings, "peel": False}
+    return settings
 
 
 def clear(store: Store) -> None:
@@ -82,7 +95,7 @@ def _note_config(c) -> None:
 def label_station_in(c) -> dict | None:
     """The stored settings, read on an open transaction."""
     row = c.execute("SELECT setup_json FROM laptop_setup WHERE id = 1").fetchone()
-    return json.loads(row["setup_json"]).get("label_station") if row else None
+    return _with_defaults(json.loads(row["setup_json"]).get("label_station")) if row else None
 
 
 def label_station(store: Store) -> dict | None:
@@ -105,7 +118,8 @@ def _text(value, *, required: bool) -> str | None:
 
 def normalize_label_station(body, printer_ip) -> dict:
     """The settings as stored: `{label_kind, printer: {type, ip, model,
-    serial}, dpi, offset_x, offset_y}`. `printer_ip(value)` is the transport's
+    serial}, dpi, offset_x, offset_y, peel}` (`peel`: print in peel-off mode;
+    false when left out, for kiosks from before it). `printer_ip(value)` is the transport's
     address check: a network printer's `ip` must pass it (`bad_printer_ip`),
     and a USB printer has none. Raises BadLabelStation."""
     if not isinstance(body, dict) or body.get("label_kind") not in LABEL_KINDS:
@@ -126,9 +140,13 @@ def normalize_label_station(body, printer_ip) -> dict:
     for key in ("offset_x", "offset_y"):
         if not _int_in(body.get(key), OFFSET_RANGE):
             raise BadLabelStation()
+    peel = body.get("peel", False)
+    if not isinstance(peel, bool):
+        raise BadLabelStation()
     return {"label_kind": body["label_kind"],
             "printer": {"type": printer["type"], "ip": ip, "model": model, "serial": serial},
-            "dpi": body["dpi"], "offset_x": body["offset_x"], "offset_y": body["offset_y"]}
+            "dpi": body["dpi"], "offset_x": body["offset_x"], "offset_y": body["offset_y"],
+            "peel": peel}
 
 
 def save_label_station(store: Store, settings: dict) -> dict:

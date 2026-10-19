@@ -100,6 +100,7 @@ export default function KioskDevicesTab({ detail: d }: { detail: DeviceDetail })
               <dt>DPI</dt><dd>{typeof station.dpi === 'number' ? `${station.dpi} dpi` : '—'}</dd>
               <dt>Horizontal offset</dt><dd>{dots(station.offset_x)}</dd>
               <dt>Vertical offset</dt><dd>{dots(station.offset_y)}</dd>
+              <dt>Print mode</dt><dd>{station.peel === true ? 'Peel off' : 'Tear off'}</dd>
             </dl>
           </div>
         </div>

@@ -54,6 +54,9 @@ export interface LabelStationSection {
   dpi: number;
   offset_x: number;
   offset_y: number;
+  /** Prints peel-off (the station found a peeler). Absent from laptops
+   *  that predate the peeler check: tear off. */
+  peel?: boolean;
 }
 
 /** config.label_station when the kiosk reported one; null (card hidden) for

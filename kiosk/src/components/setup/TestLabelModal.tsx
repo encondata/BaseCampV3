@@ -10,7 +10,9 @@
  *   skipped with a note.
  *
  * Every print goes through `applyPrintSettings` with the station's
- * offsets (the same `^LS`/`^LT` shift Printer tools uses). After a print,
+ * offsets (the same `^LS`/`^LT` shift Printer tools uses), then
+ * `withPrintMode`: `^MMP` (peel off) when step 5 found a peeler, else
+ * `^MMT` (never saved to the printer). After a print,
  * the horizontal and vertical offsets (dots, may be negative) show with
  * Reprint; offsets carried over from the station's saved settings show from
  * the start. The parent keeps them and saves them with the station.
@@ -22,7 +24,7 @@ import {
 } from '@portal/lib/printLabels';
 
 import { ApiError, postTestRender, type KioskLabelTemplate, type LabelKind } from '../../lib/api';
-import { mockTemplateFor, type StationPrinter } from '../../lib/stationPrinter';
+import { mockTemplateFor, withPrintMode, type StationPrinter } from '../../lib/stationPrinter';
 import { ChoiceCard } from '../printers/ChoiceCard';
 import { alignmentInsets } from '../printers/AlignmentTestModal';
 
@@ -40,12 +42,14 @@ interface Props {
   templates: KioskLabelTemplate[];
   initiativeId: string;
   offsets: Offsets;
+  /** Print peel-off (`^MMP`): step 5 found a peeler. Otherwise tear-off. */
+  peel: boolean;
   onOffsets: (offsets: Offsets) => void;
   onClose: () => void;
 }
 
 export default function TestLabelModal({
-  printer, dpi, labelKind, templates, initiativeId, offsets, onOffsets, onClose,
+  printer, dpi, labelKind, templates, initiativeId, offsets, peel, onOffsets, onClose,
 }: Props) {
   const [choice, setChoice] = useState<Choice>('alignment');
   const [sizeKey, setSizeKey] = useState<SizeKey>(labelKind === 'front' ? '2x1' : '4x2');
@@ -97,8 +101,8 @@ export default function TestLabelModal({
     setBusy(true);
     setNotice(null);
     try {
-      const zpl = applyPrintSettings(await labelZpl(),
-        { ...DEFAULT_PRINT_SETTINGS, horizontalOffset: x, verticalOffset: y }, { singleCopy: true });
+      const zpl = withPrintMode(applyPrintSettings(await labelZpl(),
+        { ...DEFAULT_PRINT_SETTINGS, horizontalOffset: x, verticalOffset: y }, { singleCopy: true }), peel);
       await printer.send(zpl);
       setPrinted(true);
       setNotice({

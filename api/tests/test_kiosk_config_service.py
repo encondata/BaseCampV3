@@ -424,6 +424,28 @@ async def test_label_station_section_does_not_count_against_the_cap(db, value):
     assert d.config["label_station"] == value and d.config["extra_0"] == {"v": "changed"}
 
 
+_LABEL_STATION = {"label_kind": "top", "dpi": 300, "offset_x": -12, "offset_y": 4,
+                  "printer": {"type": "usb", "ip": None, "model": "ZD421", "serial": None}}
+
+
+@pytest.mark.parametrize("value", [{**_LABEL_STATION, "peel": True},
+                                   {**_LABEL_STATION, "peel": False},
+                                   _LABEL_STATION])  # a laptop from before the peeler check
+async def test_label_station_section_keeps_peel_and_accepts_documents_without_it(db, value):
+    """`peel` (print peel-off) rides in the section verbatim; an older
+    laptop's section without it is stored as sent, and a portal edit of
+    another section carries either through untouched."""
+    d = await _kiosk(db)
+    doc = _with()
+    doc["label_station"] = value
+    assert await accept_kiosk_report(db, d, doc, NOW, now=NOW)
+    assert d.config["label_station"] == value
+    later = NOW + timedelta(minutes=1)
+    edit = {**d.config, "appearance": {**d.config["appearance"], "flash_ms": 400}}
+    await apply_portal_edit(db, d, edit, actor_id=None, now=later)
+    assert d.config["label_station"] == value
+
+
 async def test_kiosk_report_bad_values_defaulted_rest_kept(db):
     d = await _kiosk(db)
     doc = _with(flash_ms=99999)
