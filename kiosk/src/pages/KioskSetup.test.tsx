@@ -40,9 +40,12 @@ vi.mock('../lib/sync', async (importOriginal) => {
 // Step 5 has its own tests (PrinterStep.test.tsx); here it only has to
 // hand back the label kind it was given and finish.
 vi.mock('../components/setup/PrinterStep', () => ({
-  default: ({ labelKind, onFinish, onBack }: { labelKind: string; onFinish: () => void; onBack: () => void }) => (
+  default: ({ labelKind, initial, onFinish, onBack }: {
+    labelKind: string; initial: { offset_x: number } | null; onFinish: () => void; onBack: () => void;
+  }) => (
     <div>
       <p>Printer step for {labelKind}</p>
+      <p>Saved offset {initial ? initial.offset_x : 'none'}</p>
       <button type="button" onClick={onFinish}>Stub finish</button>
       <button type="button" onClick={onBack}>Back</button>
     </div>
@@ -534,6 +537,45 @@ describe('laptop mode', () => {
     await screen.findByText('Step 4 of 5 · What it prints');
     await waitFor(() => expect(
       screen.getByRole('option', { name: /Front labels/ }).getAttribute('aria-selected')).toBe('true'));
+  });
+
+  const FRONT_SAVED = {
+    label_kind: 'front', printer: { type: 'usb', ip: null, model: null, serial: null },
+    dpi: 203, offset_x: 6, offset_y: 0,
+  };
+
+  async function toKindStep(user: ReturnType<typeof userEvent.setup>) {
+    renderPage();
+    await user.click(await screen.findByRole('option', { name: /Label Station/ }));
+    await user.click(await screen.findByText('NAP11 Hall Migration (demo)'));
+    await user.click(cardFor('NAP22 Hall'));
+    await screen.findByText('Step 4 of 5 · What it prints');
+  }
+
+  it('saved settings that arrive after the person chose a label kind never override it', async () => {
+    let answer: (v: unknown) => void = () => {};
+    apiMock.getLabelStation.mockReturnValue(new Promise((r) => { answer = r; }));
+    const user = userEvent.setup();
+    await toKindStep(user);
+    await user.click(screen.getByRole('option', { name: /Top labels/ }));
+    await act(async () => { answer(FRONT_SAVED); });
+    expect(screen.getByRole('option', { name: /Top labels/ }).getAttribute('aria-selected')).toBe('true');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(screen.getByText('Printer step for top')).toBeTruthy();
+    // the offsets still carry over to the printer step
+    expect(screen.getByText('Saved offset 6')).toBeTruthy();
+  });
+
+  it('saved settings that arrive once the printer step is open keep its kind but pass the offsets', async () => {
+    let answer: (v: unknown) => void = () => {};
+    apiMock.getLabelStation.mockReturnValue(new Promise((r) => { answer = r; }));
+    const user = userEvent.setup();
+    await toKindStep(user);
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(screen.getByText('Saved offset none')).toBeTruthy();
+    await act(async () => { answer(FRONT_SAVED); });
+    expect(screen.getByText('Printer step for top')).toBeTruthy();
+    expect(screen.getByText('Saved offset 6')).toBeTruthy();
   });
 
   it('a Label Station save failure stays on the Site step and says so', async () => {

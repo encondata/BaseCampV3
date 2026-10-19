@@ -111,6 +111,10 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
   const [testOpen, setTestOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
+  // Set once the test labels modal changes the offsets: saved settings that
+  // arrive late never overwrite them.
+  const offsetsTouched = useRef(false);
+  const templatesRequested = useRef(false);
   const runId = useRef(0);
   const scanTimer = useRef<number | undefined>(undefined);
   const mounted = useRef(true);
@@ -126,14 +130,20 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // The move's templates land with the sync Kiosk Setup started after Site.
+  // The station's saved settings can arrive after this step opened: their
+  // offsets still carry over, unless the test labels already changed them.
   useEffect(() => {
-    if (sync.phase === 'running') return undefined;
-    let alive = true;
+    if (initial && !offsetsTouched.current) setOffsets({ x: initial.offset_x, y: initial.offset_y });
+  }, [initial]);
+
+  // The move's templates land with the sync Kiosk Setup started after Site:
+  // read them once, after the first phase that isn't running.
+  useEffect(() => {
+    if (sync.phase === 'running' || templatesRequested.current) return;
+    templatesRequested.current = true;
     getLabelTemplates()
-      .then((ts) => { if (alive) setTemplates(ts); })
-      .catch(() => { if (alive) setTemplates([]); });
-    return () => { alive = false; };
+      .then((ts) => { if (mounted.current) setTemplates(ts); })
+      .catch(() => { if (mounted.current) setTemplates([]); });
   }, [sync.phase]);
 
   const printer = useMemo<StationPrinter | null>(() => {
@@ -143,7 +153,9 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [type, zebra.device, zebra.connected, ip, initiativeId]);
 
-  const runChecks = async (p: StationPrinter, ts: KioskLabelTemplate[]) => {
+  /** `keepInstallError`: the recheck after a failed font install keeps
+   *  saying what failed. */
+  const runChecks = async (p: StationPrinter, ts: KioskLabelTemplate[], keepInstallError = false) => {
     const id = ++runId.current;
     const live = () => id === runId.current && mounted.current;
     const put = (key: CheckKey, result: CheckRowResult) => {
@@ -153,7 +165,7 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
     setIdentity(null);
     setHostStatus(null);
     setFontFix(null);
-    setInstallError('');
+    if (!keepInstallError) setInstallError('');
 
     setRunning('answers');
     let ident: HostIdentification | null = null;
@@ -246,12 +258,14 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
     if (!printer || !fontFix) return;
     setInstalling(true);
     setInstallError('');
+    let installFailed = false;
     try {
       for (const font of fontFix.installable) {
         try {
           await printer.sendFont(font);
         } catch (err) {
-          setInstallError(`Couldn't install ${font.name} (${codeOf(err)}).`);
+          if (mounted.current) setInstallError(`Couldn't install ${font.name} (${codeOf(err)}).`);
+          installFailed = true;
           break;
         }
       }
@@ -259,7 +273,8 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
     } finally {
       if (mounted.current) setInstalling(false);
     }
-    if (mounted.current) recheck();
+    // Fonts sent before a failure still turn green; the error stays.
+    if (mounted.current && templates) void runChecks(printer, templates, installFailed);
   };
 
   const pollScan = async () => {
@@ -464,7 +479,8 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
       {testOpen && printer && identity && (
         <TestLabelModal printer={printer} dpi={identity.dpi} labelKind={labelKind}
                         templates={templates ?? []} initiativeId={initiativeId}
-                        offsets={offsets} onOffsets={setOffsets} onClose={() => setTestOpen(false)} />
+                        offsets={offsets}
+                        onOffsets={(o) => { offsetsTouched.current = true; setOffsets(o); }} onClose={() => setTestOpen(false)} />
       )}
     </>
   );

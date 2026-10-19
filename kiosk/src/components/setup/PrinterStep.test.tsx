@@ -3,7 +3,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { KioskLabelTemplate } from '../../lib/api';
+import { ApiError, type KioskLabelTemplate } from '../../lib/api';
 
 /** One fake Zebra printer, answered the same way over USB and the edge. */
 const printerState = vi.hoisted(() => ({
@@ -42,12 +42,15 @@ vi.mock('../../lib/api', async (importOriginal) => {
   return { ...actual, ...apiMock };
 });
 
-const templatesMock = vi.hoisted(() => ({ templates: [] as KioskLabelTemplate[] }));
-vi.mock('../../lib/labelTemplates', () => ({ getLabelTemplates: async () => templatesMock.templates }));
+const templatesMock = vi.hoisted(() => ({ templates: [] as KioskLabelTemplate[], calls: 0 }));
+vi.mock('../../lib/labelTemplates', () => ({
+  getLabelTemplates: async () => { templatesMock.calls += 1; return templatesMock.templates; },
+}));
 
+const syncState = vi.hoisted(() => ({ phase: 'done' }));
 vi.mock('../../lib/sync', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/sync')>();
-  return { ...actual, useSyncStatus: () => ({ phase: 'done' }) };
+  return { ...actual, useSyncStatus: () => ({ phase: syncState.phase }) };
 });
 
 const usb = vi.hoisted(() => ({
@@ -94,6 +97,8 @@ beforeEach(() => {
   usb.known = [{ productName: 'ZD421', serialNumber: 'USB1' }];
   usb.sent = [];
   templatesMock.templates = [template({ id: 'g', name: 'Generic Rack and RU' })];
+  templatesMock.calls = 0;
+  syncState.phase = 'done';
   apiMock.fetchKioskLabelFonts.mockReset().mockResolvedValue({ fonts: [], missing: [] });
   apiMock.fetchKioskFontContent.mockReset().mockResolvedValue(new Uint8Array([0, 1, 0, 0]));
   apiMock.startPrinterScan.mockReset().mockResolvedValue({ scan_id: 's1' });
@@ -115,9 +120,12 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 function renderStep(over: Partial<Parameters<typeof PrinterStep>[0]> = {}) {
   const onFinish = vi.fn();
   const onBack = vi.fn();
-  render(<PrinterStep initiativeId="i-1" labelKind="top" initial={null}
-                      onFinish={onFinish} onBack={onBack} {...over} />);
-  return { onFinish, onBack };
+  const view = render(<PrinterStep initiativeId="i-1" labelKind="top" initial={null}
+                                   onFinish={onFinish} onBack={onBack} {...over} />);
+  const rerender = (next: Partial<Parameters<typeof PrinterStep>[0]> = {}) => view.rerender(
+    <PrinterStep initiativeId="i-1" labelKind="top" initial={null}
+                 onFinish={onFinish} onBack={onBack} {...over} {...next} />);
+  return { onFinish, onBack, rerender };
 }
 
 function row(label: string): HTMLElement {
@@ -271,6 +279,26 @@ describe('checks', () => {
     expect(usb.sent).toContain('~DYE:ROBOTO.TTF,B,T,4,,');
   });
 
+  it('a failed font install keeps its error on screen after the recheck', async () => {
+    const user = userEvent.setup();
+    templatesMock.templates = [template({ code: '^XA^A@N,30,30,E:ROBOTO.TTF^FDx^FS^XZ' })];
+    apiMock.fetchKioskLabelFonts.mockResolvedValue({ fonts: [{ id: 'f-r', name: 'ROBOTO.TTF', size: 4 }], missing: [] });
+    apiMock.printerSendFont.mockRejectedValue(new ApiError(502, 'printer_unreachable'));
+    renderStep();
+    await user.click(screen.getByRole('option', { name: /Network printer/ }));
+    await user.type(screen.getByLabelText('Printer IP'), '10.0.0.40');
+    await user.click(screen.getByRole('button', { name: 'Use this address' }));
+    await failed('Fonts installed');
+    await user.click(screen.getByRole('button', { name: 'Install 1 missing font' }));
+    const message = "Couldn't install ROBOTO.TTF (printer_unreachable).";
+    await screen.findByText(message);
+    // past the settle delay and the follow-up recheck
+    await screen.findByRole('button', { name: 'Install 1 missing font' });
+    await new Promise((r) => { setTimeout(r, 900); });
+    await failed('Fonts installed');
+    expect(screen.getByText(message)).toBeTruthy();
+  });
+
   it('a font that is not in the library stays red with the upload hint', async () => {
     const user = userEvent.setup();
     templatesMock.templates = [template({ code: '^XA^A@N,30,30,E:MISSING.TTF^FDx^FS^XZ' })];
@@ -343,4 +371,36 @@ it('opens the test labels modal once the printer answers', async () => {
   await passed('Printer answers');
   await user.click(screen.getByRole('button', { name: 'Print test labels' }));
   expect(screen.getByRole('dialog', { name: 'Test labels' })).toBeTruthy();
+});
+
+it('loads the templates once, after the first sync phase that is not running', async () => {
+  syncState.phase = 'running';
+  const { rerender } = renderStep();
+  await screen.findByText(/Downloading the move's label templates/);
+  expect(templatesMock.calls).toBe(0);
+  syncState.phase = 'done';
+  rerender();
+  await waitFor(() => expect(templatesMock.calls).toBe(1));
+  syncState.phase = 'running';
+  rerender();
+  syncState.phase = 'error';
+  rerender();
+  syncState.phase = 'done';
+  rerender();
+  await new Promise((r) => { setTimeout(r, 50); });
+  expect(templatesMock.calls).toBe(1);
+});
+
+it('picks up saved offsets that arrive after the step opened', async () => {
+  const user = userEvent.setup();
+  const { onFinish, rerender } = renderStep();
+  rerender({ initial: {
+    label_kind: 'top', printer: { type: 'usb', ip: null, model: 'ZT411', serial: 'USB1' },
+    dpi: 203, offset_x: 9, offset_y: -2,
+  } });
+  await user.click(await screen.findByRole('button', { name: 'Use ZD421' }));
+  await allGreen();
+  await user.click(finishButton());
+  await waitFor(() => expect(onFinish).toHaveBeenCalled());
+  expect(apiMock.putLabelStation).toHaveBeenCalledWith(expect.objectContaining({ offset_x: 9, offset_y: -2 }));
 });

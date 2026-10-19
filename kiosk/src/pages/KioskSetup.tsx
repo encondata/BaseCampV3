@@ -122,6 +122,13 @@ export default function KioskSetup() {
   // A Label Station's step 4 choice, and its saved settings (Change setup).
   const [labelKind, setLabelKind] = useState<LabelKind>('top');
   const [labelStation, setLabelStation] = useState<LabelStationSettings | null>(null);
+  // The saved settings load after the Site save. A late answer only
+  // preselects the label kind while the kind step is still open and nobody
+  // has picked one; `labelLoad` drops an answer for an earlier save.
+  const stepRef = useRef<Step>('type');
+  const kindChosen = useRef(false);
+  const labelLoad = useRef(0);
+  useEffect(() => { stepRef.current = step; }, [step]);
   const sync = useSyncStatus();
   // An RFID station only offers scan types with RFID in the name.
   const scanTypes = options
@@ -173,6 +180,7 @@ export default function KioskSetup() {
     setSubmitError('');
     setLabelKind('top');
     setLabelStation(null);
+    labelLoad.current += 1;
     setStep(laptop ? 'type' : 'move');
     // Wizard closed: the effect above opens it and the one below loads.
     if (wizardOpen) load();
@@ -226,6 +234,7 @@ export default function KioskSetup() {
     setSubmitError('');
     setLabelKind('top');
     setLabelStation(null);
+    labelLoad.current += 1;
     setStep(laptop ? 'type' : 'move');
     setWizardOpen(true);
   };
@@ -303,9 +312,14 @@ export default function KioskSetup() {
         // Saved to the portal, but a Label Station isn't set up until its
         // printer is: steps 4 and 5 follow. Saved settings preselect them.
         setStep('kind');
+        stepRef.current = 'kind';
+        kindChosen.current = false;
+        const load = ++labelLoad.current;
         void getLabelStation().then((s) => {
+          if (load !== labelLoad.current) return;
+          // The offsets carry over to the printer step whenever they land.
           setLabelStation(s);
-          if (s) setLabelKind(s.label_kind);
+          if (s && stepRef.current === 'kind' && !kindChosen.current) setLabelKind(s.label_kind);
         }).catch(() => {});
       } else {
         writeSetupState('complete');
@@ -466,7 +480,8 @@ export default function KioskSetup() {
 
         {step === 'kind' && (
           <div>
-            <LabelKindStep selected={labelKind} onSelect={setLabelKind}
+            <LabelKindStep selected={labelKind}
+                           onSelect={(kind) => { kindChosen.current = true; setLabelKind(kind); }}
                            onContinue={() => setStep('printer')} onBack={back} />
           </div>
         )}

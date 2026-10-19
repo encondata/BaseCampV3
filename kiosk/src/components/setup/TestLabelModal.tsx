@@ -12,7 +12,8 @@
  * Every print goes through `applyPrintSettings` with the station's
  * offsets (the same `^LS`/`^LT` shift Printer tools uses). After a print,
  * the horizontal and vertical offsets (dots, may be negative) show with
- * Reprint; the parent keeps them and saves them with the station.
+ * Reprint; offsets carried over from the station's saved settings show from
+ * the start. The parent keeps them and saves them with the station.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -51,6 +52,8 @@ export default function TestLabelModal({
   const [hText, setHText] = useState(String(offsets.x));
   const [vText, setVText] = useState(String(offsets.y));
   const [printed, setPrinted] = useState(false);
+  // Carried-over (non-zero) offsets show before the first print too.
+  const [carried] = useState(offsets.x !== 0 || offsets.y !== 0);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   // The rendered mock label, by template id: a reprint only re-shifts it.
@@ -156,7 +159,7 @@ export default function TestLabelModal({
                   ))}
                 </div>
               )}
-              {printed && (
+              {(printed || carried) && (
                 <>
                   <div className="modal-section">Offsets</div>
                   <div className="pf-form zp-form">

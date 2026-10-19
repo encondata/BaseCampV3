@@ -104,9 +104,16 @@ it('skips a mock template that only exists at another DPI, with a note', async (
   expect(apiMock.postTestRender).not.toHaveBeenCalled();
 });
 
+it('shows carried-over offsets before the first print', () => {
+  renderModal({ offsets: { x: 12, y: -4 } });
+  expect((screen.getByLabelText('Horizontal offset') as HTMLInputElement).value).toBe('12');
+  expect((screen.getByLabelText('Vertical offset') as HTMLInputElement).value).toBe('-4');
+});
+
 it('shows offsets after a print, and Reprint uses the new offsets', async () => {
   const user = userEvent.setup();
-  const { printer, onOffsets } = renderModal();
+  const { printer, onOffsets } = renderModal({ offsets: { x: 0, y: 0 } });
+  // nothing carried over: the offsets wait for the first print
   expect(screen.queryByLabelText('Horizontal offset')).toBeNull();
   await user.click(screen.getByRole('radio', { name: /Mock-data label/ }));
   await user.click(screen.getByRole('button', { name: 'Print test label' }));

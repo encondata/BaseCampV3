@@ -999,6 +999,8 @@ export interface EdgeSetup {
   scan_status_label: string;
   station_type: 'label' | 'rfid' | null;
   reader: { ip: string; serial: string; model: string; versions: Partial<ReaderVersions> } | null;
+  /** A Label Station's saved printer settings; null until step 5 saves them. */
+  label_station?: LabelStationSettings | null;
   updated_at: string;
 }
 

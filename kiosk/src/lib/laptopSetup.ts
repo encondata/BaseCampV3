@@ -42,6 +42,18 @@ export function selectionFromEdge(setup: EdgeSetup | null): KioskSetupSelection 
   return selection;
 }
 
+/** A Label Station's setup is saved at Site, before its label kind and
+ *  printer (steps 4-5): it only counts as finished once those are saved,
+ *  i.e. when the edge's copy carries `label_station`. Otherwise a reload or
+ *  a second browser mid-setup would skip the printer step. */
+export function edgeSetupComplete(setup: EdgeSetup | null): boolean {
+  if (!setup || typeof setup !== 'object') return false;
+  if (setup.station_type === 'label') {
+    return typeof setup.label_station === 'object' && setup.label_station !== null;
+  }
+  return true;
+}
+
 let inFlight: Promise<EdgeSetup | null> | null = null;
 
 /** One GET /edge/setup shared by concurrent callers; null on any failure. */
@@ -60,7 +72,7 @@ export async function hydrateLaptopSetup(lockedMove: string | null = null): Prom
   if (!isLaptop() || hasLocalSetup()) return false;
   const shared = await fetchShared();
   const selection = selectionFromEdge(shared);
-  if (!selection) return false;
+  if (!selection || !edgeSetupComplete(shared)) return false;
   if (lockedMove && selection.initiativeId !== lockedMove) return false;
   // a setup finished in this browser while the edge answered wins
   if (hasLocalSetup()) return false;
