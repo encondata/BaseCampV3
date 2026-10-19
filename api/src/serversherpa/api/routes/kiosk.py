@@ -1276,7 +1276,7 @@ async def kiosk_label_font_content(
             or font.name.upper() not in await _move_font_names(db, initiative)):
         raise _err(404, "font_not_found")
     data = await get_object(font.storage_key)
-    return Response(content=data, media_type=font.content_type,
+    return Response(content=data, media_type=font.content_type or "font/ttf",
                     headers={"Content-Disposition": f'attachment; filename="{font.name}"'})
 
 

@@ -22,6 +22,9 @@ from edge.upstream import CloudOffline
 router = APIRouter(dependencies=[Depends(require_session)])
 
 MAX_COMMAND = 4096              # a query: ~HI, ~HS, ^XA^HWE:*.*^XZ
+# The only queries the kiosk sends (identity, status, the E: listing), byte
+# for byte; anything else (settings, deletes, resets) is refused here.
+ALLOWED_QUERIES = frozenset({"~HI", "~HS", "^XA^HWE:*.*^XZ"})
 MAX_ZPL = 8 * 1024 * 1024       # a label job (graphics can be large)
 BODY_OVERHEAD = 64 * 1024       # the JSON around it (ip, escapes of a few characters)
 MAX_FONT = 16 * 1024 * 1024     # a TrueType font
@@ -67,10 +70,13 @@ async def scan(request: Request) -> dict:
 @router.post("/edge/printers/query")
 async def query(request: Request) -> dict:
     """`{ip, command}` → `{response, truncated}`: the reply as text (bytes
-    0-255 as latin-1), at most 64 KB, ending at 2 s idle or 5 s in all."""
+    0-255 as latin-1), at most 64 KB, ending at 2 s idle or 5 s in all.
+    `command` must be one of ALLOWED_QUERIES (422 command_not_allowed)."""
     body = await json_object(request)
     ip = await _ip(request, body.get("ip"))
     command = _text(body, "command", MAX_COMMAND)
+    if command not in ALLOWED_QUERIES:
+        raise err(422, "command_not_allowed")
     try:
         data, truncated = await request.app.state.printers.query(ip, command.encode("utf-8"))
     except PrinterError as exc:

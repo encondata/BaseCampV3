@@ -405,6 +405,25 @@ async def test_more_than_16_unknown_sections_is_refused(db):
     assert d.config_version == 1
 
 
+@pytest.mark.parametrize("value", [{"label_kind": "container", "dpi": 203,
+                                    "printer": {"type": "network", "ip": "10.0.0.9"}}, None])
+async def test_label_station_section_does_not_count_against_the_cap(db, value):
+    """The laptop's label_station section is a platform section: it rides
+    alongside 16 unknown sections, verbatim (null stays null), and a
+    report that leaves it out carries it forward."""
+    d = await _kiosk(db)
+    doc = _sections(16)
+    doc["label_station"] = value
+    assert await accept_kiosk_report(db, d, doc, NOW, now=NOW)
+    assert d.config_version == 1
+    assert "label_station" in d.config and d.config["label_station"] == value
+    later = NOW + timedelta(minutes=1)
+    again = _sections(16)
+    again["extra_0"] = {"v": "changed"}
+    assert await accept_kiosk_report(db, d, again, later, now=later)
+    assert d.config["label_station"] == value and d.config["extra_0"] == {"v": "changed"}
+
+
 async def test_kiosk_report_bad_values_defaulted_rest_kept(db):
     d = await _kiosk(db)
     doc = _with(flash_ms=99999)

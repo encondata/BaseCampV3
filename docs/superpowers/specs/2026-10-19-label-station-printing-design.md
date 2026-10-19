@@ -153,7 +153,7 @@ later phase gets its own plan.
   (`labels/generate/engine.render_label` with `placeholder_values`). Phase 1's
   mock-data test label is rendered by the portal through a new **kiosk route
   that renders one test label** (template plus mock values plus DPI) and
-  returns ZPL. On the laptop, the edge passes this through and caches it.
+  returns ZPL. On the laptop, the edge passes this through (online only; the modal keeps the rendered label for reprints).
 - **Web kiosk:** no Label Station yet, so no generation there.
 - **Laptop (phase 2):** the standalone script uses **the same renderer code**
   as the portal. It is a shared Python module, not a copy, so its output is

@@ -148,6 +148,22 @@ async def test_content_streams_a_move_font_and_404s_any_other(
         assert r.json()["detail"]["code"] == "font_not_found"
 
 
+async def test_content_without_a_stored_type_is_served_as_font_ttf(
+        client, db, seeded_user, monkeypatch):
+    hdrs = await login(client)
+    move, *_ = await _move(db)
+    db.add(_tpl("Front Fonts", label_type="front", code="^XA^A@N,25,,E:AAA.TTF^XZ"))
+    aaa = await _font(db, "AAA.TTF")
+    aaa.content_type = ""   # the column is NOT NULL; null and empty both fall back
+    await db.commit()
+    _fake_storage(monkeypatch, {"label-fonts/AAA.TTF": TTF})
+
+    r = await _content(client, hdrs, aaa.id, move.id)
+    assert r.status_code == 200, r.text
+    assert r.content == TTF
+    assert r.headers["content-type"].startswith("font/ttf")
+
+
 async def test_move_password_session_is_locked_to_its_move(
         client, db, seeded_user, monkeypatch):
     move, *_ = await _move(db)
