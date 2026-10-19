@@ -14,7 +14,7 @@ from edge.rfid import station_key
 
 SETTINGS = {"label_kind": "top",
             "printer": {"type": "network", "ip": "10.0.0.40", "model": "ZT411", "serial": "S1"},
-            "dpi": 300, "offset_x": -12, "offset_y": 4}
+            "dpi": 300, "offset_x": -12, "offset_y": 4, "peel": True}
 USB = {"label_kind": "front", "printer": {"type": "usb", "model": "ZD421", "serial": None},
        "dpi": 203, "offset_x": 0, "offset_y": 0}
 
@@ -45,7 +45,32 @@ async def test_settings_round_trip_into_the_shared_setup(app, client):
     assert laptop_setup.load(app.state.store)["label_station"] == SETTINGS
     r = await put(app, client, USB)
     assert r.json() == {**USB, "printer": {"type": "usb", "ip": None, "model": "ZD421",
-                                            "serial": None}}
+                                            "serial": None}, "peel": False}
+
+
+async def test_peel_is_kept_and_defaults_to_tear_off(app, client):
+    label_setup(app)
+    r = await put(app, client, {**USB, "peel": True})
+    assert r.status_code == 200 and r.json()["peel"] is True
+    r = await put(app, client, {**USB, "peel": False})
+    assert r.json()["peel"] is False
+    r = await put(app, client, USB)    # an older kiosk sends no peel
+    assert r.json()["peel"] is False
+
+
+async def test_a_setup_saved_before_peel_reads_as_tear_off(app, client):
+    write_host(app)
+    label_setup(app)
+    old = {k: v for k, v in SETTINGS.items() if k != "peel"}
+    setup = laptop_setup.load(app.state.store)
+    setup["label_station"] = old
+    app.state.store.run("UPDATE laptop_setup SET setup_json = ? WHERE id = 1",
+                        (json.dumps(setup),))
+    want = {**old, "peel": False}
+    assert (await client.get("/edge/label-station", headers=make_session(app))).json() == want
+    assert laptop_setup.load(app.state.store)["label_station"] == want
+    with app.state.store.tx() as c:
+        assert laptop_setup.label_station_in(c) == want
 
 
 async def test_printer_object_is_normalized(app, client):
@@ -73,6 +98,7 @@ async def test_needs_a_label_station_setup(app, client):
     {"printer": {"type": "usb", "model": 5}},
     {"dpi": "300"}, {"dpi": 0}, {"dpi": True}, {"dpi": 5000},
     {"offset_x": 1.5}, {"offset_y": "3"}, {"offset_x": 100000}, {"offset_y": None},
+    {"peel": "yes"}, {"peel": 1}, {"peel": None},
 ])
 async def test_bad_settings_are_422(app, client, change):
     write_host(app)

@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from './api';
 import {
   checkDpi, fontsUsed, mockTemplateFor, templateFamily, neededFonts, networkStationPrinter, statusProblems,
-  templatesOfKind, usbStationPrinter,
+  templatesOfKind, usbStationPrinter, parseGetvar, withPrintMode, PEELER_PRESENT_QUERY, PRINT_MODE_QUERY,
 } from './stationPrinter';
 import type { KioskLabelTemplate } from './api';
 import type { ZebraPrinter } from './useZebraPrinter';
@@ -104,6 +104,100 @@ describe('usbStationPrinter', () => {
       .toBe('http://api.test/kiosk/labels/fonts/f-1/content?initiative_id=i-1');
     expect(sent).toEqual(['~DYE:ARIAL.TTF,B,T,6,,']);
     expect(Array.from(bytes[0])).toEqual([0, 1, 0, 0, 9, 9]);
+  });
+});
+
+describe('peeler', () => {
+  function zebraAnswering(replies: Record<string, string | Error>) {
+    return {
+      query: vi.fn(async (cmd: string) => {
+        const r = replies[cmd];
+        if (r instanceof Error) throw r;
+        return r ?? '';
+      }),
+      send: vi.fn(), sendBytes: vi.fn(), productName: 'ZD421', device: {},
+    } as unknown as ZebraPrinter;
+  }
+
+  it('sends the two SGD getvars byte for byte', () => {
+    expect(PEELER_PRESENT_QUERY).toBe('! U1 getvar "sensor.peeler_present"\r\n');
+    expect(PRINT_MODE_QUERY).toBe('! U1 getvar "media.printmode"\r\n');
+  });
+
+  it('reads a fitted peeler and the print mode', async () => {
+    const zebra = zebraAnswering({ [PEELER_PRESENT_QUERY]: '"Present"', [PRINT_MODE_QUERY]: '"peel off"' });
+    expect(await usbStationPrinter(zebra, 'i-1').peeler()).toEqual({ present: true, mode: 'peel off' });
+    expect(zebra.query).toHaveBeenCalledWith(PEELER_PRESENT_QUERY, undefined);
+    expect(zebra.query).toHaveBeenCalledWith(PRINT_MODE_QUERY, undefined);
+  });
+
+  it('reads no peeler', async () => {
+    const zebra = zebraAnswering({ [PEELER_PRESENT_QUERY]: '"Not Present"', [PRINT_MODE_QUERY]: '"tear off"' });
+    expect(await usbStationPrinter(zebra, 'i-1').peeler()).toEqual({ present: false, mode: 'tear off' });
+  });
+
+  it('a printer that does not know the variables reports null', async () => {
+    const zebra = zebraAnswering({ [PEELER_PRESENT_QUERY]: '"?"', [PRINT_MODE_QUERY]: '"?"' });
+    expect(await usbStationPrinter(zebra, 'i-1').peeler()).toEqual({ present: null, mode: null });
+  });
+
+  it('a silent printer or an unexpected reply reports null', async () => {
+    const zebra = zebraAnswering({ [PEELER_PRESENT_QUERY]: '', [PRINT_MODE_QUERY]: '"TEAR OFF"' });
+    expect(await usbStationPrinter(zebra, 'i-1').peeler()).toEqual({ present: null, mode: 'tear off' });
+    const odd = zebraAnswering({ [PEELER_PRESENT_QUERY]: '"maybe"', [PRINT_MODE_QUERY]: '' });
+    expect(await usbStationPrinter(odd, 'i-1').peeler()).toEqual({ present: null, mode: null });
+  });
+
+  it('a query error reports null instead of throwing', async () => {
+    const zebra = zebraAnswering({
+      [PEELER_PRESENT_QUERY]: new Error('read timeout'), [PRINT_MODE_QUERY]: new Error('read timeout'),
+    });
+    expect(await usbStationPrinter(zebra, 'i-1').peeler()).toEqual({ present: null, mode: null });
+  });
+
+  it('goes through the edge for a network printer', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const { command } = JSON.parse(String(init?.body));
+      return json({ response: command === PEELER_PRESENT_QUERY ? '"Present"' : '"tear off"', truncated: false });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await networkStationPrinter('10.0.0.40', 'i-1').peeler())
+      .toEqual({ present: true, mode: 'tear off' });
+    const commands = callsOf(fetchMock).map(([, init]) => JSON.parse(String(init?.body)).command);
+    expect(commands).toEqual([PEELER_PRESENT_QUERY, PRINT_MODE_QUERY]);
+  });
+});
+
+describe('parseGetvar', () => {
+  it.each([
+    ['"Present"', 'Present'],
+    ['"Not Present"', 'Not Present'],
+    ['"?"', null],
+    ['', null],
+    [' "peel off" ', 'peel off'],
+    ['"peel off"\r\n', 'peel off'],
+    ['""', null],
+  ])('%j -> %j', (reply, want) => {
+    expect(parseGetvar(reply)).toBe(want);
+  });
+});
+
+describe('withPrintMode', () => {
+  it('puts ^MMP right after ^XA for peel and ^MMT for tear', () => {
+    expect(withPrintMode('^XA^FO10,10^FDx^FS^XZ', true)).toBe('^XA^MMP^FO10,10^FDx^FS^XZ');
+    expect(withPrintMode('^XA^FO10,10^FDx^FS^XZ', false)).toBe('^XA^MMT^FO10,10^FDx^FS^XZ');
+  });
+
+  it('marks every label in a multi-label job', () => {
+    expect(withPrintMode('^XA^FDa^FS^XZ\n^XA^FDb^FS^XZ', true))
+      .toBe('^XA^MMP^FDa^FS^XZ\n^XA^MMP^FDb^FS^XZ');
+    expect(withPrintMode('^XA^FDa^FS^XZ^XA^FDb^FS^XZ', false))
+      .toBe('^XA^MMT^FDa^FS^XZ^XA^MMT^FDb^FS^XZ');
+  });
+
+  it('never saves the mode to the printer', () => {
+    const out = withPrintMode('^XA^XZ', true);
+    expect(out).not.toMatch(/\^JUS|setvar/i);
   });
 });
 

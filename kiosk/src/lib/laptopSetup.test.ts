@@ -50,7 +50,7 @@ it('a laptop browser with no setup loads the laptop\'s, then downloads the move 
 
 const LABEL_STATION = {
   label_kind: 'top', printer: { type: 'usb', ip: null, model: 'ZT411', serial: 'S1' },
-  dpi: 203, offset_x: 0, offset_y: 0,
+  dpi: 203, offset_x: 0, offset_y: 0, peel: false,
 };
 
 it('a label station carries no reader', async () => {

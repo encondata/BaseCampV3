@@ -5,7 +5,8 @@
  * a font, and read a reply; identity (`~HI`), status (`~HS`) and the E:
  * listing (`^HW`) are built and parsed once, here, so the setup checks,
  * font install and test prints run the same code and send the same
- * commands either way.
+ * commands either way. The peeler check (two SGD getvars) and the
+ * per-label print mode (`withPrintMode`) live here too.
  *
  * Also the pure helpers the setup step needs: which templates belong to
  * a label kind, the DPI check, the fonts those templates use, what a
@@ -27,6 +28,19 @@ import {
 } from './api';
 import type { ZebraPrinter } from './useZebraPrinter';
 
+/** SGD reads, byte for byte as the edge allows them (CR LF included). A
+ *  ZD421 with a peeler answers `"Present"`, one without `"Not Present"`,
+ *  a printer that doesn't know the variable `"?"`, an old one maybe
+ *  nothing. (`^HH` doesn't report the peeler, and `sensor.peeler` is the
+ *  peel sensor's state, not whether one is fitted.) */
+export const PEELER_PRESENT_QUERY = '! U1 getvar "sensor.peeler_present"\r\n';
+/** `"tear off"`, `"peel off"`, `"rewind"`, `"cutter"`, … */
+export const PRINT_MODE_QUERY = '! U1 getvar "media.printmode"\r\n';
+
+/** `present`: null when the printer doesn't say (unknown variable, no or
+ *  unreadable answer, a query error). `mode`: the print mode, lower case. */
+export interface PeelerInfo { present: boolean | null; mode: string | null }
+
 export interface StationPrinter {
   kind: 'usb' | 'network';
   /** The LAN address of a network printer; null over USB. */
@@ -35,6 +49,8 @@ export interface StationPrinter {
   serial: string | null;
   identify(): Promise<HostIdentification | null>;
   status(): Promise<HostStatus | null>;
+  /** Whether a peeler is fitted, and the printer's print mode. Never throws. */
+  peeler(): Promise<PeelerInfo>;
   query(command: string): Promise<string>;
   send(zpl: string): Promise<void>;
   /** Installs a library font on E: (`~DY` plus its bytes). */
@@ -51,6 +67,26 @@ interface Transport {
   sendFont(name: string, font: KioskLabelFont): Promise<void>;
 }
 
+/** One getvar's value, or null on any failure. Over USB the reply is a
+ *  single short packet with no framing, so the default read is enough. */
+async function getvar(t: Transport, command: string): Promise<string | null> {
+  try {
+    return parseGetvar(await t.query(command));
+  } catch {
+    return null;
+  }
+}
+
+async function readPeeler(t: Transport): Promise<PeelerInfo> {
+  const present = await getvar(t, PEELER_PRESENT_QUERY);
+  const mode = await getvar(t, PRINT_MODE_QUERY);
+  const fitted = present?.toLowerCase();
+  return {
+    present: fitted === 'present' ? true : fitted === 'not present' ? false : null,
+    mode: mode ? mode.toLowerCase() : null,
+  };
+}
+
 function fromTransport(t: Transport): StationPrinter {
   return {
     kind: t.kind,
@@ -59,6 +95,7 @@ function fromTransport(t: Transport): StationPrinter {
     identify: async () => parseHostIdentification(await t.query(HOST_IDENTIFICATION)),
     // ~HS answers in three frames; USB reads them in up to four packets.
     status: async () => parseHostStatus(await t.query(HOST_STATUS, { maxReads: 4 })),
+    peeler: () => readPeeler(t),
     query: (command) => t.query(command),
     send: (zpl) => t.send(zpl),
     // Zebra object names are upper case; the same name goes out either way.
@@ -103,6 +140,22 @@ export async function readFonts(printer: StationPrinter): Promise<DirectoryListi
 }
 
 // ── pure helpers ────────────────────────────────────────────────────
+
+/** An SGD getvar reply's value: surrounding whitespace and double quotes
+ *  stripped; `"?"` (unknown variable) and an empty reply are null. */
+export function parseGetvar(reply: string): string | null {
+  let v = reply.trim();
+  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1).trim();
+  return v === '' || v === '?' ? null : v;
+}
+
+/** The label printed peel-off (`^MMP`) or tear-off (`^MMT`): the mode goes
+ *  right after every `^XA`, so it holds for that label only and is never
+ *  saved to the printer (no `^JUS`, no setvar). */
+export function withPrintMode(zpl: string, peel: boolean): string {
+  const mode = peel ? '^MMP' : '^MMT';
+  return zpl.replace(/\^XA/g, `^XA${mode}`);
+}
 
 export const KIND_LABEL: Record<LabelKind, string> = { top: 'Top', front: 'Front' };
 

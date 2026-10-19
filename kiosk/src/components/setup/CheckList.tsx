@@ -2,7 +2,8 @@
  * Rows for the setup checks (the RFID Network check and final check, and
  * the Label Station's printer checks): a spinner while a row runs, a green
  * check when it passed, a red X with its detail when it failed, a muted
- * dot until it has run.
+ * dot until it has run. A row marked `showOkDetail` (an informational
+ * check that always passes) shows its detail, muted, when it passed too.
  */
 
 import type { CheckName } from '../../lib/api';
@@ -11,7 +12,7 @@ import type { CheckName } from '../../lib/api';
 export interface CheckRowResult { state: 'ok' | 'fail' | 'unknown'; detail?: string }
 
 interface Props<N extends string> {
-  items: { name: N; label: string }[];
+  items: { name: N; label: string; showOkDetail?: boolean }[];
   results: Partial<Record<N, CheckRowResult>>;
   running: N | null;
 }
@@ -19,7 +20,7 @@ interface Props<N extends string> {
 export default function CheckList<N extends string = CheckName>({ items, results, running }: Props<N>) {
   return (
     <ul className="check-list">
-      {items.map(({ name, label }) => {
+      {items.map(({ name, label, showOkDetail }) => {
         const result: CheckRowResult | undefined = results[name];
         return (
           <li key={name} className="check-row">
@@ -45,6 +46,9 @@ export default function CheckList<N extends string = CheckName>({ items, results
             <span>{label}</span>
             {result && result.state !== 'ok' && result.detail && (
               <span className="form-error">{result.detail}</span>
+            )}
+            {result?.state === 'ok' && showOkDetail && result.detail && (
+              <span className="check-note">{result.detail}</span>
             )}
           </li>
         );

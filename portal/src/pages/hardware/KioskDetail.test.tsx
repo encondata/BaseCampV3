@@ -425,6 +425,21 @@ it('the Devices tab shows a read-only Label Station card from config.label_stati
   expect(within(card).queryByRole('button')).toBeNull();
 });
 
+it('the Label Station card shows the print mode: peel off, or tear off when not reported', async () => {
+  api.getDevice.mockResolvedValue(detail({ config: {
+    ...structuredClone(CONFIG), label_station: { ...LABEL_STATION, peel: true } } }));
+  renderAt('/hardware/kiosks/k1/devices');
+  let card = (await screen.findByRole('heading', { name: 'Label Station' })).closest('.panel') as HTMLElement;
+  expect(within(card).getByText('Print mode')).not.toBeNull();
+  expect(within(card).getByText('Peel off')).not.toBeNull();
+  cleanup();
+  // a laptop from before the peeler check reports no peel: tear off
+  api.getDevice.mockResolvedValue(detail({ config: { ...structuredClone(CONFIG), label_station: LABEL_STATION } }));
+  renderAt('/hardware/kiosks/k1/devices');
+  card = (await screen.findByRole('heading', { name: 'Label Station' })).closest('.panel') as HTMLElement;
+  expect(within(card).getByText('Tear off')).not.toBeNull();
+});
+
 it('a USB Label Station shows no IP row', async () => {
   api.getDevice.mockResolvedValue(detail({ config: {
     ...structuredClone(CONFIG),

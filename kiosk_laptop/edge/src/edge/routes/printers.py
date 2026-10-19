@@ -21,10 +21,15 @@ from edge.upstream import CloudOffline
 
 router = APIRouter(dependencies=[Depends(require_session)])
 
-MAX_COMMAND = 4096              # a query: ~HI, ~HS, ^XA^HWE:*.*^XZ
-# The only queries the kiosk sends (identity, status, the E: listing), byte
-# for byte; anything else (settings, deletes, resets) is refused here.
-ALLOWED_QUERIES = frozenset({"~HI", "~HS", "^XA^HWE:*.*^XZ"})
+MAX_COMMAND = 4096              # a query: ~HI, ~HS, ^XA^HWE:*.*^XZ, two SGD getvars
+# The only queries the kiosk sends (identity, status, the E: listing, and
+# the SGD reads of the peeler and print mode), byte for byte; anything else
+# (settings, setvar, deletes, resets) is refused here.
+ALLOWED_QUERIES = frozenset({
+    "~HI", "~HS", "^XA^HWE:*.*^XZ",
+    '! U1 getvar "sensor.peeler_present"\r\n',
+    '! U1 getvar "media.printmode"\r\n',
+})
 MAX_ZPL = 8 * 1024 * 1024       # a label job (graphics can be large)
 BODY_OVERHEAD = 64 * 1024       # the JSON around it (ip, escapes of a few characters)
 MAX_FONT = 16 * 1024 * 1024     # a TrueType font
@@ -166,7 +171,7 @@ async def get_label_station(request: Request) -> dict | None:
 @router.put("/edge/label-station")
 async def put_label_station(request: Request) -> dict:
     """`{label_kind, printer: {type, ip?, model, serial?}, dpi, offset_x,
-    offset_y}` → the stored copy. 409 not_label_station until the laptop is
+    offset_y, peel?}` → the stored copy (`peel` false when left out). 409 not_label_station until the laptop is
     set up as a Label Station."""
     body = await json_object(request)
     st = request.app.state

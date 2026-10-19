@@ -1225,6 +1225,9 @@ export interface LabelStationSettings {
   dpi: number;
   offset_x: number;
   offset_y: number;
+  /** Print peel-off (`^MMP` on every label): step 5 found a peeler. The
+   *  edge reads settings saved before this as false (tear off). */
+  peel: boolean;
 }
 
 /** One font from the portal's library that the move's templates use. */

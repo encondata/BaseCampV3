@@ -21,7 +21,7 @@ function lastCall(fetchMock: ReturnType<typeof vi.fn>): { url: string; method: s
 
 const SETTINGS: api.LabelStationSettings = {
   label_kind: 'front', printer: { type: 'network', ip: '10.0.0.40', model: 'ZT411', serial: null },
-  dpi: 300, offset_x: -12, offset_y: 4,
+  dpi: 300, offset_x: -12, offset_y: 4, peel: true,
 };
 
 it('saves the settings with PUT /edge/label-station and reads them back with GET', async () => {
