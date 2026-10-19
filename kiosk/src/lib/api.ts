@@ -1201,3 +1201,96 @@ export interface ReaderDevice {
 export async function getReaderDevice(): Promise<ReaderDevice> {
   return jsonFrom<ReaderDevice>(await apiFetch('/edge/rfid/device'));
 }
+
+// ── Label Station printing (Kiosk Setup steps 4-5) ──────────────────
+// The kiosk font + test-render routes (kiosk:view, scoped to the move's
+// own templates), and the laptop edge's network printer transport and
+// station settings. Printer errors carry `detail.code`: bad_printer_ip
+// (422), printer_unreachable (502), printer_timeout (504),
+// font_name_mismatch (409), font_not_found (404), cloud_sign_in_required
+// (403), not_label_station (409).
+
+export type LabelKind = 'top' | 'front';
+
+/** The station's label settings as the edge keeps them in the laptop's
+ *  shared setup (and reports as the config section `label_station`). */
+export interface LabelStationSettings {
+  label_kind: LabelKind;
+  printer: { type: 'usb' | 'network'; ip: string | null; model: string | null; serial: string | null };
+  dpi: number;
+  offset_x: number;
+  offset_y: number;
+}
+
+/** One font from the portal's library that the move's templates use. */
+export interface KioskLabelFont { id: string; name: string; size: number }
+
+/** `missing`: fonts the move's templates use that aren't in the library. */
+export interface KioskLabelFonts { fonts: KioskLabelFont[]; missing: string[] }
+
+export async function fetchKioskLabelFonts(initiativeId: string): Promise<KioskLabelFonts> {
+  return jsonFrom<KioskLabelFonts>(await apiFetch(
+    `/kiosk/labels/fonts?initiative_id=${encodeURIComponent(initiativeId)}`));
+}
+
+/** The font's TrueType bytes. */
+export async function fetchKioskFontContent(fontId: string, initiativeId: string): Promise<Uint8Array> {
+  const resp = await apiFetch(`/kiosk/labels/fonts/${encodeURIComponent(fontId)}/content`
+    + `?initiative_id=${encodeURIComponent(initiativeId)}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return new Uint8Array(await resp.arrayBuffer());
+}
+
+/** One template filled with the portal's mock values by the portal's own
+ *  renderer — finished ZPL, never filled in on the kiosk. */
+export async function postTestRender(body: {
+  initiative_id: string; template_id: string; dpi_key: string;
+}): Promise<{ zpl: string; template_name: string }> {
+  return jsonFrom<{ zpl: string; template_name: string }>(await postJson('/kiosk/labels/test-render', body));
+}
+
+export interface PrinterScan {
+  scan_id: string | null;
+  state: 'running' | 'done' | 'failed';
+  probed: number;
+  total: number;
+  printers: { ip: string }[];
+}
+
+/** Starts a scan of the laptop's subnets for TCP 9100 (cancelling a running one). */
+export async function startPrinterScan(): Promise<{ scan_id: string }> {
+  return jsonFrom<{ scan_id: string }>(await apiFetch('/edge/printers/scan', { method: 'POST' }));
+}
+
+export async function getPrinterScan(): Promise<PrinterScan> {
+  return jsonFrom<PrinterScan>(await apiFetch('/edge/printers/scan'));
+}
+
+/** Sends a command to a LAN printer on 9100 and returns its reply. */
+export async function printerQuery(ip: string, command: string): Promise<{ response: string; truncated: boolean }> {
+  return jsonFrom<{ response: string; truncated: boolean }>(await postJson('/edge/printers/query', { ip, command }));
+}
+
+export async function printerSend(ip: string, zpl: string): Promise<void> {
+  await jsonFrom<{ ok: true }>(await postJson('/edge/printers/send', { ip, zpl }));
+}
+
+/** The edge downloads the font from the kiosk font route and sends it with `~DY`. */
+export async function printerSendFont(body: {
+  ip: string; font_id: string; name: string; initiative_id: string;
+}): Promise<void> {
+  await jsonFrom<{ ok: true }>(await postJson('/edge/printers/send-font', body));
+}
+
+/** The station's saved label settings, or null when none are saved. */
+export async function getLabelStation(): Promise<LabelStationSettings | null> {
+  return jsonFrom<LabelStationSettings | null>(await apiFetch('/edge/label-station'));
+}
+
+export async function putLabelStation(settings: LabelStationSettings): Promise<LabelStationSettings> {
+  return jsonFrom<LabelStationSettings>(await apiFetch('/edge/label-station', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  }));
+}

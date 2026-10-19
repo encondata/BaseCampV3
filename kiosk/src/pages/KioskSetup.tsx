@@ -6,6 +6,10 @@
  * (NetworkCheckStep). Every path then continues the same way: pick a move, then which of that move's sites this
  * kiosk is at ("step 1A" — the move's source or destination site), then
  * a scan type, and stamp this kiosk's Device row (POST /kiosk/setup).
+ * A Label Station has no scan type: its setup is saved right after Site
+ * (always Labeled), then it picks what it prints (LabelKindStep) and its
+ * printer (PrinterStep); setup only counts as complete once the printer
+ * step finishes.
  * Tap-to-select card pickers (`.setup-card`, mirroring `.kiosk-tile`) —
  * large touch targets, no native `<select>`. Tapping a move or site card
  * selects it and advances to the next step; tapping a scan-type card
@@ -26,13 +30,16 @@ import { useNavigate } from 'react-router-dom';
 
 import ConfirmStep from '../components/setup/ConfirmStep';
 import ConnectStep from '../components/setup/ConnectStep';
+import LabelKindStep from '../components/setup/LabelKindStep';
 import NetworkCheckStep from '../components/setup/NetworkCheckStep';
 import PairStep from '../components/setup/PairStep';
+import PrinterStep from '../components/setup/PrinterStep';
 import ReaderStep from '../components/setup/ReaderStep';
 import StationTypeStep from '../components/setup/StationTypeStep';
 import {
-  ApiError, CLOUD_SIGN_IN_TEXT, getSetupOptions, submitKioskSetup, type PairResult,
-  type ReaderInfo, type SetupOptionInitiative, type SetupOptions, type SetupOptionSite,
+  ApiError, CLOUD_SIGN_IN_TEXT, getLabelStation, getSetupOptions, submitKioskSetup,
+  type LabelKind, type LabelStationSettings, type PairResult, type ReaderInfo,
+  type SetupOptionInitiative, type SetupOptions, type SetupOptionSite,
 } from '../lib/api';
 import { getIdentity } from '../lib/identity';
 import {
@@ -48,11 +55,14 @@ import { formatSyncedAt, runSync, useSyncStatus } from '../lib/sync';
 /** Shown when Kiosk Setup is reached from another device on the LAN. */
 const LAN_NOTICE = "You're changing the setup of the laptop itself.";
 
-type Step = 'type' | 'reader' | 'connect' | 'pair' | 'network' | 'move' | 'site' | 'scan' | 'confirm';
+type Step =
+  'type' | 'reader' | 'connect' | 'pair' | 'network' | 'move' | 'site' | 'scan' | 'confirm'
+  | 'kind' | 'printer';
 
 const STEP_LABEL: Record<Step, string> = {
   type: 'Station type', reader: 'Select reader', connect: 'Connect', pair: 'Pair',
   network: 'Network check', move: 'Move', site: 'Site', scan: 'Scan type', confirm: 'Confirm & verify',
+  kind: 'What it prints', printer: 'Printer',
 };
 
 /** A Label Station records one scan type only (Jimmy, 2026-10-19), so
@@ -64,7 +74,7 @@ const LABEL_STATION_SCAN_STATUS = 'labeled';
 function pathFor(laptop: boolean, stationType: StationType | ''): Step[] {
   if (!laptop) return ['move', 'site', 'scan'];
   if (stationType === 'rfid') return ['type', 'reader', 'connect', 'pair', 'network', 'move', 'site', 'scan', 'confirm'];
-  if (stationType === 'label') return ['type', 'move', 'site'];
+  if (stationType === 'label') return ['type', 'move', 'site', 'kind', 'printer'];
   return ['type', 'move', 'site', 'scan'];
 }
 
@@ -109,6 +119,9 @@ export default function KioskSetup() {
   const [scanStatus, setScanStatus] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
+  // A Label Station's step 4 choice, and its saved settings (Change setup).
+  const [labelKind, setLabelKind] = useState<LabelKind>('top');
+  const [labelStation, setLabelStation] = useState<LabelStationSettings | null>(null);
   const sync = useSyncStatus();
   // An RFID station only offers scan types with RFID in the name.
   const scanTypes = options
@@ -158,6 +171,8 @@ export default function KioskSetup() {
     setConnected(null);
     setPaired(null);
     setSubmitError('');
+    setLabelKind('top');
+    setLabelStation(null);
     setStep(laptop ? 'type' : 'move');
     // Wizard closed: the effect above opens it and the one below loads.
     if (wizardOpen) load();
@@ -209,6 +224,8 @@ export default function KioskSetup() {
     setConnected(null);
     setPaired(null);
     setSubmitError('');
+    setLabelKind('top');
+    setLabelStation(null);
     setStep(laptop ? 'type' : 'move');
     setWizardOpen(true);
   };
@@ -281,10 +298,20 @@ export default function KioskSetup() {
         if (reader) saved.reader = { ip: reader.ip, serial: reader.serial, model: reader.model };
       }
       setSelection(saved);
-      writeSetupState('complete');
       dismissSetupClearNotice();
-      // An RFID station still has to verify and start its reader.
-      if (station === 'rfid') setStep('confirm'); else setWizardOpen(false);
+      if (station === 'label') {
+        // Saved to the portal, but a Label Station isn't set up until its
+        // printer is: steps 4 and 5 follow. Saved settings preselect them.
+        setStep('kind');
+        void getLabelStation().then((s) => {
+          setLabelStation(s);
+          if (s) setLabelKind(s.label_kind);
+        }).catch(() => {});
+      } else {
+        writeSetupState('complete');
+        // An RFID station still has to verify and start its reader.
+        if (station === 'rfid') setStep('confirm'); else setWizardOpen(false);
+      }
       // Fire-and-forget: the summary appears immediately and the
       // download reports itself through `.sync-status`. A sync outcome
       // never changes the setup state — the kiosk IS set up either way.
@@ -437,6 +464,22 @@ export default function KioskSetup() {
           </div>
         )}
 
+        {step === 'kind' && (
+          <div>
+            <LabelKindStep selected={labelKind} onSelect={setLabelKind}
+                           onContinue={() => setStep('printer')} onBack={back} />
+          </div>
+        )}
+
+        {step === 'printer' && (
+          <div>
+            <PrinterStep
+              initiativeId={initiativeId} labelKind={labelKind} initial={labelStation}
+              onBack={back}
+              onFinish={() => { writeSetupState('complete'); setWizardOpen(false); }} />
+          </div>
+        )}
+
         {moveStep && loadError && (
           <>
             <p className="form-error" role="alert">Couldn&apos;t load setup options.</p>
@@ -494,8 +537,9 @@ export default function KioskSetup() {
             <div className="setup-cards" role="listbox" aria-label="Sites">
               {siteChoices.map(({ site, role }) => (
                 <button key={site.id} type="button" role="option"
-                        aria-selected={siteId === site.id} className="setup-card"
-                        onClick={() => selectSite(site.id)}>
+                        aria-selected={siteId === site.id}
+                        className={`setup-card${submitting && siteId === site.id ? ' is-saving' : ''}`}
+                        disabled={submitting} onClick={() => selectSite(site.id)}>
                   <div className="setup-card-role">{role.toUpperCase()}</div>
                   <div className="setup-card-title">{site.name}</div>
                 </button>
@@ -506,8 +550,16 @@ export default function KioskSetup() {
                 This move has no sites yet. Ask a coordinator to add them.
               </p>
             )}
+            {/* A Label Station saves straight from this step. */}
+            {submitError && laptop && stationType === 'label' && (
+              <p className="form-error" role="alert">
+                {submitError === 'cloud_sign_in_required'
+                  ? CLOUD_SIGN_IN_TEXT
+                  : <>Couldn&apos;t save the kiosk setup ({submitError}). Try again.</>}
+              </p>
+            )}
             <div className="pf-form-actions">
-              <button type="button" className="mini-btn" onClick={back}>Back</button>
+              <button type="button" className="mini-btn" onClick={back} disabled={submitting}>Back</button>
             </div>
           </div>
         )}

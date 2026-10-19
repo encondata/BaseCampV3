@@ -21,6 +21,7 @@ const apiMock = vi.hoisted(() => ({
   pairReader: vi.fn(),
   runCheck: vi.fn(),
   startReader: vi.fn(),
+  getLabelStation: vi.fn(),
 }));
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
@@ -35,6 +36,18 @@ vi.mock('../lib/sync', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/sync')>();
   return { ...actual, runSync: syncMock.runSync, useSyncStatus: () => syncMock.status };
 });
+
+// Step 5 has its own tests (PrinterStep.test.tsx); here it only has to
+// hand back the label kind it was given and finish.
+vi.mock('../components/setup/PrinterStep', () => ({
+  default: ({ labelKind, onFinish, onBack }: { labelKind: string; onFinish: () => void; onBack: () => void }) => (
+    <div>
+      <p>Printer step for {labelKind}</p>
+      <button type="button" onClick={onFinish}>Stub finish</button>
+      <button type="button" onClick={onBack}>Back</button>
+    </div>
+  ),
+}));
 
 import { ApiError } from '../lib/api';
 import { getIdentity } from '../lib/identity';
@@ -80,6 +93,7 @@ beforeEach(() => {
   localStorage.clear();
   apiMock.getSetupOptions.mockReset().mockResolvedValue(OPTIONS);
   apiMock.submitKioskSetup.mockReset().mockResolvedValue(RESULT);
+  apiMock.getLabelStation.mockReset().mockResolvedValue(null);
   syncMock.runSync.mockClear();
   syncMock.status = { phase: 'idle' };
 });
@@ -474,13 +488,13 @@ describe('laptop mode', () => {
     expect(screen.getByRole('option', { name: /RFID Station/ })).toBeTruthy();
   });
 
-  it('the Label Station path is Move → Site, counted out of 3, and always sends the Labeled scan type', async () => {
+  it('the Label Station path is Move → Site → What it prints → Printer, counted out of 5, and sends Labeled', async () => {
     const user = userEvent.setup();
     renderPage();
     await user.click(await screen.findByRole('option', { name: /Label Station/ }));
-    expect(screen.getByText('Step 2 of 3 · Move')).toBeTruthy();
+    expect(screen.getByText('Step 2 of 5 · Move')).toBeTruthy();
     await user.click(await screen.findByText('NAP11 Hall Migration (demo)'));
-    expect(screen.getByText('Step 3 of 3 · Site')).toBeTruthy();
+    expect(screen.getByText('Step 3 of 5 · Site')).toBeTruthy();
     await user.click(cardFor('NAP22 Hall'));
 
     await waitFor(() => expect(apiMock.submitKioskSetup).toHaveBeenCalledWith({
@@ -488,10 +502,49 @@ describe('laptop mode', () => {
       scan_status: 'labeled', station_type: 'label',
     }));
     expect(screen.queryByText(/Scan type/)).toBeNull();
-    expect(await screen.findByText('Label Station · Laptop')).toBeTruthy();
+    // Saved to the portal, but setup isn't complete until the printer step.
+    expect(await screen.findByText('Step 4 of 5 · What it prints')).toBeTruthy();
     expect(readKioskSetup()?.stationType).toBe('label');
+    expect(readSetupState()).not.toBe('complete');
+    expect(screen.getByRole('option', { name: /Top labels/ }).getAttribute('aria-selected')).toBe('true');
+    await user.click(screen.getByRole('option', { name: /Front labels/ }));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(screen.getByText('Step 5 of 5 · Printer')).toBeTruthy();
+    expect(screen.getByText('Printer step for front')).toBeTruthy();
+    expect(readSetupState()).not.toBe('complete');
+    await user.click(screen.getByRole('button', { name: 'Stub finish' }));
+
+    expect(await screen.findByText('Label Station · Laptop')).toBeTruthy();
+    expect(readSetupState()).toBe('complete');
     expect(readKioskSetup()?.reader).toBeUndefined();
     expect(apiMock.startReaderScan).not.toHaveBeenCalled();
+  });
+
+  it('a Label Station that already has settings preselects its saved label kind', async () => {
+    apiMock.getLabelStation.mockResolvedValue({
+      label_kind: 'front', printer: { type: 'usb', ip: null, model: null, serial: null },
+      dpi: 203, offset_x: 0, offset_y: 0,
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole('option', { name: /Label Station/ }));
+    await user.click(await screen.findByText('NAP11 Hall Migration (demo)'));
+    await user.click(cardFor('NAP22 Hall'));
+    await screen.findByText('Step 4 of 5 · What it prints');
+    await waitFor(() => expect(
+      screen.getByRole('option', { name: /Front labels/ }).getAttribute('aria-selected')).toBe('true'));
+  });
+
+  it('a Label Station save failure stays on the Site step and says so', async () => {
+    apiMock.submitKioskSetup.mockRejectedValue(new ApiError(500, 'boom'));
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole('option', { name: /Label Station/ }));
+    await user.click(await screen.findByText('NAP11 Hall Migration (demo)'));
+    await user.click(cardFor('NAP22 Hall'));
+    expect(await screen.findByText(/Couldn't save the kiosk setup \(boom\)/)).toBeTruthy();
+    expect(screen.getByText('Step 3 of 5 · Site')).toBeTruthy();
   });
 
   it('the RFID path runs reader → connect → pair → network check → move → site → scan type', async () => {
@@ -1025,7 +1078,7 @@ describe('laptop mode: final fix round', () => {
       });
       writeSetupState('complete');
     });
-    expect(screen.getByText('Step 2 of 3 · Move')).toBeTruthy();
+    expect(screen.getByText('Step 2 of 5 · Move')).toBeTruthy();
   });
 });
 
