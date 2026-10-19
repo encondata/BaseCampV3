@@ -115,6 +115,10 @@ export default function TestLabelModal({
     }
   };
 
+  // The offsets shift what is printed, not the label stock; dots per mm
+  // at this printer's DPI makes the numbers meaningful (203 → 8, 300 → 12).
+  const perMm = `${Math.round(dpi / 25.4)} dots ≈ 1 mm at ${dpi} DPI.`;
+
   const offsetField = (id: string, label: string, hint: string, value: string, axis: 'x' | 'y') => (
     <div>
       <label htmlFor={id}>{label} (dots)</label>
@@ -163,8 +167,8 @@ export default function TestLabelModal({
                 <>
                   <div className="modal-section">Offsets</div>
                   <div className="pf-form zp-form">
-                    {offsetField('tl-horizontal', 'Horizontal offset', 'Offset in dots (+ moves right)', hText, 'x')}
-                    {offsetField('tl-vertical', 'Vertical offset', 'Offset in dots (+ moves down)', vText, 'y')}
+                    {offsetField('tl-horizontal', 'Horizontal offset', `+ moves the printing right on the label, − moves it left. ${perMm}`, hText, 'x')}
+                    {offsetField('tl-vertical', 'Vertical offset', `+ moves the printing down on the label, − moves it up. ${perMm}`, vText, 'y')}
                   </div>
                 </>
               )}
