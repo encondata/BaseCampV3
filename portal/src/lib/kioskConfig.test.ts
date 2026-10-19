@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { DeviceConfigHistoryItem } from './api';
 import {
-  DEFAULT_CONFIG, applicableSections, configFor, sectionSource, soundLabel, syncLine, withSection,
+  DEFAULT_CONFIG, applicableSections, configFor, labelStationOf, sectionSource, soundLabel, syncLine, withSection,
 } from './kioskConfig';
 
 const NOW = Date.parse('2026-10-17T12:00:00Z');
@@ -87,5 +87,33 @@ describe('sectionSource at the history cap', () => {
     }));
     expect(sectionSource('appearance', full, NOW)).toBe('Unchanged in the last 200 changes');
     expect(sectionSource('appearance', full.slice(0, 199), NOW)).toBe('No changes recorded');
+  });
+});
+
+describe('label_station', () => {
+  const ls = {
+    label_kind: 'top',
+    printer: { type: 'usb', ip: null, model: 'ZD621', serial: null },
+    dpi: 203, offset_x: 0, offset_y: 0,
+  };
+
+  it('is read when present and hidden when absent, null or malformed', () => {
+    expect(labelStationOf({ ...DEFAULT_CONFIG, label_station: ls })).toEqual(ls);
+    expect(labelStationOf(DEFAULT_CONFIG)).toBeNull();
+    expect(labelStationOf({ ...DEFAULT_CONFIG, label_station: null })).toBeNull();
+    expect(labelStationOf({ ...DEFAULT_CONFIG, label_station: 'x' })).toBeNull();
+  });
+
+  it('passes through withSection byte for byte', () => {
+    const base = { ...DEFAULT_CONFIG, label_station: ls };
+    const next = withSection(base, 'sound', { ...DEFAULT_CONFIG.sound, volume: 0.5 });
+    expect(JSON.stringify(next.label_station)).toBe(JSON.stringify(ls));
+    const nulled = withSection({ ...DEFAULT_CONFIG, label_station: null }, 'sound', DEFAULT_CONFIG.sound);
+    expect(nulled.label_station).toBeNull();
+  });
+
+  it('is not an editable section', () => {
+    expect(applicableSections({ sub_type: 'laptop', station_type: 'label' }))
+      .not.toContain('label_station' as never);
   });
 });

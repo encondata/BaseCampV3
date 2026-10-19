@@ -44,6 +44,28 @@ export interface KioskConfig {
   [section: string]: unknown;
 }
 
+/** The Label Station's settings, reported by the laptop's edge. Read-only on
+ *  the portal: it isn't in SectionKey, so no editor exists for it, and
+ *  withSection carries it through every other edit untouched. The edge sends
+ *  an explicit null when it has none. */
+export interface LabelStationSection {
+  label_kind: 'top' | 'front';
+  printer: { type: 'usb' | 'network'; ip: string | null; model: string | null; serial: string | null };
+  dpi: number;
+  offset_x: number;
+  offset_y: number;
+}
+
+/** config.label_station when the kiosk reported one; null (card hidden) for
+ *  an absent, null or malformed section. */
+export function labelStationOf(config: { [section: string]: unknown }): LabelStationSection | null {
+  const v = config.label_station;
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const p = (v as { printer?: unknown }).printer;
+  if (!p || typeof p !== 'object') return null;
+  return v as LabelStationSection;
+}
+
 export const DEFAULT_CONFIG: KioskConfig = {
   schema: 1,
   appearance: {
