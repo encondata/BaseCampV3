@@ -509,8 +509,12 @@ export default function KioskSetup() {
         {step === 'kind' && (
           <div>
             <LabelKindStep selected={labelKind}
-                           onSelect={(kind) => { kindChosen.current = true; setLabelKind(kind); }}
-                           onContinue={() => setStep('printer')} onBack={back} />
+                           onChoose={(kind) => {
+                             kindChosen.current = true;
+                             setLabelKind(kind);
+                             setStep('printer');
+                           }}
+                           onBack={back} />
           </div>
         )}
 

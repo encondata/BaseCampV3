@@ -1,6 +1,7 @@
 /** Label Station step 4: what does this station print? Top labels come
  *  first and are the default; the choice decides which templates the
- *  printer step checks against. Tap a card to choose it, then Continue. */
+ *  printer step checks against. Tapping a card chooses it and moves on,
+ *  like the Move and Site steps; the default is shown selected. */
 
 import type { LabelKind } from '../../lib/api';
 
@@ -11,19 +12,18 @@ const CHOICES: { kind: LabelKind; title: string; meta: string }[] = [
 
 interface Props {
   selected: LabelKind;
-  onSelect: (kind: LabelKind) => void;
-  onContinue: () => void;
+  onChoose: (kind: LabelKind) => void;
   onBack: () => void;
 }
 
-export default function LabelKindStep({ selected, onSelect, onContinue, onBack }: Props) {
+export default function LabelKindStep({ selected, onChoose, onBack }: Props) {
   return (
     <>
       <h2>What does this station print?</h2>
       <div className="setup-cards" role="listbox" aria-label="Label types">
         {CHOICES.map((c) => (
           <button key={c.kind} type="button" role="option" aria-selected={selected === c.kind}
-                  className="setup-card" onClick={() => onSelect(c.kind)}>
+                  className="setup-card" onClick={() => onChoose(c.kind)}>
             <div className="setup-card-title">{c.title}</div>
             <div className="setup-card-meta">{c.meta}</div>
           </button>
@@ -31,7 +31,6 @@ export default function LabelKindStep({ selected, onSelect, onContinue, onBack }
       </div>
       <div className="pf-form-actions">
         <button type="button" className="mini-btn" onClick={onBack}>Back</button>
-        <button type="button" className="btn-solid" onClick={onContinue}>Continue</button>
       </div>
     </>
   );
