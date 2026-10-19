@@ -8,7 +8,7 @@ import { ApiError, type KioskLabelTemplate } from '../../lib/api';
 /** One fake Zebra printer, answered the same way over USB and the edge. */
 const printerState = vi.hoisted(() => ({
   dpmm: 8, paperOut: false, headOpen: false, paused: false, fonts: [] as string[],
-  peeler: '"Not Present"' as string | Error, printMode: '"tear off"',
+  peeler: '"Not Present"' as string | Error,
 }));
 
 function reply(command: string): string {
@@ -22,7 +22,6 @@ function reply(command: string): string {
     if (s.peeler instanceof Error) throw s.peeler;
     return s.peeler;
   }
-  if (command === '! U1 getvar "media.printmode"\r\n') return s.printMode;
   if (command === '^XA^HWE:*.*^XZ') {
     return `- DIR E:*.*\r\n${s.fonts.map((f) => `* E:${f} 1000`).join('\r\n')}\r\n-500000 bytes free\r\n`;
   }
@@ -100,7 +99,7 @@ function template(over: Partial<KioskLabelTemplate>): KioskLabelTemplate {
 beforeEach(() => {
   Object.assign(printerState, {
     dpmm: 8, paperOut: false, headOpen: false, paused: false, fonts: [],
-    peeler: '"Not Present"', printMode: '"tear off"',
+    peeler: '"Not Present"',
   });
   auth.kioskMove = null;
   usb.known = [{ productName: 'ZD421', serialNumber: 'USB1' }];
@@ -359,7 +358,7 @@ describe('peeler', () => {
     const peeler = commands.indexOf('! U1 getvar "sensor.peeler_present"\r\n');
     expect(hs).toBeGreaterThanOrEqual(0);
     expect(peeler).toBeGreaterThan(hs);
-    expect(commands).toContain('! U1 getvar "media.printmode"\r\n');
+    expect(commands.filter((c) => c.includes('getvar'))).toEqual(['! U1 getvar "sensor.peeler_present"\r\n']);
     expect(apiMock.printerSend).not.toHaveBeenCalled();
     expect(commands.join('\n')).not.toMatch(/setvar|\^JUS/);
     expect(within(peelerRow()).getByText('Peeler fitted · labels peel off')).toBeTruthy();

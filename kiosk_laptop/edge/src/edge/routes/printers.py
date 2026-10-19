@@ -21,14 +21,13 @@ from edge.upstream import CloudOffline
 
 router = APIRouter(dependencies=[Depends(require_session)])
 
-MAX_COMMAND = 4096              # a query: ~HI, ~HS, ^XA^HWE:*.*^XZ, two SGD getvars
+MAX_COMMAND = 4096              # a query: ~HI, ~HS, ^XA^HWE:*.*^XZ, the peeler getvar
 # The only queries the kiosk sends (identity, status, the E: listing, and
-# the SGD reads of the peeler and print mode), byte for byte; anything else
-# (settings, setvar, deletes, resets) is refused here.
+# the SGD read of whether a peeler is fitted), byte for byte; anything else
+# (settings, setvar, other getvars, deletes, resets) is refused here.
 ALLOWED_QUERIES = frozenset({
     "~HI", "~HS", "^XA^HWE:*.*^XZ",
     '! U1 getvar "sensor.peeler_present"\r\n',
-    '! U1 getvar "media.printmode"\r\n',
 })
 MAX_ZPL = 8 * 1024 * 1024       # a label job (graphics can be large)
 BODY_OVERHEAD = 64 * 1024       # the JSON around it (ip, escapes of a few characters)
