@@ -459,6 +459,41 @@ export interface KioskTrucksSync {
   trucks: KioskTruckRow[];
 }
 
+/** Why a template is in the move's set — one or more per template. */
+export type KioskLabelTemplateReason =
+  'destination_site' | 'source_site' | 'front' | 'generic' | 'container' | 'fallback';
+
+/** One label template from the move's set (`/kiosk/sync/label-templates`).
+ *  `code` is the printer code at the template's own size and DPI with its
+ *  `{placeholder}` tokens intact — a design template arrives already
+ *  converted. When a design could not convert, `code` is `""` and `error`
+ *  says why. `move_site_names` lists only the move's own origin and
+ *  destination sites the template is linked to. */
+export interface KioskLabelTemplate {
+  id: string;
+  name: string;
+  label_type: string;
+  size_key: string;
+  dpi_key: string;
+  language_key: string;
+  version: number;
+  updated_at: string;
+  move_site_names: string[];
+  reasons: KioskLabelTemplateReason[];
+  code: string;
+  generation_rules: Record<string, unknown>;
+  width_in: number | null;
+  height_in: number | null;
+  dots: number | null;
+  error: string | null;
+}
+
+export interface KioskLabelTemplatesSync {
+  initiative_id: string;
+  generated_at: string;
+  templates: KioskLabelTemplate[];
+}
+
 /** The whole roster in one response — the API does not page it. */
 export async function fetchAssetsSync(initiativeId: string): Promise<KioskAssetsSync> {
   const resp = await apiFetch(`/kiosk/sync/assets?initiative_id=${encodeURIComponent(initiativeId)}`);
@@ -482,6 +517,15 @@ export async function fetchTrucksSync(initiativeId: string): Promise<KioskTrucks
   const resp = await apiFetch(
     `/kiosk/sync/trucks?initiative_id=${encodeURIComponent(initiativeId)}`);
   return jsonFrom<KioskTrucksSync>(resp);
+}
+
+/** The move's label template set — the whole set every time (no delta). */
+export async function fetchLabelTemplatesSync(
+  initiativeId: string,
+): Promise<KioskLabelTemplatesSync> {
+  const resp = await apiFetch(
+    `/kiosk/sync/label-templates?initiative_id=${encodeURIComponent(initiativeId)}`);
+  return jsonFrom<KioskLabelTemplatesSync>(resp);
 }
 
 // ── scan ingest ─────────────────────────────────────────────────────

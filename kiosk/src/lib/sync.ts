@@ -11,6 +11,12 @@
  * `done` with real counts before anything is fetched again
  * (`hydrateSyncStatus`).
  *
+ * After that, the move's label template set comes down as a soft step
+ * (`syncLabelTemplates`): a success replaces the `label_templates` store,
+ * so a template that stopped matching on the portal is gone; a failure
+ * is logged and keeps the previous set (or, when the move changed, drops
+ * the other move's set), and the move sync still reports `done`.
+ *
  * The store/hook shape mirrors `setupState.ts` (`useSyncExternalStore`
  * over a module-level snapshot + listener set). Sync outcomes never
  * touch `kiosk_setup_complete`: a kiosk is set up whether or not its
@@ -20,7 +26,8 @@
 import { useEffect, useSyncExternalStore } from 'react';
 
 import {
-  ApiError, fetchAssetsSync, fetchContainersSync, fetchPeopleSync, fetchTrucksSync,
+  ApiError, fetchAssetsSync, fetchContainersSync, fetchLabelTemplatesSync, fetchPeopleSync,
+  fetchTrucksSync,
 } from './api';
 import { count, readMeta, replaceAllMulti } from './localDb';
 
@@ -162,6 +169,8 @@ export async function runSync(initiativeId: string, initiativeName: string): Pro
       count('assets'), count('people'), count('containers'), count('trucks'),
     ]);
     if (myRun !== currentRun) return;
+    await syncLabelTemplates(initiativeId, () => myRun === currentRun);
+    if (myRun !== currentRun) return;
     hydrated = true;
     setStatus({
       phase: 'done', assets: assetsCount, people: peopleCount,
@@ -170,6 +179,45 @@ export async function runSync(initiativeId: string, initiativeName: string): Pro
   } catch {
     if (myRun !== currentRun) return;
     setStatus({ ...previous, phase: 'error', error: 'storage' });
+  }
+}
+
+/** The meta row recording which move the stored template set belongs to. */
+export const LABEL_TEMPLATES_META_KEY = 'label_templates';
+
+/**
+ * The soft step: fetch the move's label template set and replace the
+ * stored one. Never throws — a fetch or storage failure is logged and the
+ * previous set stays, so templates can never fail the move sync. The one
+ * exception is a set that belongs to another move: it is judged by the
+ * set's own `label_templates` meta row (written in the same transaction
+ * as the rows), not the `sync` row, which can run ahead of it after a
+ * crash between the two writes. `current` guards against a superseded run
+ * writing over a newer one.
+ */
+async function syncLabelTemplates(
+  initiativeId: string, current: () => boolean,
+): Promise<void> {
+  try {
+    const body = await fetchLabelTemplatesSync(initiativeId);
+    if (!current()) return;
+    await replaceAllMulti(
+      [{ store: 'label_templates', rows: body.templates }],
+      { key: LABEL_TEMPLATES_META_KEY, value: { initiativeId } },
+    );
+  } catch (err) {
+    console.warn('label template sync failed; the move sync still counts', err);
+    if (!current()) return;
+    try {
+      const owner = (await readMeta(LABEL_TEMPLATES_META_KEY))?.initiativeId;
+      if (owner === initiativeId) return;
+      await replaceAllMulti(
+        [{ store: 'label_templates', rows: [] }],
+        { key: LABEL_TEMPLATES_META_KEY, value: { initiativeId } },
+      );
+    } catch (clearErr) {
+      console.warn('could not drop the previous move\'s label templates', clearErr);
+    }
   }
 }
 

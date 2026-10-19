@@ -9,6 +9,7 @@ const apiMock = vi.hoisted(() => ({
   fetchPeopleSync: vi.fn(),
   fetchContainersSync: vi.fn(),
   fetchTrucksSync: vi.fn(),
+  fetchLabelTemplatesSync: vi.fn(),
 }));
 vi.mock('./api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api')>();
@@ -18,11 +19,14 @@ vi.mock('./api', async (importOriginal) => {
     fetchPeopleSync: apiMock.fetchPeopleSync,
     fetchContainersSync: apiMock.fetchContainersSync,
     fetchTrucksSync: apiMock.fetchTrucksSync,
+    fetchLabelTemplatesSync: apiMock.fetchLabelTemplatesSync,
   };
 });
 
 import { ApiError } from './api';
-import { clearDb, closeDb, count, getAll, readMeta, replaceAll } from './localDb';
+import { clearDb, closeDb, count, getAll, readMeta, replaceAll, writeMeta } from './localDb';
+import { clearKioskSetup, writeKioskSetup } from './kioskSetup';
+import { getLabelTemplates } from './labelTemplates';
 import { readSyncStatus, resetSyncStatus, runSync } from './sync';
 
 const ASSETS = {
@@ -75,6 +79,23 @@ const TRUCKS = {
   ],
 };
 
+function template(id: string, name: string, extra: Record<string, unknown> = {}) {
+  return {
+    id, name, label_type: 'top', size_key: '4x6', dpi_key: '203', language_key: 'zpl',
+    version: 1, updated_at: '2026-10-19T12:00:00Z', move_site_names: [], reasons: ['generic'],
+    code: '^XA^FD{asset_name}^FS^XZ', generation_rules: {}, width_in: 4, height_in: 6,
+    dots: 203, error: null, ...extra,
+  };
+}
+
+const LABEL_TEMPLATES = {
+  initiative_id: 'i-1', generated_at: '2026-10-19T12:00:00Z',
+  templates: [
+    template('lt-1', 'Container Label 4x6 203dpi', { label_type: 'container', reasons: ['container'] }),
+    template('lt-2', 'Generic Rack and RU', { reasons: ['fallback', 'generic'] }),
+  ],
+};
+
 const PEOPLE = {
   generated_at: '2026-09-13T12:00:00Z',
   people: [
@@ -90,6 +111,8 @@ beforeEach(() => {
   apiMock.fetchPeopleSync.mockReset();
   apiMock.fetchContainersSync.mockReset();
   apiMock.fetchTrucksSync.mockReset();
+  apiMock.fetchLabelTemplatesSync.mockReset();
+  apiMock.fetchLabelTemplatesSync.mockResolvedValue(LABEL_TEMPLATES);
 });
 
 it('writes all four stores and the meta row, and reports done with counts', async () => {
@@ -240,4 +263,151 @@ it('clearing the local data resets the status to idle', async () => {
   expect(await count('assets')).toBe(0);
   expect(await count('containers')).toBe(0);
   expect(await count('trucks')).toBe(0);
+});
+
+
+// ── the move's label template set (kiosk label templates download §4) ──
+
+function mockMove(): void {
+  apiMock.fetchAssetsSync.mockResolvedValue(ASSETS);
+  apiMock.fetchPeopleSync.mockResolvedValue(PEOPLE);
+  apiMock.fetchContainersSync.mockResolvedValue(CONTAINERS);
+  apiMock.fetchTrucksSync.mockResolvedValue(TRUCKS);
+}
+
+it('stores the move\'s label templates with the sync', async () => {
+  mockMove();
+  await runSync('i-1', 'A Move');
+
+  expect(apiMock.fetchLabelTemplatesSync).toHaveBeenCalledWith('i-1');
+  expect(readSyncStatus().phase).toBe('done');
+  const stored = await getLabelTemplates();
+  expect(stored.map((t) => t.id)).toEqual(['lt-1', 'lt-2']);
+  expect(stored[1]).toMatchObject({
+    name: 'Generic Rack and RU', reasons: ['fallback', 'generic'],
+    code: '^XA^FD{asset_name}^FS^XZ', dots: 203,
+  });
+});
+
+it('a failed template fetch keeps the old set and the sync still succeeds', async () => {
+  mockMove();
+  await runSync('i-1', 'A Move');
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  apiMock.fetchLabelTemplatesSync.mockRejectedValue(new ApiError(500, 'server_error'));
+  apiMock.fetchAssetsSync.mockResolvedValue({ ...ASSETS, assets: [ASSETS.assets[0]] });
+
+  await runSync('i-1', 'A Move');
+
+  expect(readSyncStatus()).toMatchObject({ phase: 'done', assets: 1 });
+  expect(await count('assets')).toBe(1);                 // the rest of the move landed
+  expect((await getLabelTemplates()).map((t) => t.id)).toEqual(['lt-1', 'lt-2']);
+  expect(warn).toHaveBeenCalled();
+  warn.mockRestore();
+});
+
+it('a failed template fetch on the first sync leaves an empty set and still succeeds', async () => {
+  mockMove();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  apiMock.fetchLabelTemplatesSync.mockRejectedValue(new TypeError('Failed to fetch'));
+
+  await runSync('i-1', 'A Move');
+
+  expect(readSyncStatus()).toMatchObject({ phase: 'done', assets: 2, trucks: 2 });
+  expect(await getLabelTemplates()).toEqual([]);
+  warn.mockRestore();
+});
+
+it('a failed template fetch for a different move drops the previous move\'s set', async () => {
+  mockMove();
+  await runSync('i-1', 'Move A');
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  apiMock.fetchLabelTemplatesSync.mockRejectedValue(new ApiError(500, 'server_error'));
+
+  await runSync('i-2', 'Move B');
+
+  expect(readSyncStatus().phase).toBe('done');
+  expect(await getLabelTemplates()).toEqual([]);         // never Move A's templates on Move B
+  warn.mockRestore();
+});
+
+it('a stale sync meta row never keeps another move\'s templates', async () => {
+  mockMove();
+  await runSync('i-1', 'Move A');
+  // a crash after the move commit but before the template write
+  await writeMeta('sync', { initiativeId: 'i-2', initiativeName: 'Move B' });
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  apiMock.fetchLabelTemplatesSync.mockRejectedValue(new ApiError(500, 'server_error'));
+
+  await runSync('i-2', 'Move B');
+
+  expect(await getAll('label_templates')).toEqual([]);
+  warn.mockRestore();
+});
+
+it('getLabelTemplates is empty when the set belongs to another move than the setup', async () => {
+  mockMove();
+  await runSync('i-1', 'Move A');
+  const setup = {
+    initiativeName: 'x', siteId: 's', siteName: 's', siteRole: 'source' as const,
+    scanStatus: 'x', scanLabel: 'x',
+  };
+  try {
+    writeKioskSetup({ ...setup, initiativeId: 'i-2' });
+    expect(await getLabelTemplates()).toEqual([]);
+    writeKioskSetup({ ...setup, initiativeId: 'i-1' });
+    expect((await getLabelTemplates()).length).toBe(2);
+  } finally {
+    clearKioskSetup();
+  }
+});
+
+it('a second sync replaces the set, removing a template that no longer matches', async () => {
+  mockMove();
+  await runSync('i-1', 'A Move');
+  apiMock.fetchLabelTemplatesSync.mockResolvedValue({
+    ...LABEL_TEMPLATES,
+    templates: [template('lt-2', 'Generic Rack and RU', { version: 2, reasons: ['generic'] })],
+  });
+
+  await runSync('i-1', 'A Move');
+
+  const stored = await getLabelTemplates();
+  expect(stored.map((t) => [t.id, t.version])).toEqual([['lt-2', 2]]);
+});
+
+it('getLabelTemplates returns the set in natural name order', async () => {
+  mockMove();
+  apiMock.fetchLabelTemplatesSync.mockResolvedValue({
+    ...LABEL_TEMPLATES,
+    templates: [
+      template('z', 'Rack 10'), template('a', 'Rack 9'), template('m', 'Front'),
+    ],
+  });
+  await runSync('i-1', 'A Move');
+  expect((await getLabelTemplates()).map((t) => t.name)).toEqual(['Front', 'Rack 9', 'Rack 10']);
+});
+
+it('a superseded run never writes its templates', async () => {
+  mockMove();
+  let resolveA!: (v: typeof LABEL_TEMPLATES) => void;
+  apiMock.fetchLabelTemplatesSync
+    .mockImplementationOnce(() => new Promise((res) => { resolveA = res; }))
+    .mockResolvedValueOnce({ ...LABEL_TEMPLATES, templates: [template('b-1', 'B only')] });
+
+  const runA = runSync('i-1', 'Move A');
+  await vi.waitFor(() => expect(apiMock.fetchLabelTemplatesSync).toHaveBeenCalledTimes(1));
+  await runSync('i-2', 'Move B');
+  resolveA(LABEL_TEMPLATES);
+  await runA;
+
+  expect((await getLabelTemplates()).map((t) => t.id)).toEqual(['b-1']);
+  expect(readSyncStatus().phase).toBe('done');
+});
+
+it('clearing the local data empties the template set', async () => {
+  mockMove();
+  await runSync('i-1', 'A Move');
+  expect(await count('label_templates')).toBe(2);
+  await clearDb();
+  expect(await count('label_templates')).toBe(0);
 });
