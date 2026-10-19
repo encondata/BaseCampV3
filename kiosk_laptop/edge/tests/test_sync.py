@@ -412,3 +412,28 @@ async def test_label_template_and_move_password_errors_are_both_reported(app, cl
         200, json={"moves": [{"initiative_id": "m-1"}]})
     meta = await app.state.syncer.run()
     assert meta["last_error"] == "label_templates_http_500, bad_move_passwords"
+
+
+async def test_label_station_syncs_as_station_without_a_person(app, cloud):
+    """An unattended Label Station syncs through its key, skipping the client
+    asset list (an RFID-only read; the portal refuses it to a Label key)."""
+    from edge import laptop_setup
+    from edge.rfid import station_key
+    store = app.state.store
+    laptop_setup.save(store, {"initiative_id": "m-1"}, "label")
+    station_key.store_key(store, app.state.keys, "the-label-key")
+    app.state.syncer.set_target("m-1", "p-gone")                   # nobody has a cloud session
+    client_key = _person_key("client-assets")
+    store.run("INSERT INTO cache VALUES (?, 200, 'kept', 'then')", (client_key,))
+    station = _mock_station(cloud)
+    station["client-assets"] = cloud.get("/kiosk/station/sync/client-assets").respond(
+        403, json={"detail": {"code": "not_rfid_station"}})
+    meta = await app.state.syncer.run()
+    assert meta["last_error"] is None and meta["synced_at"]
+    assert not station["client-assets"].called
+    for name in ("assets", "containers", "people", "label-templates"):
+        req = station[name].calls[0].request
+        assert req.headers["authorization"] == "Station the-label-key"
+        body = store.one("SELECT body FROM cache WHERE key = ?", (_person_key(name),))["body"]
+        assert json.loads(body) == {"station": name}
+    assert store.one("SELECT body FROM cache WHERE key = ?", (client_key,))["body"] == "kept"

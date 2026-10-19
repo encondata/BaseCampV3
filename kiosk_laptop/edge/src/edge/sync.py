@@ -9,14 +9,15 @@ it is `unchanged`, the stored row stays. Any other refusal also keeps the
 stored row and records `move_passwords_http_<status>`, except a 403
 `move_locked`/`not_signed_in_here`, which is skipped without an error.
 
-With no usable person cloud session (an unattended RFID Station), the
-move's data comes through the station-key routes instead
+With no usable person cloud session (an unattended RFID or Label Station),
+the move's data comes through the station-key routes instead
 (`/kiosk/station/sync/<name>?serial=&initiative_id=`), stored under the
 SAME cache keys the person reads use, so everything reading the cache keeps
 working. Those routes cover the move's assets, containers and people, the
 client asset list and the label template set only; trucks, label vocab,
 setup options and move passwords keep their cached copies until a person
-syncs.
+syncs. A Label Station skips the client asset list (it only feeds the RFID
+off-move alarm, and the portal refuses it to a Label key).
 
 The label template set is a soft step, the same as on the web kiosk: a
 refusal keeps the cached set, the rest of the move still lands, and the
@@ -44,15 +45,19 @@ def sync_paths(initiative_id: str) -> list[str]:
 
 
 STATION_SYNC = ("assets", "containers", "people", "client-assets", "label-templates")
+RFID_ONLY_SYNC = ("client-assets",)  # the off-move alarm's list: 403 to a Label key
 
 
-def station_sync_paths(initiative_id: str, serial: str) -> list[tuple[str, str]]:
+def station_sync_paths(initiative_id: str, serial: str,
+                       station_type: str | None = None) -> list[tuple[str, str]]:
     """(cache key, station route) pairs: each station read lands under the
-    cache key of the person read it stands in for."""
+    cache key of the person read it stands in for. A Label Station skips
+    the RFID-only lists (their cached copies stay)."""
     q = f"serial={quote(serial, safe='')}&initiative_id={quote(initiative_id, safe='')}"
     by_name = {path.split("?", 1)[0].removeprefix("/kiosk/sync/"): path
                for path in sync_paths(initiative_id) if path.startswith("/kiosk/sync/")}
-    return [(by_name[name], f"/kiosk/station/sync/{name}?{q}") for name in STATION_SYNC]
+    return [(by_name[name], f"/kiosk/station/sync/{name}?{q}") for name in STATION_SYNC
+            if station_type != "label" or name not in RFID_ONLY_SYNC]
 
 
 SKIP_CODES = {"move_locked", "not_signed_in_here"}
@@ -181,7 +186,8 @@ class Syncer:
         pulled: list[tuple[str, str]] = []
         error: str | None = None
         try:
-            for key, path in station_sync_paths(initiative, self.serial()):
+            station = station_key.station_type(self.store)
+            for key, path in station_sync_paths(initiative, self.serial(), station):
                 resp = await station_key.request_as_station(self.upstream, "GET", path)
                 if resp is None:
                     return self._error("needs_sign_in")

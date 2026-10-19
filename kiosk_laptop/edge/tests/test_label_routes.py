@@ -117,3 +117,71 @@ async def test_a_session_locked_to_another_move_is_move_locked(app, client):
     laptop_setup.clear(app.state.store)
     r = await client.get("/edge/labels/status", headers=same)
     assert r.status_code == 403
+
+
+# ── POST /edge/labels/printed ───────────────────────────────────────
+
+PRINTED = {"asset_id": "a-1", "scanned_value": "SN-0001",
+           "scanned_at": "2026-10-19T14:05:06.250Z"}
+
+
+def _label_setup(app, station="label"):
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1", "site_id": "s-1",
+                                        "scan_status": "received"}, station)
+
+
+async def test_printed_queues_a_labeled_barcode_scan(app, client):
+    _label_setup(app)
+    wake = app.state.rfid_upload_wake
+    wake.clear()
+    r = await client.post("/edge/labels/printed", headers=make_session(app), json=PRINTED)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["queued"] is True and set(body) == {"queued", "client_scan_id"}
+    row = app.state.store.one("SELECT * FROM pending_rfid_scans")
+    assert row["client_scan_id"] == body["client_scan_id"]
+    assert (row["scan_type"], row["matched_kind"], row["matched_id"], row["epc"]) == (
+        "barcode", "asset", "a-1", "SN-0001")
+    assert (row["scan_status"], row["initiative_id"], row["site_id"]) == (
+        "labeled", "m-1", "s-1")
+    assert row["raw_read_id"] is None and row["upload_state"] == "pending"
+    assert row["off_move"] == 0 and row["attempts"] == 0
+    assert row["scanned_at"] == "2026-10-19T14:05:06+00:00"
+    assert wake.is_set()
+    # a second label is its own scan (raw_read_id NULL is never a duplicate)
+    r = await client.post("/edge/labels/printed", headers=make_session(app), json=PRINTED)
+    assert r.status_code == 200 and r.json()["client_scan_id"] != body["client_scan_id"]
+    assert app.state.store.one("SELECT COUNT(*) AS n FROM pending_rfid_scans")["n"] == 2
+
+
+async def test_printed_needs_a_label_station(app, client):
+    headers = make_session(app)
+    assert (await client.post("/edge/labels/printed", json=PRINTED)).status_code == 401
+    r = await client.post("/edge/labels/printed", headers=headers, json=PRINTED)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "not_label_station"
+    _label_setup(app, "rfid")
+    r = await client.post("/edge/labels/printed", headers=headers, json=PRINTED)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "not_label_station"
+    assert app.state.store.one("SELECT COUNT(*) AS n FROM pending_rfid_scans")["n"] == 0
+
+
+async def test_printed_is_move_locked(app, client):
+    _label_setup(app)
+    other = make_session(app, kiosk_move={"initiative_id": "m-2", "name": "Other"})
+    r = await client.post("/edge/labels/printed", headers=other, json=PRINTED)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "move_locked"
+    same = make_session(app, kiosk_move={"initiative_id": "m-1", "name": "Move 1"})
+    assert (await client.post("/edge/labels/printed", headers=same,
+                              json=PRINTED)).status_code == 200
+
+
+async def test_printed_refuses_bad_bodies(app, client):
+    _label_setup(app)
+    headers = make_session(app)
+    for bad in ({**PRINTED, "asset_id": ""}, {**PRINTED, "asset_id": 5},
+                {**PRINTED, "scanned_value": ""}, {**PRINTED, "scanned_value": "x" * 1000},
+                {**PRINTED, "scanned_at": "yesterday"}, {**PRINTED, "scanned_at": None},
+                {k: v for k, v in PRINTED.items() if k != "asset_id"}, ["nope"]):
+        r = await client.post("/edge/labels/printed", headers=headers, json=bad)
+        assert r.status_code == 422, bad
+    assert app.state.store.one("SELECT COUNT(*) AS n FROM pending_rfid_scans")["n"] == 0

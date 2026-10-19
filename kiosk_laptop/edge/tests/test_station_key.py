@@ -84,18 +84,18 @@ async def test_failed_rfid_setup_issues_nothing(app, client, cloud):
     assert not route.called
 
 
-async def test_label_setup_clears_key(app, client, cloud):
+async def test_setup_without_a_station_type_clears_key(app, client, cloud):
     ready(app, cloud)
     station_key.store_key(app.state.store, app.state.keys, RAW)
     route = cloud.post("/kiosk/station-key").respond(200, json={"key": "other"})
-    assert (await setup(client, app, station_type="label")).status_code == 200
+    assert (await setup(client, app)).status_code == 200
     assert station_key.load_key(app.state.store, app.state.keys) is None
     assert not route.called
 
 
-async def test_issue_without_rfid_setup_stores_nothing(app, cloud):
+async def test_issue_without_a_station_setup_stores_nothing(app, cloud):
     app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
-    laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "label")
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, None)
     cloud.post("/kiosk/station-key").respond(200, json={"key": RAW})
     assert await station_key.issue(app.state, "p-1") is False
     assert station_key.load_key(app.state.store, app.state.keys) is None
@@ -137,7 +137,8 @@ async def test_issue_failure_retried_by_background(app, cloud, monkeypatch):
     assert route.call_count == 2
 
 
-async def test_background_retry_needs_rfid_setup_and_a_cloud_session(app, cloud, monkeypatch):
+async def test_background_retry_needs_a_station_setup_and_a_cloud_session(app, cloud,
+                                                                          monkeypatch):
     cloud.get("/system/status").respond(200, json={})
     monkeypatch.setattr(app.state.syncer, "run", _no_sync)
     route = cloud.post("/kiosk/station-key").respond(200, json={"key": RAW})
@@ -147,11 +148,11 @@ async def test_background_retry_needs_rfid_setup_and_a_cloud_session(app, cloud,
     assert not route.called
     app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
     make_session(app, person_id="p-1")
-    laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "label")
-    await bg.tick(now=2000.0)                    # a Label Station needs no key
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, None)
+    await bg.tick(now=2000.0)                    # no station type: no key
     assert not route.called
-    _rfid_setup(app)
-    await bg.tick(now=3000.0)
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "label")
+    await bg.tick(now=3000.0)                    # a Label Station gets one too
     assert route.call_count == 1
 
 
@@ -475,3 +476,51 @@ async def test_apply_clear_setup_clears_the_pause_flag(app, cloud):
     await station_key.station_request(app.state, "GET", "/kiosk/station/sync/people")
     station_key.apply_clear_setup(store)
     assert station_key.is_paused(store) is False
+
+
+# ── Label Station ───────────────────────────────────────────────────
+
+async def test_label_station_gets_a_key_on_setup(app, client, cloud):
+    ready(app, cloud)
+    station_key.store_key(app.state.store, app.state.keys, "old-setup-key")
+    route = cloud.post("/kiosk/station-key").respond(200, json={"key": RAW})
+    assert (await setup(client, app, station_type="label")).status_code == 200
+    assert route.call_count == 1
+    assert json.loads(route.calls[0].request.content) == {"serial": app.state.identity.serial}
+    assert station_key.load_key(app.state.store, app.state.keys) == RAW
+    # a station setup either way; reader-specific code still sees "not RFID"
+    assert station_key.is_station_setup(app.state.store)
+    assert not station_key.is_rfid_setup(app.state.store)
+    assert not station_key.needs_key(app.state.store)
+
+
+async def test_a_label_station_without_a_key_needs_one(app):
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "label")
+    assert station_key.needs_key(app.state.store)
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, None)
+    assert not station_key.needs_key(app.state.store)
+
+
+async def test_answer_for_a_station_type_changed_meanwhile_is_discarded(app, cloud):
+    app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    _rfid_setup(app)
+
+    def switch(request):
+        laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "label")
+        return httpx.Response(200, json={"key": RAW})
+
+    cloud.post("/kiosk/station-key").mock(side_effect=switch)
+    assert await station_key.issue(app.state, "p-1") is False
+    assert not station_key.has_key(app.state.store)
+
+
+async def test_label_setup_keeps_pending_labeled_scans(app, client, cloud):
+    from tests.test_rfid_uploader import add_scans, rows
+    ready(app, cloud)
+    cloud.post("/kiosk/station-key").respond(200, json={"key": RAW})
+    [rfid] = add_scans(app.state.store, 1)
+    [labeled] = add_scans(app.state.store, 1, scan_type="barcode", scan_status="labeled")
+    assert (await setup(client, app, station_type="label")).status_code == 200
+    after = rows(app.state.store)
+    assert after[rfid]["reject_code"] == "station_changed"
+    assert after[labeled]["upload_state"] == "pending"

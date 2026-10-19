@@ -5,6 +5,7 @@ guard that keeps the transport aimed at LAN printers only."""
 import asyncio
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from tests.conftest import make_session
@@ -479,7 +480,7 @@ async def test_the_kiosk_queries_are_allowed(app, client, fake, monkeypatch, com
     assert bytes(fake.received) == command.encode()
 
 
-@pytest.mark.parametrize("command", ["^XA^JUF^XZ", "~JC", "~WC", "^XA^HH^XZ", "~HI ", "~hi",
+@pytest.mark.parametrize("command", ["^XA^JUF^XZ", "~JC", "~WC", "~HI ", "~hi",
                                      "~HI\n", "~HI~JC", "^XA^HWB:*.*^XZ", "^XA^IDE:FONT.TTF^XZ",
                                      # near-variants of the two SGD getvars
                                      '! U1 getvar "sensor.peeler_present"',
@@ -499,6 +500,31 @@ async def test_other_commands_are_refused_before_the_printer(app, client, fake, 
                           json={"ip": "127.0.0.1", "command": command})
     assert r.status_code == 422 and r.json()["detail"]["code"] == "command_not_allowed"
     assert bytes(fake.received) == b""
+
+
+HH_REPLY = (Path(__file__).parent / "fixtures" / "zt220_hh.txt").read_bytes()
+
+
+async def test_hh_query_allowed_and_variants_refused(app, client, monkeypatch):
+    """The Label Station reads the printer's configuration label (^HH) for
+    its print mode and label length; the reply is a real ZT220's."""
+    monkeypatch.setattr(printers, "IDLE_S", 0.2)
+    fake = await FakePrinter(reply=HH_REPLY).start()
+    use_fake(app, fake)
+    headers = make_session(app)
+    r = await client.post("/edge/printers/query", headers=headers,
+                          json={"ip": "127.0.0.1", "command": "^XA^HH^XZ"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"response": HH_REPLY.decode("latin-1"), "truncated": False}
+    assert "TEAR OFF            PRINT MODE" in r.json()["response"]
+    assert bytes(fake.received) == b"^XA^HH^XZ"
+    fake.received.clear()
+    for command in ("^XA^HH^XZ\r\n", "^xa^hh^xz", "^XA^HH^XZ^XA^JUS^XZ"):
+        r = await client.post("/edge/printers/query", headers=headers,
+                              json={"ip": "127.0.0.1", "command": command})
+        assert r.status_code == 422 and r.json()["detail"]["code"] == "command_not_allowed"
+    assert bytes(fake.received) == b""
+    await fake.close()
 
 
 # ── send ────────────────────────────────────────────────────────────

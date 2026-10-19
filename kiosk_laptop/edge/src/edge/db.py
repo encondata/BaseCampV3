@@ -170,6 +170,44 @@ SCHEMA_STEPS: list[str] = [
         done INTEGER NOT NULL DEFAULT 0, pending INTEGER NOT NULL DEFAULT 0,
         started_at TEXT, finished_at TEXT)
     """,
+    # the Label Station's Labeled scans share the RFID upload queue: `scan_type`
+    # ('barcode'; NULL is an RFID scan) and no raw read behind them, so
+    # `raw_read_id` becomes nullable (SQLite can't drop NOT NULL: rebuild)
+    """
+    CREATE TABLE pending_rfid_scans_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        raw_read_id INTEGER UNIQUE,
+        client_scan_id TEXT NOT NULL UNIQUE,
+        epc TEXT NOT NULL,
+        matched_kind TEXT NOT NULL,
+        matched_id TEXT NOT NULL,
+        off_move INTEGER NOT NULL DEFAULT 0,
+        off_move_initiative_id TEXT,
+        off_move_initiative_name TEXT,
+        scanned_at TEXT NOT NULL,
+        initiative_id TEXT, site_id TEXT, scan_status TEXT,
+        upload_state TEXT NOT NULL DEFAULT 'pending',
+        was_accepted INTEGER NOT NULL DEFAULT 0,
+        accepted_at TEXT,
+        reject_code TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT,
+        waiting_for_internet INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        scan_type TEXT);
+    INSERT INTO pending_rfid_scans_new (id, raw_read_id, client_scan_id, epc, matched_kind,
+        matched_id, off_move, off_move_initiative_id, off_move_initiative_name, scanned_at,
+        initiative_id, site_id, scan_status, upload_state, was_accepted, accepted_at,
+        reject_code, attempts, next_attempt_at, waiting_for_internet, last_error, created_at)
+        SELECT id, raw_read_id, client_scan_id, epc, matched_kind, matched_id, off_move,
+        off_move_initiative_id, off_move_initiative_name, scanned_at, initiative_id, site_id,
+        scan_status, upload_state, was_accepted, accepted_at, reject_code, attempts,
+        next_attempt_at, waiting_for_internet, last_error, created_at FROM pending_rfid_scans;
+    DROP TABLE pending_rfid_scans;
+    ALTER TABLE pending_rfid_scans_new RENAME TO pending_rfid_scans;
+    CREATE INDEX pending_rfid_scans_due ON pending_rfid_scans (upload_state, next_attempt_at)
+    """,
 ]
 
 

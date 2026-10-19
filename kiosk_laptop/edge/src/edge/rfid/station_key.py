@@ -1,12 +1,16 @@
-"""The RFID station key (rfid scan processing spec §3): a portal-issued
-secret that lets an unattended RFID Station sync its move and upload scans
-with nobody signed in.
+"""The station key (rfid scan processing spec §3): a portal-issued secret
+that lets an unattended station (RFID or Label) sync its move and upload
+scans with nobody signed in.
 
-Issued by `POST /kiosk/station-key` as the person who just saved an RFID
-Kiosk Setup (or, when that failed, retried by the background loop at most
-once a minute while someone signed in here has a usable cloud session and
-the setup is still RFID). Stored only encrypted with edge.key; cleared on a
-Label setup, a Clear Setup from the portal, and Wipe.
+Issued by `POST /kiosk/station-key` as the person who just saved an RFID or
+Label Kiosk Setup (or, when that failed, retried by the background loop at
+most once a minute while someone signed in here has a usable cloud session
+and the setup is still a station). Stored only encrypted with edge.key;
+cleared on every new setup (it covered the previous one), a Clear Setup
+from the portal, and Wipe.
+
+`is_station_setup` (either station type) gates the key, sync and upload
+paths; `is_rfid_setup` stays RFID-only for the reader-specific code.
 
 A 403 `kiosk_not_registered` on any station route (the laptop's kiosk
 registration lapsed) keeps the key: renewing on the portal's Kiosk Devices
@@ -114,15 +118,30 @@ def _resume(store: Store) -> None:
         events.record(store, EVENT_KIND, RESUMED_TITLE)
 
 
+STATION_TYPES = ("rfid", "label")
+
+
 def is_rfid_setup(store: Store) -> bool:
-    return _rfid_initiative(store) is not None
+    """An RFID Station setup (the reader-specific paths)."""
+    station = _station(store)
+    return station is not None and station[0] == "rfid"
 
 
-def _rfid_initiative(store: Store) -> str | None:
-    """The move of the laptop's RFID Station setup; None for any other setup."""
+def is_station_setup(store: Store) -> bool:
+    """An RFID or Label Station setup: one that holds a station key."""
+    return _station(store) is not None
+
+
+def station_type(store: Store) -> str | None:
+    station = _station(store)
+    return station[0] if station is not None else None
+
+
+def _station(store: Store) -> tuple[str, str] | None:
+    """(station type, move) of the laptop's station setup; None for any other."""
     setup = laptop_setup.load(store)
-    if isinstance(setup, dict) and setup.get("station_type") == "rfid":
-        return str(setup.get("initiative_id"))
+    if isinstance(setup, dict) and setup.get("station_type") in STATION_TYPES:
+        return setup["station_type"], str(setup.get("initiative_id"))
     return None
 
 
@@ -141,7 +160,7 @@ def _lock(st) -> asyncio.Lock:
 
 
 def needs_key(store: Store) -> bool:
-    return is_rfid_setup(store) and not has_key(store)
+    return is_station_setup(store) and not has_key(store)
 
 
 async def issue(st, person_id: str) -> bool:
@@ -150,7 +169,7 @@ async def issue(st, person_id: str) -> bool:
     One issue at a time: a second caller (the Confirm check racing the
     background retry) finds the first one's key and makes no call, so a key
     the portal already replaced is never stored. The answer is kept only if
-    the laptop is still an RFID Station for the move it was asked for."""
+    the laptop is still the same station type for the move it was asked for."""
     async with _lock(st):
         if has_key(st.store):
             return True
@@ -158,7 +177,7 @@ async def issue(st, person_id: str) -> bool:
 
 
 async def _issue(st, person_id: str) -> bool:
-    initiative = _rfid_initiative(st.store)
+    station = _station(st.store)
     try:
         resp = await st.upstream.as_person(person_id, "POST", ISSUE_PATH,
                                            json={"serial": st.identity.serial})
@@ -182,8 +201,8 @@ async def _issue(st, person_id: str) -> bool:
     if not isinstance(raw, str) or not raw:
         log.warning("station key not issued: unexpected answer")
         return False
-    if initiative is None or _rfid_initiative(st.store) != initiative:
-        # set up again (another move, or a Label Station) while this was in flight
+    if station is None or _station(st.store) != station:
+        # set up again (another move or station type) while this was in flight
         log.info("station key discarded: the setup changed while it was issued")
         return False
     store_key(st.store, st.keys, raw)
