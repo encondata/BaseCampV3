@@ -7,10 +7,10 @@ import json
 from datetime import UTC, datetime
 
 import pytest
+from tests.conftest import make_session
 
 from edge import printers
-from edge.printers import Printers
-from tests.conftest import make_session
+from edge.printers import DockerPaths, Printers
 
 HI_REPLY = b"\x02ZT411-300dpi,V92.21.39Z,12,8176KB\x03\r\n"
 
@@ -122,6 +122,7 @@ async def test_routes_need_a_session(client, method, path, body):
     "255.255.255.255",
     "::1",
     "fe80::1",
+    "::ffff:10.0.0.9",    # IPv4-mapped IPv6
     "10.0.0.09",          # leading zeros
     " 10.0.0.9",
     "printer.local",
@@ -149,6 +150,126 @@ def test_guard_without_host_info_still_refuses_non_lan(app):
     p = app.state.printers
     assert not p.allowed("8.8.8.8") and not p.allowed("127.0.0.1")
     assert not p.allowed("192.168.1.255") and p.allowed("192.168.1.20")
+
+
+# ── the guard vs Docker's paths back to the laptop ─────────────────
+
+DOCKER = DockerPaths(
+    addresses=frozenset({"172.18.0.3",          # the container itself
+                         "172.18.0.1",          # its default gateway (the bridge)
+                         "192.168.65.254"}),    # host.docker.internal
+    subnets=("172.18.0.0/16",))
+
+
+def docker_printers(app, paths=DOCKER):
+    return Printers(app.state.settings.data_dir, docker_paths=lambda: paths)
+
+
+@pytest.mark.parametrize("ip", ["172.18.0.3", "172.18.0.1", "192.168.65.254", "172.18.5.5"])
+def test_guard_refuses_docker_paths_to_the_laptop(app, ip):
+    write_host(app)
+    assert not docker_printers(app).allowed(ip)
+
+
+@pytest.mark.parametrize("ip", ["172.17.5.5", "172.19.0.9", "192.168.65.20", "10.0.0.9"])
+def test_guard_does_not_blanket_block_docker_ranges(app, ip):
+    write_host(app)
+    assert docker_printers(app).allowed(ip)
+
+
+def test_a_container_subnet_that_is_the_lan_stays_open(app):
+    # host networking: the container's subnet is the laptop's LAN
+    write_host(app, ips=("10.0.0.5",), prefix=24)
+    p = docker_printers(app, DockerPaths(addresses=frozenset({"10.0.0.5", "10.0.0.1"}),
+                                         subnets=("10.0.0.0/24",)))
+    assert p.allowed("10.0.0.9")
+    assert not p.allowed("10.0.0.1")   # the gateway itself stays refused
+
+
+async def test_docker_paths_bad_ip_is_422_on_the_routes(app, client):
+    write_host(app)
+    app.state.printers = docker_printers(app)
+    r = await client.post("/edge/printers/query", headers=make_session(app),
+                          json={"ip": "192.168.65.254", "command": "~HI"})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_printer_ip"
+
+
+def test_docker_paths_are_looked_up_once(app):
+    calls = []
+
+    def paths():
+        calls.append(1)
+        return DOCKER
+
+    p = Printers(app.state.settings.data_dir, docker_paths=paths)
+    p.allowed("10.0.0.9")
+    p.allowed("10.0.0.10")
+    assert calls == [1]
+
+
+ROUTE = """Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT
+eth0\t00000000\t010012AC\t0003\t0\t0\t0\t00000000\t0\t0\t0
+eth0\t000012AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0
+"""
+
+FIB = """Main:
+  +-- 0.0.0.0/0 3 0 5
+     |-- 0.0.0.0
+        /0 universe UNICAST
+  +-- 127.0.0.0/8 2 0 2
+     |-- 127.0.0.1
+        /32 host LOCAL
+  +-- 172.18.0.0/16 2 0 2
+     |-- 172.18.0.3
+        /32 host LOCAL
+     |-- 172.18.255.255
+        /32 link BROADCAST
+Local:
+  +-- 172.18.0.0/16 2 0 2
+     |-- 172.18.0.3
+        /32 host LOCAL
+"""
+
+
+def test_route_table_gives_the_gateway_and_connected_subnets():
+    gateway, subnets = printers.parse_route(ROUTE)
+    assert gateway == "172.18.0.1" and subnets == ["172.18.0.0/16"]
+
+
+def test_fib_trie_gives_the_container_addresses():
+    assert printers.parse_fib_trie(FIB) == {"172.18.0.3"}
+
+
+def test_discover_docker_paths_from_injected_sources():
+    def resolve(name):
+        return {"host.docker.internal": ["192.168.65.254"],
+                "gateway.docker.internal": ["192.168.65.1"]}.get(name, [])
+
+    paths = printers.discover_docker_paths(in_container=lambda: True, route=lambda: ROUTE,
+                                           fib=lambda: FIB, resolve=resolve)
+    assert paths.addresses == {"172.18.0.3", "172.18.0.1", "192.168.65.254", "192.168.65.1"}
+    assert paths.subnets == ("172.18.0.0/16",)
+
+
+def test_discover_docker_paths_outside_a_container_is_empty():
+    def boom():
+        raise AssertionError("not read outside a container")
+
+    paths = printers.discover_docker_paths(in_container=lambda: False, route=boom, fib=boom,
+                                           resolve=boom)
+    assert paths == DockerPaths()
+
+
+def test_discover_docker_paths_tolerates_missing_sources():
+    def gone():
+        raise OSError("no /proc")
+
+    def unresolved(name):
+        raise OSError("no such host")
+
+    paths = printers.discover_docker_paths(in_container=lambda: True, route=gone, fib=gone,
+                                           resolve=unresolved)
+    assert paths == DockerPaths()
 
 
 # ── scan ────────────────────────────────────────────────────────────
@@ -267,6 +388,28 @@ async def test_a_reply_that_never_stops_is_cut_off_at_the_total_limit(app, clien
     await fake.close()
 
 
+async def test_at_most_four_printer_connections_at_once(app, client):
+    active = {"now": 0, "max": 0}
+
+    async def slow(writer):
+        active["now"] += 1
+        active["max"] = max(active["max"], active["now"])
+        await asyncio.sleep(0.15)
+        writer.write(b"ok")
+        await writer.drain()
+        active["now"] -= 1
+
+    fake = await FakePrinter(reply=slow, hold_open=False).start()
+    use_fake(app, fake)
+    headers = make_session(app)
+    results = await asyncio.gather(*(client.post("/edge/printers/query", headers=headers,
+                                                 json={"ip": "127.0.0.1", "command": "~HS"})
+                                     for _ in range(8)))
+    assert all(r.status_code == 200 for r in results)
+    assert printers.MAX_CONNECTIONS == 4 and active["max"] <= 4
+    await fake.close()
+
+
 async def test_read_limits_are_the_specified_values():
     assert (printers.MAX_READ, printers.IDLE_S, printers.TOTAL_S) == (65536, 2.0, 5.0)
 
@@ -305,6 +448,22 @@ async def test_send_delivers_the_bytes(app, client):
         await asyncio.sleep(0.01)
     assert bytes(fake.received) == zpl.encode("utf-8")
     await fake.close()
+
+
+async def test_send_refuses_an_oversized_body_before_parsing(app, client, fake, monkeypatch):
+    use_fake(app, fake)
+    from edge.routes import printers as printer_routes
+    monkeypatch.setattr(printer_routes, "MAX_ZPL", 1000)
+    big = json.dumps({"ip": "127.0.0.1", "zpl": "^XA" + "x" * 80_000 + "^XZ"})
+    r = await client.post("/edge/printers/send", headers=make_session(app), content=big)
+    assert r.status_code == 413 and r.json()["detail"]["code"] == "request_too_large"
+    # no Content-Length (a streamed body) is capped while reading
+    async def chunks():
+        yield big.encode()
+
+    r = await client.post("/edge/printers/send", headers=make_session(app), content=chunks())
+    assert r.status_code == 413
+    assert fake.received == b""
 
 
 async def test_send_rejects_an_empty_zpl(app, client, fake):
@@ -368,6 +527,17 @@ async def test_send_font_name_must_match_the_cloud_font(app, client, cloud, fake
     cloud.get(f"/kiosk/labels/fonts/{FONT_ID}/content").respond(
         200, content=FONT_BYTES,
         headers={"content-disposition": 'attachment; filename="OTHER.TTF"'})
+    r = await client.post("/edge/printers/send-font", headers=make_session(app),
+                          json={"ip": "127.0.0.1", "font_id": FONT_ID, "name": "SWISS.TTF",
+                                "initiative_id": MOVE_ID})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "font_name_mismatch"
+    assert fake.received == b""
+
+
+async def test_send_font_without_a_cloud_filename_is_refused(app, client, cloud, fake):
+    use_fake(app, fake)
+    _online(app)
+    cloud.get(f"/kiosk/labels/fonts/{FONT_ID}/content").respond(200, content=FONT_BYTES)
     r = await client.post("/edge/printers/send-font", headers=make_session(app),
                           json={"ip": "127.0.0.1", "font_id": FONT_ID, "name": "SWISS.TTF",
                                 "initiative_id": MOVE_ID})

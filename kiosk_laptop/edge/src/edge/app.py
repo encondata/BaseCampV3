@@ -75,6 +75,8 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
                 runner.start()
             if reporter:
                 reporter.start()
+            # Docker's paths back to the laptop: looked up once, off the loop
+            await asyncio.to_thread(app.state.printers.docker_paths)
             yield
         finally:
             try:

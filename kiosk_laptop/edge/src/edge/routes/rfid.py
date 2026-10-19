@@ -9,29 +9,14 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, Request
 
 from edge import config_sync, laptop_setup
-from edge.deps import err, require_session
+from edge.deps import err, online, require_session
+from edge.deps import json_object as _json_object
 from edge.rfid import alarm, checks, events, pairing, tagreads, ziotc
 from edge.rfid.reader_report import current_snapshot
 from edge.rfid.ziotc import ReaderError
 from edge.sessions import EdgeSession
 
 router = APIRouter(prefix="/edge/rfid", dependencies=[Depends(require_session)])
-
-
-async def _json_object(request: Request) -> dict:
-    try:
-        body = await request.json()
-    except ValueError:
-        body = None
-    if not isinstance(body, dict):
-        raise err(422, "bad_request")
-    return body
-
-
-def online(session: EdgeSession = Depends(require_session)) -> EdgeSession:
-    if session.offline:
-        raise err(503, "edge_offline")
-    return session
 
 
 @router.post("/scan")

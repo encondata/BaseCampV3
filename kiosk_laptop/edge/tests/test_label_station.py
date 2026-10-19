@@ -6,11 +6,11 @@ import json
 from datetime import UTC, datetime
 
 import pytest
+from tests.conftest import make_session
+from tests.test_config_sync import DOC, _clock_known, _row, _seed
 
 from edge import config_sync, laptop_setup
 from edge.rfid import station_key
-from tests.conftest import make_session
-from tests.test_config_sync import DOC, _clock_known, _row, _seed
 
 SETTINGS = {"label_kind": "top",
             "printer": {"type": "network", "ip": "10.0.0.40", "model": "ZT411", "serial": "S1"},
@@ -187,3 +187,15 @@ async def test_the_report_carries_the_section(app, client):
     await put(app, client, SETTINGS)
     beat = config_sync.prepare_beat(app.state.store)
     assert beat.fields["config"]["label_station"] == SETTINGS
+
+
+async def test_wipe_nulls_the_section_and_marks_dirty(app, client):
+    write_host(app)
+    await _seed(app, client)
+    label_setup(app)
+    await put(app, client, SETTINGS)
+    app.state.store.run("UPDATE device_config SET dirty = 0")
+    r = await client.post("/edge/wipe", json={}, headers=make_session(app, max_rank=60))
+    assert r.status_code == 200
+    got = (await client.get("/edge/config", headers=make_session(app))).json()
+    assert got["doc"]["label_station"] is None and _row(app)["dirty"] == 1

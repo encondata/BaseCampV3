@@ -189,7 +189,7 @@ def _apply_alarm(c, section) -> None:
                   "timed_seconds = excluded.timed_seconds", (new["mode"], new["timed_seconds"]))
 
 
-def _with_alarm(c, doc: dict) -> dict:
+def _with_owned(c, doc: dict) -> dict:
     """`doc` with the sections the edge owns: its `alarm` mirroring
     alarm_settings (other alarm keys kept) and `label_station` mirroring the
     shared setup's Label Station settings."""
@@ -230,16 +230,30 @@ def put(store: Store, doc: dict, base_version: int | None, *, seed: bool = False
             # unreported defaults-only seed and this one is customized
             if stored is None or (_replaceable_seed(row, stored)
                                   and not browser_defaults_only(doc)):
-                _write(c, doc=json.dumps(_with_alarm(c, {**doc, "schema": 1})),
+                _write(c, doc=json.dumps(_with_owned(c, {**doc, "schema": 1})),
                        version=row["version"] + 1)
             return _view(_row(c))
         if base_version is not None and base_version != row["version"]:
             raise ConfigConflict(_view(row))
         _apply_alarm(c, doc.get("alarm"))
-        new = _with_alarm(c, {**doc, "schema": 1})
+        new = _with_owned(c, {**doc, "schema": 1})
         if stored is None or _canon(new) != _canon(stored):
             _changed(c, row, new)
         return _view(_row(c))
+
+
+def _note_owned(c) -> None:
+    """A section the edge owns changed: the document follows, as a local
+    change. With no document yet the change is still marked, and the first
+    report (once a browser seeds) carries it stamped."""
+    row = _row(c)
+    stored = _doc(row)
+    if stored is None:
+        _changed(c, row, None)
+        return
+    new = _with_owned(c, stored)
+    if _canon(new) != _canon(stored):
+        _changed(c, row, new)
 
 
 def note_alarm_edit(store: Store) -> None:
@@ -247,14 +261,7 @@ def note_alarm_edit(store: Store) -> None:
     as a local change. With no document yet the change is still marked, and
     the first report (once a browser seeds) carries it stamped."""
     with store.tx() as c:
-        row = _row(c)
-        stored = _doc(row)
-        if stored is None:
-            _changed(c, row, None)
-            return
-        new = _with_alarm(c, stored)
-        if _canon(new) != _canon(stored):
-            _changed(c, row, new)
+        _note_owned(c)
 
 
 def note_label_station(c) -> None:
@@ -262,14 +269,7 @@ def note_label_station(c) -> None:
     or a station type change), on the caller's transaction: the document's
     `label_station` follows, as a local change. With no document yet the
     change is still marked, as for the alarm."""
-    row = _row(c)
-    stored = _doc(row)
-    if stored is None:
-        _changed(c, row, None)
-        return
-    new = _with_alarm(c, stored)
-    if _canon(new) != _canon(stored):
-        _changed(c, row, new)
+    _note_owned(c)
 
 
 # ── the check-ins ───────────────────────────────────────────────────
@@ -295,7 +295,7 @@ def prepare_beat(store: Store) -> Beat:
                 or now < last
             held = row["changed_at_local"] is not None and row["server_offset_ms"] is None
             if due and not held:
-                fields["config"] = _with_alarm(c, doc)
+                fields["config"] = _with_owned(c, doc)
                 fields["config_changed_at"] = row["changed_at"]
                 reported = True
         return Beat(fields=fields, reported=reported, version=row["version"], sent_at=now)
@@ -355,7 +355,7 @@ def handle_reply(store: Store, beat: Beat, data) -> None:
             stored = _doc(row)
             if not row["dirty"]:
                 _apply_alarm(c, cfg.get("alarm"))
-                new = _with_alarm(c, cfg)
+                new = _with_owned(c, cfg)
                 changed = stored is None or _canon(new) != _canon(stored)
                 _write(c, doc=json.dumps(new), applied_version=version,
                        version=row["version"] + (1 if changed else 0))
@@ -366,7 +366,7 @@ def handle_reply(store: Store, beat: Beat, data) -> None:
                 for section in LOCAL_SECTIONS:
                     if stored is not None and section in stored:
                         merged[section] = stored[section]
-                merged = _with_alarm(c, merged)
+                merged = _with_owned(c, merged)
                 if stored is None or _canon(merged) != _canon(stored):
                     _write(c, doc=json.dumps(merged), version=row["version"] + 1)
     laptop_setup.set_scan_type(store, data.get("scan_status"), data.get("scan_status_label"))

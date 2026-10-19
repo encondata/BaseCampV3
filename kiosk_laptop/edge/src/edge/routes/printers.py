@@ -9,13 +9,13 @@ signed-in person), so an offline sign-in gets 503 edge_offline."""
 
 import re
 from email.message import Message
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 
 from edge import laptop_setup
-from edge.deps import err, require_session
+from edge.deps import err, json_object, online, require_session
 from edge.printers import PrinterError, font_header
-from edge.routes.rfid import _json_object, online
 from edge.sessions import EdgeSession
 from edge.upstream import CloudOffline
 
@@ -23,6 +23,7 @@ router = APIRouter(dependencies=[Depends(require_session)])
 
 MAX_COMMAND = 4096              # a query: ~HI, ~HS, ^XA^HWE:*.*^XZ
 MAX_ZPL = 8 * 1024 * 1024       # a label job (graphics can be large)
+BODY_OVERHEAD = 64 * 1024       # the JSON around it (ip, escapes of a few characters)
 MAX_FONT = 16 * 1024 * 1024     # a TrueType font
 FONT_NAME = re.compile(r"[A-Za-z0-9_\-]{1,64}\.TTF", re.IGNORECASE)
 CLOUD_ID = re.compile(r"[A-Za-z0-9\-]{1,64}")
@@ -61,7 +62,7 @@ async def scan(request: Request) -> dict:
 async def query(request: Request) -> dict:
     """`{ip, command}` → `{response, truncated}`: the reply as text (bytes
     0-255 as latin-1), at most 64 KB, ending at 2 s idle or 5 s in all."""
-    body = await _json_object(request)
+    body = await json_object(request)
     ip = _ip(request, body.get("ip"))
     command = _text(body, "command", MAX_COMMAND)
     try:
@@ -73,8 +74,9 @@ async def query(request: Request) -> dict:
 
 @router.post("/edge/printers/send")
 async def send(request: Request) -> dict:
-    """`{ip, zpl}` → `{ok}`: the ZPL as UTF-8, the same bytes WebUSB sends."""
-    body = await _json_object(request)
+    """`{ip, zpl}` → `{ok}`: the ZPL as UTF-8, the same bytes WebUSB sends. A
+    body over MAX_ZPL plus overhead is 413 request_too_large, unparsed."""
+    body = await json_object(request, max_bytes=MAX_ZPL + BODY_OVERHEAD)
     ip = _ip(request, body.get("ip"))
     zpl = _text(body, "zpl", MAX_ZPL)
     try:
@@ -94,13 +96,15 @@ def _filename(disposition: str | None) -> str | None:
 
 
 @router.post("/edge/printers/send-font", dependencies=[Depends(online)])
-async def send_font(request: Request, session: EdgeSession = Depends(require_session)) -> dict:
+async def send_font(request: Request,
+                    session: Annotated[EdgeSession, Depends(require_session)]) -> dict:
     """`{ip, font_id, name, initiative_id}` → `{ok}`: the font's bytes from
     the cloud's kiosk font route (only fonts the move's templates use), sent
     as `~DYE:{name},B,T,{len},,` plus the bytes. `name` must be the font's
-    own name (409 font_name_mismatch); a cloud refusal keeps its status and
+    own name, as the cloud names it (409 font_name_mismatch, also when the
+    cloud names none); a cloud refusal keeps its status and
     code."""
-    body = await _json_object(request)
+    body = await json_object(request)
     ip = _ip(request, body.get("ip"))
     name = body.get("name")
     font_id, move_id = body.get("font_id"), body.get("initiative_id")
@@ -129,7 +133,7 @@ async def send_font(request: Request, session: EdgeSession = Depends(require_ses
     if not data or len(data) > MAX_FONT:
         raise err(422, "font_too_large" if data else "font_empty")
     cloud_name = _filename(resp.headers.get("content-disposition"))
-    if cloud_name is not None and cloud_name.upper() != name.upper():
+    if cloud_name is None or cloud_name.upper() != name.upper():
         raise err(409, "font_name_mismatch")
     try:
         await st.printers.send(ip, font_header(name, len(data)), data)
@@ -152,7 +156,7 @@ async def put_label_station(request: Request) -> dict:
     """`{label_kind, printer: {type, ip?, model, serial?}, dpi, offset_x,
     offset_y}` → the stored copy. 409 not_label_station until the laptop is
     set up as a Label Station."""
-    body = await _json_object(request)
+    body = await json_object(request)
     st = request.app.state
     try:
         settings = laptop_setup.normalize_label_station(body, st.printers.allowed)
