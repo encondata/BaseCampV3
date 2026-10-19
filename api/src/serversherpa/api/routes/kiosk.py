@@ -654,6 +654,12 @@ async def _active_scan_types(db: AsyncSession) -> list[StatusValue]:
 LABEL_STATION_SCAN_STATUS = "labeled"
 
 
+def is_station(device: Device) -> bool:
+    """A laptop kiosk set up as an RFID Station or a Label Station; both
+    upload under a station key."""
+    return device.sub_type == "laptop" and device.station_type in ("rfid", "label")
+
+
 def is_rfid_station(device: Device) -> bool:
     """An RFID Station: a laptop kiosk set up with station type rfid."""
     return device.sub_type == "laptop" and device.station_type == "rfid"
@@ -784,9 +790,8 @@ async def kiosk_setup(
                       "rfid_reader_model", "rfid_reader_versions"):
             _stamp(field, None)
         device.rfid_paired_at = None
-        # a Label Station uploads through the signed-in session, not a key
-        await station_keys.revoke(db, device, actor_id=actor.person.id,
-                                  reason="label_station")
+        # a Label Station keeps its station key (it uploads Labeled scans
+        # with it); a station-type or move change revokes it as before
 
     device.current_initiative_id = initiative.id
     device.site_id = site.id
@@ -812,14 +817,15 @@ async def issue_station_key(
     body: KioskStationKeyIn, db: DbSession,
     actor: AuthContext = require_permission("kiosk", "view"),
 ) -> KioskStationKeyOut:
-    """Issue (or replace) this RFID station's upload key. The raw key is
+    """Issue (or replace) this RFID or Label Station's upload key. The raw key is
     returned once; only its sha256 is stored. A move-password session may
     issue only for the move the kiosk is set up for."""
     device = await db.scalar(select(Device).where(Device.serial == body.serial))
     if device is None or device.device_type != "kiosk":
         raise _err(404, "device_not_found")
-    if (device.sub_type != "laptop" or device.station_type != "rfid"
-            or device.current_initiative_id is None):
+    # the code stays not_rfid_station for old edges, though a Label Station
+    # now qualifies too
+    if not is_station(device) or device.current_initiative_id is None:
         raise _err(409, "not_rfid_station")
     if registration_state(device.token_expires_at, datetime.now(UTC)) not in ("ok", "soon"):
         raise _err(409, "kiosk_not_registered")
@@ -1528,6 +1534,7 @@ async def _store_scan_batch(
     locked: uuid.UUID | None, inactive_moves: set[uuid.UUID],
     allowed_sites: set[uuid.UUID] | None = None, rfid_only: bool = False,
     audit_via: str | None = None, off_move_allowed: bool = False,
+    barcode_only: bool = False, forced_status: str | None = None,
 ) -> KioskScanBatchOut:
     """Validate and store one scan batch for `device`; shared by the
     person route (POST /kiosk/scans) and the station-key route.
@@ -1536,8 +1543,9 @@ async def _store_scan_batch(
     set of moves a station key covers. A scan's move is its own
     `initiative_id`, else the device's setup move. Outside `locked` /
     `allowed_moves` it is `move_locked`; in `inactive_moves` (completed,
-    cancelled or archived) it is `move_inactive`. `rfid_only` rejects
-    other scan types (`bad_scan_type`); `allowed_sites`, when given, must
+    cancelled or archived) it is `move_inactive`. `rfid_only` (or
+    `barcode_only`) rejects other scan types (`bad_scan_type`);
+    `forced_status` overrides every scan's status; `allowed_sites`, when given, must
     contain a scan's effective site (`bad_site`, checked after the move
     checks). `off_move` is stored only when `off_move_allowed` (a station
     upload); the person route always stores False. Commits."""
@@ -1545,7 +1553,8 @@ async def _store_scan_batch(
     # One lookup per reference kind for the whole batch, not per scan.
     site_ids = {s.site_id for s in scans if s.site_id is not None}
     initiative_ids = {s.initiative_id for s in scans if s.initiative_id is not None}
-    status_keys = {s.scan_status for s in scans if s.scan_status is not None}
+    status_keys = {s.scan_status for s in scans
+                   if s.scan_status is not None and forced_status is None}
     known_sites = set(await db.scalars(
         select(Site.id).where(Site.id.in_(site_ids)))) if site_ids else set()
     known_initiatives = set(await db.scalars(
@@ -1566,14 +1575,16 @@ async def _store_scan_batch(
     rows: list[dict] = []
     for scan in scans:
         if scan.scan_type not in known_scan_types or (
-                rfid_only and scan.scan_type != "rfid"):
+                (rfid_only and scan.scan_type != "rfid")
+                or (barcode_only and scan.scan_type != "barcode")):
             code = "bad_scan_type"
         elif scan.site_id is not None and scan.site_id not in known_sites:
             code = "bad_site"
         elif (scan.initiative_id is not None
                 and scan.initiative_id not in known_initiatives):
             code = "bad_initiative"
-        elif scan.scan_status is not None and scan.scan_status not in known_statuses:
+        elif (forced_status is None and scan.scan_status is not None
+                and scan.scan_status not in known_statuses):
             code = "bad_status"
         elif (locked is not None
                 and (scan.initiative_id or device.current_initiative_id) != locked):
@@ -1597,7 +1608,7 @@ async def _store_scan_batch(
             rejected.append(KioskScanRejected(
                 client_scan_id=scan.client_scan_id, code=code))
             continue
-        checkpoint = scan.scan_status or device.scan_status
+        checkpoint = forced_status or scan.scan_status or device.scan_status
         rows.append({
             "scanned_value": scan.scanned_value,
             "scan_type": scan.scan_type,
@@ -1637,8 +1648,9 @@ async def _store_scan_batch(
 async def station_ingest_scans(
     body: KioskStationScanBatchIn, request: Request, db: DbSession,
 ) -> KioskStationScanBatchOut:
-    """RFID scans an unattended laptop kiosk uploads under its station
-    key (`Authorization: Station <key>`), no person session needed. Stored
+    """Scans an unattended laptop kiosk uploads under its station
+    key (RFID scans from an RFID Station; Labeled barcode scans from a
+    Label Station, which never records off-move scans) (`Authorization: Station <key>`), no person session needed. Stored
     exactly like `POST /kiosk/scans` but with no operator. The key covers
     one move: a scan for any other is `move_locked`, and one for that move
     once it is completed, cancelled or archived is `move_inactive`. The
@@ -1658,10 +1670,13 @@ async def station_ingest_scans(
         if init is not None and (init.status in HISTORICAL_INITIATIVE_STATUSES
                                  or init.archived_at is not None):
             inactive.add(move)
+    label = device.station_type == "label"
     out = await _store_scan_batch(
         db, device, body.scans, operator_id=None, allowed_moves=allowed,
         locked=None, inactive_moves=inactive, allowed_sites=sites,
-        rfid_only=True, audit_via="station_key", off_move_allowed=True)
+        rfid_only=not label, barcode_only=label,
+        forced_status=LABEL_STATION_SCAN_STATUS if label else None,
+        audit_via="station_key", off_move_allowed=not label)
     return KioskStationScanBatchOut(
         accepted=out.accepted, rejected=out.rejected,
         clear_setup=device.setup_clear_id)

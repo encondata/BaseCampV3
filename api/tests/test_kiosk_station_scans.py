@@ -324,3 +324,27 @@ async def test_scan_first_sent_on_person_route_then_station_is_one_row(
     r = await _post(client, key, [s])
     assert r.json()["accepted"] == [s["client_scan_id"]]
     assert len(await _rows(db, "EPC-BOTH")) == 1
+
+
+async def test_label_station_scans_record_labeled_barcodes(client, db, seeded_user):
+    device, _, key = await _station(db)
+    (await db.get(Device, device.id)).station_type = "label"
+    await db.commit()
+    r = await _post(client, key, [
+        _scan("LBL-1", scan_type="barcode", scan_status="in_transit", off_move=True)])
+    assert r.status_code == 200, r.text
+    assert len(r.json()["accepted"]) == 1 and r.json()["rejected"] == []
+    [row] = await _rows(db, "LBL-1")
+    assert row.scan_type == "barcode"
+    assert row.scan_status == "labeled"
+    assert row.off_move is False
+
+
+async def test_label_station_rfid_scan_rejected(client, db, seeded_user):
+    device, _, key = await _station(db)
+    (await db.get(Device, device.id)).station_type = "label"
+    await db.commit()
+    r = await _post(client, key, [_scan("LBL-RFID")])
+    assert r.status_code == 200, r.text
+    assert [x["code"] for x in r.json()["rejected"]] == ["bad_scan_type"]
+    assert await _rows(db, "LBL-RFID") == []

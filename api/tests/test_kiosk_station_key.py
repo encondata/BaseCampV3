@@ -164,7 +164,7 @@ async def test_issue_guards(client, db, seeded_user):
 
     device, init = await _device(db, person_id=uid)
     init_id = init.id
-    for fields in ({"station_type": "label"}, {"station_type": None},
+    for fields in ({"station_type": None},
                    {"sub_type": "web"}, {"current_initiative_id": None}):
         await reset(device, **fields)
         r = await attempt()
@@ -249,7 +249,35 @@ async def test_clear_setup_request_revokes_key(client, db, seeded_user):
     assert row.changes == {"reason": "clear_setup"}
 
 
-async def test_label_setup_revokes_key(client, db, seeded_user):
+async def test_label_station_can_get_a_station_key(client, db, seeded_user):
+    uid = seeded_user.id
+    hdrs = await login(client)
+    device, _ = await _device(db, person_id=uid, station_type="label")
+    r = await client.post("/kiosk/station-key", headers=hdrs, json={"serial": SERIAL})
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    assert (await db.get(Device, device.id)).station_key_hash is not None
+
+
+async def test_non_station_laptop_still_refused(client, db, seeded_user):
+    uid = seeded_user.id
+    hdrs = await login(client)
+    await _device(db, person_id=uid, station_type=None)
+    r = await client.post("/kiosk/station-key", headers=hdrs, json={"serial": SERIAL})
+    assert r.status_code == 409 and _code(r) == "not_rfid_station"
+
+
+async def test_verify_accepts_label_station(client, db, seeded_user):
+    uid = seeded_user.id
+    hdrs = await login(client)
+    device, _ = await _device(db, person_id=uid, station_type="label")
+    key = (await client.post("/kiosk/station-key", headers=hdrs,
+                             json={"serial": SERIAL})).json()["key"]
+    got = await station_keys.verify(db, SERIAL, key)
+    assert got is not None and got.id == device.id
+
+
+async def test_label_station_setup_keeps_its_key(client, db, seeded_user):
     uid = seeded_user.id
     hdrs = await login(client)
     device = Device(device_type="kiosk", name="Station 1", serial=SERIAL, sub_type="laptop",
@@ -264,16 +292,15 @@ async def test_label_setup_revokes_key(client, db, seeded_user):
     await db.refresh(device)
     db.expunge(device)
     planned_id, dest_id, status_key = planned.id, dest.id, active.key
-    issued = await client.post("/kiosk/station-key", headers=hdrs, json={"serial": SERIAL})
-    assert issued.status_code == 200, issued.text
     body = {"serial": SERIAL, "initiative_id": str(planned_id), "site_id": str(dest_id),
             "scan_status": status_key, "station_type": "label"}
+    issued = await client.post("/kiosk/station-key", headers=hdrs, json={"serial": SERIAL})
+    assert issued.status_code == 200, issued.text
     r = await client.post("/kiosk/setup", headers=hdrs, json=body)
     assert r.status_code == 200, r.text
     db.expire_all()
-    assert (await db.get(Device, device.id)).station_key_hash is None
-    [row] = await _audits(db, device, "station_key_revoke")
-    assert row.changes == {"reason": "label_station"}
+    assert (await db.get(Device, device.id)).station_key_hash is not None
+    assert await _audits(db, device, "station_key_revoke") == []
 
 
 async def test_audit_rows_never_contain_the_key(client, db, seeded_user):
