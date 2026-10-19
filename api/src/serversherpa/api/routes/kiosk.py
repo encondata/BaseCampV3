@@ -638,6 +638,10 @@ async def _active_scan_types(db: AsyncSession) -> list[StatusValue]:
         .order_by(StatusValue.sort_order, natural(StatusValue.label)))).all())
 
 
+# A Label Station records one scan type only (Jimmy, 2026-10-19).
+LABEL_STATION_SCAN_STATUS = "labeled"
+
+
 def is_rfid_station(device: Device) -> bool:
     """An RFID Station: a laptop kiosk set up with station type rfid."""
     return device.sub_type == "laptop" and device.station_type == "rfid"
@@ -646,10 +650,13 @@ def is_rfid_station(device: Device) -> bool:
 async def allowed_scan_types(db: AsyncSession, device: Device) -> list[StatusValue]:
     """The scan types this kiosk may be set to, by Kiosk Setup's rule: the
     active asset status values, and on an RFID Station only those whose
-    label contains "RFID" (any case). None without a current move."""
+    label contains "RFID" (any case); a Label Station only Labeled. None
+    without a current move."""
     if device.current_initiative_id is None:
         return []
     types = await _active_scan_types(db)
+    if device.station_type == "label":
+        return [t for t in types if t.key == LABEL_STATION_SCAN_STATUS]
     if is_rfid_station(device):
         types = [t for t in types if "rfid" in t.label.lower()]
     return types
@@ -720,7 +727,10 @@ async def kiosk_setup(
             or initiative.status in HISTORICAL_INITIATIVE_STATUSES
             or initiative.archived_at is not None):
         raise _err(422, "bad_initiative")
-    scan_type = await db.get(StatusValue, ("asset", body.scan_status))
+    # A Label Station records Labeled whatever the client sent.
+    scan_key = (LABEL_STATION_SCAN_STATUS if body.station_type == "label"
+                else body.scan_status)
+    scan_type = await db.get(StatusValue, ("asset", scan_key))
     if scan_type is None or not scan_type.is_active:
         raise _err(422, "bad_scan_status")
     if body.site_id == initiative.origin_site_id:
