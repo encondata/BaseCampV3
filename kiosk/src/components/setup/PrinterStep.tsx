@@ -73,9 +73,9 @@ function isIpv4(text: string): boolean {
 
 /** The Peeler row's detail: what the printer said, and how labels print. */
 function peelerDetail(present: boolean | null): string {
-  if (present === true) return 'Peeler fitted · labels peel off';
-  if (present === false) return 'No peeler · labels tear off';
-  return "Printer doesn't report a peeler · labels tear off";
+  if (present === true) return 'Peeler detected · printing in peel-off mode';
+  if (present === false) return 'No peeler · printing in tear-off mode';
+  return "Printer doesn't report a peeler · printing in tear-off mode";
 }
 
 function codeOf(err: unknown): string {

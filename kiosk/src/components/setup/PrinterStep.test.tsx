@@ -328,11 +328,11 @@ describe('peeler', () => {
   const peelerRow = () => row('Peeler');
 
   it.each([
-    ['"Present"', 'Peeler fitted · labels peel off', true],
-    ['"Not Present"', 'No peeler · labels tear off', false],
-    ['"?"', "Printer doesn't report a peeler · labels tear off", false],
-    ['', "Printer doesn't report a peeler · labels tear off", false],
-    [new Error('read timeout'), "Printer doesn't report a peeler · labels tear off", false],
+    ['"Present"', 'Peeler detected · printing in peel-off mode', true],
+    ['"Not Present"', 'No peeler · printing in tear-off mode', false],
+    ['"?"', "Printer doesn't report a peeler · printing in tear-off mode", false],
+    ['', "Printer doesn't report a peeler · printing in tear-off mode", false],
+    [new Error('read timeout'), "Printer doesn't report a peeler · printing in tear-off mode", false],
   ])('reply %j shows "%s" and saves peel %s', async (reply, detail, peel) => {
     const user = userEvent.setup();
     printerState.peeler = reply;
@@ -361,7 +361,7 @@ describe('peeler', () => {
     expect(commands.filter((c) => c.includes('getvar'))).toEqual(['! U1 getvar "sensor.peeler_present"\r\n']);
     expect(apiMock.printerSend).not.toHaveBeenCalled();
     expect(commands.join('\n')).not.toMatch(/setvar|\^JUS/);
-    expect(within(peelerRow()).getByText('Peeler fitted · labels peel off')).toBeTruthy();
+    expect(within(peelerRow()).getByText('Peeler detected · printing in peel-off mode')).toBeTruthy();
   });
 });
 
