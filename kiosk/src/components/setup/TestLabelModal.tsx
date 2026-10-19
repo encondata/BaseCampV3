@@ -12,7 +12,7 @@
  * Every print goes through `applyPrintSettings` with the station's
  * offsets (the same `^LS`/`^LT` shift Printer tools uses), then
  * `withPrintMode`: `^MMP` (peel off) when step 5 found a peeler, else
- * `^MMT`, on that label only. After a print,
+ * `^MMT` (never saved to the printer). After a print,
  * the horizontal and vertical offsets (dots, may be negative) show with
  * Reprint; offsets carried over from the station's saved settings show from
  * the start. The parent keeps them and saves them with the station.

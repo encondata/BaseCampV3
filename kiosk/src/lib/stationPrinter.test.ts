@@ -160,6 +160,10 @@ describe('parseGetvar', () => {
 });
 
 describe('withPrintMode', () => {
+  it('drops a ^MM with no mode letter too', () => {
+    expect(withPrintMode('^XA^MM,N^FDx^FS^XZ', true)).toBe('^XA^MMP^FDx^FS^XZ');
+  });
+
   it('puts ^MMP right after ^XA for peel and ^MMT for tear', () => {
     expect(withPrintMode('^XA^FO10,10^FDx^FS^XZ', true)).toBe('^XA^MMP^FO10,10^FDx^FS^XZ');
     expect(withPrintMode('^XA^FO10,10^FDx^FS^XZ', false)).toBe('^XA^MMT^FO10,10^FDx^FS^XZ');

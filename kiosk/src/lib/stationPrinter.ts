@@ -140,13 +140,14 @@ export function parseGetvar(reply: string): string | null {
   return v === '' || v === '?' ? null : v;
 }
 
-// A label's own print mode: ^MM<mode>[,<prepeel Y/N>], any case.
-const PRINT_MODE_RE = /\^MM[A-Z](?:,[A-Z])?/gi;
+// A label's own print mode: ^MM[<mode>][,<prepeel Y/N>], any case.
+const PRINT_MODE_RE = /\^MM[A-Z]?(?:,[A-Z])?/gi;
 
 /** The label printed peel-off (`^MMP`) or tear-off (`^MMT`): any `^MM` the
  *  label carries is dropped, and the station's mode goes right after every
- *  `^XA` (any case, kept as written), so it holds for that label only and
- *  is never saved to the printer (no `^JUS`, no setvar). */
+ *  `^XA` (any case, kept as written). It is never saved (no `^JUS`, no
+ *  setvar), but the printer keeps it until a label sets another mode or
+ *  it restarts. */
 export function withPrintMode(zpl: string, peel: boolean): string {
   const mode = peel ? '^MMP' : '^MMT';
   return zpl.replace(PRINT_MODE_RE, '').replace(/\^XA/gi, (xa) => `${xa}${mode}`);
