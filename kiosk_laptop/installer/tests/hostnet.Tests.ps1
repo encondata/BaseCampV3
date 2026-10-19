@@ -139,6 +139,24 @@ Describe 'ConvertTo-HostNetworkJson' {
     }
 }
 
+Describe 'self_addresses' {
+    It 'lists every IPv4 address the laptop owns once, vEthernet, VPN and down adapters included' {
+        $self = @(ConvertTo-HostSelfAddressList -Addresses $script:Addresses)
+        $self -join ',' | Should -Be '10.10.48.57,10.10.50.9,192.168.1.20,172.25.160.1,172.30.0.1,10.8.0.2,169.254.33.4,172.20.10.3,172.20.10.9,172.20.10.10,10.10.48.99'
+    }
+    It 'leaves out loopback, unspecified and malformed addresses' {
+        $a = @((Get-FakeAddress 'lo' 1 '127.0.0.1' 8), (Get-FakeAddress 'x' 2 '0.0.0.0' 0), (Get-FakeAddress 'y' 3 '10.0.0.256' 24))
+        @(ConvertTo-HostSelfAddressList -Addresses $a).Count | Should -Be 0
+    }
+    It 'adds self_addresses last when given, and keeps an empty list a list' {
+        $now = [datetime]::UtcNow
+        $with = ConvertTo-HostNetworkJson -Interfaces @() -Now $now -Gateway '10.10.48.1' -SelfAddresses @('172.17.0.1', '10.10.48.57')
+        $with | Should -BeLike '*"gateway":"10.10.48.1","self_addresses":`["172.17.0.1","10.10.48.57"`]}'
+        ConvertTo-HostNetworkJson -Interfaces @() -Now $now -SelfAddresses @() | Should -BeLike '*"self_addresses":`[`]}'
+        ConvertTo-HostNetworkJson -Interfaces @() -Now $now -SelfAddresses @('172.17.0.1') | Should -BeLike '*"self_addresses":`["172.17.0.1"`]}'
+    }
+}
+
 Describe 'Get-HostnetGateway' {
     It 'takes the route with the lowest route plus interface metric' {
         $routes = @((Get-FakeRoute '192.168.1.1' 0 50), (Get-FakeRoute '10.10.48.1' 5 10), (Get-FakeRoute '172.16.0.1' 0 25))
@@ -216,6 +234,14 @@ Describe 'Invoke-HostNetwork' {
         @($o.interfaces | ForEach-Object { $_.ipv4 }) -join ',' | Should -Be '10.10.48.57,10.10.50.9,172.20.10.3'
         $age = ([datetime]::UtcNow - [datetime]::Parse($o.updated_at, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal)).TotalSeconds
         [math]::Abs($age) | Should -BeLessThan 60
+    }
+    It 'records every owned address, the WSL and Hyper-V switches included, as self_addresses' {
+        Invoke-HostNetwork | Should -Be 0
+        $o = [IO.File]::ReadAllText((Join-Path $script:data 'host-network.json')) | ConvertFrom-Json
+        @($o.self_addresses) | Should -Contain '172.25.160.1'
+        @($o.self_addresses) | Should -Contain '172.30.0.1'
+        @($o.self_addresses) | Should -Contain '10.10.48.57'
+        @($o.interfaces).Count | Should -Be 3
     }
     It 'records the default gateway' {
         Invoke-HostNetwork | Should -Be 0

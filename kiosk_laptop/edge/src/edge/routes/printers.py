@@ -29,9 +29,11 @@ FONT_NAME = re.compile(r"[A-Za-z0-9_\-]{1,64}\.TTF", re.IGNORECASE)
 CLOUD_ID = re.compile(r"[A-Za-z0-9\-]{1,64}")
 
 
-def _ip(request: Request, value) -> str:
-    if not request.app.state.printers.allowed(value):
-        raise err(422, "bad_printer_ip")
+async def _ip(request: Request, value) -> str:
+    try:
+        await request.app.state.printers.check(value)
+    except PrinterError as exc:
+        raise _printer_error(exc) from None
     return value
 
 
@@ -42,14 +44,18 @@ def _text(body: dict, key: str, limit: int) -> str:
     return value
 
 
+_STATUS = {"bad_printer_ip": 422, "printer_timeout": 504, "printer_busy": 503,
+           "printer_guard_unavailable": 503}
+
+
 def _printer_error(exc: PrinterError):
-    status = 422 if exc.code == "bad_printer_ip" else 504 if exc.code == "printer_timeout" \
-        else 502
-    return err(status, exc.code)
+    return err(_STATUS.get(exc.code, 502), exc.code)
 
 
 @router.post("/edge/printers/scan")
 async def start_scan(request: Request) -> dict:
+    # the lookup in a thread first, so the scan's guard never looks up on the loop
+    await request.app.state.printers.guard_ready()
     return {"scan_id": request.app.state.printers.start()}
 
 
@@ -63,7 +69,7 @@ async def query(request: Request) -> dict:
     """`{ip, command}` → `{response, truncated}`: the reply as text (bytes
     0-255 as latin-1), at most 64 KB, ending at 2 s idle or 5 s in all."""
     body = await json_object(request)
-    ip = _ip(request, body.get("ip"))
+    ip = await _ip(request, body.get("ip"))
     command = _text(body, "command", MAX_COMMAND)
     try:
         data, truncated = await request.app.state.printers.query(ip, command.encode("utf-8"))
@@ -77,7 +83,7 @@ async def send(request: Request) -> dict:
     """`{ip, zpl}` → `{ok}`: the ZPL as UTF-8, the same bytes WebUSB sends. A
     body over MAX_ZPL plus overhead is 413 request_too_large, unparsed."""
     body = await json_object(request, max_bytes=MAX_ZPL + BODY_OVERHEAD)
-    ip = _ip(request, body.get("ip"))
+    ip = await _ip(request, body.get("ip"))
     zpl = _text(body, "zpl", MAX_ZPL)
     try:
         await request.app.state.printers.send(ip, zpl.encode("utf-8"))
@@ -105,7 +111,7 @@ async def send_font(request: Request,
     cloud names none); a cloud refusal keeps its status and
     code."""
     body = await json_object(request)
-    ip = _ip(request, body.get("ip"))
+    ip = await _ip(request, body.get("ip"))
     name = body.get("name")
     font_id, move_id = body.get("font_id"), body.get("initiative_id")
     if not isinstance(name, str) or not FONT_NAME.fullmatch(name) \
@@ -158,6 +164,10 @@ async def put_label_station(request: Request) -> dict:
     set up as a Label Station."""
     body = await json_object(request)
     st = request.app.state
+    printer = body.get("printer")
+    if isinstance(printer, dict) and printer.get("type") == "network" \
+            and (await st.printers.guard_ready()).unavailable:
+        raise err(503, "printer_guard_unavailable")
     try:
         settings = laptop_setup.normalize_label_station(body, st.printers.allowed)
     except laptop_setup.BadLabelStation as exc:

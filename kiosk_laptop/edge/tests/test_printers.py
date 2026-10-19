@@ -65,10 +65,12 @@ def use_fake(app, fake, targets=None):
                                   targets=targets)
 
 
-def write_host(app, ips=("10.0.0.5",), prefix=24):
-    (app.state.settings.data_dir / "host-network.json").write_text(json.dumps(
-        {"updated_at": datetime.now(UTC).isoformat(),
-         "interfaces": [{"name": "en0", "ipv4": i, "prefix": prefix} for i in ips]}))
+def write_host(app, ips=("10.0.0.5",), prefix=24, self_addresses=None):
+    data = {"updated_at": datetime.now(UTC).isoformat(),
+            "interfaces": [{"name": "en0", "ipv4": i, "prefix": prefix} for i in ips]}
+    if self_addresses is not None:
+        data["self_addresses"] = list(self_addresses)
+    (app.state.settings.data_dir / "host-network.json").write_text(json.dumps(data))
 
 
 async def wait_done(client, app):
@@ -267,9 +269,10 @@ def test_discover_docker_paths_tolerates_missing_sources():
     def unresolved(name):
         raise OSError("no such host")
 
+    # never raises, but a container whose gateway can't be found is incomplete
     paths = printers.discover_docker_paths(in_container=lambda: True, route=gone, fib=gone,
                                            resolve=unresolved)
-    assert paths == DockerPaths()
+    assert paths == DockerPaths(in_container=True, complete=False)
 
 
 # ── scan ────────────────────────────────────────────────────────────
@@ -582,3 +585,204 @@ async def test_send_font_bad_ip_is_422_before_any_cloud_call(app, client, cloud)
                                 "initiative_id": MOVE_ID})
     assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_printer_ip"
     assert not route.called
+
+
+# ── fix pass: self addresses, fail-closed lookup, bounded waits ─────
+
+def test_guard_refuses_every_address_the_laptop_owns(app):
+    # docker0 / br-* / vEthernet aren't LAN interfaces, but they are the laptop
+    write_host(app, self_addresses=["10.0.0.5", "172.17.0.1", "172.25.160.1", "192.168.1.20"])
+    p = app.state.printers
+    for ip in ("172.17.0.1", "172.25.160.1", "192.168.1.20"):
+        assert not p.allowed(ip), ip
+    assert p.allowed("172.17.0.9") and p.allowed("10.0.0.9")
+
+
+def test_guard_refuses_self_addresses_from_a_stale_file(app):
+    (app.state.settings.data_dir / "host-network.json").write_text(json.dumps(
+        {"updated_at": "2020-01-01T00:00:00Z", "interfaces": [],
+         "self_addresses": ["172.17.0.1"]}))
+    assert not app.state.printers.allowed("172.17.0.1")
+
+
+async def test_self_address_is_422_on_the_routes(app, client):
+    write_host(app, self_addresses=["172.17.0.1"])
+    r = await client.post("/edge/printers/query", headers=make_session(app),
+                          json={"ip": "172.17.0.1", "command": "~HI"})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_printer_ip"
+
+
+def test_scan_never_targets_a_self_address(app):
+    write_host(app, ips=("10.0.0.5",), self_addresses=["10.0.0.5", "10.0.0.77"])
+    p = Printers(app.state.settings.data_dir)
+    assert "10.0.0.77" not in p._scan_targets() and "10.0.0.9" in p._scan_targets()
+
+
+@pytest.mark.parametrize("marker", [".dockerenv", "run/.containerenv"])
+def test_in_container_knows_docker_and_podman(tmp_path, marker):
+    assert not printers._in_container(root=tmp_path)
+    (tmp_path / marker).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / marker).write_text("")
+    assert printers._in_container(root=tmp_path)
+
+
+INCOMPLETE = DockerPaths(in_container=True, complete=False)
+
+
+def test_a_failed_lookup_in_a_container_is_retried_and_warned(app, caplog):
+    calls = []
+
+    def lookup():
+        calls.append(1)
+        return INCOMPLETE if len(calls) < 3 else DOCKER
+
+    write_host(app)
+    p = Printers(app.state.settings.data_dir, docker_paths=lookup)
+    with caplog.at_level("WARNING", logger="edge.printers"):
+        assert not p.allowed("10.0.0.9")     # fail closed while the guard can't see
+        assert not p.allowed("10.0.0.9")
+    assert len(calls) == 2
+    assert any("printer guard" in r.getMessage() for r in caplog.records)
+    assert p.allowed("10.0.0.9") and p.allowed("10.0.0.10")
+    assert len(calls) == 3                   # complete: kept from now on
+
+
+def test_discover_docker_paths_without_a_gateway_is_incomplete():
+    no_default = ROUTE.splitlines()[0] + "\n" + ROUTE.splitlines()[2] + "\n"
+    paths = printers.discover_docker_paths(in_container=lambda: True, route=lambda: no_default,
+                                           fib=lambda: FIB, resolve=lambda n: [])
+    assert paths.in_container and not paths.complete
+
+
+@pytest.mark.parametrize("method,path,body", [
+    ("/edge/printers/query", "query", {"ip": "10.0.0.9", "command": "~HI"}),
+    ("/edge/printers/send", "send", {"ip": "10.0.0.9", "zpl": "^XA^XZ"}),
+    ("/edge/printers/send-font", "font",
+     {"ip": "10.0.0.9", "font_id": "f-1", "name": "A.TTF", "initiative_id": "m-1"}),
+])
+async def test_printer_traffic_is_503_while_the_guard_is_unavailable(app, client, cloud, method,
+                                                                    path, body):
+    write_host(app)
+    _online(app)
+    app.state.printers = Printers(app.state.settings.data_dir, docker_paths=lambda: INCOMPLETE)
+    r = await client.post(method, headers=make_session(app), json=body)
+    assert r.status_code == 503, r.text
+    assert r.json()["detail"]["code"] == "printer_guard_unavailable"
+
+
+async def test_label_station_network_printer_is_503_while_the_guard_is_unavailable(app, client):
+    write_host(app)
+    app.state.printers = Printers(app.state.settings.data_dir, docker_paths=lambda: INCOMPLETE)
+    r = await client.put("/edge/label-station", headers=make_session(app), json={
+        "label_kind": "top", "printer": {"type": "network", "ip": "10.0.0.9"},
+        "dpi": 203, "offset_x": 0, "offset_y": 0})
+    assert r.status_code == 503 and r.json()["detail"]["code"] == "printer_guard_unavailable"
+
+
+async def test_the_scan_still_runs_while_the_guard_is_unavailable(app, client):
+    write_host(app)
+    def probe(ip, port):
+        return asyncio.sleep(0, result=ip == "10.0.0.9")
+
+    app.state.printers = Printers(app.state.settings.data_dir, docker_paths=lambda: INCOMPLETE,
+                                  connect=probe)
+    r = await client.post("/edge/printers/scan", headers=make_session(app))
+    assert r.status_code == 200
+    body = await wait_done(client, app)
+    assert body["printers"] == [{"ip": "10.0.0.9"}]
+
+
+DESKTOP_UNRESOLVED = DockerPaths(addresses=frozenset({"172.18.0.3", "172.18.0.1"}),
+                                 subnets=("172.18.0.0/16",), in_container=True)
+
+
+@pytest.mark.parametrize("ip", ["192.168.65.1", "192.168.65.20", "192.168.65.254"])
+def test_docker_desktop_range_is_refused_when_host_docker_internal_does_not_resolve(app, ip):
+    write_host(app)
+    assert not docker_printers(app, DESKTOP_UNRESOLVED).allowed(ip)
+
+
+def test_docker_desktop_range_stays_open_when_it_is_the_lan(app):
+    write_host(app, ips=("192.168.65.5",))
+    assert docker_printers(app, DESKTOP_UNRESOLVED).allowed("192.168.65.20")
+
+
+def test_docker_desktop_range_stays_open_outside_a_container(app):
+    write_host(app)
+    assert docker_printers(app, DockerPaths()).allowed("192.168.65.20")
+
+
+def test_discover_docker_paths_notes_whether_docker_desktop_resolves():
+    def resolve(name):
+        if name == "host.docker.internal":
+            raise OSError("no such host")
+        return []
+
+    paths = printers.discover_docker_paths(in_container=lambda: True, route=lambda: ROUTE,
+                                           fib=lambda: FIB, resolve=resolve)
+    assert paths.complete and not paths.desktop
+    paths = printers.discover_docker_paths(in_container=lambda: True, route=lambda: ROUTE,
+                                           fib=lambda: FIB, resolve=lambda n: ["192.168.65.254"])
+    assert paths.desktop
+
+
+def test_the_docker_name_lookup_is_bounded():
+    import time
+
+    def hangs(name):
+        time.sleep(3)
+        return ["192.168.65.254"]
+
+    started = time.monotonic()
+    paths = printers.discover_docker_paths(in_container=lambda: True, route=lambda: ROUTE,
+                                           fib=lambda: FIB, resolve=hangs)
+    assert time.monotonic() - started < 1.5
+    assert paths.complete and not paths.desktop and "192.168.65.254" not in paths.addresses
+    assert printers.RESOLVE_TIMEOUT_S == 1.0
+
+
+async def test_the_lookup_never_runs_on_the_event_loop(app):
+    import threading
+    loop_thread = threading.get_ident()
+    seen = []
+
+    def lookup():
+        seen.append(threading.get_ident())
+        return DOCKER
+
+    write_host(app)
+    p = Printers(app.state.settings.data_dir, docker_paths=lookup,
+                 in_container=lambda: True)
+    assert not p.allowed("10.0.0.9")      # nothing looked up yet: refused, not looked up inline
+    assert seen == []
+    await p.guard_ready()
+    assert seen and all(t != loop_thread for t in seen)
+    assert p.allowed("10.0.0.9")
+
+
+async def test_a_busy_printer_transport_is_503_after_the_wait_bound(app, client, monkeypatch):
+    monkeypatch.setattr(printers, "BUSY_S", 0.2)
+    release = asyncio.Event()
+
+    async def held(writer):
+        await release.wait()
+        writer.write(b"ok")
+        await writer.drain()
+
+    fake = await FakePrinter(reply=held, hold_open=False).start()
+    use_fake(app, fake)
+    headers = make_session(app)
+    body = {"ip": "127.0.0.1", "command": "~HS"}
+    first = [asyncio.create_task(client.post("/edge/printers/query", headers=headers, json=body))
+             for _ in range(printers.MAX_CONNECTIONS)]
+    await asyncio.sleep(0.05)
+    r = await client.post("/edge/printers/query", headers=headers, json=body)
+    assert r.status_code == 503 and r.json()["detail"]["code"] == "printer_busy"
+    release.set()
+    assert all(x.status_code == 200 for x in await asyncio.gather(*first))
+    assert printers.BUSY_S == 0.2
+    await fake.close()
+
+
+async def test_busy_bound_is_ten_seconds():
+    assert printers.BUSY_S == 10.0

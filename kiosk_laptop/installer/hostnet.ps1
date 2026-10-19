@@ -12,12 +12,16 @@ Writes <data folder>\host-network.json, the laptop's LAN addresses, for the
 edge (edge/hostnet.py), atomically:
   {"updated_at":"2026-10-01T18:00:00Z",
    "interfaces":[{"name":"Ethernet","ipv4":"10.10.48.57","prefix":24}],
-   "gateway":"10.10.48.1"}
+   "gateway":"10.10.48.1",
+   "self_addresses":["10.10.48.57","172.25.160.1"]}
 Built-in cmdlets only: Get-NetIPAddress -AddressFamily IPv4 (AddressState
 Preferred) joined with Get-NetAdapter -Physical (adapters that are up).
 "gateway" is the next hop of the best default route (Get-NetRoute, lowest
 RouteMetric + InterfaceMetric), omitted when there is none or it isn't a
-usable IPv4 address.
+usable IPv4 address. "self_addresses" is every IPv4 address the laptop
+owns (Get-NetIPAddress, any adapter or state, loopback left out): Docker,
+WSL and Hyper-V vEthernet switches included. The edge's printer guard
+refuses all of them.
 Once a day it also refreshes hostnet.ps1 and launch.ps1 from the installer
 ref (config.env's KIOSK_INSTALLER_REF), since the nightly update job runs as
 the user and can't write this folder; the last result is in
@@ -91,6 +95,24 @@ function ConvertTo-HostInterfaceList {
     }
 }
 
+# ConvertTo-HostSelfAddressList ADDRESSES: every well-formed IPv4 address the
+# laptop owns, once each, in order: any adapter (virtual ones included) and
+# any AddressState; only unspecified, broadcast and loopback are left out.
+function ConvertTo-HostSelfAddressList {
+    param([object[]]$Addresses = @())
+    $seen = @{}
+    foreach ($addr in $Addresses) {
+        $ip = [string]$addr.IPAddress
+        if ($ip -notmatch '^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$') { continue }
+        $bad = $false
+        foreach ($i in 1..4) { if ([int]$Matches[$i] -gt 255) { $bad = $true } }
+        if ($bad -or $ip -eq '0.0.0.0' -or $ip -eq '255.255.255.255' -or [int]$Matches[1] -eq 127) { continue }
+        if ($seen.ContainsKey($ip)) { continue }
+        $seen[$ip] = $true
+        $ip
+    }
+}
+
 # Get-HostnetGateway ROUTES: the NextHop of the default route with the lowest
 # RouteMetric + InterfaceMetric, skipping 0.0.0.0 (on-link) and any next hop
 # the edge won't use; $null when nothing qualifies.
@@ -107,16 +129,22 @@ function Get-HostnetGateway {
     $best
 }
 
-# ConvertTo-HostNetworkJson INTERFACES NOW [GATEWAY]: the file's JSON
-# (updated_at in UTC; "gateway" after the interfaces when GATEWAY is set).
+# ConvertTo-HostNetworkJson INTERFACES NOW [GATEWAY] [SELFADDRESSES]: the
+# file's JSON (updated_at in UTC; "gateway" after the interfaces when GATEWAY
+# is set; then "self_addresses" when SELFADDRESSES is passed, even empty).
 function ConvertTo-HostNetworkJson {
-    param([object[]]$Interfaces = @(), [Parameter(Mandatory = $true)][datetime]$Now, [string]$Gateway)
+    param([object[]]$Interfaces = @(), [Parameter(Mandatory = $true)][datetime]$Now, [string]$Gateway,
+          [AllowEmptyCollection()][string[]]$SelfAddresses)
     $stamp = $Now.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture)
     # Each entry on its own and the list joined by hand: Windows PowerShell 5.1
     # can serialize a wrapped array as {"value": [...], "Count": n}.
     $items = @(foreach ($i in $Interfaces) { ConvertTo-Json -InputObject $i -Compress })
     $extra = ''
     if ($Gateway) { $extra = ',"gateway":' + (ConvertTo-Json -InputObject $Gateway -Compress) }
+    if ($PSBoundParameters.ContainsKey('SelfAddresses')) {
+        $own = @(foreach ($ip in @($SelfAddresses)) { if ($ip) { ConvertTo-Json -InputObject ([string]$ip) -Compress } })
+        $extra += ',"self_addresses":[' + ($own -join ',') + ']'
+    }
     '{"updated_at":' + (ConvertTo-Json -InputObject $stamp -Compress) + ',"interfaces":[' + ($items -join ',') + ']' + $extra + '}'
 }
 
@@ -160,7 +188,8 @@ function Invoke-HostNetwork {
     } catch {
         $gateway = $null
     }
-    $json = ConvertTo-HostNetworkJson -Interfaces $list -Now ([datetime]::UtcNow) -Gateway $gateway
+    $self = @(ConvertTo-HostSelfAddressList -Addresses $addresses)
+    $json = ConvertTo-HostNetworkJson -Interfaces $list -Now ([datetime]::UtcNow) -Gateway $gateway -SelfAddresses $self
     if (Write-HostNetworkFile -DataDir (Get-HostnetDataDir) -Text $json) { return 0 }
     1
 }
