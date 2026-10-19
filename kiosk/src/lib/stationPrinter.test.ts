@@ -156,6 +156,7 @@ describe('pure helpers', () => {
     expect(templateFamily(template({ name: 'Container Label 4x6 203dpi' }))).toBe('Container Label 4x6');
     expect(templateFamily(template({ name: 'Top asset tag (600DPI)' }))).toBe('Top asset tag');
     expect(templateFamily(template({ name: 'DPI test 203' }))).toBe('DPI test 203');
+    expect(templateFamily(template({ name: 'Generic Rack and RU - 3400DPI' }))).toBe('Generic Rack and RU');
     expect(templateFamily(template({ name: '203DPI' }))).toBe('203DPI');
   });
 

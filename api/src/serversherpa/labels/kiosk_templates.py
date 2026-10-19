@@ -35,7 +35,7 @@ from serversherpa.labels.model import parse_design
 
 FALLBACK_NAME = "generic rack and ru"
 # A trailing DPI marker: " - 203DPI", " 300 dpi", "(600DPI)", " – 203 DPI".
-_DPI_SUFFIX = re.compile(r"\s*[-–—]?\s*\(?\s*\d{3}\s*dpi\s*\)?\s*$", re.IGNORECASE)
+_DPI_SUFFIX = re.compile(r"\s*[-–—]?\s*\(?\s*\d+\s*dpi\s*\)?\s*$", re.IGNORECASE)
 
 
 def family_name(name: str) -> str:

@@ -165,7 +165,7 @@ export const GENERIC_TEMPLATE_NAME = 'Generic Rack and RU';
 
 // A trailing DPI marker: " - 203DPI", " 300 dpi", "(600DPI)". Same rule as
 // the server's labels.kiosk_templates.family_name.
-const DPI_SUFFIX = /\s*[-–—]?\s*\(?\s*\d{3}\s*dpi\s*\)?\s*$/i;
+const DPI_SUFFIX = /\s*[-–—]?\s*\(?\s*\d+\s*dpi\s*\)?\s*$/i;
 
 /** The template's family: the name its DPI versions share. The server sends
  *  it; a set cached before that is grouped by the same name rule here. */
