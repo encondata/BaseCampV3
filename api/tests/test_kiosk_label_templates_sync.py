@@ -300,7 +300,7 @@ async def test_code_template_is_returned_verbatim(client, db, seeded_user):
     assert row["error"] is None
     assert row["generation_rules"] == {"length_limits": {"asset_name": 20}}
     assert set(row) == {
-        "id", "name", "label_type", "size_key", "dpi_key", "language_key", "version",
+        "id", "name", "family", "label_type", "size_key", "dpi_key", "language_key", "version",
         "updated_at", "move_site_names", "reasons", "code", "generation_rules",
         "width_in", "height_in", "dots", "error"}
     assert (row["size_key"], row["language_key"], row["version"]) == ("4x2", "zpl", 1)
@@ -479,3 +479,27 @@ def test_rf1_ptouch_differs_in_the_length_prefix():
     assert kiosk != portal
     assert "^DI" + chr(len("Name: Server 42")) in portal
     assert "^DI" + chr(len("Name: {asset_name}")) in kiosk
+
+
+def test_family_name_strips_a_trailing_dpi_marker():
+    from serversherpa.labels.kiosk_templates import family_name
+    assert family_name("Generic Rack and RU - 203DPI") == "Generic Rack and RU"
+    assert family_name("Generic Rack and RU - 300 dpi") == "Generic Rack and RU"
+    assert family_name("Container Label 4x6 203dpi") == "Container Label 4x6"
+    assert family_name("Top asset tag (600DPI)") == "Top asset tag"
+    assert family_name("Generic Rack and RU") == "Generic Rack and RU"
+    assert family_name("DPI test 203") == "DPI test 203"      # no marker at the end
+    assert family_name("203DPI") == "203DPI"                  # never empty
+
+
+async def test_fallback_matches_dpi_variants_and_lists_their_family(client, db, seeded_user):
+    hdrs = await login(client)
+    move, *_ = await _move(db)
+    a = _tpl("Generic Rack and RU - 203DPI", label_type="top", dpi_key="203")
+    b = _tpl("Generic Rack and RU - 300DPI", label_type="top", dpi_key="300")
+    db.add_all([a, b])
+    await db.commit()
+    rows = _by_name((await _get(client, hdrs, move.id)).json())
+    for name in ("Generic Rack and RU - 203DPI", "Generic Rack and RU - 300DPI"):
+        assert rows[name]["reasons"] == ["fallback", "generic"]
+        assert rows[name]["family"] == "Generic Rack and RU"

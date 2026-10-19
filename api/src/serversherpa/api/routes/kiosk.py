@@ -70,7 +70,7 @@ from serversherpa.labels.generate.values import (
     make_model_text, placeholder_values,
 )
 from serversherpa.labels.kiosk_templates import (
-    move_template_set, template_code,
+    family_name, move_template_set, template_code,
 )
 from serversherpa.labels.template_fonts import fonts_used
 from serversherpa.services import auth as auth_service
@@ -1144,7 +1144,8 @@ async def _label_templates_body(
             error = ((str(exc) or type(exc).__name__) if isinstance(exc, ValueError)
                      else type(exc).__name__)
         templates.append(KioskLabelTemplateOut(
-            id=template.id, name=template.name, label_type=template.label_type,
+            id=template.id, name=template.name, family=family_name(template.name),
+            label_type=template.label_type,
             size_key=template.size_key, dpi_key=template.dpi_key,
             language_key=template.language_key, version=template.version,
             updated_at=template.updated_at, move_site_names=move_site_names,

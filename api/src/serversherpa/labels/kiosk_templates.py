@@ -9,14 +9,20 @@ carries every reason it matched:
   destination / origin site;
 - `generic`: "generic" appears anywhere in its name, ignoring case;
 - `container`: its label_type is container or container_info;
-- `fallback`: it is named exactly "Generic Rack and RU" (ignoring case)
-  and no ACTIVE template is linked to the destination site. A move with no
+- `fallback`: its family name (below) is "Generic Rack and RU" (ignoring
+  case), so every DPI version of it qualifies, and no ACTIVE template is linked to the destination site. A move with no
   destination site counts as having none.
+
+Templates come in DPI versions named like "Generic Rack and RU - 203DPI" /
+"... - 300DPI" or "Container Label 4x6 203dpi". `family_name` strips that
+trailing DPI marker, so every client groups the versions the same way and
+picks the one whose `dpi_key` matches its printer.
 
 The kiosk device's own site plays no part. Conversion goes through the
 portal's own compiler (labels/compile.py) with `subs=None`, built the same
 way labels/generate/engine.py's `render_label` builds the design and size."""
 
+import re
 import uuid
 
 from sqlalchemy import select
@@ -28,6 +34,15 @@ from serversherpa.labels.compile import compile_parsed_design
 from serversherpa.labels.model import parse_design
 
 FALLBACK_NAME = "generic rack and ru"
+# A trailing DPI marker: " - 203DPI", " 300 dpi", "(600DPI)", " – 203 DPI".
+_DPI_SUFFIX = re.compile(r"\s*[-–—]?\s*\(?\s*\d{3}\s*dpi\s*\)?\s*$", re.IGNORECASE)
+
+
+def family_name(name: str) -> str:
+    """The template's name without a trailing DPI marker: the key its DPI
+    versions share. Never empty: a name that is only a marker stays as is."""
+    base = _DPI_SUFFIX.sub("", name).strip()
+    return base or name.strip()
 CONTAINER_TYPES = ("container", "container_info")
 
 
@@ -83,7 +98,7 @@ async def move_template_set(
             reasons.add("generic")
         if template.label_type in CONTAINER_TYPES:
             reasons.add("container")
-        if name == FALLBACK_NAME and not destination_has_template:
+        if family_name(name) == FALLBACK_NAME and not destination_has_template:
             reasons.add("fallback")
         if reasons:
             picked.append((template, reasons,
