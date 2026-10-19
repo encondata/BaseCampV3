@@ -529,6 +529,19 @@ kbd {
   padding: 14px 20px;
   border-top: 1px solid var(--paper-line);
 }
+/* A card that lets its dropdowns escape (`overflow: visible`) no longer
+   clips its children, so the gray header (and any footer background) would
+   paint square over the card's 16px corners. Round them to the card's inner
+   radius (16px minus its 1px border) whatever the card's overflow.
+   styles/modalCorners.test.ts keeps this in place. */
+.modal-card > .modal-head:first-child {
+  border-top-left-radius: 15px;
+  border-top-right-radius: 15px;
+}
+.modal-card > .modal-foot:last-child {
+  border-bottom-left-radius: 15px;
+  border-bottom-right-radius: 15px;
+}
 
 /* ── left-nav accordion ───────────────────────────────────── */
 
