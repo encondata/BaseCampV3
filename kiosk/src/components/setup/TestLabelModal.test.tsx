@@ -133,3 +133,12 @@ it('shows offsets after a print, and Reprint uses the new offsets', async () => 
   // the rendered label is reused, never re-rendered for a reprint
   expect(apiMock.postTestRender).toHaveBeenCalledTimes(1);
 });
+
+it('the offset hints say the printing moves, and give dots per mm at the printer DPI', () => {
+  renderModal({ dpi: 203, offsets: { x: 4, y: 0 } });
+  expect(screen.getByText('+ moves the printing right on the label, − moves it left. 8 dots ≈ 1 mm at 203 DPI.')).toBeTruthy();
+  expect(screen.getByText('+ moves the printing down on the label, − moves it up. 8 dots ≈ 1 mm at 203 DPI.')).toBeTruthy();
+  cleanup();
+  renderModal({ dpi: 300, offsets: { x: 4, y: 0 } });
+  expect(screen.getByText('+ moves the printing right on the label, − moves it left. 12 dots ≈ 1 mm at 300 DPI.')).toBeTruthy();
+});
