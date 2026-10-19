@@ -311,6 +311,8 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
     if (next === type) return;
     setType(next);
     setSaveError('');
+    // Choosing Network starts looking right away; an IP can still be typed.
+    if (next === 'network' && scan?.state !== 'running') void startScan();
   };
 
   const allOk = ITEMS.every((i) => results[i.name]?.state === 'ok') && running === null;
@@ -387,7 +389,7 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
           <div className="pf-form-actions">
             <button type="button" className="mini-btn" disabled={scan?.state === 'running'}
                     onClick={() => void startScan()}>
-              {scan?.state === 'running' ? 'Scanning…' : 'Scan the network'}
+              {scan?.state === 'running' ? 'Scanning…' : scan ? 'Scan again' : 'Scan the network'}
             </button>
           </div>
           {scan?.state === 'running' && scan.total > 0 && (

@@ -488,6 +488,7 @@ def test_family_name_strips_a_trailing_dpi_marker():
     assert family_name("Container Label 4x6 203dpi") == "Container Label 4x6"
     assert family_name("Top asset tag (600DPI)") == "Top asset tag"
     assert family_name("Generic Rack and RU") == "Generic Rack and RU"
+    assert family_name("Generic Rack and RU - 3400DPI") == "Generic Rack and RU"  # a typo still groups
     assert family_name("DPI test 203") == "DPI test 203"      # no marker at the end
     assert family_name("203DPI") == "203DPI"                  # never empty
 

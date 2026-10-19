@@ -180,12 +180,11 @@ describe('USB', () => {
 });
 
 describe('network', () => {
-  it('scans and lists printers, and a picked printer runs the checks through the edge', async () => {
+  it('choosing Network starts the scan, and a picked printer runs the checks through the edge', async () => {
     const user = userEvent.setup();
     const { onFinish } = renderStep();
     await user.click(screen.getByRole('option', { name: /Network printer/ }));
-    await user.click(screen.getByRole('button', { name: 'Scan the network' }));
-    expect(apiMock.startPrinterScan).toHaveBeenCalled();
+    expect(apiMock.startPrinterScan).toHaveBeenCalledTimes(1);
     await user.click(await screen.findByRole('button', { name: /^10\.0\.0\.41/ }));
     await allGreen();
     expect(apiMock.printerQuery).toHaveBeenCalledWith('10.0.0.41', '~HI');
@@ -413,7 +412,6 @@ it('found network printers show their model, firmware and DPI with the IP', asyn
   const user = userEvent.setup();
   renderStep();
   await user.click(screen.getByRole('option', { name: /Network printer/ }));
-  await user.click(screen.getByRole('button', { name: 'Scan the network' }));
   const found = await screen.findByRole('group', { name: 'Printers found' });
   const first = within(found).getByRole('button', { name: /10\.0\.0\.40/ });
   expect(first.textContent).toContain('ZD621-203dpi');
@@ -421,4 +419,15 @@ it('found network printers show their model, firmware and DPI with the IP', asyn
   expect(first.textContent).toContain('203 DPI');
   const silent = within(found).getByRole('button', { name: /10\.0\.0\.41/ });
   expect(silent.textContent).toContain("Didn't say what it is");
+});
+
+it('a finished scan can run again, and re-choosing Network does not rescan', async () => {
+  const user = userEvent.setup();
+  renderStep();
+  await user.click(screen.getByRole('option', { name: /Network printer/ }));
+  await screen.findByRole('group', { name: 'Printers found' });
+  await user.click(screen.getByRole('option', { name: /Network printer/ }));
+  expect(apiMock.startPrinterScan).toHaveBeenCalledTimes(1);
+  await user.click(screen.getByRole('button', { name: 'Scan again' }));
+  await waitFor(() => expect(apiMock.startPrinterScan).toHaveBeenCalledTimes(2));
 });
