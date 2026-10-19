@@ -67,14 +67,6 @@
         "dev"
       ],
       "port": 5178
-    },
-    {
-      "name": "factory-dashboard",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": [
-        "factory/serve.py"
-      ],
-      "port": 8765
     }
   ]
 }

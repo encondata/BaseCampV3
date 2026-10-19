@@ -144,3 +144,16 @@ Reference tabs. They rarely change.
 4. To-Do: set the item's status (plus #39 for bulk tools).
 5. Summary: update the headline counts, the area row, and both percentages.
 6. Zoom on the Summary to verify, then tell Jimmy exactly which rows changed.
+
+## Harbor Master (duplicate of the sheet, for now)
+
+Harbor Master project **SS** (MCP tools `get_project`, `list_cards`, `move_card`, `update_card`, `add_comment`, `log_progress`, `save_update`) holds the same data as the sheet. Whenever the sheet changes, make the same change there:
+
+| Sheet | Harbor Master |
+|---|---|
+| Feature Parity / Gaps row, column E status | **Feature Parity** board card (find it with `list_cards` `query` = the feature name, filter by `area`). The status is the card's column: `move_card` to the same status name. Notes go in the `notes` / `gap_notes` fields; add an `add_comment` with the merge sha. |
+| To-Do tab row | **To-Do** board card (field `sheet_number` = the sheet's #). Columns: Not started, In progress, Deferred, Done. Status notes → `status_notes`. |
+| Future Features tab row | **Future Features** board (Future, In progress, Complete). |
+| Summary tab | Nothing to write: Harbor Master computes counts and parity from the columns (same weights). Check `get_summary` against the sheet's recount. |
+| Summary columns I–K (Jimmy's) | Area priority / expected date / notes. Jimmy's, never write them in either place. |
+| Weekly Summary row | The week's progress update: `save_update` (title `DDMONYY to DDMONYY`, hours) or `log_progress` lines. |
