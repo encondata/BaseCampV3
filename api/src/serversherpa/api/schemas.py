@@ -3192,6 +3192,19 @@ class KioskAssetOut(BaseModel):
     model: str | None = None
     make_model: str
     container_id: uuid.UUID | None = None
+    # The move roster row's own fields, each kept separate (the label map
+    # only carries the combined position-or-rack "raw" values). RUs are the
+    # stored number as text ("14", "14.5"), without the label's "U" prefix.
+    source_rack: str | None = None
+    source_ru: str | None = None
+    source_position: str | None = None
+    source_pod: str | None = None
+    destination_rack: str | None = None
+    destination_ru: str | None = None
+    destination_position: str | None = None
+    destination_pod: str | None = None
+    priority_wave: str | None = None
+    disposition: str | None = None
     label: dict[str, str]
 
 

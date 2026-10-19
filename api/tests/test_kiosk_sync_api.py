@@ -126,6 +126,46 @@ async def test_assets_sync_returns_the_roster_with_label_values(client, db, seed
     assert str(off_roster.id) not in [a["id"] for a in body["assets"]]
 
 
+async def test_assets_sync_carries_the_roster_fields(client, db, seeded_user):
+    """Each asset carries its own source/destination rack, RU, position and
+    pod, plus priority wave and disposition, as separate values (the label
+    map only has the combined position-or-rack "raw" value)."""
+    hdrs = await login(client)
+    move, _project, on_roster, _off = await _seed_move(db)
+    ia = await db.scalar(text(
+        "SELECT id FROM initiative_assets WHERE asset_id = :a"), {"a": on_roster.id})
+    await db.execute(text(
+        "UPDATE initiative_assets SET source_position = 'NAP7 A12 U14', source_pod = 'P1', "
+        "destination_position = 'NAP11 C03 U22', destination_pod = 'P9', "
+        "source_ru = 14.5, priority_wave = 'Wave 2', disposition = 'Move' WHERE id = :i"),
+        {"i": ia})
+    await db.commit()
+
+    resp = await client.get(f"/kiosk/sync/assets?initiative_id={move.id}", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    row = resp.json()["assets"][0]
+    assert row["source_rack"] == "NAP7 A12"
+    assert row["source_ru"] == "14.5"
+    assert row["source_position"] == "NAP7 A12 U14"
+    assert row["source_pod"] == "P1"
+    assert row["destination_rack"] == "NAP11 C03"
+    assert row["destination_ru"] == "22"
+    assert row["destination_position"] == "NAP11 C03 U22"
+    assert row["destination_pod"] == "P9"
+    assert row["priority_wave"] == "Wave 2"
+    assert row["disposition"] == "Move"
+
+
+async def test_assets_sync_roster_fields_are_null_when_unset(client, db, seeded_user):
+    hdrs = await login(client)
+    move, _project, _on, _off = await _seed_move(db)
+    resp = await client.get(f"/kiosk/sync/assets?initiative_id={move.id}", headers=hdrs)
+    row = resp.json()["assets"][0]
+    for key in ("source_position", "source_pod", "destination_position", "destination_pod",
+                "priority_wave", "disposition"):
+        assert row[key] is None, key
+
+
 async def test_assets_sync_survives_a_deactivated_catalog_key(client, db, seeded_user):
     """asset_id/make_model are computed from the asset/model columns, not
     read out of the catalog-filtered `label` map — an admin deactivating
