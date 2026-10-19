@@ -277,11 +277,9 @@ async def test_verify_accepts_label_station(client, db, seeded_user):
     assert got is not None and got.id == device.id
 
 
-async def test_label_station_setup_keeps_its_key(client, db, seeded_user):
-    uid = seeded_user.id
-    hdrs = await login(client)
+async def _setup_world(db, uid, station_type):
     device = Device(device_type="kiosk", name="Station 1", serial=SERIAL, sub_type="laptop",
-                    station_type="rfid", session_person_id=uid,
+                    station_type=station_type, session_person_id=uid,
                     token_expires_at=datetime.now(UTC) + timedelta(days=30))
     db.add(device)
     origin, dest = await _seed_sites(db)
@@ -291,9 +289,14 @@ async def test_label_station_setup_keeps_its_key(client, db, seeded_user):
     await db.commit()
     await db.refresh(device)
     db.expunge(device)
-    planned_id, dest_id, status_key = planned.id, dest.id, active.key
-    body = {"serial": SERIAL, "initiative_id": str(planned_id), "site_id": str(dest_id),
-            "scan_status": status_key, "station_type": "label"}
+    return device, {"serial": SERIAL, "initiative_id": str(planned.id),
+                    "site_id": str(dest.id), "scan_status": active.key,
+                    "station_type": "label"}
+
+
+async def test_label_station_setup_keeps_its_key(client, db, seeded_user):
+    hdrs = await login(client)
+    device, body = await _setup_world(db, seeded_user.id, "label")
     issued = await client.post("/kiosk/station-key", headers=hdrs, json={"serial": SERIAL})
     assert issued.status_code == 200, issued.text
     r = await client.post("/kiosk/setup", headers=hdrs, json=body)
@@ -301,6 +304,38 @@ async def test_label_station_setup_keeps_its_key(client, db, seeded_user):
     db.expire_all()
     assert (await db.get(Device, device.id)).station_key_hash is not None
     assert await _audits(db, device, "station_key_revoke") == []
+
+
+async def test_setup_station_type_change_revokes_key(client, db, seeded_user):
+    hdrs = await login(client)
+    device, body = await _setup_world(db, seeded_user.id, "rfid")
+    issued = await client.post("/kiosk/station-key", headers=hdrs, json={"serial": SERIAL})
+    assert issued.status_code == 200, issued.text
+    r = await client.post("/kiosk/setup", headers=hdrs, json=body)
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    assert (await db.get(Device, device.id)).station_key_hash is None
+    [row] = await _audits(db, device, "station_key_revoke")
+    assert row.changes == {"reason": "station_type_change"}
+
+
+async def test_setup_move_change_revokes_key(client, db, seeded_user):
+    hdrs = await login(client)
+    device, body = await _setup_world(db, seeded_user.id, "label")
+    issued = await client.post("/kiosk/station-key", headers=hdrs, json={"serial": SERIAL})
+    assert issued.status_code == 200, issued.text
+    other = Initiative(name="Other Move", initiative_type="move", status="planned",
+                       origin_site_id=uuid.UUID(body["site_id"]))
+    db.add(other)
+    await db.commit()
+    await db.refresh(other)
+    r = await client.post("/kiosk/setup", headers=hdrs,
+                          json={**body, "initiative_id": str(other.id)})
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    assert (await db.get(Device, device.id)).station_key_hash is None
+    [row] = await _audits(db, device, "station_key_revoke")
+    assert row.changes == {"reason": "move_change"}
 
 
 async def test_audit_rows_never_contain_the_key(client, db, seeded_user):

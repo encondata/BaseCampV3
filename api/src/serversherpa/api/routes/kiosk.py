@@ -508,11 +508,13 @@ async def heartbeat(
     # Config and scan-type sync serve only the kiosk this sign-in session
     # belongs to: a kiosk session (move-password ones included) is bound to
     # the serial of its first beat, and never syncs for any other serial,
-    # sign-in or not. Portal sessions never sync. A station-keyed device
-    # syncs config only on /kiosk/station/heartbeat (scan type still comes
+    # sign-in or not. Portal sessions never sync. A station-keyed RFID
+    # Station syncs config only on /kiosk/station/heartbeat (scan type still comes
     # back to its own session).
     own_kiosk = await _bind_kiosk_session(db, actor, body.serial)
-    if own_kiosk and device.station_key_hash is None:
+    # Reader telemetry (and so config) rides the station heartbeat only for
+    # an RFID Station; a keyed Label Station has no station heartbeat.
+    if own_kiosk and (device.station_key_hash is None or not is_rfid_station(device)):
         sync = await _sync_config(db, device, body.config, body.config_changed_at,
                                   body.config_applied_version, now=now,
                                   actor_id=actor.person.id)
@@ -776,6 +778,16 @@ async def kiosk_setup(
             station_changes[field] = {"from": old_cmp, "to": new}
             setattr(device, field, new)
 
+    # a station key covers one station type and one move: changing either
+    # revokes it (re-setup with the same type and move keeps it)
+    if device.station_key_hash is not None:
+        if device.station_type != body.station_type:
+            await station_keys.revoke(db, device, actor_id=actor.person.id,
+                                      reason="station_type_change")
+        elif device.current_initiative_id != initiative.id:
+            await station_keys.revoke(db, device, actor_id=actor.person.id,
+                                      reason="move_change")
+
     if body.station_type == "rfid":
         reader = body.reader
         _stamp("station_type", "rfid")
@@ -791,7 +803,7 @@ async def kiosk_setup(
             _stamp(field, None)
         device.rfid_paired_at = None
         # a Label Station keeps its station key (it uploads Labeled scans
-        # with it); a station-type or move change revokes it as before
+        # with it) unless the type or move changed (revoked above)
 
     device.current_initiative_id = initiative.id
     device.site_id = site.id
@@ -1417,11 +1429,12 @@ async def _client_assets_body(
 
 
 async def _station_sync_device(request: Request, db: AsyncSession,
-                               serial: str, initiative_id: uuid.UUID) -> None:
+                               serial: str, initiative_id: uuid.UUID) -> Device:
     """Station sync serves only the move the key was issued for."""
     device = await station_device(request, db, serial)
     if device.station_key_initiative_id != initiative_id:
         raise _err(403, "move_locked")
+    return device
 
 
 @router.get("/station/sync/assets", response_model=KioskAssetsSyncOut)
@@ -1471,8 +1484,12 @@ async def station_sync_client_assets(
     request: Request, db: DbSession, serial: str = Query(...),
     initiative_id: uuid.UUID = Query(...),
 ) -> KioskClientAssetsSyncOut:
-    """Station-key twin of /sync/client-assets, for the key move only."""
-    await _station_sync_device(request, db, serial, initiative_id)
+    """Station-key twin of /sync/client-assets, for the key move only. It
+    feeds the RFID Station's off-move alarm, so a Label Station's key is
+    refused."""
+    device = await _station_sync_device(request, db, serial, initiative_id)
+    if device.station_type != "rfid":
+        raise _err(403, "not_rfid_station")
     return await _client_assets_body(db, initiative_id)
 
 

@@ -336,6 +336,25 @@ async def test_station_keyed_device_ignores_person_heartbeat_config(client, db, 
     assert d.config_applied_version is None and d.config_reported_at is None
 
 
+async def test_keyed_label_station_still_syncs_config_on_person_heartbeat(
+        client, db, seeded_user):
+    device, _, _key = await _station(db, person_id=seeded_user.id)
+    hdrs = await login(client)
+    d = await _device(db, SERIAL)
+    d.station_type = "label"
+    d.config = _doc(flash_ms=1234)
+    d.config_version = 2
+    await db.commit()
+    r = await client.post("/kiosk/heartbeat", headers=hdrs, json={
+        "serial": SERIAL, "name": "Station 1", "mode": "laptop", "sign_in": True,
+        "config_applied_version": 1})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["config"] is not None and body["config_version"] == 2
+    d = await _device(db, SERIAL)
+    assert d.config_applied_version == 1
+
+
 async def test_applied_version_above_config_version_is_stored_as_null(client, db, seeded_user):
     hdrs = await login(client)
     await _beat(client, hdrs)

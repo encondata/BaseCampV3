@@ -422,9 +422,9 @@ TotpChallengeOrUser = Annotated[TotpActor, Depends(totp_actor)]
 
 async def station_device(request: Request, db: AsyncSession, serial: str) -> Device:
     """The kiosk Device `serial` when the request carries its station key
-    (`Authorization: Station <key>`) and the kiosk is still an RFID laptop.
-    A bad, missing or revoked key, or a kiosk that is no longer an RFID
-    laptop, is one 401 `station_key_invalid`. The key is never logged.
+    (`Authorization: Station <key>`) and the kiosk is still an RFID or Label
+    Station laptop. A bad, missing or revoked key, or a kiosk that is no
+    longer a station laptop, is one 401 `station_key_invalid`. The key is never logged.
 
     A matching key on a kiosk whose registration has lapsed (or was never
     made) is a 403 `kiosk_not_registered`, and the key is kept: renewing on
