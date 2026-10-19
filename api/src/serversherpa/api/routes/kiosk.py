@@ -895,6 +895,13 @@ async def sync_assets(
     return await _assets_body(db, initiative_id)
 
 
+def _ru_text(ru) -> str | None:
+    """A roster RU (Numeric) as plain text: 14 → "14", 14.50 → "14.5"."""
+    if ru is None:
+        return None
+    return format(ru.normalize(), "f")
+
+
 async def _assets_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskAssetsSyncOut:
     initiative = await db.get(Initiative, initiative_id)
     if initiative is None:
@@ -949,7 +956,13 @@ async def _assets_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskAsset
             id=asset.id, asset_id=asset_id, name=asset.name,
             rfid=asset.rfid_tag, serial_number=asset.serial_number,
             make=make, model=model_name, make_model=make_model,
-            container_id=packed_in.get(asset.id), label=label))
+            container_id=packed_in.get(asset.id),
+            source_rack=ia.source_rack, source_ru=_ru_text(ia.source_ru),
+            source_position=ia.source_position, source_pod=ia.source_pod,
+            destination_rack=ia.destination_rack, destination_ru=_ru_text(ia.destination_ru),
+            destination_position=ia.destination_position, destination_pod=ia.destination_pod,
+            priority_wave=ia.priority_wave, disposition=ia.disposition,
+            label=label))
 
     return KioskAssetsSyncOut(
         initiative_id=initiative.id, initiative_name=initiative.name,
