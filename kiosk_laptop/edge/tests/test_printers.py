@@ -15,6 +15,13 @@ from edge.printers import DockerPaths, Printers
 HI_REPLY = b"\x02ZT411-300dpi,V92.21.39Z,12,8176KB\x03\r\n"
 
 
+NO_DETAILS = {"model": None, "firmware": None, "dpi": None}
+
+
+async def no_identity(ip, port):
+    return None
+
+
 class FakePrinter:
     """A raw TCP printer on localhost: records what it receives and answers
     with `reply` (bytes, or a coroutine function(writer) for slow replies)."""
@@ -286,7 +293,30 @@ async def test_scan_finds_the_fake_printer(app, client, fake):
     body = await wait_done(client, app)
     assert body["state"] == "done"
     assert body["probed"] == body["total"] == 1
-    assert body["printers"] == [{"ip": "127.0.0.1"}]
+    assert body["printers"] == [{"ip": "127.0.0.1", "model": "ZT411-300dpi",
+                                 "firmware": "V92.21.39Z", "dpi": 300}]
+
+
+async def test_scan_lists_a_silent_9100_host_without_details(app, client):
+    silent = await FakePrinter(reply=b"").start()
+    try:
+        use_fake(app, silent, targets=lambda: ["127.0.0.1"])
+        await client.post("/edge/printers/scan", headers=make_session(app))
+        body = await wait_done(client, app)
+        assert body["printers"] == [{"ip": "127.0.0.1", "model": None,
+                                     "firmware": None, "dpi": None}]
+    finally:
+        await silent.close()
+
+
+def test_parse_host_identification():
+    from edge.printers import parse_host_identification
+    assert parse_host_identification(b"\x02ZD621-203dpi,V93.21.18Z,8,8192KB\x03\r\n") == {
+        "model": "ZD621-203dpi", "firmware": "V93.21.18Z", "dpi": 203}
+    assert parse_host_identification(b"\x02ZT411,V1,12,8176KB\x03") == {
+        "model": "ZT411", "firmware": "V1", "dpi": 300}
+    assert parse_host_identification(b"garbage") is None
+    assert parse_host_identification(b"") is None
 
 
 async def test_scan_probes_the_laptop_subnet_on_9100_minus_its_own_address(app, client):
@@ -297,12 +327,13 @@ async def test_scan_probes_the_laptop_subnet_on_9100_minus_its_own_address(app, 
         seen.append((ip, port))
         return ip == "10.0.0.3"
 
-    app.state.printers = Printers(app.state.settings.data_dir, connect=connect)
+    app.state.printers = Printers(app.state.settings.data_dir, connect=connect,
+                                  identify=no_identity)
     await client.post("/edge/printers/scan", headers=make_session(app))
     body = await wait_done(client, app)
     assert body["state"] == "done" and body["total"] == 5 and body["probed"] == 5
     assert sorted(seen) == [(f"10.0.0.{n}", 9100) for n in (1, 2, 3, 4, 6)]
-    assert body["printers"] == [{"ip": "10.0.0.3"}]
+    assert body["printers"] == [{"ip": "10.0.0.3", **NO_DETAILS}]
 
 
 async def test_scan_concurrency_and_timeout_copy_reader_discovery():
@@ -705,11 +736,11 @@ async def test_the_scan_still_runs_while_the_guard_is_unavailable(app, client):
         return asyncio.sleep(0, result=ip == "10.0.0.9")
 
     app.state.printers = Printers(app.state.settings.data_dir, docker_paths=lambda: INCOMPLETE,
-                                  connect=probe)
+                                  connect=probe, identify=no_identity)
     r = await client.post("/edge/printers/scan", headers=make_session(app))
     assert r.status_code == 200
     body = await wait_done(client, app)
-    assert body["printers"] == [{"ip": "10.0.0.9"}]
+    assert body["printers"] == [{"ip": "10.0.0.9", **NO_DETAILS}]
 
 
 DESKTOP_UNRESOLVED = DockerPaths(addresses=frozenset({"172.18.0.3", "172.18.0.1"}),

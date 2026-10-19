@@ -52,6 +52,11 @@ from edge.rfid import discovery
 PORT = 9100
 CONCURRENCY = discovery.CONCURRENCY
 SCAN_TIMEOUT_S = discovery.TIMEOUT_S
+# A found printer is asked `~HI` so the list can show what it is: one short
+# exchange per printer, read to the frame end (ETX), capped and timed.
+IDENTIFY_TIMEOUT_S = 1.5
+IDENTIFY_MAX = 512
+_NOMINAL_DPI = {6: 150, 8: 203, 12: 300, 24: 600}
 CONNECT_TIMEOUT_S = 3.0   # a query or send to a chosen printer
 MAX_READ = 65536          # a query's reply, at most
 IDLE_S = 2.0              # a query ends after this long without new bytes
@@ -262,6 +267,49 @@ async def tcp_connect(ip: str, port: int) -> bool:
     return await discovery.tcp_connect(ip, port, SCAN_TIMEOUT_S)
 
 
+def parse_host_identification(reply: bytes) -> dict | None:
+    """`~HI`'s `STX model,firmware,dots/mm,memory ETX` as {model, firmware,
+    dpi}; None when the reply isn't one. Mirrors the kiosk's
+    parseHostIdentification (portal/src/labels/zebraUsb.ts)."""
+    text = reply.decode("latin-1")
+    frames = text.split("\x02")[1:]
+    if not frames:
+        return None
+    parts = [p.strip() for p in frames[-1].split("\x03")[0].split(",")]
+    if len(parts) < 4 or not parts[0]:
+        return None
+    try:
+        dpmm = int(parts[2])
+    except ValueError:
+        return None
+    return {"model": parts[0], "firmware": parts[1] or None,
+            "dpi": _NOMINAL_DPI.get(dpmm, round(dpmm * 25.4))}
+
+
+async def identify_printer(ip: str, port: int) -> dict | None:
+    """Ask a just-found printer `~HI`; None when it doesn't answer one."""
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, port),
+                                                IDENTIFY_TIMEOUT_S)
+    except (TimeoutError, OSError):
+        return None
+    out = bytearray()
+    try:
+        writer.write(b"~HI")
+        async with asyncio.timeout(IDENTIFY_TIMEOUT_S):
+            await writer.drain()
+            while b"\x03" not in out and len(out) < IDENTIFY_MAX:
+                chunk = await reader.read(IDENTIFY_MAX - len(out))
+                if not chunk:
+                    break
+                out += chunk
+    except (TimeoutError, OSError):
+        pass
+    finally:
+        await _close(writer)
+    return parse_host_identification(bytes(out))
+
+
 async def _close(writer) -> None:
     writer.close()
     try:
@@ -278,7 +326,8 @@ class Printers:
     `in_container` (whether there is anything to look up)."""
 
     def __init__(self, data_dir, *, port: int = PORT, allow=None, targets=None,
-                 connect=tcp_connect, docker_paths=discover_docker_paths,
+                 connect=tcp_connect, identify=identify_printer,
+                 docker_paths=discover_docker_paths,
                  in_container=_in_container) -> None:
         self.data_dir = data_dir
         self.port = port
@@ -290,6 +339,7 @@ class Printers:
         self._io = asyncio.Semaphore(MAX_CONNECTIONS)
         self._targets = targets
         self._connect = connect
+        self._identify = identify
         self._task: asyncio.Task | None = None
         self._snap = {"scan_id": None, "state": "done", "probed": 0, "total": 0,
                       "printers": []}
@@ -372,7 +422,7 @@ class Printers:
         targets = self._scan_targets()
         scan_id = uuid.uuid4().hex
         snap = {"scan_id": scan_id, "state": "running" if targets else "failed",
-                "probed": 0, "total": len(targets), "printers": []}
+                "probed": 0, "total": len(targets), "printers": [], "info": {}}
         self._snap = snap  # each scan writes only its own dict
         self._task = asyncio.create_task(self._run(snap, targets)) if targets else None
         return scan_id
@@ -380,7 +430,10 @@ class Printers:
     def snapshot(self) -> dict:
         s = self._snap
         found = sorted(s["printers"], key=ipaddress.ip_address)
-        return {**s, "printers": [{"ip": ip} for ip in found]}
+        info = s.get("info", {})
+        blank = {"model": None, "firmware": None, "dpi": None}
+        return {k: v for k, v in s.items() if k != "info"} | {
+            "printers": [{"ip": ip, **(info.get(ip) or blank)} for ip in found]}
 
     async def aclose(self) -> None:
         if self._task and not self._task.done():
@@ -399,6 +452,11 @@ class Printers:
                 except (TimeoutError, OSError):
                     up = False
             if up:
+                # what it is, for choosing the right printer; still listed if it won't say
+                try:
+                    snap["info"][ip] = await self._identify(ip, self.port)
+                except Exception:  # noqa: BLE001 - a bad answer never drops a found printer
+                    snap["info"][ip] = None
                 snap["printers"].append(ip)
         finally:
             snap["probed"] += 1

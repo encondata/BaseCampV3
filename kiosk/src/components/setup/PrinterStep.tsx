@@ -27,7 +27,7 @@ import { useKioskAuth } from '../../auth/KioskAuthContext';
 import {
   ApiError, fetchKioskLabelFonts, getPrinterScan, putLabelStation, startPrinterScan,
   type KioskLabelFont, type KioskLabelTemplate, type LabelKind, type LabelStationSettings,
-  type PrinterScan,
+  type PrinterScan, type FoundPrinter,
 } from '../../lib/api';
 import { getLabelTemplates } from '../../lib/labelTemplates';
 import {
@@ -87,6 +87,13 @@ interface Props {
   initial: LabelStationSettings | null;
   onBack: () => void;
   onFinish: () => void;
+}
+
+/** What a found network printer said it is (its `~HI` answer), so the
+ *  right one is easy to pick from several on the same network. */
+function printerDetails(p: FoundPrinter): string {
+  const parts = [p.model, p.firmware, p.dpi ? `${p.dpi} DPI` : null].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : "Didn't say what it is";
 }
 
 export default function PrinterStep({ initiativeId, labelKind, initial, onBack, onFinish }: Props) {
@@ -402,6 +409,7 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
                 <button key={p.ip} type="button" className="setup-card" aria-pressed={ip === p.ip}
                         disabled={busy} onClick={() => setIp(p.ip)}>
                   <span className="setup-card-title">{p.ip}</span>
+                  <span className="setup-card-meta">{printerDetails(p)}</span>
                 </button>
               ))}
             </div>
