@@ -474,21 +474,20 @@ describe('laptop mode', () => {
     expect(screen.getByRole('option', { name: /RFID Station/ })).toBeTruthy();
   });
 
-  it('the Label Station path is Move → Site → Scan type, counted out of 4, and sends station_type', async () => {
+  it('the Label Station path is Move → Site, counted out of 3, and always sends the Labeled scan type', async () => {
     const user = userEvent.setup();
     renderPage();
     await user.click(await screen.findByRole('option', { name: /Label Station/ }));
-    expect(screen.getByText('Step 2 of 4 · Move')).toBeTruthy();
+    expect(screen.getByText('Step 2 of 3 · Move')).toBeTruthy();
     await user.click(await screen.findByText('NAP11 Hall Migration (demo)'));
-    expect(screen.getByText('Step 3 of 4 · Site')).toBeTruthy();
+    expect(screen.getByText('Step 3 of 3 · Site')).toBeTruthy();
     await user.click(cardFor('NAP22 Hall'));
-    expect(screen.getByText('Step 4 of 4 · Scan type')).toBeTruthy();
-    await user.click(cardFor('RFID 1 - Cage Exit'));
 
     await waitFor(() => expect(apiMock.submitKioskSetup).toHaveBeenCalledWith({
       serial: 'kiosk-laptop-1', initiative_id: 'i-1', site_id: 's-2',
-      scan_status: 'rfid_1_cage_exit', station_type: 'label',
+      scan_status: 'labeled', station_type: 'label',
     }));
+    expect(screen.queryByText(/Scan type/)).toBeNull();
     expect(await screen.findByText('Label Station · Laptop')).toBeTruthy();
     expect(readKioskSetup()?.stationType).toBe('label');
     expect(readKioskSetup()?.reader).toBeUndefined();
@@ -625,16 +624,16 @@ describe('laptop mode', () => {
       expect(screen.getByRole('button', { name: 'Back' })).toBeTruthy();
     });
 
-    it('the Label path still shows every scan type', async () => {
+    it('the Label path never offers a scan type: it saves Labeled', async () => {
       apiMock.getSetupOptions.mockResolvedValue(MIXED);
       const user = userEvent.setup();
       renderPage();
       await user.click(await screen.findByRole('option', { name: /Label Station/ }));
       await user.click(await screen.findByText('NAP11 Hall Migration (demo)'));
       await user.click(cardFor('NAP22 Hall'));
-      expect(screen.getByRole('option', { name: 'Received' })).toBeTruthy();
-      expect(screen.getByRole('option', { name: 'RFID Received' })).toBeTruthy();
-      expect(screen.getByRole('option', { name: 'rfid out' })).toBeTruthy();
+      expect(screen.queryByRole('option', { name: 'Received' })).toBeNull();
+      await waitFor(() => expect(apiMock.submitKioskSetup).toHaveBeenCalledWith(
+        expect.objectContaining({ scan_status: 'labeled', station_type: 'label' })));
     });
   });
 
@@ -1026,7 +1025,7 @@ describe('laptop mode: final fix round', () => {
       });
       writeSetupState('complete');
     });
-    expect(screen.getByText('Step 2 of 4 · Move')).toBeTruthy();
+    expect(screen.getByText('Step 2 of 3 · Move')).toBeTruthy();
   });
 });
 

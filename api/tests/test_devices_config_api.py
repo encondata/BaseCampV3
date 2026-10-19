@@ -130,17 +130,26 @@ async def test_detail_setup_and_scan_type_options(client, db, seeded_user):
                        color="#000000", sort_order=99, is_active=False))
     await db.flush()
     device = await _kiosk(db, current_initiative_id=move.id, site_id=dest.id,
-                          scan_status="pre_stage", station_type="label")
+                          scan_status="pre_stage")
     hdrs = await login_staff(client, seeded_user)
     body = (await client.get(f"/devices/{device.id}", headers=hdrs)).json()
     assert body["setup"] == {
         "initiative_id": str(move.id), "initiative_name": "NAP7 Rack Move",
         "site_id": str(dest.id), "site_name": "NAP22 Hall", "site_role": "destination",
-        "station_type": "label", "scan_status": "pre_stage",
+        "station_type": None, "scan_status": "pre_stage",
         "scan_status_label": "Pre-Stage"}
     keys = [o["key"] for o in body["scan_type_options"]]
     assert "pre_stage" in keys and "active" in keys and "old_gone" not in keys
     assert set(body["scan_type_options"][0]) == {"key", "label", "color"}
+
+
+async def test_label_station_options_are_labeled_only(client, db, seeded_user):
+    move, _origin, dest = await _move(db)
+    device = await _kiosk(db, sub_type="laptop", station_type="label",
+                          current_initiative_id=move.id, site_id=dest.id)
+    hdrs = await login_staff(client, seeded_user)
+    body = (await client.get(f"/devices/{device.id}", headers=hdrs)).json()
+    assert [o["key"] for o in body["scan_type_options"]] == ["labeled"]
 
 
 async def test_rfid_station_options_are_rfid_labels_only(client, db, seeded_user):
