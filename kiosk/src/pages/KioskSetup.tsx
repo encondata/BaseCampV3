@@ -9,7 +9,9 @@
  * A Label Station has no scan type: its setup is saved right after Site
  * (always Labeled), then it picks what it prints (LabelKindStep) and its
  * printer (PrinterStep); setup only counts as complete once the printer
- * step finishes.
+ * step finishes (a switch to one, or a re-run of one with no printer
+ * settings, reads as incomplete from the Site save until then). The
+ * summary of a Label Station the edge has no printer settings for says so.
  * Tap-to-select card pickers (`.setup-card`, mirroring `.kiosk-tile`) —
  * large touch targets, no native `<select>`. Tapping a move or site card
  * selects it and advances to the next step; tapping a scan-type card
@@ -54,6 +56,9 @@ import { formatSyncedAt, runSync, useSyncStatus } from '../lib/sync';
 
 /** Shown when Kiosk Setup is reached from another device on the LAN. */
 const LAN_NOTICE = "You're changing the setup of the laptop itself.";
+/** Shown on the summary of a Label Station the edge has no printer
+ *  settings for (e.g. one set up before steps 4-5 existed). */
+const NO_PRINTER_NOTICE = 'Printer not set up — run Change setup to finish this Label Station.';
 
 type Step =
   'type' | 'reader' | 'connect' | 'pair' | 'network' | 'move' | 'site' | 'scan' | 'confirm'
@@ -146,6 +151,18 @@ export default function KioskSetup() {
     if (setupComplete && !touched.current) setWizardOpen(false);
   }, [setupComplete]);
   const clearNotice = useSetupClearNotice();
+
+  // The summary of a Label Station checks the edge for its printer
+  // settings; none (or a failed read) never blocks the summary.
+  const labelSummary = !wizardOpen && laptop && selection?.stationType === 'label';
+  const [printerMissing, setPrinterMissing] = useState(false);
+  useEffect(() => {
+    setPrinterMissing(false);
+    if (!labelSummary) return undefined;
+    let live = true;
+    getLabelStation().then((s) => { if (live) setPrinterMissing(s === null); }).catch(() => {});
+    return () => { live = false; };
+  }, [labelSummary]);
 
   const load = () => {
     setLoadError(false);
@@ -283,6 +300,8 @@ export default function KioskSetup() {
   };
 
   const finish = async (scanKey: string, chosenSiteId: string = siteId) => {
+    // Whether this run re-saves an existing Label Station (vs a switch to one).
+    const wasLabel = selection?.stationType === 'label';
     setScanStatus(scanKey);
     setSubmitting(true);
     setSubmitError('');
@@ -311,6 +330,9 @@ export default function KioskSetup() {
       if (station === 'label') {
         // Saved to the portal, but a Label Station isn't set up until its
         // printer is: steps 4 and 5 follow. Saved settings preselect them.
+        // A switch to a Label Station is incomplete until step 5's Finish,
+        // so an abandoned one never stays "complete" without a printer.
+        if (!wasLabel) writeSetupState('incomplete');
         setStep('kind');
         stepRef.current = 'kind';
         kindChosen.current = false;
@@ -319,6 +341,9 @@ export default function KioskSetup() {
           if (load !== labelLoad.current) return;
           // The offsets carry over to the printer step whenever they land.
           setLabelStation(s);
+          // An existing Label Station that never saved a printer is no
+          // more finished than a new one.
+          if (!s && wasLabel) writeSetupState('incomplete');
           if (s && stepRef.current === 'kind' && !kindChosen.current) setLabelKind(s.label_kind);
         }).catch(() => {});
       } else {
@@ -352,6 +377,9 @@ export default function KioskSetup() {
           <div className="sys-banner sys-banner-broadcast" role="status">
             An administrator cleared this kiosk&apos;s setup. Run Kiosk Setup to continue.
           </div>
+        )}
+        {labelSummary && printerMissing && (
+          <p className="sys-banner sys-banner-broadcast" role="status">{NO_PRINTER_NOTICE}</p>
         )}
         <div className="setup-summary">
           <p>
@@ -491,7 +519,11 @@ export default function KioskSetup() {
             <PrinterStep
               initiativeId={initiativeId} labelKind={labelKind} initial={labelStation}
               onBack={back}
-              onFinish={() => { writeSetupState('complete'); setWizardOpen(false); }} />
+              onFinish={() => {
+                labelLoad.current += 1;   // a late settings answer changes nothing now
+                writeSetupState('complete');
+                setWizardOpen(false);
+              }} />
           </div>
         )}
 

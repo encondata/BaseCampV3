@@ -578,6 +578,98 @@ describe('laptop mode', () => {
     expect(screen.getByText('Saved offset 6')).toBeTruthy();
   });
 
+  const LABEL_SELECTION = {
+    initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration (demo)',
+    siteId: 's-2', siteName: 'NAP22 Hall', siteRole: 'destination' as const,
+    scanStatus: 'labeled', scanLabel: 'Labeled', stationType: 'label' as const,
+  };
+  const NO_PRINTER = 'Printer not set up — run Change setup to finish this Label Station.';
+
+  async function changeSetupToLabelKindStep(user: ReturnType<typeof userEvent.setup>) {
+    renderPage();
+    await user.click(await screen.findByRole('button', { name: 'Change setup' }));
+    await user.click(await screen.findByRole('option', { name: /Label Station/ }));
+    await user.click(await screen.findByText('NAP11 Hall Migration (demo)'));
+    await user.click(cardFor('NAP22 Hall'));
+    await screen.findByText('Step 4 of 5 · What it prints');
+  }
+
+  it('Change setup from an RFID Station to a Label Station is incomplete until the printer step finishes', async () => {
+    writeKioskSetup({ ...LABEL_SELECTION, scanStatus: 'rfid_1_cage_exit', scanLabel: 'RFID 1 - Cage Exit',
+      stationType: 'rfid', reader: { ip: '10.0.0.5', serial: '1234ABCD', model: 'FX9600' } });
+    writeSetupState('complete');
+    apiMock.submitKioskSetup.mockResolvedValue({ ...RESULT, scan_status: 'labeled', scan_status_label: 'Labeled' });
+    const user = userEvent.setup();
+    await changeSetupToLabelKindStep(user);
+    // abandoned here, the browser is no longer a "complete" station
+    expect(readSetupState()).toBe('incomplete');
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(readSetupState()).toBe('incomplete');
+    await user.click(screen.getByRole('button', { name: 'Stub finish' }));
+    expect(readSetupState()).toBe('complete');
+  });
+
+  it('re-running setup on a Label Station that has printer settings stays complete', async () => {
+    writeKioskSetup(LABEL_SELECTION);
+    writeSetupState('complete');
+    apiMock.getLabelStation.mockResolvedValue(FRONT_SAVED);
+    const user = userEvent.setup();
+    await changeSetupToLabelKindStep(user);
+    await waitFor(() => expect(
+      screen.getByRole('option', { name: /Front labels/ }).getAttribute('aria-selected')).toBe('true'));
+    expect(readSetupState()).toBe('complete');
+  });
+
+  it('re-running setup on a Label Station without printer settings is incomplete until Finish', async () => {
+    writeKioskSetup(LABEL_SELECTION);
+    writeSetupState('complete');
+    const user = userEvent.setup();
+    await changeSetupToLabelKindStep(user);
+    await waitFor(() => expect(readSetupState()).toBe('incomplete'));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(screen.getByRole('button', { name: 'Stub finish' }));
+    expect(readSetupState()).toBe('complete');
+  });
+
+  it('the summary of a Label Station without printer settings says to finish it', async () => {
+    writeKioskSetup(LABEL_SELECTION);
+    writeSetupState('complete');
+    renderPage();
+    expect(await screen.findByText(NO_PRINTER)).toBeTruthy();
+    expect(apiMock.getLabelStation).toHaveBeenCalled();
+  });
+
+  it('the summary of a Label Station with printer settings has no printer notice', async () => {
+    writeKioskSetup(LABEL_SELECTION);
+    writeSetupState('complete');
+    apiMock.getLabelStation.mockResolvedValue(FRONT_SAVED);
+    renderPage();
+    await screen.findByText(/This kiosk is set up for/);
+    await waitFor(() => expect(apiMock.getLabelStation).toHaveBeenCalled());
+    await act(async () => {});
+    expect(screen.queryByText(NO_PRINTER)).toBeNull();
+  });
+
+  it('the summary shows no printer notice when the settings cannot be read, or for an RFID Station', async () => {
+    writeKioskSetup(LABEL_SELECTION);
+    writeSetupState('complete');
+    apiMock.getLabelStation.mockRejectedValue(new ApiError(503, 'edge_offline'));
+    renderPage();
+    await screen.findByText(/This kiosk is set up for/);
+    await act(async () => {});
+    expect(screen.queryByText(NO_PRINTER)).toBeNull();
+    cleanup();
+
+    apiMock.getLabelStation.mockReset().mockResolvedValue(null);
+    writeKioskSetup({ ...LABEL_SELECTION, stationType: 'rfid' });
+    renderPage();
+    await screen.findByText(/This kiosk is set up for/);
+    await act(async () => {});
+    expect(screen.queryByText(NO_PRINTER)).toBeNull();
+    expect(apiMock.getLabelStation).not.toHaveBeenCalled();
+  });
+
   it('a Label Station save failure stays on the Site step and says so', async () => {
     apiMock.submitKioskSetup.mockRejectedValue(new ApiError(500, 'boom'));
     const user = userEvent.setup();
