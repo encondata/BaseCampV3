@@ -837,3 +837,11 @@ async def test_a_busy_printer_transport_is_503_after_the_wait_bound(app, client,
 
 async def test_busy_bound_is_ten_seconds():
     assert printers.BUSY_S == 10.0
+
+
+def test_parse_host_identification_real_zt220_reply():
+    """A real Zebra ZT220's ~HI reply, captured 2026-10-19 (see
+    kiosk/src/lib/realPrinterReplies.test.ts for the full set)."""
+    from edge.printers import parse_host_identification
+    assert parse_host_identification(b"\x02ZT220-200dpi,V72.20.25Z,8,4096KB\x03\r\n") == {
+        "model": "ZT220-200dpi", "firmware": "V72.20.25Z", "dpi": 203}
