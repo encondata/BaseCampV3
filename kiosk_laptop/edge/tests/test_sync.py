@@ -197,7 +197,7 @@ async def test_not_signed_in_here_is_skipped_without_error(app, cloud):
 
 # ── the client asset list and the station-key fallback (rfid scan processing §2.1, §3.2) ──
 
-STATION_NAMES = ("assets", "containers", "people", "client-assets")
+STATION_NAMES = ("assets", "containers", "people", "client-assets", "label-templates")
 
 
 def _person_key(name, initiative="m-1"):
@@ -312,3 +312,92 @@ async def test_client_assets_500_still_fails_the_sync(app, cloud):
     cloud.get("/kiosk/sync/client-assets?initiative_id=m-1").respond(500)
     meta = await app.state.syncer.run()
     assert meta["last_error"] == "http_500:/kiosk/sync/client-assets?initiative_id=m-1"
+
+
+# ── the move's label template set (kiosk label templates download §4) ──
+
+LABEL_TEMPLATES = "/kiosk/sync/label-templates?initiative_id=m-1"
+
+
+def _as_person(app):
+    app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    app.state.syncer.set_target("m-1", "p-1")
+
+
+async def test_person_sync_caches_label_templates(app, cloud):
+    _as_person(app)
+    assert LABEL_TEMPLATES in sync_paths("m-1")
+    _mock_sync(cloud)
+    meta = await app.state.syncer.run()
+    assert meta["last_error"] is None
+    row = app.state.store.one("SELECT body FROM cache WHERE key = ?", (LABEL_TEMPLATES,))
+    assert json.loads(row["body"]) == {"path": LABEL_TEMPLATES}
+
+
+async def test_station_sync_caches_label_templates_under_the_person_key(app, cloud):
+    from edge.rfid import station_key
+    store = app.state.store
+    station_key.store_key(store, app.state.keys, "the-station-key")
+    app.state.syncer.set_target("m-1", None)
+    station = _mock_station(cloud)
+    meta = await app.state.syncer.run()
+    assert meta["last_error"] is None
+    req = station["label-templates"].calls[0].request
+    assert req.headers["authorization"] == "Station the-station-key"
+    assert req.url.params["initiative_id"] == "m-1"
+    body = store.one("SELECT body FROM cache WHERE key = ?", (LABEL_TEMPLATES,))["body"]
+    assert json.loads(body) == {"station": "label-templates"}
+
+
+async def test_label_templates_404_from_an_old_portal_is_an_empty_set(app, cloud):
+    _as_person(app)
+    _mock_sync(cloud)
+    cloud.get(LABEL_TEMPLATES).respond(404, json={"detail": "Not Found"})
+    meta = await app.state.syncer.run()
+    assert meta["last_error"] is None and meta["synced_at"]
+    assert json.loads(app.state.store.one("SELECT body FROM cache WHERE key = ?",
+                                          (LABEL_TEMPLATES,))["body"]) == {"templates": []}
+    assert app.state.store.one("SELECT 1 FROM cache WHERE key = ?", (_person_key("assets"),))
+
+
+async def test_station_label_templates_404_is_an_empty_set(app, cloud):
+    from edge.rfid import station_key
+    store = app.state.store
+    station_key.store_key(store, app.state.keys, "the-station-key")
+    app.state.syncer.set_target("m-1", None)
+    _mock_station(cloud)
+    cloud.get("/kiosk/station/sync/label-templates").respond(404, json={"detail": "Not Found"})
+    meta = await app.state.syncer.run()
+    assert meta["last_error"] is None
+    assert json.loads(store.one("SELECT body FROM cache WHERE key = ?",
+                                (LABEL_TEMPLATES,))["body"]) == {"templates": []}
+
+
+async def test_failed_label_templates_keep_old_set_and_the_rest_still_syncs(app, cloud):
+    _as_person(app)
+    store = app.state.store
+    store.run("INSERT INTO cache VALUES (?, 200, 'old-set', 'then')", (LABEL_TEMPLATES,))
+    store.run("INSERT INTO cache VALUES (?, 200, 'old-assets', 'then')", (_person_key("assets"),))
+    _mock_sync(cloud)
+    cloud.get(LABEL_TEMPLATES).respond(500)
+    meta = await app.state.syncer.run()
+    assert meta["synced_at"]
+    assert meta["last_error"] == "label_templates_http_500"
+    assert store.one("SELECT body FROM cache WHERE key = ?", (LABEL_TEMPLATES,))["body"] == "old-set"
+    assets = store.one("SELECT body FROM cache WHERE key = ?", (_person_key("assets"),))["body"]
+    assert json.loads(assets) == {"path": _person_key("assets")}       # the rest landed
+
+
+async def test_station_failed_label_templates_keep_old_set(app, cloud):
+    from edge.rfid import station_key
+    store = app.state.store
+    station_key.store_key(store, app.state.keys, "the-station-key")
+    app.state.syncer.set_target("m-1", None)
+    store.run("INSERT INTO cache VALUES (?, 200, 'old-set', 'then')", (LABEL_TEMPLATES,))
+    _mock_station(cloud)
+    cloud.get("/kiosk/station/sync/label-templates").respond(500)
+    meta = await app.state.syncer.run()
+    assert meta["synced_at"] and meta["last_error"] == "label_templates_http_500"
+    assert store.one("SELECT body FROM cache WHERE key = ?", (LABEL_TEMPLATES,))["body"] == "old-set"
+    assets = store.one("SELECT body FROM cache WHERE key = ?", (_person_key("assets"),))["body"]
+    assert json.loads(assets) == {"station": "assets"}

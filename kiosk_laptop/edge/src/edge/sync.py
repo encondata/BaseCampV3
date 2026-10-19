@@ -13,9 +13,15 @@ With no usable person cloud session (an unattended RFID Station), the
 move's data comes through the station-key routes instead
 (`/kiosk/station/sync/<name>?serial=&initiative_id=`), stored under the
 SAME cache keys the person reads use, so everything reading the cache keeps
-working. Those routes cover the move's assets, containers and people and
-the client asset list only; trucks, label vocab, setup options and move
-passwords keep their cached copies until a person syncs."""
+working. Those routes cover the move's assets, containers and people, the
+client asset list and the label template set only; trucks, label vocab,
+setup options and move passwords keep their cached copies until a person
+syncs.
+
+The label template set is a soft step, the same as on the web kiosk: a
+refusal keeps the cached set, the rest of the move still lands, and the
+sync records `label_templates_http_<status>`. A portal from before the set
+answers 404, stored as an empty set (like the client asset list)."""
 
 import json
 import logging
@@ -33,11 +39,11 @@ log = logging.getLogger("edge.sync")
 def sync_paths(initiative_id: str) -> list[str]:
     q = f"initiative_id={quote(initiative_id, safe='')}"
     return [f"/kiosk/sync/assets?{q}", "/kiosk/sync/people", f"/kiosk/sync/containers?{q}",
-            f"/kiosk/sync/client-assets?{q}", f"/kiosk/sync/trucks?{q}", "/kiosk/labels/vocab",
-            "/kiosk/setup-options"]
+            f"/kiosk/sync/client-assets?{q}", f"/kiosk/sync/trucks?{q}",
+            f"/kiosk/sync/label-templates?{q}", "/kiosk/labels/vocab", "/kiosk/setup-options"]
 
 
-STATION_SYNC = ("assets", "containers", "people", "client-assets")
+STATION_SYNC = ("assets", "containers", "people", "client-assets", "label-templates")
 
 
 def station_sync_paths(initiative_id: str, serial: str) -> list[tuple[str, str]]:
@@ -50,14 +56,26 @@ def station_sync_paths(initiative_id: str, serial: str) -> list[tuple[str, str]]
 
 
 SKIP_CODES = {"move_locked", "not_signed_in_here"}
-CLIENT_ASSETS = "/kiosk/sync/client-assets"
-NO_CLIENT_ASSETS = json.dumps({"assets": []})
+LABEL_TEMPLATES = "/kiosk/sync/label-templates"
+# Reads an older portal may not have yet: its 404 stands for an empty body.
+OPTIONAL_EMPTY = {
+    "/kiosk/sync/client-assets": json.dumps({"assets": []}),
+    LABEL_TEMPLATES: json.dumps({"templates": []}),
+}
 
 
-def _old_portal_client_assets(path: str, resp) -> bool:
-    """A portal from before the client asset list answers 404 for it: an
-    empty list, so the rest of the move still syncs."""
-    return resp.status_code == 404 and path.split("?", 1)[0] == CLIENT_ASSETS
+def _old_portal_empty(path: str, resp) -> str | None:
+    """A portal from before one of the `OPTIONAL_EMPTY` reads answers 404
+    for it: its empty body, so the rest of the move still syncs."""
+    if resp.status_code != 404:
+        return None
+    return OPTIONAL_EMPTY.get(path.split("?", 1)[0])
+
+
+def _soft(path: str) -> bool:
+    """The label template set never fails the move sync: a refusal keeps the
+    cached set (the caller records the error)."""
+    return path.split("?", 1)[0] == LABEL_TEMPLATES
 
 
 def _skipped(resp) -> bool:
@@ -100,13 +118,18 @@ class Syncer:
         if actor is None:
             return await self._run_as_station(initiative)
         pulled: list[tuple[str, str]] = []
+        error: str | None = None
         try:
             for path in sync_paths(initiative):
                 resp = await self.upstream.as_person(actor, "GET", path)
                 if resp is None:
                     return await self._run_as_station(initiative)
-                if _old_portal_client_assets(path, resp):
-                    pulled.append((path, NO_CLIENT_ASSETS))
+                empty = _old_portal_empty(path, resp)
+                if empty is not None:
+                    pulled.append((path, empty))
+                    continue
+                if resp.status_code != 200 and _soft(path):
+                    error = f"label_templates_http_{resp.status_code}"
                     continue
                 if resp.status_code != 200:
                     return self._error(f"http_{resp.status_code}:{path}")
@@ -115,7 +138,6 @@ class Syncer:
         except CloudOffline:
             return self._error("offline")
         rows: list[tuple] | None = None
-        error: str | None = None
         if moves is not None and moves.status_code == 200:
             try:
                 data = moves.json()
@@ -124,9 +146,9 @@ class Syncer:
                              json.dumps(m["session"]), now_iso(), m.get("version"))
                             for m in data.get("moves", [])]
             except (ValueError, KeyError, TypeError, AttributeError):
-                error = "bad_move_passwords"
+                error = error or "bad_move_passwords"
         elif moves is not None and not _skipped(moves):
-            error = f"move_passwords_http_{moves.status_code}"
+            error = error or f"move_passwords_http_{moves.status_code}"
         with self.store.tx() as c:
             for path, body in pulled:
                 c.execute("INSERT INTO cache (key, status, body, stored_at) VALUES (?, 200, ?, ?) "
@@ -149,13 +171,18 @@ class Syncer:
         if not station_key.has_key(self.store):
             return self._error("needs_sign_in")
         pulled: list[tuple[str, str]] = []
+        error: str | None = None
         try:
             for key, path in station_sync_paths(initiative, self.serial()):
                 resp = await station_key.request_as_station(self.upstream, "GET", path)
                 if resp is None:
                     return self._error("needs_sign_in")
-                if _old_portal_client_assets(key, resp):
-                    pulled.append((key, NO_CLIENT_ASSETS))
+                empty = _old_portal_empty(key, resp)
+                if empty is not None:
+                    pulled.append((key, empty))
+                    continue
+                if resp.status_code != 200 and _soft(key):
+                    error = f"label_templates_http_{resp.status_code}"
                     continue
                 if resp.status_code != 200:
                     return self._error(f"http_{resp.status_code}:{path.split('?', 1)[0]}")
@@ -168,8 +195,8 @@ class Syncer:
                           "ON CONFLICT(key) DO UPDATE SET status = 200, body = excluded.body, "
                           "stored_at = excluded.stored_at", (key, body, now_iso()))
                 note_cache_write()
-            c.execute("UPDATE sync_meta SET synced_at = ?, last_error = NULL WHERE id = 1",
-                      (now_iso(),))
+            c.execute("UPDATE sync_meta SET synced_at = ?, last_error = ? WHERE id = 1",
+                      (now_iso(), error))
         self._recheck_rfid()
         return self.meta()
 

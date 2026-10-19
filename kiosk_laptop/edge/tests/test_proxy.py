@@ -267,3 +267,20 @@ async def test_repeated_slashes_cannot_reach_station_key_routes(app, client, clo
         r = await client.post(path, headers=hdrs, json={})
         assert r.status_code == 404, path
     assert not upstream.called
+
+
+async def test_synced_label_templates_are_served_offline(app, client, cloud):
+    """The set the sync stored is what a laptop browser reads with no internet,
+    under the same key the kiosk's fetch uses."""
+    _online_as(app)
+    app.state.syncer.set_target("m-1", "p-1")
+    key = "/kiosk/sync/label-templates?initiative_id=m-1"
+    cloud.get(url__regex=r"/kiosk/sync/.*").respond(200, json={"templates": [{"id": "t-1"}]})
+    cloud.get(url__regex=r"/kiosk/(setup-options|labels/vocab)").respond(200, json={})
+    cloud.get(url__regex=r"/kiosk/edge/move-passwords.*").respond(200, json={"moves": []})
+    assert (await app.state.syncer.run())["last_error"] is None
+    cloud.get(url__regex=r"/kiosk/sync/.*").mock(side_effect=httpx.ConnectError("down"))
+    hdrs = make_session(app, kiosk_move={"initiative_id": "m-1", "name": "Move"})
+    r = await client.get(key, headers=hdrs)
+    assert r.status_code == 200 and r.json() == {"templates": [{"id": "t-1"}]}
+    assert r.headers["x-edge-cache"] == "hit"

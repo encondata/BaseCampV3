@@ -73,9 +73,13 @@ it('clearDb empties every store', async () => {
   await replaceAll('people', [person('p1', 'W-1')]);
   await replaceAll('containers', [container('c-1', 'SC-DAL_PAL-001', 'R-1')]);
   await replaceAll('trucks', [truck('t-1', 'TRUCK-1', 'L-1042')]);
+  await replaceAll('label_templates', [{ id: 'lt-1', name: 'Generic Rack and RU' }]);
   await writeMeta('sync', { assets: 1, people: 1, containers: 1, trucks: 1 });
 
   await clearDb();
+
+  // The template set is the move's too: a wipe never leaves it behind.
+  expect(await count('label_templates')).toBe(0);
 
   expect(await count('assets')).toBe(0);
   expect(await count('people')).toBe(0);
@@ -124,11 +128,11 @@ it('replaceAllMulti aborts every store together when one write is invalid', asyn
   expect(await readMeta('sync')).toBeNull();
 });
 
-it('v5 carries the outbox, the sounds, the containers, and the trucks store', async () => {
+it('v6 carries the outbox, the sounds, the containers, the trucks and the label templates', async () => {
   const db = await openDb();
-  expect(db.version).toBe(5);
-  expect([...db.objectStoreNames].sort())
-    .toEqual(['assets', 'containers', 'meta', 'outbox', 'people', 'sounds', 'trucks']);
+  expect(db.version).toBe(6);
+  expect([...db.objectStoreNames].sort()).toEqual(
+    ['assets', 'containers', 'label_templates', 'meta', 'outbox', 'people', 'sounds', 'trucks']);
 });
 
 it('finds a truck by name and by load_number', async () => {
@@ -169,7 +173,7 @@ it('upgrades a v1 database in place, keeping its rows and adding the outbox', as
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(5);
+  expect(db.version).toBe(6);
   expect(db.objectStoreNames.contains('outbox')).toBe(true);
   expect(db.objectStoreNames.contains('sounds')).toBe(true);
   expect(db.objectStoreNames.contains('containers')).toBe(true);
@@ -196,7 +200,7 @@ it('upgrades a v2 database in place, keeping its outbox and adding sounds', asyn
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(5);
+  expect(db.version).toBe(6);
   expect(db.objectStoreNames.contains('sounds')).toBe(true);
   expect(db.objectStoreNames.contains('containers')).toBe(true);
   expect(db.objectStoreNames.contains('trucks')).toBe(true);
@@ -224,7 +228,7 @@ it('upgrades a v3 database in place, keeping its data and adding containers', as
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(5);
+  expect(db.version).toBe(6);
   expect(db.objectStoreNames.contains('containers')).toBe(true);
   expect(db.objectStoreNames.contains('trucks')).toBe(true);
   expect(await count('assets')).toBe(1);
@@ -258,12 +262,52 @@ it('upgrades a v4 database in place, keeping its containers and adding trucks', 
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(5);
+  expect(db.version).toBe(6);
   expect(db.objectStoreNames.contains('trucks')).toBe(true);
   expect(await count('assets')).toBe(1);
   expect(await count('containers')).toBe(1);
   expect(await count('outbox')).toBe(1);
   expect(await count('trucks')).toBe(0);
+});
+
+it('upgrades a v5 database in place, keeping its data and adding label_templates', async () => {
+  // A kiosk that synced before the label template download shipped: its
+  // downloaded move, crates, trucks and queued scans must all survive.
+  await new Promise<void>((resolve, reject) => {
+    const req = indexedDB.open('serversherpa-kiosk', 5);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      db.createObjectStore('assets', { keyPath: 'id' }).createIndex('rfid', 'rfid');
+      db.createObjectStore('people', { keyPath: 'id' }).createIndex('rfid_tag', 'rfid_tag');
+      db.createObjectStore('meta', { keyPath: 'key' });
+      db.createObjectStore('outbox', { keyPath: 'client_scan_id' }).createIndex('status', 'status');
+      db.createObjectStore('sounds', { keyPath: 'id' });
+      const containers = db.createObjectStore('containers', { keyPath: 'id' });
+      containers.createIndex('rfid_tag', 'rfid_tag');
+      containers.createIndex('name', 'name');
+      const trucks = db.createObjectStore('trucks', { keyPath: 'id' });
+      trucks.createIndex('name', 'name');
+      trucks.createIndex('load_number', 'load_number');
+    };
+    req.onsuccess = () => { req.result.close(); resolve(); };
+    req.onerror = () => reject(req.error);
+  });
+  await replaceAll('assets', [asset('a', 'R1')]);
+  await replaceAll('containers', [container('c-1', 'SC-DAL_PAL-001', 'R-1')]);
+  await replaceAll('trucks', [truck('t-1', 'TRUCK-1', 'L-1042')]);
+  await putRows('outbox', [{ client_scan_id: 's1', status: 'queued' }]);
+  await writeMeta('sync', { initiativeId: 'i-1', assets: 1 });
+  closeDb();
+
+  const db = await openDb();
+  expect(db.version).toBe(6);
+  expect(db.objectStoreNames.contains('label_templates')).toBe(true);
+  expect(await count('assets')).toBe(1);
+  expect(await count('containers')).toBe(1);
+  expect(await count('trucks')).toBe(1);
+  expect(await count('outbox')).toBe(1);
+  expect(await readMeta('sync')).toMatchObject({ initiativeId: 'i-1' });
+  expect(await count('label_templates')).toBe(0);
 });
 
 it('putRows upserts without clearing, and deleteRows removes by key', async () => {
@@ -303,13 +347,13 @@ it('closes its connection when another tab needs a higher version', async () => 
   // three stale tabs pinned the database at v1 and the Scanning page
   // never became usable.
   const upgraded = await new Promise<IDBDatabase>((resolve, reject) => {
-    const req = indexedDB.open('serversherpa-kiosk', 6);
+    const req = indexedDB.open('serversherpa-kiosk', 7);
     req.onupgradeneeded = () => req.result.createObjectStore('later', { keyPath: 'id' });
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
     req.onblocked = () => reject(new Error('blocked — the old connection never yielded'));
   });
-  expect(upgraded.version).toBe(6);
+  expect(upgraded.version).toBe(7);
   expect(upgraded.objectStoreNames.contains('assets')).toBe(true);
   upgraded.close();
 });

@@ -11,6 +11,12 @@
  * `done` with real counts before anything is fetched again
  * (`hydrateSyncStatus`).
  *
+ * After that, the move's label template set comes down as a soft step
+ * (`syncLabelTemplates`): a success replaces the `label_templates` store,
+ * so a template that stopped matching on the portal is gone; a failure
+ * is logged and keeps the previous set (or, when the move changed, drops
+ * the other move's set), and the move sync still reports `done`.
+ *
  * The store/hook shape mirrors `setupState.ts` (`useSyncExternalStore`
  * over a module-level snapshot + listener set). Sync outcomes never
  * touch `kiosk_setup_complete`: a kiosk is set up whether or not its
@@ -20,9 +26,10 @@
 import { useEffect, useSyncExternalStore } from 'react';
 
 import {
-  ApiError, fetchAssetsSync, fetchContainersSync, fetchPeopleSync, fetchTrucksSync,
+  ApiError, fetchAssetsSync, fetchContainersSync, fetchLabelTemplatesSync, fetchPeopleSync,
+  fetchTrucksSync,
 } from './api';
-import { count, readMeta, replaceAllMulti } from './localDb';
+import { count, readMeta, replaceAll, replaceAllMulti } from './localDb';
 
 export type SyncPhase = 'idle' | 'running' | 'done' | 'error';
 
@@ -133,6 +140,13 @@ export async function runSync(initiativeId: string, initiativeName: string): Pro
   }
 
   if (myRun !== currentRun) return;
+  let previousMove: unknown = null;
+  try {
+    previousMove = (await readMeta(META_KEY))?.initiativeId ?? null;
+  } catch {
+    /* unreadable here means the write below fails too and reports 'storage' */
+  }
+  if (myRun !== currentRun) return;
   try {
     const syncedAt = new Date().toISOString();
     // assets, people, containers, trucks, and the meta pointer land in
@@ -162,6 +176,8 @@ export async function runSync(initiativeId: string, initiativeName: string): Pro
       count('assets'), count('people'), count('containers'), count('trucks'),
     ]);
     if (myRun !== currentRun) return;
+    await syncLabelTemplates(initiativeId, previousMove !== initiativeId, () => myRun === currentRun);
+    if (myRun !== currentRun) return;
     hydrated = true;
     setStatus({
       phase: 'done', assets: assetsCount, people: peopleCount,
@@ -170,6 +186,32 @@ export async function runSync(initiativeId: string, initiativeName: string): Pro
   } catch {
     if (myRun !== currentRun) return;
     setStatus({ ...previous, phase: 'error', error: 'storage' });
+  }
+}
+
+/**
+ * The soft step: fetch the move's label template set and replace the
+ * stored one. Never throws — a fetch or storage failure is logged and the
+ * previous set stays, so templates can never fail the move sync. The one
+ * exception is a sync that switched moves (`moveChanged`): the previous
+ * set belongs to the other move, so it is dropped rather than kept.
+ * `current` guards against a superseded run writing over a newer one.
+ */
+async function syncLabelTemplates(
+  initiativeId: string, moveChanged: boolean, current: () => boolean,
+): Promise<void> {
+  try {
+    const body = await fetchLabelTemplatesSync(initiativeId);
+    if (!current()) return;
+    await replaceAll('label_templates', body.templates);
+  } catch (err) {
+    console.warn('label template sync failed; the move sync still counts', err);
+    if (!moveChanged || !current()) return;
+    try {
+      await replaceAll('label_templates', []);
+    } catch (clearErr) {
+      console.warn('could not drop the previous move\'s label templates', clearErr);
+    }
   }
 }
 
