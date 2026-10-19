@@ -511,7 +511,6 @@ describe('laptop mode', () => {
     expect(readSetupState()).not.toBe('complete');
     expect(screen.getByRole('option', { name: /Top labels/ }).getAttribute('aria-selected')).toBe('true');
     await user.click(screen.getByRole('option', { name: /Front labels/ }));
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
 
     expect(screen.getByText('Step 5 of 5 · Printer')).toBeTruthy();
     expect(screen.getByText('Printer step for front')).toBeTruthy();
@@ -559,8 +558,6 @@ describe('laptop mode', () => {
     await toKindStep(user);
     await user.click(screen.getByRole('option', { name: /Top labels/ }));
     await act(async () => { answer(FRONT_SAVED); });
-    expect(screen.getByRole('option', { name: /Top labels/ }).getAttribute('aria-selected')).toBe('true');
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
     expect(screen.getByText('Printer step for top')).toBeTruthy();
     // the offsets still carry over to the printer step
     expect(screen.getByText('Saved offset 6')).toBeTruthy();
@@ -571,7 +568,7 @@ describe('laptop mode', () => {
     apiMock.getLabelStation.mockReturnValue(new Promise((r) => { answer = r; }));
     const user = userEvent.setup();
     await toKindStep(user);
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(screen.getByRole('option', { name: /Top labels/ }));
     expect(screen.getByText('Saved offset none')).toBeTruthy();
     await act(async () => { answer(FRONT_SAVED); });
     expect(screen.getByText('Printer step for top')).toBeTruthy();
@@ -604,7 +601,7 @@ describe('laptop mode', () => {
     // abandoned here, the browser is no longer a "complete" station
     expect(readSetupState()).toBe('incomplete');
     expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(screen.getByRole('option', { name: /Top labels/ }));
     expect(readSetupState()).toBe('incomplete');
     await user.click(screen.getByRole('button', { name: 'Stub finish' }));
     expect(readSetupState()).toBe('complete');
@@ -627,7 +624,7 @@ describe('laptop mode', () => {
     const user = userEvent.setup();
     await changeSetupToLabelKindStep(user);
     await waitFor(() => expect(readSetupState()).toBe('incomplete'));
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(screen.getByRole('option', { name: /Top labels/ }));
     await user.click(screen.getByRole('button', { name: 'Stub finish' }));
     expect(readSetupState()).toBe('complete');
   });
