@@ -37,7 +37,8 @@ from serversherpa.api.schemas import (
     KioskClockOutIn, KioskContainerAssetIn, KioskContainerAssetOut,
     KioskContainerAssetRow, KioskContainerOut, KioskContainerRef,
     KioskContainersSyncOut, KioskContainerStateOut, KioskEdgeMovePassword,
-    KioskEdgeMovePasswordsOut, KioskLabelTemplateOut, KioskLabelTemplatesSyncOut,
+    KioskEdgeMovePasswordsOut, KioskLabelFontOut, KioskLabelFontsOut,
+    KioskLabelTemplateOut, KioskLabelTemplatesSyncOut,
     KioskMoveOut,
     KioskPeopleSyncOut, KioskPersonOut, KioskPrinterEventIn,
     KioskRfidEnrollIn, KioskRfidEnrollOut, KioskScanBatchIn, KioskSoundOut,
@@ -45,7 +46,7 @@ from serversherpa.api.schemas import (
     KioskStationHeartbeatIn, KioskStationHeartbeatOut,
     KioskStationScanBatchOut, KioskSetupIn, KioskSetupOut, KioskSetupReadOut, KioskSetupReaderOut,
     KioskStationKeyIn, KioskStationKeyOut,
-    KioskSignOutIn, KioskTimeclockEntry, KioskTimeclockLastEntry,
+    KioskSignOutIn, KioskTestRenderIn, KioskTestRenderOut, KioskTimeclockEntry, KioskTimeclockLastEntry,
     KioskTimeclockPerson, KioskTimeclockStatusOut, KioskTruckContainerIn,
     KioskTruckContainerOut, KioskTruckContainerRow, KioskTruckOut,
     KioskTruckRef, KioskTrucksSyncOut, KioskTruckStateOut, LabelVocabOut,
@@ -57,17 +58,21 @@ from serversherpa.api.schemas import (
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
     Asset, AssetModel, AuditLog, AuthSession, Client, Container, ContainerAsset, Device, Initiative,
-    InitiativeAsset, KioskPairRequest, KioskSound, LabelPlaceholder, LabelVocab, Person,
+    InitiativeAsset, KioskPairRequest, KioskSound, LabelFont, LabelPlaceholder,
+    LabelTemplate, LabelVocab, Person,
     RawScan, Site, StatusValue, TimeEntry, Truck, TruckContainer, UserAccount,
     WorkerProfile,
 )
 from serversherpa.db.ordering import natural, natural_key
+from serversherpa.labels.generate.engine import render_label
 from serversherpa.labels.generate.values import (
-    CONTAINER_KEYS, AssetRow, Sites, make_model_text, placeholder_values,
+    CONTAINER_KEYS, AssetRow, Sites, _apply_length_limits, _apply_position_rules,
+    make_model_text, placeholder_values,
 )
 from serversherpa.labels.kiosk_templates import (
     move_template_set, template_code,
 )
+from serversherpa.labels.template_fonts import fonts_used
 from serversherpa.services import auth as auth_service
 from serversherpa.services import kiosk_config
 from serversherpa.services import kiosk_pairing as pairing
@@ -1150,6 +1155,169 @@ async def _label_templates_body(
 
     return KioskLabelTemplatesSyncOut(
         initiative_id=initiative.id, generated_at=datetime.now(UTC), templates=templates)
+
+
+# ── Label Station setup: fonts + mock test label (kiosk:view) ───────
+# Spec docs/superpowers/specs/2026-10-19-label-station-printing-design.md.
+# Same access as /sync/label-templates. No station-key twins: setup always
+# has a person signed in.
+
+# Fixed sample values for the mock-data test label: one per catalog
+# placeholder (asset and container keys alike). Raw positions are
+# dot-separated so a template's position-split rules have parts to split.
+MOCK_VALUES: dict[str, str] = {
+    "asset_id": "100000",
+    "asset_name": "SAMPLE-SERVER-01",
+    "serial_number": "SN0000001",
+    "make": "Dell",
+    "model": "PowerEdge R740",
+    "make_model": "Dell PowerEdge R740",
+    "source_raw": "A1.R01.U12",
+    "source_ru": "U12",
+    "source_site": "Sample Site A",
+    "destination_raw": "B2.R04.U12",
+    "destination_ru": "U12",
+    "destination_site": "Sample Site B",
+    "move_name": "Sample Move",
+    "move_date": "09/01/2026",
+    "move_date_long": "01-SEP-2026",
+    "container_name": "SAMPLE-CRATE-01",
+    "container_id": "200000",
+    "label_tag": "PRIORITY",
+}
+
+
+def mock_label_values(catalog_keys: list[str], generation_rules: dict | None) -> dict[str, str]:
+    """MOCK_VALUES plus "" for any other active catalog key, then the
+    template's generation_rules through the label generator's own helpers
+    (position split, then length limits) — the same order
+    `placeholder_values` applies them."""
+    out = {key: "" for key in catalog_keys}
+    out.update(MOCK_VALUES)
+    if generation_rules:
+        _apply_position_rules(out, generation_rules,
+                              source_raw=MOCK_VALUES["source_raw"],
+                              destination_raw=MOCK_VALUES["destination_raw"])
+        _apply_length_limits(out, generation_rules)
+    return out
+
+
+async def _label_move(db: AsyncSession, initiative_id: uuid.UUID) -> Initiative:
+    initiative = await db.get(Initiative, initiative_id)
+    if initiative is None:
+        raise _err(404, "initiative_not_found")
+    if initiative.initiative_type != "move":
+        raise _err(422, "bad_initiative")
+    return initiative
+
+
+async def _label_vocab(db: AsyncSession) -> dict[tuple[str, str], dict]:
+    return {(v.kind, v.key): v.meta or {} for v in (await db.execute(
+        select(LabelVocab).where(LabelVocab.kind.in_(("size", "dpi"))))).scalars()}
+
+
+async def _move_font_names(db: AsyncSession, initiative: Initiative) -> set[str]:
+    """Every E: font the move's template set references (upper-cased).
+    A template that can't convert contributes nothing — the label-templates
+    sync lists it with its error."""
+    vocab = await _label_vocab(db)
+    names: set[str] = set()
+    for template, _reasons, _sites in await move_template_set(db, initiative):
+        try:
+            code = template_code(template, vocab.get(("size", template.size_key), {}),
+                                 vocab.get(("dpi", template.dpi_key), {}))
+        except Exception:
+            logger.warning("kiosk label fonts: template %s could not convert",
+                           template.id, exc_info=True)
+            continue
+        names |= fonts_used(code)
+    return names
+
+
+@router.get("/labels/fonts", response_model=KioskLabelFontsOut)
+async def kiosk_label_fonts(
+    db: DbSession,
+    initiative_id: uuid.UUID = Query(...),
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskLabelFontsOut:
+    """The printer fonts the move's label template set references: library
+    fonts (not deleted) in `fonts`, natural by name, and referenced names
+    the library doesn't have in `missing`. Same contract as
+    /sync/label-templates (404 / 422 `bad_initiative` / 403 `move_locked`)."""
+    _require_move(actor, initiative_id)
+    initiative = await _label_move(db, initiative_id)
+    names = await _move_font_names(db, initiative)
+    fonts = []
+    if names:
+        fonts = (await db.execute(
+            select(LabelFont)
+            .where(LabelFont.name.in_(sorted(names)), LabelFont.deleted_at.is_(None))
+            .order_by(natural(LabelFont.name)))).scalars().all()
+    found = {f.name.upper() for f in fonts}
+    return KioskLabelFontsOut(
+        fonts=[KioskLabelFontOut(id=f.id, name=f.name, size=f.size_bytes) for f in fonts],
+        missing=sorted(names - found, key=natural_key))
+
+
+@router.get("/labels/fonts/{font_id}/content")
+async def kiosk_label_font_content(
+    font_id: uuid.UUID, db: DbSession,
+    initiative_id: uuid.UUID = Query(...),
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> Response:
+    """A font's raw TTF bytes for the station to push to its printer
+    (`~DY`) — only when the move's templates reference that font. Any
+    other font, a deleted one, or an unknown id is 404 `font_not_found`,
+    so a move-password session can never fetch another font."""
+    _require_move(actor, initiative_id)
+    initiative = await _label_move(db, initiative_id)
+    font = await db.get(LabelFont, font_id)
+    if (font is None or font.deleted_at is not None
+            or font.name.upper() not in await _move_font_names(db, initiative)):
+        raise _err(404, "font_not_found")
+    data = await get_object(font.storage_key)
+    return Response(content=data, media_type=font.content_type,
+                    headers={"Content-Disposition": f'attachment; filename="{font.name}"'})
+
+
+@router.post("/labels/test-render", response_model=KioskTestRenderOut)
+async def kiosk_label_test_render(
+    body: KioskTestRenderIn, db: DbSession,
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskTestRenderOut:
+    """One mock-data test label: the template filled with MOCK_VALUES
+    (plus its generation_rules) and rendered by the label generator's own
+    `render_label`, so the station never fills placeholders itself. The
+    template must be in the move's (active) set — 404 `template_not_found`
+    otherwise — and `dpi_key` must be the template's own (422
+    `dpi_mismatch`). A design that can't convert is 422
+    `template_unconvertible`. A read made through POST, so it is exempt
+    from read-only mode."""
+    _require_move(actor, body.initiative_id)
+    initiative = await _label_move(db, body.initiative_id)
+    template: LabelTemplate | None = next(
+        (t for t, _r, _s in await move_template_set(db, initiative) if t.id == body.template_id),
+        None)
+    if template is None:
+        raise _err(404, "template_not_found")
+    if template.dpi_key != body.dpi_key:
+        raise _err(422, "dpi_mismatch", template_dpi_key=template.dpi_key)
+    vocab = await _label_vocab(db)
+    size_meta = vocab.get(("size", template.size_key), {})
+    dpi_meta = vocab.get(("dpi", template.dpi_key), {})
+    values = mock_label_values(await _label_catalog_keys(db), template.generation_rules)
+    try:
+        if template.kind != "code" and (
+                size_meta.get("width_in") is None or size_meta.get("height_in") is None
+                or dpi_meta.get("dots") is None):
+            raise ValueError("unknown label size or DPI")
+        zpl, _unknown = render_label(template, values, size_meta=size_meta,
+                                     dpi_meta=dpi_meta, language_key=template.language_key)
+    except Exception as exc:
+        logger.warning("kiosk test label %s could not render: %s",
+                       template.id, type(exc).__name__, exc_info=True)
+        raise _err(422, "template_unconvertible") from None
+    return KioskTestRenderOut(zpl=zpl, template_name=template.name)
 
 
 @router.get("/sync/client-assets", response_model=KioskClientAssetsSyncOut)

@@ -3531,6 +3531,33 @@ class KioskLabelTemplatesSyncOut(BaseModel):
     templates: list[KioskLabelTemplateOut]
 
 
+class KioskLabelFontOut(BaseModel):
+    """A font-library font the move's label templates reference. `name` is
+    its printer object name (`NAME.TTF` on E:); `size` is in bytes."""
+    id: uuid.UUID
+    name: str
+    size: int
+
+
+class KioskLabelFontsOut(BaseModel):
+    """GET /kiosk/labels/fonts: the move's referenced fonts that are in
+    the library, plus `missing`: referenced names the library lacks."""
+    fonts: list[KioskLabelFontOut]
+    missing: list[str]
+
+
+class KioskTestRenderIn(BaseModel):
+    initiative_id: uuid.UUID
+    template_id: uuid.UUID
+    dpi_key: str = Field(min_length=1, max_length=40)
+
+
+class KioskTestRenderOut(BaseModel):
+    """One mock-data test label, rendered by the portal's render_label."""
+    zpl: str
+    template_name: str
+
+
 class KioskContainerAssetIn(BaseModel):
     """One asset the kiosk just scanned into (or out of) a container.
 
