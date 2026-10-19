@@ -3505,10 +3505,14 @@ class KioskLabelTemplateOut(BaseModel):
     fallback. `width_in`/`height_in`/`dots` come from the size and DPI
     vocabulary (None when the key has no vocabulary row).
     `move_site_names` names only the move's own origin/destination sites
-    the template is linked to; links to other sites are never named."""
+    the template is linked to; links to other sites are never named.
+    `family` is the name without its trailing DPI marker ("Generic Rack and
+    RU - 203DPI" → "Generic Rack and RU"): the DPI versions of one template
+    share it, and a kiosk picks the one whose `dpi_key` matches its printer."""
 
     id: uuid.UUID
     name: str
+    family: str
     label_type: str
     size_key: str
     dpi_key: str

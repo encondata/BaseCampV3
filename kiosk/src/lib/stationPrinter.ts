@@ -163,14 +163,27 @@ export function statusProblems(status: HostStatus): string[] {
 
 export const GENERIC_TEMPLATE_NAME = 'Generic Rack and RU';
 
-/** The mock-data test label's template: "Generic Rack and RU" for a Top
- *  station, its Front template for a Front one, at the printer's DPI. A
- *  template only at another DPI is skipped, and `note` says why. */
+// A trailing DPI marker: " - 203DPI", " 300 dpi", "(600DPI)". Same rule as
+// the server's labels.kiosk_templates.family_name.
+const DPI_SUFFIX = /\s*[-–—]?\s*\(?\s*\d{3}\s*dpi\s*\)?\s*$/i;
+
+/** The template's family: the name its DPI versions share. The server sends
+ *  it; a set cached before that is grouped by the same name rule here. */
+export function templateFamily(t: KioskLabelTemplate): string {
+  if (t.family) return t.family;
+  const base = t.name.replace(DPI_SUFFIX, '').trim();
+  return base || t.name.trim();
+}
+
+/** The mock-data test label's template: the "Generic Rack and RU" family
+ *  for a Top station, its Front template for a Front one, in the version
+ *  at the printer's DPI. A template only at another DPI is skipped, and
+ *  `note` says why. */
 export function mockTemplateFor(
   templates: KioskLabelTemplate[], kind: LabelKind, dpi: number,
 ): { template: KioskLabelTemplate | null; note: string } {
   const candidates = kind === 'top'
-    ? templates.filter((t) => t.name.trim().toLowerCase() === GENERIC_TEMPLATE_NAME.toLowerCase())
+    ? templates.filter((t) => templateFamily(t).toLowerCase() === GENERIC_TEMPLATE_NAME.toLowerCase())
     : templatesOfKind(templates, 'front');
   const match = candidates.find((t) => t.dpi_key === String(dpi));
   if (match) return { template: match, note: '' };
@@ -186,6 +199,6 @@ export function mockTemplateFor(
   const dpis = [...new Set(candidates.map((t) => t.dpi_key))].sort(naturalCompare);
   return {
     template: null,
-    note: `"${other.name}" is only available at ${dpis.join(' or ')} DPI, so the mock-data label is skipped.`,
+    note: `"${templateFamily(other)}" is only available at ${dpis.join(' or ')} DPI, so the mock-data label is skipped.`,
   };
 }

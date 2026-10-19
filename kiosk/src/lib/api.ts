@@ -472,6 +472,9 @@ export type KioskLabelTemplateReason =
 export interface KioskLabelTemplate {
   id: string;
   name: string;
+  /** The name without its trailing DPI marker; the DPI versions of one
+   *  template share it. Missing from sets cached before it was added. */
+  family?: string;
   label_type: string;
   size_key: string;
   dpi_key: string;

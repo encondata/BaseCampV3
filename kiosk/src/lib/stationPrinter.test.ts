@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from './api';
 import {
-  checkDpi, fontsUsed, mockTemplateFor, neededFonts, networkStationPrinter, statusProblems,
+  checkDpi, fontsUsed, mockTemplateFor, templateFamily, neededFonts, networkStationPrinter, statusProblems,
   templatesOfKind, usbStationPrinter,
 } from './stationPrinter';
 import type { KioskLabelTemplate } from './api';
@@ -147,5 +147,31 @@ describe('pure helpers', () => {
     expect(skipped.template).toBeNull();
     expect(skipped.note).toBe('"Front" is only available at 300 DPI, so the mock-data label is skipped.');
     expect(mockTemplateFor([], 'top', 203).note).toBe('No "Generic Rack and RU" template was downloaded for this move.');
+  });
+
+  it('templateFamily uses the server family, else strips a trailing DPI marker', () => {
+    expect(templateFamily(template({ name: 'Anything', family: 'Server says' }))).toBe('Server says');
+    expect(templateFamily(template({ name: 'Generic Rack and RU - 203DPI' }))).toBe('Generic Rack and RU');
+    expect(templateFamily(template({ name: 'Generic Rack and RU - 300 dpi' }))).toBe('Generic Rack and RU');
+    expect(templateFamily(template({ name: 'Container Label 4x6 203dpi' }))).toBe('Container Label 4x6');
+    expect(templateFamily(template({ name: 'Top asset tag (600DPI)' }))).toBe('Top asset tag');
+    expect(templateFamily(template({ name: 'DPI test 203' }))).toBe('DPI test 203');
+    expect(templateFamily(template({ name: '203DPI' }))).toBe('203DPI');
+  });
+
+  it('mockTemplateFor picks the Generic Rack and RU version named for the printer DPI', () => {
+    const ts = [
+      template({ id: 'g203', name: 'Generic Rack and RU - 203DPI', family: 'Generic Rack and RU', dpi_key: '203' }),
+      template({ id: 'g300', name: 'Generic Rack and RU - 300DPI', family: 'Generic Rack and RU', dpi_key: '300' }),
+      template({ id: 'other', name: 'Top Site A - 203DPI', family: 'Top Site A', dpi_key: '203' }),
+    ];
+    expect(mockTemplateFor(ts, 'top', 203).template?.id).toBe('g203');
+    expect(mockTemplateFor(ts, 'top', 300).template?.id).toBe('g300');
+    // An older cached set has no `family`; the name still groups it.
+    const old = ts.map(({ family: _f, ...rest }) => rest as KioskLabelTemplate);
+    expect(mockTemplateFor(old, 'top', 300).template?.id).toBe('g300');
+    const skipped = mockTemplateFor(ts.slice(0, 1), 'top', 300);
+    expect(skipped.template).toBeNull();
+    expect(skipped.note).toBe('"Generic Rack and RU" is only available at 203 DPI, so the mock-data label is skipped.');
   });
 });
