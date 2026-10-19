@@ -36,6 +36,8 @@
  * IndexedDB `meta` store, which "Clear local data" empties.
  */
 
+import { compareOrdinal } from '@portal/lib/naturalSort';
+
 import type { HeartbeatConfigFields, HeartbeatResult } from './api';
 import {
   DEFAULT_APPEARANCE, readAppearance, subscribeAppearance, writeAppearance, type Appearance, type Hsl,
@@ -206,7 +208,8 @@ function asHsl(value: unknown): Hsl | null {
 function canon(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canon).join(',')}]`;
   if (isObj(value)) {
-    return `{${Object.keys(value).sort()
+    // Canonical JSON: keys in code-unit (ordinal) order, never locale order.
+    return `{${Object.keys(value).sort(compareOrdinal)
       .map((k) => `${JSON.stringify(k)}:${canon(value[k])}`).join(',')}}`;
   }
   return JSON.stringify(value) ?? 'null';
