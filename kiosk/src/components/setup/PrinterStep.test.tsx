@@ -309,7 +309,8 @@ describe('checks', () => {
     await connectUsb(user);
     await failed('DPI matches the templates');
     expect(apiMock.getLabelPlan).toHaveBeenCalledWith({ dpi: 203, kind: 'front' });
-    expect(within(row('DPI matches the templates')).getByText(/^No active Front template for this move\./))
+    expect(within(row('DPI matches the templates')).getByText('No active Front template for this move. Someone '
+      + 'with label access needs to activate one on Labels › Templates in the portal, then pick the move again.'))
       .toBeTruthy();
   });
 

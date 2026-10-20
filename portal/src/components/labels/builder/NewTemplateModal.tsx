@@ -16,8 +16,9 @@
  * rather than leave it behind and post another.
  *
  * Label types: the active type list, plus Custom… the same way — a type
- * name ("ID badge") whose key is its lowercase slug (`id_badge`), a type
- * row posted off the list unless "Save this type to the list" is on, and
+ * name ("Shelf tag") whose key is its lowercase slug (`shelf_tag`), a
+ * type row saved to the list unless "Save this type to the list" is
+ * turned off (then it is for test prints only, which the dialog says), and
  * the same rewrite of its own pending row on a retry. A name that is a
  * listed type (its key or its label) says so and offers that type
  * instead; a key an unlisted row holds moves on (`_2`, `_3`…). Kiosk Label
@@ -80,7 +81,7 @@ export function customSizeKey(w: number, h: number, taken: ReadonlySet<string>):
 const TYPE_KEY_MAX = 36;
 
 /** A type row's key for a custom type named `name`: lowercase letters,
- *  digits and `_` ("ID badge" → `id_badge`, accents dropped), and a key
+ *  digits and `_` ("Shelf tag" → `shelf_tag`, accents dropped), and a key
  *  another type already holds gets `_2`, `_3`… "" when nothing is left. */
 export function customTypeKey(name: string, taken: ReadonlySet<string>): string {
   const base = name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
@@ -102,8 +103,10 @@ const ERRORS: Record<string, string> = {
 };
 const TYPE_TAKEN = 'Someone added a type under the same name just now. Press Create template again.';
 
-const CUSTOM_TYPE_NOTE = "Custom types print from the portal's Print Labels; kiosk Label Stations print Top "
-  + 'and Front labels.';
+const CUSTOM_TYPE_NOTE = "Custom types print from the portal's Print Labels once they're on the list; kiosk "
+  + 'Label Stations print Top and Front labels.';
+const OFF_LIST_TYPE_NOTE = 'Off the list, this type is for test prints only; save it to the list to generate '
+  + 'labels with it.';
 
 export default function NewTemplateModal({ vocab, onCreated, onCancel }: NewTemplateModalProps) {
   const types = useMemo(() => vocabOfKind(vocab, 'type'), [vocab]);
@@ -111,7 +114,8 @@ export default function NewTemplateModal({ vocab, onCreated, onCancel }: NewTemp
   const [name, setName] = useState('');
   const [type, setType] = useState(types[0]?.key ?? CUSTOM);
   const [typeName, setTypeName] = useState('');
-  const [keepType, setKeepType] = useState(false);
+  // a type is for printing labels: on the list unless the designer says not
+  const [keepType, setKeepType] = useState(true);
   const [size, setSize] = useState(sizes[0]?.key ?? CUSTOM);
   const [unit, setUnit] = useState<Unit>('in');
   const [width, setWidth] = useState('');
@@ -302,7 +306,7 @@ export default function NewTemplateModal({ vocab, onCreated, onCancel }: NewTemp
               <>
                 <div className="full">
                   <label htmlFor="lbb-new-type-name">Type name</label>
-                  <input id="lbb-new-type-name" value={typeName} placeholder="ID badge" maxLength={80}
+                  <input id="lbb-new-type-name" value={typeName} placeholder="Shelf tag" maxLength={80}
                     autoComplete="off" disabled={busy} onChange={(e) => setTypeName(e.target.value)} />
                 </div>
                 <div className="full lbb-new-custom">
@@ -321,6 +325,7 @@ export default function NewTemplateModal({ vocab, onCreated, onCancel }: NewTemp
                     </span>
                   )}
                 </div>
+                {!keepType && <p className="full page-hint lbb-new-type-note">{OFF_LIST_TYPE_NOTE}</p>}
                 <p className="full page-hint lbb-new-type-note">{CUSTOM_TYPE_NOTE}</p>
               </>
             )}

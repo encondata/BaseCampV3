@@ -132,3 +132,40 @@ async def test_the_seed_still_renames_an_active_old_row(client, db, seeded_user)
     assert r.status_code == 409 and r.json()["detail"] == ACTIVE
     assert await db.scalar(select(LabelTemplateVersion.summary).where(
         LabelTemplateVersion.template_id == old_id, LabelTemplateVersion.version == 2)) == "Changed name"
+
+
+async def test_the_inactive_check_rereads_under_the_row_lock(client, db, seeded_user):
+    """A rename decides from the row as locked, not as the request first
+    read it: an activation committed in between is seen, and refused."""
+    from sqlalchemy import update
+
+    from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.labels import templates_tree as tree
+
+    hdrs = await _super(db, client)
+    parent = await _create(client, hdrs, is_active=False)
+    legacy = _legacy("Front tag - 203DPI", "203", is_active=False)
+    db.add(legacy)
+    await db.commit()
+    for tid in (parent["id"], legacy.id):
+        async with get_sessionmaker()() as s:
+            row = await s.get(LabelTemplate, tid)
+            assert row.is_active is False          # what the request read
+            async with get_sessionmaker()() as other:   # an activation lands meanwhile
+                await other.execute(update(LabelTemplate).where(LabelTemplate.id == row.id)
+                                    .values(is_active=True))
+                await other.commit()
+            try:
+                await tree.lock_for_rename(s, row)
+            except tree.TemplateActive:
+                pass
+            else:
+                raise AssertionError("an activation committed since the read must refuse the rename")
+            await s.rollback()
+    # an inactive row passes, locked
+    async with get_sessionmaker()() as s:
+        row = await s.get(LabelTemplate, legacy.id)
+        row.is_active = False
+        await s.commit()
+        await tree.lock_for_rename(s, await s.get(LabelTemplate, legacy.id))
+        await s.rollback()

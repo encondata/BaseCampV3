@@ -294,30 +294,40 @@ function customType(dialog: HTMLElement, name: string) {
   fireEvent.change(within(dialog).getByLabelText('Type name'), { target: { value: name } });
 }
 
-const NOTE = "Custom types print from the portal's Print Labels; kiosk Label Stations print Top and Front labels.";
+const NOTE = "Custom types print from the portal's Print Labels once they're on the list; kiosk Label Stations "
+  + 'print Top and Front labels.';
+const OFF_LIST = 'Off the list, this type is for test prints only; save it to the list to generate labels with it.';
 
 describe('a custom label type', () => {
-  it('posts a type row off the list and creates the template with that type', async () => {
+  it('saves a custom type to the list by default and creates the template with it', async () => {
     const { dialog, onCreated } = setup();
     fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Staff badge' } });
     expect(within(dialog).queryByText(NOTE)).toBeNull();
     customType(dialog, '  ID badge ');
     expect(within(dialog).getByText(NOTE)).toBeTruthy();
+    expect((within(dialog).getByLabelText('Type name') as HTMLInputElement).placeholder).toBe('Shelf tag');
+    expect((within(dialog).getByLabelText('Save this type to the list') as HTMLInputElement).checked).toBe(true);
+    expect(within(dialog).queryByText(OFF_LIST)).toBeNull();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
-    expect(api.createLabelVocab).toHaveBeenCalledWith({ kind: 'type', key: 'id_badge', label: 'ID badge', is_active: false });
+    expect(api.createLabelVocab).toHaveBeenCalledWith({ kind: 'type', key: 'id_badge', label: 'ID badge', is_active: true });
     expect(api.createLabelTemplate).toHaveBeenCalledWith(expect.objectContaining({
       name: 'Staff badge', label_type: 'id_badge', size_key: '4x2' }));
   });
 
-  it('saves the type to the list when asked', async () => {
+  it('off the list it says the type is for test prints only, and posts it off the list', async () => {
     const { dialog } = setup();
     fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Staff badge' } });
     customType(dialog, 'ID badge');
     fireEvent.click(within(dialog).getByLabelText('Save this type to the list'));
+    expect(within(dialog).getByText(OFF_LIST)).toBeTruthy();
+    expect(within(dialog).getByText(NOTE)).toBeTruthy();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
     await waitFor(() => expect(api.createLabelTemplate).toHaveBeenCalled());
-    expect(api.createLabelVocab).toHaveBeenCalledWith({ kind: 'type', key: 'id_badge', label: 'ID badge', is_active: true });
+    expect(api.createLabelVocab).toHaveBeenCalledWith({ kind: 'type', key: 'id_badge', label: 'ID badge', is_active: false });
+    // back on: the line goes
+    fireEvent.click(within(dialog).getByLabelText('Save this type to the list'));
+    expect(within(dialog).queryByText(OFF_LIST)).toBeNull();
   });
 
   it('needs a type name', () => {
@@ -358,6 +368,7 @@ describe('a custom label type', () => {
     const { dialog, onCreated } = setup();
     fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Staff badge' } });
     customType(dialog, 'ID badge');
+    fireEvent.click(within(dialog).getByLabelText('Save this type to the list'));   // off the list
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
     await within(dialog).findByRole('alert');
     fireEvent.change(within(dialog).getByLabelText('Type name'), { target: { value: 'Visitor badge' } });
@@ -374,6 +385,7 @@ describe('a custom label type', () => {
     const { dialog, onCreated } = setup();
     fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Staff badge' } });
     customType(dialog, 'ID badge');
+    fireEvent.click(within(dialog).getByLabelText('Save this type to the list'));   // off the list
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
     await within(dialog).findByRole('alert');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));

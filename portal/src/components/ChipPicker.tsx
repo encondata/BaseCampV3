@@ -9,7 +9,8 @@
  * - Picking adds a chip and clears the box. Backspace in the empty box
  *   takes the last chip off. Every × is a button, so Tab reaches it; after
  *   one removes its chip, focus goes to the next chip's ×, else the
- *   previous one's, else the box.
+ *   previous one's, else the box — without opening its menu (that waits
+ *   for a click, typing or ↓; Clear all does the same).
  * - `clearAll` adds a "Clear all" text button once there are two or more
  *   chips; `note` is a one-line state under the chips.
  * - Inside a modal the ComboBox menu portals by itself (ComboBox /
@@ -19,7 +20,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
 
-import ComboBox, { type ComboOption } from './ComboBox';
+import ComboBox, { type ComboBoxHandle, type ComboOption } from './ComboBox';
 import { naturalCompare } from '../lib/naturalSort';
 import '../styles/chipPicker.css';
 
@@ -46,6 +47,7 @@ export default function ChipPicker({
 }: ChipPickerProps) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const removeRefs = useRef(new Map<string, HTMLButtonElement>());
+  const combo = useRef<ComboBoxHandle | null>(null);
   const [focusNext, setFocusNext] = useState<FocusTarget | null>(null);
 
   const byValue = new Map(options.map((o) => [o.value, o]));
@@ -54,13 +56,11 @@ export default function ChipPicker({
   const remaining = options.filter((o) => !picked.has(o.value))
     .sort((a, b) => naturalCompare(a.label, b.label));
 
-  const box = () => wrapRef.current?.querySelector<HTMLInputElement>('input[role="combobox"]') ?? null;
-
   useEffect(() => {
     if (!focusNext) return;
     setFocusNext(null);
     if (focusNext.kind === 'chip') removeRefs.current.get(focusNext.value)?.focus();
-    else box()?.focus();
+    else combo.current?.focusQuietly();   // the menu opens only when the person asks
   }, [focusNext]);
 
   const remove = (value: string) => {
@@ -99,6 +99,7 @@ export default function ChipPicker({
       )}
       {note ? <p className="page-hint chip-picker-note">{note}</p> : null}
       <ComboBox options={remaining} value="" disabled={disabled} placeholder={placeholder} ariaLabel={ariaLabel}
+        handle={combo}
         onChange={(v) => { if (v) onChange([...selected, v]); }} />
     </div>
   );

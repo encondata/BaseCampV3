@@ -202,3 +202,46 @@ describe('placement', () => {
     expect(tip.style.visibility).toBe('');
   });
 });
+
+describe('the trigger at work', () => {
+  it('Enter or Space on the trigger hides its tip', async () => {
+    const user = userEvent.setup();
+    renderTips();
+    await user.tab();
+    expect(screen.getByRole('tooltip')).toBeTruthy();
+    fireEvent.keyDown(zoomOut(), { key: 'Enter' });
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    // shown again by the next keyboard focus, then Space
+    await user.tab();
+    await user.tab({ shift: true });
+    expect(screen.getByRole('tooltip').textContent).toBe('Zoom out⌘-');
+    fireEvent.keyDown(zoomOut(), { key: ' ' });
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('a trigger turned off while its tip shows hides the tip', () => {
+    vi.useFakeTimers();
+    const view = (disabled: boolean) => (
+      <div className="portal-shell">
+        <Tip label="Save" keys="⌘S" note={disabled ? 'Saving…' : null}>
+          <button type="button" disabled={disabled}>Save</button>
+        </Tip>
+      </div>
+    );
+    const { rerender } = render(view(false));
+    const save = screen.getByRole('button', { name: 'Save' });
+    fireEvent.pointerEnter(save);
+    act(() => { vi.advanceTimersByTime(TIP_DELAY_MS); });
+    expect(screen.getByRole('tooltip')).toBeTruthy();
+    rerender(view(true));
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    // a hover on the disabled trigger still shows its tip, with the reason
+    fireEvent.pointerLeave(save.parentElement as HTMLElement);
+    fireEvent.pointerEnter(save.parentElement as HTMLElement);
+    act(() => { vi.advanceTimersByTime(TIP_DELAY_MS); });
+    expect(screen.getByRole('tooltip').querySelector('.tip-note')?.textContent).toBe('Saving…');
+    // and turning it back on leaves the tip up
+    rerender(view(false));
+    expect(screen.getByRole('tooltip')).toBeTruthy();
+  });
+});

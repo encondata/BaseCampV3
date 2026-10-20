@@ -234,8 +234,10 @@ export function noTemplateText(kind: LabelKind, printerDpi: number, available: r
   const kindLabel = KIND_LABEL[kind];
   const dpis = [...new Set(available)].filter((d) => d !== String(printerDpi)).sort(naturalCompare);
   if (dpis.length === 0) {
+    // Generic Rack and RU is the Top fallback: only a Top station hears of it
+    const fallback = kind === 'top' ? ` (${GENERIC_TEMPLATE_NAME} covers every move)` : '';
     return `No active ${kindLabel} template for this move. Someone with label access needs to activate one on `
-      + 'Labels › Templates in the portal (Generic Rack and RU covers every move), then pick the move again.';
+      + `Labels › Templates in the portal${fallback}, then pick the move again.`;
   }
   return `This move's ${kindLabel} template prints at ${joinWords(dpis, 'and')} DPI only; this printer is `
     + `${printerDpi} DPI. Activate a ${printerDpi} DPI version on Labels › Templates, or use a `

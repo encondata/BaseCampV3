@@ -87,10 +87,14 @@ it('each × is reachable by Tab, and focus moves on after a removal', async () =
   // the last one: the previous chip's ×
   await userEvent.keyboard('{Enter}');
   expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Remove NAP1' }));
-  // none left: the box
+  // none left: the box, focused without opening its menu
   await userEvent.keyboard('{Enter}');
   expect(chips()).toEqual([]);
   expect(document.activeElement).toBe(box());
+  expect(document.querySelector('.combo-menu')).toBeNull();
+  // the person opens it: ↓, or typing
+  await userEvent.keyboard('{ArrowDown}');
+  expect(document.querySelector('.combo-menu')).toBeTruthy();
 });
 
 it('Clear all shows with two or more chips and empties the picker', async () => {
@@ -102,6 +106,11 @@ it('Clear all shows with two or more chips and empties the picker', async () => 
   await userEvent.click(screen.getByRole('button', { name: 'Clear all' }));
   expect(onChange).toHaveBeenLastCalledWith([]);
   expect(chips()).toEqual([]);
+  // focus goes to the box, its menu stays shut until the person types
+  expect(document.activeElement).toBe(box());
+  expect(document.querySelector('.combo-menu')).toBeNull();
+  await userEvent.keyboard('N');
+  expect(document.querySelector('.combo-menu')).toBeTruthy();
 });
 
 it('a note sits under the chips', () => {

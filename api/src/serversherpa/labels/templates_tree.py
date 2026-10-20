@@ -664,6 +664,15 @@ async def rename_parent(db: AsyncSession, parent: LabelTemplate, name: str) -> N
         c.name, c.updated_at = renames[c.id], _now()
 
 
+async def lock_for_rename(db: AsyncSession, row: LabelTemplate) -> None:
+    """Rename… is for an inactive template (the PATCH route's rule): lock
+    the row and re-read it, so an activation committed since the request
+    read it counts, and refuse with TemplateActive while it is on."""
+    await _lock(db, row)
+    if row.is_active:
+        raise TemplateActive()
+
+
 async def record_rename(db: AsyncSession, parent: LabelTemplate, before: str,
                         actor_id: uuid.UUID | None) -> None:
     """A parent's rename as its next version ("Renamed from <before>"),

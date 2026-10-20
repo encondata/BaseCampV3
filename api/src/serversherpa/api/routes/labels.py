@@ -725,9 +725,9 @@ async def update_template(
     data = body.model_dump(exclude_unset=True)
     summary = data.pop("summary", None)
     try:
-        if (row.parent_id is None and data.get("name") is not None
-                and data["name"] != row.name and row.is_active):
-            raise tree.TemplateActive()
+        if row.parent_id is None and data.get("name") is not None and data["name"] != row.name:
+            # decided from the row as locked, not as first read
+            await tree.lock_for_rename(db, row)
         if row.parent_id is not None:
             out_of_date = await _patch_child(db, row, data, summary, actor)
         elif row.is_tree_parent:

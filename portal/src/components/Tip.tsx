@@ -4,8 +4,11 @@
  *
  * - Shows 350 ms into a hover, and at once on keyboard focus (the
  *   `:focus-visible` rule: focus that came from the keyboard, never the
- *   focus a mouse click gives). Hides on pointer leave, blur, Escape, any
- *   pointer press, a scroll or a resize. One tip shows at a time.
+ *   focus a mouse click gives). Hides on pointer leave, blur, Escape, Enter
+ *   or Space on the trigger (it was used), any pointer press, a scroll or
+ *   a resize, and when the trigger turns disabled while it shows (its
+ *   state changed under the tip; a fresh hover shows the new reason). One
+ *   tip shows at a time.
  * - Content: a label, the shortcut as keycaps (`keys`, one keycap per
  *   binding of the builder's "⌘⇧Z" / "Delete / Backspace" strings), and an
  *   optional second line (`note`: why a button is off).
@@ -148,6 +151,14 @@ export default function Tip({ label, keys, note, children }: {
     };
   }, [open, hide]);
 
+  // the trigger turned off while its tip showed: the tip is stale
+  const disabled = !!(children.props as { disabled?: boolean }).disabled;
+  const wasDisabled = useRef(disabled);
+  useEffect(() => {
+    if (disabled && !wasDisabled.current) hide();
+    wasDisabled.current = disabled;
+  }, [disabled, hide]);
+
   const onPointerEnter = () => {
     clearTimer();
     const at = presses;
@@ -166,7 +177,8 @@ export default function Tip({ label, keys, note, children }: {
 
   return (
     <span ref={wrapRef} className="tip-trigger" onPointerEnter={onPointerEnter} onPointerLeave={hide}
-      onPointerDown={hide} onFocus={onFocus} onBlur={hide}>
+      onPointerDown={hide} onFocus={onFocus} onBlur={hide}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') hide(); }}>
       {trigger}
       {open && createPortal(
         <div ref={tipRef} id={tipId} role="tooltip" className={`tip${pos ? ` is-${pos.placement}` : ''}`}
