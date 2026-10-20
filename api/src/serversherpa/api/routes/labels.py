@@ -886,6 +886,9 @@ async def _patch_child(db: DbSession, row: LabelTemplate, data: dict, summary: s
     changes: dict = {}
     if "design" in data:
         _parse_v2(data["design"])
+        # the type and language as locked (the parent, then this child), not
+        # as first read: a parent type change in flight lands first
+        await tree.lock_child(db, row)
         _images_badge_only(data["design"], row.label_type, row.language_key)
         if data["design"] != row.design:
             before = tree.version_label(row.generated_from_version or 0, row.child_edits)
@@ -910,6 +913,11 @@ async def _patch_parent(db: DbSession, row: LabelTemplate, data: dict, summary: 
     _no_nulls(data)
     if "design" in data:
         _parse_v2(data["design"])
+    children: list[LabelTemplate] = []
+    if data.keys() & {"design", "label_type", "language_key"}:
+        # the images check reads the tree as locked (the parent, then its
+        # children), so an image save and a type change never both land
+        children = await tree.lock_tree(db, row)
     label_type = data.get("label_type", row.label_type)
     language_key = data.get("language_key", row.language_key)
     _images_badge_only(data.get("design", row.design), label_type, language_key)
@@ -917,7 +925,7 @@ async def _patch_parent(db: DbSession, row: LabelTemplate, data: dict, summary: 
         # the children follow the parent's type and language; those that
         # keep their own design (customized, or Old) may hold an image the
         # parent's doesn't. The rest follow the parent's design.
-        for child in await tree.children_of(db, row):
+        for child in children:
             if child.customized or child.is_old:
                 _images_badge_only(child.design, label_type, language_key,
                                    template_id=str(child.id), template_name=child.name)
@@ -1552,7 +1560,12 @@ async def restore_template_version(
     row = await _template_or_404(db, template_id)
     try:
         old = await tree.get_version(db, row, version, child_edits)
-        # the type or language may have changed since that version
+        # the type or language may have changed since that version: checked
+        # on the tree as locked, as a PATCH does
+        if row.is_tree_parent:
+            await tree.lock_tree(db, row)
+        elif row.parent_id is not None:
+            await tree.lock_child(db, row)
         _images_badge_only(old.design, row.label_type, row.language_key)
         await tree.restore(db, row, version, child_edits, actor.person.id)
     except tree.TreeError as e:

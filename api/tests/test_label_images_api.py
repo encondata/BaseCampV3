@@ -25,6 +25,7 @@ from serversherpa.api.routes import labels as labels_module
 from serversherpa.db.models import (
     AuditLog,
     LabelImage,
+    LabelTemplate,
     Partner,
     Person,
     PersonRole,
@@ -850,6 +851,135 @@ async def test_a_customized_childs_image_blocks_a_type_change(client, db, seeded
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "images_badge_only"
     assert r.json()["detail"]["template_id"] == child["id"]
+
+
+async def _actor(db, email="sa-img@test.example.com"):
+    """What the PATCH helpers use of the AuthContext: the person."""
+    return SimpleNamespace(person=await db.scalar(select(Person).where(Person.email == email)))
+
+
+async def _plain_badge(client, sa, name):
+    r = await client.post(URL, headers=sa, json=_badge(_design(), name=name))
+    assert r.status_code == 201, r.text
+    node = await _node(client, sa, name)
+    return uuid.UUID(node["id"]), uuid.UUID(node["children"][0]["id"])
+
+
+async def test_an_image_save_checks_the_type_as_locked(client, db, seeded_user, store):
+    """M2: an image save decides from the template as locked, not as the
+    request first read it: a type change to Top committed in between
+    refuses it, on a child and on the parent."""
+    from fastapi import HTTPException
+
+    from serversherpa.db.engine import get_sessionmaker
+
+    sa = await _super(db, client)
+    actor = await _actor(db)
+    with_image = {"design": _design(_image("logo", "logo"))}
+    for target in ("child", "parent"):
+        parent_id, child_id = await _plain_badge(client, sa, f"Race Badge {target}")
+        async with get_sessionmaker()() as s:
+            row = await s.get(LabelTemplate, child_id if target == "child" else parent_id)
+            # another request turns the whole tree into a Top template meanwhile
+            r = await client.patch(f"{URL}/{parent_id}", headers=sa, json={"label_type": "top"})
+            assert r.status_code == 200, r.text
+            patch = labels_module._patch_child if target == "child" else labels_module._patch_parent
+            with pytest.raises(HTTPException) as caught:
+                await patch(s, row, dict(with_image), None, actor)
+            assert caught.value.detail["code"] == "images_badge_only", target
+            await s.rollback()
+
+
+async def test_a_restore_checks_the_type_as_locked(client, db, seeded_user, store):
+    """M2 on the other write that brings a design back: restoring a version
+    with an image checks the type as locked too."""
+    from fastapi import HTTPException
+
+    from serversherpa.db.engine import get_sessionmaker
+
+    sa = await _super(db, client)
+    actor = await _actor(db)
+    r = await client.post(URL, headers=sa, json=_badge(_design(_image("logo", "logo")),
+                                                       name="Restore Badge"))
+    assert r.status_code == 201, r.text
+    pid = uuid.UUID(r.json()["id"])
+    r = await client.patch(f"{URL}/{pid}", headers=sa, json={"design": _design()})   # v2: none
+    assert r.status_code == 200, r.text
+    async with get_sessionmaker()() as s:
+        stale = await s.get(LabelTemplate, pid)             # read as an ID badge
+        assert stale.label_type == "id_badge"
+        r = await client.patch(f"{URL}/{pid}", headers=sa, json={"label_type": "top"})
+        assert r.status_code == 200, r.text
+        with pytest.raises(HTTPException) as caught:
+            await labels_module.restore_template_version(pid, 1, 0, s, actor=actor, _rank=actor)
+        assert caught.value.detail["code"] == "images_badge_only"
+        assert stale.label_type == "top"                    # the row as locked
+        await s.rollback()
+
+
+async def test_a_type_change_waits_for_an_image_save_in_flight(client, db, seeded_user, store):
+    """M2, the other way round: a child's image save in flight when the
+    parent's type change starts lands first, and the type change then sees
+    the customized child's image and is refused (both used to commit,
+    leaving a picture on a Top template)."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from serversherpa.db.engine import get_sessionmaker
+
+    sa = await _super(db, client)
+    actor = await _actor(db)
+    parent_id, child_id = await _plain_badge(client, sa, "Busy Badge")
+    saved = asyncio.Event()
+
+    async def child_save():
+        async with get_sessionmaker()() as s:
+            child = await s.get(LabelTemplate, child_id)
+            await labels_module._patch_child(s, child, {"design": _design(_image("logo", "logo"))},
+                                             None, actor)
+            await s.flush()
+            saved.set()
+            await asyncio.sleep(0.3)      # the type change starts meanwhile
+            await s.commit()
+
+    async def type_change():
+        async with get_sessionmaker()() as s:
+            parent = await s.get(LabelTemplate, parent_id)   # read before the child save
+            await saved.wait()
+            try:
+                await labels_module._patch_parent(s, parent, {"label_type": "top"}, None, actor)
+            except HTTPException as e:
+                await s.rollback()
+                return e.detail["code"]
+            await s.commit()
+            return None
+
+    _, refused = await asyncio.gather(child_save(), type_change())
+    assert refused == "images_badge_only"
+    db.expire_all()
+    assert (await db.get(LabelTemplate, parent_id)).label_type == "id_badge"
+
+
+async def test_set_parent_fields_locks_the_tree(client, db, seeded_user, store):
+    """A type, size or language change locks the parent and its children
+    (the order every save takes them in) before it writes them."""
+    from sqlalchemy.exc import DBAPIError
+
+    from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.labels import templates_tree
+
+    sa = await _super(db, client)
+    parent_id, child_id = await _plain_badge(client, sa, "Locked Badge")
+    async with get_sessionmaker()() as s, get_sessionmaker()() as other:
+        parent = await s.get(LabelTemplate, parent_id)
+        await templates_tree.set_parent_fields(s, parent, {"size_key": "4x2"})
+        for row_id in (parent_id, child_id):
+            with pytest.raises(DBAPIError):
+                await other.execute(select(LabelTemplate.id).where(LabelTemplate.id == row_id)
+                                    .with_for_update(nowait=True))
+            await other.rollback()
+        await s.rollback()
 
 
 # ── the preview's cap ────────────────────────────────────────────────
