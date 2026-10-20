@@ -189,13 +189,14 @@ existing catalog keys keep their `U13` form for code templates.
 **Expected length and the reserved width.** For Text, the reserved width is
 N × the widest glyph of the chosen font at the chosen size; for Number, N ×
 the digit width; for a monospace font, N × the cell width. The canvas draws
-the reserved box, not the sample's extent. Neighbors never move. The
-alignment offset inside the reserved width is computed in the browser from
-the font metrics and baked into the element's position; the compiler
-never uses `^FB` for a single-line field. A value wider than the box
-therefore spills to the right on the printer, and the canvas shows the
-spill in red past the box so the author sets Max characters. Multi-line
-static text is the one place `^FB` is used.
+the reserved box, not the sample's extent. Neighbors never move. A
+left-aligned field compiles to a plain `^FT` at the box's left edge; a
+centered or right-aligned field compiles to a one-line `^FB` over the
+reserved width with that justification, since the printed value differs
+per asset and only the printer knows its width. A value wider than the box
+spills to the right (left-aligned) or overprints its own line (centered
+or right-aligned), and the canvas shows the spill in red past the box so
+the author sets Max characters. Multi-line static text also uses `^FB`.
 
 **Bold.** When the chosen family has a Bold file in the library, Bold uses
 it. When it doesn't (Swiss 721 Condensed Bold has only the one cut), Bold
@@ -419,8 +420,8 @@ search, ⌘/ shortcut sheet.
     confirmation).
 15. One Split definition per field per template; placements carry their
     own formatting.
-16. Text compiles to `^FT` at a baseline the browser computed; no `^FB` on
-    single-line fields; overflow spills right and shows red on the canvas.
+16. Text compiles to `^FT` at a baseline the browser computed; `^FB` only
+    for centered or right-aligned fields; overflow shows red on the canvas.
 17. The Swiss default is *resident*: never pushed to a printer, drawn on
     the canvas with a stand-in over the real metrics.
 18. Bold on an inverted element of a single-cut family widens by 15%
