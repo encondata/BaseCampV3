@@ -360,10 +360,21 @@ async def test_same_version_reply_is_not_reapplied(app, client, cloud):
 
 async def test_station_key_moves_config_sync_off_the_person_heartbeat(app, client, cloud):
     await _seed(app, client)
+    laptop_setup.save(app.state.store, {"initiative_id": "i-1"}, "rfid")
     station_key.store_key(app.state.store, app.state.keys, "the-key")
     sent = await _person_beat(app, client, cloud)
     for key in ("config", "config_changed_at", "config_applied_version"):
         assert key not in sent
+
+
+async def test_keyed_label_station_syncs_config_on_the_person_heartbeat(app, client, cloud):
+    # A Label Station sends no station heartbeat, so its config rides the
+    # person heartbeat even while it holds a station key.
+    await _seed(app, client)
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "label")
+    station_key.store_key(app.state.store, app.state.keys, "the-key")
+    sent = await _person_beat(app, client, cloud)
+    assert "config_applied_version" in sent
 
 
 async def test_scan_type_from_the_reply_updates_the_shared_setup(app, client, cloud):

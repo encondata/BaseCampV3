@@ -3,7 +3,8 @@
  * the Label Station's printer checks): a spinner while a row runs, a green
  * check when it passed, a red X with its detail when it failed, a muted
  * dot until it has run. A row marked `showOkDetail` (an informational
- * check that always passes) shows its detail, muted, when it passed too.
+ * check that always passes) shows its detail, muted, beside its label on
+ * the same line, when it passed too.
  * A result's `notes` show under the row as muted warnings, whatever its
  * state: they never fail it.
  */
@@ -50,7 +51,7 @@ export default function CheckList<N extends string = CheckName>({ items, results
               <span className="form-error">{result.detail}</span>
             )}
             {result?.state === 'ok' && showOkDetail && result.detail && (
-              <span className="check-note">{result.detail}</span>
+              <span className="check-note check-inline">{result.detail}</span>
             )}
             {result?.notes?.map((note, i) => (
               <span key={`${i}-${note}`} className="check-note check-warning">{note}</span>

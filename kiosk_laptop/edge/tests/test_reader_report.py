@@ -251,6 +251,18 @@ async def test_no_station_heartbeat_without_key(app, client, cloud):
     assert not route.called
 
 
+async def test_label_station_sends_no_station_heartbeat(app, client, cloud):
+    # The station heartbeat is RFID-only on the portal: a Label Station's key
+    # is refused there, and a refusal drops the key (it did, every minute).
+    laptop_setup.save(app.state.store, {"initiative_id": "i-1"}, "label")
+    store_key(app)
+    route = station_route(cloud)
+    await reader_report.send_station_heartbeat(app.state, None)
+    assert not route.called
+    from edge.rfid import station_key
+    assert station_key.has_key(app.state.store)
+
+
 async def test_station_heartbeat_sent_with_nobody_signed_in(app, client, cloud):
     # the reporter loop itself, with no edge or cloud session at all
     await paired_station(app, client)

@@ -200,6 +200,16 @@ def test_global_beats_generic_rack_and_ru():
                          "top", "203")[0].id == "grru"
 
 
+def test_generic_rack_and_ru_is_the_fallback_whatever_its_site_links():
+    # The dev portal's Generic Rack and RU templates are linked to some other
+    # site; the fallback must still be picked (Jimmy: the move always gets it).
+    templates = [_t("grru-203", "other", "203", family=GRRU),
+                 _t("grru-300", "other", "300", family=GRRU),
+                 _t("elsewhere", "other", "300", family="Another site's Top")]
+    assert pick_template(templates, "top", "300")[0].id == "grru-300"
+    assert pick_template(templates, "top", "203")[0].id == "grru-203"
+
+
 def test_front_ignores_source_and_generic_rack_and_ru():
     templates = [_t("src-f", "source", label_type="front"),
                  _t("grru-f", "global", family=GRRU, label_type="front"),
