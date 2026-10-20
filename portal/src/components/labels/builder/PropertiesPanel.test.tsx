@@ -566,6 +566,8 @@ describe('PropertiesPanel: an image (ID badges)', () => {
         'Templates that use it print no picture in its place (an outlined box where Hide when empty is off) '
         + 'until another image is picked.')).toBeTruthy();
       expect(api.deleteLabelImage).not.toHaveBeenCalled();
+      // the focus goes into the dialog, on Cancel
+      expect(document.activeElement).toBe(within(confirmDialog()).getByRole('button', { name: 'Cancel' }));
     });
 
     it('deletes it, refreshes the library, and the element keeps it (it prints nothing now)', async () => {
