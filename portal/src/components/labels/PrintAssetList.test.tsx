@@ -182,4 +182,16 @@ describe('PrintAssetList', () => {
     // its 22px padding and 1px border each side, less 2px safety).
     expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1126);
   });
+
+  it('a DPI column, when no printer DPI filters the labels, still fits the card', () => {
+    setup({ dpisOf: (r) => (r.asset_id === 'a3' ? ['203', '600'] : []) });
+    const head = document.querySelector('.list-head') as HTMLElement;
+    expect(head.textContent).toContain('DPI');
+    const row = screen.getByText('core-switch').closest('.dir-row') as HTMLElement;
+    const cells = row.querySelectorAll('.row-main > .cell');
+    expect(cells[cells.length - 1].textContent).toBe('203 · 600');
+    expect(head.style.gridTemplateColumns).toMatch(/ 88px$/);
+    // the same 1126px fit, DPI column included
+    expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1126);
+  });
 });

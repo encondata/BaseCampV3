@@ -40,30 +40,33 @@ export type LabelFilter = 'all' | 'ready' | 'missing';
 // the header cell below still renders the raw checkbox input.
 const CHECKBOX_COL: ColumnDef = { key: 'select', label: '', width: '32px', default: true };
 
-// Fit: default columns + trailing ≤ 1126px (1174 - 44 - 2 - 2 safety —
-// .plabels-card, labels.css: padding 18px 22px plus a 1px border,
-// 23px each side). `name` sits at 152 rather than the 158 it had while
-// the ceiling was 1132: the nine defaults now total exactly 1126, and
-// `name` is the widest floor and the most flexible track, so it is the
-// one place 6px comes off without squeezing a short identifier column.
+// Fit: default columns + the DPI column + trailing ≤ 1126px (1174 - 44 -
+// 2 - 2 safety — .plabels-card, labels.css: padding 18px 22px plus a 1px
+// border, 23px each side). The DPI column (below) shows while no printer
+// DPI filters the labels, so the floors leave room for it: the text tracks
+// gave up 100px between them (name 152 → 128, serial 120 → 100, make
+// 90 → 78, model 110 → 92, source rack 100 → 90, status 110 → 100, label
+// 110 → 104), all truncating with a tooltip. With a printer connected the
+// spare 100px goes back to the flexible tracks.
 export const COLUMNS: ColumnDef[] = [
   { key: 'asset_id', label: 'Asset ID', width: '90px', default: true },
-  { key: 'name', label: 'Name', width: '1.6fr', default: true, min: 152 },
-  { key: 'serial', label: 'Serial', width: '1fr', default: true, min: 120 },
-  { key: 'make', label: 'Make', width: '0.8fr', default: true, min: 90 },
-  { key: 'model', label: 'Model', width: '1fr', default: true, min: 110 },
+  { key: 'name', label: 'Name', width: '1.6fr', default: true, min: 128 },
+  { key: 'serial', label: 'Serial', width: '1fr', default: true, min: 100 },
+  { key: 'make', label: 'Make', width: '0.8fr', default: true, min: 78 },
+  { key: 'model', label: 'Model', width: '1fr', default: true, min: 92 },
   {
     key: 'source_rack', label: 'Source rack', short: 'Src Rack',
-    width: '0.9fr', default: true, min: 100,
+    width: '0.9fr', default: true, min: 90,
   },
   { key: 'source_ru', label: 'RU', width: '64px', default: true },
-  { key: 'status', label: 'Status', width: '0.9fr', default: true, min: 110 },
-  { key: 'label', label: 'Label', width: '110px', default: true },
+  { key: 'status', label: 'Status', width: '0.9fr', default: true, min: 100 },
+  { key: 'label', label: 'Label', width: '104px', default: true },
 ];
 // Shown only while no printer DPI filters the labels (`dpisOf`), after the
-// registry — always on, so a saved column set can't hide it. It takes the
-// list past the fit above: at the narrowest window it scrolls sideways.
-export const DPI_COL: ColumnDef = { key: 'dpi', label: 'DPI', width: '112px', default: true };
+// registry — always on, so a saved column set can't hide it. 88px holds
+// two DPIs ("203 · 600"); all three truncate, with the full list in the
+// tooltip.
+export const DPI_COL: ColumnDef = { key: 'dpi', label: 'DPI', width: '88px', default: true };
 const ALL_KEYS = new Set(COLUMNS.map((c) => c.key));
 const DEFAULT_VISIBLE = new Set(COLUMNS.filter((c) => c.default).map((c) => c.key));
 
@@ -113,8 +116,9 @@ export function sortRows(
   });
 }
 
-/** A row's DPIs, lowest first ("203 · 300"); a dash when it has no label. */
-function dpiCell(dpis: string[]) {
+/** A row's DPIs, lowest first ("203 · 300"); a dash when it has no label.
+ *  The container list's DPI column too. */
+export function dpiCell(dpis: string[]) {
   const text = dpis.join(' · ');
   return text
     ? <span className="mono cell-line" title={titleFor(text)}>{text}</span>

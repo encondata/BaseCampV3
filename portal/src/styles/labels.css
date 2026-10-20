@@ -209,6 +209,9 @@
 .plabels-printer-status .dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
 .plabels-printer-status .dot.on { background: var(--c-green); }
 .plabels-printer-status .dot.off { background: var(--c-red); }
+/* an unreadable printer's DPI choice: the hint over the segmented control */
+.plabels-dpi-pick { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.plabels-dpi-pick .page-hint { margin: 0; }
 
 /* full-width cards: assets + ready-to-print */
 .plabels-card {

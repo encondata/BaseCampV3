@@ -234,8 +234,7 @@ async def _generate_one(
         code, unknown = render_label(template, values, size_meta=size_meta, dpi_meta=dpi_meta,
                                      language_key=template.language_key)
         if builder:
-            values = {k: values[k] for k in sorted(design_field_keys(template.design))
-                      if k in values}
+            values = {k: values[k] for k in design_field_keys(template.design) if k in values}
     except Exception as exc:
         _tag_error(error_summary, error_details, item=item, label_type=label_type, exc=exc)
         return "error"

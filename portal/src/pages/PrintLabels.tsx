@@ -12,8 +12,11 @@
  *
  * Labels are generated per printer DPI, so a bundle can hold several per
  * entity: once a printer is connected the page reads its resolution (`~HI`)
- * and keeps only that DPI's labels; with no printer (or an unreadable one)
- * every DPI shows, with a DPI column saying which each row has.
+ * and keeps only that DPI's labels (and remembers it for Generate Labels'
+ * default). Printing waits for that read; a printer whose resolution
+ * can't be read gets a DPI choice, and nothing prints until one is made.
+ * With no printer every DPI shows, with a DPI column saying which each
+ * row has. A label at any other DPI never prints.
  *
  * The page has two modes, chosen by the selected label type
  * (`isContainerLabelType`): an ASSET mode over the initiative's roster and
@@ -30,7 +33,9 @@ import {
   type LabelVocab,
 } from '../lib/api';
 import { relativeTime } from '../lib/format';
-import { visibleInitiativesForGenerate } from '../lib/generateLabels';
+import {
+  GENERATE_DPIS, isGenerateDpi, visibleInitiativesForGenerate, writeGenerateDpi,
+} from '../lib/generateLabels';
 import * as labelCache from '../lib/labelCache';
 import { isContainerLabelType, vocabLabel, vocabOfKind } from '../lib/labels';
 import {
@@ -54,6 +59,8 @@ import '../styles/reports.css';
 import '../styles/labels.css';
 
 const LABEL_DELAY_MS = 100;
+const READING_DPI = "Reading the printer's resolution…";
+const CHOOSE_DPI = "Choose the printer's DPI (Step 3) to print.";
 const AUTO_NEXT_SECONDS = 5;
 
 interface Notice { type: 'success' | 'info' | 'warning' | 'error'; message: string; action?: { label: string; onClick: () => void } }
@@ -136,20 +143,32 @@ export default function PrintLabels() {
   labelTypeRef.current = labelType;
   const batchStaleRef = useRef(0);
 
-  // The connected printer's resolution as a dpi_key: only labels generated
-  // for it print. Null with no printer or when `~HI` can't be read;
-  // undefined while it is being read.
+  // The connected printer's resolution as a dpi_key, from `~HI`: undefined
+  // while it is being read, null with no printer or when it can't be read
+  // (then the operator picks one, `pickedDpi`). Only labels generated for
+  // `printerDpi` print. A DPI the page learns also becomes Generate
+  // Labels' default (`labels.generate.dpi`).
   const [printerRead, setPrinterRead] = useState<string | null | undefined>(null);
+  const [pickedDpi, setPickedDpi] = useState<string | null>(null);
   useEffect(() => {
+    setPickedDpi(null);
     if (!printer.connected) { setPrinterRead(null); return undefined; }
     let cancelled = false;
     setPrinterRead(undefined);
     printer.identify()
-      .then((identity) => { if (!cancelled) setPrinterRead(identity ? String(identity.dpi) : null); })
+      .then((identity) => {
+        if (cancelled) return;
+        const dpi = identity ? String(identity.dpi) : null;
+        setPrinterRead(dpi);
+        if (isGenerateDpi(dpi)) writeGenerateDpi(dpi);
+      })
       .catch(() => { if (!cancelled) setPrinterRead(null); });
     return () => { cancelled = true; };
   }, [printer.connected]); // eslint-disable-line react-hooks/exhaustive-deps
-  const printerDpi = printerRead ?? null;
+  const readingDpi = printer.connected && printerRead === undefined;
+  const dpiUnreadable = printer.connected && printerRead === null;
+  const printerDpi = printer.connected ? (printerRead ?? pickedDpi) : null;
+  const pickDpi = (dpi: string) => { setPickedDpi(dpi); writeGenerateDpi(dpi); };
 
   // Printer notices flow into the page's strip.
   useEffect(() => {
@@ -368,8 +387,8 @@ export default function PrintLabels() {
   const containerDpis = useMemo(
     () => (dpiMap ? (c: ContainerItem) => dpiMap.get(c.id) ?? [] : null), [dpiMap]);
   const isCustom = labelType === LABEL_TYPE_CUSTOM;
-  const statusOf = useCallback((r: InitiativeAssetRow): LabelStatus => labelStatusFor(r.asset_id, byEntity), [byEntity]);
-  const containerStatusOf = useCallback((c: ContainerItem): LabelStatus => labelStatusFor(c.id, byEntity), [byEntity]);
+  const statusOf = useCallback((r: InitiativeAssetRow): LabelStatus => labelStatusFor(r.asset_id, byEntity, printerDpi), [byEntity, printerDpi]);
+  const containerStatusOf = useCallback((c: ContainerItem): LabelStatus => labelStatusFor(c.id, byEntity, printerDpi), [byEntity, printerDpi]);
   /** The noun this mode prints labels for — used in the coverage line, the
    *  card heading, the Ready-to-print bar and the validation notices. */
   const entityNoun = containerMode ? 'container' : 'asset';
@@ -414,7 +433,12 @@ export default function PrintLabels() {
   // ── sending ──────────────────────────────────────────────────────────
   const sendLabel = (zpl: string, singleCopy = false) => printer.send(applyPrintSettings(zpl, settings, { singleCopy }));
   const sendBlanks = async (count: number) => { if (count > 0) await sendLabel(blankLabelsZpl(count), true); };
-  const zplFor = (assetId: string): string | null => (isCustom ? (customZpl.trim() || null) : (byEntity.get(assetId)?.code ?? null));
+  /** The code to send: a label generated for the printer's DPI only. */
+  const zplFor = (assetId: string): string | null => {
+    if (isCustom) return customZpl.trim() || null;
+    const item = byEntity.get(assetId);
+    return item && printerDpi && item.dpi_key === printerDpi ? item.code : null;
+  };
   const rowById = useMemo(() => new Map((roster ?? []).map((r) => [r.asset_id, r])), [roster]);
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -452,23 +476,31 @@ export default function PrintLabels() {
       setNotice({ type: 'error', message: `Please connect a printer, select a label type, and select ${entityNoun}s to print` });
       return null;
     }
+    if (readingDpi) {
+      setNotice({ type: 'info', message: READING_DPI });
+      return null;
+    }
     if (isCustom) {
       if (!customZpl.trim()) { setNotice({ type: 'error', message: 'Please enter raw ZPL code for custom label printing' }); return null; }
       return { ids: printableIds, stale: 0 };
     }
-    const missing = missingLabelIds(printableIds, byEntity);
+    if (!printerDpi) {
+      setNotice({ type: 'error', message: CHOOSE_DPI });
+      return null;
+    }
+    const missing = missingLabelIds(printableIds, byEntity, printerDpi);
     if (missing.length > 0) {
-      const unsupported = missing.filter((id) => labelStatusFor(id, byEntity) === 'unsupported').length;
+      const unsupported = missing.filter((id) => labelStatusFor(id, byEntity, printerDpi) === 'unsupported').length;
       setNotice({
         type: 'error',
         message: unsupported === missing.length
           ? `${missing.length} selected ${entityNoun}(s) have labels compiled for a non-Zebra printer`
-          : `${missing.length} selected ${entityNoun}(s) do not have ${typeLabel(labelType)} data. Please generate labels first.`,
+          : `${missing.length} selected ${entityNoun}(s) have no ${typeLabel(labelType)} at ${printerDpi} DPI — generate at ${printerDpi} DPI.`,
         action: { label: 'Deselect missing', onClick: () => { setActiveSelected((s) => s.filter((id) => !missing.includes(id))); setNotice(null); } },
       });
       return null;
     }
-    const stale = staleLabelCount(printableIds, byEntity);
+    const stale = staleLabelCount(printableIds, byEntity, printerDpi);
     return { ids: printableIds, stale };
   };
 
@@ -583,7 +615,8 @@ export default function PrintLabels() {
     }
   };
 
-  const canPrint = printer.connected && !!labelType && printableIds.length > 0 && !printing && !batch;
+  const dpiBlocked = readingDpi || (!isCustom && !printerDpi);
+  const canPrint = printer.connected && !!labelType && printableIds.length > 0 && !printing && !batch && !dpiBlocked;
   const modified = settingsModified(settings);
 
   return (
@@ -699,12 +732,22 @@ export default function PrintLabels() {
               {printer.connected ? `Printer connected${printer.productName ? ` · ${printer.productName}` : ''}` : 'No printer connected'}
             </span>
           </div>
-          {printer.connected && printerRead !== undefined && (
-            <p className="page-hint">
-              {printerDpi
-                ? `Showing the labels generated for ${printerDpi} DPI, this printer's resolution.`
-                : "Couldn't read this printer's resolution, so labels for every DPI show."}
-            </p>
+          {readingDpi && <p className="page-hint">{READING_DPI}</p>}
+          {printer.connected && printerRead && (
+            <p className="page-hint">Showing the labels generated for {printerRead} DPI, this printer's resolution.</p>
+          )}
+          {dpiUnreadable && (
+            <div className="plabels-dpi-pick">
+              <p className="page-hint">Couldn't read this printer's resolution. Choose its DPI to print its labels.</p>
+              <div className="segmented" role="radiogroup" aria-label="Printer DPI">
+                {GENERATE_DPIS.map((d) => (
+                  <button key={d} type="button" role="radio" aria-checked={pickedDpi === d}
+                          className={pickedDpi === d ? 'on' : ''} onClick={() => pickDpi(d)}>
+                    {d} DPI
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
           {!printer.supported ? (
             <p className="page-hint">USB printing needs Chrome or Edge on a secure (https or localhost) address.</p>
@@ -719,6 +762,8 @@ export default function PrintLabels() {
         <StepCard step="Step 5" title="Ready to print"
                   hint={inlineProgress
                     ? `Printing ${inlineProgress.done} of ${inlineProgress.total}…`
+                    : readingDpi ? READING_DPI
+                    : printer.connected && !isCustom && labelType && !printerDpi ? CHOOSE_DPI
                     : activeSelected.length === 0 ? `Select ${entityNoun}s to print labels`
                     : `${printableIds.length} label(s) will be printed${activeSelected.length > printableIds.length ? ` · ${activeSelected.length - printableIds.length} selected ${entityNoun}(s) are hidden by the current filters` : ''}`}>
           <div className="plabels-ready-actions">

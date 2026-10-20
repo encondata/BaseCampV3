@@ -56,11 +56,17 @@ function defaultStorage(): Storage | null {
   }
 }
 
-/** The remembered DPI, or 300 when none (or something unknown) is stored. */
+export function isGenerateDpi(dpi: string | null | undefined): dpi is string {
+  return !!dpi && (GENERATE_DPIS as readonly string[]).includes(dpi);
+}
+
+/** The remembered DPI, or 300 when none (or something unknown) is stored.
+ *  Generate writes the operator's choice; Print Labels writes the DPI of
+ *  each printer it connects to, so Generate starts at the last printer's. */
 export function readGenerateDpi(storage: Pick<Storage, 'getItem'> | null = defaultStorage()): string {
   try {
     const raw = storage?.getItem(GENERATE_DPI_STORAGE_KEY) ?? null;
-    return raw && (GENERATE_DPIS as readonly string[]).includes(raw) ? raw : DEFAULT_GENERATE_DPI;
+    return isGenerateDpi(raw) ? raw : DEFAULT_GENERATE_DPI;
   } catch {
     return DEFAULT_GENERATE_DPI;
   }

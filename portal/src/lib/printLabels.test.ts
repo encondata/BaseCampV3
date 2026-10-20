@@ -216,6 +216,13 @@ describe('labels per DPI', () => {
     expect(bundleAtDpi(null, '300')).toBeNull();
     expect(bundleByEntity(bundleAtDpi(bundle, '203')).get('a')?.code).toBe('^XAa203^XZ');
   });
+  it("treats a label at another DPI than the printer's as missing", () => {
+    const by = bundleByEntity(bundle);              // no DPI filter: last wins, a-300
+    expect(labelStatusFor('a', by, '300')).toBe('ready');
+    expect(labelStatusFor('a', by, '203')).toBe('missing');
+    expect(missingLabelIds(['a', 'b'], by, '203')).toEqual(['a', 'b']);
+    expect(staleLabelCount(['a', 'b'], by, '300')).toBe(0);
+  });
   it("lists each entity's DPIs lowest first", () => {
     const dpis = dpisByEntity(bundle);
     expect(dpis.get('a')).toEqual(['203', '300', '600']);

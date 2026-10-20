@@ -38,6 +38,10 @@ import { LABEL_TAG_OPTIONS } from '../../lib/labelTags';
 import type { LabelStatus } from '../../lib/printLabels';
 import { naturalCompare } from '../../lib/sites';
 import { VirtualRows } from '../../lib/virtualRows';
+// The DPI column (shown while no printer DPI filters the labels, after the
+// registry and always on) is the asset list's own; it stays within the fit
+// below.
+import { DPI_COL, dpiCell } from './PrintAssetList';
 import '../../styles/directory.css';
 
 export const PRINT_CONTAINER_LIST_PAGE_KEY = 'labels-print-containers';
@@ -63,10 +67,6 @@ export const COLUMNS: ColumnDef[] = [
   { key: 'status', label: 'Status', width: '0.9fr', default: true, min: 110 },
   { key: 'label', label: 'Label', width: '110px', default: true },
 ];
-// Shown only while no printer DPI filters the labels (`dpisOf`), after the
-// registry — always on, so a saved column set can't hide it (still within
-// the fit above).
-export const DPI_COL: ColumnDef = { key: 'dpi', label: 'DPI', width: '112px', default: true };
 const ALL_KEYS = new Set(COLUMNS.map((c) => c.key));
 const DEFAULT_VISIBLE = new Set(COLUMNS.filter((c) => c.default).map((c) => c.key));
 
@@ -112,14 +112,6 @@ export function sortContainerRows(
     }
     return cmp * sortDir;
   });
-}
-
-/** A row's DPIs, lowest first ("203 · 300"); a dash when it has no label. */
-function dpiCell(dpis: string[]) {
-  const text = dpis.join(' · ');
-  return text
-    ? <span className="mono cell-line" title={titleFor(text)}>{text}</span>
-    : <span className="cell-sub">—</span>;
 }
 
 interface Props {

@@ -220,10 +220,13 @@ export function bundleByEntity(bundle: GeneratedLabelBundle | null): Map<string,
 
 /** Only ZPL can go to a Zebra; a label compiled for another language is
  *  `unsupported` (blocks the print like a missing one). Stale labels still
- *  have code, so they print. */
-export function labelStatusFor(entityId: string, byEntity: Map<string, GeneratedLabelBundleItem>): LabelStatus {
+ *  have code, so they print. Given the printer's `dpi`, a label generated
+ *  for another DPI is `missing`: it would print at the wrong scale. */
+export function labelStatusFor(
+  entityId: string, byEntity: Map<string, GeneratedLabelBundleItem>, dpi?: string | null,
+): LabelStatus {
   const item = byEntity.get(entityId);
-  if (!item) return 'missing';
+  if (!item || (dpi && item.dpi_key !== dpi)) return 'missing';
   if (item.language_key !== 'zpl') return 'unsupported';
   return item.stale ? 'stale' : 'ready';
 }
@@ -232,10 +235,14 @@ export function isPrintableStatus(s: LabelStatus): boolean {
   return s === 'ready' || s === 'stale';
 }
 
-export function missingLabelIds(selectedIds: string[], byEntity: Map<string, GeneratedLabelBundleItem>): string[] {
-  return selectedIds.filter((id) => !isPrintableStatus(labelStatusFor(id, byEntity)));
+export function missingLabelIds(
+  selectedIds: string[], byEntity: Map<string, GeneratedLabelBundleItem>, dpi?: string | null,
+): string[] {
+  return selectedIds.filter((id) => !isPrintableStatus(labelStatusFor(id, byEntity, dpi)));
 }
 
-export function staleLabelCount(selectedIds: string[], byEntity: Map<string, GeneratedLabelBundleItem>): number {
-  return selectedIds.filter((id) => labelStatusFor(id, byEntity) === 'stale').length;
+export function staleLabelCount(
+  selectedIds: string[], byEntity: Map<string, GeneratedLabelBundleItem>, dpi?: string | null,
+): number {
+  return selectedIds.filter((id) => labelStatusFor(id, byEntity, dpi) === 'stale').length;
 }
