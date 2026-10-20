@@ -3156,6 +3156,8 @@ class SetupOptionScanType(BaseModel):
 class SetupOptionsOut(BaseModel):
     initiatives: list[SetupOptionInitiative]
     scan_types: list[SetupOptionScanType]
+    # every active site, for a Time Clock station's no-move Site step
+    sites: list[SetupOptionSite]
 
 
 class KioskReaderIn(BaseModel):
@@ -3178,23 +3180,27 @@ StationType = Literal["label", "rfid", "timeclock"]
 
 
 class KioskSetupIn(BaseModel):
+    """The move, site and scan type are required (422 bad_initiative /
+    bad_site / bad_scan_status) except on a Time Clock station, which takes
+    no scan type and an optional move and site."""
     serial: str = Field(min_length=1, max_length=120)
-    initiative_id: uuid.UUID
-    site_id: uuid.UUID
-    scan_status: str = Field(min_length=1)
+    initiative_id: uuid.UUID | None = None
+    site_id: uuid.UUID | None = None
+    scan_status: str | None = Field(default=None, min_length=1)
     station_type: StationType | None = None
     reader: KioskReaderIn | None = None
 
 
 class KioskSetupOut(BaseModel):
     device_id: uuid.UUID
-    initiative_id: uuid.UUID
-    initiative_name: str
-    site_id: uuid.UUID
-    site_name: str
-    site_role: Literal["source", "destination"]
-    scan_status: str
-    scan_status_label: str
+    initiative_id: uuid.UUID | None
+    initiative_name: str | None
+    site_id: uuid.UUID | None
+    site_name: str | None
+    # "other": a Time Clock station's site with no move
+    site_role: Literal["source", "destination", "other"] | None
+    scan_status: str | None
+    scan_status_label: str | None
 
 
 # ── kiosk local-data sync ──

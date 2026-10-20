@@ -719,6 +719,11 @@ async def setup_options(
         rows = [r for r in rows if r[0].id == actor.session.initiative_id]
     scan_types = await _active_scan_types(db)
     status_labels = await _initiative_status_labels(db)
+    # every active site, for a Time Clock station's no-move Site step; a
+    # move-password session can only set up its own move, so it gets none
+    sites = [] if actor.session.initiative_id is not None else list((await db.scalars(
+        select(Site).where(Site.archived_at.is_(None))
+        .order_by(natural(Site.name)))).all())
     return SetupOptionsOut(
         initiatives=[
             SetupOptionInitiative(
@@ -733,7 +738,8 @@ async def setup_options(
                                   if dest else None))
             for i, origin, dest, client in rows],
         scan_types=[SetupOptionScanType(key=s.key, label=s.label, color=s.color)
-                   for s in scan_types])
+                   for s in scan_types],
+        sites=[SetupOptionSite(id=s.id, name=s.name) for s in sites])
 
 
 @router.post("/setup", response_model=KioskSetupOut)
@@ -743,32 +749,52 @@ async def kiosk_setup(
 ) -> KioskSetupOut:
     """Stamps this kiosk's Device row (found by serial) with the move, the
     move's source or destination site, and the scan type chosen in the
-    Kiosk Setup wizard. Not read-only exempt — this is a write. A
-    move-password session may set up only its own move."""
+    Kiosk Setup wizard. A Time Clock station takes no scan type, and its
+    move is optional: with no move the site is any active site (role
+    "other") or none. Not read-only exempt — this is a write. A
+    move-password session may set up only its own move (never no move)."""
     _require_move(actor, body.initiative_id)
     device = await db.scalar(select(Device).where(Device.serial == body.serial))
     if device is None or device.device_type != "kiosk":
         raise _err(404, "device_not_found")
-    initiative = await db.get(Initiative, body.initiative_id)
-    if (initiative is None or initiative.initiative_type != "move"
-            or initiative.status in HISTORICAL_INITIATIVE_STATUSES
-            or initiative.archived_at is not None):
-        raise _err(422, "bad_initiative")
-    # A Label Station records Labeled whatever the client sent.
-    scan_key = (LABEL_STATION_SCAN_STATUS if body.station_type == "label"
-                else body.scan_status)
-    scan_type = await db.get(StatusValue, ("asset", scan_key))
-    if scan_type is None or not scan_type.is_active:
-        raise _err(422, "bad_scan_status")
-    if body.site_id == initiative.origin_site_id:
-        site_role = "source"
-    elif body.site_id == initiative.destination_site_id:
-        site_role = "destination"
-    else:
-        raise _err(422, "bad_site")
-    site = await db.get(Site, body.site_id)
-    if site is None:
-        raise _err(422, "bad_site")
+    timeclock_station = body.station_type == station_keys.TIMECLOCK
+    initiative = None
+    if body.initiative_id is not None or not timeclock_station:
+        initiative = (await db.get(Initiative, body.initiative_id)
+                      if body.initiative_id is not None else None)
+        if (initiative is None or initiative.initiative_type != "move"
+                or initiative.status in HISTORICAL_INITIATIVE_STATUSES
+                or initiative.archived_at is not None):
+            raise _err(422, "bad_initiative")
+    scan_type = None
+    if not timeclock_station:
+        # A Label Station records Labeled whatever the client sent.
+        scan_key = (LABEL_STATION_SCAN_STATUS if body.station_type == "label"
+                    else body.scan_status)
+        scan_type = (await db.get(StatusValue, ("asset", scan_key))
+                     if scan_key is not None else None)
+        if scan_type is None or not scan_type.is_active:
+            raise _err(422, "bad_scan_status")
+    site = None
+    site_role = None
+    if initiative is not None:
+        # a move's kiosk stands at its source or destination (a missing
+        # site never matches a move whose site is unset)
+        if body.site_id is not None and body.site_id == initiative.origin_site_id:
+            site_role = "source"
+        elif body.site_id is not None and body.site_id == initiative.destination_site_id:
+            site_role = "destination"
+        else:
+            raise _err(422, "bad_site")
+        site = await db.get(Site, body.site_id)
+        if site is None:
+            raise _err(422, "bad_site")
+    elif body.site_id is not None:
+        # a Time Clock station with no move: any active site
+        site = await db.get(Site, body.site_id)
+        if site is None or site.archived_at is not None:
+            raise _err(422, "bad_site")
+        site_role = "other"
     if body.station_type == "rfid":
         if body.reader is None:
             raise _err(422, "reader_required")
@@ -785,13 +811,16 @@ async def kiosk_setup(
             station_changes[field] = {"from": old_cmp, "to": new}
             setattr(device, field, new)
 
-    # a station key covers one station type and one move: changing either
-    # revokes it (re-setup with the same type and move keeps it)
+    # a station key covers one station type and one move (or no move, on a
+    # Time Clock station): changing either revokes it, including a move
+    # going from none to one or back (re-setup with the same type and move
+    # keeps it)
+    new_initiative_id = initiative.id if initiative is not None else None
     if device.station_key_hash is not None:
         if device.station_type != body.station_type:
             await station_keys.revoke(db, device, actor_id=actor.person.id,
                                       reason="station_type_change")
-        elif device.current_initiative_id != initiative.id:
+        elif device.current_initiative_id != new_initiative_id:
             await station_keys.revoke(db, device, actor_id=actor.person.id,
                                       reason="move_change")
 
@@ -803,32 +832,35 @@ async def kiosk_setup(
         _stamp("rfid_reader_model", reader.model)
         _stamp("rfid_reader_versions", dict(reader.versions))
         device.rfid_paired_at = now
-    elif body.station_type == "label":
-        _stamp("station_type", "label")
+    elif body.station_type in ("label", station_keys.TIMECLOCK):
+        _stamp("station_type", body.station_type)
         for field in ("rfid_reader_ip", "rfid_reader_serial",
                       "rfid_reader_model", "rfid_reader_versions"):
             _stamp(field, None)
         device.rfid_paired_at = None
-        # a Label Station keeps its station key (it uploads Labeled scans
-        # with it) unless the type or move changed (revoked above)
+        # a Label or Time Clock Station keeps its station key unless the
+        # type or move changed (revoked above)
 
-    device.current_initiative_id = initiative.id
-    device.site_id = site.id
-    device.scan_status = scan_type.key
+    device.current_initiative_id = new_initiative_id
+    device.site_id = site.id if site is not None else None
+    device.scan_status = scan_type.key if scan_type is not None else None
     device.updated_at = datetime.now(UTC)
     audit(db, actor_id=actor.person.id, entity_type="device",
           entity_id=str(device.id), action="kiosk_setup",
-          changes={"initiative_id": str(initiative.id), "site_id": str(site.id),
-                   "scan_status": scan_type.key})
+          changes={"initiative_id": str(new_initiative_id) if new_initiative_id else None,
+                   "site_id": str(site.id) if site is not None else None,
+                   "scan_status": device.scan_status})
     if station_changes:
         audit(db, actor_id=actor.person.id, entity_type="device",
               entity_id=str(device.id), action="kiosk_station_setup",
               changes=station_changes)
     await db.commit()
-    return KioskSetupOut(device_id=device.id, initiative_id=initiative.id,
-                         initiative_name=initiative.name,
-                         site_id=site.id, site_name=site.name, site_role=site_role,
-                         scan_status=scan_type.key, scan_status_label=scan_type.label)
+    return KioskSetupOut(
+        device_id=device.id, initiative_id=new_initiative_id,
+        initiative_name=initiative.name if initiative is not None else None,
+        site_id=device.site_id, site_name=site.name if site is not None else None,
+        site_role=site_role, scan_status=device.scan_status,
+        scan_status_label=scan_type.label if scan_type is not None else None)
 
 
 @router.post("/station-key", response_model=KioskStationKeyOut)
@@ -838,13 +870,16 @@ async def issue_station_key(
 ) -> KioskStationKeyOut:
     """Issue (or replace) this RFID, Label or Time Clock Station's key. The raw key is
     returned once; only its sha256 is stored. A move-password session may
-    issue only for the move the kiosk is set up for."""
+    issue only for the move the kiosk is set up for (never for a Time Clock
+    Station set up with no move)."""
     device = await db.scalar(select(Device).where(Device.serial == body.serial))
     if device is None or device.device_type != "kiosk":
         raise _err(404, "device_not_found")
     # the code stays not_rfid_station for old edges, though a Label Station
-    # and a Time Clock Station now qualify too
-    if not is_station(device) or device.current_initiative_id is None:
+    # and a Time Clock Station now qualify too; only a Time Clock Station
+    # may hold a key with no move
+    if not is_station(device) or (device.current_initiative_id is None
+                                  and device.station_type != station_keys.TIMECLOCK):
         raise _err(409, "not_rfid_station")
     if registration_state(device.token_expires_at, datetime.now(UTC)) not in ("ok", "soon"):
         raise _err(409, "kiosk_not_registered")
