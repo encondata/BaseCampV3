@@ -271,18 +271,24 @@ def seed_label_fonts() -> None:
     _name_connections("seed-label-fonts")
 
     async def _run() -> None:
-        from serversherpa.labels.font_seed import FontSeedError, seed
+        from serversherpa.labels import font_seed
 
         try:
             async with get_sessionmaker()() as db:
                 try:
-                    added = await seed(db)
-                except FontSeedError as exc:
+                    added = await font_seed.seed(db)
+                except font_seed.FontSeedError as exc:
                     typer.secho(f"Font seed stopped: {exc}", fg="red", err=True)
                     raise typer.Exit(EXIT_FAILED) from exc
+                fileless = [n for n in await font_seed.residents_without_file(db)
+                            if n in added]
             for name in added:
                 typer.echo(f"added {name}")
             typer.secho(f"Seeded {len(added)} label font(s).", fg="green")
+            for name in fileless:
+                typer.secho(f"Upload Zebra's {name} on Labels › Printers › Install Fonts: it "
+                            "fills the resident row so the builder can measure the default "
+                            "font (it is never pushed to a printer or served).", fg="yellow")
         finally:
             await dispose_engine()
 
@@ -304,18 +310,23 @@ def seed_label_templates() -> None:
         from serversherpa.labels import builtin_templates
 
         try:
+            def show(report) -> None:
+                for old, new in report.renamed:
+                    typer.echo(f'renamed "{old}" to "{new}"')
+                for name in report.created:
+                    typer.echo(f"created {name}")
+                for name in report.skipped:
+                    typer.echo(f"skipped {name}: already a builder template")
+
             async with get_sessionmaker()() as db:
                 try:
                     report = await builtin_templates.seed(db)
                 except builtin_templates.TemplateSeedError as exc:
+                    # what it did before it stopped is committed: say so
+                    show(exc.report)
                     typer.secho(f"Template seed stopped: {exc}", fg="red", err=True)
                     raise typer.Exit(EXIT_FAILED) from exc
-            for old, new in report.renamed:
-                typer.echo(f'renamed "{old}" to "{new}"')
-            for name in report.created:
-                typer.echo(f"created {name}")
-            for name in report.skipped:
-                typer.echo(f"skipped {name}: already a builder template")
+            show(report)
             typer.secho(f"Seeded {len(report.created)} label template(s), all inactive. "
                         "Open each in the builder, then use Replace… on the templates page.",
                         fg="green")

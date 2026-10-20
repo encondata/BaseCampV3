@@ -143,6 +143,17 @@ async def test_seed_adopts_files_already_in_the_library(db, fake_io):
         "label-fonts/swiss.ttf", True)
 
 
+async def test_residents_without_file_lists_the_fileless_resident_row(db, fake_io):
+    fetch, _fetched, _stored = fake_io
+    assert await font_seed.residents_without_file(db) == []
+    await font_seed.seed(db, fetch=fetch)
+    assert await font_seed.residents_without_file(db) == ["TT0003M_.TTF"]
+    swiss = (await _active(db))["TT0003M_.TTF"]
+    swiss.storage_key, swiss.size_bytes = "label-fonts/swiss.ttf", 7
+    await db.commit()
+    assert await font_seed.residents_without_file(db) == []
+
+
 async def test_seed_refuses_a_download_that_is_not_truetype(db, fake_io):
     _fetch, _fetched, stored = fake_io
 
@@ -153,6 +164,82 @@ async def test_seed_refuses_a_download_that_is_not_truetype(db, fake_io):
         await font_seed.seed(db, fetch=html_page)
     assert stored == {}
     assert all(r.resident for r in (await _active(db)).values())
+
+
+async def test_a_failed_row_insert_removes_the_stored_file(db, fake_io, monkeypatch):
+    """api-core-4: whatever stops the row after the file is stored (not
+    only a name race), the file goes again and the error goes on up."""
+    fetch, _fetched, stored = fake_io
+    deleted: list[str] = []
+
+    async def delete(key):
+        deleted.append(key)
+        stored.pop(key, None)
+
+    async def broken(db, font, key):
+        if font.resident:
+            return await real_create(db, font, key)
+        raise RuntimeError("database went away")
+
+    real_create = font_seed._create
+    monkeypatch.setattr(font_seed, "delete_object", delete)
+    monkeypatch.setattr(font_seed, "_create", broken)
+    with pytest.raises(RuntimeError, match="database went away"):
+        await font_seed.seed(db, fetch=fetch)
+    assert len(deleted) == 1 and stored == {}
+    assert all(r.resident for r in (await _active(db)).values())
+
+
+def _transport(handler):
+    import httpx
+    return httpx.MockTransport(handler)
+
+
+async def test_http_fetch_streams_and_stops_past_the_cap():
+    """security-5: the download stops as soon as it passes MAX_FONT_BYTES,
+    before the whole body is read, and never follows a redirect."""
+    import httpx
+
+    sent: list[int] = []
+
+    async def endless():
+        while True:
+            sent.append(1)
+            yield b"\x00" * 65536
+
+    def huge(request):
+        return httpx.Response(200, content=endless())
+
+    with pytest.raises(font_seed.FontSeedError, match="larger than"):
+        await font_seed.http_fetch("https://raw.githubusercontent.com/x/y.ttf",
+                                   transport=_transport(huge))
+    assert len(sent) * 65536 <= font_seed.MAX_FONT_BYTES + 2 * 65536
+
+    def moved(request):
+        return httpx.Response(302, headers={"location": "https://elsewhere.example/y.ttf"})
+
+    with pytest.raises(font_seed.FontSeedError, match="redirect"):
+        await font_seed.http_fetch("https://raw.githubusercontent.com/x/y.ttf",
+                                   transport=_transport(moved))
+
+    def ok(request):
+        return httpx.Response(200, content=b"\x00\x01\x00\x00font")
+
+    assert await font_seed.http_fetch("https://raw.githubusercontent.com/x/y.ttf",
+                                      transport=_transport(ok)) == b"\x00\x01\x00\x00font"
+    assert font_seed.FETCH_TIMEOUT.read == 30.0 and font_seed.FETCH_TIMEOUT.connect == 60.0
+
+
+async def test_an_oversized_download_never_reaches_storage(db, fake_io):
+    """security-5 through the seed: the cap stops it before put_object."""
+    _fetch, _fetched, stored = fake_io
+
+    async def too_big(url):
+        return b"\x00\x01\x00\x00" + b"\x00" * font_seed.MAX_FONT_BYTES
+
+    with pytest.raises(font_seed.FontSeedError, match="larger than"):
+        await font_seed.seed(db, fetch=too_big)
+    assert stored == {}
 
 
 def test_cli_seed_label_fonts(monkeypatch):
@@ -179,14 +266,26 @@ def test_cli_seed_label_fonts(monkeypatch):
             raise outcome[0]
         return outcome[0]
 
+    fileless: list[str] = ["TT0003M_.TTF"]
+
+    async def residents_without_file(db):
+        return fileless
+
     monkeypatch.setattr(cli, "get_sessionmaker", lambda: _Session)
     monkeypatch.setattr(cli, "dispose_engine", no_dispose)
     monkeypatch.setattr(font_seed, "seed", fake_seed)
+    monkeypatch.setattr(font_seed, "residents_without_file", residents_without_file)
 
     result = CliRunner().invoke(cli.app, ["seed-label-fonts"])
     assert result.exit_code == 0, result.output
     assert "added ROBOTO_R.TTF" in result.output
     assert "Seeded 2 label font(s)." in result.output
+    # contracts-5: the resident row it just made has no file yet
+    assert ("Upload Zebra's TT0003M_.TTF on Labels › Printers › Install Fonts"
+            in result.output)
+    fileless.clear()  # adopted with its file: nothing to remind
+    result = CliRunner().invoke(cli.app, ["seed-label-fonts"])
+    assert result.exit_code == 0 and "Install Fonts" not in result.output
 
     outcome[0] = font_seed.FontSeedError("https://x/y.ttf: not a TrueType font")
     result = CliRunner().invoke(cli.app, ["seed-label-fonts"])

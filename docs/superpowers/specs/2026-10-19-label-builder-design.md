@@ -372,14 +372,20 @@ saved to the list.
 - Operator steps, once per stack (the rebuilt designs live in
   `serversherpa.labels.builtin_templates`):
   1. `serversherpa seed-label-fonts`.
-  2. `serversherpa seed-label-templates`. The five parents and their 203,
+  2. Upload Zebra's `TT0003M_.TTF` on Labels › Printers › Install Fonts.
+     It fills the resident Swiss 721 row's file, so the builder can
+     measure the default font (reserved widths, overflow, baselines); the
+     file is never pushed to a printer or served to a browser. The seed
+     command prints this reminder when it creates the row without a file.
+  3. `serversherpa seed-label-templates`. The five parents and their 203,
      300 and 600 DPI children land inactive, linked to no site. An old
      code row that holds one of the names is renamed "<name> Old" first
-     (the command lists each rename); running it again changes nothing.
-  3. Open each parent in the builder and check it against the old tag.
-  4. Print the Vegas tag on the office ZD421 and compare it with the
+     (the command lists each rename, also when it stops partway); running
+     it again changes nothing.
+  4. Open each parent in the builder and check it against the old tag.
+  5. Print the Vegas tag on the office ZD421 and compare it with the
      canvas.
-  5. Per family, link the rebuilt parent to the old rows' sites first
+  6. Per family, link the rebuilt parent to the old rows' sites first
      (an unlinked active template counts as global and outranks the
      Generic fallback), then Replace… the old code rows with it (the old
      rows keep their links).

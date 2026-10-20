@@ -182,9 +182,12 @@ FRONT_ASSET_TAG: dict = {
     "schema": 2,
     "size": {"w": 2, "h": 1},
     "elements": [
-        # 68 modules for the six-digit sample (Code 128 set C), 2 dots each
+        # ^BC in mode N starts in subset B: the six-digit sample is start,
+        # six characters and the check (11 modules each) plus stop (13) =
+        # 101 modules, 2 dots each = 202 dots (at 203 DPI the module is
+        # one dot, ^BY1)
         {"id": "barcode", "type": "barcode", "field": "asset_id", "symbology": "code128",
-         "moduleIn": _in(2), "showText": True, "x": _in(15), "y": _in(2), "w": _in(136),
+         "moduleIn": _in(2), "showText": True, "x": _in(15), "y": _in(2), "w": _in(202),
          "h": _in(35), "rotation": 0, "locked": False, "hideWhenEmpty": False},
         _text("caption-target", "Target:", 15, 110, _BODY, 120),
         _field("value-target", "destination_rack", 140, 110, _BODY, 300),
@@ -259,16 +262,21 @@ BUILTIN_TEMPLATES: list[BuiltinTemplate] = [
 
 # ── seed-label-templates ────────────────────────────────────────────
 
-class TemplateSeedError(RuntimeError):
-    """The seed can't go on. Templates seeded before it stay; nothing of
-    the one that failed is kept."""
-
-
 @dataclass
 class SeedReport:
     created: list[str] = field(default_factory=list)
     renamed: list[tuple[str, str]] = field(default_factory=list)   # (from, to)
     skipped: list[str] = field(default_factory=list)
+
+
+class TemplateSeedError(RuntimeError):
+    """The seed can't go on. Templates seeded before it stay; nothing of
+    the one that failed is kept. `report` is what the seed did before it
+    stopped, so the command can still list it."""
+
+    def __init__(self, message: str, report: SeedReport | None = None):
+        super().__init__(message)
+        self.report = report or SeedReport()
 
 
 async def _check_vocab(db: AsyncSession) -> None:
@@ -333,14 +341,15 @@ async def seed(db: AsyncSession) -> SeedReport:
         try:
             if holder is not None:
                 if holder.parent_id is not None:
-                    raise TemplateSeedError(f'"{b.name}" is a DPI child\'s name; rename it first')
+                    raise TemplateSeedError(f'"{b.name}" is a DPI child\'s name; rename it first',
+                                            report)
                 renamed = (holder.name, await _rename_old(db, holder, b.name))
             await _create(db, b)
         except tree.TreeError as exc:
             await db.rollback()
             detail = ", ".join(f"{k}: {v}" for k, v in exc.extra.items())
-            raise TemplateSeedError(f"{b.name}: {exc.code}" + (f" ({detail})" if detail else "")
-                                    ) from exc
+            raise TemplateSeedError(f"{b.name}: {exc.code}" + (f" ({detail})" if detail else ""),
+                                    report) from exc
         except TemplateSeedError:
             await db.rollback()
             raise

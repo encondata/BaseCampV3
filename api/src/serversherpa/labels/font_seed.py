@@ -82,18 +82,43 @@ def display_name(family: str, weight: str) -> str:
     return fam["label"] if fam["resident"] else f"{fam['label']} {weight.capitalize()}"
 
 
-async def http_fetch(url: str) -> bytes:
+# 60 s to connect and in all, but no more than 30 s waiting on any read
+FETCH_TIMEOUT = httpx.Timeout(60.0, read=30.0)
+
+
+async def http_fetch(url: str, *, transport: httpx.AsyncBaseTransport | None = None) -> bytes:
+    """One pinned font file. A pinned raw URL answers directly, so a
+    redirect (which could go anywhere) is refused; the body is read in
+    chunks and the download stops as soon as it passes MAX_FONT_BYTES.
+    `transport` is for tests."""
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
-            resp = await client.get(url)
+        async with (httpx.AsyncClient(follow_redirects=False, timeout=FETCH_TIMEOUT,
+                                      transport=transport) as client,
+                    client.stream("GET", url) as resp):
+            if resp.is_redirect:
+                raise FontSeedError(f"{url}: a redirect to {resp.headers.get('location')}; "
+                                    "pinned font URLs never redirect")
             resp.raise_for_status()
-            return resp.content
+            data = bytearray()
+            async for chunk in resp.aiter_bytes():
+                data += chunk
+                if len(data) > MAX_FONT_BYTES:
+                    raise FontSeedError(f"{url}: larger than {MAX_FONT_BYTES} bytes")
+            return bytes(data)
     except httpx.HTTPError as exc:
         raise FontSeedError(f"{url}: {exc}") from exc
 
 
 async def _active(db: AsyncSession, *conds) -> LabelFont | None:
     return await db.scalar(select(LabelFont).where(LabelFont.deleted_at.is_(None), *conds))
+
+
+async def residents_without_file(db: AsyncSession) -> list[str]:
+    """The resident rows still waiting for their library copy (the builder
+    measures the default font from it): their object names."""
+    return list((await db.execute(select(LabelFont.name).where(
+        LabelFont.deleted_at.is_(None), LabelFont.resident.is_(True),
+        LabelFont.storage_key.is_(None)).order_by(LabelFont.name))).scalars())
 
 
 async def _adopt(db: AsyncSession, font: LabelFont, family: str, weight: str) -> None:
@@ -104,6 +129,17 @@ async def _adopt(db: AsyncSession, font: LabelFont, family: str, weight: str) ->
     audit(db, actor_id=None, entity_type="label_font", entity_id=str(font.id),
           action="update", changes=diff(before, snapshot(font, FONT_FIELDS)))
     await db.commit()
+
+
+async def _discard(key: str | None) -> None:
+    """Best-effort removal of a stored file no row points at (the error
+    that got us here is the one worth reporting)."""
+    if not key:
+        return
+    try:
+        await delete_object(key)
+    except Exception:
+        pass
 
 
 async def _create(db: AsyncSession, font: LabelFont, key: str | None) -> bool:
@@ -118,11 +154,7 @@ async def _create(db: AsyncSession, font: LabelFont, key: str | None) -> bool:
         return True
     except IntegrityError:
         await db.rollback()
-        if key:
-            try:
-                await delete_object(key)
-            except Exception:
-                pass
+        await _discard(key)
         return False
 
 
@@ -157,6 +189,13 @@ async def seed(db: AsyncSession, *, fetch: Fetch = http_fetch) -> list[str]:
                 await put_object(key, data, "font/ttf")
                 font = LabelFont(**common, storage_key=key, size_bytes=len(data),
                                  resident=False, source_url=url)
-            if await _create(db, font, key):
+            try:
+                created = await _create(db, font, key)
+            except Exception:
+                # the row never landed: nothing else can reach the file
+                await db.rollback()
+                await _discard(key)
+                raise
+            if created:
                 done.append(obj)
     return done

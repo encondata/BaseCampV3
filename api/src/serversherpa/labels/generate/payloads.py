@@ -39,8 +39,9 @@ async def load_status_labels(db: AsyncSession, record_type: str) -> dict[str, st
         .where(StatusValue.record_type == record_type))).all())
 
 
-def ru_text(ru: Decimal | None) -> str | None:
-    """A roster RU (Numeric) as plain text: 14 -> "14", 14.50 -> "14.5"."""
+def ru_plain(ru: Decimal | None) -> str | None:
+    """A roster RU (Numeric) as plain text: 14 -> "14", 14.50 -> "14.5"
+    (labels.fields.ru_text is the label side: any synced RU, blank as "")."""
     if ru is None:
         return None
     return format(ru.normalize(), "f")
@@ -94,12 +95,12 @@ def asset_payload(asset: Asset, roster_row: InitiativeAsset, model: AssetModel |
         "make_model": make_model_text(make or "", model_name or ""),
         "container_id": container_id,
         "source_rack": ia.source_rack,
-        "source_ru": ru_text(ia.source_ru),
+        "source_ru": ru_plain(ia.source_ru),
         "source_ru_raw": ru_raw(ia.source_ru),
         "source_position": ia.source_position,
         "source_pod": ia.source_pod,
         "destination_rack": ia.destination_rack,
-        "destination_ru": ru_text(ia.destination_ru),
+        "destination_ru": ru_plain(ia.destination_ru),
         "destination_ru_raw": ru_raw(ia.destination_ru),
         "destination_position": ia.destination_position,
         "destination_pod": ia.destination_pod,

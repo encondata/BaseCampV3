@@ -174,10 +174,20 @@ async def test_metrics_route_returns_advances(client, db, seeded_user, monkeypat
         reads.append(key)
         return await real_get(key)
 
+    # ledger B10: fontTools parses off the event loop
+    threaded = []
+    real_to_thread = labels_module.asyncio.to_thread
+
+    async def recording_to_thread(func, *args, **kwargs):
+        threaded.append(func)
+        return await real_to_thread(func, *args, **kwargs)
+
     monkeypatch.setattr(labels_module, "get_object", counting_get)
+    monkeypatch.setattr(labels_module.asyncio, "to_thread", recording_to_thread)
     staff = await login(client)   # labels:view
     r = await client.get(f"/labels/fonts/{font_id}/metrics", headers=staff)
     assert r.status_code == 200, r.text
+    assert threaded.count(labels_module.font_metrics) == 1
     m = r.json()
     assert (m["unitsPerEm"], m["ascent"], m["descent"]) == (1000, 800, 200)
     assert sorted(m["advances"]) == sorted(chr(c) for c in range(32, 127))

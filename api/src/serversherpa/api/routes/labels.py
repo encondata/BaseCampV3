@@ -17,6 +17,7 @@ scope-aware `_runs_query` the list/get routes use rather than a bare
 one. All mutations audit into the caller's txn.
 """
 
+import asyncio
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -1935,7 +1936,8 @@ async def label_font_metrics(
     cached = _METRICS_CACHE.get(cache_key)
     if cached is None:
         try:
-            cached = font_metrics(await get_object(font.storage_key))
+            # fontTools parses for ~10 ms: off the event loop
+            cached = await asyncio.to_thread(font_metrics, await get_object(font.storage_key))
         except UnreadableFont as exc:
             raise _err(422, "unreadable_font") from exc
         if len(_METRICS_CACHE) >= _METRICS_CACHE_MAX:

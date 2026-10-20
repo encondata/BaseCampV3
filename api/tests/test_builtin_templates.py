@@ -231,6 +231,21 @@ def test_front_asset_tag_keeps_the_stored_layout():
     assert "85620388" not in zpl
 
 
+def test_front_asset_tag_barcode_box_is_the_printed_symbol():
+    """ledger B1: ^BC in mode N starts in subset B, so the six-digit sample
+    is start + six characters + check (11 modules each) + stop (13): 101
+    modules, at 2 dots a module 202 dots at 300 DPI, inside the 600-dot
+    label from x 15."""
+    (bar,) = [el for el in FRONT_ASSET_TAG["elements"] if el["type"] == "barcode"]
+    digits = len(BY_NAME["Front Asset Tag"].samples["asset_id"])
+    modules = 11 + 11 * digits + 11 + 13
+    assert (digits, modules) == (6, 101)
+    module_dots = round(bar["moduleIn"] * 300)
+    assert module_dots == 2
+    assert round(bar["w"] * 300) == modules * module_dots == 202
+    assert round((bar["x"] + bar["w"]) * 300) <= 600
+
+
 def test_switch_front_tag_is_one_serial_number():
     zpl, _ = _render(BY_NAME["Switch Front Tag"], 300)
     assert _lines(zpl) == ["^XA", "^PW1200", "^LL600", "^CI28",
@@ -384,6 +399,42 @@ async def test_a_renamed_active_row_keeps_its_family_until_replace(db):
     assert all(c.is_active for c in children) and parent.is_active
 
 
+async def test_seed_refuses_a_name_a_dpi_child_holds(db):
+    """ledger B3: a DPI child under one of the names is the coded error, and
+    that template is not created (the ones before it are)."""
+    other = await tree.create_parent(
+        db, name="Elsewhere", description="", label_type="front", size_key="2x1",
+        language_key="zpl", design=FRONT_ASSET_TAG, samples={}, site_ids=[], actor_id=None,
+        is_active=False)
+    child = (await tree.children_of(db, other))[0]
+    child.name = "Front Asset Tag"
+    await db.commit()
+    with pytest.raises(builtin_templates.TemplateSeedError,
+                       match="\"Front Asset Tag\" is a DPI child's name; rename it first") as exc:
+        await builtin_templates.seed(db)
+    assert exc.value.report.created == NAMES[:3]
+    assert sorted(await _parents(db)) == sorted(["Elsewhere", *NAMES[:3]])
+
+
+async def test_seed_rolls_back_a_rename_when_the_create_is_refused(db):
+    """ledger B3: an older row named like one of the new DPI children
+    ("<name> · 300") stops that template with NameTaken; the rename of
+    the old row holding the name itself is rolled back with it, and the
+    report the error carries lists what the seed did before."""
+    db.add_all([_code_row("Vegas Destination"), _code_row("Front Asset Tag", label_type="front"),
+                _code_row("Front Asset Tag · 300", label_type="front")])
+    await db.commit()
+    with pytest.raises(builtin_templates.TemplateSeedError,
+                       match="Front Asset Tag: label_template_exists") as exc:
+        await builtin_templates.seed(db)
+    assert exc.value.report.created == NAMES[:3]
+    assert exc.value.report.renamed == [("Vegas Destination", "Vegas Destination Old")]
+    names = set((await db.execute(select(LabelTemplate.name))).scalars())
+    assert {"Front Asset Tag", "Front Asset Tag · 300", "Vegas Destination Old"} <= names
+    assert "Front Asset Tag Old" not in names
+    assert sorted(await _parents(db)) == sorted(NAMES[:3])
+
+
 async def test_seed_stops_before_writing_when_a_vocabulary_row_is_missing(db):
     await db.execute(LabelVocab.__table__.delete().where(
         LabelVocab.kind == "size", LabelVocab.key == "2x1"))
@@ -436,6 +487,17 @@ def test_cli_seed_label_templates(monkeypatch):
     result = CliRunner().invoke(cli.app, ["seed-label-templates"])
     assert result.exit_code == cli.EXIT_FAILED
     assert "no size 2x1" in result.output
+
+    # ledger B2: a seed that stops partway still lists what it did first
+    outcome[0] = builtin_templates.TemplateSeedError(
+        "Front Asset Tag: label_template_exists", builtin_templates.SeedReport(
+            created=["Vegas Destination"],
+            renamed=[("Vegas Destination", "Vegas Destination Old")]))
+    result = CliRunner().invoke(cli.app, ["seed-label-templates"])
+    assert result.exit_code == cli.EXIT_FAILED
+    assert 'renamed "Vegas Destination" to "Vegas Destination Old"' in result.output
+    assert "created Vegas Destination" in result.output
+    assert "Front Asset Tag: label_template_exists" in result.output
 
 
 # ── the portal renders the seeded Vegas tag as the sync's item does ──
