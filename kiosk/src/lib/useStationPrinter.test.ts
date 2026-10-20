@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /** The Label Station's saved printer: network straight from the settings,
- *  USB by the saved serial (else the only allowed Zebra), else the person
+ *  USB by the saved serial (the only allowed Zebra only when no serial is
+ *  saved or it reports none), else the person
  *  has to connect one. */
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -75,8 +76,25 @@ it('a USB printer connects to the allowed device with the saved serial', async (
   expect(result.current.printer).toMatchObject({ kind: 'usb', serial: 'SAVED' });
 });
 
-it('a USB printer with no matching serial uses the only allowed Zebra', async () => {
+it('a saved serial the only allowed Zebra does not match is needs_usb, never a different printer', async () => {
   usb.known = [{ productName: 'ZD421', serialNumber: 'ONLY' }];
+  apiMock.getLabelStation.mockResolvedValue(settings({ serial: 'SAVED' }));
+  const { result } = renderHook(() => useStationPrinter());
+  await waitFor(() => expect(result.current.state).toBe('needs_usb'));
+  expect(usb.connectTo).not.toHaveBeenCalled();
+  expect(result.current.printer).toBeNull();
+});
+
+it('no saved serial uses the only allowed Zebra', async () => {
+  usb.known = [{ productName: 'ZD421', serialNumber: 'ONLY' }];
+  apiMock.getLabelStation.mockResolvedValue(settings({ serial: null }));
+  const { result } = renderHook(() => useStationPrinter());
+  await waitFor(() => expect(result.current.state).toBe('ready'));
+  expect(usb.connectTo).toHaveBeenCalledWith(usb.known[0]);
+});
+
+it('the only allowed Zebra reporting no serial stands in for a saved one', async () => {
+  usb.known = [{ productName: 'ZD421', serialNumber: '' }];
   apiMock.getLabelStation.mockResolvedValue(settings({ serial: 'SAVED' }));
   const { result } = renderHook(() => useStationPrinter());
   await waitFor(() => expect(result.current.state).toBe('ready'));

@@ -5,9 +5,11 @@
  *
  * - Network: straight from the saved IP, through the edge.
  * - USB: connects to the printer this browser already allowed whose
- *   serial number is the saved one; when none matches, the only allowed
- *   Zebra (the browser only allows Zebras here). Anything else needs the
- *   person to pick one (`connectUsb`, the browser's picker): `needs_usb`.
+ *   serial number is the saved one. The only allowed Zebra (the browser
+ *   only allows Zebras here) stands in only when no serial was saved or
+ *   that device reports none — a saved serial is never swapped for a
+ *   different printer. Anything else needs the person to pick one
+ *   (`connectUsb`, the browser's picker): `needs_usb`.
  * - No settings saved (or none readable): `no_settings`.
  */
 
@@ -63,8 +65,8 @@ export function useStationPrinter(): UseStationPrinter {
       const known = await zebraRef.current.knownDevices();
       if (!live()) return;
       const saved = next.printer.serial;
-      const match = (saved ? known.find((d) => serialOf(d) === saved) : undefined)
-        ?? (known.length === 1 ? known[0] : undefined);
+      const only = known.length === 1 && (!saved || serialOf(known[0]) === null) ? known[0] : undefined;
+      const match = (saved ? known.find((d) => serialOf(d) === saved) : undefined) ?? only;
       if (match) await zebraRef.current.connectTo(match);
     } catch {
       /* stays needs_usb */
