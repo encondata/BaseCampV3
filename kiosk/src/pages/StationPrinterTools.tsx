@@ -18,7 +18,7 @@
  * Nothing here writes printer settings except Full Printer Setup and
  * Factory Reset, as on every other kiosk.
  */
-import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import type { HostIdentification, HostStatus, PrinterConfiguration } from '@portal/labels/zebraUsb';
@@ -57,16 +57,24 @@ const STEP_MODALS: Record<StepModal, { title: string; description: string }> = {
   },
 };
 
-/** Step 5's Peeler wording. */
-function peelerText(present: boolean | null): string {
+const SWITCH_HINT = 'Run Check printer & fonts to switch.';
+
+/** Step 5's Peeler wording when the printer agrees with the station's
+ *  saved mode (`peel`, what the Printing Station actually uses); when it
+ *  doesn't, the mode in use and how to switch. */
+function peelerText(present: boolean | null, peel: boolean): string {
+  if (present === true && !peel) {
+    return `Peeler detected, but this station prints in tear-off mode. ${SWITCH_HINT}`;
+  }
+  if (present === false && peel) {
+    return `No peeler found, but this station prints in peel-off mode. ${SWITCH_HINT}`;
+  }
+  if (present === null && peel) {
+    return `Printer doesn't report a peeler, but this station prints in peel-off mode. ${SWITCH_HINT}`;
+  }
   if (present === true) return 'Peeler detected · printing in peel-off mode';
   if (present === false) return 'No peeler · printing in tear-off mode';
   return "Printer doesn't report a peeler · printing in tear-off mode";
-}
-
-function serialOf(device: unknown): string | null {
-  const serial = (device as { serialNumber?: unknown } | null | undefined)?.serialNumber;
-  return typeof serial === 'string' && serial ? serial : null;
 }
 
 export default function StationPrinterTools() {
@@ -81,6 +89,9 @@ export default function StationPrinterTools() {
   const [stepModal, setStepModal] = useState<StepModal | null>(null);
   const [fromReset, setFromReset] = useState<{ config: PrinterConfiguration | null } | null>(null);
   const [notice, setNotice] = useState<{ type: string; message: string } | null>(null);
+  // The USB device held when the step 5 modal opened: one picked there
+  // and not saved is let go on close.
+  const deviceAtOpen = useRef<unknown>(null);
   // The network printer's command log lives outside React: re-render when it changes.
   const [, logChanged] = useReducer((n: number) => n + 1, 0);
 
@@ -118,15 +129,25 @@ export default function StationPrinterTools() {
   const saveOffsets = async (o: StationOffsets) => {
     if (!settings) throw new Error('No saved settings');
     await putLabelStation({ ...settings, offset_x: o.x, offset_y: o.y });
-    await station.reload();
+    // Saved: a failed re-read doesn't make it "Couldn't save".
+    try {
+      await station.reload();
+    } catch {
+      /* the next reload picks the offsets up */
+    }
+  };
+
+  const openStep = (which: StepModal) => {
+    deviceAtOpen.current = zebra.device ?? null;
+    setStepModal(which);
   };
 
   const closeStep = async (saved: boolean) => {
     setStepModal(null);
     // A USB printer picked in the modal but not saved isn't the station's:
-    // let go of it so the saved one is found again.
-    if (!saved && settings?.printer.type === 'usb' && settings.printer.serial
-        && zebra.connected && serialOf(zebra.device) !== settings.printer.serial) {
+    // let go of it so the saved one is found again (also when the saved
+    // printer has no serial, or is a network one).
+    if (!saved && zebra.connected && (zebra.device ?? null) !== deviceAtOpen.current) {
       await zebra.disconnect();
     }
     await station.reload();
@@ -181,7 +202,7 @@ export default function StationPrinterTools() {
           <>
             <PrinterHealth identity={identity} status={status} productName={toolPrinter?.productName ?? null} />
             <div className="zp-station-facts">
-              <div><span className="cell-sub">Peeler</span><span className="cell-top">{peeler ? peelerText(peeler.present) : 'Checking…'}</span></div>
+              <div><span className="cell-sub">Peeler</span><span className="cell-top">{peeler ? peelerText(peeler.present, settings?.peel ?? false) : 'Checking…'}</span></div>
               <div><span className="cell-sub">Offsets</span><span className="cell-top">{`Horizontal ${settings?.offset_x ?? 0} dots · Vertical ${settings?.offset_y ?? 0} dots`}</span></div>
             </div>
           </>
@@ -220,7 +241,7 @@ export default function StationPrinterTools() {
               <div className="cell-sub">Switch to another USB or network printer. The same checks as Kiosk Setup run before it&apos;s saved.</div>
             </div>
             <div className="cell zp-tool-action">
-              <button type="button" className="btn-solid" disabled={!settings} onClick={() => setStepModal('change')}>Change printer</button>
+              <button type="button" className="btn-solid" disabled={!settings} onClick={() => openStep('change')}>Change printer</button>
             </div>
           </div>
         </div>
@@ -231,7 +252,7 @@ export default function StationPrinterTools() {
               <div className="cell-sub">Run the printer checks again and install the fonts the move&apos;s templates need.</div>
             </div>
             <div className="cell zp-tool-action">
-              <button type="button" className="btn-solid" disabled={!settings} onClick={() => setStepModal('check')}>Check printer</button>
+              <button type="button" className="btn-solid" disabled={!settings} onClick={() => openStep('check')}>Check printer</button>
             </div>
           </div>
         </div>

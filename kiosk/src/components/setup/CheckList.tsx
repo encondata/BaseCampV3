@@ -52,8 +52,8 @@ export default function CheckList<N extends string = CheckName>({ items, results
             {result?.state === 'ok' && showOkDetail && result.detail && (
               <span className="check-note">{result.detail}</span>
             )}
-            {result?.notes?.map((note) => (
-              <span key={note} className="check-note check-warning">{note}</span>
+            {result?.notes?.map((note, i) => (
+              <span key={`${i}-${note}`} className="check-note check-warning">{note}</span>
             ))}
           </li>
         );

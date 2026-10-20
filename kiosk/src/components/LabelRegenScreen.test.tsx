@@ -42,7 +42,7 @@ vi.mock('../lib/laptopSetup', () => ({ hydrateLaptopSetup: vi.fn(() => Promise.r
 
 import { writeKioskSetup } from '../lib/kioskSetup';
 import KioskShell from '../layout/KioskShell';
-import LabelRegenScreen, { LABEL_RUN_POLL_MS } from './LabelRegenScreen';
+import LabelRegenScreen, { LABEL_RUN_POLL_MS, LABEL_RUN_UNREACHABLE_MS } from './LabelRegenScreen';
 
 const SETUP = {
   initiativeId: 'i-1', initiativeName: 'Initech ORD1 to AUS1', siteId: 's-1', siteName: 'ORD1',
@@ -132,6 +132,49 @@ it('a failed poll keeps the last state and never throws', async () => {
   expect(screen.getByRole('alertdialog').textContent).toContain('1 of 4');
 });
 
+it('after 10 s of failed polls it says the label service is unreachable, until a poll answers idle', async () => {
+  apiMock.getLabelRunStatus.mockResolvedValue(status({ state: 'running', reason: 'updates', total: 4, done: 1 }));
+  render(<LabelRegenScreen />);
+  await flush();
+  apiMock.getLabelRunStatus.mockRejectedValue(new Error('offline'));
+  await tick(LABEL_RUN_UNREACHABLE_MS - LABEL_RUN_POLL_MS);
+  expect(screen.getByRole('alertdialog').textContent).toContain('1 of 4');
+  await tick(LABEL_RUN_POLL_MS * 2);
+  const dialog = screen.getByRole('alertdialog', { name: "Can't reach this laptop's label service." });
+  expect(dialog.textContent).toContain('Labels may be out of date.');
+  expect(dialog.textContent).not.toContain('1 of 4');
+  expect(screen.queryByRole('button')).toBeNull();
+
+  // still polling; an answer that is still running shows the run again
+  apiMock.getLabelRunStatus.mockResolvedValue(status({ state: 'running', reason: 'updates', total: 4, done: 2 }));
+  await tick(LABEL_RUN_POLL_MS);
+  expect(screen.getByRole('alertdialog').textContent).toContain('2 of 4');
+
+  // a success resets the timer: one failure later it isn't unreachable yet
+  apiMock.getLabelRunStatus.mockRejectedValue(new Error('offline'));
+  await tick(LABEL_RUN_POLL_MS * 2);
+  expect(screen.getByRole('alertdialog').textContent).toContain('2 of 4');
+  await tick(LABEL_RUN_UNREACHABLE_MS);
+  expect(screen.getByRole('alertdialog').textContent).toContain('Labels may be out of date.');
+
+  apiMock.getLabelRunStatus.mockResolvedValue(status({ state: 'idle', reason: 'updates', total: 4, done: 4 }));
+  await tick(LABEL_RUN_POLL_MS);
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+});
+
+it('the progress bar has no value range while the total is 0', async () => {
+  apiMock.getLabelRunStatus.mockResolvedValue(status({ state: 'running', reason: 'setup', total: 0, done: 0 }));
+  render(<LabelRegenScreen />);
+  await flush();
+  const bar = screen.getByRole('progressbar');
+  expect(bar.hasAttribute('aria-valuenow')).toBe(false);
+  expect(bar.hasAttribute('aria-valuemax')).toBe(false);
+  apiMock.getLabelRunStatus.mockResolvedValue(status({ state: 'running', reason: 'setup', total: 5, done: 2 }));
+  await tick(LABEL_RUN_POLL_MS);
+  expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('2');
+  expect(screen.getByRole('progressbar').getAttribute('aria-valuemax')).toBe('5');
+});
+
 it('the page underneath is inert while it shows, and not after', async () => {
   apiMock.getLabelRunStatus.mockResolvedValue(status({ state: 'running', reason: 'setup', total: 2, done: 0 }));
   render(<div><button type="button">Page button</button><LabelRegenScreen /></div>);
@@ -167,6 +210,12 @@ it('mounted only for a signed-in laptop Label Station', async () => {
   shell();
   await flush();
   expect(screen.getByRole('alertdialog', { name: 'Preparing labels for this move' })).toBeTruthy();
+  cleanup();
+
+  // Not on Kiosk Setup itself, which must stay usable through steps 4-5.
+  render(<MemoryRouter initialEntries={['/setup']}><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+  await flush();
+  expect(screen.queryByRole('alertdialog', { name: /labels/i })).toBeNull();
   cleanup();
 
   // Signed out: no polling.

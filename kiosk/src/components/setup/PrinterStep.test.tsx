@@ -354,6 +354,45 @@ describe('checks', () => {
     expect(screen.getByText(message)).toBeTruthy();
   });
 
+  it("fonts are the plan template's only: other templates' fonts never block", async () => {
+    const user = userEvent.setup();
+    templatesMock.templates = [
+      template({ id: 'picked', code: '^XA^A@N,30,30,E:ROBOTO.TTF^FDx^FS^XZ' }),
+      template({ id: 'global', code: '^XA^A@N,30,30,E:OTHER.TTF^FDx^FS^XZ' }),
+      template({ id: 'other-dpi', dpi_key: '300', code: '^XA^A@N,30,30,E:BIG.TTF^FDx^FS^XZ' }),
+    ];
+    printerState.fonts.push('ROBOTO.TTF');
+    apiMock.getLabelPlan.mockResolvedValue({
+      template: { id: 'picked', name: 'ORD1 Top 203', family: 'ORD1 Top', dpi_key: '203', version: 1 },
+      notes: [],
+    });
+    renderStep();
+    await connectUsb(user);
+    await allGreen();
+    expect(apiMock.fetchKioskLabelFonts).not.toHaveBeenCalled();
+
+    // the picked template's own missing font still fails
+    cleanup();
+    printerState.fonts = [];
+    renderStep();
+    await connectUsb(user);
+    await failed('Fonts installed');
+    expect(within(row('Fonts installed')).getByText('Missing: ROBOTO.TTF.')).toBeTruthy();
+  });
+
+  it('without a plan (older edge) fonts fall back to every template of the kind', async () => {
+    const user = userEvent.setup();
+    templatesMock.templates = [
+      template({ id: 'a', code: '^XA^A@N,30,30,E:ROBOTO.TTF^FDx^FS^XZ' }),
+      template({ id: 'b', code: '^XA^A@N,30,30,E:OTHER.TTF^FDx^FS^XZ' }),
+    ];
+    printerState.fonts.push('ROBOTO.TTF');
+    renderStep();
+    await connectUsb(user);
+    await failed('Fonts installed');
+    expect(within(row('Fonts installed')).getByText('Missing: OTHER.TTF.')).toBeTruthy();
+  });
+
   it('a font that is not in the library stays red with the upload hint', async () => {
     const user = userEvent.setup();
     templatesMock.templates = [template({ code: '^XA^A@N,30,30,E:MISSING.TTF^FDx^FS^XZ' })];

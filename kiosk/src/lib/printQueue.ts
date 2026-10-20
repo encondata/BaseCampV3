@@ -9,7 +9,8 @@
  * a Labeled scan recorded with the exact value scanned, once per scan on
  * its first label that goes out (its first attempt or a Retry; a Reprint
  * never records) → in peel mode, `~HS` every 500 ms until the printed
- * label has been taken ("Take the label"; see `waitForTake`).
+ * label has been taken ("Take the label"; see `waitForTake`), or the
+ * printer has been unreadable for a minute (printed, with a warning).
  *
  * A failed record doesn't undo the print: the entry stays printed with a
  * small warning, and nothing is printed again. Retry resends the very
@@ -41,6 +42,9 @@ export interface QueueEntry {
   message: string | null;
   /** Printed, but the Labeled scan couldn't be recorded. */
   recordWarning: string | null;
+  /** Printed in peel mode, but the printer couldn't be read to see the
+   *  label taken (see `waitForTake`). */
+  takeWarning: string | null;
 }
 
 /** Newest first. */
@@ -75,6 +79,10 @@ export const TAKE_LABEL_POLL_MS = 500;
 /** A printer that never reports a label waiting moves on after it has
  *  been idle this long. */
 export const TAKE_LABEL_IDLE_MS = 10_000;
+/** The peel wait gives up after the printer has been missing or unreadable
+ *  this long in a row, so the queue can't hang on it. */
+export const TAKE_LABEL_UNREACHABLE_MS = 60_000;
+export const TAKE_UNCONFIRMED_TEXT = "Couldn't confirm the label was taken — check the printer.";
 export const NO_SETTINGS_TEXT = "This station's printer settings couldn't be read. Open Kiosk Setup.";
 
 const LABEL_REASONS: Record<string, string> = {
@@ -134,7 +142,7 @@ export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
     nextId += 1;
     const entry: QueueEntry = {
       id: `p-${nextId}`, asset, scannedValue, scannedAt: new Date().toISOString(), reprint,
-      state: 'queued', message: null, recordWarning: null,
+      state: 'queued', message: null, recordWarning: null, takeWarning: null,
     };
     entries.unshift(entry);
     work.set(entry.id, { entry, sent: null, recorded: false });
@@ -159,22 +167,37 @@ export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
    *  left to print, and either a label seen waiting first or the printer
    *  idle for TAKE_LABEL_IDLE_MS (one that never reports a waiting label).
    *  The printer is looked up on every poll (a USB reconnect is a new
-   *  one); none, or a failed or unreadable poll, keeps waiting: the label
-   *  is already out. */
-  async function waitForTake(): Promise<void> {
+   *  one); none, or a failed or unreadable poll, keeps waiting (the label
+   *  is already out), but only for TAKE_LABEL_UNREACHABLE_MS in a row:
+   *  then it gives up and resolves false. Any poll that answers resets
+   *  that timer, so a label left waiting keeps the queue waiting. True
+   *  once the label was taken (or the printer stayed idle). */
+  async function waitForTake(): Promise<boolean> {
     let seenWaiting = false;
     let idleSince: number | null = null;
+    let failingSince: number | null = null;
+    const failed = () => {
+      failingSince ??= now();
+      return now() - failingSince >= TAKE_LABEL_UNREACHABLE_MS;
+    };
     for (;;) {
       await sleep(TAKE_LABEL_POLL_MS);
       const printer = deps.printer();
-      if (!printer) continue;
+      if (!printer) {
+        if (failed()) return false;
+        continue;
+      }
       let status;
       try {
         status = await printer.status();
       } catch {
+        status = null;
+      }
+      if (!status) {
+        if (failed()) return false;
         continue;
       }
-      if (!status) continue;
+      failingSince = null;
       if (status.labelWaiting) {
         seenWaiting = true;
         idleSince = null;
@@ -184,9 +207,9 @@ export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
         idleSince = null;
         continue;
       }
-      if (seenWaiting) return;
+      if (seenWaiting) return true;
       idleSince ??= now();
-      if (now() - idleSince >= TAKE_LABEL_IDLE_MS) return;
+      if (now() - idleSince >= TAKE_LABEL_IDLE_MS) return true;
     }
   }
 
@@ -250,7 +273,7 @@ export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
     }
     if (settings.peel) {
       update(entry, { state: 'take_label' });
-      await waitForTake();
+      if (!(await waitForTake())) entry.takeWarning = TAKE_UNCONFIRMED_TEXT;
     }
     update(entry, { state: 'printed' });
   }

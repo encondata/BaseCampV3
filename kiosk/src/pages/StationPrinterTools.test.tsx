@@ -27,6 +27,7 @@ const station = vi.hoisted(() => ({
   sent: [] as string[],
   reload: vi.fn(async () => {}),
   connectUsb: vi.fn(async () => {}),
+  zebra: { connected: false, device: null as unknown, log: [], clearLog: () => {}, disconnect: vi.fn(async () => {}) },
 }));
 vi.mock('../lib/useStationPrinter', () => {
   const identity: HostIdentification = { model: 'ZD421-203dpi ZPL', firmware: 'V92.21.16Z', dotsPerMm: 8, dpi: 203, memory: '8192KB' };
@@ -47,7 +48,7 @@ vi.mock('../lib/useStationPrinter', () => {
     useStationPrinter: () => ({
       settings: station.state === 'no_settings' ? null : station.settings,
       printer: station.state === 'ready' ? printer : null,
-      zebra: { connected: false, log: [], clearLog: () => {} },
+      zebra: station.zebra,
       state: station.state,
       connectUsb: station.connectUsb,
       reload: station.reload,
@@ -103,7 +104,10 @@ beforeEach(() => {
   station.settings = { ...SETTINGS, printer: { ...SETTINGS.printer } };
   station.peeler = true;
   station.sent = [];
-  station.reload.mockClear();
+  station.reload.mockReset().mockResolvedValue(undefined);
+  station.zebra.connected = false;
+  station.zebra.device = null;
+  station.zebra.disconnect.mockClear();
   step.props = null;
   api.fetchLabelVocab.mockReset().mockResolvedValue(VOCAB);
   api.putLabelStation.mockReset().mockImplementation(async (s: LabelStationSettings) => s);
@@ -133,6 +137,7 @@ it('shows the saved network printer with its health, peeler and offsets', async 
 });
 
 it('says when the printer does not report a peeler, and when there is none', async () => {
+  station.settings = { ...SETTINGS, peel: false };
   station.peeler = null;
   renderPage();
   expect(await screen.findByText("Printer doesn't report a peeler · printing in tear-off mode")).toBeTruthy();
@@ -140,6 +145,72 @@ it('says when the printer does not report a peeler, and when there is none', asy
   station.peeler = false;
   renderPage();
   expect(await screen.findByText('No peeler · printing in tear-off mode')).toBeTruthy();
+});
+
+it('says which mode is used when the peeler reading disagrees with the saved settings', async () => {
+  station.settings = { ...SETTINGS, peel: false };
+  station.peeler = true;
+  renderPage();
+  expect(await screen.findByText(
+    'Peeler detected, but this station prints in tear-off mode. Run Check printer & fonts to switch.',
+  )).toBeTruthy();
+  cleanup();
+  station.settings = { ...SETTINGS, peel: true };
+  station.peeler = false;
+  renderPage();
+  expect(await screen.findByText(
+    'No peeler found, but this station prints in peel-off mode. Run Check printer & fonts to switch.',
+  )).toBeTruthy();
+  cleanup();
+  station.peeler = null;
+  renderPage();
+  expect(await screen.findByText(
+    "Printer doesn't report a peeler, but this station prints in peel-off mode. Run Check printer & fonts to switch.",
+  )).toBeTruthy();
+});
+
+it('offsets that saved still say saved when the reload after fails', async () => {
+  station.reload.mockRejectedValue(new Error('edge restarting'));
+  renderPage();
+  await screen.findByText('Ready');
+  await userEvent.click(screen.getByRole('button', { name: 'Print test label' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Test label alignment' });
+  const h = within(dialog).getByLabelText('Horizontal offset');
+  fireEvent.change(h, { target: { value: '10' } });
+  fireEvent.blur(h);
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Save offsets' }));
+  await waitFor(() => expect(station.reload).toHaveBeenCalled());
+  expect(await within(dialog).findByText(/Offsets saved/)).toBeTruthy();
+  expect(within(dialog).queryByText(/Couldn't save the offsets/)).toBeNull();
+});
+
+it('closing step 5 unsaved lets go of a USB printer picked there, saved serial or not', async () => {
+  station.settings = { ...SETTINGS, printer: { type: 'usb', ip: null, model: 'ZD421', serial: null } };
+  const saved = { serialNumber: 'Z1' };
+  station.zebra.connected = true;
+  station.zebra.device = saved;
+  renderPage();
+  await userEvent.click(screen.getByRole('button', { name: 'Change printer' }));
+  let dialog = await screen.findByRole('dialog', { name: 'Change printer' });
+  station.zebra.device = { serialNumber: 'Z2' };      // another printer picked in the modal
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+  await waitFor(() => expect(station.zebra.disconnect).toHaveBeenCalledTimes(1));
+
+  // the same device as when it opened stays connected
+  station.zebra.device = saved;
+  await userEvent.click(screen.getByRole('button', { name: 'Check printer' }));
+  dialog = await screen.findByRole('dialog', { name: 'Check printer & fonts' });
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+  await waitFor(() => expect(station.reload).toHaveBeenCalledTimes(2));
+  expect(station.zebra.disconnect).toHaveBeenCalledTimes(1);
+
+  // saving keeps whatever was picked
+  await userEvent.click(screen.getByRole('button', { name: 'Change printer' }));
+  dialog = await screen.findByRole('dialog', { name: 'Change printer' });
+  station.zebra.device = { serialNumber: 'Z3' };
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Save printer' }));
+  await waitFor(() => expect(station.reload).toHaveBeenCalledTimes(3));
+  expect(station.zebra.disconnect).toHaveBeenCalledTimes(1);
 });
 
 it('the alignment test saves offsets to the station and prints in peel-off mode', async () => {

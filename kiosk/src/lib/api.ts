@@ -461,7 +461,7 @@ export interface KioskTrucksSync {
 
 /** Why a template is in the move's set — one or more per template. */
 export type KioskLabelTemplateReason =
-  'destination_site' | 'source_site' | 'front' | 'generic' | 'container' | 'fallback';
+  'destination_site' | 'source_site' | 'front' | 'generic' | 'container' | 'fallback' | 'global';
 
 /** One label template from the move's set (`/kiosk/sync/label-templates`).
  *  `code` is the printer code at the template's own size and DPI with its
@@ -489,6 +489,13 @@ export interface KioskLabelTemplate {
   height_in: number | null;
   dots: number | null;
   error: string | null;
+  /** 'code' or 'design'. Missing from sets cached before it was added. */
+  kind?: 'code' | 'design';
+  /** A design template's stored design JSON (the laptop edge compiles it
+   *  with the asset's values); null for a code template. */
+  design?: Record<string, unknown> | null;
+  /** How its site links relate to this move: 'global' when it has none. */
+  scope?: 'destination' | 'source' | 'both' | 'global' | 'other';
 }
 
 export interface KioskLabelTemplatesSync {

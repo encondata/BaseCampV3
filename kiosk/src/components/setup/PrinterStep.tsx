@@ -12,7 +12,8 @@
  * - Ready to print: `~HS` reports no paper out, head open or pause;
  * - Peeler: whether a peeler is fitted (SGD `sensor.peeler_present`). It
  *   never fails; it decides whether labels print peel-off or tear-off;
- * - Fonts: every E: font those templates use is on the printer. A missing
+ * - Fonts: every E: font the plan's template uses is on the printer (when
+ *   the plan call failed, every template of the kind's fonts). A missing
  *   font that's in the portal's library installs from here; one that isn't
  *   stays red with what to do.
  *
@@ -228,8 +229,15 @@ export default function PrinterStep({
 
     setRunning('dpi');
     let dpiResult: CheckRowResult;
+    // The templates whose fonts the printer needs: the one the plan picks
+    // (none when it picks none); every template of the kind when there is
+    // no plan, or its template isn't among the downloaded ones.
+    let fontTemplates = templatesOfKind(ts, labelKind);
     try {
       const plan = await getLabelPlan({ dpi: ident.dpi, kind: labelKind });
+      const picked = plan.template ? ts.find((t) => t.id === plan.template?.id) : undefined;
+      if (!plan.template) fontTemplates = [];
+      else if (picked) fontTemplates = [picked];
       dpiResult = plan.template
         ? { state: 'ok', detail: plan.template.name, notes: plan.notes }
         : { state: 'fail', detail: `No ${KIND_LABEL[labelKind]} template at ${ident.dpi} DPI`, notes: plan.notes };
@@ -264,7 +272,7 @@ export default function PrinterStep({
     put('peeler', { state: 'ok', detail: peelerDetail(present) });
 
     setRunning('fonts');
-    const needed = neededFonts(templatesOfKind(ts, labelKind));
+    const needed = neededFonts(fontTemplates);
     if (needed.length === 0) {
       put('fonts', { state: 'ok', detail: 'No printer fonts needed.' });
     } else {
