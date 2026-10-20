@@ -150,3 +150,29 @@ async def test_samples_are_capped(client, db, seeded_user):
     resp = await client.post("/labels/templates/compile", headers=hdrs,
                              json=_body(design=V2, dpi_key="300", samples=edge))
     assert resp.status_code == 200, resp.text
+
+
+async def test_an_unbounded_expected_length_is_refused(client, db, seeded_user):
+    """F1: a labels:view caller can't make the compile pad a value to a
+    billion characters; create and PATCH refuse the same design."""
+    hdrs = await login(client)  # labels:view only
+    huge = {**V2, "elements": [{**V2["elements"][0], "display": "number",
+                                "expectedLength": 10**9}]}
+    resp = await client.post("/labels/templates/compile", headers=hdrs,
+                             json=_body(design=huge, dpi_key="300"))
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "bad_design",
+                                     "problems": ["f1: expectedLength must be at most 64"]}
+
+    from tests.test_status_values_write import _make
+    sa = await _make(db, client, "super_admin", "adm@test.example.com")
+    tpl = {"name": "Bounded", "label_type": "top", "size_key": "4x2", "language_key": "zpl",
+           "kind": "design", "design": V2}
+    resp = await client.post("/labels/templates", headers=sa, json={**tpl, "design": huge})
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "bad_design"
+    resp = await client.post("/labels/templates", headers=sa, json=tpl)
+    assert resp.status_code == 201, resp.text
+    resp = await client.patch(f"/labels/templates/{resp.json()['id']}", headers=sa,
+                              json={"design": huge})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["problems"] == ["f1: expectedLength must be at most 64"]

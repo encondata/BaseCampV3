@@ -147,3 +147,26 @@ def test_schema_defaults_to_1():
         with pytest.raises(DesignError) as exc:
             parse_design({"schema": bad, "size": {"w": 1, "h": 1}, "elements": []})
         assert "schema" in str(exc.value)
+
+
+def test_counts_and_lines_are_bounded():
+    """F1: expectedLength/maxChars pad and trim a value to that many
+    characters, so an unbounded one makes every compile allocate it. Both
+    stop at 64 and a text's lines at 50, on schema 1 as on schema 2."""
+    for key, big in (("expectedLength", 10**9), ("maxChars", 65)):
+        with pytest.raises(DesignError) as exc:
+            parse_design(_v2(_field(**{key: big})))
+        assert exc.value.problems == [f"f1: {key} must be at most 64"]
+    text = {"id": "t1", "type": "text", "content": "a", "font": SWISS, "sizePt": 10,
+            "baselineIn": 0.1, "x": 0, "y": 0, "w": 1, "h": 0.2, "rotation": 0}
+    with pytest.raises(DesignError) as exc:
+        parse_design(_v2({**text, "lines": 51}))
+    assert exc.value.problems == ["t1: lines must be at most 50"]
+    v1_text = {**V1["elements"][0], "lines": 10**6}
+    with pytest.raises(DesignError) as exc:
+        parse_design({**V1, "elements": [v1_text]})
+    assert exc.value.problems == ["t1: lines must be at most 50"]
+    # the bounds themselves are fine
+    d = parse_design(_v2(_field(expectedLength=64, maxChars=64), {**text, "lines": 50}))
+    assert (d.elements[0].expected_length, d.elements[0].max_chars) == (64, 64)
+    assert d.elements[1].lines == 50

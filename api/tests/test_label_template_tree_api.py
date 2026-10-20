@@ -649,7 +649,21 @@ async def test_tree_readable_with_labels_view(client, db, seeded_user):
     legacy, parent = tree
     assert legacy["children"] == [] and legacy["schema_version"] == 1
     assert legacy["family"] == "Generic Rack and RU"
-    assert len(parent["children"]) == 3 and parent["samples"] == {"asset_id": "10482"}
+    # F5: stored sample values are the builder's (rank 80), like the
+    # sample-values route they come from; below it they read as empty
+    assert len(parent["children"]) == 3 and parent["samples"] == {}
+    listed = (await client.get(URL, headers=staff)).json()
+    assert [t["samples"] for t in listed if t["id"] == parent["id"]] == [{}]
+    one = (await client.get(f"{URL}/{parent['id']}", headers=staff)).json()
+    assert one["samples"] == {}
+    admin = await _make(db, client, "admin", "adm@test.example.com")  # rank 60
+    assert (await _node(client, admin, "Vegas Destination"))["samples"] == {}
+    # rank 80 reads them on all three routes
+    assert (await _node(client, sa, "Vegas Destination"))["samples"] == {"asset_id": "10482"}
+    listed = (await client.get(URL, headers=sa)).json()
+    assert [t["samples"] for t in listed if t["id"] == parent["id"]] == [{"asset_id": "10482"}]
+    one = (await client.get(f"{URL}/{parent['id']}", headers=sa)).json()
+    assert one["samples"] == {"asset_id": "10482"}
     r = await client.post(URL, headers=staff, json=_body("Mine"))
     assert r.status_code == 403
 

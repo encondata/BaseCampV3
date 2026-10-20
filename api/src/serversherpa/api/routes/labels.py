@@ -492,12 +492,21 @@ def _is_v2(design: object) -> bool:
     return isinstance(design, dict) and design.get("schema", 1) == 2
 
 
+def _readable_samples(item, actor: AuthContext):
+    """A template's stored sample values are the builder's: they come from
+    Load from asset… (a whole From-To row, rank 80 like the sample-values
+    route), so the list, tree and get routes show them only at rank 80."""
+    if actor.access.max_rank < SUPER_ADMIN_RANK:
+        item.samples = {}
+    return item
+
+
 @router.get("/templates", response_model=list[LabelTemplateOut])
 async def list_templates(
     db: DbSession, label_type: str | None = None, size_key: str | None = None,
     dpi_key: str | None = None, language_key: str | None = None,
     active: bool | None = None, site_id: uuid.UUID | None = None,
-    _actor: AuthContext = require_permission("labels", "view"),
+    actor: AuthContext = require_permission("labels", "view"),
 ) -> list:
     q = select(LabelTemplate).order_by(natural(LabelTemplate.name))
     for col, val in ((LabelTemplate.label_type, label_type),
@@ -517,7 +526,7 @@ async def list_templates(
     site_map = await _site_ids_map(db)
     out = []
     for r in rows:
-        item = LabelTemplateOut.model_validate(r)
+        item = _readable_samples(LabelTemplateOut.model_validate(r), actor)
         item.site_ids = site_map.get(r.id, [])
         out.append(item)
     return out
@@ -525,7 +534,7 @@ async def list_templates(
 
 @router.get("/templates/tree", response_model=list[LabelTemplateTreeOut])
 async def template_tree(
-    db: DbSession, _actor: AuthContext = require_permission("labels", "view"),
+    db: DbSession, actor: AuthContext = require_permission("labels", "view"),
 ) -> list[LabelTemplateTreeOut]:
     """The templates list (spec §4.9): every top-level template, natural by
     name — a builder parent with its DPI children (current and Old, natural
@@ -541,12 +550,14 @@ async def template_tree(
             children.setdefault(r.parent_id, []).append(r)
     out = []
     for top in sorted(tops, key=lambda r: natural_key(r.name)):
-        kids = [LabelTemplateChildOut(**LabelTemplateOut.model_validate(c).model_dump(),
-                                      out_of_date=tree.is_out_of_date(c, top))
+        kids = [_readable_samples(LabelTemplateChildOut(
+                    **LabelTemplateOut.model_validate(c).model_dump(),
+                    out_of_date=tree.is_out_of_date(c, top)), actor)
                 for c in sorted(children.get(top.id, []), key=lambda r: natural_key(r.name))]
-        item = LabelTemplateTreeOut(
+        item = _readable_samples(LabelTemplateTreeOut(
             **LabelTemplateOut.model_validate(top).model_dump(),
-            family=top.name if top.is_tree_parent else family_name(top.name), children=kids)
+            family=top.name if top.is_tree_parent else family_name(top.name), children=kids),
+            actor)
         item.site_ids = site_map.get(top.id, [])
         out.append(item)
     return out
@@ -555,10 +566,10 @@ async def template_tree(
 @router.get("/templates/{template_id}", response_model=LabelTemplateOut)
 async def get_template(
     template_id: uuid.UUID, db: DbSession,
-    _actor: AuthContext = require_permission("labels", "view"),
+    actor: AuthContext = require_permission("labels", "view"),
 ) -> LabelTemplateOut:
     row = await _template_or_404(db, template_id)
-    item = LabelTemplateOut.model_validate(row)
+    item = _readable_samples(LabelTemplateOut.model_validate(row), actor)
     item.site_ids = [l.site_id for l in row.site_links]
     return item
 

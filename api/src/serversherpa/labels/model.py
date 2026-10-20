@@ -38,6 +38,12 @@ SCHEMAS = (1, 2)
 DISPLAYS = ("text", "number", "barcode", "qr")
 TRIMS = ("front", "rear")
 STRIP_WHERES = ("front", "rear", "anywhere")
+# A field's expected length and max characters pad or trim its value to
+# that many characters, and a text's lines size its ^FB, so each has a
+# ceiling: nothing on a label needs more, and the compile must not
+# allocate whatever a request asks for.
+MAX_COUNT = 64
+MAX_LINES = 50
 
 
 class DesignError(ValueError):
@@ -227,6 +233,9 @@ def _lines(el: dict, p: list[str]) -> int:
     if not _int(lines) or lines < 1:
         p.append("lines must be an integer of 1 or more")
         return 1
+    if lines > MAX_LINES:
+        p.append(f"lines must be at most {MAX_LINES}")
+        return 1
     return lines
 
 
@@ -345,6 +354,9 @@ def _opt_count(el: dict, key: str, p: list[str]) -> int | None:
         return None
     if not _int(v) or v < 1:
         p.append(f"{key} must be a whole number of 1 or more")
+        return None
+    if v > MAX_COUNT:
+        p.append(f"{key} must be at most {MAX_COUNT}")
         return None
     return v
 
