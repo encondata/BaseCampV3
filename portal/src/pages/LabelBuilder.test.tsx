@@ -11,7 +11,7 @@
  */
 
 import { StrictMode } from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -42,6 +42,12 @@ const api = vi.hoisted(() => ({
 vi.mock('../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../lib/api')>()), ...api,
 }));
+
+// the whole page renders in jsdom, several times a test: run beside the rest
+// of the suite one step can take longer than the default second, and a test
+// longer than the default five
+configure({ asyncUtilTimeout: 4000 });
+vi.setConfig({ testTimeout: 20000 });
 
 const { default: LabelBuilder } = await import('./LabelBuilder');
 const { default: ProtectedRoute } = await import('../components/ProtectedRoute');
