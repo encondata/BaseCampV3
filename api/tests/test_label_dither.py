@@ -9,6 +9,7 @@ because zlib's output may vary between builds (zlib-ng)."""
 
 import base64
 import binascii
+import importlib.util
 import json
 import re
 import zlib
@@ -28,6 +29,9 @@ from serversherpa.labels.render import render_template
 from serversherpa.labels.zpl import compile_zpl, crc16, image_box_dots, z64
 
 FIXTURE = Path(labels_pkg.__file__).parent / "fixtures" / "dither.json"
+# the builder canvas's parity fixture and its generator (written by the
+# Python core, checked by portal/src/labels/builder/imageParity.test.ts)
+IMAGE_PARITY = Path(__file__).resolve().parents[2] / "portal/src/labels/builder/fixtures"
 SWISS = {"family": "swiss721-cond-bold", "weight": "regular"}
 SPLITS = {"destination_rack": {"pieces": ["NAP", "Sector", "POD", "Row", "Rack"]}}
 GFA = re.compile(r"\^FO(\d+),(\d+)\^GFA,(\d+),(\d+),(\d+),:Z64:([A-Za-z0-9+/=]*):([0-9A-F]{4})\^FS")
@@ -407,6 +411,21 @@ def test_bitmap_must_fill_the_footprint():
     # the footprint at another DPI is another size
     with pytest.raises(ValueError, match="footprint"):
         compile_zpl(parse_design(_design(_image())), 203, {}, images={"img": _pattern(120, 90)})
+
+
+def test_the_canvas_parity_fixture_is_what_the_python_core_writes(tmp_path):
+    """image_parity.json pins the dots the canvas draws for image elements
+    (imageParity.test.ts). Its generator runs the real model.py, zpl.py and
+    dither.py: re-run it here, so a core change that moves a printed dot
+    fails on this side too, not only when the portal suite next runs."""
+    spec = importlib.util.spec_from_file_location("image_parity", IMAGE_PARITY / "image_parity.py")
+    generator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generator)
+    generator.OUT = tmp_path / "image_parity.json"
+    generator.main()
+    assert generator.OUT.read_text() == (IMAGE_PARITY / "image_parity.json").read_text(), (
+        "the core moved: rerun `PYTHONPATH=api/src python3 "
+        "portal/src/labels/builder/fixtures/image_parity.py` and check the canvas still matches")
 
 
 # ---- schema 3 ----------------------------------------------------------
