@@ -26,6 +26,7 @@ Anti-goals: a badge template reaching a kiosk; an image making an older laptop p
 - The badge carries the person's **avatar (cropped)**; **staff** get the **Cumulus logo**, **workers** get their **parent partner's logo**.
 - Fields for **workers (crew)** and **portal users (staff)**.
 - **No print destination yet** — just template building.
+- **The printer preview shows image placeholders, not the pictures** (2026-10-20; §4.5, §4.7).
 
 ## 4. How it works
 
@@ -76,7 +77,7 @@ Design JSON (schema 3, §4.6):
 - The source key is **`source`, never `field`**, so images stay out of `design_field_keys`, unknown-key reporting and sample loading.
 - Defaults: photo → `cover` + `dither`; logo and static → `contain` + `threshold`. `brightness` −100..100, `contrast` 0..300 (percent), `threshold` 1..254.
 - `hideWhenEmpty` (default on): a photo or logo the person doesn't have prints nothing; off, it prints an outlined box so the gap is visible on a test print.
-- Static images live in a new **`label_images`** table (id, name, storage key, width, height, mime, created_by, created_at), uploaded from the builder (PNG, JPEG, WebP, GIF; 5 MiB; the original is stored uncropped). Designs reference them by id; the cleanup tab's storage sweep lists their keys. *(My call: by reference, not inline — a design is copied into every version and DPI child.)*
+- Static images live in a new **`label_images`** table (id, name, storage key, width, height, mime, created_by, created_at), uploaded from the builder (PNG, JPEG, WebP, GIF; 5 MiB; the original is stored uncropped). Designs reference them by id; the cleanup tab's storage sweep lists their keys. *(My call: by reference, not inline — a design is copied into every version and DPI child.)* Developer › Database › Cleanup has a **Deleted label images** category in its Deleted files group: it purges library images deleted before the age cutoff, with their stored pictures, and keeps a stored picture that something else still uses (a live library image or the company logo). A stored picture it can't delete is counted and logged by the error's class and S3 code only.
 - The builder tool **Image** (shortcut **I**); the Properties panel: Source (Photo / Logo / Static image with a library picker and Upload…), Fit, Mode (Photo / Logo look), Brightness, Contrast, Threshold (logo look), Invert, then the usual position, rotation, hide-when-empty and lock. Resizing keeps the box free; the image fits inside it by `fit`.
 - Thermal printers print black or white: **photos are dithered** (Atkinson), **logos thresholded**. White is transparent (a printer can't print white over black), so z-order follows the element list.
 
@@ -93,25 +94,27 @@ Design JSON (schema 3, §4.6):
 2. **Dither (shared, integer-only):** `labels/dither.py` and its exact mirror `portal/src/labels/builder/dither.ts` apply the brightness/contrast table, then Atkinson (photo) or threshold (logo), then invert, then pack to 1-bit rows. Both are pinned byte-for-byte by a shared fixture `labels/fixtures/dither.json`.
 3. **Compile:** `zpl.py` emits `^FO{x},{y}^GFA,{c},{c},{d},:Z64:{base64(zlib)}:{crc16}^FS` from the already-dithered bitmap, banded when a band would pass 99,999 bytes. `compile_zpl` gains an `images` argument (element id → bitmap); it stays pure and never fetches.
 4. **Canvas:** the builder asks the API for the prepped gray raster of each image element at the view DPI (`POST /labels/images/raster`, bytes not URLs — no CORS, no tainted canvas), dithers it with `dither.ts`, and draws the bits into an SVG `<image>` (pixelated, white transparent). What you see is what prints.
-5. **Compile route / Test print / preview:** resolve each image server-side with the same prep + `dither.py`, so the ZPL's bits equal the canvas's bits by construction (same gray raster, same integer dither).
+5. **Compile route / Test print:** resolve each image server-side with the same prep + `dither.py`, so the ZPL's bits equal the canvas's bits by construction (same gray raster, same integer dither). **The printer preview is the exception:** it compiles with `image_mode: "placeholder"`, and every image element prints as a 2-dot `^GB` outline with two `^GD` diagonals at its footprint, whatever its source, its picture or its Hide when empty. No picture is read and no person is looked up, so Labelary is never sent a picture. The canvas and Test print use the real pictures. This is Jimmy's decision of 2026-10-20 ("Labelary is fine, keep the preview as is. don't render the images as previews just use a placeholder.").
 
-The preview's ZPL size cap rises from 20,000 to 250,000 characters (a 1 in² photo is ~12k at 300 DPI and ~47k at 600 in Z64).
+The preview's ZPL size cap rises from 20,000 to 250,000 characters. It was sized for pictures (a 1 in² photo is ~12k at 300 DPI and ~47k at 600 in Z64); with placeholders a badge preview stays far below it.
 
 ### 4.6 Schema 3
 
 - A builder design containing any image element is **schema 3**; without images it stays **schema 2** (nothing changes for today's templates). The portal sets the schema when it serializes; the API accepts 2 and 3 for builder templates (every `== 2` gate: `_parse_v2`, `_is_v2` and their seven call sites, `parseDesign`, `DesignV2.schema`, the builder's "made before the label builder" check) and stores `schema_version` from the design (`templates_tree.py` no longer hard-codes 2).
+- Design rules (422 `bad_design`): a design holds at most **8 image elements**, and a schema 3 design refuses two elements with the same id (images are resolved by element id, so two sharing one would share one picture).
+- An image box whose `^GF` row would pass 99,999 bytes (one row of its footprint, turned at 90 and 270), or that is past 4 million dots, is refused with 422 `image_too_large` by the raster route and the compile; the compile also refuses a design's images past 8 million dots together.
 - The laptop edge keeps `SUPPORTED_SCHEMA = 2`: a schema 3 design that ever reached it reports "needs a laptop update" and prints nothing. Its tests that use 3 as "a newer schema" move to 4.
 
 ### 4.7 Load from person…
 
 - `FieldPanel`'s **Load from person…** (on `id_badge` templates; "Load from asset…" stays on asset types) opens a dialog with the report-generate header and a person search (workers and staff; archived and hidden move identities excluded).
 - New route `GET /labels/sample-person?person_id=` — `labels:view` + rank 80 like `/labels/sample-values` — returns `{values: {key: text}, person_id, has_photo, has_logo}` from a pure `fields.person_values(payload)` (the API builds the payload; `fields.py` stays database-free).
-- The sample person is remembered in the template's samples under the reserved key `person:id`, so the canvas, preview and Test print resolve the same photo and logo. Without a sample person, photo and logo elements draw a dashed placeholder on the canvas and print nothing (an outlined box if `hideWhenEmpty` is off).
+- The sample person is remembered in the template's samples under the reserved key `person:id`, so the canvas and Test print resolve the same photo and logo. The printer preview never shows them: it compiles with `image_mode: "placeholder"`, so every image element is an outlined box with both diagonals at its footprint and no person is looked up for it (§4.5, Jimmy's 2026-10-20 decision: "Labelary is fine, keep the preview as is. don't render the images as previews just use a placeholder."). Without a sample person, photo and logo elements draw a dashed placeholder on the canvas and print nothing (an outlined box if `hideWhenEmpty` is off).
 - While a badge has a sample person, the Fields panel footer names them ("Sample person: …") and offers **Clear sample person** beside Load from person… (enabled once the fields have loaded, since the Person group says which keys are the person's). The portal sends `person:id` exactly as stored (only `""` means no one, as on the server). Loading a person (even the same one again) or clearing forgets every photo and logo the canvas kept, so they are fetched again.
 
 ### 4.8 System settings › Branding
 
-- A new **Branding** section on System settings (admins): **Company name** (default "Cumulus Solutions Group") and **Company logo** (upload PNG/JPEG/WebP, original stored uncropped; preview; remove). Stored in the system config (`branding` section: `company_name`, `company_logo_key`); the cleanup sweep lists the key.
+- A new **Branding** section on System settings (admins): **Company name** (default "Cumulus Solutions Group") and **Company logo** (upload PNG/JPEG/WebP, original stored uncropped; preview; remove). Stored in the system config (`branding` section: `company_name`, `company_logo_key`); the cleanup sweep lists the key. A blank company name is refused with 422 `company_name_required`, and one that holds a control character with 422 `company_name_invalid` (a badge prints it on one line); the tab says "The company name can’t contain control characters."
 
 ### 4.9 Test print and the Printer button
 
@@ -130,14 +133,15 @@ The preview's ZPL size cap rises from 20,000 to 250,000 characters (a 1 in² pho
 - The person search applies §4.4's staff/worker rule server-side and returns id, name, type, company, avatar presence and logo presence, natural-sorted; archived people and hidden move identities never appear; blacklisted workers do (a designer may need their badge layout).
 - **Load from person…** replaces **every** person sample key, writing `""` for the person's blanks (no stale values from a previous person); clearing the sample person resets them.
 - Image prep and dither run in a worker thread with a small LRU cache of prepped rasters; decoded images are capped at 40 megapixels (decompression-bomb guard) at upload and at prep; a preview past the 250,000-character cap shows "Too large to preview at this DPI" instead of failing.
-- Static library images: PNG/JPEG/WebP/GIF, 5 MiB, originals stored uncropped, soft delete (an image in use degrades to "no image"); deleting is allowed while in use. The builder's static-image picker has **Delete…** for the picked image (a report-generate confirm: "<image name> · Delete", "Templates that use it will print nothing in its place until another image is picked."); the element keeps its `imageId` and the canvas shows the placeholder.
+- Static library images: PNG/JPEG/WebP/GIF, 5 MiB, originals stored uncropped, soft delete (an image in use degrades to "no image"); deleting is allowed while in use. The builder's static-image picker has **Delete…** for the picked image (a report-generate confirm: "<image name> · Delete", "Templates that use it print no picture in its place (an outlined box where Hide when empty is off) until another image is picked."); the element keeps its `imageId` and the canvas shows the placeholder.
+- A library image's name (the one given, else the file's name) that holds a control character is refused with 422 `bad_field` (field `name`). The picker says "The file’s name has a control character in it. Rename the file and upload it again." instead of the file-type sentence it gives for `empty_file`, `invalid_file_type`, `unreadable_image` and `image_too_large`.
 - Branding upload: `PUT /settings/branding/logo` (PNG/JPEG/WebP, 5 MiB, original stored), `settings:change`; the Branding tab is viewable with `settings:view`. `_key_sources` reads the logo key from the system config JSON.
 - `ImageCropModal` fills white before drawing so transparent logos and avatars no longer turn black (affects every crop in the portal, intended). Partner logos stay cropped squares for now; storing originals is later work.
 
 ### 4.12 Geometry details
 
 - An image fits into its unrotated `w × h` box at the DPI, then is transposed for 90/180/270; the footprint swaps as for shapes, with `x, y` its top-left.
-- The outlined box for an empty photo/logo with `hideWhenEmpty` off is a 2-dot `^GB` (0.01 in at 203).
+- The outlined box for an empty photo/logo with `hideWhenEmpty` off is a 2-dot `^GB` (0.01 in at 203). The printer preview's placeholder is the same outline plus two 2-dot `^GD` diagonals, drawn for every image element.
 - Inverted text over an image XORs on paper (`^FR`); the canvas draws it the same way (difference blend), so what you see is what prints.
 - Rasters are fetched one per element, debounced while resizing; the response is `application/octet-stream` with `X-Raster-Width`/`X-Raster-Height` headers. The canvas keeps them for the session within 64 entries and 64 MiB (least recently used first); a 404 `no_image` is never kept.
 
