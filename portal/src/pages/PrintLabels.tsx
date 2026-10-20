@@ -59,6 +59,8 @@ import '../styles/reports.css';
 import '../styles/labels.css';
 
 const LABEL_DELAY_MS = 100;
+/** The id of Custom's one send when no asset is ticked (no row has it). */
+const RAW_ONCE = '';
 const READING_DPI = "Reading the printer's resolution…";
 const CHOOSE_DPI = "Choose the printer's DPI (Step 3) to print.";
 const AUTO_NEXT_SECONDS = 5;
@@ -470,9 +472,13 @@ export default function PrintLabels() {
     [containerMode, containerSelected, containerDisplayed, selected, displayed, settings]);
   const activeSelected = containerMode ? containerSelected : selected;
   const setActiveSelected = containerMode ? setContainerSelected : setSelected;
+  /** What Print sends: the printable selection, or for Custom with nothing
+   *  ticked one send of the raw ZPL with no asset behind it. */
+  const printIds = useMemo(() => (isCustom && activeSelected.length === 0 ? [RAW_ONCE] : printableIds),
+    [isCustom, activeSelected.length, printableIds]);
 
   const validateForPrint = (): { ids: string[]; stale: number } | null => {
-    if (!printer.connected || !labelType || printableIds.length === 0) {
+    if (!printer.connected || !labelType || printIds.length === 0) {
       setNotice({ type: 'error', message: `Please connect a printer, select a label type, and select ${entityNoun}s to print` });
       return null;
     }
@@ -482,7 +488,7 @@ export default function PrintLabels() {
     }
     if (isCustom) {
       if (!customZpl.trim()) { setNotice({ type: 'error', message: 'Please enter raw ZPL code for custom label printing' }); return null; }
-      return { ids: printableIds, stale: 0 };
+      return { ids: printIds, stale: 0 };
     }
     if (!printerDpi) {
       setNotice({ type: 'error', message: CHOOSE_DPI });
@@ -616,7 +622,7 @@ export default function PrintLabels() {
   };
 
   const dpiBlocked = readingDpi || (!isCustom && !printerDpi);
-  const canPrint = printer.connected && !!labelType && printableIds.length > 0 && !printing && !batch && !dpiBlocked;
+  const canPrint = printer.connected && !!labelType && printIds.length > 0 && !printing && !batch && !dpiBlocked;
   const modified = settingsModified(settings);
 
   return (
@@ -702,7 +708,7 @@ export default function PrintLabels() {
               );
             })}
             <ChoiceCard title="Custom" selected={isCustom} onSelect={() => handleLabelTypeChange(LABEL_TYPE_CUSTOM)}
-                        description="Send raw ZPL to the printer once per selected asset" />
+                        description="Send raw ZPL to the printer once, or once per selected asset" />
           </div>
           {coverage && coverage.missing > 0 && (
             <p className="page-hint"><Link to="/labels/generate">Generate labels</Link> for the {entityNoun}s that are missing one.</p>
@@ -764,7 +770,8 @@ export default function PrintLabels() {
                     ? `Printing ${inlineProgress.done} of ${inlineProgress.total}…`
                     : readingDpi ? READING_DPI
                     : printer.connected && !isCustom && labelType && !printerDpi ? CHOOSE_DPI
-                    : activeSelected.length === 0 ? `Select ${entityNoun}s to print labels`
+                    : activeSelected.length === 0
+                      ? (isCustom ? 'The ZPL prints once; select assets to print it once per asset' : `Select ${entityNoun}s to print labels`)
                     : `${printableIds.length} label(s) will be printed${activeSelected.length > printableIds.length ? ` · ${activeSelected.length - printableIds.length} selected ${entityNoun}(s) are hidden by the current filters` : ''}`}>
           <div className="plabels-ready-actions">
             <button type="button" className="btn-ghost plabels-gear" aria-label="Print settings" title="Print settings"
@@ -772,7 +779,7 @@ export default function PrintLabels() {
               Settings{modified && <span className="plabels-modified" aria-hidden="true" />}
             </button>
             <button type="button" className="btn-solid" disabled={!canPrint} onClick={() => void handlePrint()}>
-              {printing ? 'Printing…' : `Print ${printableIds.length} label${printableIds.length === 1 ? '' : 's'}`}
+              {printing ? 'Printing…' : `Print ${printIds.length} label${printIds.length === 1 ? '' : 's'}`}
             </button>
           </div>
         </StepCard>
