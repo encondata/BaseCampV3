@@ -1028,7 +1028,7 @@ export interface EdgeSetup {
   initiative_name: string | null;
   site_id: string | null;
   site_name: string | null;
-  site_role: 'source' | 'destination' | null;
+  site_role: 'source' | 'destination' | 'other' | null;
   scan_status: string | null;
   scan_status_label: string | null;
   station_type: 'label' | 'rfid' | 'timeclock' | null;

@@ -21,6 +21,7 @@ import PrintingStation from './pages/PrintingStation';
 import RfidStatus from './pages/RfidStatus';
 import Scan from './pages/Scan';
 import Settings from './pages/Settings';
+import StartTimeclock from './pages/StartTimeclock';
 import Timeclock from './pages/Timeclock';
 import Trucks from './pages/Trucks';
 
@@ -55,6 +56,10 @@ export default function App() {
               on a laptop RFID station. The page itself sends web mode, or a
               laptop with no paired reader, home. */}
           <Route path="/rfid_status" element={<KioskGuard><KioskShell><RfidStatus /></KioskShell></KioskGuard>} />
+          {/* Start Time Clock — the Time Clock station's Home tile and where
+              its Kiosk Setup lands. Signed in like /rfid_status: it arms
+              this browser as the station's display, then signs out. */}
+          <Route path="/timeclock/station" element={<KioskGuard><KioskShell><StartTimeclock /></KioskShell></KioskGuard>} />
           <Route path="/settings" element={<KioskShell><Settings /></KioskShell>} />
           <Route path="/" element={<KioskGuard><KioskShell><Home /></KioskShell></KioskGuard>} />
           {/* Scanning is a real screen now, so it gets its own route

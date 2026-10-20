@@ -184,6 +184,15 @@ it('a Label Station shows only Kiosk Setup, Label Printing and Settings', () => 
   expect(tileTitles()).toEqual(['Kiosk Setup', 'Label Printing', 'Settings']);
 });
 
+it('a Time Clock station shows only Time Clock, Kiosk Setup and Settings, Time Clock linking to its start page', () => {
+  window.__KIOSK_CONFIG__ = { mode: 'laptop' };
+  writeSetupState('complete');
+  saveSetup('timeclock');
+  renderRouted();
+  expect(tileTitles()).toEqual(['Time Clock', 'Kiosk Setup', 'Settings']);
+  expect(screen.getAllByRole('link')[0].getAttribute('href')).toBe('/timeclock/station');
+});
+
 it('web mode and an unset laptop still show every feature', () => {
   writeSetupState('complete');
   saveSetup('rfid');

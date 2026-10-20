@@ -1,0 +1,122 @@
+/**
+ * The Time Clock station's edge client (laptop edition). The edge holds
+ * the station key; the browser only ever talks to `/edge/timeclock/*`.
+ *
+ * - `getStationInfo` is public: the kiosk asks it on load to learn whether
+ *   `/` with nobody signed in should show the time clock.
+ * - `armDisplay` is the one signed-in call (Start Time Clock): it goes
+ *   through `apiFetch` so the session bearer rides along, and the edge
+ *   answers with the HttpOnly display cookie the signed-out routes need.
+ * - The people list, status and punches run signed out, so they are plain
+ *   same-origin fetches (the display cookie rides along on its own), never
+ *   `apiFetch`, which would read a 401 as the session ending. Their errors
+ *   keep the edge's own code and status (`edge_offline` included), unlike
+ *   `lib/api.ts`, which folds `edge_offline` into `network`.
+ */
+
+import { useCallback, useEffect, useState } from 'react';
+
+import {
+  ApiError, apiFetch, type KioskPeopleSync, type KioskPersonRow, type KioskTimeclockStatus,
+} from '../lib/api';
+import { isLaptop } from '../lib/platform';
+
+export interface StationInfo {
+  timeclock: boolean;
+  ready: boolean;
+  paused: boolean;
+  armed: boolean;
+  initiative_name: string | null;
+  site_name: string | null;
+}
+
+const BASE = '/edge/timeclock';
+
+async function edgeError(resp: Response): Promise<ApiError> {
+  let code = 'unknown_error';
+  let detail: unknown;
+  try {
+    const body = await resp.json();
+    detail = body?.detail;
+    code = body?.detail?.code ?? code;
+  } catch {
+    /* non-JSON error body */
+  }
+  return new ApiError(resp.status, code, detail);
+}
+
+async function edgeFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  let resp: Response;
+  try {
+    resp = await fetch(`${BASE}${path}`, { ...init, credentials: 'same-origin' });
+  } catch {
+    throw new ApiError(0, 'network');
+  }
+  if (!resp.ok) throw await edgeError(resp);
+  return resp.json() as Promise<T>;
+}
+
+function postPerson(path: string, personId: string): Promise<KioskTimeclockStatus> {
+  return edgeFetch<KioskTimeclockStatus>(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ person_id: personId }),
+  });
+}
+
+/** What the edge says about this laptop's station; null on any failure. */
+export async function getStationInfo(): Promise<StationInfo | null> {
+  try {
+    return await edgeFetch<StationInfo>('/station');
+  } catch {
+    return null;
+  }
+}
+
+/** Marks this browser as the station's display (Start Time Clock). Throws
+ *  `ApiError`: 409 `not_timeclock_station`, 403 `move_locked` for a
+ *  move-password session. */
+export async function armDisplay(): Promise<void> {
+  const resp = await apiFetch(`${BASE}/arm`, { method: 'POST' });
+  if (!resp.ok) throw await edgeError(resp);
+}
+
+export async function stationPeople(): Promise<KioskPersonRow[]> {
+  return (await edgeFetch<KioskPeopleSync>('/people')).people;
+}
+
+export function stationStatus(personId: string): Promise<KioskTimeclockStatus> {
+  return edgeFetch<KioskTimeclockStatus>(`/status/${encodeURIComponent(personId)}`);
+}
+
+export function stationClockIn(personId: string): Promise<KioskTimeclockStatus> {
+  return postPerson('/clock-in', personId);
+}
+
+export function stationClockOut(personId: string): Promise<KioskTimeclockStatus> {
+  return postPerson('/clock-out', personId);
+}
+
+/** The station info on a laptop. `loading` is true only until the first
+ *  answer; `refresh()` reads again and keeps the last info meanwhile, so a
+ *  screen built on it never blanks. Web mode never asks. */
+export function useStationInfo(): { loading: boolean; info: StationInfo | null; refresh(): void } {
+  const laptop = isLaptop();
+  const [loading, setLoading] = useState(laptop);
+  const [info, setInfo] = useState<StationInfo | null>(null);
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    if (!laptop) return undefined;
+    let live = true;
+    void getStationInfo().then((next) => {
+      if (!live) return;
+      setInfo(next);
+      setLoading(false);
+    });
+    return () => { live = false; };
+  }, [laptop, tick]);
+
+  const refresh = useCallback(() => setTick((t) => t + 1), []);
+  return { loading: laptop && loading, info: laptop ? info : null, refresh };
+}

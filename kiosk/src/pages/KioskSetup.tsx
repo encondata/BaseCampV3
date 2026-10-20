@@ -12,6 +12,10 @@
  * step finishes (a switch to one, or a re-run of one with no printer
  * settings, reads as incomplete from the Site save until then). The
  * summary of a Label Station the edge has no printer settings for says so.
+ * A Time Clock station walks Move → Site only, and its move is optional:
+ * the Move step leads with a **No move** card, after which Site lists
+ * every site plus **No site**. Picking a site saves it (no scan type, no
+ * move-data download) and goes to Start Time Clock (`/timeclock/station`).
  * Tap-to-select card pickers (`.setup-card`, mirroring `.kiosk-tile`) —
  * large touch targets, no native `<select>`. Tapping a move or site card
  * selects it and advances to the next step; tapping a scan-type card
@@ -80,6 +84,7 @@ function pathFor(laptop: boolean, stationType: StationType | ''): Step[] {
   if (!laptop) return ['move', 'site', 'scan'];
   if (stationType === 'rfid') return ['type', 'reader', 'connect', 'pair', 'network', 'move', 'site', 'scan', 'confirm'];
   if (stationType === 'label') return ['type', 'move', 'site', 'kind', 'printer'];
+  if (stationType === 'timeclock') return ['type', 'move', 'site'];
   return ['type', 'move', 'site', 'scan'];
 }
 
@@ -121,6 +126,9 @@ export default function KioskSetup() {
   const [paired, setPaired] = useState<PairResult | null>(null);
   const [initiativeId, setInitiativeId] = useState('');
   const [siteId, setSiteId] = useState('');
+  // A Time Clock station's "No move" and "No site" picks (ids stay empty).
+  const [noMove, setNoMove] = useState(false);
+  const [noSite, setNoSite] = useState(false);
   const [scanStatus, setScanStatus] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
@@ -188,6 +196,8 @@ export default function KioskSetup() {
     if (!hadSelection || selection !== null) return;
     setInitiativeId('');
     setSiteId('');
+    setNoMove(false);
+    setNoSite(false);
     setScanStatus('');
     setStationType('');
     setReaderIp('');
@@ -223,8 +233,10 @@ export default function KioskSetup() {
       return;
     }
     const initiative = options.initiatives.find((i) => i.id === initiativeId);
-    const validSiteIds = [initiative?.source_site?.id, initiative?.destination_site?.id]
-      .filter((id): id is string => Boolean(id));
+    const validSiteIds = noMove
+      ? (options.sites ?? []).map((site) => site.id)
+      : [initiative?.source_site?.id, initiative?.destination_site?.id]
+        .filter((id): id is string => Boolean(id));
     if (siteId && !validSiteIds.includes(siteId)) setSiteId('');
     if (scanStatus && !scanTypes.some((s) => s.key === scanStatus)) setScanStatus('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -233,14 +245,19 @@ export default function KioskSetup() {
   const openWizard = (preselect: boolean) => {
     touched.current = true;
     if (preselect && selection) {
+      const savedTimeclock = selection.stationType === 'timeclock';
       setInitiativeId(selection.initiativeId);
       setSiteId(selection.siteId);
+      setNoMove(savedTimeclock && !selection.initiativeId);
+      setNoSite(savedTimeclock && !selection.siteId);
       setScanStatus(selection.scanStatus);
       setStationType(laptop ? selection.stationType ?? '' : '');
       setReaderIp(selection.reader?.ip ?? '');
     } else {
       setInitiativeId('');
       setSiteId('');
+      setNoMove(false);
+      setNoSite(false);
       setScanStatus('');
       setStationType('');
       setReaderIp('');
@@ -276,27 +293,83 @@ export default function KioskSetup() {
     setStep('connect');
   };
 
+  const timeclock = laptop && stationType === 'timeclock';
+  // With no move, a Time Clock station may stand at any site, or none.
+  const anySite = timeclock && noMove;
   const selectedInitiative = options?.initiatives.find((i) => i.id === initiativeId) ?? null;
-  const siteChoices: { site: SetupOptionSite; role: 'source' | 'destination' }[] = [];
-  if (selectedInitiative?.source_site) {
-    siteChoices.push({ site: selectedInitiative.source_site, role: 'source' });
-  }
-  if (selectedInitiative?.destination_site) {
-    siteChoices.push({ site: selectedInitiative.destination_site, role: 'destination' });
+  const siteChoices: { site: SetupOptionSite; role: 'source' | 'destination' | null }[] = [];
+  if (anySite) {
+    (options?.sites ?? []).forEach((site) => siteChoices.push({ site, role: null }));
+  } else {
+    if (selectedInitiative?.source_site) {
+      siteChoices.push({ site: selectedInitiative.source_site, role: 'source' });
+    }
+    if (selectedInitiative?.destination_site) {
+      siteChoices.push({ site: selectedInitiative.destination_site, role: 'destination' });
+    }
   }
 
   const selectMove = (id: string) => {
     touched.current = true;
-    if (id !== initiativeId) setSiteId('');
+    if (id !== initiativeId || noMove) {
+      setSiteId('');
+      setNoSite(false);
+    }
     setInitiativeId(id);
+    setNoMove(false);
+    setStep('site');
+  };
+
+  /** A Time Clock station's "No move": its site list is every site. */
+  const selectNoMove = () => {
+    touched.current = true;
+    if (!noMove) {
+      setSiteId('');
+      setNoSite(false);
+    }
+    setInitiativeId('');
+    setNoMove(true);
     setStep('site');
   };
 
   const selectSite = (id: string) => {
     setSiteId(id);
+    setNoSite(false);
+    // A Time Clock station has no scan type: picking the site saves it.
+    if (timeclock) void finishTimeclock(id);
     // A Label Station has nothing to choose: save Labeled straight away.
-    if (laptop && stationType === 'label') void finish(LABEL_STATION_SCAN_STATUS, id);
+    else if (laptop && stationType === 'label') void finish(LABEL_STATION_SCAN_STATUS, id);
     else setStep('scan');
+  };
+
+  /** Saves a Time Clock station: no scan type, and the move and site may
+   *  each be left out. There is no move data to download; the person goes
+   *  straight on to Start Time Clock. */
+  const finishTimeclock = async (chosenSiteId: string) => {
+    setSubmitting(true);
+    setSubmitError('');
+    try {
+      const result = await submitKioskSetup({
+        serial: getIdentity().serial, initiative_id: initiativeId || null,
+        site_id: chosenSiteId || null, station_type: 'timeclock',
+      });
+      setSelection({
+        initiativeId: result.initiative_id ?? '', initiativeName: result.initiative_name ?? 'No move',
+        siteId: result.site_id ?? '', siteName: result.site_name ?? 'No site',
+        siteRole: result.site_role ?? 'none',
+        scanStatus: '', scanLabel: '', stationType: 'timeclock',
+      });
+      dismissSetupClearNotice();
+      writeSetupState('complete');
+      setWizardOpen(false);
+      navigate('/timeclock/station');
+    } catch (err) {
+      // Same rule as finish(): never downgrade a kiosk that was already set up.
+      if (readSetupState() !== 'complete') writeSetupState('failed');
+      setSubmitError(err instanceof ApiError ? err.code : 'unknown_error');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const finish = async (scanKey: string, chosenSiteId: string = siteId) => {
@@ -371,6 +444,7 @@ export default function KioskSetup() {
 
   if (!wizardOpen && selection) {
     const resync = () => { void runSync(selection.initiativeId, selection.initiativeName); };
+    const timeclockSummary = selection.stationType === 'timeclock';
     return (
       <div className="portal-page">
         <div className="eyebrow">Kiosk · Setup</div>
@@ -385,11 +459,19 @@ export default function KioskSetup() {
           <p className="sys-banner sys-banner-broadcast" role="status">{NO_PRINTER_NOTICE}</p>
         )}
         <div className="setup-summary">
-          <p>
-            This kiosk is set up for <b>{selection.initiativeName}</b> at{' '}
-            <b>{selection.siteName}</b> ({selection.siteRole}) · scan type{' '}
-            <b>{selection.scanLabel}</b>
-          </p>
+          {timeclockSummary ? (
+            <p>
+              This kiosk is a Time Clock station for{' '}
+              <b>{selection.initiativeId ? selection.initiativeName : 'no move'}</b> at{' '}
+              <b>{selection.siteId ? selection.siteName : 'no site'}</b>.
+            </p>
+          ) : (
+            <p>
+              This kiosk is set up for <b>{selection.initiativeName}</b> at{' '}
+              <b>{selection.siteName}</b> ({selection.siteRole}) · scan type{' '}
+              <b>{selection.scanLabel}</b>
+            </p>
+          )}
           {laptop && selection.stationType && (
             <p>
               Station: <b>{stationLabel(selection.stationType, platform().label)}</b>
@@ -398,7 +480,8 @@ export default function KioskSetup() {
               )}
             </p>
           )}
-          <div className="sync-status">
+          {/* A Time Clock station downloads no move data. */}
+          {!timeclockSummary && <div className="sync-status">
             {/* idle only happens before a first sync, or after the
                 Developer tab's "Clear local data" — without this branch
                 that would be a dead end with no way back. */}
@@ -428,7 +511,7 @@ export default function KioskSetup() {
                 <button type="button" className="mini-btn" onClick={resync}>Try again</button>
               </>
             )}
-          </div>
+          </div>}
           <div className="setup-actions">
             <button type="button" className="mini-btn" onClick={() => openWizard(true)}>
               Change setup
@@ -547,6 +630,15 @@ export default function KioskSetup() {
           <div>
             <h2>Which move?</h2>
             <div className="setup-cards" role="listbox" aria-label="Moves">
+              {timeclock && (
+                <button type="button" role="option" aria-selected={noMove} className="setup-card"
+                        onClick={selectNoMove}>
+                  <div className="setup-card-title">No move</div>
+                  <div className="setup-card-meta">
+                    Punches are filed under no move and sorted out later in the portal.
+                  </div>
+                </button>
+              )}
               {options.initiatives.map((i) => {
                 const dates = formatMoveDates(i);
                 return (
@@ -589,23 +681,34 @@ export default function KioskSetup() {
           <div>
             <h2>Which site is this kiosk at?</h2>
             <div className="setup-cards" role="listbox" aria-label="Sites">
+              {/* No site only without a move: a move's station always
+                  stands at one of its sites (the portal refuses a move
+                  with no site). */}
+              {anySite && (
+                <button type="button" role="option" aria-selected={noSite}
+                        className={`setup-card${submitting && noSite ? ' is-saving' : ''}`}
+                        disabled={submitting}
+                        onClick={() => { setSiteId(''); setNoSite(true); void finishTimeclock(''); }}>
+                  <div className="setup-card-title">No site</div>
+                </button>
+              )}
               {siteChoices.map(({ site, role }) => (
                 <button key={site.id} type="button" role="option"
                         aria-selected={siteId === site.id}
                         className={`setup-card${submitting && siteId === site.id ? ' is-saving' : ''}`}
                         disabled={submitting} onClick={() => selectSite(site.id)}>
-                  <div className="setup-card-role">{role.toUpperCase()}</div>
+                  {role && <div className="setup-card-role">{role.toUpperCase()}</div>}
                   <div className="setup-card-title">{site.name}</div>
                 </button>
               ))}
             </div>
-            {siteChoices.length === 0 && (
+            {siteChoices.length === 0 && !anySite && (
               <p className="page-hint">
                 This move has no sites yet. Ask a coordinator to add them.
               </p>
             )}
-            {/* A Label Station saves straight from this step. */}
-            {submitError && laptop && stationType === 'label' && (
+            {/* A Label or Time Clock station saves straight from this step. */}
+            {submitError && laptop && (stationType === 'label' || stationType === 'timeclock') && (
               <p className="form-error" role="alert">
                 {submitError === 'cloud_sign_in_required'
                   ? CLOUD_SIGN_IN_TEXT
