@@ -1140,11 +1140,14 @@ async def compile_template(
 ) -> LabelCompileOut:
     """A preview's or test print's code. A builder design prints the page's
     samples over the mock values, and its images (schema 3, ID Badge ZPL
-    only: 422 `images_badge_only`) resolved here: library images for anyone
-    with labels:view, the sample person's (`person:id`) photo and logo at
-    rank 80 only (below, they print as empty). `image_mode` placeholder
-    (the preview, which goes to Labelary) prints every image as a crossed
-    box instead: no picture is read and no sample person looked up."""
+    only: 422 `images_badge_only`) resolved here at rank 80 only: library
+    images and the sample person's (`person:id`) photo and logo. `image_mode`
+    placeholder (the preview, which goes to Labelary) prints every image as
+    a crossed box instead: no picture is read and no sample person looked
+    up. Below rank 80 every compile is the placeholder one, whatever the
+    image_mode: only the builder (rank 80) needs real pictures, and reading
+    library images for any labels:view caller let one keep the API
+    dithering up to MAX_DESIGN_IMAGE_DOTS per request."""
     size = await db.get(LabelVocab, ("size", body.size_key))
     dpi = await db.get(LabelVocab, ("dpi", body.dpi_key))
     lang = await db.get(LabelVocab, ("language", body.language_key))
@@ -1169,7 +1172,8 @@ async def compile_template(
 
     if body.design is None:
         raise _err(422, "bad_payload", message="design kind needs design")
-    placeholders = body.image_mode == "placeholder"
+    placeholders = (body.image_mode == "placeholder"
+                    or actor.access.max_rank < SUPER_ADMIN_RANK)
     out = await _compile_design(db, body.design, body.size_key, body.dpi_key,
                                 body.language_key, subs,
                                 images_for=actor if v2 and not placeholders else None,
