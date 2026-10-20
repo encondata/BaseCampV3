@@ -26,10 +26,10 @@ describe('previewRequest', () => {
   it('builds the compile body (v2 design with its samples) and the preview body (with font ids)', () => {
     const d = parseDesign(vegas);
     const samples = { asset_id: '100000', destination_rack: '14.01.07C.02.03' };
-    const req = previewRequest(d, 600, samples, ['rc-r'], '4x2');
+    const req = previewRequest(d, 600, samples, ['rc-r'], '4x2', 'top');
     expect(req.compile).toEqual({
       kind: 'design', design: vegas, size_key: '4x2', dpi_key: '600', language_key: 'zpl',
-      mode: 'sample', samples,
+      mode: 'sample', samples, label_type: 'top',
     });
     expect(req.preview('^XA^XZ')).toEqual({
       zpl: '^XA^XZ', size_key: '4x2', dpi_key: '600', font_ids: ['rc-r'],
@@ -39,7 +39,7 @@ describe('previewRequest', () => {
   it('sends copies, so a later edit never changes a body already built', () => {
     const samples = { asset_id: '1' };
     const fontIds = ['a'];
-    const req = previewRequest(newDesign({ w: 2, h: 1 }), 300, samples, fontIds, '2x1');
+    const req = previewRequest(newDesign({ w: 2, h: 1 }), 300, samples, fontIds, '2x1', 'container');
     samples.asset_id = '2';
     fontIds.push('b');
     expect(req.compile.samples).toEqual({ asset_id: '1' });

@@ -218,9 +218,21 @@ describe('a parent template', () => {
     await waitFor(() => expect(printer.send).toHaveBeenCalledWith('^XA^FD10482^FS^XZ'));
     expect(api.compileLabel).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'design', dpi_key: '203', size_key: '4x2', language_key: 'zpl', samples: SAMPLES,
-      design: expect.objectContaining({ schema: 2 }),
+      design: expect.objectContaining({ schema: 2 }), label_type: 'top',
     }));
     expect(printer.connect).not.toHaveBeenCalled();
+  });
+
+  it('the printer preview compiles for the template\'s label type (out-of-type keys preview blank)', async () => {
+    api.previewZplRequest.mockRejectedValue(new Error('offline'));
+    await openParent();
+    const preview = screen.getByRole('region', { name: 'Printer preview' });
+    fireEvent.click(within(preview).getByRole('button', { name: 'Render' }));
+    await waitFor(() => expect(api.compileLabel).toHaveBeenCalledTimes(1));
+    expect(api.compileLabel).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'design', dpi_key: '300', size_key: '4x2', mode: 'sample', samples: SAMPLES, label_type: 'top',
+    }));
+    await within(preview).findByRole('alert');
   });
 
   it('⌘P connects a printer first when none is connected', async () => {

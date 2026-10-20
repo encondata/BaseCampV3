@@ -19,6 +19,9 @@ export interface CompileBody {
   mode: 'sample';
   /** Field key → sample value: what the design prints with. */
   samples: Record<string, string>;
+  /** The template's label type: only its fields take mock values, so a key
+   *  of another type previews blank, as it prints. */
+  label_type: string;
 }
 
 export interface PreviewZplBody {
@@ -44,10 +47,10 @@ export interface LibraryFont {
 }
 
 /** Both bodies for previewing `design` at `dpi` with `samples`, the open
- *  fonts `fontIds` embedded. `sizeKey` is the template's size; the bodies
- *  hold copies of what they are given. */
+ *  fonts `fontIds` embedded. `sizeKey` and `labelType` are the template's;
+ *  the bodies hold copies of what they are given. */
 export function previewRequest(design: DesignV2, dpi: number, samples: Readonly<Record<string, string>>,
-  fontIds: readonly string[], sizeKey: string): PreviewRequest {
+  fontIds: readonly string[], sizeKey: string, labelType: string): PreviewRequest {
   const dpiKey = String(dpi);
   const ids = [...fontIds];
   return {
@@ -59,6 +62,7 @@ export function previewRequest(design: DesignV2, dpi: number, samples: Readonly<
       language_key: 'zpl',
       mode: 'sample',
       samples: { ...samples },
+      label_type: labelType,
     },
     preview: (zpl) => ({ zpl, size_key: sizeKey, dpi_key: dpiKey, font_ids: [...ids] }),
   };

@@ -476,7 +476,7 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
     try {
       const { code } = await compileLabel({
         kind: 'design', design: serializeDesign(shownDesign), size_key: template.size_key, dpi_key: dpiKey,
-        language_key: 'zpl', mode: 'sample', samples: { ...shownSamples },
+        language_key: 'zpl', mode: 'sample', samples: { ...shownSamples }, label_type: template.label_type,
       });
       if (!printer.connected) await printer.connect();
       await printer.send(code);
@@ -698,7 +698,7 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
             metricsFor={metricsFor} onChange={editChange} onSelect={onSelect} labelType={template.label_type}
             readOnly={readOnly} />
           <PreviewPanel design={shownDesign} dpi={dpi} samples={shownSamples} library={library}
-            sizeKey={template.size_key} disabled={!isZpl} />
+            sizeKey={template.size_key} labelType={template.label_type} disabled={!isZpl} />
         </div>
       </div>
 

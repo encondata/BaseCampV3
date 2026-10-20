@@ -22,6 +22,8 @@ export interface PreviewPanelProps {
   /** GET /labels/fonts; null while it loads. */
   library: readonly LabelFont[] | null;
   sizeKey: string;
+  /** The template's label type: the preview mocks only its fields. */
+  labelType: string;
   /** Only ZPL renders here. */
   disabled?: boolean;
 }
@@ -37,7 +39,9 @@ function errorText(err: unknown): string {
   return "Couldn't render the preview.";
 }
 
-export default function PreviewPanel({ design, dpi, samples, library, sizeKey, disabled = false }: PreviewPanelProps) {
+export default function PreviewPanel({
+  design, dpi, samples, library, sizeKey, labelType, disabled = false,
+}: PreviewPanelProps) {
   const [url, setUrl] = useState<string | null>(null);
   const [shown, setShown] = useState<{ design: DesignV2; dpi: number; samples: Readonly<Record<string, string>> } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -50,7 +54,7 @@ export default function PreviewPanel({ design, dpi, samples, library, sizeKey, d
     setBusy(true);
     setError(null);
     try {
-      const req = previewRequest(design, dpi, samples, fontIdsFor(design, library ?? []), sizeKey);
+      const req = previewRequest(design, dpi, samples, fontIdsFor(design, library ?? []), sizeKey, labelType);
       const { code } = await compileLabel(req.compile);
       const blob = await previewZplRequest(req.preview(code));
       setUrl(URL.createObjectURL(blob));

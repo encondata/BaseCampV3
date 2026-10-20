@@ -5661,7 +5661,8 @@ export async function getLabelFontMetrics(id: string): Promise<LabelFontMetrics>
 
 /** A design kind compiles `design` (any JSON object: a schema 1 design or
  *  the builder's schema 2 one); `samples` are a schema 2 design's sample
- *  values, printed over the portal's mock values. */
+ *  values, printed over the portal's mock values for `label_type` (the
+ *  template's: a key of another type prints blank, as on a real label). */
 export async function compileLabel(body: {
   kind: 'design' | 'code';
   design?: object | null;
@@ -5669,6 +5670,7 @@ export async function compileLabel(body: {
   size_key: string; dpi_key: string; language_key: string;
   mode: 'placeholders' | 'sample';
   samples?: Record<string, string>;
+  label_type?: string;
 }): Promise<{ code: string }> {
   const resp = await apiFetch('/labels/templates/compile', {
     method: 'POST',
