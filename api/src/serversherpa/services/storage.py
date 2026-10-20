@@ -193,12 +193,24 @@ async def put_object(key: str, data: bytes, content_type: str) -> None:
     ))
 
 
+def _built_client():
+    """The client, or StorageConfigError when the settings can't build one
+    (a malformed endpoint, a missing key). Only the underlying class name
+    survives: boto3's message ("Invalid endpoint: <url>") and its traceback
+    context are dropped."""
+    try:
+        return _client()
+    except (ValueError, AttributeError) as exc:
+        raise StorageConfigError(type(exc).__name__) from None
+
+
 async def get_object(key: str) -> bytes:
     """Read a private object's bytes (blocking boto3 moved off the loop).
-    Used by the import worker to fetch uploaded files."""
+    Used by the import worker to fetch uploaded files. Raises one of
+    STORAGE_ERRORS (StorageConfigError for unbuildable settings)."""
     s = get_settings()
     resp = await asyncio.to_thread(partial(
-        _client().get_object,
+        _built_client().get_object,
         Bucket=s.spaces_bucket,
         Key=key,
     ))
@@ -248,11 +260,7 @@ async def scan_objects(visit: Callable[[str, int], None], prefix: str = "") -> N
     s = get_settings()
 
     def _scan() -> None:
-        try:
-            client = _client()
-        except (ValueError, AttributeError) as exc:
-            raise StorageConfigError(type(exc).__name__) from None
-        paginator = client.get_paginator("list_objects_v2")
+        paginator = _built_client().get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=s.spaces_bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
                 visit(obj["Key"], int(obj.get("Size", 0)))

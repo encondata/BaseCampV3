@@ -7,6 +7,7 @@ transposition, ready for the shared dither. Pure: no database.
 Pillow lives only in this module, and the API imports it lazily."""
 
 import io
+import random
 import struct
 import subprocess
 import sys
@@ -272,7 +273,7 @@ def test_a_large_picture_is_reduced_before_it_is_composited(monkeypatch):
     logo = Image.new("RGBA", (1000, 500), (0, 0, 0, 0))
     logo.paste((0, 0, 0, 255), (0, 0, 500, 500))               # left half black, right clear
     rows = _rows(gray_raster(_png(logo), 50, 25, "contain", 0))
-    assert reduce_calls[0] == (10,)                            # 1000 // 100, 500 // 50
+    assert reduce_calls[0][0] == 10                            # 1000 // 100, 500 // 50
     assert all(r[:24] == [0] * 24 and r[26:] == [255] * 24 for r in rows)
 
 
@@ -309,6 +310,101 @@ def test_a_picture_up_to_twice_the_box_is_never_reduced(monkeypatch):
     gray_raster(buf.getvalue(), 40, 20, "cover", 0)
     gray_raster(_png(Image.new("RGBA", (159, 79))), 40, 20, "contain", 90)
     assert reduce_calls == [] and drafts == []
+
+
+def corrupt_png(width: int = 20, height: int = 10) -> bytes:
+    """Every chunk's CRC right, but the image stream itself broken: only
+    decoding it finds out."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + kind + data
+                + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
+    rows = b"".join(b"\0" + bytes([200]) * width for _ in range(height))
+    stream = bytearray(zlib.compress(rows))
+    stream[5] ^= 0xFF
+    stream[8] ^= 0x55
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0))
+            + chunk(b"IDAT", bytes(stream)) + chunk(b"IEND", b""))
+
+
+def test_a_corrupt_picture_is_unreadable_not_a_black_slab():
+    """Reading a PNG's EXIF can decode it (no early eXIf chunk): a broken
+    stream must surface as UnreadableImage, never be swallowed there and
+    leave an empty (black) picture behind."""
+    for fit in ("cover", "contain"):
+        with pytest.raises(UnreadableImage):
+            gray_raster(corrupt_png(), 20, 10, fit, 0)
+    with pytest.raises(UnreadableImage):
+        image_prep.probe(corrupt_png())
+    # a large one, on the reduce path, too
+    with pytest.raises(UnreadableImage):
+        gray_raster(corrupt_png(400, 300), 20, 10, "cover", 0)
+
+
+# the reviewer's sources and boxes where the centered crop came out a hair
+# below zero (Pillow: "box offset can't be negative")
+COVER_EDGES = [((94, 662), (210, 340)), ((425, 862), (592, 695)), ((1603, 1426), (436, 197))]
+
+
+def test_cover_never_crops_outside_the_picture():
+    for (sw, sh), (bw, bh) in COVER_EDGES:
+        for rotation in (0, 90):
+            r = gray_raster(_png(Image.new("L", (sw, sh), 100)), bw, bh, "cover", rotation)
+            assert sorted((r.width, r.height)) == sorted((bw, bh))
+            assert set(r.gray) == {100}
+
+
+def test_any_picture_fits_any_box(monkeypatch):
+    """500 random source and box sizes, both fits: never an error, always
+    exactly the box, and every crop inside its picture (Pillow tolerates a
+    right or bottom edge a hair outside; the crop never relies on that)."""
+    boxes = []
+    real_resize = Image.Image.resize
+
+    def recording_resize(self, size, resample=None, box=None, *args, **kwargs):
+        if box is not None:
+            boxes.append((self.size, box))
+        return real_resize(self, size, resample, box, *args, **kwargs)
+
+    monkeypatch.setattr(Image.Image, "resize", recording_resize)
+    rnd = random.Random(20261020)
+    for _ in range(500):
+        sw, sh = rnd.randint(1, 1500), rnd.randint(1, 1500)
+        bw, bh = rnd.randint(1, 700), rnd.randint(1, 700)
+        fit = rnd.choice(("cover", "contain"))
+        r = gray_raster(_png(Image.new("L", (sw, sh), 37)), bw, bh, fit, 0)
+        assert (r.width, r.height) == (bw, bh), (sw, sh, bw, bh, fit)
+        assert set(r.gray) <= {37, 255}, (sw, sh, bw, bh, fit)
+    assert boxes
+    for (iw, ih), (left, top, right, bottom) in boxes:
+        assert 0 <= left <= right <= iw and 0 <= top <= bottom <= ih, ((iw, ih), (left, top))
+
+
+def _mirror_png(width: int, height: int) -> bytes:
+    """Dark in the middle, light at both edges: the same read either way."""
+    mid = (width - 1) / 2
+    row = bytes(min(255, round(abs(x - mid) * 255 / mid)) for x in range(width))
+    return _png(Image.frombytes("L", (width, height), row * height))
+
+
+def test_a_reduced_picture_stays_centered():
+    """A whole-factor reduction drops the remainder evenly from both sides,
+    so a symmetric picture comes out symmetric (rounding the reduced size up
+    shifted it by up to half a reduced pixel)."""
+    for fit in ("cover", "contain"):
+        rows = _rows(gray_raster(_mirror_png(3001, 3000), 50, 50, fit, 0))
+        assert max(abs(r[x] - r[49 - x]) for r in rows for x in range(25)) <= 1, fit
+
+
+def test_large_sixteen_bit_transparency_reduces_to_white():
+    """The tRNS dots of a large 16-bit gray picture are white once reduced."""
+    row = (1000).to_bytes(2, "little") * 200 + bytes(2 * 200)   # tRNS level | black
+    im = Image.frombytes("I;16", (400, 200), row * 200)
+    assert (im.getpixel((10, 10)), im.getpixel((300, 10))) == (1000, 0)
+    buf = io.BytesIO()
+    im.save(buf, "PNG", transparency=1000)
+    rows = _rows(gray_raster(buf.getvalue(), 20, 10, "cover", 0))
+    assert all(r[:10] == [255] * 10 and r[10:] == [0] * 10 for r in rows)
 
 
 def test_bad_box_or_settings():

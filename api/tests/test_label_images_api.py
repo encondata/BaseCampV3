@@ -32,6 +32,7 @@ from serversherpa.db.models import (
     WorkerProfile,
 )
 from serversherpa.labels import dither, image_prep
+from serversherpa.services import storage
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from tests.test_sites_api import login
 from tests.test_status_values_write import _make
@@ -247,15 +248,49 @@ async def test_a_storage_outage_is_a_502(client, db, seeded_user, store, monkeyp
         assert r.json()["detail"]["code"] == "storage_unavailable"
     assert "storage.internal" not in caplog.text
 
-    # storage that can't be configured at all is the same 502
-    from serversherpa.services.storage import StorageConfigError
 
-    async def unconfigured(key):
-        raise StorageConfigError("ValueError")
+BAD_ENDPOINT = "not a url secret-endpoint"
 
-    monkeypatch.setattr(labels_module, "get_object", unconfigured)
-    r = await _compile(client, sa, _design(_image("s", "static", imageId=image_id)))
+
+@pytest.fixture
+def malformed_endpoint(monkeypatch):
+    """Storage settings whose endpoint boto3 refuses to build a client for
+    (ValueError "Invalid endpoint: <url>"): the real read path, no mock."""
+    from serversherpa.config import get_settings
+
+    monkeypatch.setenv("SS_SPACES_ENDPOINT", BAD_ENDPOINT)
+    get_settings.cache_clear()
+    storage._client.cache_clear()
+    yield
+    get_settings.cache_clear()
+    storage._client.cache_clear()
+
+
+async def test_get_object_wraps_a_client_that_cannot_be_built(malformed_endpoint):
+    with pytest.raises(storage.StorageConfigError) as caught:
+        await storage.get_object("label-images/any.png")
+    assert caught.value.cause == "ValueError"
+    assert "secret" not in str(caught.value).lower()
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
+
+
+async def test_unconfigured_storage_is_a_502(client, db, seeded_user, store, malformed_endpoint,
+                                             monkeypatch, caplog):
+    """A storage client that can't even be built (a malformed endpoint) is
+    the same 502 from the raster and the compile, and the endpoint shows
+    up nowhere."""
+    sa = await _super(db, client)
+    image_id = await _library_image(client, sa)
+    monkeypatch.setattr(labels_module, "get_object", storage.get_object)    # the real read
+    r = await client.post("/labels/images/raster", headers=sa, json={
+        "source": "static", "image_id": image_id, "w_in": 0.1, "h_in": 0.1, "dpi": 300,
+        "fit": "contain", "rotation": 0})
     assert r.status_code == 502 and r.json()["detail"]["code"] == "storage_unavailable"
+    r2 = await _compile(client, sa, _design(_image("s", "static", imageId=image_id)))
+    assert r2.status_code == 502 and r2.json()["detail"]["code"] == "storage_unavailable"
+    assert "StorageConfigError" in caplog.text
+    for text in (r.text, r2.text, caplog.text):
+        assert "secret" not in text
 
 
 async def test_upload_validation(client, db, seeded_user, store):
@@ -370,6 +405,46 @@ async def test_raster_without_a_picture_is_404(client, db, seeded_user, store):
     assert await code(image_id=fresh, w_in=12, h_in=12, dpi=600) == (422, "image_too_large")
     assert (await client.post("/labels/images/raster", headers=sa, json={
         **body, "image_id": fresh, "fit": "stretch"})).status_code == 422
+
+
+async def test_a_corrupt_stored_picture(client, db, seeded_user, store):
+    """A stored picture whose image stream is broken (the upload check
+    would refuse it; a V2 avatar might not have had one): 422 from the
+    raster, nothing printed by the compile, never a black slab."""
+    from tests.test_label_image_prep import corrupt_png
+
+    sa = await _super(db, client)
+    image_id = await _library_image(client, sa)
+    row = await db.get(LabelImage, uuid.UUID(image_id))
+    store.blobs[row.storage_key] = corrupt_png()
+    r = await client.post("/labels/images/raster", headers=sa, json={
+        "source": "static", "image_id": image_id, "w_in": 0.2, "h_in": 0.1, "dpi": 100,
+        "fit": "cover", "rotation": 0})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "unreadable_image"
+    jo = await _worker(db, store)
+    store.blobs["people/jo.png"] = corrupt_png()
+    r = await _compile(client, sa, _design(_image("photo", "photo"),
+                                           _image("s", "static", x=1.4, imageId=image_id)),
+                       samples={"person:id": str(jo.id)})
+    assert r.status_code == 200 and _graphics(r.json()["code"]) == []
+    # the upload refuses one outright
+    up = await _upload(client, sa, corrupt_png())
+    assert up.status_code == 422 and up.json()["detail"]["code"] == "unreadable_image"
+
+
+async def test_cover_boxes_that_used_to_fall_off_the_picture(client, db, seeded_user, store):
+    """Sizes where the centered crop came out a hair below zero: 200, not a
+    Pillow ValueError (500), from the raster and the compile."""
+    from tests.test_label_image_prep import COVER_EDGES
+
+    sa = await _super(db, client)
+    for (sw, sh), (bw, bh) in COVER_EDGES:
+        image_id = await _library_image(client, sa, _png(sw, sh, 90))
+        body = {"source": "static", "image_id": image_id, "w_in": bw / 100, "h_in": bh / 100,
+                "dpi": 100, "fit": "cover", "rotation": 0}
+        r = await client.post("/labels/images/raster", headers=sa, json=body)
+        assert r.status_code == 200, (sw, sh, bw, bh, r.text)
+        assert (int(r.headers["x-raster-width"]), int(r.headers["x-raster-height"])) == (bw, bh)
 
 
 async def test_raster_preps_in_a_thread_and_caches(client, db, seeded_user, store, monkeypatch):
