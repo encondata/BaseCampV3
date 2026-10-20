@@ -64,7 +64,8 @@ from serversherpa.labels import labelary
 from serversherpa.labels import templates_tree as tree
 from serversherpa.labels.compile import UnsupportedLanguage, compile_design
 from serversherpa.labels.fields import (
-    CONTAINER_LABEL_TYPES, design_field_keys, field_values, groups_for, mock_field_values,
+    PERSON_LABEL_TYPES, allows_from_to, design_field_keys, field_values, groups_for,
+    mock_field_values,
 )
 from serversherpa.labels.font_metrics import UnreadableFont, metrics as font_metrics
 from serversherpa.labels.font_seed import (
@@ -266,10 +267,10 @@ async def list_fields(
     """The label builder's fields for a template of `label_type` (every
     group when omitted; labels/fields.py has the catalog), and the From-To
     headers across the rosters of every move not archived, for the
-    `ft:<header>` fields. A container label has no From-To row, so it gets
-    no headers."""
+    `ft:<header>` fields. A container label has no From-To row and an ID
+    badge describes a person, so neither gets headers."""
     headers: list[str] = []
-    if label_type not in CONTAINER_LABEL_TYPES:
+    if allows_from_to(label_type):
         key = func.jsonb_object_keys(InitiativeAsset.raw_ft)
         q = (select(key).distinct()
              .join(Initiative, Initiative.id == InitiativeAsset.initiative_id)
@@ -1601,7 +1602,8 @@ async def preview_generation(
     actor: AuthContext = require_permission("labels", "view"),
 ) -> LabelGeneratePreviewOut:
     """What a run at `dpi_key` (300 by default, like a run) would do: each
-    type's templates at that DPI and the counts of its labels at that DPI."""
+    type's templates at that DPI and the counts of its labels at that DPI.
+    An ID badge (PERSON_LABEL_TYPES) is never offered: it never generates."""
     ini = await _scoped_initiative(db, actor, initiative_id)
 
     client_name = (await db.scalar(select(Client.name).where(Client.id == ini.client_id))
@@ -1627,7 +1629,8 @@ async def preview_generation(
     # Same site preference as the runner: destination, else origin.
     template_site_id = ini.destination_site_id or ini.origin_site_id
     type_rows = (await db.execute(
-        select(LabelVocab).where(LabelVocab.kind == "type", LabelVocab.is_active == True)  # noqa: E712
+        select(LabelVocab).where(LabelVocab.kind == "type", LabelVocab.is_active == True,  # noqa: E712
+                                 LabelVocab.key.not_in(PERSON_LABEL_TYPES))
         .order_by(LabelVocab.sort_order, natural(LabelVocab.key)))).scalars().all()
 
     types: list[LabelGeneratePreviewTypeOut] = []

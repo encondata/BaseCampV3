@@ -1788,6 +1788,29 @@ class LabelFont(Base):
     deleted_at: Mapped[datetime | None]
 
 
+class LabelImage(Base):
+    """A static image in the label builder's image library (ID badge
+    templates, 0104): a template's image element references one by id, so
+    a design copied into every version and DPI child stays small.
+    `storage_key` is the original upload, stored uncropped; `width` and
+    `height` are its pixel size. Soft-deleted: an element whose image is
+    deleted prints nothing."""
+    __tablename__ = "label_images"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    name: Mapped[str]
+    storage_key: Mapped[str]
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    mime: Mapped[str]
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    deleted_at: Mapped[datetime | None]
+
+
 class LabelTemplateSite(Base):
     """One row per template-site assignment; no rows = global template."""
     __tablename__ = "label_template_sites"

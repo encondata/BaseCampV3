@@ -2,8 +2,10 @@
 printer code with its {placeholder} tokens intact (spec
 docs/superpowers/specs/2026-10-19-kiosk-label-templates-sync-design.md §2-3).
 
-Active templates only. A template is included when any of these hold, and
-carries every reason it matched:
+Active templates of the label types a kiosk prints (KIOSK_LABEL_TYPES) only:
+an ID badge or a custom type's template never syncs, whatever its site links
+or name. A template is included when any of these hold, and carries every
+reason it matched:
 - `front`: its label_type is front;
 - `destination_site` / `source_site`: it is linked to the move's
   destination / origin site;
@@ -72,6 +74,10 @@ def row_family(name: str, parent_name: str | None) -> str:
 
 
 CONTAINER_TYPES = ("container", "container_info")
+# The only label types a kiosk prints. An ID badge (labels/fields.py
+# PERSON_LABEL_TYPES) or a custom type from New template › Custom… never
+# reaches one: not in the sync, the font list or the test render.
+KIOSK_LABEL_TYPES = ("top", "front", "rail", *CONTAINER_TYPES)
 
 
 class PickedTemplate(NamedTuple):
@@ -112,12 +118,14 @@ async def move_template_set(db: AsyncSession, initiative: Initiative) -> list[Pi
     site are never named — a Front/Generic/Container template linked only
     elsewhere is still picked, with an empty list. Then the template's
     `link_scope` and its family (`row_family`). Builder parents are never
-    in the set; their children are, with the parent's site links."""
+    in the set; their children are, with the parent's site links. Only the
+    KIOSK_LABEL_TYPES are ever in it."""
     parent = aliased(LabelTemplate)
     rows = (await db.execute(
         select(LabelTemplate, parent.name)
         .outerjoin(parent, parent.id == LabelTemplate.parent_id)
         .where(LabelTemplate.is_active.is_(True),
+               LabelTemplate.label_type.in_(KIOSK_LABEL_TYPES),
                (LabelTemplate.parent_id.is_not(None)) | (LabelTemplate.schema_version < 2))
         .order_by(natural(LabelTemplate.name), LabelTemplate.id))).all()
     if not rows:

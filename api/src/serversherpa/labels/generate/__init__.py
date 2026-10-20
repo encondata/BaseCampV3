@@ -11,11 +11,12 @@ loop.
 
 `enqueue_run` is the single entry point any surface (the future API
 route, other packages) uses to queue a run — it owns label-type and DPI
-validation, the one-active-run-per-initiative rule, and (per-type
-template overrides) validating that each override key is one of the
-run's own label types and each value an active template of that same
-type that prints at the run's DPI, so every caller gets the same
-behavior. The runner honors an override over `select.select_template`'s
+validation (an ID badge, `fields.PERSON_LABEL_TYPES`, never generates: it
+describes a person, not a roster row), the one-active-run-per-initiative
+rule, and (per-type template overrides) validating that each override key
+is one of the run's own label types and each value an active template of
+that same type that prints at the run's DPI, so every caller gets the
+same behavior. The runner honors an override over `select.select_template`'s
 auto-match, falling back to "no template" if the override was
 deactivated between enqueue and processing."""
 
@@ -31,6 +32,7 @@ from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import LabelGenerationRun, LabelTemplate, LabelVocab
+from serversherpa.labels.fields import PERSON_LABEL_TYPES
 
 ACTIVE_STATUSES = ("queued", "running")
 
@@ -60,8 +62,9 @@ def entity_for_type(label_type: str) -> str:
 
 class InvalidLabelTypes(ValueError):
     """One or more requested label types are not active `type` vocab
-    keys (or the list was empty). `problems` are the offending keys,
-    sorted — an empty list means the request had no types at all."""
+    keys, or are an ID badge (PERSON_LABEL_TYPES), which never generates
+    (or the list was empty). `problems` are the offending keys, sorted —
+    an empty list means the request had no types at all."""
 
     def __init__(self, problems: list[str]):
         super().__init__(
@@ -164,7 +167,7 @@ async def enqueue_run(
         sa_select(LabelVocab.key).where(LabelVocab.kind == "type",
                                      LabelVocab.key.in_(requested),
                                      LabelVocab.is_active == True))).scalars())  # noqa: E712
-    problems = sorted(set(requested) - active_keys)
+    problems = sorted((set(requested) - active_keys) | (set(requested) & set(PERSON_LABEL_TYPES)))
     if problems:
         raise InvalidLabelTypes(problems)
 

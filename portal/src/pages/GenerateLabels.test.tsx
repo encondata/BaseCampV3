@@ -529,3 +529,13 @@ it('shows a DPI choice defaulting to 300 and remembers it', async () => {
   renderAt();
   expect(checked()).toEqual(['203 DPI']);
 });
+
+it('never offers the ID Badge type: a badge never generates', async () => {
+  api.listLabelVocab.mockResolvedValue([...VOCAB, vocabRow('id_badge', 'ID Badge')]);
+  const user = userEvent.setup();
+  renderAt();
+  await pickNap11(user);
+  expect(screen.getByRole('checkbox', { name: /Top/ })).not.toBeNull();
+  expect(screen.queryByRole('checkbox', { name: /ID Badge/ })).toBeNull();
+  expect(screen.queryByText('ID Badge')).toBeNull();
+});

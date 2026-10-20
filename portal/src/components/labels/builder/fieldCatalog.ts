@@ -6,14 +6,16 @@
  * the label. Unused fields come first in their group, placed ones after
  * them; both keep the catalog's order.
  *
- * A custom label type (New template › Custom…, an ID badge) is one the
- * catalog doesn't know: the API sends it every group (labels/fields.py
- * `groups_for`), so it can place any field, and it has From-To columns
- * like any label that isn't a container's.
+ * A custom label type (New template › Custom…, a shelf tag) is one the
+ * catalog doesn't know: the API sends it every group but Person
+ * (labels/fields.py `groups_for`), so it can place any asset, move, site or
+ * container field, and it has From-To columns like any label that isn't a
+ * container's. The ID badge's only group is Person, and it has no From-To
+ * columns.
  */
 
 import type { LabelFields } from '../../../lib/api';
-import { isContainerLabelType } from '../../../lib/labels';
+import { isContainerLabelType, isPersonLabelType } from '../../../lib/labels';
 import { naturalCompare } from '../../../lib/naturalSort';
 import type { DesignV2, ElementV2 } from '../../../labels/builder/model';
 import { piece as splitPiece } from '../../../labels/fieldRules';
@@ -40,9 +42,10 @@ export interface CatalogGroup {
 
 export const FT_GROUP_LABEL = 'From-To columns';
 
-/** Container labels have no From-To row. */
+/** Container labels have no From-To row, and an ID badge describes a
+ *  person (labels/fields.py `allows_from_to`). */
 export function allowsFromTo(labelType: string | undefined): boolean {
-  return !labelType || !isContainerLabelType(labelType);
+  return !labelType || !(isContainerLabelType(labelType) || isPersonLabelType(labelType));
 }
 
 function own<V>(obj: Readonly<Record<string, V>> | undefined, key: string): V | undefined {

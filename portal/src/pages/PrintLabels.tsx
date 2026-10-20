@@ -37,7 +37,7 @@ import {
   GENERATE_DPIS, isGenerateDpi, visibleInitiativesForGenerate, writeGenerateDpi,
 } from '../lib/generateLabels';
 import * as labelCache from '../lib/labelCache';
-import { isContainerLabelType, vocabLabel, vocabOfKind } from '../lib/labels';
+import { isContainerLabelType, isPersonLabelType, vocabLabel, vocabOfKind } from '../lib/labels';
 import {
   LABEL_TYPE_CUSTOM, applyPrintSettings, batchBounds, batchCount, blankLabelsZpl, bundleAtDpi,
   bundleByEntity, containerPrintOrder, defaultCopiesFor, dpisByEntity, labelStatusFor,
@@ -201,7 +201,8 @@ export default function PrintLabels() {
     refreshCachedBundles();
   }, [refreshCachedBundles]);
 
-  const typeVocab = useMemo(() => vocabOfKind(vocab, 'type'), [vocab]);
+  // an ID badge has no generated labels: it prints from the label builder
+  const typeVocab = useMemo(() => vocabOfKind(vocab, 'type').filter((v) => !isPersonLabelType(v.key)), [vocab]);
   // Offline without vocab: the types present in cached bundles.
   const typeChoices = useMemo(() => {
     if (typeVocab.length > 0) return typeVocab.map((v) => ({ key: v.key, label: v.label }));
