@@ -43,6 +43,9 @@ from serversherpa.labels.kiosk_templates import row_family
 TREE_DPIS = ("203", "300", "600")
 PARENT_DPI = "300"   # the design DPI the builder shows
 SEPARATOR = " · "
+# what an audit row records of a template (the routes and the seed)
+TEMPLATE_FIELDS = ["name", "description", "label_type", "size_key", "dpi_key", "language_key",
+                   "design", "code", "is_active", "generation_rules", "samples"]
 
 _ACTIVE_LOCK = text(
     "SELECT pg_advisory_xact_lock(hashtextextended('label_templates:active', 0))")
@@ -456,13 +459,18 @@ async def save_child(db: AsyncSession, child: LabelTemplate, *, design: dict,
                 child_edits=child.child_edits, summary=summary or auto, actor_id=actor_id)
 
 
-async def _old_name(db: AsyncSession, parent: LabelTemplate, dpi: str) -> str:
-    base = f"{child_name(parent.name, dpi)} Old"
-    name, n = base, 1
-    while await _name_taken(db, name):
+async def free_old_name(db: AsyncSession, name: str) -> str:
+    """"<name> Old", or the first free "<name> Old 2", " Old 3", …"""
+    base = f"{name} Old"
+    candidate, n = base, 1
+    while await _name_taken(db, candidate):
         n += 1
-        name = f"{base} {n}"
-    return name
+        candidate = f"{base} {n}"
+    return candidate
+
+
+async def _old_name(db: AsyncSession, parent: LabelTemplate, dpi: str) -> str:
+    return await free_old_name(db, child_name(parent.name, dpi))
 
 
 async def current_child(db: AsyncSession, parent: LabelTemplate,

@@ -46,6 +46,8 @@ where = ["src"]
 "serversherpa.reports.move_scan_history" = ["templates/*.html"]
 "serversherpa.wiki" = ["assets/*.png"]
 "serversherpa.mail" = ["templates/*"]
+# vegas_v2.json is the Vegas Destination design seed-label-templates loads
+"serversherpa.labels" = ["fixtures/*.json"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

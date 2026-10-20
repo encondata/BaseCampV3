@@ -369,6 +369,18 @@ saved to the list.
   old template was a typo.
 - "Edit as raw ZPL" stays as an escape hatch for a code template, but new
   templates are designs.
+- Operator steps, once per stack (the rebuilt designs live in
+  `serversherpa.labels.builtin_templates`):
+  1. `serversherpa seed-label-fonts`.
+  2. `serversherpa seed-label-templates`. The five parents and their 203,
+     300 and 600 DPI children land inactive, linked to no site. An old
+     code row that holds one of the names is renamed "<name> Old" first
+     (the command lists each rename); running it again changes nothing.
+  3. Open each parent in the builder and check it against the old tag.
+  4. Print the Vegas tag on the office ZD421 and compare it with the
+     canvas.
+  5. Per family, Replace… the old code rows with the rebuilt parent, then
+     link its sites (the old rows keep theirs).
 
 ## 5. Keyboard shortcuts
 

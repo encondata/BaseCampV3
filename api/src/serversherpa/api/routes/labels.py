@@ -359,9 +359,7 @@ async def update_placeholder(
     return LabelPlaceholderOut.model_validate(row)
 
 
-TEMPLATE_FIELDS = ["name", "description", "label_type", "size_key",
-                   "dpi_key", "language_key", "design", "code", "is_active",
-                   "generation_rules", "samples"]
+TEMPLATE_FIELDS = tree.TEMPLATE_FIELDS
 
 _TEMPLATE_VOCAB = (("type", "label_type"), ("size", "size_key"),
                    ("dpi", "dpi_key"), ("language", "language_key"))
