@@ -1,25 +1,31 @@
 """System surface: process registry (super_admin+) and per-process logs
 (developer-only): paged reads, a 1 s-tailing WebSocket stream, and an
-audited clear. Also: logging/env config, and the admin controls
-(read-only maintenance mode, worker pause, broadcast banner) — a public
-status endpoint plus a settings:change-gated get/put."""
+audited clear. Also: logging/env config, the admin controls (read-only
+maintenance mode, worker pause, broadcast banner) — a public status
+endpoint plus a settings:change-gated get/put — and Branding (the company
+name and logo staff ID badges show)."""
 
 import asyncio
 import contextlib
 import logging
 import socket as _socket
+import uuid
 from datetime import UTC, datetime
+from typing import Annotated
 
 from fastapi import (
-    APIRouter, Body, HTTPException, WebSocket, WebSocketDisconnect,
+    APIRouter, Body, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect,
 )
 from sqlalchemy import update, delete, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from serversherpa.access.defaults import SUPER_ADMIN_RANK
 from serversherpa.api.deps import (
     AuthContext, DbSession, authenticate_token, password_change_owed, require_permission,
 )
+from serversherpa.api.routes.attachments import MAX_IMAGE_BYTES, _sniff_image
 from serversherpa.api.schemas import (
+    BrandingIn, BrandingOut,
     RevokeAllSessionsOut, SecurityConfigIn, SecurityConfigOut,
     AiLookupConfigIn, AiLookupConfigOut,
     AdminConfigIn, AdminConfigOut, BackgroundStatusOut, LogEntryOut, LogPageOut, SystemProcessOut,
@@ -32,6 +38,7 @@ from serversherpa.db.models import (
     AuthSession, LogEntry, SystemConfig, SystemProcess, TrustedDevice,
 )
 from serversherpa.services.audit import audit
+from serversherpa.services.storage import delete_object, presign_get, put_object
 from serversherpa.system.admin_config import read_admin_config
 from serversherpa.system.config_store import read_section
 from serversherpa.system.forwarders import (
@@ -263,6 +270,145 @@ async def put_ai_lookup_config(
               changes=changes)
     await db.commit()
     return AiLookupConfigOut(**data)
+
+
+# ── Branding (System settings › Branding) ──────────────────────────
+# The company staff ID badges name and show (labels/people_badge.py). The
+# logo is stored as uploaded (uncropped) under a key the server picks; its
+# key lives in this section, where the cleanup sweep finds it.
+
+BRANDING_SECTION = "branding"
+BRANDING_LOGO_PREFIX = "branding/company-logo/"
+# what a badge logo may be (no GIF: a logo is one still picture)
+BRANDING_LOGO_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
+_branding_logger = logging.getLogger("serversherpa.system.branding")
+
+
+def _branding_out(cfg: dict) -> BrandingOut:
+    key = cfg.get("company_logo_key") or None
+    return BrandingOut(company_name=cfg.get("company_name") or "", has_logo=key is not None,
+                       logo_url=presign_get(key))
+
+
+async def _locked_branding(db: DbSession) -> SystemConfig:
+    """The branding row, created if missing and locked for this
+    transaction, so two writes (a name and a logo, or two logos) never
+    overwrite each other's change or leave a logo no row points at."""
+    await db.execute(pg_insert(SystemConfig).values(section=BRANDING_SECTION, data={})
+                     .on_conflict_do_nothing(index_elements=[SystemConfig.section]))
+    return await db.get(SystemConfig, BRANDING_SECTION, with_for_update=True,
+                        populate_existing=True)
+
+
+async def _save_branding(db: DbSession, row: SystemConfig, actor: AuthContext,
+                         data: dict) -> None:
+    """Write the section (defaults merged in, as the other sections) and
+    audit what changed. The caller commits."""
+    stored = await read_section(db, BRANDING_SECTION)
+    merged = {**stored, **data}
+    row.data = merged
+    row.updated_at = datetime.now(UTC)
+    row.updated_by = actor.person.id
+    changes = {key: {"from": stored.get(key), "to": merged[key]}
+               for key in merged if stored.get(key) != merged[key]}
+    if changes:
+        audit(db, actor_id=actor.person.id, entity_type="system",
+              entity_id=BRANDING_SECTION, action="branding_update", changes=changes)
+
+
+async def _drop_logo(key: str | None) -> None:
+    """Delete a logo object nothing points at any more. Only a key these
+    routes chose (under BRANDING_LOGO_PREFIX): whatever else a config row
+    might hold is never deleted from here. Best effort: the config is
+    already saved, so a failure only leaves an unused object."""
+    if not key or not key.startswith(BRANDING_LOGO_PREFIX):
+        return
+    try:
+        await delete_object(key)
+    except Exception as exc:  # noqa: BLE001 - the change itself succeeded
+        _branding_logger.warning("branding logo %s left behind: %s", key, exc)
+
+
+@router.get("/branding", response_model=BrandingOut)
+async def get_branding(
+    db: DbSession,
+    actor: AuthContext = require_permission("settings", "view"),
+) -> BrandingOut:
+    return _branding_out(await read_section(db, BRANDING_SECTION))
+
+
+@router.patch("/branding", response_model=BrandingOut)
+async def patch_branding(
+    body: BrandingIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("settings", "change"),
+) -> BrandingOut:
+    """The company name, trimmed; 422 `company_name_required` when blank."""
+    name = body.company_name.strip()
+    if not name:
+        raise _err(422, "company_name_required")
+    row = await _locked_branding(db)
+    await _save_branding(db, row, actor, {"company_name": name})
+    await db.commit()
+    return _branding_out(await read_section(db, BRANDING_SECTION))
+
+
+@router.put("/branding/logo", response_model=BrandingOut)
+async def put_branding_logo(
+    db: DbSession,
+    file: Annotated[UploadFile, File()],
+    actor: AuthContext = require_permission("settings", "change"),
+) -> BrandingOut:
+    """Upload (or replace) the company logo: PNG, JPEG or WebP, up to 5 MiB
+    and 40 megapixels, stored as uploaded. The logo it replaces is deleted.
+    413 `file_too_large`; 422 `empty_file`, `invalid_file_type`,
+    `unreadable_image`, `image_too_large`."""
+    from serversherpa.labels import image_prep    # Pillow, only when a logo arrives
+
+    data = await file.read(MAX_IMAGE_BYTES + 1)
+    if not data:
+        raise _err(422, "empty_file")
+    if len(data) > MAX_IMAGE_BYTES:
+        raise _err(413, "file_too_large")
+    sniffed = _sniff_image(data)
+    if sniffed is None or sniffed[0] not in BRANDING_LOGO_TYPES:
+        raise _err(422, "invalid_file_type")
+    try:
+        info = await asyncio.to_thread(image_prep.probe, data)
+    except image_prep.ImageTooLarge as exc:
+        raise _err(422, "image_too_large") from exc
+    except image_prep.UnreadableImage as exc:
+        raise _err(422, "unreadable_image") from exc
+    key = f"{BRANDING_LOGO_PREFIX}{uuid.uuid4()}{info.ext}"
+    await put_object(key, data, info.mime)
+    try:
+        row = await _locked_branding(db)
+        old = (await read_section(db, BRANDING_SECTION)).get("company_logo_key")
+        await _save_branding(db, row, actor, {"company_logo_key": key})
+        await db.commit()
+    except Exception:
+        # the key was never committed, so nothing else can reach the object
+        await db.rollback()
+        await _drop_logo(key)
+        raise
+    await _drop_logo(old)
+    return _branding_out(await read_section(db, BRANDING_SECTION))
+
+
+@router.delete("/branding/logo", response_model=BrandingOut)
+async def delete_branding_logo(
+    db: DbSession,
+    actor: AuthContext = require_permission("settings", "change"),
+) -> BrandingOut:
+    """Remove the company logo (its object is deleted). Staff badges print
+    no logo until a new one is uploaded. A no-op without a logo."""
+    row = await _locked_branding(db)
+    old = (await read_section(db, BRANDING_SECTION)).get("company_logo_key")
+    if old:
+        await _save_branding(db, row, actor, {"company_logo_key": None})
+    await db.commit()
+    await _drop_logo(old)
+    return _branding_out(await read_section(db, BRANDING_SECTION))
 
 
 @router.post("/sessions/revoke-all", response_model=RevokeAllSessionsOut)

@@ -1,10 +1,10 @@
 /**
  * System settings — console-wide controls that affect every user, in
- * tabs: Administration (live), Security / Maintenance / About
- * (placeholders until their content lands). Gated on `settings:view`;
- * Administration's controls are interactive only with `settings:change`
- * (see AdminControls' `canChange` prop). Personal preferences live on
- * /me — see pages/me/MePreferences.tsx.
+ * tabs: Administration, Security, AI lookup and Branding (live),
+ * Maintenance / About (placeholders until their content lands). Gated on
+ * `settings:view`; the controls are interactive only with
+ * `settings:change` (each takes a `canChange` prop). Personal preferences
+ * live on /me — see pages/me/MePreferences.tsx.
  */
 
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -12,27 +12,30 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import AdminControls from '../components/settings/AdminControls';
 import AiLookupControls from '../components/settings/AiLookupControls';
+import BrandingControls from '../components/settings/BrandingControls';
 import SecurityControls from '../components/settings/SecurityControls';
 import '../styles/settings.css';
 
-type Tab = 'administration' | 'security' | 'ai-lookup' | 'maintenance' | 'about';
+type Tab = 'administration' | 'security' | 'ai-lookup' | 'branding' | 'maintenance' | 'about';
 
 const TABS: { key: Tab; label: string; to: string }[] = [
   { key: 'administration', label: 'Administration', to: '/settings' },
   { key: 'security', label: 'Security', to: '/settings/security' },
   { key: 'ai-lookup', label: 'AI lookup', to: '/settings/ai-lookup' },
+  { key: 'branding', label: 'Branding', to: '/settings/branding' },
   { key: 'maintenance', label: 'Maintenance', to: '/settings/maintenance' },
   { key: 'about', label: 'About', to: '/settings/about' },
 ];
 
-const PLACEHOLDERS: Record<Exclude<Tab, 'administration' | 'security' | 'ai-lookup'>, { title: string; hint: string }> = {
+const PLACEHOLDERS: Record<Exclude<Tab, 'administration' | 'security' | 'ai-lookup' | 'branding'>, { title: string; hint: string }> = {
   maintenance: { title: 'Maintenance', hint: 'Backups, housekeeping, and scheduled maintenance windows.' },
-  about: { title: 'About', hint: 'Version, build, environment, and licence details.' },
+  about: { title: 'About', hint: 'Version, build, environment, and license details.' },
 };
 
 export function settingsTabFor(pathname: string): Tab {
   if (pathname.startsWith('/settings/security')) return 'security';
   if (pathname.startsWith('/settings/ai-lookup')) return 'ai-lookup';
+  if (pathname.startsWith('/settings/branding')) return 'branding';
   if (pathname.startsWith('/settings/maintenance')) return 'maintenance';
   if (pathname.startsWith('/settings/about')) return 'about';
   return 'administration';
@@ -82,6 +85,7 @@ export default function Settings() {
             <AiLookupControls canChange={canChange} />
           </section>
         )}
+        {tab === 'branding' && <BrandingControls canChange={canChange} />}
         {(tab === 'maintenance' || tab === 'about') && (
           <section className="set-section">
             <div className="set-head">

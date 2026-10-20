@@ -7,6 +7,7 @@ const api = vi.hoisted(() => ({
   getAdminConfig: vi.fn(),
   updateAdminConfig: vi.fn(),
   refreshSystemStatus: vi.fn(),
+  getBranding: vi.fn(),
 }));
 vi.mock('../lib/api', async (orig) => ({
   ...(await orig<typeof import('../lib/api')>()),
@@ -26,6 +27,7 @@ beforeEach(() => {
   auth.can.mockReturnValue(true);
   api.getAdminConfig.mockResolvedValue({ ...base });
   api.updateAdminConfig.mockImplementation(async (patch) => ({ ...base, ...patch }));
+  api.getBranding.mockResolvedValue({ company_name: 'Cumulus Solutions Group', has_logo: false, logo_url: null });
 });
 afterEach(cleanup);
 
@@ -35,7 +37,7 @@ function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
-        {['/settings', '/settings/security', '/settings/ai-lookup', '/settings/maintenance', '/settings/about'].map((p) => (
+        {['/settings', '/settings/security', '/settings/ai-lookup', '/settings/branding', '/settings/maintenance', '/settings/about'].map((p) => (
           <Route key={p} path={p} element={<Settings />} />
         ))}
       </Routes>
@@ -81,14 +83,25 @@ it('contains no Appearance, Notifications, or Account content', async () => {
   expect(screen.queryByText('Account')).toBeNull();
 });
 
-it('shows five tabs; placeholder tabs render their placeholder card instead of Administration', async () => {
+it('shows six tabs; placeholder tabs render their placeholder card instead of Administration', async () => {
   renderAt('/settings');
-  expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Administration', 'Security', 'AI lookup', 'Maintenance', 'About']);
+  expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(
+    ['Administration', 'Security', 'AI lookup', 'Branding', 'Maintenance', 'About']);
   expect(screen.getByRole('tab', { name: 'Administration' }).getAttribute('aria-selected')).toBe('true');
   cleanup();
   renderAt('/settings/maintenance');
   expect(screen.getByRole('tab', { name: 'Maintenance' }).getAttribute('aria-selected')).toBe('true');
   expect(screen.getByRole('heading', { name: 'Maintenance', level: 3 })).toBeTruthy();
   expect(screen.getByText(/placeholder/)).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'Administration', level: 3 })).toBeNull();
+});
+
+it('the Branding tab shows the company name and logo controls', async () => {
+  renderAt('/settings/branding');
+  expect(screen.getByRole('tab', { name: 'Branding' }).getAttribute('aria-selected')).toBe('true');
+  expect(screen.getByRole('heading', { name: 'Branding', level: 3 })).toBeTruthy();
+  await waitFor(() => expect((screen.getByLabelText('Company name') as HTMLInputElement).value)
+    .toBe('Cumulus Solutions Group'));
+  expect(screen.getByRole('button', { name: 'Upload logo…' })).toBeTruthy();
   expect(screen.queryByRole('heading', { name: 'Administration', level: 3 })).toBeNull();
 });

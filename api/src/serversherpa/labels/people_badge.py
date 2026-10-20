@@ -108,6 +108,24 @@ async def logo_key(db: AsyncSession, person: Person) -> str | None:
     return (await _badge(db, person)).logo_key
 
 
+@dataclass(frozen=True)
+class Summary:
+    """One person as the builder's person search lists them: "Staff",
+    "Worker" or "" (module docstring), the company their badge names (None
+    when none), and whether they have a photo and a logo (the stored keys
+    are set; a missing object still prints as no image)."""
+    person_type: str
+    company: str | None
+    has_photo: bool
+    has_logo: bool
+
+
+async def summary(db: AsyncSession, person: Person) -> Summary:
+    badge = await _badge(db, person)
+    return Summary(badge.person_type, badge.company or None, photo_key(person) is not None,
+                   bool(badge.logo_key))
+
+
 async def person_payload(db: AsyncSession, person_id: object) -> dict | None:
     """The payload `fields.person_values` documents, for the person
     `find_person` finds; None when it finds no one."""

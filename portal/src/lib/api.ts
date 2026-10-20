@@ -4460,6 +4460,49 @@ export async function updateAiLookupConfig(patch: Partial<AiLookupConfig>): Prom
   return resp.json();
 }
 
+// ── system config: Branding (the company on staff ID badges) ──────────
+
+/** System settings › Branding: the company name and logo staff ID badges
+ *  show. `logo_url` is a short-lived link to the stored original, null
+ *  without a logo. Read with settings:view, changed with settings:change. */
+export interface Branding { company_name: string; has_logo: boolean; logo_url: string | null }
+
+export async function getBranding(): Promise<Branding> {
+  const resp = await apiFetch('/system/branding');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** The company name, trimmed; 422 `company_name_required` when blank. */
+export async function updateBranding(patch: { company_name: string }): Promise<Branding> {
+  const resp = await apiFetch('/system/branding', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Upload or replace the company logo: PNG, JPEG or WebP, 5 MiB at most,
+ *  stored as uploaded (uncropped); the logo it replaces is deleted. 413
+ *  `file_too_large`; 422 `empty_file`, `invalid_file_type`,
+ *  `unreadable_image`, `image_too_large`. */
+export async function uploadBrandingLogo(file: File): Promise<Branding> {
+  const form = new FormData();
+  form.set('file', file);
+  const resp = await apiFetch('/system/branding/logo', { method: 'PUT', body: form });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Remove the company logo (the stored file is deleted). */
+export async function removeBrandingLogo(): Promise<Branding> {
+  const resp = await apiFetch('/system/branding/logo', { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 /* ── spec lookup (Makes/Models spec lookup runs + suggestions) ──────── */
 
 export interface SpecLookupStatus {
@@ -5616,6 +5659,38 @@ export async function listLabelFields(labelType?: string): Promise<LabelFields> 
 export async function loadSampleAsset(initiativeId: string, assetId: string): Promise<Record<string, string>> {
   const q = new URLSearchParams({ initiative_id: initiativeId, asset_id: assetId });
   const resp = await apiFetch(`/labels/sample-values?${q.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** GET /labels/sample-people: one staff member or worker Load from person…
+ *  can pick. `company` is the one their badge names (Branding's for staff,
+ *  a worker's partner), null when none. */
+export interface SamplePerson {
+  person_id: string; name: string; person_type: 'Staff' | 'Worker'; company: string | null;
+  has_photo: boolean; has_logo: boolean;
+}
+
+/** Staff and workers whose first, last or preferred name holds every word
+ *  of `q`, natural by name, at most `limit` (1-100); archived people and
+ *  hidden move identities never appear. Rank 80 + labels:view. */
+export async function searchSamplePeople(q: string, limit = 25): Promise<SamplePerson[]> {
+  const params = new URLSearchParams({ q, limit: String(limit) });
+  const resp = await apiFetch(`/labels/sample-people?${params.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** GET /labels/sample-person: one person's badge values, {key: text} for
+ *  every person key ('' for a blank), and whether their badge has a photo
+ *  and a logo. 404 `person_not_found`. Rank 80 + labels:view. */
+export interface SamplePersonValues {
+  person_id: string; values: Record<string, string>; has_photo: boolean; has_logo: boolean;
+}
+
+export async function loadSamplePerson(personId: string): Promise<SamplePersonValues> {
+  const params = new URLSearchParams({ person_id: personId });
+  const resp = await apiFetch(`/labels/sample-person?${params.toString()}`);
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

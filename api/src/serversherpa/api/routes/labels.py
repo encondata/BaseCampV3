@@ -28,8 +28,8 @@ from pathlib import PurePosixPath
 from typing import Annotated
 
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
-from sqlalchemy import func, or_, select
+from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -49,7 +49,7 @@ from serversherpa.api.schemas import (
     LabelGeneratePreviewOut, LabelGeneratePreviewTemplateOut, LabelGeneratePreviewTypeOut,
     LabelImageOut, LabelImageRasterIn,
     LabelPlaceholderCreateIn, LabelPlaceholderOut, LabelPlaceholderUpdateIn,
-    LabelRunCreateIn, LabelRunOut,
+    LabelRunCreateIn, LabelRunOut, LabelSamplePeopleItemOut, LabelSamplePersonOut,
     LabelTemplateChildOut, LabelTemplateCloneIn, LabelTemplateCreateIn,
     LabelTemplateDeactivateSummaryOut, LabelTemplateDeleteIn, LabelTemplateDeleteSummaryOut,
     LabelTemplateDpiIn,
@@ -62,7 +62,8 @@ from serversherpa.api.schemas import (
 from serversherpa.db.models import (
     Asset, AssetModel, Client, Container, GeneratedLabel, Initiative, InitiativeAsset,
     LabelFont, LabelGenerationRun, LabelImage, LabelPlaceholder, LabelTemplate,
-    LabelTemplateSite, LabelTemplateVersion, LabelVocab, Person, Site,
+    LabelTemplateSite, LabelTemplateVersion, LabelVocab, Person, PersonRole, Role, Site,
+    WorkerProfile,
 )
 from serversherpa.db.ordering import natural, natural_key
 from serversherpa.labels import labelary
@@ -71,7 +72,7 @@ from serversherpa.labels import dither, people_badge
 from serversherpa.labels.compile import UnsupportedLanguage, compile_parsed_design
 from serversherpa.labels.fields import (
     PERSON_LABEL_TYPES, allows_from_to, design_field_keys, field_values, groups_for,
-    mock_field_values,
+    mock_field_values, person_values,
 )
 from serversherpa.labels.font_metrics import UnreadableFont, metrics as font_metrics
 from serversherpa.labels.font_seed import (
@@ -91,6 +92,7 @@ from serversherpa.labels.model import Design, DesignError, ImageEl, parse_design
 from serversherpa.labels.tokens import apply_placeholders
 from serversherpa.labels.zpl import box_dots, image_box_dots
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.storage import delete_object, get_object, put_object
 
 router = APIRouter(prefix="/labels", tags=["labels"])
@@ -335,6 +337,88 @@ async def sample_values(
                    if initiative.destination_site_id else None)
     payload = asset_payload(asset, roster_row, model, await load_status_labels(db, "asset"))
     return field_values(payload, label_context(initiative, origin, destination))
+
+
+SAMPLE_PEOPLE_LIMIT = 25
+SAMPLE_PEOPLE_MAX = 100
+
+
+def _like_any(token: str, *columns) -> object:
+    """`token` as literal text (its %, _ and backslashes are not wildcards)
+    inside any of `columns`, ignoring case."""
+    escaped = token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return or_(*(c.ilike(f"%{escaped}%", escape="\\") for c in columns))
+
+
+@router.get("/sample-people", response_model=list[LabelSamplePeopleItemOut])
+async def sample_people(
+    db: DbSession,
+    q: str = Query("", max_length=120),
+    limit: int = Query(SAMPLE_PEOPLE_LIMIT, ge=1, le=SAMPLE_PEOPLE_MAX),
+    _actor: AuthContext = require_permission("labels", "view"),
+    _rank: AuthContext = DESIGNER,
+) -> list[LabelSamplePeopleItemOut]:
+    """The builder's Load from person… search: staff and workers (the
+    labels/people_badge.py rule — an active global-anchored role, else an
+    active worker role or a worker profile) whose first, last or preferred
+    name holds every word of `q`, natural by name, at most `limit`. Archived
+    people and hidden move identities never appear; blacklisted workers do
+    (a designer may need their badge layout). Rank 80 like the
+    sample-values route: it lists people across every partner."""
+    staff = exists().where(PersonRole.person_id == Person.id, PersonRole.revoked_at.is_(None),
+                           PersonRole.role == Role.name,
+                           Role.scope_anchor == people_badge.GLOBAL_ANCHOR)
+    worker = exists().where(PersonRole.person_id == Person.id, PersonRole.revoked_at.is_(None),
+                            PersonRole.role == people_badge.WORKER_ROLE)
+    profile = exists().where(WorkerProfile.person_id == Person.id)
+    stmt = select(Person).where(Person.archived_at.is_(None),
+                                Person.source != KIOSK_MOVE_SOURCE,
+                                or_(staff, worker, profile))
+    words = q.split()
+    if words:
+        stmt = stmt.where(and_(*(_like_any(w, Person.first_name, Person.last_name,
+                                           Person.preferred_name) for w in words)))
+    # the badge's person_name: a preferred name (not a blank one) or the
+    # first name, then the last
+    shown = func.concat(
+        func.coalesce(func.nullif(func.btrim(Person.preferred_name), ""),
+                      func.btrim(Person.first_name)),
+        " ", func.btrim(Person.last_name))
+    people = (await db.scalars(stmt.order_by(natural(shown), Person.id).limit(limit))).all()
+    out = []
+    for person in people:
+        row = await people_badge.summary(db, person)
+        if not row.person_type:      # the filter above is the same rule; never trust it
+            continue
+        # person_values' person_name, the name the badge prints
+        name = person_values({"person": {
+            "first_name": person.first_name, "last_name": person.last_name,
+            "preferred_name": person.preferred_name}})["person_name"]
+        out.append(LabelSamplePeopleItemOut(
+            person_id=person.id, name=name, person_type=row.person_type, company=row.company,
+            has_photo=row.has_photo, has_logo=row.has_logo))
+    return out
+
+
+@router.get("/sample-person", response_model=LabelSamplePersonOut)
+async def sample_person(
+    db: DbSession,
+    person_id: uuid.UUID,
+    _actor: AuthContext = require_permission("labels", "view"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelSamplePersonOut:
+    """Load from person…: one person's ID badge values, {key: text} for
+    every person key, as `fields.person_values` prints them, and whether
+    their badge has a photo and a logo. Any person a badge can be printed
+    for, archived ones too (a template may already sample one); 404
+    `person_not_found` for anyone else (unknown, a hidden move identity)."""
+    person = await people_badge.find_person(db, person_id)
+    if person is None:
+        raise _err(404, "person_not_found")
+    payload = await people_badge.person_payload(db, person.id)
+    row = await people_badge.summary(db, person)
+    return LabelSamplePersonOut(person_id=person.id, values=person_values(payload),
+                                has_photo=row.has_photo, has_logo=row.has_logo)
 
 
 @router.get("/placeholders", response_model=list[LabelPlaceholderOut])

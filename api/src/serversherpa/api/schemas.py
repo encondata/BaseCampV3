@@ -2491,6 +2491,22 @@ class RevokeAllSessionsOut(BaseModel):
     revoked_people: int
 
 
+class BrandingOut(BaseModel):
+    """System settings › Branding: the company staff ID badges name and
+    show. `logo_url` is a short-lived link to the stored original."""
+    company_name: str
+    has_logo: bool
+    logo_url: str | None
+
+
+class BrandingIn(BaseModel):
+    """PATCH /system/branding: the company name (trimmed, never blank). The
+    logo has its own routes."""
+    model_config = ConfigDict(extra="forbid")
+
+    company_name: str = Field(max_length=200)
+
+
 class AdminConfigIn(BaseModel):
     """Partial update — only sent fields change."""
 
@@ -4180,6 +4196,29 @@ class LabelImageRasterIn(BaseModel):
     dpi: int = Field(ge=1, le=1200)
     fit: Literal["cover", "contain"]
     rotation: Literal[0, 90, 180, 270] = 0
+
+
+class LabelSamplePeopleItemOut(BaseModel):
+    """GET /labels/sample-people: one staff member or worker the builder can
+    load as a badge's sample person. `company` is the one their badge names
+    (Branding's for staff, a worker's partner), None when none; the photo
+    and logo flags say whether their badge has one to print."""
+    person_id: uuid.UUID
+    name: str
+    person_type: Literal["Staff", "Worker"]
+    company: str | None
+    has_photo: bool
+    has_logo: bool
+
+
+class LabelSamplePersonOut(BaseModel):
+    """GET /labels/sample-person: one person's badge field values, {key:
+    text} for every person key (labels/fields.py person_values), and
+    whether their badge has a photo and a logo to print."""
+    person_id: uuid.UUID
+    values: dict[str, str]
+    has_photo: bool
+    has_logo: bool
 
 
 # ── generate labels (runs, preview, generated) ──────────────────────

@@ -225,3 +225,29 @@
 /* Notice line inside a .set-section (e.g. email-off hint on /me › Notifications). */
 .set-hint { margin: 0; padding: 12px 20px; border-bottom: 1px solid var(--paper-line); }
 .set-section .data-table-scroll { border-bottom: 1px solid var(--paper-line); }
+
+/* ── System settings › Branding ───────────────────────────── */
+
+.brand-form { padding: 16px 20px; border-bottom: 1px solid var(--paper-line); }
+/* the logo as a badge prints it: on white, never cropped */
+.brand-logo-preview {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 176px;
+  height: 88px;
+  padding: 8px;
+  box-sizing: border-box;
+  background: #fff;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.brand-logo-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.brand-logo-empty { font-size: 12px; color: var(--text-mute); }
+.brand-logo-error { margin: 6px 0 0; }
+/* Remove's confirm dialog sizes to its few lines */
+.modal-card.reports-modal-card.rgm-card.brand-remove-card {
+  width: min(520px, 94vw); min-width: 0; max-width: 94vw;
+}
