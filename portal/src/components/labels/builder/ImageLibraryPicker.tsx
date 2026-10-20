@@ -45,6 +45,10 @@ function byName(rows: LabelImage[]): LabelImage[] {
 
 function uploadError(err: unknown): string {
   if (err instanceof ApiError) {
+    // the API refuses a control character in the name it takes from the file
+    if (err.code === 'bad_field') {
+      return 'The file’s name has a control character in it. Rename the file and upload it again.';
+    }
     if (err.status === 413) return 'That file is over 5 MB.';
     if (err.status === 415 || err.status === 422) {
       return 'That file isn’t a picture a label can use: a PNG, JPEG, WebP or GIF of 40 megapixels at most.';
