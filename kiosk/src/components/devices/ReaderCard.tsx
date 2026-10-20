@@ -14,7 +14,6 @@ import {
   getReaderDevice, getReaderStatus, runCheck,
   type CheckResult, type ReaderDevice, type ReaderStatus,
 } from '../../lib/api';
-import { useKioskSetup } from '../../lib/kioskSetup';
 import { isLaptop } from '../../lib/platform';
 import { antennasLabel, readerState, type ReaderState } from '../../lib/readerState';
 import DeviceCard, { type DevicePill } from './DeviceCard';
@@ -45,7 +44,6 @@ type CheckView = { kind: 'result'; result: CheckResult } | { kind: 'error' } | n
 export default function ReaderCard() {
   const laptop = isLaptop();
   const navigate = useNavigate();
-  const [setup] = useKioskSetup();
   // The latest real (non-busy) status; a busy answer keeps it on screen.
   const [status, setStatus] = useState<ReaderStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -195,11 +193,9 @@ export default function ReaderCard() {
               onClick={() => void runReaderCheck()}>
         Check reader
       </button>
-      {setup?.stationType === 'rfid' && (
-        <button type="button" className="mini-btn" onClick={() => navigate('/rfid_status')}>
-          Open RFID dashboard
-        </button>
-      )}
+      <button type="button" className="mini-btn" onClick={() => navigate('/rfid_status')}>
+        Open RFID dashboard
+      </button>
     </>
   );
 

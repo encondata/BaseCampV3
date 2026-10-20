@@ -16,11 +16,9 @@ import { Link } from 'react-router-dom';
 import type { HostIdentification, HostStatus, UsbDeviceLike } from '@portal/labels/zebraUsb';
 
 import { useDevMode } from '../../lib/devMode';
-import { FEATURES, featureAvailable, homeFeatures } from '../../lib/features';
+import { FEATURES, featureAvailable } from '../../lib/features';
 import { getIdentity } from '../../lib/identity';
-import { useKioskSetup } from '../../lib/kioskSetup';
 import { LABEL_SECTIONS } from '../../lib/labelSections';
-import { isLaptop } from '../../lib/platform';
 import { useKioskSetupState } from '../../lib/setupState';
 import { useZebraPrinter } from '../../lib/useZebraPrinter';
 import { healthChips } from '../printers/PrinterHealth';
@@ -97,9 +95,9 @@ export default function PrinterCard() {
 
   const [setupState] = useKioskSetupState();
   const [devMode] = useDevMode();
-  const [setup] = useKioskSetup();
-  const labelsReachable = featureAvailable(LABELS, setupState, devMode)
-    && homeFeatures(isLaptop(), setup?.stationType).some((f) => f.id === 'labels');
+  // The station type hides nothing in Settings (Jimmy): only setup progress
+  // and developer mode decide whether Label Printing opens.
+  const labelsReachable = featureAvailable(LABELS, setupState, devMode);
 
   const [identity, setIdentity] = useState<HostIdentification | null>(null);
   const [status, setStatus] = useState<HostStatus | null>(null);

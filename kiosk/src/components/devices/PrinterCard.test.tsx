@@ -383,11 +383,11 @@ describe('PrinterCard', () => {
       expect(link()).toBeTruthy();
     });
 
-    it('an RFID Station laptop hides it, a Label Station shows it', async () => {
+    it('shows it on an RFID Station and a Label Station alike', async () => {
       window.__KIOSK_CONFIG__ = { mode: 'laptop' };
       writeKioskSetup({ ...SETUP, stationType: 'rfid' });
       await renderCard();
-      expect(link()).toBeNull();
+      expect(link()).toBeTruthy();
       cleanup();
       writeKioskSetup({ ...SETUP, stationType: 'label' });
       await renderCard();

@@ -81,18 +81,10 @@ describe('Label Printing on a laptop station', () => {
   });
   afterEach(() => { delete window.__KIOSK_CONFIG__; });
 
-  it('an RFID Station sends /labels/station home', () => {
+  it('an RFID Station opens /labels too: the setup choice hides nothing (Jimmy)', () => {
     writeKioskSetup({ ...SETUP, stationType: 'rfid' });
     renderLabels('/labels/station');
-    expect(screen.getByText('Home')).toBeTruthy();
-    expect(screen.queryByText('Printing Station')).toBeNull();
-  });
-
-  it('even with developer mode on', () => {
-    writeDevMode(true);
-    writeKioskSetup({ ...SETUP, stationType: 'rfid' });
-    renderLabels('/labels/station');
-    expect(screen.getByText('Home')).toBeTruthy();
+    expect(screen.getByText('Printing Station')).toBeTruthy();
   });
 
   it('a Label Station opens it', () => {
