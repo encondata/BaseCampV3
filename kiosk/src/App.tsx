@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { KioskAuthProvider } from './auth/KioskAuthContext';
 import KioskGuard from './components/KioskGuard';
 import SetupGate from './components/SetupGate';
+import StationRoot from './components/StationRoot';
 import KioskShell from './layout/KioskShell';
 import { FEATURES } from './lib/features';
 import { useKioskSetup } from './lib/kioskSetup';
@@ -11,7 +12,6 @@ import { isLaptop } from './lib/platform';
 import Containers from './pages/Containers';
 import Enroll from './pages/Enroll';
 import FeaturePage from './pages/FeaturePage';
-import Home from './pages/Home';
 import KioskSetup from './pages/KioskSetup';
 import LabelSectionPage from './pages/LabelSectionPage';
 import Labels from './pages/Labels';
@@ -22,7 +22,7 @@ import RfidStatus from './pages/RfidStatus';
 import Scan from './pages/Scan';
 import Settings from './pages/Settings';
 import StartTimeclock from './pages/StartTimeclock';
-import Timeclock from './pages/Timeclock';
+import TimeclockKiosk from './pages/TimeclockKiosk';
 import Trucks from './pages/Trucks';
 
 const SCAN = FEATURES.find((f) => f.id === 'scan')!;
@@ -61,7 +61,9 @@ export default function App() {
               this browser as the station's display, then signs out. */}
           <Route path="/timeclock/station" element={<KioskGuard><KioskShell><StartTimeclock /></KioskShell></KioskGuard>} />
           <Route path="/settings" element={<KioskShell><Settings /></KioskShell>} />
-          <Route path="/" element={<KioskGuard><KioskShell><Home /></KioskShell></KioskGuard>} />
+          {/* Home — or, on an armed Time Clock station with nobody signed
+              in, the signed-out time clock's Welcome screen. */}
+          <Route path="/" element={<StationRoot />} />
           {/* Scanning is a real screen now, so it gets its own route
               rather than the placeholder map below — same guards. */}
           <Route
@@ -140,13 +142,14 @@ export default function App() {
               )}
             />
           ))}
-          {/* Timeclock is a real screen too — same guards as Scanning. */}
+          {/* Timeclock is the guided time clock flow — same guards as
+              Scanning, but full screen: no KioskShell around it. */}
           <Route
             path={TIMECLOCK.path}
             element={(
               <KioskGuard>
                 <SetupGate feature={TIMECLOCK}>
-                  <KioskShell><Timeclock /></KioskShell>
+                  <TimeclockKiosk />
                 </SetupGate>
               </KioskGuard>
             )}

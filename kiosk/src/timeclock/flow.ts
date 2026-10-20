@@ -12,7 +12,7 @@
  * `name` changes nothing here.
  */
 
-import type { KioskTimeclockStatus } from '../lib/api';
+import { CLOUD_SIGN_IN_TEXT, type KioskTimeclockStatus } from '../lib/api';
 
 export type FlowMode = 'station' | 'kiosk';
 
@@ -31,6 +31,7 @@ export interface FlowState {
 }
 
 export type FlowAction =
+  | { type: 'enterName' }
   | { type: 'identified'; status: KioskTimeclockStatus }
   | { type: 'confirmYes' }
   | { type: 'confirmNo' }
@@ -69,12 +70,26 @@ export function initialState(mode: FlowMode): FlowState {
   };
 }
 
+const ERROR_READ_ONLY = 'The portal is in read-only mode. Your punch was not recorded. Try again shortly.';
+
 function failureText(code: string): string {
-  return code === 'network' || code === 'edge_offline' ? ERROR_UNREACHABLE : ERROR_OTHER;
+  if (code === 'network' || code === 'edge_offline') return ERROR_UNREACHABLE;
+  // a laptop kiosk signed in while offline can't punch until it signs in online
+  if (code === 'cloud_sign_in_required') return CLOUD_SIGN_IN_TEXT;
+  if (code === 'read_only_mode') return ERROR_READ_ONLY;
+  return ERROR_OTHER;
 }
 
+/** The actions that start a punch. While one is in flight (`busy`) they
+ *  change nothing, so a double tap can never send a second punch: the
+ *  component sends only when an action takes the state into busy. */
+const STARTS_PUNCH = new Set<FlowAction['type']>(['chooseIn', 'chooseOut', 'punchStarted']);
+
 export function reducer(state: FlowState, action: FlowAction): FlowState {
+  if (state.busy && STARTS_PUNCH.has(action.type)) return state;
   switch (action.type) {
+    case 'enterName':
+      return state.step === 'welcome' ? { ...state, step: 'name' } : state;
     case 'identified':
       return {
         ...state, step: 'confirm', status: action.status, busy: false, error: null, notice: null, punched: null,
@@ -106,7 +121,7 @@ export function reducer(state: FlowState, action: FlowAction): FlowState {
       if (action.code === 'already_clocked_in' || action.code === 'not_clocked_in') {
         return { ...state, step: 'action', busy: false, error: null, notice: NOTICE_CHANGED };
       }
-      return { ...state, busy: false, error: failureText(action.code) };
+      return { ...state, busy: false, error: failureText(action.code), notice: null };
     case 'statusRefreshed':
       return { ...state, status: action.status, busy: false };
     case 'badgeNew':

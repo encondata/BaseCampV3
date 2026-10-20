@@ -769,11 +769,10 @@
 .sound-upload-row .name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sound-upload-row .size { font-family: var(--font-mono); font-size: 11px; color: var(--text-mute); }
 
-/* ── Timeclock ───────────────────────────────────────────────────────
-   The Scanning page's input, then either a list of people to tap or one
-   worker's card. Everything is sized for a finger at arm's length: the
-   result rows are tall, the avatar is big enough to recognize across a
-   dock, and the single action button is a 64px target. */
+/* ── Pick lists and toasts ────────────────────────────────────────────
+   Born on the old Timeclock page (now the full-screen flow in
+   timeclock.css); Containers' result rows and Enroll's toast still use
+   them. Sized for a finger at arm's length: the rows are tall. */
 .tc-results { display: grid; gap: 8px; margin-top: 14px; max-width: clamp(20rem, 62vw, 62rem); }
 .tc-result {
   display: flex; align-items: center; gap: 12px;
@@ -788,37 +787,12 @@
   text-transform: uppercase; color: var(--text-mute); white-space: nowrap;
 }
 .tc-result-tag { font-family: var(--font-mono); font-size: 13px; color: var(--text-mute); }
-
-.tc-card {
-  display: flex; align-items: center; gap: 18px;
-  padding: 22px 24px;
-  background: var(--paper); border: 1px solid var(--paper-line); border-radius: 16px;
-  max-width: clamp(20rem, 62vw, 62rem); margin-top: 18px;
-}
-.tc-card-body { min-width: 0; }
-.tc-avatar, .tc-avatar-fallback {
-  width: 88px; height: 88px; border-radius: 50%; flex: none; object-fit: cover;
-}
-.tc-avatar-fallback {
-  display: grid; place-items: center;
-  background: var(--paper-2); color: var(--text-mute); font-size: 30px; font-weight: 600;
-}
-.tc-name { font-size: 26px; font-weight: 600; }
-.tc-status { font-size: 17px; margin: 6px 0 2px; }
-.tc-status.is-in { color: var(--c-green); }
-.tc-status.is-out { color: var(--text-mute); }
-.tc-sub { font-size: 13px; color: var(--text-mute); margin: 0; }
-.tc-actions { display: flex; gap: 12px; align-items: center; margin-top: 18px; }
-.tc-action { min-height: 64px; font-size: 20px; padding: 0 32px; }
 .tc-toast {
   margin-top: 14px; padding: 12px 16px; border-radius: 10px;
   background: color-mix(in srgb, var(--c-green) 15%, transparent);
   border-left: 3px solid var(--c-green);
   font-size: 15px;
 }
-/* The session-only receipt of what this kiosk punched — the portal's
-   own time entries are the record. Same shape as the scan list. */
-.tc-chip { font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
 
 /* ── printer modals on a kiosk screen ──────────────────────────────
    printers.css gives the alignment and setup cards `max-height: none;

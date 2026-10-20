@@ -36,6 +36,12 @@ describe('constants', () => {
 });
 
 describe('reducer', () => {
+  it('enterName goes from welcome to name, and nowhere else', () => {
+    expect(reducer(at('welcome'), { type: 'enterName' }).step).toBe('name');
+    const confirm = at('confirm');
+    expect(reducer(confirm, { type: 'enterName' })).toBe(confirm);
+  });
+
   it('identified stores the status and goes to confirm, clearing error, notice and punched', () => {
     const s = reducer(
       at('name', { error: 'x', notice: 'y', punched: 'in', busy: true }),
@@ -105,6 +111,26 @@ describe('reducer', () => {
   it('punchFailed with any other code is the generic error and stays on the step', () => {
     const s = reducer(at('clockOut', { status: ON, busy: true }), { type: 'punchFailed', code: 'boom' });
     expect(s).toMatchObject({ step: 'clockOut', busy: false, error: OTHER });
+  });
+
+  it.each([
+    ['cloud_sign_in_required', 'Sign in again while online to do this.'],
+    ['read_only_mode', 'The portal is in read-only mode. Your punch was not recorded. Try again shortly.'],
+  ])('punchFailed %s has its own message', (code, text) => {
+    expect(reducer(at('action', { busy: true }), { type: 'punchFailed', code }).error).toBe(text);
+  });
+
+  it('a generic punchFailed clears an earlier notice', () => {
+    const s = reducer(at('action', { busy: true, notice: CHANGED }), { type: 'punchFailed', code: 'network' });
+    expect(s).toMatchObject({ busy: false, error: NETWORK, notice: null });
+  });
+
+  it.each([
+    ['chooseIn', at('action', { busy: true })],
+    ['chooseOut', at('action', { status: ON, busy: true })],
+    ['punchStarted', at('clockOut', { status: ON, busy: true })],
+  ] as const)('%s while busy is ignored, so a double tap never sends two punches', (type, busy) => {
+    expect(reducer(busy, { type })).toBe(busy);
   });
 
   it('badge branches', () => {

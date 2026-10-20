@@ -55,3 +55,21 @@ it('calls the latest onIdle without restarting the timer', () => {
   expect(first).not.toHaveBeenCalled();
   expect(second).toHaveBeenCalledTimes(1);
 });
+
+it('hears a key or tap even when the target stops it from bubbling', () => {
+  const onIdle = vi.fn();
+  const box = document.createElement('div');
+  document.body.appendChild(box);
+  const stop = (e: Event) => e.stopPropagation();
+  box.addEventListener('keydown', stop);
+  box.addEventListener('pointerdown', stop);
+  renderHook(() => useIdle(true, 20_000, onIdle));
+  act(() => { vi.advanceTimersByTime(15_000); });
+  act(() => { box.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true })); });
+  act(() => { vi.advanceTimersByTime(15_000); });
+  expect(onIdle).not.toHaveBeenCalled();
+  act(() => { box.dispatchEvent(new Event('pointerdown', { bubbles: true })); });
+  act(() => { vi.advanceTimersByTime(19_999); });
+  expect(onIdle).not.toHaveBeenCalled();
+  box.remove();
+});
