@@ -2174,7 +2174,9 @@ async def label_font_metrics(
 logger = logging.getLogger(__name__)
 
 # The builder's sample person: their id among a template's samples
-# (Load from person…), whose photo and logo a badge previews and prints.
+# (Load from person…), whose photo and logo a badge draws on the canvas and
+# prints. The printer preview compiles with image_mode "placeholder" and
+# reads no picture (each image is a crossed box), so none reaches Labelary.
 SAMPLE_PERSON_KEY = "person:id"
 # One image's box at its DPI, and one compile's images together, in dots;
 # past these the picture is refused (422 image_too_large) instead of prepped

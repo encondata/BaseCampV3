@@ -43,8 +43,10 @@
  * the Image tool and the image properties are there only, a design with
  * an image saves as schema 3 (model.ts serializeDesign) and anywhere else
  * one is refused before the API would. The badge's sample person rides in
- * the samples (`person:id`), so the canvas, the preview and Test print draw
- * the same photo and logo. Load from person… (LoadFromPersonModal) makes
+ * the samples (`person:id`), so the canvas and Test print draw the same
+ * photo and logo; the printer preview compiles with `image_mode:
+ * "placeholder"` and shows each picture as a crossed box, so no picture is
+ * ever sent to the preview service (Jimmy, 2026-10-20). Load from person… (LoadFromPersonModal) makes
  * someone the sample person: every person sample becomes theirs ("" for
  * their blanks) and `person:id` names them; Clear sample person takes
  * every person sample and `person:id` away. Either one forgets the photos
