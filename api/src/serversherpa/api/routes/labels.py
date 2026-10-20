@@ -153,11 +153,12 @@ async def list_vocab(
 async def create_vocab(
     body: LabelVocabCreateIn, db: DbSession, actor: CurrentUser,
 ) -> LabelVocabOut:
-    """Devtools-gated, except a size: the builder's New template › Custom…
-    lets a designer (labels:add and rank 80, spec §4.10) add one, to the
-    list or (is_active false) for the one template it is made for."""
+    """Devtools-gated, except a size or a label type: the builder's New
+    template › Custom… lets a designer (labels:add and rank 80, spec §4.10)
+    add one, to the list or (is_active false) for the one template it is
+    made for."""
     if not actor.access.can("devtools", "add"):
-        if body.kind != "size" or not actor.access.can("labels", "add"):
+        if body.kind not in _CUSTOM_KINDS or not actor.access.can("labels", "add"):
             raise _err(403, "forbidden")
         if actor.access.max_rank < SUPER_ADMIN_RANK:
             raise _err(403, "forbidden", min_rank=SUPER_ADMIN_RANK)
@@ -175,26 +176,36 @@ async def create_vocab(
     return LabelVocabOut.model_validate(row)
 
 
-async def _pending_size(db: DbSession, row: LabelVocab | None) -> bool:
-    """A custom size New template › Custom… posted for one template that
-    has no template on it yet: a size row, off the list, unused."""
-    if row is None or row.kind != "size" or row.is_active:
+# The vocab kinds New template › Custom… makes: a size, and a label type.
+_CUSTOM_KINDS = {"size": "size_key", "type": "label_type"}
+
+
+async def _vocab_used(db: DbSession, kind: str, key: str) -> bool:
+    """Whether any template is on the `kind` row `key` (a size or type)."""
+    column = getattr(LabelTemplate, _CUSTOM_KINDS[kind])
+    return bool(await db.scalar(select(func.count()).select_from(LabelTemplate)
+                                .where(column == key)))
+
+
+async def _pending_vocab(db: DbSession, row: LabelVocab | None) -> bool:
+    """A custom size or type New template › Custom… posted for one template
+    that has no template on it yet: off the list, unused."""
+    if row is None or row.kind not in _CUSTOM_KINDS or row.is_active:
         return False
-    return not await db.scalar(select(func.count()).select_from(LabelTemplate)
-                               .where(LabelTemplate.size_key == row.key))
+    return not await _vocab_used(db, row.kind, row.key)
 
 
 @router.patch("/vocab/{kind}/{key}", response_model=LabelVocabOut)
 async def update_vocab(
     kind: str, key: str, body: LabelVocabUpdateIn, db: DbSession, actor: CurrentUser,
 ) -> LabelVocabOut:
-    """Devtools-gated, except a designer's pending custom size (labels:add
-    and rank 80, as create_vocab): when the create it was posted for fails
-    and the size is changed, the dialog rewrites that row rather than
-    leaving it behind and posting another."""
+    """Devtools-gated, except a designer's pending custom size or type
+    (labels:add and rank 80, as create_vocab): when the create it was posted
+    for fails and the size or type is changed, the dialog rewrites that row
+    rather than leaving it behind and posting another."""
     row = await db.get(LabelVocab, (kind, key))
     if not actor.access.can("devtools", "change"):
-        if not (actor.access.can("labels", "add") and await _pending_size(db, row)):
+        if not (actor.access.can("labels", "add") and await _pending_vocab(db, row)):
             raise _err(403, "forbidden")
         if actor.access.max_rank < SUPER_ADMIN_RANK:
             raise _err(403, "forbidden", min_rank=SUPER_ADMIN_RANK)
@@ -448,17 +459,14 @@ async def _check_template_vocab(
                            key=values[field])
 
 
-async def _check_new_size(db: DbSession, size_key: str) -> None:
-    """A new builder template's size: a listed (active) size, or an
-    unlisted custom size (inactive) no template uses yet — the one New
+async def _check_new_vocab(db: DbSession, kind: str, key: str) -> None:
+    """A new builder template's size or label type: a listed (active) row,
+    or an unlisted custom one (inactive) no template uses yet — the one New
     template › Custom… just made for it. 422 unknown_vocab otherwise."""
-    row = await db.get(LabelVocab, ("size", size_key))
-    if row is not None and not row.is_active:
-        used = await db.scalar(select(func.count()).select_from(LabelTemplate)
-                               .where(LabelTemplate.size_key == size_key))
-        if not used:
-            return
-    await _check_template_vocab(db, {"size_key": size_key})
+    row = await db.get(LabelVocab, (kind, key))
+    if row is not None and not row.is_active and not await _vocab_used(db, kind, key):
+        return
+    await _check_template_vocab(db, {_CUSTOM_KINDS[kind]: key})
 
 
 async def _check_site_ids(db: DbSession, site_ids: list[uuid.UUID]) -> None:
@@ -674,9 +682,9 @@ async def _create_parent(db: DbSession, body: LabelTemplateCreateIn,
                    message="a builder template carries its rules on each field")
     _parse_v2(body.design)
     _check_samples(body.samples)
-    await _check_template_vocab(db, {"label_type": body.label_type,
-                                     "language_key": body.language_key})
-    await _check_new_size(db, body.size_key)
+    await _check_template_vocab(db, {"language_key": body.language_key})
+    await _check_new_vocab(db, "type", body.label_type)
+    await _check_new_vocab(db, "size", body.size_key)
     for dpi in tree.TREE_DPIS:
         await _check_template_vocab(db, {"dpi_key": dpi})
     await _check_site_ids(db, site_ids)

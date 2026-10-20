@@ -984,6 +984,28 @@ async def test_a_designer_can_change_a_pending_custom_size(client, db, seeded_us
     assert r.status_code == 403, r.text
 
 
+async def test_a_parent_can_use_an_unlisted_custom_type(client, db, seeded_user):
+    """A custom type not saved to the list is an inactive type row: the
+    template it was made for may use it while nothing else does yet, and a
+    second template may not pick it. A listed custom type is any template's."""
+    hdrs = await _super(db, client)
+    r = await client.post("/labels/vocab", headers=hdrs, json={
+        "kind": "type", "key": "id_badge", "label": "ID badge", "is_active": False})
+    assert r.status_code == 201, r.text
+    parent = await _create(client, hdrs, name="Badge", label_type="id_badge", is_active=False)
+    assert parent["label_type"] == "id_badge"
+    node = await _node(client, hdrs, "Badge")
+    assert {c["label_type"] for c in node["children"]} == {"id_badge"}
+    r = await client.post(URL, headers=hdrs, json=_body("Badge 2", label_type="id_badge"))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {"code": "unknown_vocab", "field": "label_type", "key": "id_badge"}
+    r = await client.post("/labels/vocab", headers=hdrs, json={
+        "kind": "type", "key": "visitor_badge", "label": "Visitor badge"})
+    assert r.status_code == 201, r.text
+    for name in ("Visitor A", "Visitor B"):
+        await _create(client, hdrs, name=name, label_type="visitor_badge", is_active=False)
+
+
 async def test_a_parent_can_use_an_unlisted_custom_size(client, db, seeded_user):
     """A custom size not saved to the list is an inactive size row: the
     template it was made for may use it while nothing else does yet, and a

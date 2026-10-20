@@ -15,6 +15,15 @@
  * lets a designer change a pending size: off the list, on no template)
  * rather than leave it behind and post another.
  *
+ * Label types: the active type list, plus Custom… the same way — a type
+ * name ("ID badge") whose key is its lowercase slug (`id_badge`), a type
+ * row posted off the list unless "Save this type to the list" is on, and
+ * the same rewrite of its own pending row on a retry. A name that is a
+ * listed type (its key or its label) says so and offers that type
+ * instead; a key an unlisted row holds moves on (`_2`, `_3`…). Kiosk Label
+ * Stations print Top and Front only, which the dialog says under a custom
+ * type.
+ *
  * The report-generate header; the card sizes to its content.
  */
 
@@ -67,6 +76,19 @@ export function customSizeKey(w: number, h: number, taken: ReadonlySet<string>):
   for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }
 
+/** The longest custom type key (the API takes 40), leaving room for `_NN`. */
+const TYPE_KEY_MAX = 36;
+
+/** A type row's key for a custom type named `name`: lowercase letters,
+ *  digits and `_` ("ID badge" → `id_badge`, accents dropped), and a key
+ *  another type already holds gets `_2`, `_3`… "" when nothing is left. */
+export function customTypeKey(name: string, taken: ReadonlySet<string>): string {
+  const base = name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, TYPE_KEY_MAX).replace(/_+$/, '');
+  if (!base || !taken.has(base)) return base;
+  for (let n = 2; ; n++) if (!taken.has(`${base}_${n}`)) return `${base}_${n}`;
+}
+
 function sameSize(row: LabelVocab, w: number, h: number): boolean {
   const m = sizeMeta(row);
   return Math.abs(m.width_in - w) < 0.0005 && Math.abs(m.height_in - h) < 0.0005 && !m.has_tab;
@@ -78,12 +100,18 @@ const ERRORS: Record<string, string> = {
   label_vocab_exists: 'Someone added a size under the same name just now. Press Create template again.',
   forbidden: 'Only a super admin or a developer can create templates.',
 };
+const TYPE_TAKEN = 'Someone added a type under the same name just now. Press Create template again.';
+
+const CUSTOM_TYPE_NOTE = "Custom types print from the portal's Print Labels; kiosk Label Stations print Top "
+  + 'and Front labels.';
 
 export default function NewTemplateModal({ vocab, onCreated, onCancel }: NewTemplateModalProps) {
   const types = useMemo(() => vocabOfKind(vocab, 'type'), [vocab]);
   const sizes = useMemo(() => vocabOfKind(vocab, 'size'), [vocab]);
   const [name, setName] = useState('');
-  const [type, setType] = useState(types[0]?.key ?? '');
+  const [type, setType] = useState(types[0]?.key ?? CUSTOM);
+  const [typeName, setTypeName] = useState('');
+  const [keepType, setKeepType] = useState(false);
   const [size, setSize] = useState(sizes[0]?.key ?? CUSTOM);
   const [unit, setUnit] = useState<Unit>('in');
   const [width, setWidth] = useState('');
@@ -97,11 +125,59 @@ export default function NewTemplateModal({ vocab, onCreated, onCancel }: NewTemp
   const ownSize = useRef<{ key: string; w: number; h: number; active: boolean; made: boolean } | null>(null);
   /** Keys this dialog posted or found taken: never offered again. */
   const usedKeys = useRef(new Set<string>());
+  /** The custom type row this dialog last posted, as `ownSize`. */
+  const ownType = useRef<{ key: string; label: string; active: boolean; made: boolean } | null>(null);
+  const usedTypeKeys = useRef(new Set<string>());
 
   const custom = size === CUSTOM;
   const w = toInches(width, unit);
   const h = toInches(height, unit);
-  const ready = !!name.trim() && !!type && (custom ? w !== null && h !== null : !!size);
+  const customType = type === CUSTOM;
+  const typeLabel = typeName.trim();
+  const typeSlug = customTypeKey(typeLabel, new Set());
+  /** A listed type the custom name already is (its key or its label). */
+  const listedType = customType && typeLabel
+    ? types.find((t) => t.key === typeSlug || t.label.trim().toLowerCase() === typeLabel.toLowerCase()) ?? null
+    : null;
+  const typeReady = customType ? !!typeSlug && listedType === null : !!type;
+  const ready = !!name.trim() && typeReady && (custom ? w !== null && h !== null : !!size);
+
+  /** The type row to create the template on: a listed one, or for Custom…
+   *  this dialog's own row (rewritten while it is pending), else a new one. */
+  const typeKey = async (): Promise<string> => {
+    if (!customType) return type;
+    const own = ownType.current;
+    const again = own !== null && own.label === typeLabel && own.active === keepType;
+    if (again && own.made) return own.key;
+    // the name or the switch changed since this dialog made its row off the list
+    if (own !== null && own.made && !own.active) {
+      try {
+        await updateLabelVocab('type', own.key, { label: typeLabel, is_active: keepType });
+        ownType.current = { key: own.key, label: typeLabel, active: keepType, made: true };
+        return own.key;
+      } catch (err) {
+        if (!(err instanceof ApiError) || (err.status !== 403 && err.status !== 404)) throw err;
+        ownType.current = null;
+      }
+    }
+    // a repeat of a post whose answer was lost: a 409 now means it landed
+    const repeat = again && !own.made;
+    const taken = new Set([...vocab.filter((v) => v.kind === 'type').map((v) => v.key), ...usedTypeKeys.current]);
+    const key = repeat ? own.key : customTypeKey(typeLabel, taken);
+    usedTypeKeys.current.add(key);
+    ownType.current = { key, label: typeLabel, active: keepType, made: false };
+    try {
+      await createLabelVocab({ kind: 'type', key, label: typeLabel, is_active: keepType });
+    } catch (err) {
+      const landed = repeat && err instanceof ApiError && err.code === 'label_vocab_exists';
+      if (!landed) {
+        if (err instanceof ApiError && err.code === 'label_vocab_exists') ownType.current = null;
+        throw err;
+      }
+    }
+    ownType.current.made = true;
+    return key;
+  };
 
   /** The size row to create the template on: a listed one, or for Custom…
    *  a listed row of those dimensions, else a new row. */
@@ -158,17 +234,23 @@ export default function NewTemplateModal({ vocab, onCreated, onCancel }: NewTemp
     if (!ready || busy) return;
     setBusy(true);
     setError(null);
+    let posting: 'type' | 'other' = 'type';
     try {
+      const labelType = await typeKey();
+      posting = 'other';
       const picked = await sizeKey();
       const created = await createLabelTemplate({
-        name: name.trim(), label_type: type, size_key: picked.key, language_key: 'zpl',
+        name: name.trim(), label_type: labelType, size_key: picked.key, language_key: 'zpl',
         kind: 'design', design: serializeDesign(newDesign({ w: picked.w, h: picked.h })),
         samples: {}, is_active: false,
       });
       onCreated(created);
     } catch (err) {
-      setError(err instanceof ApiError ? ERRORS[err.code] ?? `Couldn't create the template (${err.code}).`
-        : "Couldn't create the template.");
+      if (err instanceof ApiError && err.code === 'label_vocab_exists' && posting === 'type') setError(TYPE_TAKEN);
+      else {
+        setError(err instanceof ApiError ? ERRORS[err.code] ?? `Couldn't create the template (${err.code}).`
+          : "Couldn't create the template.");
+      }
       setBusy(false);
     }
   };
@@ -212,9 +294,36 @@ export default function NewTemplateModal({ vocab, onCreated, onCancel }: NewTemp
             </div>
             <div className="full">
               <label htmlFor="lbb-new-type">Label type</label>
-              <ComboBox inputId="lbb-new-type" options={types.map((t) => ({ value: t.key, label: t.label }))}
-                value={type} onChange={setType} disabled={busy} placeholder="Pick a type…" />
+              <ComboBox inputId="lbb-new-type" disabled={busy} placeholder="Pick a type…"
+                options={[...types.map((t) => ({ value: t.key, label: t.label })), { value: CUSTOM, label: 'Custom…' }]}
+                value={type} onChange={setType} />
             </div>
+            {customType && (
+              <>
+                <div className="full">
+                  <label htmlFor="lbb-new-type-name">Type name</label>
+                  <input id="lbb-new-type-name" value={typeName} placeholder="ID badge" maxLength={80}
+                    autoComplete="off" disabled={busy} onChange={(e) => setTypeName(e.target.value)} />
+                </div>
+                <div className="full lbb-new-custom">
+                  <span className="lbb-new-keep">
+                    <Switch label="Save this type to the list" checked={keepType} disabled={busy}
+                      onChange={setKeepType} />
+                    <span>Save this type to the list</span>
+                  </span>
+                  {listedType && (
+                    <span className="lbb-new-taken">
+                      <span className="pf-error">That type already exists.</span>
+                      <button type="button" className="mini-btn" disabled={busy}
+                        onClick={() => { setType(listedType.key); setTypeName(''); }}>
+                        Use {listedType.label}
+                      </button>
+                    </span>
+                  )}
+                </div>
+                <p className="full page-hint lbb-new-type-note">{CUSTOM_TYPE_NOTE}</p>
+              </>
+            )}
             <div className="full">
               <label id="lbb-new-size-label">Size</label>
               <div className="segmented lbb-sizes" role="group" aria-labelledby="lbb-new-size-label">
