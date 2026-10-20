@@ -191,7 +191,10 @@ async def _issue(st, person_id: str) -> bool:
         log.info("station key not issued: no usable cloud session")
         return False
     if resp.status_code != 200:
-        level = logging.INFO if _code(resp) == "not_signed_in_here" else logging.WARNING
+        # expected, retried every minute: not signed in here, or a portal from
+        # before Label Station keys (409 not_rfid_station) — not warnings
+        level = (logging.INFO if _code(resp) in ("not_signed_in_here", "not_rfid_station")
+                 else logging.WARNING)
         log.log(level, "station key not issued: portal answered %s", resp.status_code)
         return False
     try:

@@ -115,6 +115,18 @@ async def test_a_bad_network_ip_is_bad_printer_ip(app, client):
     assert r.json()["detail"]["code"] == "bad_printer_ip"
 
 
+async def test_a_session_locked_to_another_move_is_move_locked(app, client):
+    write_host(app)
+    label_setup(app, initiative_id="m-1")
+    other = make_session(app, kiosk_move={"initiative_id": "m-2", "name": "Other"})
+    r = await client.put("/edge/label-station", headers=other, json=SETTINGS)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "move_locked"
+    assert laptop_setup.label_station(app.state.store) is None
+    same = make_session(app, kiosk_move={"initiative_id": "m-1", "name": "Move 1"})
+    r = await client.put("/edge/label-station", headers=same, json=SETTINGS)
+    assert r.status_code == 200, r.text
+
+
 async def test_clear_setup_clears_them(app, client):
     write_host(app)
     label_setup(app)

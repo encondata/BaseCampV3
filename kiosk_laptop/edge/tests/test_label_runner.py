@@ -222,7 +222,11 @@ async def test_sync_and_settings_changes_request_a_run(app, client, cloud):
     assert runner.pending is None
 
 
-async def test_label_station_setup_requests_a_setup_run(app, client, cloud):
+async def test_label_station_setup_waits_for_step_5_to_confirm(app, client, cloud):
+    """Kiosk Setup itself requests no run and leaves the saved settings
+    unconfirmed: a sync before step 5 renders nothing (no yellow screen)."""
+    store = _seed(app)
+    await app.state.label_runner.run_pending()
     app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1",
                                     expires_in=900)
     cloud.post("/kiosk/setup").respond(200, json={"initiative_id": MOVE})
@@ -231,7 +235,50 @@ async def test_label_station_setup_requests_a_setup_run(app, client, cloud):
     r = await client.post("/kiosk/setup", headers=make_session(app),
                           json={"initiative_id": MOVE, "station_type": "label"})
     assert r.status_code == 200
-    assert app.state.label_runner.pending == "setup"
+    assert app.state.label_runner.pending != "setup"
+    setup = laptop_setup.load(store)
+    assert setup["label_station"] is not None  # kept, but not trusted yet
+    assert not laptop_setup.label_confirmed(setup)
+
+
+async def test_unconfirmed_settings_generate_nothing_until_the_put(app, client):
+    store = _seed(app)
+    runner = app.state.label_runner
+    station = laptop_setup.label_station(store)
+    laptop_setup.save(store, {"initiative_id": MOVE}, "label")  # Kiosk Setup again
+    store.run("DELETE FROM station_labels")
+    rendered = []
+
+    def render(template_json, job):
+        rendered.append(job.asset_id)
+        return generate.render_job(template_json, job)
+
+    runner.render = render
+    runner.request("updates")  # e.g. the setup's sync
+    await runner.run_pending()
+    assert rendered == [] and _labels(store) == {}
+    assert _run_row(store).get("state") != "running"
+
+    # step 5 saves the very same settings: still a 'setup' run, then confirmed
+    r = await client.put("/edge/label-station", headers=make_session(app), json=station)
+    assert r.status_code == 200, r.text
+    assert runner.pending == "setup"
+    assert laptop_setup.label_confirmed(laptop_setup.load(store))
+    await runner.run_pending()
+    assert set(rendered) == {"a-1", "a-2"} and _run_row(store)["reason"] == "setup"
+
+    # once confirmed, the same settings again request nothing
+    runner.forget()
+    r = await client.put("/edge/label-station", headers=make_session(app), json=station)
+    assert r.status_code == 200 and runner.pending is None
+
+
+async def test_a_setup_saved_before_the_flag_reads_as_confirmed(app):
+    store = _seed(app)
+    setup = laptop_setup.load(store)
+    setup.pop("label_unconfirmed", None)
+    assert laptop_setup.label_confirmed(setup)
+    assert laptop_setup.label_confirmed(None)
 
 
 async def test_wipe_clears_label_tables(app, client):

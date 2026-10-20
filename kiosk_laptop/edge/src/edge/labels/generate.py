@@ -166,8 +166,13 @@ def build_plan(store: Store, *, label_kind: str | None = None,
             values = asset_label_values(_label_asset(a), move, catalog_keys,
                                         generation_rules=rules)
             if template is not None:
+                # the size/DPI vocabulary and language ride along: a vocab
+                # edit changes the label without bumping the template version
                 fingerprint = _fingerprint([values, template.id, template.version, dpi,
-                                            label_kind])
+                                            label_kind, template_json.get("width_in"),
+                                            template_json.get("height_in"),
+                                            template_json.get("dots"),
+                                            template_json.get("language_key")])
             else:
                 fingerprint = _fingerprint(["no_template", dpi, label_kind])
             jobs.append(AssetJob(str(a["id"]), values, fingerprint))
@@ -183,10 +188,15 @@ def changed_jobs(store: Store, plan: Plan) -> list[AssetJob]:
 
 def render_job(template_json: dict | None, job: AssetJob) -> tuple[str | None, str | None]:
     """`(zpl, None)`, or `(None, error)`. Unknown placeholders are not an
-    error (they print blank, as on the portal)."""
+    error (they print blank, as on the portal). A design template whose size
+    or DPI has no vocabulary details (width_in, height_in, dots) is
+    template_failed, never rendered at size 0."""
     if template_json is None:
         return None, NO_TEMPLATE
     kind = template_json.get("kind") or "code"
+    if kind == "design" and not all(
+            _positive(template_json.get(k)) for k in ("width_in", "height_in", "dots")):
+        return None, TEMPLATE_FAILED
     source = SimpleNamespace(
         kind=kind, code=template_json.get("code") if kind == "code" else None,
         design=template_json.get("design") if kind == "design" else None,
@@ -195,10 +205,14 @@ def render_job(template_json: dict | None, job: AssetJob) -> tuple[str | None, s
         zpl, _unknown = render_template(
             source, job.values, width_in=template_json.get("width_in") or 0,
             height_in=template_json.get("height_in") or 0,
-            dots=template_json.get("dots") or 0)
+            dots=template_json.get("dots") or 0)  # 0s only reach a code template
     except Exception:  # a design the shared compiler can't handle
         return None, TEMPLATE_FAILED
     return zpl, None
+
+
+def _positive(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
 
 
 def apply(store: Store, plan: Plan, job: AssetJob, zpl: str | None, error: str | None) -> None:

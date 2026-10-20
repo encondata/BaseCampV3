@@ -189,6 +189,14 @@ def test_only_changed_assets_are_rerendered(app):
     _seed(app, templates=[_template("t-203", version=2)])
     assert len(generate.changed_jobs(store, generate.build_plan(store))) == 2
 
+    # the size/DPI vocabulary or language changes (same version): every label
+    for change in ({"width_in": 4.5}, {"height_in": 2.5}, {"dots": 200},
+                   {"language_key": "zpl2"}):
+        _seed(app, templates=[_template("t-203")])
+        _apply_all(store, generate.build_plan(store))
+        _seed(app, templates=[{**_template("t-203"), **change}])
+        assert len(generate.changed_jobs(store, generate.build_plan(store))) == 2, change
+
     # the printer's DPI changes: every label
     _seed(app, dpi=300, templates=[_template("t-203"), _template("t-300", dpi="300")])
     _apply_all(store, generate.build_plan(store))
@@ -214,6 +222,102 @@ def test_bad_template_gives_error_rows_not_a_crash(app):
     rows = _rows(store)
     assert {r["error"] for r in rows.values()} == {"no_template_at_dpi"}
     assert {r["template_id"] for r in rows.values()} == {None}
+
+
+def test_a_design_without_size_or_dots_is_template_failed(app):
+    for missing in ("width_in", "height_in", "dots"):
+        for bad in (None, 0):
+            store = _seed(app, templates=[{**_template("t-203"), missing: bad}])
+            plan = generate.build_plan(store)
+            assert generate.render_job(plan.template_json, plan.assets[0]) \
+                == (None, "template_failed"), (missing, bad)
+    # a code template needs none of them
+    store = _seed(app, templates=[{**_template("c-203", kind="code", code="^XA^XZ"),
+                                   "width_in": None, "height_in": None, "dots": None}])
+    plan = generate.build_plan(store)
+    assert generate.render_job(plan.template_json, plan.assets[0]) == ("^XA^XZ", None)
+
+
+# Every placeholder the design compiles, so the round trip covers each value path
+E2E_DESIGN = {
+    "elements": [
+        {"type": "text", "x": 0.1, "y": 0.1, "w": 3.0, "h": 0.3, "fontSizePt": 12,
+         "content": "{asset_name} {asset_id} {make_model}"},
+        {"type": "text", "x": 0.1, "y": 0.45, "w": 3.0, "h": 0.3, "fontSizePt": 10,
+         "content": "{source_ru} {destination_ru} {src_rack}-{src_slot}"},
+        {"type": "text", "x": 0.1, "y": 0.8, "w": 3.0, "h": 0.3, "fontSizePt": 10,
+         "content": "{move_date} {move_date_long} {destination_site} {source_site}"},
+        {"type": "barcode", "x": 0.1, "y": 1.2, "w": 2.5, "h": 0.5,
+         "data": "{serial_number}", "symbology": "code128"},
+        {"type": "qr", "x": 3.0, "y": 1.0, "w": 0.8, "h": 0.8, "data": "{asset_id}"},
+    ],
+}
+E2E_KEYS = ["asset_id", "asset_name", "serial_number", "make_model", "source_ru",
+            "destination_ru", "source_raw", "destination_raw", "source_site",
+            "destination_site", "move_date", "move_date_long", "move_name"]
+
+
+def test_sync_json_round_trip_renders_the_portals_bytes(app):
+    """The sync bodies exactly as the API serializes them (RU as the stored
+    numeric text in *_ru_raw, the move day as an ISO date, vocab floats,
+    the design JSON) through the edge path give the same bytes as the
+    portal's own inputs (Decimal RU, a `date`) through render_template."""
+    from datetime import date
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from serversherpa.labels.label_values import LabelAsset, LabelMove, asset_label_values
+
+    rules = {"source": {"1": "src_rack", "2": "src_slot"}, "length_limits": {"asset_name": 6}}
+    rows = [  # (legacy_id, name, serial, source_ru, destination_ru, source_position)
+        (101, "web01-long", "SN-1", Decimal("14.50"), Decimal("3.00"), "R1.14"),
+        (102, "db02", "SN/2 ü", Decimal("7"), None, None),
+        (103, None, None, None, Decimal("42.25"), "A.B.C"),
+    ]
+    assets = [{
+        "id": f"a-{legacy}", "asset_id": str(legacy), "legacy_id": legacy, "name": name,
+        "rfid": None, "serial_number": serial, "make": "Dell", "model": "R640",
+        "make_model": "Dell R640", "container_id": None, "source_rack": "R1",
+        "source_ru": None, "source_ru_raw": None if sru is None else str(sru),
+        "source_position": pos, "source_pod": None, "destination_rack": "D9",
+        "destination_ru": None, "destination_ru_raw": None if dru is None else str(dru),
+        "destination_position": None, "destination_pod": None, "priority_wave": None,
+        "disposition": None, "label": {}}
+        for legacy, name, serial, sru, dru, pos in rows]
+    template = {**_template("t-203", design=E2E_DESIGN, rules=rules),
+                "width_in": 4.0, "height_in": 2.0, "dots": 203}
+    store = app.state.store
+    laptop_setup.save(store, {"initiative_id": MOVE}, "label")
+    laptop_setup.save_label_station(store, {
+        "label_kind": "top", "printer": {"type": "usb", "ip": None, "model": None,
+                                         "serial": None},
+        "dpi": 203, "offset_x": 0, "offset_y": 0, "peel": False})
+    assets_path, templates_path = _paths()
+    _put_cache(store, assets_path, {
+        "initiative_id": MOVE, "initiative_name": "Move 1",
+        "generated_at": "2026-10-19T00:00:00Z", "assets": assets,
+        "label_context": {"move_name": "Move 1", "move_day": "2026-11-03",
+                          "source_site": "Old DC", "destination_site": "New DC",
+                          "catalog_keys": E2E_KEYS}})
+    _put_cache(store, templates_path, {
+        "initiative_id": MOVE, "generated_at": "2026-10-19T00:00:00Z",
+        "templates": [json.loads(json.dumps(template))]})
+
+    plan = generate.build_plan(store)
+    move = LabelMove(name="Move 1", day=date(2026, 11, 3), source_site="Old DC",
+                     destination_site="New DC")
+    source = SimpleNamespace(kind="design", code=None, design=E2E_DESIGN, language_key="zpl")
+    assert len(plan.assets) == len(rows)
+    for job, (legacy, name, serial, sru, dru, pos) in zip(plan.assets, rows):
+        portal_asset = LabelAsset(
+            legacy_id=legacy, name=name, serial_number=serial, make="Dell", model="R640",
+            source_rack="R1", source_ru=sru, source_position=pos, destination_rack="D9",
+            destination_ru=dru, destination_position=None)
+        values = asset_label_values(portal_asset, move, E2E_KEYS, generation_rules=rules)
+        expected, _ = render_template(source, values, width_in=4.0, height_in=2.0, dots=203)
+        zpl, error = generate.render_job(plan.template_json, job)
+        assert error is None and zpl == expected, job.asset_id
+    assert "U14.5 U3" in generate.render_job(plan.template_json, plan.assets[0])[0]
 
 
 def test_prune_removes_assets_off_the_move(app):

@@ -2494,7 +2494,8 @@ async def _kiosk_caller(request: Request, db: AsyncSession,
                         serial: str | None) -> tuple[AuthContext | None, Device | None]:
     """Who is calling a kiosk-sound route: a person session with kiosk:view
     (`Authorization: Bearer ...`), or an RFID Station's key
-    (`Authorization: Station <key>`) for the kiosk `serial`. Returns
+    (`Authorization: Station <key>`) for the kiosk `serial` (a Label
+    Station's key is 403 not_rfid_station). Returns
     (actor, None) or (None, device). The session path runs the same checks
     as every other route (kiosk session scope, forced password change,
     read-only); the station path runs the station-key check and the
@@ -2506,6 +2507,9 @@ async def _kiosk_caller(request: Request, db: AsyncSession,
             raise HTTPException(status_code=401, detail={"code": "station_key_invalid"},
                                 headers={"WWW-Authenticate": "Bearer"})
         device = await station_device(request, db, serial)
+        if device.station_type != "rfid":
+            # sounds feed the RFID Station's alarm: a Label Station's key is refused
+            raise _err(403, "not_rfid_station")
         await enforce_read_only_config(db, request)
         return None, device
     if scheme.lower() != "bearer" or not raw:

@@ -293,6 +293,16 @@ async def test_not_signed_in_here_logs_at_info(app, cloud, caplog):
     assert recs and all(r.levelno == logging.INFO for r in recs)
 
 
+async def test_an_older_portals_not_rfid_station_logs_at_info(app, cloud, caplog):
+    caplog.set_level(logging.DEBUG, logger="edge.rfid.station_key")
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1"}, "label")
+    app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    cloud.post("/kiosk/station-key").respond(409, json={"detail": {"code": "not_rfid_station"}})
+    assert await station_key.issue(app.state, "p-1") is False
+    recs = [r for r in caplog.records if r.name == "edge.rfid.station_key"]
+    assert recs and all(r.levelno == logging.INFO for r in recs)
+
+
 async def test_station_401_with_clear_setup_clears_the_laptop(app, cloud):
     _rfid_setup(app)
     station_key.store_key(app.state.store, app.state.keys, RAW)

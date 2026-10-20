@@ -1,6 +1,10 @@
 """The Label Station's generation runs (edge/labels/generate.py does the
-work): a request — Kiosk Setup, a sync, a changed DPI / label kind /
+work): a request — Kiosk Setup's step 5, a sync, a changed DPI / label kind /
 printer — sets a pending flag, and the background label loop runs it.
+
+Nothing runs between a Label Station setup and setup step 5 confirming
+its settings (laptop_setup.label_confirmed): the confirming PUT
+/edge/label-station requests the 'setup' run.
 
 A run that has labels to render records its progress in the one
 `label_run` row (`state` 'running', `total`, `done`), which the kiosk shows
@@ -84,6 +88,8 @@ class LabelRunner:
 
     async def _run(self, reason: Reason) -> None:
         generation = self._generation
+        if not laptop_setup.label_confirmed(laptop_setup.load(self.store)):
+            return  # set up again, settings not yet confirmed by setup step 5
         plan = generate.build_plan(self.store)
         if plan is None or not plan.has_asset_data:
             return  # not a Label Station, or nothing synced to build from

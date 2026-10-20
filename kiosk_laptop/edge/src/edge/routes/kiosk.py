@@ -134,7 +134,7 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
             if station in station_key.STATION_TYPES:
                 await station_key.issue(st, session.person_id)
         st.syncer.set_target(str(result["initiative_id"]), session.person_id)
+        # no label run here: a Label Station's settings stay unconfirmed
+        # until setup step 5 saves them (PUT /edge/label-station runs it)
         await st.syncer.run()
-        if station == "label":
-            st.label_runner.request("setup")
     return passthrough(resp)

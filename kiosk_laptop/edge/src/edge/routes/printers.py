@@ -14,7 +14,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 
 from edge import laptop_setup
-from edge.deps import err, json_object, online, require_session
+from edge.deps import err, json_object, online, require_session, setup_move
 from edge.printers import PrinterError, font_header
 from edge.sessions import EdgeSession
 from edge.upstream import CloudOffline
@@ -168,11 +168,12 @@ async def get_label_station(request: Request) -> dict | None:
     return laptop_setup.label_station(request.app.state.store)
 
 
-@router.put("/edge/label-station")
+@router.put("/edge/label-station", dependencies=[Depends(setup_move)])
 async def put_label_station(request: Request) -> dict:
     """`{label_kind, printer: {type, ip?, model, serial?}, dpi, offset_x,
     offset_y, peel?}` → the stored copy (`peel` false when left out). 409 not_label_station until the laptop is
-    set up as a Label Station."""
+    set up as a Label Station; a session locked to another move is 403
+    move_locked (deps.setup_move)."""
     body = await json_object(request)
     st = request.app.state
     printer = body.get("printer")
@@ -186,6 +187,6 @@ async def put_label_station(request: Request) -> dict:
     try:
         return laptop_setup.save_label_station(
             st.store, settings,
-            on_regenerate=lambda: st.label_runner.request("updates"))
+            on_regenerate=st.label_runner.request)
     except LookupError:
         raise err(409, "not_label_station") from None
