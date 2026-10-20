@@ -5,7 +5,9 @@ import KioskGuard from './components/KioskGuard';
 import SetupGate from './components/SetupGate';
 import KioskShell from './layout/KioskShell';
 import { FEATURES } from './lib/features';
-import { LABEL_SECTIONS } from './lib/labelSections';
+import { useKioskSetup } from './lib/kioskSetup';
+import { LABEL_SECTIONS, type LabelSection } from './lib/labelSections';
+import { isLaptop } from './lib/platform';
 import Containers from './pages/Containers';
 import Enroll from './pages/Enroll';
 import FeaturePage from './pages/FeaturePage';
@@ -15,6 +17,7 @@ import LabelSectionPage from './pages/LabelSectionPage';
 import Labels from './pages/Labels';
 import Login from './pages/Login';
 import PrinterTools from './pages/PrinterTools';
+import PrintingStation from './pages/PrintingStation';
 import RfidStatus from './pages/RfidStatus';
 import Scan from './pages/Scan';
 import Settings from './pages/Settings';
@@ -27,6 +30,15 @@ const CONTAINERS = FEATURES.find((f) => f.id === 'containers')!;
 const TRUCKS = FEATURES.find((f) => f.id === 'trucks')!;
 const LABELS = FEATURES.find((f) => f.id === 'labels')!;
 const TIMECLOCK = FEATURES.find((f) => f.id === 'timeclock')!;
+
+/** One Label Printing section. Printing Station is real only on a laptop
+ *  set up as a Label Station; anywhere else it stays the placeholder. */
+function LabelSectionRoute({ section }: { section: LabelSection }) {
+  const [setup] = useKioskSetup();
+  if (section.id === 'printers') return <PrinterTools />;
+  if (section.id === 'station' && isLaptop() && setup?.stationType === 'label') return <PrintingStation />;
+  return <LabelSectionPage section={section} />;
+}
 
 export default function App() {
   return (
@@ -92,7 +104,8 @@ export default function App() {
           />
           {/* Label Printing opens on its own three-card entry screen, so
               it gets explicit routes rather than the placeholder map
-              below — same guards. */}
+              below — same guards. SetupGate sends every /labels route
+              home on an RFID Station laptop. */}
           <Route
             path={LABELS.path}
             element={(
@@ -103,9 +116,10 @@ export default function App() {
               </KioskGuard>
             )}
           />
-          {/* Printer Setup / Troubleshooting is a real screen now; the
-              other two sections keep the placeholder page. The section
-              entry still owns the title and blurb either way. */}
+          {/* Printer Setup / Troubleshooting is a real screen, and so is
+              Printing Station on a laptop Label Station; the rest keep
+              the placeholder page. The section entry still owns the
+              title and blurb either way. */}
           {LABEL_SECTIONS.map((s) => (
             <Route
               key={s.id}
@@ -114,7 +128,7 @@ export default function App() {
                 <KioskGuard>
                   <SetupGate feature={LABELS}>
                     <KioskShell>
-                      {s.id === 'printers' ? <PrinterTools /> : <LabelSectionPage section={s} />}
+                      <LabelSectionRoute section={s} />
                     </KioskShell>
                   </SetupGate>
                 </KioskGuard>

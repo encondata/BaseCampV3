@@ -14,6 +14,7 @@ import { registrationLabel } from '@portal/lib/devices';
 import { applyPreferences, DEFAULT_PREFERENCES } from '@portal/lib/settings';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
+import LabelRegenScreen from '../components/LabelRegenScreen';
 import OffMoveAlarm from '../components/OffMoveAlarm';
 import ScanFlash from '../components/ScanFlash';
 import type { RegistrationState } from '../lib/api';
@@ -77,6 +78,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   // the preference), then the forced theme overrides it. Leaving the route
   // re-runs the effect, so the preference is applied again.
   const forceDark = location.pathname === '/rfid_status';
+  const onSetup = location.pathname === '/setup' || location.pathname.startsWith('/setup/');
   // Clear Setup from the portal: whoever is signed in goes to Kiosk Setup,
   // once. The flag lives above the router and the shell remounts as routes
   // change shape, so it is consumed here — a later mount sees false.
@@ -218,6 +220,12 @@ export default function KioskShell({ children }: { children: ReactNode }) {
           Station laptop. Only while signed in: every alarm route needs an
           edge session, so a signed-out page would only poll 401s. */}
       {authed && isLaptop() && kioskSetup?.stationType === 'rfid' && <OffMoveAlarm />}
+      {/* The yellow label regeneration takeover, over every page of a
+          Label Station laptop while the edge generates labels. Signed in
+          only, for the same reason. Never on Kiosk Setup, which has to stay
+          usable while the station is being set up. */}
+      {authed && isLaptop() && kioskSetup?.stationType === 'label' && !onSetup
+        && <LabelRegenScreen />}
     </div>
   );
 }

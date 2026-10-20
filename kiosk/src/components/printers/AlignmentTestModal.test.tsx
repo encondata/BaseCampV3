@@ -83,3 +83,50 @@ describe('AlignmentTestModal', () => {
     expect(onClose).toHaveBeenCalledTimes(3);
   });
 });
+
+describe('AlignmentTestModal on a Label Station', () => {
+  function station() {
+    const onPrint = vi.fn(async (_zpl: string) => undefined);
+    const onSaveOffsets = vi.fn(async (_o: { x: number; y: number }) => undefined);
+    const transform = (zpl: string) => zpl.replace(/\^XA/g, '^XA^MMP');
+    render(<AlignmentTestModal vocab={vocab} printerDpi={203} onPrint={onPrint} onClose={() => {}}
+                               offsets={{ x: -3, y: 5 }} onSaveOffsets={onSaveOffsets} transform={transform} />);
+    return { onPrint, onSaveOffsets };
+  }
+
+  it('starts from the station offsets and prints through the transform', async () => {
+    localStorage.setItem('labels.print.settings', JSON.stringify({ verticalOffset: 40, horizontalOffset: 40, copies: 3 }));
+    const { onPrint } = station();
+    expect((screen.getByLabelText('Vertical offset') as HTMLInputElement).value).toBe('5');
+    expect((screen.getByLabelText('Horizontal offset') as HTMLInputElement).value).toBe('-3');
+    await userEvent.click(screen.getByRole('button', { name: 'Print test label' }));
+    const zpl = onPrint.mock.calls[0][0];
+    expect(zpl).toContain('^XA^MMP');
+    expect(zpl).toContain('^LT5');
+    expect(zpl).toContain('^LS3');
+    expect(zpl).not.toContain('^PQ');
+  });
+
+  it('saves offsets to the station and leaves localStorage alone', async () => {
+    const { onSaveOffsets } = station();
+    const h = screen.getByLabelText('Horizontal offset');
+    fireEvent.change(h, { target: { value: '7' } });
+    fireEvent.blur(h);
+    await userEvent.click(screen.getByRole('button', { name: 'Save offsets' }));
+    expect(onSaveOffsets).toHaveBeenCalledWith({ x: 7, y: 5 });
+    expect(localStorage.getItem('labels.print.settings')).toBeNull();
+    expect(await screen.findByText('Offsets saved — the Printing Station uses them from the next label.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Save offsets' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('says when the station could not save them', async () => {
+    const { onSaveOffsets } = station();
+    onSaveOffsets.mockRejectedValueOnce(new Error('edge_unavailable'));
+    const v = screen.getByLabelText('Vertical offset');
+    fireEvent.change(v, { target: { value: '9' } });
+    fireEvent.blur(v);
+    await userEvent.click(screen.getByRole('button', { name: 'Save offsets' }));
+    expect(await screen.findByText("Couldn't save the offsets to this station. Try again.")).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Save offsets' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});

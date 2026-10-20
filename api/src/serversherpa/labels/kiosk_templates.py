@@ -9,9 +9,11 @@ carries every reason it matched:
   destination / origin site;
 - `generic`: "generic" appears anywhere in its name, ignoring case;
 - `container`: its label_type is container or container_info;
+- `global`: its label_type is top or front and it is linked to no site, so
+  the Label Station can pick it when no site template applies;
 - `fallback`: its family name (below) is "Generic Rack and RU" (ignoring
-  case), so every DPI version of it qualifies, and no ACTIVE template is linked to the destination site. A move with no
-  destination site counts as having none.
+  case), so every DPI version of it qualifies, whatever the destination
+  site's links (the Label Station's pick order ends on it).
 
 Templates come in DPI versions named like "Generic Rack and RU - 203DPI" /
 "... - 300DPI" or "Container Label 4x6 203dpi". `family_name` strips that
@@ -50,15 +52,33 @@ class TemplateConvertError(ValueError):
     """A design template whose size or DPI has no vocabulary details."""
 
 
+def link_scope(sites: set[uuid.UUID], origin_id: uuid.UUID | None,
+               destination_id: uuid.UUID | None) -> str:
+    """How a template's site links relate to this move: "both" (linked to
+    its origin and destination), "destination", "source", "global" (no
+    links at all) or "other" (linked only to sites that aren't the move's).
+    The same words labels/pick.py's TemplateChoice.scope uses."""
+    to_dest = destination_id is not None and destination_id in sites
+    to_src = origin_id is not None and origin_id in sites
+    if to_dest and to_src:
+        return "both"
+    if to_dest:
+        return "destination"
+    if to_src:
+        return "source"
+    return "other" if sites else "global"
+
+
 async def move_template_set(
     db: AsyncSession, initiative: Initiative,
-) -> list[tuple[LabelTemplate, set[str], list[str]]]:
+) -> list[tuple[LabelTemplate, set[str], list[str], str]]:
     """Every active template the move's kiosk needs, ordered by
     natural(name), each with the set of reasons it was picked and
     `move_site_names`: the names of the move's OWN origin/destination
     sites the template is linked to (natural-sorted). Links to any other
     site are never named — a Front/Generic/Container template linked only
-    elsewhere is still picked, with an empty list."""
+    elsewhere is still picked, with an empty list. The fourth item is the
+    template's `link_scope`."""
     templates = (await db.execute(
         select(LabelTemplate)
         .where(LabelTemplate.is_active.is_(True))
@@ -80,10 +100,7 @@ async def move_template_set(
         if site_id in move_sites:
             move_names.setdefault(template_id, []).append(site_name)
 
-    destination_has_template = destination_id is not None and any(
-        destination_id in sites for sites in links.values())
-
-    picked: list[tuple[LabelTemplate, set[str], list[str]]] = []
+    picked: list[tuple[LabelTemplate, set[str], list[str], str]] = []
     for template in templates:
         sites = links.get(template.id, set())
         name = template.name.lower()
@@ -98,11 +115,14 @@ async def move_template_set(
             reasons.add("generic")
         if template.label_type in CONTAINER_TYPES:
             reasons.add("container")
-        if family_name(name) == FALLBACK_NAME and not destination_has_template:
+        if template.label_type in ("top", "front") and not sites:
+            reasons.add("global")
+        if family_name(name) == FALLBACK_NAME:
             reasons.add("fallback")
         if reasons:
             picked.append((template, reasons,
-                           sorted(move_names.get(template.id, []), key=natural_key)))
+                           sorted(move_names.get(template.id, []), key=natural_key),
+                           link_scope(sites, origin_id, destination_id)))
     return picked
 
 

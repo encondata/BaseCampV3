@@ -41,6 +41,7 @@ const apiMock = vi.hoisted(() => ({
   printerSendFont: vi.fn(),
   putLabelStation: vi.fn(),
   postTestRender: vi.fn(),
+  getLabelPlan: vi.fn(),
 }));
 vi.mock('../../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/api')>();
@@ -125,6 +126,8 @@ beforeEach(() => {
     printerState.fonts.push(body.name);
   });
   apiMock.putLabelStation.mockReset().mockImplementation(async (s: unknown) => s);
+  // An older edge with no plan route: the DPI row falls back to the downloaded templates.
+  apiMock.getLabelPlan.mockReset().mockRejectedValue(new ApiError(404, 'unknown_error'));
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
@@ -245,6 +248,46 @@ describe('checks', () => {
     await passed('DPI matches the templates');
   });
 
+  it('DPI asks the edge plan: green with the template name, notes as non-blocking warnings', async () => {
+    const user = userEvent.setup();
+    apiMock.getLabelPlan.mockResolvedValue({
+      template: { id: 't1', name: 'ORD1 Top 203', family: 'Top', dpi_key: '203', version: 3 },
+      notes: ['No destination template at 203 DPI; using the source template.'],
+    });
+    const { onFinish } = renderStep();
+    await connectUsb(user);
+    await passed('DPI matches the templates');
+    expect(apiMock.getLabelPlan).toHaveBeenCalledWith({ dpi: 203, kind: 'top' });
+    const dpiRow = row('DPI matches the templates');
+    expect(within(dpiRow).getByText('ORD1 Top 203')).toBeTruthy();
+    const note = within(dpiRow).getByText('No destination template at 203 DPI; using the source template.');
+    expect(note.classList.contains('check-warning')).toBe(true);
+    await allGreen();
+    expect(finishButton().disabled).toBe(false);
+    await user.click(finishButton());
+    await waitFor(() => expect(onFinish).toHaveBeenCalled());
+  });
+
+  it('DPI fails when the edge plan has no template at the printer DPI', async () => {
+    const user = userEvent.setup();
+    apiMock.getLabelPlan.mockResolvedValue({ template: null, notes: [] });
+    renderStep();
+    await connectUsb(user);
+    await failed('DPI matches the templates');
+    expect(within(row('DPI matches the templates')).getByText('No Top template at 203 DPI')).toBeTruthy();
+    expect(finishButton().disabled).toBe(true);
+  });
+
+  it('DPI names the Front kind for a Front station', async () => {
+    const user = userEvent.setup();
+    apiMock.getLabelPlan.mockResolvedValue({ template: null, notes: [] });
+    renderStep({ labelKind: 'front' });
+    await connectUsb(user);
+    await failed('DPI matches the templates');
+    expect(apiMock.getLabelPlan).toHaveBeenCalledWith({ dpi: 203, kind: 'front' });
+    expect(within(row('DPI matches the templates')).getByText('No Front template at 203 DPI')).toBeTruthy();
+  });
+
   it('status problems say what to fix, and Recheck turns them green', async () => {
     const user = userEvent.setup();
     printerState.paperOut = true;
@@ -309,6 +352,45 @@ describe('checks', () => {
     await new Promise((r) => { setTimeout(r, 900); });
     await failed('Fonts installed');
     expect(screen.getByText(message)).toBeTruthy();
+  });
+
+  it("fonts are the plan template's only: other templates' fonts never block", async () => {
+    const user = userEvent.setup();
+    templatesMock.templates = [
+      template({ id: 'picked', code: '^XA^A@N,30,30,E:ROBOTO.TTF^FDx^FS^XZ' }),
+      template({ id: 'global', code: '^XA^A@N,30,30,E:OTHER.TTF^FDx^FS^XZ' }),
+      template({ id: 'other-dpi', dpi_key: '300', code: '^XA^A@N,30,30,E:BIG.TTF^FDx^FS^XZ' }),
+    ];
+    printerState.fonts.push('ROBOTO.TTF');
+    apiMock.getLabelPlan.mockResolvedValue({
+      template: { id: 'picked', name: 'ORD1 Top 203', family: 'ORD1 Top', dpi_key: '203', version: 1 },
+      notes: [],
+    });
+    renderStep();
+    await connectUsb(user);
+    await allGreen();
+    expect(apiMock.fetchKioskLabelFonts).not.toHaveBeenCalled();
+
+    // the picked template's own missing font still fails
+    cleanup();
+    printerState.fonts = [];
+    renderStep();
+    await connectUsb(user);
+    await failed('Fonts installed');
+    expect(within(row('Fonts installed')).getByText('Missing: ROBOTO.TTF.')).toBeTruthy();
+  });
+
+  it('without a plan (older edge) fonts fall back to every template of the kind', async () => {
+    const user = userEvent.setup();
+    templatesMock.templates = [
+      template({ id: 'a', code: '^XA^A@N,30,30,E:ROBOTO.TTF^FDx^FS^XZ' }),
+      template({ id: 'b', code: '^XA^A@N,30,30,E:OTHER.TTF^FDx^FS^XZ' }),
+    ];
+    printerState.fonts.push('ROBOTO.TTF');
+    renderStep();
+    await connectUsb(user);
+    await failed('Fonts installed');
+    expect(within(row('Fonts installed')).getByText('Missing: OTHER.TTF.')).toBeTruthy();
   });
 
   it('a font that is not in the library stays red with the upload hint', async () => {
@@ -481,4 +563,31 @@ it('a finished scan can run again, and re-choosing Network does not rescan', asy
   expect(apiMock.startPrinterScan).toHaveBeenCalledTimes(1);
   await user.click(screen.getByRole('button', { name: 'Scan again' }));
   await waitFor(() => expect(apiMock.startPrinterScan).toHaveBeenCalledTimes(2));
+});
+
+describe('in the Label Station printer tools', () => {
+  const saved = {
+    label_kind: 'top' as const, printer: { type: 'network' as const, ip: '10.0.0.40', model: 'ZD621', serial: null },
+    dpi: 203, offset_x: 2, offset_y: 1, peel: false,
+  };
+
+  it('preselect starts on the saved network printer; no Back; its own Finish label', async () => {
+    const user = userEvent.setup();
+    const { onFinish } = renderStep({ initial: saved, preselect: true, finishLabel: 'Save printer', onBack: undefined });
+    expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
+    await allGreen();
+    expect(apiMock.printerQuery).toHaveBeenCalledWith('10.0.0.40', '~HI');
+    expect(apiMock.startPrinterScan).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Save printer' }));
+    await waitFor(() => expect(onFinish).toHaveBeenCalled());
+    expect(apiMock.putLabelStation).toHaveBeenCalledWith(expect.objectContaining({
+      printer: expect.objectContaining({ type: 'network', ip: '10.0.0.40' }), offset_x: 2, offset_y: 1,
+    }));
+  });
+
+  it('without preselect a saved network printer waits for a pick', async () => {
+    renderStep({ initial: saved });
+    await screen.findByLabelText('Printer IP');
+    expect(apiMock.printerQuery).not.toHaveBeenCalled();
+  });
 });

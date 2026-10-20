@@ -78,3 +78,31 @@ def test_schema_step_adds_station_status(tmp_path):
     assert store.one("SELECT paused FROM station_status")["paused"] == "kiosk_not_registered"
     with pytest.raises(sqlite3.IntegrityError):         # one row only
         store.run("INSERT INTO station_status (id, paused) VALUES (2, NULL)")
+
+
+def test_labeled_scan_step_keeps_queued_rfid_scans(tmp_path, monkeypatch):
+    """The step that rebuilds pending_rfid_scans (nullable raw_read_id, new
+    scan_type) carries every queued row over untouched."""
+    from edge import db
+    monkeypatch.setattr(db, "SCHEMA_STEPS", SCHEMA_STEPS[:-1])
+    old = Store(tmp_path / "edge.db")
+    old.run("INSERT INTO pending_rfid_scans (raw_read_id, client_scan_id, epc, matched_kind, "
+            "matched_id, scanned_at, attempts, last_error, created_at) "
+            "VALUES (7, 'c-1', 'E1', 'asset', 'a-1', 't', 3, 'http_500', 'now')")
+    old.close()
+    monkeypatch.setattr(db, "SCHEMA_STEPS", SCHEMA_STEPS)
+    store = Store(tmp_path / "edge.db")
+    row = store.one("SELECT * FROM pending_rfid_scans")
+    assert (row["id"], row["raw_read_id"], row["client_scan_id"], row["attempts"],
+            row["last_error"], row["scan_type"]) == (1, 7, "c-1", 3, "http_500", None)
+    with pytest.raises(sqlite3.IntegrityError):           # raw_read_id still unique
+        store.run("INSERT INTO pending_rfid_scans (raw_read_id, client_scan_id, epc, "
+                  "matched_kind, matched_id, scanned_at, created_at) "
+                  "VALUES (7, 'c-2', 'E1', 'asset', 'a-1', 't', 'now')")
+    for sid in ("c-3", "c-4"):                            # but NULL never collides
+        store.run("INSERT INTO pending_rfid_scans (client_scan_id, epc, matched_kind, "
+                  "matched_id, scanned_at, created_at, scan_type) "
+                  "VALUES (?, 'B1', 'asset', 'a-1', 't', 'now', 'barcode')", (sid,))
+    assert store.one("SELECT MAX(id) AS m FROM pending_rfid_scans")["m"] == 3
+    assert store.one("SELECT 1 FROM sqlite_master WHERE name = 'pending_rfid_scans_due'")
+    store.close()

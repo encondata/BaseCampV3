@@ -5,12 +5,15 @@
  * laptop edge). Either way the printer becomes one `StationPrinter`, and
  * the same checks run against it, each a row that turns green:
  * - Printer answers (`~HI`);
- * - DPI: at least one downloaded template of the station's kind is at the
- *   printer's DPI;
+ * - DPI: the edge's label plan (`GET /edge/labels/plan`) finds a template
+ *   of the station's kind at the printer's DPI, and names it; the plan's
+ *   notes show under the row as warnings that never block. An edge
+ *   without the plan route falls back to the downloaded templates;
  * - Ready to print: `~HS` reports no paper out, head open or pause;
  * - Peeler: whether a peeler is fitted (SGD `sensor.peeler_present`). It
  *   never fails; it decides whether labels print peel-off or tear-off;
- * - Fonts: every E: font those templates use is on the printer. A missing
+ * - Fonts: every E: font the plan's template uses is on the printer (when
+ *   the plan call failed, every template of the kind's fonts). A missing
  *   font that's in the portal's library installs from here; one that isn't
  *   stays red with what to do.
  *
@@ -20,6 +23,12 @@
  * on the edge (`PUT /edge/label-station`), including the offsets set in
  * the test labels modal and whether to print peel-off. Setup never writes
  * printer settings: the print mode goes on each label instead.
+ *
+ * Printer Setup / Troubleshooting on a Label Station reuses this step as
+ * its Change printer / Check printer & fonts modal: no Back, its own
+ * Finish label, the page's USB printer (`zebra`) instead of a second
+ * hold on the same device, and `preselect` to start on the saved network
+ * printer.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -28,7 +37,7 @@ import type { HostIdentification, HostStatus, UsbDeviceLike } from '@portal/labe
 
 import { useKioskAuth } from '../../auth/KioskAuthContext';
 import {
-  ApiError, fetchKioskLabelFonts, getPrinterScan, putLabelStation, startPrinterScan,
+  ApiError, fetchKioskLabelFonts, getLabelPlan, getPrinterScan, putLabelStation, startPrinterScan,
   type KioskLabelFont, type KioskLabelTemplate, type LabelKind, type LabelStationSettings,
   type PrinterScan, type FoundPrinter,
 } from '../../lib/api';
@@ -38,7 +47,7 @@ import {
   templatesOfKind, usbStationPrinter, type StationPrinter,
 } from '../../lib/stationPrinter';
 import { useSyncStatus } from '../../lib/sync';
-import { useZebraPrinter } from '../../lib/useZebraPrinter';
+import { useZebraPrinter, type ZebraPrinter } from '../../lib/useZebraPrinter';
 import PrinterHealth from '../printers/PrinterHealth';
 import CheckList, { type CheckRowResult } from './CheckList';
 import TestLabelModal, { type Offsets } from './TestLabelModal';
@@ -48,7 +57,7 @@ type PrinterType = 'usb' | 'network';
 
 const ITEMS: { name: CheckKey; label: string; showOkDetail?: boolean }[] = [
   { name: 'answers', label: 'Printer answers' },
-  { name: 'dpi', label: 'DPI matches the templates' },
+  { name: 'dpi', label: 'DPI matches the templates', showOkDetail: true },
   { name: 'status', label: 'Ready to print' },
   { name: 'peeler', label: 'Peeler', showOkDetail: true },
   { name: 'fonts', label: 'Fonts installed' },
@@ -96,8 +105,15 @@ interface Props {
   labelKind: LabelKind;
   /** The station's saved settings, when it has some: their offsets carry over. */
   initial: LabelStationSettings | null;
-  onBack: () => void;
+  /** No Back button without it. */
+  onBack?: () => void;
   onFinish: () => void;
+  /** The Finish button's text when every check passed (default "Finish"). */
+  finishLabel?: string;
+  /** Start on the saved network printer instead of waiting for a pick. */
+  preselect?: boolean;
+  /** A USB printer hook the caller already holds; this step's own when absent. */
+  zebra?: ZebraPrinter;
 }
 
 /** What a found network printer said it is (its `~HI` answer), so the
@@ -107,16 +123,22 @@ function printerDetails(p: FoundPrinter): string {
   return parts.length > 0 ? parts.join(' · ') : "Didn't say what it is";
 }
 
-export default function PrinterStep({ initiativeId, labelKind, initial, onBack, onFinish }: Props) {
+export default function PrinterStep({
+  initiativeId, labelKind, initial, onBack, onFinish, finishLabel = 'Finish', preselect = false, zebra: sharedZebra,
+}: Props) {
   const { kioskMove } = useKioskAuth();
-  const zebra = useZebraPrinter();
+  // Always called (hooks can't be conditional); holds nothing when unused.
+  const ownZebra = useZebraPrinter();
+  const zebra = sharedZebra ?? ownZebra;
   const sync = useSyncStatus();
   const [type, setType] = useState<PrinterType>(initial?.printer.type ?? 'usb');
   const [known, setKnown] = useState<UsbDeviceLike[]>([]);
   const [scan, setScan] = useState<PrinterScan | null>(null);
   const [scanError, setScanError] = useState('');
   const [typedIp, setTypedIp] = useState(initial?.printer.type === 'network' ? initial.printer.ip ?? '' : '');
-  const [ip, setIp] = useState<string | null>(null);
+  const [ip, setIp] = useState<string | null>(
+    preselect && initial?.printer.type === 'network' ? initial.printer.ip : null,
+  );
   const [templates, setTemplates] = useState<KioskLabelTemplate[] | null>(null);
   const [results, setResults] = useState<Partial<Record<CheckKey, CheckRowResult>>>({});
   const [running, setRunning] = useState<CheckKey | null>(null);
@@ -205,7 +227,26 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
     setIdentity(ident);
     put('answers', { state: 'ok', detail: `${ident.model} · ${ident.dpi} DPI` });
 
-    put('dpi', checkDpi(ts, labelKind, ident.dpi));
+    setRunning('dpi');
+    let dpiResult: CheckRowResult;
+    // The templates whose fonts the printer needs: the one the plan picks
+    // (none when it picks none); every template of the kind when there is
+    // no plan, or its template isn't among the downloaded ones.
+    let fontTemplates = templatesOfKind(ts, labelKind);
+    try {
+      const plan = await getLabelPlan({ dpi: ident.dpi, kind: labelKind });
+      const picked = plan.template ? ts.find((t) => t.id === plan.template?.id) : undefined;
+      if (!plan.template) fontTemplates = [];
+      else if (picked) fontTemplates = [picked];
+      dpiResult = plan.template
+        ? { state: 'ok', detail: plan.template.name, notes: plan.notes }
+        : { state: 'fail', detail: `No ${KIND_LABEL[labelKind]} template at ${ident.dpi} DPI`, notes: plan.notes };
+    } catch {
+      // An older edge (or a failed call): never a dead end in setup.
+      dpiResult = checkDpi(ts, labelKind, ident.dpi);
+    }
+    if (!live()) return;
+    put('dpi', dpiResult);
 
     setRunning('status');
     let st: HostStatus | null = null;
@@ -231,7 +272,7 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
     put('peeler', { state: 'ok', detail: peelerDetail(present) });
 
     setRunning('fonts');
-    const needed = neededFonts(templatesOfKind(ts, labelKind));
+    const needed = neededFonts(fontTemplates);
     if (needed.length === 0) {
       put('fonts', { state: 'ok', detail: 'No printer fonts needed.' });
     } else {
@@ -491,7 +532,7 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
       {saveError && <p className="form-error" role="alert">{saveError}</p>}
 
       <div className="pf-form-actions">
-        <button type="button" className="mini-btn" disabled={saving} onClick={onBack}>Back</button>
+        {onBack && <button type="button" className="mini-btn" disabled={saving} onClick={onBack}>Back</button>}
         <button type="button" className="mini-btn" disabled={!printer || !identity || busy}
                 onClick={() => setTestOpen(true)}>
           Print test labels
@@ -505,7 +546,7 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
         )}
         <button type="button" className="btn-solid" disabled={!allOk || !printer || !identity || busy}
                 onClick={() => void save()}>
-          {saving ? 'Saving…' : 'Finish'}
+          {saving ? 'Saving…' : finishLabel}
         </button>
       </div>
 

@@ -27,10 +27,12 @@ from edge.db import Store
 from edge.hostnet import DynamicHosts, HostCheckMiddleware, parse_host
 from edge.identity import load_or_create
 from edge.outbox import OutboxWorker
+from edge.labels.runner import LabelRunner
 from edge.printers import Printers
 from edge.routes import auth as auth_routes
 from edge.routes import edge as edge_routes
 from edge.routes import kiosk as kiosk_routes
+from edge.routes import labels as label_routes
 from edge.routes import printers as printer_routes
 from edge.routes import proxy
 from edge.routes import rfid as rfid_routes
@@ -120,12 +122,17 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     app.state.gateway_knock = checks.knock
     app.state.syncer = Syncer(app.state.store, app.state.upstream,
                               lambda: app.state.identity.serial)
+    app.state.label_wake = asyncio.Event()  # set by a label request: run the generator now
+    app.state.label_runner = LabelRunner(app.state.store, wake=app.state.label_wake)
+    # fresh move data: a Label Station re-renders whatever labels it changed
+    app.state.syncer.after_sync = app.state.label_runner.request_if_label_station
 
     app.include_router(auth_routes.router)
     app.include_router(edge_routes.router)
     app.include_router(kiosk_routes.router)
     app.include_router(rfid_routes.router)
     app.include_router(printer_routes.router)
+    app.include_router(label_routes.router)
 
     @app.get("/config.js")
     async def config_js(request: Request) -> Response:

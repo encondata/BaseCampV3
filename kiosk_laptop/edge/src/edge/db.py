@@ -14,6 +14,12 @@ from pathlib import Path
 # rollback an older image keeps running on a database a newer image already
 # migrated, so nothing an older image reads or writes may be renamed,
 # dropped or tightened, and `schema_version` never goes down.
+#
+# One sanctioned exception: the step that rebuilds pending_rfid_scans (Label
+# Station Labeled scans) to LOOSEN `raw_read_id` from NOT NULL to nullable,
+# which SQLite can only do by copying the table. It keeps every column an
+# older image uses, with the same names and meaning; only a constraint got
+# looser. Don't take it as precedent: new steps stay additive.
 SCHEMA_STEPS: list[str] = [
     """
     CREATE TABLE edge_sessions (
@@ -157,6 +163,56 @@ SCHEMA_STEPS: list[str] = [
         version INTEGER NOT NULL DEFAULT 0, changed_at TEXT, changed_at_local TEXT,
         dirty INTEGER NOT NULL DEFAULT 0, applied_version INTEGER, server_offset_ms INTEGER,
         reported_at TEXT)
+    """,
+    # the Label Station's finished labels, one per asset on the move (edge/labels/
+    # generate.py): `fingerprint` covers every input, so only changed assets are
+    # re-rendered; `label_run` is the generator's one progress row
+    """
+    CREATE TABLE station_labels (asset_id TEXT PRIMARY KEY, label_kind TEXT, dpi INTEGER,
+        template_id TEXT, template_version INTEGER, template_name TEXT, fingerprint TEXT,
+        zpl TEXT, error TEXT, generated_at TEXT);
+    CREATE TABLE label_run (id INTEGER PRIMARY KEY CHECK (id = 1),
+        state TEXT NOT NULL DEFAULT 'idle', reason TEXT, total INTEGER NOT NULL DEFAULT 0,
+        done INTEGER NOT NULL DEFAULT 0, pending INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT, finished_at TEXT)
+    """,
+    # the Label Station's Labeled scans share the RFID upload queue: `scan_type`
+    # ('barcode'; NULL is an RFID scan) and no raw read behind them, so
+    # `raw_read_id` becomes nullable (SQLite can't drop NOT NULL: rebuild)
+    """
+    CREATE TABLE pending_rfid_scans_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        raw_read_id INTEGER UNIQUE,
+        client_scan_id TEXT NOT NULL UNIQUE,
+        epc TEXT NOT NULL,
+        matched_kind TEXT NOT NULL,
+        matched_id TEXT NOT NULL,
+        off_move INTEGER NOT NULL DEFAULT 0,
+        off_move_initiative_id TEXT,
+        off_move_initiative_name TEXT,
+        scanned_at TEXT NOT NULL,
+        initiative_id TEXT, site_id TEXT, scan_status TEXT,
+        upload_state TEXT NOT NULL DEFAULT 'pending',
+        was_accepted INTEGER NOT NULL DEFAULT 0,
+        accepted_at TEXT,
+        reject_code TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT,
+        waiting_for_internet INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        scan_type TEXT);
+    INSERT INTO pending_rfid_scans_new (id, raw_read_id, client_scan_id, epc, matched_kind,
+        matched_id, off_move, off_move_initiative_id, off_move_initiative_name, scanned_at,
+        initiative_id, site_id, scan_status, upload_state, was_accepted, accepted_at,
+        reject_code, attempts, next_attempt_at, waiting_for_internet, last_error, created_at)
+        SELECT id, raw_read_id, client_scan_id, epc, matched_kind, matched_id, off_move,
+        off_move_initiative_id, off_move_initiative_name, scanned_at, initiative_id, site_id,
+        scan_status, upload_state, was_accepted, accepted_at, reject_code, attempts,
+        next_attempt_at, waiting_for_internet, last_error, created_at FROM pending_rfid_scans;
+    DROP TABLE pending_rfid_scans;
+    ALTER TABLE pending_rfid_scans_new RENAME TO pending_rfid_scans;
+    CREATE INDEX pending_rfid_scans_due ON pending_rfid_scans (upload_state, next_attempt_at)
     """,
 ]
 

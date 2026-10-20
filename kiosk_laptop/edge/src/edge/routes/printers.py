@@ -14,19 +14,20 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 
 from edge import laptop_setup
-from edge.deps import err, json_object, online, require_session
+from edge.deps import err, json_object, online, require_session, setup_move
 from edge.printers import PrinterError, font_header
 from edge.sessions import EdgeSession
 from edge.upstream import CloudOffline
 
 router = APIRouter(dependencies=[Depends(require_session)])
 
-MAX_COMMAND = 4096              # a query: ~HI, ~HS, ^XA^HWE:*.*^XZ, the peeler getvar
-# The only queries the kiosk sends (identity, status, the E: listing, and
-# the SGD read of whether a peeler is fitted), byte for byte; anything else
+MAX_COMMAND = 4096              # a query: ~HI, ~HS, ^XA^HWE:*.*^XZ, ^HH, the peeler getvar
+# The only queries the kiosk sends (identity, status, the E: listing, the
+# configuration label (^HH: print mode, label length) and the SGD read of
+# whether a peeler is fitted), byte for byte; anything else
 # (settings, setvar, other getvars, deletes, resets) is refused here.
 ALLOWED_QUERIES = frozenset({
-    "~HI", "~HS", "^XA^HWE:*.*^XZ",
+    "~HI", "~HS", "^XA^HWE:*.*^XZ", "^XA^HH^XZ",
     '! U1 getvar "sensor.peeler_present"\r\n',
 })
 MAX_ZPL = 8 * 1024 * 1024       # a label job (graphics can be large)
@@ -167,11 +168,12 @@ async def get_label_station(request: Request) -> dict | None:
     return laptop_setup.label_station(request.app.state.store)
 
 
-@router.put("/edge/label-station")
+@router.put("/edge/label-station", dependencies=[Depends(setup_move)])
 async def put_label_station(request: Request) -> dict:
     """`{label_kind, printer: {type, ip?, model, serial?}, dpi, offset_x,
     offset_y, peel?}` → the stored copy (`peel` false when left out). 409 not_label_station until the laptop is
-    set up as a Label Station."""
+    set up as a Label Station; a session locked to another move is 403
+    move_locked (deps.setup_move)."""
     body = await json_object(request)
     st = request.app.state
     printer = body.get("printer")
@@ -183,6 +185,8 @@ async def put_label_station(request: Request) -> dict:
     except laptop_setup.BadLabelStation as exc:
         raise err(422, exc.code) from None
     try:
-        return laptop_setup.save_label_station(st.store, settings)
+        return laptop_setup.save_label_station(
+            st.store, settings,
+            on_regenerate=st.label_runner.request)
     except LookupError:
         raise err(409, "not_label_station") from None

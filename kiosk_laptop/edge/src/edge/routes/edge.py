@@ -19,7 +19,7 @@ AUTH_TABLES = ("cloud_sessions", "offline_logins", "edge_sessions", "login_failu
                "move_passwords")
 MOVE_TABLES = ("cache", "outbox", "laptop_setup", "rfid_events",
               "raw_tag_reads", "rfid_tags_seen", "station_key", "pending_rfid_scans",
-              "rfid_unmatched", "alarm_open", "alarm_last")
+              "rfid_unmatched", "alarm_open", "alarm_last", "station_labels", "label_run")
 
 
 def _status(request: Request, session: EdgeSession | None) -> dict:
@@ -128,6 +128,7 @@ async def wipe(request: Request, _: EdgeSession = Depends(require_admin)) -> JSO
         if had_label_station:  # the config's mirror drops it too
             config_sync.note_label_station(c)
     note_cache_write()  # the cache table was emptied: drop memoized tag indexes
+    st.label_runner.forget()
     response = JSONResponse({"cleared_move_data": True})
     response.delete_cookie("ss_refresh", path="/auth")
     return response

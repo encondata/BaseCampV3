@@ -1,5 +1,5 @@
-"""A station key works only for a registered RFID laptop kiosk: a kiosk that
-is no longer an RFID laptop gets the plain 401, and a lapsed registration is a
+"""A station key works only for a registered RFID or Label laptop kiosk: a kiosk
+that is no longer a station laptop gets the plain 401, and a lapsed registration is a
 403 `kiosk_not_registered` that keeps the key, so renewing restores uploads."""
 
 import uuid
@@ -17,9 +17,9 @@ async def _set(db, device, **fields):
     await db.commit()
 
 
-async def test_key_refused_when_station_is_no_longer_rfid_laptop(client, db, seeded_user):
+async def test_key_refused_when_station_is_no_longer_a_station_laptop(client, db, seeded_user):
     device, _, key = await _station(db)
-    await _set(db, device, station_type="label")
+    await _set(db, device, station_type=None)
     r = await _post(client, key, [_scan("EPC-ELIG-LABEL")])
     assert r.status_code == 401
     assert r.json()["detail"] == {"code": "station_key_invalid"}

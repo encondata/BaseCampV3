@@ -18,10 +18,10 @@ name: kiosk-laptop-image
 on:
   push:
     branches: [main]
-    paths: ['kiosk/**', 'kiosk_laptop/**', 'portal/src/**', '.github/workflows/kiosk-laptop-image.yml']
+    paths: ['kiosk/**', 'kiosk_laptop/**', 'portal/src/**', 'api/src/serversherpa/labels/**', 'api/src/serversherpa/__init__.py', '.github/workflows/kiosk-laptop-image.yml']
     tags: ['kiosk-laptop-v*']
   pull_request:
-    paths: ['kiosk/**', 'kiosk_laptop/**', 'portal/src/**', '.github/workflows/kiosk-laptop-image.yml']
+    paths: ['kiosk/**', 'kiosk_laptop/**', 'portal/src/**', 'api/src/serversherpa/labels/**', 'api/src/serversherpa/__init__.py', '.github/workflows/kiosk-laptop-image.yml']
   workflow_dispatch:
 
 # Least privilege: only the publish job can write packages.

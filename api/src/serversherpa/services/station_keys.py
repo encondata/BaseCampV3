@@ -1,5 +1,5 @@
-"""RFID station keys: a per-device secret an unattended laptop kiosk uses to
-upload scans as itself. Only the sha256 is stored; the raw key is returned
+"""Station keys (RFID and Label Stations): a per-device secret an unattended
+laptop kiosk uses to upload scans as itself. Only the sha256 is stored; the raw key is returned
 once, at issue, and never logged or audited. Spec §3.
 
 Callers commit; audit rows ride the caller's transaction."""
@@ -61,8 +61,8 @@ async def revoke(db: AsyncSession, device: Device, *,
 
 async def verify(db: AsyncSession, serial: str, raw_key: str) -> Device | None:
     """The kiosk Device for `serial` when `raw_key` matches its key and the
-    device is still an RFID laptop station, else None (no device, not a
-    kiosk, no key, a wrong key, or no longer `laptop` / `rfid`). Eligibility
+    device is still an RFID or Label laptop station, else None (no device, not a
+    kiosk, no key, a wrong key, or no longer `laptop` / `rfid` or `label`). Eligibility
     is checked only after the hash matches. Registration is not checked here;
     deps.station_device refuses a lapsed one with a 403 that keeps the key."""
     device = await db.scalar(select(Device).where(Device.serial == serial))
@@ -70,6 +70,6 @@ async def verify(db: AsyncSession, serial: str, raw_key: str) -> Device | None:
         return None
     if not hmac.compare_digest(_hash(raw_key), device.station_key_hash):
         return None
-    if device.sub_type != "laptop" or device.station_type != "rfid":
+    if device.sub_type != "laptop" or device.station_type not in ("rfid", "label"):
         return None
     return device

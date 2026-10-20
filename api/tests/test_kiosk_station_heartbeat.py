@@ -166,3 +166,11 @@ async def test_person_heartbeat_ignores_reader(client, db, seeded_user):
         "serial": SERIAL, "name": "Station 1", "mode": "laptop", "reader": REPORT})
     assert r.status_code == 200, r.text
     assert await _readers(db) == []
+
+
+async def test_station_heartbeat_refuses_a_label_station_key(client, db, seeded_user):
+    device, _, key = await _station(db)
+    await _set(db, device, station_type="label")
+    r = await _beat(client, key, version="2.0")
+    assert r.status_code == 401
+    assert r.json()["detail"] == {"code": "station_key_invalid"}

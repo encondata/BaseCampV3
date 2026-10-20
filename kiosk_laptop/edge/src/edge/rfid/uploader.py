@@ -1,5 +1,8 @@
 """Pending RFID scans -> the portal (rfid scan processing spec §4).
 
+The same queue carries a Label Station's Labeled scans (`scan_type`
+'barcode', queued by POST /edge/labels/printed); NULL is an RFID scan.
+
 Every 5 s (and right after the processor inserts) the oldest due `pending`
 rows, at most 50, go to `POST /kiosk/station/scans` under the station key,
 with no person session needed. One batch at a time. A resend reuses each
@@ -92,7 +95,7 @@ def _scan(row) -> dict:
     scan = {
         "client_scan_id": row["client_scan_id"],
         "scanned_value": row["epc"],
-        "scan_type": "rfid",
+        "scan_type": row["scan_type"] or "rfid",  # NULL: an RFID row from before the column
         "scanned_at": row["scanned_at"],
         "site_id": row["site_id"],
         "initiative_id": row["initiative_id"],

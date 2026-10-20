@@ -33,7 +33,7 @@ from serversherpa.api.routes.auth import (
 from serversherpa.api.routes.labels import vocab_usage as _vocab_usage
 from serversherpa.api.schemas import (
     HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut,
-    KioskClientAssetOut, KioskClientAssetsSyncOut, KioskClockInIn,
+    KioskLabelContextOut, KioskClientAssetOut, KioskClientAssetsSyncOut, KioskClockInIn,
     KioskClockOutIn, KioskContainerAssetIn, KioskContainerAssetOut,
     KioskContainerAssetRow, KioskContainerOut, KioskContainerRef,
     KioskContainersSyncOut, KioskContainerStateOut, KioskEdgeMovePassword,
@@ -87,6 +87,7 @@ from serversherpa.services.kiosk_registration import (  # noqa: F401 (re-exporte
 )
 from serversherpa.services.password_policy import load_policy
 from serversherpa.services.storage import delete_object, get_object, presign_get, put_object
+from serversherpa.services.timezone import stored_day
 
 router = APIRouter(prefix="/kiosk", tags=["kiosk"])
 logger = logging.getLogger("serversherpa.api.routes.kiosk")
@@ -507,11 +508,13 @@ async def heartbeat(
     # Config and scan-type sync serve only the kiosk this sign-in session
     # belongs to: a kiosk session (move-password ones included) is bound to
     # the serial of its first beat, and never syncs for any other serial,
-    # sign-in or not. Portal sessions never sync. A station-keyed device
-    # syncs config only on /kiosk/station/heartbeat (scan type still comes
+    # sign-in or not. Portal sessions never sync. A station-keyed RFID
+    # Station syncs config only on /kiosk/station/heartbeat (scan type still comes
     # back to its own session).
     own_kiosk = await _bind_kiosk_session(db, actor, body.serial)
-    if own_kiosk and device.station_key_hash is None:
+    # Reader telemetry (and so config) rides the station heartbeat only for
+    # an RFID Station; a keyed Label Station has no station heartbeat.
+    if own_kiosk and (device.station_key_hash is None or not is_rfid_station(device)):
         sync = await _sync_config(db, device, body.config, body.config_changed_at,
                                   body.config_applied_version, now=now,
                                   actor_id=actor.person.id)
@@ -653,6 +656,12 @@ async def _active_scan_types(db: AsyncSession) -> list[StatusValue]:
 LABEL_STATION_SCAN_STATUS = "labeled"
 
 
+def is_station(device: Device) -> bool:
+    """A laptop kiosk set up as an RFID Station or a Label Station; both
+    upload under a station key."""
+    return device.sub_type == "laptop" and device.station_type in ("rfid", "label")
+
+
 def is_rfid_station(device: Device) -> bool:
     """An RFID Station: a laptop kiosk set up with station type rfid."""
     return device.sub_type == "laptop" and device.station_type == "rfid"
@@ -769,6 +778,16 @@ async def kiosk_setup(
             station_changes[field] = {"from": old_cmp, "to": new}
             setattr(device, field, new)
 
+    # a station key covers one station type and one move: changing either
+    # revokes it (re-setup with the same type and move keeps it)
+    if device.station_key_hash is not None:
+        if device.station_type != body.station_type:
+            await station_keys.revoke(db, device, actor_id=actor.person.id,
+                                      reason="station_type_change")
+        elif device.current_initiative_id != initiative.id:
+            await station_keys.revoke(db, device, actor_id=actor.person.id,
+                                      reason="move_change")
+
     if body.station_type == "rfid":
         reader = body.reader
         _stamp("station_type", "rfid")
@@ -783,9 +802,8 @@ async def kiosk_setup(
                       "rfid_reader_model", "rfid_reader_versions"):
             _stamp(field, None)
         device.rfid_paired_at = None
-        # a Label Station uploads through the signed-in session, not a key
-        await station_keys.revoke(db, device, actor_id=actor.person.id,
-                                  reason="label_station")
+        # a Label Station keeps its station key (it uploads Labeled scans
+        # with it) unless the type or move changed (revoked above)
 
     device.current_initiative_id = initiative.id
     device.site_id = site.id
@@ -811,14 +829,15 @@ async def issue_station_key(
     body: KioskStationKeyIn, db: DbSession,
     actor: AuthContext = require_permission("kiosk", "view"),
 ) -> KioskStationKeyOut:
-    """Issue (or replace) this RFID station's upload key. The raw key is
+    """Issue (or replace) this RFID or Label Station's upload key. The raw key is
     returned once; only its sha256 is stored. A move-password session may
     issue only for the move the kiosk is set up for."""
     device = await db.scalar(select(Device).where(Device.serial == body.serial))
     if device is None or device.device_type != "kiosk":
         raise _err(404, "device_not_found")
-    if (device.sub_type != "laptop" or device.station_type != "rfid"
-            or device.current_initiative_id is None):
+    # the code stays not_rfid_station for old edges, though a Label Station
+    # now qualifies too
+    if not is_station(device) or device.current_initiative_id is None:
         raise _err(409, "not_rfid_station")
     if registration_state(device.token_expires_at, datetime.now(UTC)) not in ("ok", "soon"):
         raise _err(409, "kiosk_not_registered")
@@ -923,6 +942,11 @@ def _ru_text(ru) -> str | None:
     return format(ru.normalize(), "f")
 
 
+def _ru_raw(ru) -> str | None:
+    """The stored RU exactly ("14.50"), so the edge rebuilds the Decimal."""
+    return None if ru is None else str(ru)
+
+
 async def _assets_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskAssetsSyncOut:
     initiative = await db.get(Initiative, initiative_id)
     if initiative is None:
@@ -974,20 +998,29 @@ async def _assets_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskAsset
         make_model = make_model_text(make or "", model_name or "")
         label = placeholder_values(asset_row, initiative, sites, catalog_keys)
         assets.append(KioskAssetOut(
-            id=asset.id, asset_id=asset_id, name=asset.name,
+            id=asset.id, asset_id=asset_id, legacy_id=asset.legacy_id, name=asset.name,
             rfid=asset.rfid_tag, serial_number=asset.serial_number,
             make=make, model=model_name, make_model=make_model,
             container_id=packed_in.get(asset.id),
             source_rack=ia.source_rack, source_ru=_ru_text(ia.source_ru),
+            source_ru_raw=_ru_raw(ia.source_ru),
             source_position=ia.source_position, source_pod=ia.source_pod,
             destination_rack=ia.destination_rack, destination_ru=_ru_text(ia.destination_ru),
+            destination_ru_raw=_ru_raw(ia.destination_ru),
             destination_position=ia.destination_position, destination_pod=ia.destination_pod,
             priority_wave=ia.priority_wave, disposition=ia.disposition,
             label=label))
 
     return KioskAssetsSyncOut(
         initiative_id=initiative.id, initiative_name=initiative.name,
-        generated_at=datetime.now(UTC), assets=assets)
+        generated_at=datetime.now(UTC), assets=assets,
+        label_context=KioskLabelContextOut(
+            move_name=initiative.name,
+            move_day=(stored_day(initiative.scheduled_start)
+                      if initiative.scheduled_start is not None else None),
+            source_site=origin.name if origin else None,
+            destination_site=destination.name if destination else None,
+            catalog_keys=catalog_keys))
 
 
 @router.get("/sync/people", response_model=KioskPeopleSyncOut)
@@ -1128,7 +1161,7 @@ async def _label_templates_body(
         select(LabelVocab).where(LabelVocab.kind.in_(("size", "dpi"))))).scalars()}
 
     templates: list[KioskLabelTemplateOut] = []
-    for template, reasons, move_site_names in picked:
+    for template, reasons, move_site_names, scope in picked:
         size_meta = vocab.get(("size", template.size_key), {})
         dpi_meta = vocab.get(("dpi", template.dpi_key), {})
         try:
@@ -1152,7 +1185,10 @@ async def _label_templates_body(
             reasons=sorted(reasons), code=code,
             generation_rules=template.generation_rules or {},
             width_in=size_meta.get("width_in"), height_in=size_meta.get("height_in"),
-            dots=dpi_meta.get("dots"), error=error))
+            dots=dpi_meta.get("dots"), error=error,
+            kind=template.kind,
+            design=(template.design if template.kind == "design" else None),
+            scope=scope))
 
     return KioskLabelTemplatesSyncOut(
         initiative_id=initiative.id, generated_at=datetime.now(UTC), templates=templates)
@@ -1223,7 +1259,7 @@ async def _move_font_names(db: AsyncSession, initiative: Initiative) -> set[str]
     sync lists it with its error."""
     vocab = await _label_vocab(db)
     names: set[str] = set()
-    for template, _reasons, _sites in await move_template_set(db, initiative):
+    for template, _reasons, _sites, _scope in await move_template_set(db, initiative):
         try:
             code = template_code(template, vocab.get(("size", template.size_key), {}),
                                  vocab.get(("dpi", template.dpi_key), {}))
@@ -1297,7 +1333,7 @@ async def kiosk_label_test_render(
     _require_move(actor, body.initiative_id)
     initiative = await _label_move(db, body.initiative_id)
     template: LabelTemplate | None = next(
-        (t for t, _r, _s in await move_template_set(db, initiative) if t.id == body.template_id),
+        (t for t, _r, _s, _sc in await move_template_set(db, initiative) if t.id == body.template_id),
         None)
     if template is None:
         raise _err(404, "template_not_found")
@@ -1393,11 +1429,12 @@ async def _client_assets_body(
 
 
 async def _station_sync_device(request: Request, db: AsyncSession,
-                               serial: str, initiative_id: uuid.UUID) -> None:
+                               serial: str, initiative_id: uuid.UUID) -> Device:
     """Station sync serves only the move the key was issued for."""
     device = await station_device(request, db, serial)
     if device.station_key_initiative_id != initiative_id:
         raise _err(403, "move_locked")
+    return device
 
 
 @router.get("/station/sync/assets", response_model=KioskAssetsSyncOut)
@@ -1447,8 +1484,12 @@ async def station_sync_client_assets(
     request: Request, db: DbSession, serial: str = Query(...),
     initiative_id: uuid.UUID = Query(...),
 ) -> KioskClientAssetsSyncOut:
-    """Station-key twin of /sync/client-assets, for the key move only."""
-    await _station_sync_device(request, db, serial, initiative_id)
+    """Station-key twin of /sync/client-assets, for the key move only. It
+    feeds the RFID Station's off-move alarm, so a Label Station's key is
+    refused."""
+    device = await _station_sync_device(request, db, serial, initiative_id)
+    if device.station_type != "rfid":
+        raise _err(403, "not_rfid_station")
     return await _client_assets_body(db, initiative_id)
 
 
@@ -1510,6 +1551,7 @@ async def _store_scan_batch(
     locked: uuid.UUID | None, inactive_moves: set[uuid.UUID],
     allowed_sites: set[uuid.UUID] | None = None, rfid_only: bool = False,
     audit_via: str | None = None, off_move_allowed: bool = False,
+    barcode_only: bool = False, forced_status: str | None = None,
 ) -> KioskScanBatchOut:
     """Validate and store one scan batch for `device`; shared by the
     person route (POST /kiosk/scans) and the station-key route.
@@ -1518,8 +1560,9 @@ async def _store_scan_batch(
     set of moves a station key covers. A scan's move is its own
     `initiative_id`, else the device's setup move. Outside `locked` /
     `allowed_moves` it is `move_locked`; in `inactive_moves` (completed,
-    cancelled or archived) it is `move_inactive`. `rfid_only` rejects
-    other scan types (`bad_scan_type`); `allowed_sites`, when given, must
+    cancelled or archived) it is `move_inactive`. `rfid_only` (or
+    `barcode_only`) rejects other scan types (`bad_scan_type`);
+    `forced_status` overrides every scan's status; `allowed_sites`, when given, must
     contain a scan's effective site (`bad_site`, checked after the move
     checks). `off_move` is stored only when `off_move_allowed` (a station
     upload); the person route always stores False. Commits."""
@@ -1527,7 +1570,8 @@ async def _store_scan_batch(
     # One lookup per reference kind for the whole batch, not per scan.
     site_ids = {s.site_id for s in scans if s.site_id is not None}
     initiative_ids = {s.initiative_id for s in scans if s.initiative_id is not None}
-    status_keys = {s.scan_status for s in scans if s.scan_status is not None}
+    status_keys = {s.scan_status for s in scans
+                   if s.scan_status is not None and forced_status is None}
     known_sites = set(await db.scalars(
         select(Site.id).where(Site.id.in_(site_ids)))) if site_ids else set()
     known_initiatives = set(await db.scalars(
@@ -1548,14 +1592,16 @@ async def _store_scan_batch(
     rows: list[dict] = []
     for scan in scans:
         if scan.scan_type not in known_scan_types or (
-                rfid_only and scan.scan_type != "rfid"):
+                (rfid_only and scan.scan_type != "rfid")
+                or (barcode_only and scan.scan_type != "barcode")):
             code = "bad_scan_type"
         elif scan.site_id is not None and scan.site_id not in known_sites:
             code = "bad_site"
         elif (scan.initiative_id is not None
                 and scan.initiative_id not in known_initiatives):
             code = "bad_initiative"
-        elif scan.scan_status is not None and scan.scan_status not in known_statuses:
+        elif (forced_status is None and scan.scan_status is not None
+                and scan.scan_status not in known_statuses):
             code = "bad_status"
         elif (locked is not None
                 and (scan.initiative_id or device.current_initiative_id) != locked):
@@ -1579,7 +1625,7 @@ async def _store_scan_batch(
             rejected.append(KioskScanRejected(
                 client_scan_id=scan.client_scan_id, code=code))
             continue
-        checkpoint = scan.scan_status or device.scan_status
+        checkpoint = forced_status or scan.scan_status or device.scan_status
         rows.append({
             "scanned_value": scan.scanned_value,
             "scan_type": scan.scan_type,
@@ -1619,8 +1665,9 @@ async def _store_scan_batch(
 async def station_ingest_scans(
     body: KioskStationScanBatchIn, request: Request, db: DbSession,
 ) -> KioskStationScanBatchOut:
-    """RFID scans an unattended laptop kiosk uploads under its station
-    key (`Authorization: Station <key>`), no person session needed. Stored
+    """Scans an unattended laptop kiosk uploads under its station
+    key (RFID scans from an RFID Station; Labeled barcode scans from a
+    Label Station, which never records off-move scans) (`Authorization: Station <key>`), no person session needed. Stored
     exactly like `POST /kiosk/scans` but with no operator. The key covers
     one move: a scan for any other is `move_locked`, and one for that move
     once it is completed, cancelled or archived is `move_inactive`. The
@@ -1640,10 +1687,13 @@ async def station_ingest_scans(
         if init is not None and (init.status in HISTORICAL_INITIATIVE_STATUSES
                                  or init.archived_at is not None):
             inactive.add(move)
+    label = device.station_type == "label"
     out = await _store_scan_batch(
         db, device, body.scans, operator_id=None, allowed_moves=allowed,
         locked=None, inactive_moves=inactive, allowed_sites=sites,
-        rfid_only=True, audit_via="station_key", off_move_allowed=True)
+        rfid_only=not label, barcode_only=label,
+        forced_status=LABEL_STATION_SCAN_STATUS if label else None,
+        audit_via="station_key", off_move_allowed=not label)
     return KioskStationScanBatchOut(
         accepted=out.accepted, rejected=out.rejected,
         clear_setup=device.setup_clear_id)
@@ -2444,7 +2494,8 @@ async def _kiosk_caller(request: Request, db: AsyncSession,
                         serial: str | None) -> tuple[AuthContext | None, Device | None]:
     """Who is calling a kiosk-sound route: a person session with kiosk:view
     (`Authorization: Bearer ...`), or an RFID Station's key
-    (`Authorization: Station <key>`) for the kiosk `serial`. Returns
+    (`Authorization: Station <key>`) for the kiosk `serial` (a Label
+    Station's key is 403 not_rfid_station). Returns
     (actor, None) or (None, device). The session path runs the same checks
     as every other route (kiosk session scope, forced password change,
     read-only); the station path runs the station-key check and the
@@ -2456,6 +2507,9 @@ async def _kiosk_caller(request: Request, db: AsyncSession,
             raise HTTPException(status_code=401, detail={"code": "station_key_invalid"},
                                 headers={"WWW-Authenticate": "Bearer"})
         device = await station_device(request, db, serial)
+        if device.station_type != "rfid":
+            # sounds feed the RFID Station's alarm: a Label Station's key is refused
+            raise _err(403, "not_rfid_station")
         await enforce_read_only_config(db, request)
         return None, device
     if scheme.lower() != "bearer" or not raw:

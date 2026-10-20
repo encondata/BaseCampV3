@@ -496,3 +496,29 @@ async def test_background_runs_uploader_and_processor_wakes_it(app, cloud):
         assert len(calls) > n
     finally:
         await bg.stop()
+
+
+async def test_uploader_sends_barcode_scan_type(app, cloud):
+    with_key(app)
+    [rfid] = add_scans(app.state.store, 1)
+    [labeled] = add_scans(app.state.store, 1, scan_type="barcode", scan_status="labeled",
+                          epc="ASSET-TAG-0001")
+    route = cloud.post(PATH).mock(side_effect=accept_all)
+    assert await uploader(app).drain_once() == 2
+    scans = {s["client_scan_id"]: s for s in json.loads(route.calls[0].request.content)["scans"]}
+    assert scans[labeled]["scan_type"] == "barcode"
+    assert scans[labeled]["scan_status"] == "labeled"
+    assert scans[labeled]["scanned_value"] == "ASSET-TAG-0001"
+    assert scans[labeled]["asset_id"]
+    assert scans[rfid]["scan_type"] == "rfid"        # older rows (NULL) stay RFID
+    assert all(r["upload_state"] == "accepted" for r in rows(app.state.store).values())
+
+
+async def test_labeled_scan_failure_uses_the_same_retry_schedule(app, cloud):
+    with_key(app)
+    [sid] = add_scans(app.state.store, 1, scan_type="barcode", scan_status="labeled")
+    cloud.post(PATH).respond(500)
+    clock = Clock()
+    await uploader(app, clock).drain_once()
+    r = rows(app.state.store)[sid]
+    assert r["attempts"] == 1 and r["next_attempt_at"] == at(clock.t + GAPS[0])

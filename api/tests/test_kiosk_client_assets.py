@@ -326,3 +326,27 @@ async def test_client_asset_on_another_clients_move_is_listed_once(client, db, s
     assert got == [(None, None)]
     other = [r["initiative_name"] for r in rows if r["name"] == "ol-other"]
     assert other == ["OL Other"]
+
+
+async def test_station_sync_works_with_a_label_station_key(client, db, seeded_user):
+    s, key = await _station(db)
+    live = (await db.scalars(select(Device).where(Device.serial == SERIAL))).one()
+    live.station_type = "label"
+    key_move = live.station_key_initiative_id
+    await db.commit()
+    r = await client.get(
+        f"/kiosk/station/sync/assets?serial={SERIAL}&initiative_id={key_move}",
+        headers=_auth(key))
+    assert r.status_code == 200, r.text
+
+
+async def test_station_client_assets_refuses_a_label_station_key(client, db, seeded_user):
+    s, key = await _station(db)
+    live = (await db.scalars(select(Device).where(Device.serial == SERIAL))).one()
+    key_move = live.station_key_initiative_id
+    url = f"/kiosk/station/sync/client-assets?serial={SERIAL}&initiative_id={key_move}"
+    assert (await client.get(url, headers=_auth(key))).status_code == 200
+    live.station_type = "label"
+    await db.commit()
+    r = await client.get(url, headers=_auth(key))
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_rfid_station"

@@ -328,6 +328,7 @@
 @media (prefers-reduced-motion: reduce) { .check-spinner { animation-duration: 3s; } }
 .check-row .form-error { margin: 0; flex-basis: 100%; padding-left: 28px; }
 .check-row .check-note { margin: 0; flex-basis: 100%; padding-left: 28px; color: var(--text-mute); }
+.check-row .check-warning::before { content: '⚠ '; color: var(--amber); }
 .check-info { margin: 12px 0; }
 .setup-wizard .form-error { max-width: clamp(20rem, 62vw, 62rem); }
 .setup-summary {
@@ -557,6 +558,70 @@
   cursor: pointer;
 }
 
+/* ── Label regeneration takeover ─────────────────────────────────────
+   Rendered by KioskShell on a Label Station laptop while the edge is
+   generating labels: the whole screen goes yellow, above everything
+   (modals' scrims sit in the 2000s). Fixed colors, not themed, like the
+   alarm: dark ink on yellow is about 14:1, well past 4.5:1. The bar's
+   stripes drift slowly; prefers-reduced-motion holds them still. */
+.label-regen {
+  --regen-yellow: #f6c90e;
+  --regen-ink: #1f1a05;
+  --regen-track: rgba(31, 26, 5, .18);
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(18px, 4vw, 48px);
+  color: var(--regen-ink);
+  background: var(--regen-yellow);
+  overflow: auto;
+}
+.label-regen:focus { outline: none; }
+.label-regen-card {
+  width: min(720px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  text-align: center;
+}
+.label-regen-title {
+  margin: 0;
+  font-size: clamp(26px, 4.4vw, 48px);
+  line-height: 1.15;
+}
+.label-regen-count {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: clamp(18px, 2.4vw, 28px);
+  font-weight: 700;
+}
+.label-regen-bar {
+  height: 14px;
+  border-radius: 999px;
+  background: var(--regen-track);
+  overflow: hidden;
+}
+.label-regen-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: repeating-linear-gradient(-45deg,
+    var(--regen-ink) 0 12px, #4a3f0c 12px 24px);
+  background-size: 34px 34px;
+  transition: width .4s ease;
+  animation: label-regen-stripes 1.2s linear infinite;
+}
+@keyframes label-regen-stripes {
+  from { background-position: 0 0; }
+  to { background-position: 34px 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .label-regen-bar span { animation: none; transition: none; }
+}
+
 /* ── Appearance tab: HSL color picker ───────────────────────────────── */
 .hsl-picker { display: flex; align-items: center; gap: 16px; flex: 0 0 auto; flex-wrap: wrap; }
 /* The picker is wide, and .settings-row's label column is `min-width: 0`
@@ -615,6 +680,53 @@
 .scan-row.is-nomatch { background: color-mix(in srgb, var(--c-red, #c03540) 12%, transparent); }
 .scan-row.is-failed > td:first-child,
 .scan-row.is-nomatch > td:first-child { border-left-color: var(--c-red, #c03540); }
+
+/* ── Printing Station ────────────────────────────────────────────────
+   The scan box (.scan-input) over one big result card: the asset on the
+   left, the outcome in large type on the right (green printed, amber
+   while printing or waiting to be taken, red with what to fix), then the
+   session's prints in the scan list's shape. */
+.station-printer-note {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin: 0 0 14px; padding: 12px 16px;
+  background: var(--paper); border: 1px solid var(--paper-line); border-radius: 12px;
+}
+.station-printer-note p { margin: 0; }
+.station-result {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px 28px;
+  margin: 16px 0; padding: 20px 24px;
+  background: var(--paper); border: 1px solid var(--paper-line); border-left: 6px solid var(--paper-line);
+  border-radius: 14px;
+}
+.station-result.is-printed { border-left-color: var(--c-green, #178a4c); }
+.station-result.is-queued,
+.station-result.is-printing,
+.station-result.is-take_label { border-left-color: var(--c-amber, #a36207); }
+.station-result.is-failed { border-left-color: var(--c-red, #c03540); }
+.station-asset { margin: 0; display: grid; gap: 6px; }
+.station-asset > div:not(.station-asset-name) { display: grid; grid-template-columns: 9rem minmax(0, 1fr); gap: 10px; }
+.station-asset dt { color: var(--text-mute); font-size: 13px; }
+.station-asset dd { margin: 0; color: var(--text-dark); overflow-wrap: anywhere; }
+.station-asset-name { font-size: 20px; font-weight: 600; color: var(--text-dark); margin-bottom: 4px; }
+.station-scanned { margin: 0; font-size: 18px; color: var(--text-dark); overflow-wrap: anywhere; }
+.station-outcome { display: grid; gap: 12px; align-content: start; justify-items: start; }
+.station-status { margin: 0; font-size: 34px; font-weight: 700; line-height: 1.15; color: var(--text-dark); }
+.station-result.is-printed .station-status { color: var(--c-green, #178a4c); }
+.station-result.is-take_label .station-status { color: var(--c-amber, #a36207); }
+.station-result.is-failed .station-status { color: var(--c-red, #c03540); font-size: 22px; }
+.station-warning { margin: 0; font-size: 12.5px; color: var(--c-amber, #a36207); }
+.station-list .scan-chip { white-space: normal; }
+.station-list .mini-btn { margin-top: 6px; }
+.station-row > td:first-child { border-left: 3px solid transparent; }
+.station-row.is-printed > td:first-child { border-left-color: var(--c-green, #178a4c); }
+.station-row.is-queued > td:first-child,
+.station-row.is-printing > td:first-child,
+.station-row.is-take_label > td:first-child { border-left-color: var(--c-amber, #a36207); }
+.station-row.is-failed { background: color-mix(in srgb, var(--c-red, #c03540) 12%, transparent); }
+.station-row.is-failed > td:first-child { border-left-color: var(--c-red, #c03540); }
+@media (max-width: 760px) {
+  .station-result { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* The flash-duration row: a range plus its mono readout, sized like one
    of the picker's own channel rows so the Appearance tab reads as one
@@ -1024,3 +1136,19 @@
 .device-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
 .device-note { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 10px; font-size: 12.5px; color: var(--text-mute); }
 .device-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--paper-line); }
+
+/* ── Label Station printer card + step 5 modal ─────────────────────
+   The saved printer's Peeler and Offsets under its health chips, and
+   Kiosk Setup's printer step in a content-sized modal (same viewport cap
+   as the reset card). */
+.zp-station-facts { display: grid; gap: 6px; }
+.zp-station-facts > div { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.zp-station-facts .cell-sub { min-width: 64px; }
+.modal-card.reports-modal-card.rgm-card.zp-station-card { width: min(820px, 96vw); max-width: 96vw; }
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-station-card {
+  max-height: 92dvh;
+  display: flex;
+  flex-direction: column;
+}
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-station-card > .modal-body { overflow: auto; min-height: 0; }
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-station-card > .modal-head { flex: none; }

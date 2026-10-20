@@ -146,6 +146,19 @@ async def test_station_key_upload_and_download(client, db, seeded_user, store):
     assert got.status_code == 200 and got.content == b"ID3fake-mp3"
 
 
+async def test_a_label_stations_key_is_refused(client, db, seeded_user, store):
+    device, _, key = await _station(db)
+    (await db.get(Device, device.id)).station_type = "label"
+    await db.commit()
+    r = await client.post("/kiosk/sounds", headers=_auth(key), files=_file(),
+                          params={"serial": SERIAL})
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_rfid_station"
+    got = await client.get(f"/kiosk/sounds/{uuid.uuid4()}", headers=_auth(key),
+                           params={"serial": SERIAL})
+    assert got.status_code == 403 and got.json()["detail"]["code"] == "not_rfid_station"
+    assert not store
+
+
 async def test_station_key_needs_a_valid_key_and_serial(client, db, seeded_user, store):
     _, _, key = await _station(db)
     bad = await client.post("/kiosk/sounds", headers=_auth("nope"), files=_file(),

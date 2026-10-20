@@ -9,9 +9,16 @@ A Label Station's label settings (`label_station`: label kind, printer, DPI,
 offsets and peel-off printing) are saved with PUT /edge/label-station once the setup exists.
 They survive setting up again as a Label Station and are dropped by Clear
 Setup or a change of station type; the config document's `label_station`
-section mirrors them (config_sync), marked dirty whenever they change."""
+section mirrors them (config_sync), marked dirty whenever they change.
+
+Every Label Station setup leaves the settings unconfirmed (`label_unconfirmed`
+in the shared setup, never in `label_station`) until setup step 5 saves them
+again: no labels are generated in between, so a re-setup never builds the
+new move's labels from the old printer and kind. A setup saved before the
+flag existed reads as confirmed."""
 
 import json
+from collections.abc import Callable
 
 from edge.db import Store, now_iso
 from edge.rfid import alarm, pairing
@@ -40,6 +47,8 @@ def save(store: Store, result: dict, station_type: str | None) -> dict:
         # a Label Station set up again keeps its printer; any other change drops it
         kept = previous.get("station_type") == "label" and setup["station_type"] == "label"
         setup["label_station"] = previous.get("label_station") if kept else None
+        if setup["station_type"] == "label":
+            setup["label_unconfirmed"] = True
         c.execute("INSERT INTO laptop_setup (id, setup_json, updated_at) VALUES (1, ?, ?) "
                   "ON CONFLICT (id) DO UPDATE SET setup_json = excluded.setup_json, "
                   "updated_at = excluded.updated_at", (json.dumps(setup), setup["updated_at"]))
@@ -98,6 +107,11 @@ def label_station_in(c) -> dict | None:
     return _with_defaults(json.loads(row["setup_json"]).get("label_station")) if row else None
 
 
+def label_confirmed(setup: dict | None) -> bool:
+    """False between a Label Station setup and step 5 saving its settings."""
+    return not (isinstance(setup, dict) and setup.get("label_unconfirmed"))
+
+
 def label_station(store: Store) -> dict | None:
     setup = load(store)
     return setup.get("label_station") if setup else None
@@ -149,19 +163,39 @@ def normalize_label_station(body, printer_ip) -> dict:
             "peel": peel}
 
 
-def save_label_station(store: Store, settings: dict) -> dict:
-    """Store normalized settings in the shared setup. Raises LookupError when
-    the laptop isn't set up as a Label Station."""
+REGENERATE_KEYS = ("dpi", "label_kind", "printer")  # offsets and peel apply when sending
+
+
+def save_label_station(store: Store, settings: dict, *,
+                       on_regenerate: Callable[[str], None] | None = None) -> dict:
+    """Store normalized settings in the shared setup and confirm them.
+    Raises LookupError when the laptop isn't set up as a Label Station.
+    `on_regenerate(reason)` is called with 'setup' when this confirms a new
+    setup (always, even with unchanged settings), else with 'updates' when
+    the labels' inputs changed (DPI, label kind or printer)."""
+    reason = None
     with store.tx() as c:
         row = c.execute("SELECT setup_json FROM laptop_setup WHERE id = 1").fetchone()
         setup = json.loads(row["setup_json"]) if row else None
         if setup is None or setup.get("station_type") != "label":
             raise LookupError("not_label_station")
-        if setup.get("label_station") != settings:
+        previous = setup.get("label_station")
+        unconfirmed = not label_confirmed(setup)
+        if previous != settings:
+            if not isinstance(previous, dict) or any(
+                    previous.get(k) != settings.get(k) for k in REGENERATE_KEYS):
+                reason = "updates"
             setup["label_station"] = settings
+        if unconfirmed:
+            reason = "setup"
+            setup.pop("label_unconfirmed", None)
+        if previous != settings or unconfirmed:
             c.execute("UPDATE laptop_setup SET setup_json = ? WHERE id = 1",
                       (json.dumps(setup),))
+        if previous != settings:
             _note_config(c)
+    if reason is not None and on_regenerate is not None:
+        on_regenerate(reason)
     return settings
 
 

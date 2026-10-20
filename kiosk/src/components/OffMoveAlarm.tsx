@@ -33,6 +33,7 @@ import {
 } from '../lib/api';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { soundBlocked, soundSettled, startAlarmSound } from '../lib/sound';
+import { openTakeovers, syncInert } from '../lib/takeover';
 
 /** How often the edge is asked for open alarms. */
 export const ALARM_POLL_MS = 1000;
@@ -44,32 +45,6 @@ export const KEY_GUARD_MS = 1000;
 /** The first "is the sound blocked?" check waits for the siren's resume()
  *  to settle, or this long when the browser leaves it pending. */
 const SOUND_CHECK_GRACE_MS = 300;
-
-/* ── Open takeovers: the newest one owns the keyboard ──────────────── */
-
-/** Open takeovers' root elements, oldest first. Only the last one (on top)
- *  answers Space, and everything outside it is inert. */
-const openTakeovers: HTMLElement[] = [];
-/** The elements this module made inert (never one someone else did). */
-const madeInert = new Set<Element>();
-
-/** Marks every element outside the top takeover (each sibling of it and
- *  of its ancestors) inert, so Tab, Enter and Escape can't reach the page
- *  underneath; with none open, undoes exactly what it set. */
-function syncInert(): void {
-  madeInert.forEach((el) => el.removeAttribute('inert'));
-  madeInert.clear();
-  const top = openTakeovers[openTakeovers.length - 1];
-  if (!top) return;
-  for (let node: Element = top; node.parentElement && node !== document.body;
-    node = node.parentElement) {
-    for (const sibling of Array.from(node.parentElement.children)) {
-      if (sibling === node || sibling.hasAttribute('inert')) continue;
-      sibling.setAttribute('inert', '');
-      madeInert.add(sibling);
-    }
-  }
-}
 
 /** A local Test alarm: the rows to show and the timing to show them with
  *  (the Sound tab passes the station's current settings). `onClose` runs

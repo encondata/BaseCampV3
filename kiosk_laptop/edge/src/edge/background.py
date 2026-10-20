@@ -7,7 +7,9 @@ usable cloud session. One bad iteration is logged, never fatal.
 A second loop, independent of the internet, matches raw RFID tag reads into
 pending scans every 2 s, and at once when the ingest stores a batch. A third
 uploads pending RFID scans under the station key every 5 s, and at once when
-the processor inserts some (it does its own internet probing, spec §4)."""
+the processor inserts some (it does its own internet probing, spec §4).
+A fourth runs the Label Station's label generation whenever one is
+requested (edge/labels/runner.py)."""
 
 import asyncio
 import contextlib
@@ -17,6 +19,7 @@ import time
 from edge.rfid import processing, station_key, uploader
 
 log = logging.getLogger("edge.background")
+LABEL_INTERVAL_S = 60  # a request wakes the label loop at once; this is only a backstop
 
 
 class Background:
@@ -27,6 +30,7 @@ class Background:
         self._task: asyncio.Task | None = None
         self._process_task: asyncio.Task | None = None
         self._upload_task: asyncio.Task | None = None
+        self._label_task: asyncio.Task | None = None
         self.uploader = uploader.Uploader(state.store, state)
 
     async def tick(self, now: float) -> None:
@@ -95,13 +99,25 @@ class Background:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(wake.wait(), timeout=uploader.INTERVAL_S)
 
+    async def _label_loop(self) -> None:
+        wake = self.state.label_wake
+        while True:
+            wake.clear()  # before the run: a request made during it wakes the next one
+            try:
+                await self.state.label_runner.run_pending()
+            except Exception:
+                log.exception("label run failed")
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(wake.wait(), timeout=LABEL_INTERVAL_S)
+
     def start(self) -> None:
         self._task = asyncio.create_task(self._loop())
         self._process_task = asyncio.create_task(self._process_loop())
         self._upload_task = asyncio.create_task(self._upload_loop())
+        self._label_task = asyncio.create_task(self._label_loop())
 
     async def stop(self) -> None:
-        for task in (self._task, self._process_task, self._upload_task):
+        for task in (self._task, self._process_task, self._upload_task, self._label_task):
             if task:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
