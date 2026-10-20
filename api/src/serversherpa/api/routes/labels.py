@@ -19,6 +19,7 @@ one. All mutations audit into the caller's txn.
 
 import re
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Annotated
@@ -172,12 +173,29 @@ async def create_vocab(
     return LabelVocabOut.model_validate(row)
 
 
+async def _pending_size(db: DbSession, row: LabelVocab | None) -> bool:
+    """A custom size New template › Custom… posted for one template that
+    has no template on it yet: a size row, off the list, unused."""
+    if row is None or row.kind != "size" or row.is_active:
+        return False
+    return not await db.scalar(select(func.count()).select_from(LabelTemplate)
+                               .where(LabelTemplate.size_key == row.key))
+
+
 @router.patch("/vocab/{kind}/{key}", response_model=LabelVocabOut)
 async def update_vocab(
-    kind: str, key: str, body: LabelVocabUpdateIn, db: DbSession,
-    actor: AuthContext = require_permission("devtools", "change"),
+    kind: str, key: str, body: LabelVocabUpdateIn, db: DbSession, actor: CurrentUser,
 ) -> LabelVocabOut:
+    """Devtools-gated, except a designer's pending custom size (labels:add
+    and rank 80, as create_vocab): when the create it was posted for fails
+    and the size is changed, the dialog rewrites that row rather than
+    leaving it behind and posting another."""
     row = await db.get(LabelVocab, (kind, key))
+    if not actor.access.can("devtools", "change"):
+        if not (actor.access.can("labels", "add") and await _pending_size(db, row)):
+            raise _err(403, "forbidden")
+        if actor.access.max_rank < SUPER_ADMIN_RANK:
+            raise _err(403, "forbidden", min_rank=SUPER_ADMIN_RANK)
     if row is None:
         raise _err(404, "unknown_vocab")
     data = body.model_dump(exclude_unset=True)
@@ -234,19 +252,22 @@ async def list_fields(
 ) -> LabelFieldsOut:
     """The label builder's fields for a template of `label_type` (every
     group when omitted; labels/fields.py has the catalog), and the From-To
-    headers across every move's roster for the `ft:<header>` fields. A
-    container label has no From-To row, so it gets no headers."""
+    headers across the rosters of every move not archived, for the
+    `ft:<header>` fields. A container label has no From-To row, so it gets
+    no headers."""
     headers: list[str] = []
     if label_type not in CONTAINER_LABEL_TYPES:
         key = func.jsonb_object_keys(InitiativeAsset.raw_ft)
         q = (select(key).distinct()
-             .where(InitiativeAsset.raw_ft.is_not(None),
+             .join(Initiative, Initiative.id == InitiativeAsset.initiative_id)
+             .where(Initiative.archived_at.is_(None),
+                    InitiativeAsset.raw_ft.is_not(None),
                     func.jsonb_typeof(InitiativeAsset.raw_ft) == "object"))
         # Defense in depth, same posture as _runs_query: `labels` is
         # global-only today, so this leg is unreachable.
         cond = scope_conditions("initiatives", actor.access, actor.person.id)
         if cond is not None:
-            q = q.join(Initiative, Initiative.id == InitiativeAsset.initiative_id).where(cond)
+            q = q.where(cond)
         headers = sorted((await db.scalars(q)).all(), key=natural_key)
     return LabelFieldsOut(groups=groups_for(label_type), ft_headers=headers)
 
@@ -458,6 +479,18 @@ def _tree_err(exc: tree.TreeError) -> HTTPException:
     return _err(exc.status, exc.code, **exc.extra)
 
 
+@asynccontextmanager
+async def _create_race(db: DbSession, code: str, **extra):
+    """A create or Add DPI checks its name and DPI before it inserts; two at
+    once can both pass and the second trips the unique index. Answer that
+    with the check's own 409 instead of a 500 (as upload_label_font does)."""
+    try:
+        yield
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _err(409, code, **extra) from exc
+
+
 async def _template_or_404(db: DbSession, template_id: uuid.UUID) -> LabelTemplate:
     row = (await db.execute(select(LabelTemplate)
         .options(selectinload(LabelTemplate.site_links))
@@ -548,11 +581,12 @@ async def template_tree(
             tops.append(r)
         else:
             children.setdefault(r.parent_id, []).append(r)
+    designed = await tree.design_versions(db, children)
     out = []
     for top in sorted(tops, key=lambda r: natural_key(r.name)):
         kids = [_readable_samples(LabelTemplateChildOut(
                     **LabelTemplateOut.model_validate(c).model_dump(),
-                    out_of_date=tree.is_out_of_date(c, top)), actor)
+                    out_of_date=tree.is_out_of_date(c, designed[top.id])), actor)
                 for c in sorted(children.get(top.id, []), key=lambda r: natural_key(r.name))]
         item = _readable_samples(LabelTemplateTreeOut(
             **LabelTemplateOut.model_validate(top).model_dump(),
@@ -603,26 +637,25 @@ async def create_template(
             raise _err(422, "bad_design", problems=e.problems) from e
     await _check_template_vocab(db, values)
     await _check_site_ids(db, site_ids)
-    existing = (await db.execute(select(LabelTemplate).where(
-        LabelTemplate.name == body.name))).scalar_one_or_none()
-    if existing is not None:
+    if await tree.name_taken(db, body.name):
         raise _err(409, "label_template_exists")
     row = LabelTemplate(**values, dpis=[body.dpi_key])
-    db.add(row)
-    await db.flush()  # server-generated UUID for the audit row
-    for sid in site_ids:
-        db.add(LabelTemplateSite(template_id=row.id, site_id=sid))
-    tree.add_version(db, row, version=1, summary="Created", actor_id=actor.person.id)
-    try:
-        await tree.guard_active(db, [row])
-    except tree.TreeError as e:
-        raise _tree_err(e) from e
-    changes = diff({}, snapshot(row, TEMPLATE_FIELDS))
-    if site_ids:
-        changes["site_ids"] = {"from": [], "to": sorted(str(s) for s in site_ids)}
-    audit(db, actor_id=actor.person.id, entity_type="label_template",
-          entity_id=str(row.id), action="create", changes=changes)
-    await db.commit()
+    async with _create_race(db, "label_template_exists"):
+        db.add(row)
+        await db.flush()  # server-generated UUID for the audit row
+        for sid in site_ids:
+            db.add(LabelTemplateSite(template_id=row.id, site_id=sid))
+        tree.add_version(db, row, version=1, summary="Created", actor_id=actor.person.id)
+        try:
+            await tree.guard_active(db, [row])
+        except tree.TreeError as e:
+            raise _tree_err(e) from e
+        changes = diff({}, snapshot(row, TEMPLATE_FIELDS))
+        if site_ids:
+            changes["site_ids"] = {"from": [], "to": sorted(str(s) for s in site_ids)}
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(row.id), action="create", changes=changes)
+        await db.commit()
     item = LabelTemplateOut.model_validate(row)
     item.site_ids = site_ids
     return item
@@ -645,22 +678,23 @@ async def _create_parent(db: DbSession, body: LabelTemplateCreateIn,
     for dpi in tree.TREE_DPIS:
         await _check_template_vocab(db, {"dpi_key": dpi})
     await _check_site_ids(db, site_ids)
-    try:
-        parent = await tree.create_parent(
-            db, name=body.name, description=body.description, label_type=body.label_type,
-            size_key=body.size_key, language_key=body.language_key, design=body.design,
-            samples=body.samples or {}, site_ids=site_ids, actor_id=actor.person.id,
-            is_active=body.is_active)
-    except tree.TreeError as e:
-        raise _tree_err(e) from e
-    changes = diff({}, snapshot(parent, TEMPLATE_FIELDS))
-    changes["children"] = {"from": [], "to": [
-        tree.child_name(parent.name, d) for d in tree.TREE_DPIS]}
-    if site_ids:
-        changes["site_ids"] = {"from": [], "to": sorted(str(s) for s in site_ids)}
-    audit(db, actor_id=actor.person.id, entity_type="label_template",
-          entity_id=str(parent.id), action="create", changes=changes)
-    await db.commit()
+    async with _create_race(db, "label_template_exists"):
+        try:
+            parent = await tree.create_parent(
+                db, name=body.name, description=body.description, label_type=body.label_type,
+                size_key=body.size_key, language_key=body.language_key, design=body.design,
+                samples=body.samples or {}, site_ids=site_ids, actor_id=actor.person.id,
+                is_active=body.is_active)
+        except tree.TreeError as e:
+            raise _tree_err(e) from e
+        changes = diff({}, snapshot(parent, TEMPLATE_FIELDS))
+        changes["children"] = {"from": [], "to": [
+            tree.child_name(parent.name, d) for d in tree.TREE_DPIS]}
+        if site_ids:
+            changes["site_ids"] = {"from": [], "to": sorted(str(s) for s in site_ids)}
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(parent.id), action="create", changes=changes)
+        await db.commit()
     return await _template_out(db, parent)
 
 
@@ -735,8 +769,9 @@ async def _patch_parent(db: DbSession, row: LabelTemplate, data: dict, summary: 
         if f in data:
             raise _err(422, "bad_field", field=f,
                        message="a builder template has no " + f.replace("_", " "))
-    _no_nulls(data)
+    # site_ids as on an older row: absent or null leaves them, [] clears
     new_site_ids = data.pop("site_ids", None)
+    _no_nulls(data)
     if "design" in data:
         _parse_v2(data["design"])
     _check_samples(data.get("samples"))
@@ -765,10 +800,18 @@ async def _patch_parent(db: DbSession, row: LabelTemplate, data: dict, summary: 
                               for sid in new_site_ids]
     design = data.get("design", row.design)
     samples = data.get("samples", row.samples or {})
+    child_summary = None
+    if "size_key" in fields:
+        # the design carries the size the canvas draws: a new size is a
+        # design change on the parent and every child that follows it
+        size = await db.get(LabelVocab, ("size", fields["size_key"]))
+        design = {**design, "size": {"w": size.meta["width_in"], "h": size.meta["height_in"]}}
+        if "design" not in data and summary is None:
+            summary = child_summary = f"Size changed to {fields['size_key']}"
     if design != row.design or samples != (row.samples or {}):
         before_version = row.version
         await tree.save_parent(db, row, design=design, samples=samples, summary=summary,
-                               actor_id=actor.person.id)
+                               actor_id=actor.person.id, child_summary=child_summary)
         changes["version"] = {"from": before_version, "to": row.version}
     if "is_active" in data and await _set_active(db, row, data["is_active"]):
         changes["is_active"] = {"from": not data["is_active"], "to": data["is_active"]}
@@ -884,12 +927,15 @@ def _check_samples(samples: dict[str, str] | None) -> None:
                    message=f"a sample value is at most {MAX_SAMPLE_CHARS} characters")
 
 
-def _builder_values(design: dict, samples: dict[str, str] | None) -> dict[str, str]:
+def _builder_values(design: dict, samples: dict[str, str] | None,
+                    label_type: str | None = None) -> dict[str, str]:
     """What a schema 2 design prints in the builder's preview and test
-    print: the portal's mock values, shaped like `field_values` (a From-To
-    column prints its header), with the template's samples over them —
-    never the placeholder catalog's v1 samples."""
-    return {**mock_field_values(None, design_field_keys(design)), **(samples or {})}
+    print: the portal's mock values for the template's label type, shaped
+    like `field_values` (a From-To column prints its header; a key of
+    another type prints blank, as it does on a real label), with the
+    template's samples over them — never the placeholder catalog's v1
+    samples. No type: every catalog key."""
+    return {**mock_field_values(label_type, design_field_keys(design)), **(samples or {})}
 
 
 async def _compile_design(db: DbSession, design_json: dict, size_key: str,
@@ -929,7 +975,7 @@ async def compile_template(
                    message="sample values belong to builder templates")
     _check_samples(body.samples)
     if v2:
-        subs = _builder_values(body.design, body.samples)
+        subs = _builder_values(body.design, body.samples, body.label_type)
     else:
         subs = await _sample_values(db) if body.mode == "sample" else None
 
@@ -1190,14 +1236,15 @@ async def add_template_dpi(
     if row is None:
         raise _err(404, "unknown_template")
     before = list(row.dpis or [])
-    try:
-        child = await tree.add_dpi(db, row, body.dpi, actor_id=actor.person.id)
-    except tree.TreeError as e:
-        raise _tree_err(e) from e
-    audit(db, actor_id=actor.person.id, entity_type="label_template",
-          entity_id=str(row.id), action="add_dpi",
-          changes={"dpis": {"from": before, "to": list(row.dpis)}, "child": child.name})
-    await db.commit()
+    async with _create_race(db, "dpi_exists", dpi=body.dpi):
+        try:
+            child = await tree.add_dpi(db, row, body.dpi, actor_id=actor.person.id)
+        except tree.TreeError as e:
+            raise _tree_err(e) from e
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(row.id), action="add_dpi",
+              changes={"dpis": {"from": before, "to": list(row.dpis)}, "child": child.name})
+        await db.commit()
     return await _template_out(db, child)
 
 
@@ -1332,7 +1379,8 @@ async def _out_of_date(db: DbSession, row: LabelTemplate) -> list[uuid.UUID]:
     """A parent's out-of-date children, or a child itself when it is one."""
     if row.is_tree_parent:
         return await tree.out_of_date_ids(db, row)
-    if row.parent_id is not None and tree.is_out_of_date(row, await tree.parent_of(db, row)):
+    if row.parent_id is not None and tree.is_out_of_date(
+            row, await tree.design_version(db, await tree.parent_of(db, row))):
         return [row.id]
     return []
 

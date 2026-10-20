@@ -15,7 +15,14 @@ api/routes/labels.py validates input, maps the errors and audits.
   (and an older row's) are (version, 0); a child's count under its
   parent's, (generated_from_version, child_edits), shown `v7.2`. A
   child's own `version` is its revision counter, bumped on every change,
-  so a kiosk sees an edit as a new version.
+  so a kiosk sees an edit as a new version. A parent save that changes
+  only the sample values is a parent version and nothing else: its
+  children print the same design, so they are left exactly as they are
+  (out of date means the parent's *design* has moved past a child, see
+  `design_versions`).
+- Saves lock what they decide from (the parent, then its children; a
+  child save its child), so two designers saving one family never write
+  over each other's work.
 - A child is on or off with its parent, never alone (an Old child is
   always off).
 - One active template per family, label type and DPI (parents aside: they
@@ -137,22 +144,69 @@ def _dpi_order(dpis) -> list[str]:
     return sorted(set(dpis), key=int)
 
 
-def is_out_of_date(child: LabelTemplate, parent: LabelTemplate) -> bool:
-    """A customized child the parent has saved past (an Old child is kept
-    on purpose, never out of date)."""
+def is_out_of_date(child: LabelTemplate, design_version: int) -> bool:
+    """A customized child whose parent's design has moved past the version
+    it was generated from (`design_version`, from `design_versions`; an Old
+    child is kept on purpose, never out of date)."""
     return (child.customized and not child.is_old
-            and (child.generated_from_version or 0) < parent.version)
+            and (child.generated_from_version or 0) < design_version)
+
+
+# what a save decides from, re-read under the row lock (`_lock`)
+_SAVE_COLUMNS = ("name", "design", "samples", "version", "dpis", "is_active", "label_type",
+                 "size_key", "language_key", "generated_from_version", "child_edits",
+                 "customized", "is_old")
+
+
+async def _lock(db: AsyncSession, row: LabelTemplate) -> None:
+    """Lock `row` to the end of the transaction and re-read what a save
+    decides from, so the decision never rests on a read another transaction
+    has committed past. Pending changes are flushed first (a refresh would
+    drop them)."""
+    await db.flush()
+    await db.refresh(row, attribute_names=list(_SAVE_COLUMNS), with_for_update=True)
 
 
 # ── reads ───────────────────────────────────────────────────────────
 
-async def children_of(db: AsyncSession, parent: LabelTemplate, *,
-                      include_old: bool = True) -> list[LabelTemplate]:
+async def children_of(db: AsyncSession, parent: LabelTemplate, *, include_old: bool = True,
+                      for_update: bool = False) -> list[LabelTemplate]:
+    """The parent's children, natural by name. `for_update` locks them and
+    re-reads them (a save deciding which to regenerate)."""
     q = select(LabelTemplate).where(LabelTemplate.parent_id == parent.id)
     if not include_old:
         q = q.where(LabelTemplate.is_old.is_(False))
+    if for_update:
+        q = q.with_for_update().execution_options(populate_existing=True)
     rows = (await db.execute(q)).scalars().all()
     return sorted(rows, key=lambda r: natural_key(r.name))
+
+
+async def design_versions(db: AsyncSession, parent_ids) -> dict[uuid.UUID, int]:
+    """{parent id: the version its current design was saved at} — one past
+    the newest of its versions with a different design (1 when none
+    differs). A samples-only save bumps a parent's version but not this,
+    so it never puts a child out of date."""
+    ids = list(dict.fromkeys(parent_ids))
+    if not ids:
+        return {}
+    newest_other = dict((await db.execute(
+        select(LabelTemplateVersion.template_id, func.max(LabelTemplateVersion.version))
+        .join(LabelTemplate, LabelTemplate.id == LabelTemplateVersion.template_id)
+        .where(LabelTemplateVersion.template_id.in_(ids),
+               LabelTemplateVersion.child_edits == 0,
+               LabelTemplateVersion.design.is_distinct_from(LabelTemplate.design))
+        .group_by(LabelTemplateVersion.template_id))).all())
+    return {pid: newest_other.get(pid, 0) + 1 for pid in ids}
+
+
+async def design_version(db: AsyncSession, parent: LabelTemplate) -> int:
+    return (await design_versions(db, [parent.id]))[parent.id]
+
+
+async def current_dpis(db: AsyncSession, parent: LabelTemplate) -> set[str]:
+    """The DPIs the parent has a current (not Old) child at."""
+    return {c.dpi_key for c in await children_of(db, parent, include_old=False)}
 
 
 async def parent_of(db: AsyncSession, child: LabelTemplate) -> LabelTemplate:
@@ -171,13 +225,13 @@ async def family_of(db: AsyncSession, row: LabelTemplate) -> str:
     return row_family(row.name, (await parent_of(db, row)).name)
 
 
-async def _name_taken(db: AsyncSession, name: str) -> bool:
+async def name_taken(db: AsyncSession, name: str) -> bool:
     return await db.scalar(select(LabelTemplate.id).where(LabelTemplate.name == name)) is not None
 
 
 async def _require_free(db: AsyncSession, names: list[str]) -> None:
     for name in names:
-        if await _name_taken(db, name):
+        if await name_taken(db, name):
             raise NameTaken(name=name)
 
 
@@ -275,18 +329,6 @@ def change_summary(before: dict | None, after: dict | None, *,
 
 # ── one active template per family, type and DPI ───────────────────
 
-async def assert_single_active(db: AsyncSession, *, family: str, label_type: str,
-                               dpi_key: str, exclude_id: uuid.UUID | None) -> None:
-    """Raise ActiveConflict naming every other active template (parents
-    aside) of this family, type and DPI. Takes the activation lock first,
-    held to the end of the transaction."""
-    await db.execute(_ACTIVE_LOCK)
-    names = await _conflicts(db, family=family, label_type=label_type, dpi_key=dpi_key,
-                             exclude_id=exclude_id)
-    if names:
-        raise ActiveConflict(names)
-
-
 async def _conflicts(db: AsyncSession, *, family: str, label_type: str, dpi_key: str,
                      exclude_id: uuid.UUID | None) -> list[str]:
     parent = aliased(LabelTemplate)
@@ -304,8 +346,11 @@ async def _conflicts(db: AsyncSession, *, family: str, label_type: str, dpi_key:
 
 
 async def guard_active(db: AsyncSession, rows: list[LabelTemplate]) -> None:
-    """assert_single_active for every active, printing row in `rows`,
-    reporting every conflict at once."""
+    """The one-active rule, the only way in: raise ActiveConflict naming
+    every other active template (parents aside) of the family, type and DPI
+    of each active, printing row in `rows`, all conflicts at once. Flushes
+    first, then takes the activation lock (held to the end of the
+    transaction) before it looks."""
     await db.flush()
     await db.execute(_ACTIVE_LOCK)
     names: set[str] = set()
@@ -328,8 +373,9 @@ async def printing_rows(db: AsyncSession, template: LabelTemplate) -> list[Label
 
 
 async def out_of_date_ids(db: AsyncSession, parent: LabelTemplate) -> list[uuid.UUID]:
+    current = await design_version(db, parent)
     return [c.id for c in await children_of(db, parent, include_old=False)
-            if is_out_of_date(c, parent)]
+            if is_out_of_date(c, current)]
 
 
 async def activate(db: AsyncSession, template: LabelTemplate) -> list[LabelTemplate]:
@@ -390,7 +436,7 @@ async def generate_children(db: AsyncSession, parent: LabelTemplate, *,
     """A child for every DPI in the parent's set that has no current one:
     the parent's design, no samples, generated from the parent's version,
     as active as the parent."""
-    have = {c.dpi_key for c in await children_of(db, parent, include_old=False)}
+    have = await current_dpis(db, parent)
     made: list[LabelTemplate] = []
     for dpi in _dpi_order(parent.dpis):
         if dpi in have:
@@ -416,23 +462,31 @@ async def generate_children(db: AsyncSession, parent: LabelTemplate, *,
 
 
 async def save_parent(db: AsyncSession, parent: LabelTemplate, *, design: dict,
-                      samples: dict, summary: str | None,
-                      actor_id: uuid.UUID | None) -> ParentSaveResult:
+                      samples: dict, summary: str | None, actor_id: uuid.UUID | None,
+                      child_summary: str | None = None) -> ParentSaveResult:
     """The next parent version: every child without hand edits is
-    regenerated from it; customized children are left exactly as they are
-    and come back as out of date."""
-    auto = change_summary(parent.design, design,
-                          samples_changed=(parent.samples or {}) != (samples or {}))
+    regenerated from it (a version on each: `child_summary`, else
+    "Generated from v<n>"); customized children are left exactly as they
+    are and come back as out of date. When only the samples change, the
+    children are left alone (module docstring). The parent and then its
+    children are locked first, so the children regenerated are the ones
+    without hand edits as of this save, not as of an earlier read."""
+    await _lock(db, parent)
+    design_changed = design != parent.design
+    auto = ("Changed sample values" if not design_changed else change_summary(
+        parent.design, design, samples_changed=(parent.samples or {}) != (samples or {})))
     parent.design = copy.deepcopy(design)
     parent.samples = dict(samples or {})
     parent.version += 1
     parent.updated_at = _now()
     add_version(db, parent, version=parent.version, summary=summary or auto,
                 actor_id=actor_id)
+    if not design_changed:
+        return {"out_of_date": []}
     out_of_date: list[uuid.UUID] = []
-    for child in await children_of(db, parent, include_old=False):
+    for child in await children_of(db, parent, include_old=False, for_update=True):
         if child.customized:
-            if is_out_of_date(child, parent):
+            if is_out_of_date(child, parent.version):
                 out_of_date.append(child.id)
             continue
         child.design = copy.deepcopy(design)
@@ -440,15 +494,20 @@ async def save_parent(db: AsyncSession, parent: LabelTemplate, *, design: dict,
         child.version += 1
         child.updated_at = _now()
         add_version(db, child, version=parent.version,
-                    summary=f"Generated from v{parent.version}", actor_id=actor_id)
+                    summary=child_summary or f"Generated from v{parent.version}",
+                    actor_id=actor_id)
     return {"out_of_date": out_of_date}
 
 
 async def save_child(db: AsyncSession, child: LabelTemplate, *, design: dict,
                      summary: str | None, actor_id: uuid.UUID | None) -> None:
-    """A hand edit of one DPI: the child is customized from now on."""
+    """A hand edit of one DPI: the child is customized from now on. The
+    child is locked and re-read first, so an edit lands on top of a parent
+    save that regenerated it meanwhile (its version and its key count on
+    from that save)."""
     if child.parent_id is None:
         raise NotAChild()
+    await _lock(db, child)
     auto = change_summary(child.design, design)
     child.design = copy.deepcopy(design)
     child.customized = True
@@ -463,7 +522,7 @@ async def free_old_name(db: AsyncSession, name: str) -> str:
     """"<name> Old", or the first free "<name> Old 2", " Old 3", …"""
     base = f"{name} Old"
     candidate, n = base, 1
-    while await _name_taken(db, candidate):
+    while await name_taken(db, candidate):
         n += 1
         candidate = f"{base} {n}"
     return candidate
@@ -484,11 +543,14 @@ async def update_from_parent(db: AsyncSession, child: LabelTemplate,
                              actor_id: uuid.UUID | None) -> tuple[LabelTemplate, bool]:
     """Keep the customized child as "… Old" (nested, inactive) and generate
     a fresh child at its DPI from the parent's current design. Returns
-    (the fresh child, whether this call made it): the child row is locked
-    and re-read first, so a second call — a double click, or one that
-    waited on the first — finds it already Old and gets the same fresh
-    child back."""
+    (the fresh child, whether this call made it): the parent and then the
+    child row are locked and re-read first (the order every save takes
+    them in), so the fresh child copies the parent's design as of now, even
+    when a parent save was in flight, and a second call — a double click,
+    or one that waited on the first — finds the child already Old and gets
+    the same fresh child back."""
     parent = await parent_of(db, child)
+    await _lock(db, parent)
     await db.execute(select(LabelTemplate).where(LabelTemplate.id == child.id)
                      .with_for_update().execution_options(populate_existing=True))
     if child.is_old:
@@ -550,7 +612,7 @@ async def add_dpi(db: AsyncSession, parent: LabelTemplate, dpi: str, *,
         raise NotAParent()
     if dpi not in TREE_DPIS:
         raise BadDpi(dpi=dpi, allowed=list(TREE_DPIS))
-    if dpi in {c.dpi_key for c in await children_of(db, parent, include_old=False)}:
+    if dpi in await current_dpis(db, parent):
         raise DpiExists(dpi=dpi)
     parent.dpis = _dpi_order([*parent.dpis, dpi])
     parent.updated_at = _now()

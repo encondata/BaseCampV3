@@ -83,10 +83,35 @@ async def test_patch_replace_clear_and_absent(client, db, seeded_user):
     resp = await client.patch(f"/labels/templates/{tid}", headers=hdrs,
                               json={"site_ids": [sb]})
     assert resp.json()["version"] == 3
+    # null: untouched, like absent
+    resp = await client.patch(f"/labels/templates/{tid}", headers=hdrs,
+                              json={"site_ids": None})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["site_ids"] == [sb] and resp.json()["version"] == 3
     # clear to global: bumps
     resp = await client.patch(f"/labels/templates/{tid}", headers=hdrs,
                               json={"site_ids": []})
     assert resp.json()["site_ids"] == [] and resp.json()["version"] == 4
+
+
+async def test_parent_patch_sites_null_is_unchanged_and_empty_clears(client, db, seeded_user):
+    """ledger B4: a builder parent takes site_ids as an older row does —
+    absent or null leaves them, [] clears them (global)."""
+    from tests.test_label_template_tree_api import _body as tree_body
+
+    sa, sb = await _two_sites(db)
+    hdrs = await _admin(db, client)
+    resp = await client.post("/labels/templates", headers=hdrs,
+                             json=tree_body("Tree", site_ids=[sa, sb]))
+    assert resp.status_code == 201, resp.text
+    tid = resp.json()["id"]
+    for body in ({"description": "x"}, {"site_ids": None}, {"site_ids": None, "description": "y"}):
+        resp = await client.patch(f"/labels/templates/{tid}", headers=hdrs, json=body)
+        assert resp.status_code == 200, (body, resp.text)
+        assert sorted(resp.json()["site_ids"]) == sorted([sa, sb])
+    resp = await client.patch(f"/labels/templates/{tid}", headers=hdrs, json={"site_ids": []})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["site_ids"] == []
 
 
 async def test_site_filter_returns_assigned_plus_globals(client, db,

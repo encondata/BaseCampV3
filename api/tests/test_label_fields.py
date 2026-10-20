@@ -269,6 +269,26 @@ async def test_fields_route_filters_groups_by_label_type(client, db, seeded_user
     assert [g["key"] for g in r.json()["groups"]] == [g["key"] for g in FIELD_GROUPS]
 
 
+async def test_ft_headers_leave_out_archived_moves(client, db, seeded_user):
+    """ledger B11: the From-To headers come from the rosters of moves still
+    in play; an archived move's columns are not offered."""
+    from datetime import UTC, datetime
+
+    await _seed_raw_ft(db)
+    old = Initiative(name="Old Move", initiative_type="move", status="completed",
+                     archived_at=datetime.now(UTC))
+    asset = Asset(name="hdr-old", serial_number="HDROLD")
+    db.add_all([old, asset])
+    await db.flush()
+    db.add(InitiativeAsset(initiative_id=old.id, asset_id=asset.id,
+                           raw_ft={"Retired Column": "x", "Notes": "y"}))
+    await db.commit()
+    r = await client.get("/labels/fields", headers=await login(client),
+                         params={"label_type": "top"})
+    assert r.status_code == 200, r.text
+    assert r.json()["ft_headers"] == ["Asset Name", "Data 2", "Data 10", "Notes"]
+
+
 async def test_fields_route_needs_labels_view(client, db, seeded_user):
     hdrs = await _make(db, client, "worker", "worker@test.example.com")
     r = await client.get("/labels/fields", headers=hdrs, params={"label_type": "top"})

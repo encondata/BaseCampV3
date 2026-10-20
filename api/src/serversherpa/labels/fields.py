@@ -227,8 +227,10 @@ def mock_field_values(label_type: str | None, field_keys: set[str] | None = None
     """The portal's mock values for a schema 2 test label, shaped like
     `field_values`: MOCK_VALUES for every catalog key of the type, and each
     `ft:<header>` key in `field_keys` printing its header (a From-To column
-    has no catalog sample)."""
+    has no catalog sample; a container label has no From-To row, so none)."""
     out = {key: MOCK_VALUES[key] for key in catalog_keys(label_type)}
+    if label_type in CONTAINER_LABEL_TYPES:
+        return out
     for key in sorted(field_keys or ()):
         if key.startswith(FT_PREFIX):
             out[key] = key[len(FT_PREFIX):]

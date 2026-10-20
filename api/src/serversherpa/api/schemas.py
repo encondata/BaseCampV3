@@ -4118,6 +4118,9 @@ class LabelCompileIn(BaseModel):
     # a schema 2 design's sample values (the builder's), over the portal's
     # mock values; refused for anything else
     samples: dict[str, str] | None = None
+    # the template's label type: a schema 2 preview mocks only that type's
+    # fields (a key of another type previews blank, as it prints)
+    label_type: str | None = Field(None, max_length=64)
 
 
 class LabelCompileOut(BaseModel):

@@ -135,6 +135,37 @@ async def test_create_rejects_a_taken_child_name_and_a_bad_design(client, db, se
     assert await db.scalar(select(func.count()).select_from(LabelTemplate)) == 1
 
 
+async def test_a_create_or_add_dpi_race_is_a_409(client, db, seeded_user, monkeypatch):
+    """api-tree-6: the name and DPI checks read before they insert, so a
+    concurrent create or Add DPI (forced here by hiding the rows the checks
+    would see) trips a unique index: the same 409 as the check, not a 500."""
+    from serversherpa.labels import templates_tree
+
+    hdrs = await _super(db, client)
+    parent = await _create(client, hdrs)
+
+    async def nothing_taken(db, name):
+        return False
+
+    async def no_current_dpis(db, parent):
+        return set()
+
+    monkeypatch.setattr(templates_tree, "name_taken", nothing_taken)
+    r = await client.post(URL, headers=hdrs, json=_body())
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "label_template_exists"
+    r = await client.post(URL, headers=hdrs, json={
+        "name": "Vegas Destination", "label_type": "top", "size_key": "4x2", "dpi_key": "203",
+        "language_key": "zpl", "kind": "code", "code": "^XA^XZ"})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "label_template_exists"
+    monkeypatch.setattr(templates_tree, "current_dpis", no_current_dpis)
+    r = await client.post(f"{URL}/{parent['id']}/dpis", headers=hdrs, json={"dpi": "600"})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == {"code": "dpi_exists", "dpi": "600"}
+    assert await db.scalar(select(func.count()).select_from(LabelTemplate)) == 4
+
+
 # ── save ────────────────────────────────────────────────────────────
 
 async def test_parent_save_regenerates_uncustomized_children_and_flags_customized(
@@ -182,9 +213,12 @@ async def test_parent_metadata_flows_to_children(client, db, seeded_user):
     hdrs = await _super(db, client)
     parent = await _create(client, hdrs)
     r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs,
-                           json={"name": "Vegas Dest", "size_key": "2x1"})
+                           json={"name": "Vegas Dest", "language_key": "zpl",
+                                 "description": "Renamed"})
     assert r.status_code == 200, r.text
     assert r.json()["version"] == 1  # metadata is not a design version
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"size_key": "2x1"})
+    assert r.status_code == 200, r.text
     node = await _node(client, hdrs, "Vegas Dest")
     assert [c["name"] for c in node["children"]] == [
         "Vegas Dest · 203", "Vegas Dest · 300", "Vegas Dest · 600"]
@@ -216,6 +250,202 @@ async def test_stored_samples_are_capped_like_the_compile(client, db, seeded_use
     edge = {**{f"ft:col {i}": "x" for i in range(199)}, "asset_id": "9" * 500}
     r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"samples": edge})
     assert r.status_code == 200, r.text
+
+
+async def test_a_samples_only_save_leaves_the_children_alone(client, db, seeded_user):
+    """M2: a parent save that changes only the sample values records a
+    parent version and nothing else: no child is regenerated, bumped or
+    put out of date, and a kiosk's sync doesn't change."""
+    from tests.test_kiosk_label_templates_sync import _get, _move
+
+    hdrs = await _super(db, client)
+    parent = await _create(client, hdrs)
+    c300 = _child(await _node(client, hdrs, "Vegas Destination"), "300")
+    r = await client.patch(f"{URL}/{c300['id']}", headers=hdrs, json={"design": _added(DESIGN)})
+    assert r.status_code == 200, r.text
+    move, *_ = await _move(db)
+    await db.commit()
+    staff = await login(client)
+    sync_before = (await _get(client, staff, move.id)).json()["templates"]
+    assert len(sync_before) == 3
+    before = (await _node(client, hdrs, "Vegas Destination"))["children"]
+
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs,
+                           json={"samples": {"asset_id": "7"}})
+    assert r.status_code == 200, r.text
+    assert (r.json()["version"], r.json()["samples"], r.json()["out_of_date"]) == (
+        2, {"asset_id": "7"}, [])
+    versions = (await client.get(f"{URL}/{parent['id']}/versions", headers=hdrs)).json()
+    assert [(v["label"], v["summary"]) for v in versions] == [
+        ("v2", "Changed sample values"), ("v1", "Created")]
+    assert (await _node(client, hdrs, "Vegas Destination"))["children"] == before
+    assert all(c["out_of_date"] is False for c in before)
+    for child in before:
+        r = await client.get(f"{URL}/{child['id']}/versions", headers=hdrs)
+        assert len(r.json()) == (2 if child["id"] == c300["id"] else 1)
+    assert (await _get(client, staff, move.id)).json()["templates"] == sync_before
+
+    # a later design save still regenerates and flags as before
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"design": _moved(DESIGN)})
+    assert r.status_code == 200, r.text
+    assert r.json()["version"] == 3 and r.json()["out_of_date"] == [c300["id"]]
+    node = await _node(client, hdrs, "Vegas Destination")
+    assert _child(node, "203")["generated_from_version"] == 3
+    # and a samples-only save after it doesn't clear what is out of date
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs,
+                           json={"samples": {"asset_id": "8"}})
+    assert r.json()["version"] == 4 and r.json()["out_of_date"] == [c300["id"]]
+    assert _child(await _node(client, hdrs, "Vegas Destination"), "203")[
+        "generated_from_version"] == 3
+
+
+async def test_a_size_change_rewrites_the_design_size(client, db, seeded_user):
+    """contracts-3: a parent's size_key change puts the size into the design
+    of the parent and its uncustomized children (a version on each); a
+    customized child keeps its own and is out of date."""
+    hdrs = await _super(db, client)
+    parent = await _create(client, hdrs)
+    c300 = _child(await _node(client, hdrs, "Vegas Destination"), "300")
+    r = await client.patch(f"{URL}/{c300['id']}", headers=hdrs, json={"design": _added(DESIGN)})
+    assert r.status_code == 200, r.text
+
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"size_key": "2x1"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["size_key"], body["version"], body["design"]["size"]) == (
+        "2x1", 2, {"w": 2, "h": 1})
+    assert body["design"]["elements"] == DESIGN["elements"]
+    assert body["out_of_date"] == [c300["id"]]
+    versions = (await client.get(f"{URL}/{parent['id']}/versions", headers=hdrs)).json()
+    assert versions[0]["summary"] == "Size changed to 2x1"
+    node = await _node(client, hdrs, "Vegas Destination")
+    for dpi in ("203", "600"):
+        c = _child(node, dpi)
+        assert (c["size_key"], c["design"]["size"], c["generated_from_version"]) == (
+            "2x1", {"w": 2, "h": 1}, 2)
+        newest = (await client.get(f"{URL}/{c['id']}/versions", headers=hdrs)).json()[0]
+        assert (newest["label"], newest["summary"]) == ("v2", "Size changed to 2x1")
+    kept = _child(node, "300")
+    assert kept["size_key"] == "2x1" and kept["design"]["size"] == {"w": 4, "h": 2}
+    assert kept["out_of_date"] is True
+    # with a design in the same PATCH the size still comes from the list
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs,
+                           json={"size_key": "4x2", "design": _moved(body["design"])})
+    assert r.status_code == 200, r.text
+    assert r.json()["design"]["size"] == {"w": 4, "h": 2}
+    versions = (await client.get(f"{URL}/{parent['id']}/versions", headers=hdrs)).json()
+    assert versions[0]["summary"] == "Moved 1 element, changed the size"
+
+
+async def test_parent_save_never_overwrites_a_child_customized_meanwhile(
+        client, db, seeded_user):
+    """api-tree-3: the parent save decides from the children it has locked,
+    not from what its session read earlier, so a hand edit committed in
+    between is kept (and reported out of date), never overwritten."""
+    from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.labels import templates_tree
+
+    hdrs = await _super(db, client)
+    parent = await _create(client, hdrs)
+    c300 = _child(await _node(client, hdrs, "Vegas Destination"), "300")
+    async with get_sessionmaker()() as s:
+        mine = await s.get(LabelTemplate, uuid.UUID(parent["id"]))
+        read = await templates_tree.children_of(s, mine)  # held: the session keeps them
+        assert not any(c.customized for c in read)
+        # another designer's hand edit commits meanwhile
+        r = await client.patch(f"{URL}/{c300['id']}", headers=hdrs,
+                               json={"design": _added(DESIGN)})
+        assert r.status_code == 200, r.text
+        result = await templates_tree.save_parent(s, mine, design=_moved(DESIGN), samples={},
+                                                  summary=None, actor_id=None)
+        await s.commit()
+    assert result["out_of_date"] == [uuid.UUID(c300["id"])]
+    kept = _child(await _node(client, hdrs, "Vegas Destination"), "300")
+    assert (kept["design"], kept["customized"], kept["out_of_date"]) == (
+        _added(DESIGN), True, True)
+
+
+async def test_a_child_save_waits_for_a_parent_save_in_flight(client, db, seeded_user):
+    """api-tree-3, the other way round: a hand edit started from a child read
+    before a parent save regenerated it lands on top of that save (its
+    version counts on from it), not on the stale read."""
+    import asyncio
+
+    from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.labels import templates_tree
+
+    hdrs = await _super(db, client)
+    parent = await _create(client, hdrs)
+    child_id = uuid.UUID(_child(await _node(client, hdrs, "Vegas Destination"), "300")["id"])
+    saved = asyncio.Event()
+
+    async def parent_save():
+        async with get_sessionmaker()() as s:
+            mine = await s.get(LabelTemplate, uuid.UUID(parent["id"]))
+            await templates_tree.save_parent(s, mine, design=_moved(DESIGN), samples={},
+                                             summary=None, actor_id=None)
+            await s.flush()
+            saved.set()
+            await asyncio.sleep(0.3)  # the child save runs meanwhile
+            await s.commit()
+
+    async def child_save():
+        async with get_sessionmaker()() as s:
+            child = await s.get(LabelTemplate, child_id)  # v1, before the parent save
+            await saved.wait()
+            await templates_tree.save_child(s, child, design=_added(_moved(DESIGN)),
+                                            summary=None, actor_id=None)
+            await s.commit()
+
+    await asyncio.gather(parent_save(), child_save())
+    row = await db.get(LabelTemplate, child_id)
+    await db.refresh(row)
+    assert (row.generated_from_version, row.child_edits, row.version, row.customized) == (
+        2, 1, 3, True)
+    assert row.design == _added(_moved(DESIGN))
+    keys = (await db.execute(select(LabelTemplateVersion.version, LabelTemplateVersion.child_edits)
+                             .where(LabelTemplateVersion.template_id == child_id))).all()
+    assert sorted(keys) == [(1, 0), (2, 0), (2, 1)]
+
+
+async def test_update_from_parent_reads_the_parent_after_its_lock(client, db, seeded_user):
+    """api-tree-4: a parent save in flight when Update from parent starts
+    is the design the fresh child is generated from."""
+    import asyncio
+
+    from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.labels import templates_tree
+
+    hdrs = await _super(db, client)
+    parent = await _create(client, hdrs)
+    c300 = _child(await _node(client, hdrs, "Vegas Destination"), "300")
+    saved_v2 = await _customize_and_save(client, hdrs, parent["id"], c300["id"], 0.1)
+    newer = _moved(saved_v2["design"], 0.2)
+    saved, loaded = asyncio.Event(), asyncio.Event()
+
+    async def parent_save():
+        async with get_sessionmaker()() as s:
+            await loaded.wait()
+            mine = await s.get(LabelTemplate, uuid.UUID(parent["id"]))
+            await templates_tree.save_parent(s, mine, design=newer, samples={},
+                                             summary=None, actor_id=None)
+            await s.flush()
+            saved.set()
+            await asyncio.sleep(0.3)  # Update from parent runs meanwhile
+            await s.commit()
+
+    async def update():
+        async with get_sessionmaker()() as s:
+            child = await s.get(LabelTemplate, uuid.UUID(c300["id"]))
+            await templates_tree.parent_of(s, child)  # v2, read before the save
+            loaded.set()
+            await saved.wait()
+            fresh, created = await templates_tree.update_from_parent(s, child, None)
+            await s.commit()
+            return fresh.design, fresh.generated_from_version, created
+
+    _, (design, version, created) = await asyncio.gather(parent_save(), update())
+    assert (design, version, created) == (newer, 3, True)
 
 
 # ── update from parent ──────────────────────────────────────────────
@@ -663,6 +893,28 @@ async def test_mutations_need_rank_80(client, db, seeded_user):
     assert await db.scalar(select(func.count()).select_from(LabelTemplate)) == 5
 
 
+async def test_a_version_note_needs_labels_change_as_well_as_rank_80(client, db, seeded_user):
+    """ledger B8: rank 80 alone doesn't let a designer write a version note;
+    labels:change is needed too (an override can take it away)."""
+    from serversherpa.db.models import PermissionOverride, UserAccount
+
+    sa = await _super(db, client)
+    parent = await _create(client, sa)
+    url = f"{URL}/{parent['id']}/versions/1/0"
+    no_change = await _make(db, client, "super_admin", "nochange@test.example.com")
+    person_id = await db.scalar(select(UserAccount.person_id).where(
+        UserAccount.email == "nochange@test.example.com"))
+    db.add(PermissionOverride(person_id=person_id, resource="labels", action="change",
+                              allow=False))
+    await db.commit()
+    r = await client.patch(url, headers=no_change, json={"note": "mine"})
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == {"code": "forbidden"}
+    assert (await client.get(url, headers=sa)).json()["note"] == ""
+    r = await client.patch(url, headers=sa, json={"note": "checked on the ZD421"})
+    assert r.status_code == 200 and r.json()["note"] == "checked on the ZD421"
+
+
 async def test_tree_readable_with_labels_view(client, db, seeded_user):
     sa = await _super(db, client)
     await _create(client, sa)
@@ -691,6 +943,41 @@ async def test_tree_readable_with_labels_view(client, db, seeded_user):
     assert one["samples"] == {"asset_id": "10482"}
     r = await client.post(URL, headers=staff, json=_body("Mine"))
     assert r.status_code == 403
+
+
+async def test_a_designer_can_change_a_pending_custom_size(client, db, seeded_user):
+    """ledger B7: New template › Custom… posts an unlisted size before the
+    create; when that create fails and the size is changed, the designer
+    rewrites the same pending row (inactive, no template on it) instead of
+    leaving it behind. A listed or used size stays devtools-only."""
+    hdrs = await _super(db, client)
+    r = await client.post("/labels/vocab", headers=hdrs, json={
+        "kind": "size", "key": "3x1_25", "label": '3" x 1.25"', "is_active": False,
+        "meta": {"width_in": 3, "height_in": 1.25, "has_tab": False}})
+    assert r.status_code == 201, r.text
+    r = await client.patch("/labels/vocab/size/3x1_25", headers=hdrs, json={
+        "label": '3.5" x 1.25"', "meta": {"width_in": 3.5, "height_in": 1.25, "has_tab": False}})
+    assert r.status_code == 200, r.text
+    assert (r.json()["label"], r.json()["meta"]["width_in"], r.json()["is_active"]) == (
+        '3.5" x 1.25"', 3.5, False)
+    parent = await _create(client, hdrs, name="Odd size", size_key="3x1_25")
+    assert parent["size_key"] == "3x1_25"
+    # now a template uses it: no longer pending
+    r = await client.patch("/labels/vocab/size/3x1_25", headers=hdrs, json={"label": "x"})
+    assert r.status_code == 403, r.text
+    # a listed size, and anything that isn't a size, stay devtools-only
+    r = await client.patch("/labels/vocab/size/4x2", headers=hdrs, json={"label": "x"})
+    assert r.status_code == 403, r.text
+    r = await client.patch("/labels/vocab/dpi/203", headers=hdrs, json={"label": "x"})
+    assert r.status_code == 403, r.text
+    # below rank 80, nothing
+    r = await client.post("/labels/vocab", headers=hdrs, json={
+        "kind": "size", "key": "5x5", "label": '5" x 5"', "is_active": False,
+        "meta": {"width_in": 5, "height_in": 5, "has_tab": False}})
+    assert r.status_code == 201, r.text
+    admin = await _make(db, client, "admin", "adm@test.example.com")
+    r = await client.patch("/labels/vocab/size/5x5", headers=admin, json={"label": "x"})
+    assert r.status_code == 403, r.text
 
 
 async def test_a_parent_can_use_an_unlisted_custom_size(client, db, seeded_user):

@@ -193,3 +193,31 @@ async def test_a_qr_value_too_long_is_a_design_problem(client, db, seeded_user):
     resp = await client.post("/labels/templates/compile", headers=hdrs, json=_body(
         design=qr, dpi_key="300", samples={"asset_id": "a" * 213}))
     assert resp.status_code == 200, resp.text
+
+
+async def test_a_preview_prints_only_the_template_types_fields(client, db, seeded_user):
+    """contracts-4: with the template's label_type, a key of another type
+    previews blank, as the generator, the kiosk and the station print it."""
+    hdrs = await login(client)
+    crate = {**V2["elements"][1], "id": "f9", "field": "container_name"}
+    design = {**V2, "elements": [V2["elements"][0], crate, V2["elements"][2]]}
+    resp = await client.post("/labels/templates/compile", headers=hdrs, json=_body(
+        design=design, dpi_key="300", label_type="top"))
+    assert resp.status_code == 200, resp.text
+    assert _data(resp.json()["code"]) == ["100000", "", "Notes"]
+    resp = await client.post("/labels/templates/compile", headers=hdrs, json=_body(
+        design=design, dpi_key="300", label_type="container"))
+    assert _data(resp.json()["code"]) == ["", "SAMPLE-CRATE-01", ""]
+    # without a type every catalog key previews (the older callers)
+    resp = await client.post("/labels/templates/compile", headers=hdrs, json=_body(
+        design=design, dpi_key="300"))
+    assert _data(resp.json()["code"]) == ["100000", "SAMPLE-CRATE-01", "Notes"]
+    # a sample still wins over the type's mock values
+    resp = await client.post("/labels/templates/compile", headers=hdrs, json=_body(
+        design=design, dpi_key="300", label_type="top", samples={"asset_id": "7"}))
+    assert _data(resp.json()["code"])[0] == "7"
+
+
+def _data(code):
+    import re
+    return re.findall(r"\^FD(.*?)\^FS", code)
