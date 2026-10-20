@@ -22,7 +22,7 @@ const SPEC = [
   'Enter', 'Mod+[', 'Mod+]', 'Mod+Shift+[', 'Mod+Shift+]', 'Mod+L',
   'Mod+B', 'Mod+Shift+I',
   'Alt+A', 'Alt+D', 'Alt+W', 'Alt+S', 'Alt+H', 'Alt+V', 'Shift+Alt+H', 'Shift+Alt+V',
-  'Mod+=', 'Mod+-', 'Mod+0', 'Mod+1', 'Space+Drag', "Mod+'", "Mod+Shift+'", 'Mod+R', 'Mod+E',
+  'Mod+=', 'Mod+-', 'Mod+0', 'Shift+0', 'Space+Drag', "Mod+'", "Mod+Shift+'", 'Mod+R', 'Mod+E',
   'Mod+S', 'Mod+P', '/', 'Mod+/',
 ];
 
@@ -37,6 +37,14 @@ describe('SHORTCUTS', () => {
     expect(new Set(combos).size).toBe(combos.length);
     const ids = SHORTCUTS.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('leaves ⌘1 to the browser: true size is ⇧0', () => {
+    expect(combos).not.toContain(canonical('Mod+1'));
+    expect(matched(key('1', 'Digit1', { metaKey: true }))).toBeNull();
+    expect(matched(key(')', 'Digit0', { shiftKey: true }))).toBe('canvas.trueSize');
+    expect(matched(key('0', 'Digit0', { shiftKey: true }))).toBe('canvas.trueSize');   // AZERTY: ⇧ types 0
+    expect(SHORTCUTS.find((s) => s.id === 'canvas.trueSize')).toMatchObject({ mac: '⇧0', win: 'Shift+0' });
   });
 
   it('leaves ⌘K to the command palette and ⌘\\ to the sidebar', () => {
@@ -85,6 +93,13 @@ describe('matchShortcut', () => {
   it('prefers the character typed over the physical key', () => {
     // an AZERTY Z sits where QWERTY has W
     expect(matched(key('z', 'KeyW', { metaKey: true }))).toBe('edit.undo');
+  });
+
+  it('never reads the physical key behind a plain letter or digit', () => {
+    // Dvorak J sits where QWERTY has C: Ctrl+J is not Copy
+    expect(matched(key('j', 'KeyC', { ctrlKey: true }), 'win')).toBeNull();
+    expect(matched(key('j', 'KeyC', { metaKey: true }), 'mac')).toBeNull();
+    expect(matched(key('3', 'Digit0', { metaKey: true }))).toBeNull();
   });
 
   it('matches arrows, Delete on either key, Tab, Enter and the field search', () => {

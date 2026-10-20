@@ -2,9 +2,11 @@
  * Canvas geometry in inches: snapping, keeping elements on the label,
  * hit-testing, marquee selection, and the eight resize handles with each
  * element type's rule (spec §4.2 Resizing):
- *  - text (static text, a field shown as text or a number): the height
- *    scales the font size and baseline; the width follows the expected
- *    length when one is set, else it is free;
+ *  - text (static text, a field shown as text or a number): the height is
+ *    one line of the font (metrics.ts `textBoxFor`), so it sets the font
+ *    size and the baseline; until the font's metrics load, both scale in
+ *    proportion. The width follows the expected length when one is set,
+ *    else it is free;
  *  - barcode: the height is the bar height; the width snaps to whole
  *    narrow modules (the printer's ^BY, in dots at the DPI);
  *  - QR code: square, in whole magnification steps of the symbol the value
@@ -17,7 +19,7 @@
  */
 
 import { DEFAULT_FAMILY, glyphWidthScale, type FontRef } from './fonts';
-import { baselineIn, reservedWidthIn, type FontMetrics } from './metrics';
+import { reservedWidthIn, sizePtForHeight, textBoxFor, type FontMetrics } from './metrics';
 import type { Display, ElementV2 } from './model';
 import { qrMagnification, qrModules } from './qr';
 import { pyRound, toDots } from './units';
@@ -201,13 +203,18 @@ function sized<T extends ElementV2>(el: T, along: number, across: number, ctx: R
   if (kind !== 'text' || (el.type !== 'text' && el.type !== 'field')) return { ...el, w: along, h: across };
 
   const sizePt = el.sizePt ?? 0;
-  const ratio = el.h > 0 && sizePt > 0 ? across / el.h : 1;
-  const nextSize = sizePt * ratio;
   const metrics = ctx.metricsFor?.(el) ?? null;
-  const scaled = Math.abs(across - el.h) > EPS && ratio !== 1;
-  const baseline = scaled
-    ? (metrics ? baselineIn(metrics, nextSize) : (el.baselineIn ?? 0) * ratio)
-    : el.baselineIn;
+  // with metrics the height alone sets the size; without, it scales the old one
+  const scaled = Math.abs(across - el.h) > EPS && (metrics !== null || (el.h > 0 && sizePt > 0));
+  let nextSize = sizePt;
+  let baseline = el.baselineIn;
+  if (scaled && metrics) {
+    nextSize = sizePtForHeight(metrics, across);
+    baseline = textBoxFor(metrics, nextSize).baselineIn;
+  } else if (scaled) {
+    nextSize = sizePt * (across / el.h);
+    baseline = (el.baselineIn ?? 0) * (across / el.h);
+  }
   const expected = el.type === 'field' ? el.expectedLength : null;
   let w = along;
   if (expected) {
@@ -216,7 +223,7 @@ function sized<T extends ElementV2>(el: T, along: number, across: number, ctx: R
     const reserved = metrics
       ? reservedWidthIn(metrics, nextSize, expected, display, glyphWidthScale(font, !!el.inverted))
       : null;
-    w = reserved ?? el.w * ratio;
+    w = reserved ?? (sizePt > 0 ? el.w * (nextSize / sizePt) : el.w);
   }
   return { ...el, w, h: across, sizePt: scaled ? nextSize : el.sizePt, baselineIn: baseline };
 }

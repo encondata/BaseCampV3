@@ -1,8 +1,8 @@
 /**
  * The builder's keyboard shortcuts: every binding of spec §5, with `/` for
- * the field search. ⌘K stays the portal's command palette and ⌘\ the
- * sidebar toggle, so neither is bound here. "Mod" is ⌘ on a Mac and Ctrl
- * everywhere else.
+ * the field search and ⇧0 for true size (the browser keeps ⌘1 for its first
+ * tab). ⌘K stays the portal's command palette and ⌘\ the sidebar toggle,
+ * so neither is bound here. "Mod" is ⌘ on a Mac and Ctrl everywhere else.
  *
  * A binding is written `Mod+Shift+Alt+Key` (any of the modifiers, the key
  * last). Pointer gestures (⇧-drag, ⌥-drag, Space-drag, ⇧-resize) are listed
@@ -101,7 +101,7 @@ const DEFS: Def[] = [
   { id: 'canvas.zoomIn', keys: ['Mod+='], label: 'Zoom in', group: 'Canvas' },
   { id: 'canvas.zoomOut', keys: ['Mod+-'], label: 'Zoom out', group: 'Canvas' },
   { id: 'canvas.fit', keys: ['Mod+0'], label: 'Zoom to fit', group: 'Canvas' },
-  { id: 'canvas.trueSize', keys: ['Mod+1'], label: 'True size (one dot per pixel)', group: 'Canvas' },
+  { id: 'canvas.trueSize', keys: ['Shift+0'], label: 'True size (one dot per pixel)', group: 'Canvas' },
   { id: 'canvas.pan', keys: ['Space+Drag'], label: 'Pan', group: 'Canvas', pointer: true },
   { id: 'canvas.grid', keys: ["Mod+'"], label: 'Show or hide the grid', group: 'Canvas' },
   { id: 'canvas.snap', keys: ["Mod+Shift+'"], label: 'Snap to the grid on or off', group: 'Canvas' },
@@ -182,8 +182,10 @@ const MATCHABLE = SHORTCUTS
 
 /** The shortcut a key press triggers on `platform`, or null. Modifiers must
  *  match exactly (Mod is ⌘ on a Mac, Ctrl elsewhere); the key is the
- *  character typed, else the physical key, so ⌘⇧[ and ⌥A match although
- *  Shift and ⌥ change the character. The caller checks `when` against focus. */
+ *  character typed. Only when Shift or ⌥ turned it into something other
+ *  than a plain letter or digit (`{`, `å`, `)`) does the physical key
+ *  count, so ⌘⇧[ and ⌥A match, and Dvorak's Ctrl+J (QWERTY's C key) is
+ *  not Copy. The caller checks `when` against focus. */
 export function matchShortcut(e: KeyLike, platform: Platform): Shortcut | null {
   const mod = platform === 'mac' ? e.metaKey : e.ctrlKey;
   const other = platform === 'mac' ? e.ctrlKey : e.metaKey;
@@ -192,10 +194,10 @@ export function matchShortcut(e: KeyLike, platform: Platform): Shortcut | null {
     combo.mods.has('Mod') === mod && combo.mods.has('Shift') === e.shiftKey
     && combo.mods.has('Alt') === e.altKey);
   const typed = typedKey(e.key);
+  const hit = candidates.find(({ combo }) => combo.key === typed);
+  if (hit || /^[A-Z0-9]$/.test(typed)) return hit?.shortcut ?? null;
   const physical = codeKey(e.code);
-  const hit = candidates.find(({ combo }) => combo.key === typed)
-    ?? candidates.find(({ combo }) => combo.key === physical);
-  return hit?.shortcut ?? null;
+  return candidates.find(({ combo }) => combo.key === physical)?.shortcut ?? null;
 }
 
 /** 'mac' on a Mac, iPhone or iPad; 'win' for everything else (and with no

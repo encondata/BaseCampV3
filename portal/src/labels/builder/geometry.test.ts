@@ -5,7 +5,7 @@ import {
   barcodeModuleDots, clampToLabel, footprint, hitTest, marqueeSelect, move, resize, snap,
   type ResizeContext,
 } from './geometry';
-import { baselineIn, reservedWidthIn, type FontMetrics } from './metrics';
+import { reservedWidthIn, textBoxFor, type FontMetrics } from './metrics';
 import {
   parseDesign, type BarcodeElement, type BoxElement, type ElementV2, type FieldElement,
   type QrElement, type TextElement,
@@ -117,13 +117,24 @@ describe('resize: text', () => {
   const pod = byId<FieldElement>('banner-pod');           // expected length 3, 24 pt, h 0.24
   const caption = byId<TextElement>('caption-name');      // static, 10.08 pt, h 0.1008
 
-  it('scales the font with the height and sizes the width to the expected length', () => {
+  it('sets the font size from the height as one line of the font, the width from the expected length', () => {
+    // 0.48 in = (720 + 200)/1000 em → 0.48 × 72 / 0.92 pt
+    const size = (0.48 * 72) / 0.92;
     const out = resize(pod, 's', 0, 0.24, { ...CTX, metricsFor: () => METRICS });
-    expect(out.sizePt).toBeCloseTo(48, 10);
+    expect(out.sizePt).toBeCloseTo(size, 10);
     expect(out.h).toBeCloseTo(0.48, 10);
-    expect(out.baselineIn).toBeCloseTo(baselineIn(METRICS, 48), 10);
-    expect(out.w).toBeCloseTo(reservedWidthIn(METRICS, 48, 3, 'text')!, 10);
+    expect(out.h).toBeCloseTo(textBoxFor(METRICS, out.sizePt!).h, 10);
+    expect(out.baselineIn).toBeCloseTo(textBoxFor(METRICS, size).baselineIn, 10);
+    expect(out.w).toBeCloseTo(reservedWidthIn(METRICS, size, 3, 'text')!, 10);
     expect(out.y).toBe(pod.y);
+  });
+
+  it('keeps a hand-made box (h = baseline) until its height is dragged', () => {
+    // the Vegas fixture's text boxes stop at the baseline; a width drag leaves them be
+    const out = resize(pod, 'e', 0.3, 0, { ...CTX, metricsFor: () => METRICS });
+    expect(out.h).toBe(pod.h);
+    expect(out.baselineIn).toBe(pod.baselineIn);
+    expect(out.sizePt).toBe(pod.sizePt);
   });
 
   it('scales everything in proportion while the font metrics are not loaded', () => {

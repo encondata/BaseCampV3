@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { FontWeight } from './fonts';
 import {
-  baselineIn, lineHeightIn, loadFont, reservedWidthIn, textWidthIn, type FontMetrics, type FontSource,
+  baselineIn, lineHeightIn, loadFont, reservedWidthIn, sizePtForHeight, textBoxFor, textWidthIn,
+  type FontMetrics, type FontSource,
 } from './metrics';
 
 // 1000 units per em; the widest glyph is W (950), the widest digit 8 (560)
@@ -31,6 +32,22 @@ describe('measurement', () => {
   it('places the baseline ascent below the top', () => {
     expect(baselineIn(METRICS, 24)).toBeCloseTo(0.3, 10);       // 900/1000 × 24/72
     expect(lineHeightIn(METRICS, 24)).toBeCloseTo(0.4, 10);     // (900+300)/1000 × 24/72
+  });
+
+  it('sizes a text box to one line of the font, the baseline at the ascent', () => {
+    // (900 + 300)/1000 × 24/72 tall, the baseline 900/1000 × 24/72 down
+    const box = textBoxFor(METRICS, 24);
+    expect(box.h).toBeCloseTo(0.4, 10);
+    expect(box.baselineIn).toBeCloseTo(0.3, 10);
+    expect(sizePtForHeight(METRICS, 0.4)).toBeCloseTo(24, 10);
+    expect(sizePtForHeight(METRICS, box.h)).toBeCloseTo(24, 10);
+  });
+
+  it('reserves the widest glyph even when it is a symbol', () => {
+    const symbols: FontMetrics = { ...METRICS, advances: { ...METRICS.advances, '@': 1000, '%': 1100 } };
+    expect(reservedWidthIn(symbols, 24, 3, 'text')).toBeCloseTo(1.1, 10);     // 3 × 1100/1000 × 24/72
+    expect(reservedWidthIn(symbols, 24, 3, 'number')).toBeCloseTo(0.56, 10);  // digits only
+    expect(textWidthIn(symbols, 24, 'é')).toBeCloseTo(1.1 / 3, 10);
   });
 
   it('measures text by its advances, a character outside the table as the widest glyph', () => {

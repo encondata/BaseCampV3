@@ -21,6 +21,7 @@ describe('qrModules', () => {
     expect(qrModules('')).toBe(21);
     expect(qrModules('0'.repeat(513))).toBe(57);         // v10 (17 + 4 x 10)
     expect(qrModules('٣'.repeat(20))).toBe(29);          // non-ASCII digits are bytes (40), not numeric
+    expect(qrModules('😀'.repeat(4))).toBe(25);          // astral: 4 UTF-8 bytes each (16), not 8 UTF-16 units
     expect(() => qrModules('x'.repeat(214))).toThrow(RangeError);   // beyond v10's 213 bytes
   });
 

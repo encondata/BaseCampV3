@@ -168,6 +168,13 @@ function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v)) as T;
 }
 
+/** `obj[key]` only when `obj` holds `key` itself: a field key is opaque
+ *  text, so `constructor` or `__proto__` must read as missing, never as
+ *  Object.prototype's. */
+function own<V>(obj: Readonly<Record<string, V>> | undefined, key: string): V | undefined {
+  return obj !== undefined && Object.hasOwn(obj, key) ? obj[key] : undefined;
+}
+
 // ---- parse / serialize ---------------------------------------------------
 
 /** The smallest unused `<prefix>-<n>` id. */
@@ -303,13 +310,13 @@ export function reorder(d: DesignV2, ids: string | readonly string[], move: Reor
  *  piece, named `Piece 1`..`Piece n`. A field has one Split per template, so
  *  a field that already has one keeps it (placing it again reuses it). */
 export function addSplit(d: DesignV2, fieldKey: string, sample: string): DesignV2 {
-  if (d.splits?.[fieldKey]) return d;
+  if (own(d.splits, fieldKey)) return d;
   const pieces = splitValue(sample).map((_, i) => `Piece ${i + 1}`);
   return { ...d, splits: { ...d.splits, [fieldKey]: { pieces } } };
 }
 
 export function renamePiece(d: DesignV2, fieldKey: string, index: number, name: string): DesignV2 {
-  const split = d.splits?.[fieldKey];
+  const split = own(d.splits, fieldKey);
   if (!split || index < 0 || index >= split.pieces.length) {
     throw new RangeError(`no piece ${index} in ${fieldKey}'s Split`);
   }
@@ -337,7 +344,7 @@ export function fieldRules(el: FieldElement): FieldRules {
 }
 
 function rawValue(el: FieldElement, values: Readonly<Record<string, string>>): string {
-  const raw = values[el.field] || '';
+  const raw = own(values, el.field) || '';
   return el.piece == null ? raw : splitPiece(raw, el.piece);
 }
 
@@ -349,7 +356,7 @@ export function elementValue(el: ElementV2, values: Readonly<Record<string, stri
     case 'field': return applyRules(rawValue(el, values), fieldRules(el));
     case 'text': return el.content;
     case 'barcode':
-    case 'qr': return el.field != null ? values[el.field] || '' : el.data ?? '';
+    case 'qr': return el.field != null ? own(values, el.field) || '' : el.data ?? '';
     default: return '';
   }
 }
@@ -470,15 +477,15 @@ const checkSource: Check = (el, p) => {
   }
 };
 
-function checkField(el: Raw, p: string[], splits: Readonly<Record<string, string[]>>): void {
+function checkField(el: Raw, p: string[], splits: ReadonlyMap<string, string[]>): void {
   const key = typeof el.field === 'string' ? el.field : '';
   if (!key) p.push('field must be a non-empty string');
   const piece = el.piece;
   if (present(piece)) {
     if (!int(piece) || piece < 0) p.push('piece must be a whole number of 0 or more');
-    else if (!(key in splits)) p.push(`piece ${piece} needs a Split defined for ${repr(key)}`);
-    else if (piece >= splits[key].length) {
-      p.push(`piece ${piece} is beyond ${repr(key)}'s Split (${splits[key].length} pieces)`);
+    else if (!splits.has(key)) p.push(`piece ${piece} needs a Split defined for ${repr(key)}`);
+    else if (piece >= splits.get(key)!.length) {
+      p.push(`piece ${piece} is beyond ${repr(key)}'s Split (${splits.get(key)!.length} pieces)`);
     }
   }
   let display = withDefault(el.display, 'text');
@@ -500,7 +507,7 @@ function checkField(el: Raw, p: string[], splits: Readonly<Record<string, string
   optChoice('stripWhere', STRIP_WHERES)(el, p);
 }
 
-function checkElement(el: Raw, p: string[], splits: Readonly<Record<string, string[]>>): void {
+function checkElement(el: Raw, p: string[], splits: ReadonlyMap<string, string[]>): void {
   for (const key of ['x', 'y', 'w', 'h']) needNum(key)(el, p);
   if (!ROTATIONS.includes(withDefault(el.rotation, 0) as number)) {
     p.push('rotation must be one of 0/90/180/270');
@@ -542,7 +549,7 @@ export function validate(d: DesignV2): Problem[] {
   if (!isObject(size) || !positive(size.w) || !positive(size.h)) {
     problems.push({ elementId: null, message: 'size must hold positive numbers w and h' });
   }
-  const splits: Record<string, string[]> = {};
+  const splits = new Map<string, string[]>();
   if (present(raw.splits)) {
     if (!isObject(raw.splits)) {
       problems.push({ elementId: null, message: 'splits must be an object' });
@@ -552,7 +559,7 @@ export function validate(d: DesignV2): Problem[] {
         if (!Array.isArray(pieces) || !pieces.length || !pieces.every((n) => typeof n === 'string')) {
           problems.push({ elementId: null, message: `splits: ${repr(key)} must hold a non-empty list of piece names` });
         } else {
-          splits[key] = pieces as string[];
+          splits.set(key, pieces as string[]);
         }
       }
     }

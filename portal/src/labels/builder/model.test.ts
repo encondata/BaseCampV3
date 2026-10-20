@@ -241,3 +241,44 @@ describe('what an element prints (mirrors model.py element_value / element_hidde
     expect(elementHidden(el(d, 'rule'), {})).toBe(false);
   });
 });
+
+describe('field keys that name Object.prototype members', () => {
+  it('define, rename and find a Split like any other key', () => {
+    const ctor = addSplit(newDesign({ w: 4, h: 2 }), 'constructor', 'a.b');
+    expect(ctor.splits?.constructor).toEqual({ pieces: ['Piece 1', 'Piece 2'] });
+    expect(() => renamePiece(newDesign({ w: 4, h: 2 }), 'constructor', 0, 'X')).toThrow(RangeError);
+    const proto = addSplit(newDesign({ w: 4, h: 2 }), '__proto__', '1.2.3');
+    expect(Object.hasOwn(proto.splits!, '__proto__')).toBe(true);
+    expect(Object.getPrototypeOf(proto.splits)).toBe(Object.prototype);
+    expect(serializeDesign(proto).splits).toEqual(JSON.parse('{"__proto__":{"pieces":["Piece 1","Piece 2","Piece 3"]}}'));
+    expect(renamePiece(proto, '__proto__', 1, 'Row').splits!.__proto__).toEqual({ pieces: ['Piece 1', 'Row', 'Piece 3'] });
+  });
+
+  it('read a missing value as blank', () => {
+    const field = (key: string, extra: Partial<FieldElement> = {}): FieldElement => ({
+      id: 'f', type: 'field', field: key, display: 'text', x: 0, y: 0, w: 1, h: 0.1, rotation: 0,
+      sizePt: 8, baselineIn: 0.1, ...extra,
+    });
+    expect(elementValue(field('constructor'), {})).toBe('');
+    expect(elementValue(field('__proto__'), {})).toBe('');
+    expect(elementValue(field('toString', { piece: 0 }), {})).toBe('');
+    expect(elementHidden(field('toString', { hideWhenEmpty: true }), {})).toBe(true);
+    const qr: ElementV2 = { id: 'q', type: 'qr', field: '__proto__', x: 0, y: 0, w: 0.5, h: 0.5, rotation: 0 };
+    expect(elementValue(qr, {})).toBe('');
+    expect(elementValue(field('constructor'), JSON.parse('{"constructor":"A1"}'))).toBe('A1');
+  });
+
+  it('validate pieces against own Splits only', () => {
+    const piece = (key: string, n: number) => ({
+      id: 'f1', type: 'field', field: key, piece: n, x: 0, y: 0, w: 1, h: 0.1, rotation: 0,
+      display: 'text', sizePt: 8, baselineIn: 0.1,
+    });
+    const msgs = (raw: unknown) => validate(parseDesign(raw)).map((p) => p.message);
+    expect(msgs({ schema: 2, size: { w: 4, h: 2 }, elements: [piece('constructor', 0)] }))
+      .toEqual(["piece 0 needs a Split defined for 'constructor'"]);
+    const own = JSON.parse('{"schema":2,"size":{"w":4,"h":2},"splits":{"__proto__":{"pieces":["A"]}},"elements":[]}');
+    expect(msgs({ ...own, elements: [piece('__proto__', 0)] })).toEqual([]);
+    expect(msgs({ ...own, elements: [piece('__proto__', 1)] }))
+      .toEqual(["piece 1 is beyond '__proto__''s Split (1 pieces)"]);
+  });
+});

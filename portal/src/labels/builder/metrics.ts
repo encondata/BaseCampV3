@@ -63,6 +63,18 @@ export function lineHeightIn(m: FontMetrics, sizePt: number): number {
   return (m.ascent + m.descent) * inchesPerUnit(m, sizePt);
 }
 
+/** A text element's box across its text: one line of the font tall, the
+ *  baseline at the ascent. New and retyped text gets this box; a hand-made
+ *  one (the Vegas fixture stops its boxes at the baseline) stays valid. */
+export function textBoxFor(m: FontMetrics, sizePt: number): { h: number; baselineIn: number } {
+  return { h: lineHeightIn(m, sizePt), baselineIn: baselineIn(m, sizePt) };
+}
+
+/** The font size whose line (`textBoxFor`) is `heightIn` tall. */
+export function sizePtForHeight(m: FontMetrics, heightIn: number): number {
+  return (heightIn * 72 * m.unitsPerEm) / (m.ascent + m.descent);
+}
+
 /** The width `text` prints at `sizePt`. A character outside the metrics
  *  (they cover printable ASCII) counts as the widest glyph, so the canvas
  *  errs toward showing an overflow. `widthScale` widens every glyph
