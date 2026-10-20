@@ -109,8 +109,8 @@ def test_groups_for_a_label_type():
         assert keys(t) == ["asset", "model", "move_row", "move", "sites"]
     for t in ("container", "container_info"):
         assert keys(t) == ["move", "sites", "container"]
-    # a type outside the five is an asset label, as labels.generate has it
-    assert keys("shelf") == keys("top")
+    # a type outside the five (a custom type, "id_badge") can place any field
+    assert keys("id_badge") == [g["key"] for g in FIELD_GROUPS]
     assert keys(None) == [g["key"] for g in FIELD_GROUPS]
     from serversherpa.labels.generate import ENTITY_FOR_TYPE
     assert set(fields.CONTAINER_LABEL_TYPES) == {
@@ -135,6 +135,19 @@ def test_mock_values_cover_every_key():
                       "label_tag"}
     for key in shared:
         assert MOCK_VALUES[key] == PLACEHOLDER_MOCK_VALUES[key], key
+
+
+def test_a_custom_type_mocks_every_key():
+    """mock_field_values for a type the catalog doesn't know: every catalog
+    key, and its From-To columns as their headers."""
+    every = {f["key"] for g in FIELD_GROUPS for f in g["fields"]}
+    values = fields.mock_field_values("id_badge", {"ft:Badge No", "asset_id"})
+    assert set(values) == every | {"ft:Badge No"}
+    assert values["container_name"] == MOCK_VALUES["container_name"]
+    assert values["asset_id"] == MOCK_VALUES["asset_id"]
+    assert values["ft:Badge No"] == "Badge No"
+    # a known type keeps its own keys
+    assert "container_name" not in fields.mock_field_values("top")
 
 
 def test_the_kiosk_test_label_reads_the_placeholder_mocks_from_fields():
@@ -267,6 +280,10 @@ async def test_fields_route_filters_groups_by_label_type(client, db, seeded_user
 
     r = await client.get("/labels/fields", headers=hdrs)
     assert [g["key"] for g in r.json()["groups"]] == [g["key"] for g in FIELD_GROUPS]
+    # a custom type: every group, and the From-To columns
+    r = await client.get("/labels/fields", headers=hdrs, params={"label_type": "id_badge"})
+    assert [g["key"] for g in r.json()["groups"]] == [g["key"] for g in FIELD_GROUPS]
+    assert r.json()["ft_headers"] == ["Asset Name", "Data 2", "Data 10", "Notes"]
 
 
 async def test_ft_headers_leave_out_archived_moves(client, db, seeded_user):

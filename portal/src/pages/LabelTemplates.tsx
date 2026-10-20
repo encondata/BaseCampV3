@@ -19,14 +19,18 @@
  *  read-only — no menus, no New template):
  *   - a parent: Edit design, Versions…, Clone to new template…, Sites…,
  *     Add DPI… (a DPI missing), Replace… (older active rows of its family
- *     and type), Activate/Deactivate, Delete… (typed name);
+ *     and type), Rename… (inactive only: on an active one it shows off,
+ *     with the reason), Activate/Deactivate, Delete… (typed name);
  *   - a child: Edit this DPI only, Update from parent… (customized only),
  *     Versions…, Test print… (the builder, which prints it on arrival:
  *     navigation state `testPrint`), Delete this DPI…
  *     — never on or off: a child follows its parent;
  *   - an older single row: Edit as raw ZPL (a code row, or a schema 1
- *     design converted first), Activate/Deactivate, Delete… (typed name).
- *  Activate goes through POST …/activate; a refusal because another
+ *     design converted first), Rename… (inactive only), Activate/Deactivate,
+ *     Delete… (typed name).
+ *  Deactivate asks first in a dialog naming what goes off, with a warning
+ *  when it leaves no active Generic Rack and RU at a DPI (Delete… warns
+ *  the same way). Activate goes through POST …/activate; a refusal because another
  *  active template prints the same family, type and DPI opens Replace…
  *  for a parent. Versions' Open shows that version in the builder (the
  *  detail rides the navigation state as `openVersion`); Restore there needs
@@ -38,7 +42,7 @@ import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import {
-  ApiError, activateLabelTemplate, convertLabelTemplate, deleteLabelTemplate, listLabelTemplateTree,
+  ApiError, activateLabelTemplate, convertLabelTemplate, listLabelTemplateTree,
   listLabelVocab, listSites, templateVersionLabel,
   type LabelTemplate, type LabelTemplateChild, type LabelTemplateTreeNode, type LabelVocab, type SiteItem,
 } from '../lib/api';
@@ -62,7 +66,9 @@ import { CloneModal } from '../components/labels/builder/BuilderDialogs';
 import VersionsModal from '../components/labels/builder/VersionsModal';
 import DeleteTemplateModal from '../components/labels/DeleteTemplateModal';
 import ReplaceTemplateModal from '../components/labels/ReplaceTemplateModal';
-import { AddDpiModal, SitesModal, UpdateFromParentModal } from '../components/labels/TemplateRowDialogs';
+import {
+  AddDpiModal, DeactivateTemplateModal, RenameTemplateModal, SitesModal, UpdateFromParentModal,
+} from '../components/labels/TemplateRowDialogs';
 import { RowActionsMenu, type RowAction } from '../components/hardware/RowActionsMenu';
 import '../styles/directory.css';
 import '../styles/labels.css';
@@ -133,7 +139,9 @@ type Dialog =
   | { kind: 'add-dpi'; node: LabelTemplateTreeNode }
   | { kind: 'replace'; node: LabelTemplateTreeNode }
   | { kind: 'update'; child: LabelTemplateChild; parent: LabelTemplateTreeNode }
-  | { kind: 'delete'; template: LabelTemplate; dpiChildren: LabelTemplateChild[] };
+  | { kind: 'delete'; template: LabelTemplate; dpiChildren: LabelTemplateChild[] }
+  | { kind: 'deactivate'; template: LabelTemplate }
+  | { kind: 'rename'; node: LabelTemplateTreeNode };
 
 export default function LabelTemplates() {
   const { can, maxRank, preferences } = useAuth();
@@ -333,18 +341,6 @@ export default function LabelTemplates() {
 
   // ── actions ────────────────────────────────────────────────────────
 
-  const deactivate = async (t: LabelTemplate) => {
-    const what = isTreeParent(t) ? `"${t.name}" and its DPI versions` : `"${t.name}"`;
-    if (!window.confirm(`Deactivate ${what}?`)) return;
-    setError('');
-    try {
-      await deleteLabelTemplate(t.id);
-      await load();
-    } catch (err) {
-      setError(msgFor(err));
-    }
-  };
-
   const activate = async (node: LabelTemplateTreeNode) => {
     setError('');
     try {
@@ -378,10 +374,17 @@ export default function LabelTemplates() {
   const versionsAction = (t: LabelTemplate): RowAction[] => (designer ? [{
     key: 'versions', label: 'Versions…', onSelect: () => setDialog({ kind: 'versions', template: t }),
   }] : []);
+  // Rename… only while off (the API refuses an active one: template_active);
+  // on an active template it shows, off, with the reason
+  const renameAction = (node: LabelTemplateTreeNode): RowAction[] => (canChange ? [{
+    key: 'rename', label: 'Rename…', disabled: node.is_active,
+    hint: node.is_active ? 'Deactivate it first to rename it' : undefined,
+    onSelect: () => setDialog({ kind: 'rename', node }),
+  }] : []);
   const onOff = (node: LabelTemplateTreeNode): RowAction[] => {
     if (!canChange) return [];
     return node.is_active
-      ? [{ key: 'deactivate', label: 'Deactivate', onSelect: () => void deactivate(node) }]
+      ? [{ key: 'deactivate', label: 'Deactivate', onSelect: () => setDialog({ kind: 'deactivate', template: node }) }]
       : [{ key: 'activate', label: 'Activate', onSelect: () => void activate(node) }];
   };
 
@@ -400,6 +403,7 @@ export default function LabelTemplates() {
     ...(canChange && replaceCandidates(node, nodes ?? []).length ? [{
       key: 'replace', label: 'Replace…', onSelect: () => setDialog({ kind: 'replace', node }),
     }] : []),
+    ...renameAction(node),
     ...onOff(node),
     ...(canDelete ? [{
       key: 'delete', label: 'Delete…', destructive: true,
@@ -431,6 +435,7 @@ export default function LabelTemplates() {
     ...(canChange && node.kind === 'design' ? [{
       key: 'convert', label: rawLabel(node), onSelect: () => convert(node),
     }] : []),
+    ...renameAction(node),
     ...onOff(node),
     ...(canDelete ? [{
       key: 'delete', label: 'Delete…', destructive: true,
@@ -653,6 +658,13 @@ export default function LabelTemplates() {
         <UpdateFromParentModal child={dialog.child} parentVersion={templateVersionLabel(dialog.parent)}
           keptName={keptChildName(dialog.parent.name, dialog.child.dpi_key, allNames)}
           onUpdated={done} onClose={() => setDialog(null)} />
+      )}
+      {dialog?.kind === 'rename' && (
+        <RenameTemplateModal template={dialog.node} dpiChildren={dialog.node.children} onRenamed={done}
+          onClose={() => setDialog(null)} />
+      )}
+      {dialog?.kind === 'deactivate' && (
+        <DeactivateTemplateModal template={dialog.template} onDeactivated={done} onClose={() => setDialog(null)} />
       )}
       {dialog?.kind === 'delete' && (
         <DeleteTemplateModal template={dialog.template} dpiChildren={dialog.dpiChildren}

@@ -5,6 +5,11 @@
  * design already places), with how often each field and Split piece is on
  * the label. Unused fields come first in their group, placed ones after
  * them; both keep the catalog's order.
+ *
+ * A custom label type (New template › Custom…, an ID badge) is one the
+ * catalog doesn't know: the API sends it every group (labels/fields.py
+ * `groups_for`), so it can place any field, and it has From-To columns
+ * like any label that isn't a container's.
  */
 
 import type { LabelFields } from '../../../lib/api';

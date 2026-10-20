@@ -220,21 +220,43 @@ export function builtInFontText(names: string[]): string {
 
 export interface CheckOutcome { state: 'ok' | 'fail'; detail: string }
 
-/** Passes when at least one template of the kind is at the printer's DPI. */
-export function checkDpi(templates: KioskLabelTemplate[], kind: LabelKind, dpi: number): CheckOutcome {
-  const ofKind = templatesOfKind(templates, kind);
+/** "a", "a and b", "a, b and c" (`word` "or": "a, b or c"). */
+function joinWords(items: readonly string[], word: 'and' | 'or'): string {
+  if (items.length <= 1) return items.join('');
+  return `${items.slice(0, -1).join(', ')} ${word} ${items[items.length - 1]}`;
+}
+
+/** What the DPI row says when the move has no template of the kind at the
+ *  printer's DPI: who fixes it and where, from `available` — the DPIs the
+ *  move does have one at (any order; listed naturally). Never implies the
+ *  station is online: a fix in the portal reaches it on the next pick. */
+export function noTemplateText(kind: LabelKind, printerDpi: number, available: readonly string[]): string {
   const kindLabel = KIND_LABEL[kind];
-  if (ofKind.length === 0) {
-    return { state: 'fail', detail: `No ${kindLabel} templates were downloaded for this move.` };
+  const dpis = [...new Set(available)].filter((d) => d !== String(printerDpi)).sort(naturalCompare);
+  if (dpis.length === 0) {
+    // Generic Rack and RU is the Top fallback: only a Top station hears of it
+    const fallback = kind === 'top' ? ` (${GENERIC_TEMPLATE_NAME} covers every move)` : '';
+    return `No active ${kindLabel} template for this move. Someone with label access needs to activate one on `
+      + `Labels › Templates in the portal${fallback}, then pick the move again.`;
   }
-  if (ofKind.some((t) => t.dpi_key === String(dpi))) {
+  return `This move's ${kindLabel} template prints at ${joinWords(dpis, 'and')} DPI only; this printer is `
+    + `${printerDpi} DPI. Activate a ${printerDpi} DPI version on Labels › Templates, or use a `
+    + `${joinWords(dpis, 'or')} DPI printer.`;
+}
+
+/** The DPIs the downloaded templates of the kind print at. */
+export function downloadedDpis(templates: KioskLabelTemplate[], kind: LabelKind): string[] {
+  return [...new Set(templatesOfKind(templates, kind).map((t) => t.dpi_key))].sort(naturalCompare);
+}
+
+/** Passes when at least one template of the kind is at the printer's DPI
+ *  (an edge without the label plan: the downloaded templates decide). */
+export function checkDpi(templates: KioskLabelTemplate[], kind: LabelKind, dpi: number): CheckOutcome {
+  const dpis = downloadedDpis(templates, kind);
+  if (dpis.includes(String(dpi))) {
     return { state: 'ok', detail: `${dpi} DPI` };
   }
-  const dpis = [...new Set(ofKind.map((t) => t.dpi_key))].sort(naturalCompare);
-  return {
-    state: 'fail',
-    detail: `This printer prints at ${dpi} DPI, but the move's ${kindLabel} templates are ${dpis.join(' or ')} DPI.`,
-  };
+  return { state: 'fail', detail: noTemplateText(kind, dpi, dpis) };
 }
 
 /** What a `~HS` reply says to fix before printing: paper, head, pause. */

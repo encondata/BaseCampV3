@@ -102,7 +102,7 @@ async def test_designer_adds_a_custom_size(client, db, seeded_user):
     assert {r["key"]: r["is_active"] for r in rows}["2_5x1"] is False
 
     resp = await client.post("/labels/vocab", headers=sa, json={
-        "kind": "type", "key": "side", "label": "Side Label"})
+        "kind": "dpi", "key": "1200", "label": "1200 dpi", "meta": {"dots": 1200}})
     assert resp.status_code == 403
     admin = await _make(db, client, "admin", "adm-size@test.example.com")
     resp = await client.post("/labels/vocab", headers=admin, json={
@@ -110,3 +110,65 @@ async def test_designer_adds_a_custom_size(client, db, seeded_user):
         "meta": {"width_in": 5, "height_in": 5, "has_tab": False}})
     assert resp.status_code == 403
     assert resp.json()["detail"] == {"code": "forbidden", "min_rank": 80}
+
+
+async def test_designer_adds_a_custom_type(client, db, seeded_user):
+    """New template › Custom… for the label type, as for the size: a rank-80
+    designer with labels:add posts a type row, listed or (is_active false)
+    kept off the list for the one template; dpi and language rows stay
+    devtools-only, and below rank 80 nothing."""
+    sa = await _make(db, client, "super_admin", "sa-type@test.example.com")
+    resp = await client.post("/labels/vocab", headers=sa, json={
+        "kind": "type", "key": "id_badge", "label": "ID badge"})
+    assert resp.status_code == 201, resp.text
+    assert (resp.json()["is_active"], resp.json()["label"]) == (True, "ID badge")
+    resp = await client.post("/labels/vocab", headers=sa, json={
+        "kind": "type", "key": "visitor_badge", "label": "Visitor badge", "is_active": False})
+    assert resp.status_code == 201, resp.text
+    rows = (await client.get("/labels/vocab?kind=type", headers=sa)).json()
+    assert {r["key"]: r["is_active"] for r in rows}["visitor_badge"] is False
+    resp = await client.post("/labels/vocab", headers=sa, json={
+        "kind": "type", "key": "top", "label": "Top again"})
+    assert resp.status_code == 409
+    resp = await client.post("/labels/vocab", headers=sa, json={
+        "kind": "language", "key": "epl", "label": "EPL", "meta": {"family": "zebra"}})
+    assert resp.status_code == 403
+    admin = await _make(db, client, "admin", "adm-type@test.example.com")
+    resp = await client.post("/labels/vocab", headers=admin, json={
+        "kind": "type", "key": "shelf", "label": "Shelf"})
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == {"code": "forbidden", "min_rank": 80}
+
+
+async def test_a_designer_can_change_a_pending_custom_type(client, db, seeded_user):
+    """A retry with a changed custom type rewrites the dialog's own pending
+    type row (inactive, on no template); a listed or used type stays
+    devtools-only, which may change any."""
+    sa = await _make(db, client, "super_admin", "sa-type2@test.example.com")
+    resp = await client.post("/labels/vocab", headers=sa, json={
+        "kind": "type", "key": "id_badge", "label": "ID badge", "is_active": False})
+    assert resp.status_code == 201, resp.text
+    resp = await client.patch("/labels/vocab/type/id_badge", headers=sa,
+                              json={"label": "Visitor badge", "is_active": False})
+    assert resp.status_code == 200, resp.text
+    assert (resp.json()["label"], resp.json()["is_active"]) == ("Visitor badge", False)
+    # a listed type is not pending
+    resp = await client.patch("/labels/vocab/type/top", headers=sa, json={"label": "x"})
+    assert resp.status_code == 403, resp.text
+    # a template on it: no longer pending
+    db.add(LabelTemplate(name="Badge", label_type="id_badge", size_key="4x2", dpi_key="203",
+                         language_key="zpl", kind="code", code="^XA^XZ"))
+    await db.commit()
+    resp = await client.patch("/labels/vocab/type/id_badge", headers=sa, json={"label": "y"})
+    assert resp.status_code == 403, resp.text
+    # below rank 80, nothing
+    resp = await client.post("/labels/vocab", headers=sa, json={
+        "kind": "type", "key": "shelf", "label": "Shelf", "is_active": False})
+    assert resp.status_code == 201, resp.text
+    admin = await _make(db, client, "admin", "adm-type2@test.example.com")
+    resp = await client.patch("/labels/vocab/type/shelf", headers=admin, json={"label": "x"})
+    assert resp.status_code == 403, resp.text
+    # devtools changes any type
+    dev = await _make(db, client, "developer", "dev-type@test.example.com")
+    resp = await client.patch("/labels/vocab/type/id_badge", headers=dev, json={"label": "Badge"})
+    assert resp.status_code == 200, resp.text

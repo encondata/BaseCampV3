@@ -27,11 +27,9 @@
 .pop-item.danger { color: var(--c-red); margin-top: 6px; }
 .pop-item.danger:hover { background: var(--c-red-bg); }
 
-/* Momentarily unavailable item (the row is in flight). Color, cursor and
- * opacity only — no typography, so the item keeps its exact metrics and
- * the list-typography guardrail stays happy. */
-.pop-item:disabled { color: var(--text-mute); opacity: 0.55; cursor: default; }
-.pop-item:disabled:hover { background: transparent; }
+/* Momentarily unavailable item (the row is in flight): greyed by
+ * column-menu.css's .pop-item:disabled (color, cursor and opacity only, so
+ * the item keeps its metrics); a destructive one keeps its red. */
 .pop-item.danger:disabled { color: var(--c-red); }
 .pop-item.danger:disabled:hover { background: transparent; }
 

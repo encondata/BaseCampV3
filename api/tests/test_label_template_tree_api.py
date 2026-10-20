@@ -211,12 +211,14 @@ async def test_parent_save_regenerates_uncustomized_children_and_flags_customize
 
 async def test_parent_metadata_flows_to_children(client, db, seeded_user):
     hdrs = await _super(db, client)
-    parent = await _create(client, hdrs)
+    parent = await _create(client, hdrs, is_active=False)  # Rename… needs it off
     r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs,
                            json={"name": "Vegas Dest", "language_key": "zpl",
                                  "description": "Renamed"})
     assert r.status_code == 200, r.text
-    assert r.json()["version"] == 1  # metadata is not a design version
+    assert r.json()["version"] == 2  # the rename's version ("Renamed from …")
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"description": "Again"})
+    assert r.json()["version"] == 2  # other metadata is not a version
     r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"size_key": "2x1"})
     assert r.status_code == 200, r.text
     node = await _node(client, hdrs, "Vegas Dest")
@@ -516,7 +518,8 @@ async def test_delete_parent_requires_typed_name_and_cascades(client, db, seeded
     r = await client.get(f"{URL}/{parent['id']}/delete-summary", headers=hdrs)
     assert r.status_code == 200, r.text
     summary = {"children": ["Vegas Destination · 203", "Vegas Destination · 300",
-                            "Vegas Destination · 600"], "generated_labels": 1}
+                            "Vegas Destination · 600"], "generated_labels": 1,
+               "fallback_dpis_lost": []}
     assert r.json() == summary
 
     for body in ({"typed_name": "vegas destination"}, {"typed_name": ""}, None):
@@ -882,6 +885,7 @@ async def test_mutations_need_rank_80(client, db, seeded_user):
         ("PATCH", f"{URL}/{pid}/versions/1/0", {"note": "x"}),
         ("POST", f"{URL}/{pid}/versions/1/0/restore", None),
         ("GET", f"{URL}/{pid}/delete-summary", None),
+        ("GET", f"{URL}/{pid}/deactivate-summary", None),
         ("POST", f"{URL}/{legacy.id}/convert-to-code", None),
     ]
     for method, url, body in calls:
@@ -978,6 +982,28 @@ async def test_a_designer_can_change_a_pending_custom_size(client, db, seeded_us
     admin = await _make(db, client, "admin", "adm@test.example.com")
     r = await client.patch("/labels/vocab/size/5x5", headers=admin, json={"label": "x"})
     assert r.status_code == 403, r.text
+
+
+async def test_a_parent_can_use_an_unlisted_custom_type(client, db, seeded_user):
+    """A custom type not saved to the list is an inactive type row: the
+    template it was made for may use it while nothing else does yet, and a
+    second template may not pick it. A listed custom type is any template's."""
+    hdrs = await _super(db, client)
+    r = await client.post("/labels/vocab", headers=hdrs, json={
+        "kind": "type", "key": "id_badge", "label": "ID badge", "is_active": False})
+    assert r.status_code == 201, r.text
+    parent = await _create(client, hdrs, name="Badge", label_type="id_badge", is_active=False)
+    assert parent["label_type"] == "id_badge"
+    node = await _node(client, hdrs, "Badge")
+    assert {c["label_type"] for c in node["children"]} == {"id_badge"}
+    r = await client.post(URL, headers=hdrs, json=_body("Badge 2", label_type="id_badge"))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {"code": "unknown_vocab", "field": "label_type", "key": "id_badge"}
+    r = await client.post("/labels/vocab", headers=hdrs, json={
+        "kind": "type", "key": "visitor_badge", "label": "Visitor badge"})
+    assert r.status_code == 201, r.text
+    for name in ("Visitor A", "Visitor B"):
+        await _create(client, hdrs, name=name, label_type="visitor_badge", is_active=False)
 
 
 async def test_a_parent_can_use_an_unlisted_custom_size(client, db, seeded_user):

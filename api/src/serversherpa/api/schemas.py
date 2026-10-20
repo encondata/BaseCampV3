@@ -4008,6 +4008,15 @@ class LabelTemplateDeleteIn(BaseModel):
 class LabelTemplateDeleteSummaryOut(BaseModel):
     children: list[str]
     generated_labels: int
+    # the DPIs the delete leaves with no active Generic Rack and RU (Top)
+    fallback_dpis_lost: list[str]
+
+
+class LabelTemplateDeactivateSummaryOut(BaseModel):
+    """What POST …/deactivate would turn off, and the DPIs it would leave
+    with no active Generic Rack and RU (Top)."""
+    rows: list[str]
+    fallback_dpis_lost: list[str]
 
 
 class LabelTemplateCloneIn(BaseModel):

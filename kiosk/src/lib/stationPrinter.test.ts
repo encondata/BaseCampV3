@@ -215,8 +215,19 @@ describe('pure helpers', () => {
     expect(neededFonts(templatesOfKind(ts, 'front'))).toEqual(['B.TTF']);
     expect(checkDpi(ts, 'top', 203).state).toBe('ok');
     expect(checkDpi(ts, 'top', 300)).toMatchObject({ state: 'fail' });
-    expect(checkDpi(ts, 'top', 300).detail).toContain('203');
-    expect(checkDpi([], 'front', 300).detail).toBe('No Front templates were downloaded for this move.');
+    expect(checkDpi(ts, 'top', 300).detail).toBe("This move's Top template prints at 203 DPI only; this printer "
+      + 'is 300 DPI. Activate a 300 DPI version on Labels › Templates, or use a 203 DPI printer.');
+    expect(checkDpi([], 'top', 300).detail).toBe('No active Top template for this move. Someone with label '
+      + 'access needs to activate one on Labels › Templates in the portal (Generic Rack and RU covers every move), '
+      + 'then pick the move again.');
+    // Generic Rack and RU is a Top family: a Front station isn't told it helps
+    expect(checkDpi([], 'front', 300).detail).toBe('No active Front template for this move. Someone with label '
+      + 'access needs to activate one on Labels › Templates in the portal, then pick the move again.');
+    const several = [...ts, template({ id: 'd', label_type: 'top', dpi_key: '600' }),
+      template({ id: 'e', label_type: 'top', dpi_key: '1200' })];
+    expect(checkDpi(several, 'top', 300).detail).toBe("This move's Top template prints at 203, 600 and 1200 DPI "
+      + 'only; this printer is 300 DPI. Activate a 300 DPI version on Labels › Templates, or use a 203, 600 or 1200 '
+      + 'DPI printer.');
   });
 
   it('statusProblems names paper, head and pause', () => {

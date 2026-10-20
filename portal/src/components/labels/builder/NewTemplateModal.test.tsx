@@ -7,6 +7,11 @@
  * dimensions is used instead of a new row. A retry after a failed create
  * rewrites the dialog's own pending row (off the list, unused) rather than
  * leaving it behind.
+ *
+ * The label type has Custom… too: a type name whose key is its slug, a type
+ * row posted off the list unless "Save this type to the list" is on, the
+ * same rewrite of its own pending row on a retry, and a name that matches
+ * a listed type offers that type instead.
  */
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -20,7 +25,7 @@ vi.mock('../../../lib/api', async (importActual) => ({
 }));
 
 const { ApiError } = await import('../../../lib/api');
-const { default: NewTemplateModal, customSizeKey, toInches } = await import('./NewTemplateModal');
+const { default: NewTemplateModal, customSizeKey, customTypeKey, toInches } = await import('./NewTemplateModal');
 
 const row = (kind: string, key: string, label: string, meta: Record<string, unknown> = {}, sort = 0, active = true): LabelVocab => ({
   kind, key, label, description: '', meta, sort_order: sort, is_active: active, usage_count: null,
@@ -29,6 +34,7 @@ const row = (kind: string, key: string, label: string, meta: Record<string, unkn
 const VOCAB: LabelVocab[] = [
   row('type', 'top', 'Top Label', {}, 1),
   row('type', 'front', 'Front Label', {}, 2),
+  row('type', 'shelf', 'Shelf (off the list)', {}, 3, false),
   row('size', '4x2', '4" x 2"', { width_in: 4, height_in: 2, has_tab: false }, 1),
   row('size', '2x1', '2" x 1"', { width_in: 2, height_in: 1, has_tab: false }, 2),
   row('size', '3x1', 'Old 3" x 1"', { width_in: 3.5, height_in: 1, has_tab: false }, 3, false),
@@ -277,5 +283,136 @@ describe('a retry after a failed create', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
     expect(api.createLabelVocab.mock.calls.map((c) => c[0].key)).toEqual(['3_25x1_5', '3_25x1_5-2']);
+  });
+});
+
+/** Picks Custom… in the label type box and types the type's name. */
+function customType(dialog: HTMLElement, name: string) {
+  fireEvent.focus(within(dialog).getByLabelText('Label type'));
+  const menu = document.querySelector('.combo-menu') as HTMLElement;
+  fireEvent.mouseDown(within(menu).getByText('Custom…'));
+  fireEvent.change(within(dialog).getByLabelText('Type name'), { target: { value: name } });
+}
+
+const NOTE = "Custom types print from the portal's Print Labels once they're on the list; kiosk Label Stations "
+  + 'print Top and Front labels.';
+const OFF_LIST = 'Off the list, this type is for test prints only; save it to the list to generate labels with it.';
+
+describe('a custom label type', () => {
+  it('saves a custom type to the list by default and creates the template with it', async () => {
+    const { dialog, onCreated } = setup();
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Staff badge' } });
+    expect(within(dialog).queryByText(NOTE)).toBeNull();
+    customType(dialog, '  ID badge ');
+    expect(within(dialog).getByText(NOTE)).toBeTruthy();
+    expect((within(dialog).getByLabelText('Type name') as HTMLInputElement).placeholder).toBe('Shelf tag');
+    expect((within(dialog).getByLabelText('Save this type to the list') as HTMLInputElement).checked).toBe(true);
+    expect(within(dialog).queryByText(OFF_LIST)).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(api.createLabelVocab).toHaveBeenCalledWith({ kind: 'type', key: 'id_badge', label: 'ID badge', is_active: true });
+    expect(api.createLabelTemplate).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'Staff badge', label_type: 'id_badge', size_key: '4x2' }));
+  });
+
+  it('off the list it says the type is for test prints only, and posts it off the list', async () => {
+    const { dialog } = setup();
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Staff badge' } });
+    customType(dialog, 'ID badge');
+    fireEvent.click(within(dialog).getByLabelText('Save this type to the list'));
+    expect(within(dialog).getByText(OFF_LIST)).toBeTruthy();
+    expect(within(dialog).getByText(NOTE)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    await waitFor(() => expect(api.createLabelTemplate).toHaveBeenCalled());
+    expect(api.createLabelVocab).toHaveBeenCalledWith({ kind: 'type', key: 'id_badge', label: 'ID badge', is_active: false });
+    // back on: the line goes
+    fireEvent.click(within(dialog).getByLabelText('Save this type to the list'));
+    expect(within(dialog).queryByText(OFF_LIST)).toBeNull();
+  });
+
+  it('needs a type name', () => {
+    const { dialog } = setup();
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Staff badge' } });
+    customType(dialog, '  ');
+    expect((within(dialog).getByRole('button', { name: 'Create template' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('a name that is a listed type says so and offers it instead', () => {
+    const { dialog } = setup();
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Front tag' } });
+    customType(dialog, 'Front');
+    expect(within(dialog).getByText('That type already exists.')).toBeTruthy();
+    const create = within(dialog).getByRole('button', { name: 'Create template' }) as HTMLButtonElement;
+    expect(create.disabled).toBe(true);
+    // its label matches too, whatever the case
+    fireEvent.change(within(dialog).getByLabelText('Type name'), { target: { value: 'front label' } });
+    expect(within(dialog).getByText('That type already exists.')).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Use Front Label' }));
+    expect(within(dialog).queryByLabelText('Type name')).toBeNull();
+    expect((within(dialog).getByLabelText('Label type') as HTMLInputElement).value).toBe('Front Label');
+    expect(create.disabled).toBe(false);
+  });
+
+  it('a key an unlisted type holds moves on to the next free one', async () => {
+    const { dialog } = setup();
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Shelf tag' } });
+    customType(dialog, 'Shelf');
+    expect(within(dialog).queryByText('That type already exists.')).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    await waitFor(() => expect(api.createLabelTemplate).toHaveBeenCalled());
+    expect(api.createLabelVocab.mock.calls[0][0]).toMatchObject({ kind: 'type', key: 'shelf_2', label: 'Shelf' });
+  });
+
+  it('a retry with a changed type rewrites its own pending row', async () => {
+    api.createLabelTemplate.mockRejectedValueOnce(new ApiError(409, 'label_template_exists'));
+    const { dialog, onCreated } = setup();
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Staff badge' } });
+    customType(dialog, 'ID badge');
+    fireEvent.click(within(dialog).getByLabelText('Save this type to the list'));   // off the list
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    await within(dialog).findByRole('alert');
+    fireEvent.change(within(dialog).getByLabelText('Type name'), { target: { value: 'Visitor badge' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(api.createLabelVocab).toHaveBeenCalledTimes(1);
+    expect(api.updateLabelVocab).toHaveBeenCalledWith('type', 'id_badge', { label: 'Visitor badge', is_active: false });
+    expect(api.createLabelTemplate.mock.calls[1][0].label_type).toBe('id_badge');
+  });
+
+  it('a retry with the same type reuses its row; the switch puts it on the list', async () => {
+    api.createLabelTemplate.mockRejectedValueOnce(new ApiError(409, 'label_template_exists'))
+      .mockRejectedValueOnce(new ApiError(409, 'label_template_exists'));
+    const { dialog, onCreated } = setup();
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Staff badge' } });
+    customType(dialog, 'ID badge');
+    fireEvent.click(within(dialog).getByLabelText('Save this type to the list'));   // off the list
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    await within(dialog).findByRole('alert');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    await waitFor(() => expect(api.createLabelTemplate).toHaveBeenCalledTimes(2));
+    expect(api.createLabelVocab).toHaveBeenCalledTimes(1);
+    expect(api.updateLabelVocab).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByLabelText('Save this type to the list'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(api.updateLabelVocab).toHaveBeenCalledWith('type', 'id_badge', { label: 'ID badge', is_active: true });
+  });
+
+  it('a type row someone else just made says so', async () => {
+    api.createLabelVocab.mockRejectedValueOnce(new ApiError(409, 'label_vocab_exists'));
+    const { dialog } = setup();
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Staff badge' } });
+    customType(dialog, 'ID badge');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    expect((await within(dialog).findByRole('alert')).textContent)
+      .toBe('Someone added a type under the same name just now. Press Create template again.');
+  });
+
+  it('type keys are lowercase slugs, moved on when taken', () => {
+    expect(customTypeKey('ID badge', new Set())).toBe('id_badge');
+    expect(customTypeKey('  Café   Badge #2 ', new Set())).toBe('cafe_badge_2');
+    expect(customTypeKey('ID badge', new Set(['id_badge', 'id_badge_2']))).toBe('id_badge_3');
+    expect(customTypeKey('!!!', new Set())).toBe('');
+    expect(customTypeKey('x'.repeat(60), new Set()).length).toBeLessThanOrEqual(36);
   });
 });

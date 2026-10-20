@@ -146,3 +146,11 @@
 .pop-item.drop-after  { box-shadow: inset 0 -2px 0 var(--accent); }
 .list-head .col-head.drop-before { box-shadow: inset 2px 0 0 var(--accent); }
 .list-head .col-head.drop-after  { box-shadow: inset -2px 0 0 var(--accent); }
+
+/* ── RowActionsMenu items (components/hardware/RowActionsMenu.tsx) ─────
+ * A disabled item is greyed and inert; one with a `hint` says why under
+ * its label. */
+.pop-item:disabled { color: var(--text-mute); opacity: 0.55; cursor: default; }
+.pop-item:disabled:hover { background: transparent; }
+.pop-item.has-hint { flex-direction: column; align-items: flex-start; gap: 2px; }
+.pop-item-hint { font-size: 11px; color: var(--text-mute); }

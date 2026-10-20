@@ -634,6 +634,9 @@ textarea.lbp-text { resize: vertical; }
 .lbb-new-custom { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; }
 .lbb-new-keep { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dark); }
 .lbb-new-custom .lbb-new-inches { margin: 0; }
+/* a custom type name that is a listed type: say so, offer it */
+.lbb-new-taken { display: inline-flex; align-items: center; gap: 8px; }
+.pf-form .lbb-new-type-note { margin: 0; }
 .lbb-ver { display: inline-flex; align-items: center; gap: 6px; }
 .lbb-ver-actions { display: inline-flex; justify-content: flex-end; gap: 6px; }
 .lbb-note {

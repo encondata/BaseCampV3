@@ -78,7 +78,8 @@ export const NEEDS_UPDATE_TEXT = 'This laptop needs an update to print this temp
 
 /** What an entry says for each error the edge stores on a label. */
 const LABEL_REASONS: Record<string, string> = {
-  no_template_at_dpi: "No label for this asset: no template at this printer's DPI",
+  no_template_at_dpi: "No label for this asset: this move has no active label template at this printer's DPI. "
+    + 'Someone with label access needs to activate one on Labels › Templates.',
   template_failed: "No label for this asset: the label template couldn't be built",
   template_unsupported: NEEDS_UPDATE_TEXT,
 };

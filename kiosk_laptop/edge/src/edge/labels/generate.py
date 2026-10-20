@@ -67,6 +67,23 @@ class Plan(NamedTuple):
     # one from a portal without `label_context`): `assets` is then empty for
     # want of data, not because the move has none, so nothing may be pruned
     has_asset_data: bool = True
+    # with no template picked: the DPIs at which the move's downloaded set
+    # has one for this kind (`available_dpis`), so the kiosk can say what to
+    # do; empty when a template was picked
+    available_dpis: tuple[str, ...] = ()
+
+
+def _dpi_sort_key(dpi: str) -> tuple:
+    """DPI keys in natural order: "203" < "300" < "1200"."""
+    return (0, int(dpi), "") if dpi.isdigit() else (1, 0, dpi.casefold())
+
+
+def available_dpis(choices: list[TemplateChoice], kind: str) -> tuple[str, ...]:
+    """The DPIs (natural order) at which `pick_template` finds a `kind`
+    template among `choices`: what a printer would need for this move."""
+    dpis = {t.dpi_key for t in choices if t.label_type == kind}
+    return tuple(sorted((d for d in dpis if pick_template(choices, kind, d)[0] is not None),
+                        key=_dpi_sort_key))
 
 
 def _fingerprint(parts: list) -> str:
@@ -189,6 +206,7 @@ def build_plan(store: Store, *, label_kind: str | None = None,
             by_id[choice.id] = t
             choices.append(choice)
     template, notes = pick_template(choices, label_kind, str(dpi))
+    elsewhere = available_dpis(choices, label_kind) if template is None else ()
     template_json = by_id[template.id] if template else None
     rules = (template_json or {}).get("generation_rules") or None
     schema = template_schema(template_json) if template_json is not None else 1
@@ -232,7 +250,7 @@ def build_plan(store: Store, *, label_kind: str | None = None,
                                             template_json.get("dots"),
                                             template_json.get("language_key")])
             jobs.append(AssetJob(str(a["id"]), values, fingerprint))
-    return Plan(template, notes, jobs, template_json, label_kind, dpi, has_data)
+    return Plan(template, notes, jobs, template_json, label_kind, dpi, has_data, elsewhere)
 
 
 def changed_jobs(store: Store, plan: Plan) -> list[AssetJob]:
