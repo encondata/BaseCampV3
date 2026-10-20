@@ -25,6 +25,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.labels import builtin_templates
 from serversherpa.labels import templates_tree as tree
+from serversherpa.labels.barcode import barcode_modules
 from serversherpa.labels.builtin_templates import (
     AMSTERDAM_DESTINATION,
     BUILTIN_TEMPLATES,
@@ -33,7 +34,6 @@ from serversherpa.labels.builtin_templates import (
     SWITCH_FRONT_TAG,
     VEGAS_DESTINATION,
 )
-from serversherpa.labels.barcode import barcode_modules
 from serversherpa.labels.field_rules import split_value
 from serversherpa.labels.fields import design_field_keys, field_values
 from serversherpa.labels.model import (

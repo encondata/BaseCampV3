@@ -25,7 +25,14 @@ from collections.abc import Mapping
 from serversherpa.labels.barcode import code128_data
 from serversherpa.labels.fonts import font_object
 from serversherpa.labels.model import (
-    BarcodeEl, BoxEl, Design, FieldEl, LineEl, QrEl, TextEl, element_hidden,
+    BarcodeEl,
+    BoxEl,
+    Design,
+    FieldEl,
+    LineEl,
+    QrEl,
+    TextEl,
+    element_hidden,
     element_value,
 )
 from serversherpa.labels.qr import QrTooLong, qr_modules
