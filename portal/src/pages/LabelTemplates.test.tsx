@@ -2,7 +2,8 @@
 /**
  * /labels/templates — Label Templates directory list. Covers what a unit
  * test can see: vocab-resolved cell labels, kind chips (Builder/Raw
- * code), the "New template" split-kind menu, and the row-actions
+ * code), "New template" opening the builder, where each row's edit
+ * action goes (builder, code editor, convert to code), and the row-actions
  * deactivate round trip (RowActionsMenu portals to document.body, so its
  * items are queried at `screen` level, not `within(row)`). Full
  * toolbar/column-menu/reorder/CSV behavior is exercised generically by
@@ -11,7 +12,7 @@
 
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { LabelTemplate, LabelVocab, SiteItem, UiPreferences } from '../lib/api';
@@ -128,12 +129,63 @@ it('Sites column shows names with overflow and All sites for globals', async () 
   expect(screen.queryByText('All sites')).not.toBeNull();
 });
 
-it('New template menu offers both kinds', async () => {
-  render(<MemoryRouter><LabelTemplates /></MemoryRouter>);
+function Where() {
+  const loc = useLocation();
+  return <div data-testid="where">{loc.pathname}</div>;
+}
+
+function renderRouted() {
+  return render(
+    <MemoryRouter initialEntries={['/labels/templates']}>
+      <Routes>
+        <Route path="/labels/templates" element={<LabelTemplates />} />
+        <Route path="*" element={<Where />} />
+      </Routes>
+    </MemoryRouter>);
+}
+
+const BUILDER: LabelTemplate = {
+  ...TEMPLATES[0], id: 't3', name: 'Vegas Destination', schema_version: 2, dpi_key: '300',
+  design: { schema: 2, size: { w: 4, h: 2 }, elements: [] }, dpis: ['203', '300', '600'],
+};
+
+it('New template opens the label builder', async () => {
+  renderRouted();
   await waitFor(() => expect(screen.queryByText('Front tag')).not.toBeNull());
   await userEvent.click(screen.getByRole('button', { name: /New template/ }));
-  expect(screen.queryByText('Visual builder')).not.toBeNull();
-  expect(screen.queryByText('Raw code (paste ZPL)')).not.toBeNull();
+  expect(screen.getByTestId('where').textContent).toBe('/labels/templates/new');
+});
+
+it('a builder template edits in the builder, a code template in the code editor', async () => {
+  api.listLabelTemplates.mockResolvedValue([...TEMPLATES, BUILDER]);
+  renderRouted();
+  await waitFor(() => expect(screen.queryByText('Vegas Destination')).not.toBeNull());
+  const builderRow = screen.getByText('Vegas Destination').closest('.dir-row')!;
+  await userEvent.click(within(builderRow as HTMLElement).getByRole('button', { name: /Actions/ }));
+  expect(screen.queryByText(/Edit as raw/)).toBeNull();
+  await userEvent.click(screen.getByText('Edit'));
+  expect(screen.getByTestId('where').textContent).toBe('/labels/templates/t3/edit');
+  cleanup();
+
+  renderRouted();
+  await waitFor(() => expect(screen.queryByText('Crate tag')).not.toBeNull());
+  const codeRow = screen.getByText('Crate tag').closest('.dir-row')!;
+  await userEvent.click(within(codeRow as HTMLElement).getByRole('button', { name: /Actions/ }));
+  expect(screen.queryByText('Edit')).toBeNull();
+  await userEvent.click(screen.getByText('Edit as raw code'));   // an ESC/P template
+  expect(screen.getByTestId('where').textContent).toBe('/labels/templates/t2/code');
+});
+
+it('an older design template converts to code, then opens in the code editor', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  renderRouted();
+  await waitFor(() => expect(screen.queryByText('Front tag')).not.toBeNull());
+  const row = screen.getByText('Front tag').closest('.dir-row')!;
+  await userEvent.click(within(row as HTMLElement).getByRole('button', { name: /Actions/ }));
+  expect(screen.queryByText('Edit')).toBeNull();      // the builder can't open a schema 1 design
+  await userEvent.click(screen.getByText('Edit as raw ZPL'));
+  await waitFor(() => expect(api.convertLabelTemplate).toHaveBeenCalledWith('t1'));
+  await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('/labels/templates/t1/code'));
 });
 
 it('row menu deactivates via deleteLabelTemplate', async () => {
@@ -146,16 +198,3 @@ it('row menu deactivates via deleteLabelTemplate', async () => {
   expect(api.deleteLabelTemplate).toHaveBeenCalledWith('t1');
 });
 
-it('row menu offers Edit as raw ZPL on design rows only', async () => {
-  render(<MemoryRouter><LabelTemplates /></MemoryRouter>);
-  await waitFor(() => expect(screen.queryByText('Front tag')).not.toBeNull());
-  const designRow = screen.getByText('Front tag').closest('.dir-row')!;
-  await userEvent.click(within(designRow as HTMLElement)
-    .getByRole('button', { name: /Actions/ }));
-  expect(screen.queryByText('Edit as raw ZPL')).not.toBeNull();
-  await userEvent.keyboard('{Escape}');
-  const codeRow = screen.getByText('Crate tag').closest('.dir-row')!;
-  await userEvent.click(within(codeRow as HTMLElement)
-    .getByRole('button', { name: /Actions/ }));
-  expect(screen.queryByText(/Edit as raw/)).toBeNull();
-});

@@ -6,7 +6,8 @@ AND rank 80 (super admin or developer, spec §4.9 — the builder, its
 versions, clone, Replace… and delete); the tree itself
 (labels/templates_tree.py) owns every write to a template;
 vocab + placeholder mutations are devtools-gated (god-only), matching the
-rest of the Variables surface. Of the generate-labels routes, list/get/
+rest of the Variables surface — except a new size, which the builder's New
+template › Custom… lets a designer (labels:add and rank 80) add. Of the generate-labels routes, list/get/
 preview/generated stay view-gated, but creating a run is a mutation — it
 enqueues work and (with `regenerate_existing`) can redo prior output — so
 it gates on labels:add (labels:change for the regenerate flavor), and
@@ -29,7 +30,9 @@ from sqlalchemy.orm import selectinload
 
 from serversherpa.access.defaults import SUPER_ADMIN_RANK
 from serversherpa.access.scope import scope_conditions
-from serversherpa.api.deps import AuthContext, DbSession, require_permission, require_rank
+from serversherpa.api.deps import (
+    AuthContext, CurrentUser, DbSession, require_permission, require_rank,
+)
 from serversherpa.api.schemas import (
     GeneratedLabelOut,
     GeneratedLabelBundleItemOut, GeneratedLabelBundleOut,
@@ -57,7 +60,9 @@ from serversherpa.db.ordering import natural, natural_key
 from serversherpa.labels import labelary
 from serversherpa.labels import templates_tree as tree
 from serversherpa.labels.compile import UnsupportedLanguage, compile_design
-from serversherpa.labels.fields import CONTAINER_LABEL_TYPES, field_values, groups_for
+from serversherpa.labels.fields import (
+    CONTAINER_LABEL_TYPES, design_field_keys, field_values, groups_for, mock_field_values,
+)
 from serversherpa.labels.font_metrics import UnreadableFont, metrics as font_metrics
 from serversherpa.labels.font_seed import (
     FONT_FIELDS, MAX_FONT_BYTES, TRUETYPE_MAGICS, display_name as family_display_name,
@@ -143,9 +148,16 @@ async def list_vocab(
 
 @router.post("/vocab", response_model=LabelVocabOut, status_code=201)
 async def create_vocab(
-    body: LabelVocabCreateIn, db: DbSession,
-    actor: AuthContext = require_permission("devtools", "add"),
+    body: LabelVocabCreateIn, db: DbSession, actor: CurrentUser,
 ) -> LabelVocabOut:
+    """Devtools-gated, except a size: the builder's New template › Custom…
+    lets a designer (labels:add and rank 80, spec §4.10) add one, to the
+    list or (is_active false) for the one template it is made for."""
+    if not actor.access.can("devtools", "add"):
+        if body.kind != "size" or not actor.access.can("labels", "add"):
+            raise _err(403, "forbidden")
+        if actor.access.max_rank < SUPER_ADMIN_RANK:
+            raise _err(403, "forbidden", min_rank=SUPER_ADMIN_RANK)
     problem = _validate_meta(body.kind, body.meta)
     if problem:
         raise _err(422, "bad_meta", message=problem)
@@ -415,6 +427,19 @@ async def _check_template_vocab(
                            key=values[field])
 
 
+async def _check_new_size(db: DbSession, size_key: str) -> None:
+    """A new builder template's size: a listed (active) size, or an
+    unlisted custom size (inactive) no template uses yet — the one New
+    template › Custom… just made for it. 422 unknown_vocab otherwise."""
+    row = await db.get(LabelVocab, ("size", size_key))
+    if row is not None and not row.is_active:
+        used = await db.scalar(select(func.count()).select_from(LabelTemplate)
+                               .where(LabelTemplate.size_key == size_key))
+        if not used:
+            return
+    await _check_template_vocab(db, {"size_key": size_key})
+
+
 async def _check_site_ids(db: DbSession, site_ids: list[uuid.UUID]) -> None:
     for sid in site_ids:
         if await db.get(Site, sid) is None:
@@ -605,8 +630,8 @@ async def _create_parent(db: DbSession, body: LabelTemplateCreateIn,
                    message="a builder template carries its rules on each field")
     _parse_v2(body.design)
     await _check_template_vocab(db, {"label_type": body.label_type,
-                                     "size_key": body.size_key,
                                      "language_key": body.language_key})
+    await _check_new_size(db, body.size_key)
     for dpi in tree.TREE_DPIS:
         await _check_template_vocab(db, {"dpi_key": dpi})
     await _check_site_ids(db, site_ids)
@@ -831,6 +856,14 @@ async def _sample_values(db: DbSession) -> dict[str, str]:
     return {r.key: r.sample_value for r in rows}
 
 
+def _builder_values(design: dict, samples: dict[str, str] | None) -> dict[str, str]:
+    """What a schema 2 design prints in the builder's preview and test
+    print: the portal's mock values, shaped like `field_values` (a From-To
+    column prints its header), with the template's samples over them —
+    never the placeholder catalog's v1 samples."""
+    return {**mock_field_values(None, design_field_keys(design)), **(samples or {})}
+
+
 async def _compile_design(db: DbSession, design_json: dict, size_key: str,
                           dpi_key: str, language_key: str,
                           subs: dict[str, str] | None) -> str:
@@ -862,7 +895,14 @@ async def compile_template(
     lang = await db.get(LabelVocab, ("language", body.language_key))
     if size is None or dpi is None or lang is None:
         raise _err(404, "unknown_vocab")
-    subs = await _sample_values(db) if body.mode == "sample" else None
+    v2 = body.kind == "design" and _is_v2(body.design)
+    if body.samples is not None and not v2:
+        raise _err(422, "bad_field", field="samples",
+                   message="sample values belong to builder templates")
+    if v2:
+        subs = _builder_values(body.design, body.samples)
+    else:
+        subs = await _sample_values(db) if body.mode == "sample" else None
 
     if body.kind == "code":
         if body.code is None:
@@ -908,7 +948,39 @@ async def convert_template_to_code(
     return item
 
 
-_DPMM = {203: 8, 300: 12}
+_DPMM = {203: 8, 300: 12, 600: 24}
+
+# The resident cut by its printer object name: Labelary has no copy, and
+# its font 0 is the same face (spec §4.4), so a preview draws it with that.
+_RESIDENT_A_AT = re.compile(
+    r"\^A@([NRIB]),(\d+),(\d+),E:(?:"
+    + "|".join(re.escape(obj) for f in FAMILIES.values() if f["resident"]
+               for obj in f["objects"].values() if obj)
+    + r")", re.IGNORECASE)
+
+# Font bytes per stored file, read once: (font id, storage key, size) → bytes.
+# Only the builder's few open fonts come through here; the cap bounds it.
+_FONT_BYTES_CACHE: dict[tuple[uuid.UUID, str, int], bytes] = {}
+_FONT_BYTES_CACHE_MAX = 32
+
+
+async def _font_download(db: DbSession, font_id: uuid.UUID) -> bytes:
+    """`~DY` of one library font, as Install Fonts sends it: the binary
+    TrueType header, then the file. Never the resident font (403
+    `font_not_servable`, as its content route)."""
+    font = await _font_or_404(db, font_id)
+    if font.resident or resident_object(font.name):
+        raise _err(403, "font_not_servable")
+    if not font.storage_key:
+        raise _err(404, "no_font_file")
+    key = (font.id, font.storage_key, font.size_bytes)
+    data = _FONT_BYTES_CACHE.get(key)
+    if data is None:
+        data = await get_object(font.storage_key)
+        if len(_FONT_BYTES_CACHE) >= _FONT_BYTES_CACHE_MAX:
+            _FONT_BYTES_CACHE.clear()
+        _FONT_BYTES_CACHE[key] = data
+    return f"~DYE:{font.name.upper()},B,T,{len(data)},,".encode() + data
 
 
 @router.post("/preview/zpl")
@@ -916,6 +988,9 @@ async def preview_zpl(
     body: LabelZplPreviewIn, db: DbSession,
     _actor: AuthContext = require_permission("labels", "view"),
 ) -> Response:
+    """The printer-rendered preview (Labelary). `font_ids` embeds those
+    library fonts ahead of the label (`~DY`) so it renders in them; the
+    resident Swiss cut is drawn with Labelary's font 0 (`^A0`)."""
     size = await db.get(LabelVocab, ("size", body.size_key))
     dpi = await db.get(LabelVocab, ("dpi", body.dpi_key))
     if size is None or dpi is None:
@@ -923,9 +998,12 @@ async def preview_zpl(
     dpmm = _DPMM.get(dpi.meta["dots"])
     if dpmm is None:
         raise _err(422, "unsupported_dpi", dots=dpi.meta["dots"])
+    zpl = _RESIDENT_A_AT.sub(r"^A0\1,\2,\3", body.zpl)
+    downloads = [await _font_download(db, fid) for fid in dict.fromkeys(body.font_ids)]
+    payload: str | bytes = b"".join(downloads) + zpl.encode("utf-8") if downloads else zpl
     try:
         png = await labelary.render_png(
-            body.zpl, size.meta["width_in"], size.meta["height_in"], dpmm)
+            payload, size.meta["width_in"], size.meta["height_in"], dpmm)
     except Exception:
         raise _err(502, "labelary_unavailable") from None
     return Response(png, media_type="image/png")

@@ -1,19 +1,17 @@
 // @vitest-environment jsdom
 /**
- * /labels/templates/new and /labels/templates/:id/edit — the label
- * template editor page shell. Covers what Task 15 delivers: vocab-seeded
- * defaults for a new design template, the fully-functional raw-code
- * editor (textarea + save → create), the edit route's load + patch round
- * trip, and the save-error → pf-error mapping. The design-kind canvas/
- * palette/properties regions are stub slots until Tasks 16-18 land.
+ * /labels/templates/:id/code — a code template's editor ("Edit as raw
+ * ZPL"): the load + patch round trip, a deactivated vocab value kept
+ * selectable, site chips, the save-error → pf-error mapping, and a design
+ * template sent on to the label builder.
  */
 
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { LabelPlaceholder, LabelVocab, UiPreferences } from '../lib/api';
+import type { LabelVocab, UiPreferences } from '../lib/api';
 
 const auth = vi.hoisted(() => {
   const state: { can: (resource: string, action: string) => boolean } = {
@@ -39,13 +37,10 @@ vi.mock('../auth/AuthContext', () => ({
 
 const api = vi.hoisted(() => ({
   listLabelVocab: vi.fn(),
-  listLabelPlaceholders: vi.fn(),
   listSites: vi.fn(),
   getLabelTemplate: vi.fn(),
-  createLabelTemplate: vi.fn(),
   updateLabelTemplate: vi.fn(),
   compileLabel: vi.fn(),
-  convertLabelTemplate: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -64,18 +59,12 @@ const VOCAB: LabelVocab[] = [
   { kind: 'language', key: 'escp', label: 'ESC/P', description: '', meta: {}, sort_order: 1, is_active: true, usage_count: null },
 ];
 
-const PLACEHOLDERS: LabelPlaceholder[] = [
-  { key: 'asset_id', label: 'Asset ID', description: '', sample_value: 'A-1001',
-    applies_to: ['top', 'front'], sort_order: 0, is_active: true, usage_count: null },
-];
-
 const SITES = [{ id: 's1', name: 'NAP7' }, { id: 's2', name: 'NAP11' }] as never;
 
 beforeEach(() => {
   vi.clearAllMocks();
   auth.can = () => true;
   api.listLabelVocab.mockResolvedValue(VOCAB);
-  api.listLabelPlaceholders.mockResolvedValue(PLACEHOLDERS);
   api.listSites.mockResolvedValue(SITES);
   api.compileLabel.mockResolvedValue({ code: '^XA^FS^XZ' });
 });
@@ -84,69 +73,55 @@ afterEach(cleanup);
 
 const { default: LabelTemplateEditor } = await import('./LabelTemplateEditor');
 
+const CODE_TEMPLATE = {
+  id: 't1', name: 'Front tag', description: '', label_type: 'front',
+  size_key: '4x2', dpi_key: '203', language_key: 'zpl', kind: 'code',
+  design: null, code: '^XA^XZ', version: 2, is_active: true,
+  site_ids: [] as string[], created_at: '', updated_at: '',
+};
+
+function Where() {
+  return <div data-testid="where">{useLocation().pathname}</div>;
+}
+
 function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
-        <Route path="/labels/templates/new" element={<LabelTemplateEditor />} />
-        <Route path="/labels/templates/:id/edit" element={<LabelTemplateEditor />} />
+        <Route path="/labels/templates/:id/code" element={<LabelTemplateEditor />} />
+        <Route path="*" element={<Where />} />
       </Routes>
     </MemoryRouter>);
 }
 
-it('new design template: vocab selectors seeded with first active keys', async () => {
-  renderAt('/labels/templates/new?kind=design');
-  await waitFor(() => expect(screen.queryByLabelText('Name')).not.toBeNull());
-  expect((screen.getByLabelText('Size') as HTMLSelectElement).value).toBe('4x2');
-  expect((screen.getByLabelText('Language') as HTMLSelectElement).value).toBe('zpl');
-});
-
-it('new code template shows the code textarea and saves via create', async () => {
-  api.createLabelTemplate.mockResolvedValue({ id: 't-new', kind: 'code' });
-  renderAt('/labels/templates/new?kind=code');
-  await waitFor(() => expect(screen.queryByLabelText('Name')).not.toBeNull());
-  await userEvent.type(screen.getByLabelText('Name'), 'Vegas front');
-  // userEvent.type() treats single { } as special-key syntax, so a literal
-  // "{asset_id}" placeholder must be escaped as doubled braces.
-  await userEvent.type(screen.getByLabelText('Template code'), '^XA^FD{{asset_id}}^FS^XZ');
-  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-  await waitFor(() => expect(api.createLabelTemplate).toHaveBeenCalled());
-  const body = api.createLabelTemplate.mock.calls[0][0];
-  expect(body).toMatchObject({ name: 'Vegas front', kind: 'code',
-    size_key: '4x2', language_key: 'zpl', design: null });
-  expect(body.code).toContain('{asset_id}');
-});
-
-it('edit route loads the template and patches on save', async () => {
-  api.getLabelTemplate.mockResolvedValue({
-    id: 't1', name: 'Front tag', description: '', label_type: 'front',
-    size_key: '4x2', dpi_key: '203', language_key: 'zpl', kind: 'code',
-    design: null, code: '^XA^XZ', version: 2, is_active: true,
-    site_ids: [], created_at: '', updated_at: '' });
+it('loads the code template and patches on save', async () => {
+  api.getLabelTemplate.mockResolvedValue(CODE_TEMPLATE);
   api.updateLabelTemplate.mockResolvedValue({ id: 't1' });
-  renderAt('/labels/templates/t1/edit');
+  renderAt('/labels/templates/t1/code');
   await waitFor(() =>
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Front tag'));
   await userEvent.type(screen.getByLabelText('Name'), ' v2');
+  // userEvent.type() reads `{` as the start of a special key, so a literal
+  // one is typed as `{{` (a `}` needs no escape).
+  await userEvent.type(screen.getByLabelText('Template code'), '^FD{{asset_id}');
   await userEvent.click(screen.getByRole('button', { name: 'Save' }));
   await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledWith(
-    't1', expect.objectContaining({ name: 'Front tag v2' })));
-  expect(api.updateLabelTemplate.mock.calls[0][1]).not.toHaveProperty('kind');
+    't1', expect.objectContaining({ name: 'Front tag v2', code: '^XA^XZ^FD{asset_id}' })));
+  const body = api.updateLabelTemplate.mock.calls[0][1];
+  expect(body).not.toHaveProperty('kind');
+  expect(body).not.toHaveProperty('design');
+  expect(body).not.toHaveProperty('generation_rules');   // kept as stored; the API takes them
 });
 
-it('edit route with a deactivated current vocab value renders it selected', async () => {
-  api.getLabelTemplate.mockResolvedValue({
-    id: 't1', name: 'Old size tag', description: '', label_type: 'top',
-    size_key: '9x9', dpi_key: '203', language_key: 'zpl', kind: 'code',
-    design: null, code: '^XA^XZ', version: 3, is_active: true,
-    site_ids: [], created_at: '', updated_at: '' });
+it('a deactivated current vocab value renders selected', async () => {
+  api.getLabelTemplate.mockResolvedValue({ ...CODE_TEMPLATE, name: 'Old size tag', size_key: '9x9' });
   api.listLabelVocab.mockResolvedValue([
     ...VOCAB,
     { kind: 'size', key: '9x9', label: '9 x 9 in', description: '',
       meta: { width_in: 9, height_in: 9 }, sort_order: 2, is_active: false,
       usage_count: null },
   ]);
-  renderAt('/labels/templates/t1/edit');
+  renderAt('/labels/templates/t1/code');
   await waitFor(() =>
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Old size tag'));
   expect((screen.getByLabelText('Size') as HTMLSelectElement).value).toBe('9x9');
@@ -154,100 +129,29 @@ it('edit route with a deactivated current vocab value renders it selected', asyn
 
 it('save error surfaces the pf-error', async () => {
   const { ApiError } = await import('../lib/api');
-  api.createLabelTemplate.mockRejectedValue(new ApiError(409, 'label_template_exists'));
-  renderAt('/labels/templates/new?kind=code');
+  api.getLabelTemplate.mockResolvedValue(CODE_TEMPLATE);
+  api.updateLabelTemplate.mockRejectedValue(new ApiError(409, 'label_template_exists'));
+  renderAt('/labels/templates/t1/code');
   await waitFor(() => expect(screen.queryByLabelText('Name')).not.toBeNull());
-  await userEvent.type(screen.getByLabelText('Name'), 'dupe');
-  await userEvent.type(screen.getByLabelText('Template code'), 'x');
   await userEvent.click(screen.getByRole('button', { name: 'Save' }));
   await waitFor(() =>
     expect(screen.queryByText('A template with this name already exists.')).not.toBeNull());
 });
 
-it('edit loads site chips and save sends site_ids', async () => {
-  api.getLabelTemplate.mockResolvedValue({
-    id: 't1', name: 'Front tag', description: '', label_type: 'front',
-    size_key: '4x2', dpi_key: '203', language_key: 'zpl', kind: 'code',
-    design: null, code: '^XA^XZ', version: 2, is_active: true,
-    site_ids: ['s1'], created_at: '', updated_at: '' });
+it('loads site chips and save sends site_ids', async () => {
+  api.getLabelTemplate.mockResolvedValue({ ...CODE_TEMPLATE, site_ids: ['s1'] });
   api.updateLabelTemplate.mockResolvedValue({ id: 't1' });
-  renderAt('/labels/templates/t1/edit');
+  renderAt('/labels/templates/t1/code');
   await waitFor(() => expect(screen.queryByText('NAP7')).not.toBeNull());
   await userEvent.click(screen.getByRole('button', { name: 'Save' }));
   await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledWith(
     't1', expect.objectContaining({ site_ids: ['s1'] })));
 });
 
-it('converts a design template to raw code after confirm', async () => {
-  vi.spyOn(window, 'confirm').mockReturnValue(true);
+it('a design template goes to the label builder', async () => {
   api.getLabelTemplate.mockResolvedValue({
-    id: 't9', name: 'Builder', description: '', label_type: 'top',
-    size_key: '4x2', dpi_key: '203', language_key: 'zpl', kind: 'design',
-    design: { size: { w: 4, h: 2 }, elements: [] }, code: null, version: 1,
-    is_active: true, site_ids: [], created_at: '', updated_at: '' });
-  api.convertLabelTemplate.mockResolvedValue({
-    id: 't9', kind: 'code', code: '^XA^CONVERTED^XZ', design: null,
-    name: 'Builder', description: '', label_type: 'top', size_key: '4x2',
-    dpi_key: '203', language_key: 'zpl', version: 2, is_active: true,
-    site_ids: [], created_at: '', updated_at: '' });
-  renderAt('/labels/templates/t9/edit');
-  await waitFor(() =>
-    expect(screen.queryByRole('button', { name: 'Edit as raw ZPL' })).not.toBeNull());
-  await userEvent.click(screen.getByRole('button', { name: 'Edit as raw ZPL' }));
-  expect(window.confirm).toHaveBeenCalled();
-  await waitFor(() => expect(api.convertLabelTemplate).toHaveBeenCalledWith('t9'));
-  const ta = await screen.findByLabelText('Template code') as HTMLTextAreaElement;
-  expect(ta.value).toBe('^XA^CONVERTED^XZ');
-});
-
-it('no convert button on new or code-kind templates', async () => {
-  renderAt('/labels/templates/new?kind=design');
-  await waitFor(() => expect(screen.queryByLabelText('Name')).not.toBeNull());
-  expect(screen.queryByRole('button', { name: /Edit as raw/ })).toBeNull();
-});
-
-it('loads generation_rules into the panel and PATCHes the (possibly edited) rules back on save', async () => {
-  api.getLabelTemplate.mockResolvedValue({
-    id: 't1', name: 'Front tag', description: '', label_type: 'front',
-    size_key: '4x2', dpi_key: '203', language_key: 'zpl', kind: 'code',
-    design: null, code: '^XA^XZ', version: 2, is_active: true,
-    site_ids: [], generation_rules: { destination: { '1': 'nap' } },
-    created_at: '', updated_at: '' });
-  api.updateLabelTemplate.mockResolvedValue({ id: 't1' });
-  renderAt('/labels/templates/t1/edit');
-  await waitFor(() =>
-    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Front tag'));
-  expect(screen.getByDisplayValue('nap')).not.toBeNull();
-  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-  await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledWith(
-    't1', expect.objectContaining({ generation_rules: { destination: { '1': 'nap' } } })));
-});
-
-it('a bad generation-rules token disables Save', async () => {
-  api.getLabelTemplate.mockResolvedValue({
-    id: 't1', name: 'Front tag', description: '', label_type: 'front',
-    size_key: '4x2', dpi_key: '203', language_key: 'zpl', kind: 'code',
-    design: null, code: '^XA^XZ', version: 2, is_active: true,
-    site_ids: [], generation_rules: {}, created_at: '', updated_at: '' });
-  renderAt('/labels/templates/t1/edit');
-  await waitFor(() =>
-    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Front tag'));
-  expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(false);
-  await userEvent.click(screen.getAllByRole('button', { name: '+ Add position' })[0]);
-  await userEvent.type(screen.getAllByLabelText('Destination position')[0], '1');
-  await userEvent.type(screen.getAllByLabelText('Destination token')[0], 'Bad Token');
-  await waitFor(() =>
-    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true));
-  expect(api.updateLabelTemplate).not.toHaveBeenCalled();
-});
-
-it('new template defaults to no sites (global)', async () => {
-  api.createLabelTemplate.mockResolvedValue({ id: 't-new', kind: 'code' });
-  renderAt('/labels/templates/new?kind=code');
-  await waitFor(() => expect(screen.queryByLabelText('Name')).not.toBeNull());
-  await userEvent.type(screen.getByLabelText('Name'), 'g');
-  await userEvent.type(screen.getByLabelText('Template code'), 'x');
-  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-  await waitFor(() => expect(api.createLabelTemplate).toHaveBeenCalled());
-  expect(api.createLabelTemplate.mock.calls[0][0].site_ids).toEqual([]);
+    ...CODE_TEMPLATE, id: 't9', kind: 'design', code: null,
+    design: { schema: 2, size: { w: 4, h: 2 }, elements: [] } });
+  renderAt('/labels/templates/t9/code');
+  await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('/labels/templates/t9/edit'));
 });

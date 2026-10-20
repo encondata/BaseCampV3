@@ -37,6 +37,7 @@ import InitiativeDetailPage from './pages/InitiativeDetail';
 import InitiativeTimeline from './pages/InitiativeTimeline';
 import KioskDevices from './pages/KioskDevices';
 import KioskDetail from './pages/hardware/KioskDetail';
+import LabelBuilder from './pages/LabelBuilder';
 import LabelTemplateEditor from './pages/LabelTemplateEditor';
 import LabelTemplates from './pages/LabelTemplates';
 import LinkKiosk from './pages/LinkKiosk';
@@ -177,10 +178,20 @@ export default function App() {
                 <Route path="/labels/templates" element={
                   <ProtectedRoute resource="labels"><LabelTemplates /></ProtectedRoute>
                 } />
+                {/* the label builder: super admin or developer (spec §4.9) */}
                 <Route path="/labels/templates/new" element={
-                  <ProtectedRoute resource="labels"><LabelTemplateEditor /></ProtectedRoute>} />
+                  <ProtectedRoute resource="labels" minRank={80} fallback="/labels/templates">
+                    <LabelBuilder />
+                  </ProtectedRoute>} />
                 <Route path="/labels/templates/:id/edit" element={
-                  <ProtectedRoute resource="labels"><LabelTemplateEditor /></ProtectedRoute>} />
+                  <ProtectedRoute resource="labels" minRank={80} fallback="/labels/templates">
+                    <LabelBuilder />
+                  </ProtectedRoute>} />
+                {/* "Edit as raw ZPL": a code template's own editor */}
+                <Route path="/labels/templates/:id/code" element={
+                  <ProtectedRoute resource="labels" minRank={80} fallback="/labels/templates">
+                    <LabelTemplateEditor />
+                  </ProtectedRoute>} />
                 <Route path="/labels/generate" element={
                   <ProtectedRoute resource="labels"><GenerateLabels /></ProtectedRoute>
                 } />

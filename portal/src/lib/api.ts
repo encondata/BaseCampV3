@@ -5301,6 +5301,54 @@ export interface LabelTemplate {
   // API always sends, defaulting to `{}`) don't need updating.
   generation_rules?: LabelGenerationRules;
   created_at: string; updated_at: string;
+  // The label builder's tree (api labels/templates_tree.py), optional so
+  // fixtures predating it still type: a parent is schema_version 2 with no
+  // parent_id and owns `dpis` and `samples`; a child names its parent and
+  // is version v<generated_from_version>.<child_edits>.
+  parent_id?: string | null;
+  schema_version?: number;
+  samples?: Record<string, string>;
+  dpis?: string[];
+  generated_from_version?: number | null;
+  child_edits?: number;
+  customized?: boolean;
+  is_old?: boolean;
+}
+
+/** PATCH / restore: the saved template, and the parent's customized
+ *  children this or an earlier save left out of date. */
+export interface LabelTemplateSaved extends LabelTemplate {
+  out_of_date?: string[];
+}
+
+/** A DPI child in the tree; `out_of_date`: customized, and the parent has
+ *  saved past the version it was generated from. */
+export interface LabelTemplateChild extends LabelTemplate {
+  out_of_date: boolean;
+}
+
+/** GET /labels/templates/tree: a top-level template — a builder parent with
+ *  its DPI children (current and Old), or an older single row. */
+export interface LabelTemplateTreeNode extends LabelTemplate {
+  family: string;
+  children: LabelTemplateChild[];
+}
+
+/** One saved state of a template; `label` reads v7 or v7.2. */
+export interface LabelTemplateVersion {
+  version: number; child_edits: number; label: string; summary: string; note: string;
+  created_by: string | null; created_by_name: string | null; created_at: string;
+}
+
+export interface LabelTemplateVersionDetail extends LabelTemplateVersion {
+  design: Record<string, unknown> | null; code: string | null; samples: Record<string, string>;
+}
+
+/** v7, or v7.2 for a child's second hand edit on parent v7. */
+export function templateVersionLabel(t: Pick<LabelTemplate, 'version' | 'parent_id' | 'generated_from_version' | 'child_edits'>): string {
+  if (!t.parent_id) return `v${t.version}`;
+  const base = t.generated_from_version ?? 0;
+  return t.child_edits ? `v${base}.${t.child_edits}` : `v${base}`;
 }
 
 export async function listLabelVocab(kind?: string): Promise<LabelVocab[]> {
@@ -5389,7 +5437,7 @@ export async function createLabelTemplate(
 
 export async function updateLabelTemplate(
   id: string, body: Record<string, unknown>,
-): Promise<LabelTemplate> {
+): Promise<LabelTemplateSaved> {
   const resp = await apiFetch(`/labels/templates/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -5412,6 +5460,104 @@ export async function convertLabelTemplate(id: string): Promise<LabelTemplate> {
   });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
+}
+
+// ── the label builder's template tree: versions, clone, Replace…, delete ──
+
+async function labelTemplatePost<T>(path: string, body?: unknown): Promise<T> {
+  const resp = await apiFetch(path, body === undefined ? { method: 'POST' } : {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+const templatePath = (id: string) => `/labels/templates/${encodeURIComponent(id)}`;
+const versionPath = (id: string, version: number, childEdits: number) =>
+  `${templatePath(id)}/versions/${version}/${childEdits}`;
+
+export async function listLabelTemplateTree(): Promise<LabelTemplateTreeNode[]> {
+  const resp = await apiFetch('/labels/templates/tree');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** One line per save, newest first. */
+export async function listLabelTemplateVersions(id: string): Promise<LabelTemplateVersion[]> {
+  const resp = await apiFetch(`${templatePath(id)}/versions`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getLabelTemplateVersion(
+  id: string, version: number, childEdits: number,
+): Promise<LabelTemplateVersionDetail> {
+  const resp = await apiFetch(versionPath(id, version, childEdits));
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** The author's note on a version, added after the save. */
+export async function noteLabelTemplateVersion(
+  id: string, version: number, childEdits: number, note: string,
+): Promise<LabelTemplateVersionDetail> {
+  const resp = await apiFetch(versionPath(id, version, childEdits), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Saves an older version again as the next one. */
+export async function restoreLabelTemplateVersion(
+  id: string, version: number, childEdits: number,
+): Promise<LabelTemplateSaved> {
+  return labelTemplatePost(`${versionPath(id, version, childEdits)}/restore`);
+}
+
+/** A new, inactive template named `name`: design, samples, sites and (for a
+ *  parent) its current children. */
+export async function cloneLabelTemplate(id: string, name: string): Promise<LabelTemplate> {
+  return labelTemplatePost(`${templatePath(id)}/clone`, { name });
+}
+
+/** A customized child gives way to a fresh one from its parent; it stays
+ *  nested, inactive, as "… Old". Returns the fresh child. */
+export async function updateLabelTemplateFromParent(id: string): Promise<LabelTemplate> {
+  return labelTemplatePost(`${templatePath(id)}/update-from-parent`);
+}
+
+/** Replace…: deactivates `oldIds` and activates this template in one step. */
+export async function replaceLabelTemplates(id: string, oldIds: string[]): Promise<LabelTemplate> {
+  return labelTemplatePost(`${templatePath(id)}/replace`, { old_template_ids: oldIds });
+}
+
+/** Add DPI: brings a deleted DPI child back, generated from the parent. */
+export async function addLabelTemplateDpi(id: string, dpi: string): Promise<LabelTemplate> {
+  return labelTemplatePost(`${templatePath(id)}/dpis`, { dpi });
+}
+
+export interface LabelTemplateDeleteSummary { children: string[]; generated_labels: number }
+
+export async function getLabelTemplateDeleteSummary(id: string): Promise<LabelTemplateDeleteSummary> {
+  const resp = await apiFetch(`${templatePath(id)}/delete-summary`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Deletes for real: a DPI child alone, or a top-level template (with its
+ *  children and generated labels) when `typedName` is exactly its name. */
+export async function deleteLabelTemplateForGood(id: string, typedName?: string): Promise<void> {
+  const resp = await apiFetch(templatePath(id), typedName === undefined ? { method: 'DELETE' } : {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ typed_name: typedName }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
 }
 
 // ── Label builder fields (the field panel, Load from asset…) ─────────
@@ -5491,12 +5637,28 @@ export async function getLabelFontBytes(id: string): Promise<Uint8Array> {
   return new Uint8Array(await resp.arrayBuffer());
 }
 
+/** GET /labels/fonts/{id}/metrics: glyph metrics in font units for the
+ *  builder canvas (labels/builder/metrics.ts FontMetrics). */
+export interface LabelFontMetrics {
+  unitsPerEm: number; ascent: number; descent: number; advances: Record<string, number>;
+}
+
+export async function getLabelFontMetrics(id: string): Promise<LabelFontMetrics> {
+  const resp = await apiFetch(`/labels/fonts/${encodeURIComponent(id)}/metrics`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** A design kind compiles `design` (any JSON object: a schema 1 design or
+ *  the builder's schema 2 one); `samples` are a schema 2 design's sample
+ *  values, printed over the portal's mock values. */
 export async function compileLabel(body: {
   kind: 'design' | 'code';
-  design?: Record<string, unknown> | null;
+  design?: object | null;
   code?: string | null;
   size_key: string; dpi_key: string; language_key: string;
   mode: 'placeholders' | 'sample';
+  samples?: Record<string, string>;
 }): Promise<{ code: string }> {
   const resp = await apiFetch('/labels/templates/compile', {
     method: 'POST',
@@ -5507,8 +5669,10 @@ export async function compileLabel(body: {
   return resp.json();
 }
 
+/** The printer-rendered preview (Labelary); `font_ids` are library fonts
+ *  embedded ahead of the label so it renders in them. */
 export async function previewZplRequest(body: {
-  zpl: string; size_key: string; dpi_key: string;
+  zpl: string; size_key: string; dpi_key: string; font_ids?: string[];
 }): Promise<Blob> {
   const resp = await apiFetch('/labels/preview/zpl', {
     method: 'POST',

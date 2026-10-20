@@ -474,3 +474,168 @@ textarea.lbp-text { resize: vertical; }
 /* the weight shown is the font's own; the chosen one is marked instead */
 .combo-menu .lbp-font-option.kbar-item.selected { font-weight: inherit; box-shadow: inset 3px 0 0 var(--amber); }
 .lbp-font-option .sub { flex: none; padding-left: 12px; }
+
+/* ── the page (`lbb-`): top bar, notices, the three columns, dialogs ──
+ *
+ * The builder fills the main column: the top bar and notices, then the
+ * fields | canvas over the placed fields | properties over the printer
+ * preview, each panel scrolling inside itself. Same guardrail rule as the
+ * canvas and panels: no class here holds a list trigger word. */
+
+.portal-page.lbb-page {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 640px;
+  box-sizing: border-box;
+  padding: 14px 18px 18px;
+  min-width: 0;
+}
+
+.lbb-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.lbb-name {
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-dark);
+}
+.lbb-spacer { flex: 1 1 auto; }
+.lbb-group { display: inline-flex; gap: 4px; }
+.lbb-bar .mini-btn.lbb-icon-btn { width: 30px; padding: 0; justify-content: center; }
+.lbb-icon { width: 16px; height: 16px; display: block; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.lbb-bar .mini-btn, .lbb-bar .btn-solid { gap: 6px; }
+.lbb-save .lbp-kbd { background: rgba(255, 255, 255, 0.18); border-color: transparent; color: inherit; }
+/* the parent's DPIs: each one a button inside the chip */
+.lbb-dpi {
+  padding: 0 2px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  opacity: 0.65;
+  cursor: pointer;
+}
+.lbb-dpi:hover { opacity: 1; }
+.lbb-dpi.on { opacity: 1; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
+
+.lbb-notice,
+.lbb-viewing {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 13px;
+  color: var(--text-dark);
+}
+.lbb-notice.is-success { color: var(--c-green); background: var(--c-green-bg); border-color: var(--c-green-bd); }
+.lbb-notice.is-info { color: var(--c-blue); background: var(--c-blue-bg); border-color: var(--c-blue-bd); }
+.lbb-notice.is-warning { color: var(--c-amber); background: var(--c-amber-bg); border-color: var(--c-amber-bd); }
+.lbb-notice.is-error { color: var(--c-red); background: var(--c-red-bg); border-color: var(--c-red-bd); }
+.lbb-notice-close {
+  margin-left: auto;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 16px;
+  cursor: pointer;
+}
+.lbb-viewing { background: var(--c-violet-bg); border-color: var(--c-violet-bd); }
+.lbb-viewing > span { flex: 1 1 auto; }
+
+.lbb-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr) 300px;
+  gap: 12px;
+}
+.lbb-body > .lbp { min-height: 0; }
+.lbb-center,
+.lbb-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+}
+/* the canvas keeps room for its toolbar and stage (.lbc-stage's 360px
+   floor); the placed fields give way first and scroll inside */
+.lbb-center > .lbc { flex: 1 1 460px; min-height: 460px; }
+.lbb-center > .lbp-placed { flex: 0 1 auto; min-height: 140px; }
+.lbb-side > .lbp-props { flex: 1 1 auto; min-height: 0; }
+.lbb-side > .lbb-preview { flex: none; }
+@media (max-width: 1100px) {
+  .portal-page.lbb-page { height: auto; }
+  .lbb-body { grid-template-columns: minmax(0, 1fr); }
+  .lbb-body > .lbp-fields-panel { max-height: 360px; }
+  .lbb-center > .lbc { flex-basis: auto; }
+}
+
+/* the printer preview */
+.lbb-preview-body { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px 12px; }
+.lbb-preview-body .lbp-hint,
+.lbb-preview-body .pf-error { margin: 0; }
+.lbb-preview-img { display: block; max-width: 100%; border: 1px solid var(--paper-line); background: #fff; }
+
+/* dialogs */
+.modal-card.reports-modal-card.rgm-card.lbb-new-card { width: min(680px, 96vw); max-width: 96vw; }
+.modal-card.reports-modal-card.rgm-card.lbb-versions-card { width: min(1040px, 96vw); max-width: 96vw; }
+.modal-card.reports-modal-card.rgm-card.lbb-keys-card { width: min(920px, 96vw); max-width: 96vw; }
+.modal-card.reports-modal-card.rgm-card.lbb-small-card { width: min(580px, 96vw); max-width: 96vw; }
+.segmented.lbb-sizes { display: flex; flex-wrap: wrap; }
+.lbb-new-custom { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; }
+.lbb-new-keep { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dark); }
+.lbb-new-custom .lbb-new-inches { margin: 0; }
+.lbb-ver { display: inline-flex; align-items: center; gap: 6px; }
+.lbb-ver-actions { display: inline-flex; justify-content: flex-end; gap: 6px; }
+.lbb-note {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.lbb-note-empty { color: var(--text-mute); font-style: italic; }
+.lbb-foot-text { margin: 0; }
+.lbb-keys { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 22px; align-items: start; }
+@media (max-width: 760px) { .lbb-keys { grid-template-columns: minmax(0, 1fr); } }
+.lbb-keys-title {
+  margin: 0 0 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.lbb-stale { display: flex; flex-direction: column; gap: 8px; }
+.lbb-stale-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+}
+.lbb-stale-name { flex: 1 1 auto; min-width: 0; }
+.lbb-stale-actions { display: inline-flex; gap: 6px; }

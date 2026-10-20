@@ -6,13 +6,14 @@
  *  ColumnMenu filters + persisted visible/sort/order state
  *  (usePersistentListState) + CSV export + virtualized rows.
  *
- *  There is no create-in-place modal here — "New template" opens a small
- *  two-option pop-menu (Visual builder / Raw code) that navigates to the
- *  editor route (Task 15), same for the "Edit" row action. Deactivate/
- *  Activate are in-place: deactivate soft-deletes via deleteLabelTemplate
- *  (after confirm), activate flips is_active back on via
- *  updateLabelTemplate — both re-load(). No row expansion, like
- *  FixedReaders. */
+ *  "New template" opens the label builder (/labels/templates/new, its New
+ *  template dialog). A builder template's "Edit" opens it in the builder;
+ *  a code template opens in its code editor ("Edit as raw ZPL", the escape
+ *  hatch of spec §4.11), and an older design template — one the builder
+ *  can't open — converts to code first. Deactivate/Activate are in-place:
+ *  deactivate goes through deleteLabelTemplate (after confirm), activate
+ *  flips is_active back on via updateLabelTemplate — both re-load(). No
+ *  row expansion, like FixedReaders. */
 
 import { compareValues } from '../lib/naturalSort';
 import { useEffect, useMemo, useState } from 'react';
@@ -31,7 +32,7 @@ import {
 import { siteNames, sitesCellText, templateSearchText, vocabLabel, vocabOfKind } from '../lib/labels';
 import {
   ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
-  listGridStyle, listScale, moveKey, passesFacets, titleFor, useOutsideClose, useReorderDrag,
+  listGridStyle, listScale, moveKey, passesFacets, titleFor, useReorderDrag,
   useSearchHaystacks, visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
@@ -64,30 +65,11 @@ const activeLabel = (active: boolean) => (active ? 'Active' : 'Inactive');
 const msgFor = (err: unknown): string =>
   err instanceof ApiError ? `Request failed (${err.code}).` : "Couldn't complete that action.";
 
-function NewTemplateMenu({ onPick }: { onPick: (kind: 'design' | 'code') => void }) {
-  const [open, setOpen] = useState(false);
-  const ref = useOutsideClose<HTMLDivElement>(() => setOpen(false));
-
-  return (
-    <div className="pop-wrap" ref={ref}>
-      <button type="button" className="btn-solid" onClick={() => setOpen((v) => !v)}>
-        + New template ▾
-      </button>
-      {open && (
-        <div className="pop-menu">
-          <button type="button" className="pop-item"
-                  onClick={() => { setOpen(false); onPick('design'); }}>
-            Visual builder
-          </button>
-          <button type="button" className="pop-item"
-                  onClick={() => { setOpen(false); onPick('code'); }}>
-            Raw code (paste ZPL)
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
+/** A template the label builder opens: a schema 2 design (a builder
+ *  parent or one of its DPI children). */
+const isBuilderTemplate = (t: LabelTemplate) =>
+  t.kind === 'design' && (t.schema_version ?? 1) >= 2;
+const rawLabel = (t: LabelTemplate) => (t.language_key === 'zpl' ? 'Edit as raw ZPL' : 'Edit as raw code');
 
 export default function LabelTemplates() {
   const { can, preferences } = useAuth();
@@ -329,7 +311,9 @@ export default function LabelTemplates() {
                          onReorder={setColOrder} />
           <ExportButton onExport={() => exportCsv('label-templates', CSV_COLUMNS, visible)} />
           {canAdd && (
-            <NewTemplateMenu onPick={(kind) => navigate(`/labels/templates/new?kind=${kind}`)} />
+            <button type="button" className="btn-solid" onClick={() => navigate('/labels/templates/new')}>
+              + New template
+            </button>
           )}
         </div>
       </div>
@@ -381,18 +365,21 @@ export default function LabelTemplates() {
                   ))}
                   <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}>
                     <RowActionsMenu actions={[
-                      ...(canChange ? [{
+                      ...(canChange && isBuilderTemplate(t) ? [{
                         key: 'edit', label: 'Edit',
                         onSelect: () => navigate(`/labels/templates/${t.id}/edit`),
                       }] : []),
-                      ...(canChange && t.kind === 'design' ? [{
-                        key: 'convert',
-                        label: t.language_key === 'zpl' ? 'Edit as raw ZPL' : 'Edit as raw code',
+                      ...(canChange && t.kind === 'code' ? [{
+                        key: 'code', label: rawLabel(t),
+                        onSelect: () => navigate(`/labels/templates/${t.id}/code`),
+                      }] : []),
+                      ...(canChange && t.kind === 'design' && !isBuilderTemplate(t) ? [{
+                        key: 'convert', label: rawLabel(t),
                         onSelect: () => {
                           if (!window.confirm('One-way: the draggable elements are discarded '
                             + 'and this becomes a raw-code template. Continue?')) return;
                           void convertLabelTemplate(t.id)
-                            .then(() => navigate(`/labels/templates/${t.id}/edit`))
+                            .then(() => navigate(`/labels/templates/${t.id}/code`))
                             .catch((err: unknown) => setError(msgFor(err)));
                         },
                       }] : []),

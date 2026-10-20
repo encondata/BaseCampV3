@@ -652,3 +652,19 @@ async def test_tree_readable_with_labels_view(client, db, seeded_user):
     assert len(parent["children"]) == 3 and parent["samples"] == {"asset_id": "10482"}
     r = await client.post(URL, headers=staff, json=_body("Mine"))
     assert r.status_code == 403
+
+
+async def test_a_parent_can_use_an_unlisted_custom_size(client, db, seeded_user):
+    """A custom size not saved to the list is an inactive size row: the
+    template it was made for may use it while nothing else does yet, and a
+    second template may not pick it."""
+    hdrs = await _super(db, client)
+    r = await client.post("/labels/vocab", headers=hdrs, json={
+        "kind": "size", "key": "3x1_25", "label": '3" x 1.25"', "is_active": False,
+        "meta": {"width_in": 3, "height_in": 1.25, "has_tab": False}})
+    assert r.status_code == 201, r.text
+    parent = await _create(client, hdrs, name="Odd size", size_key="3x1_25")
+    assert parent["size_key"] == "3x1_25"
+    r = await client.post(URL, headers=hdrs, json=_body(name="Second", size_key="3x1_25"))
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "unknown_vocab"

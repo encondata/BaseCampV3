@@ -3843,6 +3843,9 @@ class LabelVocabCreateIn(BaseModel):
     description: str = ""
     meta: dict = Field(default_factory=dict)
     sort_order: int = 0
+    # false keeps a row off the lists: a custom size made for one template
+    # and not saved to the list (the builder's New template › Custom…)
+    is_active: bool = True
 
 
 class LabelVocabUpdateIn(BaseModel):
@@ -4112,6 +4115,9 @@ class LabelCompileIn(BaseModel):
     dpi_key: str
     language_key: str
     mode: Literal["placeholders", "sample"] = "placeholders"
+    # a schema 2 design's sample values (the builder's), over the portal's
+    # mock values; refused for anything else
+    samples: dict[str, str] | None = None
 
 
 class LabelCompileOut(BaseModel):
@@ -4124,6 +4130,9 @@ class LabelZplPreviewIn(BaseModel):
     zpl: str = Field(min_length=1, max_length=20000)
     size_key: str
     dpi_key: str
+    # library fonts to embed (~DY) ahead of the label: the open fonts a
+    # builder design prints with; never the resident one
+    font_ids: list[uuid.UUID] = Field(default_factory=list, max_length=16)
 
 
 # ── generate labels (runs, preview, generated) ──────────────────────
