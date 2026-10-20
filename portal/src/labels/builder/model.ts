@@ -4,6 +4,11 @@
  * stored). Every edit returns a new design and never mutates its input, so
  * the undo history can keep each state as is.
  *
+ * A design with an image element is schema 3 and one without is schema 2
+ * (spec 2026-10-20-badge-templates §4.6), so a laptop that prints up to
+ * schema 2 refuses a badge instead of printing it without its picture. The
+ * edits leave `schema` alone; `serializeDesign` sets it from the elements.
+ *
  * Geometry (model.py): x, y is the top-left of the element's footprint on
  * the label, in inches. w runs along the element's own text direction and h
  * across it, so at rotation 90 or 270 the footprint is h wide and w tall.
@@ -15,6 +20,7 @@
  */
 
 import { applyRules, isBlank, piece as splitPiece, splitValue, type FieldRules } from '../fieldRules';
+import { BRIGHTNESS, CONTRAST, THRESHOLD, type DitherMode, type DitherParams } from './dither';
 import { familyInfo, type FontRef } from './fonts';
 
 export type Rotation = 0 | 90 | 180 | 270;
@@ -23,6 +29,8 @@ export type Display = 'text' | 'number' | 'barcode' | 'qr';
 export type Symbology = 'code128' | 'code39';
 export type Trim = 'front' | 'rear';
 export type StripWhere = 'front' | 'rear' | 'anywhere';
+export type ImageSource = 'photo' | 'logo' | 'static';
+export type ImageFit = 'cover' | 'contain';
 
 /** An inverted element's padding in inches: x along the text, y across. */
 export interface Pad {
@@ -113,12 +121,37 @@ export interface BoxElement extends ElementBase {
   fill?: boolean;
 }
 
+/** Schema 3: a picture printed as a Zebra graphic (model.py ImageEl). Its
+ *  source is the sample person's photo or logo, or a static image from the
+ *  label image library; never a field key. It fits its unrotated w x h box
+ *  (`fit`), then turns with the element; white dots are transparent. */
+export interface ImageElement extends ElementBase {
+  type: 'image';
+  source: ImageSource;
+  /** The label image's id: a static image only (absent until one is picked). */
+  imageId?: string | null;
+  /** Absent: `cover` for a photo, `contain` for a logo or static image. */
+  fit?: ImageFit;
+  /** Absent: `dither` for a photo, `threshold` for a logo or static image. */
+  mode?: DitherMode;
+  /** -100..100, absent 0 */
+  brightness?: number;
+  /** 0..300 percent, absent 100 */
+  contrast?: number;
+  /** 1..254, absent 128: the threshold mode's cut */
+  threshold?: number;
+  invert?: boolean;
+  /** Absent or true: no photo or logo prints nothing; false, an outlined box. */
+  hideWhenEmpty?: boolean;
+}
+
 export type ElementV2 =
-  | FieldElement | TextElement | BarcodeElement | QrElement | LineElement | BoxElement;
+  | FieldElement | TextElement | BarcodeElement | QrElement | LineElement | BoxElement | ImageElement;
 export type ElementType = ElementV2['type'];
 
 export interface DesignV2 {
-  schema: 2;
+  /** 3 when an image is on the label, else 2 (`serializeDesign` sets it). */
+  schema: 2 | 3;
   size: { w: number; h: number };
   /** Field key → the names of its Split's pieces (one Split per field). */
   splits?: Record<string, { pieces: string[] }>;
@@ -142,7 +175,7 @@ export class DesignError extends Error {
   }
 }
 
-const ELEMENT_TYPES: readonly ElementType[] = ['field', 'text', 'barcode', 'qr', 'line', 'box'];
+const ELEMENT_TYPES: readonly ElementType[] = ['field', 'text', 'barcode', 'qr', 'line', 'box', 'image'];
 const ROTATIONS: readonly number[] = [0, 90, 180, 270];
 const ALIGNS: readonly string[] = ['left', 'center', 'right'];
 const DISPLAYS: readonly string[] = ['text', 'number', 'barcode', 'qr'];
@@ -150,11 +183,24 @@ const SYMBOLOGIES: readonly string[] = ['code128', 'code39'];
 const TRIMS: readonly string[] = ['front', 'rear'];
 const STRIP_WHERES: readonly string[] = ['front', 'rear', 'anywhere'];
 const WEIGHTS: readonly string[] = ['regular', 'bold'];
+const IMAGE_SOURCES: readonly string[] = ['photo', 'logo', 'static'];
+const FITS: readonly string[] = ['cover', 'contain'];
+const MODES: readonly string[] = ['dither', 'threshold'];
+
+/** A photo fills its box and is dithered; a logo or a static image fits
+ *  inside it and is thresholded (model.py IMAGE_DEFAULTS). */
+export const IMAGE_DEFAULTS: Readonly<Record<ImageSource, { fit: ImageFit; mode: DitherMode }>> = {
+  photo: { fit: 'cover', mode: 'dither' },
+  logo: { fit: 'contain', mode: 'threshold' },
+  static: { fit: 'contain', mode: 'threshold' },
+};
 
 /** model.py's caps: a field's expected length and max characters (a glyph
- *  count, nothing needs more than two digits) and static text's lines. */
+ *  count, nothing needs more than two digits), static text's lines, and the
+ *  images on one design. */
 export const MAX_COUNT = 64;
 export const MAX_LINES = 50;
+export const MAX_IMAGE_ELEMENTS = 8;
 
 type Raw = Record<string, unknown>;
 
@@ -194,14 +240,16 @@ function freshId(used: Set<string>, prefix: string): string {
   }
 }
 
-/** A stored schema 2 design as the builder's model: a deep copy, with every
- *  key kept as stored. Throws DesignError only for what the builder cannot
- *  hold (not a schema 2 design, no size, an element that isn't one); every
- *  other fault is left for `validate`. An element with a missing or
+/** A stored schema 2 or 3 design as the builder's model: a deep copy, with
+ *  every key kept as stored. Throws DesignError only for what the builder
+ *  cannot hold (not a builder design, no size, an element that isn't one);
+ *  every other fault is left for `validate`. An element with a missing or
  *  repeated id gets a fresh `<type>-<n>` one, since selection needs ids. */
 export function parseDesign(raw: unknown): DesignV2 {
   if (!isObject(raw)) throw new DesignError(['design must be an object']);
-  if (raw.schema !== 2) throw new DesignError([`schema must be 2, not ${repr(raw.schema)}`]);
+  if (raw.schema !== 2 && raw.schema !== 3) {
+    throw new DesignError([`schema must be 2 or 3, not ${repr(raw.schema)}`]);
+  }
   const size = raw.size;
   if (!isObject(size) || !positive(size.w) || !positive(size.h)) {
     throw new DesignError(['size must hold positive numbers w and h']);
@@ -228,9 +276,13 @@ export function parseDesign(raw: unknown): DesignV2 {
   return design;
 }
 
-/** The design as JSON to store: a deep copy without undefined keys. */
+/** The design as JSON to store: a deep copy without undefined keys, schema
+ *  3 when an image is on the label and 2 when none is (model.py refuses an
+ *  image under schema 2 and schema 3 without one). */
 export function serializeDesign(d: DesignV2): DesignV2 {
-  return clone(d);
+  const out = clone(d);
+  out.schema = out.elements.some((e) => e.type === 'image') ? 3 : 2;
+  return out;
 }
 
 // ---- edits ---------------------------------------------------------------
@@ -398,7 +450,25 @@ export function elementHidden(el: ElementV2, values: Readonly<Record<string, str
   }
 }
 
-// ---- validate (model.py parse_design, schema 2) ----------------------------
+// ---- images ----------------------------------------------------------------
+
+/** How the picture fits its box: the stored fit, else the source's default. */
+export function imageFit(el: ImageElement): ImageFit {
+  return el.fit ?? (IMAGE_DEFAULTS[el.source] ?? IMAGE_DEFAULTS.static).fit;
+}
+
+/** The dither settings (model.py `ImageEl.params`), defaults filled in. */
+export function imageParams(el: ImageElement): DitherParams {
+  return {
+    brightness: el.brightness ?? 0,
+    contrast: el.contrast ?? 100,
+    threshold: el.threshold ?? 128,
+    mode: el.mode ?? (IMAGE_DEFAULTS[el.source] ?? IMAGE_DEFAULTS.static).mode,
+    invert: !!el.invert,
+  };
+}
+
+// ---- validate (model.py parse_design, schema 2 and 3) ----------------------
 
 function num(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v);
@@ -534,6 +604,32 @@ function checkField(el: Raw, p: string[], splits: ReadonlyMap<string, string[]>)
   optChoice('stripWhere', STRIP_WHERES)(el, p);
 }
 
+const wholeIn = (key: string, fallback: number, [lo, hi]: readonly [number, number]): Check => (el, p) => {
+  const v = withDefault(el[key], fallback);
+  if (!int(v) || v < lo || v > hi) p.push(`${key} must be a whole number from ${lo} to ${hi}`);
+};
+
+function checkImage(el: Raw, p: string[]): void {
+  let source = el.source as ImageSource;
+  if (!IMAGE_SOURCES.includes(source)) {
+    p.push(`source must be one of ${IMAGE_SOURCES.join('/')}`);
+    source = 'static';
+  }
+  if (source === 'static' && present(el.imageId) && (typeof el.imageId !== 'string' || !el.imageId)) {
+    p.push('imageId must be a non-empty string');
+  }
+  if (!FITS.includes(withDefault(el.fit, IMAGE_DEFAULTS[source].fit) as string)) {
+    p.push('fit must be cover or contain');
+  }
+  if (!MODES.includes(withDefault(el.mode, IMAGE_DEFAULTS[source].mode) as string)) {
+    p.push('mode must be dither or threshold');
+  }
+  wholeIn('brightness', 0, BRIGHTNESS)(el, p);
+  wholeIn('contrast', 100, CONTRAST)(el, p);
+  wholeIn('threshold', 128, THRESHOLD)(el, p);
+  if (!positive(el.w) || !positive(el.h)) p.push('an image needs a positive w and h');
+}
+
 function checkElement(el: Raw, p: string[], splits: ReadonlyMap<string, string[]>): void {
   for (const key of ['x', 'y', 'w', 'h']) needNum(key)(el, p);
   if (!ROTATIONS.includes(withDefault(el.rotation, 0) as number)) {
@@ -561,6 +657,9 @@ function checkElement(el: Raw, p: string[], splits: ReadonlyMap<string, string[]
     case 'line':
     case 'box':
       checkStroke(el, p);
+      return;
+    case 'image':
+      checkImage(el, p);
       return;
     default:
       p.push(`unknown type ${repr(el.type)}`);
@@ -601,5 +700,8 @@ export function validate(d: DesignV2): Problem[] {
     seen.add(id);
     problems.push(...p.map((message) => ({ elementId: id, message })));
   });
+  if (d.elements.filter((el) => el.type === 'image').length > MAX_IMAGE_ELEMENTS) {
+    problems.push({ elementId: null, message: `a design holds at most ${MAX_IMAGE_ELEMENTS} images` });
+  }
   return problems;
 }

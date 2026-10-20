@@ -425,6 +425,7 @@ def test_template_schema_reads_the_design_like_the_server(app):
     for odd in (True, "3", 3.0, None, [3]):
         assert schema(_template("d", design={**DESIGN, "schema": odd})) == 1, odd
     assert schema(_template("d", design={**DESIGN, "schema": 3})) == 3
+    assert schema(_template("d", design={**DESIGN, "schema": 4})) == 4
     # the sync's own schema_version counts too (a kind this edge doesn't know)
     assert schema({**_template("x", kind="hologram"), "schema_version": 4}) == 4
     assert schema({**_template("d", design=DESIGN), "schema_version": True}) == 1
@@ -432,8 +433,8 @@ def test_template_schema_reads_the_design_like_the_server(app):
 
 
 def test_a_newer_schema_is_template_unsupported_and_prints_nothing(app, monkeypatch):
-    newer = {"schema": 3, "elements": [{"type": "hologram", "field": "asset_id"}]}
-    store = _seed(app, templates=[{**_template("t-203", design=newer), "schema_version": 3}])
+    newer = {"schema": 4, "elements": [{"type": "hologram", "field": "asset_id"}]}
+    store = _seed(app, templates=[{**_template("t-203", design=newer), "schema_version": 4}])
     plan = generate.build_plan(store)
     assert plan.template.id == "t-203"  # still the station's pick: it fails visibly
     assert generate.render_job(plan.template_json, plan.assets[0]) \
@@ -444,9 +445,23 @@ def test_a_newer_schema_is_template_unsupported_and_prints_nothing(app, monkeypa
         == {(None, "template_unsupported", "t-203")}
     assert generate.changed_jobs(store, generate.build_plan(store)) == []
 
-    # a laptop update that knows schema 3 redoes every label
-    monkeypatch.setattr(generate, "SUPPORTED_SCHEMA", 3)
+    # a laptop update that knows schema 4 redoes every label
+    monkeypatch.setattr(generate, "SUPPORTED_SCHEMA", 4)
     assert len(generate.changed_jobs(store, generate.build_plan(store))) == 2
+
+
+def test_a_schema_3_image_design_prints_nothing_here(app):
+    """A builder design with an image is schema 3 (the portal's ID badges);
+    this edge prints up to schema 2, so one that ever reached it is
+    template_unsupported, never a label with the image missing."""
+    image = {"id": "photo", "type": "image", "source": "photo", "x": 0.1, "y": 0.1,
+             "w": 0.8, "h": 1.0, "rotation": 0}
+    badge = {**VEGAS, "schema": 3, "elements": [*VEGAS["elements"], image]}
+    store = _seed_vegas(app, templates=[_vegas(design=badge, schema_version=3)])
+    plan = generate.build_plan(store)
+    assert generate.template_schema(plan.template_json) == 3
+    assert generate.render_job(plan.template_json, plan.assets[0]) \
+        == (None, "template_unsupported")
 
 
 def test_prune_removes_assets_off_the_move(app):

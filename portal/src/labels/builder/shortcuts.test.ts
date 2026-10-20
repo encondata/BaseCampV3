@@ -116,6 +116,12 @@ describe('matchShortcut', () => {
     expect(matched(key('/', 'Slash', { ctrlKey: true }), 'win')).toBe('workflow.shortcutSheet');
   });
 
+  it('I is the Image tool (ID badges), apart from ⌘⇧I (Inverted)', () => {
+    expect(matched(key('i', 'KeyI'))).toBe('tool.image');
+    expect(matched(key('I', 'KeyI', { metaKey: true, shiftKey: true }))).toBe('format.inverted');
+    expect(SHORTCUTS.find((s) => s.id === 'tool.image')).toMatchObject({ mac: 'I', win: 'I', group: 'Tools' });
+  });
+
   it('never matches a pointer gesture from the keyboard', () => {
     expect(matched(key(' ', 'Space'))).toBeNull();
   });

@@ -661,3 +661,16 @@ it("printing waits while the printer's resolution is being read", async () => {
   expect(screen.getAllByText("Reading the printer's resolution…").length).toBe(2);   // Step 3 + Step 5
   expect(printer.send).not.toHaveBeenCalled();
 });
+
+it('never offers the ID Badge type: badges print from the label builder', async () => {
+  api.listLabelVocab.mockResolvedValue([
+    { kind: 'type', key: 'id_badge', label: 'ID Badge', description: '', meta: {}, sort_order: 0, is_active: true, usage_count: null },
+    ...vocab,
+  ]);
+  renderPage();
+  await pickInitiative();
+  // the first type offered is Top, not the badge sorted ahead of it
+  expect(await screen.findByText('3 of 3 assets have a Top Label')).toBeTruthy();
+  expect(screen.queryByRole('radio', { name: /ID Badge/ })).toBeNull();
+  expect(api.getGeneratedLabelBundle.mock.calls.map((c) => c[1])).not.toContain('id_badge');
+});

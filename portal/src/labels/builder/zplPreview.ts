@@ -5,10 +5,26 @@
  * fonts the design uses embedded (`POST /labels/preview/zpl`, `font_ids`).
  * The resident Swiss cut is never sent: the preview draws it with the
  * printer's font 0, the same face.
+ *
+ * Pictures never go to Labelary (an outside service): the preview's
+ * compile asks for `image_mode: "placeholder"`, so every image element
+ * renders as a placeholder; the canvas and Test print use the real
+ * pictures (every other compile leaves `image_mode` out: "print"). A
+ * badge's samples still carry its sample person (`person:id`) for its
+ * text. A big ZPL is past PREVIEW_MAX_CHARS, and the preview route won't
+ * take it.
  */
 
 import { familyInfo, fontObject, metricsFile, type FontRef, type FontWeight } from './fonts';
 import { serializeDesign, type DesignV2, type ElementV2 } from './model';
+
+/** The longest ZPL POST /labels/preview/zpl renders. */
+export const PREVIEW_MAX_CHARS = 250_000;
+
+/** Whether `zpl` is past what the preview renders. */
+export function previewTooLarge(zpl: string): boolean {
+  return zpl.length > PREVIEW_MAX_CHARS;
+}
 
 export interface CompileBody {
   kind: 'design';
@@ -17,11 +33,14 @@ export interface CompileBody {
   dpi_key: string;
   language_key: 'zpl';
   mode: 'sample';
-  /** Field key → sample value: what the design prints with. */
+  /** Field key → sample value: what the design prints with; a badge's
+   *  sample person under `person:id`. */
   samples: Record<string, string>;
   /** The template's label type: only its fields take mock values, so a key
    *  of another type previews blank, as it prints. */
   label_type: string;
+  /** Images as placeholders: no picture is sent to Labelary. */
+  image_mode: 'placeholder';
 }
 
 export interface PreviewZplBody {
@@ -63,6 +82,7 @@ export function previewRequest(design: DesignV2, dpi: number, samples: Readonly<
       mode: 'sample',
       samples: { ...samples },
       label_type: labelType,
+      image_mode: 'placeholder',
     },
     preview: (zpl) => ({ zpl, size_key: sizeKey, dpi_key: dpiKey, font_ids: [...ids] }),
   };

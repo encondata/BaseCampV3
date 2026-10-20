@@ -47,6 +47,7 @@ from serversherpa.db.models import (
     ImportJob,
     LabelFont,
     LabelGenerationRun,
+    LabelImage,
     Note,
     Notification,
     Partner,
@@ -55,6 +56,7 @@ from serversherpa.db.models import (
     ReportRun,
     SpecLookupJob,
     StatusRuleExecution,
+    SystemConfig,
     TrustedDevice,
 )
 from serversherpa.notifications.password_reminders import KIND as PASSWORD_EXPIRING_KIND
@@ -131,13 +133,15 @@ async def cutoff_for(db: AsyncSession, older_than_days: int | None) -> datetime 
 
 async def delete_objects(keys: Iterable[str], result: CategoryResult) -> None:
     """Delete stored objects once the rows that used them are gone. Call
-    AFTER the chunk commits. A failure is counted and logged; it never
-    stops the run and is not retried."""
+    AFTER the chunk commits. A failure is counted and logged (the error's
+    class and S3 code only: botocore's message carries the endpoint); it
+    never stops the run and is not retried."""
     for key in keys:
         try:
             await storage.delete_object(key)
-        except Exception:
-            logger.warning("cleanup: could not delete object %s", key, exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - counted, the run goes on
+            logger.warning("cleanup: could not delete object %s: %s", key,
+                           storage.loggable(exc))
             result.files_failed += 1
         else:
             result.files_deleted += 1
@@ -297,8 +301,9 @@ async def _purge_trusted_browsers(
 # ── stored files: who still uses a key ───────────────────────────────
 
 # Each table that holds a storage key, as (model, key column, "this row
-# is a kept row" filter or None). Soft-deleted attachments and fonts do
-# not count: nothing can reach their object any more.
+# is a kept row" filter or None). Soft-deleted attachments, fonts and label
+# images do not count: nothing can reach their object any more. The company
+# logo's key lives in the system config's branding section (JSON).
 def _key_sources() -> list[tuple[type, ColumnElement, ColumnElement | None]]:
     return [
         (Attachment, Attachment.storage_key, Attachment.deleted_at.is_(None)),
@@ -308,6 +313,9 @@ def _key_sources() -> list[tuple[type, ColumnElement, ColumnElement | None]]:
         (Client, Client.logo_key, None),
         (Partner, Partner.logo_key, None),
         (LabelFont, LabelFont.storage_key, LabelFont.deleted_at.is_(None)),
+        (LabelImage, LabelImage.storage_key, LabelImage.deleted_at.is_(None)),
+        (SystemConfig, SystemConfig.data["company_logo_key"].astext,
+         SystemConfig.section == "branding"),
     ]
 
 
@@ -562,6 +570,10 @@ def _old_fonts(cutoff: datetime) -> ColumnElement[bool]:
     return LabelFont.deleted_at < cutoff
 
 
+def _old_label_images(cutoff: datetime) -> ColumnElement[bool]:
+    return LabelImage.deleted_at < cutoff
+
+
 async def _count_attachments(db: AsyncSession, cutoff: datetime | None) -> tuple[int, int]:
     where = _old_attachments(cutoff)
     return (await _count_rows(db, Attachment, where),
@@ -612,6 +624,27 @@ async def _purge_fonts(maker: async_sessionmaker, cutoff: datetime | None) -> Ca
     result = CategoryResult("label_fonts")
     await purge_in_chunks(maker, LabelFont, _old_fonts(cutoff), result,
                           before=_chunk_keys(LabelFont, LabelFont.storage_key),
+                          still_used=keys_in_use)
+    return result
+
+
+# Nothing points at a label image row either: a badge design names its
+# library image by id inside the design JSON, and a deleted one already
+# prints as no picture there (routes/labels.py _library_key). Its object
+# stays while another row (another library image, an avatar, a logo) uses
+# the same key.
+async def _count_label_images(db: AsyncSession, cutoff: datetime | None) -> tuple[int, int]:
+    where = _old_label_images(cutoff)
+    return (await _count_rows(db, LabelImage, where),
+            await _count_unused_keys(db, LabelImage, LabelImage.storage_key, where))
+
+
+async def _purge_label_images(
+    maker: async_sessionmaker, cutoff: datetime | None,
+) -> CategoryResult:
+    result = CategoryResult("label_images")
+    await purge_in_chunks(maker, LabelImage, _old_label_images(cutoff), result,
+                          before=_chunk_keys(LabelImage, LabelImage.storage_key),
                           still_used=keys_in_use)
     return result
 
@@ -694,8 +727,8 @@ GROUPS: dict[str, Group] = {g.key: g for g in (
         )),
     Group(
         key="deleted", label="Deleted files",
-        description="Files, notes and fonts that were deleted and are past the age you "
-                    "choose, along with their stored copies.",
+        description="Files, notes, fonts and label images that were deleted and are past "
+                    "the age you choose, along with their stored copies.",
         needs_age=True,
         categories=(
             Category(
@@ -715,6 +748,13 @@ GROUPS: dict[str, Group] = {g.key: g for g in (
                             "stored font file. A file another font in the library still "
                             "uses stays.",
                 count=_count_fonts, purge=_purge_fonts),
+            Category(
+                key="label_images", label="Deleted label images",
+                description="Pictures that were removed from the label image library, with "
+                            "the stored picture. A badge template that still names one already "
+                            "prints no picture in its place. A picture something else still "
+                            "uses stays.",
+                count=_count_label_images, purge=_purge_label_images),
         )),
 )}
 

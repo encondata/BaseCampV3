@@ -29,6 +29,8 @@ LABEL_VOCAB_SEEDS = """
       ('type','rail','Rail Label','Placed on the rack rail at the destination RU.','{}',3),
       ('type','container','Container Label','Placed on crates and containers.','{"default_copies": 5}',4),
       ('type','container_info','Container Info Label','The crate''s QR, route, date and RFID zone.','{"default_copies": 1}',5),
+      -- 0104: the built-in ID Badge type
+      ('type','id_badge','ID Badge','A worker''s or staff member''s ID badge.','{}',6),
       ('size','4x2','4" x 2"','','{"width_in": 4, "height_in": 2, "has_tab": false}',1),
       ('size','2x1','2" x 1"','','{"width_in": 2, "height_in": 1, "has_tab": false}',2),
       ('size','4x3-tab','4" x 3" (w/ tab)','','{"width_in": 4, "height_in": 3, "has_tab": true}',3),
@@ -412,7 +414,7 @@ async def clean_db():
                 "syslog": {"host": "", "port": 514, "protocol": "udp"}}'::jsonb),
               ('logging_cursor', '{"last_forwarded_id": 0}'::jsonb)
         """))
-        # labels seeds (0042 as amended by 0066 and 0102)
+        # labels seeds (0042 as amended by 0066, 0102 and 0104)
         await session.execute(text(LABEL_VOCAB_SEEDS))
         await session.execute(text(LABEL_PLACEHOLDER_SEEDS))
         await session.commit()

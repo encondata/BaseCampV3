@@ -36,6 +36,8 @@ CONTAINER_KEYS = ["container_name", "container_id", "label_tag", "container_rfid
                   "container_type", "container_status"]
 ASSET_TYPES = ["top", "front", "rail"]
 ALL_TYPES = ["top", "front", "rail", "container", "container_info"]
+# every group but Person: what a custom type (New template › Custom…) offers
+NON_PERSON_GROUPS = ["asset", "model", "move_row", "move", "sites", "container"]
 
 ITEM = {
     "id": "6f1c2b0e-0000-4000-8000-000000000001",
@@ -77,7 +79,8 @@ def _keys(group_key):
 def test_catalog_keys_are_unique_and_grouped():
     assert [(g["key"], g["label"]) for g in FIELD_GROUPS] == [
         ("asset", "Asset"), ("model", "Make & model"), ("move_row", "On this move"),
-        ("move", "Move"), ("sites", "Sites"), ("container", "Container")]
+        ("move", "Move"), ("sites", "Sites"), ("container", "Container"),
+        ("person", "Person")]
     assert _keys("asset") == ASSET_KEYS
     assert _keys("model") == ["make_model"]
     assert _keys("move_row") == MOVE_ROW_KEYS
@@ -87,7 +90,8 @@ def test_catalog_keys_are_unique_and_grouped():
     types = {g["key"]: g["label_types"] for g in FIELD_GROUPS}
     assert types == {"asset": ASSET_TYPES, "model": ASSET_TYPES, "move_row": ASSET_TYPES,
                      "move": ALL_TYPES, "sites": ALL_TYPES,
-                     "container": ["container", "container_info"]}
+                     "container": ["container", "container_info"],
+                     "person": ["id_badge"]}
     every = [f["key"] for g in FIELD_GROUPS for f in g["fields"]]
     assert len(every) == len(set(every))
     assert not [k for k in every if k.startswith("ft:")]
@@ -109,8 +113,11 @@ def test_groups_for_a_label_type():
         assert keys(t) == ["asset", "model", "move_row", "move", "sites"]
     for t in ("container", "container_info"):
         assert keys(t) == ["move", "sites", "container"]
-    # a type outside the five (a custom type, "id_badge") can place any field
-    assert keys("id_badge") == [g["key"] for g in FIELD_GROUPS]
+    # the built-in ID badge type places people fields only
+    assert keys("id_badge") == ["person"]
+    # a custom type (New template › Custom…, "shelf") can place any field
+    # but a person's
+    assert keys("shelf") == NON_PERSON_GROUPS
     assert keys(None) == [g["key"] for g in FIELD_GROUPS]
     from serversherpa.labels.generate import ENTITY_FOR_TYPE
     assert set(fields.CONTAINER_LABEL_TYPES) == {
@@ -139,10 +146,12 @@ def test_mock_values_cover_every_key():
 
 def test_a_custom_type_mocks_every_key():
     """mock_field_values for a type the catalog doesn't know: every catalog
-    key, and its From-To columns as their headers."""
-    every = {f["key"] for g in FIELD_GROUPS for f in g["fields"]}
-    values = fields.mock_field_values("id_badge", {"ft:Badge No", "asset_id"})
+    key but the people fields (those are the ID badge's), and its From-To
+    columns as their headers."""
+    every = {f["key"] for g in FIELD_GROUPS if g["key"] != "person" for f in g["fields"]}
+    values = fields.mock_field_values("shelf", {"ft:Badge No", "asset_id"})
     assert set(values) == every | {"ft:Badge No"}
+    assert "person_name" not in values
     assert values["container_name"] == MOCK_VALUES["container_name"]
     assert values["asset_id"] == MOCK_VALUES["asset_id"]
     assert values["ft:Badge No"] == "Badge No"
@@ -280,9 +289,9 @@ async def test_fields_route_filters_groups_by_label_type(client, db, seeded_user
 
     r = await client.get("/labels/fields", headers=hdrs)
     assert [g["key"] for g in r.json()["groups"]] == [g["key"] for g in FIELD_GROUPS]
-    # a custom type: every group, and the From-To columns
-    r = await client.get("/labels/fields", headers=hdrs, params={"label_type": "id_badge"})
-    assert [g["key"] for g in r.json()["groups"]] == [g["key"] for g in FIELD_GROUPS]
+    # a custom type: every group but Person, and the From-To columns
+    r = await client.get("/labels/fields", headers=hdrs, params={"label_type": "shelf"})
+    assert [g["key"] for g in r.json()["groups"]] == NON_PERSON_GROUPS
     assert r.json()["ft_headers"] == ["Asset Name", "Data 2", "Data 10", "Notes"]
 
 

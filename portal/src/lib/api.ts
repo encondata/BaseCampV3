@@ -4460,6 +4460,49 @@ export async function updateAiLookupConfig(patch: Partial<AiLookupConfig>): Prom
   return resp.json();
 }
 
+// ── system config: Branding (the company on staff ID badges) ──────────
+
+/** System settings › Branding: the company name and logo staff ID badges
+ *  show. `logo_url` is a short-lived link to the stored original, null
+ *  without a logo. Read with settings:view, changed with settings:change. */
+export interface Branding { company_name: string; has_logo: boolean; logo_url: string | null }
+
+export async function getBranding(): Promise<Branding> {
+  const resp = await apiFetch('/system/branding');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** The company name, trimmed; 422 `company_name_required` when blank. */
+export async function updateBranding(patch: { company_name: string }): Promise<Branding> {
+  const resp = await apiFetch('/system/branding', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Upload or replace the company logo: PNG, JPEG or WebP, 5 MiB at most,
+ *  stored as uploaded (uncropped); the logo it replaces is deleted. 413
+ *  `file_too_large`; 422 `empty_file`, `invalid_file_type`,
+ *  `unreadable_image`, `image_too_large`. */
+export async function uploadBrandingLogo(file: File): Promise<Branding> {
+  const form = new FormData();
+  form.set('file', file);
+  const resp = await apiFetch('/system/branding/logo', { method: 'PUT', body: form });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Remove the company logo (the stored file is deleted). */
+export async function removeBrandingLogo(): Promise<Branding> {
+  const resp = await apiFetch('/system/branding/logo', { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 /* ── spec lookup (Makes/Models spec lookup runs + suggestions) ──────── */
 
 export interface SpecLookupStatus {
@@ -5620,6 +5663,38 @@ export async function loadSampleAsset(initiativeId: string, assetId: string): Pr
   return resp.json();
 }
 
+/** GET /labels/sample-people: one staff member or worker Load from person…
+ *  can pick. `company` is the one their badge names (Branding's for staff,
+ *  a worker's partner), null when none. */
+export interface SamplePerson {
+  person_id: string; name: string; person_type: 'Staff' | 'Worker'; company: string | null;
+  has_photo: boolean; has_logo: boolean;
+}
+
+/** Staff and workers whose first, last or preferred name holds every word
+ *  of `q`, natural by name, at most `limit` (1-100); archived people and
+ *  hidden move identities never appear. Rank 80 + labels:view. */
+export async function searchSamplePeople(q: string, limit = 25): Promise<SamplePerson[]> {
+  const params = new URLSearchParams({ q, limit: String(limit) });
+  const resp = await apiFetch(`/labels/sample-people?${params.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** GET /labels/sample-person: one person's badge values, {key: text} for
+ *  every person key ('' for a blank), and whether their badge has a photo
+ *  and a logo. 404 `person_not_found`. Rank 80 + labels:view. */
+export interface SamplePersonValues {
+  person_id: string; values: Record<string, string>; has_photo: boolean; has_logo: boolean;
+}
+
+export async function loadSamplePerson(personId: string): Promise<SamplePersonValues> {
+  const params = new URLSearchParams({ person_id: personId });
+  const resp = await apiFetch(`/labels/sample-person?${params.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 // ── Label font library (Labels → Printers › Install Fonts) ───────────
 
 export interface LabelFontUsedBy { template_id: string; template_name: string }
@@ -5688,6 +5763,10 @@ export async function compileLabel(body: {
   mode: 'placeholders' | 'sample';
   samples?: Record<string, string>;
   label_type?: string;
+  /** "print" (the default): the real pictures; "placeholder": a placeholder
+   *  for each image element (the printer preview: no picture goes to
+   *  Labelary). */
+  image_mode?: 'print' | 'placeholder';
 }): Promise<{ code: string }> {
   const resp = await apiFetch('/labels/templates/compile', {
     method: 'POST',
@@ -5696,6 +5775,89 @@ export async function compileLabel(body: {
   });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
+}
+
+// ── Label images (ID badges: the image element) ──────────────────────
+
+/** POST /labels/images/raster: one image element's picture, prepped as the
+ *  compiler preps it (labels/image_prep.py) — fitted to the element's
+ *  `w_in` x `h_in` box at `dpi` by `fit`, turned by `rotation` — for the
+ *  builder canvas to dither. A photo or logo is `person_id`'s, a static
+ *  picture is `image_id`. */
+export interface LabelImageRasterBody {
+  source: 'photo' | 'logo' | 'static';
+  image_id?: string;
+  person_id?: string;
+  w_in: number;
+  h_in: number;
+  dpi: number;
+  fit: 'cover' | 'contain';
+  rotation: 0 | 90 | 180 | 270;
+}
+
+/** 8-bit gray levels, row-major (0 black, 255 white), already turned. The
+ *  size is the X-Raster-Width / X-Raster-Height headers' (the API exposes
+ *  them over CORS), null if they can't be read: the caller knows the size
+ *  it asked for. */
+export interface LabelImageRaster { width: number | null; height: number | null; gray: Uint8Array }
+
+function rasterSide(resp: Response, header: string): number | null {
+  const v = resp.headers.get(header);
+  const n = v === null ? NaN : Number(v);
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+/** null when there is no picture to draw (404 `no_image`: no sample
+ *  person, a person with no photo or logo, a static image missing or
+ *  deleted). Refusals are ApiErrors: 422 `bad_field`, `person_not_found`,
+ *  `image_too_large` (past 4,000,000 dots), `unreadable_image`; 502
+ *  `storage_unavailable`. Rank 80 + labels:view. */
+export async function labelImageRaster(body: LabelImageRasterBody): Promise<LabelImageRaster | null> {
+  const resp = await apiFetch('/labels/images/raster', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (resp.status === 204) return null;
+  if (!resp.ok) {
+    const err = await errorFrom(resp);
+    if (err.status === 404 && err.code === 'no_image') return null;
+    throw err;
+  }
+  return {
+    width: rasterSide(resp, 'X-Raster-Width'),
+    height: rasterSide(resp, 'X-Raster-Height'),
+    gray: new Uint8Array(await resp.arrayBuffer()),
+  };
+}
+
+/** A static picture in the label image library (`label_images`): the
+ *  original as uploaded, its size in pixels. */
+export interface LabelImage {
+  id: string; name: string; width: number; height: number; mime: string; created_at: string;
+}
+
+export async function listLabelImages(): Promise<LabelImage[]> {
+  const resp = await apiFetch('/labels/images');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** PNG, JPEG, WebP or GIF, 5 MiB at most; `name` defaults to the file's. */
+export async function uploadLabelImage(file: File, name?: string): Promise<LabelImage> {
+  const form = new FormData();
+  form.set('file', file);
+  if (name) form.set('name', name);
+  const resp = await apiFetch('/labels/images', { method: 'POST', body: form });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** A soft delete: a template still using it prints no picture there (an
+ *  outlined box where Hide when empty is off) until another is picked. */
+export async function deleteLabelImage(id: string): Promise<void> {
+  const resp = await apiFetch(`/labels/images/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
 }
 
 /** The printer-rendered preview (Labelary); `font_ids` are library fonts

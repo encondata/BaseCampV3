@@ -65,6 +65,21 @@ export const FIELDS: LabelFields = {
   ft_headers: ['Data 2', 'Data 10', 'Notes'],
 };
 
+/** GET /labels/fields?label_type=id_badge: the Person group only, no
+ *  From-To columns (labels/fields.py, keys in its order). */
+export const PERSON_FIELDS: LabelFields = {
+  groups: [{
+    key: 'person', label: 'Person', label_types: ['id_badge'], fields: ([
+      ['person_name', 'Name'], ['first_name', 'First name'], ['last_name', 'Last name'],
+      ['preferred_name', 'Preferred name'], ['person_type', 'Person type'], ['company', 'Company'],
+      ['parent_company', 'Parent company'], ['job_title', 'Job title'], ['roles', 'Roles'], ['trade', 'Trade'],
+      ['level', 'Level'], ['worker_status', 'Worker status'], ['employee_id', 'Employee ID'], ['email', 'Email'],
+      ['phone', 'Phone'], ['person_rfid_tag', 'RFID tag'], ['badge_id', 'Badge ID'], ['badge_short', 'Badge ID (short)'],
+    ] as const).map(([key, label]) => ({ key, label, kind: 'text' as const, mock: '' })),
+  }],
+  ft_headers: [],
+};
+
 export const SAMPLES: Record<string, string> = {
   destination_rack: '14.01.07C.02.03',
   destination_ru: '23',

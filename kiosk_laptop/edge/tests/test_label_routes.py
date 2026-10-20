@@ -60,8 +60,8 @@ async def test_unsupported_templates_are_counted_and_each_label_says_so(app, cli
     """`unsupported` counts the templates (not labels) this laptop's edge
     is too old to print; their labels are errors with that reason."""
     headers = make_session(app)
-    newer = {"schema": 3, "elements": []}
-    _seed(app, templates=[{**_template("t-203", design=newer), "schema_version": 3}])
+    newer = {"schema": 4, "elements": []}
+    _seed(app, templates=[{**_template("t-203", design=newer), "schema_version": 4}])
     runner = app.state.label_runner
     runner.request("setup")
     await runner.run_pending()

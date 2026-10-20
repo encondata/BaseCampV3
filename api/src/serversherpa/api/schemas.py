@@ -14,6 +14,7 @@ from pydantic import (
     ConfigDict,
     EmailStr,
     Field,
+    StringConstraints,
     field_validator,
 )
 
@@ -2491,6 +2492,22 @@ class RevokeAllSessionsOut(BaseModel):
     revoked_people: int
 
 
+class BrandingOut(BaseModel):
+    """System settings › Branding: the company staff ID badges name and
+    show. `logo_url` is a short-lived link to the stored original."""
+    company_name: str
+    has_logo: bool
+    logo_url: str | None
+
+
+class BrandingIn(BaseModel):
+    """PATCH /system/branding: the company name, trimmed before its
+    200-character cap (never blank). The logo has its own routes."""
+    model_config = ConfigDict(extra="forbid")
+
+    company_name: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)]
+
+
 class AdminConfigIn(BaseModel):
     """Partial update — only sent fields change."""
 
@@ -3939,7 +3956,8 @@ class LabelTemplateOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     # The label builder's tree (labels/templates_tree.py): a parent is
-    # schema_version 2 with no parent_id and owns `dpis` and `samples`; a
+    # schema_version 2 (3 when its design has images) with no parent_id and
+    # owns `dpis` and `samples`; a
     # child names its parent, the parent version it was generated from and
     # its hand edits on top (v<generated_from_version>.<child_edits>).
     parent_id: uuid.UUID | None = None
@@ -4074,9 +4092,9 @@ class LabelFontOut(BaseModel):
 
 
 class LabelTemplateCreateIn(BaseModel):
-    """A `design` with `"schema": 2` creates a builder parent (at 300 DPI)
-    and its 203/300/600 children; `dpi_key` is then not needed. Any other
-    body creates one row at `dpi_key`, as before."""
+    """A `design` with `"schema": 2` (or 3, with images) creates a builder
+    parent (at 300 DPI) and its 203/300/600 children; `dpi_key` is then not
+    needed. Any other body creates one row at `dpi_key`, as before."""
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=120)
@@ -4124,12 +4142,18 @@ class LabelCompileIn(BaseModel):
     dpi_key: str
     language_key: str
     mode: Literal["placeholders", "sample"] = "placeholders"
-    # a schema 2 design's sample values (the builder's), over the portal's
-    # mock values; refused for anything else
+    # a builder (schema 2 or 3) design's sample values, over the portal's
+    # mock values; refused for anything else. `person:id` names the sample
+    # person whose photo and logo a badge's images print (rank 80 only).
     samples: dict[str, str] | None = None
-    # the template's label type: a schema 2 preview mocks only that type's
-    # fields (a key of another type previews blank, as it prints)
+    # the template's label type: a builder preview mocks only that type's
+    # fields (a key of another type previews blank, as it prints); an image
+    # element needs `id_badge` (and language zpl)
     label_type: str | None = Field(None, max_length=64)
+    # `print` resolves a builder design's images into their pictures (Test
+    # print); `placeholder` (the preview, rendered by Labelary, which is
+    # never sent a picture) prints each as a crossed box and reads none
+    image_mode: Literal["print", "placeholder"] = "print"
 
 
 class LabelCompileOut(BaseModel):
@@ -4139,12 +4163,67 @@ class LabelCompileOut(BaseModel):
 class LabelZplPreviewIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    zpl: str = Field(min_length=1, max_length=20000)
+    # a badge photo is ~12k characters of Z64 at 300 DPI and ~47k at 600
+    zpl: str = Field(min_length=1, max_length=250_000)
     size_key: str
     dpi_key: str
     # library fonts to embed (~DY) ahead of the label: the open fonts a
     # builder design prints with; never the resident one
     font_ids: list[uuid.UUID] = Field(default_factory=list, max_length=16)
+
+
+class LabelImageOut(BaseModel):
+    """A static image in the label image library (ID badge templates): the
+    original upload's upright pixel size, type and bytes."""
+    id: uuid.UUID
+    name: str
+    width: int
+    height: int
+    mime: str
+    size_bytes: int
+    created_by: uuid.UUID | None
+    created_by_name: str | None
+    created_at: datetime
+
+
+class LabelImageRasterIn(BaseModel):
+    """POST /labels/images/raster: an image element's picture as the gray
+    raster it prints from, at `dpi`: a library image (`static`, by
+    `image_id`), or a person's photo or logo (`person_id`). The box is
+    `w_in` x `h_in` before `rotation` (clockwise)."""
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["photo", "logo", "static"]
+    image_id: str | None = Field(None, max_length=64)
+    person_id: str | None = Field(None, max_length=64)
+    w_in: float = Field(gt=0, le=100)
+    h_in: float = Field(gt=0, le=100)
+    dpi: int = Field(ge=1, le=1200)
+    fit: Literal["cover", "contain"]
+    rotation: Literal[0, 90, 180, 270] = 0
+
+
+class LabelSamplePeopleItemOut(BaseModel):
+    """GET /labels/sample-people: one staff member or worker the builder can
+    load as a badge's sample person. `company` is the one their badge names
+    (Branding's for staff, a worker's partner), None when none; the photo
+    and logo flags say whether their badge has one to print."""
+    person_id: uuid.UUID
+    name: str
+    person_type: Literal["Staff", "Worker"]
+    company: str | None
+    has_photo: bool
+    has_logo: bool
+
+
+class LabelSamplePersonOut(BaseModel):
+    """GET /labels/sample-person: one person's badge field values, {key:
+    text} for every person key (labels/fields.py person_values), and
+    whether their badge has a photo and a logo to print."""
+    person_id: uuid.UUID
+    values: dict[str, str]
+    has_photo: bool
+    has_logo: bool
 
 
 # ── generate labels (runs, preview, generated) ──────────────────────

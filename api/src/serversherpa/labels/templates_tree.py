@@ -3,8 +3,9 @@ one DPI child per entry of its `dpis`, versions, clone, Replace… and the
 typed-name delete. Every write to a builder template goes through here;
 api/routes/labels.py validates input, maps the errors and audits.
 
-- A parent (`schema_version` 2, no `parent_id`) is the design the builder
-  shows, at 300 DPI. It never prints: kiosks and the generator use its
+- A parent (`schema_version` 2 or 3, no `parent_id`) is the design the
+  builder shows, at 300 DPI. A builder row's `schema_version` is its
+  design's schema: 3 with an image element, else 2 (`design_schema`). It never prints: kiosks and the generator use its
   children.
 - A child is a full copy of the parent's design pinned to one DPI, named
   "<parent> · <dpi>". A parent save regenerates every child that has no
@@ -45,6 +46,7 @@ from serversherpa.db.models import (
     GeneratedLabel, LabelTemplate, LabelTemplateSite, LabelTemplateVersion,
 )
 from serversherpa.db.ordering import natural_key
+from serversherpa.labels.fields import PERSON_LABEL_TYPES
 from serversherpa.labels.kiosk_templates import FALLBACK_NAME, row_family
 
 TREE_DPIS = ("203", "300", "600")
@@ -129,6 +131,15 @@ class UnknownTemplates(TreeError):
     status, code = 422, "unknown_templates"
 
 
+class ImagesBadgeOnly(TreeError):
+    """Images print only on ID Badge templates in ZPL (spec
+    2026-10-20-badge-templates §4.10)."""
+    status, code = 422, "images_badge_only"
+
+    def __init__(self, **extra):
+        super().__init__(message="Images print on ID Badge templates in ZPL only", **extra)
+
+
 class ParentSaveResult(TypedDict):
     out_of_date: list[uuid.UUID]
 
@@ -147,6 +158,30 @@ class DeleteSummaryOut(DeleteSummary):
 class DeactivateSummary(TypedDict):
     rows: list[str]
     fallback_dpis_lost: list[str]
+
+
+def design_schema(design: dict | None) -> int:
+    """A builder design's schema, stored as its row's `schema_version`: 3
+    when it has an image element, 2 otherwise (the routes validate it)."""
+    schema = design.get("schema") if isinstance(design, dict) else None
+    if isinstance(schema, int) and not isinstance(schema, bool) and schema >= 2:
+        return schema
+    return 2
+
+
+def has_image(design: object) -> bool:
+    """Whether a builder design has an image element."""
+    elements = design.get("elements") if isinstance(design, dict) else None
+    return isinstance(elements, list) and any(
+        isinstance(el, dict) and el.get("type") == "image" for el in elements)
+
+
+def check_images(design: object, label_type: str | None, language_key: str | None,
+                 **extra) -> None:
+    """ImagesBadgeOnly for a design with an image element on any type but
+    an ID badge, or any language but ZPL (`extra` names the row at fault)."""
+    if has_image(design) and (label_type not in PERSON_LABEL_TYPES or language_key != "zpl"):
+        raise ImagesBadgeOnly(**extra)
 
 
 def _now() -> datetime:
@@ -173,10 +208,13 @@ def is_out_of_date(child: LabelTemplate, design_version: int) -> bool:
             and (child.generated_from_version or 0) < design_version)
 
 
-# what a save decides from, re-read under the row lock (`_lock`)
-_SAVE_COLUMNS = ("name", "design", "samples", "version", "dpis", "is_active", "label_type",
-                 "size_key", "language_key", "generated_from_version", "child_edits",
-                 "customized", "is_old")
+# what a save decides from, re-read under the row lock (`_lock`).
+# schema_version too: a save sets it from the design it writes, and a stale
+# copy of it in the session would make that set look like no change, so the
+# row would keep another transaction's schema under this design.
+_SAVE_COLUMNS = ("name", "design", "schema_version", "samples", "version", "dpis",
+                 "is_active", "label_type", "size_key", "language_key",
+                 "generated_from_version", "child_edits", "customized", "is_old")
 
 
 async def _lock(db: AsyncSession, row: LabelTemplate) -> None:
@@ -486,8 +524,9 @@ async def create_parent(db: AsyncSession, *, name: str, description: str, label_
         name=name, description=description, label_type=label_type, size_key=size_key,
         dpi_key=PARENT_DPI, language_key=language_key, kind="design",
         design=copy.deepcopy(design), code=None, version=1, is_active=is_active,
-        generation_rules={}, schema_version=2, samples=dict(samples or {}),
-        dpis=list(TREE_DPIS), generated_from_version=None, child_edits=0,
+        generation_rules={}, schema_version=design_schema(design),
+        samples=dict(samples or {}), dpis=list(TREE_DPIS), generated_from_version=None,
+        child_edits=0,
         customized=False, is_old=False)
     db.add(parent)
     await db.flush()
@@ -517,7 +556,8 @@ async def generate_children(db: AsyncSession, parent: LabelTemplate, *,
             size_key=parent.size_key, dpi_key=dpi, language_key=parent.language_key,
             kind="design", design=copy.deepcopy(parent.design), code=None,
             version=parent.version, is_active=parent.is_active, generation_rules={},
-            parent_id=parent.id, schema_version=2, samples={}, dpis=[dpi],
+            parent_id=parent.id, schema_version=design_schema(parent.design), samples={},
+            dpis=[dpi],
             generated_from_version=parent.version, child_edits=0, customized=False,
             is_old=False)
         db.add(child)
@@ -539,12 +579,16 @@ async def save_parent(db: AsyncSession, parent: LabelTemplate, *, design: dict,
     are and come back as out of date. When only the samples change, the
     children are left alone (module docstring). The parent and then its
     children are locked first, so the children regenerated are the ones
-    without hand edits as of this save, not as of an earlier read."""
+    without hand edits as of this save, not as of an earlier read; the
+    design is checked against the type and language as locked
+    (ImagesBadgeOnly), whatever the caller checked before."""
     await _lock(db, parent)
+    check_images(design, parent.label_type, parent.language_key)
     design_changed = design != parent.design
     auto = ("Changed sample values" if not design_changed else change_summary(
         parent.design, design, samples_changed=(parent.samples or {}) != (samples or {})))
     parent.design = copy.deepcopy(design)
+    parent.schema_version = design_schema(design)
     parent.samples = dict(samples or {})
     parent.version += 1
     parent.updated_at = _now()
@@ -559,6 +603,7 @@ async def save_parent(db: AsyncSession, parent: LabelTemplate, *, design: dict,
                 out_of_date.append(child.id)
             continue
         child.design = copy.deepcopy(design)
+        child.schema_version = design_schema(design)
         child.generated_from_version = parent.version
         child.version += 1
         child.updated_at = _now()
@@ -573,12 +618,15 @@ async def save_child(db: AsyncSession, child: LabelTemplate, *, design: dict,
     """A hand edit of one DPI: the child is customized from now on. The
     child is locked and re-read first, so an edit lands on top of a parent
     save that regenerated it meanwhile (its version and its key count on
-    from that save)."""
+    from that save). The design is checked against the type and language
+    as locked (ImagesBadgeOnly)."""
     if child.parent_id is None:
         raise NotAChild()
     await _lock(db, child)
+    check_images(design, child.label_type, child.language_key)
     auto = change_summary(child.design, design)
     child.design = copy.deepcopy(design)
+    child.schema_version = design_schema(design)
     child.customized = True
     child.child_edits += 1
     child.version += 1
@@ -685,9 +733,38 @@ async def record_rename(db: AsyncSession, parent: LabelTemplate, before: str,
                 actor_id=actor_id)
 
 
+async def lock_tree(db: AsyncSession, parent: LabelTemplate) -> list[LabelTemplate]:
+    """Lock the parent and then its children (Old ones too), the order every
+    save takes them in, re-reading what a save decides from; returns the
+    children. A write that checks the tree first (an image only on an ID
+    Badge in ZPL) checks the rows as locked, so a concurrent save can't
+    change them under it."""
+    await _lock(db, parent)
+    return await children_of(db, parent, for_update=True)
+
+
+async def lock_parent(db: AsyncSession, parent: LabelTemplate) -> None:
+    """Lock the parent alone, re-reading what a save decides from (the lock
+    save_parent takes first). For a write that touches no child, such as a
+    samples-only save: its children stay unlocked, so it never holds a
+    child's row against a write that takes the rows in another order
+    (activate, deactivate and delete flush theirs in id order)."""
+    await _lock(db, parent)
+
+
+async def lock_child(db: AsyncSession, child: LabelTemplate) -> LabelTemplate:
+    """Lock the child's parent and then the child (the order every save
+    takes them in), re-reading both; returns the parent."""
+    parent = await parent_of(db, child)
+    await _lock(db, parent)
+    await _lock(db, child)
+    return parent
+
+
 async def set_parent_fields(db: AsyncSession, parent: LabelTemplate, values: dict) -> None:
-    """label_type / size_key / language_key on a parent and every child."""
-    rows = [parent, *await children_of(db, parent)]
+    """label_type / size_key / language_key on a parent and every child,
+    the tree locked first (`lock_tree`)."""
+    rows = [parent, *await lock_tree(db, parent)]
     for row in rows:
         for field, value in values.items():
             setattr(row, field, value)
@@ -777,7 +854,8 @@ async def clone(db: AsyncSession, source: LabelTemplate, new_name: str,
             name=child_name(new_name, c.dpi_key), description="", label_type=c.label_type,
             size_key=c.size_key, dpi_key=c.dpi_key, language_key=c.language_key,
             kind="design", design=copy.deepcopy(c.design), code=None, version=1,
-            is_active=False, generation_rules={}, parent_id=copy_row.id, schema_version=2,
+            is_active=False, generation_rules={}, parent_id=copy_row.id,
+            schema_version=design_schema(c.design),
             samples={}, dpis=[c.dpi_key], generated_from_version=1, child_edits=0,
             customized=c.customized, is_old=False))
     db.add_all(made)

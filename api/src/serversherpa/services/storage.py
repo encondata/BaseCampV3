@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from botocore.httpsession import get_cert_path
 
 from serversherpa.config import get_settings
@@ -56,6 +56,27 @@ class StorageConfigError(Exception):
     def __init__(self, cause: str) -> None:
         super().__init__(cause)
         self.cause = cause
+
+
+# What a storage call can raise: botocore's own errors (ClientError and
+# EndpointConnectionError are both BotoCoreError/ClientError subclasses), the
+# socket/TLS failures under them, and a client that couldn't be built at all.
+# Their messages can carry the endpoint URL: log the class, never the text.
+STORAGE_ERRORS = (ClientError, BotoCoreError, OSError, StorageConfigError)
+
+
+def is_missing(exc: BaseException) -> bool:
+    """A storage error that only says the object isn't there."""
+    return (isinstance(exc, ClientError)
+            and exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"))
+
+
+def loggable(exc: BaseException) -> str:
+    """What a log line may say about a failed storage call: the error's
+    class, plus the S3 error code when there is one, never its message
+    (STORAGE_ERRORS)."""
+    code = exc.response.get("Error", {}).get("Code") if isinstance(exc, ClientError) else None
+    return f"{type(exc).__name__} (code={code})" if code else type(exc).__name__
 
 
 def _preload_ca_bundle(client) -> None:
@@ -169,10 +190,11 @@ async def head_object(key: str) -> dict | None:
 
 
 async def put_object(key: str, data: bytes, content_type: str) -> None:
-    """Blocking boto3 call moved off the event loop."""
+    """Blocking boto3 call moved off the event loop. Raises one of
+    STORAGE_ERRORS (StorageConfigError for unbuildable settings)."""
     s = get_settings()
     await asyncio.to_thread(partial(
-        _client().put_object,
+        _built_client().put_object,
         Bucket=s.spaces_bucket,
         Key=key,
         Body=data,
@@ -180,12 +202,24 @@ async def put_object(key: str, data: bytes, content_type: str) -> None:
     ))
 
 
+def _built_client():
+    """The client, or StorageConfigError when the settings can't build one
+    (a malformed endpoint, a missing key). Only the underlying class name
+    survives: boto3's message ("Invalid endpoint: <url>") and its traceback
+    context are dropped."""
+    try:
+        return _client()
+    except (ValueError, AttributeError) as exc:
+        raise StorageConfigError(type(exc).__name__) from None
+
+
 async def get_object(key: str) -> bytes:
     """Read a private object's bytes (blocking boto3 moved off the loop).
-    Used by the import worker to fetch uploaded files."""
+    Used by the import worker to fetch uploaded files. Raises one of
+    STORAGE_ERRORS (StorageConfigError for unbuildable settings)."""
     s = get_settings()
     resp = await asyncio.to_thread(partial(
-        _client().get_object,
+        _built_client().get_object,
         Bucket=s.spaces_bucket,
         Key=key,
     ))
@@ -196,10 +230,12 @@ async def delete_object(key: str) -> None:
     """Delete a private object. S3-compatible DELETE is idempotent (no error
     for a key that's already gone), so callers never need to check
     existence first — a delete of a key that was never written, or was
-    already removed, succeeds exactly like one that removes something."""
+    already removed, succeeds exactly like one that removes something.
+    Raises one of STORAGE_ERRORS (StorageConfigError for unbuildable
+    settings)."""
     s = get_settings()
     await asyncio.to_thread(partial(
-        _client().delete_object,
+        _built_client().delete_object,
         Bucket=s.spaces_bucket,
         Key=key,
     ))
@@ -235,11 +271,7 @@ async def scan_objects(visit: Callable[[str, int], None], prefix: str = "") -> N
     s = get_settings()
 
     def _scan() -> None:
-        try:
-            client = _client()
-        except (ValueError, AttributeError) as exc:
-            raise StorageConfigError(type(exc).__name__) from None
-        paginator = client.get_paginator("list_objects_v2")
+        paginator = _built_client().get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=s.spaces_bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
                 visit(obj["Key"], int(obj.get("Size", 0)))

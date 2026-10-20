@@ -30,7 +30,7 @@ import {
   GENERATE_DPIS, canGenerate, firstUnresolvedType, isRunActive, readGenerateDpi,
   templatesPayloadFor, visibleInitiativesForGenerate, writeGenerateDpi,
 } from '../lib/generateLabels';
-import { isContainerLabelType, vocabLabel, vocabOfKind } from '../lib/labels';
+import { isContainerLabelType, isPersonLabelType, vocabLabel, vocabOfKind } from '../lib/labels';
 import { useSystemStatus } from '../lib/systemStatusContext';
 import { useAuth } from '../auth/AuthContext';
 import ComboBox from '../components/ComboBox';
@@ -124,7 +124,8 @@ export default function GenerateLabels() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const typeVocab = useMemo(() => vocabOfKind(vocab, 'type'), [vocab]);
+  // an ID badge never generates (the API refuses one): it prints from the label builder
+  const typeVocab = useMemo(() => vocabOfKind(vocab, 'type').filter((v) => !isPersonLabelType(v.key)), [vocab]);
   const typeLabelFor = (key: string) => vocabLabel(vocab, 'type', key);
 
   const pickerOptions = useMemo(

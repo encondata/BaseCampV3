@@ -217,6 +217,7 @@ export default function App() {
                 <Route path="/settings" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
                 <Route path="/settings/security" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
                 <Route path="/settings/ai-lookup" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
+                <Route path="/settings/branding" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
                 <Route path="/settings/maintenance" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
                 <Route path="/settings/about" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
                 <Route path="/system/notifications" element={

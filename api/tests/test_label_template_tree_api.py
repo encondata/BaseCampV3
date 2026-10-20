@@ -990,15 +990,15 @@ async def test_a_parent_can_use_an_unlisted_custom_type(client, db, seeded_user)
     second template may not pick it. A listed custom type is any template's."""
     hdrs = await _super(db, client)
     r = await client.post("/labels/vocab", headers=hdrs, json={
-        "kind": "type", "key": "id_badge", "label": "ID badge", "is_active": False})
+        "kind": "type", "key": "shelf", "label": "Shelf", "is_active": False})
     assert r.status_code == 201, r.text
-    parent = await _create(client, hdrs, name="Badge", label_type="id_badge", is_active=False)
-    assert parent["label_type"] == "id_badge"
-    node = await _node(client, hdrs, "Badge")
-    assert {c["label_type"] for c in node["children"]} == {"id_badge"}
-    r = await client.post(URL, headers=hdrs, json=_body("Badge 2", label_type="id_badge"))
+    parent = await _create(client, hdrs, name="Shelf", label_type="shelf", is_active=False)
+    assert parent["label_type"] == "shelf"
+    node = await _node(client, hdrs, "Shelf")
+    assert {c["label_type"] for c in node["children"]} == {"shelf"}
+    r = await client.post(URL, headers=hdrs, json=_body("Shelf 2", label_type="shelf"))
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == {"code": "unknown_vocab", "field": "label_type", "key": "id_badge"}
+    assert r.json()["detail"] == {"code": "unknown_vocab", "field": "label_type", "key": "shelf"}
     r = await client.post("/labels/vocab", headers=hdrs, json={
         "kind": "type", "key": "visitor_badge", "label": "Visitor badge"})
     assert r.status_code == 201, r.text

@@ -23,7 +23,7 @@
  * listed type (its key or its label) says so and offers that type
  * instead; a key an unlisted row holds moves on (`_2`, `_3`…). Kiosk Label
  * Stations print Top and Front only, which the dialog says under a custom
- * type.
+ * type. Choosing the built-in ID Badge type picks the ID badge (CR80) size.
  *
  * The report-generate header; the card sizes to its content.
  */
@@ -34,7 +34,7 @@ import { newDesign, serializeDesign } from '../../../labels/builder/model';
 import {
   ApiError, createLabelTemplate, createLabelVocab, updateLabelVocab, type LabelTemplate, type LabelVocab,
 } from '../../../lib/api';
-import { sizeMeta, vocabOfKind } from '../../../lib/labels';
+import { isPersonLabelType, sizeMeta, vocabOfKind } from '../../../lib/labels';
 import '../../../styles/directory.css';
 import '../../../styles/profile.css';   /* .pf-form, .btn-solid, .pf-error */
 import '../../../styles/reports.css';
@@ -54,6 +54,8 @@ type Unit = 'in' | 'mm';
 
 const CUSTOM = '__custom__';
 const MM_PER_IN = 25.4;
+/** The size an ID badge starts on: the CR80 card (migration 0042). */
+const BADGE_SIZE = 'id-badge';
 
 /** A dimension typed in `unit`, in inches to the thousandth; null unless
  *  it is a positive number. */
@@ -145,6 +147,12 @@ export default function NewTemplateModal({ vocab, onCreated, onCancel }: NewTemp
     : null;
   const typeReady = customType ? !!typeSlug && listedType === null : !!type;
   const ready = !!name.trim() && typeReady && (custom ? w !== null && h !== null : !!size);
+
+  /** A listed type, or Custom…; an ID badge brings its card size along. */
+  const pickType = (key: string) => {
+    setType(key);
+    if (isPersonLabelType(key) && sizes.some((s) => s.key === BADGE_SIZE)) setSize(BADGE_SIZE);
+  };
 
   /** The type row to create the template on: a listed one, or for Custom…
    *  this dialog's own row (rewritten while it is pending), else a new one. */
@@ -300,7 +308,7 @@ export default function NewTemplateModal({ vocab, onCreated, onCancel }: NewTemp
               <label htmlFor="lbb-new-type">Label type</label>
               <ComboBox inputId="lbb-new-type" disabled={busy} placeholder="Pick a type…"
                 options={[...types.map((t) => ({ value: t.key, label: t.label })), { value: CUSTOM, label: 'Custom…' }]}
-                value={type} onChange={setType} />
+                value={type} onChange={pickType} />
             </div>
             {customType && (
               <>
@@ -319,7 +327,7 @@ export default function NewTemplateModal({ vocab, onCreated, onCancel }: NewTemp
                     <span className="lbb-new-taken">
                       <span className="pf-error">That type already exists.</span>
                       <button type="button" className="mini-btn" disabled={busy}
-                        onClick={() => { setType(listedType.key); setTypeName(''); }}>
+                        onClick={() => { pickType(listedType.key); setTypeName(''); }}>
                         Use {listedType.label}
                       </button>
                     </span>

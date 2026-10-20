@@ -1,0 +1,223 @@
+/**
+ * A static image's picture (spec 2026-10-20-badge-templates §4.3, §4.11):
+ * a pick from the label image library (GET /labels/images), names in
+ * natural order with each picture's size, and Upload… (POST /labels/images:
+ * PNG, JPEG, WebP or GIF, 5 MB at most, kept as uploaded), which adds the
+ * picture and picks it. A design holds the picture by its id; one deleted
+ * from the library since prints no picture, and the picker says so.
+ *
+ * An upload can take a while, and the user keeps working meanwhile: when
+ * it lands, the picture goes to the elements it was started for, through
+ * the latest `onPick` (so it lands on the design as it is by then), and
+ * not at all once the picker has gone (another element selected).
+ *
+ * Delete… takes the picked picture out of the library (DELETE
+ * /labels/images/{id}, a soft delete; allowed while templates use it)
+ * after a confirm (the builder's Dialog, the focus on Cancel). The element
+ * keeps the id, so it prints no picture there (an outlined box where Hide
+ * when empty is off) until another picture is picked; the canvas forgets
+ * the picture (imageRaster.ts forgetStaticRaster) and shows its
+ * placeholder. `onDialog` tells the page while the confirm is open, so
+ * the canvas keys stay off.
+ */
+
+import { useEffect, useRef, useState } from 'react';
+import type { ChangeEvent } from 'react';
+
+import {
+  ApiError, deleteLabelImage, listLabelImages, uploadLabelImage, type LabelImage,
+} from '../../../lib/api';
+import { naturalCompare } from '../../../lib/naturalSort';
+import ComboBox from '../../ComboBox';
+import '../../../styles/directory.css';   /* .btn-danger */
+import '../../../styles/profile.css';     /* .btn-solid, .pf-error */
+import '../../../styles/labelBuilder.css';
+import { Dialog } from './BuilderDialogs';
+import { forgetStaticRaster } from './imageRaster';
+
+/** The upload cap the API enforces (5 MiB). */
+const MAX_BYTES = 5 * 1024 * 1024;
+const ACCEPT = 'image/png,image/jpeg,image/webp,image/gif';
+
+function byName(rows: LabelImage[]): LabelImage[] {
+  return [...rows].sort((a, b) => naturalCompare(a.name, b.name));
+}
+
+function uploadError(err: unknown): string {
+  if (err instanceof ApiError) {
+    // the API refuses a control character in the name it takes from the file
+    if (err.code === 'bad_field') {
+      return 'The file’s name has a control character in it. Rename the file and upload it again.';
+    }
+    if (err.status === 413) return 'That file is over 5 MB.';
+    if (err.status === 415 || err.status === 422) {
+      return 'That file isn’t a picture a label can use: a PNG, JPEG, WebP or GIF of 40 megapixels at most.';
+    }
+    if (err.status === 403) return 'You don’t have access to the label image library.';
+  }
+  return 'Couldn’t upload the picture. Try again in a moment.';
+}
+
+function deleteError(err: unknown): string {
+  if (err instanceof ApiError && err.status === 403) return 'You don’t have access to the label image library.';
+  return 'Couldn’t delete the picture. Try again in a moment.';
+}
+
+/** Delete…'s confirm: the builder's Dialog, sized to its content, the
+ *  focus on Cancel. */
+function DeleteImageDialog({ image, onDeleted, onClose }: {
+  image: LabelImage;
+  onDeleted: () => void;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const destroy = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteLabelImage(image.id);
+    } catch (err) {
+      // already gone: that's what was asked for
+      if (!(err instanceof ApiError && err.status === 404)) {
+        setError(deleteError(err));
+        setBusy(false);
+        return;
+      }
+    }
+    onDeleted();
+  };
+
+  return (
+    <Dialog label="Delete library image" eyebrow={`${image.name} · Delete`} title={`Delete “${image.name}”?`}
+      card="lbb-small-card" busy={busy} onClose={onClose}
+      hint={<>Templates that use it print no picture in its place (an outlined box where Hide when empty is off)
+        until another image is picked.</>}
+      foot={(
+        <>
+          <button type="button" className="btn-solid btn-danger" disabled={busy} onClick={() => void destroy()}>
+            {busy ? 'Deleting…' : 'Delete image'}
+          </button>
+          <button type="button" className="mini-btn" onClick={onClose} disabled={busy} autoFocus>Cancel</button>
+          {error && <span className="pf-error" role="alert">{error}</span>}
+        </>
+      )} />
+  );
+}
+
+export default function ImageLibraryPicker({ value, target, onPick, disabled = false, onDialog }: {
+  /** The picked picture's id, or null for none yet. */
+  value: string | null;
+  /** The elements a pick is for. An upload remembers them as it starts:
+   *  its picture goes to them even when the selection moved on meanwhile. */
+  target: readonly string[];
+  /** A picture picked for `target`. An upload calls the latest one, and
+   *  only while the picker is still there. */
+  onPick: (imageId: string, target: readonly string[]) => void;
+  disabled?: boolean;
+  /** Delete…'s confirm opened (true) or closed (false). */
+  onDialog?: (open: boolean) => void;
+}) {
+  const [library, setLibrary] = useState<LabelImage[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<LabelImage | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const live = useRef(true);
+  // an upload ends renders later: it picks through the latest callback
+  const pick = useRef(onPick);
+  pick.current = onPick;
+
+  useEffect(() => {
+    live.current = true;
+    listLabelImages()
+      .then((rows) => { if (live.current) setLibrary(byName(rows)); })
+      .catch(() => { if (live.current) setLoadFailed(true); });
+    return () => { live.current = false; };
+  }, []);
+
+  // the page hears while the confirm is open, and that it closed when the
+  // picker goes away with it open
+  const dialogOpen = deleting !== null;
+  const tell = useRef(onDialog);
+  tell.current = onDialog;
+  useEffect(() => {
+    if (!dialogOpen) return undefined;
+    tell.current?.(true);
+    return () => tell.current?.(false);
+  }, [dialogOpen]);
+
+  /** The picture is out of the library: off the list at once, then the
+   *  library as the server has it now. */
+  const deleted = (gone: LabelImage) => {
+    forgetStaticRaster(gone.id);
+    setLibrary((rows) => (rows ?? []).filter((r) => r.id !== gone.id));
+    setDeleting(null);
+    listLabelImages()
+      .then((rows) => { if (live.current) setLibrary(byName(rows)); })
+      .catch(() => {});
+  };
+
+  const upload = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setError(null);
+    if (file.size > MAX_BYTES) {
+      setError('That file is over 5 MB.');
+      return;
+    }
+    // the elements the picture is for, as they are now
+    const forTarget = [...target];
+    setUploading(true);
+    try {
+      const made = await uploadLabelImage(file);
+      if (!live.current) return;
+      setLibrary((rows) => byName([...(rows ?? []).filter((r) => r.id !== made.id), made]));
+      pick.current(made.id, forTarget);
+    } catch (err) {
+      if (live.current) setError(uploadError(err));
+    } finally {
+      if (live.current) setUploading(false);
+    }
+  };
+
+  const options = (library ?? []).map((r) => ({ value: r.id, label: r.name, sub: `${r.width} × ${r.height}` }));
+  const missing = !!value && library !== null && !library.some((r) => r.id === value);
+  const picked = value ? library?.find((r) => r.id === value) ?? null : null;
+
+  return (
+    <>
+      <div className="lbp-image-pick">
+        <ComboBox portal ariaLabel="Static image" options={options} value={value ?? ''} disabled={disabled}
+          placeholder={library === null && !loadFailed ? 'Loading…' : 'Pick a picture…'}
+          onChange={(id) => { if (id) onPick(id, target); }} />
+        <button type="button" className="mini-btn" disabled={disabled || uploading}
+          onClick={() => fileRef.current?.click()}>
+          {uploading ? 'Uploading…' : 'Upload…'}
+        </button>
+        {picked && (
+          <button type="button" className="mini-btn" disabled={disabled}
+            title="Delete this picture from the label image library" onClick={() => setDeleting(picked)}>
+            Delete…
+          </button>
+        )}
+        <input ref={fileRef} type="file" accept={ACCEPT} aria-label="Image file" hidden disabled={disabled}
+          onChange={(e) => { void upload(e); }} />
+      </div>
+      {loadFailed && <div className="lbp-hint is-warning" role="status">Couldn’t load the label image library.</div>}
+      {missing && (
+        <div className="lbp-hint is-warning" role="status">
+          This picture was deleted from the library, so no picture prints here. Pick another.
+        </div>
+      )}
+      {error && <div className="lbp-hint is-warning" role="alert">{error}</div>}
+      {deleting && (
+        <DeleteImageDialog image={deleting} onDeleted={() => deleted(deleting)} onClose={() => setDeleting(null)} />
+      )}
+    </>
+  );
+}

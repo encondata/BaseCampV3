@@ -2,13 +2,17 @@
  * ImageCropModal — global crop/reposition step for image uploads.
  * Drag to pan, slider or scroll-wheel to zoom, circular mask preview
  * for avatars (square output either way). Exports a JPEG blob at
- * outputSize² via canvas; the caller uploads it.
+ * outputSize² via canvas, painted white first so transparent areas come
+ * out white, not black; the caller uploads it. The viewport is white too,
+ * so the picture looks as it saves, and a PNG, WebP or GIF says so.
  */
 
 import { useEffect, useRef, useState } from 'react';
 
 const VIEW = 320;        // on-screen viewport (px)
 const MAX_ZOOM = 4;      // multiplier over the cover-fit scale
+/** Upload types that can carry transparency (saved as white). */
+const CAN_BE_TRANSPARENT = new Set(['image/png', 'image/webp', 'image/gif']);
 
 interface Props {
   file: File;
@@ -88,6 +92,10 @@ export default function ImageCropModal({
     canvas.height = outputSize;
     const ctx = canvas.getContext('2d')!;
     ctx.imageSmoothingQuality = 'high';
+    // white under the picture: a JPEG has no alpha, so a transparent PNG's
+    // clear areas would otherwise come out black
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, outputSize, outputSize);
     ctx.drawImage(
       img,
       cx - half, cy - half, half * 2, half * 2,
@@ -154,6 +162,9 @@ export default function ImageCropModal({
                  strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5M8 11h6M11 8v6" /></svg>
           </div>
           <p className="crop-hint">Drag to reposition · scroll or slide to zoom</p>
+          {CAN_BE_TRANSPARENT.has(file.type) && (
+            <p className="crop-hint">Transparent areas are saved as white.</p>
+          )}
         </div>
         <div className="modal-foot">
           <button className="btn-solid" onClick={() => void save()} disabled={saving || !dims}>

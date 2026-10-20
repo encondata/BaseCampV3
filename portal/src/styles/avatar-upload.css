@@ -76,11 +76,13 @@
 .crop-card { width: min(420px, 96vw); }
 .crop-body { display: flex; flex-direction: column; align-items: center; gap: 14px; }
 
+/* white, as the crop saves (ImageCropModal paints white under the picture):
+   a white logo on a transparent PNG shows here as it will be stored */
 .crop-viewport {
   position: relative;
   overflow: hidden;
   border-radius: 14px;
-  background: #0c1117;
+  background: #fff;
   cursor: grab;
   touch-action: none;      /* pointer-drag owns touch gestures */
   user-select: none;
@@ -100,6 +102,8 @@
   border: 2px solid rgba(255, 255, 255, 0.65);
   border-radius: 14px;
 }
+/* the square window's edge, seen against the white viewport */
+.crop-mask:not(.round) { border-color: rgba(5, 8, 12, 0.25); }
 .crop-mask.round {
   border-radius: 50%;
   inset: 6px;

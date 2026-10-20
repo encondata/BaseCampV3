@@ -11,6 +11,10 @@ DEFAULT_CONFIDENTIALITY_STATEMENT = (
     "Solutions Group. It is intended solely for authorized recipients and may not "
     "be copied, distributed or disclosed without written permission.")
 
+# System settings › Branding's company name until an admin sets one: the
+# company an ID badge names for staff (labels/people_badge.py).
+DEFAULT_COMPANY_NAME = "Cumulus Solutions Group"
+
 DEFAULTS: dict[str, dict] = {
     "logging": {
         "mode": "local",
@@ -54,6 +58,9 @@ DEFAULTS: dict[str, dict] = {
     },
     # Wiki-wide settings, edited by wiki administrators (wiki/statement.py).
     "wiki": {"confidentiality_statement": DEFAULT_CONFIDENTIALITY_STATEMENT},
+    # The company staff ID badges name and show (labels/people_badge.py):
+    # company_logo_key is a stored object (the cleanup sweep keeps it).
+    "branding": {"company_name": DEFAULT_COMPANY_NAME, "company_logo_key": None},
 }
 
 

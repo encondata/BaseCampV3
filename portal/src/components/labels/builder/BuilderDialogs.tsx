@@ -6,6 +6,8 @@
  *    passed by (spec §3.4) — Update now makes a fresh child from the parent
  *    and keeps the old one, inactive, as "… Old"; Keep leaves it as it is.
  *  - LeaveModal: leaving with unsaved changes.
+ * `Dialog` is their shell, shared with the builder's panels' own confirms
+ * (the image library's Delete…).
  */
 
 import { useEffect, useState } from 'react';
@@ -17,8 +19,13 @@ import '../../../styles/profile.css';   /* .pf-form, .btn-solid, .pf-error */
 import '../../../styles/reports.css';
 import '../../../styles/labelBuilder.css';
 
-function Dialog({ label, title, hint, card, busy = false, onClose, children, foot }: {
-  label: string; title: string; hint: ReactNode; card: string; busy?: boolean; onClose: () => void;
+/** A builder dialog: the report-generate header (eyebrow, title, hint),
+ *  sized by its `card` class; Escape and the scrim close it unless busy. */
+export function Dialog({ label, eyebrow = 'Label builder', title, hint, card, busy = false, onClose, children, foot }: {
+  label: string;
+  /** The header's eyebrow (default "Label builder"). */
+  eyebrow?: ReactNode;
+  title: ReactNode; hint: ReactNode; card: string; busy?: boolean; onClose: () => void;
   children?: ReactNode; foot: ReactNode;
 }) {
   useEffect(() => {
@@ -33,7 +40,7 @@ function Dialog({ label, title, hint, card, busy = false, onClose, children, foo
       <div className={`modal-card reports-modal-card rgm-card ${card}`} role="dialog" aria-modal="true" aria-label={label}>
         <div className="modal-head">
           <div className="rgm-head-text">
-            <div className="eyebrow">Label builder</div>
+            <div className="eyebrow">{eyebrow}</div>
             <h3>{title}</h3>
             <p className="page-hint">{hint}</p>
           </div>

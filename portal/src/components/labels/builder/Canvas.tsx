@@ -18,7 +18,10 @@
  * ⌥ moves a copy), the eight handles resize one unlocked element (⇧ keeps
  * its proportions), Space-drag or the wheel pans, ⌘-wheel zooms about the
  * pointer. With Snap on a move goes in grid steps, else in whole dots. A
- * tool places its element where pressed, on release.
+ * tool places its element where pressed, on release. The Image tool (I)
+ * is there only when the page says the template takes images (an ID badge
+ * in ZPL); an image draws the sample person's photo or logo (the samples'
+ * `person:id`) or its static picture, as it prints (CanvasElement).
  * One press at a time, from the primary pointer; a pointercancel ends the
  * gesture without selecting or placing, and unmounting closes any gesture
  * still open.
@@ -44,6 +47,7 @@ import type { LoadedFont } from '../../../labels/builder/metrics';
 import {
   addElement, elementHidden, elementValue, replaceElements, type DesignV2, type ElementV2,
 } from '../../../labels/builder/model';
+import { samplePersonId } from '../../../labels/builder/image';
 import { detectPlatform, type Platform } from '../../../labels/builder/shortcuts';
 import { toDots } from '../../../labels/builder/units';
 import '../../../styles/directory.css';
@@ -91,6 +95,8 @@ export interface CanvasProps {
   readOnly?: boolean;
   /** Listen to the keyboard (default true). */
   keyboard?: boolean;
+  /** Offer the Image tool: an ID badge template in ZPL. */
+  imageTool?: boolean;
   platform?: Platform;
 }
 
@@ -145,7 +151,7 @@ const identity = (key: string) => key;
 
 export default function Canvas({
   design: given, dpi, view, onView, samples, selection, onSelect, onChange, onGesture, metricsFor,
-  fieldName = identity, gridIn = DEFAULT_GRID_IN, readOnly = false, keyboard = true, platform,
+  fieldName = identity, gridIn = DEFAULT_GRID_IN, readOnly = false, keyboard = true, imageTool = false, platform,
 }: CanvasProps) {
   // every barcode as wide as it prints (the same design when they already are)
   const design = useMemo(() => withBarcodeWidths(given, samples, dpi), [given, samples, dpi]);
@@ -351,6 +357,7 @@ export default function Canvas({
     'tool.qr': pickTool('qr'),
     'tool.box': pickTool('box'),
     'tool.line': pickTool('line'),
+    'tool.image': () => (imageTool ? pickTool('image')() : false),
     'tool.escape': () => {
       if (tool !== 'select') setTool('select');
       else if (selection.length) onSelect([]);
@@ -613,6 +620,7 @@ export default function Canvas({
   const handleFor = picked.length === 1 && !picked[0].locked && !readOnly ? picked[0] : null;
   const names = !view.showSamples;
   const minor = gridIn * dpi;
+  const personId = samplePersonId(samples);
 
   const status = (
     <>
@@ -630,7 +638,7 @@ export default function Canvas({
     <div className="lbc">
       <CanvasToolbar tool={tool} onTool={setTool} zoom={zoom} onZoom={(z) => setZoom(z)} view={view} onView={onView}
         selectionCount={selection.length} onAlign={(op) => { runAlign(op); }} readOnly={readOnly}
-        platform={os} status={status} />
+        imageTool={imageTool} platform={os} status={status} />
       <div ref={stageRef} className={stageCls.join(' ')} tabIndex={-1} role="application" aria-label="Label canvas"
         onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={(e) => finish(e, false)}
         onPointerCancel={(e) => finish(e, true)} onPointerLeave={() => setCursor(null)}>
@@ -662,7 +670,8 @@ export default function Canvas({
               return (
                 <CanvasElement key={el.id} el={el} dpi={dpi} names={names} px={px} uid={`${uid}-${i}`}
                   text={names ? nameOf(el, design, fieldName) : value}
-                  hidden={!names && elementHidden(el, samples)} font={font} value={value} />
+                  hidden={!names && elementHidden(el, samples)} font={font} value={value}
+                  personId={el.type === 'image' ? personId : null} />
               );
             })}
           </g>
