@@ -18,6 +18,8 @@ import FieldPanel, { type FieldPanelHandle, type FieldPanelProps } from './Field
 afterEach(cleanup);
 
 function setup(props: Partial<FieldPanelProps> = {}) {
+  // the design and selection start from props and then follow the panel's changes
+  const { design: _design, selection: _selection, ...rest } = props;
   const change = vi.fn<(d: DesignV2) => void>();
   const select = vi.fn<(ids: string[]) => void>();
   const onSamples = vi.fn<(s: Record<string, string>) => void>();
@@ -34,7 +36,7 @@ function setup(props: Partial<FieldPanelProps> = {}) {
         onSelect={(ids) => { select(ids); setSelection(ids); }}
         onSamples={(s) => { onSamples(s); setSamples(s); }}
         onRemoved={removed}
-        {...props} />
+        {...rest} />
     );
   }
   const utils = render(<Harness />);
@@ -131,6 +133,34 @@ describe('FieldPanel', () => {
     expect(removed).toHaveBeenLastCalledWith(2, 'Asset ID');
   });
 
+  it('after a ×, focus goes to the next row\'s ×, else the one before, else the search box', () => {
+    const removes = () => Array.from(document.querySelectorAll<HTMLButtonElement>('button.lbp-remove'));
+    const labels = () => removes().map((b) => b.getAttribute('aria-label'));
+    const press = (label: string) => {
+      const button = removes().find((b) => b.getAttribute('aria-label') === label)!;
+      button.focus();
+      fireEvent.click(button);
+    };
+    setup();
+    const before = labels();
+    const at = before.indexOf('Remove Asset name from the label');
+    expect(at).toBeGreaterThanOrEqual(0);
+    press('Remove Asset name from the label');
+    expect(document.activeElement?.getAttribute('aria-label')).toBe(before[at + 1]);
+    // the last row: the one before it
+    const rest = labels();
+    press(rest.at(-1)!);
+    expect(document.activeElement?.getAttribute('aria-label')).toBe(rest.at(-2));
+    cleanup();
+
+    // the only row: the search box
+    const only = VEGAS();
+    setup({ design: { ...only, elements: only.elements.filter((e) => e.id === 'value-name') } });
+    press('Remove Asset name from the label');
+    expect(screen.getByText('No fields on this label yet. Press + or / to add one.')).toBeTruthy();
+    expect(document.activeElement).toBe(search());
+  });
+
   it('with nothing placed, says how to add a field', () => {
     setup({ design: { schema: 2, size: { w: 4, h: 2 }, splits: {}, elements: [] } });
     expect(screen.getByText('No fields on this label yet. Press + or / to add one.')).toBeTruthy();
@@ -172,6 +202,7 @@ describe('FieldPanel', () => {
 
   it('typing in the search opens the picker; arrows and Enter pick; Escape closes and clears', () => {
     const { change, select } = setup();
+    search().focus();
     fireEvent.change(search(), { target: { value: 'rfid' } });
     expect(picker()).toBeTruthy();
     expect(pickNames()).toEqual(['RFID tag', 'From-To column “rfid”']);
@@ -180,7 +211,7 @@ describe('FieldPanel', () => {
     fireEvent.keyDown(search(), { key: 'Escape' });
     expect(picker()).toBeNull();
     expect(search().value).toBe('');
-    expect(document.activeElement === search() || document.activeElement === document.body).toBe(true);
+    expect(document.activeElement).toBe(search());   // the search box keeps the cursor
 
     fireEvent.change(search(), { target: { value: 'line' } });
     fireEvent.keyDown(search(), { key: 'Enter' });
@@ -195,6 +226,27 @@ describe('FieldPanel', () => {
     expect(picker()).toBeTruthy();
     fireEvent.keyDown(search(), { key: 'ArrowDown' });
     expect(active()?.textContent).toContain('Line');
+  });
+
+  it('Escape puts the cursor back in the search box, wherever the picker had it', () => {
+    setup();
+    fireEvent.change(search(), { target: { value: 'rack' } });
+    expect(picker()).toBeTruthy();
+    expect(document.activeElement).not.toBe(search());
+    fireEvent.keyDown(search(), { key: 'Escape' });
+    expect(picker()).toBeNull();
+    expect(document.activeElement).toBe(search());
+  });
+
+  it('Tab closes the picker and moves on as usual', () => {
+    setup();
+    search().focus();
+    fireEvent.change(search(), { target: { value: 'rack' } });
+    expect(picker()).toBeTruthy();
+    // not prevented: the browser moves focus on from the search box
+    expect(fireEvent.keyDown(search(), { key: 'Tab' })).toBe(true);
+    expect(picker()).toBeNull();
+    expect(search().value).toBe('');
   });
 
   it('+ opens the picker with the cursor in the search; + again closes it', () => {

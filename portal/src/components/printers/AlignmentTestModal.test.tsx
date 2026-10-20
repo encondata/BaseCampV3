@@ -4,7 +4,8 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { LabelVocab } from '../../lib/api';
-import AlignmentTestModal from './AlignmentTestModal';
+import { DEFAULT_PRINT_SETTINGS } from '../../lib/printLabels';
+import AlignmentTestModal, { alignmentLabelZpl } from './AlignmentTestModal';
 
 if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
 afterEach(cleanup);
@@ -68,5 +69,16 @@ describe('AlignmentTestModal', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Close' }));
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('alignmentLabelZpl', () => {
+  it('builds the boxes for a size at a DPI with the given offsets, one copy', () => {
+    const zpl = alignmentLabelZpl(vocab[0], 300, { ...DEFAULT_PRINT_SETTINGS, verticalOffset: 4, horizontalOffset: 0 });
+    expect(zpl).toContain('^PW1200');
+    expect(zpl).toContain('^LL600');
+    expect(zpl).toContain('ALIGN 4x2 300DPI');
+    expect(zpl).toContain('^LT4');
+    expect(zpl).not.toContain('^PQ');
   });
 });

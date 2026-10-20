@@ -4,7 +4,10 @@
  * DPI shown (POST /labels/templates/compile), rendered by Labelary with the
  * open fonts it prints with embedded (POST /labels/preview/zpl, font_ids).
  * The resident Swiss cut renders as the printer's font 0, the same face.
- * It renders when asked: Labelary is an outside service.
+ * It renders when asked: Labelary is an outside service. Labelary draws a
+ * QR code about 0.2 in higher than a Zebra prints it (the compiler sets ^FO
+ * for the printer, qr.ts QR_FO_OFFSET_IN), so a render of a design with
+ * one says the canvas is the one to trust there.
  */
 
 import { useEffect, useState } from 'react';
@@ -67,6 +70,8 @@ export default function PreviewPanel({
   };
 
   const stale = shown !== null && (shown.design !== design || shown.dpi !== dpi || shown.samples !== samples);
+  const rendersQr = shown !== null
+    && shown.design.elements.some((e) => e.type === 'qr' || (e.type === 'field' && e.display === 'qr'));
 
   return (
     <section className="lbp lbb-preview" aria-label="Printer preview">
@@ -76,6 +81,9 @@ export default function PreviewPanel({
       </div>
       <div className="lbb-preview-body">
         {url && <img className="lbb-preview-img" alt="The label as the printer renders it" src={url} />}
+        {url && rendersQr && (
+          <p className="lbp-hint">The preview shows QR codes about 0.2 in higher than the printer; the canvas is right.</p>
+        )}
         {stale && <p className="lbp-hint">Changed since this render.</p>}
         {!url && !error && (
           <p className="lbp-hint">The label as a Zebra printer renders it, with the sample values.</p>

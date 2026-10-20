@@ -12,7 +12,7 @@ baseline, 0.72 of the font height, and its size in points is dots × 72 /
   `origin_site_code`, the RUs are the bare-number RU fields.
 - The QR codes carry the bare asset ID (the `<` was a typo).
 - Fonts the library doesn't hold (`E:85620388.TTF`, `^A0`) print in the
-  default family, Swiss 721 Condensed Bold.
+  default family, Swiss 721 (printer built-in).
 - Vegas and Amsterdam split `destination_rack` into their own pieces;
   Generic Rack and RU makes no assumption about a site's location format
   and prints it whole.

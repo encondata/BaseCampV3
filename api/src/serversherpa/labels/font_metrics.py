@@ -1,6 +1,6 @@
 """Glyph metrics of a TrueType font for the label builder (spec §4.2
 Positions, §4.4): the canvas reserves widths and places baselines from
-them. The resident Swiss 721 Condensed Bold is drawn with a stand-in face,
+them. The resident Swiss 721 (printer built-in) is drawn with a stand-in face,
 so its real metrics come from here, read from the library copy.
 
 Every value is in font units; scale by font size / `unitsPerEm`. `ascent`

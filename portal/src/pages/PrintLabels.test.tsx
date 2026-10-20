@@ -146,6 +146,36 @@ it('switching to Front shows its coverage and Custom reveals the raw ZPL box', a
   expect(screen.getByLabelText('Raw ZPL')).toBeTruthy();
 });
 
+it('Custom prints the raw ZPL once with no asset ticked, and once per ticked asset', async () => {
+  printer.connected = true; printer.productName = 'ZD421';
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByRole('radio', { name: /Custom/ }));
+  expect(screen.getByText('Send raw ZPL to the printer once, or once per selected asset')).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('Raw ZPL'), { target: { value: '^XA^FDhello^FS^XZ' } });
+  expect(screen.getByText('The ZPL prints once; select assets to print it once per asset')).toBeTruthy();
+  const once = screen.getByRole('button', { name: 'Print 1 label' }) as HTMLButtonElement;
+  expect(once.disabled).toBe(false);
+  await userEvent.click(once);
+  await waitFor(() => expect(printer.send).toHaveBeenCalledTimes(1));
+  expect(printer.send).toHaveBeenCalledWith('^XA^FDhello^FS^XZ');
+  expect(await screen.findByText('Successfully printed 1 label(s)')).toBeTruthy();
+
+  printer.send.mockClear();
+  await userEvent.click(screen.getByLabelText('Select all filtered assets'));
+  await userEvent.click(screen.getByRole('button', { name: 'Print 3 labels' }));
+  await waitFor(() => expect(printer.send).toHaveBeenCalledTimes(3));
+  expect(new Set(printer.send.mock.calls.map((c) => c[0]))).toEqual(new Set(['^XA^FDhello^FS^XZ']));
+});
+
+it('a label type other than Custom still needs a selection', async () => {
+  printer.connected = true; printer.productName = 'ZD421';
+  renderPage();
+  await pickInitiative();
+  expect(screen.getByText('Select assets to print labels')).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'Print 0 labels' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
 it('printer card: connect button calls the hook; unsupported browsers get an explanation', async () => {
   renderPage();
   await userEvent.click(screen.getByRole('button', { name: 'Connect via USB' }));

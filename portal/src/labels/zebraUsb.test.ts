@@ -2,6 +2,7 @@
  *  ~HS-poll semantics (PrintLabels.jsx) without a printer. */
 import { describe, expect, it, vi } from 'vitest';
 
+import { fontStates } from '../components/printers/InstallFontsModal';
 import { dpiFromDotsPerMm } from './zebraCommands';
 import {
   ZEBRA_VENDOR_ID, closePrinter, ensureOpen, findBulkEndpoints, openPrinter, parseConfiguration, parseDirectory,
@@ -359,5 +360,59 @@ describe('parseDirectory with attribute flags', () => {
       ],
       bytesFree: 32346624,
     });
+  });
+});
+
+describe('parseDirectory on the office ZD421-300dpi (V93.21.38Z)', () => {
+  // ^XA^HWE:*.TTF^XZ and ^XA^HWZ:*.TTF^XZ as the printer answered them
+  // (2026-10-20, read-only queries); each reply starts with a blank line.
+  // Z: lists its fonts with a P flag, and its first row has a trailing 0.
+  const reply = (lines: string[]) => `\r\n${lines.join('\r\n')}\r\n`;
+  const E = reply([
+    "- DIR E:*.TTF",
+    "* E:85620388.TTF   1036584",
+    "* E:TT0003M_.TTF    169188       K",
+    "-  63311872 bytes free E: ONBOARD FLASH",
+  ]);
+  const Z = reply([
+    "- DIR Z:*.TTF",
+    "* Z:0.TTF    125904  P    0",
+    "* Z:T0025.TTF     92552  P",
+    "* Z:T0026.TTF     96400  P",
+    "* Z:T0028.TTF    121260  P",
+    "* Z:T0061.TTF    169188  P",
+    "* Z:T0062.TTF    129380  P",
+    "* Z:T0067.TTF    664972  P",
+    "* Z:TT0003M_.TTF    169188  P",
+    "* Z:TT0005M_.TTF    141592  P",
+  ]);
+
+  it('lists both E: fonts, the stored one behind its K flag, and the free space', () => {
+    expect(parseDirectory(E)).toEqual({
+      objects: [{ name: '85620388.TTF', bytes: 1036584 }, { name: 'TT0003M_.TTF', bytes: 169188 }],
+      bytesFree: 63311872,
+    });
+  });
+
+  it('lists all nine Z: fonts, the trailing 0 after a flag included', () => {
+    expect(parseDirectory(Z)).toEqual({
+      objects: [
+        { name: '0.TTF', bytes: 125904 }, { name: 'T0025.TTF', bytes: 92552 }, { name: 'T0026.TTF', bytes: 96400 },
+        { name: 'T0028.TTF', bytes: 121260 }, { name: 'T0061.TTF', bytes: 169188 },
+        { name: 'T0062.TTF', bytes: 129380 }, { name: 'T0067.TTF', bytes: 664972 },
+        { name: 'TT0003M_.TTF', bytes: 169188 }, { name: 'TT0005M_.TTF', bytes: 141592 },
+      ],
+      bytesFree: null,
+    });
+  });
+
+  it('gives the builder fonts their state: the built-in Swiss present, Roboto Condensed missing', () => {
+    const lib = [{ name: 'TT0003M_.TTF', resident: true }, { name: 'ROBOCO_R.TTF', resident: false }];
+    const states = fontStates(lib, parseDirectory(E), parseDirectory(Z));
+    expect(states.resident).toEqual({ 'TT0003M_.TTF': 'installed' });
+    expect(states.library).toEqual({ 'ROBOCO_R.TTF': 'missing' });
+    // on Z: alone it counts too
+    expect(fontStates(lib, { objects: [], bytesFree: 0 }, parseDirectory(Z)).resident)
+      .toEqual({ 'TT0003M_.TTF': 'installed' });
   });
 });

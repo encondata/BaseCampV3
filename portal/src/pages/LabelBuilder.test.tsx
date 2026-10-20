@@ -29,6 +29,11 @@ vi.mock('../auth/AuthContext', () => ({
 const printer = vi.hoisted(() => ({
   supported: true, connected: true, productName: 'ZD421', notice: null,
   clearNotice: vi.fn(), connect: vi.fn(), send: vi.fn(),
+  disconnect: vi.fn(), connectTo: vi.fn(), knownDevices: vi.fn(async () => []), sendBytes: vi.fn(),
+  identify: vi.fn(async () => ({ model: 'ZD421-203dpi', firmware: 'V93', dotsPerMm: 8, memory: '8192k', dpi: 203 })),
+  status: vi.fn(async () => null),
+  query: vi.fn(async (cmd: string) => (cmd.includes('HWZ') ? '- DIR Z:*.TTF\r\n* Z:TT0003M_.TTF 160676\r\n'
+    : '- DIR E:*.TTF\r\n-1928576 bytes free E: ONBOARD FLASH\r\n')),
 }));
 vi.mock('../lib/useZebraPrinter', () => ({ useZebraPrinter: () => printer }));
 
@@ -115,9 +120,20 @@ const ctrl = (key: string, extra: Record<string, unknown> = {}) => {
   fireEvent.keyDown(document.body, { key, code, ctrlKey: true, ...extra });
 };
 
+/** The builder has mounted AND run its mount effects. The page renders
+ *  when its loads resolve, outside act, so its effects (the key listeners
+ *  among them) can still be pending when the top bar shows; under a busy
+ *  suite a key pressed then went nowhere. Builder's fields request is one
+ *  of those effects, and a commit's effects all run together. */
+async function builderReady() {
+  const bar = await screen.findByRole('group', { name: 'Template' });
+  await waitFor(() => expect(api.listLabelFields).toHaveBeenCalled());
+  return bar;
+}
+
 async function openParent() {
   renderAt('/labels/templates/p1/edit');
-  await screen.findByRole('group', { name: 'Template' });
+  await builderReady();
 }
 
 /** Select everything and nudge it a dot right: an unsaved change. */
@@ -256,6 +272,22 @@ describe('a parent template', () => {
     await within(preview).findByRole('alert');
   });
 
+  it('Printer opens the printer dialog on this template, its fonts and the DPI shown', async () => {
+    await openParent();
+    fireEvent.click(within(screen.getByRole('group', { name: 'Template' })).getByRole('button', { name: 'Printer' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Printer' });
+    expect(within(dialog).getByText('Vegas Destination · Printer')).toBeTruthy();
+    // the Vegas design prints in the built-in Swiss cut only, here on Z:
+    const row = within(dialog).getByText('TT0003M_.TTF').closest('tr') as HTMLElement;
+    expect(await within(row).findByText('Present')).toBeTruthy();
+    expect(within(dialog).getByText('Prints at 203 DPI; the canvas is showing 300.')).toBeTruthy();
+    // under the dialog ⌘S saves nothing
+    ctrl('s');
+    expect(api.updateLabelTemplate).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
+    expect(screen.queryByRole('dialog', { name: 'Printer' })).toBeNull();
+  });
+
   it('⌘P connects a printer first when none is connected', async () => {
     printer.connected = false;
     await openParent();
@@ -387,7 +419,8 @@ describe('a parent template', () => {
     const racks = () => screen.getByRole('application', { name: 'Label canvas' })
       .querySelectorAll('[data-el-id^="banner-"], [data-el-id^="grid-"]:not([data-el-id^="grid-caption"])');
     expect(racks()).toHaveLength(12);   // 5 + 5 pieces, 2 RUs
-    fireEvent.click(within(fields).getByRole('button', { name: 'Remove Destination rack from the label' }));
+    // the field list fills once GET /labels/fields answers
+    fireEvent.click(await within(fields).findByRole('button', { name: 'Remove Destination rack from the label' }));
     expect(racks()).toHaveLength(2);
     const notice = screen.getByRole('status');
     expect(notice.textContent).toContain('Removed 10 placements of Destination rack.');
@@ -399,8 +432,14 @@ describe('a parent template', () => {
     expect(racks()).toHaveLength(2);
     ctrl('z');
     expect(racks()).toHaveLength(12);
-    // the notice's Undo is gone once something else is the last step
-    expect(within(screen.getByRole('status')).queryByRole('button', { name: 'Undo' })).toBeNull();
+    // undone: the notice goes with it, not just its Undo
+    await waitFor(() => expect(screen.queryByText(/Removed 10 placements/)).toBeNull());
+    // and once another step lands on top of the removal
+    fireEvent.click(within(fields).getByRole('button', { name: 'Remove Destination rack from the label' }));
+    expect(screen.getByText(/Removed 10 placements/)).toBeTruthy();
+    ctrl('a');
+    fireEvent.keyDown(document.body, { key: 'ArrowRight', code: 'ArrowRight' });
+    await waitFor(() => expect(screen.queryByText(/Removed 10 placements/)).toBeNull());
   });
 });
 
@@ -418,7 +457,7 @@ describe('a DPI child', () => {
   it('shows its DPI and saves only its design', async () => {
     api.updateLabelTemplate.mockResolvedValue({ ...child('300'), customized: true, child_edits: 1, version: 8 });
     renderAt('/labels/templates/c300/edit');
-    const bar = await screen.findByRole('group', { name: 'Template' });
+    const bar = await builderReady();
     expect(within(bar).getByText('Child · 300')).toBeTruthy();
     expect(within(bar).getByLabelText('Version v7').textContent).toBe('v7');
     expect(within(bar).queryByRole('button', { name: 'Clone' })).toBeNull();

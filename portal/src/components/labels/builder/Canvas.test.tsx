@@ -133,8 +133,8 @@ describe('rendering', () => {
 
     const pod = node('banner-pod').querySelector('text.lbc-text')!;
     expect(pod.textContent).toBe('07C');
-    // the resident Swiss cut draws with the Roboto Condensed Bold stand-in
-    expect(pod.getAttribute('font-family')).toContain('label-builder-roboto-condensed-bold');
+    // the resident Swiss cut draws with the Roboto Regular stand-in
+    expect(pod.getAttribute('font-family')).toContain('label-builder-roboto-regular');
     expect(metricsFor).toHaveBeenCalledWith('swiss721-cond-bold', 'regular');
     expect(node('banner-nap').querySelector('text.lbc-text')!.textContent).toBe('14');
     expect(node('banner-ru').querySelector('text.lbc-text')!.textContent).toBe('23');
@@ -540,6 +540,28 @@ describe('align', () => {
     const one = setup({ selection: ['banner-rack'] });
     expect(one.container.querySelector('.lbc-anchor')).toBeNull();
     expect(one.container.querySelector('.lbc-anchor-tag')).toBeNull();
+  });
+
+  it('the anchor tag sits above the anchor, or under it when the label\'s top edge is in the way', () => {
+    const tag = (c: HTMLElement) => {
+      const bg = c.querySelector('.lbc-anchor-tag-bg')!;
+      const box = c.querySelector('.lbc-anchor')!;
+      const n = (e: Element, a: string) => Number(e.getAttribute(a));
+      return { top: n(bg, 'y'), bottom: n(bg, 'y') + n(bg, 'height'), boxTop: n(box, 'y'),
+        boxBottom: n(box, 'y') + n(box, 'height'), text: n(c.querySelector('.lbc-anchor-tag')!, 'y') };
+    };
+    // banner-rack sits 18 dots from the top: no room above, so the tag goes under it
+    const top = setup({ selection: ['banner-rack', 'barcode'] });
+    const t = tag(top.container);
+    expect(t.top).toBeGreaterThanOrEqual(t.boxBottom);
+    expect(t.text).toBeGreaterThan(t.top);
+    expect(t.text).toBeLessThan(t.bottom);
+    top.unmount();
+    // the barcode, 500 dots down, has room: the tag sits on top of it
+    const low = setup({ selection: ['barcode', 'banner-rack'] });
+    const b = tag(low.container);
+    expect(b.bottom).toBeLessThanOrEqual(b.boxTop);
+    expect(b.top).toBeGreaterThanOrEqual(0);
   });
 
   it('the align tooltips say what they align to', () => {

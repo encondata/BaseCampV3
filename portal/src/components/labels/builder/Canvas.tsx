@@ -678,13 +678,16 @@ export default function Canvas({
             {picked.length > 1 && (() => {
               // the first picked: what Align and Match size line the rest up on
               const f = dotFootprint(picked[0], dpi);
+              // the tag sits on top of the anchor, or under it when the
+              // label's top edge (the view's) leaves no room above
+              const tagTop = f.y - 15 * px >= 0 ? f.y - 15 * px : f.y + Math.max(f.h, px) + 2 * px;
               return (
                 <g className="lbc-anchor-mark">
                   <rect className="lbc-anchor" x={f.x} y={f.y} width={Math.max(f.w, px)} height={Math.max(f.h, px)}
                     strokeWidth={2 * px} />
-                  <rect className="lbc-anchor-tag-bg" x={f.x} y={f.y - 15 * px} width={42 * px} height={13 * px}
+                  <rect className="lbc-anchor-tag-bg" x={f.x} y={tagTop} width={42 * px} height={13 * px}
                     rx={3 * px} />
-                  <text className="lbc-anchor-tag" x={f.x + 5 * px} y={f.y - 5.5 * px} fontSize={9.5 * px}>anchor</text>
+                  <text className="lbc-anchor-tag" x={f.x + 5 * px} y={tagTop + 9.5 * px} fontSize={9.5 * px}>anchor</text>
                 </g>
               );
             })()}

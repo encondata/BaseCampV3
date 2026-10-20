@@ -2,7 +2,7 @@
 /**
  * The font dropdown: the eight families, each name and the sample
  * `0O 1Il 7` drawn in that family's own face (the resident Swiss cut in its
- * Roboto Condensed Bold stand-in), keyboard and pointer picks.
+ * Roboto Regular stand-in), keyboard and pointer picks.
  */
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -40,8 +40,8 @@ describe('FontSelect', () => {
     expect(options).toHaveLength(8);
     for (const o of options) expect(o.querySelector('.lbp-font-sample')?.textContent).toBe('0O 1Il 7');
     // the resident Swiss cut is drawn with its stand-in
-    expect(options[0].querySelector('.lbp-font-name')?.textContent).toBe('Swiss 721 Condensed Bold');
-    expect(faceOf(options[0])).toContain('label-builder-roboto-condensed-bold');
+    expect(options[0].querySelector('.lbp-font-name')?.textContent).toBe('Swiss 721 (printer built-in)');
+    expect(faceOf(options[0])).toContain('label-builder-roboto-regular');
     expect(options[0].textContent).toContain('default');
     expect(faceOf(options[4])).toContain('label-builder-roboto-mono-regular');
     expect(options[4].textContent).toContain('mono');

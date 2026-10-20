@@ -19,6 +19,7 @@ describe('command strings', () => {
     expect(configurationQuery()).toBe('^XA^HH^XZ');
     expect(directoryQuery()).toBe('^XA^HWE:*.*^XZ');
     expect(directoryQuery('R')).toBe('^XA^HWR:*.*^XZ');
+    expect(directoryQuery('Z', '*.TTF')).toBe('^XA^HWZ:*.TTF^XZ');
     expect(deleteObject('E', '85620388.TTF')).toBe('^XA^IDE:85620388.TTF^XZ');
     expect(downloadFontHeader('E', '85620388.TTF', 124336)).toBe('~DYE:85620388.TTF,B,T,124336,,');
   });

@@ -1,6 +1,6 @@
 """Seeding the label builder's font library (spec §4.4): the fourteen open
-TrueType files from pinned GitHub URLs, and the resident Swiss 721
-Condensed Bold row, which has no file. Downloads and object storage are
+TrueType files from pinned GitHub URLs, and the resident Swiss 721 row
+(Zebra's built-in cut), which has no file. Downloads and object storage are
 faked: the suite never fetches a font."""
 
 import re
@@ -15,7 +15,7 @@ from serversherpa.labels.fonts import FAMILIES
 
 # object name → (family, weight, display name, resident)
 EXPECTED = {
-    "TT0003M_.TTF": ("swiss721-cond-bold", "regular", "Swiss 721 Condensed Bold", True),
+    "TT0003M_.TTF": ("swiss721-cond-bold", "regular", "Swiss 721 (printer built-in)", True),
     "ROBOCO_R.TTF": ("roboto-condensed", "regular", "Roboto Condensed Regular", False),
     "ROBOCO_B.TTF": ("roboto-condensed", "bold", "Roboto Condensed Bold", False),
     "ROBOTO_R.TTF": ("roboto", "regular", "Roboto Regular", False),
@@ -139,8 +139,48 @@ async def test_seed_adopts_files_already_in_the_library(db, fake_io):
         roboto.id, "roboto", "regular", "Roboto Regular", "label-fonts/mine.ttf", False)
     s = rows["TT0003M_.TTF"]
     assert (s.id, s.family, s.weight, s.display_name, s.storage_key, s.resident) == (
-        swiss.id, "swiss721-cond-bold", "regular", "Swiss 721 Condensed Bold",
+        swiss.id, "swiss721-cond-bold", "regular", "Swiss 721 (printer built-in)",
         "label-fonts/swiss.ttf", True)
+
+
+async def test_seed_renames_a_resident_row_seeded_under_an_older_label(db, fake_io):
+    """The resident Swiss row was seeded as "Swiss 721 Condensed Bold" until
+    2026-10-20 (the cut is the regular weight): a re-seed gives it the
+    family's label, and leaves its file and every other row alone."""
+    fetch, fetched, _stored = fake_io
+    await font_seed.seed(db, fetch=fetch)
+    rows = await _active(db)
+    swiss = rows["TT0003M_.TTF"]
+    swiss.display_name, swiss.storage_key, swiss.size_bytes = (
+        "Swiss 721 Condensed Bold", "label-fonts/swiss.ttf", 160676)
+    rows["ROBOTO_R.TTF"].display_name = "My Roboto"
+    await db.commit()
+    fetched.clear()
+
+    assert await font_seed.seed(db, fetch=fetch) == ["TT0003M_.TTF"]
+    assert fetched == []
+    rows = await _active(db)
+    s = rows["TT0003M_.TTF"]
+    assert (s.id, s.display_name, s.storage_key, s.size_bytes, s.resident) == (
+        swiss.id, "Swiss 721 (printer built-in)", "label-fonts/swiss.ttf", 160676, True)
+    assert rows["ROBOTO_R.TTF"].display_name == "My Roboto"
+    logged = (await db.execute(select(AuditLog).where(
+        AuditLog.entity_type == "label_font", AuditLog.entity_id == str(swiss.id),
+        AuditLog.action == "update"))).scalars().all()
+    assert len(logged) == 1
+    assert await font_seed.seed(db, fetch=fetch) == []
+
+
+async def test_seed_leaves_a_resident_row_under_a_custom_name_alone(db, fake_io):
+    """Only the old seeded label is replaced: a name someone chose stays."""
+    fetch, _fetched, _stored = fake_io
+    await font_seed.seed(db, fetch=fetch)
+    swiss = (await _active(db))["TT0003M_.TTF"]
+    swiss.display_name = "Zebra Swiss (ours)"
+    await db.commit()
+
+    assert await font_seed.seed(db, fetch=fetch) == []
+    assert (await _active(db))["TT0003M_.TTF"].display_name == "Zebra Swiss (ours)"
 
 
 async def test_residents_without_file_lists_the_fileless_resident_row(db, fake_io):

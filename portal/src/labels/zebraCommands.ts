@@ -13,7 +13,8 @@ export const SAVE_SETTINGS = '^XA^JUS^XZ';
 export const FACTORY_DEFAULTS = '^XA^JUF^XZ';
 
 export const configurationQuery = (): string => '^XA^HH^XZ';
-export const directoryQuery = (drive = 'E'): string => `^XA^HW${drive}:*.*^XZ`;
+/** `^HW` lists a drive's objects matching `pattern` (`*.TTF`: its TrueType fonts). */
+export const directoryQuery = (drive = 'E', pattern = '*.*'): string => `^XA^HW${drive}:${pattern}^XZ`;
 export const deleteObject = (drive: string, name: string): string => `^XA^ID${drive}:${name}^XZ`;
 
 /** `~DYd:name,B,T,<bytes>,,` — binary TrueType download; the file bytes

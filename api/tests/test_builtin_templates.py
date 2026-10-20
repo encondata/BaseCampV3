@@ -152,10 +152,13 @@ def test_the_three_location_tags_cap_their_qr_at_600_only():
 
 # Anchors from the stored code templates (300 DPI), the way
 # test_labels_zpl_v2.py pins the Vegas fixture: every rebuilt element
-# prints where the old template put it.
+# prints where the old template put it, except the QR code: the stored
+# ^FO1000,148 printed its symbol 60 dots lower (a ZD421 draws ^BQ 60 dots
+# below its ^FO), and the design puts the symbol's top at 148, so its ^FO
+# is now 88 (labels/qr.py QR_FO_OFFSET_IN).
 _SHARED_4X2 = ("^FT38,173^", "^FT185,173^", "^FT38,220^", "^FT185,220^", "^FT38,270^",
                "^FT185,270^", "^FO38,295^GB1120,5,5^FS", "^FO440,500^BY4^BCN,50,Y,N,N^FH_^FD>;100000^FS",
-               "^FO1000,148^BQN,2,7^FH_^FDMA,100000^FS", "^FT1120,580^A@B,45,45,",
+               "^FO1000,88^BQN,2,7^FH_^FDMA,100000^FS", "^FT1120,580^A@B,45,45,",
                "^FT1160,580^A@B,45,45,")
 _GRID_759 = ("^FT38,351^", "^FT185,351^", "^FT627,351^", "^FT759,351^", "^FT38,420^",
              "^FT185,420^", "^FT627,420^", "^FT759,420^", "^FT38,489^", "^FT185,489^",

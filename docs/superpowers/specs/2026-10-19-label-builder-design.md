@@ -78,7 +78,7 @@ These came from the conversation on 2026-10-19 and are binding.
 - Font per field, defaulting to `TT0003M_.TTF`. Only fonts in the font
   library are offered, so a printer can be set up with them. About eight
   options, with a friendly name and a rendered sample in the dropdown.
-  The eight: Swiss 721 Condensed Bold (default), Roboto Condensed, Roboto,
+  The eight: Swiss 721 (printer built-in; the default), Roboto Condensed, Roboto,
   Oswald, Roboto Mono, IBM Plex Mono, Atkinson Hyperlegible, Source Sans 3.
   Roboto Mono and IBM Plex Mono are monospace.
 
@@ -101,9 +101,9 @@ These came from the conversation on 2026-10-19 and are binding.
 - The DPI column reads "All" when all three children exist.
 
 ### 3.5 The screen
-- Fields on the left with a search and a **+** that opens a picker. Fields
-  already on the label sink to the end of their group in grey with a count;
-  duplicates are allowed.
+- Fields on the left: the panel lists the fields on the label, each with
+  its count; **+** and `/` open the catalog picker, where duplicates are
+  allowed.
 - The table of placed fields sits under the canvas, with the per-field
   controls in columns.
 - Grid, snap and rulers; alignment tools for multiple selected fields.
@@ -175,7 +175,7 @@ stacking order, lock, and hide-when-empty (data elements only).
 | Static text | content; font; size; weight; inverted; alignment |
 | Line, Box | stroke width; box: fill |
 | Barcode | field or static data; Code 128 or Code 39; bar height from the box; module width; human-readable line on/off; width follows the data and the module; the canvas shows the printed width |
-| QR code | field or static data; size from the box (magnification in printer steps); error correction M |
+| QR code | field or static data; size from the box (magnification in printer steps); error correction M; the canvas draws the symbol where it prints, and the compiler sets `^FO` the printer's 0.2 in QR offset above it, so a symbol can't sit nearer the top edge than 0.2 in (the Properties panel warns) |
 
 **Field value pipeline** (in this order): take the raw value → Split (if the
 display type is Split: the piece for this sub-field) → Strip → Max
@@ -199,7 +199,7 @@ or right-aligned), and the canvas shows the spill in red past the box so
 the author sets Max characters. Multi-line static text also uses `^FB`.
 
 **Bold.** When the chosen family has a Bold file in the library, Bold uses
-it. When it doesn't (Swiss 721 Condensed Bold has only the one cut), Bold
+it. When it doesn't (Swiss 721 has only the one cut), Bold
 overprints the text one dot to the right, except on an inverted element,
 where two reversed passes would cancel each other: there Bold widens the
 glyphs by 15% through the font's width parameter instead. Normal on the
@@ -266,13 +266,16 @@ codes and shapes use top-left `^FO`.
   fonts a template uses, as they do today.
 - The dropdown shows each font's name with the sample `0O 1Il 7`, rendered
   in that font.
-- **The default is different.** Swiss 721 Condensed Bold is a commercial
-  Bitstream cut that Zebra ships on the printer; its file may be installed
-  on a printer but not served to browsers. So: the library marks it
+- **The default is different.** Swiss 721, labeled "Swiss 721 (printer
+  built-in)", is a commercial Bitstream cut that Zebra ships on the
+  printer (`TT0003M_.TTF`, which identifies as Swis721 BT Roman: regular
+  weight, normal width; the slug `swiss721-cond-bold` predates knowing
+  that and stays, since designs store it). Its file may be installed on a
+  printer but not served to browsers. So: the library marks it
   *resident*, step 5 and Printer Setup only check it is present and never
-  push it; the canvas draws it with Roboto Condensed Bold as a stand-in
-  while reserving widths from the real file's metrics, which the server
-  reads once from the library copy. Spacing is exact; the glyph shapes on
+  push it; the canvas draws it with Roboto Regular as a stand-in while
+  reserving widths from the real file's metrics, which the server reads
+  once from the library copy. Spacing is exact; the glyph shapes on
   screen are close but not the printer's. The printed preview (Labelary)
   renders the default through Zebra's built-in font 0, which is the same
   face, so that preview is exact for it.
@@ -301,11 +304,12 @@ codes and shapes use top-left `^FO`.
   sample value, a placed Split piece nested under its field. Fields not on
   the label aren't listed. Each row has a remove × (on hover or focus) that
   takes every placement of the field (or the piece) off the label in one
-  undo step, with a notice that offers Undo. With nothing placed the panel
+  undo step, locked placements included (Undo restores them), with a
+  notice that offers Undo. With nothing placed the panel
   says "No fields on this label yet. Press + or / to add one."
 - The search box (`/`) and the **+** open the picker, which holds the
   catalog: static text, line, box, then every field, unused first and
-  placed last in grey with `on label ×n`. The search box filters it.
+  placed last in gray with `on label ×n`. The search box filters it.
 - The sample value of a field is edited in place in the list. **Load from
   asset…** picks a move and an asset and fills every sample from that row.
 - The "any column from the uploaded From-To row" fields are listed from
@@ -322,11 +326,38 @@ codes and shapes use top-left `^FO`.
 - The canvas is the preview. The existing printer-rendered preview
   (Labelary) stays as a check, with sample values substituted and the
   template's open fonts embedded in the request (cached on the server);
-  the resident default renders through Labelary's font 0 (§4.4).
-- The Roboto Condensed Bold stand-in for the default font on the canvas is
-  Jimmy's choice (2026-10-19) over buying a Swiss 721 webfont license.
+  the resident default renders through Labelary's font 0 (§4.4). Labelary
+  draws a QR code about 0.2 in higher than a Zebra prints it (the compiler
+  sets `^FO` for the printer, §4.8), so a render with a QR code says so
+  under it: "The preview shows QR codes about 0.2 in higher than the
+  printer; the canvas is right."
+- A stand-in for the default font on the canvas is Jimmy's choice
+  (2026-10-19) over buying a Swiss 721 webfont license. It is Roboto
+  Regular since 2026-10-20, when the resident file turned out to be the
+  regular cut (it was Roboto Condensed Bold, which drew heavier and
+  narrower than the print).
 - Test print sends the label with sample values to a USB printer from the
   portal, as today.
+- **Printer**, beside Test print (off, with Test print's reason, for a
+  template that isn't ZPL), opens a dialog on the builder's own USB printer
+  connection (network printers are on the backlog; Jimmy chose USB only,
+  2026-10-20):
+  - Connection: Connect / Disconnect as on Labels › Printers, the identity
+    and health chips, and a note when the printer's DPI isn't the one the
+    canvas shows ("Prints at 300 DPI; the canvas is showing 203").
+  - Alignment label: the Printers page's concentric boxes for the
+    template's size at the printer's DPI, with the offsets saved for Print
+    Labels.
+  - Fonts: one row per printer object the design's text prints with (the
+    `design_fonts` set; faux Bold needs only the Regular file), checked
+    against `^HWE:*.TTF` and `^HWZ:*.TTF`. A built-in font counts on Z: or
+    E:, a library font only on E:, where the label names it. A missing
+    library font has Install (labels:add), the same push as Install Fonts,
+    one at a time; a missing built-in font says "Built into Zebra printers;
+    this one doesn't have it"; a font not in the library says so. When Z:
+    can't be read, E: still answers for the library fonts, and a built-in
+    font not on E: says "Couldn't read the printer's built-in fonts".
+  - Send raw ZPL: a box whose text goes to the printer exactly as typed.
 - **Sample values never leave the portal.** They can hold one client's real
   asset data, and a global template reaches every kiosk, so the kiosk sync
   carries no samples. The Label Station's test label (setup step 5 and
@@ -343,6 +374,11 @@ codes and shapes use top-left `^FO`.
   for alignment inside the reserved width, per-element QR magnification and
   Code 128 options. Positions stay top-left `^FO`; the browser's font
   metrics decide where text sits, so no printer-side metrics are needed.
+  One printer quirk is absorbed: a Zebra draws a `^BQ` symbol's top edge
+  0.2 in below its `^FO` y (60 dots measured on a ZD421 at 300 DPI, at any
+  magnification; scaled for 203 and 600, unverified there), so the QR's
+  `^FO` y is the symbol's top less that, clamped at 0 (labels/qr.py
+  `QR_FO_OFFSET_IN`, mirrored in the portal's qr.ts).
 - The sync carries the fields in §3.6 (several are new to the sync) and the
   move's new code.
 - Every design carries a schema version. A laptop whose edge is older than

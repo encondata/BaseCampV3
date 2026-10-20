@@ -1,8 +1,8 @@
 /**
  * The builder's font dropdown (spec §3.2, §4.4): the eight library
  * families, each name and the sample `0O 1Il 7` drawn in that family's own
- * face at the weight in use. The resident Swiss 721 Condensed Bold shows
- * under its own name in its Roboto Condensed Bold stand-in (fonts.ts
+ * face at the weight in use. The resident Swiss 721 (printer built-in)
+ * shows under its own name in its Roboto Regular stand-in (fonts.ts
  * faceFile), marked "default"; the monospace families are marked "mono".
  * Opening the list asks `metricsFor` for every family, which is how the
  * page loads their faces.

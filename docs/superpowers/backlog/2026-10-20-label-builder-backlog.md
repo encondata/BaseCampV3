@@ -107,6 +107,27 @@ QR).
     the original size** uses the row without rewriting it
     (`NewTemplateModal.tsx`): mark `ownSize` dirty on any non-403/404
     failure so the next try always PATCHes.
+34. **Code 128 width for non-ASCII data is unverified.** `labels/barcode.py`
+    `barcode_modules` (and the portal's `barcode.ts` mirror) count each
+    UTF-8 byte as one subset-B character. Real Code 128 needs FNC4 for a
+    byte at 0x80 or above and can't encode control bytes, so a non-ASCII
+    value's width (and whether it prints at all) is unverified. Asset IDs
+    are ASCII, so today's labels are unaffected.
+
+## Printing from the builder
+
+35. **Network printers from the portal.** The builder's Printer dialog
+    and Test print reach a USB (WebUSB) Zebra only; Jimmy chose USB-only
+    for now (2026-10-20). Two ways to reach a network printer: relay
+    through a Label Station laptop on the same network (the edge already
+    has scan, query, send and fonts), or Zebra Browser Print.
+36. **QR `^FO` offset at 203 and 600 DPI.** The emulator draws `^BQ` about
+    10 dots below and right of its `^FO`; the printer's real offset was
+    measured with a probe on the ZD421-300dpi (60 dots down, none
+    sideways, at magnification 5 and 10) and the compiler and canvas now
+    compensate (`labels/qr.py` `QR_FO_OFFSET_IN`, 2026-10-20). The 203 and
+    600 DPI values (41 and 120 dots) are scaled, not measured: probe them
+    on hardware and adjust if they differ.
 
 ## Kiosk and laptop edge (`kiosk/`, `kiosk_laptop/`)
 

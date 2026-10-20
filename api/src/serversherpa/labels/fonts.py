@@ -3,9 +3,11 @@ prints with (spec §4.4).
 
 Every family is TrueType and lives on the printer under an 8.3 object
 name, which the ZPL compiler emits as `^A@…,E:<object>`. Swiss 721
-Condensed Bold is Zebra's own resident cut: it is never pushed to a
-printer or served to a browser, and it has no separate Bold file, so Bold
-on it is faux (see `font_object`). This table is the only source of the
+(`TT0003M_.TTF`, Swis721 BT Roman: regular weight, normal width) is
+Zebra's own resident cut: it is never pushed to a printer or served to a
+browser, and it has no separate Bold file, so Bold on it is faux (see
+`font_object`). Its slug, `swiss721-cond-bold`, predates knowing which cut
+it is and stays as designs store it. This table is the only source of the
 object names: the compiler never asks the font library, so the canvas, the
 portal and every laptop edge compile the same bytes.
 
@@ -38,7 +40,7 @@ def _family(label: str, regular: str, bold: str | None, *, resident: bool = Fals
 
 
 FAMILIES: dict[str, Family] = {
-    "swiss721-cond-bold": _family("Swiss 721 Condensed Bold", "TT0003M_.TTF", None,
+    "swiss721-cond-bold": _family("Swiss 721 (printer built-in)", "TT0003M_.TTF", None,
                                   resident=True),
     "roboto-condensed": _family("Roboto Condensed", "ROBOCO_R.TTF", "ROBOCO_B.TTF"),
     "roboto": _family("Roboto", "ROBOTO_R.TTF", "ROBOTO_B.TTF"),

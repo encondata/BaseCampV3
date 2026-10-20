@@ -152,7 +152,7 @@ def _tiny_ttf(upem: int = 1000) -> bytes:
 
 
 async def _resident(db, **over) -> LabelFont:
-    font = LabelFont(name="TT0003M_.TTF", display_name="Swiss 721 Condensed Bold",
+    font = LabelFont(name="TT0003M_.TTF", display_name="Swiss 721 (printer built-in)",
                      storage_key=None, size_bytes=0, family="swiss721-cond-bold",
                      weight="regular", resident=True, **over)
     db.add(font)
@@ -229,7 +229,7 @@ async def test_resident_font_content_is_refused(client, db, seeded_user):
     body = up.json()
     assert (body["id"], body["resident"], body["family"], body["size_bytes"]) == (
         str(swiss.id), True, "swiss721-cond-bold", len(_tiny_ttf()))
-    assert body["display_name"] == "Swiss 721 Condensed Bold"
+    assert body["display_name"] == "Swiss 721 (printer built-in)"
     assert (await _upload(client, admin, "TT0003M_.TTF")).status_code == 409   # has its file now
 
     r = await client.get(f"/labels/fonts/{swiss.id}/metrics", headers=staff)

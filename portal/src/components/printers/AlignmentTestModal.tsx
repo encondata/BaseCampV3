@@ -10,6 +10,7 @@ import type { LabelVocab } from '../../lib/api';
 import { dpiDots, sizeMeta, vocabOfKind } from '../../lib/labels';
 import {
   alignmentTestZpl, applyPrintSettings, clampSetting, readPrintSettings, writePrintSettings,
+  type PrintSettings,
 } from '../../lib/printLabels';
 import ComboBox from '../ComboBox';
 
@@ -21,6 +22,16 @@ export function alignmentInsets(widthDots: number, heightDots: number): number[]
   const insets = [5];
   for (let inset = 30; widthDots - 2 * inset >= 50 && heightDots - 2 * inset >= 50; inset += 25) insets.push(inset);
   return insets;
+}
+
+/** The alignment label for `size` at `dots` DPI with `settings`' offsets
+ *  applied, one copy: what Print test label sends, and the label builder's
+ *  Printer dialog too. */
+export function alignmentLabelZpl(size: LabelVocab, dots: number, settings: PrintSettings): string {
+  const meta = sizeMeta(size);
+  const w = Math.round(meta.width_in * dots);
+  const h = Math.round(meta.height_in * dots);
+  return applyPrintSettings(alignmentTestZpl(w, h, size.key, dots), settings, { singleCopy: true });
 }
 
 export default function AlignmentTestModal({ vocab, printerDpi, onPrint, onClose }: {
@@ -56,9 +67,7 @@ export default function AlignmentTestModal({ vocab, printerDpi, onPrint, onClose
     setNotice(null);
     setBusy(true);
     try {
-      const zpl = applyPrintSettings(alignmentTestZpl(dims.w, dims.h, size.key, dots),
-        { ...stored, verticalOffset: vertical, horizontalOffset: horizontal }, { singleCopy: true });
-      await onPrint(zpl);
+      await onPrint(alignmentLabelZpl(size, dots, { ...stored, verticalOffset: vertical, horizontalOffset: horizontal }));
       setNotice({ type: 'success', message: `Alignment test label (${size.key}) sent to printer` });
     } catch (err) {
       setNotice({ type: 'error', message: err instanceof Error && err.message ? err.message : 'Failed to print alignment test label' });

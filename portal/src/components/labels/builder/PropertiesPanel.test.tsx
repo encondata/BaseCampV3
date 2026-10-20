@@ -121,6 +121,24 @@ describe('PropertiesPanel', () => {
     expect(elementOf(last(), 'qr')).toMatchObject({ w: 147 / DPI, h: 147 / DPI });
   });
 
+  it('warns when a QR code sits nearer the top edge than the printer can print it', () => {
+    const warning = "Too close to the top edge: the printer can't print a QR code higher than 0.2 in from the top";
+    setup({ selection: ['qr'] });
+    expect(within(panel()).queryByText(warning)).toBeNull();
+    commit('Y', '30');
+    expect(within(panel()).getByText(warning)).toBeTruthy();
+    commit('Y', '60');
+    expect(within(panel()).queryByText(warning)).toBeNull();
+  });
+
+  it('warns for a field shown as a QR code too', () => {
+    const d = VEGAS();
+    const qrField = { ...elementOf(d, 'value-name'), display: 'qr', y: 0.05, w: 0.49, h: 0.49 } as FieldElement;
+    setup({ design: { ...d, elements: d.elements.map((e) => (e.id === 'value-name' ? qrField : e)) },
+      selection: ['value-name'] });
+    expect(within(panel()).getByText(/Too close to the top edge/)).toBeTruthy();
+  });
+
   it('display type Split builds the pieces from the sample: 14.01.07C.02.03 → 5 rows', () => {
     const { last, select } = setup({ design: oneRack(), selection: ['rack'] });
     press('Split');

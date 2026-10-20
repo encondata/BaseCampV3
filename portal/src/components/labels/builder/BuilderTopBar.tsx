@@ -4,7 +4,8 @@
  * parent with its DPIs ("Parent (203 · 300 · 600)", each one a button that
  * shows the label at that DPI) or one child ("Child · 300") — the version,
  * an Unsaved mark while there are changes, undo and redo, then Versions,
- * Clone, Test print and Save with their keys.
+ * Clone, Printer (the USB printer dialog), Test print and Save with their
+ * keys.
  */
 
 import { SHORTCUTS, type Platform } from '../../../labels/builder/shortcuts';
@@ -34,7 +35,9 @@ export interface BuilderTopBarProps {
   /** Why Clone is off just now (unsaved changes). */
   cloneBlocked?: string | null;
   onTestPrint: () => void;
-  /** Why Test print is off (not a ZPL template). */
+  /** Opens the Printer dialog (connection, alignment label, fonts). */
+  onPrinter: () => void;
+  /** Why Test print and Printer are off (not a ZPL template). */
   printBlocked?: string | null;
   onSave: () => void;
   saving?: boolean;
@@ -54,7 +57,7 @@ const REDO_ICON = <path d="M14 7H7.5a4.5 4.5 0 0 0 0 9H12M14 7l-3-3M14 7l-3 3" /
 
 export default function BuilderTopBar({
   name, typeSize, role, version, dirty, canUndo, canRedo, onUndo, onRedo, onBack, onVersions, onClone,
-  cloneBlocked = null, onTestPrint, printBlocked = null, onSave, saving = false, printing = false,
+  cloneBlocked = null, onTestPrint, onPrinter, printBlocked = null, onSave, saving = false, printing = false,
   readOnly = false, platform,
 }: BuilderTopBarProps) {
   const undoKeys = keysOf('edit.undo', platform);
@@ -103,6 +106,8 @@ export default function BuilderTopBar({
         <button type="button" className="mini-btn" onClick={onClone} disabled={!!cloneBlocked}
           title={cloneBlocked ?? 'Clone to a new template'}>Clone</button>
       )}
+      <button type="button" className="mini-btn" onClick={onPrinter} disabled={!!printBlocked}
+        title={printBlocked ?? 'Connect the USB printer, print an alignment label, check its fonts'}>Printer</button>
       <button type="button" className="mini-btn" onClick={onTestPrint} disabled={printing || !!printBlocked}
         title={printBlocked ?? 'Print this label with its sample values on a USB Zebra printer'}>
         {printing ? 'Printing…' : 'Test print'} <kbd className="lbp-kbd">{printKeys}</kbd>

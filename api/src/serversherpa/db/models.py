@@ -1765,7 +1765,7 @@ class LabelFont(Base):
 
     `family`/`weight` place the file in one of the label builder's
     families (serversherpa.labels.fonts; one active file per pair, 0101).
-    `resident` is Zebra's own Swiss 721 Condensed Bold: never pushed to a
+    `resident` is Zebra's own Swiss 721 (TT0003M_.TTF): never pushed to a
     printer or served to a browser, and without a file (`storage_key` NULL,
     `size_bytes` 0) until one is uploaded for its metrics. `source_url` is
     where `seed-label-fonts` downloaded the file."""

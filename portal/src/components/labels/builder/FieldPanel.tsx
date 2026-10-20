@@ -17,7 +17,7 @@
  * when Load from asset… is pressed.
  */
 
-import { forwardRef, useEffect, useId, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent } from 'react';
 
 import { removeElements, type DesignV2 } from '../../../labels/builder/model';
@@ -157,6 +157,7 @@ const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldP
       if (picking || query) {
         e.preventDefault();
         close();
+        searchRef.current?.focus({ preventScroll: true });
       }
       return;
     }
@@ -205,25 +206,50 @@ const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldP
 
   const select = (key: string, piece?: number | null) => onSelect(placementsOf(design, key, piece).map((e) => e.id));
 
+  /** Where focus goes once a row's × has taken its row away: the next
+   *  row's ×, else the one before, else the search box (resolved after the
+   *  list re-renders without the row). */
+  const asideRef = useRef<HTMLElement>(null);
+  const refocus = useRef<{ from: DesignV2; next: string[] } | null>(null);
+  const removeLabel = (name: string) => `Remove ${name} from the label`;
+  useLayoutEffect(() => {
+    const want = refocus.current;
+    const root = asideRef.current;
+    if (!want || !root) return;
+    if (want.from === design) return;   // not re-rendered without the row yet
+    refocus.current = null;
+    const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>('button.lbp-remove'));
+    const byLabel = (label: string) => buttons.find((b) => b.getAttribute('aria-label') === label);
+    const target = want.next.map(byLabel).find((b) => b !== undefined);
+    if (target) target.focus({ preventScroll: true });
+    else searchRef.current?.focus({ preventScroll: true });
+  });
+
   /** Every placement of `key` (or of one Split piece), in one change. */
   const remove = (name: string, key: string, piece?: number | null) => {
     if (readOnly) return;
     const gone = placementsOf(design, key, piece).map((e) => e.id);
     if (!gone.length) return;
+    const labels = Array.from(asideRef.current?.querySelectorAll<HTMLButtonElement>('button.lbp-remove') ?? [])
+      .map((b) => b.getAttribute('aria-label') ?? '');
+    const at = labels.indexOf(removeLabel(name));
+    if (at >= 0) {
+      refocus.current = { from: design, next: [...labels.slice(at + 1), ...labels.slice(0, at).reverse()] };
+    }
     onChange(removeElements(design, gone));
     if (selection.some((id) => gone.includes(id))) onSelect(selection.filter((id) => !gone.includes(id)));
     onRemoved?.(gone.length, name);
   };
 
   const removeButton = (name: string, key: string, piece?: number | null) => (readOnly ? null : (
-    <button type="button" className="lbp-remove" aria-label={`Remove ${name} from the label`}
+    <button type="button" className="lbp-remove" aria-label={removeLabel(name)}
       title="Remove from the label" onClick={() => remove(name, key, piece)}>
       <svg viewBox="0 0 16 16" aria-hidden="true" className="lbp-icon"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg>
     </button>
   ));
 
   return (
-    <aside className="lbp lbp-fields-panel" aria-label="Fields">
+    <aside className="lbp lbp-fields-panel" aria-label="Fields" ref={asideRef}>
       <div className="lbp-title">
         <span>Fields</span>
         <kbd className="lbp-kbd" title="Press / to search the fields">/</kbd>

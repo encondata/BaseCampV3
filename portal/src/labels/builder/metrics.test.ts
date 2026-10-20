@@ -80,11 +80,11 @@ describe('loadFont', () => {
     vi.unstubAllGlobals();
   });
 
-  it('draws the resident family with Roboto Condensed Bold and measures it with its own file', async () => {
+  it('draws the resident family with Roboto Regular and measures it with its own file', async () => {
     const out = await loadFont('swiss721-cond-bold', 'bold', source);
     expect(out.metrics).toBe(METRICS);
     expect(out.face).toBeNull();                 // no FontFace here (node): never fetches the face
-    expect(out.cssFamily).toBe('label-builder-roboto-condensed-bold');
+    expect(out.cssFamily).toBe('label-builder-roboto-regular');
     expect(calls).toEqual(['metrics swiss721-cond-bold regular']);
   });
 
@@ -98,8 +98,8 @@ describe('loadFont', () => {
     vi.stubGlobal('document', { fonts: { add: (f: unknown) => added.push(f) } });
 
     const swiss = await loadFont('swiss721-cond-bold', 'regular', source);
-    expect(calls).toEqual(['metrics swiss721-cond-bold regular', 'bytes roboto-condensed bold']);
-    expect((swiss.face as unknown as FakeFace).family).toBe('label-builder-roboto-condensed-bold');
+    expect(calls).toEqual(['metrics swiss721-cond-bold regular', 'bytes roboto regular']);
+    expect((swiss.face as unknown as FakeFace).family).toBe('label-builder-roboto-regular');
     expect(added).toEqual([swiss.face]);
 
     calls.length = 0;
