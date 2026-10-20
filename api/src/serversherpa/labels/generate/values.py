@@ -44,6 +44,9 @@ class AssetRow(NamedTuple):
     destination_rack: str | None
     destination_ru: Decimal | None
     destination_position: str | None
+    # the row as /kiosk/sync/assets sends it (payloads.asset_payload): what a
+    # label builder template's field values come from
+    payload: dict | None = None
 
     @property
     def entity_id(self) -> object:
@@ -60,6 +63,8 @@ class ContainerRow(NamedTuple):
     legacy_id: int | None
     name: str | None
     label_tag: str | None
+    # payloads.container_payload's dict, as for AssetRow.payload
+    payload: dict | None = None
 
     @property
     def entity_id(self) -> object:

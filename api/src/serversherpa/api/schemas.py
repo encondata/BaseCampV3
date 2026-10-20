@@ -4145,6 +4145,9 @@ class LabelRunCreateIn(BaseModel):
     # a stock pydantic error, so it 422s as {"code": "invalid_templates",
     # "problems": [...]}.
     templates: dict[str, uuid.UUID] = Field(default_factory=dict)
+    # the printer DPI the run generates for: a `dpi` vocab key, checked by
+    # enqueue_run (422 {"code": "invalid_dpi"})
+    dpi_key: str = "300"
 
 
 class LabelRunOut(BaseModel):
@@ -4177,6 +4180,7 @@ class LabelRunOut(BaseModel):
     # type key -> template id (text) — the operator's per-type override,
     # as validated and stored by enqueue_run.
     template_overrides: dict[str, str]
+    dpi_key: str
 
 
 class LabelGeneratePreviewInitiativeOut(BaseModel):
@@ -4240,6 +4244,7 @@ class GeneratedLabelOut(BaseModel):
     label_type: str
     template_name: str
     template_version: int
+    dpi_key: str
     generated_at: datetime
     stale: bool
     code: str

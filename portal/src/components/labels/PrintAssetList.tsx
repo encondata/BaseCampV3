@@ -8,7 +8,9 @@
  * prefs under `labels-print`. Sorting by Source rack is numeric-aware
  * with RU top-down (largest first) as the tie-break — V2's own rule.
  * Selection is by asset id (`row.asset_id`); the parent gets the displayed
- * (sorted + filtered) rows so it can derive the print order.
+ * (sorted + filtered) rows so it can derive the print order. With no
+ * printer DPI to filter by, the parent passes `dpisOf` and a DPI column
+ * (not toggleable) lists the DPIs each asset has a label at.
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
@@ -58,6 +60,10 @@ export const COLUMNS: ColumnDef[] = [
   { key: 'status', label: 'Status', width: '0.9fr', default: true, min: 110 },
   { key: 'label', label: 'Label', width: '110px', default: true },
 ];
+// Shown only while no printer DPI filters the labels (`dpisOf`), after the
+// registry — always on, so a saved column set can't hide it. It takes the
+// list past the fit above: at the narrowest window it scrolls sideways.
+export const DPI_COL: ColumnDef = { key: 'dpi', label: 'DPI', width: '112px', default: true };
 const ALL_KEYS = new Set(COLUMNS.map((c) => c.key));
 const DEFAULT_VISIBLE = new Set(COLUMNS.filter((c) => c.default).map((c) => c.key));
 
@@ -107,9 +113,20 @@ export function sortRows(
   });
 }
 
+/** A row's DPIs, lowest first ("203 · 300"); a dash when it has no label. */
+function dpiCell(dpis: string[]) {
+  const text = dpis.join(' · ');
+  return text
+    ? <span className="mono cell-line" title={titleFor(text)}>{text}</span>
+    : <span className="cell-sub">—</span>;
+}
+
 interface Props {
   rows: InitiativeAssetRow[];
   statusOf: ((row: InitiativeAssetRow) => LabelStatus) | null;
+  /** The DPIs a row has a label at — a DPI column — when no printer DPI
+   *  narrows the labels; null hides the column. */
+  dpisOf?: ((row: InitiativeAssetRow) => string[]) | null;
   selected: string[];
   onSelectedChange: (next: string[]) => void;
   onDisplayedChange: (displayed: InitiativeAssetRow[]) => void;
@@ -120,7 +137,7 @@ interface Props {
 }
 
 export default function PrintAssetList({
-  rows, statusOf, selected, onSelectedChange, onDisplayedChange, onRefresh, refreshing, disabled = false, resetKey,
+  rows, statusOf, dpisOf = null, selected, onSelectedChange, onDisplayedChange, onRefresh, refreshing, disabled = false, resetKey,
 }: Props) {
   const { preferences } = useAuth();
   const listGridScale = listScale(preferences?.list_size);
@@ -192,7 +209,8 @@ export default function PrintAssetList({
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = listGridStyle([CHECKBOX_COL, ...shownCols], [], undefined, listGridScale);
+  const grid = listGridStyle([CHECKBOX_COL, ...shownCols, ...(dpisOf ? [DPI_COL] : [])], [],
+    undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cell = (r: InitiativeAssetRow, key: string) => {
@@ -257,6 +275,7 @@ export default function PrintAssetList({
                           sortDir={sortKey === c.key ? sortDir : null} onSort={(dir) => setSort(c.key, dir)} />
             </ColHead>
           ))}
+          {dpisOf && <ColHead col={DPI_COL} />}
         </div>
 
         {displayed.length === 0 && (
@@ -280,6 +299,7 @@ export default function PrintAssetList({
                 {shownCols.map((c) => (
                   <div key={c.key} className={`cell ${c.key === 'name' ? 'cell-primary' : ''}`}>{cell(r, c.key)}</div>
                 ))}
+                {dpisOf && <div className="cell">{dpiCell(dpisOf(r))}</div>}
               </div>
             </div>
           );

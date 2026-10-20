@@ -1839,13 +1839,17 @@ class LabelGenerationRun(Base):
     # since a template can be deactivated in between.
     template_overrides: Mapped[dict] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb"))
+    # the printer DPI this run generates for (0103): it uses only templates
+    # at that DPI, and its labels replace only that DPI's labels
+    dpi_key: Mapped[str] = mapped_column(server_default="300")
 
 
 class GeneratedLabel(Base):
-    """One row per (entity, initiative, label_type) — regenerating
-    replaces the row (upsert). `values` holds the substituted placeholder
-    values for audit/preview; `stale` is set only by explicit
-    regeneration (this phase never auto-invalidates it)."""
+    """One row per (entity, initiative, label_type, dpi_key) — regenerating
+    replaces the row (upsert); each DPI keeps its own (0103). `values`
+    holds the substituted placeholder values for audit/preview; `stale` is
+    set only by explicit regeneration (this phase never auto-invalidates
+    it)."""
     __tablename__ = "generated_labels"
 
     id: Mapped[uuid.UUID] = mapped_column(

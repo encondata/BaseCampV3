@@ -192,6 +192,26 @@ export function batchBounds(batchNumber: number, batchSize: number, total: numbe
 
 export type LabelStatus = 'ready' | 'stale' | 'missing' | 'unsupported';
 
+/** The labels a printer at `dpi` takes: a bundle holds every DPI an
+ *  entity was generated at, and only the printer's own DPI may print. No
+ *  DPI (no printer, or one whose `~HI` couldn't be read) keeps them all. */
+export function bundleAtDpi(bundle: GeneratedLabelBundle | null, dpi: string | null): GeneratedLabelBundle | null {
+  if (!bundle || !dpi) return bundle;
+  return { ...bundle, labels: bundle.labels.filter((item) => item.dpi_key === dpi) };
+}
+
+/** Each entity's label DPIs, lowest first — the lists' DPI column. */
+export function dpisByEntity(bundle: GeneratedLabelBundle | null): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  for (const item of bundle?.labels ?? []) {
+    const dpis = map.get(item.entity_id) ?? [];
+    if (!dpis.includes(item.dpi_key)) dpis.push(item.dpi_key);
+    map.set(item.entity_id, dpis);
+  }
+  for (const dpis of map.values()) dpis.sort(naturalCompare);
+  return map;
+}
+
 export function bundleByEntity(bundle: GeneratedLabelBundle | null): Map<string, GeneratedLabelBundleItem> {
   const map = new Map<string, GeneratedLabelBundleItem>();
   for (const item of bundle?.labels ?? []) map.set(item.entity_id, item);

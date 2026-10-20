@@ -26,6 +26,8 @@ const printer = vi.hoisted(() => ({
   supported: true, connected: false, productName: null as string | null, notice: null,
   clearNotice: vi.fn(), connect: vi.fn(async () => undefined), disconnect: vi.fn(async () => undefined),
   send: vi.fn(async (_zpl: string) => undefined), waitForIdle: vi.fn(async (_n: number, onQueued?: (q: number) => void) => { onQueued?.(0); }),
+  // ~HI: null (unread) unless a test gives the printer a resolution
+  identify: vi.fn(async (): Promise<{ dpi: number } | null> => null),
 }));
 vi.mock('../lib/useZebraPrinter', () => ({ useZebraPrinter: () => printer }));
 
@@ -102,6 +104,7 @@ beforeEach(() => {
   localStorage.clear();
   cache.inis.clear(); cache.bundles.clear();
   printer.connected = false; printer.productName = null; printer.send.mockClear(); printer.connect.mockClear();
+  printer.identify.mockReset(); printer.identify.mockResolvedValue(null);
   api.listInitiatives.mockResolvedValue([ini('i1', 'NAP11'), ini('i2', 'Done move', 'completed')]);
   api.listLabelVocab.mockResolvedValue(vocab);
   api.listInitiativeAssets.mockResolvedValue(ROWS);
@@ -528,4 +531,48 @@ it("says plainly that container lists aren't available offline, instead of readi
   expect(await screen.findByText(/Container lists aren't available offline/)).toBeTruthy();
   expect(screen.queryByText('No containers found on this initiative')).toBeNull();
   expect(screen.queryByText("Couldn't load the initiative's containers.")).toBeNull();
+});
+
+it("print page filters to the connected printer's DPI", async () => {
+  const at = (id: string, dpi: string) => ({
+    id: `g-${id}-${dpi}`, entity_type: 'asset' as const, entity_id: id, template_id: `t${dpi}`,
+    template_name: `T · ${dpi}`, template_version: 1, language_key: 'zpl', size_key: '4x2',
+    dpi_key: dpi, stale: false, generated_at: 'now', code: `^XA^FD${id}@${dpi}^FS^XZ`,
+  });
+  api.getGeneratedLabelBundle.mockResolvedValue({
+    initiative_id: 'i1', label_type: 'top', fetched_at: 'now',
+    labels: [at('a1', '203'), at('a1', '300'), at('a2', '300'), at('a3', '203'), at('a3', '600')],
+  });
+
+  // no printer: every DPI's labels, with a DPI column saying which
+  renderPage();
+  await pickInitiative();
+  expect(screen.getByText('3 of 3 assets have a Top Label')).toBeTruthy();
+  const head = document.querySelector('.list-head') as HTMLElement;
+  expect(head.textContent).toContain('DPI');
+  // the DPI column is the row's last cell
+  const dpiCell = (name: string) => {
+    const cells = (screen.getByText(name).closest('.dir-row') as HTMLElement)
+      .querySelectorAll('.row-main > .cell');
+    return cells[cells.length - 1].textContent;
+  };
+  expect([dpiCell('asset-1'), dpiCell('asset-2'), dpiCell('asset-3')]).toEqual(
+    ['203 · 300', '300', '203 · 600']);
+  cleanup();
+
+  // a 300 DPI printer: only its labels, so the column goes
+  printer.connected = true;
+  printer.identify.mockResolvedValue({ dpi: 300 });
+  renderPage();
+  await pickInitiative();
+  expect(await screen.findByText('2 of 3 assets have a Top Label · 1 missing')).toBeTruthy();
+  expect(screen.getByText("Showing the labels generated for 300 DPI, this printer's resolution.")).toBeTruthy();
+  expect((document.querySelector('.list-head') as HTMLElement).textContent).not.toContain('DPI');
+  await userEvent.click(screen.getByLabelText('Select asset-1'));
+  await userEvent.click(screen.getByLabelText('Select asset-2'));
+  await userEvent.click(screen.getByRole('button', { name: 'Print 2 labels' }));
+  await waitFor(() => expect(printer.send).toHaveBeenCalledTimes(2));
+  // display order: Source rack, RU top-down — a2 (R1/42) before a1 (R1/40)
+  expect(printer.send.mock.calls.map((c) => c[0])).toEqual([
+    '^XA^FDa2@300^FS^XZ', '^XA^FDa1@300^FS^XZ']);
 });

@@ -5517,14 +5517,20 @@ export interface LabelRun {
   // the runs list uses it to mark a chip "manual" when that run's
   // operator overrode (or hand-picked) that type's template.
   template_overrides?: Record<string, string>;
+  /** The printer DPI the run generated for. Optional for the same reason
+   *  as `template_overrides`; the API always sends it. */
+  dpi_key?: string;
 }
 
 /** POST /labels/generate/runs — 404 `initiative_not_found`, 422
  *  `invalid_label_types`/`invalid_templates` (the latter's `err.detail`
- *  carries `problems: string[]` alongside `code`), 409 `run_active`
- *  (`err.detail` carries `run_id` alongside `code` for that one). */
+ *  carries `problems: string[]` alongside `code`)/`invalid_dpi`, 409
+ *  `run_active` (`err.detail` carries `run_id` alongside `code` for that
+ *  one). */
 export async function startLabelRun(body: {
   initiative_id: string; label_types: string[]; regenerate_existing: boolean; notify: boolean;
+  /** The printer DPI to generate for (the server defaults to 300). */
+  dpi_key?: string;
   /** Only the types the operator resolved themselves — an auto-matched
    *  type with no override never appears here. Omit entirely when empty
    *  rather than sending `{}`. */
@@ -5601,9 +5607,14 @@ export interface LabelGeneratePreview {
   active_run_id: string | null;
 }
 
-export async function getLabelGeneratePreview(initiativeId: string): Promise<LabelGeneratePreview> {
-  const resp = await apiFetch(
-    `/labels/generate/preview?initiative_id=${encodeURIComponent(initiativeId)}`);
+/** What a run at `dpiKey` would do: each type's templates at that DPI and
+ *  its labels' counts at that DPI (the server defaults to 300). */
+export async function getLabelGeneratePreview(
+  initiativeId: string, dpiKey?: string,
+): Promise<LabelGeneratePreview> {
+  const qs = new URLSearchParams({ initiative_id: initiativeId });
+  if (dpiKey) qs.set('dpi_key', dpiKey);
+  const resp = await apiFetch(`/labels/generate/preview?${qs.toString()}`);
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
@@ -5613,11 +5624,11 @@ export interface GeneratedLabel {
   // the human Asset ID (assets.legacy_id, a BigInteger) — not a UUID.
   asset_id: number | null; serial_number: string | null; name: string | null;
   label_type: string; template_name: string; template_version: number;
-  generated_at: string; stale: boolean; code: string;
+  dpi_key: string; generated_at: string; stale: boolean; code: string;
 }
 
 export async function listGeneratedLabels(params: {
-  initiative_id?: string; label_type?: string; limit?: number;
+  initiative_id?: string; label_type?: string; dpi_key?: string; limit?: number;
 } = {}): Promise<GeneratedLabel[]> {
   const qs = new URLSearchParams();
   Object.entries(params).forEach(([k, v]) => { if (v !== undefined) qs.set(k, String(v)); });
@@ -5637,8 +5648,10 @@ export interface GeneratedLabelBundleItem {
   stale: boolean; generated_at: string; code: string;
 }
 
-/** Every generated asset label of one type on one initiative — the Print
- *  Labels page's print payload and the unit its offline cache stores. */
+/** Every generated asset label of one type on one initiative, at every
+ *  DPI it was generated for — the Print Labels page's print payload (it
+ *  keeps the connected printer's DPI) and the unit its offline cache
+ *  stores. */
 export interface GeneratedLabelBundle {
   initiative_id: string; label_type: string; fetched_at: string;
   labels: GeneratedLabelBundleItem[];

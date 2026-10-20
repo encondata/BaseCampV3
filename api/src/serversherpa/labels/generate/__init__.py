@@ -10,14 +10,14 @@ reports/jobs.py); `worker` is the `serversherpa label-worker` process
 loop.
 
 `enqueue_run` is the single entry point any surface (the future API
-route, other packages) uses to queue a run — it owns label-type
+route, other packages) uses to queue a run — it owns label-type and DPI
 validation, the one-active-run-per-initiative rule, and (per-type
 template overrides) validating that each override key is one of the
 run's own label types and each value an active template of that same
-type, so every caller gets the same behavior. The runner honors an
-override over `select.select_template`'s auto-match, falling back to
-"no template" if the override was deactivated between enqueue and
-processing."""
+type that prints at the run's DPI, so every caller gets the same
+behavior. The runner honors an override over `select.select_template`'s
+auto-match, falling back to "no template" if the override was
+deactivated between enqueue and processing."""
 
 import uuid
 from collections.abc import Sequence
@@ -70,12 +70,22 @@ class InvalidLabelTypes(ValueError):
         self.problems = problems
 
 
+class InvalidDpi(ValueError):
+    """The run's `dpi_key` is not an active `dpi` vocab key."""
+
+    def __init__(self, dpi_key: str):
+        super().__init__(f"unknown or inactive DPI: {dpi_key}")
+        self.dpi_key = dpi_key
+
+
 class InvalidTemplates(ValueError):
     """One or more `template_overrides` entries are unusable: the key
     isn't one of the run's own label types, the template id doesn't
-    exist or isn't active, or it exists but is a different type's
-    template. `problems` are human-readable, one per offending entry,
-    e.g. "front: template <id> is not active"."""
+    exist or isn't active, it exists but is a different type's
+    template, it is a label builder parent (which never prints — its DPI
+    children do), or it prints at another DPI than the run's. `problems`
+    are human-readable, one per offending entry, e.g. "front: template
+    <id> is not active"."""
 
     def __init__(self, problems: list[str]):
         super().__init__(f"invalid template overrides: {', '.join(problems)}")
@@ -93,12 +103,14 @@ class RunActive(Exception):
 
 async def _validated_template_overrides(
     db: AsyncSession, template_overrides: dict[str, str] | None, requested: list[str],
+    dpi_key: str,
 ) -> dict[str, str]:
     """Every key must be one of the run's own `requested` label types,
-    and every value a template id that exists, is active, and whose
-    `label_type` matches the key it's filed under. Returns the overrides
-    with values normalized to plain uuid text, ready to store on the
-    run — the runner reads them back with `uuid.UUID(...)`."""
+    and every value a template id that exists, is active, whose
+    `label_type` matches the key it's filed under, and that prints at the
+    run's `dpi_key`. Returns the overrides with values normalized to plain
+    uuid text, ready to store on the run — the runner reads them back with
+    `uuid.UUID(...)`."""
     if not template_overrides:
         return {}
 
@@ -115,19 +127,23 @@ async def _validated_template_overrides(
 
     if parsed:
         rows = (await db.execute(
-            sa_select(LabelTemplate.id, LabelTemplate.label_type, LabelTemplate.is_active)
-            .where(LabelTemplate.id.in_(parsed.values())))).all()
-        by_id = {row_id: (row_type, row_active) for row_id, row_type, row_active in rows}
+            sa_select(LabelTemplate).where(LabelTemplate.id.in_(parsed.values())))).scalars()
+        by_id = {row.id: row for row in rows}
     else:
         by_id = {}
 
     validated: dict[str, str] = {}
     for label_type, template_id in parsed.items():
         found = by_id.get(template_id)
-        if found is None or not found[1]:
+        if found is None or not found.is_active:
             problems.append(f"{label_type}: template {template_id} is not active")
-        elif found[0] != label_type:
-            problems.append(f"{label_type}: template is a '{found[0]}' template")
+        elif found.label_type != label_type:
+            problems.append(f"{label_type}: template is a '{found.label_type}' template")
+        elif found.is_tree_parent:
+            problems.append(f"{label_type}: pick one of the template's DPI versions")
+        elif found.dpi_key != dpi_key:
+            problems.append(
+                f"{label_type}: template prints at {found.dpi_key} DPI, not {dpi_key}")
         else:
             validated[label_type] = str(template_id)
 
@@ -139,7 +155,7 @@ async def _validated_template_overrides(
 async def enqueue_run(
     db: AsyncSession, *, initiative_id: uuid.UUID, label_types: Sequence[str],
     regenerate_existing: bool, requested_by: uuid.UUID, notify: bool,
-    template_overrides: dict[str, str] | None = None,
+    template_overrides: dict[str, str] | None = None, dpi_key: str = "300",
 ) -> LabelGenerationRun:
     requested = list(dict.fromkeys(label_types))          # de-dupe, keep order
     if not requested:
@@ -152,8 +168,13 @@ async def enqueue_run(
     if problems:
         raise InvalidLabelTypes(problems)
 
+    dpi_known = await db.scalar(sa_select(LabelVocab.key).where(
+        LabelVocab.kind == "dpi", LabelVocab.key == dpi_key, LabelVocab.is_active.is_(True)))
+    if dpi_known is None:
+        raise InvalidDpi(dpi_key)
+
     validated_overrides = await _validated_template_overrides(
-        db, template_overrides, requested)
+        db, template_overrides, requested, dpi_key)
 
     existing = await db.scalar(
         sa_select(LabelGenerationRun).where(
@@ -165,7 +186,8 @@ async def enqueue_run(
     run = LabelGenerationRun(
         initiative_id=initiative_id, label_types=requested,
         regenerate_existing=regenerate_existing, requested_by=requested_by,
-        notify=notify, status="queued", template_overrides=validated_overrides)
+        notify=notify, status="queued", template_overrides=validated_overrides,
+        dpi_key=dpi_key)
     db.add(run)
     await db.commit()
     return run

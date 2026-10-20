@@ -5,7 +5,8 @@
 the code-template `label` map), /kiosk/sync/containers each item with
 `container_payload`, and the portal hands the same dicts to `field_values`
 — so a label the laptop edge prints from the sync JSON carries exactly the
-text the portal computes from the database.
+text the portal computes from the database. `label_context` is the move
+half both read, the sync's `label_context` minus its `catalog_keys`.
 
 Not pure (it reads ORM rows and, in `load_status_labels`, the database); the
 pure half is labels/fields.py."""
@@ -21,10 +22,13 @@ from serversherpa.db.models import (
     Asset,
     AssetModel,
     Container,
+    Initiative,
     InitiativeAsset,
+    Site,
     StatusValue,
 )
 from serversherpa.labels.label_values import make_model_text
+from serversherpa.services.timezone import stored_day
 
 
 async def load_status_labels(db: AsyncSession, record_type: str) -> dict[str, str]:
@@ -112,6 +116,23 @@ def asset_payload(asset: Asset, roster_row: InitiativeAsset, model: AssetModel |
         "roster_status": ia.status,
         "roster_status_label": _label(status_labels, ia.status),
         "raw_ft": ia.raw_ft if isinstance(ia.raw_ft, dict) else None,
+    }
+
+
+def label_context(initiative: Initiative, origin: Site | None,
+                  destination: Site | None) -> dict:
+    """The move's values every label of it shares: its name, code and day
+    (the stored date, `stored_day`) and its origin and destination sites'
+    names and codes."""
+    return {
+        "move_name": initiative.name,
+        "move_code": initiative.code,
+        "move_day": (stored_day(initiative.scheduled_start)
+                     if initiative.scheduled_start is not None else None),
+        "source_site": origin.name if origin else None,
+        "source_site_code": origin.code if origin else None,
+        "destination_site": destination.name if destination else None,
+        "destination_site_code": destination.code if destination else None,
     }
 
 

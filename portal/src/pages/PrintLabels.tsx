@@ -10,6 +10,11 @@
  * cards (Initiative / Label type / Printer), the roster card, the Ready to
  * print bar. Modals: Print settings, Printing labels (batch), Offline labels.
  *
+ * Labels are generated per printer DPI, so a bundle can hold several per
+ * entity: once a printer is connected the page reads its resolution (`~HI`)
+ * and keeps only that DPI's labels; with no printer (or an unreadable one)
+ * every DPI shows, with a DPI column saying which each row has.
+ *
  * The page has two modes, chosen by the selected label type
  * (`isContainerLabelType`): an ASSET mode over the initiative's roster and
  * a CONTAINER mode over its containers. Each mode keeps its own roster,
@@ -29,8 +34,9 @@ import { visibleInitiativesForGenerate } from '../lib/generateLabels';
 import * as labelCache from '../lib/labelCache';
 import { isContainerLabelType, vocabLabel, vocabOfKind } from '../lib/labels';
 import {
-  LABEL_TYPE_CUSTOM, applyPrintSettings, batchBounds, batchCount, blankLabelsZpl, bundleByEntity,
-  containerPrintOrder, defaultCopiesFor, labelStatusFor, missingLabelIds, printOrder,
+  LABEL_TYPE_CUSTOM, applyPrintSettings, batchBounds, batchCount, blankLabelsZpl, bundleAtDpi,
+  bundleByEntity, containerPrintOrder, defaultCopiesFor, dpisByEntity, labelStatusFor,
+  missingLabelIds, printOrder,
   rackOf, readPrintSettings, settingsModified, staleLabelCount, writePrintSettings,
   type LabelStatus, type PrintSettings,
 } from '../lib/printLabels';
@@ -129,6 +135,21 @@ export default function PrintLabels() {
   const labelTypeRef = useRef(labelType);
   labelTypeRef.current = labelType;
   const batchStaleRef = useRef(0);
+
+  // The connected printer's resolution as a dpi_key: only labels generated
+  // for it print. Null with no printer or when `~HI` can't be read;
+  // undefined while it is being read.
+  const [printerRead, setPrinterRead] = useState<string | null | undefined>(null);
+  useEffect(() => {
+    if (!printer.connected) { setPrinterRead(null); return undefined; }
+    let cancelled = false;
+    setPrinterRead(undefined);
+    printer.identify()
+      .then((identity) => { if (!cancelled) setPrinterRead(identity ? String(identity.dpi) : null); })
+      .catch(() => { if (!cancelled) setPrinterRead(null); });
+    return () => { cancelled = true; };
+  }, [printer.connected]); // eslint-disable-line react-hooks/exhaustive-deps
+  const printerDpi = printerRead ?? null;
 
   // Printer notices flow into the page's strip.
   useEffect(() => {
@@ -338,7 +359,14 @@ export default function PrintLabels() {
     return () => window.removeEventListener('online', onOnline);
   }, [labelType, loadRoster, loadBundle, loadContainers]);
 
-  const byEntity = useMemo(() => bundleByEntity(bundle), [bundle]);
+  const byEntity = useMemo(() => bundleByEntity(bundleAtDpi(bundle, printerDpi)), [bundle, printerDpi]);
+  // Without a printer DPI each row may have labels at several DPIs: the
+  // lists' DPI column names them.
+  const dpiMap = useMemo(() => (printerDpi ? null : dpisByEntity(bundle)), [bundle, printerDpi]);
+  const assetDpis = useMemo(
+    () => (dpiMap ? (r: InitiativeAssetRow) => dpiMap.get(r.asset_id) ?? [] : null), [dpiMap]);
+  const containerDpis = useMemo(
+    () => (dpiMap ? (c: ContainerItem) => dpiMap.get(c.id) ?? [] : null), [dpiMap]);
   const isCustom = labelType === LABEL_TYPE_CUSTOM;
   const statusOf = useCallback((r: InitiativeAssetRow): LabelStatus => labelStatusFor(r.asset_id, byEntity), [byEntity]);
   const containerStatusOf = useCallback((c: ContainerItem): LabelStatus => labelStatusFor(c.id, byEntity), [byEntity]);
@@ -671,6 +699,13 @@ export default function PrintLabels() {
               {printer.connected ? `Printer connected${printer.productName ? ` · ${printer.productName}` : ''}` : 'No printer connected'}
             </span>
           </div>
+          {printer.connected && printerRead !== undefined && (
+            <p className="page-hint">
+              {printerDpi
+                ? `Showing the labels generated for ${printerDpi} DPI, this printer's resolution.`
+                : "Couldn't read this printer's resolution, so labels for every DPI show."}
+            </p>
+          )}
           {!printer.supported ? (
             <p className="page-hint">USB printing needs Chrome or Edge on a secure (https or localhost) address.</p>
           ) : printer.connected ? (
@@ -724,6 +759,7 @@ export default function PrintLabels() {
             <div className="dir-empty">No containers found on this initiative</div>
           ) : containers ? (
             <PrintContainerList rows={containers} statusOf={isCustom || !labelType ? null : containerStatusOf}
+                                dpisOf={isCustom || !labelType ? null : containerDpis}
                                 selected={containerSelected} onSelectedChange={setContainerSelected}
                                 onDisplayedChange={setContainerDisplayed}
                                 onRefresh={() => void loadContainers(initiativeId)}
@@ -734,7 +770,8 @@ export default function PrintLabels() {
         ) : roster && roster.length === 0 ? (
           <div className="dir-empty">No assets found on this initiative</div>
         ) : roster ? (
-          <PrintAssetList rows={roster} statusOf={isCustom || !labelType ? null : statusOf} selected={selected}
+          <PrintAssetList rows={roster} statusOf={isCustom || !labelType ? null : statusOf}
+                          dpisOf={isCustom || !labelType ? null : assetDpis} selected={selected}
                           onSelectedChange={setSelected} onDisplayedChange={setDisplayed}
                           onRefresh={() => void loadRoster(initiativeId, { keepSelection: true })} refreshing={rosterLoading}
                           disabled={printing || !!batch} resetKey={initiativeId} />

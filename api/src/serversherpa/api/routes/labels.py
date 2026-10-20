@@ -64,7 +64,9 @@ from serversherpa.labels.font_seed import (
     new_storage_key,
 )
 from serversherpa.labels.fonts import FAMILIES, object_family, resident_object
-from serversherpa.labels.generate import InvalidLabelTypes, InvalidTemplates, RunActive, entity_for_type, enqueue_run
+from serversherpa.labels.generate import (
+    InvalidDpi, InvalidLabelTypes, InvalidTemplates, RunActive, entity_for_type, enqueue_run,
+)
 from serversherpa.labels.generate.select import candidate_templates
 from serversherpa.labels.kiosk_templates import family_name
 from serversherpa.labels.model import DesignError, parse_design
@@ -1215,7 +1217,8 @@ def _run_out(run: LabelGenerationRun, initiative_name: str, requested_by_name: s
         error_details=run.error_details, error=run.error, requested_by=run.requested_by,
         requested_by_name=requested_by_name, notify=run.notify, created_at=run.created_at,
         started_at=run.started_at, finished_at=run.finished_at, worker_id=run.worker_id,
-        progress_pct=progress_pct, template_overrides=dict(run.template_overrides or {}))
+        progress_pct=progress_pct, template_overrides=dict(run.template_overrides or {}),
+        dpi_key=run.dpi_key)
 
 
 def _runs_query(actor: AuthContext):
@@ -1256,9 +1259,12 @@ async def create_generation_run(
             db, initiative_id=body.initiative_id, label_types=body.label_types,
             regenerate_existing=body.regenerate_existing, requested_by=actor.person.id,
             notify=body.notify,
-            template_overrides={k: str(v) for k, v in body.templates.items()})
+            template_overrides={k: str(v) for k, v in body.templates.items()},
+            dpi_key=body.dpi_key)
     except InvalidLabelTypes as exc:
         raise _err(422, "invalid_label_types", problems=exc.problems) from exc
+    except InvalidDpi as exc:
+        raise _err(422, "invalid_dpi") from exc
     except InvalidTemplates as exc:
         raise _err(422, "invalid_templates", problems=exc.problems) from exc
     except RunActive as exc:
@@ -1279,7 +1285,8 @@ async def create_generation_run(
     audit(db, actor_id=actor.person.id, entity_type="label_generation_run",
           entity_id=str(run.id), action="create",
           changes={"initiative_id": {"from": None, "to": str(body.initiative_id)},
-                   "label_types": {"from": [], "to": list(run.label_types)}})
+                   "label_types": {"from": [], "to": list(run.label_types)},
+                   "dpi_key": {"from": None, "to": run.dpi_key}})
     await db.commit()
     return await _run_out_for_id(db, run.id, actor)
 
@@ -1348,9 +1355,11 @@ async def cancel_generation_run(
 
 @router.get("/generate/preview", response_model=LabelGeneratePreviewOut)
 async def preview_generation(
-    initiative_id: uuid.UUID, db: DbSession,
+    initiative_id: uuid.UUID, db: DbSession, dpi_key: str = "300",
     actor: AuthContext = require_permission("labels", "view"),
 ) -> LabelGeneratePreviewOut:
+    """What a run at `dpi_key` (300 by default, like a run) would do: each
+    type's templates at that DPI and the counts of its labels at that DPI."""
     ini = await _scoped_initiative(db, actor, initiative_id)
 
     client_name = (await db.scalar(select(Client.name).where(Client.id == ini.client_id))
@@ -1381,7 +1390,7 @@ async def preview_generation(
 
     types: list[LabelGeneratePreviewTypeOut] = []
     for vocab in type_rows:
-        candidates = await candidate_templates(db, vocab.key, template_site_id)
+        candidates = await candidate_templates(db, vocab.key, template_site_id, dpi_key)
         template = None
         template_out = None
         if candidates and candidates[0].scope in ("site", "global"):
@@ -1402,7 +1411,8 @@ async def preview_generation(
                    GeneratedLabel.stale)
             .where(GeneratedLabel.initiative_id == ini.id,
                    GeneratedLabel.entity_type == entity_for_type(vocab.key),
-                   GeneratedLabel.label_type == vocab.key))).all()
+                   GeneratedLabel.label_type == vocab.key,
+                   GeneratedLabel.dpi_key == dpi_key))).all()
         for template_id, template_version, is_stale in existing_rows:
             if (template is not None and template_id == template.id
                     and template_version == template.version and not is_stale):
@@ -1431,6 +1441,7 @@ async def preview_generation(
 async def list_generated_labels(
     db: DbSession, initiative_id: uuid.UUID | None = None,
     label_type: str | None = None, entity_id: uuid.UUID | None = None,
+    dpi_key: str | None = None,
     limit: int = GENERATED_DEFAULT_LIMIT, before: datetime | None = None,
     actor: AuthContext = require_permission("labels", "view"),
 ) -> list[GeneratedLabelOut]:
@@ -1453,6 +1464,8 @@ async def list_generated_labels(
         q = q.where(GeneratedLabel.label_type == label_type)
     if entity_id is not None:
         q = q.where(GeneratedLabel.entity_id == entity_id)
+    if dpi_key is not None:
+        q = q.where(GeneratedLabel.dpi_key == dpi_key)
     if before is not None:
         q = q.where(GeneratedLabel.generated_at < before)
     q = (q.order_by(GeneratedLabel.generated_at.desc(), GeneratedLabel.id.desc())
@@ -1467,8 +1480,8 @@ async def list_generated_labels(
             serial_number=serial if is_asset else None,
             name=name if is_asset else None,
             label_type=gl.label_type, template_name=template_name,
-            template_version=template_version, generated_at=gl.generated_at,
-            stale=gl.stale, code=gl.code))
+            template_version=template_version, dpi_key=gl.dpi_key,
+            generated_at=gl.generated_at, stale=gl.stale, code=gl.code))
     return out
 
 
@@ -1480,8 +1493,10 @@ async def get_generated_label_bundle(
     """Print Labels' data source: every label of one type on one
     initiative — asset or container, whichever `label_type` maps to —
     with the language/size/dpi keys the page needs to decide what a
-    Zebra printer can take. Unknown/archived/out-of-scope initiatives
-    read as 404 like the preview endpoint."""
+    Zebra printer can take. Every DPI's labels come down (an entity has
+    one per DPI it was generated at); the page keeps the connected
+    printer's, and its offline cache holds them all. Unknown/archived/
+    out-of-scope initiatives read as 404 like the preview endpoint."""
     ini = await _scoped_initiative(db, actor, initiative_id)
     # The entity filter is the whole point of the mapping: a container type
     # must never serve asset labels (or the reverse), whatever rows happen

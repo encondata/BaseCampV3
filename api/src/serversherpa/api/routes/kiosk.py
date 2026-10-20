@@ -70,7 +70,7 @@ from serversherpa.labels.fields import (
 from serversherpa.labels.fonts import resident_object
 from serversherpa.labels.generate.engine import render_label
 from serversherpa.labels.generate.payloads import (
-    asset_payload, container_payload, load_status_labels,
+    asset_payload, container_payload, label_context, load_status_labels,
 )
 from serversherpa.labels.generate.values import (
     CONTAINER_KEYS, AssetRow, Sites, _apply_length_limits, _apply_position_rules,
@@ -94,7 +94,6 @@ from serversherpa.services.kiosk_registration import (  # noqa: F401 (re-exporte
 )
 from serversherpa.services.password_policy import load_policy
 from serversherpa.services.storage import delete_object, get_object, presign_get, put_object
-from serversherpa.services.timezone import stored_day
 
 router = APIRouter(prefix="/kiosk", tags=["kiosk"])
 logger = logging.getLogger("serversherpa.api.routes.kiosk")
@@ -996,16 +995,9 @@ async def _assets_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskAsset
     return KioskAssetsSyncOut(
         initiative_id=initiative.id, initiative_name=initiative.name,
         generated_at=datetime.now(UTC), assets=assets,
+        # the same move values the portal generator prints from
         label_context=KioskLabelContextOut(
-            move_name=initiative.name,
-            move_code=initiative.code,
-            move_day=(stored_day(initiative.scheduled_start)
-                      if initiative.scheduled_start is not None else None),
-            source_site=origin.name if origin else None,
-            source_site_code=origin.code if origin else None,
-            destination_site=destination.name if destination else None,
-            destination_site_code=destination.code if destination else None,
-            catalog_keys=catalog_keys))
+            **label_context(initiative, origin, destination), catalog_keys=catalog_keys))
 
 
 async def _placed_ft_headers(db: AsyncSession, initiative: Initiative) -> set[str]:

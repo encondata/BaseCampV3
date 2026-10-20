@@ -2,7 +2,8 @@ import { expect, it } from 'vitest';
 
 import type { InitiativeItem, LabelGeneratePreviewType } from './api';
 import {
-  candidateScopeText, canGenerate, firstUnresolvedType, hasHiddenErrors,
+  GENERATE_DPI_STORAGE_KEY, candidateScopeText, canGenerate, firstUnresolvedType, hasHiddenErrors,
+  readGenerateDpi, writeGenerateDpi,
   isRunActive, isValidToken, jsonToRuleRows, progressPct, resolvedTemplateId, ruleRowsToJson,
   sortedErrorSummary, templatesPayloadFor, validateRuleRows, visibleInitiativesForGenerate,
 } from './generateLabels';
@@ -162,3 +163,16 @@ it('validateRuleRows rejects a non-numeric position and a non-positive length li
 // unit-test at this lib level; GenerateLabels.tsx now takes the vocab
 // as-is (see api/tests/test_label_generate_api.py for the preview-level
 // coverage of container types showing up).
+
+it('remembers the generate DPI, falling back to 300 for nothing or an unknown value', () => {
+  const store = new Map<string, string>();
+  const storage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); } };
+  expect(readGenerateDpi(storage)).toBe('300');
+  writeGenerateDpi('600', storage);
+  expect(store.get(GENERATE_DPI_STORAGE_KEY)).toBe('600');
+  expect(readGenerateDpi(storage)).toBe('600');
+  store.set(GENERATE_DPI_STORAGE_KEY, '150');
+  expect(readGenerateDpi(storage)).toBe('300');
+  expect(readGenerateDpi({ getItem: () => { throw new Error('blocked'); } })).toBe('300');
+  expect(readGenerateDpi(null)).toBe('300');
+});
