@@ -252,6 +252,16 @@ describe('pure helpers', () => {
     expect(templateFamily(template({ name: '203DPI' }))).toBe('203DPI');
   });
 
+  it('templateFamily strips a trailing " Old" / " Old N" too, around a DPI marker', () => {
+    expect(templateFamily(template({ name: 'Vegas Destination Old' }))).toBe('Vegas Destination');
+    expect(templateFamily(template({ name: 'Vegas Destination Old 2' }))).toBe('Vegas Destination');
+    expect(templateFamily(template({ name: 'Generic Rack and RU - 203DPI Old' }))).toBe('Generic Rack and RU');
+    expect(templateFamily(template({ name: 'Generic Rack and RU Old - 300DPI' }))).toBe('Generic Rack and RU');
+    expect(templateFamily(template({ name: 'Switch Front Tag old' }))).toBe('Switch Front Tag old');
+    expect(templateFamily(template({ name: 'Asset Tag Bold' }))).toBe('Asset Tag Bold');
+    expect(templateFamily(template({ name: 'Old 2' }))).toBe('Old 2');
+  });
+
   it('mockTemplateFor picks the Generic Rack and RU version named for the printer DPI', () => {
     const ts = [
       template({ id: 'g203', name: 'Generic Rack and RU - 203DPI', family: 'Generic Rack and RU', dpi_key: '203' }),

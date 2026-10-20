@@ -539,6 +539,19 @@ def test_family_name_strips_a_trailing_dpi_marker():
     assert family_name("203DPI") == "203DPI"                  # never empty
 
 
+def test_family_name_strips_a_trailing_old():
+    """A row kept as "<name> Old" (or " Old N") when a rebuilt template took
+    its name stays in its family, with or around a DPI marker."""
+    from serversherpa.labels.kiosk_templates import family_name
+    assert family_name("Vegas Destination Old") == "Vegas Destination"
+    assert family_name("Vegas Destination Old 2") == "Vegas Destination"
+    assert family_name("Generic Rack and RU - 203DPI Old") == "Generic Rack and RU"
+    assert family_name("Generic Rack and RU Old - 300DPI") == "Generic Rack and RU"
+    assert family_name("Switch Front Tag old") == "Switch Front Tag old"   # the word as written
+    assert family_name("Asset Tag Bold") == "Asset Tag Bold"               # a whole word only
+    assert family_name("Old") == "Old" and family_name("Old 2") == "Old 2"  # never empty
+
+
 async def test_fallback_matches_dpi_variants_and_lists_their_family(client, db, seeded_user):
     hdrs = await login(client)
     move, *_ = await _move(db)

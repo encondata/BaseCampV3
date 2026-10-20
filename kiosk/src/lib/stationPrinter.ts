@@ -248,16 +248,22 @@ export function statusProblems(status: HostStatus): string[] {
 
 export const GENERIC_TEMPLATE_NAME = 'Generic Rack and RU';
 
-// A trailing DPI marker: " - 203DPI", " 300 dpi", "(600DPI)". Same rule as
-// the server's labels.kiosk_templates.family_name.
+// A trailing DPI marker: " - 203DPI", " 300 dpi", "(600DPI)", and a kept
+// older row's " Old" / " Old 2", in either order. Same rule as the server's
+// labels.kiosk_templates.family_name.
 const DPI_SUFFIX = /\s*[-–—]?\s*\(?\s*\d+\s*dpi\s*\)?\s*$/i;
+const OLD_SUFFIX = /\s+Old(?:\s+\d+)?\s*$/;
 
 /** The template's family: the name its DPI versions share. The server sends
  *  it; a set cached before that is grouped by the same name rule here. */
 export function templateFamily(t: KioskLabelTemplate): string {
   if (t.family) return t.family;
-  const base = t.name.replace(DPI_SUFFIX, '').trim();
-  return base || t.name.trim();
+  let base = t.name.trim();
+  for (;;) {
+    const stripped = base.replace(DPI_SUFFIX, '').replace(OLD_SUFFIX, '').trim();
+    if (!stripped || stripped === base) return base;
+    base = stripped;
+  }
 }
 
 /** The mock-data test label's template: the one the station's plan picks

@@ -152,9 +152,9 @@ AMSTERDAM_DESTINATION: dict = {
     ],
 }
 
-# rack ^FT120 · ru ^FT650; the stored grid's captions stay where they were.
-# With no Split there is no floor, room or row to print: those captions
-# stand alone, POD takes the roster's destination pod, RACK the whole rack.
+# rack ^FT120 · ru ^FT650. With no Split there is no floor, room or row to
+# print, so the stored grid keeps only POD (the roster's destination pod),
+# RACK (the whole rack) and RU, where they were.
 GENERIC_RACK_AND_RU: dict = {
     "schema": 2,
     "size": {"w": 4, "h": 2},
@@ -163,11 +163,8 @@ GENERIC_RACK_AND_RU: dict = {
         _field("banner-ru", "destination_ru", 650, 100, _BANNER, _reserve(2, _BANNER),
                display="number", expected=2),
         *_from_vegas(*_NAME_SERIAL_MODEL),
-        _text("grid-caption-floor", "FLOOR:", 38, 351, _BODY, 140),
-        _text("grid-caption-room", "ROOM:", 627, 351, _BODY, 120),
         _text("grid-caption-pod", "POD:", 38, 420, _BODY, 140),
         _field("grid-pod", "destination_pod", 185, 420, _BODY, 400),
-        _text("grid-caption-row", "ROW:", 627, 420, _BODY, 120),
         _text("grid-caption-rack", "RACK:", 38, 489, _BODY, 140),
         _field("grid-rack", "destination_rack", 185, 489, _BODY, 400),
         _text("grid-caption-ru", "RU:", 627, 489, _BODY, 120),

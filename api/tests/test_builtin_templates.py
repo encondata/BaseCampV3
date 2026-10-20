@@ -180,8 +180,7 @@ def test_amsterdam_keeps_its_banner_and_grid():
 def test_generic_prints_the_rack_whole_with_no_split():
     zpl, _ = _render(BY_NAME["Generic Rack and RU"], 300)
     rack = BY_NAME["Generic Rack and RU"].samples["destination_rack"]
-    for anchor in (*_SHARED_4X2, "^FT38,351^", "^FT627,351^", "^FT38,420^", "^FT627,420^",
-                   "^FT38,489^", "^FT627,489^",
+    for anchor in (*_SHARED_4X2, "^FT38,420^", "^FT38,489^", "^FT627,489^",
                    f"^FT120,100^A@N,100,100,E:TT0003M_.TTF^FH_^FD{rack}^FS",
                    "^FT650,100^A@N,100,100,E:TT0003M_.TTF^FH_^FD12^FS",
                    f"^FT185,489^A@N,35,35,E:TT0003M_.TTF^FH_^FD{rack}^FS",
@@ -191,10 +190,12 @@ def test_generic_prints_the_rack_whole_with_no_split():
     assert "splits" not in GENERIC_RACK_AND_RU or not GENERIC_RACK_AND_RU["splits"]
     assert all("piece" not in el for el in GENERIC_RACK_AND_RU["elements"])
     assert "^GB200," not in zpl and "^FR" not in zpl   # no banner boxes
+    # no vocabulary, so no floor, room or row: only the grid rows with a
+    # value keep their captions, where the stored template put them
     captions = re.findall(r"\^FD([A-Z]+:)\^FS", zpl)
-    assert captions == ["FLOOR:", "ROOM:", "POD:", "ROW:", "RACK:", "RU:"]
-    # no vocabulary, so nothing to print beside FLOOR, ROOM and ROW
-    for spot in ("^FT185,351^", "^FT759,351^", "^FT759,420^"):
+    assert captions == ["POD:", "RACK:", "RU:"]
+    for spot in ("^FT38,351^", "^FT185,351^", "^FT627,351^", "^FT759,351^", "^FT627,420^",
+                 "^FT759,420^"):
         assert spot not in zpl, spot
 
 
@@ -346,6 +347,41 @@ async def test_seed_renames_an_old_code_row_that_holds_a_family_name(db):
         "Generic Rack and RU", "Generic Rack and RU · 203", "Generic Rack and RU · 300",
         "Generic Rack and RU · 600"]
     await db.rollback()
+
+
+async def test_a_renamed_active_row_keeps_its_family_until_replace(db):
+    """The old row the seed renames "Switch Front Tag Old" stays active and
+    in the Switch Front Tag family: turning the rebuilt parent on beside it
+    is refused, and Replace… swaps the two in one step (spec §4.1)."""
+    old = _code_row("Switch Front Tag", is_active=True, version=3)
+    db.add(old)
+    await db.commit()
+    old_id = old.id
+
+    report = await builtin_templates.seed(db)
+    assert ("Switch Front Tag", "Switch Front Tag Old") in report.renamed
+    parent_id = (await _parents(db))["Switch Front Tag"].id
+    row = await db.get(LabelTemplate, old_id, populate_existing=True)
+    assert (row.name, row.is_active) == ("Switch Front Tag Old", True)
+    assert await tree.family_of(db, row) == "Switch Front Tag"
+
+    parent = await db.get(LabelTemplate, parent_id)
+    with pytest.raises(tree.ActiveConflict) as refused:
+        await tree.activate(db, parent)
+    assert refused.value.names == ["Switch Front Tag Old"]
+    await db.rollback()
+
+    parent = await db.get(LabelTemplate, parent_id, populate_existing=True)
+    off, on = await tree.replace(db, parent, [old_id], None)
+    await db.commit()
+    assert [r.id for r in off] == [old_id]
+    assert sorted(r.name for r in on) == [
+        "Switch Front Tag", "Switch Front Tag · 203", "Switch Front Tag · 300",
+        "Switch Front Tag · 600"]
+    row = await db.get(LabelTemplate, old_id, populate_existing=True)
+    assert row.is_active is False
+    children = await tree.children_of(db, parent)
+    assert all(c.is_active for c in children) and parent.is_active
 
 
 async def test_seed_stops_before_writing_when_a_vocabulary_row_is_missing(db):

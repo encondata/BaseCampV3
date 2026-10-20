@@ -18,7 +18,10 @@ carries every reason it matched:
 Templates come in DPI versions named like "Generic Rack and RU - 203DPI" /
 "... - 300DPI" or "Container Label 4x6 203dpi". `family_name` strips that
 trailing DPI marker, so every client groups the versions the same way and
-picks the one whose `dpi_key` matches its printer.
+picks the one whose `dpi_key` matches its printer. It strips a trailing
+" Old" / " Old N" too: an older row renamed when a rebuilt template took
+its name (labels/builtin_templates.py) stays in its family, so the
+one-active rule still sees it and Replace… still offers it.
 
 The label builder's templates (labels/templates_tree.py) reach a kiosk as
 their DPI children only, never the parent: a child takes its family (the
@@ -46,13 +49,20 @@ from serversherpa.labels.model import parse_design
 FALLBACK_NAME = "generic rack and ru"
 # A trailing DPI marker: " - 203DPI", " 300 dpi", "(600DPI)", " – 203 DPI".
 _DPI_SUFFIX = re.compile(r"\s*[-–—]?\s*\(?\s*\d+\s*dpi\s*\)?\s*$", re.IGNORECASE)
+# A kept older row: " Old", " Old 2" (the word itself, case as written).
+_OLD_SUFFIX = re.compile(r"\s+Old(?:\s+\d+)?\s*$")
 
 
 def family_name(name: str) -> str:
-    """The template's name without a trailing DPI marker: the key its DPI
-    versions share. Never empty: a name that is only a marker stays as is."""
-    base = _DPI_SUFFIX.sub("", name).strip()
-    return base or name.strip()
+    """The template's name without a trailing DPI marker or " Old" /
+    " Old N", in either order: the key its DPI versions and its kept older
+    rows share. Never empty: a name that is only a marker stays as is."""
+    base = name.strip()
+    while True:
+        stripped = _OLD_SUFFIX.sub("", _DPI_SUFFIX.sub("", base)).strip()
+        if not stripped or stripped == base:
+            return base
+        base = stripped
 
 
 def row_family(name: str, parent_name: str | None) -> str:
