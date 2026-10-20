@@ -3,8 +3,9 @@
  * changed (generated from the design diff), the author's note, who saved
  * it and when. Open shows that version on the canvas, read-only; Restore
  * saves it again as the next version (with unsaved changes on the page it
- * asks first, since they go). A note is added or edited in place: ⌘S never
- * asks for one.
+ * asks first, since they go; `canRestore` off hides it for someone who may
+ * look but not save). A note is added or edited in place: ⌘S never asks for
+ * one.
  *
  * The report-generate header; the card sizes to its content.
  */
@@ -30,6 +31,9 @@ export interface VersionsModalProps {
   current: string;
   /** The page has unsaved changes: Restore asks first. */
   dirty: boolean;
+  /** Off for someone who may look but not save (no labels:change): no
+   *  Restore. Defaults to on. */
+  canRestore?: boolean;
   onOpen: (version: LabelTemplateVersionDetail) => void;
   onRestored: (saved: LabelTemplateSaved) => void;
   onClose: () => void;
@@ -81,7 +85,7 @@ function errorText(err: unknown, fallback: string): string {
 }
 
 export default function VersionsModal({
-  templateId, templateName, current, dirty, onOpen, onRestored, onClose,
+  templateId, templateName, current, dirty, canRestore = true, onOpen, onRestored, onClose,
 }: VersionsModalProps) {
   const [versions, setVersions] = useState<LabelTemplateVersion[] | null>(null);
   const [noting, setNoting] = useState<string | null>(null);
@@ -163,7 +167,7 @@ export default function VersionsModal({
         when(v.created_at),
         <span className="lbb-ver-actions">
           <button type="button" className="mini-btn" disabled={busy} onClick={() => void open(v)}>Open</button>
-          {!isCurrent && (
+          {canRestore && !isCurrent && (
             <button type="button" className="mini-btn" disabled={busy} onClick={() => void restore(v)}>Restore</button>
           )}
         </span>,
@@ -180,7 +184,9 @@ export default function VersionsModal({
             <div className="eyebrow">Label builder</div>
             <h3>Versions of {templateName}</h3>
             <p className="page-hint">
-              Every save is kept. Open one to look at it, or restore it as the next version.
+              {canRestore
+                ? 'Every save is kept. Open one to look at it, or restore it as the next version.'
+                : 'Every save is kept. Open one to look at it.'}
             </p>
           </div>
           <button type="button" className="modal-close" aria-label="Close" onClick={onClose} disabled={busy}>

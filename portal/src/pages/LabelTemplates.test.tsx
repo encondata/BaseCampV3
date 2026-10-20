@@ -188,11 +188,12 @@ const { default: LabelTemplates } = await import('./LabelTemplates');
 
 function Where() {
   const loc = useLocation();
-  const state = loc.state as { openVersion?: { label: string } } | null;
+  const state = loc.state as { openVersion?: { label: string }; testPrint?: boolean } | null;
   return (
     <div>
       <div data-testid="where">{loc.pathname}</div>
       <div data-testid="where-version">{state?.openVersion?.label ?? ''}</div>
+      <div data-testid="where-print">{state?.testPrint ? 'print' : ''}</div>
     </div>
   );
 }
@@ -315,6 +316,19 @@ it('a search that matches a DPI version holds its parent open', async () => {
   expect(screen.queryByText('Vegas Destination · 300 Old')).toBeNull();     // it was never opened by hand
 });
 
+it('a search that matches the parent itself leaves it closed and its toggle free', async () => {
+  renderRouted();
+  await ready();
+  // every child's name carries the parent's, so only the parent's own match counts here
+  await userEvent.type(screen.getByPlaceholderText('Filter this list…'), 'vegas');
+  expect(screen.getByText('Vegas Destination')).toBeTruthy();
+  expect(screen.queryByText('Vegas Destination · 203')).toBeNull();
+  const toggle = within(rowOf('Vegas Destination')).getByRole('button', { name: 'Expand Vegas Destination' });
+  expect((toggle as HTMLButtonElement).disabled).toBe(false);
+  await userEvent.click(toggle);
+  expect(screen.getByText('Vegas Destination · 203')).toBeTruthy();
+});
+
 it('New template opens the label builder', async () => {
   renderRouted();
   await ready();
@@ -367,6 +381,7 @@ it('Edit design, Edit this DPI only and Test print… open the builder', async (
   await openMenu('Vegas Destination · 300');
   await userEvent.click(screen.getByRole('menuitem', { name: 'Test print…' }));
   expect(screen.getByTestId('where').textContent).toBe('/labels/templates/p1-300/edit');
+  expect(screen.getByTestId('where-print').textContent).toBe('print');   // the builder prints on arrival
   cleanup();
 
   renderRouted();
@@ -374,6 +389,7 @@ it('Edit design, Edit this DPI only and Test print… open the builder', async (
   await openMenu('Vegas Destination · 203');
   await userEvent.click(screen.getByRole('menuitem', { name: 'Edit this DPI only' }));
   expect(screen.getByTestId('where').textContent).toBe('/labels/templates/p1-203/edit');
+  expect(screen.getByTestId('where-print').textContent).toBe('');
 });
 
 it('Update from parent… explains the Old copy, then makes a fresh one', async () => {
@@ -537,4 +553,9 @@ it('without labels:change a designer still reads and opens versions, but edits n
   await ready();
   expect(screen.queryByRole('button', { name: /New template/ })).toBeNull();
   expect(await openMenu('Vegas Destination')).toEqual(['Versions…']);
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Versions…' }));
+  const dialog = screen.getByRole('dialog', { name: 'Versions of Vegas Destination' });
+  await within(dialog).findByText('Banner to Oswald');
+  expect(within(dialog).getAllByRole('button', { name: 'Open' })).toHaveLength(2);
+  expect(within(dialog).queryAllByRole('button', { name: 'Restore' })).toHaveLength(0);
 });

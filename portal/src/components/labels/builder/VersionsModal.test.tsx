@@ -125,3 +125,13 @@ it('Escape in a note drops it and keeps the dialog open', async () => {
   fireEvent.keyDown(document.body, { key: 'Escape' });
   expect(onClose).toHaveBeenCalledTimes(1);
 });
+
+it('without canRestore every version opens but none restores', async () => {
+  render(<VersionsModal templateId="p1" templateName="Vegas Destination" current="v7" dirty={false} canRestore={false}
+    onOpen={vi.fn()} onRestored={vi.fn()} onClose={vi.fn()} />);
+  const dialog = screen.getByRole('dialog', { name: 'Versions of Vegas Destination' });
+  await within(dialog).findByText('Added Serial');
+  expect(within(lineOf(dialog, 'v6')).getByRole('button', { name: 'Open' })).toBeTruthy();
+  expect(within(dialog).queryAllByRole('button', { name: 'Restore' })).toHaveLength(0);
+  expect(within(dialog).getByText(/Open one to look at it\./)).toBeTruthy();
+});

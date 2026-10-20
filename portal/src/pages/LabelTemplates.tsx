@@ -8,7 +8,8 @@
  *  its DPI children (current and kept "Old" ones, nested, in the API's
  *  natural name order), or an older single row with nothing under it.
  *  Search, facets, column filters and sort act on the top-level rows; a
- *  search that matches a child's name opens its parent. Which parents are
+ *  search that matches a child on something its parent's own cells don't
+ *  say (its DPI, "Old") holds the parent open. Which parents are
  *  open is remembered in localStorage. The DPI column reads "All" when a
  *  parent has 203, 300 and 600, else the DPIs it has; a child's state
  *  chips say From parent, Customized, Out of date (parent vN) or, for an
@@ -20,14 +21,16 @@
  *     Add DPI… (a DPI missing), Replace… (older active rows of its family
  *     and type), Activate/Deactivate, Delete… (typed name);
  *   - a child: Edit this DPI only, Update from parent… (customized only),
- *     Versions…, Test print… (the child in the builder), Delete this DPI…
+ *     Versions…, Test print… (the builder, which prints it on arrival:
+ *     navigation state `testPrint`), Delete this DPI…
  *     — never on or off: a child follows its parent;
  *   - an older single row: Edit as raw ZPL (a code row, or a schema 1
  *     design converted first), Activate/Deactivate, Delete… (typed name).
  *  Activate goes through POST …/activate; a refusal because another
  *  active template prints the same family, type and DPI opens Replace…
  *  for a parent. Versions' Open shows that version in the builder (the
- *  detail rides the navigation state as `openVersion`). */
+ *  detail rides the navigation state as `openVersion`); Restore there needs
+ *  labels:change. */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
@@ -243,10 +246,14 @@ export default function LabelTemplates() {
     ['Updated', (t) => t.updated_at],
   ];
 
+  /** What a top-level row's own cells say; a parent has no DPI of its own
+   *  (its children's names carry theirs). */
+  const ownText = (t: LabelTemplateTreeNode) =>
+    `${templateSearchText(isTreeParent(t) ? { ...t, dpi_key: '' } : t)} ${
+      siteNames(t.site_ids, sites).join(' ').toLowerCase()}`;
+  const ownHaystack = useSearchHaystacks(nodes, ownText);
   const childNames = (t: LabelTemplateTreeNode) => t.children.map((c) => c.name).join(' ').toLowerCase();
-  const searchText = (t: LabelTemplateTreeNode) =>
-    `${templateSearchText(t)} ${siteNames(t.site_ids, sites).join(' ').toLowerCase()} ${childNames(t)}`;
-  const haystack = useSearchHaystacks(nodes, searchText);
+  const haystack = useSearchHaystacks(nodes, (t) => `${ownHaystack(t)} ${childNames(t)}`);
 
   const facetGroups = useMemo<FacetGroup[]>(() => [
     {
@@ -303,14 +310,17 @@ export default function LabelTemplates() {
   }, [nodes, vocab, sites, facets, filters, q, sortKey, sortDir, haystack]);
 
   const lines = useMemo<Line[]>(() => visible.flatMap((node): Line[] => {
-    // a search that finds one of its DPI versions holds the parent open
-    const byQuery = !!q && node.children.some((c) => c.name.toLowerCase().includes(q));
+    // a search that finds one of its DPI versions on something the parent's
+    // own cells don't say (the DPI, "Old") holds the parent open; every
+    // child's name carries the parent's, so a match on that alone doesn't
+    const byQuery = !!q && !ownHaystack(node).includes(q)
+      && node.children.some((c) => c.name.toLowerCase().includes(q));
     const open = node.children.length > 0 && (openIds.has(node.id) || byQuery);
     return [
       { kind: 'top', node, open, byQuery },
       ...(open ? node.children.map((child): Line => ({ kind: 'child', child, parent: node })) : []),
     ];
-  }), [visible, openIds, q]);
+  }), [visible, openIds, q, ownHaystack]);
 
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
@@ -403,8 +413,11 @@ export default function LabelTemplates() {
       key: 'update', label: 'Update from parent…', onSelect: () => setDialog({ kind: 'update', child, parent }),
     }] : []),
     ...versionsAction(child),
-    // a test print happens in the builder, at this child's DPI (⌘P there)
-    ...(canChange ? [{ key: 'print', label: 'Test print…', onSelect: () => edit(child) }] : []),
+    // the builder prints it on arrival, at this child's DPI
+    ...(canChange ? [{
+      key: 'print', label: 'Test print…',
+      onSelect: () => navigate(`/labels/templates/${child.id}/edit`, { state: { testPrint: true } }),
+    }] : []),
     ...(canDelete ? [{
       key: 'delete', label: 'Delete this DPI…', destructive: true,
       onSelect: () => setDialog({ kind: 'delete', template: child, dpiChildren: [] }),
@@ -618,7 +631,7 @@ export default function LabelTemplates() {
 
       {dialog?.kind === 'versions' && (
         <VersionsModal templateId={dialog.template.id} templateName={dialog.template.name}
-          current={templateVersionLabel(dialog.template)} dirty={false}
+          current={templateVersionLabel(dialog.template)} dirty={false} canRestore={canChange}
           onOpen={(v) => navigate(`/labels/templates/${dialog.template.id}/edit`, { state: { openVersion: v } })}
           onRestored={done} onClose={() => setDialog(null)} />
       )}

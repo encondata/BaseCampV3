@@ -10,6 +10,7 @@
  * The keys are pressed as Ctrl (the platform is pinned to Windows).
  */
 
+import { StrictMode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -372,6 +373,41 @@ describe('a DPI child', () => {
     expect(id).toBe('c300');
     expect(Object.keys(body)).toEqual(['design']);
     await waitFor(() => expect(within(bar).getByLabelText('Version v7.1')).toBeTruthy());
+  });
+});
+
+describe('arriving from the templates list', () => {
+  /** The route as the list's Test print… opens it, under StrictMode (its
+   *  effects run twice on mount, so "once" is tested for real). */
+  function arrive(path: string, state: unknown) {
+    return render(
+      <StrictMode>
+        <MemoryRouter initialEntries={[{ pathname: path, state }]}>
+          <Routes>
+            <Route path="/labels/templates/:id/edit" element={<LabelBuilder />} />
+          </Routes>
+        </MemoryRouter>
+      </StrictMode>);
+  }
+
+  it('Test print… prints the child once on arrival, connecting first', async () => {
+    printer.connected = false;
+    arrive('/labels/templates/c600/edit', { testPrint: true });
+    await screen.findByRole('group', { name: 'Template' });
+    await waitFor(() => expect(printer.send).toHaveBeenCalledWith('^XA^FD10482^FS^XZ'));
+    expect(printer.connect).toHaveBeenCalledTimes(1);
+    expect(api.compileLabel).toHaveBeenCalledWith(expect.objectContaining({ dpi_key: '600', mode: 'sample' }));
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    expect(printer.send).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText('Sent a test label at 600 DPI.')).toBeTruthy();
+  });
+
+  it('a plain arrival prints nothing', async () => {
+    arrive('/labels/templates/c600/edit', null);
+    await screen.findByRole('group', { name: 'Template' });
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    expect(api.compileLabel).not.toHaveBeenCalled();
+    expect(printer.send).not.toHaveBeenCalled();
   });
 });
 

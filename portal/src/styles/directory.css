@@ -768,7 +768,13 @@
 
 .mini-btn.danger { color: var(--c-red); border-color: var(--c-red-bd); }
 .mini-btn.danger:hover:not(:disabled) { border-color: var(--c-red); background: var(--c-red-bg); }
-.btn-danger { background: var(--c-red, #c03540); color: #fff; }
+/* A destructive solid button. `.btn-solid` (profile.css) sets the accent
+   fill with one class, so a lone `.btn-danger` only wins when its sheet
+   happens to load later — a page that imports directory.css before
+   profile.css got an amber Delete. The two-class selector wins whatever
+   the order (guardrail: styles/dangerButton.test.ts). */
+.btn-danger,
+.btn-solid.btn-danger { background: var(--c-red, #c03540); color: #fff; }
 
 /* god-mode pending-delete control: row-chip or detail-actions, either way
  * a compact inline cluster of [chip] + [button] + optional inline error. */

@@ -25,7 +25,9 @@
  * its samples at the DPI shown and sends it to a USB Zebra printer.
  *
  * Versions' Open on the templates list lands here with that version in the
- * navigation state (`openVersion`), and the page opens on it, read-only.
+ * navigation state (`openVersion`), and the page opens on it, read-only; a
+ * child's Test print… there lands with `testPrint`, and the page runs its
+ * test print once (connecting a printer first if none is).
  *
  * Fonts load as they are needed (useBuilderFonts). A text element whose
  * font changed before that font's metrics arrived is refit when they do,
@@ -139,17 +141,27 @@ function loadError(err: unknown): string {
   return "Couldn't load the template.";
 }
 
-/** A version the templates list's Versions panel opened (its Open), handed
- *  over in the navigation state: the builder opens on it, read-only. */
-function handedVersion(state: unknown): LabelTemplateVersionDetail | null {
-  const v = (state as { openVersion?: unknown } | null)?.openVersion;
-  return v && typeof v === 'object' && typeof (v as LabelTemplateVersionDetail).label === 'string'
-    ? v as LabelTemplateVersionDetail : null;
+/** What the templates list hands over in the navigation state: a version
+ *  its Versions panel opened (`openVersion`; the builder opens on it,
+ *  read-only), or a child's Test print… (`testPrint`; the builder prints
+ *  it once on arrival). */
+interface Handed { version: LabelTemplateVersionDetail | null; testPrint: boolean }
+
+const NOTHING_HANDED: Handed = { version: null, testPrint: false };
+
+function handedOver(state: unknown): Handed {
+  const s = state as { openVersion?: unknown; testPrint?: unknown } | null;
+  const v = s?.openVersion;
+  return {
+    version: v && typeof v === 'object' && typeof (v as LabelTemplateVersionDetail).label === 'string'
+      ? v as LabelTemplateVersionDetail : null,
+    testPrint: s?.testPrint === true,
+  };
 }
 
 function EditTemplate({ id }: { id: string }) {
   const location = useLocation();
-  const [handed] = useState(() => handedVersion(location.state));
+  const [handed] = useState(() => handedOver(location.state));
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [code, setCode] = useState(false);
   const [error, setError] = useState<{ title: string; message: string } | null>(null);
@@ -230,7 +242,7 @@ function staleChildren(node: LabelTemplateTreeNode | null, ids: readonly string[
   });
 }
 
-function Builder({ initial, handed = null }: { initial: Loaded; handed?: LabelTemplateVersionDetail | null }) {
+function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed?: Handed }) {
   const navigate = useNavigate();
   const location = useLocation();
   const platform = useMemo(() => detectPlatform(), []);
@@ -491,11 +503,15 @@ function Builder({ initial, handed = null }: { initial: Loaded; handed?: LabelTe
     }
   };
 
-  // a version handed over by the templates list opens once; the state is
-  // dropped so a reload or Back lands on the template itself
+  // what the templates list handed over happens once — the ref holds
+  // across StrictMode's second mount — and the state is dropped, so a reload
+  // or Back lands on the template itself
+  const handedDone = useRef(false);
   useEffect(() => {
-    if (!handed) return;
-    openVersion(handed);
+    if (handedDone.current || (!handed.version && !handed.testPrint)) return;
+    handedDone.current = true;
+    if (handed.version) openVersion(handed.version);
+    if (handed.testPrint) void testPrint();
     navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
