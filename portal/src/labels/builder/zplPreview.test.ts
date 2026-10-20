@@ -31,7 +31,7 @@ describe('previewRequest', () => {
     const req = previewRequest(d, 600, samples, ['rc-r'], '4x2', 'top');
     expect(req.compile).toEqual({
       kind: 'design', design: vegas, size_key: '4x2', dpi_key: '600', language_key: 'zpl',
-      mode: 'sample', samples, label_type: 'top',
+      mode: 'sample', samples, label_type: 'top', image_mode: 'placeholder',
     });
     expect(req.preview('^XA^XZ')).toEqual({
       zpl: '^XA^XZ', size_key: '4x2', dpi_key: '600', font_ids: ['rc-r'],
@@ -44,6 +44,8 @@ describe('previewRequest', () => {
     const req = previewRequest(design(photo), 300, samples, [], 'id-badge', 'id_badge');
     expect(req.compile.samples).toEqual(samples);
     expect(req.compile.design.schema).toBe(3);
+    // pictures never go to Labelary: the compile draws placeholders for them
+    expect(req.compile.image_mode).toBe('placeholder');
   });
 
   it('knows a ZPL too large to preview', () => {

@@ -8,6 +8,8 @@
  * `clearPersonSamples` takes every person key and `person:id` away.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -68,13 +70,20 @@ describe('LoadFromPersonModal', () => {
     setup();
     expect(within(dialog()).getByText('Crew badge · Load from person')).toBeTruthy();
     expect(within(dialog()).getByRole('heading', { name: 'Load samples from a person' })).toBeTruthy();
-    expect(within(dialog()).getByRole('searchbox', { name: 'Search people' }).closest('.dir-search')).not.toBeNull();
+    const search = within(dialog()).getByRole('searchbox', { name: 'Search people' }) as HTMLInputElement;
+    expect(search.closest('.dir-search')).not.toBeNull();
+    // the API takes 120 characters at most
+    expect(search.maxLength).toBe(120);
     await waitFor(() => expect(rows()).toHaveLength(3));
     expect(api.searchSamplePeople).toHaveBeenCalledTimes(1);
     expect(api.searchSamplePeople).toHaveBeenCalledWith('', PERSON_SEARCH_LIMIT);
     // natural order as returned, never re-sorted (a plain sort puts Crew 10 first)
-    expect(within(dialog()).getAllByRole('radio').map((r) => r.getAttribute('aria-label')))
-      .toEqual(['Ada Lovelace', 'Crew 2', 'Crew 10']);
+    // each radio is named with its row: two people of one name sound apart
+    expect(within(dialog()).getAllByRole('radio').map((r) => r.getAttribute('aria-label'))).toEqual([
+      'Ada Lovelace, Cumulus Solutions Group, Staff, Photo · Logo',
+      'Crew 2, Rivera Electric, Worker, Logo',
+      'Crew 10, no company, Worker, No photo or logo',
+    ]);
     // name, company, the Staff/Worker chip, what pictures the badge gets
     const [ada, crew2, crew10] = rows();
     expect(within(ada).getByText('Cumulus Solutions Group')).toBeTruthy();
@@ -116,7 +125,8 @@ describe('LoadFromPersonModal', () => {
     await waitFor(() => expect(api.searchSamplePeople).toHaveBeenCalledTimes(3));
     await waitFor(() => expect(rows()).toHaveLength(1));
     await act(async () => { late([PEOPLE[0]]); });
-    expect(within(dialog()).getAllByRole('radio').map((r) => r.getAttribute('aria-label'))).toEqual(['Crew 10']);
+    expect(within(dialog()).getAllByRole('radio').map((r) => r.getAttribute('aria-label'))).toEqual([
+      'Crew 10, no company, Worker, No photo or logo']);
   });
 
   it('says when no one matches, and when the search fails', async () => {
@@ -129,11 +139,29 @@ describe('LoadFromPersonModal', () => {
     expect(await within(dialog()).findByText('Couldn’t search people.')).toBeTruthy();
   });
 
+  it('a search that fails drops the pick: nothing to load', async () => {
+    setup();
+    fireEvent.click(await within(dialog()).findByRole('radio', { name: /^Crew 2,/ }));
+    const load = within(dialog()).getByRole('button', { name: 'Load samples' }) as HTMLButtonElement;
+    expect(load.disabled).toBe(false);
+    api.searchSamplePeople.mockRejectedValue(new Error('down'));
+    fireEvent.change(within(dialog()).getByRole('searchbox', { name: 'Search people' }), { target: { value: 'crew' } });
+    expect(await within(dialog()).findByText('Couldn’t search people.')).toBeTruthy();
+    expect(load.disabled).toBe(true);
+  });
+
+  it('keeps its description to a readable measure, so the card doesn’t stretch', () => {
+    const css = readFileSync(join(__dirname, '../../../styles/labelBuilder.css'), 'utf8');
+    const at = css.indexOf('.lbp-load-card .rgm-head-text .page-hint {');
+    expect(at).toBeGreaterThan(0);
+    expect(css.slice(at, css.indexOf('}', at))).toMatch(/max-width:\s*60ch/);
+  });
+
   it('picking a person loads their values and hands them back', async () => {
     const { onLoad } = setup();
     const load = within(dialog()).getByRole('button', { name: 'Load samples' }) as HTMLButtonElement;
     expect(load.disabled).toBe(true);
-    fireEvent.click(await within(dialog()).findByRole('radio', { name: 'Crew 2' }));
+    fireEvent.click(await within(dialog()).findByRole('radio', { name: /^Crew 2,/ }));
     expect(load.disabled).toBe(false);
     fireEvent.click(load);
     await waitFor(() => expect(onLoad).toHaveBeenCalledTimes(1));
@@ -144,9 +172,9 @@ describe('LoadFromPersonModal', () => {
   it('a person gone since the search says so', async () => {
     api.loadSamplePerson.mockRejectedValue(new ApiError(404, 'person_not_found'));
     const { onLoad } = setup();
-    fireEvent.click(await within(dialog()).findByRole('radio', { name: 'Ada Lovelace' }));
+    fireEvent.click(await within(dialog()).findByRole('radio', { name: /^Ada Lovelace,/ }));
     fireEvent.click(within(dialog()).getByRole('button', { name: 'Load samples' }));
-    expect(await within(dialog()).findByText('That person is no longer on file.')).toBeTruthy();
+    expect((await within(dialog()).findByRole('alert')).textContent).toBe('That person is no longer on file.');
     expect(onLoad).not.toHaveBeenCalled();
   });
 

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // No jest-dom matchers in this project: assertions read DOM properties
 // directly (see AiLookupControls.test.tsx).
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -100,6 +100,56 @@ it('checks the type and size before uploading, and reports a refusal', async () 
   expect((await screen.findByRole('alert')).textContent).toBe('That file could not be read as an image.');
 });
 
+it('says a code it doesn’t know as a sentence, never the code', async () => {
+  render(<BrandingControls canChange />);
+  await screen.findByText('No logo');
+  api.uploadBrandingLogo.mockRejectedValue(new api.ApiError(500, 'something_new'));
+  await userEvent.upload(fileInput(), png());
+  expect((await screen.findByRole('alert')).textContent).toBe('Upload failed — try again.');
+  api.uploadBrandingLogo.mockRejectedValue(new api.ApiError(502, 'storage_unavailable'));
+  await userEvent.upload(fileInput(), png());
+  await waitFor(() => expect(screen.getByRole('alert').textContent)
+    .toBe('Logo storage isn’t available right now. Try again in a moment.'));
+  // read-only maintenance carries its own sentence
+  api.uploadBrandingLogo.mockRejectedValue(Object.assign(new api.ApiError(423, 'read_only_mode'),
+    { message: 'The portal is in read-only maintenance mode.' }));
+  await userEvent.upload(fileInput(), png());
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('The portal is in read-only maintenance mode.'));
+});
+
+it('a company name the server refuses says why', async () => {
+  api.updateBranding.mockRejectedValue(new api.ApiError(422, 'company_name_invalid'));
+  render(<BrandingControls canChange />);
+  await waitFor(() => expect(nameInput().value).toBe('Cumulus Solutions Group'));
+  await userEvent.type(nameInput(), ' East');
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  expect((await screen.findByRole('alert')).textContent).toBe('The company name can’t contain control characters.');
+  api.updateBranding.mockRejectedValue(new api.ApiError(500, 'something_new'));
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Could not save.'));
+});
+
+it('says Uploading… while the logo uploads', async () => {
+  let finish!: (b: typeof WITH_LOGO) => void;
+  api.uploadBrandingLogo.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  render(<BrandingControls canChange />);
+  await screen.findByText('No logo');
+  await userEvent.upload(fileInput(), png());
+  const busy = await screen.findByRole('button', { name: 'Uploading…' }) as HTMLButtonElement;
+  expect(busy.disabled).toBe(true);
+  finish({ ...WITH_LOGO });
+  expect(await screen.findByRole('button', { name: 'Replace logo…' })).toBeTruthy();
+});
+
+it('a logo that won’t load shows No logo', async () => {
+  api.getBranding.mockResolvedValue({ ...WITH_LOGO });
+  render(<BrandingControls canChange />);
+  const img = await screen.findByRole('img', { name: 'Company logo' });
+  fireEvent.error(img);
+  expect(await screen.findByText('No logo')).toBeTruthy();
+  expect(screen.queryByRole('img', { name: 'Company logo' })).toBeNull();
+});
+
 it('Remove asks once in the confirm dialog, then clears the logo', async () => {
   api.getBranding.mockResolvedValue({ ...WITH_LOGO });
   api.removeBrandingLogo.mockResolvedValue({ ...NO_LOGO });
@@ -118,6 +168,14 @@ it('Remove asks once in the confirm dialog, then clears the logo', async () => {
   expect(screen.getByText('No logo')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
   confirm.mockRestore();
+});
+
+it('the Remove confirm takes the focus, on Cancel', async () => {
+  api.getBranding.mockResolvedValue({ ...WITH_LOGO });
+  render(<BrandingControls canChange />);
+  await userEvent.click(await screen.findByRole('button', { name: 'Remove' }));
+  const dialog = screen.getByRole('dialog', { name: 'Remove the company logo' });
+  expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Cancel' }));
 });
 
 it('Cancel and Escape close the dialog without removing', async () => {

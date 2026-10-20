@@ -6,7 +6,9 @@
  * from the field's sample.
  */
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -20,7 +22,9 @@ import { FAKE_METRICS, FIELDS, SAMPLES, VEGAS, elementOf, fakeMetricsFor } from 
 import PlacedFieldsTable from './PlacedFieldsTable';
 import PropertiesPanel, { type PropertiesPanelProps } from './PropertiesPanel';
 
-const api = vi.hoisted(() => ({ listLabelImages: vi.fn(), uploadLabelImage: vi.fn(), deleteLabelImage: vi.fn() }));
+const api = vi.hoisted(() => ({
+  listLabelImages: vi.fn(), uploadLabelImage: vi.fn(), deleteLabelImage: vi.fn(), labelImageRaster: vi.fn(),
+}));
 vi.mock('../../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../../lib/api')>()), ...api,
 }));
@@ -405,6 +409,17 @@ describe('PropertiesPanel: an image (ID badges)', () => {
     const resized = setup({ design: badge(photo({ w: 0.6, h: 0.6 })), selection: ['image-1'], props: { imagesAllowed: true } });
     pressIn('Source', 'Logo');
     expect(imageOf(resized.last())).toMatchObject({ source: 'logo', w: 0.6, h: 0.6 });
+    cleanup();
+    // locked: never resized, even at the old source's size
+    const locked = setup({ design: badge(photo({ locked: true })), selection: ['image-1'], props: { imagesAllowed: true } });
+    pressIn('Source', 'Logo');
+    expect(imageOf(locked.last())).toMatchObject({ source: 'logo', fit: 'contain', w: 0.8, h: 1 });
+  });
+
+  it('Fit says what fills the rest of the box', () => {
+    setup({ design: badge(photo()), selection: ['image-1'], props: { imagesAllowed: true } });
+    const fit = within(within(panel()).getByRole('group', { name: 'Fit' })).getByRole('button', { name: 'Fit' });
+    expect(fit.getAttribute('title')).toBe('Fit the whole picture inside the box, white around it');
   });
 
   it('a static image picks from the label image library, natural order', async () => {
@@ -446,8 +461,93 @@ describe('PropertiesPanel: an image (ID badges)', () => {
     expect(change).not.toHaveBeenCalled();
   });
 
+  describe('an upload that finishes after the user kept working', () => {
+    const MADE: LabelImage = { id: 'img-new', name: 'Cumulus', width: 600, height: 200, mime: 'image/png', created_at: '' };
+    const staticImage = (id: string) => photo({ id, source: 'static', fit: 'contain', mode: 'threshold' });
+
+    /** The panel over a design the test can also change from outside (as
+     *  the canvas does), with the upload held until `finish()`. */
+    async function startUpload(design: DesignV2, selection: string[], props: Partial<PropertiesPanelProps> = {}) {
+      let finish!: (made: LabelImage) => void;
+      api.uploadLabelImage.mockReturnValue(new Promise<LabelImage>((resolve) => { finish = resolve; }));
+      const change = vi.fn<(d: DesignV2) => void>();
+      const outside: {
+        design?: (edit: (d: DesignV2) => DesignV2) => void;
+        select?: (ids: string[]) => void;
+        readOnly?: (on: boolean) => void;
+      } = {};
+      function Harness() {
+        const [d, setD] = useState<DesignV2>(design);
+        const [sel, setSel] = useState<string[]>(selection);
+        const [ro, setRo] = useState(false);
+        outside.design = (edit) => setD(edit);
+        outside.select = setSel;
+        outside.readOnly = setRo;
+        return (
+          <PropertiesPanel design={d} selection={sel} samples={SAMPLES} fields={FIELDS} dpi={DPI}
+            metricsFor={fakeMetricsFor} onChange={(next) => { change(next); setD(next); }} onSelect={setSel}
+            imagesAllowed readOnly={ro} {...props} />
+        );
+      }
+      render(<Harness />);
+      await waitFor(() => expect(api.listLabelImages).toHaveBeenCalled());
+      fireEvent.change(within(panel()).getByLabelText('Image file'),
+        { target: { files: [new File(['png'], 'Cumulus.png', { type: 'image/png' })] } });
+      await waitFor(() => expect(api.uploadLabelImage).toHaveBeenCalled());
+      const done = async () => {
+        await act(async () => { finish(MADE); });
+      };
+      return { change, outside, done, last: () => change.mock.calls.at(-1)![0] };
+    }
+
+    it('keeps an element moved meanwhile, and the picture goes to its element', async () => {
+      const { outside, done, last } = await startUpload(badge(caption, staticImage('image-1')), ['image-1']);
+      // the caption moves on the canvas while the picture uploads
+      act(() => outside.design!((d) => updateElement(d, 'text-1', { x: 2 })));
+      await done();
+      expect(elementOf(last(), 'text-1').x).toBe(2);
+      expect(imageOf(last()).imageId).toBe('img-new');
+    });
+
+    it('goes to the element it was uploaded for, even with another one selected since', async () => {
+      const { outside, done, last } = await startUpload(
+        badge(staticImage('image-1'), staticImage('image-2')), ['image-1']);
+      act(() => outside.select!(['image-2']));
+      await done();
+      expect(imageOf(last()).imageId).toBe('img-new');
+      expect((elementOf(last(), 'image-2') as ImageElement).imageId).toBeUndefined();
+    });
+
+    it('changes nothing once the panel is read-only (an old version opened)', async () => {
+      const { change, outside, done } = await startUpload(badge(staticImage('image-1')), ['image-1']);
+      act(() => outside.readOnly!(true));
+      await done();
+      expect(change).not.toHaveBeenCalled();
+    });
+
+    it('changes nothing once the picker is gone (something else selected)', async () => {
+      const { change, outside, done } = await startUpload(badge(caption, staticImage('image-1')), ['image-1']);
+      act(() => outside.select!(['text-1']));
+      await done();
+      expect(change).not.toHaveBeenCalled();
+    });
+
+    it('goes through onUpdate, worked out from the design the page has then', async () => {
+      const onUpdate = vi.fn<(edit: (present: DesignV2) => DesignV2) => void>();
+      const { change, done } = await startUpload(badge(caption, staticImage('image-1')), ['image-1'], { onUpdate });
+      await done();
+      expect(change).not.toHaveBeenCalled();
+      expect(onUpdate).toHaveBeenCalledTimes(1);
+      // the page's design by then: the caption moved
+      const present = updateElement(badge(caption, staticImage('image-1')), 'text-1', { x: 2 });
+      const next = onUpdate.mock.calls[0][0](present);
+      expect(elementOf(next, 'text-1').x).toBe(2);
+      expect(imageOf(next).imageId).toBe('img-new');
+    });
+  });
+
   describe('Delete… (the picked library picture)', () => {
-    const DELETED_NOTE = 'This picture was deleted from the library, so it prints nothing. Pick another.';
+    const DELETED_NOTE = 'This picture was deleted from the library, so no picture prints here. Pick another.';
     const staticOne = (imageId?: string) => badge(photo({ source: 'static', fit: 'contain', mode: 'threshold', imageId }));
     const confirmDialog = () => screen.getByRole('dialog', { name: 'Delete library image' });
 
@@ -463,8 +563,11 @@ describe('PropertiesPanel: an image (ID badges)', () => {
       expect(within(confirmDialog()).getByText('Logo 10 · Delete')).toBeTruthy();
       expect(within(confirmDialog()).getByRole('heading', { name: 'Delete “Logo 10”?' })).toBeTruthy();
       expect(within(confirmDialog()).getByText(
-        'Templates that use it will print nothing in its place until another image is picked.')).toBeTruthy();
+        'Templates that use it print no picture in its place (an outlined box where Hide when empty is off) '
+        + 'until another image is picked.')).toBeTruthy();
       expect(api.deleteLabelImage).not.toHaveBeenCalled();
+      // the focus goes into the dialog, on Cancel
+      expect(document.activeElement).toBe(within(confirmDialog()).getByRole('button', { name: 'Cancel' }));
     });
 
     it('deletes it, refreshes the library, and the element keeps it (it prints nothing now)', async () => {
@@ -522,6 +625,29 @@ describe('PropertiesPanel: an image (ID badges)', () => {
       await waitFor(() => expect(api.listLabelImages).toHaveBeenCalled());
       expect((within(panel()).getByRole('button', { name: 'Delete…' }) as HTMLButtonElement).disabled).toBe(true);
     });
+  });
+
+  it('says why the selected picture can’t be drawn, as the canvas does', async () => {
+    const { ApiError } = await import('../../../lib/api');
+    const { fetchRaster } = await import('./imageRaster');
+    const logo = photo({ source: 'static', imageId: 'img-10', fit: 'contain', mode: 'threshold' });
+    api.labelImageRaster.mockRejectedValue(new ApiError(502, 'storage_unavailable'));
+    setup({ design: badge(logo), selection: ['image-1'], props: { imagesAllowed: true } });
+    expect(within(panel()).queryByText('Images unavailable right now.')).toBeNull();
+    await act(async () => { await fetchRaster(logo, DPI, null).catch(() => null); });
+    const said = within(panel()).getByText('Images unavailable right now.');
+    expect(said.getAttribute('role')).toBe('status');
+  });
+
+  it('a note among the image controls sits on their gap: its margin rule wins (comes last)', () => {
+    const css = readFileSync(join(__dirname, '../../../styles/labelBuilder.css'), 'utf8');
+    const among = css.indexOf('.lbp-prop-controls > .lbp-hint {');
+    const any = css.indexOf('.lbp-prop .lbp-hint {');
+    expect(among).toBeGreaterThan(0);
+    expect(any).toBeGreaterThan(0);
+    // the same specificity: the later rule sets the margin
+    expect(among).toBeGreaterThan(any);
+    expect(css.slice(among, css.indexOf('}', among))).toMatch(/margin-top:\s*0/);
   });
 
   it('off an ID badge in ZPL, says images don’t print there', () => {

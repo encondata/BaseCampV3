@@ -20,7 +20,7 @@
  *    needs (qr.ts), capped at the printer's 10;
  *  - line and box: free;
  *  - image: a free box, the picture fitting inside it by its fit (cover
- *    crops it to fill the box, contain leaves white round it).
+ *    crops it to fill the box, contain leaves white around it).
  *
  * With ⇧ a drag keeps the footprint's proportions before the type's rule
  * applies, so a photo keeps its shape.

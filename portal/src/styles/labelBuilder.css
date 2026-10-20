@@ -490,8 +490,10 @@ textarea.lbp-text { resize: vertical; }
    Upload… and Delete… under it, its notes under them */
 .lbp-image-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 1 1 100%; min-width: 0; }
 .lbp-image-pick .combo-wrap { flex: 1 1 100%; min-width: 0; }
-.lbp-prop-controls > .lbp-hint { flex: 1 1 100%; margin-top: 0; }
 .lbp-prop .lbp-hint { margin-top: 5px; }
+/* a note among the controls (the image picker's) sits on their gap: after
+   the rule above, which has the same specificity */
+.lbp-prop-controls > .lbp-hint { flex: 1 1 100%; margin-top: 0; }
 .lbp-prop .lbp-hint.is-warning { color: var(--c-amber); }
 .lbp-static { font-size: 13px; color: var(--text-dark); }
 .lbp-unit { font-size: 11px; color: var(--text-mute); }
@@ -647,6 +649,9 @@ textarea.lbp-text { resize: vertical; }
 .modal-card.reports-modal-card.rgm-card.lbb-versions-card { width: min(1040px, 96vw); max-width: 96vw; }
 .modal-card.reports-modal-card.rgm-card.lbb-keys-card { width: min(920px, 96vw); max-width: 96vw; }
 .modal-card.reports-modal-card.rgm-card.lbb-small-card { width: min(580px, 96vw); max-width: 96vw; }
+/* Load from person / asset size to their content: the description wraps at
+   a readable measure instead of stretching the card */
+.lbp-load-card .rgm-head-text .page-hint { max-width: 60ch; }
 .segmented.lbb-sizes { display: flex; flex-wrap: wrap; }
 .lbb-new-custom { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; }
 .lbb-new-keep { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dark); }

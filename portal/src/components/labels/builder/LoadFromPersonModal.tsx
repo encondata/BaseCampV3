@@ -28,6 +28,8 @@ import '../../../styles/labelBuilder.css';
 
 /** How many people one search lists (the API allows 100). */
 export const PERSON_SEARCH_LIMIT = 50;
+/** The longest search the API takes (GET /labels/sample-people `q`). */
+const PERSON_SEARCH_MAX = 120;
 /** The quiet after typing before the search goes out. */
 export const PERSON_SEARCH_DEBOUNCE_MS = 250;
 
@@ -108,6 +110,8 @@ export default function LoadFromPersonModal({ templateName, onLoad, onClose }: L
           if (!live) return;
           setPeople([]);
           setSearchError(true);
+          // the list is gone, and the pick with it
+          setPicked(null);
         });
     }, searched.current ? PERSON_SEARCH_DEBOUNCE_MS : 0);
     return () => {
@@ -163,7 +167,7 @@ export default function LoadFromPersonModal({ templateName, onLoad, onClose }: L
               <div className="dir-search">
                 {SEARCH_ICON}
                 <input type="search" aria-label="Search people" placeholder="Search staff and workers by name…"
-                  value={query} autoFocus autoComplete="off" spellCheck={false}
+                  value={query} maxLength={PERSON_SEARCH_MAX} autoFocus autoComplete="off" spellCheck={false}
                   onChange={(e) => setQuery(e.target.value)} />
               </div>
             </div>
@@ -175,7 +179,8 @@ export default function LoadFromPersonModal({ templateName, onLoad, onClose }: L
               {searchError && <div className="ini-picker-empty">Couldn’t search people.</div>}
               {(people ?? []).map((p) => (
                 <label key={p.person_id} className={`mini-row ini-picker-row ${picked?.person_id === p.person_id ? 'on' : ''}`}>
-                  <input type="radio" name="lbp-load-person" aria-label={p.name}
+                  <input type="radio" name="lbp-load-person"
+                    aria-label={`${p.name}, ${p.company ?? 'no company'}, ${p.person_type}, ${pictures(p)}`}
                     checked={picked?.person_id === p.person_id} onChange={() => { setPicked(p); setError(null); }} />
                   <span className="cell-primary"><span className="pn"><b>{p.name}</b></span></span>
                   <span className="cell-sub">{p.company ?? '—'}</span>
@@ -188,7 +193,7 @@ export default function LoadFromPersonModal({ templateName, onLoad, onClose }: L
               <p className="page-hint">The first {PERSON_SEARCH_LIMIT} by name: type more of a name to narrow them.</p>
             )}
           </div>
-          {error && <div className="pf-error">{error}</div>}
+          {error && <div className="pf-error" role="alert">{error}</div>}
         </div>
         <div className="modal-foot">
           <button type="button" className="btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>

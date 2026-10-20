@@ -354,8 +354,20 @@ describe('an ID badge', () => {
 
   it('Clear waits for the fields: they say which samples are the person’s', () => {
     renderBadge({ fields: null, samples: { person_name: 'Ada Lovelace', 'person:id': PERSON } });
-    expect((screen.getByRole('button', { name: 'Clear sample person' }) as HTMLButtonElement).disabled).toBe(true);
+    const clear = screen.getByRole('button', { name: 'Clear sample person' }) as HTMLButtonElement;
+    expect(clear.disabled).toBe(true);
+    expect(clear.title).toBe('Waiting for the field list…');
     expect((screen.getByRole('button', { name: 'Load from person…' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('with no field list (it failed to load), Clear still works: the page asks the server for the keys', () => {
+    const { onClearPerson } = renderBadge({ fields: null, loadError: 'Couldn’t load the fields.',
+      samples: { person_name: 'Ada Lovelace', 'person:id': PERSON } });
+    const clear = screen.getByRole('button', { name: 'Clear sample person' }) as HTMLButtonElement;
+    expect(clear.disabled).toBe(false);
+    expect(clear.title).toBe('');
+    fireEvent.click(clear);
+    expect(onClearPerson).toHaveBeenCalledTimes(1);
   });
 
   it('a DPI child or an old version: both read-only', () => {

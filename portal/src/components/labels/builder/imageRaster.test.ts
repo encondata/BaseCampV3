@@ -20,9 +20,10 @@ vi.mock('../../../lib/api', async (importActual) => ({
 }));
 
 const {
-  RASTER_CACHE_BYTES, clearRasterCache, fetchRaster, forgetPersonRasters, forgetStaticRaster, rasterCacheBytes,
-  useImageRaster,
+  RASTER_CACHE_BYTES, RASTER_ERROR, clearRasterCache, compileImageErrorText, fetchRaster, forgetAllRasters,
+  forgetPersonRasters, forgetStaticRaster, rasterCacheBytes, rasterErrorText, useImageRaster, useRasterProblem,
 } = await import('./imageRaster');
+const { ApiError } = await import('../../../lib/api');
 
 const PERSON = '0b7f3c52-6a2e-4c41-9d1e-3f2a9b8c7d10';
 
@@ -124,6 +125,16 @@ describe('fetchRaster', () => {
     expect(api.labelImageRaster).toHaveBeenCalledTimes(2);
   });
 
+  it('forgetAllRasters (a template opened) drops every picture, photos, logos and library pictures', async () => {
+    await fetchRaster(el(), 300, PERSON);
+    await fetchRaster(el({ source: 'static', imageId: 'img-1' }), 300, null);
+    forgetAllRasters();
+    expect(rasterCacheBytes()).toBe(0);
+    await fetchRaster(el(), 300, PERSON);
+    await fetchRaster(el({ source: 'static', imageId: 'img-1' }), 300, null);
+    expect(api.labelImageRaster).toHaveBeenCalledTimes(4);
+  });
+
   it('forgetStaticRaster drops that library picture only', async () => {
     await fetchRaster(el({ source: 'static', imageId: 'img-1' }), 300, null);
     await fetchRaster(el({ source: 'static', imageId: 'img-1', w: 1 }), 300, null);
@@ -175,6 +186,15 @@ describe('useImageRaster', () => {
     expect(api.labelImageRaster).toHaveBeenCalledTimes(2);
   });
 
+  it('a library picture on screen is asked for again once every picture is forgotten', async () => {
+    const pic = el({ source: 'static', imageId: 'img-1', fit: 'contain', mode: 'threshold' });
+    const { result } = renderHook(() => useImageRaster(pic, 300, null, true));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    act(() => { forgetAllRasters(); });
+    await waitFor(() => expect(api.labelImageRaster).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+  });
+
   it('forgetting someone else’s pictures asks nothing', async () => {
     const pic = el({ source: 'static', imageId: 'img-1', fit: 'contain', mode: 'threshold' });
     const { result } = renderHook(() => useImageRaster(pic, 300, null, true));
@@ -183,5 +203,58 @@ describe('useImageRaster', () => {
     await new Promise((r) => { setTimeout(r, 300); });
     expect(result.current.status).toBe('ready');
     expect(api.labelImageRaster).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('what the errors say', () => {
+  it('a picture refused in read-only mode says so', () => {
+    expect(rasterErrorText(new ApiError(423, 'read_only_mode')))
+      .toBe('Pictures can’t load during read-only maintenance.');
+    expect(rasterErrorText(new ApiError(500, 'something_else'))).toBe(RASTER_ERROR);
+  });
+
+  it('a compile’s picture, design and read-only codes are sentences, the same for Test print and the preview', () => {
+    const say = (code: string, detail?: unknown) => compileImageErrorText(new ApiError(422, code, detail));
+    expect(say('person_not_found')).toBe('The sample person is no longer on file. Load another or clear the sample person.');
+    expect(say('image_too_large')).toBe('A picture is too large at this DPI. Make its box smaller.');
+    expect(say('storage_unavailable')).toBe('The pictures can’t be loaded right now. Try again in a moment.');
+    expect(say('images_badge_only')).toBe('Can’t print: images print on ID Badge templates in ZPL only.');
+    expect(say('bad_design', { code: 'bad_design', problems: ['image-1: pick a picture'] }))
+      .toBe('The design can’t print yet: image-1: pick a picture');
+    expect(say('bad_design')).toBe('The design can’t print yet.');
+    expect(say('read_only_mode'))
+      .toBe('Labels can’t be compiled while the portal is in read-only maintenance mode.');
+  });
+
+  it('anything else is left to the caller', () => {
+    expect(compileImageErrorText(new ApiError(500, 'labelary_unavailable'))).toBeNull();
+    expect(compileImageErrorText(new Error('offline'))).toBeNull();
+  });
+});
+
+describe('useRasterProblem', () => {
+  it('says why the picture failed, as its element does, without asking the server itself', async () => {
+    const pic = el({ source: 'static', imageId: 'img-1', fit: 'contain', mode: 'threshold' });
+    const { result } = renderHook(() => useRasterProblem(pic, 300, null));
+    expect(result.current).toBeNull();
+    api.labelImageRaster.mockRejectedValueOnce(new ApiError(502, 'storage_unavailable'));
+    await act(async () => { await expect(fetchRaster(pic, 300, null)).rejects.toThrow(); });
+    expect(result.current).toBe('Images unavailable right now.');
+    // another size of it is another picture
+    const other = renderHook(() => useRasterProblem({ ...pic, w: 1 }, 300, null));
+    expect(other.result.current).toBeNull();
+    expect(api.labelImageRaster).toHaveBeenCalledTimes(1);
+    // asked again and had: no problem
+    await act(async () => { await fetchRaster(pic, 300, null); });
+    expect(result.current).toBeNull();
+  });
+
+  it('a forgotten picture’s problem goes with it', async () => {
+    api.labelImageRaster.mockRejectedValue(new ApiError(422, 'person_not_found'));
+    const { result } = renderHook(() => useRasterProblem(el(), 300, PERSON));
+    await act(async () => { await expect(fetchRaster(el(), 300, PERSON)).rejects.toThrow(); });
+    expect(result.current).toBe('The sample person is no longer on file.');
+    act(() => { forgetPersonRasters(); });
+    expect(result.current).toBeNull();
   });
 });

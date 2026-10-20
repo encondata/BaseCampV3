@@ -3,8 +3,10 @@
  * badges name and show (a worker's badge shows their partner instead).
  * The company name saves on Save; the logo (PNG, JPEG or WebP up to 5 MB,
  * stored as uploaded, uncropped) uploads as soon as a file is picked and
- * replaces the old one; Remove asks once in the report-generate confirm
- * dialog. Everything is read-only without `settings:change`.
+ * replaces the old one ("Uploading…" meanwhile); Remove asks once in the
+ * report-generate confirm dialog. A logo whose picture won't load shows
+ * "No logo". Errors are sentences, never raw API codes. Everything is
+ * read-only without `settings:change`.
  */
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
@@ -21,16 +23,29 @@ const ACCEPTED = ['image/png', 'image/jpeg', 'image/webp'];
 const MAX_BYTES = 5 * 1024 * 1024;
 const NAME_MAX = 200;
 
+const STORAGE_DOWN = 'Logo storage isn’t available right now. Try again in a moment.';
+
 const LOGO_ERRORS: Record<string, string> = {
   file_too_large: 'The logo is over 5 MB.',
   invalid_file_type: 'Use a PNG, JPEG, or WebP image.',
   empty_file: 'That file is empty.',
   unreadable_image: 'That file could not be read as an image.',
   image_too_large: 'The logo is over 40 megapixels.',
+  storage_unavailable: STORAGE_DOWN,
 };
 
+const NAME_ERRORS: Record<string, string> = {
+  company_name_required: 'Enter a company name.',
+  company_name_invalid: 'The company name can’t contain control characters.',
+};
+
+/** A known code's sentence; read-only maintenance says its own; any other
+ *  code (never shown raw) is `fallback`. */
 function message(err: unknown, codes: Record<string, string>, fallback: string): string {
-  if (err instanceof ApiError) return codes[err.code] ?? err.message;
+  if (err instanceof ApiError) {
+    if (codes[err.code]) return codes[err.code];
+    if (err.code === 'read_only_mode' && err.message) return err.message;
+  }
   return fallback;
 }
 
@@ -41,6 +56,9 @@ export default function BrandingControls({ canChange = true }: { canChange?: boo
   const [nameError, setNameError] = useState('');
   const [logoError, setLogoError] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  // the stored logo's URL failed to load (expired, or the object is gone)
+  const [broken, setBroken] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -61,7 +79,7 @@ export default function BrandingControls({ canChange = true }: { canChange?: boo
       const next = await updateBranding({ company_name: name.trim() });
       setCfg(next); setName(next.company_name);
     } catch (err) {
-      setNameError(message(err, { company_name_required: 'Enter a company name.' }, 'Could not save.'));
+      setNameError(message(err, NAME_ERRORS, 'Could not save.'));
     } finally { setBusy(false); }
   };
 
@@ -72,13 +90,15 @@ export default function BrandingControls({ canChange = true }: { canChange?: boo
     if (!file) return;
     if (!ACCEPTED.includes(file.type)) { setLogoError(LOGO_ERRORS.invalid_file_type); return; }
     if (file.size > MAX_BYTES) { setLogoError(LOGO_ERRORS.file_too_large); return; }
-    setBusy(true); setLogoError('');
+    setBusy(true); setUploading(true); setLogoError('');
     try {
       setCfg(await uploadBrandingLogo(file));
     } catch (err) {
       setLogoError(message(err, LOGO_ERRORS, 'Upload failed — try again.'));
-    } finally { setBusy(false); }
+    } finally { setBusy(false); setUploading(false); }
   };
+
+  const logoUrl = cfg?.logo_url && cfg.logo_url !== broken ? cfg.logo_url : null;
 
   return (
     <>
@@ -104,7 +124,7 @@ export default function BrandingControls({ canChange = true }: { canChange?: boo
             <span>Printed on staff ID badges. PNG, JPEG, or WebP up to 5 MB; the original is kept, uncropped.</span>
             <div className="set-inline">
               <button type="button" className="mini-btn" disabled={locked} onClick={pick}>
-                {cfg?.has_logo ? 'Replace logo…' : 'Upload logo…'}
+                {uploading ? 'Uploading…' : cfg?.has_logo ? 'Replace logo…' : 'Upload logo…'}
               </button>
               {cfg?.has_logo && (
                 <button type="button" className="mini-btn danger" disabled={locked}
@@ -116,8 +136,8 @@ export default function BrandingControls({ canChange = true }: { canChange?: boo
             {logoError && <p className="pf-error brand-logo-error" role="alert">{logoError}</p>}
           </div>
           <div className="brand-logo-preview">
-            {cfg?.logo_url
-              ? <img src={cfg.logo_url} alt="Company logo" />
+            {logoUrl
+              ? <img src={logoUrl} alt="Company logo" onError={() => setBroken(logoUrl)} />
               : <span className="brand-logo-empty">No logo</span>}
           </div>
           <input ref={fileRef} type="file" hidden accept={ACCEPTED.join(',')}
@@ -152,7 +172,7 @@ function RemoveLogoDialog({ onClose, onRemoved }: {
     try {
       onRemoved(await removeBrandingLogo());
     } catch (err) {
-      setError(message(err, {}, 'Could not remove the logo.'));
+      setError(message(err, { storage_unavailable: STORAGE_DOWN }, 'Could not remove the logo.'));
       setBusy(false);
     }
   };
@@ -178,7 +198,7 @@ function RemoveLogoDialog({ onClose, onRemoved }: {
           <button type="button" className="btn-solid btn-danger" disabled={busy} onClick={() => void remove()}>
             {busy ? 'Removing…' : 'Remove logo'}
           </button>
-          <button type="button" className="mini-btn" disabled={busy} onClick={onClose}>Cancel</button>
+          <button type="button" className="mini-btn" disabled={busy} onClick={onClose} autoFocus>Cancel</button>
           {error && <span className="pf-error" role="alert">{error}</span>}
         </div>
       </div>

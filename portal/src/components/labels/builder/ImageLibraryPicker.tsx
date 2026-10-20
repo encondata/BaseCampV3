@@ -4,14 +4,20 @@
  * natural order with each picture's size, and Upload… (POST /labels/images:
  * PNG, JPEG, WebP or GIF, 5 MB at most, kept as uploaded), which adds the
  * picture and picks it. A design holds the picture by its id; one deleted
- * from the library since prints nothing, and the picker says so.
+ * from the library since prints no picture, and the picker says so.
+ *
+ * An upload can take a while, and the user keeps working meanwhile: when
+ * it lands, the picture goes to the elements it was started for, through
+ * the latest `onPick` (so it lands on the design as it is by then), and
+ * not at all once the picker has gone (another element selected).
  *
  * Delete… takes the picked picture out of the library (DELETE
  * /labels/images/{id}, a soft delete; allowed while templates use it)
- * after a confirm with the report-generate header. The element keeps the
- * id, so it prints nothing there until another picture is picked; the
- * canvas forgets the picture (imageRaster.ts forgetStaticRaster) and shows
- * its placeholder. `onDialog` tells the page while the confirm is open, so
+ * after a confirm (the builder's Dialog, the focus on Cancel). The element
+ * keeps the id, so it prints no picture there (an outlined box where Hide
+ * when empty is off) until another picture is picked; the canvas forgets
+ * the picture (imageRaster.ts forgetStaticRaster) and shows its
+ * placeholder. `onDialog` tells the page while the confirm is open, so
  * the canvas keys stay off.
  */
 
@@ -25,8 +31,8 @@ import { naturalCompare } from '../../../lib/naturalSort';
 import ComboBox from '../../ComboBox';
 import '../../../styles/directory.css';   /* .btn-danger */
 import '../../../styles/profile.css';     /* .btn-solid, .pf-error */
-import '../../../styles/reports.css';     /* the report-generate header */
 import '../../../styles/labelBuilder.css';
+import { Dialog } from './BuilderDialogs';
 import { forgetStaticRaster } from './imageRaster';
 
 /** The upload cap the API enforces (5 MiB). */
@@ -53,7 +59,8 @@ function deleteError(err: unknown): string {
   return 'Couldn’t delete the picture. Try again in a moment.';
 }
 
-/** Delete…'s confirm: the report-generate header, sized to its content. */
+/** Delete…'s confirm: the builder's Dialog, sized to its content, the
+ *  focus on Cancel. */
 function DeleteImageDialog({ image, onDeleted, onClose }: {
   image: LabelImage;
   onDeleted: () => void;
@@ -61,14 +68,6 @@ function DeleteImageDialog({ image, onDeleted, onClose }: {
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !e.defaultPrevented && !busy) onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [busy, onClose]);
 
   const destroy = async () => {
     if (busy) return;
@@ -88,36 +87,31 @@ function DeleteImageDialog({ image, onDeleted, onClose }: {
   };
 
   return (
-    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-      <div className="modal-card reports-modal-card rgm-card lbb-small-card" role="dialog" aria-modal="true"
-        aria-label="Delete library image">
-        <div className="modal-head">
-          <div className="rgm-head-text">
-            <div className="eyebrow">{image.name} · Delete</div>
-            <h3>Delete “{image.name}”?</h3>
-            <p className="page-hint">Templates that use it will print nothing in its place until another image is picked.</p>
-          </div>
-          <button type="button" className="modal-close" aria-label="Close" onClick={onClose} disabled={busy}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
-              strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
-          </button>
-        </div>
-        <div className="modal-foot">
+    <Dialog label="Delete library image" eyebrow={`${image.name} · Delete`} title={`Delete “${image.name}”?`}
+      card="lbb-small-card" busy={busy} onClose={onClose}
+      hint={<>Templates that use it print no picture in its place (an outlined box where Hide when empty is off)
+        until another image is picked.</>}
+      foot={(
+        <>
           <button type="button" className="btn-solid btn-danger" disabled={busy} onClick={() => void destroy()}>
             {busy ? 'Deleting…' : 'Delete image'}
           </button>
-          <button type="button" className="mini-btn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="mini-btn" onClick={onClose} disabled={busy} autoFocus>Cancel</button>
           {error && <span className="pf-error" role="alert">{error}</span>}
-        </div>
-      </div>
-    </div>
+        </>
+      )} />
   );
 }
 
-export default function ImageLibraryPicker({ value, onPick, disabled = false, onDialog }: {
+export default function ImageLibraryPicker({ value, target, onPick, disabled = false, onDialog }: {
   /** The picked picture's id, or null for none yet. */
   value: string | null;
-  onPick: (imageId: string) => void;
+  /** The elements a pick is for. An upload remembers them as it starts:
+   *  its picture goes to them even when the selection moved on meanwhile. */
+  target: readonly string[];
+  /** A picture picked for `target`. An upload calls the latest one, and
+   *  only while the picker is still there. */
+  onPick: (imageId: string, target: readonly string[]) => void;
   disabled?: boolean;
   /** Delete…'s confirm opened (true) or closed (false). */
   onDialog?: (open: boolean) => void;
@@ -129,6 +123,9 @@ export default function ImageLibraryPicker({ value, onPick, disabled = false, on
   const [deleting, setDeleting] = useState<LabelImage | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const live = useRef(true);
+  // an upload ends renders later: it picks through the latest callback
+  const pick = useRef(onPick);
+  pick.current = onPick;
 
   useEffect(() => {
     live.current = true;
@@ -169,15 +166,18 @@ export default function ImageLibraryPicker({ value, onPick, disabled = false, on
       setError('That file is over 5 MB.');
       return;
     }
+    // the elements the picture is for, as they are now
+    const forTarget = [...target];
     setUploading(true);
     try {
       const made = await uploadLabelImage(file);
+      if (!live.current) return;
       setLibrary((rows) => byName([...(rows ?? []).filter((r) => r.id !== made.id), made]));
-      onPick(made.id);
+      pick.current(made.id, forTarget);
     } catch (err) {
-      setError(uploadError(err));
+      if (live.current) setError(uploadError(err));
     } finally {
-      setUploading(false);
+      if (live.current) setUploading(false);
     }
   };
 
@@ -190,7 +190,7 @@ export default function ImageLibraryPicker({ value, onPick, disabled = false, on
       <div className="lbp-image-pick">
         <ComboBox portal ariaLabel="Static image" options={options} value={value ?? ''} disabled={disabled}
           placeholder={library === null && !loadFailed ? 'Loading…' : 'Pick a picture…'}
-          onChange={(id) => { if (id) onPick(id); }} />
+          onChange={(id) => { if (id) onPick(id, target); }} />
         <button type="button" className="mini-btn" disabled={disabled || uploading}
           onClick={() => fileRef.current?.click()}>
           {uploading ? 'Uploading…' : 'Upload…'}
@@ -207,7 +207,7 @@ export default function ImageLibraryPicker({ value, onPick, disabled = false, on
       {loadFailed && <div className="lbp-hint is-warning" role="status">Couldn’t load the label image library.</div>}
       {missing && (
         <div className="lbp-hint is-warning" role="status">
-          This picture was deleted from the library, so it prints nothing. Pick another.
+          This picture was deleted from the library, so no picture prints here. Pick another.
         </div>
       )}
       {error && <div className="lbp-hint is-warning" role="alert">{error}</div>}
