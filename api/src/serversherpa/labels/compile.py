@@ -12,7 +12,7 @@ compiler without parsing the same JSON twice."""
 from serversherpa.labels.brother_escp import compile_escp
 from serversherpa.labels.brother_ptouch import compile_ptouch
 from serversherpa.labels.model import Design, parse_design
-from serversherpa.labels.zpl import compile_zpl
+from serversherpa.labels.zpl import FontObjects, compile_zpl
 
 
 class UnsupportedLanguage(ValueError):
@@ -25,10 +25,13 @@ class UnsupportedLanguage(ValueError):
 
 
 def compile_parsed_design(design: Design, *, dots: int, language_key: str,
-                          subs: dict[str, str] | None) -> str:
-    """Dispatch an already-parsed Design to its language compiler."""
+                          subs: dict[str, str] | None,
+                          font_objects: FontObjects | None = None) -> str:
+    """Dispatch an already-parsed Design to its language compiler. A
+    schema 2 design needs `subs` (its values); `font_objects` is ZPL's
+    font-library override (zpl.compile_zpl)."""
     if language_key == "zpl":
-        return compile_zpl(design, dots, subs)
+        return compile_zpl(design, dots, subs, font_objects=font_objects)
     if language_key == "escp":
         return compile_escp(design, subs)
     if language_key == "ptouch":
@@ -38,9 +41,12 @@ def compile_parsed_design(design: Design, *, dots: int, language_key: str,
 
 def compile_design(design_json: dict, *, width_in: float, height_in: float,
                     dots: int, language_key: str,
-                    subs: dict[str, str] | None) -> str:
+                    subs: dict[str, str] | None,
+                    font_objects: FontObjects | None = None) -> str:
     """Parse design_json (with the resolved size overridden in) and
     dispatch to the language's compiler. Raises DesignError (bad design
-    JSON) or UnsupportedLanguage — both left for the caller to map."""
+    JSON), UnsupportedLanguage, or ValueError (a schema 2 design with no
+    subs) — all left for the caller to map."""
     design = parse_design({**design_json, "size": {"w": width_in, "h": height_in}})
-    return compile_parsed_design(design, dots=dots, language_key=language_key, subs=subs)
+    return compile_parsed_design(design, dots=dots, language_key=language_key, subs=subs,
+                                 font_objects=font_objects)

@@ -14,7 +14,11 @@ docs/superpowers/specs/2026-09-11-generate-labels-design.md
 §Deliberate differences): a `code` kind scans the raw code string; a
 `design` kind scans every text-bearing element (text content, barcode/QR
 data) after parsing. The label itself is still produced either way —
-unresolved tokens compile to "" via labels/tokens.py, same as always."""
+unresolved tokens compile to "" via labels/tokens.py, same as always.
+
+A schema 2 design has no tokens: its elements name field keys, and the
+values pass straight to the compiler. The keys it names that `values`
+lacks are reported the same way (they print blank)."""
 
 from typing import Protocol
 
@@ -48,6 +52,11 @@ def render_template(
     # parsed ONCE — the token scan below and the compile both work off
     # this same Design object, rather than parsing design_json twice
     design = parse_design({**design_json, "size": {"w": width_in, "h": height_in}})
+    if design.schema >= 2:
+        keys = {el.field for el in design.elements if getattr(el, "field", None)}
+        code = compile_parsed_design(design, dots=dots,
+                                     language_key=template.language_key, subs=values)
+        return code, _unknown(keys, values)
     tokens: set[str] = set()
     for el in design.elements:
         if isinstance(el, TextEl):
