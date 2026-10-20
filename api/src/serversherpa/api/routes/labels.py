@@ -90,7 +90,7 @@ from serversherpa.labels.generate.select import candidate_templates
 from serversherpa.labels.kiosk_templates import family_name
 from serversherpa.labels.model import Design, DesignError, ImageEl, parse_design
 from serversherpa.labels.tokens import apply_placeholders
-from serversherpa.labels.zpl import box_dots, image_box_dots
+from serversherpa.labels.zpl import GF_MAX_BYTES, box_dots, image_box_dots
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.storage import (
@@ -1095,7 +1095,8 @@ async def _compile_design(db: DbSession, design_json: dict, size_key: str,
     size/dpi/language vocab rows, then calls the vocab-free core
     (labels/compile.py, shared with the label-generation runner). With
     `images_for` (the actor), a schema 3 design's images are resolved
-    first (`resolve_images`, with the page's `samples`)."""
+    first (`resolve_images`, with the page's `samples`). Anything the
+    design or the compiler refuses is 422 `bad_design`."""
     size = await db.get(LabelVocab, ("size", size_key))
     dpi = await db.get(LabelVocab, ("dpi", dpi_key))
     lang = await db.get(LabelVocab, ("language", language_key))
@@ -1112,6 +1113,10 @@ async def _compile_design(db: DbSession, design_json: dict, size_key: str,
         raise _err(422, "bad_design", problems=e.problems) from e
     except UnsupportedLanguage as e:
         raise _err(422, "unsupported_language", key=e.key) from e
+    except ValueError as e:
+        # whatever else the compiler refuses (zpl.py: a bitmap that isn't
+        # its footprint, a row past one ^GF) is the design's, never a 500
+        raise _err(422, "bad_design", problems=[str(e)]) from e
 
 
 @router.post("/templates/compile", response_model=LabelCompileOut)
@@ -2154,6 +2159,10 @@ SAMPLE_PERSON_KEY = "person:id"
 MAX_IMAGE_DOTS = 4_000_000
 MAX_DESIGN_IMAGE_DOTS = 8_000_000
 MAX_IMAGE_NAME = 120
+# Prep and dither run in worker threads (asyncio's default executor, which
+# every to_thread in the API shares, storage calls included): at most this
+# many at once, however many compiles and canvases ask.
+_PREP_GATE = asyncio.Semaphore(4)
 # Prepped rasters by (storage key, w, h, fit, rotation): stored objects
 # never change under a key (a new upload is a new key), so an entry never
 # goes stale. Bounded by count and bytes; least recently used goes first.
@@ -2206,6 +2215,22 @@ async def _stored_picture(key: str) -> bytes | None:
         raise _err(502, "storage_unavailable") from exc
 
 
+async def _prep(func, *args):
+    """`func(*args)` in a worker thread, inside the prep gate."""
+    async with _PREP_GATE:
+        return await asyncio.to_thread(func, *args)
+
+
+def _image_box_fits(width: int, height: int, rotation: int, **extra) -> None:
+    """422 `image_too_large` for a box past MAX_IMAGE_DOTS, or one whose
+    footprint (the box, turned at 90 and 270) has rows wider than one ^GF
+    holds (zpl.GF_MAX_BYTES): such a box is under the dot cap only by being
+    a few dots tall, and no printer row could take it."""
+    across = height if rotation in (90, 270) else width
+    if width * height > MAX_IMAGE_DOTS or dither.bytes_per_row(across) > GF_MAX_BYTES:
+        raise _err(422, "image_too_large", **extra)
+
+
 async def _gray_raster(key: str, width: int, height: int, fit: str, rotation: int):
     """The prepped raster (image_prep.Raster) of the stored picture at
     `key`, cached; None when the object is gone. Prep runs in a worker
@@ -2218,10 +2243,30 @@ async def _gray_raster(key: str, width: int, height: int, fit: str, rotation: in
         data = await _stored_picture(key)
         if data is None:
             return None
-        raster = await asyncio.to_thread(image_prep.gray_raster, data, width, height, fit,
-                                         rotation)
+        raster = await _prep(image_prep.gray_raster, data, width, height, fit, rotation)
         _RASTER_CACHE.put(cache_key, raster)
     return raster
+
+
+async def _gray_rasters(key: str, boxes: list[tuple[int, int, str, int]]) -> list:
+    """`_gray_raster` for each (width, height, fit, rotation) box of the
+    picture at `key`, with one storage read and one decode for all the boxes
+    not cached yet (image_prep.gray_rasters), however many elements show it.
+    Each entry is the image_prep.Raster, None when the object is gone, or
+    the ImageTooLarge / UnreadableImage that box got."""
+    from serversherpa.labels import image_prep
+
+    found = {box: _RASTER_CACHE.get((key, *box)) for box in boxes}
+    missing = [box for box, raster in found.items() if raster is None]
+    if missing:
+        data = await _stored_picture(key)
+        prepped = ([None] * len(missing) if data is None
+                   else await _prep(image_prep.gray_rasters, data, missing))
+        for box, raster in zip(missing, prepped, strict=True):
+            if isinstance(raster, image_prep.Raster):
+                _RASTER_CACHE.put((key, *box), raster)
+            found[box] = raster
+    return [found[box] for box in boxes]
 
 
 async def _library_key(db: DbSession, image_id: object) -> str | None:
@@ -2254,12 +2299,14 @@ async def resolve_images(db: DbSession, design: Design | dict, dpi: int,
     """Each image element's printed bitmap, by element id, at `dpi`: a
     static image by its `imageId` (the library); a photo or logo from the
     sample person (`samples["person:id"]`, checked when a photo or logo
-    needs it), at rank 80 only. An element
-    whose picture is missing, unreadable or past the size cap is left out
-    (it prints as empty); a box past MAX_IMAGE_DOTS, or images past
-    MAX_DESIGN_IMAGE_DOTS together, is 422 `image_too_large`. Each bitmap is
-    the element's box, prepped, turned and dithered: the footprint
-    `compile_zpl` places."""
+    needs it), at rank 80 only. An element whose picture is missing,
+    unreadable or past the size cap is left out (it prints as empty); a box
+    past MAX_IMAGE_DOTS or wider than one ^GF row (`_image_box_fits`), or
+    images past MAX_DESIGN_IMAGE_DOTS together, is 422 `image_too_large`.
+    Each stored picture is read and decoded once, however many elements
+    show it (`_gray_rasters`; a design holds at most
+    model.MAX_IMAGE_ELEMENTS). Each bitmap is the element's box, prepped,
+    turned and dithered: the footprint `compile_zpl` places."""
     from serversherpa.labels import image_prep
 
     if isinstance(design, dict):
@@ -2269,8 +2316,7 @@ async def resolve_images(db: DbSession, design: Design | dict, dpi: int,
         return {}
     boxes = {el.id: image_box_dots(el, dpi) for el in elements}
     for el in elements:
-        if boxes[el.id][0] * boxes[el.id][1] > MAX_IMAGE_DOTS:
-            raise _err(422, "image_too_large", element=el.id)
+        _image_box_fits(*boxes[el.id], el.rotation, element=el.id)
     if sum(w * h for w, h in boxes.values()) > MAX_DESIGN_IMAGE_DOTS:
         raise _err(422, "image_too_large")
     person = None
@@ -2278,7 +2324,7 @@ async def resolve_images(db: DbSession, design: Design | dict, dpi: int,
             and any(el.source != "static" for el in elements)):
         person = await _sample_person(db, samples)
     logo: list[str | None] = []     # the person's logo key, looked up once
-    out: dict[str, dither.Bitmap] = {}
+    shown: dict[str, list[ImageEl]] = {}    # the elements each stored picture is in
     for el in elements:
         width, height = boxes[el.id]
         if width < 1 or height < 1:
@@ -2293,18 +2339,20 @@ async def resolve_images(db: DbSession, design: Design | dict, dpi: int,
             if not logo:
                 logo.append(await people_badge.logo_key(db, person))
             key = logo[0]
-        if not key:
-            continue
-        try:
-            raster = await _gray_raster(key, width, height, el.fit, el.rotation)
-        except (image_prep.ImageTooLarge, image_prep.UnreadableImage) as exc:
-            logger.warning("label image %s (%s) prints empty: %s", el.id, key, exc)
-            continue
-        if raster is None:
-            continue
-        bits = await asyncio.to_thread(dither.bitmap, raster.gray, raster.width,
-                                       raster.height, el.params)
-        out[el.id] = dither.Bitmap(raster.width, raster.height, bits)
+        if key:
+            shown.setdefault(key, []).append(el)
+    out: dict[str, dither.Bitmap] = {}
+    for key, els in shown.items():
+        rasters = await _gray_rasters(key, [(*boxes[el.id], el.fit, el.rotation) for el in els])
+        for el, raster in zip(els, rasters, strict=True):
+            if isinstance(raster, (image_prep.ImageTooLarge, image_prep.UnreadableImage)):
+                logger.warning("label image %s (%s) prints empty: %s", el.id, key, raster)
+                continue
+            if raster is None:
+                continue
+            bits = await _prep(dither.bitmap, raster.gray, raster.width, raster.height,
+                               el.params)
+            out[el.id] = dither.Bitmap(raster.width, raster.height, bits)
     return out
 
 
@@ -2326,8 +2374,7 @@ async def image_raster(
     width, height = box_dots(body.w_in, body.h_in, body.dpi)
     if width < 1 or height < 1:
         raise _err(422, "bad_field", field="w_in", message="the box is under one dot")
-    if width * height > MAX_IMAGE_DOTS:
-        raise _err(422, "image_too_large")
+    _image_box_fits(width, height, body.rotation)
     if body.source == "static":
         if not body.image_id:
             raise _err(422, "bad_field", field="image_id")

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import vegas from '../../../../api/src/serversherpa/labels/fixtures/vegas_v2.json';
 import {
-  DesignError, MAX_COUNT, MAX_LINES, addElement, addSplit, duplicate, elementHidden, elementValue, imageFit,
+  DesignError, MAX_COUNT, MAX_IMAGE_ELEMENTS, MAX_LINES, addElement, addSplit, duplicate, elementHidden, elementValue, imageFit,
   imageParams, invertPadOf, newDesign, nextId, parseDesign, placementsOf, removeElements, renamePiece, reorder,
   replaceElements, serializeDesign, updateElement, validate, type DesignV2, type ElementV2, type FieldElement,
   type ImageElement,
@@ -243,6 +243,16 @@ describe('validate (mirrors labels/model.py parse_design v2)', () => {
     const d = design(box('b1'), box('b2'));
     const twin = { ...d, elements: [d.elements[0], { ...d.elements[1], id: 'b1' }] };
     expect(messages(twin)).toEqual(['b1: id is used by another element']);
+  });
+
+  it('holds at most 8 images, as model.py does (MAX_IMAGE_ELEMENTS)', () => {
+    const images = (n: number) => Array.from({ length: n }, (_, i) => image(`i${i}`));
+    expect(validate(design(...images(MAX_IMAGE_ELEMENTS), field()))).toEqual([]);
+    expect(validate(design(...images(9), field()))).toEqual([
+      { elementId: null, message: 'a design holds at most 8 images' },
+    ]);
+    const src = readFileSync(MODEL_PY, 'utf8');
+    expect(Number(/^MAX_IMAGE_ELEMENTS = (\d+)$/m.exec(src)?.[1])).toBe(MAX_IMAGE_ELEMENTS);
   });
 
   it('caps expected length and max characters at 64, lines at 50 (model.py MAX_COUNT, MAX_LINES)', () => {

@@ -591,6 +591,155 @@ async def test_compile_caps_the_image_size(client, db, seeded_user, store):
     assert r.status_code == 422 and r.json()["detail"]["code"] == "image_too_large"
 
 
+def _loads(monkeypatch) -> dict:
+    """The distinct pictures image_prep decodes, held so no id is reused."""
+    loaded: dict = {}
+    real = image_prep._load
+
+    def counting(im):
+        loaded[id(im)] = im
+        real(im)
+
+    monkeypatch.setattr(image_prep, "_load", counting)
+    return loaded
+
+
+async def test_compile_reads_and_decodes_each_picture_once(
+        client, db, seeded_user, store, monkeypatch):
+    """F2: eight image elements over two pictures are two storage reads and
+    two decodes, not eight; each element still prints exactly the raster the
+    canvas gets for it."""
+    sa = await _super(db, client)
+    photo = await _library_image(client, sa, _photo_png())
+    crest = await _library_image(client, sa, _png(40, 30, 90))
+    shapes = [(0.3, 0.2, 0), (0.25, 0.4, 90), (0.5, 0.3, 180), (0.2, 0.2, 270)]
+    elements = []
+    for n, (w, h, rotation) in enumerate(shapes):
+        elements.append(_image(f"p{n}", "static", imageId=photo, x=0.1 + n * 0.8, y=0.1,
+                               w=w, h=h, rotation=rotation, mode="dither"))
+        elements.append(_image(f"c{n}", "static", imageId=crest, x=0.1 + n * 0.8, y=1.0,
+                               w=w, h=h, rotation=rotation, fit="cover"))
+    keys = {(await db.get(LabelImage, uuid.UUID(i))).storage_key for i in (photo, crest)}
+    labels_module._RASTER_CACHE.clear()
+    store.gets.clear()
+    loaded = _loads(monkeypatch)
+    r = await _compile(client, sa, _design(*elements))
+    assert r.status_code == 200, r.text
+    assert sorted(store.gets) == sorted(keys)
+    assert len(loaded) == 2
+    graphics = _graphics(r.json()["code"])
+    assert len(graphics) == 8
+    labels_module._RASTER_CACHE.clear()          # the canvas preps each box on its own
+    for el, (_x, _y, d, bits) in zip(elements, graphics, strict=True):
+        raster = await client.post("/labels/images/raster", headers=sa, json={
+            "source": "static", "image_id": el["imageId"], "w_in": el["w"], "h_in": el["h"],
+            "dpi": 300, "fit": el.get("fit", "contain"), "rotation": el["rotation"]})
+        assert raster.status_code == 200, raster.text
+        w, h = int(raster.headers["x-raster-width"]), int(raster.headers["x-raster-height"])
+        params = dither.Params(0, 100, 128, el.get("mode", "threshold"), False)
+        assert d == dither.bytes_per_row(w)
+        assert bits == dither.bitmap(raster.content, w, h, params), el["id"]
+    # a second compile of the same design is served from the raster cache
+    store.gets.clear()
+    assert (await _compile(client, sa, _design(*elements))).status_code == 200
+    assert store.gets == []
+
+
+async def test_prep_and_dither_run_inside_the_gate(client, db, seeded_user, store, monkeypatch):
+    """F2: prep and dither share asyncio's default executor with every other
+    to_thread (storage calls included), so at most four run at once, the
+    compile's and the canvas's alike."""
+    sa = await _super(db, client)
+    image_id = await _library_image(client, sa, _photo_png())
+    assert labels_module._PREP_GATE._value == 4
+    seen = []
+    real_to_thread = labels_module.asyncio.to_thread
+
+    async def recording_to_thread(func, *args, **kwargs):
+        seen.append((getattr(func, "__name__", func), labels_module._PREP_GATE._value))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(labels_module.asyncio, "to_thread", recording_to_thread)
+    r = await _compile(client, sa, _design(_image("s", "static", imageId=image_id)))
+    assert r.status_code == 200, r.text
+    r = await client.post("/labels/images/raster", headers=sa, json={
+        "source": "static", "image_id": image_id, "w_in": 0.2, "h_in": 0.2, "dpi": 300,
+        "fit": "cover", "rotation": 0})
+    assert r.status_code == 200, r.text
+    # each ran holding one of the four slots
+    assert seen == [("gray_rasters", 3), ("bitmap", 3), ("gray_raster", 3)]
+    assert labels_module._PREP_GATE._value == 4
+
+
+async def test_a_design_holds_at_most_eight_images(client, db, seeded_user, store):
+    sa = await _super(db, client)
+    image_id = await _library_image(client, sa)
+    nine = [_image(f"i{n}", "static", imageId=image_id, x=0.1 + (n % 5) * 0.6,
+                   y=0.1 + (n // 5) * 0.6, w=0.2, h=0.2) for n in range(9)]
+    store.gets.clear()
+    r = await _compile(client, sa, _design(*nine))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["code"] == "bad_design"
+    assert r.json()["detail"]["problems"] == ["a design holds at most 8 images"]
+    assert store.gets == []                      # refused before any picture is read
+    assert (await _compile(client, sa, _design(*nine[:8]))).status_code == 200
+    r = await client.post(URL, headers=sa, json=_badge(_design(*nine), name="Too many"))
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_design"
+
+
+async def test_duplicate_element_ids_are_a_bad_design(client, db, seeded_user, store):
+    """M1: two image elements sharing an id would share one picture (or 500
+    the compile when their sizes differ)."""
+    sa = await _super(db, client)
+    image_id = await _library_image(client, sa)
+    twins = _design(_image("img", "static", imageId=image_id),
+                    _image("img", "static", imageId=image_id, x=1.4, w=0.3))
+    r = await _compile(client, sa, twins)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["code"] == "bad_design"
+    assert "img: id is used by another element" in r.json()["detail"]["problems"]
+    r = await client.post(URL, headers=sa, json=_badge(twins, name="Twins"))
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_design"
+
+
+async def test_a_row_wider_than_one_graphic_holds_is_too_large(
+        client, db, seeded_user, store, monkeypatch):
+    """M1: a box under the dot cap can still be wider than one ^GF row holds
+    (99,999 bytes): 422 image_too_large, never a compile 500. The row is the
+    footprint's, so a box turned 90 counts its height."""
+    sa = await _super(db, client)
+    image_id = await _library_image(client, sa)
+    for w, h, rotation in ((2700, 1 / 300, 0), (1 / 300, 2700, 90)):   # 810,000 x 1 dots
+        r = await _compile(client, sa, _design(_image("wide", "static", imageId=image_id,
+                                                      w=w, h=h, rotation=rotation)))
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"] == {"code": "image_too_large", "element": "wide"}
+    # the raster route's own bounds (100 in, 1200 DPI) keep it far below one
+    # row; the same rule applies there all the same
+    monkeypatch.setattr(labels_module, "GF_MAX_BYTES", 10)
+    body = {"source": "static", "image_id": image_id, "w_in": 0.3, "h_in": 0.1, "dpi": 300,
+            "fit": "contain", "rotation": 0}
+    r = await client.post("/labels/images/raster", headers=sa, json=body)
+    assert (r.status_code, r.json()["detail"]["code"]) == (422, "image_too_large")
+    r = await client.post("/labels/images/raster", headers=sa, json={**body, "rotation": 90})
+    assert r.status_code == 200, r.text       # turned: 30 dots wide, 4 bytes a row
+
+
+async def test_a_compile_value_error_is_a_bad_design(client, db, seeded_user, store, monkeypatch):
+    """M1: whatever else the compiler refuses is the design's fault (422),
+    not a 500."""
+    sa = await _super(db, client)
+
+    def refuse(*args, **kwargs):
+        raise ValueError("a 3 x 3 bitmap for a 4 x 4 footprint")
+
+    monkeypatch.setattr(labels_module, "compile_parsed_design", refuse)
+    r = await _compile(client, sa, _design(_image("photo", "photo")))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {"code": "bad_design",
+                                  "problems": ["a 3 x 3 bitmap for a 4 x 4 footprint"]}
+
+
 # ── images only on ID Badge ZPL templates ────────────────────────────
 
 async def test_compile_refuses_an_image_off_a_zpl_badge(client, db, seeded_user, store):

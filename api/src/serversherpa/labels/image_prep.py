@@ -13,12 +13,12 @@ the element's dot box:
   cameras save, is a JPEG; the first frame of anything with several),
   refusing anything past MAX_PIXELS from its header, before decoding;
 - a picture past twice the box is decoded or reduced smaller first (a JPEG
-  at 1/2, 1/4 or 1/8; anything else by a whole-factor box reduction, alpha
-  premultiplied, the remainder dropped evenly from both sides so the
-  picture stays centered), never below twice the box: a 40 MP upload never
-  makes full-size copies for the steps below. A picture under four times
-  the box is never reduced, so its raster is exactly what the steps below
-  make;
+  at 1/2, 1/4 or 1/8; anything else by a whole-factor box reduction, the
+  factor at most MAX_REDUCE, alpha premultiplied, the remainder dropped
+  evenly from both sides so the picture stays centered), never below twice
+  the box: a 40 MP upload never makes full-size copies for the steps below.
+  A picture under four times the box is never reduced, so its raster is
+  exactly what the steps below make;
 - composite any transparency onto white (a clear pixel stored as black
   would otherwise print black), 16-bit gray's included;
 - 8-bit gray by ITU-R 601 luma (Pillow's L: 299/587/114);
@@ -29,8 +29,17 @@ the element's dot box:
 - turn by exact transposition, clockwise as every element turns (ZPL `R`
   is 90), so at 90 and 270 the raster is h wide and w tall.
 
-The builder's canvas and the compile both dither this same raster with the
-shared integer dither, so what the canvas shows is what prints.
+`gray_rasters` preps one picture for several boxes (the elements of one
+design that show it): it is opened and decoded once (a JPEG once per scale
+it is drafted at), and each box gets exactly the raster `gray_raster` makes
+for that box alone. The builder's canvas (one box at a time) and the
+compile both dither this same raster with the shared integer dither, so
+what the canvas shows is what prints.
+
+Only a decoder error makes a picture unreadable: damage the decoder papers
+over prints as decoded (libjpeg fills the rest of a JPEG whose data stops
+early at an end marker with mid-gray; a corrupt lossy WebP can decode to
+noise), as it shows anywhere else the picture is displayed.
 
 Pillow's own decompression-bomb warning (past ~89 MP) is left to the
 warnings filter: MAX_PIXELS refuses those pictures anyway, and a filter
@@ -41,6 +50,7 @@ worker threads.)"""
 from __future__ import annotations
 
 import io
+from collections.abc import Sequence
 from typing import NamedTuple
 
 from PIL import Image
@@ -48,6 +58,10 @@ from PIL import Image
 # a decompression-bomb guard: a picture past this many pixels is refused
 # from its header, at upload and at prep
 MAX_PIXELS = 40_000_000
+# the largest whole-factor box reduction: past it Pillow's fixed-point
+# average drifts (white comes out 254 at 300), and the fit's resampling
+# does the rest of the shrinking
+MAX_REDUCE = 255
 
 # the decoders tried, and what each decoded format is stored and served as
 OPEN_FORMATS = ("PNG", "JPEG", "WEBP", "GIF")
@@ -152,13 +166,13 @@ def probe(data: bytes) -> ImageInfo:
 
 
 def _reduced(im: Image.Image, want: tuple[int, int]) -> Image.Image:
-    """`im` box-reduced by the largest whole factor that keeps it at least
-    `want` both ways (RGBA and LA premultiplied, as Pillow's reduce does);
-    `im` itself under a factor of 2. The rows and columns past a whole
-    number of blocks are dropped evenly from both sides, so the picture
-    stays centered (rounding the size up would shift it by up to half a
-    reduced pixel)."""
-    factor = min(im.width // want[0], im.height // want[1])
+    """`im` box-reduced by the largest whole factor (at most MAX_REDUCE)
+    that keeps it at least `want` both ways (RGBA and LA premultiplied, as
+    Pillow's reduce does); `im` itself under a factor of 2. The rows and
+    columns past a whole number of blocks are dropped evenly from both
+    sides, so the picture stays centered (rounding the size up would shift
+    it by up to half a reduced pixel)."""
+    factor = min(MAX_REDUCE, im.width // want[0], im.height // want[1])
     if factor < 2:
         return im
     width, height = im.width // factor * factor, im.height // factor * factor
@@ -174,22 +188,33 @@ def _on_white(im: Image.Image) -> Image.Image:
     return white.convert("L")
 
 
-def _gray(im: Image.Image, want: tuple[int, int]) -> Image.Image:
-    """8-bit gray, transparency over white, reduced toward `want` first."""
+def _base(im: Image.Image) -> tuple[Image.Image, bool]:
+    """What every box of a decoded picture starts from, and whether it still
+    has transparency to put on white: 8-bit gray (False), or RGBA or LA
+    (True). Nothing here depends on the box, so a picture shown in several
+    boxes makes this once."""
     if im.mode.startswith("I;16"):
         im = im.convert("I")
     if im.mode == "I":                         # 16-bit gray: scale, don't clip
         gray = im.point(_SIXTEEN_TO_EIGHT, "L")
         clear = im.info.get("transparency")
         if not isinstance(clear, int):
-            return _reduced(gray, want)
-        # a tRNS level: those dots are clear. One 8-bit alpha band, then the
-        # reduction and the white composite on the (smaller) gray + alpha
+            return gray, False
+        # a tRNS level: those dots are clear. One 8-bit alpha band; the
+        # reduction and the white composite then work on the gray + alpha
         alpha = im.point([0 if v == clear else 255 for v in range(65536)], "L")
-        return _on_white(_reduced(Image.merge("LA", (gray, alpha)), want))
+        return Image.merge("LA", (gray, alpha)), True
     if im.mode in _ALPHA_MODES or "transparency" in im.info:
-        return _on_white(_reduced(im if im.mode == "RGBA" else im.convert("RGBA"), want))
-    return _reduced(im.convert("L"), want)
+        return (im if im.mode == "RGBA" else im.convert("RGBA")), True
+    return im.convert("L"), False
+
+
+def _gray(base: Image.Image, clear: bool, want: tuple[int, int]) -> Image.Image:
+    """8-bit gray, reduced toward `want` first, then (when the picture has
+    transparency) composited onto white: the composite works on the smaller
+    picture."""
+    reduced = _reduced(base, want)
+    return _on_white(reduced) if clear else reduced
 
 
 def _fit(im: Image.Image, width: int, height: int, fit: str) -> Image.Image:
@@ -210,29 +235,86 @@ def _fit(im: Image.Image, width: int, height: int, fit: str) -> Image.Image:
     return out
 
 
-def gray_raster(data: bytes, w_dots: int, h_dots: int, fit: str, rotation: int) -> Raster:
-    """`data` fitted to the unrotated w_dots x h_dots box, then turned
-    `rotation` degrees clockwise (module docstring). Raises ImageTooLarge,
-    UnreadableImage, or ValueError for a bad box, fit or rotation."""
+def _check_box(w_dots: int, h_dots: int, fit: str, rotation: int) -> None:
     if not (isinstance(w_dots, int) and isinstance(h_dots, int) and w_dots > 0 and h_dots > 0):
         raise ValueError(f"the box must be whole dots above 0, not {w_dots} x {h_dots}")
     if fit not in FITS:
         raise ValueError(f"fit must be cover or contain, not {fit!r}")
     if rotation not in (0, *_TURN):
         raise ValueError(f"rotation must be 0, 90, 180 or 270, not {rotation!r}")
-    im, _kind = _open(data)
-    orientation = _orientation(im)
-    # twice the box, as the picture is stored (before its EXIF turn)
-    want = (2 * h_dots, 2 * w_dots) if orientation in _SWAPPED else (2 * w_dots, 2 * h_dots)
-    if im.format in _JPEG_FORMATS and min(im.width // want[0], im.height // want[1]) >= 2:
-        # decode at 1/2, 1/4 or 1/8, never below `want`, in its own mode
-        # (asking for L would change how a color JPEG turns gray)
-        im.draft(im.mode, want)
-    _load(im)
-    gray = _gray(im, want)
-    if orientation in _UPRIGHT:
-        gray = gray.transpose(_UPRIGHT[orientation])
-    out = _fit(gray, w_dots, h_dots, fit)
-    if rotation:
-        out = out.transpose(_TURN[rotation])
-    return Raster(out.width, out.height, out.tobytes())
+
+
+class _Picture:
+    """One stored picture, opened once and decoded once for every box it is
+    prepped to (a JPEG once per scale it is drafted at: 1/2, 1/4 or 1/8 for
+    a small box, whole for a large one). Each box's raster is exactly what
+    prepping that box alone makes, so the canvas (one box at a time) and a
+    compile (every element of a design together) get the same raster.
+    Raises ImageTooLarge or UnreadableImage."""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+        self._im, _kind = _open(data)
+        self._jpeg = self._im.format in _JPEG_FORMATS
+        # anything but a JPEG is decoded here (module docstring, _orientation)
+        self._orientation = _orientation(self._im)
+        # the decoded picture's _base, by its decoded size (a JPEG drafted
+        # smaller decodes smaller)
+        self._bases: dict[tuple[int, int], tuple[Image.Image, bool]] = {}
+
+    def _base_for(self, want: tuple[int, int]) -> tuple[Image.Image, bool]:
+        im = self._im
+        if self._jpeg and min(im.width // want[0], im.height // want[1]) >= 2:
+            # decode at 1/2, 1/4 or 1/8, never below `want`, in its own
+            # mode (asking for L would change how a color JPEG turns gray).
+            # A draft is set once, before decoding: a fresh open per scale
+            im, _kind = _open(self._data)
+            im.draft(im.mode, want)
+        base = self._bases.get(im.size)
+        if base is None:
+            _load(im)
+            base = self._bases[im.size] = _base(im)
+        return base
+
+    def raster(self, w_dots: int, h_dots: int, fit: str, rotation: int) -> Raster:
+        # twice the box, as the picture is stored (before its EXIF turn)
+        want = ((2 * h_dots, 2 * w_dots) if self._orientation in _SWAPPED
+                else (2 * w_dots, 2 * h_dots))
+        gray = _gray(*self._base_for(want), want)
+        if self._orientation in _UPRIGHT:
+            gray = gray.transpose(_UPRIGHT[self._orientation])
+        out = _fit(gray, w_dots, h_dots, fit)
+        if rotation:
+            out = out.transpose(_TURN[rotation])
+        return Raster(out.width, out.height, out.tobytes())
+
+
+def gray_raster(data: bytes, w_dots: int, h_dots: int, fit: str, rotation: int) -> Raster:
+    """`data` fitted to the unrotated w_dots x h_dots box, then turned
+    `rotation` degrees clockwise (module docstring). Raises ImageTooLarge,
+    UnreadableImage, or ValueError for a bad box, fit or rotation."""
+    _check_box(w_dots, h_dots, fit, rotation)
+    return _Picture(data).raster(w_dots, h_dots, fit, rotation)
+
+
+def gray_rasters(data: bytes, boxes: Sequence[tuple[int, int, str, int]],
+                 ) -> list[Raster | ImageTooLarge | UnreadableImage]:
+    """`gray_raster` for each (w_dots, h_dots, fit, rotation) box of one
+    picture, which is opened and decoded once for all of them (`_Picture`):
+    each box's raster, or the ImageTooLarge or UnreadableImage it gets.
+    Raises ValueError, before anything is decoded, for a bad box."""
+    for box in boxes:
+        _check_box(*box)
+    if not boxes:
+        return []
+    try:
+        picture = _Picture(data)
+    except (ImageTooLarge, UnreadableImage) as exc:
+        return [exc] * len(boxes)
+    out: list[Raster | ImageTooLarge | UnreadableImage] = []
+    for box in boxes:
+        try:
+            out.append(picture.raster(*box))
+        except (ImageTooLarge, UnreadableImage) as exc:
+            out.append(exc)
+    return out

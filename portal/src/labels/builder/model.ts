@@ -196,9 +196,11 @@ export const IMAGE_DEFAULTS: Readonly<Record<ImageSource, { fit: ImageFit; mode:
 };
 
 /** model.py's caps: a field's expected length and max characters (a glyph
- *  count, nothing needs more than two digits) and static text's lines. */
+ *  count, nothing needs more than two digits), static text's lines, and the
+ *  images on one design. */
 export const MAX_COUNT = 64;
 export const MAX_LINES = 50;
+export const MAX_IMAGE_ELEMENTS = 8;
 
 type Raw = Record<string, unknown>;
 
@@ -698,5 +700,8 @@ export function validate(d: DesignV2): Problem[] {
     seen.add(id);
     problems.push(...p.map((message) => ({ elementId: id, message })));
   });
+  if (d.elements.filter((el) => el.type === 'image').length > MAX_IMAGE_ELEMENTS) {
+    problems.push({ elementId: null, message: `a design holds at most ${MAX_IMAGE_ELEMENTS} images` });
+  }
   return problems;
 }

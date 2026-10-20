@@ -411,6 +411,29 @@ def test_bitmap_must_fill_the_footprint():
 
 # ---- schema 3 ----------------------------------------------------------
 
+def test_a_design_holds_at_most_eight_images():
+    """Each image is a storage read and a decode at compile time: a badge
+    needs a photo, a logo and a few static pictures, never hundreds."""
+    eight = [_image(id=f"i{n}") for n in range(8)]
+    assert len(parse_design(_design(*eight, _field())).elements) == 9
+    with pytest.raises(DesignError) as exc:
+        parse_design(_design(*eight, _image(id="i8"), _field()))
+    assert exc.value.problems == ["a design holds at most 8 images"]
+
+
+def test_schema_3_refuses_duplicate_element_ids():
+    """Images are resolved by element id: two elements sharing one would
+    share one picture (or fail the compile), so schema 3 refuses them, with
+    the builder's message."""
+    with pytest.raises(DesignError) as exc:
+        parse_design(_design(_image(), _image(x=1.5), _field(), _field(id="img")))
+    assert exc.value.problems == ["img: id is used by another element",
+                                  "img: id is used by another element"]
+    assert len(parse_design(_design(_image(), _image(id="img2"), _field())).elements) == 3
+    # schema 2 designs keep parsing as they always have
+    assert len(parse_design(_design(_field(), _field(), schema=2)).elements) == 2
+
+
 def test_schema_rules():
     with pytest.raises(DesignError) as exc:
         parse_design(_design(_image(), schema=2))

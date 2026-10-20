@@ -60,6 +60,9 @@ MAX_LINES = 50
 # every save copies the design into a version row and each DPI child, and
 # it rides every kiosk sync
 MAX_ELEMENTS = 500
+# every image is a storage read and a decode when the design compiles; a
+# badge needs a photo, a logo and a few static pictures
+MAX_IMAGE_ELEMENTS = 8
 
 
 class DesignError(ValueError):
@@ -581,6 +584,7 @@ def parse_design(raw: object) -> Design:
     splits = _splits(raw.get("splits"), problems) if schema >= 2 else {}
 
     parsed: list[object] = []
+    seen: set[str] = set()
     for i, el in enumerate(elements):
         if not isinstance(el, dict):
             problems.append(f"element {i}: must be an object")
@@ -598,9 +602,17 @@ def parse_design(raw: object) -> Design:
                      else _v2_element(el, base, p, splits, schema))
         if parsed_el is not None:
             parsed.append(parsed_el)
+        if schema == 3:
+            # images are resolved by element id: two elements sharing one
+            # would share one picture (the builder's rule, model.ts)
+            if eid in seen:
+                p.append("id is used by another element")
+            seen.add(eid)
         problems.extend(f"{eid}: {msg}" for msg in p)
     if schema == 3 and not any(isinstance(e, ImageEl) for e in parsed):
         problems.append("a schema 3 design needs an image element")
+    if sum(isinstance(e, ImageEl) for e in parsed) > MAX_IMAGE_ELEMENTS:
+        problems.append(f"a design holds at most {MAX_IMAGE_ELEMENTS} images")
 
     if problems:
         raise DesignError(problems)
