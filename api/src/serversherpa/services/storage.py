@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from botocore.httpsession import get_cert_path
 
 from serversherpa.config import get_settings
@@ -56,6 +56,19 @@ class StorageConfigError(Exception):
     def __init__(self, cause: str) -> None:
         super().__init__(cause)
         self.cause = cause
+
+
+# What a storage call can raise: botocore's own errors (ClientError and
+# EndpointConnectionError are both BotoCoreError/ClientError subclasses), the
+# socket/TLS failures under them, and a client that couldn't be built at all.
+# Their messages can carry the endpoint URL: log the class, never the text.
+STORAGE_ERRORS = (ClientError, BotoCoreError, OSError, StorageConfigError)
+
+
+def is_missing(exc: BaseException) -> bool:
+    """A storage error that only says the object isn't there."""
+    return (isinstance(exc, ClientError)
+            and exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"))
 
 
 def _preload_ca_bundle(client) -> None:

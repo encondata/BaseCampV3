@@ -93,7 +93,9 @@ from serversherpa.labels.tokens import apply_placeholders
 from serversherpa.labels.zpl import box_dots, image_box_dots
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
-from serversherpa.services.storage import delete_object, get_object, put_object
+from serversherpa.services.storage import (
+    STORAGE_ERRORS, delete_object, get_object, is_missing, put_object,
+)
 
 router = APIRouter(prefix="/labels", tags=["labels"])
 
@@ -2189,14 +2191,18 @@ _RASTER_CACHE = _RasterCache()
 
 
 async def _stored_picture(key: str) -> bytes | None:
-    """A stored object's bytes, or None when the object is gone; any other
-    storage failure is a 502."""
+    """A stored object's bytes, or None when the object is gone (it prints
+    as no image). Storage being down or unconfigured is 502
+    `storage_unavailable`, in the raster route and the compile alike."""
     try:
         return await get_object(key)
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+    except STORAGE_ERRORS as exc:
+        if is_missing(exc):
             return None
-        logger.warning("label image read failed for %s: %s", key, exc)
+        # the class and S3 code only: botocore's message carries the endpoint
+        code = exc.response.get("Error", {}).get("Code") if isinstance(exc, ClientError) else None
+        logger.warning("label image read failed for %s: %s (code=%s)", key,
+                       type(exc).__name__, code)
         raise _err(502, "storage_unavailable") from exc
 
 

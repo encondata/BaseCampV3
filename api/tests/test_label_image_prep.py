@@ -7,13 +7,16 @@ transposition, ready for the shared dither. Pure: no database.
 Pillow lives only in this module, and the API imports it lazily."""
 
 import io
+import struct
 import subprocess
 import sys
 import textwrap
+import warnings
+import zlib
 from pathlib import Path
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageFile, JpegImagePlugin
 
 import serversherpa
 from serversherpa.labels import image_prep
@@ -146,6 +149,52 @@ def test_a_huge_picture_is_refused():
     assert image_prep.MAX_PIXELS == 40_000_000
 
 
+def _png_header(width: int, height: int) -> bytes:
+    """A PNG that only claims its size: a 1-bit gray header and an empty
+    image stream, so a test can ask for any size without building it."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + kind + data
+                + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 1, 0, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(b"")) + chunk(b"IEND", b""))
+
+
+def test_the_cap_is_checked_before_decoding(monkeypatch):
+    """The pixel count comes from the header: a bomb is refused without a
+    single row decoded."""
+    def no_decoding(self):
+        raise RuntimeError("decoded")
+
+    bigs = (_png_header(10_000, 5_000), _png(Image.new("1", (10_000, 5_000))))
+    small = _png(Image.new("L", (4, 4)))
+    monkeypatch.setattr(ImageFile.ImageFile, "load", no_decoding)
+    monkeypatch.setattr(Image.Image, "load", no_decoding)
+    for big in bigs:
+        with pytest.raises(ImageTooLarge):
+            gray_raster(big, 10, 10, "cover", 0)
+        with pytest.raises(ImageTooLarge):
+            image_prep.probe(big)
+    # the patch does stop decoding: a small picture gets as far as decoding
+    with pytest.raises(UnreadableImage, match="decoded"):
+        gray_raster(small, 2, 2, "cover", 0)
+
+
+def test_pillows_own_bomb_check_is_too_large_as_well():
+    """Past Pillow's own limits its warning (or, past twice that, its error)
+    comes first: still ImageTooLarge, whatever the warnings filter does."""
+    over_warning = _png_header(10_000, 9_000)          # 90 MP: Pillow warns
+    over_error = _png_header(20_000, 10_000)           # 200 MP: Pillow refuses
+    for data in (over_warning, over_error):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with pytest.raises(ImageTooLarge):
+                gray_raster(data, 10, 10, "cover", 0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            with pytest.raises(ImageTooLarge):
+                image_prep.probe(data)
+
+
 def test_the_cap_is_inclusive(monkeypatch):
     monkeypatch.setattr(image_prep, "MAX_PIXELS", 100)
     assert gray_raster(_png(Image.new("L", (10, 10))), 2, 2, "cover", 0).width == 2
@@ -164,6 +213,102 @@ def test_unreadable_and_foreign_pictures():
         gray_raster(buf.getvalue(), 4, 4, "cover", 0)
     with pytest.raises(UnreadableImage):
         image_prep.probe(buf.getvalue())
+
+
+def _mpo(*colors) -> bytes:
+    """A multi-picture JPEG, as phones and cameras save them."""
+    first, *rest = (Image.new("RGB", (30, 20), c) for c in colors)
+    buf = io.BytesIO()
+    first.save(buf, "MPO", save_all=True, append_images=rest)
+    return buf.getvalue()
+
+
+def test_a_multi_picture_jpeg_is_a_jpeg():
+    data = _mpo((0, 0, 0), (255, 255, 255))
+    assert Image.open(io.BytesIO(data)).format == "MPO"       # what Pillow calls it
+    info = image_prep.probe(data)
+    assert (info.width, info.height, info.mime, info.ext) == (30, 20, "image/jpeg", ".jpg")
+    # its first picture prints
+    assert max(gray_raster(data, 6, 4, "cover", 0).gray) < 20
+
+
+def test_a_format_without_a_type_is_unreadable(monkeypatch):
+    """Never a KeyError: a decoder format the module has no type for is an
+    unreadable picture."""
+    monkeypatch.setattr(image_prep, "TYPES", {k: v for k, v in image_prep.TYPES.items()
+                                              if k != "PNG"})
+    with pytest.raises(UnreadableImage):
+        image_prep.probe(_png(Image.new("L", (4, 4))))
+    with pytest.raises(UnreadableImage):
+        gray_raster(_png(Image.new("L", (4, 4))), 2, 2, "cover", 0)
+
+
+def test_sixteen_bit_gray_transparency_prints_white():
+    im = Image.new("I;16", (3, 1))
+    for x, v in enumerate((65535, 1000, 0)):
+        im.putpixel((x, 0), v)
+    buf = io.BytesIO()
+    im.save(buf, "PNG", transparency=1000)
+    assert list(gray_raster(buf.getvalue(), 3, 1, "cover", 0).gray) == [255, 255, 0]
+
+
+def _spy(monkeypatch, cls, name):
+    calls = []
+    real = getattr(cls, name)
+
+    def spy(self, *args, **kwargs):
+        calls.append(args)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(cls, name, spy)
+    return calls
+
+
+def test_a_large_picture_is_reduced_before_it_is_composited(monkeypatch):
+    """A source past twice the box is box-reduced (whole factors, alpha
+    premultiplied) before the white composite, so a 40 MP transparent PNG
+    never makes full-size copies for it; the result still prints right."""
+    reduce_calls = _spy(monkeypatch, Image.Image, "reduce")
+    logo = Image.new("RGBA", (1000, 500), (0, 0, 0, 0))
+    logo.paste((0, 0, 0, 255), (0, 0, 500, 500))               # left half black, right clear
+    rows = _rows(gray_raster(_png(logo), 50, 25, "contain", 0))
+    assert reduce_calls[0] == (10,)                            # 1000 // 100, 500 // 50
+    assert all(r[:24] == [0] * 24 and r[26:] == [255] * 24 for r in rows)
+
+
+def test_a_large_jpeg_is_decoded_small(monkeypatch):
+    """A JPEG past twice the box decodes at 1/2, 1/4 or 1/8 (in its own
+    mode, so the gray is Pillow's L as always), in its stored orientation."""
+    drafts = _spy(monkeypatch, JpegImagePlugin.JpegImageFile, "draft")
+    upright = Image.new("L", (800, 400), 255)
+    upright.paste(0, (0, 0, 400, 400))                        # left half black
+    stored = upright.transpose(Image.Transpose.ROTATE_90)    # 400 x 800, needs EXIF 6
+    exif = Image.Exif()
+    exif[0x0112] = 6
+    buf = io.BytesIO()
+    stored.convert("RGB").save(buf, "JPEG", exif=exif, quality=95)
+    rows = _rows(gray_raster(buf.getvalue(), 40, 20, "cover", 0))
+    assert drafts == [("RGB", (40, 80))]                      # the box, twice, as stored
+    assert rows[10][5] < 40 and rows[10][34] > 215            # upright: black left
+    # the same picture reduced or decoded whole differs by a level or two at most
+    reduced = gray_raster(buf.getvalue(), 40, 20, "cover", 0).gray
+    monkeypatch.setattr(JpegImagePlugin.JpegImageFile, "draft", lambda self, mode, size: None)
+    monkeypatch.setattr(Image.Image, "reduce", lambda self, factor, box=None: self.copy())
+    whole = gray_raster(buf.getvalue(), 40, 20, "cover", 0).gray
+    assert max(abs(a - b) for a, b in zip(reduced, whole, strict=True)) <= 8
+
+
+def test_a_picture_up_to_twice_the_box_is_never_reduced(monkeypatch):
+    """Under 4x the box (so at most 2x after a whole-factor reduction) a
+    picture is prepped exactly as before: the canvas and the printer keep
+    the same bits for every portal avatar and small logo."""
+    reduce_calls = _spy(monkeypatch, Image.Image, "reduce")
+    drafts = _spy(monkeypatch, JpegImagePlugin.JpegImageFile, "draft")
+    buf = io.BytesIO()
+    Image.new("RGB", (159, 79), (90, 90, 90)).save(buf, "JPEG")
+    gray_raster(buf.getvalue(), 40, 20, "cover", 0)
+    gray_raster(_png(Image.new("RGBA", (159, 79))), 40, 20, "contain", 90)
+    assert reduce_calls == [] and drafts == []
 
 
 def test_bad_box_or_settings():

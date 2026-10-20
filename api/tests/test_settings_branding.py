@@ -107,6 +107,20 @@ async def test_jpeg_and_webp_are_accepted_with_their_extensions(client, db, seed
     assert webp.endswith(".webp") and store.blobs[webp][1] == "image/webp"
 
 
+async def test_a_multi_picture_jpeg_logo_is_a_jpeg(client, db, seeded_user, store):
+    """Phones and cameras save JPEGs as MPO (several pictures in one file):
+    stored as the JPEG it is, never a 500."""
+    hdrs = await _super(db, client)
+    buf = io.BytesIO()
+    Image.new("RGB", (30, 20)).save(buf, "MPO", save_all=True,
+                                    append_images=[Image.new("RGB", (30, 20), (255, 255, 255))])
+    resp = await _upload(client, hdrs, buf.getvalue(), "phone.jpg", "image/jpeg")
+    assert resp.status_code == 200, resp.text
+    key = (await _stored(db))["company_logo_key"]
+    assert KEY.match(key) and key.endswith(".jpg")
+    assert store.blobs[key] == (buf.getvalue(), "image/jpeg")
+
+
 async def test_replacing_the_logo_deletes_the_old_object(client, db, seeded_user, store):
     hdrs = await _super(db, client)
     await _upload(client, hdrs, _image())

@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError
 from PIL import Image
 from sqlalchemy import select
 
@@ -198,6 +198,64 @@ async def test_upload_list_and_soft_delete(client, db, seeded_user, store):
     actions = (await db.execute(select(AuditLog.action).where(
         AuditLog.entity_type == "label_image", AuditLog.entity_id == body["id"]))).scalars().all()
     assert sorted(actions) == ["create", "delete"]
+
+
+def _mpo() -> bytes:
+    """A multi-picture JPEG (phones and cameras): Pillow calls it MPO."""
+    buf = io.BytesIO()
+    Image.new("RGB", (30, 20), (0, 0, 0)).save(
+        buf, "MPO", save_all=True, append_images=[Image.new("RGB", (30, 20), (255, 255, 255))])
+    return buf.getvalue()
+
+
+async def test_a_multi_picture_jpeg_uploads_as_a_jpeg(client, db, seeded_user, store):
+    sa = await _super(db, client)
+    r = await _upload(client, sa, _mpo(), filename="phone.jpg")
+    assert r.status_code == 201, r.text
+    assert (r.json()["mime"], r.json()["width"], r.json()["height"]) == ("image/jpeg", 30, 20)
+    row = await db.get(LabelImage, uuid.UUID(r.json()["id"]))
+    assert row.storage_key.endswith(".jpg")
+    raster = await client.post("/labels/images/raster", headers=sa, json={
+        "source": "static", "image_id": r.json()["id"], "w_in": 0.1, "h_in": 0.1, "dpi": 100,
+        "fit": "cover", "rotation": 0})
+    assert raster.status_code == 200 and max(raster.content) < 20     # its first picture
+
+
+async def test_a_storage_outage_is_a_502(client, db, seeded_user, store, monkeypatch, caplog):
+    """Not a missing object (that prints nothing): storage itself is down.
+    The raster and the compile both say so, and the log never carries the
+    endpoint (botocore's message does)."""
+    sa = await _super(db, client)
+    jo = await _worker(db, store)
+    image_id = await _library_image(client, sa)
+
+    async def down(key):
+        raise EndpointConnectionError(endpoint_url="http://storage.internal:9000")
+
+    monkeypatch.setattr(labels_module, "get_object", down)
+    r = await client.post("/labels/images/raster", headers=sa, json={
+        "source": "static", "image_id": image_id, "w_in": 0.1, "h_in": 0.1, "dpi": 300,
+        "fit": "contain", "rotation": 0})
+    assert r.status_code == 502 and r.json()["detail"]["code"] == "storage_unavailable"
+    r = await client.post("/labels/images/raster", headers=sa, json={
+        "source": "photo", "person_id": str(jo.id), "w_in": 0.1, "h_in": 0.1, "dpi": 300,
+        "fit": "cover", "rotation": 0})
+    assert r.status_code == 502 and r.json()["detail"]["code"] == "storage_unavailable"
+    for design in (_design(_image("s", "static", imageId=image_id)), _design(_image("p", "photo"))):
+        r = await _compile(client, sa, design, samples={"person:id": str(jo.id)})
+        assert r.status_code == 502, r.text
+        assert r.json()["detail"]["code"] == "storage_unavailable"
+    assert "storage.internal" not in caplog.text
+
+    # storage that can't be configured at all is the same 502
+    from serversherpa.services.storage import StorageConfigError
+
+    async def unconfigured(key):
+        raise StorageConfigError("ValueError")
+
+    monkeypatch.setattr(labels_module, "get_object", unconfigured)
+    r = await _compile(client, sa, _design(_image("s", "static", imageId=image_id)))
+    assert r.status_code == 502 and r.json()["detail"]["code"] == "storage_unavailable"
 
 
 async def test_upload_validation(client, db, seeded_user, store):
