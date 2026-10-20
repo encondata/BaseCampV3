@@ -253,7 +253,7 @@ Spec §6 says the signed-out edge routes answer "loopback requests" only. Behind
 - Test: `kiosk/src/timeclock/flow.test.ts`, `backend.test.ts`, `format.test.ts`, `useIdle.test.tsx`
 
 **Interfaces:**
-- Consumes: Task 6 `api.ts` types and `fetchTimeclockStatus/clockIn/clockOut` (existing names in `lib/api.ts:810-845`), Task 7 `stationApi.ts`.
+- Consumes: Task 6 `api.ts` types and `fetchTimeclockStatus`, `postClockIn`, `postClockOut` (existing in `lib/api.ts:810-845`; the posts take `{serial, person_id, ...}`), Task 7 `stationApi.ts`.
 - Produces:
   - `type FlowMode = 'station' | 'kiosk'`
   - `type Step = 'welcome' | 'name' | 'confirm' | 'action' | 'clockOut' | 'badge' | 'printing' | 'verify' | 'done'`
