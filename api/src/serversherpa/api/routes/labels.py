@@ -388,8 +388,8 @@ async def sample_people(
         " ", func.btrim(Person.last_name))
     people = (await db.scalars(stmt.order_by(natural(shown), Person.id).limit(limit))).all()
     out = []
-    for person in people:
-        row = await people_badge.summary(db, person)
+    # one set of lookups for the page: a partner chain is read once, not per row
+    for person, row in zip(people, await people_badge.summaries(db, people), strict=True):
         if not row.person_type:      # the filter above is the same rule; never trust it
             continue
         # person_values' person_name, the name the badge prints
@@ -417,8 +417,7 @@ async def sample_person(
     person = await people_badge.find_person(db, person_id)
     if person is None:
         raise _err(404, "person_not_found")
-    payload = await people_badge.person_payload(db, person.id)
-    row = await people_badge.summary(db, person)
+    payload, row = await people_badge.payload_and_summary(db, person)
     return LabelSamplePersonOut(person_id=person.id, values=person_values(payload),
                                 has_photo=row.has_photo, has_logo=row.has_logo)
 

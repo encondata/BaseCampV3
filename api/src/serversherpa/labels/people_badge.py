@@ -17,7 +17,8 @@ field catalog stays in fields.py.
 A hidden move identity (the kiosk's per-move sign-in) is nobody's badge."""
 
 import uuid
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,7 +66,73 @@ class _Badge:
     logo_key: str | None
 
 
-async def _partner_chain(db: AsyncSession, partner: Partner) -> list[Partner]:
+@dataclass
+class _Known:
+    """What badges are worked out from, each read once and kept: grants and
+    worker profiles by person, partners by id (up their parent chains), the
+    branding section. One per request: the person search shares it across
+    its rows (its grants and profiles read for every row at once), so a
+    page of workers under one partner chain reads that chain once."""
+    grants: dict[uuid.UUID, list[tuple[str, str | None, str | None]]] = field(
+        default_factory=dict)
+    profiles: dict[uuid.UUID, WorkerProfile | None] = field(default_factory=dict)
+    partners: dict[uuid.UUID, Partner | None] = field(default_factory=dict)
+    branding: dict | None = None
+
+
+def _grants_query():
+    return (select(PersonRole.person_id, Role.name, Role.label, Role.scope_anchor)
+            .join(PersonRole, PersonRole.role == Role.name)
+            .where(PersonRole.revoked_at.is_(None)))
+
+
+async def _preload(db: AsyncSession, people: Sequence[Person], known: _Known) -> None:
+    """Every one of `people`'s active grants and worker profile, in one
+    query each."""
+    ids = [p.id for p in people]
+    if not ids:
+        return
+    for pid in ids:
+        known.grants.setdefault(pid, [])
+        known.profiles.setdefault(pid, None)
+    for pid, name, label, anchor in (await db.execute(
+            _grants_query().where(PersonRole.person_id.in_(ids)))).all():
+        known.grants[pid].append((name, label, anchor))
+    for profile in (await db.scalars(
+            select(WorkerProfile).where(WorkerProfile.person_id.in_(ids)))).all():
+        known.profiles[profile.person_id] = profile
+
+
+async def _grants(db: AsyncSession, person_id: uuid.UUID,
+                  known: _Known) -> list[tuple[str, str | None, str | None]]:
+    if person_id not in known.grants:
+        known.grants[person_id] = [
+            (name, label, anchor) for _pid, name, label, anchor in (await db.execute(
+                _grants_query().where(PersonRole.person_id == person_id))).all()]
+    return known.grants[person_id]
+
+
+async def _profile(db: AsyncSession, person_id: uuid.UUID, known: _Known) -> WorkerProfile | None:
+    if person_id not in known.profiles:
+        known.profiles[person_id] = await db.get(WorkerProfile, person_id)
+    return known.profiles[person_id]
+
+
+async def _partner(db: AsyncSession, partner_id: uuid.UUID, known: _Known) -> Partner | None:
+    # db.get alone isn't enough: the session's identity map holds rows only
+    # while something references them, so a partner went between rows
+    if partner_id not in known.partners:
+        known.partners[partner_id] = await db.get(Partner, partner_id)
+    return known.partners[partner_id]
+
+
+async def _branding(db: AsyncSession, known: _Known) -> dict:
+    if known.branding is None:
+        known.branding = await read_section(db, "branding")
+    return known.branding
+
+
+async def _partner_chain(db: AsyncSession, partner: Partner, known: _Known) -> list[Partner]:
     """The partner and its ancestors, nearest first, archived ones left out
     (the walk goes on above them)."""
     chain: list[Partner] = []
@@ -75,28 +142,26 @@ async def _partner_chain(db: AsyncSession, partner: Partner) -> list[Partner]:
         seen.add(row.id)
         if row.archived_at is None:
             chain.append(row)
-        row = await db.get(Partner, row.parent_id) if row.parent_id else None
+        row = await _partner(db, row.parent_id, known) if row.parent_id else None
     return chain
 
 
-async def _badge(db: AsyncSession, person: Person) -> _Badge:
-    grants = (await db.execute(
-        select(Role.name, Role.label, Role.scope_anchor)
-        .join(PersonRole, PersonRole.role == Role.name)
-        .where(PersonRole.person_id == person.id, PersonRole.revoked_at.is_(None)))).all()
-    profile = await db.get(WorkerProfile, person.id)
+async def _badge(db: AsyncSession, person: Person, known: _Known | None = None) -> _Badge:
+    known = known if known is not None else _Known()
+    grants = await _grants(db, person.id, known)
+    profile = await _profile(db, person.id, known)
     staff_roles = [label or name for name, label, anchor in grants if anchor == GLOBAL_ANCHOR]
     if staff_roles:
-        branding = await read_section(db, "branding")
+        branding = await _branding(db, known)
         return _Badge("Staff", staff_roles, profile, branding.get("company_name"), None,
                       branding.get("company_logo_key") or None)
     if profile is None and not any(name == WORKER_ROLE for name, _l, _a in grants):
         return _Badge("", [], None, None, None, None)
-    partner = (await db.get(Partner, profile.partner_id)
+    partner = (await _partner(db, profile.partner_id, known)
                if profile is not None and profile.partner_id else None)
     if partner is None:
         return _Badge("Worker", [], profile, None, None, None)
-    chain = await _partner_chain(db, partner)
+    chain = await _partner_chain(db, partner, known)
     logo = next((p.logo_key for p in reversed(chain) if p.logo_key), None) \
         or partner.logo_key or None
     return _Badge("Worker", [], profile, partner.name, chain[-1].name if chain else None, logo)
@@ -120,10 +185,23 @@ class Summary:
     has_logo: bool
 
 
-async def summary(db: AsyncSession, person: Person) -> Summary:
-    badge = await _badge(db, person)
+def _summary(person: Person, badge: _Badge) -> Summary:
     return Summary(badge.person_type, badge.company or None, photo_key(person) is not None,
                    bool(badge.logo_key))
+
+
+async def summary(db: AsyncSession, person: Person) -> Summary:
+    return _summary(person, await _badge(db, person))
+
+
+async def summaries(db: AsyncSession, people: Sequence[Person]) -> list[Summary]:
+    """`summary` for each of `people`, in order, from lookups made once for
+    all of them (`_Known`): their grants and worker profiles in one query
+    each, each partner up their parent chains and the branding section
+    once."""
+    known = _Known()
+    await _preload(db, people, known)
+    return [_summary(person, await _badge(db, person, known)) for person in people]
 
 
 async def person_payload(db: AsyncSession, person_id: object) -> dict | None:
@@ -132,7 +210,17 @@ async def person_payload(db: AsyncSession, person_id: object) -> dict | None:
     person = await find_person(db, person_id)
     if person is None:
         return None
+    return await _payload(db, person, await _badge(db, person))
+
+
+async def payload_and_summary(db: AsyncSession, person: Person) -> tuple[dict, Summary]:
+    """`person_payload` and `summary` of one person (as `find_person` found
+    them), from one badge lookup."""
     badge = await _badge(db, person)
+    return await _payload(db, person, badge), _summary(person, badge)
+
+
+async def _payload(db: AsyncSession, person: Person, badge: _Badge) -> dict:
     profile = badge.profile
     level = None
     status = status_label = None
