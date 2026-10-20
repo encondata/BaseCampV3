@@ -67,6 +67,7 @@ function previewOut(overrides: Record<string, number[]> = {}): CleanupPreviewOut
         cat('attachments', 'Deleted files', 0),
         cat('notes', 'Deleted notes', 0),
         cat('label_fonts', 'Deleted label fonts', 0),
+        cat('label_images', 'Deleted label images', n('label_images', 0, 0), n('label_images', 1, 0)),
       ],
     },
   ];
@@ -121,7 +122,7 @@ it('renders the three group cards with every category toggled on', () => {
     'Old history': ['Sent, failed and skipped mail', 'Read or hidden notifications',
       'Finished import jobs', 'Report runs', 'Label generation runs',
       'Finished spec lookups', 'Status rule run logs'],
-    'Deleted files': ['Deleted files', 'Deleted notes', 'Deleted label fonts'],
+    'Deleted files': ['Deleted files', 'Deleted notes', 'Deleted label fonts', 'Deleted label images'],
   };
   for (const [group, labels] of Object.entries(expected)) {
     const c = within(card(group));
@@ -161,6 +162,19 @@ it('previews with the edited age and shows rows and files', async () => {
   expect(history.queryByText('1,204 rows · 38 files')).toBeNull();
   await user.click(history.getByRole('button', { name: 'Preview' }));
   await waitFor(() => expect(api.getCleanupPreview).toHaveBeenLastCalledWith(30));
+});
+
+it('lists deleted label images under Deleted files, with their count', async () => {
+  api.getCleanupPreview.mockResolvedValue(previewOut({ label_images: [4, 3] }));
+  const { user } = renderTab();
+  const deleted = within(card('Deleted files'));
+  expect(deleted.getByText(
+    'Files, notes, fonts and label images that were deleted and are past the age you choose, '
+    + 'along with their stored copies.')).toBeTruthy();
+  await user.click(deleted.getByRole('button', { name: 'Preview' }));
+  const row = deleted.getByRole('checkbox', { name: 'Deleted label images' }).closest('.set-row') as HTMLElement;
+  await waitFor(() => expect(within(row).getByText('4 rows · 3 files')).toBeTruthy());
+  expect(within(row).getByText('Deleted label images')).toBeTruthy();
 });
 
 it('only fills in the card that was previewed', async () => {

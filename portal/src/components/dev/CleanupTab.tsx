@@ -82,12 +82,13 @@ const GROUPS: GroupSpec[] = [
   },
   {
     key: 'deleted', label: 'Deleted files', needsAge: true,
-    description: 'Files, notes and fonts that were deleted and are past the age you choose, '
+    description: 'Files, notes, fonts and label images that were deleted and are past the age you choose, '
       + 'along with their stored copies.',
     categories: [
       { key: 'attachments', label: 'Deleted files' },
       { key: 'notes', label: 'Deleted notes' },
       { key: 'label_fonts', label: 'Deleted label fonts' },
+      { key: 'label_images', label: 'Deleted label images' },
     ],
   },
 ];
