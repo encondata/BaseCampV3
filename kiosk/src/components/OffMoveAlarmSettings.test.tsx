@@ -65,7 +65,7 @@ afterEach(() => {
   delete window.__KIOSK_CONFIG__;
 });
 
-it('section_hidden_off_rfid_station', async () => {
+it('section_shown_on_any_signed_in_laptop', async () => {
   // Web kiosk.
   delete window.__KIOSK_CONFIG__;
   render(<OffMoveAlarmSettings />);
@@ -73,15 +73,16 @@ it('section_hidden_off_rfid_station', async () => {
   expect(screen.queryByText('Off-move alarm')).toBeNull();
   cleanup();
 
-  // Laptop, Label Station.
+  // Laptop, Label Station: shown too — the setup choice hides nothing (Jimmy).
   laptop();
   writeKioskSetup({ ...SETUP, stationType: 'label' });
   render(<OffMoveAlarmSettings />);
   await flush();
-  expect(screen.queryByText('Off-move alarm')).toBeNull();
+  expect(screen.getByText('Off-move alarm')).toBeTruthy();
   cleanup();
 
   // Laptop RFID Station, signed out.
+  apiMock.getAlarmSettings.mockClear();
   writeKioskSetup(SETUP);
   auth.status = 'anon';
   render(<OffMoveAlarmSettings />);
@@ -291,5 +292,5 @@ it('shows the alarm sound picker inside the section, behind the same gate', asyn
   writeKioskSetup({ ...SETUP, stationType: 'label' });
   render(<OffMoveAlarmSettings soundRow={<div>Alarm sound picker</div>} />);
   await flush();
-  expect(screen.queryByText('Alarm sound picker')).toBeNull();
+  expect(screen.getByText('Alarm sound picker')).toBeTruthy();
 });

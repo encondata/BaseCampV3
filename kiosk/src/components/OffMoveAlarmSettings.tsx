@@ -19,7 +19,6 @@ import { useKioskAuth } from '../auth/KioskAuthContext';
 import {
   getAlarmSettings, saveAlarmSettings, type AlarmMode, type AlarmSettings, type OffMoveAlarmRow,
 } from '../lib/api';
-import { useKioskSetup } from '../lib/kioskSetup';
 import { isLaptop } from '../lib/platform';
 import OffMoveAlarm from './OffMoveAlarm';
 
@@ -54,8 +53,9 @@ function parseSeconds(text: string): number | null {
  *  (and so behind the same gate) right under the mode. */
 export default function OffMoveAlarmSettings({ soundRow }: { soundRow?: ReactNode } = {}) {
   const { status } = useKioskAuth();
-  const [setup] = useKioskSetup();
-  if (status !== 'authed' || !isLaptop() || setup?.stationType !== 'rfid') return null;
+  // Laptop only (the alarm lives on the laptop's edge); never gated on the
+  // station type — the setup choice hides nothing in Settings (Jimmy).
+  if (status !== 'authed' || !isLaptop()) return null;
   return <AlarmSettingsSection soundRow={soundRow} />;
 }
 

@@ -192,14 +192,14 @@ describe('ReaderCard', () => {
     expect(screen.getByRole('status').textContent).toContain('Couldn’t run the reader check');
   });
 
-  it('Open RFID dashboard goes to /rfid_status, and only on an RFID Station', async () => {
+  it('Open RFID dashboard goes to /rfid_status, whatever the station type', async () => {
     await renderCard();
     fireEvent.click(screen.getByRole('button', { name: 'Open RFID dashboard' }));
     expect(screen.getByText('DASHBOARD')).toBeTruthy();
     cleanup();
     writeKioskSetup({ ...SETUP, stationType: 'label' });
     await renderCard();
-    expect(screen.queryByRole('button', { name: 'Open RFID dashboard' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Open RFID dashboard' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Check reader' })).toBeTruthy();
   });
 
