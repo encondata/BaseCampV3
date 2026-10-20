@@ -636,20 +636,17 @@ def _is_v2(design: object) -> bool:
     return isinstance(design, dict) and design.get("schema", 1) in BUILDER_SCHEMAS
 
 
-def _has_image(design: object) -> bool:
-    elements = design.get("elements") if isinstance(design, dict) else None
-    return isinstance(elements, list) and any(
-        isinstance(el, dict) and el.get("type") == "image" for el in elements)
-
-
 def _images_badge_only(design: object, label_type: str | None, language_key: str | None,
                        **extra) -> None:
     """Images print only on ID Badge templates in ZPL (spec
     2026-10-20-badge-templates §4.10): 422 `images_badge_only` for a design
-    with an image element on any other type or language."""
-    if _has_image(design) and (label_type not in PERSON_LABEL_TYPES or language_key != "zpl"):
-        raise _err(422, "images_badge_only",
-                   message="Images print on ID Badge templates in ZPL only", **extra)
+    with an image element on any other type or language. The tree's saves
+    check it again under their lock (tree.check_images); this is the fast
+    answer."""
+    try:
+        tree.check_images(design, label_type, language_key, **extra)
+    except tree.ImagesBadgeOnly as e:
+        raise _tree_err(e) from e
 
 
 def _readable_samples(item, actor: AuthContext):
@@ -913,9 +910,11 @@ async def _patch_parent(db: DbSession, row: LabelTemplate, data: dict, summary: 
     if "design" in data:
         _parse_v2(data["design"])
     children: list[LabelTemplate] = []
-    if data.keys() & {"design", "label_type", "language_key"}:
-        # the images check reads the tree as locked (the parent, then its
-        # children), so an image save and a type change never both land
+    if data.keys() & {"design", "label_type", "language_key", "samples", "size_key"}:
+        # anything that can reach save_parent reads the tree as locked (the
+        # parent, then its children): the images check, so an image save and
+        # a type change never both land, and the design and samples written
+        # back below, so a samples-only save never writes a stale design
         children = await tree.lock_tree(db, row)
     label_type = data.get("label_type", row.label_type)
     language_key = data.get("language_key", row.language_key)

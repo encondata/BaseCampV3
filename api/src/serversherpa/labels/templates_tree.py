@@ -46,6 +46,7 @@ from serversherpa.db.models import (
     GeneratedLabel, LabelTemplate, LabelTemplateSite, LabelTemplateVersion,
 )
 from serversherpa.db.ordering import natural_key
+from serversherpa.labels.fields import PERSON_LABEL_TYPES
 from serversherpa.labels.kiosk_templates import FALLBACK_NAME, row_family
 
 TREE_DPIS = ("203", "300", "600")
@@ -130,6 +131,15 @@ class UnknownTemplates(TreeError):
     status, code = 422, "unknown_templates"
 
 
+class ImagesBadgeOnly(TreeError):
+    """Images print only on ID Badge templates in ZPL (spec
+    2026-10-20-badge-templates §4.10)."""
+    status, code = 422, "images_badge_only"
+
+    def __init__(self, **extra):
+        super().__init__(message="Images print on ID Badge templates in ZPL only", **extra)
+
+
 class ParentSaveResult(TypedDict):
     out_of_date: list[uuid.UUID]
 
@@ -159,6 +169,21 @@ def design_schema(design: dict | None) -> int:
     return 2
 
 
+def has_image(design: object) -> bool:
+    """Whether a builder design has an image element."""
+    elements = design.get("elements") if isinstance(design, dict) else None
+    return isinstance(elements, list) and any(
+        isinstance(el, dict) and el.get("type") == "image" for el in elements)
+
+
+def check_images(design: object, label_type: str | None, language_key: str | None,
+                 **extra) -> None:
+    """ImagesBadgeOnly for a design with an image element on any type but
+    an ID badge, or any language but ZPL (`extra` names the row at fault)."""
+    if has_image(design) and (label_type not in PERSON_LABEL_TYPES or language_key != "zpl"):
+        raise ImagesBadgeOnly(**extra)
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -183,10 +208,13 @@ def is_out_of_date(child: LabelTemplate, design_version: int) -> bool:
             and (child.generated_from_version or 0) < design_version)
 
 
-# what a save decides from, re-read under the row lock (`_lock`)
-_SAVE_COLUMNS = ("name", "design", "samples", "version", "dpis", "is_active", "label_type",
-                 "size_key", "language_key", "generated_from_version", "child_edits",
-                 "customized", "is_old")
+# what a save decides from, re-read under the row lock (`_lock`).
+# schema_version too: a save sets it from the design it writes, and a stale
+# copy of it in the session would make that set look like no change, so the
+# row would keep another transaction's schema under this design.
+_SAVE_COLUMNS = ("name", "design", "schema_version", "samples", "version", "dpis",
+                 "is_active", "label_type", "size_key", "language_key",
+                 "generated_from_version", "child_edits", "customized", "is_old")
 
 
 async def _lock(db: AsyncSession, row: LabelTemplate) -> None:
@@ -551,8 +579,11 @@ async def save_parent(db: AsyncSession, parent: LabelTemplate, *, design: dict,
     are and come back as out of date. When only the samples change, the
     children are left alone (module docstring). The parent and then its
     children are locked first, so the children regenerated are the ones
-    without hand edits as of this save, not as of an earlier read."""
+    without hand edits as of this save, not as of an earlier read; the
+    design is checked against the type and language as locked
+    (ImagesBadgeOnly), whatever the caller checked before."""
     await _lock(db, parent)
+    check_images(design, parent.label_type, parent.language_key)
     design_changed = design != parent.design
     auto = ("Changed sample values" if not design_changed else change_summary(
         parent.design, design, samples_changed=(parent.samples or {}) != (samples or {})))
@@ -587,10 +618,12 @@ async def save_child(db: AsyncSession, child: LabelTemplate, *, design: dict,
     """A hand edit of one DPI: the child is customized from now on. The
     child is locked and re-read first, so an edit lands on top of a parent
     save that regenerated it meanwhile (its version and its key count on
-    from that save)."""
+    from that save). The design is checked against the type and language
+    as locked (ImagesBadgeOnly)."""
     if child.parent_id is None:
         raise NotAChild()
     await _lock(db, child)
+    check_images(design, child.label_type, child.language_key)
     auto = change_summary(child.design, design)
     child.design = copy.deepcopy(design)
     child.schema_version = design_schema(design)

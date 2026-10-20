@@ -1032,6 +1032,127 @@ async def test_an_image_save_checks_the_type_as_locked(client, db, seeded_user, 
             await s.rollback()
 
 
+async def _tree_rows(db, parent_id) -> list[LabelTemplate]:
+    """The parent and its children as committed."""
+    db.expire_all()
+    return list((await db.execute(select(LabelTemplate).where(
+        (LabelTemplate.id == parent_id) | (LabelTemplate.parent_id == parent_id)))).scalars())
+
+
+async def test_a_samples_only_save_writes_the_design_as_locked(client, db, seeded_user, store):
+    """R1: a parent PATCH with only sample values saves the design as
+    locked, not as the request first read it. A stale read of a badge with
+    an image, then a type change to Top without the image committed in
+    between, then the samples save: the tree stays Top with no image."""
+    from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.labels import templates_tree
+
+    sa = await _super(db, client)
+    actor = await _actor(db)
+    r = await client.post(URL, headers=sa, json=_badge(_design(_image("logo", "logo")),
+                                                       name="Stale Badge"))
+    assert r.status_code == 201, r.text
+    pid = uuid.UUID(r.json()["id"])
+    async with get_sessionmaker()() as s:
+        stale = await s.get(LabelTemplate, pid)              # an ID badge with an image
+        assert stale.label_type == "id_badge" and stale.schema_version == 3
+        r = await client.patch(f"{URL}/{pid}", headers=sa,
+                               json={"design": _design(), "label_type": "top"})
+        assert r.status_code == 200, r.text
+        await labels_module._patch_parent(s, stale, {"samples": {"asset_id": "7"}}, None, actor)
+        await s.commit()
+    rows = await _tree_rows(db, pid)
+    assert len(rows) == 4
+    for row in rows:
+        assert row.label_type == "top", row.name
+        assert not templates_tree.has_image(row.design), row.name
+        assert row.schema_version == templates_tree.design_schema(row.design) == 2, row.name
+    parent = next(row for row in rows if row.id == pid)
+    assert parent.samples == {"asset_id": "7"}
+
+
+async def test_a_stale_design_save_stores_its_own_schema(client, db, seeded_user, store):
+    """R1: `schema_version` never disagrees with the stored design. A
+    stale read (schema 3), a save without the image committed in between
+    (schema 2), then an image save from the stale read: every row of the
+    tree stores schema 3 with the image."""
+    from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.labels import templates_tree
+
+    sa = await _super(db, client)
+    actor = await _actor(db)
+    with_image = _design(_image("logo", "logo"))
+    r = await client.post(URL, headers=sa, json=_badge(with_image, name="Schema Badge"))
+    assert r.status_code == 201, r.text
+    pid = uuid.UUID(r.json()["id"])
+    async with get_sessionmaker()() as s:
+        stale = await s.get(LabelTemplate, pid)
+        assert stale.schema_version == 3
+        r = await client.patch(f"{URL}/{pid}", headers=sa, json={"design": _design()})
+        assert r.status_code == 200, r.text
+        await labels_module._patch_parent(s, stale, {"design": with_image}, None, actor)
+        await s.commit()
+    rows = await _tree_rows(db, pid)
+    assert len(rows) == 4
+    for row in rows:
+        assert templates_tree.has_image(row.design), row.name
+        assert row.schema_version == templates_tree.design_schema(row.design) == 3, row.name
+
+
+async def test_the_tree_saves_refuse_an_image_off_a_badge(client, db, seeded_user, store):
+    """R1, defense in depth: save_parent and save_child check images
+    against the type and language as locked, whatever the route checked."""
+    from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.labels import templates_tree
+
+    sa = await _super(db, client)
+    r = await client.post(URL, headers=sa, json=_badge(_design(), name="Top Plain",
+                                                       label_type="top", size_key="4x2"))
+    assert r.status_code == 201, r.text
+    node = await _node(client, sa, "Top Plain")
+    parent_id, child_id = uuid.UUID(node["id"]), uuid.UUID(node["children"][0]["id"])
+    with_image = _design(_image("logo", "logo"))
+    async with get_sessionmaker()() as s:
+        parent = await s.get(LabelTemplate, parent_id)
+        with pytest.raises(templates_tree.TreeError) as caught:
+            await templates_tree.save_parent(s, parent, design=with_image, samples={},
+                                             summary=None, actor_id=None)
+        assert (caught.value.status, caught.value.code) == (422, "images_badge_only")
+        assert caught.value.extra["message"] == "Images print on ID Badge templates in ZPL only"
+        await s.rollback()
+    async with get_sessionmaker()() as s:
+        child = await s.get(LabelTemplate, child_id)
+        with pytest.raises(templates_tree.TreeError) as caught:
+            await templates_tree.save_child(s, child, design=with_image, summary=None,
+                                            actor_id=None)
+        assert (caught.value.status, caught.value.code) == (422, "images_badge_only")
+        await s.rollback()
+    rows = await _tree_rows(db, parent_id)
+    assert not any(templates_tree.has_image(row.design) for row in rows)
+
+
+async def test_a_samples_only_patch_still_saves_the_samples(client, db, seeded_user, store):
+    """R1: the samples-only save takes the tree lock now, and still saves
+    the samples (a badge with an image keeps it, schema 3)."""
+    from serversherpa.labels import templates_tree
+
+    sa = await _super(db, client)
+    with_image = _design(_image("logo", "logo"))
+    r = await client.post(URL, headers=sa, json=_badge(with_image, name="Sample Badge"))
+    assert r.status_code == 201, r.text
+    pid = uuid.UUID(r.json()["id"])
+    r = await client.patch(f"{URL}/{pid}", headers=sa,
+                           json={"samples": {"asset_id": "7"}, "description": "crew"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["samples"] == {"asset_id": "7"} and body["version"] == 2
+    assert body["description"] == "crew" and body["schema_version"] == 3
+    rows = await _tree_rows(db, pid)
+    for row in rows:
+        assert row.design == with_image, row.name
+        assert row.schema_version == templates_tree.design_schema(row.design) == 3, row.name
+
+
 async def test_a_restore_checks_the_type_as_locked(client, db, seeded_user, store):
     """M2 on the other write that brings a design back: restoring a version
     with an image checks the type as locked too."""
