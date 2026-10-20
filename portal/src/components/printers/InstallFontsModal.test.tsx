@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { LabelFont } from '../../lib/api';
-import InstallFontsModal, { fontStates } from './InstallFontsModal';
+import InstallFontsModal, { fontStates, installFont } from './InstallFontsModal';
 
 afterEach(cleanup);
 
@@ -43,6 +43,7 @@ describe('fontStates', () => {
     const listing = { objects: [{ name: '85620388.TTF', bytes: 1 }, { name: 'TT0003M_.TTF', bytes: 2 }], bytesFree: 9 };
     expect(fontStates(LIB, listing)).toEqual({
       library: { '85620388.TTF': 'installed', 'ARIAL_B.TTF': 'missing' },
+      resident: {},
       printerOnly: [{ name: 'TT0003M_.TTF', bytes: 2 }],
     });
     expect(fontStates(LIB, null).library).toEqual({});
@@ -50,8 +51,45 @@ describe('fontStates', () => {
   it('gives a resident font no install state and keeps it off the printer-only list', () => {
     const listing = { objects: [{ name: 'TT0003M_.TTF', bytes: 2 }], bytesFree: 9 };
     expect(fontStates([SWISS, LIB[1]], listing)).toEqual({
-      library: { 'ARIAL_B.TTF': 'missing' }, printerOnly: [],
+      library: { 'ARIAL_B.TTF': 'missing' }, resident: { 'TT0003M_.TTF': 'installed' }, printerOnly: [],
     });
+  });
+  it('counts a resident font present on Z: or on E:, and only E: for a library font', () => {
+    const e = { objects: [{ name: 'ARIAL_B.TTF', bytes: 1 }], bytesFree: 9 };
+    const z = { objects: [{ name: 'TT0003M_.TTF', bytes: 2 }, { name: '85620388.TTF', bytes: 3 }], bytesFree: 0 };
+    const none = { objects: [], bytesFree: 0 };
+    expect(fontStates([SWISS, ...LIB], e, z)).toEqual({
+      // templates name E:, so a library font copy elsewhere doesn't count
+      library: { '85620388.TTF': 'missing', 'ARIAL_B.TTF': 'installed' },
+      resident: { 'TT0003M_.TTF': 'installed' },
+      printerOnly: [],
+    });
+    expect(fontStates([SWISS], { objects: [{ name: 'tt0003m_.ttf', bytes: 2 }], bytesFree: 9 }, none).resident)
+      .toEqual({ 'TT0003M_.TTF': 'installed' });
+    expect(fontStates([SWISS], e, none).resident).toEqual({ 'TT0003M_.TTF': 'missing' });
+    // no E: listing yet: nothing is known
+    expect(fontStates([SWISS], null, z).resident).toEqual({});
+  });
+});
+
+describe('installFont', () => {
+  it('streams the ~DY header then the bytes to E:', async () => {
+    const printer = fakePrinter();
+    const fetchBytes = vi.fn(async (_id: string) => new Uint8Array([0, 1, 0, 0, 7, 7]));
+    const progress = vi.fn();
+    await installFont(printer, LIB[1], fetchBytes, progress);
+    expect(fetchBytes).toHaveBeenCalledWith('f2');
+    expect(printer.send).toHaveBeenCalledWith('~DYE:ARIAL_B.TTF,B,T,6,,');
+    expect(printer.sendBytes).toHaveBeenCalledTimes(1);
+    expect(progress).toHaveBeenCalledWith(6, 6);
+    expect(printer.send.mock.invocationCallOrder[0]).toBeLessThan(printer.sendBytes.mock.invocationCallOrder[0]);
+  });
+  it('never pushes a resident font', async () => {
+    const printer = fakePrinter();
+    const fetchBytes = vi.fn(async (_id: string) => new Uint8Array([0, 1, 0, 0]));
+    await expect(installFont(printer, SWISS, fetchBytes)).rejects.toThrow(/built into Zebra printers/);
+    expect(fetchBytes).not.toHaveBeenCalled();
+    expect(printer.send).not.toHaveBeenCalled();
   });
 });
 

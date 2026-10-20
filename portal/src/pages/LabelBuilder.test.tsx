@@ -29,6 +29,11 @@ vi.mock('../auth/AuthContext', () => ({
 const printer = vi.hoisted(() => ({
   supported: true, connected: true, productName: 'ZD421', notice: null,
   clearNotice: vi.fn(), connect: vi.fn(), send: vi.fn(),
+  disconnect: vi.fn(), connectTo: vi.fn(), knownDevices: vi.fn(async () => []), sendBytes: vi.fn(),
+  identify: vi.fn(async () => ({ model: 'ZD421-203dpi', firmware: 'V93', dotsPerMm: 8, memory: '8192k', dpi: 203 })),
+  status: vi.fn(async () => null),
+  query: vi.fn(async (cmd: string) => (cmd.includes('HWZ') ? '- DIR Z:*.TTF\r\n* Z:TT0003M_.TTF 160676\r\n'
+    : '- DIR E:*.TTF\r\n-1928576 bytes free E: ONBOARD FLASH\r\n')),
 }));
 vi.mock('../lib/useZebraPrinter', () => ({ useZebraPrinter: () => printer }));
 
@@ -254,6 +259,22 @@ describe('a parent template', () => {
       kind: 'design', dpi_key: '300', size_key: '4x2', mode: 'sample', samples: SAMPLES, label_type: 'top',
     }));
     await within(preview).findByRole('alert');
+  });
+
+  it('Printer opens the printer dialog on this template, its fonts and the DPI shown', async () => {
+    await openParent();
+    fireEvent.click(within(screen.getByRole('group', { name: 'Template' })).getByRole('button', { name: 'Printer' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Printer' });
+    expect(within(dialog).getByText('Vegas Destination · Printer')).toBeTruthy();
+    // the Vegas design prints in the built-in Swiss cut only, here on Z:
+    const row = within(dialog).getByText('TT0003M_.TTF').closest('tr') as HTMLElement;
+    expect(await within(row).findByText('Present')).toBeTruthy();
+    expect(within(dialog).getByText('Prints at 203 DPI; the canvas is showing 300.')).toBeTruthy();
+    // under the dialog ⌘S saves nothing
+    ctrl('s');
+    expect(api.updateLabelTemplate).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
+    expect(screen.queryByRole('dialog', { name: 'Printer' })).toBeNull();
   });
 
   it('⌘P connects a printer first when none is connected', async () => {

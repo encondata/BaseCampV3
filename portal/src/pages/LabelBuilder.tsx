@@ -22,7 +22,9 @@
  * save lists the customized children it passed by, and the page asks about
  * each one. Unsaved changes are guarded: in-app links ask first and a
  * reload gets the browser's prompt. Test print (⌘P) compiles the label with
- * its samples at the DPI shown and sends it to a USB Zebra printer.
+ * its samples at the DPI shown and sends it to a USB Zebra printer; Printer
+ * opens that printer's dialog (BuilderPrinterModal: connection, alignment
+ * label, the design's fonts on the printer, raw ZPL).
  *
  * Versions' Open on the templates list lands here with that version in the
  * navigation state (`openVersion`), and the page opens on it, read-only; a
@@ -42,6 +44,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom';
 
+import { useAuth } from '../auth/AuthContext';
+import BuilderPrinterModal from '../components/labels/builder/BuilderPrinterModal';
 import BuilderTopBar from '../components/labels/builder/BuilderTopBar';
 import {
   CloneModal, LeaveModal, OutOfDateModal, type OutOfDateChild,
@@ -69,7 +73,7 @@ import {
 } from '../labels/builder/model';
 import { detectPlatform } from '../labels/builder/shortcuts';
 import {
-  ApiError, compileLabel, getLabelTemplate, listLabelFields, listLabelFonts, listLabelTemplateTree,
+  ApiError, compileLabel, getLabelFontBytes, getLabelTemplate, listLabelFields, listLabelFonts, listLabelTemplateTree,
   listLabelVocab, restoreLabelTemplateVersion, templateVersionLabel, updateLabelTemplate,
   type LabelFields, type LabelFont, type LabelTemplate, type LabelTemplateSaved, type LabelTemplateTreeNode,
   type LabelTemplateVersionDetail, type LabelVocab,
@@ -205,7 +209,7 @@ function EditTemplate({ id }: { id: string }) {
 
 /** A notice; `undoOf` offers Undo while that design is still the last step. */
 type Notice = { type: 'success' | 'info' | 'warning' | 'error'; message: string; undoOf?: DesignV2 };
-type Modal = 'versions' | 'clone' | 'sheet' | 'asset';
+type Modal = 'versions' | 'clone' | 'sheet' | 'asset' | 'printer';
 interface Viewing { label: string; version: number; childEdits: number; design: DesignV2; samples: Record<string, string> }
 
 const json = (v: unknown) => JSON.stringify(v);
@@ -252,6 +256,7 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
   const location = useLocation();
   const platform = useMemo(() => detectPlatform(), []);
   const printer = useZebraPrinter();
+  const { can } = useAuth();
   const { vocab, fonts: library } = initial;
 
   const [template, setTemplate] = useState<LabelTemplate>(initial.template);
@@ -667,6 +672,7 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
         onClone={isChild ? undefined : () => setModal('clone')}
         cloneBlocked={dirty ? 'Save your changes first: a clone copies the saved template.' : null}
         onTestPrint={() => { void testPrint(); }}
+        onPrinter={() => setModal('printer')}
         printBlocked={isZpl ? null : 'Test print is for ZPL templates.'}
         onSave={() => { void save(); }}
         saving={saving} printing={printing} readOnly={readOnly} />
@@ -734,6 +740,11 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
           onCloned={(copyRow) => navigate(`${TEMPLATES}/${copyRow.id}/edit`)} />
       )}
       {modal === 'sheet' && <ShortcutSheet platform={platform} onClose={() => setModal(null)} />}
+      {modal === 'printer' && (
+        <BuilderPrinterModal templateName={template.name} sizeKey={template.size_key} vocab={vocab}
+          design={shownDesign} library={library} viewDpi={dpi} printer={printer} canInstall={can('labels', 'add')}
+          onFetchBytes={getLabelFontBytes} onClose={() => setModal(null)} />
+      )}
       {modal === 'asset' && (
         <LoadFromAssetModal onClose={() => setModal(null)} onLoad={(values) => {
           const filled = fillSamples(samples, values);

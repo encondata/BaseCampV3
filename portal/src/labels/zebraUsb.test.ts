@@ -361,3 +361,13 @@ describe('parseDirectory with attribute flags', () => {
     });
   });
 });
+
+describe('parseDirectory on the Z: drive', () => {
+  // ^HWZ:*.TTF in the ZPL manual's ^HW shape: the drive letter on each
+  // object, as the ZT220 lists E: (not captured from a printer)
+  const Z = '\x02- DIR Z:*.TTF\r\n* Z:TT0003M_.TTF    160676\r\n-0 bytes free Z: ROM\r\n\x03';
+
+  it('lists the built-in TrueType fonts', () => {
+    expect(parseDirectory(Z)).toEqual({ objects: [{ name: 'TT0003M_.TTF', bytes: 160676 }], bytesFree: 0 });
+  });
+});

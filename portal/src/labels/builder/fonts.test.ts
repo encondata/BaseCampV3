@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_FAMILY, FONT_FAMILIES, FONT_SAMPLE, STAND_IN, faceFile, familyInfo, fauxBold,
-  glyphWidthScale, metricsFile,
+  fontObject, glyphWidthScale, metricsFile,
 } from './fonts';
 
 const FONTS_PY = join(__dirname, '../../../../api/src/serversherpa/labels/fonts.py');
@@ -12,17 +12,27 @@ const FONTS_PY = join(__dirname, '../../../../api/src/serversherpa/labels/fonts.
 describe('font families', () => {
   it('mirrors FAMILIES in labels/fonts.py, in order', () => {
     const src = readFileSync(FONTS_PY, 'utf8');
-    const rows = [...src.matchAll(/"([a-z0-9-]+)": _family\("([^"]+)", "[^"]+", (None|"[^"]+")([^)]*)\)/g)]
+    const rows = [...src.matchAll(/"([a-z0-9-]+)": _family\("([^"]+)", "([^"]+)", (None|"[^"]+")([^)]*)\)/g)]
       .map((m) => ({
         slug: m[1],
         label: m[2],
-        bold: m[3] !== 'None',
-        resident: /resident=True/.test(m[4]),
-        mono: /mono=True/.test(m[4]),
+        objects: { regular: m[3], bold: m[4] === 'None' ? null : m[4].slice(1, -1) },
+        bold: m[4] !== 'None',
+        resident: /resident=True/.test(m[5]),
+        mono: /mono=True/.test(m[5]),
       }));
     expect(rows).toHaveLength(8);
-    expect(FONT_FAMILIES.map(({ slug, label, bold, resident, mono }) => ({ slug, label, bold, resident, mono })))
+    expect(FONT_FAMILIES.map(({ slug, label, objects, bold, resident, mono }) => ({ slug, label, objects, bold, resident, mono })))
       .toEqual(rows);
+  });
+
+  it('names the printer object a family and weight print with, as font_object does', () => {
+    expect(fontObject({ family: 'swiss721-cond-bold', weight: 'regular' })).toBe('TT0003M_.TTF');
+    // no Bold file: faux bold prints the Regular file
+    expect(fontObject({ family: 'swiss721-cond-bold', weight: 'bold' })).toBe('TT0003M_.TTF');
+    expect(fontObject({ family: 'roboto', weight: 'regular' })).toBe('ROBOTO_R.TTF');
+    expect(fontObject({ family: 'roboto', weight: 'bold' })).toBe('ROBOTO_B.TTF');
+    expect(fontObject({ family: 'nope', weight: 'regular' })).toBeNull();
   });
 
   it('defaults to the resident Swiss cut and samples with 0O 1Il 7', () => {

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import vegas from '../../../../api/src/serversherpa/labels/fixtures/vegas_v2.json';
 import { addElement, newDesign, parseDesign, type DesignV2, type ElementV2 } from './model';
-import { fontIdsFor, previewRequest, type LibraryFont } from './zplPreview';
+import { designFonts, fontIdsFor, previewRequest, type LibraryFont } from './zplPreview';
 
 const LIBRARY: LibraryFont[] = [
   { id: 'swiss', family: 'swiss721-cond-bold', weight: 'regular', resident: true },
@@ -70,5 +70,39 @@ describe('fontIdsFor', () => {
     expect(fontIdsFor(design(asQr), LIBRARY)).toEqual([]);
     expect(fontIdsFor(design(asText), LIBRARY)).toEqual(['mono-r']);
     expect(fontIdsFor(design(text('t', 'oswald', 'regular')), LIBRARY)).toEqual([]);
+  });
+});
+
+describe('designFonts', () => {
+  it('names the resident object for a design in the resident font only', () => {
+    expect(designFonts(parseDesign(vegas))).toEqual([
+      { family: 'swiss721-cond-bold', weight: 'regular', object: 'TT0003M_.TTF' },
+    ]);
+  });
+
+  it('lists each printer object the text prints with once, in order of first use (design_fonts)', () => {
+    const d = design(
+      text('t1', 'roboto-condensed', 'bold'),
+      text('t2', 'swiss721-cond-bold', 'bold'),      // faux bold: the Regular file is all it needs
+      text('t3', 'roboto', 'regular'),
+      text('t4', 'roboto-condensed', 'bold'),
+      text('t5', 'roboto', 'bold'),                  // a Bold file: the printer needs it, library or not
+      text('t6', 'swiss721-cond-bold', 'regular'),
+    );
+    expect(designFonts(d)).toEqual([
+      { family: 'roboto-condensed', weight: 'bold', object: 'ROBOCO_B.TTF' },
+      { family: 'swiss721-cond-bold', weight: 'regular', object: 'TT0003M_.TTF' },
+      { family: 'roboto', weight: 'regular', object: 'ROBOTO_R.TTF' },
+      { family: 'roboto', weight: 'bold', object: 'ROBOTO_B.TTF' },
+    ]);
+  });
+
+  it('skips fields shown as a barcode or QR code, and unknown families', () => {
+    const base = parseDesign(vegas).elements.find((e) => e.id === 'banner-pod')!;
+    const asQr = { ...base, id: 'f1', display: 'qr', font: { family: 'roboto-mono', weight: 'regular' } } as ElementV2;
+    const asText = { ...base, id: 'f2', font: { family: 'roboto-mono', weight: 'regular' } } as ElementV2;
+    expect(designFonts(design(asQr))).toEqual([]);
+    expect(designFonts(design(asText))).toEqual([{ family: 'roboto-mono', weight: 'regular', object: 'ROBOMO_R.TTF' }]);
+    expect(designFonts(design(text('t', 'nope', 'regular')))).toEqual([]);
   });
 });

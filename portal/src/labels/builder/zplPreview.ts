@@ -7,8 +7,8 @@
  * printer's font 0, the same face.
  */
 
-import { familyInfo, metricsFile, type FontRef } from './fonts';
-import { serializeDesign, type DesignV2 } from './model';
+import { familyInfo, fontObject, metricsFile, type FontRef, type FontWeight } from './fonts';
+import { serializeDesign, type DesignV2, type ElementV2 } from './model';
 
 export interface CompileBody {
   kind: 'design';
@@ -68,6 +68,35 @@ export function previewRequest(design: DesignV2, dpi: number, samples: Readonly<
   };
 }
 
+/** Static text, and a field shown as text or a number: the elements that
+ *  print with a font (a barcode or QR code prints none). */
+function printsText(el: ElementV2): el is Extract<ElementV2, { font?: FontRef }> {
+  return el.type === 'text' || (el.type === 'field' && (el.display === 'text' || el.display === 'number'));
+}
+
+/** One printer object a design's text prints with. `weight` is the file's
+ *  (faux Bold prints the Regular file). */
+export interface DesignFont {
+  family: string;
+  weight: FontWeight;
+  object: string;
+}
+
+/** The printer objects `design`'s text prints with, once each, in order of
+ *  first use, resident ones included: the TS side of labels/template_fonts.py
+ *  `design_fonts`, for checking a printer has them. A family the builder
+ *  doesn't know is left out. */
+export function designFonts(design: DesignV2): DesignFont[] {
+  const out: DesignFont[] = [];
+  for (const el of design.elements) {
+    if (!printsText(el) || !el.font) continue;
+    const object = fontObject(el.font);
+    if (!object || out.some((f) => f.object === object)) continue;
+    out.push({ family: el.font.family, weight: metricsFile(el.font).weight, object });
+  }
+  return out;
+}
+
 /** The library files `design`'s text prints with that a preview must embed,
  *  once each, in order of first use: one per family and weight its static
  *  text and text or number fields use (faux Bold prints the Regular file;
@@ -78,7 +107,7 @@ export function fontIdsFor(design: DesignV2, library: readonly LibraryFont[]): s
   const find = (f: FontRef) => library.find((row) => row.family === f.family && row.weight === f.weight);
   const ids: string[] = [];
   for (const el of design.elements) {
-    if (el.type !== 'text' && !(el.type === 'field' && (el.display === 'text' || el.display === 'number'))) continue;
+    if (!printsText(el)) continue;
     if (!el.font || familyInfo(el.font.family)?.resident) continue;
     const file = metricsFile(el.font);
     const row = find(file) ?? (file.weight === 'bold' ? find({ ...file, weight: 'regular' }) : undefined);

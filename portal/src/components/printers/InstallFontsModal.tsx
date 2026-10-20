@@ -19,19 +19,45 @@ import { RowActionsMenu } from '../hardware/RowActionsMenu';
 
 export type FontState = 'installed' | 'missing' | 'printer-only';
 
-/** Library fonts by installed/missing (resident fonts have no state: they
- *  are never installed), and the E: objects the library doesn't have. */
-export function fontStates(library: LabelFont[], listing: DirectoryListing | null) {
-  const onPrinter = new Map((listing?.objects ?? []).map((o) => [o.name.toUpperCase(), o]));
+/** Library fonts by installed/missing on E: (where templates name them),
+ *  resident fonts by present/missing on E: or Z: (Zebra keeps its built-in
+ *  fonts on Z:; they are never installed, so they have no library state),
+ *  and the E: objects the library doesn't have. Nothing is known before
+ *  the E: listing is read; a Z: listing not passed counts as empty. */
+export function fontStates(library: Pick<LabelFont, 'name' | 'resident'>[], listing: DirectoryListing | null, zListing: DirectoryListing | null = null) {
+  const names = (l: DirectoryListing | null) => new Set((l?.objects ?? []).map((o) => o.name.toUpperCase()));
+  const onE = names(listing);
+  const onZ = names(zListing);
   const lib: Record<string, FontState> = {};
+  const resident: Record<string, 'installed' | 'missing'> = {};
   if (listing) {
     for (const f of library) {
-      if (!f.resident) lib[f.name.toUpperCase()] = onPrinter.has(f.name.toUpperCase()) ? 'installed' : 'missing';
+      const name = f.name.toUpperCase();
+      if (f.resident) resident[name] = onE.has(name) || onZ.has(name) ? 'installed' : 'missing';
+      else lib[name] = onE.has(name) ? 'installed' : 'missing';
     }
   }
   const libNames = new Set(library.map((f) => f.name.toUpperCase()));
   const printerOnly = (listing?.objects ?? []).filter((o) => !libNames.has(o.name.toUpperCase())).map((o) => ({ name: o.name, bytes: o.bytes }));
-  return { library: lib, printerOnly };
+  return { library: lib, resident, printerOnly };
+}
+
+/** Push one library font to the printer's E: drive: a `~DY` header, then
+ *  the TTF bytes, then a pause while the printer stores it. The caller
+ *  re-reads the directory to confirm. A resident font is refused: Zebra
+ *  ships it, and its file is never pushed. Shared by this modal and the
+ *  label builder's Printer dialog; callers run one install at a time. */
+export async function installFont(
+  printer: Pick<ZebraPrinter, 'send' | 'sendBytes'>,
+  font: Pick<LabelFont, 'id' | 'name' | 'resident'>,
+  fetchBytes: (id: string) => Promise<Uint8Array>,
+  onProgress?: (sent: number, total: number) => void,
+): Promise<void> {
+  if (font.resident) throw new Error(`${font.name} is built into Zebra printers and is never installed.`);
+  const bytes = await fetchBytes(font.id);
+  await printer.send(downloadFontHeader('E', font.name, bytes.length));
+  await printer.sendBytes(bytes, onProgress);
+  await new Promise((r) => setTimeout(r, 500));
 }
 
 const kb = (bytes: number) => `${Math.round(bytes / 1024).toLocaleString()} KB`;
@@ -91,10 +117,8 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
     setBusy(true);
     setProgress((p) => ({ ...p, [f.id]: { sent: 0, total: f.size_bytes } }));
     try {
-      const bytes = await onFetchBytes(f.id);
-      await printerRef.current.send(downloadFontHeader('E', f.name, bytes.length));
-      await printerRef.current.sendBytes(bytes, (sent, total) => setProgress((p) => ({ ...p, [f.id]: { sent, total } })));
-      await new Promise((r) => setTimeout(r, 500));
+      await installFont(printerRef.current, f, onFetchBytes,
+        (sent, total) => setProgress((p) => ({ ...p, [f.id]: { sent, total } })));
       await readDirectory();
       setProgress((p) => ({ ...p, [f.id]: 'done' }));
     } catch (err) {

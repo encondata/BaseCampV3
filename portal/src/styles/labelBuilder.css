@@ -668,3 +668,17 @@ textarea.lbp-text { resize: vertical; }
 }
 .lbb-stale-name { flex: 1 1 auto; min-width: 0; }
 .lbb-stale-actions { display: inline-flex; gap: 6px; }
+.modal-card.reports-modal-card.rgm-card.lbb-printer-card { width: min(860px, 96vw); max-width: 96vw; }
+.lbb-raw-form { grid-template-columns: minmax(0, 1fr); }
+.lbb-raw-zpl {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  color: var(--text-dark);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  resize: vertical;
+}

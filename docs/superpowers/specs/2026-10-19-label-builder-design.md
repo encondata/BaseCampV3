@@ -327,6 +327,24 @@ codes and shapes use top-left `^FO`.
   Jimmy's choice (2026-10-19) over buying a Swiss 721 webfont license.
 - Test print sends the label with sample values to a USB printer from the
   portal, as today.
+- **Printer**, beside Test print (off, with Test print's reason, for a
+  template that isn't ZPL), opens a dialog on the builder's own USB printer
+  connection (network printers are on the backlog; Jimmy chose USB only,
+  2026-10-20):
+  - Connection: Connect / Disconnect as on Labels › Printers, the identity
+    and health chips, and a note when the printer's DPI isn't the one the
+    canvas shows ("Prints at 300 DPI; the canvas is showing 203").
+  - Alignment label: the Printers page's concentric boxes for the
+    template's size at the printer's DPI, with the offsets saved for Print
+    Labels.
+  - Fonts: one row per printer object the design's text prints with (the
+    `design_fonts` set; faux Bold needs only the Regular file), checked
+    against `^HWE:*.TTF` and `^HWZ:*.TTF`. A built-in font counts on Z: or
+    E:, a library font only on E:, where the label names it. A missing
+    library font has Install (labels:add), the same push as Install Fonts,
+    one at a time; a missing built-in font says "Built into Zebra printers;
+    this one doesn't have it"; a font not in the library says so.
+  - Send raw ZPL: a box whose text goes to the printer exactly as typed.
 - **Sample values never leave the portal.** They can hold one client's real
   asset data, and a global template reaches every kiosk, so the kiosk sync
   carries no samples. The Label Station's test label (setup step 5 and
