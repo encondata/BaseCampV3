@@ -233,6 +233,12 @@
 .lt-delete .page-hint.lt-delete-note { margin: 0; }
 .lt-delete .pf-form { margin: 0; }
 .lt-delete-load { display: flex; align-items: center; gap: 10px; }
+/* Rename…: the name box, then a parent's DPI versions as they'll be named */
+.lt-rename { display: flex; flex-direction: column; gap: 12px; }
+.lt-rename .pf-form { margin: 0; }
+.lt-rename-preview { display: flex; flex-direction: column; gap: 6px; }
+.lt-rename-preview .page-hint { margin: 0; }
+.lt-rename-preview ul { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 0; padding: 0; list-style: none; }
 /* Delete / Deactivate leaving no active Generic Rack and RU at a DPI */
 .lt-fallback-note {
   padding: 10px 14px; border: 1px solid var(--c-amber-bd, #efd39a); border-radius: 10px;

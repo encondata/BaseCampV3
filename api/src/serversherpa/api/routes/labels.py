@@ -709,11 +709,17 @@ async def update_template(
     """A builder parent saves its next version (children without hand
     edits follow, `out_of_date` lists the customized ones it has passed);
     a child saves a hand edit (`v<parent>.<edits>`) and otherwise takes only
-    activation; an older row updates as it always has."""
+    activation; an older row updates as it always has. A new `name` (a
+    parent's, which its children follow, or an older row's) only while the
+    template is inactive: 409 `template_active` otherwise, before anything
+    else in the request lands. A child's name is never its own (422)."""
     row = await _template_or_404(db, template_id)
     data = body.model_dump(exclude_unset=True)
     summary = data.pop("summary", None)
     try:
+        if (row.parent_id is None and data.get("name") is not None
+                and data["name"] != row.name and row.is_active):
+            raise tree.TemplateActive()
         if row.parent_id is not None:
             out_of_date = await _patch_child(db, row, data, summary, actor)
         elif row.is_tree_parent:
@@ -782,6 +788,7 @@ async def _patch_parent(db: DbSession, row: LabelTemplate, data: dict, summary: 
     if "name" in data and data["name"] != row.name:
         before = row.name
         await tree.rename_parent(db, row, data["name"])
+        await tree.record_rename(db, row, before, actor.person.id)
         changes["name"] = {"from": before, "to": row.name}
     if "description" in data and data["description"] != row.description:
         changes["description"] = {"from": row.description, "to": data["description"]}

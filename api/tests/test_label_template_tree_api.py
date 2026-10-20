@@ -211,12 +211,14 @@ async def test_parent_save_regenerates_uncustomized_children_and_flags_customize
 
 async def test_parent_metadata_flows_to_children(client, db, seeded_user):
     hdrs = await _super(db, client)
-    parent = await _create(client, hdrs)
+    parent = await _create(client, hdrs, is_active=False)  # Rename… needs it off
     r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs,
                            json={"name": "Vegas Dest", "language_key": "zpl",
                                  "description": "Renamed"})
     assert r.status_code == 200, r.text
-    assert r.json()["version"] == 1  # metadata is not a design version
+    assert r.json()["version"] == 2  # the rename's version ("Renamed from …")
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"description": "Again"})
+    assert r.json()["version"] == 2  # other metadata is not a version
     r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"size_key": "2x1"})
     assert r.status_code == 200, r.text
     node = await _node(client, hdrs, "Vegas Dest")

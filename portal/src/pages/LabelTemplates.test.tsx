@@ -225,7 +225,8 @@ async function expand(name: string) {
 
 async function openMenu(name: string): Promise<string[]> {
   await userEvent.click(within(rowOf(name)).getByRole('button', { name: /Actions/ }));
-  return screen.getAllByRole('menuitem').map((m) => m.textContent ?? '');
+  // an item with a hint line is named by its label (aria-label)
+  return screen.getAllByRole('menuitem').map((m) => m.getAttribute('aria-label') ?? m.textContent ?? '');
 }
 
 it('label templates list: column floors, shared template + minimum, sideways-scroll card', async () => {
@@ -341,11 +342,11 @@ it('New template opens the label builder', async () => {
   expect(screen.getByTestId('where').textContent).toBe('/labels/templates/new');
 });
 
-it('a parent’s menu: design, versions, clone, sites, on/off and delete', async () => {
+it('a parent’s menu: design, versions, clone, sites, rename, on/off and delete', async () => {
   renderRouted();
   await ready();
   expect(await openMenu('Vegas Destination')).toEqual([
-    'Edit design', 'Versions…', 'Clone to new template…', 'Sites…', 'Deactivate', 'Delete…',
+    'Edit design', 'Versions…', 'Clone to new template…', 'Sites…', 'Rename…', 'Deactivate', 'Delete…',
   ]);
 });
 
@@ -353,7 +354,8 @@ it('a parent missing a DPI offers Add DPI…, and one with older rows of its fam
   renderRouted();
   await ready();
   expect(await openMenu('Amsterdam Destination')).toEqual([
-    'Edit design', 'Versions…', 'Clone to new template…', 'Sites…', 'Add DPI…', 'Replace…', 'Activate', 'Delete…',
+    'Edit design', 'Versions…', 'Clone to new template…', 'Sites…', 'Add DPI…', 'Replace…', 'Rename…', 'Activate',
+    'Delete…',
   ]);
 });
 
@@ -498,6 +500,43 @@ it('Deactivate warns when it leaves no active fallback', async () => {
   expect((await within(dialog).findByRole('note')).textContent).toMatch(/at 203 DPI\./);
 });
 
+it('Rename… is off on an active template, with the reason', async () => {
+  renderRouted();
+  await ready();
+  await openMenu('Vegas Destination');
+  const item = screen.getByRole('menuitem', { name: 'Rename…' }) as HTMLButtonElement;
+  expect(item.disabled).toBe(true);
+  expect(item.textContent).toContain('Deactivate it first to rename it');
+  await userEvent.click(item);
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+it('Rename… on an inactive parent previews its DPI versions, saves and refreshes the list', async () => {
+  renderRouted();
+  await ready();
+  await openMenu('Amsterdam Destination');
+  const item = screen.getByRole('menuitem', { name: 'Rename…' }) as HTMLButtonElement;
+  expect(item.disabled).toBe(false);
+  expect(item.textContent).toBe('Rename…');
+  await userEvent.click(item);
+  const dialog = await screen.findByRole('dialog', { name: 'Rename template' });
+  const box = within(dialog).getByLabelText('New name') as HTMLInputElement;
+  await userEvent.clear(box);
+  await userEvent.type(box, 'Amsterdam West');
+  expect(within(dialog).getByText('Amsterdam West · 203')).toBeTruthy();
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Rename' }));
+  await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledWith('p2', { name: 'Amsterdam West' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await waitFor(() => expect(api.listLabelTemplateTree).toHaveBeenCalledTimes(2));
+});
+
+it('a DPI version has no Rename…', async () => {
+  renderRouted();
+  await ready();
+  await expand('Amsterdam Destination');
+  expect(await openMenu('Amsterdam Destination · 203')).not.toContain('Rename…');
+});
+
 it('Add DPI… brings back a missing DPI', async () => {
   renderRouted();
   await ready();
@@ -546,7 +585,7 @@ it('Versions… lists the saves; Open shows that version in the builder', async 
 it('an older single row keeps its raw-code menu, plus a typed delete', async () => {
   renderRouted();
   await ready();
-  expect(await openMenu('Crate tag')).toEqual(['Edit as raw code', 'Activate', 'Delete…']);   // an ESC/P template
+  expect(await openMenu('Crate tag')).toEqual(['Edit as raw code', 'Rename…', 'Activate', 'Delete…']);   // an ESC/P template
   await userEvent.click(screen.getByRole('menuitem', { name: 'Edit as raw code' }));
   expect(screen.getByTestId('where').textContent).toBe('/labels/templates/t2/code');
 });
@@ -555,7 +594,7 @@ it('an older design template converts to code, then opens in the code editor', a
   vi.spyOn(window, 'confirm').mockReturnValue(true);
   renderRouted();
   await ready();
-  expect(await openMenu('Front tag')).toEqual(['Edit as raw ZPL', 'Deactivate', 'Delete…']);
+  expect(await openMenu('Front tag')).toEqual(['Edit as raw ZPL', 'Rename…', 'Deactivate', 'Delete…']);
   await userEvent.click(screen.getByRole('menuitem', { name: 'Edit as raw ZPL' }));
   await waitFor(() => expect(api.convertLabelTemplate).toHaveBeenCalledWith('t1'));
   await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('/labels/templates/t1/code'));

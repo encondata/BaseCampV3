@@ -238,3 +238,27 @@ it('still renders the trigger when every item is disabled', async () => {
   expect(items.map((i) => i.textContent)).toEqual(['Download', 'Delete']);
   expect(items.every((i) => i.disabled)).toBe(true);
 });
+
+it('a disabled item can say why it is off: a hint line that describes it', async () => {
+  const user = userEvent.setup();
+  render(
+    <RowActionsMenu
+      actions={[
+        { key: 'rename', label: 'Rename…', onSelect: vi.fn(), disabled: true, hint: 'Deactivate it first to rename it' },
+        { key: 'edit', label: 'Edit', onSelect: vi.fn() },
+      ]}
+    />,
+  );
+  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+  // the name stays the label; the hint shows under it and describes it
+  const item = screen.getByRole('menuitem', { name: 'Rename…' }) as HTMLButtonElement;
+  expect(item.disabled).toBe(true);
+  const hint = screen.getByText('Deactivate it first to rename it');
+  expect(item.contains(hint)).toBe(true);
+  expect(hint.className).toBe('pop-item-hint');
+  expect(item.getAttribute('aria-describedby')).toBe(hint.id);
+  // an item without a hint is as it was
+  const edit = screen.getByRole('menuitem', { name: 'Edit' });
+  expect(edit.textContent).toBe('Edit');
+  expect(edit.getAttribute('aria-describedby')).toBeNull();
+});

@@ -12,7 +12,7 @@
  *  default, flipped upward when there isn't ~200px of viewport space
  *  below it. */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import '../../styles/column-menu.css';
@@ -28,6 +28,9 @@ export interface RowAction {
    *  trigger away mid-action. An action the user may never use is still
    *  passed pre-gated, i.e. not passed at all. */
   disabled?: boolean;
+  /** Why a disabled item is off ("Deactivate it first to rename it"): a
+   *  muted line under its label that also describes it to a screen reader. */
+  hint?: string;
 }
 
 interface MenuPos { top: number | 'auto'; bottom: number | 'auto'; right: number }
@@ -55,6 +58,7 @@ export function RowActionsMenu({ label, actions }: {
   const triggerRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const instanceId = useRef(Symbol('row-actions-menu')).current;
+  const hintPrefix = `row-action-hint-${useId().replace(/:/g, '')}`;
 
   // Close this instance whenever a different instance announces that it
   // just opened. Listens for the component's whole lifetime (not just
@@ -143,8 +147,10 @@ export function RowActionsMenu({ label, actions }: {
              }}>
           {actions.map((a) => (
             <button key={a.key} type="button" role="menuitem"
-                    className={`pop-item${a.destructive ? ' danger' : ''}`}
+                    className={`pop-item${a.destructive ? ' danger' : ''}${a.hint ? ' has-hint' : ''}`}
                     disabled={a.disabled}
+                    aria-label={a.hint ? a.label : undefined}
+                    aria-describedby={a.hint ? `${hintPrefix}-${a.key}` : undefined}
                     onClick={(e) => {
                       e.stopPropagation();
                       // Belt and braces: a disabled button fires no click
@@ -154,7 +160,12 @@ export function RowActionsMenu({ label, actions }: {
                       setOpen(false);
                       a.onSelect();
                     }}>
-              {a.label}
+              {a.hint ? (
+                <>
+                  <span>{a.label}</span>
+                  <span className="pop-item-hint" id={`${hintPrefix}-${a.key}`}>{a.hint}</span>
+                </>
+              ) : a.label}
             </button>
           ))}
         </div>,

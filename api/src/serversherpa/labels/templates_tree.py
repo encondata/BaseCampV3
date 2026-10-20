@@ -99,6 +99,16 @@ class ChildFollowsParent(TreeError):
     status, code = 409, "child_follows_parent"
 
 
+class TemplateActive(TreeError):
+    """Rename… on the templates list: a template renames only while it is
+    off (the PATCH route's rule; the seed's rename of an old row is not
+    bound by it)."""
+    status, code = 409, "template_active"
+
+    def __init__(self):
+        super().__init__(message="Deactivate the template to rename it.")
+
+
 class NotCustomized(TreeError):
     status, code = 409, "not_customized"
 
@@ -652,6 +662,18 @@ async def rename_parent(db: AsyncSession, parent: LabelTemplate, name: str) -> N
     parent.name, parent.updated_at = name, _now()
     for c in children:
         c.name, c.updated_at = renames[c.id], _now()
+
+
+async def record_rename(db: AsyncSession, parent: LabelTemplate, before: str,
+                        actor_id: uuid.UUID | None) -> None:
+    """A parent's rename as its next version ("Renamed from <before>"),
+    the design unchanged, so no child goes out of date. The parent is
+    locked first, like a save, so the version number is its own."""
+    await _lock(db, parent)
+    parent.version += 1
+    parent.updated_at = _now()
+    add_version(db, parent, version=parent.version, summary=f"Renamed from {before}",
+                actor_id=actor_id)
 
 
 async def set_parent_fields(db: AsyncSession, parent: LabelTemplate, values: dict) -> None:

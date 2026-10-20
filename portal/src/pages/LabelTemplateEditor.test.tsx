@@ -138,6 +138,17 @@ it('save error surfaces the pf-error', async () => {
     expect(screen.queryByText('A template with this name already exists.')).not.toBeNull());
 });
 
+it('renaming an active template says to deactivate it first', async () => {
+  const { ApiError } = await import('../lib/api');
+  api.getLabelTemplate.mockResolvedValue(CODE_TEMPLATE);
+  api.updateLabelTemplate.mockRejectedValue(new ApiError(409, 'template_active'));
+  renderAt('/labels/templates/t1/code');
+  await waitFor(() => expect(screen.queryByLabelText('Name')).not.toBeNull());
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(
+    screen.queryByText('This template is active; deactivate it on Labels › Templates to rename it.')).not.toBeNull());
+});
+
 it('loads site chips and save sends site_ids', async () => {
   api.getLabelTemplate.mockResolvedValue({ ...CODE_TEMPLATE, site_ids: ['s1'] });
   api.updateLabelTemplate.mockResolvedValue({ id: 't1' });

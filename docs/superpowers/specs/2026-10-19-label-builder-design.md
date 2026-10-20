@@ -399,8 +399,15 @@ A tree, as mocked up: parent rows with type, size, DPI ("All" or the ones
 present), version, state and sites; child rows with DPI, version and
 state chips *From parent*, *Customized*, *Out of date*, *Kept · inactive*
 for Old children. Row menus: parent — Edit design, Versions, Clone to new
-template, Sites, Deactivate, Delete; child — Edit this DPI only, Update
-from parent, Versions, Test print, Delete this DPI. Delete on a parent
+template, Sites, Rename…, Deactivate, Delete; child — Edit this DPI only,
+Update from parent, Versions, Test print, Delete this DPI; an older single
+row — Edit as raw ZPL, Rename…, Activate/Deactivate, Delete. Rename… works
+only on an inactive template: on an active one the item shows disabled
+with "Deactivate it first to rename it", and `PATCH` with a new `name`
+answers 409 `template_active` (the seed's rename of an old row is not
+bound by it). A parent's DPI versions follow its name (previewed in the
+dialog) and the parent records a "Renamed from <old>" version; a child's
+name is never its own. Delete on a parent
 lists everything that goes (children and generated labels) and requires
 the typed name. Versions show one line per save with what changed, Open
 and Restore. The "what changed" line is generated from the design diff

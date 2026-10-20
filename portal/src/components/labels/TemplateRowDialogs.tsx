@@ -9,9 +9,11 @@
  *    from the parent and is kept, inactive, as "… Old".
  *  - DeactivateTemplateModal: names what goes off and warns, like Delete,
  *    when it leaves no active Generic Rack and RU at a DPI (FallbackCallout).
+ *  - RenameTemplateModal: Rename… for an inactive parent (its DPI versions
+ *    follow, previewed live) or an older single row.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import TagInput from '../TagInput';
@@ -270,6 +272,105 @@ export function DeactivateTemplateModal({ template, onDeactivated, onClose }: {
       ) : summary?.fallback_dpis_lost.length ? (
         <FallbackCallout dpis={summary.fallback_dpis_lost} />
       ) : null}
+    </ListDialog>
+  );
+}
+
+/** A DPI version as Rename… previews it. */
+export interface RenamedChild { name: string; dpi_key: string; is_old?: boolean }
+
+/** What a parent's DPI version is called once the parent is `name` (the
+ *  API's rename_parent rule: the part after the parent's old name is kept,
+ *  " · <dpi>" and " Old" when the name doesn't start with it). */
+export function renamedChildName(oldParent: string, name: string, child: RenamedChild): string {
+  const suffix = child.name.startsWith(oldParent)
+    ? child.name.slice(oldParent.length)
+    : ` · ${child.dpi_key}${child.is_old ? ' Old' : ''}`;
+  return `${name}${suffix}`;
+}
+
+function renameError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === 'name_taken' || err.code === 'label_template_exists') {
+      return 'That name is already used by another template.';
+    }
+    if (err.code === 'template_active') return 'This template was activated; deactivate it to rename it.';
+    if (err.status === 404) return 'This template no longer exists.';
+  }
+  return "Couldn't rename the template.";
+}
+
+export function RenameTemplateModal({ template, dpiChildren = [], onRenamed, onClose }: {
+  /** An inactive top-level template: a builder parent or an older row. */
+  template: Pick<LabelTemplate, 'id' | 'name'>;
+  /** A parent's DPI versions (current and Old), for the preview. */
+  dpiChildren?: RenamedChild[];
+  onRenamed: () => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(template.name);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const box = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    box.current?.focus();
+    box.current?.select();
+  }, []);
+
+  const next = name.trim();
+  const ready = next !== '' && next !== template.name && !busy;
+  const rename = async () => {
+    if (!ready) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await updateLabelTemplate(template.id, { name: next });
+      onRenamed();
+    } catch (err) {
+      setError(renameError(err));
+      setBusy(false);
+    }
+  };
+
+  const shown = next || template.name;
+  return (
+    <ListDialog label="Rename template" eyebrow={`${template.name} · Rename`} title="Rename" card="lt-small-card"
+      busy={busy} onClose={onClose}
+      hint={dpiChildren.length
+        ? 'A new name for this template; its DPI versions take it too. Only an inactive template can be renamed.'
+        : 'A new name for this template. Only an inactive template can be renamed.'}
+      foot={(
+        <>
+          <button type="button" className="btn-solid" disabled={!ready} onClick={() => void rename()}>
+            {busy ? 'Renaming…' : 'Rename'}
+          </button>
+          <button type="button" className="mini-btn" onClick={onClose} disabled={busy}>Cancel</button>
+          {error && <span className="pf-error" role="alert">{error}</span>}
+        </>
+      )}>
+      <div className="lt-rename">
+        <div className="pf-form">
+          <div className="full">
+            <label htmlFor="lt-rename-name">New name</label>
+            <input id="lt-rename-name" ref={box} value={name} maxLength={120} autoComplete="off"
+              spellCheck={false} disabled={busy} onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void rename(); }} />
+          </div>
+        </div>
+        {dpiChildren.length > 0 && (
+          <div className="lt-rename-preview">
+            <span className="page-hint">Its DPI versions become</span>
+            <ul aria-label="DPI versions after the rename">
+              {dpiChildren.map((c) => (
+                <li key={c.name} className={`chip ${c.is_old ? 'c-slate' : 'tag'}`}>
+                  {renamedChildName(template.name, shown, c)}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
     </ListDialog>
   );
 }
