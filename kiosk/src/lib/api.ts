@@ -1311,3 +1311,62 @@ export async function putLabelStation(settings: LabelStationSettings): Promise<L
     body: JSON.stringify(settings),
   }));
 }
+
+// ── Label Station printing (/edge/labels) ───────────────────────────
+// Every route needs the edge session; a move-locked session on another
+// move gets 403 move_locked.
+
+/** The edge's label run. `reason` keeps the last run's value while idle:
+ *  only `state` says whether a run is going. */
+export interface LabelRunStatus {
+  state: 'idle' | 'running';
+  reason: 'setup' | 'updates' | null;
+  total: number;
+  done: number;
+  ready: number;
+  errors: number;
+}
+
+export async function getLabelRunStatus(): Promise<LabelRunStatus> {
+  return jsonFrom<LabelRunStatus>(await apiFetch('/edge/labels/status'));
+}
+
+export interface LabelPlanTemplate { id: string; name: string; family: string; dpi_key: string; version: number }
+
+/** Which template the station would print with. `template` is null when
+ *  none of the kind is at that DPI; `notes` say which steps fell through. */
+export interface LabelPlan { template: LabelPlanTemplate | null; notes: string[] }
+
+/** The plan for the saved settings, or for `dpi` / `kind` when given.
+ *  404 not_label_station; 422 for a bad dpi or kind. */
+export async function getLabelPlan(opts: { dpi?: number; kind?: LabelKind } = {}): Promise<LabelPlan> {
+  const params = new URLSearchParams();
+  if (opts.dpi !== undefined) params.set('dpi', String(opts.dpi));
+  if (opts.kind !== undefined) params.set('kind', opts.kind);
+  const query = params.toString();
+  return jsonFrom<LabelPlan>(await apiFetch(`/edge/labels/plan${query ? `?${query}` : ''}`));
+}
+
+/** One asset's finished label. `zpl` is null (with `error`) when it
+ *  couldn't be generated. */
+export interface StationLabel {
+  asset_id: string;
+  zpl: string | null;
+  error: string | null;
+  template_name: string;
+  dpi: number;
+  label_kind: LabelKind;
+}
+
+/** Throws ApiError `label_not_found` (404) or `labels_regenerating` (409). */
+export async function getStationLabel(assetId: string): Promise<StationLabel> {
+  return jsonFrom<StationLabel>(await apiFetch(`/edge/labels/asset/${encodeURIComponent(assetId)}`));
+}
+
+/** Queues a Labeled scan once a label was sent. Throws ApiError
+ *  `label_not_found` / `not_label_station` (409) or `scan_value_mismatch` (422). */
+export async function postLabelPrinted(body: {
+  asset_id: string; scanned_value: string; scanned_at: string;
+}): Promise<void> {
+  await jsonFrom<{ queued: true; client_scan_id: string }>(await postJson('/edge/labels/printed', body));
+}

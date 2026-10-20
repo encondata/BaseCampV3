@@ -4,12 +4,14 @@
  * check when it passed, a red X with its detail when it failed, a muted
  * dot until it has run. A row marked `showOkDetail` (an informational
  * check that always passes) shows its detail, muted, when it passed too.
+ * A result's `notes` show under the row as muted warnings, whatever its
+ * state: they never fail it.
  */
 
 import type { CheckName } from '../../lib/api';
 
 /** The part of a check's result a row shows. */
-export interface CheckRowResult { state: 'ok' | 'fail' | 'unknown'; detail?: string }
+export interface CheckRowResult { state: 'ok' | 'fail' | 'unknown'; detail?: string; notes?: string[] }
 
 interface Props<N extends string> {
   items: { name: N; label: string; showOkDetail?: boolean }[];
@@ -50,6 +52,9 @@ export default function CheckList<N extends string = CheckName>({ items, results
             {result?.state === 'ok' && showOkDetail && result.detail && (
               <span className="check-note">{result.detail}</span>
             )}
+            {result?.notes?.map((note) => (
+              <span key={note} className="check-note check-warning">{note}</span>
+            ))}
           </li>
         );
       })}

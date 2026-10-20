@@ -328,6 +328,7 @@
 @media (prefers-reduced-motion: reduce) { .check-spinner { animation-duration: 3s; } }
 .check-row .form-error { margin: 0; flex-basis: 100%; padding-left: 28px; }
 .check-row .check-note { margin: 0; flex-basis: 100%; padding-left: 28px; color: var(--text-mute); }
+.check-row .check-warning::before { content: '⚠ '; color: var(--amber); }
 .check-info { margin: 12px 0; }
 .setup-wizard .form-error { max-width: clamp(20rem, 62vw, 62rem); }
 .setup-summary {
@@ -555,6 +556,70 @@
   border: 1px solid rgba(255, 255, 255, .7);
   border-radius: 8px;
   cursor: pointer;
+}
+
+/* ── Label regeneration takeover ─────────────────────────────────────
+   Rendered by KioskShell on a Label Station laptop while the edge is
+   generating labels: the whole screen goes yellow, above everything
+   (modals' scrims sit in the 2000s). Fixed colors, not themed, like the
+   alarm: dark ink on yellow is about 14:1, well past 4.5:1. The bar's
+   stripes drift slowly; prefers-reduced-motion holds them still. */
+.label-regen {
+  --regen-yellow: #f6c90e;
+  --regen-ink: #1f1a05;
+  --regen-track: rgba(31, 26, 5, .18);
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(18px, 4vw, 48px);
+  color: var(--regen-ink);
+  background: var(--regen-yellow);
+  overflow: auto;
+}
+.label-regen:focus { outline: none; }
+.label-regen-card {
+  width: min(720px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  text-align: center;
+}
+.label-regen-title {
+  margin: 0;
+  font-size: clamp(26px, 4.4vw, 48px);
+  line-height: 1.15;
+}
+.label-regen-count {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: clamp(18px, 2.4vw, 28px);
+  font-weight: 700;
+}
+.label-regen-bar {
+  height: 14px;
+  border-radius: 999px;
+  background: var(--regen-track);
+  overflow: hidden;
+}
+.label-regen-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: repeating-linear-gradient(-45deg,
+    var(--regen-ink) 0 12px, #4a3f0c 12px 24px);
+  background-size: 34px 34px;
+  transition: width .4s ease;
+  animation: label-regen-stripes 1.2s linear infinite;
+}
+@keyframes label-regen-stripes {
+  from { background-position: 0 0; }
+  to { background-position: 34px 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .label-regen-bar span { animation: none; transition: none; }
 }
 
 /* ── Appearance tab: HSL color picker ───────────────────────────────── */

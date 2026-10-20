@@ -41,6 +41,7 @@ const apiMock = vi.hoisted(() => ({
   printerSendFont: vi.fn(),
   putLabelStation: vi.fn(),
   postTestRender: vi.fn(),
+  getLabelPlan: vi.fn(),
 }));
 vi.mock('../../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/api')>();
@@ -125,6 +126,8 @@ beforeEach(() => {
     printerState.fonts.push(body.name);
   });
   apiMock.putLabelStation.mockReset().mockImplementation(async (s: unknown) => s);
+  // An older edge with no plan route: the DPI row falls back to the downloaded templates.
+  apiMock.getLabelPlan.mockReset().mockRejectedValue(new ApiError(404, 'unknown_error'));
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
@@ -243,6 +246,46 @@ describe('checks', () => {
     renderStep({ labelKind: 'front' });
     await connectUsb(user);
     await passed('DPI matches the templates');
+  });
+
+  it('DPI asks the edge plan: green with the template name, notes as non-blocking warnings', async () => {
+    const user = userEvent.setup();
+    apiMock.getLabelPlan.mockResolvedValue({
+      template: { id: 't1', name: 'ORD1 Top 203', family: 'Top', dpi_key: '203', version: 3 },
+      notes: ['No destination template at 203 DPI; using the source template.'],
+    });
+    const { onFinish } = renderStep();
+    await connectUsb(user);
+    await passed('DPI matches the templates');
+    expect(apiMock.getLabelPlan).toHaveBeenCalledWith({ dpi: 203, kind: 'top' });
+    const dpiRow = row('DPI matches the templates');
+    expect(within(dpiRow).getByText('ORD1 Top 203')).toBeTruthy();
+    const note = within(dpiRow).getByText('No destination template at 203 DPI; using the source template.');
+    expect(note.classList.contains('check-warning')).toBe(true);
+    await allGreen();
+    expect(finishButton().disabled).toBe(false);
+    await user.click(finishButton());
+    await waitFor(() => expect(onFinish).toHaveBeenCalled());
+  });
+
+  it('DPI fails when the edge plan has no template at the printer DPI', async () => {
+    const user = userEvent.setup();
+    apiMock.getLabelPlan.mockResolvedValue({ template: null, notes: [] });
+    renderStep();
+    await connectUsb(user);
+    await failed('DPI matches the templates');
+    expect(within(row('DPI matches the templates')).getByText('No Top template at 203 DPI')).toBeTruthy();
+    expect(finishButton().disabled).toBe(true);
+  });
+
+  it('DPI names the Front kind for a Front station', async () => {
+    const user = userEvent.setup();
+    apiMock.getLabelPlan.mockResolvedValue({ template: null, notes: [] });
+    renderStep({ labelKind: 'front' });
+    await connectUsb(user);
+    await failed('DPI matches the templates');
+    expect(apiMock.getLabelPlan).toHaveBeenCalledWith({ dpi: 203, kind: 'front' });
+    expect(within(row('DPI matches the templates')).getByText('No Front template at 203 DPI')).toBeTruthy();
   });
 
   it('status problems say what to fix, and Recheck turns them green', async () => {

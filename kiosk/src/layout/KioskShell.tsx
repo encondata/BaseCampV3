@@ -14,6 +14,7 @@ import { registrationLabel } from '@portal/lib/devices';
 import { applyPreferences, DEFAULT_PREFERENCES } from '@portal/lib/settings';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
+import LabelRegenScreen from '../components/LabelRegenScreen';
 import OffMoveAlarm from '../components/OffMoveAlarm';
 import ScanFlash from '../components/ScanFlash';
 import type { RegistrationState } from '../lib/api';
@@ -218,6 +219,10 @@ export default function KioskShell({ children }: { children: ReactNode }) {
           Station laptop. Only while signed in: every alarm route needs an
           edge session, so a signed-out page would only poll 401s. */}
       {authed && isLaptop() && kioskSetup?.stationType === 'rfid' && <OffMoveAlarm />}
+      {/* The yellow label regeneration takeover, over every page of a
+          Label Station laptop while the edge generates labels. Signed in
+          only, for the same reason. */}
+      {authed && isLaptop() && kioskSetup?.stationType === 'label' && <LabelRegenScreen />}
     </div>
   );
 }

@@ -92,7 +92,8 @@ export default function App() {
           />
           {/* Label Printing opens on its own three-card entry screen, so
               it gets explicit routes rather than the placeholder map
-              below — same guards. */}
+              below — same guards. SetupGate sends every /labels route
+              home on an RFID Station laptop. */}
           <Route
             path={LABELS.path}
             element={(

@@ -75,3 +75,40 @@ it('lists the move fonts, downloads one, and renders a test label', async () => 
   expect(await api.postTestRender(body)).toEqual({ zpl: '^XA^XZ', template_name: 'G' });
   expect(lastCall(fetchMock)).toEqual({ url: 'http://api.test/kiosk/labels/test-render', method: 'POST', body });
 });
+
+it('reads the label run status, the plan, and one station label from /edge/labels', async () => {
+  const status = { state: 'running', reason: 'setup', total: 10, done: 3, ready: 3, errors: 0 };
+  const fetchMock = vi.fn(async () => json(status));
+  vi.stubGlobal('fetch', fetchMock);
+  expect(await api.getLabelRunStatus()).toEqual(status);
+  expect(lastCall(fetchMock)).toMatchObject({ url: 'http://api.test/edge/labels/status', method: 'GET' });
+
+  const plan = { template: { id: 't1', name: 'Top 203', family: 'Top', dpi_key: '203', version: 2 }, notes: [] };
+  fetchMock.mockImplementation(async () => json(plan));
+  expect(await api.getLabelPlan()).toEqual(plan);
+  expect(lastCall(fetchMock).url).toBe('http://api.test/edge/labels/plan');
+  await api.getLabelPlan({ dpi: 203, kind: 'front' });
+  expect(lastCall(fetchMock).url).toBe('http://api.test/edge/labels/plan?dpi=203&kind=front');
+
+  const label = { asset_id: 'a 1', zpl: '^XA^XZ', error: null, template_name: 'Top 203', dpi: 203, label_kind: 'top' };
+  fetchMock.mockImplementation(async () => json(label));
+  expect(await api.getStationLabel('a 1')).toEqual(label);
+  expect(lastCall(fetchMock).url).toBe('http://api.test/edge/labels/asset/a%201');
+});
+
+it('surfaces label_not_found and labels_regenerating as ApiErrors', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => json({ detail: { code: 'labels_regenerating' } }, 409)));
+  await expect(api.getStationLabel('a1')).rejects.toMatchObject({ status: 409, code: 'labels_regenerating' });
+  vi.stubGlobal('fetch', vi.fn(async () => json({ detail: { code: 'label_not_found' } }, 404)));
+  await expect(api.getStationLabel('a1')).rejects.toMatchObject({ status: 404, code: 'label_not_found' });
+});
+
+it('posts a printed scan to /edge/labels/printed', async () => {
+  const fetchMock = vi.fn(async () => json({ queued: true, client_scan_id: 'c1' }));
+  vi.stubGlobal('fetch', fetchMock);
+  const body = { asset_id: 'a1', scanned_value: 'SN1', scanned_at: '2026-10-19T12:00:00Z' };
+  await expect(api.postLabelPrinted(body)).resolves.toBeUndefined();
+  expect(lastCall(fetchMock)).toEqual({ url: 'http://api.test/edge/labels/printed', method: 'POST', body });
+  vi.stubGlobal('fetch', vi.fn(async () => json({ detail: { code: 'scan_value_mismatch' } }, 422)));
+  await expect(api.postLabelPrinted(body)).rejects.toMatchObject({ status: 422, code: 'scan_value_mismatch' });
+});

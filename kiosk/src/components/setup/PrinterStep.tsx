@@ -5,8 +5,10 @@
  * laptop edge). Either way the printer becomes one `StationPrinter`, and
  * the same checks run against it, each a row that turns green:
  * - Printer answers (`~HI`);
- * - DPI: at least one downloaded template of the station's kind is at the
- *   printer's DPI;
+ * - DPI: the edge's label plan (`GET /edge/labels/plan`) finds a template
+ *   of the station's kind at the printer's DPI, and names it; the plan's
+ *   notes show under the row as warnings that never block. An edge
+ *   without the plan route falls back to the downloaded templates;
  * - Ready to print: `~HS` reports no paper out, head open or pause;
  * - Peeler: whether a peeler is fitted (SGD `sensor.peeler_present`). It
  *   never fails; it decides whether labels print peel-off or tear-off;
@@ -28,7 +30,7 @@ import type { HostIdentification, HostStatus, UsbDeviceLike } from '@portal/labe
 
 import { useKioskAuth } from '../../auth/KioskAuthContext';
 import {
-  ApiError, fetchKioskLabelFonts, getPrinterScan, putLabelStation, startPrinterScan,
+  ApiError, fetchKioskLabelFonts, getLabelPlan, getPrinterScan, putLabelStation, startPrinterScan,
   type KioskLabelFont, type KioskLabelTemplate, type LabelKind, type LabelStationSettings,
   type PrinterScan, type FoundPrinter,
 } from '../../lib/api';
@@ -48,7 +50,7 @@ type PrinterType = 'usb' | 'network';
 
 const ITEMS: { name: CheckKey; label: string; showOkDetail?: boolean }[] = [
   { name: 'answers', label: 'Printer answers' },
-  { name: 'dpi', label: 'DPI matches the templates' },
+  { name: 'dpi', label: 'DPI matches the templates', showOkDetail: true },
   { name: 'status', label: 'Ready to print' },
   { name: 'peeler', label: 'Peeler', showOkDetail: true },
   { name: 'fonts', label: 'Fonts installed' },
@@ -205,7 +207,19 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
     setIdentity(ident);
     put('answers', { state: 'ok', detail: `${ident.model} · ${ident.dpi} DPI` });
 
-    put('dpi', checkDpi(ts, labelKind, ident.dpi));
+    setRunning('dpi');
+    let dpiResult: CheckRowResult;
+    try {
+      const plan = await getLabelPlan({ dpi: ident.dpi, kind: labelKind });
+      dpiResult = plan.template
+        ? { state: 'ok', detail: plan.template.name, notes: plan.notes }
+        : { state: 'fail', detail: `No ${KIND_LABEL[labelKind]} template at ${ident.dpi} DPI`, notes: plan.notes };
+    } catch {
+      // An older edge (or a failed call): never a dead end in setup.
+      dpiResult = checkDpi(ts, labelKind, ident.dpi);
+    }
+    if (!live()) return;
+    put('dpi', dpiResult);
 
     setRunning('status');
     let st: HostStatus | null = null;
