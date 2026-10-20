@@ -14,6 +14,8 @@ import io
 from fontTools.ttLib import TTFont
 
 FIRST_CODEPOINT, LAST_CODEPOINT = 32, 126
+# the range the OpenType spec allows for head.unitsPerEm
+MIN_UPEM, MAX_UPEM = 16, 16384
 
 
 class UnreadableFont(ValueError):
@@ -24,17 +26,22 @@ def metrics(ttf_bytes: bytes) -> dict:
     """{"unitsPerEm", "ascent", "descent", "advances": {char: advance}}."""
     try:
         font = TTFont(io.BytesIO(ttf_bytes), lazy=True)
+        upem = int(font["head"].unitsPerEm)
+        if not MIN_UPEM <= upem <= MAX_UPEM:
+            raise UnreadableFont(f"unitsPerEm {upem} is outside {MIN_UPEM}..{MAX_UPEM}")
         hhea = font["hhea"]
         hmtx = font["hmtx"]
         cmap = font.getBestCmap() or {}
         notdef = font.getGlyphOrder()[0]
         return {
-            "unitsPerEm": int(font["head"].unitsPerEm),
+            "unitsPerEm": upem,
             "ascent": abs(int(hhea.ascent)),
             "descent": abs(int(hhea.descent)),
             "advances": {chr(cp): int(hmtx[cmap.get(cp, notdef)][0])
                          for cp in range(FIRST_CODEPOINT, LAST_CODEPOINT + 1)},
         }
+    except UnreadableFont:
+        raise
     except Exception as exc:
         # fontTools reports a damaged or foreign file through many exception
         # types (TTLibError, struct.error, KeyError, AssertionError, ...).

@@ -5,6 +5,7 @@ like test_attachments.py."""
 
 import uuid
 
+import pytest
 from serversherpa.api.routes import labels as labels_module
 from serversherpa.db.models import AuditLog, LabelFont
 from sqlalchemy import select
@@ -117,7 +118,7 @@ async def test_font_permissions(client, db, seeded_user):
 
 # ── builder families: metrics, the resident font ─────────────────────
 
-def _tiny_ttf() -> bytes:
+def _tiny_ttf(upem: int = 1000) -> bytes:
     """A real TrueType file: 1000 units per em, ascent 800, descent 200,
     glyphs for space, A and 0; every other character falls to .notdef."""
     import io
@@ -134,7 +135,7 @@ def _tiny_ttf() -> bytes:
         pen.closePath()
         return pen.glyph()
 
-    fb = FontBuilder(1000, isTTF=True)
+    fb = FontBuilder(upem, isTTF=True)
     fb.setupGlyphOrder([".notdef", "space", "A", "zero"])
     fb.setupCharacterMap({32: "space", 65: "A", 48: "zero"})
     fb.setupGlyf({".notdef": box(), "space": TTGlyphPen(None).glyph(), "A": box(),
@@ -267,3 +268,62 @@ async def test_kiosk_fonts_list_marks_resident(client, db, seeded_user, monkeypa
     assert (await _content(client, hdrs, aaa.id, move.id)).status_code == 200
     r = await _content(client, hdrs, swiss.id, move.id)
     assert r.status_code == 403 and r.json()["detail"]["code"] == "font_not_servable"
+
+
+def test_metrics_refuse_an_out_of_range_units_per_em():
+    from serversherpa.labels.font_metrics import UnreadableFont, metrics
+
+    assert metrics(_tiny_ttf(16))["unitsPerEm"] == 16
+    for upem in (8, 15):
+        with pytest.raises(UnreadableFont, match="unitsPerEm"):
+            metrics(_tiny_ttf(upem))
+
+
+async def test_a_legacy_swiss_row_is_never_served(client, db, seeded_user, monkeypatch):
+    """A TT0003M_.TTF uploaded before the builder (resident false, with a
+    file) is refused by name on both content routes."""
+    from tests.test_kiosk_label_station_api import _content, _fake_storage
+    from tests.test_kiosk_label_templates_sync import _move, _tpl
+
+    hdrs = await login(client)
+    move, *_ = await _move(db)
+    db.add(_tpl("Front Fonts", label_type="front",
+                code="^XA^CWK,E:TT0003M_.TTF^AKN,50^FDx^FS^XZ"))
+    legacy = LabelFont(name="tt0003m_.ttf", display_name="tt0003m_.ttf",
+                       storage_key="label-fonts/legacy.ttf", size_bytes=10)
+    db.add(legacy)
+    await db.commit()
+    assert legacy.resident is False
+    _fake_storage(monkeypatch, {"label-fonts/legacy.ttf": TTF})
+
+    r = await client.get(f"/labels/fonts/{legacy.id}/content", headers=hdrs)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "font_not_servable"
+    r = await _content(client, hdrs, legacy.id, move.id)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "font_not_servable"
+
+
+async def test_a_failed_fill_removes_the_stored_file(client, db, seeded_user, monkeypatch):
+    """Filling the resident row: if the write fails after the file is
+    stored, the file is removed again and the row stays fileless."""
+    admin = await _make(db, client, "admin", "adm-fonts8@test.example.com")
+    swiss = await _resident(db)
+    stored, removed = [], []
+
+    async def fake_put(key, data, content_type):
+        stored.append(key)
+
+    async def fake_delete(key):
+        removed.append(key)
+
+    def broken_audit(*args, **kwargs):
+        raise RuntimeError("audit down")
+
+    monkeypatch.setattr(labels_module, "put_object", fake_put)
+    monkeypatch.setattr(labels_module, "delete_object", fake_delete)
+    monkeypatch.setattr(labels_module, "audit", broken_audit)
+
+    with pytest.raises(RuntimeError, match="audit down"):
+        await _upload(client, admin, "TT0003M_.TTF", data=_tiny_ttf())
+    assert len(stored) == 1 and removed == stored
+    await db.refresh(swiss)
+    assert swiss.storage_key is None and swiss.size_bytes == 0

@@ -63,6 +63,13 @@ def object_family(name: str) -> tuple[str, str] | None:
     return None
 
 
+def resident_object(name: str) -> bool:
+    """True for a resident family's printer object name: whatever the
+    library row says, that file is never pushed to a printer or served."""
+    found = object_family(name)
+    return found is not None and FAMILIES[found[0]]["resident"]
+
+
 def font_object(family: str, weight: str, *,
                 objects: Mapping[str, str | None] | None = None) -> tuple[str, bool]:
     """(object name, faux_bold) for one weight of a family. Bold on a

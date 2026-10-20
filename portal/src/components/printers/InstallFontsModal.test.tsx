@@ -14,6 +14,9 @@ const font = (id: string, name: string, used: string[] = []): LabelFont => ({
   used_by: used.map((t) => ({ template_id: t, template_name: t })),
 });
 const LIB = [font('f1', '85620388.TTF', ['Front Asset Tag']), font('f2', 'ARIAL_B.TTF')];
+// Zebra's built-in Swiss 721, seeded without a file
+const SWISS: LabelFont = { ...font('f3', 'TT0003M_.TTF'), size_bytes: 0, resident: true,
+  family: 'swiss721-cond-bold', weight: 'regular' };
 const DIR = '\x02- DIR E:*.*\r\n* 85620388.TTF       124336\r\n* TT0003M_.TTF      169188\r\n-1928576 bytes free E: ONBOARD FLASH\r\n\x03';
 
 function fakePrinter(connected = true) {
@@ -43,6 +46,12 @@ describe('fontStates', () => {
       printerOnly: [{ name: 'TT0003M_.TTF', bytes: 2 }],
     });
     expect(fontStates(LIB, null).library).toEqual({});
+  });
+  it('gives a resident font no install state and keeps it off the printer-only list', () => {
+    const listing = { objects: [{ name: 'TT0003M_.TTF', bytes: 2 }], bytesFree: 9 };
+    expect(fontStates([SWISS, LIB[1]], listing)).toEqual({
+      library: { 'ARIAL_B.TTF': 'missing' }, printerOnly: [],
+    });
   });
 });
 
@@ -77,6 +86,23 @@ describe('InstallFontsModal', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Install all missing' }));
     await waitFor(() => expect(printer.send).toHaveBeenCalledWith('~DYE:ARIAL_B.TTF,B,T,6,,'));
     expect(printer.send.mock.calls.filter((c) => String(c[0]).startsWith('~DY')).length).toBe(1);
+  });
+  it('a resident font says it is built in and is never pushed', async () => {
+    const { printer, onFetchBytes } = setup({ fonts: [...LIB, SWISS] });
+    await screen.findByText('Missing');
+    const row = screen.getByText('TT0003M_.TTF').closest('tr') as HTMLElement;
+    expect(within(row).getByText('Built in on Zebra printers')).toBeTruthy();
+    expect(within(row).queryByText('0 KB')).toBeNull();
+    expect(screen.queryByText('Printer only')).toBeNull();   // the E: copy is the library font
+
+    await userEvent.click(screen.getByRole('button', { name: 'Install all missing' }));
+    await waitFor(() => expect(printer.send).toHaveBeenCalledWith('~DYE:ARIAL_B.TTF,B,T,6,,'));
+    expect(printer.send.mock.calls.some((c) => String(c[0]).includes('TT0003M_'))).toBe(false);
+    expect(onFetchBytes.mock.calls.map((c) => c[0])).toEqual(['f2']);
+
+    await userEvent.click(within(row).getByRole('button', { name: /actions/i }));
+    expect(await screen.findByRole('menuitem', { name: 'Remove' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: /install/i })).toBeNull();
   });
   it('removes an object from the printer', async () => {
     const { printer } = setup();

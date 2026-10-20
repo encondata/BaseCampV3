@@ -5,7 +5,9 @@ was downloaded from. `resident` marks Zebra's own Swiss 721 Condensed
 Bold (`TT0003M_.TTF`): it is never pushed to a printer or served to a
 browser, and its row exists without a file until one is uploaded for its
 metrics, so `storage_key` becomes nullable (a non-resident row still needs
-a file). One active file per family and weight.
+a file). One active file per family and weight. A `TT0003M_.TTF` already
+in the library (uploaded for the Label Station's fonts check) becomes the
+resident row here, so it stops being served before the seed ever runs.
 
 Design: docs/superpowers/specs/2026-10-19-label-builder-design.md §4.4
 
@@ -33,6 +35,9 @@ def upgrade() -> None:
                                            server_default=sa.text("false")))
     op.add_column("label_fonts", sa.Column("source_url", sa.Text(), nullable=True))
     op.alter_column("label_fonts", "storage_key", existing_type=sa.Text(), nullable=True)
+    op.execute(
+        "UPDATE label_fonts SET resident = true, family = 'swiss721-cond-bold', "
+        "weight = 'regular' WHERE upper(name::text) = 'TT0003M_.TTF' AND deleted_at IS NULL")
     op.create_check_constraint(
         "ck_label_fonts_weight", "label_fonts",
         "weight IS NULL OR weight IN ('regular', 'bold')")

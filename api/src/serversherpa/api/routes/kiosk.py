@@ -65,6 +65,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.db.ordering import natural, natural_key
 from serversherpa.labels.fields import PLACEHOLDER_MOCK_VALUES
+from serversherpa.labels.fonts import resident_object
 from serversherpa.labels.generate.engine import render_label
 from serversherpa.labels.generate.payloads import (
     asset_payload, container_payload, load_status_labels,
@@ -1271,7 +1272,7 @@ async def kiosk_label_font_content(
     if (font is None or font.deleted_at is not None
             or font.name.upper() not in await _move_font_names(db, initiative)):
         raise _err(404, "font_not_found")
-    if font.resident:
+    if font.resident or resident_object(font.name):
         raise _err(403, "font_not_servable")
     data = await get_object(font.storage_key)
     return Response(content=data, media_type=font.content_type or "font/ttf",

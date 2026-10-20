@@ -5417,11 +5417,16 @@ export async function convertLabelTemplate(id: string): Promise<LabelTemplate> {
 export interface LabelFontUsedBy { template_id: string; template_name: string }
 
 /** A TrueType font admins uploaded once; `name` is the Zebra object name
- *  it installs under on the printer's E: drive. */
+ *  it installs under on the printer's E: drive. `family`/`weight` place it
+ *  in a label builder family. A `resident` font is built into Zebra
+ *  printers: it is never pushed to one and its bytes are never served
+ *  (`size_bytes` is 0 until a copy is uploaded for its metrics). */
 export interface LabelFont {
   id: string; name: string; display_name: string; size_bytes: number; content_type: string;
   uploaded_by: string | null; uploaded_by_name: string | null; created_at: string;
   used_by: LabelFontUsedBy[];
+  family?: string | null; weight?: 'regular' | 'bold' | null;
+  resident?: boolean; source_url?: string | null;
 }
 
 export async function listLabelFonts(): Promise<LabelFont[]> {

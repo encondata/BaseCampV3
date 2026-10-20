@@ -54,7 +54,7 @@ from serversherpa.labels.font_seed import (
     FONT_FIELDS, MAX_FONT_BYTES, TRUETYPE_MAGICS, display_name as family_display_name,
     new_storage_key,
 )
-from serversherpa.labels.fonts import FAMILIES, object_family
+from serversherpa.labels.fonts import FAMILIES, object_family, resident_object
 from serversherpa.labels.generate import InvalidLabelTypes, InvalidTemplates, RunActive, entity_for_type, enqueue_run
 from serversherpa.labels.generate.select import candidate_templates
 from serversherpa.labels.model import DesignError, parse_design
@@ -1068,11 +1068,22 @@ async def upload_label_font(
         before = snapshot(fileless, FONT_FIELDS)
         key = new_storage_key()
         await put_object(key, data, "font/ttf")
-        fileless.storage_key, fileless.size_bytes = key, len(data)
-        fileless.content_type, fileless.uploaded_by = "font/ttf", actor.person.id
-        audit(db, actor_id=actor.person.id, entity_type="label_font", entity_id=str(fileless.id),
-              action="update", changes=diff(before, snapshot(fileless, FONT_FIELDS)))
-        await db.commit()
+        try:
+            fileless.storage_key, fileless.size_bytes = key, len(data)
+            fileless.content_type, fileless.uploaded_by = "font/ttf", actor.person.id
+            audit(db, actor_id=actor.person.id, entity_type="label_font",
+                  entity_id=str(fileless.id), action="update",
+                  changes=diff(before, snapshot(fileless, FONT_FIELDS)))
+            await db.commit()
+        except Exception:
+            # as on the create path: the key was never persisted, so nothing
+            # else can reach the blob; best-effort remove it
+            await db.rollback()
+            try:
+                await delete_object(key)
+            except Exception:
+                pass
+            raise
         await db.refresh(fileless)
         used = await _fonts_used_by(db)
         return _font_out(fileless, uploader, used.get(object_name, []))
@@ -1136,7 +1147,7 @@ async def label_font_content(
     resident font: Zebra's commercial file stays off browsers (403
     `font_not_servable`)."""
     font = await _font_or_404(db, font_id)
-    if font.resident:
+    if font.resident or resident_object(font.name):
         raise _err(403, "font_not_servable")
     data = await get_object(font.storage_key)
     return Response(content=data, media_type=font.content_type,

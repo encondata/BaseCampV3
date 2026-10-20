@@ -2,8 +2,10 @@
  * Printers › Install fonts — the V3 font library (TrueType files admins
  * upload once) on the left, the connected printer's E: drive on the
  * right. Install streams a `~DY` header + the TTF bytes over WebUSB and
- * re-reads the directory to confirm. Presentational for the API side
- * (callbacks); talks to the printer through the hook's query/send.
+ * re-reads the directory to confirm. A resident font (Zebra's built-in
+ * Swiss 721) is never pushed: its row says it is built in instead.
+ * Presentational for the API side (callbacks); talks to the printer
+ * through the hook's query/send.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -17,10 +19,16 @@ import { RowActionsMenu } from '../hardware/RowActionsMenu';
 
 export type FontState = 'installed' | 'missing' | 'printer-only';
 
+/** Library fonts by installed/missing (resident fonts have no state: they
+ *  are never installed), and the E: objects the library doesn't have. */
 export function fontStates(library: LabelFont[], listing: DirectoryListing | null) {
   const onPrinter = new Map((listing?.objects ?? []).map((o) => [o.name.toUpperCase(), o]));
   const lib: Record<string, FontState> = {};
-  if (listing) for (const f of library) lib[f.name.toUpperCase()] = onPrinter.has(f.name.toUpperCase()) ? 'installed' : 'missing';
+  if (listing) {
+    for (const f of library) {
+      if (!f.resident) lib[f.name.toUpperCase()] = onPrinter.has(f.name.toUpperCase()) ? 'installed' : 'missing';
+    }
+  }
   const libNames = new Set(library.map((f) => f.name.toUpperCase()));
   const printerOnly = (listing?.objects ?? []).filter((o) => !libNames.has(o.name.toUpperCase())).map((o) => ({ name: o.name, bytes: o.bytes }));
   return { library: lib, printerOnly };
@@ -79,6 +87,7 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
   const states = useMemo(() => fontStates(fonts ?? [], listing), [fonts, listing]);
 
   const install = async (f: LabelFont) => {
+    if (f.resident) return;
     setBusy(true);
     setProgress((p) => ({ ...p, [f.id]: { sent: 0, total: f.size_bytes } }));
     try {
@@ -170,16 +179,17 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
       key: f.id,
       cells: [
         <div className="cell-primary" key="n"><div className="pn"><b>{f.name}</b><span>{f.display_name}</span></div></div>,
-        <span className="mono" key="s">{kb(f.size_bytes)}</span>,
+        <span className="mono" key="s">{f.resident && f.size_bytes === 0 ? '—' : kb(f.size_bytes)}</span>,
         <span className="zp-chips" key="u">{f.used_by.length === 0 ? <span className="cell-sub">—</span> : f.used_by.map((u) => <span key={u.template_id} className="chip tag">{u.template_name}</span>)}</span>,
         <span className="mono" key="t">{relativeTime(f.created_at)}</span>,
-        <span key="p">{state && !progress[f.id] ? <span className={`chip ${state === 'installed' ? 'c-green' : 'c-amber'}`}>{state === 'installed' ? 'Installed' : 'Missing'}</span> : progressCell(f)}</span>,
+        <span key="p">{f.resident ? <span className="chip c-slate" title="Zebra printers ship this font; it is never installed from here.">Built in on Zebra printers</span>
+          : state && !progress[f.id] ? <span className={`chip ${state === 'installed' ? 'c-green' : 'c-amber'}`}>{state === 'installed' ? 'Installed' : 'Missing'}</span> : progressCell(f)}</span>,
         // Items are pre-gated: an unreachable action isn't passed at all, so
         // a row with nothing to offer renders no trigger. `busy`/`batching`
         // disable rather than drop, keeping the trigger steady mid-install.
         <span className="zp-inline-actions" key="a">
           <RowActionsMenu actions={[
-            ...(printer.connected && state ? [{
+            ...(printer.connected && state && !f.resident ? [{
               key: 'install',
               label: state === 'installed' ? 'Reinstall' : 'Install',
               onSelect: () => void install(f),
@@ -252,7 +262,7 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
                   { key: 'size', label: 'Size', width: '90px', mono: true, align: 'right' },
                   { key: 'used', label: 'Used by', width: 'minmax(160px, 1.2fr)' },
                   { key: 'when', label: 'Uploaded', width: '110px', mono: true },
-                  { key: 'state', label: 'On printer', width: '150px' },
+                  { key: 'state', label: 'On printer', width: '200px' },
                   { key: 'actions', label: '', width: '88px', align: 'right' },
                 ]} /></div>
               )}
