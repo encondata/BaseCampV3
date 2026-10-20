@@ -13,7 +13,7 @@ import serversherpa.labels as labels_pkg
 from serversherpa.labels.brother_escp import compile_escp
 from serversherpa.labels.brother_ptouch import compile_ptouch
 from serversherpa.labels.fields import MOCK_VALUES
-from serversherpa.labels.fonts import font_object
+from serversherpa.labels.fonts import FAMILIES, font_object
 from serversherpa.labels.model import parse_design
 from serversherpa.labels.qr import qr_modules
 from serversherpa.labels.render import render_template
@@ -96,12 +96,16 @@ def test_faux_bold_overprints_one_dot():
         "^FT400,100^A@N,100,100,E:ROBOCO_B.TTF^FH_^FD07C^FS"]
     assert "E:ROBOCO_R.TTF" in _zpl(_field(font={"family": "roboto-condensed",
                                                  "weight": "regular"}))
-    # the library can lack a family's Bold file: then Bold is faux there too
-    out = _zpl(_field(font={"family": "roboto-condensed", "weight": "bold"}),
-               font_objects={"roboto-condensed": {"regular": "ROBOCO_R.TTF", "bold": None}})
-    assert _body(out) == [
-        "^FT400,100^A@N,100,100,E:ROBOCO_R.TTF^FH_^FD07C^FS",
-        "^FT401,100^A@N,100,100,E:ROBOCO_R.TTF^FH_^FD07C^FS"]
+
+
+def test_bold_follows_the_static_family_table():
+    """M1 (loud): the compiler never looks at the font library. Bold is the
+    family's own Bold object, or faux on a family with none (fonts.py);
+    there is no override, so the canvas and every printer agree."""
+    with pytest.raises(TypeError):
+        _zpl(_field(), font_objects={"roboto": {"regular": "ROBOTO_R.TTF", "bold": None}})
+    with pytest.raises(TypeError):
+        font_object("roboto", "bold", objects={"regular": "ROBOTO_R.TTF", "bold": None})
 
 
 def test_faux_bold_on_inverted_widens():
@@ -203,18 +207,19 @@ def test_qr_always_prints_upright():
         assert "^BQN,2,7^" in _zpl(as_field)
 
 
-def test_font_object_names_are_checked_before_they_are_emitted():
-    for bad in ("../x.TTF", "TOOLONGNAME.TTF", "rob_r.ttf", "X^XZ.TTF", "ROBO.OTF", ".TTF"):
-        with pytest.raises(ValueError, match="font object"):
-            _zpl(_field(font={"family": "roboto", "weight": "regular"}),
-                 font_objects={"roboto": {"regular": bad, "bold": None}})
-        with pytest.raises(ValueError, match="font object"):
-            font_object("roboto", "bold", objects={"regular": "ROBOTO_R.TTF", "bold": bad})
-    with pytest.raises(ValueError, match="regular"):
-        _zpl(_field(font={"family": "roboto", "weight": "bold"}),
-             font_objects={"roboto": {"bold": "ROBOTO_B.TTF"}})
-    # every built-in family's objects pass
+def test_every_family_prints_an_8_3_object_name():
+    """`^A@…,E:<object>` carries only an 8.3 `.TTF` name, so the static
+    table is the whole guard: no other name reaches ZPL."""
+    for slug, family in FAMILIES.items():
+        for weight in ("regular", "bold"):
+            name, faux = font_object(slug, weight)
+            assert re.fullmatch(r"[A-Z0-9_]{1,8}\.TTF", name), (slug, weight, name)
+            assert faux is (weight == "bold" and family["objects"]["bold"] is None)
     assert font_object("swiss721-cond-bold", "regular") == ("TT0003M_.TTF", False)
+    assert font_object("swiss721-cond-bold", "bold") == ("TT0003M_.TTF", True)
+    assert font_object("roboto", "bold") == ("ROBOTO_B.TTF", False)
+    with pytest.raises(ValueError, match="weight"):
+        font_object("roboto", "light")
 
 
 def test_values_are_hex_escaped():
@@ -234,6 +239,22 @@ def test_values_are_hex_escaped():
     # (its `_` hex-escaped), never as asset_id's value
     assert _data(_zpl(_field(field="asset_name", piece=None, maxChars=None),
                       values={"asset_name": "{asset_id}", "asset_id": "1"})) == ["{asset_5fid}"]
+    # non-ASCII rides as UTF-8 bytes, each one hex-escaped (^CI28)
+    assert _data(_zpl(_field(field="asset_name", piece=None, maxChars=None),
+                      values={"asset_name": "Café ☃ 1"})) == ["Caf_c3_a9 _e2_98_83 1"]
+    # api-core-2: in Code 128 data a `>` starts an invocation code (`>;`,
+    # `>8`, …), so a literal one is `>0`; text, QR and Code 39 keep it
+    code39 = {"id": "b2", "type": "barcode", "field": "asset_name", "symbology": "code39",
+              "x": 0, "y": 1.3, "w": 2, "h": 0.2, "rotation": 0}
+    as_barcode = _field(id="f2", field="asset_name", piece=None, maxChars=None,
+                        display="barcode", symbology="code128", h=0.2)
+    out = _zpl(_field(field="asset_name", piece=None, maxChars=None),
+               {"id": "q1", "type": "qr", "field": "asset_name", "x": 1, "y": 0.5,
+                "w": 0.49, "h": 0.49, "rotation": 0},
+               {"id": "b1", "type": "barcode", "field": "asset_name",
+                "symbology": "code128", "x": 0, "y": 1, "w": 2, "h": 0.2, "rotation": 0},
+               as_barcode, code39, values={"asset_name": "A>;B>"})
+    assert _data(out) == ["A>;B>", "MA,A>;B>", "A>0;B>0", "A>0;B>0", "A>;B>"]
 
 
 def test_field_keys_are_opaque():
@@ -290,6 +311,12 @@ def test_static_text_and_shapes():
         "^FO30,300^GB5,300,5^FS",
         "^FO30,360^GB300,60,3^FS",
         "^FO30,360^GB300,60,60^FS"]
+    # api-core-3: a typed newline is ZPL's ^FB line break (`\&`) when the
+    # text has lines to break onto, and dropped on a one-line text
+    broken = {**wrapped, "content": "Two\nlines"}
+    assert _data(_zpl(broken, values={})) == ["Two\\&lines"]
+    assert _data(_zpl({**broken, "lines": 1}, values={})) == ["Twolines"]
+    assert _data(_zpl({**broken, "content": "a\r\nb\\c"}, values={})) == ["a\\&b_5cc"]
 
 
 def test_field_displayed_as_barcode_or_qr_applies_its_rules():

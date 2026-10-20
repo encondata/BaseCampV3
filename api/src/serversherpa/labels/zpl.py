@@ -75,7 +75,12 @@ def _text(el: TextEl, dpi: int, subs) -> str:
 
 
 def _barcode_field(el: BarcodeEl | FieldEl, dpi: int, fd: str) -> str:
-    """A barcode field around already-escaped data `fd`."""
+    """A barcode field around already-escaped data `fd`. In Code 128 data a
+    `>` starts an invocation code (`>;` subset C, `>8` FNC1, …), so a
+    literal one goes as `>0` (escaping never makes a `>`, so this is safe
+    on escaped data)."""
+    if el.symbology == "code128":
+        fd = fd.replace(">", ">0")
     hd = _dots(el.h, dpi)
     flag = "Y" if el.show_text else "N"
     # None keeps the historical ^BY2 exactly; a module width in inches is
@@ -109,8 +114,6 @@ def _shape(el, dpi: int) -> str:
 
 # one dot along each rotation's reading direction (the faux-bold overprint)
 _STEP = {0: (1, 0), 90: (0, 1), 180: (-1, 0), 270: (0, -1)}
-
-FontObjects = Mapping[str, Mapping[str, str | None]]
 
 
 def _origin(el: TextEl | FieldEl, dpi: int, baseline_in: float) -> tuple[int, int]:
@@ -149,10 +152,18 @@ def _invert_box(el: TextEl | FieldEl, dpi: int) -> str:
     return f"^FO{bx},{by}^GB{bw},{bh},{min(bw, bh)}^FS"
 
 
-def _v2_text(el: TextEl | FieldEl, value: str, dpi: int,
-             font_objects: FontObjects | None) -> list[str]:
-    family, weight = el.font.family, el.font.weight
-    obj, faux = font_object(family, weight, objects=(font_objects or {}).get(family))
+def _text_data(el: TextEl | FieldEl, value: str, lines: int) -> str:
+    """The escaped ^FD of a text: a newline typed into static text is the
+    ^FB line break `\\&` when the text has lines to break onto, and
+    dropped on a one-line text (a hex LF would print as nothing or a box)."""
+    if not isinstance(el, TextEl):
+        return _esc(value)
+    parts = value.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return ("\\&" if lines > 1 else "").join(_esc(part) for part in parts)
+
+
+def _v2_text(el: TextEl | FieldEl, value: str, dpi: int) -> list[str]:
+    obj, faux = font_object(el.font.family, el.font.weight)
     h = round(el.font_size_pt * dpi / 72)
     w = round(h * 1.15) if faux and el.inverted else h
     lines = el.lines if isinstance(el, TextEl) else 1
@@ -162,7 +173,7 @@ def _v2_text(el: TextEl | FieldEl, value: str, dpi: int,
     block = (f"^FB{_dots(el.w, dpi)},{lines},0,{_JUST[el.align]},0"
              if el.align != "left" or lines > 1 else "")
     rest = (f"{block}^A@{_ROT[el.rotation]},{h},{w},E:{obj}"
-            + ("^FR" if el.inverted else "") + f"^FH_^FD{_esc(value)}^FS")
+            + ("^FR" if el.inverted else "") + f"^FH_^FD{_text_data(el, value, lines)}^FS")
     out = [_invert_box(el, dpi)] if el.inverted else []
     out.append(f"^FT{ox},{oy}{rest}")
     if faux and not el.inverted:
@@ -199,8 +210,7 @@ def _v2_shape(el: LineEl | BoxEl, dpi: int) -> str:
     return f"^FO{_dots(el.x, dpi)},{_dots(el.y, dpi)}^GB{w},{h},{t}^FS"
 
 
-def _v2_element(el: object, dpi: int, values: Mapping[str, str],
-                font_objects: FontObjects | None) -> list[str]:
+def _v2_element(el: object, dpi: int, values: Mapping[str, str]) -> list[str]:
     if isinstance(el, (LineEl, BoxEl)):
         return [_v2_shape(el, dpi)]
     if element_hidden(el, values):
@@ -211,14 +221,11 @@ def _v2_element(el: object, dpi: int, values: Mapping[str, str],
         return [_barcode_field(el, dpi, _esc(value))]
     if isinstance(el, QrEl) or display == "qr":
         return [_v2_qr(el, value, dpi)]
-    return _v2_text(el, value, dpi, font_objects)
+    return _v2_text(el, value, dpi)
 
 
 def compile_zpl(design: Design, dpi: int,
-                substitutions: dict[str, str] | None = None, *,
-                font_objects: FontObjects | None = None) -> str:
-    """`font_objects` ({family: {"regular", "bold"}}) overrides a schema 2
-    family's object names with what the font library holds."""
+                substitutions: dict[str, str] | None = None) -> str:
     lines = ["^XA",
              f"^PW{_dots(design.width_in, dpi)}",
              f"^LL{_dots(design.height_in, dpi)}",
@@ -227,7 +234,7 @@ def compile_zpl(design: Design, dpi: int,
         if substitutions is None:
             raise ValueError("v2 designs render with values")
         for el in design.elements:
-            lines.extend(_v2_element(el, dpi, substitutions, font_objects))
+            lines.extend(_v2_element(el, dpi, substitutions))
         lines.append("^XZ")
         return "\n".join(lines)
     for el in design.elements:
