@@ -1,0 +1,61 @@
+/* Tip — the styled hover tip (components/Tip.tsx). Portaled into
+   .portal-shell, so the theme tokens (light and dark) apply. */
+
+.tip-trigger {
+  display: inline-flex;
+  min-width: 0;
+}
+/* a disabled button gets no pointer events of its own: let them through to
+   the wrapper, so its tip (with the reason it's off) still shows */
+.tip-trigger > :disabled { pointer-events: none; }
+
+.tip {
+  position: fixed;
+  z-index: 1300; /* over the page, its sticky bars and map panes */
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 6px 9px;
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-dark);
+  box-shadow: 0 6px 20px rgba(12, 17, 23, 0.18);
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: normal;
+  text-transform: none;
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
+  animation: tip-in 0.12s ease-out;
+}
+.tip-main { display: flex; align-items: center; gap: 8px; }
+.tip-label { font-weight: 500; }
+.tip-main .tip-label { flex: 1 1 auto; }
+.tip-note { color: var(--text-mute); }
+/* the builder's keycap look (labelBuilder.css .lbp-kbd) */
+.tip-kbd {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 5px;
+  border: 1px solid var(--paper-line);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+
+@keyframes tip-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+/* no fade with reduced motion: the OS setting or the portal's own */
+@media (prefers-reduced-motion: reduce) {
+  .tip { animation: none; }
+}
+.portal-shell[data-motion='off'] .tip { animation: none; }

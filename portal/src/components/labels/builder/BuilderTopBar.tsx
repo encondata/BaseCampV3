@@ -5,10 +5,13 @@
  * shows the label at that DPI) or one child ("Child · 300") — the version,
  * an Unsaved mark while there are changes, undo and redo, then Versions,
  * Clone, Printer (the USB printer dialog), Test print and Save with their
- * keys.
+ * keys. Every button has a hover tip (components/Tip.tsx): what it does,
+ * its keys, and why it's off when it is; no native `title`, so never two
+ * tooltips.
  */
 
-import { SHORTCUTS, type Platform } from '../../../labels/builder/shortcuts';
+import { shortcutKeys, type Platform } from '../../../labels/builder/shortcuts';
+import Tip from '../../Tip';
 import '../../../styles/directory.css';
 import '../../../styles/labelBuilder.css';
 
@@ -47,10 +50,8 @@ export interface BuilderTopBarProps {
   platform: Platform;
 }
 
-function keysOf(id: string, platform: Platform): string {
-  const s = SHORTCUTS.find((x) => x.id === id);
-  return s ? (platform === 'mac' ? s.mac : s.win) : '';
-}
+/** Why editing controls are off while an older version is open. */
+const READ_ONLY_NOTE = 'An older version is open.';
 
 const UNDO_ICON = <path d="M6 7H12.5a4.5 4.5 0 0 1 0 9H8M6 7l3-3M6 7l3 3" />;
 const REDO_ICON = <path d="M14 7H7.5a4.5 4.5 0 0 0 0 9H12M14 7l-3-3M14 7l-3 3" />;
@@ -60,26 +61,31 @@ export default function BuilderTopBar({
   cloneBlocked = null, onTestPrint, onPrinter, printBlocked = null, onSave, saving = false, printing = false,
   readOnly = false, platform,
 }: BuilderTopBarProps) {
-  const undoKeys = keysOf('edit.undo', platform);
-  const redoKeys = keysOf('edit.redo', platform);
-  const printKeys = keysOf('workflow.testPrint', platform);
-  const saveKeys = keysOf('workflow.save', platform);
+  const undoKeys = shortcutKeys('edit.undo', platform);
+  const redoKeys = shortcutKeys('edit.redo', platform);
+  const printKeys = shortcutKeys('workflow.testPrint', platform);
+  const saveKeys = shortcutKeys('workflow.save', platform);
   return (
     <div className="lbb-bar" role="group" aria-label="Template">
-      <button type="button" className="mini-btn" onClick={onBack}>← Templates</button>
+      <Tip label="Back to the templates list">
+        <button type="button" className="mini-btn" onClick={onBack}>← Templates</button>
+      </Tip>
       <b className="lbb-name" title={name}>{name}</b>
       <span className="chip tag">{typeSize}</span>
       {role.kind === 'parent' ? (
-        <span className="chip c-blue lbb-dpis" title="Shown at the highlighted DPI; click another to switch">
+        <span className="chip c-blue lbb-dpis">
           {/* one flex item, so the separators keep their spaces */}
           <span>
             Parent (
             {role.dpis.map((dpi, i) => (
               <span key={dpi}>
                 {i > 0 && ' · '}
-                <button type="button" className={`lbb-dpi${dpi === role.viewDpi ? ' on' : ''}`}
-                  aria-pressed={dpi === role.viewDpi} aria-label={`Show at ${dpi} DPI`}
-                  onClick={() => role.onViewDpi(dpi)}>{dpi}</button>
+                <Tip label={`Show at ${dpi} DPI`}
+                  note={dpi === role.viewDpi ? 'Shown at this DPI now; click another to switch.' : null}>
+                  <button type="button" className={`lbb-dpi${dpi === role.viewDpi ? ' on' : ''}`}
+                    aria-pressed={dpi === role.viewDpi} aria-label={`Show at ${dpi} DPI`}
+                    onClick={() => role.onViewDpi(dpi)}>{dpi}</button>
+                </Tip>
               </span>
             ))}
             )
@@ -91,30 +97,41 @@ export default function BuilderTopBar({
       <span className="chip c-violet" aria-label={`Version ${version}`}>{version}</span>
       {dirty && <span className="chip c-amber">Unsaved</span>}
       <span className="lbb-group">
-        <button type="button" className="mini-btn lbb-icon-btn" aria-label="Undo" title={`Undo · ${undoKeys}`}
-          disabled={!canUndo || readOnly} onClick={onUndo}>
-          <svg className="lbb-icon" viewBox="0 0 20 20" aria-hidden="true">{UNDO_ICON}</svg>
-        </button>
-        <button type="button" className="mini-btn lbb-icon-btn" aria-label="Redo" title={`Redo · ${redoKeys}`}
-          disabled={!canRedo || readOnly} onClick={onRedo}>
-          <svg className="lbb-icon" viewBox="0 0 20 20" aria-hidden="true">{REDO_ICON}</svg>
-        </button>
+        <Tip label="Undo" keys={undoKeys} note={readOnly ? READ_ONLY_NOTE : canUndo ? null : 'Nothing to undo'}>
+          <button type="button" className="mini-btn lbb-icon-btn" aria-label="Undo"
+            disabled={!canUndo || readOnly} onClick={onUndo}>
+            <svg className="lbb-icon" viewBox="0 0 20 20" aria-hidden="true">{UNDO_ICON}</svg>
+          </button>
+        </Tip>
+        <Tip label="Redo" keys={redoKeys} note={readOnly ? READ_ONLY_NOTE : canRedo ? null : 'Nothing to redo'}>
+          <button type="button" className="mini-btn lbb-icon-btn" aria-label="Redo"
+            disabled={!canRedo || readOnly} onClick={onRedo}>
+            <svg className="lbb-icon" viewBox="0 0 20 20" aria-hidden="true">{REDO_ICON}</svg>
+          </button>
+        </Tip>
       </span>
       <span className="lbb-spacer" />
-      <button type="button" className="mini-btn" onClick={onVersions}>Versions</button>
+      <Tip label="Saved versions of this template">
+        <button type="button" className="mini-btn" onClick={onVersions}>Versions</button>
+      </Tip>
       {onClone && (
-        <button type="button" className="mini-btn" onClick={onClone} disabled={!!cloneBlocked}
-          title={cloneBlocked ?? 'Clone to a new template'}>Clone</button>
+        <Tip label="Clone to a new template" note={cloneBlocked}>
+          <button type="button" className="mini-btn" onClick={onClone} disabled={!!cloneBlocked}>Clone</button>
+        </Tip>
       )}
-      <button type="button" className="mini-btn" onClick={onPrinter} disabled={!!printBlocked}
-        title={printBlocked ?? 'Connect the USB printer, print an alignment label, check its fonts'}>Printer</button>
-      <button type="button" className="mini-btn" onClick={onTestPrint} disabled={printing || !!printBlocked}
-        title={printBlocked ?? 'Print this label with its sample values on a USB Zebra printer'}>
-        {printing ? 'Printing…' : 'Test print'} <kbd className="lbp-kbd">{printKeys}</kbd>
-      </button>
-      <button type="button" className="btn-solid lbb-save" onClick={onSave} disabled={saving || readOnly}>
-        {saving ? 'Saving…' : 'Save'} <kbd className="lbp-kbd">{saveKeys}</kbd>
-      </button>
+      <Tip label="Connect the USB printer, print an alignment label, check its fonts" note={printBlocked}>
+        <button type="button" className="mini-btn" onClick={onPrinter} disabled={!!printBlocked}>Printer</button>
+      </Tip>
+      <Tip label="Print this label with its sample values on a USB Zebra printer" keys={printKeys} note={printBlocked}>
+        <button type="button" className="mini-btn" onClick={onTestPrint} disabled={printing || !!printBlocked}>
+          {printing ? 'Printing…' : 'Test print'} <kbd className="lbp-kbd">{printKeys}</kbd>
+        </button>
+      </Tip>
+      <Tip label="Save" keys={saveKeys} note={readOnly ? 'An older version is open: nothing to save.' : null}>
+        <button type="button" className="btn-solid lbb-save" onClick={onSave} disabled={saving || readOnly}>
+          {saving ? 'Saving…' : 'Save'} <kbd className="lbp-kbd">{saveKeys}</kbd>
+        </button>
+      </Tip>
     </div>
   );
 }

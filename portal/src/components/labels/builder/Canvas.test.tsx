@@ -564,16 +564,23 @@ describe('align', () => {
     expect(b.top).toBeGreaterThanOrEqual(0);
   });
 
-  it('the align tooltips say what they align to', () => {
+  it('the align tooltips say what they align to', async () => {
     const { unmount } = setup({ selection: ['banner-pod', 'banner-nap'] });
-    const title = (name: string) => screen.getByRole('button', { name }).getAttribute('title');
-    expect(title('Align left')).toBe('Align left edges to the first selected · ⌥A');
-    expect(title('Align centers')).toMatch(/^Align centers to the first selected/);
-    expect(title('Align bottom')).toMatch(/^Align bottom edges to the first selected/);
-    expect(title('Match width')).toBe('Match the first selected’s width');
+    // the hover tip (components/Tip.tsx): its text is the label then the keys
+    const tipText = async (name: string) => {
+      const button = screen.getByRole('button', { name });
+      fireEvent.pointerEnter(button);
+      const text = (await screen.findByRole('tooltip')).textContent;
+      fireEvent.pointerLeave(button);
+      return text;
+    };
+    expect(await tipText('Align left')).toBe('Align left edges to the first selected⌥A');
+    expect(await tipText('Align centers')).toMatch(/^Align centers to the first selected/);
+    expect(await tipText('Align bottom')).toMatch(/^Align bottom edges to the first selected/);
+    expect(await tipText('Match width')).toBe('Match the first selected’s width');
     unmount();
     setup({ selection: ['banner-pod'] });
-    expect(title('Align left')).toBe('Align left to the label · ⌥A');
+    expect(await tipText('Align left')).toBe('Align left to the label⌥A');
   });
 
   it('one element aligns to the label', () => {
