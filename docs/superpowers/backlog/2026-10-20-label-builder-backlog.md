@@ -69,7 +69,9 @@ QR).
     numbers within 1e-6.
 17. **Lost pointer release; frozen drag collapses a multi-selection.**
     `Canvas.tsx`: finish the press on `lostpointercapture` and window
-    `blur`; a read-only drag keeps the selection.
+    `blur` for move, resize AND the new `place` press (a tool press whose
+    pointerup is lost places at the old point on the next click); a
+    read-only drag keeps the selection.
 18. **Leave guard misses in-app navigation.** `useLeaveGuard.ts`: `useBlocker`
     if the router is a data router.
 19. **Print Labels DPI picker flashes one frame on connect.** `PrintLabels.tsx`:
@@ -80,6 +82,31 @@ QR).
 22. **Builder Save / Versions not gated on `labels:change`.** `LabelBuilder.tsx`,
     `VersionsModal`: disable without the permission; `saveError` for 403
     should name the missing permission.
+
+## API (`api/`) — from the re-review of the fix wave
+
+30. **Lock-order deadlock between explicit family locks and key-order
+    updates.** `templates_tree.py` `save_parent`/`update_from_parent` lock
+    parent → children explicitly, while activate/deactivate/replace/rename/
+    size/type PATCHes take row locks implicitly in primary-key order (random
+    UUIDs, so a child often sorts before its parent). Two designers on one
+    family within a millisecond can deadlock; Postgres aborts one (a 500,
+    nothing half-written). Fix: lock the whole family in one statement
+    (`WHERE id = :p OR parent_id = :p ORDER BY id FOR UPDATE`) in both save
+    functions, or make every family write take the parent lock first.
+31. **Size-only or samples-only parent PATCH reads the design before the
+    lock.** `routes/labels.py` `_patch_parent` builds `design` (plus the
+    size rewrite) before `save_parent` locks; a save committed in between is
+    overwritten. API-only today (the portal always sends design and samples,
+    and nothing PATCHes `size_key`). Fix: apply the size inside
+    `save_parent` after `_lock`, or lock at the top of `_patch_parent`.
+32. **`_num` on a huge integer.** `model.py`: `math.isfinite` raises
+    `OverflowError` on a 400-digit int → 500 on the `labels:view` compile
+    route (pre-existing). Catch it and return False.
+33. **New template custom size: a lost PATCH answer followed by a revert to
+    the original size** uses the row without rewriting it
+    (`NewTemplateModal.tsx`): mark `ownSize` dirty on any non-403/404
+    failure so the next try always PATCHes.
 
 ## Kiosk and laptop edge (`kiosk/`, `kiosk_laptop/`)
 
