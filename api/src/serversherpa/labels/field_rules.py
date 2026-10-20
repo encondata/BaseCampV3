@@ -65,10 +65,10 @@ def _max_trim(value: str, rules: FieldRules) -> str:
 
 
 def _pad_number(value: str, rules: FieldRules) -> str:
-    """Leading zeros on the integer part only (`3.5` → `03.5`); never
-    truncates."""
+    """Leading zeros on the integer part only (`3.5` → `03.5`, `.5` →
+    `00.5`); never truncates. A blank value stays blank: no zeros."""
     length = rules.get("expected_length") or 0
-    if rules.get("display") != "number" or length <= 0:
+    if not value or rules.get("display") != "number" or length <= 0:
         return value
     head, dot, tail = value.partition(".")
     return head.rjust(length, "0") + dot + tail
@@ -80,6 +80,7 @@ def apply_rules(value: str, rules: FieldRules) -> str:
 
 
 def is_blank(value: str, rules: FieldRules) -> bool:
-    """Hide-when-empty's test: blank after Strip and Max/Trim, before
-    padding, so a stripped-away number is still blank."""
+    """Hide-when-empty's test: blank after Strip and Max/Trim. Padding
+    leaves a blank value blank, so this always agrees with apply_rules
+    returning `""`."""
     return _max_trim(_strip(value, rules), rules) == ""

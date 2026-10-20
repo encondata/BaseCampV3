@@ -55,10 +55,11 @@ function maxTrim(value: string, rules: FieldRules): string {
   return (rules.trim === 'front' ? chars.slice(-max) : chars.slice(0, max)).join('');
 }
 
-/** Leading zeros on the integer part only (`3.5` → `03.5`); never truncates. */
+/** Leading zeros on the integer part only (`3.5` → `03.5`, `.5` → `00.5`);
+ *  never truncates. A blank value stays blank: no zeros. */
 function padNumber(value: string, rules: FieldRules): string {
   const length = rules.expectedLength ?? 0;
-  if (rules.display !== 'number' || length <= 0) return value;
+  if (!value || rules.display !== 'number' || length <= 0) return value;
   const dot = value.indexOf('.');
   const head = dot < 0 ? value : value.slice(0, dot);
   const tail = dot < 0 ? '' : value.slice(dot);
@@ -70,8 +71,8 @@ export function applyRules(value: string, rules: FieldRules): string {
   return padNumber(maxTrim(strip(value, rules), rules), rules);
 }
 
-/** Hide-when-empty's test: blank after Strip and Max/Trim, before padding,
- *  so a stripped-away number is still blank. */
+/** Hide-when-empty's test: blank after Strip and Max/Trim. Padding leaves a
+ *  blank value blank, so this always agrees with applyRules returning `''`. */
 export function isBlank(value: string, rules: FieldRules): boolean {
   return maxTrim(strip(value, rules), rules) === '';
 }
