@@ -73,6 +73,9 @@ export interface PropertiesPanelProps {
   /** The template takes images: an ID badge in ZPL. */
   imagesAllowed?: boolean;
   readOnly?: boolean;
+  /** A dialog of the panel's own opened (true) or closed (false): the
+   *  image library's Delete…; the page turns the canvas keys off meanwhile. */
+  onDialog?: (open: boolean) => void;
 }
 
 const DISPLAYS: SegmentedOption<DisplayChoice>[] = [
@@ -154,7 +157,7 @@ function barcodeHint(el: ElementV2, value: string, dpi: number): string {
 
 export default function PropertiesPanel({
   design: given, selection, samples, fields, dpi, metricsFor, onChange: emit, onSelect, labelType,
-  imagesAllowed = false, readOnly = false,
+  imagesAllowed = false, readOnly = false, onDialog,
 }: PropertiesPanelProps) {
   // every barcode as wide as it prints, here and in every edit sent up
   const design = withBarcodeWidths(given, samples, dpi);
@@ -432,7 +435,7 @@ export default function PropertiesPanel({
             </Prop>
             {image.source === 'static' && (
               <Prop label="Static image">
-                <ImageLibraryPicker value={image.imageId ?? null} disabled={readOnly}
+                <ImageLibraryPicker value={image.imageId ?? null} disabled={readOnly} onDialog={onDialog}
                   onPick={(imageId) => apply((e) => (isImage(e) && e.source === 'static' ? { imageId } : null))} />
               </Prop>
             )}

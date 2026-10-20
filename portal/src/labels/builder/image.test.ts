@@ -46,7 +46,14 @@ describe('samplePersonId', () => {
     expect(PERSON_SAMPLE_KEY).toBe('person:id');
     expect(samplePersonId({ 'person:id': PERSON, person_name: 'Ada' })).toBe(PERSON);
     expect(samplePersonId({ person_name: 'Ada' })).toBeNull();
-    expect(samplePersonId({ 'person:id': '  ' })).toBeNull();
+    expect(samplePersonId({ 'person:id': '' })).toBeNull();
+  });
+
+  it('sends the stored value as it is, as the server reads it (only an empty one is no person)', () => {
+    // the server's `if not value` treats only "" as none: a padded or blank
+    // value is a person it can't find (422 person_not_found), never a trimmed one
+    expect(samplePersonId({ 'person:id': `${PERSON} ` })).toBe(`${PERSON} `);
+    expect(samplePersonId({ 'person:id': '  ' })).toBe('  ');
   });
 });
 

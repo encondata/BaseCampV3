@@ -44,7 +44,11 @@
  * an image saves as schema 3 (model.ts serializeDesign) and anywhere else
  * one is refused before the API would. The badge's sample person rides in
  * the samples (`person:id`), so the canvas, the preview and Test print draw
- * the same photo and logo.
+ * the same photo and logo. Load from person… (LoadFromPersonModal) makes
+ * someone the sample person: every person sample becomes theirs ("" for
+ * their blanks) and `person:id` names them; Clear sample person takes
+ * every person sample and `person:id` away. Either one forgets the photos
+ * and logos the canvas kept (imageRaster.ts), so they are asked for again.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -60,9 +64,13 @@ import {
 import { fontOf, isTypeset, patchElements, refit } from '../components/labels/builder/builderEdits';
 import Canvas, { DEFAULT_VIEW, type CanvasView } from '../components/labels/builder/Canvas';
 import { deleteSelection, selected } from '../components/labels/builder/canvasActions';
-import { fieldLabel } from '../components/labels/builder/fieldCatalog';
+import { fieldLabel, personFieldKeys } from '../components/labels/builder/fieldCatalog';
 import FieldPanel, { type FieldPanelHandle } from '../components/labels/builder/FieldPanel';
+import { forgetPersonRasters } from '../components/labels/builder/imageRaster';
 import LoadFromAssetModal, { fillSamples } from '../components/labels/builder/LoadFromAssetModal';
+import LoadFromPersonModal, {
+  clearPersonSamples, personSamples,
+} from '../components/labels/builder/LoadFromPersonModal';
 import NewTemplateModal from '../components/labels/builder/NewTemplateModal';
 import PlacedFieldsTable from '../components/labels/builder/PlacedFieldsTable';
 import PreviewPanel from '../components/labels/builder/PreviewPanel';
@@ -83,7 +91,7 @@ import {
   ApiError, compileLabel, getLabelFontBytes, getLabelTemplate, listLabelFields, listLabelFonts, listLabelTemplateTree,
   listLabelVocab, restoreLabelTemplateVersion, templateVersionLabel, updateLabelTemplate,
   type LabelFields, type LabelFont, type LabelTemplate, type LabelTemplateSaved, type LabelTemplateTreeNode,
-  type LabelTemplateVersionDetail, type LabelVocab,
+  type LabelTemplateVersionDetail, type LabelVocab, type SamplePersonValues,
 } from '../lib/api';
 import { dpiDots, isPersonLabelType, vocabLabel } from '../lib/labels';
 import { naturalCompare } from '../lib/naturalSort';
@@ -217,7 +225,7 @@ function EditTemplate({ id }: { id: string }) {
 
 /** A notice; `undoOf` offers Undo while that design is still the last step. */
 type Notice = { type: 'success' | 'info' | 'warning' | 'error'; message: string; undoOf?: DesignV2 };
-type Modal = 'versions' | 'clone' | 'sheet' | 'asset' | 'printer';
+type Modal = 'versions' | 'clone' | 'sheet' | 'asset' | 'person' | 'printer';
 interface Viewing { label: string; version: number; childEdits: number; design: DesignV2; samples: Record<string, string> }
 
 const json = (v: unknown) => JSON.stringify(v);
@@ -300,6 +308,8 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
   const [saving, setSaving] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  /** A panel's own dialog is open (the image library's Delete…). */
+  const [panelDialog, setPanelDialog] = useState(false);
   const panelRef = useRef<FieldPanelHandle>(null);
   const sideRef = useRef<HTMLDivElement>(null);
   const clipboard = useRef<{ els: ElementV2[]; pastes: number }>({ els: [], pastes: 0 });
@@ -343,7 +353,7 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
   const version = templateVersionLabel(template);
   const isZpl = template.language_key === 'zpl';
   const imagesAllowed = isZpl && isPersonLabelType(template.label_type);
-  const modalOpen = modal !== null || outOfDate !== null || leaveTo !== null;
+  const modalOpen = modal !== null || outOfDate !== null || leaveTo !== null || panelDialog;
 
   // ── the history ────────────────────────────────────────────────────
 
@@ -682,6 +692,32 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
   const onSelect = useCallback((ids: string[]) => setSelection(ids), []);
   const editChange = readOnly ? () => {} : apply;
 
+  /** Load from person…: every person sample becomes theirs, "" for their
+   *  blanks, and `person:id` names them; their photo and logo are asked
+   *  for afresh (even the same person's: they may have changed). */
+  const loadPerson = (loaded: SamplePersonValues) => {
+    forgetPersonRasters();
+    setSamples(personSamples(samples, loaded, personFieldKeys(fields)));
+    setModal(null);
+    const used = new Set(design.elements.flatMap((e) => (e.type === 'image' ? [e.source] : [])));
+    const missing = [
+      used.has('photo') && !loaded.has_photo ? 'photo' : null,
+      used.has('logo') && !loaded.has_logo ? 'logo' : null,
+    ].filter((m): m is string => m !== null);
+    const name = loaded.values.person_name || 'That person';
+    setNotice({
+      type: 'success',
+      message: `Loaded ${name} as the sample person.${missing.length ? ` They have no ${missing.join(' or ')}.` : ''}`,
+    });
+  };
+
+  /** Clear sample person: no person sample and no `person:id`. */
+  const clearPerson = () => {
+    forgetPersonRasters();
+    setSamples(clearPersonSamples(samples, personFieldKeys(fields)));
+    setNotice({ type: 'info', message: 'Cleared the sample person.' });
+  };
+
   return (
     <div className="portal-page lbb-page">
       <BuilderTopBar
@@ -736,7 +772,8 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
         <FieldPanel ref={panelRef} fields={fields} design={shownDesign} samples={shownSamples} onSamples={setSamples}
           onChange={editChange} onSelect={onSelect} selection={selection} onRemoved={onRemoved}
           metricsFor={metricsFor} labelType={template.label_type}
-          onLoadFromAsset={() => setModal('asset')} loadError={fieldsError} readOnly={readOnly}
+          onLoadFromAsset={() => setModal('asset')} onLoadFromPerson={() => setModal('person')}
+          onClearPerson={clearPerson} loadError={fieldsError} readOnly={readOnly}
           samplesFromParent={isChild} />
         <div className="lbb-center">
           <Canvas design={shownDesign} dpi={dpi} view={view} onView={setView} samples={shownSamples}
@@ -749,7 +786,7 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
         <div className="lbb-side" ref={sideRef}>
           <PropertiesPanel design={shownDesign} selection={selection} samples={shownSamples} fields={fields} dpi={dpi}
             metricsFor={metricsFor} onChange={editChange} onSelect={onSelect} labelType={template.label_type}
-            imagesAllowed={imagesAllowed} readOnly={readOnly} />
+            imagesAllowed={imagesAllowed} readOnly={readOnly} onDialog={setPanelDialog} />
           <PreviewPanel design={shownDesign} dpi={dpi} samples={shownSamples} library={library}
             sizeKey={template.size_key} labelType={template.label_type} disabled={!isZpl} />
         </div>
@@ -776,6 +813,9 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
           setModal(null);
           setNotice({ type: 'success', message: `Filled ${filled.filled} sample${filled.filled === 1 ? '' : 's'} from the asset.` });
         }} />
+      )}
+      {modal === 'person' && (
+        <LoadFromPersonModal templateName={template.name} onClose={() => setModal(null)} onLoad={loadPerson} />
       )}
       {outOfDate && (
         <OutOfDateModal parentVersion={version} items={outOfDate} onDone={(updated) => {

@@ -20,9 +20,13 @@ import { FAKE_METRICS, FIELDS, SAMPLES, VEGAS, elementOf, fakeMetricsFor } from 
 import PlacedFieldsTable from './PlacedFieldsTable';
 import PropertiesPanel, { type PropertiesPanelProps } from './PropertiesPanel';
 
-const api = vi.hoisted(() => ({ listLabelImages: vi.fn(), uploadLabelImage: vi.fn() }));
+const api = vi.hoisted(() => ({ listLabelImages: vi.fn(), uploadLabelImage: vi.fn(), deleteLabelImage: vi.fn() }));
 vi.mock('../../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../../lib/api')>()), ...api,
+}));
+const raster = vi.hoisted(() => ({ forgetStaticRaster: vi.fn() }));
+vi.mock('./imageRaster', async (importActual) => ({
+  ...(await importActual<typeof import('./imageRaster')>()), ...raster,
 }));
 
 afterEach(() => {
@@ -440,6 +444,84 @@ describe('PropertiesPanel: an image (ID badges)', () => {
       { target: { files: [new File(['x'], 'big.png', { type: 'image/png' })] } });
     expect(await within(panel()).findByText('That file is over 5 MB.')).toBeTruthy();
     expect(change).not.toHaveBeenCalled();
+  });
+
+  describe('Delete… (the picked library picture)', () => {
+    const DELETED_NOTE = 'This picture was deleted from the library, so it prints nothing. Pick another.';
+    const staticOne = (imageId?: string) => badge(photo({ source: 'static', fit: 'contain', mode: 'threshold', imageId }));
+    const confirmDialog = () => screen.getByRole('dialog', { name: 'Delete library image' });
+
+    async function openDelete(onDialog = vi.fn()) {
+      const utils = setup({ design: staticOne('img-10'), selection: ['image-1'], props: { imagesAllowed: true, onDialog } });
+      await waitFor(() => expect(api.listLabelImages).toHaveBeenCalledTimes(1));
+      fireEvent.click(await within(panel()).findByRole('button', { name: 'Delete…' }));
+      return { ...utils, onDialog };
+    }
+
+    it('asks first, with the report-generate header', async () => {
+      await openDelete();
+      expect(within(confirmDialog()).getByText('Logo 10 · Delete')).toBeTruthy();
+      expect(within(confirmDialog()).getByRole('heading', { name: 'Delete “Logo 10”?' })).toBeTruthy();
+      expect(within(confirmDialog()).getByText(
+        'Templates that use it will print nothing in its place until another image is picked.')).toBeTruthy();
+      expect(api.deleteLabelImage).not.toHaveBeenCalled();
+    });
+
+    it('deletes it, refreshes the library, and the element keeps it (it prints nothing now)', async () => {
+      api.deleteLabelImage.mockResolvedValue(undefined);
+      const { change, onDialog } = await openDelete();
+      expect(onDialog).toHaveBeenLastCalledWith(true);
+      api.listLabelImages.mockResolvedValue([LIBRARY[1]]);
+      fireEvent.click(within(confirmDialog()).getByRole('button', { name: 'Delete image' }));
+      await waitFor(() => expect(api.deleteLabelImage).toHaveBeenCalledWith('img-10'));
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete library image' })).toBeNull());
+      expect(onDialog).toHaveBeenLastCalledWith(false);
+      expect(api.listLabelImages).toHaveBeenCalledTimes(2);
+      expect(raster.forgetStaticRaster).toHaveBeenCalledWith('img-10');
+      expect(await within(panel()).findByText(DELETED_NOTE)).toBeTruthy();
+      // the design is untouched: the element still names the picture
+      expect(change).not.toHaveBeenCalled();
+      // nothing left to delete
+      expect(within(panel()).queryByRole('button', { name: 'Delete…' })).toBeNull();
+    });
+
+    it('Cancel deletes nothing', async () => {
+      const { onDialog } = await openDelete();
+      fireEvent.click(within(confirmDialog()).getByRole('button', { name: 'Cancel' }));
+      expect(screen.queryByRole('dialog', { name: 'Delete library image' })).toBeNull();
+      expect(onDialog).toHaveBeenLastCalledWith(false);
+      expect(api.deleteLabelImage).not.toHaveBeenCalled();
+    });
+
+    it('a delete the server refuses says why and keeps the dialog open', async () => {
+      const { ApiError } = await import('../../../lib/api');
+      api.deleteLabelImage.mockRejectedValue(new ApiError(403, 'forbidden'));
+      await openDelete();
+      fireEvent.click(within(confirmDialog()).getByRole('button', { name: 'Delete image' }));
+      expect(await within(confirmDialog()).findByText('You don’t have access to the label image library.'))
+        .toBeTruthy();
+      expect(raster.forgetStaticRaster).not.toHaveBeenCalled();
+    });
+
+    it('one already gone counts as deleted', async () => {
+      const { ApiError } = await import('../../../lib/api');
+      api.deleteLabelImage.mockRejectedValue(new ApiError(404, 'image_not_found'));
+      api.listLabelImages.mockResolvedValueOnce(LIBRARY).mockResolvedValue([LIBRARY[1]]);
+      await openDelete();
+      fireEvent.click(within(confirmDialog()).getByRole('button', { name: 'Delete image' }));
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete library image' })).toBeNull());
+      expect(await within(panel()).findByText(DELETED_NOTE)).toBeTruthy();
+    });
+
+    it('nothing picked, or read-only: no Delete…', async () => {
+      setup({ design: staticOne(), selection: ['image-1'], props: { imagesAllowed: true } });
+      await waitFor(() => expect(api.listLabelImages).toHaveBeenCalled());
+      expect(within(panel()).queryByRole('button', { name: 'Delete…' })).toBeNull();
+      cleanup();
+      setup({ design: staticOne('img-10'), selection: ['image-1'], props: { imagesAllowed: true, readOnly: true } });
+      await waitFor(() => expect(api.listLabelImages).toHaveBeenCalled());
+      expect((within(panel()).getByRole('button', { name: 'Delete…' }) as HTMLButtonElement).disabled).toBe(true);
+    });
   });
 
   it('off an ID badge in ZPL, says images don’t print there', () => {

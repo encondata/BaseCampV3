@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { DesignV2 } from '../../../labels/builder/model';
 import type { LabelFields } from '../../../lib/api';
-import { FIELDS, SAMPLES, VEGAS, fakeMetricsFor, vegasWith } from './builderTestKit';
+import { FIELDS, PERSON_FIELDS, SAMPLES, VEGAS, fakeMetricsFor, vegasWith } from './builderTestKit';
 import FieldPanel, { type FieldPanelHandle, type FieldPanelProps } from './FieldPanel';
 
 afterEach(cleanup);
@@ -273,6 +273,18 @@ describe('FieldPanel', () => {
         labelType="container" onChange={vi.fn()} onSelect={vi.fn()} onSamples={vi.fn()} onLoadFromAsset={load} />,
     );
     expect(screen.queryByRole('button', { name: 'Load from asset…' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Load from person…' })).toBeNull();
+  });
+
+  it('an asset label offers Load from asset… and never Load from person…', () => {
+    render(
+      <FieldPanel fields={FIELDS} design={VEGAS()} samples={SAMPLES} metricsFor={fakeMetricsFor} labelType="top"
+        onChange={vi.fn()} onSelect={vi.fn()} onSamples={vi.fn()} onLoadFromAsset={vi.fn()}
+        onLoadFromPerson={vi.fn()} onClearPerson={vi.fn()} />,
+    );
+    expect(screen.getByRole('button', { name: 'Load from asset…' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Load from person…' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Clear sample person' })).toBeNull();
   });
 
   it('read-only: no adding, no removing and no editing', () => {
@@ -300,5 +312,60 @@ describe('a DPI child', () => {
     expect((screen.getByRole('button', { name: 'Add to the label' }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole('button', { name: 'Add Serial number to the label' }) as HTMLButtonElement).disabled).toBe(false);
     expect(screen.getByRole('button', { name: 'Remove Serial number from the label' })).toBeTruthy();
+  });
+});
+
+describe('an ID badge', () => {
+  const PERSON = '0b7f3c52-6a2e-4c41-9d1e-3f2a9b8c7d10';
+  const badge = (): DesignV2 => ({
+    schema: 2, size: { w: 3.375, h: 2.125 }, splits: {}, elements: [
+      { id: 'field-1', type: 'field', field: 'person_name', display: 'text', x: 0.1, y: 0.1, w: 1.5, h: 0.2,
+        rotation: 0, font: { family: 'swiss721-cond-bold', weight: 'regular' }, sizePt: 12, baselineIn: 0.15 },
+    ],
+  } as DesignV2);
+
+  function renderBadge(props: Partial<FieldPanelProps> = {}) {
+    const onLoadFromPerson = vi.fn();
+    const onClearPerson = vi.fn();
+    const utils = render(
+      <FieldPanel fields={PERSON_FIELDS} design={badge()} samples={{}} metricsFor={fakeMetricsFor}
+        labelType="id_badge" onChange={vi.fn()} onSelect={vi.fn()} onSamples={vi.fn()} onLoadFromAsset={vi.fn()}
+        onLoadFromPerson={onLoadFromPerson} onClearPerson={onClearPerson} {...props} />,
+    );
+    return { ...utils, onLoadFromPerson, onClearPerson };
+  }
+
+  it('offers Load from person…, never Load from asset…', () => {
+    const { onLoadFromPerson } = renderBadge();
+    expect(screen.queryByRole('button', { name: 'Load from asset…' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Load from person…' }));
+    expect(onLoadFromPerson).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Fills every sample, the photo and the logo from a real person.')).toBeTruthy();
+    // no sample person yet: nothing to clear
+    expect(screen.queryByRole('button', { name: 'Clear sample person' })).toBeNull();
+  });
+
+  it('with a sample person: names them and offers Clear sample person', () => {
+    const { onClearPerson } = renderBadge({ samples: { person_name: 'Ada Lovelace', 'person:id': PERSON } });
+    expect(screen.getByText('Sample person: Ada Lovelace')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear sample person' }));
+    expect(onClearPerson).toHaveBeenCalledTimes(1);
+  });
+
+  it('Clear waits for the fields: they say which samples are the person’s', () => {
+    renderBadge({ fields: null, samples: { person_name: 'Ada Lovelace', 'person:id': PERSON } });
+    expect((screen.getByRole('button', { name: 'Clear sample person' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Load from person…' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('a DPI child or an old version: both read-only', () => {
+    renderBadge({ samplesFromParent: true, samples: { person_name: 'Ada Lovelace', 'person:id': PERSON } });
+    expect((screen.getByRole('button', { name: 'Load from person…' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Clear sample person' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('Samples belong to the parent template.')).toBeTruthy();
+    cleanup();
+    renderBadge({ readOnly: true, samples: { person_name: 'Ada Lovelace', 'person:id': PERSON } });
+    expect((screen.getByRole('button', { name: 'Load from person…' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Clear sample person' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

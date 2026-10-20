@@ -10,8 +10,8 @@ import { expect, it } from 'vitest';
 
 import type { LabelFields } from '../../../lib/api';
 import { addElement, newDesign } from '../../../labels/builder/model';
-import { FIELDS } from './builderTestKit';
-import { allowsFromTo, catalogGroups } from './fieldCatalog';
+import { FIELDS, PERSON_FIELDS } from './builderTestKit';
+import { allowsFromTo, catalogGroups, personFieldKeys } from './fieldCatalog';
 
 const CONTAINER_GROUP = {
   key: 'container', label: 'Container', label_types: ['container', 'container_info'],
@@ -53,4 +53,12 @@ it('an ID badge has the Person group and no From-To columns', () => {
   });
   expect(catalogGroups(BADGE, placed, 'id_badge').map((g) => g.key)).toEqual(['person']);
   expect(catalogGroups(EVERY, placed, 'shelf').at(-1)?.fields.map((f) => f.key)).toContain('ft:Notes');
+});
+
+it('personFieldKeys: the Person group’s keys, what Load from person… fills and Clear sample person empties', () => {
+  expect(personFieldKeys(PERSON_FIELDS)).toEqual(PERSON_FIELDS.groups[0].fields.map((f) => f.key));
+  expect(personFieldKeys(PERSON_FIELDS)).toContain('person_rfid_tag');
+  // an asset label has none; nor has a catalog still loading
+  expect(personFieldKeys(FIELDS)).toEqual([]);
+  expect(personFieldKeys(null)).toEqual([]);
 });

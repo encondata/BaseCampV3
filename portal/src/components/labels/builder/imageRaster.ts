@@ -6,19 +6,29 @@
  * image.ts rasterKey) and kept for the session, so a change of look
  * (brightness, contrast, threshold, invert) only dithers again.
  *
+ * The session keeps at most RASTER_CACHE_SIZE pictures and
+ * RASTER_CACHE_BYTES of them (the server's own raster cache's caps), the
+ * least recently used going first. "No picture" (the API's 404 `no_image`)
+ * is an answer for whoever asked, never kept: the person may have a photo
+ * by the next ask. A new sample person (Load from person… — even the same
+ * one again — or Clear sample person) forgets every photo and logo
+ * (`forgetPersonRasters`), and a picture deleted from the label image
+ * library forgets that picture (`forgetStaticRaster`); the elements that
+ * drew one ask again.
+ *
  * `useImageRaster` gives an element its raster: from the cache at once, else
  * fetched — the element's first picture straight away, any later one (a
- * resize, a new fit or DPI) after RASTER_DEBOUNCE_MS without a further
- * change, so a drag asks once, for the size it ends on. Meanwhile the
- * picture it had stays up. "No picture" (the API's 404 `no_image`) is an
- * answer and is kept; a request that fails is never cached, its element
- * says why (`rasterErrorText`) and asks again the next time it changes.
+ * resize, a new fit or DPI, a forgotten picture) after RASTER_DEBOUNCE_MS
+ * without a further change, so a drag asks once, for the size it ends on.
+ * Meanwhile the picture it had stays up. A request that fails is never
+ * cached, its element says why (`rasterErrorText`) and asks again the next
+ * time it changes.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 import { imageRasterSize, rasterKey, rasterRequest, type RasterRequest } from '../../../labels/builder/image';
-import type { ImageElement } from '../../../labels/builder/model';
+import type { ImageElement, ImageSource } from '../../../labels/builder/model';
 import { ApiError, labelImageRaster } from '../../../lib/api';
 
 /** A picture as the canvas dithers it: gray levels, the footprint's size. */
@@ -29,25 +39,85 @@ export interface GrayRaster {
 }
 
 export const RASTER_DEBOUNCE_MS = 250;
-/** How many pictures the session keeps. */
-const CACHE_SIZE = 64;
+/** How many pictures the session keeps (asked for or kept). */
+export const RASTER_CACHE_SIZE = 64;
+/** How many bytes of gray levels the session keeps at most. */
+export const RASTER_CACHE_BYTES = 64 * 1024 * 1024;
 
 interface Entry {
   promise: Promise<GrayRaster | null>;
-  /** Set once it resolves: the raster, or null for no picture. */
-  value?: GrayRaster | null;
+  /** Whose picture: a library image's id, or (a photo or logo) a person's. */
+  source: ImageSource;
+  subject: string | null;
+  /** Set once the picture is kept. */
+  value?: GrayRaster;
 }
 
+/** Oldest first: Map order, a kept or reused picture moved to the back. */
 const cache = new Map<string, Entry>();
+let bytes = 0;
+
+/** How many times the sample person's pictures, and each library
+ *  picture, were forgotten: an element whose count moves asks again. */
+let personEpoch = 0;
+const staticEpochs = new Map<string, number>();
+const listeners = new Set<() => void>();
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
+function epochOf(req: RasterRequest | null): number {
+  if (!req) return 0;
+  return req.source === 'static' ? staticEpochs.get(req.image_id ?? '') ?? 0 : personEpoch;
+}
+
+function drop(key: string): void {
+  const hit = cache.get(key);
+  if (!hit) return;
+  cache.delete(key);
+  if (hit.value) bytes -= hit.value.gray.length;
+}
+
+/** Drops the oldest pictures until both caps hold, never `except`. */
+function evict(except: string): void {
+  for (const key of cache.keys()) {
+    if (cache.size <= RASTER_CACHE_SIZE && bytes <= RASTER_CACHE_BYTES) return;
+    if (key !== except) drop(key);
+  }
+}
 
 /** Forgets every picture (tests; a new session starts empty anyway). */
 export function clearRasterCache(): void {
   cache.clear();
+  bytes = 0;
 }
 
-function remember(key: string, entry: Entry): void {
-  cache.set(key, entry);
-  while (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value as string);
+/** The bytes of gray levels kept now. */
+export function rasterCacheBytes(): number {
+  return bytes;
+}
+
+/** A new sample person (or the same one loaded again, or none): every
+ *  photo and logo kept, or on its way, is forgotten, and the elements
+ *  showing one ask again. */
+export function forgetPersonRasters(): void {
+  for (const [key, entry] of cache) {
+    if (entry.source !== 'static') drop(key);
+  }
+  personEpoch += 1;
+  listeners.forEach((l) => l());
+}
+
+/** A library picture was deleted: its pictures are forgotten, and the
+ *  elements showing it ask again (and get "no picture"). */
+export function forgetStaticRaster(imageId: string): void {
+  for (const [key, entry] of cache) {
+    if (entry.source === 'static' && entry.subject === imageId) drop(key);
+  }
+  staticEpochs.set(imageId, (staticEpochs.get(imageId) ?? 0) + 1);
+  listeners.forEach((l) => l());
 }
 
 async function load(req: RasterRequest, el: ImageElement): Promise<GrayRaster | null> {
@@ -63,16 +133,15 @@ async function load(req: RasterRequest, el: ImageElement): Promise<GrayRaster | 
   return { width, height, gray: got.gray };
 }
 
-/** The settled raster for `key`: the picture, null for none, undefined
- *  while it loads or when it was never asked for. */
-function settled(key: string): GrayRaster | null | undefined {
+/** The kept raster for `key`, undefined when none is kept (never asked
+ *  for, on its way, no picture, forgotten). */
+function settled(key: string): GrayRaster | undefined {
   const hit = cache.get(key);
-  if (hit && hit.value !== undefined) {
-    // recently used: to the back of the line
-    cache.delete(key);
-    cache.set(key, hit);
-  }
-  return hit?.value;
+  if (hit?.value === undefined) return undefined;
+  // recently used: to the back of the line
+  cache.delete(key);
+  cache.set(key, hit);
+  return hit.value;
 }
 
 /** `el`'s gray raster at `dpi` for the sample person `personId`: null when
@@ -83,17 +152,35 @@ export function fetchRaster(el: ImageElement, dpi: number, personId: string | nu
   if (!req) return Promise.resolve(null);
   const key = rasterKey(req);
   const hit = cache.get(key);
-  if (hit) return hit.promise;
+  if (hit) {
+    if (hit.value) settled(key);
+    return hit.promise;
+  }
   const entry: Entry = {
+    source: req.source,
+    subject: (req.source === 'static' ? req.image_id : req.person_id) ?? null,
     promise: load(req, el).then((value) => {
-      entry.value = value;
+      const current = cache.get(key) === entry;
+      if (!value) {
+        // no picture: the answer for those asking now, never kept
+        if (current) cache.delete(key);
+        return null;
+      }
+      if (current) {
+        entry.value = value;
+        bytes += value.gray.length;
+        cache.delete(key);
+        cache.set(key, entry);
+        evict(key);
+      }
       return value;
     }, (err: unknown) => {
       if (cache.get(key) === entry) cache.delete(key);
       throw err;
     }),
   };
-  remember(key, entry);
+  cache.set(key, entry);
+  evict(key);
   return entry.promise;
 }
 
@@ -127,6 +214,9 @@ export function rasterErrorText(err: unknown): string {
 export function useImageRaster(el: ImageElement, dpi: number, personId: string | null, enabled: boolean): RasterState {
   const req = enabled ? rasterRequest(el, dpi, personId) : null;
   const key = req ? rasterKey(req) : null;
+  // moves when this picture is forgotten: an answer from before is old
+  const epoch = useSyncExternalStore(subscribe, () => epochOf(req));
+  const slot = key === null ? null : `${epoch}:${key}`;
   // the latest element and person, for the request the effect makes
   const latest = useRef({ el, dpi, personId });
   useEffect(() => { latest.current = { el, dpi, personId }; });
@@ -135,12 +225,12 @@ export function useImageRaster(el: ImageElement, dpi: number, personId: string |
   // a picture was asked for before: the next request waits for quiet
   const asked = useRef(false);
   const [result, setResult] = useState<
-    { key: string; raster: GrayRaster | null } | { key: string; error: string } | null>(null);
+    { slot: string; raster: GrayRaster | null } | { slot: string; error: string } | null>(null);
 
   const cached = key === null ? undefined : settled(key);
   // after a failure, the element's next change asks again: a lasting fault
   // asks once per edit, never in a loop
-  const failed = result !== null && result.key === key && 'error' in result;
+  const failed = result !== null && result.slot === slot && 'error' in result;
   const [attempt, setAttempt] = useState(0);
   const seen = useRef(el);
   useEffect(() => {
@@ -150,7 +240,7 @@ export function useImageRaster(el: ImageElement, dpi: number, personId: string |
   }, [el, failed]);
 
   useEffect(() => {
-    if (key === null) return undefined;
+    if (slot === null) return undefined;
     if (cached !== undefined) {
       asked.current = true;
       return undefined;
@@ -160,20 +250,20 @@ export function useImageRaster(el: ImageElement, dpi: number, personId: string |
       asked.current = true;
       const { el: e, dpi: d, personId: p } = latest.current;
       fetchRaster(e, d, p).then(
-        (raster) => { if (live) setResult({ key, raster }); },
-        (err: unknown) => { if (live) setResult({ key, error: rasterErrorText(err) }); },
+        (raster) => { if (live) setResult({ slot, raster }); },
+        (err: unknown) => { if (live) setResult({ slot, error: rasterErrorText(err) }); },
       );
     }, asked.current ? RASTER_DEBOUNCE_MS : 0);
     return () => {
       live = false;
       window.clearTimeout(timer);
     };
-  }, [key, cached, attempt]);
+  }, [slot, cached, attempt]);
 
   let state: RasterState;
   if (key === null) state = { status: 'none' };
-  else if (cached !== undefined) state = cached ? { status: 'ready', raster: cached } : { status: 'none' };
-  else if (result?.key === key) {
+  else if (cached !== undefined) state = { status: 'ready', raster: cached };
+  else if (result?.slot === slot) {
     state = 'error' in result ? { status: 'error', message: result.error, stale: null }
       : result.raster ? { status: 'ready', raster: result.raster } : { status: 'none' };
   } else {

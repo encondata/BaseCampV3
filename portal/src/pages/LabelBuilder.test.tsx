@@ -16,7 +16,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import vegas from '../../../api/src/serversherpa/labels/fixtures/vegas_v2.json';
-import { FAKE_METRICS, FIELDS, SAMPLES } from '../components/labels/builder/builderTestKit';
+import { FAKE_METRICS, FIELDS, PERSON_FIELDS, SAMPLES } from '../components/labels/builder/builderTestKit';
 import type { LabelFont, LabelTemplate, LabelTemplateTreeNode, LabelVocab } from '../lib/api';
 
 const auth = vi.hoisted(() => ({ maxRank: 80 }));
@@ -44,6 +44,7 @@ const api = vi.hoisted(() => ({
   previewZplRequest: vi.fn(), createLabelTemplate: vi.fn(), createLabelVocab: vi.fn(),
   listLabelTemplateVersions: vi.fn(), getLabelTemplateVersion: vi.fn(), restoreLabelTemplateVersion: vi.fn(),
   labelImageRaster: vi.fn(), listLabelImages: vi.fn(), uploadLabelImage: vi.fn(),
+  searchSamplePeople: vi.fn(), loadSamplePerson: vi.fn(),
 }));
 vi.mock('../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../lib/api')>()), ...api,
@@ -57,6 +58,7 @@ vi.setConfig({ testTimeout: 20000 });
 
 const { default: LabelBuilder } = await import('./LabelBuilder');
 const { default: ProtectedRoute } = await import('../components/ProtectedRoute');
+const { clearRasterCache } = await import('../components/labels/builder/imageRaster');
 
 const vocabRow = (kind: string, key: string, label: string, meta: Record<string, unknown> = {}, sort = 0): LabelVocab => ({
   kind, key, label, description: '', meta, sort_order: sort, is_active: true, usage_count: null,
@@ -150,6 +152,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  clearRasterCache();
   auth.maxRank = 80;
   printer.connected = true;
   api.getLabelTemplate.mockImplementation(async (id: string) => (id === 'p1' ? PARENT : child(id.slice(1))));
@@ -170,6 +173,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.restoreAllMocks();
 });
 
 describe('a parent template', () => {
@@ -546,6 +550,119 @@ describe('an ID badge', () => {
     const sent = api.updateLabelTemplate.mock.calls[1][1].design;
     expect(sent.schema).toBe(2);
     expect(sent.elements.map((e: { type: string }) => e.type)).toEqual(['field']);
+  });
+
+  describe('Load from person…', () => {
+    const CREW = '1c8e4d63-7b3f-4d52-8e2f-4a3b0c9d8e21';
+    const blanks = () => Object.fromEntries(PERSON_FIELDS.groups[0].fields.map((f) => [f.key, '']));
+    const person = (person_id: string, name: string) => ({
+      person_id, name, person_type: 'Worker', company: 'Rivera Electric', has_photo: true, has_logo: true,
+    });
+    const ADA_VALUES = { ...blanks(), person_name: 'Ada Lovelace', job_title: 'Engineer', company: 'Cumulus' };
+    const CREW_VALUES = { ...blanks(), person_name: 'Crew 2', company: 'Rivera Electric', badge_short: '1c8e4d63' };
+
+    beforeEach(() => {
+      api.listLabelFields.mockResolvedValue(PERSON_FIELDS);
+      api.searchSamplePeople.mockResolvedValue([person(PERSON, 'Ada Lovelace'), person(CREW, 'Crew 2')]);
+      api.loadSamplePerson.mockImplementation(async (id: string) => ({
+        person_id: id, has_photo: true, has_logo: true, values: id === CREW ? CREW_VALUES : ADA_VALUES,
+      }));
+      // a save answers with the badge, still a badge
+      api.updateLabelTemplate.mockImplementation(async (id: string, body: Record<string, unknown>) => (
+        { ...BADGE, ...body, id, version: 8, out_of_date: [] }));
+    });
+
+    async function loadPerson(name: string) {
+      fireEvent.click(await screen.findByRole('button', { name: 'Load from person…' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Load samples from a person' });
+      expect(within(dialog).getByText('Crew badge · Load from person')).toBeTruthy();
+      fireEvent.click(await within(dialog).findByRole('radio', { name }));
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Load samples' }));
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Load samples from a person' })).toBeNull());
+    }
+
+    async function savedSamples() {
+      const before = api.updateLabelTemplate.mock.calls.length;
+      ctrl('s');
+      await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledTimes(before + 1));
+      return api.updateLabelTemplate.mock.calls[before][1].samples as Record<string, string>;
+    }
+
+    it('fills every person sample; the next person leaves none of the last one’s values', async () => {
+      await openBadge({ samples: {} });
+      await loadPerson('Ada Lovelace');
+      expect(screen.getByRole('status').textContent).toContain('Loaded Ada Lovelace as the sample person.');
+      expect(await savedSamples()).toEqual({ ...ADA_VALUES, 'person:id': PERSON });
+      await loadPerson('Crew 2');
+      const samples = await savedSamples();
+      expect(samples).toEqual({ ...CREW_VALUES, 'person:id': CREW });
+      // Ada's job title is gone: Crew 2 has none, so it is blank, not hers
+      expect(samples.job_title).toBe('');
+      expect(api.loadSamplePerson.mock.calls).toEqual([[PERSON], [CREW]]);
+    });
+
+    it('the photo is asked for the new person, and asked again when the same person is loaded again', async () => {
+      // the picture is kept (jsdom paints nothing: a null 2D context)
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+      api.labelImageRaster.mockResolvedValue({ width: 240, height: 300, gray: new Uint8Array(240 * 300) });
+      const forPerson = (id: string) => api.labelImageRaster.mock.calls.filter(([b]) => b.person_id === id).length;
+      await openBadge();
+      await waitFor(() => expect(forPerson(PERSON)).toBe(1));
+      await loadPerson('Crew 2');
+      await waitFor(() => expect(forPerson(CREW)).toBe(1));
+      await loadPerson('Ada Lovelace');
+      await waitFor(() => expect(forPerson(PERSON)).toBe(2));
+      // and again: what was kept for her is dropped, so a new photo shows
+      await loadPerson('Ada Lovelace');
+      await waitFor(() => expect(forPerson(PERSON)).toBe(3));
+    });
+
+    it('Clear sample person takes every person sample and person:id away, and the photo is a placeholder', async () => {
+      await openBadge({ samples: { ...ADA_VALUES, 'person:id': PERSON } });
+      await waitFor(() => expect(api.labelImageRaster).toHaveBeenCalledTimes(1));
+      expect(screen.getByText('Sample person: Ada Lovelace')).toBeTruthy();
+      const clear = screen.getByRole('button', { name: 'Clear sample person' }) as HTMLButtonElement;
+      await waitFor(() => expect(clear.disabled).toBe(false));
+      fireEvent.click(clear);
+      expect(screen.queryByRole('button', { name: 'Clear sample person' })).toBeNull();
+      expect(await savedSamples()).toEqual({});
+      const canvas = screen.getByRole('application', { name: 'Label canvas' });
+      expect(within(canvas).getByText('Photo')).toBeTruthy();
+      expect(api.labelImageRaster).toHaveBeenCalledTimes(1);
+    });
+
+    it('the image library’s Delete… confirm keeps the canvas keys off while it is open', async () => {
+      api.listLabelImages.mockResolvedValue([
+        { id: 'img-1', name: 'Cumulus', width: 600, height: 200, mime: 'image/png', created_at: '' }]);
+      const logo = { id: 'image-9', type: 'image', source: 'static', imageId: 'img-1', fit: 'contain',
+        mode: 'threshold', x: 2, y: 0.1, w: 1, h: 0.5, rotation: 0, hideWhenEmpty: true };
+      await openBadge({ design: { ...BADGE_DESIGN, elements: [logo, ...BADGE_DESIGN.elements] } as Record<string, unknown> });
+      // select the logo (the first element)
+      fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
+      fireEvent.keyDown(document.body, { key: 'Tab', code: 'Tab' });
+      const props = screen.getByRole('complementary', { name: 'Properties' });
+      fireEvent.click(await within(props).findByRole('button', { name: 'Delete…' }));
+      const confirm = screen.getByRole('dialog', { name: 'Delete library image' });
+      // Backspace under the dialog deletes nothing on the canvas
+      fireEvent.keyDown(confirm, { key: 'Backspace', code: 'Backspace' });
+      fireEvent.keyDown(document.body, { key: 'Delete', code: 'Delete' });
+      expect(within(screen.getByRole('group', { name: 'Template' })).queryByText('Unsaved')).toBeNull();
+      // Escape closes the dialog only: the logo stays selected
+      fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
+      expect(screen.queryByRole('dialog', { name: 'Delete library image' })).toBeNull();
+      expect(within(props).getByRole('heading').textContent).toBe('Image');
+      // and the keys are back
+      fireEvent.keyDown(document.body, { key: 'Backspace', code: 'Backspace' });
+      await waitFor(() => expect(within(screen.getByRole('group', { name: 'Template' })).queryByText('Unsaved'))
+        .not.toBeNull());
+    });
+
+    it('a top label offers Load from asset…, not Load from person…', async () => {
+      api.listLabelFields.mockResolvedValue(FIELDS);
+      await openParent();
+      expect(await screen.findByRole('button', { name: 'Load from asset…' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Load from person…' })).toBeNull();
+    });
   });
 
   it('refuses to save an image on a template that isn’t an ID badge in ZPL', async () => {

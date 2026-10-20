@@ -2,7 +2,8 @@
  * ImageCropModal — global crop/reposition step for image uploads.
  * Drag to pan, slider or scroll-wheel to zoom, circular mask preview
  * for avatars (square output either way). Exports a JPEG blob at
- * outputSize² via canvas; the caller uploads it.
+ * outputSize² via canvas, painted white first so transparent areas come
+ * out white, not black; the caller uploads it.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -88,6 +89,10 @@ export default function ImageCropModal({
     canvas.height = outputSize;
     const ctx = canvas.getContext('2d')!;
     ctx.imageSmoothingQuality = 'high';
+    // white under the picture: a JPEG has no alpha, so a transparent PNG's
+    // clear areas would otherwise come out black
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, outputSize, outputSize);
     ctx.drawImage(
       img,
       cx - half, cy - half, half * 2, half * 2,

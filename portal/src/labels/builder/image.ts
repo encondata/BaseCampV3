@@ -58,10 +58,13 @@ export function imageRasterSize(el: ImageElement, dpi: number): { width: number;
   return el.rotation === 90 || el.rotation === 270 ? { width: h, height: w } : { width: w, height: h };
 }
 
-/** The sample person's id, or null when the template has none. */
+/** The sample person's id as stored, or null when the template has none.
+ *  Never trimmed: the server reads `person:id` as it is (only "" is no
+ *  one), so the canvas asks for the person the preview and Test print
+ *  print; Load from person… only ever writes a clean id. */
 export function samplePersonId(samples: Readonly<Record<string, string>>): string | null {
   const id = Object.hasOwn(samples, PERSON_SAMPLE_KEY) ? samples[PERSON_SAMPLE_KEY] : '';
-  return typeof id === 'string' && id.trim() ? id.trim() : null;
+  return typeof id === 'string' && id ? id : null;
 }
 
 /** POST /labels/images/raster's body (lib/api.ts LabelImageRasterBody). */

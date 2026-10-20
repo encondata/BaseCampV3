@@ -48,6 +48,15 @@ export function allowsFromTo(labelType: string | undefined): boolean {
   return !labelType || !(isContainerLabelType(labelType) || isPersonLabelType(labelType));
 }
 
+/** The Person group's key in GET /labels/fields (labels/fields.py). */
+export const PERSON_GROUP_KEY = 'person';
+
+/** The person keys (labels/fields.py PERSON_KEYS): what Load from person…
+ *  fills and Clear sample person empties. None until the fields load. */
+export function personFieldKeys(fields: LabelFields | null): string[] {
+  return (fields?.groups ?? []).filter((g) => g.key === PERSON_GROUP_KEY).flatMap((g) => g.fields.map((f) => f.key));
+}
+
 function own<V>(obj: Readonly<Record<string, V>> | undefined, key: string): V | undefined {
   return obj !== undefined && Object.hasOwn(obj, key) ? obj[key] : undefined;
 }

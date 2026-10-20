@@ -107,6 +107,7 @@ The preview's ZPL size cap rises from 20,000 to 250,000 characters (a 1 in² pho
 - `FieldPanel`'s **Load from person…** (on `id_badge` templates; "Load from asset…" stays on asset types) opens a dialog with the report-generate header and a person search (workers and staff; archived and hidden move identities excluded).
 - New route `GET /labels/sample-person?person_id=` — `labels:view` + rank 80 like `/labels/sample-values` — returns `{values: {key: text}, person_id, has_photo, has_logo}` from a pure `fields.person_values(payload)` (the API builds the payload; `fields.py` stays database-free).
 - The sample person is remembered in the template's samples under the reserved key `person:id`, so the canvas, preview and Test print resolve the same photo and logo. Without a sample person, photo and logo elements draw a dashed placeholder on the canvas and print nothing (an outlined box if `hideWhenEmpty` is off).
+- While a badge has a sample person, the Fields panel footer names them ("Sample person: …") and offers **Clear sample person** beside Load from person… (enabled once the fields have loaded, since the Person group says which keys are the person's). The portal sends `person:id` exactly as stored (only `""` means no one, as on the server). Loading a person (even the same one again) or clearing forgets every photo and logo the canvas kept, so they are fetched again.
 
 ### 4.8 System settings › Branding
 
@@ -129,7 +130,7 @@ The preview's ZPL size cap rises from 20,000 to 250,000 characters (a 1 in² pho
 - The person search applies §4.4's staff/worker rule server-side and returns id, name, type, company, avatar presence and logo presence, natural-sorted; archived people and hidden move identities never appear; blacklisted workers do (a designer may need their badge layout).
 - **Load from person…** replaces **every** person sample key, writing `""` for the person's blanks (no stale values from a previous person); clearing the sample person resets them.
 - Image prep and dither run in a worker thread with a small LRU cache of prepped rasters; decoded images are capped at 40 megapixels (decompression-bomb guard) at upload and at prep; a preview past the 250,000-character cap shows "Too large to preview at this DPI" instead of failing.
-- Static library images: PNG/JPEG/WebP/GIF, 5 MiB, originals stored uncropped, soft delete (an image in use degrades to "no image"); deleting is allowed while in use.
+- Static library images: PNG/JPEG/WebP/GIF, 5 MiB, originals stored uncropped, soft delete (an image in use degrades to "no image"); deleting is allowed while in use. The builder's static-image picker has **Delete…** for the picked image (a report-generate confirm: "<image name> · Delete", "Templates that use it will print nothing in its place until another image is picked."); the element keeps its `imageId` and the canvas shows the placeholder.
 - Branding upload: `PUT /settings/branding/logo` (PNG/JPEG/WebP, 5 MiB, original stored), `settings:change`; the Branding tab is viewable with `settings:view`. `_key_sources` reads the logo key from the system config JSON.
 - `ImageCropModal` fills white before drawing so transparent logos and avatars no longer turn black (affects every crop in the portal, intended). Partner logos stay cropped squares for now; storing originals is later work.
 
@@ -138,7 +139,7 @@ The preview's ZPL size cap rises from 20,000 to 250,000 characters (a 1 in² pho
 - An image fits into its unrotated `w × h` box at the DPI, then is transposed for 90/180/270; the footprint swaps as for shapes, with `x, y` its top-left.
 - The outlined box for an empty photo/logo with `hideWhenEmpty` off is a 2-dot `^GB` (0.01 in at 203).
 - Inverted text over an image XORs on paper (`^FR`); the canvas draws it the same way (difference blend), so what you see is what prints.
-- Rasters are fetched one per element, debounced while resizing; the response is `application/octet-stream` with `X-Raster-Width`/`X-Raster-Height` headers.
+- Rasters are fetched one per element, debounced while resizing; the response is `application/octet-stream` with `X-Raster-Width`/`X-Raster-Height` headers. The canvas keeps them for the session within 64 entries and 64 MiB (least recently used first); a 404 `no_image` is never kept.
 
 ### 4.13 Branches and process
 
