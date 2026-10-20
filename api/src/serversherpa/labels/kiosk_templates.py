@@ -46,6 +46,7 @@ from sqlalchemy.orm import aliased
 from serversherpa.db.models import Initiative, LabelTemplate, LabelTemplateSite, Site
 from serversherpa.db.ordering import natural, natural_key
 from serversherpa.labels.compile import compile_parsed_design
+from serversherpa.labels.fields import ALL_LABEL_TYPES
 from serversherpa.labels.model import parse_design
 
 FALLBACK_NAME = "generic rack and ru"
@@ -74,10 +75,11 @@ def row_family(name: str, parent_name: str | None) -> str:
 
 
 CONTAINER_TYPES = ("container", "container_info")
-# The only label types a kiosk prints. An ID badge (labels/fields.py
-# PERSON_LABEL_TYPES) or a custom type from New template › Custom… never
-# reaches one: not in the sync, the font list or the test render.
-KIOSK_LABEL_TYPES = ("top", "front", "rail", *CONTAINER_TYPES)
+# The only label types a kiosk prints: the catalog's asset and container
+# types (labels/fields.py). An ID badge (fields.PERSON_LABEL_TYPES) or a
+# custom type from New template › Custom… never reaches one: not in the
+# sync, the font list or the test render.
+KIOSK_LABEL_TYPES = tuple(ALL_LABEL_TYPES)
 
 
 class PickedTemplate(NamedTuple):

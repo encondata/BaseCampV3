@@ -4,9 +4,10 @@ import { describe, expect, it } from 'vitest';
 
 import vegas from '../../../../api/src/serversherpa/labels/fixtures/vegas_v2.json';
 import {
-  DesignError, MAX_COUNT, MAX_LINES, addElement, addSplit, duplicate, elementHidden, elementValue, invertPadOf,
-  newDesign, nextId, parseDesign, placementsOf, removeElements, renamePiece, reorder, replaceElements,
-  serializeDesign, updateElement, validate, type DesignV2, type ElementV2, type FieldElement,
+  DesignError, MAX_COUNT, MAX_LINES, addElement, addSplit, duplicate, elementHidden, elementValue, imageFit,
+  imageParams, invertPadOf, newDesign, nextId, parseDesign, placementsOf, removeElements, renamePiece, reorder,
+  replaceElements, serializeDesign, updateElement, validate, type DesignV2, type ElementV2, type FieldElement,
+  type ImageElement,
 } from './model';
 
 const MODEL_PY = join(__dirname, '../../../../api/src/serversherpa/labels/model.py');
@@ -15,6 +16,10 @@ const RACK = { destination_rack: '14.01.07C.02.03', destination_ru: '3.5', asset
 
 function box(id: string, x = 0, y = 0): ElementV2 {
   return { id, type: 'box', x, y, w: 0.5, h: 0.25, rotation: 0, strokeIn: 0.01 };
+}
+
+function image(id: string, extra: Partial<ImageElement> = {}): ImageElement {
+  return { id, type: 'image', source: 'photo', x: 0.1, y: 0.1, w: 0.8, h: 1, rotation: 0, ...extra };
 }
 
 function ids(d: DesignV2): string[] {
@@ -49,11 +54,36 @@ describe('parse and serialize', () => {
 
   it('refuses what the builder cannot hold', () => {
     expect(() => parseDesign(null)).toThrow(DesignError);
-    expect(() => parseDesign({ ...vegas, schema: 1 })).toThrow(/schema must be 2/);
+    expect(() => parseDesign({ ...vegas, schema: 1 })).toThrow(/schema must be 2 or 3, not 1/);
+    expect(() => parseDesign({ ...vegas, schema: 4 })).toThrow(/schema must be 2 or 3, not 4/);
     expect(() => parseDesign({ ...vegas, size: { w: 0, h: 2 } })).toThrow(/size must hold positive numbers w and h/);
     expect(() => parseDesign({ ...vegas, elements: {} })).toThrow(/elements must be a list/);
-    expect(() => parseDesign({ ...vegas, elements: [{ id: 'z', type: 'image' }] })).toThrow(/unknown type 'image'/);
+    expect(() => parseDesign({ ...vegas, elements: [{ id: 'z', type: 'hologram' }] })).toThrow(/unknown type 'hologram'/);
     expect(() => parseDesign({ ...vegas, elements: [7] })).toThrow(/element 0: must be an object/);
+  });
+
+  it('holds a schema 3 design with an image', () => {
+    const raw = { ...vegas, schema: 3, elements: [...vegas.elements, image('photo')] };
+    const d = parseDesign(raw);
+    expect(d.schema).toBe(3);
+    expect(d.elements.at(-1)).toEqual(image('photo'));
+    expect(serializeDesign(d)).toEqual(raw);
+    expect(validate(d)).toEqual([]);
+  });
+
+  it('serializes as schema 3 exactly when an image is on the label', () => {
+    const plain = newDesign({ w: 3.375, h: 2.125 });
+    expect(serializeDesign(plain).schema).toBe(2);
+    const withImage = addElement(plain, image('p1'));
+    expect(withImage.schema).toBe(2);                       // the edit leaves it to serializing
+    expect(serializeDesign(withImage).schema).toBe(3);
+    expect(serializeDesign(removeElements(withImage, ['p1'])).schema).toBe(2);
+    // a stored schema 3 design whose last image went is schema 2 again
+    const parsed = parseDesign({ ...serializeDesign(withImage), elements: [box('b1')] });
+    expect(parsed.schema).toBe(3);
+    expect(serializeDesign(parsed).schema).toBe(2);
+    // serializing never touches the design
+    expect(withImage.schema).toBe(2);
   });
 
   it('gives an element with a missing or repeated id a fresh one', () => {
@@ -242,6 +272,38 @@ describe('validate (mirrors labels/model.py parse_design v2)', () => {
     expect(elementValue(ok.elements[0], { asset_id: '42' })).toBe('000042');
   });
 
+  it('accepts a good image and applies the source defaults (model.py ImageEl)', () => {
+    expect(validate(design(image('p'), image('l', { source: 'logo' }),
+      image('s', { source: 'static', imageId: '0b8e3c4e-0000-4000-8000-000000000001' }),
+      image('n', { source: 'static' })))).toEqual([]);
+    expect(imageFit(image('p'))).toBe('cover');
+    expect(imageFit(image('l', { source: 'logo' }))).toBe('contain');
+    expect(imageFit(image('s', { source: 'static', fit: 'cover' }))).toBe('cover');
+    expect(imageParams(image('p'))).toEqual({ brightness: 0, contrast: 100, threshold: 128, mode: 'dither', invert: false });
+    expect(imageParams(image('l', { source: 'logo', brightness: -20, contrast: 150, threshold: 90, invert: true })))
+      .toEqual({ brightness: -20, contrast: 150, threshold: 90, mode: 'threshold', invert: true });
+  });
+
+  it('flags image settings with model.py\'s messages', () => {
+    const bad = { source: 'video', fit: 'stretch', mode: 'halftone', brightness: 101, contrast: -1, threshold: 255, w: 0 };
+    expect(messages(design(image('img', bad as unknown as Partial<ImageElement>)))).toEqual([
+      'img: source must be one of photo/logo/static',
+      'img: fit must be cover or contain',
+      'img: mode must be dither or threshold',
+      'img: brightness must be a whole number from -100 to 100',
+      'img: contrast must be a whole number from 0 to 300',
+      'img: threshold must be a whole number from 1 to 254',
+      'img: an image needs a positive w and h',
+    ]);
+    const bad2 = { source: 'static', imageId: '', brightness: 1.5, threshold: 0, fit: null };
+    expect(messages(design(image('img', bad2 as unknown as Partial<ImageElement>)))).toEqual([
+      'img: imageId must be a non-empty string',
+      'img: fit must be cover or contain',
+      'img: brightness must be a whole number from -100 to 100',
+      'img: threshold must be a whole number from 1 to 254',
+    ]);
+  });
+
   it('flags a bad Split and size', () => {
     const d = { ...design(), splits: { destination_rack: { pieces: [] } }, size: { w: 4, h: 0 } };
     expect(validate(d).map((p) => p.message)).toEqual([
@@ -261,6 +323,13 @@ describe('what an element prints (mirrors model.py element_value / element_hidde
     expect(elementValue(el(d, 'qr'), RACK)).toBe('100000');
     expect(elementValue(el(d, 'value-name'), RACK)).toBe('');
     expect(elementValue(el(d, 'rule'), RACK)).toBe('');
+  });
+
+  it('an image prints no text and is never a placement of a field', () => {
+    const withImage = addElement(d, image('photo'));
+    expect(elementValue(el(withImage, 'photo'), RACK)).toBe('');
+    expect(elementHidden(el(withImage, 'photo'), RACK)).toBe(false);
+    expect(placementsOf(withImage, 'photo')).toEqual([]);
   });
 
   it('hides blanks that are hide-when-empty or inverted', () => {

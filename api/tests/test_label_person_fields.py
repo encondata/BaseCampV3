@@ -6,6 +6,7 @@ payload into the text each field prints; and a badge never reaches a kiosk
 or a generation run."""
 
 import uuid
+from pathlib import Path
 
 from serversherpa.db.models import LabelVocab
 from serversherpa.labels import fields
@@ -152,6 +153,27 @@ def test_person_values_staff_and_worker():
     assert out["roles"] == ""
     assert out["badge_id"] == "9c0d2e1f-1111-4222-8333-444455556666"   # a UUID prints its text
     assert out["badge_short"] == "9c0d2e1f"
+
+
+def test_person_values_blank_preferred_name_is_blank():
+    """A whitespace-only preferred name prints as no preferred name, in its
+    own field as in person_name; a real one loses its edge spaces."""
+    for spaced in ("  ", "\t", " \n "):
+        out = person_values({"person": {**STAFF["person"], "preferred_name": spaced}})
+        assert (out["preferred_name"], out["person_name"]) == ("", "Avery Chen"), repr(spaced)
+    out = person_values({"person": {**STAFF["person"], "preferred_name": "  Ave "}})
+    assert (out["preferred_name"], out["person_name"]) == ("Ave", "Ave Chen")
+
+
+def test_kiosk_label_types_are_the_catalog_types():
+    """The kiosk's label types are fields.ALL_LABEL_TYPES, not a hand copy:
+    a type added there reaches kiosks, and a person type never does."""
+    from serversherpa.labels import kiosk_templates
+
+    assert kiosk_templates.KIOSK_LABEL_TYPES == tuple(ALL_LABEL_TYPES)
+    assert not set(kiosk_templates.KIOSK_LABEL_TYPES) & set(PERSON_LABEL_TYPES)
+    src = (Path(kiosk_templates.__file__)).read_text()
+    assert "KIOSK_LABEL_TYPES = tuple(ALL_LABEL_TYPES)" in src
 
 
 def test_person_values_roles_natural_and_once():

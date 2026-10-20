@@ -18,11 +18,16 @@ unresolved tokens compile to "" via labels/tokens.py, same as always.
 
 A schema 2 design has no tokens: its elements name field keys, and the
 values pass straight to the compiler. The keys it names that `values`
-lacks are reported the same way (they print blank)."""
+lacks are reported the same way (they print blank). A schema 3 design is
+schema 2 plus images: `images` (element id -> dithered bitmap, resolved by
+the caller) passes through to the compiler, and an image is never a key,
+so never unknown."""
 
+from collections.abc import Mapping
 from typing import Protocol
 
 from serversherpa.labels.compile import compile_parsed_design
+from serversherpa.labels.dither import Bitmap
 from serversherpa.labels.model import BarcodeEl, QrEl, TextEl, parse_design
 from serversherpa.labels.tokens import TOKEN_RE, apply_placeholders
 
@@ -41,6 +46,7 @@ def _unknown(tokens: set[str], values: dict[str, str]) -> set[str]:
 def render_template(
     template: TemplateSource, values: dict[str, str], *,
     width_in: float, height_in: float, dots: int,
+    images: Mapping[str, Bitmap] | None = None,
 ) -> tuple[str, set[str]]:
     """The printer code for one label and the tokens it left unresolved."""
     if template.kind == "code":
@@ -54,8 +60,8 @@ def render_template(
     design = parse_design({**design_json, "size": {"w": width_in, "h": height_in}})
     if design.schema >= 2:
         keys = {el.field for el in design.elements if getattr(el, "field", None)}
-        code = compile_parsed_design(design, dots=dots,
-                                     language_key=template.language_key, subs=values)
+        code = compile_parsed_design(design, dots=dots, language_key=template.language_key,
+                                     subs=values, images=images)
         return code, _unknown(keys, values)
     tokens: set[str] = set()
     for el in design.elements:

@@ -44,6 +44,9 @@ export function kindOf(el: ElementV2): ElementKind {
     case 'qr': return 'qr';
     case 'line':
     case 'box': return 'shape';
+    // a free box like a shape; ShapeBody draws nothing for it, so only its
+    // frame shows until the canvas draws the picture
+    case 'image': return 'shape';
     case 'field': return el.display === 'barcode' ? 'barcode' : el.display === 'qr' ? 'qr' : 'text';
   }
 }

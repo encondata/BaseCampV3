@@ -495,9 +495,10 @@ def person_values(payload: dict) -> dict[str, str]:
         person = {}
     first = _text(person.get("first_name"))
     last = _text(person.get("last_name"))
-    preferred = _text(person.get("preferred_name"))
+    # a whitespace-only preferred name is none at all
+    preferred = _text(person.get("preferred_name")).strip()
     # people.display_name: preferred or first, then last
-    name = " ".join(t for t in (preferred.strip() or first.strip(), last.strip()) if t)
+    name = " ".join(t for t in (preferred or first.strip(), last.strip()) if t)
     roles = payload.get("roles")
     labels = [r.strip() for r in (roles if isinstance(roles, list) else []) if isinstance(r, str)]
     badge_id = _text(person.get("id"))

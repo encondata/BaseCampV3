@@ -533,6 +533,20 @@ describe('the routes', () => {
     await waitFor(() => expect(api.getLabelTemplate).toHaveBeenCalledWith('p9'));
   });
 
+  it('tells a design from before the builder apart from a builder design it can’t read', async () => {
+    api.getLabelTemplate.mockResolvedValue({ ...PARENT, design: { size: { w: 4, h: 2 }, elements: [] } });
+    renderAt('/labels/templates/p1/edit');
+    expect(await screen.findByText(/made before the label builder/)).toBeTruthy();
+    cleanup();
+    // schema 3 is a builder design (one with images): a fault in it is damage
+    api.getLabelTemplate.mockResolvedValue({
+      ...PARENT, design: { schema: 3, size: { w: 4, h: 2 }, elements: [{ id: 'x', type: 'hologram' }] },
+    });
+    renderAt('/labels/templates/p1/edit');
+    expect(await screen.findByText('This template’s design can’t be read.')).toBeTruthy();
+    expect(screen.queryByText(/made before the label builder/)).toBeNull();
+  });
+
   it('send a code template to its code editor', async () => {
     api.getLabelTemplate.mockResolvedValue({ ...PARENT, id: 't5', kind: 'code', design: null, code: '^XA^XZ' });
     renderAt('/labels/templates/t5/edit');

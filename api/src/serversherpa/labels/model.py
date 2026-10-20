@@ -13,10 +13,15 @@ token data, lines and boxes. `schema: 2` is the label builder's model
 piece of the field's Split, each with its own rules, font and inverted
 flag; static `text` with a font and a baseline; barcodes and QR codes
 bound to a field or holding static data; lines; boxes that can be filled.
+`schema: 3` is schema 2 plus `image` elements (spec 2026-10-20-badge-
+templates §4.3, §4.6): a design with an image is schema 3 and one without
+stays schema 2, so a laptop edge that prints up to schema 2 refuses a
+design with an image instead of printing it without one.
 
-Geometry, schema 2: x, y is the top-left of the element's footprint on
-the label. w runs along the element's own text direction and h across
-it, so at rotation 90 or 270 the footprint is h wide and w tall. A text
+Geometry, schema 2 and 3: x, y is the top-left of the element's footprint
+on the label. w runs along the element's own text direction and h across
+it, so at rotation 90 or 270 the footprint is h wide and w tall (an image
+fits its unrotated w x h box, then turns with it). A text
 element's `baselineIn` is the distance from its top edge (in its own
 frame) to the text baseline; the browser computes it from the font's
 metrics, and the compiler never measures text."""
@@ -28,6 +33,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from serversherpa.labels.dither import BRIGHTNESS, CONTRAST, MODES, THRESHOLD, Params
 from serversherpa.labels.field_rules import FieldRules, apply_rules, is_blank
 from serversherpa.labels.field_rules import piece as split_piece
 from serversherpa.labels.fonts import DEFAULT_FAMILY, FAMILIES, WEIGHTS
@@ -35,10 +41,16 @@ from serversherpa.labels.fonts import DEFAULT_FAMILY, FAMILIES, WEIGHTS
 ROTATIONS = (0, 90, 180, 270)
 SYMBOLOGIES = ("code128", "code39")
 ALIGNS = ("left", "center", "right")
-SCHEMAS = (1, 2)
+SCHEMAS = (1, 2, 3)
 DISPLAYS = ("text", "number", "barcode", "qr")
 TRIMS = ("front", "rear")
 STRIP_WHERES = ("front", "rear", "anywhere")
+IMAGE_SOURCES = ("photo", "logo", "static")
+FITS = ("cover", "contain")
+# a photo fills its box and is dithered; a logo or a static image fits
+# inside it and is thresholded (spec §4.3)
+IMAGE_DEFAULTS = {"photo": ("cover", "dither"), "logo": ("contain", "threshold"),
+                  "static": ("contain", "threshold")}
 # A field's expected length and max characters pad or trim its value to
 # that many characters, and a text's lines size its ^FB, so each has a
 # ceiling: nothing on a label needs more, and the compile must not
@@ -166,12 +178,37 @@ class FieldEl(_Base):
 
 
 @dataclass(frozen=True)
+class ImageEl(_Base):
+    """Schema 3: a picture printed as a Zebra graphic. `source` is the
+    sample person's photo or logo, or a static image from the label image
+    library (`image_id`, a static image only; None until one is picked).
+    The compiler takes its already-dithered bits from the caller
+    (labels/zpl.py `compile_zpl(images=)`); never a field key, so an image
+    is never a placeholder or an unknown key."""
+    source: str
+    image_id: str | None
+    fit: str
+    mode: str
+    brightness: int = 0
+    contrast: int = 100
+    threshold: int = 128
+    invert: bool = False
+    # a missing photo or logo prints nothing; off, an outlined box
+    hide_when_empty: bool = True
+
+    @property
+    def params(self) -> Params:
+        return Params(brightness=self.brightness, contrast=self.contrast,
+                      threshold=self.threshold, mode=self.mode, invert=self.invert)
+
+
+@dataclass(frozen=True)
 class Design:
     width_in: float
     height_in: float
     elements: tuple
     schema: int = 1
-    # schema 2: field key -> the piece names of its Split (one per field)
+    # schema 2 and 3: field key -> the piece names of its Split (one per field)
     splits: dict[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
 
 
@@ -431,8 +468,54 @@ def _v2_field(el: dict, base: dict, p: list[str], splits: dict) -> FieldEl:
         symbology=sym, module_in=module_in, show_text=show_text)
 
 
-def _v2_element(el: dict, base: dict, p: list[str], splits: dict) -> object | None:
+def _whole_in(el: dict, key: str, default: int, bounds: tuple[int, int],
+              p: list[str]) -> int:
+    v = el.get(key, default)
+    lo, hi = bounds
+    if not _int(v) or not lo <= v <= hi:
+        p.append(f"{key} must be a whole number from {lo} to {hi}")
+        return default
+    return v
+
+
+def _v2_image(el: dict, base: dict, p: list[str]) -> ImageEl:
+    source = el.get("source")
+    if source not in IMAGE_SOURCES:
+        p.append("source must be one of " + "/".join(IMAGE_SOURCES))
+        source = "static"
+    image_id = None
+    if source == "static" and el.get("imageId") is not None:
+        image_id = el["imageId"]
+        if not isinstance(image_id, str) or not image_id:
+            p.append("imageId must be a non-empty string")
+            image_id = None
+    fit_default, mode_default = IMAGE_DEFAULTS[source]
+    fit = el.get("fit", fit_default)
+    if fit not in FITS:
+        p.append("fit must be cover or contain")
+        fit = fit_default
+    mode = el.get("mode", mode_default)
+    if mode not in MODES:
+        p.append("mode must be dither or threshold")
+        mode = mode_default
+    brightness = _whole_in(el, "brightness", 0, BRIGHTNESS, p)
+    contrast = _whole_in(el, "contrast", 100, CONTRAST, p)
+    threshold = _whole_in(el, "threshold", 128, THRESHOLD, p)
+    if base["w"] <= 0 or base["h"] <= 0:
+        p.append("an image needs a positive w and h")
+    return ImageEl(**base, source=source, image_id=image_id, fit=fit, mode=mode,
+                   brightness=brightness, contrast=contrast, threshold=threshold,
+                   invert=bool(el.get("invert", False)),
+                   hide_when_empty=bool(el.get("hideWhenEmpty", True)))
+
+
+def _v2_element(el: dict, base: dict, p: list[str], splits: dict,
+                schema: int) -> object | None:
     etype = el.get("type")
+    if etype == "image":
+        if schema < 3:
+            p.append("an image element needs schema 3")
+        return _v2_image(el, base, p)
     if etype == "field":
         return _v2_field(el, base, p, splits)
     if etype == "text":
@@ -485,7 +568,7 @@ def parse_design(raw: object) -> Design:
         raise DesignError(["design must be an object"])
     schema = raw.get("schema", 1)
     if not _int(schema) or schema not in SCHEMAS:
-        raise DesignError([f"schema must be 1 or 2, not {schema!r}"])
+        raise DesignError([f"schema must be 1, 2 or 3, not {schema!r}"])
     size = raw.get("size")
     if (not isinstance(size, dict) or not _num(size.get("w"))
             or not _num(size.get("h")) or size["w"] <= 0 or size["h"] <= 0):
@@ -495,7 +578,7 @@ def parse_design(raw: object) -> Design:
         raise DesignError(["elements must be a list"])
     if len(elements) > MAX_ELEMENTS:
         raise DesignError([f"a design holds at most {MAX_ELEMENTS} elements"])
-    splits = _splits(raw.get("splits"), problems) if schema == 2 else {}
+    splits = _splits(raw.get("splits"), problems) if schema >= 2 else {}
 
     parsed: list[object] = []
     for i, el in enumerate(elements):
@@ -512,10 +595,12 @@ def parse_design(raw: object) -> Design:
             rotation = 0
         base = dict(id=eid, x=x, y=y, w=w, h=h, rotation=rotation)
         parsed_el = (_v1_element(el, base, p) if schema == 1
-                     else _v2_element(el, base, p, splits))
+                     else _v2_element(el, base, p, splits, schema))
         if parsed_el is not None:
             parsed.append(parsed_el)
         problems.extend(f"{eid}: {msg}" for msg in p)
+    if schema == 3 and not any(isinstance(e, ImageEl) for e in parsed):
+        problems.append("a schema 3 design needs an image element")
 
     if problems:
         raise DesignError(problems)

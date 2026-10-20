@@ -186,9 +186,10 @@ function EditTemplate({ id }: { id: string }) {
         try {
           design = parseDesign(template.design);
         } catch (err) {
+          const schema = (template.design as { schema?: unknown } | null)?.schema;
           setError({
             title: template.name,
-            message: err instanceof DesignError && (template.design as { schema?: unknown } | null)?.schema !== 2
+            message: err instanceof DesignError && schema !== 2 && schema !== 3
               ? 'This template was made before the label builder, so the builder can’t open it. '
                 + 'From Templates, “Edit as raw ZPL” turns it into a code template.'
               : 'This template’s design can’t be read.',

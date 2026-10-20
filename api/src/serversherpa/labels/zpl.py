@@ -18,17 +18,32 @@ an inverted element widens the glyphs 15%; inverted text is a filled
 goes through Split and its rules first (labels.field_rules). Barcodes,
 QR codes and shapes are placed top-left with `^FO`; a Code 128 barcode's
 data starts in the subset labels.barcode counted (`>;` C, `>:` B), so it
-prints exactly as wide as the canvas draws it."""
+prints exactly as wide as the canvas draws it.
 
+A schema 3 design adds images (spec 2026-10-20-badge-templates §4.5,
+§4.12). The compiler stays pure: the caller resolves each image element to
+an already-dithered, already-rotated 1-bit bitmap (labels.dither) and
+passes them in by element id (`images=`). Each prints as `^GFA` with Z64
+data at the footprint's top-left (`^FO`), banded when one `^GF` would
+pass 99,999 bytes; white dots are transparent, so the element order is
+the stacking order, as on the canvas. A graphic has no `^FH` (its data is
+never escaped). An image with no bitmap prints nothing, or a 2-dot outline
+of its footprint when its hideWhenEmpty is off."""
+
+import base64
+import binascii
+import zlib
 from collections.abc import Mapping
 
 from serversherpa.labels.barcode import code128_data
+from serversherpa.labels.dither import Bitmap, bytes_per_row
 from serversherpa.labels.fonts import font_object
 from serversherpa.labels.model import (
     BarcodeEl,
     BoxEl,
     Design,
     FieldEl,
+    ImageEl,
     LineEl,
     QrEl,
     TextEl,
@@ -227,7 +242,67 @@ def _v2_shape(el: LineEl | BoxEl, dpi: int) -> str:
     return f"^FO{_dots(el.x, dpi)},{_dots(el.y, dpi)}^GB{w},{h},{t}^FS"
 
 
-def _v2_element(el: object, dpi: int, values: Mapping[str, str]) -> list[str]:
+# ---- schema 3: images ---------------------------------------------------
+
+# ^GFa,b,c,d: c (the graphic's bytes) runs 1 to 99,999
+GF_MAX_BYTES = 99_999
+# the outline an empty photo or logo prints when hideWhenEmpty is off
+EMPTY_IMAGE_STROKE = 2
+
+
+def crc16(data: bytes) -> str:
+    """CRC-16/XMODEM (CCITT, initial 0) as 4 upper-case hex digits: the
+    checksum a Z64 field ends with, taken over its base64 text."""
+    return f"{binascii.crc_hqx(data, 0):04X}"
+
+
+def z64(raw: bytes) -> str:
+    """A ^GF data field in Zebra's Z64 form: `:Z64:`, the zlib stream (not
+    raw deflate) in base64, `:`, then the CRC of that base64 text."""
+    b64 = base64.b64encode(zlib.compress(raw)).decode("ascii")
+    return f":Z64:{b64}:{crc16(b64.encode('ascii'))}"
+
+
+def image_box_dots(el: ImageEl, dpi: int) -> tuple[int, int]:
+    """The image's unrotated w x h box in dots: the size its picture is
+    fitted to before it is turned (the bitmap is then that, transposed at
+    90 and 270)."""
+    return _dots(el.w, dpi), _dots(el.h, dpi)
+
+
+def _graphic(x: int, y: int, bitmap: Bitmap) -> list[str]:
+    """`bitmap` as ^GFA fields with its top-left at x, y: one band of whole
+    rows per GF_MAX_BYTES, each band placed one band height further down."""
+    width, height, bits = bitmap
+    d = bytes_per_row(width)
+    if len(bits) != d * height:
+        raise ValueError(f"a {width} x {height} bitmap has {d * height} bytes, not {len(bits)}")
+    rows = GF_MAX_BYTES // d
+    if rows < 1:
+        raise ValueError(f"a {width}-dot row is wider than one ^GF holds")
+    out = []
+    for top in range(0, height, rows):
+        band = bits[top * d:(top + rows) * d]
+        out.append(f"^FO{x},{y + top}^GFA,{len(band)},{len(band)},{d},{z64(band)}^FS")
+    return out
+
+
+def _v2_image(el: ImageEl, dpi: int, bitmap: Bitmap | None) -> list[str]:
+    x, y = _dots(el.x, dpi), _dots(el.y, dpi)
+    if bitmap is not None and bitmap[0] > 0 and bitmap[1] > 0:
+        return _graphic(x, y, Bitmap(*bitmap))
+    if el.hide_when_empty:
+        return []
+    along, across = image_box_dots(el, dpi)
+    w, h = (across, along) if el.rotation in (90, 270) else (along, across)
+    t = EMPTY_IMAGE_STROKE
+    return [f"^FO{x},{y}^GB{max(t, w)},{max(t, h)},{t}^FS"]
+
+
+def _v2_element(el: object, dpi: int, values: Mapping[str, str],
+                images: Mapping[str, Bitmap]) -> list[str]:
+    if isinstance(el, ImageEl):
+        return _v2_image(el, dpi, images.get(el.id))
     if isinstance(el, (LineEl, BoxEl)):
         return [_v2_shape(el, dpi)]
     if element_hidden(el, values):
@@ -242,7 +317,10 @@ def _v2_element(el: object, dpi: int, values: Mapping[str, str]) -> list[str]:
 
 
 def compile_zpl(design: Design, dpi: int,
-                substitutions: dict[str, str] | None = None) -> str:
+                substitutions: dict[str, str] | None = None, *,
+                images: Mapping[str, Bitmap] | None = None) -> str:
+    """`images` maps an image element's id to its bitmap (schema 3); an
+    image element with none prints as empty."""
     lines = ["^XA",
              f"^PW{_dots(design.width_in, dpi)}",
              f"^LL{_dots(design.height_in, dpi)}",
@@ -251,7 +329,7 @@ def compile_zpl(design: Design, dpi: int,
         if substitutions is None:
             raise ValueError("v2 designs render with values")
         for el in design.elements:
-            lines.extend(_v2_element(el, dpi, substitutions))
+            lines.extend(_v2_element(el, dpi, substitutions, images or {}))
         lines.append("^XZ")
         return "\n".join(lines)
     for el in design.elements:
