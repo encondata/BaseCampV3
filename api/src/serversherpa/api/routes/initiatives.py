@@ -445,12 +445,14 @@ async def update_initiative(
                 raise
             await db.rollback()
             raise _err(422, "kiosk_password_in_use") from None
-    if "name" in changes:
-        await move_password_service.rename_kiosk_identity(db, initiative)
-    if "status" in changes \
-            and initiative.status in move_password_service.MOVE_LOGIN_BLOCKED_STATUSES:
-        await move_password_service.revoke_move_sessions(db, initiative.id)
     try:
+        # inside the race handling: their reads flush the row, so a code
+        # or password another save took meanwhile can surface here too
+        if "name" in changes:
+            await move_password_service.rename_kiosk_identity(db, initiative)
+        if "status" in changes \
+                and initiative.status in move_password_service.MOVE_LOGIN_BLOCKED_STATUSES:
+            await move_password_service.revoke_move_sessions(db, initiative.id)
         await db.commit()
     except IntegrityError as exc:
         # a racing save took the same code, or a racing admin the same
