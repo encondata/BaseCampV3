@@ -22,7 +22,8 @@
  * without a further change, so a drag asks once, for the size it ends on.
  * Meanwhile the picture it had stays up. A request that fails is never
  * cached, its element says why (`rasterErrorText`) and asks again the next
- * time it changes.
+ * time it changes. Test print and the printer preview say why a compile
+ * was refused with `compileImageErrorText`.
  */
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
@@ -203,10 +204,30 @@ export function rasterErrorText(err: unknown): string {
       case 'person_not_found': return 'The sample person is no longer on file.';
       case 'storage_unavailable': return 'Images unavailable right now.';
       case 'bad_field': return 'Can’t draw this image.';
+      case 'read_only_mode': return 'Pictures can’t load during read-only maintenance.';
       default: break;
     }
   }
   return RASTER_ERROR;
+}
+
+/** What Test print and the printer preview say when the compile refuses
+ *  the design for its pictures, its problems or read-only mode; null for
+ *  anything else, which each says in its own way. */
+export function compileImageErrorText(err: unknown): string | null {
+  if (!(err instanceof ApiError)) return null;
+  switch (err.code) {
+    case 'person_not_found': return 'The sample person is no longer on file. Load another or clear the sample person.';
+    case 'image_too_large': return 'A picture is too large at this DPI. Make its box smaller.';
+    case 'storage_unavailable': return 'The pictures can’t be loaded right now. Try again in a moment.';
+    case 'images_badge_only': return 'Can’t print: images print on ID Badge templates in ZPL only.';
+    case 'bad_design': {
+      const problems = (err.detail as { problems?: string[] } | undefined)?.problems;
+      return problems?.length ? `The design can’t print yet: ${problems[0]}` : 'The design can’t print yet.';
+    }
+    case 'read_only_mode': return 'Labels can’t be compiled while the portal is in read-only maintenance mode.';
+    default: return null;
+  }
 }
 
 /** The raster `el` draws, when `enabled` (a photo or logo in Field names

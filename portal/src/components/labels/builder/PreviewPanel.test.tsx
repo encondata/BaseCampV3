@@ -61,6 +61,22 @@ describe('PreviewPanel', () => {
     expect((await screen.findByRole('alert')).textContent).toBe('Too large to preview at this DPI.');
   });
 
+  it('a compile refused for a picture says why in a sentence, not its code', async () => {
+    const { ApiError } = await import('../../../lib/api');
+    for (const [code, said] of [
+      ['person_not_found', 'The sample person is no longer on file. Load another or clear the sample person.'],
+      ['storage_unavailable', 'The pictures can’t be loaded right now. Try again in a moment.'],
+      ['images_badge_only', 'Can’t print: images print on ID Badge templates in ZPL only.'],
+      ['image_too_large', 'A picture is too large at this DPI. Make its box smaller.'],
+    ]) {
+      api.compileLabel.mockRejectedValueOnce(new ApiError(422, code));
+      renderWith(VEGAS());
+      fireEvent.click(screen.getByRole('button', { name: 'Render' }));
+      expect((await screen.findByRole('alert')).textContent).toBe(said);
+      cleanup();
+    }
+  });
+
   it('says nothing about QR codes when the design has none', async () => {
     const d = VEGAS();
     renderWith({ ...d, elements: d.elements.filter((e) => e.type !== 'qr' && !(e.type === 'field' && e.display === 'qr')) });

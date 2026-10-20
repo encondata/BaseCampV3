@@ -522,6 +522,16 @@ describe('an ID badge', () => {
     expect(within(screen.getByRole('group', { name: 'Tools' })).queryByRole('button', { name: 'Image' })).toBeNull();
   });
 
+  it('a Test print the compile refuses for a picture says why in a sentence, not its code', async () => {
+    const { ApiError } = await import('../lib/api');
+    api.compileLabel.mockRejectedValue(new ApiError(422, 'person_not_found'));
+    await openBadge();
+    ctrl('p');
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('The sample person is no longer on file. Load another or clear the sample person.');
+    expect(printer.send).not.toHaveBeenCalled();
+  });
+
   it('⌘P sends the samples with the sample person and the design as schema 3', async () => {
     await openBadge();
     ctrl('p');

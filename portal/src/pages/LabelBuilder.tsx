@@ -66,7 +66,7 @@ import Canvas, { DEFAULT_VIEW, type CanvasView } from '../components/labels/buil
 import { deleteSelection, selected } from '../components/labels/builder/canvasActions';
 import { fieldLabel, personFieldKeys } from '../components/labels/builder/fieldCatalog';
 import FieldPanel, { type FieldPanelHandle } from '../components/labels/builder/FieldPanel';
-import { forgetPersonRasters } from '../components/labels/builder/imageRaster';
+import { compileImageErrorText, forgetPersonRasters } from '../components/labels/builder/imageRaster';
 import LoadFromAssetModal, { fillSamples } from '../components/labels/builder/LoadFromAssetModal';
 import LoadFromPersonModal, {
   clearPersonSamples, personSamples,
@@ -248,14 +248,9 @@ function saveError(err: unknown): string {
 }
 
 function printError(err: unknown): string {
-  if (err instanceof ApiError) {
-    if (err.code === 'images_badge_only') return `Can't print: ${IMAGES_BADGE_ONLY}`;
-    if (err.code === 'bad_design') {
-      const problems = (err.detail as { problems?: string[] } | undefined)?.problems;
-      return problems?.length ? `Can't print yet: ${problems[0]}` : "Can't print yet: the design has a problem.";
-    }
-    return `Couldn't compile the label (${err.code}).`;
-  }
+  const said = compileImageErrorText(err);
+  if (said) return said;
+  if (err instanceof ApiError) return `Couldn't compile the label (${err.code}).`;
   if (err instanceof Error && err.message === 'Printer not connected') return 'Connect a USB printer to test print.';
   return err instanceof Error && err.message ? `Couldn't print: ${err.message}` : "Couldn't print.";
 }

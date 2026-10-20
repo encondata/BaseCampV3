@@ -20,9 +20,10 @@ vi.mock('../../../lib/api', async (importActual) => ({
 }));
 
 const {
-  RASTER_CACHE_BYTES, clearRasterCache, fetchRaster, forgetPersonRasters, forgetStaticRaster, rasterCacheBytes,
-  useImageRaster,
+  RASTER_CACHE_BYTES, RASTER_ERROR, clearRasterCache, compileImageErrorText, fetchRaster, forgetPersonRasters,
+  forgetStaticRaster, rasterCacheBytes, rasterErrorText, useImageRaster,
 } = await import('./imageRaster');
+const { ApiError } = await import('../../../lib/api');
 
 const PERSON = '0b7f3c52-6a2e-4c41-9d1e-3f2a9b8c7d10';
 
@@ -183,5 +184,31 @@ describe('useImageRaster', () => {
     await new Promise((r) => { setTimeout(r, 300); });
     expect(result.current.status).toBe('ready');
     expect(api.labelImageRaster).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('what the errors say', () => {
+  it('a picture refused in read-only mode says so', () => {
+    expect(rasterErrorText(new ApiError(423, 'read_only_mode')))
+      .toBe('Pictures can’t load during read-only maintenance.');
+    expect(rasterErrorText(new ApiError(500, 'something_else'))).toBe(RASTER_ERROR);
+  });
+
+  it('a compile’s picture, design and read-only codes are sentences, the same for Test print and the preview', () => {
+    const say = (code: string, detail?: unknown) => compileImageErrorText(new ApiError(422, code, detail));
+    expect(say('person_not_found')).toBe('The sample person is no longer on file. Load another or clear the sample person.');
+    expect(say('image_too_large')).toBe('A picture is too large at this DPI. Make its box smaller.');
+    expect(say('storage_unavailable')).toBe('The pictures can’t be loaded right now. Try again in a moment.');
+    expect(say('images_badge_only')).toBe('Can’t print: images print on ID Badge templates in ZPL only.');
+    expect(say('bad_design', { code: 'bad_design', problems: ['image-1: pick a picture'] }))
+      .toBe('The design can’t print yet: image-1: pick a picture');
+    expect(say('bad_design')).toBe('The design can’t print yet.');
+    expect(say('read_only_mode'))
+      .toBe('Labels can’t be compiled while the portal is in read-only maintenance mode.');
+  });
+
+  it('anything else is left to the caller', () => {
+    expect(compileImageErrorText(new ApiError(500, 'labelary_unavailable'))).toBeNull();
+    expect(compileImageErrorText(new Error('offline'))).toBeNull();
   });
 });

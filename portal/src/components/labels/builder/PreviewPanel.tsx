@@ -16,6 +16,7 @@ import { useEffect, useState } from 'react';
 import type { DesignV2 } from '../../../labels/builder/model';
 import { fontIdsFor, previewRequest, previewTooLarge } from '../../../labels/builder/zplPreview';
 import { ApiError, compileLabel, previewZplRequest, type LabelFont } from '../../../lib/api';
+import { compileImageErrorText } from './imageRaster';
 import '../../../styles/directory.css';
 import '../../../styles/labelBuilder.css';
 
@@ -44,12 +45,8 @@ function errorText(err: unknown): string {
   if (err instanceof ApiError) {
     if (refusedForLength(err)) return TOO_LARGE;
     if (err.code === 'labelary_unavailable') return 'The preview service is not answering. Try again in a moment.';
-    if (err.code === 'bad_design') {
-      const problems = (err.detail as { problems?: string[] } | undefined)?.problems;
-      return problems?.length ? `The design can't print yet: ${problems[0]}` : "The design can't print yet.";
-    }
   }
-  return "Couldn't render the preview.";
+  return compileImageErrorText(err) ?? "Couldn't render the preview.";
 }
 
 export default function PreviewPanel({
