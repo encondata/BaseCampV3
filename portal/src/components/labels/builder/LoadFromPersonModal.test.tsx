@@ -8,6 +8,8 @@
  * `clearPersonSamples` takes every person key and `person:id` away.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -135,6 +137,24 @@ describe('LoadFromPersonModal', () => {
     api.searchSamplePeople.mockRejectedValue(new Error('down'));
     setup();
     expect(await within(dialog()).findByText('Couldn’t search people.')).toBeTruthy();
+  });
+
+  it('a search that fails drops the pick: nothing to load', async () => {
+    setup();
+    fireEvent.click(await within(dialog()).findByRole('radio', { name: /^Crew 2,/ }));
+    const load = within(dialog()).getByRole('button', { name: 'Load samples' }) as HTMLButtonElement;
+    expect(load.disabled).toBe(false);
+    api.searchSamplePeople.mockRejectedValue(new Error('down'));
+    fireEvent.change(within(dialog()).getByRole('searchbox', { name: 'Search people' }), { target: { value: 'crew' } });
+    expect(await within(dialog()).findByText('Couldn’t search people.')).toBeTruthy();
+    expect(load.disabled).toBe(true);
+  });
+
+  it('keeps its description to a readable measure, so the card doesn’t stretch', () => {
+    const css = readFileSync(join(__dirname, '../../../styles/labelBuilder.css'), 'utf8');
+    const at = css.indexOf('.lbp-load-card .rgm-head-text .page-hint {');
+    expect(at).toBeGreaterThan(0);
+    expect(css.slice(at, css.indexOf('}', at))).toMatch(/max-width:\s*60ch/);
   });
 
   it('picking a person loads their values and hands them back', async () => {

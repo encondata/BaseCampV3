@@ -86,6 +86,7 @@ import VersionsModal from '../components/labels/builder/VersionsModal';
 import { metricsFile } from '../labels/builder/fonts';
 import { clampToLabel, withBarcodeWidths } from '../labels/builder/geometry';
 import { createHistory } from '../labels/builder/history';
+import { samplePersonId } from '../labels/builder/image';
 import {
   addElement, DesignError, nextId, parseDesign, replaceElements, serializeDesign, validate,
   type DesignV2, type ElementV2,
@@ -93,7 +94,7 @@ import {
 import { detectPlatform } from '../labels/builder/shortcuts';
 import {
   ApiError, compileLabel, getLabelFontBytes, getLabelTemplate, listLabelFields, listLabelFonts, listLabelTemplateTree,
-  listLabelVocab, restoreLabelTemplateVersion, templateVersionLabel, updateLabelTemplate,
+  listLabelVocab, loadSamplePerson, restoreLabelTemplateVersion, templateVersionLabel, updateLabelTemplate,
   type LabelFields, type LabelFont, type LabelTemplate, type LabelTemplateSaved, type LabelTemplateTreeNode,
   type LabelTemplateVersionDetail, type LabelVocab, type SamplePersonValues,
 } from '../lib/api';
@@ -734,10 +735,31 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
     });
   };
 
-  /** Clear sample person: no person sample and no `person:id`. */
-  const clearPerson = () => {
+  /** Clear sample person: no person sample and no `person:id`. The field
+   *  list says which samples are the person's; when it failed to load, the
+   *  server's person keys (every key GET /labels/sample-person answers
+   *  with) stand in. */
+  const clearing = useRef(false);
+  const clearPerson = async () => {
+    if (clearing.current) return;
+    let keys = personFieldKeys(fields);
+    const personId = samplePersonId(samples);
+    if (!fields && personId) {
+      clearing.current = true;
+      try {
+        keys = Object.keys((await loadSamplePerson(personId)).values);
+      } catch {
+        setNotice({
+          type: 'error',
+          message: 'Couldn’t clear the sample person: couldn’t load the field list. Reload the page and try again.',
+        });
+        return;
+      } finally {
+        clearing.current = false;
+      }
+    }
     forgetPersonRasters();
-    setSamples(clearPersonSamples(samples, personFieldKeys(fields)));
+    setSamples((now) => clearPersonSamples(now, keys));
     setNotice({ type: 'info', message: 'Cleared the sample person.' });
   };
 
@@ -796,7 +818,7 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
           onChange={editChange} onSelect={onSelect} selection={selection} onRemoved={onRemoved}
           metricsFor={metricsFor} labelType={template.label_type}
           onLoadFromAsset={() => setModal('asset')} onLoadFromPerson={() => setModal('person')}
-          onClearPerson={clearPerson} loadError={fieldsError} readOnly={readOnly}
+          onClearPerson={() => { void clearPerson(); }} loadError={fieldsError} readOnly={readOnly}
           samplesFromParent={isChild} />
         <div className="lbb-center">
           <Canvas design={shownDesign} dpi={dpi} view={view} onView={setView} samples={shownSamples}

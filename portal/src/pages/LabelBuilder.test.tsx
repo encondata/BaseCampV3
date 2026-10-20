@@ -656,6 +656,31 @@ describe('an ID badge', () => {
       expect(api.labelImageRaster).toHaveBeenCalledTimes(1);
     });
 
+    it('with no field list, Clear sample person takes the person keys the server gives for them', async () => {
+      api.listLabelFields.mockRejectedValue(new Error('down'));
+      await openBadge({ samples: { ...ADA_VALUES, 'person:id': PERSON, asset_id: 'kept' } });
+      const clear = screen.getByRole('button', { name: 'Clear sample person' }) as HTMLButtonElement;
+      await waitFor(() => expect(clear.disabled).toBe(false));
+      fireEvent.click(clear);
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Clear sample person' })).toBeNull());
+      expect(api.loadSamplePerson).toHaveBeenCalledWith(PERSON);
+      // every person key and person:id gone; another sample stays
+      expect(await savedSamples()).toEqual({ asset_id: 'kept' });
+    });
+
+    it('with no field list and the person gone, Clear says it couldn’t and changes nothing', async () => {
+      const { ApiError } = await import('../lib/api');
+      api.listLabelFields.mockRejectedValue(new Error('down'));
+      api.loadSamplePerson.mockRejectedValue(new ApiError(404, 'person_not_found'));
+      await openBadge({ samples: { ...ADA_VALUES, 'person:id': PERSON } });
+      const clear = screen.getByRole('button', { name: 'Clear sample person' }) as HTMLButtonElement;
+      await waitFor(() => expect(clear.disabled).toBe(false));
+      fireEvent.click(clear);
+      expect((await screen.findByRole('alert')).textContent).toContain(
+        'Couldn’t clear the sample person: couldn’t load the field list. Reload the page and try again.');
+      expect(screen.getByRole('button', { name: 'Clear sample person' })).toBeTruthy();
+    });
+
     it('the image library’s Delete… confirm keeps the canvas keys off while it is open', async () => {
       api.listLabelImages.mockResolvedValue([
         { id: 'img-1', name: 'Cumulus', width: 600, height: 200, mime: 'image/png', created_at: '' }]);

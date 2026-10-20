@@ -110,6 +110,8 @@ export default function LoadFromPersonModal({ templateName, onLoad, onClose }: L
           if (!live) return;
           setPeople([]);
           setSearchError(true);
+          // the list is gone, and the pick with it
+          setPicked(null);
         });
     }, searched.current ? PERSON_SEARCH_DEBOUNCE_MS : 0);
     return () => {

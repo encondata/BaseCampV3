@@ -17,7 +17,9 @@
  * when Load from asset… is pressed. An ID badge offers Load from person…
  * instead (LoadFromPersonModal), and, while it has a sample person (the
  * samples' `person:id`), names them and offers Clear sample person — once
- * the fields are here, since they say which samples are the person's.
+ * the fields are here, since they say which samples are the person's (its
+ * tooltip says it is waiting; if they fail to load, the page asks the
+ * server for the person's keys instead).
  */
 
 import { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
@@ -262,6 +264,9 @@ const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldP
   const assetLoad = !!onLoadFromAsset && allowsFromTo(labelType);
   const personLoad = !!onLoadFromPerson && !!labelType && isPersonLabelType(labelType);
   const personId = samplePersonId(samples);
+  // the fields say which samples are the person's: Clear waits for them
+  // (when they fail to load, the page asks the server for the person's keys)
+  const fieldsLoading = !fields && !loadError;
   const personName = sampleOf(samples, 'person_name');
   let footHint = 'Fills every sample from a real roster row.';
   if (samplesFromParent) footHint = 'Samples belong to the parent template.';
@@ -366,7 +371,9 @@ const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldP
               <button type="button" className="mini-btn" disabled={readOnly || samplesFromParent}
                 onClick={onLoadFromPerson}>Load from person…</button>
               {personId !== null && onClearPerson && (
-                <button type="button" className="mini-btn" disabled={readOnly || samplesFromParent || !fields}
+                <button type="button" className="mini-btn"
+                  disabled={readOnly || samplesFromParent || fieldsLoading}
+                  title={fieldsLoading ? 'Waiting for the field list…' : undefined}
                   onClick={onClearPerson}>Clear sample person</button>
               )}
             </div>
