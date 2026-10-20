@@ -30,6 +30,25 @@ ALLOWED_QUERIES = frozenset({
     "~HI", "~HS", "^XA^HWE:*.*^XZ", "^XA^HH^XZ",
     '! U1 getvar "sensor.peeler_present"\r\n',
 })
+
+
+def _frames(n: int):
+    return lambda reply: reply.count(b"\x03") >= n
+
+
+# When each allowed reply is whole (Zebras answer in ~30 ms and keep the
+# connection open, so without this every query waited out the 2 s idle):
+# ~HS is three STX..ETX frames; ~HI, ^HH and the E: listing one; a getvar
+# is one quoted value. A reply that never completes still ends at the idle
+# wait.
+REPLY_COMPLETE = {
+    "~HS": _frames(3),
+    "~HI": _frames(1),
+    "^XA^HWE:*.*^XZ": _frames(1),
+    "^XA^HH^XZ": _frames(1),
+    '! U1 getvar "sensor.peeler_present"\r\n': lambda reply: reply.count(b'"') >= 2,
+}
+assert set(REPLY_COMPLETE) == ALLOWED_QUERIES
 MAX_ZPL = 8 * 1024 * 1024       # a label job (graphics can be large)
 BODY_OVERHEAD = 64 * 1024       # the JSON around it (ip, escapes of a few characters)
 MAX_FONT = 16 * 1024 * 1024     # a TrueType font
@@ -75,7 +94,8 @@ async def scan(request: Request) -> dict:
 @router.post("/edge/printers/query")
 async def query(request: Request) -> dict:
     """`{ip, command}` → `{response, truncated}`: the reply as text (bytes
-    0-255 as latin-1), at most 64 KB, ending at 2 s idle or 5 s in all.
+    0-255 as latin-1), at most 64 KB, ending as soon as the reply is whole
+    (REPLY_COMPLETE), else at 2 s idle or 5 s in all.
     `command` must be one of ALLOWED_QUERIES (422 command_not_allowed)."""
     body = await json_object(request)
     ip = await _ip(request, body.get("ip"))
@@ -83,7 +103,8 @@ async def query(request: Request) -> dict:
     if command not in ALLOWED_QUERIES:
         raise err(422, "command_not_allowed")
     try:
-        data, truncated = await request.app.state.printers.query(ip, command.encode("utf-8"))
+        data, truncated = await request.app.state.printers.query(
+            ip, command.encode("utf-8"), complete=REPLY_COMPLETE[command])
     except PrinterError as exc:
         raise _printer_error(exc) from None
     return {"response": data.decode("latin-1"), "truncated": truncated}

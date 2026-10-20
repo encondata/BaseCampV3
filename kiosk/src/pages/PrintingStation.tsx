@@ -40,7 +40,6 @@ const KEEPS_FOCUS = new Set(['INPUT', 'BUTTON', 'SELECT', 'TEXTAREA', 'A']);
 const STATE_TEXT: Record<QueueEntry['state'], string> = {
   queued: 'Waiting to print',
   printing: 'Printing',
-  take_label: 'Take the label',
   printed: 'Printed',
   failed: 'Failed',
 };
@@ -256,7 +255,6 @@ export default function PrintingStation() {
               {current.state === 'failed' ? current.message : STATE_TEXT[current.state]}
             </p>
             {current.recordWarning && <p className="station-warning">{current.recordWarning}</p>}
-            {current.takeWarning && <p className="station-warning">{current.takeWarning}</p>}
             {current.state === 'printed' && current.asset && (
               <button type="button" className="mini-btn" onClick={() => act(() => queue.reprint(current.id))}>
                 Reprint
@@ -298,7 +296,6 @@ export default function PrintingStation() {
                       {e.reprint ? ' (reprint)' : ''}
                     </span>
                     {e.recordWarning && <div className="station-warning">{e.recordWarning}</div>}
-                    {e.takeWarning && <div className="station-warning">{e.takeWarning}</div>}
                     {e.state === 'failed' && e.asset && e.id !== current?.id && (
                       <button type="button" className="mini-btn" onClick={() => act(() => queue.retry(e.id))}>
                         Retry

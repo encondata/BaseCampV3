@@ -388,6 +388,48 @@ async def test_query_ends_when_the_printer_closes(app, client):
     await fake.close()
 
 
+# Real replies (ZD421-300dpi, 2026-10-19): the printer answers in ~30 ms and
+# keeps the connection open, so a query must end when its reply is whole,
+# not after the 2 s idle wait (that wait cost ~2 s per status check).
+_HH = (Path(__file__).parent / "fixtures" / "zt220_hh.txt").read_bytes()
+COMPLETE_REPLIES = [
+    ("~HS", b"\x02030,0,0,0612,000,0,0,0,000,0,0,0\x03\r\n"
+            b"\x02000,0,0,0,0,1,6,0,00000000,1,000\x03\r\n\x020000,0\x03\r\n"),
+    ("~HI", b"\x02ZD421-300dpi,V93.21.38Z,12,8176KB\x03\r\n"),
+    ('! U1 getvar "sensor.peeler_present"\r\n', b'"Present"'),
+    ("^XA^HWE:*.*^XZ", b"\x02\r\n- DIR E:*.* \r\n* E:TEXT.ZPL   5  \r\n\r\n"
+                       b"-  32346624 bytes free E: ONBOARD FLASH \r\n\x03"),
+    ("^XA^HH^XZ", _HH),
+]
+
+
+@pytest.mark.parametrize("command,reply", COMPLETE_REPLIES, ids=lambda v: str(v)[:12])
+async def test_a_query_ends_as_soon_as_its_reply_is_whole(app, client, command, reply):
+    fake = await FakePrinter(reply=reply).start()  # holds the connection open
+    use_fake(app, fake)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    r = await client.post("/edge/printers/query", headers=make_session(app),
+                          json={"ip": "127.0.0.1", "command": command})
+    assert r.status_code == 200, r.text
+    assert r.json()["response"].encode("latin-1").startswith(reply.rstrip(b"\r\n"))
+    assert loop.time() - started < 0.5
+    await fake.close()
+
+
+async def test_a_partial_reply_still_waits_for_the_rest(app, client, monkeypatch):
+    monkeypatch.setattr(printers, "IDLE_S", 0.3)
+    fake = await FakePrinter(reply=b"\x02030,0,0\x03\r\n").start()  # 1 of ~HS's 3 frames
+    use_fake(app, fake)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    r = await client.post("/edge/printers/query", headers=make_session(app),
+                          json={"ip": "127.0.0.1", "command": "~HS"})
+    assert r.json()["response"].startswith("\x02030")
+    assert loop.time() - started >= 0.3  # fell back to the idle wait
+    await fake.close()
+
+
 async def test_a_reply_over_64_kb_is_cut_off(app, client, monkeypatch):
     monkeypatch.setattr(printers, "IDLE_S", 0.3)
     fake = await FakePrinter(reply=b"x" * 200_000).start()
