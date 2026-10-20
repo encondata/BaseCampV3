@@ -1187,7 +1187,7 @@ class Device(Base):
         ForeignKey("people.id", ondelete="SET NULL"))
     session_login_method: Mapped[str | None]
     session_started_at: Mapped[datetime | None]
-    # kiosk station type ('label' | 'rfid') and the paired RFID reader;
+    # kiosk station type ('label' | 'rfid' | 'timeclock'; 0105) and the paired RFID reader;
     # set by POST /kiosk/setup, never by the heartbeat (migration 0088)
     station_type: Mapped[str | None]
     rfid_reader_ip: Mapped[str | None] = mapped_column(INET)

@@ -663,9 +663,10 @@ LABEL_STATION_SCAN_STATUS = "labeled"
 
 
 def is_station(device: Device) -> bool:
-    """A laptop kiosk set up as an RFID Station or a Label Station; both
-    upload under a station key."""
-    return device.sub_type == "laptop" and device.station_type in ("rfid", "label")
+    """A laptop kiosk set up as an RFID, Label or Time Clock Station; each
+    holds a station key (deps.station_device scopes the routes by type)."""
+    return (device.sub_type == "laptop"
+            and device.station_type in station_keys.STATION_TYPES)
 
 
 def is_rfid_station(device: Device) -> bool:
@@ -835,14 +836,14 @@ async def issue_station_key(
     body: KioskStationKeyIn, db: DbSession,
     actor: AuthContext = require_permission("kiosk", "view"),
 ) -> KioskStationKeyOut:
-    """Issue (or replace) this RFID or Label Station's upload key. The raw key is
+    """Issue (or replace) this RFID, Label or Time Clock Station's key. The raw key is
     returned once; only its sha256 is stored. A move-password session may
     issue only for the move the kiosk is set up for."""
     device = await db.scalar(select(Device).where(Device.serial == body.serial))
     if device is None or device.device_type != "kiosk":
         raise _err(404, "device_not_found")
     # the code stays not_rfid_station for old edges, though a Label Station
-    # now qualifies too
+    # and a Time Clock Station now qualify too
     if not is_station(device) or device.current_initiative_id is None:
         raise _err(409, "not_rfid_station")
     if registration_state(device.token_expires_at, datetime.now(UTC)) not in ("ok", "soon"):
@@ -1419,8 +1420,10 @@ async def _client_assets_body(
 
 async def _station_sync_device(request: Request, db: AsyncSession,
                                serial: str, initiative_id: uuid.UUID) -> Device:
-    """Station sync serves only the move the key was issued for."""
-    device = await station_device(request, db, serial)
+    """Station sync serves only the move the key was issued for, and only an
+    RFID or Label Station (a Time Clock key is 403 wrong_station_type)."""
+    device = await station_device(request, db, serial,
+                                  types=station_keys.UPLOAD_STATION_TYPES)
     if device.station_key_initiative_id != initiative_id:
         raise _err(403, "move_locked")
     return device

@@ -3173,12 +3173,16 @@ class KioskStationKeyOut(BaseModel):
     key: str
 
 
+# a laptop kiosk's station type (devices.station_type; migration 0105)
+StationType = Literal["label", "rfid", "timeclock"]
+
+
 class KioskSetupIn(BaseModel):
     serial: str = Field(min_length=1, max_length=120)
     initiative_id: uuid.UUID
     site_id: uuid.UUID
     scan_status: str = Field(min_length=1)
-    station_type: Literal["label", "rfid"] | None = None
+    station_type: StationType | None = None
     reader: KioskReaderIn | None = None
 
 
@@ -4833,7 +4837,7 @@ class KioskSetupReadOut(BaseModel):
     site_name: str | None
     scan_status: str | None
     scan_status_label: str | None
-    station_type: Literal["label", "rfid"] | None
+    station_type: StationType | None
     reader: KioskSetupReaderOut | None
 
 
