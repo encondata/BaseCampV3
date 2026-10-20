@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import vegas from '../../../../api/src/serversherpa/labels/fixtures/vegas_v2.json';
 import {
-  barcodeModuleDots, clampToLabel, footprint, hitTest, marqueeSelect, move, resize, snap,
-  type ResizeContext,
+  barcodeModuleDots, barcodeWidthIn, clampToLabel, footprint, hitTest, marqueeSelect, move, resize, snap,
+  withBarcodeWidths, type ResizeContext,
 } from './geometry';
 import { reservedWidthIn, textBoxFor, type FontMetrics } from './metrics';
 import {
@@ -208,15 +208,76 @@ describe('resize: text', () => {
 });
 
 describe('resize: barcodes and QR codes', () => {
-  it('snaps a barcode to whole modules and lets the height go free', () => {
-    const bc = byId<BarcodeElement>('barcode');            // moduleIn 0.0133 → 4 dots at 300
-    expect(barcodeModuleDots(bc.moduleIn, 300)).toBe(4);
+  it('reads the module the compiler prints with', () => {
+    expect(barcodeModuleDots(0.0133, 300)).toBe(4);
     expect(barcodeModuleDots(null, 300)).toBe(2);          // the historical ^BY2
     expect(barcodeModuleDots(0.1, 300)).toBe(10);          // the printer's cap
-    const out = resize(bc, 'e', 0.05, 0, CTX);             // 355 dots → 89 modules → 356 dots
-    expect(out.w).toBeCloseTo(356 / 300, 10);
-    expect(resize(bc, 's', 0, 0.1, CTX).h).toBeCloseTo(0.2667, 10);
-    expect(resize(bc, 'w', 5, 0, CTX).w).toBeCloseTo(4 / 300, 10);   // one module at least
+  });
+
+  it('derives a barcode\'s width from its value and module (barcode.ts)', () => {
+    const bc = byId<BarcodeElement>('barcode');            // moduleIn 0.0133 → 4 dots at 300, 3 at 203
+    // the six-digit sample is subset C: 68 modules
+    expect(barcodeWidthIn(bc, '100000', 300)).toBeCloseTo(272 / 300, 12);
+    expect(barcodeWidthIn(bc, '100000', 203)).toBeCloseTo(204 / 203, 12);
+    expect(barcodeWidthIn(bc, '1000001', 300)).toBeCloseTo((112 * 4) / 300, 12);    // subset B
+    expect(barcodeWidthIn({ ...bc, symbology: 'code39' }, 'A1', 300)).toBeCloseTo((63 * 4) / 300, 12);
+    expect(barcodeWidthIn({ ...bc, moduleIn: null }, '100000', 300)).toBeCloseTo(136 / 300, 12);
+    // an empty value prints nothing: no width to derive
+    expect(barcodeWidthIn(bc, '', 300)).toBeNull();
+    // only barcodes (and fields shown as one) have one
+    expect(barcodeWidthIn(byId('qr'), '100000', 300)).toBeNull();
+    const field = { ...byId<FieldElement>('banner-pod'), display: 'barcode' as const, moduleIn: 3 / 300 };
+    expect(barcodeWidthIn(field, '07C', 300)).toBeCloseTo((68 * 3) / 300, 12);
+  });
+
+  it('resizing along the bars changes the module and the width follows; the height is free', () => {
+    const bc = { ...byId<BarcodeElement>('barcode'), w: 272 / 300 };
+    const ctx = { ...CTX, valueFor: () => '100000' };
+    // 272 + 75 = 347 dots wanted / 68 modules → 5 dots a module → 340 dots
+    const out = resize(bc, 'e', 0.25, 0, ctx);
+    expect(out.moduleIn).toBe(5 / 300);
+    expect(out.w).toBeCloseTo(340 / 300, 12);
+    expect(out.h).toBe(bc.h);
+    expect(out.x).toBe(bc.x);
+    // the height is the bar height and leaves the module (and the width) alone
+    const taller = resize(bc, 's', 0, 0.1, ctx);
+    expect(taller.h).toBeCloseTo(0.2667, 10);
+    expect(taller.moduleIn).toBe(bc.moduleIn);
+    expect(taller.w).toBeCloseTo(272 / 300, 12);
+    // one dot a module at least, ten at most; the west handle keeps the right edge
+    const narrow = resize(bc, 'w', 5, 0, ctx);
+    expect(narrow.moduleIn).toBe(1 / 300);
+    expect(narrow.w).toBeCloseTo(68 / 300, 12);
+    expect(narrow.x + narrow.w).toBeCloseTo(bc.x + bc.w, 12);
+    expect(resize(bc, 'e', 10, 0, ctx).moduleIn).toBe(10 / 300);
+    // less than half a module of drag leaves it as it was
+    expect(resize(bc, 'e', 30 / 300, 0, ctx).moduleIn).toBe(bc.moduleIn);
+  });
+
+  it('steps a barcode one module a key press', () => {
+    const bc = { ...byId<BarcodeElement>('barcode'), w: 272 / 300 };
+    const ctx = { ...CTX, valueFor: () => '100000', byKey: true };
+    expect(resize(bc, 'e', 1 / 300, 0, ctx).moduleIn).toBe(5 / 300);
+    expect(resize(bc, 'e', -1 / 300, 0, ctx).moduleIn).toBe(3 / 300);
+    expect(resize(bc, 'e', 10 / 300, 0, ctx).moduleIn).toBe(5 / 300);
+    expect(resize({ ...bc, moduleIn: 1 / 300, w: 68 / 300 }, 'e', -1 / 300, 0, ctx).moduleIn).toBe(1 / 300);
+    // the height steps a dot as before
+    expect(resize(bc, 's', 0, 1 / 300, ctx).h).toBeCloseTo(bc.h + 1 / 300, 12);
+  });
+
+  it('reads the length along a turned barcode', () => {
+    const bc = { ...byId<BarcodeElement>('barcode'), w: 272 / 300, rotation: 90 as const };
+    const out = resize(bc, 's', 0, 0.25, { ...CTX, valueFor: () => '100000' });   // footprint h is w
+    expect(out.moduleIn).toBe(5 / 300);
+    expect(out.w).toBeCloseTo(340 / 300, 12);
+    expect(out.h).toBe(bc.h);
+  });
+
+  it('snaps a barcode with no value to whole modules of its own', () => {
+    const bc = byId<BarcodeElement>('barcode');
+    const out = resize(bc, 'e', 0.05, 0, CTX);             // 287 dots → 72 modules of 4 → 288 dots
+    expect(out.w).toBeCloseTo(288 / 300, 10);
+    expect(out.moduleIn).toBe(bc.moduleIn);
   });
 
   it('keeps a QR code square, in whole magnification steps for the DPI', () => {
@@ -239,5 +300,33 @@ describe('resize: barcodes and QR codes', () => {
     const out = resize(field, 's', 0, 0.1, { ...CTX, valueFor: () => '100000' });
     expect(out.w).toBeCloseTo(168 / 300, 10);
     expect(out.h).toBe(out.w);
+  });
+});
+
+describe('withBarcodeWidths', () => {
+  it('keeps every barcode as wide as it prints for the values, and nothing else', () => {
+    const design = parseDesign({
+      ...vegas,
+      elements: [
+        ...vegas.elements,
+        { id: 'as-barcode', type: 'field', field: 'asset_name', display: 'barcode', symbology: 'code128',
+          moduleIn: 2 / 300, maxChars: 4, trim: 'rear', x: 0, y: 0, w: 1, h: 0.2, rotation: 0 },
+        { id: 'static', type: 'barcode', data: 'AB', symbology: 'code39', x: 0, y: 1, w: 1, h: 0.2, rotation: 0 },
+      ],
+    });
+    const values = { asset_id: '100000', asset_name: 'SAMPLE-SERVER-01' };
+    const out = withBarcodeWidths(design, values, 300);
+    const w = (id: string) => out.elements.find((e) => e.id === id)!.w;
+    expect(w('barcode')).toBeCloseTo(272 / 300, 12);
+    // the field's rules come first: four characters, subset B, 2 dots
+    expect(w('as-barcode')).toBeCloseTo((11 * 6 + 13) * 2 / 300, 12);
+    expect(w('static')).toBeCloseTo((16 * 4 - 1) * 2 / 300, 12);
+    // everything else is the very same element
+    design.elements.filter((e) => !['barcode', 'as-barcode', 'static'].includes(e.id))
+      .forEach((e) => expect(out.elements.find((o) => o.id === e.id)).toBe(e));
+    // in step already: the same design back
+    expect(withBarcodeWidths(out, values, 300)).toBe(out);
+    // an empty value keeps the box
+    expect(withBarcodeWidths(design, {}, 300).elements.find((e) => e.id === 'barcode')!.w).toBe(byId('barcode').w);
   });
 });

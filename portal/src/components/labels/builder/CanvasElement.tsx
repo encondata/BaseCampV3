@@ -12,8 +12,10 @@
  *    red. Inverted: the black block is the box plus its pad, stopped at the
  *    label's top and left edges (`_invert_box`), and the text is white.
  *    Faux bold overprints one dot along the text;
- *  - a barcode: stripes in its narrow module over the box, the
- *    human-readable line under the bars;
+ *  - a barcode: stripes in its narrow module, as wide as the printer
+ *    prints its value (the value's modules × the module: barcode.ts), the
+ *    human-readable line centered under the bars; with no value, only its
+ *    box;
  *  - a QR code: a placeholder symbol where and as big as the printer puts
  *    it (qr.ts qrLayout: centered, whole magnification steps, capped at 10),
  *    always upright, as ^BQ prints;
@@ -26,7 +28,7 @@
 import { memo } from 'react';
 
 import { faceFile, fauxBold, glyphWidthScale } from '../../../labels/builder/fonts';
-import { barcodeModuleDots } from '../../../labels/builder/geometry';
+import { barcodeModuleDots, barcodeWidthIn } from '../../../labels/builder/geometry';
 import { cssFamilyOf, textWidthIn, type LoadedFont } from '../../../labels/builder/metrics';
 import { invertPadOf, type ElementV2, type FieldElement, type TextElement } from '../../../labels/builder/model';
 import { qrLayout, type QrLayout } from '../../../labels/builder/qr';
@@ -198,8 +200,9 @@ export interface CanvasElementProps {
   hidden: boolean;
   /** A text element's loaded font; null until it loads. */
   font: LoadedFont | null;
-  /** What a QR code encodes, which sets its size. */
-  qrValue: string;
+  /** What a QR code or barcode encodes (the sample, even in Field names),
+   *  which sets its size. */
+  value: string;
   /** Dots per screen pixel, for hairlines that stay one pixel at any zoom. */
   px: number;
   /** A prefix for the SVG ids this element defines, unique on the page. */
@@ -301,17 +304,20 @@ function TextBody({ el, dpi, hidden, font, px, layout, overflow }: CanvasElement
   );
 }
 
-function BarcodeBody({ el, dpi, text, hidden, px, uid }: CanvasElementProps) {
+function BarcodeBody({ el, dpi, text, value, hidden, px, uid }: CanvasElementProps) {
   const moduleIn = el.type === 'barcode' || el.type === 'field' ? el.moduleIn : null;
   const showText = el.type === 'barcode' || el.type === 'field' ? el.showText ?? true : true;
   const m = barcodeModuleDots(moduleIn, dpi);
-  const { w, h } = dotBox(el, dpi);
+  // the printer's width, whatever the box says; no value prints nothing
+  const printed = barcodeWidthIn(el, value, dpi);
+  const shown = printed === null ? el : { ...el, w: printed };
+  const { w, h } = dotBox(shown, dpi);
   const hri = Math.max(8, 9 * m);
   const id = `${uid}-bars`;
   return (
-    <g className="lbc-frame" transform={frameTransform(el, dpi)}>
+    <g className="lbc-frame" transform={frameTransform(shown, dpi)}>
       <Outline w={w} h={h} px={px} />
-      {!hidden && (
+      {!hidden && printed !== null && (
         <>
           <defs>
             <pattern id={id} patternUnits="userSpaceOnUse" width={11 * m} height={Math.max(h, 1)}>
@@ -360,11 +366,11 @@ function QrSymbol({ layout, uid }: { layout: QrLayout; uid: string }) {
   );
 }
 
-function QrBody({ el, dpi, hidden, qrValue, px, uid }: CanvasElementProps) {
+function QrBody({ el, dpi, hidden, value, px, uid }: CanvasElementProps) {
   const fp = dotFootprint(el, dpi);
   let layout: QrLayout | null = null;
   try {
-    layout = qrLayout(el, qrValue, dpi);
+    layout = qrLayout(el, value, dpi);
   } catch {
     layout = null;
   }

@@ -11,7 +11,9 @@ import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { textBoxFor } from '../../../labels/builder/metrics';
-import { MAX_COUNT, MAX_LINES, validate, type DesignV2, type FieldElement } from '../../../labels/builder/model';
+import {
+  MAX_COUNT, MAX_LINES, updateElement, validate, type DesignV2, type FieldElement,
+} from '../../../labels/builder/model';
 import { FAKE_METRICS, FIELDS, SAMPLES, VEGAS, elementOf, fakeMetricsFor } from './builderTestKit';
 import PlacedFieldsTable from './PlacedFieldsTable';
 import PropertiesPanel, { type PropertiesPanelProps } from './PropertiesPanel';
@@ -195,6 +197,39 @@ describe('PropertiesPanel', () => {
     const shown = setup({ selection: ['value-name'] });
     press('Barcode');
     expect(elementOf(shown.last(), 'value-name')).toMatchObject({ display: 'barcode', symbology: 'code128', showText: true });
+  });
+
+  it('a barcode\'s width follows its data: W is read-only, Module sets it, H is the bar height', () => {
+    // '10482' is five characters in subset B: 90 modules of 4 dots
+    const { last } = setup({ selection: ['barcode'] });
+    const box = (name: string) => within(panel()).getByRole('textbox', { name }) as HTMLInputElement;
+    expect(box('W').value).toBe('360');
+    expect(box('W').disabled).toBe(true);
+    expect(within(panel()).getByText('Width follows the data: 5 characters → 360 dots at this DPI.')).toBeTruthy();
+    commit('Module width (dots)', '3');
+    const bc = elementOf(last(), 'barcode') as { moduleIn: number; w: number; h: number };
+    expect(bc.moduleIn).toBeCloseTo(3 / DPI);
+    expect(bc.w).toBeCloseTo(270 / DPI, 12);
+    expect(box('W').value).toBe('270');
+    expect(within(panel()).getByText('Width follows the data: 5 characters → 270 dots at this DPI.')).toBeTruthy();
+    commit('H', '80');
+    expect(elementOf(last(), 'barcode')).toMatchObject({ h: 80 / DPI, moduleIn: bc.moduleIn });
+    // Code 39 counts its own modules: 16 × 7 − 1 = 111 of 3
+    press('Code 39');
+    expect(elementOf(last(), 'barcode').w).toBeCloseTo(333 / DPI, 12);
+    cleanup();
+
+    // turned, the length runs down the label: H is the read-only one
+    const turned = updateElement(VEGAS(), 'barcode', { rotation: 90 });
+    setup({ design: turned, selection: ['barcode'] });
+    expect(box('H').value).toBe('360');
+    expect(box('H').disabled).toBe(true);
+    expect(box('W').disabled).toBe(false);
+    cleanup();
+
+    // no sample value: nothing prints yet
+    setup({ selection: ['barcode'], samples: { ...SAMPLES, asset_id: '' } });
+    expect(within(panel()).getByText('Width follows the data: no sample value, so nothing prints.')).toBeTruthy();
   });
 
   it('Split pieces keep the lock of the placement they replace', () => {

@@ -32,6 +32,10 @@
  * Fonts load as they are needed (useBuilderFonts). A text element whose
  * font changed before that font's metrics arrived is refit when they do,
  * so its box is one line of the new font tall.
+ *
+ * A barcode's box is as wide as it prints its sample at the DPI shown
+ * (geometry.ts withBarcodeWidths): the design opens that way (and counts
+ * as unchanged), and every edit keeps it so. The compiler never reads it.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -57,7 +61,7 @@ import { useBuilderFonts } from '../components/labels/builder/useBuilderFonts';
 import { useBuilderShortcuts, type ShortcutHandlers } from '../components/labels/builder/useBuilderShortcuts';
 import VersionsModal from '../components/labels/builder/VersionsModal';
 import { metricsFile } from '../labels/builder/fonts';
-import { clampToLabel } from '../labels/builder/geometry';
+import { clampToLabel, withBarcodeWidths } from '../labels/builder/geometry';
 import { createHistory } from '../labels/builder/history';
 import {
   addElement, DesignError, nextId, parseDesign, replaceElements, serializeDesign, validate,
@@ -252,18 +256,20 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
   const [template, setTemplate] = useState<LabelTemplate>(initial.template);
   const [node, setNode] = useState<LabelTemplateTreeNode | null>(initial.node);
   const isChild = !!template.parent_id;
-  const history = useRef(createHistory<DesignV2>(initial.design));
-  const [design, setDesign] = useState<DesignV2>(initial.design);
-  const [, setHistoryTick] = useState(0);
-  const [saved, setSaved] = useState(() => ({
-    design: json(serializeDesign(initial.design)),
-    samples: json(initial.template.samples ?? {}),
-  }));
   const [samples, setSamples] = useState<Record<string, string>>(
     () => ({ ...(isChild ? initial.node?.samples : initial.template.samples) ?? {} }));
+  const [viewDpi, setViewDpi] = useState(isChild ? template.dpi_key : PARENT_DPI);
+  // the design as opened, each barcode as wide as it prints (no change to save)
+  const [opened] = useState(() => withBarcodeWidths(initial.design, samples, dpiDots(vocab, viewDpi)));
+  const history = useRef(createHistory<DesignV2>(opened));
+  const [design, setDesign] = useState<DesignV2>(opened);
+  const [, setHistoryTick] = useState(0);
+  const [saved, setSaved] = useState(() => ({
+    design: json(serializeDesign(opened)),
+    samples: json(initial.template.samples ?? {}),
+  }));
   const [selection, setSelection] = useState<string[]>([]);
   const [view, setView] = useState<CanvasView>(DEFAULT_VIEW);
-  const [viewDpi, setViewDpi] = useState(isChild ? template.dpi_key : PARENT_DPI);
   const [fields, setFields] = useState<LabelFields | null>(null);
   const [fieldsError, setFieldsError] = useState<string | null>(null);
   const [modal, setModal] = useState<Modal | null>(null);
@@ -331,9 +337,14 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
     }
   }, [metricsFor]);
 
-  const apply = useCallback((next: DesignV2) => {
+  /** What every edit's barcodes are measured with: the samples and the DPI shown. */
+  const widthsFrom = useRef({ samples, dpi });
+  widthsFrom.current = { samples, dpi };
+
+  const apply = useCallback((edited: DesignV2) => {
     const h = history.current;
-    if (next === h.present) return;
+    if (edited === h.present) return;
+    const next = withBarcodeWidths(edited, widthsFrom.current.samples, widthsFrom.current.dpi);
     markPending(h.present, next);
     h.push(next);
     setDesign(next);
@@ -414,7 +425,7 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
     if (!isChild) setSamples({ ...(row.samples ?? {}) });
     let d: DesignV2;
     try {
-      d = parseDesign(row.design);
+      d = withBarcodeWidths(parseDesign(row.design), isChild ? samples : { ...(row.samples ?? {}) }, dpi);
     } catch (err) {
       console.error('label builder: the restored design cannot be read', err);
       setSaved((prev) => ({ ...prev, samples: isChild ? prev.samples : json(row.samples ?? {}) }));

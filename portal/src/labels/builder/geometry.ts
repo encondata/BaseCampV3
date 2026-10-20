@@ -9,8 +9,13 @@
  *    templates' do, several lines, or no metrics yet) scales both in
  *    proportion to its own height. The width follows the expected length
  *    when one is set, else it is free;
- *  - barcode: the height is the bar height; the width snaps to whole
- *    narrow modules (the printer's ^BY, in dots at the DPI);
+ *  - barcode: the height is the bar height; the width is derived — the
+ *    printer draws the value's modules (barcode.ts) × the narrow module
+ *    (^BY, whole dots at the DPI) whatever the box says — so resizing
+ *    along the bars sets the module and the width follows
+ *    (`barcodeWidthIn`, `withBarcodeWidths`). A key press steps the module
+ *    a dot at least; a barcode with no value to count snaps to whole
+ *    modules of its own;
  *  - QR code: square, in whole magnification steps of the symbol the value
  *    needs (qr.ts), capped at the printer's 10;
  *  - line and box: free.
@@ -20,9 +25,12 @@
  * never moves or resizes.
  */
 
+import { barcodeModules } from './barcode';
 import { DEFAULT_FAMILY, glyphWidthScale, type FontRef } from './fonts';
 import { reservedWidthIn, sizePtForHeight, textBoxFor, type FontMetrics } from './metrics';
-import type { Display, ElementV2 } from './model';
+import {
+  elementValue, type BarcodeElement, type DesignV2, type Display, type ElementV2, type FieldElement,
+} from './model';
 import { qrMagnification, qrModules } from './qr';
 import { pyRound, toDots } from './units';
 
@@ -48,10 +56,14 @@ export interface ResizeContext {
   /** A text element's font metrics, once loaded; without them text scales
    *  in proportion. */
   metricsFor?: (el: ElementV2) => FontMetrics | null | undefined;
-  /** The value a QR code shows (its sample or static data), for its size. */
+  /** The value a QR code or barcode prints (its sample or static data),
+   *  for its size. */
   valueFor?: (el: ElementV2) => string;
   /** ⇧-resize: keep the footprint's proportions. */
   keepRatio?: boolean;
+  /** A key press (⌥-arrows): a barcode's module steps a dot at least, so
+   *  a dot's resize is never lost to rounding. */
+  byKey?: boolean;
 }
 
 /** The label area an element covers: w and h swap at 90 and 270. */
@@ -124,11 +136,46 @@ export function marqueeSelect(elements: readonly ElementV2[], rect: Rect,
   }).map((el) => el.id);
 }
 
+/** The printer's narrowest and widest ^BY module, in dots. */
+const MIN_MODULE = 1;
+const MAX_MODULE = 10;
+
 /** The narrow-module width a barcode prints with, in dots: the compiler's
  *  ^BY (2 when no width is set, else the width at `dpi`, 1 to 10). */
 export function barcodeModuleDots(moduleIn: number | null | undefined, dpi: number): number {
   if (moduleIn == null) return 2;
-  return Math.max(1, Math.min(10, toDots(moduleIn, dpi)));
+  return Math.max(MIN_MODULE, Math.min(MAX_MODULE, toDots(moduleIn, dpi)));
+}
+
+/** A barcode, or a field placement shown as one. */
+export function isBarcode(el: ElementV2): el is BarcodeElement | FieldElement {
+  return el.type === 'barcode' || (el.type === 'field' && el.display === 'barcode');
+}
+
+/** The width in inches a barcode prints `value` at `dpi`: the value's
+ *  modules (barcode.ts) × its narrow module in whole dots. Null for an
+ *  empty value (nothing prints) or an element that isn't a barcode. */
+export function barcodeWidthIn(el: ElementV2, value: string, dpi: number): number | null {
+  if (!isBarcode(el)) return null;
+  const modules = barcodeModules(el.symbology ?? 'code128', value);
+  return modules ? (modules * barcodeModuleDots(el.moduleIn, dpi)) / dpi : null;
+}
+
+/** `design` with every barcode's w the width it prints at `dpi` with
+ *  `values` (elementValue: a field's rules first). The compiler never reads
+ *  a barcode's w; the canvas, hit-testing and the align tools do, so the
+ *  builder keeps it in step. A barcode whose value is empty keeps its box;
+ *  the same design comes back when nothing changes. */
+export function withBarcodeWidths(design: DesignV2, values: Readonly<Record<string, string>>,
+  dpi: number): DesignV2 {
+  let changed = false;
+  const elements = design.elements.map((el) => {
+    const w = barcodeWidthIn(el, elementValue(el, values), dpi);
+    if (w === null || w === el.w) return el;
+    changed = true;
+    return { ...el, w };
+  });
+  return changed ? { ...design, elements } : design;
 }
 
 type Kind = 'text' | 'barcode' | 'qr' | 'free';
@@ -199,12 +246,7 @@ function qrSide(el: ElementV2, wantIn: number, ctx: ResizeContext): number {
  *  `across`, under its type's rule. */
 function sized<T extends ElementV2>(el: T, along: number, across: number, ctx: ResizeContext): T {
   const kind = kindOf(el);
-  if (kind === 'barcode') {
-    if (Math.abs(along - el.w) <= EPS) return { ...el, h: across };
-    const module = barcodeModuleDots('moduleIn' in el ? el.moduleIn : null, ctx.dpi);
-    const modules = Math.max(1, pyRound(toDots(along, ctx.dpi) / module));
-    return { ...el, w: (modules * module) / ctx.dpi, h: across };
-  }
+  if (kind === 'barcode' && isBarcode(el)) return sizedBarcode(el, along, across, ctx);
   if (kind !== 'text' || (el.type !== 'text' && el.type !== 'field')) return { ...el, w: along, h: across };
 
   const sizePt = el.sizePt ?? 0;
@@ -236,4 +278,29 @@ function sized<T extends ElementV2>(el: T, along: number, across: number, ctx: R
     w = reserved ?? (sizePt > 0 ? el.w * (nextSize / sizePt) : el.w);
   }
   return { ...el, w, h: across, sizePt: scaled ? nextSize : el.sizePt, baselineIn: baseline };
+}
+
+/** A barcode asked to be `along` long: the module that comes nearest
+ *  (a key press moves it a dot at least), 1 to 10 dots, and the width that
+ *  module prints; `across` is the bar height. With no value to count, the
+ *  length snaps to whole modules of the current width. */
+function sizedBarcode<T extends ElementV2>(el: T & (BarcodeElement | FieldElement), along: number,
+  across: number, ctx: ResizeContext): T {
+  const current = barcodeModuleDots(el.moduleIn, ctx.dpi);
+  const modules = barcodeModules(el.symbology ?? 'code128', ctx.valueFor?.(el) ?? '');
+  const lengthens = Math.abs(along - el.w) > EPS;
+  if (!modules) {
+    if (!lengthens) return { ...el, h: across };
+    const count = Math.max(1, pyRound(toDots(along, ctx.dpi) / current));
+    return { ...el, w: (count * current) / ctx.dpi, h: across };
+  }
+  let module = current;
+  if (lengthens) {
+    module = Math.max(MIN_MODULE, Math.min(MAX_MODULE, pyRound(toDots(along, ctx.dpi) / modules)));
+    if (ctx.byKey && module === current) {
+      module = Math.max(MIN_MODULE, Math.min(MAX_MODULE, current + Math.sign(along - el.w)));
+    }
+  }
+  const moduleIn = module === current ? el.moduleIn : module / ctx.dpi;
+  return { ...el, moduleIn, w: (modules * module) / ctx.dpi, h: across };
 }

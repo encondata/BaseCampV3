@@ -174,7 +174,7 @@ stacking order, lock, and hide-when-empty (data elements only).
 | Field (data) | field key; display type; sub-fields when Split; font; size (pt); weight; inverted + padding; expected length; alignment; max characters + trim; strip; sample value |
 | Static text | content; font; size; weight; inverted; alignment |
 | Line, Box | stroke width; box: fill |
-| Barcode | field or static data; Code 128 or Code 39; bar height from the box; module width; human-readable line on/off |
+| Barcode | field or static data; Code 128 or Code 39; bar height from the box; module width; human-readable line on/off; width follows the data and the module; the canvas shows the printed width |
 | QR code | field or static data; size from the box (magnification in printer steps); error correction M |
 
 **Field value pipeline** (in this order): take the raw value → Split (if the
@@ -212,9 +212,18 @@ reverse. A blank value prints nothing, no box.
 
 **Resizing.** For text elements, dragging the box height scales the font
 size and the width follows the expected length (or is free when no length
-is set). For barcodes, height sets the bar height and width snaps to whole
-module widths. For QR codes, the box snaps to magnification steps. Line and
-box resize freely.
+is set). For barcodes, height sets the bar height and the width is derived:
+the printer draws the value's modules × the module whatever the box says,
+so the canvas draws that width (from the sample, also in Field names),
+resizing along the bars sets the module (whole dots, 1 to 10; ⌥←/→ steps it
+a dot), and the properties show the width read-only with "Width follows the
+data: N characters → W dots at this DPI." The compiler starts Code 128 data
+in the subset it counts: digits only, an even count of 2 or more, in subset
+C (`>;`, 11 × (n/2 + 2) + 13 modules); anything else in subset B (`>:`,
+11 × (n + 2) + 13, a `>0` or a hex-escaped byte one character each). Code 39
+is 16 × (n + 2) − 1. `labels/barcode.py` and the portal's mirror share
+`fixtures/barcode_modules.json`. For QR codes, the box snaps to
+magnification steps. Line and box resize freely.
 
 **QR codes at 600 DPI.** Zebra caps QR magnification at 10 dots per module,
 so a QR wider than about 0.35 in cannot be reproduced at 600 DPI. The

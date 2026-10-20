@@ -184,6 +184,21 @@ describe('a parent template', () => {
     expect(screen.getByRole('status').textContent).toContain('Saved v8.');
   });
 
+  it('keeps each barcode as wide as it prints its sample: opening is no change, an edit stores it', async () => {
+    // the fixture's box is 272 dots; the sample '10482' prints 90 modules of 4 = 360
+    await openParent();
+    const bar = screen.getByRole('group', { name: 'Template' });
+    expect(within(bar).queryByText('Unsaved')).toBeNull();
+    // a page edit (⌘B on the selected text), not one of the canvas's
+    ctrl('a');
+    ctrl('b');
+    await waitFor(() => expect(within(bar).queryByText('Unsaved')).not.toBeNull());
+    ctrl('s');
+    await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledTimes(1));
+    const sent = api.updateLabelTemplate.mock.calls[0][1].design.elements as { id: string; w: number }[];
+    expect(sent.find((e) => e.id === 'barcode')!.w).toBeCloseTo(360 / 300, 9);
+  });
+
   it('asks about each customized child the save passed by', async () => {
     api.updateLabelTemplate.mockResolvedValue({ ...PARENT, version: 8, out_of_date: ['c203'] });
     api.updateLabelTemplateFromParent.mockResolvedValue(child('203'));

@@ -15,9 +15,10 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import vegas from '../../../../../api/src/serversherpa/labels/fixtures/vegas_v2.json';
 import { align } from '../../../labels/builder/align';
 import { faceFile, type FontWeight } from '../../../labels/builder/fonts';
+import { withBarcodeWidths } from '../../../labels/builder/geometry';
 import { cssFamilyOf, textBoxFor, textWidthIn, type FontMetrics, type LoadedFont } from '../../../labels/builder/metrics';
 import {
-  parseDesign, replaceElements, updateElement, type DesignV2, type ElementV2, type TextElement,
+  parseDesign, replaceElements, updateElement, type BarcodeElement, type DesignV2, type ElementV2, type TextElement,
 } from '../../../labels/builder/model';
 import { toDots } from '../../../labels/builder/units';
 import { FIELDS } from './builderTestKit';
@@ -144,6 +145,31 @@ describe('rendering', () => {
     expect(node('qr').querySelector('.lbc-qr-symbol')).not.toBeNull();
     expect(node('rule').querySelector('.lbc-shape')).not.toBeNull();
     expect(node('side-site').querySelector('.lbc-frame')!.getAttribute('transform')).toContain('rotate(270)');
+  });
+
+  it('draws a barcode as wide as it prints for its value, whatever its box says', () => {
+    // '10482' is five characters in subset B: 11 × 7 + 13 = 90 modules of 4 dots
+    const stale = updateElement(VEGAS(), 'barcode', { w: 2 });
+    const { node, unmount } = setup({ design: stale });
+    const bars = () => node('barcode').querySelector('rect.lbc-bars')!;
+    expect(bars().getAttribute('width')).toBe('360');
+    // the text line is centered under the bars
+    expect(node('barcode').querySelector('text.lbc-hri')!.getAttribute('x')).toBe('180');
+    expect(node('barcode').querySelector('rect.lbc-box')!.getAttribute('width')).toBe('360');
+    unmount();
+    // six digits go in subset C: 68 modules
+    const six = setup({ design: stale, samples: { ...SAMPLES, asset_id: '100000' } });
+    expect(six.node('barcode').querySelector('rect.lbc-bars')!.getAttribute('width')).toBe('272');
+    six.unmount();
+    // Field names still draws the sample's width, so the box never jumps
+    const names = setup({ design: stale, view: { showSamples: false } });
+    expect(names.node('barcode').querySelector('rect.lbc-bars')!.getAttribute('width')).toBe('360');
+    expect(names.node('barcode').querySelector('text.lbc-hri')!.textContent).toBe('asset_id');
+    names.unmount();
+    // no value: no bars, only the box
+    const empty = setup({ design: stale, samples: { ...SAMPLES, asset_id: '' } });
+    expect(empty.node('barcode').querySelector('rect.lbc-bars')).toBeNull();
+    expect(empty.node('barcode').querySelector('rect.lbc-box')!.getAttribute('width')).toBe('600');
   });
 
   it('draws an inverted element as the black box plus its pad, in printer dots, with the text in white', () => {
@@ -430,6 +456,22 @@ describe('moving and resizing', () => {
     expect(el(last(), 'value-name').w).toBeCloseTo(2.6667 + 1 / DPI, 9);
   });
 
+  it('resizing a barcode along its bars sets its module, and ⌥ arrows step it', () => {
+    const { container, last } = setup({ selection: ['barcode'] });
+    const bc = el(VEGAS(), 'barcode');
+    // 90 modules of 4 = 360 dots; a drag of 100 dots asks for 460 → 5 a module → 450
+    drag(container.querySelector('[data-handle="e"]')!, [bc.x + 1.2, bc.y + 0.05], [bc.x + 1.2 + 100 / DPI, bc.y + 0.05]);
+    expect(el(last(), 'barcode')).toMatchObject({ moduleIn: 5 / DPI, h: bc.h });
+    expect(el(last(), 'barcode').w).toBeCloseTo(450 / DPI, 12);
+    fireEvent.keyDown(document.body, { key: 'ArrowRight', code: 'ArrowRight', altKey: true });
+    fireEvent.keyUp(document.body, { key: 'ArrowRight', code: 'ArrowRight', altKey: true });
+    expect((el(last(), 'barcode') as BarcodeElement).moduleIn).toBe(6 / DPI);
+    expect(el(last(), 'barcode').w).toBeCloseTo(540 / DPI, 12);
+    fireEvent.keyDown(document.body, { key: 'ArrowLeft', code: 'ArrowLeft', altKey: true });
+    fireEvent.keyUp(document.body, { key: 'ArrowLeft', code: 'ArrowLeft', altKey: true });
+    expect((el(last(), 'barcode') as BarcodeElement).moduleIn).toBe(5 / DPI);
+  });
+
   it('arrow keys are left alone while typing in a box', () => {
     const { change } = setup({ selection: ['banner-pod'] });
     const input = document.createElement('input');
@@ -458,7 +500,8 @@ describe('align', () => {
   it('the align buttons run align over the selection', () => {
     const { last } = setup({ selection: selected });
     fireEvent.click(screen.getByRole('button', { name: 'Align left' }));
-    const d = VEGAS();
+    // the canvas works with each barcode as wide as it prints
+    const d = withBarcodeWidths(VEGAS(), SAMPLES, DPI);
     const expected = replaceElements(d, align(selected.map((id) => el(d, id)), 'left', d.size));
     expect(last()).toEqual(expected);
     for (const id of selected) expect(el(last(), id).x).toBeCloseTo(0.0333, 9);
