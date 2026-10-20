@@ -665,6 +665,63 @@ describe('an ID badge', () => {
     });
   });
 
+  describe('a library upload that finishes after the user kept working', () => {
+    const LOGO = { id: 'image-9', type: 'image', source: 'static', fit: 'contain', mode: 'threshold',
+      x: 2, y: 0.1, w: 1, h: 0.5, rotation: 0, hideWhenEmpty: true };
+    const MADE = { id: 'img-new', name: 'Cumulus', width: 600, height: 200, mime: 'image/png', created_at: '' };
+    const DOT = 1 / 300;
+
+    /** Everything selected (the logo last, so its properties show) and an
+     *  upload of a picture for it under way. */
+    async function uploading() {
+      let finish!: (made: typeof MADE) => void;
+      api.uploadLabelImage.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+      await openBadge({ design: { ...BADGE_DESIGN, elements: [...BADGE_DESIGN.elements, LOGO] } as Record<string, unknown> });
+      ctrl('a');
+      const props = screen.getByRole('complementary', { name: 'Properties' });
+      fireEvent.change(await within(props).findByLabelText('Image file'),
+        { target: { files: [new File(['png'], 'Cumulus.png', { type: 'image/png' })] } });
+      await waitFor(() => expect(api.uploadLabelImage).toHaveBeenCalled());
+      const picked = () => (within(props).getByRole('combobox', { name: 'Static image' }) as HTMLInputElement).value;
+      return { finish: async () => { await act(async () => { finish(MADE); }); }, picked };
+    }
+
+    async function savedDesign() {
+      ctrl('s');
+      await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalled());
+      const sent = api.updateLabelTemplate.mock.calls.at(-1)![1].design as { elements: Record<string, unknown>[] };
+      return Object.fromEntries(sent.elements.map((e) => [e.id, e]));
+    }
+
+    it('keeps a nudge made meanwhile, and picks the picture for the logo', async () => {
+      const { finish, picked } = await uploading();
+      fireEvent.keyDown(document.body, { key: 'ArrowRight', code: 'ArrowRight' });
+      fireEvent.keyUp(document.body, { key: 'ArrowRight', code: 'ArrowRight' });
+      await finish();
+      await waitFor(() => expect(picked()).toBe('Cumulus'));
+      const els = await savedDesign();
+      expect(els['field-1'].x).toBeCloseTo(1.1 + DOT);
+      expect(els['image-9'].x).toBeCloseTo(2 + DOT);
+      expect(els['image-9'].imageId).toBe('img-new');
+    });
+
+    it('one landing mid-gesture waits for its end, and is its own undo step', async () => {
+      const { finish, picked } = await uploading();
+      // an arrow held down: one gesture until it is let go
+      fireEvent.keyDown(document.body, { key: 'ArrowRight', code: 'ArrowRight' });
+      await finish();
+      expect(picked()).toBe('');
+      fireEvent.keyUp(document.body, { key: 'ArrowRight', code: 'ArrowRight' });
+      await waitFor(() => expect(picked()).toBe('Cumulus'));
+      // undo takes the pick back, not the nudge
+      ctrl('z');
+      await waitFor(() => expect(picked()).toBe(''));
+      const els = await savedDesign();
+      expect(els['image-9'].x).toBeCloseTo(2 + DOT);
+      expect(els['image-9'].imageId).toBeUndefined();
+    });
+  });
+
   it('refuses to save an image on a template that isn’t an ID badge in ZPL', async () => {
     await openBadge({ label_type: 'top' });
     edit();

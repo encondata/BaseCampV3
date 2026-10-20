@@ -6,6 +6,11 @@
  * picture and picks it. A design holds the picture by its id; one deleted
  * from the library since prints nothing, and the picker says so.
  *
+ * An upload can take a while, and the user keeps working meanwhile: when
+ * it lands, the picture goes to the elements it was started for, through
+ * the latest `onPick` (so it lands on the design as it is by then), and
+ * not at all once the picker has gone (another element selected).
+ *
  * Delete… takes the picked picture out of the library (DELETE
  * /labels/images/{id}, a soft delete; allowed while templates use it)
  * after a confirm with the report-generate header. The element keeps the
@@ -114,10 +119,15 @@ function DeleteImageDialog({ image, onDeleted, onClose }: {
   );
 }
 
-export default function ImageLibraryPicker({ value, onPick, disabled = false, onDialog }: {
+export default function ImageLibraryPicker({ value, target, onPick, disabled = false, onDialog }: {
   /** The picked picture's id, or null for none yet. */
   value: string | null;
-  onPick: (imageId: string) => void;
+  /** The elements a pick is for. An upload remembers them as it starts:
+   *  its picture goes to them even when the selection moved on meanwhile. */
+  target: readonly string[];
+  /** A picture picked for `target`. An upload calls the latest one, and
+   *  only while the picker is still there. */
+  onPick: (imageId: string, target: readonly string[]) => void;
   disabled?: boolean;
   /** Delete…'s confirm opened (true) or closed (false). */
   onDialog?: (open: boolean) => void;
@@ -129,6 +139,9 @@ export default function ImageLibraryPicker({ value, onPick, disabled = false, on
   const [deleting, setDeleting] = useState<LabelImage | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const live = useRef(true);
+  // an upload ends renders later: it picks through the latest callback
+  const pick = useRef(onPick);
+  pick.current = onPick;
 
   useEffect(() => {
     live.current = true;
@@ -169,15 +182,18 @@ export default function ImageLibraryPicker({ value, onPick, disabled = false, on
       setError('That file is over 5 MB.');
       return;
     }
+    // the elements the picture is for, as they are now
+    const forTarget = [...target];
     setUploading(true);
     try {
       const made = await uploadLabelImage(file);
+      if (!live.current) return;
       setLibrary((rows) => byName([...(rows ?? []).filter((r) => r.id !== made.id), made]));
-      onPick(made.id);
+      pick.current(made.id, forTarget);
     } catch (err) {
-      setError(uploadError(err));
+      if (live.current) setError(uploadError(err));
     } finally {
-      setUploading(false);
+      if (live.current) setUploading(false);
     }
   };
 
@@ -190,7 +206,7 @@ export default function ImageLibraryPicker({ value, onPick, disabled = false, on
       <div className="lbp-image-pick">
         <ComboBox portal ariaLabel="Static image" options={options} value={value ?? ''} disabled={disabled}
           placeholder={library === null && !loadFailed ? 'Loading…' : 'Pick a picture…'}
-          onChange={(id) => { if (id) onPick(id); }} />
+          onChange={(id) => { if (id) onPick(id, target); }} />
         <button type="button" className="mini-btn" disabled={disabled || uploading}
           onClick={() => fileRef.current?.click()}>
           {uploading ? 'Uploading…' : 'Upload…'}

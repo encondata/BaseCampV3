@@ -344,6 +344,9 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
   }, [printer.notice]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const readOnly = viewing !== null;
+  /** An old version is open (read-only), as of the latest render. */
+  const viewingNow = useRef(readOnly);
+  viewingNow.current = readOnly;
   const shownDesign = viewing?.design ?? design;
   const shownSamples = viewing && Object.keys(viewing.samples).length ? viewing.samples : samples;
   const dpiKey = isChild ? template.dpi_key : viewDpi;
@@ -387,6 +390,23 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
     setHistoryTick((n) => n + 1);
   }, [markPending]);
 
+  /** Edits that landed during a gesture, run once it ends. */
+  const held = useRef<((present: DesignV2) => DesignV2)[]>([]);
+
+  /** An edit worked out from the design as it is when it lands, not as a
+   *  component last drew it: a library upload's pick, which lands after the
+   *  user kept working. Dropped while an old version is open; during a
+   *  gesture it waits for the gesture's end, since a drag redraws from
+   *  where it began and would wipe it. */
+  const update = useCallback((edit: (present: DesignV2) => DesignV2) => {
+    if (viewingNow.current) return;
+    if (gestureOpen.current) {
+      held.current.push(edit);
+      return;
+    }
+    apply(edit(history.current.present));
+  }, [apply]);
+
   const onGesture = useCallback((phase: 'begin' | 'end') => {
     if (phase === 'begin') {
       gestureOpen.current = true;
@@ -395,9 +415,10 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
       history.current.endGesture();
       gestureOpen.current = false;
       setGestures((n) => n + 1);
+      for (const edit of held.current.splice(0)) update(edit);
     }
     setHistoryTick((n) => n + 1);
-  }, []);
+  }, [update]);
 
   // refit what was waiting on a font, once the font is here (not while an
   // old version is shown: the edit would land unseen; it runs on return)
@@ -785,8 +806,8 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
         </div>
         <div className="lbb-side" ref={sideRef}>
           <PropertiesPanel design={shownDesign} selection={selection} samples={shownSamples} fields={fields} dpi={dpi}
-            metricsFor={metricsFor} onChange={editChange} onSelect={onSelect} labelType={template.label_type}
-            imagesAllowed={imagesAllowed} readOnly={readOnly} onDialog={setPanelDialog} />
+            metricsFor={metricsFor} onChange={editChange} onUpdate={update} onSelect={onSelect}
+            labelType={template.label_type} imagesAllowed={imagesAllowed} readOnly={readOnly} onDialog={setPanelDialog} />
           <PreviewPanel design={shownDesign} dpi={dpi} samples={shownSamples} library={library}
             sizeKey={template.size_key} labelType={template.label_type} disabled={!isZpl} />
         </div>

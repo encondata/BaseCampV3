@@ -6,7 +6,7 @@
  * from the field's sample.
  */
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -444,6 +444,91 @@ describe('PropertiesPanel: an image (ID badges)', () => {
       { target: { files: [new File(['x'], 'big.png', { type: 'image/png' })] } });
     expect(await within(panel()).findByText('That file is over 5 MB.')).toBeTruthy();
     expect(change).not.toHaveBeenCalled();
+  });
+
+  describe('an upload that finishes after the user kept working', () => {
+    const MADE: LabelImage = { id: 'img-new', name: 'Cumulus', width: 600, height: 200, mime: 'image/png', created_at: '' };
+    const staticImage = (id: string) => photo({ id, source: 'static', fit: 'contain', mode: 'threshold' });
+
+    /** The panel over a design the test can also change from outside (as
+     *  the canvas does), with the upload held until `finish()`. */
+    async function startUpload(design: DesignV2, selection: string[], props: Partial<PropertiesPanelProps> = {}) {
+      let finish!: (made: LabelImage) => void;
+      api.uploadLabelImage.mockReturnValue(new Promise<LabelImage>((resolve) => { finish = resolve; }));
+      const change = vi.fn<(d: DesignV2) => void>();
+      const outside: {
+        design?: (edit: (d: DesignV2) => DesignV2) => void;
+        select?: (ids: string[]) => void;
+        readOnly?: (on: boolean) => void;
+      } = {};
+      function Harness() {
+        const [d, setD] = useState<DesignV2>(design);
+        const [sel, setSel] = useState<string[]>(selection);
+        const [ro, setRo] = useState(false);
+        outside.design = (edit) => setD(edit);
+        outside.select = setSel;
+        outside.readOnly = setRo;
+        return (
+          <PropertiesPanel design={d} selection={sel} samples={SAMPLES} fields={FIELDS} dpi={DPI}
+            metricsFor={fakeMetricsFor} onChange={(next) => { change(next); setD(next); }} onSelect={setSel}
+            imagesAllowed readOnly={ro} {...props} />
+        );
+      }
+      render(<Harness />);
+      await waitFor(() => expect(api.listLabelImages).toHaveBeenCalled());
+      fireEvent.change(within(panel()).getByLabelText('Image file'),
+        { target: { files: [new File(['png'], 'Cumulus.png', { type: 'image/png' })] } });
+      await waitFor(() => expect(api.uploadLabelImage).toHaveBeenCalled());
+      const done = async () => {
+        await act(async () => { finish(MADE); });
+      };
+      return { change, outside, done, last: () => change.mock.calls.at(-1)![0] };
+    }
+
+    it('keeps an element moved meanwhile, and the picture goes to its element', async () => {
+      const { outside, done, last } = await startUpload(badge(caption, staticImage('image-1')), ['image-1']);
+      // the caption moves on the canvas while the picture uploads
+      act(() => outside.design!((d) => updateElement(d, 'text-1', { x: 2 })));
+      await done();
+      expect(elementOf(last(), 'text-1').x).toBe(2);
+      expect(imageOf(last()).imageId).toBe('img-new');
+    });
+
+    it('goes to the element it was uploaded for, even with another one selected since', async () => {
+      const { outside, done, last } = await startUpload(
+        badge(staticImage('image-1'), staticImage('image-2')), ['image-1']);
+      act(() => outside.select!(['image-2']));
+      await done();
+      expect(imageOf(last()).imageId).toBe('img-new');
+      expect((elementOf(last(), 'image-2') as ImageElement).imageId).toBeUndefined();
+    });
+
+    it('changes nothing once the panel is read-only (an old version opened)', async () => {
+      const { change, outside, done } = await startUpload(badge(staticImage('image-1')), ['image-1']);
+      act(() => outside.readOnly!(true));
+      await done();
+      expect(change).not.toHaveBeenCalled();
+    });
+
+    it('changes nothing once the picker is gone (something else selected)', async () => {
+      const { change, outside, done } = await startUpload(badge(caption, staticImage('image-1')), ['image-1']);
+      act(() => outside.select!(['text-1']));
+      await done();
+      expect(change).not.toHaveBeenCalled();
+    });
+
+    it('goes through onUpdate, worked out from the design the page has then', async () => {
+      const onUpdate = vi.fn<(edit: (present: DesignV2) => DesignV2) => void>();
+      const { change, done } = await startUpload(badge(caption, staticImage('image-1')), ['image-1'], { onUpdate });
+      await done();
+      expect(change).not.toHaveBeenCalled();
+      expect(onUpdate).toHaveBeenCalledTimes(1);
+      // the page's design by then: the caption moved
+      const present = updateElement(badge(caption, staticImage('image-1')), 'text-1', { x: 2 });
+      const next = onUpdate.mock.calls[0][0](present);
+      expect(elementOf(next, 'text-1').x).toBe(2);
+      expect(imageOf(next).imageId).toBe('img-new');
+    });
   });
 
   describe('Delete… (the picked library picture)', () => {

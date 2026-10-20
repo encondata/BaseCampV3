@@ -26,6 +26,7 @@
  * imageSourcePatch). Anywhere else an image says it doesn't print there.
  */
 
+import { useRef } from 'react';
 import type { ReactNode } from 'react';
 
 import {
@@ -66,6 +67,11 @@ export interface PropertiesPanelProps {
   dpi: number;
   metricsFor: MetricsFor;
   onChange: (design: DesignV2) => void;
+  /** An edit that lands later than the render it started in (a library
+   *  upload's pick), worked out from the page's design as it is then. The
+   *  page drops it while read-only. Without it the panel works it out from
+   *  the latest design it was given and sends it through `onChange`. */
+  onUpdate?: (edit: (present: DesignV2) => DesignV2) => void;
   /** The selection after Split replaced a placement with its pieces. */
   onSelect: (ids: string[]) => void;
   /** The template's label type (for a barcode's or QR code's field list). */
@@ -156,12 +162,25 @@ function barcodeHint(el: ElementV2, value: string, dpi: number): string {
 }
 
 export default function PropertiesPanel({
-  design: given, selection, samples, fields, dpi, metricsFor, onChange: emit, onSelect, labelType,
+  design: given, selection, samples, fields, dpi, metricsFor, onChange: emit, onUpdate, onSelect, labelType,
   imagesAllowed = false, readOnly = false, onDialog,
 }: PropertiesPanelProps) {
   // every barcode as wide as it prints, here and in every edit sent up
   const design = withBarcodeWidths(given, samples, dpi);
   const onChange = (next: DesignV2) => emit(withBarcodeWidths(next, samples, dpi));
+  // what an edit that lands later works from: this render's, read when it lands
+  const latest = useRef({ design, onChange, readOnly });
+  latest.current = { design, onChange, readOnly };
+  const update = (edit: (present: DesignV2) => DesignV2) => {
+    if (onUpdate) {
+      onUpdate(edit);
+      return;
+    }
+    const now = latest.current;
+    if (now.readOnly) return;
+    const next = edit(now.design);
+    if (next !== now.design) now.onChange(next);
+  };
   const byId = new Map(design.elements.map((e) => [e.id, e]));
   const picked = selection.map((id) => byId.get(id)).filter((e): e is ElementV2 => !!e);
   const el = picked[picked.length - 1];
@@ -171,6 +190,15 @@ export default function PropertiesPanel({
     if (readOnly) return;
     const next = patchElements(design, ids, p, metricsFor);
     if (next !== design) onChange(next);
+  };
+
+  /** A library picture for the static images among `forIds` (the
+   *  selection when the pick began: an upload lands later), patched into
+   *  the design as it is then, so nothing done meanwhile is undone. */
+  const pickImage = (imageId: string, forIds: readonly string[]) => {
+    if (readOnly) return;
+    update((d) => patchElements(d, forIds,
+      (e) => (isImage(e) && e.source === 'static' ? { imageId } : null), metricsFor));
   };
 
   /** True when the selection doesn't share `of`'s value. */
@@ -436,7 +464,7 @@ export default function PropertiesPanel({
             {image.source === 'static' && (
               <Prop label="Static image">
                 <ImageLibraryPicker value={image.imageId ?? null} disabled={readOnly} onDialog={onDialog}
-                  onPick={(imageId) => apply((e) => (isImage(e) && e.source === 'static' ? { imageId } : null))} />
+                  target={ids} onPick={pickImage} />
               </Prop>
             )}
             <Prop label="Fit · Look">
