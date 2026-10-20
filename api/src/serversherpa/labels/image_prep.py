@@ -14,15 +14,18 @@ the element's dot box:
   refusing anything past MAX_PIXELS from its header, before decoding;
 - a picture past twice the box is decoded or reduced smaller first (a JPEG
   at 1/2, 1/4 or 1/8; anything else by a whole-factor box reduction, alpha
-  premultiplied), never below twice the box: a 40 MP upload never makes
-  full-size copies for the steps below. A picture under four times the box
-  is never reduced, so its raster is exactly what the steps below make;
+  premultiplied, the remainder dropped evenly from both sides so the
+  picture stays centered), never below twice the box: a 40 MP upload never
+  makes full-size copies for the steps below. A picture under four times
+  the box is never reduced, so its raster is exactly what the steps below
+  make;
 - composite any transparency onto white (a clear pixel stored as black
   would otherwise print black), 16-bit gray's included;
 - 8-bit gray by ITU-R 601 luma (Pillow's L: 299/587/114);
 - apply the EXIF orientation (an exact transposition);
-- fit to the unrotated box: `cover` scales to fill and crops the center,
-  `contain` scales to fit and letterboxes in white; box-filter resampling;
+- fit to the unrotated box: `cover` scales to fill and crops the center
+  (the crop held inside the picture), `contain` scales to fit and
+  letterboxes in white; box-filter resampling;
 - turn by exact transposition, clockwise as every element turns (ZPL `R`
   is 90), so at 90 and 270 the raster is h wide and w tall.
 
@@ -40,7 +43,7 @@ from __future__ import annotations
 import io
 from typing import NamedTuple
 
-from PIL import Image, ImageMath
+from PIL import Image
 
 # a decompression-bomb guard: a picture past this many pixels is refused
 # from its header, at upload and at prep
@@ -65,6 +68,8 @@ _UPRIGHT = {2: Image.Transpose.FLIP_LEFT_RIGHT, 3: Image.Transpose.ROTATE_180,
             8: Image.Transpose.ROTATE_90}
 _SWAPPED = {5, 6, 7, 8}
 _ALPHA_MODES = ("RGBA", "LA", "PA", "RGBa", "La")
+# 16-bit gray levels to 8 (v // 257, a level never rounds up past its band)
+_SIXTEEN_TO_EIGHT = [v // 257 for v in range(65536)]
 
 
 class ImageTooLarge(ValueError):
@@ -114,7 +119,14 @@ def _open(data: bytes) -> tuple[Image.Image, tuple[str, str]]:
 
 
 def _orientation(im: Image.Image) -> int | None:
-    """The EXIF orientation, or None (also for EXIF too broken to read)."""
+    """The EXIF orientation, or None (also for an EXIF block too broken to
+    parse). Anything but a JPEG is decoded first: reading a PNG's EXIF can
+    decode it (no early eXIf chunk), and a broken stream must surface here
+    as UnreadableImage, not be swallowed with the EXIF and leave an empty
+    picture. A JPEG's EXIF is in its header, so it can still be drafted
+    after this."""
+    if im.format not in _JPEG_FORMATS:
+        _load(im)
     try:
         return im.getexif().get(_EXIF_ORIENTATION)
     except Exception:  # noqa: BLE001 - a broken EXIF block only loses the turn
@@ -142,9 +154,24 @@ def probe(data: bytes) -> ImageInfo:
 def _reduced(im: Image.Image, want: tuple[int, int]) -> Image.Image:
     """`im` box-reduced by the largest whole factor that keeps it at least
     `want` both ways (RGBA and LA premultiplied, as Pillow's reduce does);
-    `im` itself under a factor of 2."""
+    `im` itself under a factor of 2. The rows and columns past a whole
+    number of blocks are dropped evenly from both sides, so the picture
+    stays centered (rounding the size up would shift it by up to half a
+    reduced pixel)."""
     factor = min(im.width // want[0], im.height // want[1])
-    return im.reduce(factor) if factor >= 2 else im
+    if factor < 2:
+        return im
+    width, height = im.width // factor * factor, im.height // factor * factor
+    left, top = (im.width - width) // 2, (im.height - height) // 2
+    return im.reduce(factor, (left, top, left + width, top + height))
+
+
+def _on_white(im: Image.Image) -> Image.Image:
+    """A picture with alpha (RGBA or LA) composited onto white, as L."""
+    rgba = im if im.mode == "RGBA" else im.convert("RGBA")
+    white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+    white.alpha_composite(rgba)
+    return white.convert("L")
 
 
 def _gray(im: Image.Image, want: tuple[int, int]) -> Image.Image:
@@ -152,17 +179,16 @@ def _gray(im: Image.Image, want: tuple[int, int]) -> Image.Image:
     if im.mode.startswith("I;16"):
         im = im.convert("I")
     if im.mode == "I":                         # 16-bit gray: scale, don't clip
-        gray = im.point(lambda v: v * (1 / 257)).convert("L")
+        gray = im.point(_SIXTEEN_TO_EIGHT, "L")
         clear = im.info.get("transparency")
-        if isinstance(clear, int):             # a tRNS level: those dots are white
-            mask = ImageMath.lambda_eval(lambda a: a["equal"](a["im"], clear), im=im)
-            gray.paste(255, mask=mask.convert("L").point(lambda v: 255 if v else 0))
-        return _reduced(gray, want)
+        if not isinstance(clear, int):
+            return _reduced(gray, want)
+        # a tRNS level: those dots are clear. One 8-bit alpha band, then the
+        # reduction and the white composite on the (smaller) gray + alpha
+        alpha = im.point([0 if v == clear else 255 for v in range(65536)], "L")
+        return _on_white(_reduced(Image.merge("LA", (gray, alpha)), want))
     if im.mode in _ALPHA_MODES or "transparency" in im.info:
-        rgba = _reduced(im if im.mode == "RGBA" else im.convert("RGBA"), want)
-        white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
-        white.alpha_composite(rgba)
-        return white.convert("L")
+        return _on_white(_reduced(im if im.mode == "RGBA" else im.convert("RGBA"), want))
     return _reduced(im.convert("L"), want)
 
 
@@ -171,9 +197,11 @@ def _fit(im: Image.Image, width: int, height: int, fit: str) -> Image.Image:
     if fit == "cover":
         scale = max(width / iw, height / ih)
         cw, ch = width / scale, height / scale       # the source area kept
-        left, top = (iw - cw) / 2, (ih - ch) / 2
+        # one side is the whole picture: float error can put its edges a
+        # hair outside it, which Pillow refuses
+        left, top = max(0.0, (iw - cw) / 2), max(0.0, (ih - ch) / 2)
         return im.resize((width, height), Image.Resampling.BOX,
-                         box=(left, top, left + cw, top + ch))
+                         box=(left, top, min(float(iw), left + cw), min(float(ih), top + ch)))
     scale = min(width / iw, height / ih)
     nw = max(1, min(width, round(iw * scale)))
     nh = max(1, min(height, round(ih * scale)))
