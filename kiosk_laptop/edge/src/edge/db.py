@@ -214,6 +214,11 @@ SCHEMA_STEPS: list[str] = [
     ALTER TABLE pending_rfid_scans_new RENAME TO pending_rfid_scans;
     CREATE INDEX pending_rfid_scans_due ON pending_rfid_scans (upload_state, next_attempt_at)
     """,
+    # the Time Clock station's armed screens (edge/timeclock.py): the sha256 of
+    # each display cookie a signed-in person issued with Start Time Clock
+    """
+    CREATE TABLE timeclock_displays (token_hash TEXT PRIMARY KEY, created_at TEXT NOT NULL)
+    """,
 ]
 
 

@@ -36,6 +36,7 @@ from edge.routes import labels as label_routes
 from edge.routes import printers as printer_routes
 from edge.routes import proxy
 from edge.routes import rfid as rfid_routes
+from edge.routes import timeclock as timeclock_routes
 from edge.rfid import checks
 from edge.rfid.discovery import Discovery
 from edge.rfid.reader_report import ReaderReporter
@@ -133,6 +134,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     app.include_router(rfid_routes.router)
     app.include_router(printer_routes.router)
     app.include_router(label_routes.router)
+    app.include_router(timeclock_routes.router)
 
     @app.get("/config.js")
     async def config_js(request: Request) -> Response:
