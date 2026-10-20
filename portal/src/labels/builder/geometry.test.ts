@@ -117,16 +117,53 @@ describe('resize: text', () => {
   const pod = byId<FieldElement>('banner-pod');           // expected length 3, 24 pt, h 0.24
   const caption = byId<TextElement>('caption-name');      // static, 10.08 pt, h 0.1008
 
-  it('sets the font size from the height as one line of the font, the width from the expected length', () => {
+  /** `pod` refit to one line of the font: the box new and retyped text gets. */
+  const fitted = (): FieldElement => ({ ...pod, ...textBoxFor(METRICS, 24) });
+
+  it('sets the font size from the height of a one-line box, the width from the expected length', () => {
     // 0.48 in = (720 + 200)/1000 em → 0.48 × 72 / 0.92 pt
     const size = (0.48 * 72) / 0.92;
-    const out = resize(pod, 's', 0, 0.24, { ...CTX, metricsFor: () => METRICS });
+    const one = fitted();
+    const out = resize(one, 's', 0, 0.48 - one.h, { ...CTX, metricsFor: () => METRICS });
     expect(out.sizePt).toBeCloseTo(size, 10);
     expect(out.h).toBeCloseTo(0.48, 10);
     expect(out.h).toBeCloseTo(textBoxFor(METRICS, out.sizePt!).h, 10);
     expect(out.baselineIn).toBeCloseTo(textBoxFor(METRICS, size).baselineIn, 10);
     expect(out.w).toBeCloseTo(reservedWidthIn(METRICS, size, 3, 'text')!, 10);
     expect(out.y).toBe(pod.y);
+  });
+
+  it('scales a box that stops at the baseline (0.72 em) from its own height: +1 dot is about the same size', () => {
+    // the seeded templates' text boxes are h = baseline = 0.72 em: read as
+    // one line of the font, a one-dot drag would drop 24 pt to ≈ 19 pt
+    const ctx = { ...CTX, metricsFor: () => METRICS };
+    const dot = 1 / 300;
+    const out = resize(pod, 's', 0, dot, ctx);
+    expect(out.sizePt).toBeCloseTo(24 * ((0.24 + dot) / 0.24), 10);
+    expect(out.sizePt! - 24).toBeLessThan(0.5);
+    expect(out.h).toBeCloseTo(0.24 + dot, 10);
+    expect(out.baselineIn).toBeCloseTo(out.h, 10);           // still stops at the baseline
+    const back = resize(out, 's', 0, -dot, ctx);
+    expect(back.sizePt).toBeCloseTo(24, 10);
+    expect(back.h).toBeCloseTo(0.24, 10);
+  });
+
+  it('scales a multi-line box in proportion, so its box and its lines still agree', () => {
+    // 3 lines of 12 pt: one line of the font plus two more of 12 pt each
+    const size = 12;
+    const line = textBoxFor(METRICS, size);
+    const three: TextElement = {
+      ...caption, sizePt: size, lines: 3, h: line.h + 2 * (size / 72), baselineIn: line.baselineIn,
+    };
+    const dot = 1 / 300;
+    const out = resize(three, 's', 0, dot, { ...CTX, metricsFor: () => METRICS });
+    const want = size * ((three.h + dot) / three.h);
+    expect(out.sizePt).toBeCloseTo(want, 10);
+    expect(out.sizePt! - size).toBeLessThan(0.2);
+    expect(out.h).toBeCloseTo(three.h + dot, 10);
+    // the box is still three lines of the new size
+    expect(out.h).toBeCloseTo(textBoxFor(METRICS, out.sizePt!).h + 2 * (out.sizePt! / 72), 10);
+    expect(out.baselineIn).toBeCloseTo(textBoxFor(METRICS, out.sizePt!).baselineIn, 10);
   });
 
   it('keeps a hand-made box (h = baseline) until its height is dragged', () => {

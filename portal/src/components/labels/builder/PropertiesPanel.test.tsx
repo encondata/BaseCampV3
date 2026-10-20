@@ -90,14 +90,33 @@ describe('PropertiesPanel', () => {
     expect(elementOf(last(), 'value-name').w).toBeCloseTo(6 * 450 * (12 / 72 / 1000));
   });
 
-  it('W and H resize as a handle drag does: a text height sets its font size', () => {
+  it('W and H resize as a handle drag does: a text height scales its font size', () => {
     const { last } = setup({ selection: ['value-name'] });
+    // the Vegas box stops at the baseline (0.084 in at 8.4 pt): it scales
+    // from its own height, 25.2 → 50 dots
     commit('H', '50');
     const el = elementOf(last(), 'value-name') as FieldElement;
-    expect(el.sizePt).toBeCloseTo(12);
+    expect(el.sizePt).toBeCloseTo(8.4 * (50 / 25.2));
     expect(el.h).toBeCloseTo(50 / DPI);
+    expect(el.baselineIn).toBeCloseTo(50 / DPI);
     commit('W', '600');
     expect(elementOf(last(), 'value-name').w).toBeCloseTo(2);
+    // refit to one line of the font (a size change), the height sets the
+    // size the font's line needs: 1 em at 12 pt is 50 dots
+    commit('Size (pt)', '10');
+    commit('H', '50');
+    expect((elementOf(last(), 'value-name') as FieldElement).sizePt).toBeCloseTo(12);
+  });
+
+  it('W and H shrink a QR code as the side handles do (21 modules at 7 → 3, then 2)', () => {
+    const { last } = setup({ selection: ['qr'] });
+    expect((within(panel()).getByRole('textbox', { name: 'W' }) as HTMLInputElement).value).toBe('147');
+    commit('W', '60');
+    expect(elementOf(last(), 'qr')).toMatchObject({ w: 63 / DPI, h: 63 / DPI });
+    commit('H', '42');
+    expect(elementOf(last(), 'qr')).toMatchObject({ w: 42 / DPI, h: 42 / DPI });
+    commit('W', '+105');
+    expect(elementOf(last(), 'qr')).toMatchObject({ w: 147 / DPI, h: 147 / DPI });
   });
 
   it('display type Split builds the pieces from the sample: 14.01.07C.02.03 → 5 rows', () => {

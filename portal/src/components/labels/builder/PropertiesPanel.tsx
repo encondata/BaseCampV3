@@ -8,7 +8,7 @@
  * Positions, sizes, strokes, barcode modules and inverted padding are in
  * dots at the DPI being viewed, and every number box takes arithmetic
  * (NumberBox). W and H go through the canvas's own resize rules, so a text
- * element's height sets its font size and a QR code stays square. A text
+ * element's height scales its font size and a QR code stays square. A text
  * field is refit whenever its font, size, weight, inverted or expected
  * length changes, keeping it as wide as it reserves. Display type Split
  * turns a placement into one placement per piece of its sample.
@@ -142,8 +142,8 @@ export default function PropertiesPanel({
   };
 
   /** Each unlocked element's footprint W or H in dots, resized by the
-   *  canvas's rules (geometry.ts) exactly as a handle drag: a text height
-   *  sets the font size, a QR code stays square. */
+   *  canvas's rules (geometry.ts) exactly as a drag of the E or S handle: a
+   *  text height scales the font size, a QR code stays square. */
   const sizeOf = (dim: 'w' | 'h') => {
     const dotsOf = (e: ElementV2) => toDots(footprint(e)[dim], dpi);
     const values = picked.map(dotsOf);
@@ -155,7 +155,11 @@ export default function PropertiesPanel({
         const changed = picked.filter((e) => !e.locked).flatMap((e) => {
           const fp = footprint(e);
           const want = Math.max(1, edit(dotsOf(e)) ?? 1) / dpi;
-          const out = resize(e, 'se', dim === 'w' ? want - fp.w : 0, dim === 'h' ? want - fp.h : 0, resizeCtx);
+          // the side handle for the one dimension: the corner takes the larger
+          // of the two, so a QR code could only grow
+          const out = dim === 'w'
+            ? resize(e, 'e', want - fp.w, 0, resizeCtx)
+            : resize(e, 's', 0, want - fp.h, resizeCtx);
           return JSON.stringify(out) === JSON.stringify(e) ? [] : [out];
         });
         if (changed.length) onChange(replaceElements(design, changed));

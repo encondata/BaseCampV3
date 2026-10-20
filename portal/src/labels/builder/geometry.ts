@@ -2,11 +2,13 @@
  * Canvas geometry in inches: snapping, keeping elements on the label,
  * hit-testing, marquee selection, and the eight resize handles with each
  * element type's rule (spec §4.2 Resizing):
- *  - text (static text, a field shown as text or a number): the height is
- *    one line of the font (metrics.ts `textBoxFor`), so it sets the font
- *    size and the baseline; until the font's metrics load, both scale in
- *    proportion. The width follows the expected length when one is set,
- *    else it is free;
+ *  - text (static text, a field shown as text or a number): the height
+ *    scales the font size and the baseline. On a box that is one line of
+ *    the font (metrics.ts `textBoxFor`) the size is the one whose line is
+ *    that tall; any other box (one stopping at the baseline as the seeded
+ *    templates' do, several lines, or no metrics yet) scales both in
+ *    proportion to its own height. The width follows the expected length
+ *    when one is set, else it is free;
  *  - barcode: the height is the bar height; the width snaps to whole
  *    narrow modules (the printer's ^BY, in dots at the DPI);
  *  - QR code: square, in whole magnification steps of the symbol the value
@@ -139,6 +141,9 @@ function kindOf(el: ElementV2): Kind {
 }
 
 const EPS = 1e-12;
+/** How close a box's height must be to one line of its font (textBoxFor)
+ *  to count as one: float noise, far below a dot. */
+const ONE_LINE_EPS = 1e-9;
 
 /** The element `el` becomes when `handle` is dragged by (dx, dy) inches. */
 export function resize<T extends ElementV2>(el: T, handle: Handle, dx: number, dy: number,
@@ -204,11 +209,16 @@ function sized<T extends ElementV2>(el: T, along: number, across: number, ctx: R
 
   const sizePt = el.sizePt ?? 0;
   const metrics = ctx.metricsFor?.(el) ?? null;
-  // with metrics the height alone sets the size; without, it scales the old one
-  const scaled = Math.abs(across - el.h) > EPS && (metrics !== null || (el.h > 0 && sizePt > 0));
+  const proportional = el.h > 0 && sizePt > 0;
+  // the font's own line sets the size only on a box that is one line of it;
+  // any other box (one stopping at the baseline, several lines) scales from
+  // its own height, and refit normalizes it on the next typography change
+  const oneLine = metrics !== null && (el.type !== 'text' || (el.lines ?? 1) <= 1)
+    && (!proportional || Math.abs(el.h - textBoxFor(metrics, sizePt).h) <= ONE_LINE_EPS);
+  const scaled = Math.abs(across - el.h) > EPS && (oneLine || proportional);
   let nextSize = sizePt;
   let baseline = el.baselineIn;
-  if (scaled && metrics) {
+  if (scaled && oneLine) {
     nextSize = sizePtForHeight(metrics, across);
     baseline = textBoxFor(metrics, nextSize).baselineIn;
   } else if (scaled) {
