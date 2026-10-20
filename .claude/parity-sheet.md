@@ -117,7 +117,7 @@ One row per week:
 
 ### To-Do
 - Columns: A #, B Priority, C Time estimate, D Area, E What to build, F Why it matters, G Features it closes, H Rows, I Status.
-- **Row map:** items #1–#12 sit on row N+1. #14–#39 sit on row N (there is no #13). There is no #40 or #44, so #41–#43 sit on rows 40–42 and #45–#50 on rows 43–48. Always confirm by reading column A.
+- **Row map:** items #1–#12 sit on row N+1. #14–#39 sit on row N (there is no #13). There is no #40 or #44, so #41–#43 sit on rows 40–42, #45–#50 on rows 43–48 and #51 (the label builder backlog, added 2026-10-20) on row 49. Always confirm by reading column A.
 - **Status (column I) is free text:**
   - `Done — YYYY-MM-DD (merged to main <sha>): …`
   - `In progress — …`
