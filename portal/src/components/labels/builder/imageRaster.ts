@@ -10,8 +10,10 @@
  * RASTER_CACHE_BYTES of them (the server's own raster cache's caps), the
  * least recently used going first. "No picture" (the API's 404 `no_image`)
  * is an answer for whoever asked, never kept: the person may have a photo
- * by the next ask. A new sample person (Load from person… — even the same
- * one again — or Clear sample person) forgets every photo and logo
+ * by the next ask. Opening a template in the builder forgets every picture
+ * (`forgetAllRasters`: someone may have replaced an avatar or a logo since),
+ * a new sample person (Load from person… — even the same one again — or
+ * Clear sample person) forgets every photo and logo
  * (`forgetPersonRasters`), and a picture deleted from the label image
  * library forgets that picture (`forgetStaticRaster`); the elements that
  * drew one ask again.
@@ -58,8 +60,9 @@ interface Entry {
 const cache = new Map<string, Entry>();
 let bytes = 0;
 
-/** How many times the sample person's pictures, and each library
- *  picture, were forgotten: an element whose count moves asks again. */
+/** How many times every picture, the sample person's pictures, and each
+ *  library picture were forgotten: an element whose count moves asks again. */
+let allEpoch = 0;
 let personEpoch = 0;
 const staticEpochs = new Map<string, number>();
 const listeners = new Set<() => void>();
@@ -69,9 +72,10 @@ function subscribe(listener: () => void): () => void {
   return () => { listeners.delete(listener); };
 }
 
-function epochOf(req: RasterRequest | null): number {
-  if (!req) return 0;
-  return req.source === 'static' ? staticEpochs.get(req.image_id ?? '') ?? 0 : personEpoch;
+function epochOf(req: RasterRequest | null): string {
+  if (!req) return `${allEpoch}`;
+  const own = req.source === 'static' ? staticEpochs.get(req.image_id ?? '') ?? 0 : personEpoch;
+  return `${allEpoch}.${own}`;
 }
 
 function drop(key: string): void {
@@ -98,6 +102,17 @@ export function clearRasterCache(): void {
 /** The bytes of gray levels kept now. */
 export function rasterCacheBytes(): number {
   return bytes;
+}
+
+/** A template opened in the builder: every picture kept, or on its way,
+ *  is forgotten (a photo, logo or library picture may have changed since
+ *  it was kept, and the canvas must draw what prints), and the elements
+ *  showing one ask again. */
+export function forgetAllRasters(): void {
+  cache.clear();
+  bytes = 0;
+  allEpoch += 1;
+  listeners.forEach((l) => l());
 }
 
 /** A new sample person (or the same one loaded again, or none): every

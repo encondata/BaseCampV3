@@ -627,6 +627,21 @@ describe('an ID badge', () => {
       await waitFor(() => expect(forPerson(PERSON)).toBe(3));
     });
 
+    it('opening the badge again asks for its pictures again (someone may have replaced them)', async () => {
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+      api.labelImageRaster.mockResolvedValue({ width: 240, height: 300, gray: new Uint8Array(240 * 300) });
+      api.listLabelImages.mockResolvedValue([]);
+      const logo = { id: 'image-9', type: 'image', source: 'static', imageId: 'img-1', fit: 'contain',
+        mode: 'threshold', x: 2, y: 0.1, w: 1, h: 0.5, rotation: 0, hideWhenEmpty: true };
+      const design = { ...BADGE_DESIGN, elements: [logo, ...BADGE_DESIGN.elements] } as Record<string, unknown>;
+      const asked = (source: string) => api.labelImageRaster.mock.calls.filter(([b]) => b.source === source).length;
+      await openBadge({ design });
+      await waitFor(() => expect([asked('photo'), asked('static')]).toEqual([1, 1]));
+      cleanup();
+      await openBadge({ design });
+      await waitFor(() => expect([asked('photo'), asked('static')]).toEqual([2, 2]));
+    });
+
     it('Clear sample person takes every person sample and person:id away, and the photo is a placeholder', async () => {
       await openBadge({ samples: { ...ADA_VALUES, 'person:id': PERSON } });
       await waitFor(() => expect(api.labelImageRaster).toHaveBeenCalledTimes(1));

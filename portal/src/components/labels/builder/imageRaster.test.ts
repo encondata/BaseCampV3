@@ -20,8 +20,8 @@ vi.mock('../../../lib/api', async (importActual) => ({
 }));
 
 const {
-  RASTER_CACHE_BYTES, RASTER_ERROR, clearRasterCache, compileImageErrorText, fetchRaster, forgetPersonRasters,
-  forgetStaticRaster, rasterCacheBytes, rasterErrorText, useImageRaster,
+  RASTER_CACHE_BYTES, RASTER_ERROR, clearRasterCache, compileImageErrorText, fetchRaster, forgetAllRasters,
+  forgetPersonRasters, forgetStaticRaster, rasterCacheBytes, rasterErrorText, useImageRaster,
 } = await import('./imageRaster');
 const { ApiError } = await import('../../../lib/api');
 
@@ -125,6 +125,16 @@ describe('fetchRaster', () => {
     expect(api.labelImageRaster).toHaveBeenCalledTimes(2);
   });
 
+  it('forgetAllRasters (a template opened) drops every picture, photos, logos and library pictures', async () => {
+    await fetchRaster(el(), 300, PERSON);
+    await fetchRaster(el({ source: 'static', imageId: 'img-1' }), 300, null);
+    forgetAllRasters();
+    expect(rasterCacheBytes()).toBe(0);
+    await fetchRaster(el(), 300, PERSON);
+    await fetchRaster(el({ source: 'static', imageId: 'img-1' }), 300, null);
+    expect(api.labelImageRaster).toHaveBeenCalledTimes(4);
+  });
+
   it('forgetStaticRaster drops that library picture only', async () => {
     await fetchRaster(el({ source: 'static', imageId: 'img-1' }), 300, null);
     await fetchRaster(el({ source: 'static', imageId: 'img-1', w: 1 }), 300, null);
@@ -174,6 +184,15 @@ describe('useImageRaster', () => {
     act(() => { forgetPersonRasters(); });
     await waitFor(() => expect(result.current.status).toBe('ready'));
     expect(api.labelImageRaster).toHaveBeenCalledTimes(2);
+  });
+
+  it('a library picture on screen is asked for again once every picture is forgotten', async () => {
+    const pic = el({ source: 'static', imageId: 'img-1', fit: 'contain', mode: 'threshold' });
+    const { result } = renderHook(() => useImageRaster(pic, 300, null, true));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    act(() => { forgetAllRasters(); });
+    await waitFor(() => expect(api.labelImageRaster).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
   });
 
   it('forgetting someone else’s pictures asks nothing', async () => {

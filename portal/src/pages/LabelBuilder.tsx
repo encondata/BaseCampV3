@@ -48,7 +48,9 @@
  * someone the sample person: every person sample becomes theirs ("" for
  * their blanks) and `person:id` names them; Clear sample person takes
  * every person sample and `person:id` away. Either one forgets the photos
- * and logos the canvas kept (imageRaster.ts), so they are asked for again.
+ * and logos the canvas kept (imageRaster.ts), so they are asked for again;
+ * opening a template forgets every picture kept, so an avatar or logo
+ * replaced since an earlier visit draws as it prints.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -66,7 +68,9 @@ import Canvas, { DEFAULT_VIEW, type CanvasView } from '../components/labels/buil
 import { deleteSelection, selected } from '../components/labels/builder/canvasActions';
 import { fieldLabel, personFieldKeys } from '../components/labels/builder/fieldCatalog';
 import FieldPanel, { type FieldPanelHandle } from '../components/labels/builder/FieldPanel';
-import { compileImageErrorText, forgetPersonRasters } from '../components/labels/builder/imageRaster';
+import {
+  compileImageErrorText, forgetAllRasters, forgetPersonRasters,
+} from '../components/labels/builder/imageRaster';
 import LoadFromAssetModal, { fillSamples } from '../components/labels/builder/LoadFromAssetModal';
 import LoadFromPersonModal, {
   clearPersonSamples, personSamples,
@@ -212,6 +216,9 @@ function EditTemplate({ id }: { id: string }) {
           return;
         }
         const top = template.parent_id ?? template.id;
+        // the pictures kept from an earlier visit may be out of date (a new
+        // avatar or logo): the canvas asks again, before it draws any
+        forgetAllRasters();
         setLoaded({ template, design, node: tree.find((n) => n.id === top) ?? null, vocab, fonts });
       })
       .catch((err) => { if (live) setError({ title: 'Label builder', message: loadError(err) }); });
