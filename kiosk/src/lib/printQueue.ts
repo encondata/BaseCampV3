@@ -6,9 +6,10 @@
  * One job: the asset's stored label from the edge → the printer's `~HS`
  * (paper out, head open or paused fails the entry and nothing is sent) →
  * the label with the saved offsets and the saved peel or tear mode →
- * a Labeled scan recorded with the exact value scanned (a scan only;
- * Reprint and Retry never record) → in peel mode, `~HS` every 500 ms
- * while the printed label is waiting to be taken ("Take the label").
+ * a Labeled scan recorded with the exact value scanned, once per scan on
+ * its first label that goes out (its first attempt or a Retry; a Reprint
+ * never records) → in peel mode, `~HS` every 500 ms until the printed
+ * label has been taken ("Take the label"; see `waitForTake`).
  *
  * A failed record doesn't undo the print: the entry stays printed with a
  * small warning, and nothing is printed again. Retry resends the very
@@ -53,6 +54,8 @@ export interface PrintQueueDeps {
   getLabel: (assetId: string) => Promise<StationLabel>;
   recordPrinted: (job: PrintedJob) => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
+  /** Milliseconds, for the peel wait's idle timeout (default Date.now). */
+  now?: () => number;
   onChange: (s: QueueState) => void;
   /** An entry just finished, printed or failed (the page's flash and sound). */
   onSettled?: (entry: QueueEntry) => void;
@@ -69,6 +72,10 @@ export const PRINTER_SILENT_TEXT = "The printer didn't answer. Check that it's o
 export const REGENERATING_TEXT = 'Labels are being regenerated. Scan again when it finishes.';
 /** How often a peel-mode label is checked for having been taken. */
 export const TAKE_LABEL_POLL_MS = 500;
+/** A printer that never reports a label waiting moves on after it has
+ *  been idle this long. */
+export const TAKE_LABEL_IDLE_MS = 10_000;
+export const NO_SETTINGS_TEXT = "This station's printer settings couldn't be read. Open Kiosk Setup.";
 
 const LABEL_REASONS: Record<string, string> = {
   no_template_at_dpi: "no template at this printer's DPI",
@@ -102,12 +109,13 @@ function recordWarningText(err: unknown): string {
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
 
-/** Per entry: the finished ZPL its last attempt built, and whether this
- *  run is a Retry. */
-interface Work { entry: QueueEntry; sent: string | null; retry: boolean }
+/** Per entry: the finished ZPL its last attempt built, and whether its
+ *  Labeled scan was recorded. */
+interface Work { entry: QueueEntry; sent: string | null; recorded: boolean }
 
 export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
   const sleep = deps.sleep ?? defaultSleep;
+  const now = deps.now ?? Date.now;
   const entries: QueueEntry[] = [];        // newest first
   const work = new Map<string, Work>();
   const pending: string[] = [];             // entry ids, arrival order
@@ -129,7 +137,7 @@ export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
       state: 'queued', message: null, recordWarning: null,
     };
     entries.unshift(entry);
-    work.set(entry.id, { entry, sent: null, retry: false });
+    work.set(entry.id, { entry, sent: null, recorded: false });
     return entry;
   };
 
@@ -145,17 +153,40 @@ export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
     }
   }
 
-  /** Peel mode: until the printed label is taken. A failed or unreadable
-   *  poll keeps waiting; the label is already out. */
-  async function waitForTake(printer: StationPrinter): Promise<void> {
+  /** Peel mode: until the printed label is taken. Right after sending,
+   *  the printer may not have printed yet (nothing waiting, but the format
+   *  still queued), so "taken" needs nothing waiting and nothing queued or
+   *  left to print, and either a label seen waiting first or the printer
+   *  idle for TAKE_LABEL_IDLE_MS (one that never reports a waiting label).
+   *  The printer is looked up on every poll (a USB reconnect is a new
+   *  one); none, or a failed or unreadable poll, keeps waiting: the label
+   *  is already out. */
+  async function waitForTake(): Promise<void> {
+    let seenWaiting = false;
+    let idleSince: number | null = null;
     for (;;) {
       await sleep(TAKE_LABEL_POLL_MS);
+      const printer = deps.printer();
+      if (!printer) continue;
+      let status;
       try {
-        const status = await printer.status();
-        if (status && !status.labelWaiting) return;
+        status = await printer.status();
       } catch {
-        /* keep waiting */
+        continue;
       }
+      if (!status) continue;
+      if (status.labelWaiting) {
+        seenWaiting = true;
+        idleSince = null;
+        continue;
+      }
+      if (status.formatsQueued !== 0 || status.labelsRemaining !== 0) {
+        idleSince = null;
+        continue;
+      }
+      if (seenWaiting) return;
+      idleSince ??= now();
+      if (now() - idleSince >= TAKE_LABEL_IDLE_MS) return;
     }
   }
 
@@ -167,6 +198,10 @@ export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
     }
     update(entry, { state: 'printing', message: null });
     const settings = deps.settings();
+    if (!settings) {
+      update(entry, { state: 'failed', message: NO_SETTINGS_TEXT });
+      return;
+    }
     if (w.sent === null) {
       let label: StationLabel;
       try {
@@ -181,9 +216,9 @@ export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
       }
       w.sent = withPrintMode(applyPrintSettings(label.zpl, {
         ...DEFAULT_PRINT_SETTINGS,
-        horizontalOffset: settings?.offset_x ?? 0,
-        verticalOffset: settings?.offset_y ?? 0,
-      }, { singleCopy: true }), settings?.peel ?? false);
+        horizontalOffset: settings.offset_x,
+        verticalOffset: settings.offset_y,
+      }, { singleCopy: true }), settings.peel);
     }
     const printer = deps.printer();
     if (!printer) {
@@ -201,9 +236,10 @@ export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
       update(entry, { state: 'failed', message: PRINTER_SILENT_TEXT });
       return;
     }
-    // Only a scan records; Reprint and Retry never do (a failed print
-    // recorded nothing, and its Retry doesn't either).
-    if (!entry.reprint && !w.retry) {
+    // A scan records once, on its first label that goes out (a failed
+    // print recorded nothing, so its Retry does); a Reprint never does.
+    if (!entry.reprint && !w.recorded) {
+      w.recorded = true;
       try {
         await deps.recordPrinted({
           assetId: entry.asset.id, scannedValue: entry.scannedValue, scannedAt: entry.scannedAt,
@@ -212,9 +248,9 @@ export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
         entry.recordWarning = recordWarningText(err);
       }
     }
-    if (settings?.peel) {
+    if (settings.peel) {
       update(entry, { state: 'take_label' });
-      await waitForTake(printer);
+      await waitForTake();
     }
     update(entry, { state: 'printed' });
   }
@@ -258,7 +294,6 @@ export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
     retry(entryId) {
       const w = work.get(entryId);
       if (!w || w.entry.state !== 'failed' || !w.entry.asset) return;
-      w.retry = true;
       update(w.entry, { state: 'queued', message: null });
       schedule(w.entry);
     },

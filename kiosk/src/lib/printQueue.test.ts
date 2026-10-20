@@ -6,7 +6,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ApiError, type LabelStationSettings, type StationLabel } from './api';
 import {
-  createPrintQueue, PRINTER_SILENT_TEXT, type PrintAsset, type PrintedJob, type QueueState,
+  createPrintQueue, NO_SETTINGS_TEXT, PRINTER_SILENT_TEXT, TAKE_LABEL_IDLE_MS,
+  type PrintAsset, type PrintedJob, type QueueState,
 } from './printQueue';
 import { withPrintMode, type StationPrinter } from './stationPrinter';
 
@@ -58,24 +59,37 @@ function fakePrinter(statuses: (HostStatus | Error | null)[] = [hs()]) {
 
 function setup(opts: {
   printer?: StationPrinter | null;
-  settings?: LabelStationSettings;
+  /** Read on every call, so a test can swap the printer mid-wait. */
+  printerRef?: { current: StationPrinter | null };
+  settings?: LabelStationSettings | null;
   getLabel?: (id: string) => Promise<StationLabel>;
   recordPrinted?: (job: PrintedJob) => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
 } = {}) {
   let state: QueueState = { entries: [] };
+  // A fake clock that only the queue's sleeps move.
+  const clock = { t: 0 };
   const recordPrinted = vi.fn(opts.recordPrinted ?? (async (_job: PrintedJob) => {}));
   const getLabel = vi.fn(opts.getLabel ?? (async (id: string) => label(id)));
-  const printer = opts.printer === undefined ? fakePrinter().printer : opts.printer;
+  const ref = opts.printerRef
+    ?? { current: opts.printer === undefined ? fakePrinter().printer : opts.printer };
+  const sleep = opts.sleep ?? (async () => {});
   const queue = createPrintQueue({
-    printer: () => printer,
-    settings: () => opts.settings ?? settings(),
+    printer: () => ref.current,
+    settings: () => (opts.settings === undefined ? settings() : opts.settings),
     getLabel,
     recordPrinted,
-    sleep: opts.sleep ?? (async () => {}),
+    // Each sleep also yields a real tick, so a poll loop can't starve
+    // vi.waitFor's timers.
+    sleep: async (ms) => {
+      clock.t += ms;
+      await new Promise<void>((r) => { setTimeout(r, 0); });
+      await sleep(ms);
+    },
+    now: () => clock.t,
     onChange: (s) => { state = s; },
   });
-  return { queue, recordPrinted, getLabel, state: () => state };
+  return { queue, recordPrinted, getLabel, state: () => state, clock };
 }
 
 const settled = (get: () => QueueState) => vi.waitFor(() => {
@@ -123,19 +137,57 @@ describe('createPrintQueue', () => {
     expect(typeof q.recordPrinted.mock.calls[0][0].scannedAt).toBe('string');
   });
 
-  it('Reprint and Retry never record', async () => {
+  it('a scan that fails and then prints on Retry records exactly once', async () => {
     const { printer, sent } = fakePrinter([hs({ paperOut: true }), hs()]);
+    const q = setup({ printer });
+    q.queue.enqueue({ asset: asset(1), scannedValue: 'SN-1' });
+    await settled(q.state);
+    expect(q.state().entries[0].state).toBe('failed');
+    expect(q.recordPrinted).not.toHaveBeenCalled();
+    const id = q.state().entries[0].id;
+    q.queue.retry(id);
+    await vi.waitFor(() => expect(q.state().entries[0].state).toBe('printed'));
+    expect(q.recordPrinted).toHaveBeenCalledTimes(1);
+    expect(q.recordPrinted.mock.calls[0][0]).toMatchObject({ assetId: 'a-1', scannedValue: 'SN-1' });
+    // A printed entry can't be retried, so it never records twice.
+    q.queue.retry(id);
+    await settled(q.state);
+    expect(sent).toHaveLength(1);
+    expect(q.recordPrinted).toHaveBeenCalledTimes(1);
+  });
+
+  it('a send that fails after the record would have run records once, on the Retry that prints', async () => {
+    const { printer } = fakePrinter();
+    printer.send.mockImplementationOnce(async () => { throw new Error('network'); });
     const q = setup({ printer });
     q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
     await settled(q.state);
-    expect(q.state().entries[0].state).toBe('failed');
     q.queue.retry(q.state().entries[0].id);
     await vi.waitFor(() => expect(q.state().entries[0].state).toBe('printed'));
+    expect(q.recordPrinted).toHaveBeenCalledTimes(1);
+  });
+
+  it('Reprint never records', async () => {
+    const { printer, sent } = fakePrinter();
+    const q = setup({ printer });
+    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
+    await settled(q.state);
+    expect(q.recordPrinted).toHaveBeenCalledTimes(1);
     q.queue.reprint(q.state().entries[0].id);
     await vi.waitFor(() => expect(q.state().entries).toHaveLength(2));
     await settled(q.state);
     expect(q.state().entries[0]).toMatchObject({ state: 'printed', reprint: true });
     expect(sent).toHaveLength(2);
+    expect(q.recordPrinted).toHaveBeenCalledTimes(1);
+  });
+
+  it('no readable settings fails the entry and prints nothing', async () => {
+    const { printer, sent } = fakePrinter();
+    const q = setup({ printer, settings: null });
+    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
+    await settled(q.state);
+    expect(q.state().entries[0]).toMatchObject({ state: 'failed', message: NO_SETTINGS_TEXT });
+    expect(sent).toEqual([]);
     expect(q.recordPrinted).not.toHaveBeenCalled();
   });
 
@@ -159,7 +211,7 @@ describe('createPrintQueue', () => {
       hs({ labelWaiting: true }),
       hs(),                         // taken
       hs(),                         // job 2: before sending
-      hs(),                         // job 2: taken at once
+      hs(),                         // job 2: never waiting, idle until the timeout
     ]);
     let release: () => void = () => {};
     const sleeps: number[] = [];
@@ -183,6 +235,55 @@ describe('createPrintQueue', () => {
     expect(byAsset('a-2').state).toBe('printed');
     expect(sent).toHaveLength(2);
     expect(sleeps.every((ms) => ms === 500)).toBe(true);
+  });
+
+  it('peel mode keeps waiting while the format is still queued, then waiting → taken completes', async () => {
+    const { printer } = fakePrinter([
+      hs(),                                   // before sending
+      hs({ formatsQueued: 1 }),               // not printed yet
+      hs({ labelsRemaining: 1 }),
+      hs({ labelWaiting: true }),
+      hs(),                                   // taken
+    ]);
+    const q = setup({ printer, settings: settings({ peel: true }) });
+    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
+    await settled(q.state);
+    expect(printer.status).toHaveBeenCalledTimes(5);
+    expect(q.clock.t).toBe(2000);
+  });
+
+  it('peel mode: a printer that never reports a waiting label moves on after the idle timeout', async () => {
+    const { printer } = fakePrinter([hs(), hs({ formatsQueued: 1 }), hs()]);
+    const q = setup({ printer, settings: settings({ peel: true }) });
+    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
+    await settled(q.state);
+    // 500 ms queued, then idle from 1000 ms until 10 s later.
+    expect(q.clock.t).toBe(1000 + TAKE_LABEL_IDLE_MS);
+    expect(q.state().entries[0].state).toBe('printed');
+  });
+
+  it('peel mode polls the printer it has now, so a reconnect mid-wait completes', async () => {
+    const first = fakePrinter([hs(), hs({ labelWaiting: true }), new Error('device gone')]);
+    const second = fakePrinter([hs({ labelWaiting: true }), hs()]);
+    const ref = { current: first.printer as StationPrinter | null };
+    let release: () => void = () => {};
+    let sleeps = 0;
+    const sleep = () => {
+      sleeps += 1;
+      if (sleeps === 2) return new Promise<void>((r) => { release = r; });
+      return Promise.resolve();
+    };
+    const q = setup({ printerRef: ref, settings: settings({ peel: true }), sleep });
+    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
+    await vi.waitFor(() => expect(sleeps).toBe(2));
+    expect(q.state().entries[0].state).toBe('take_label');
+    ref.current = null;             // unplugged: keeps waiting
+    release();
+    await vi.waitFor(() => expect(sleeps).toBeGreaterThan(3));
+    ref.current = second.printer;   // reconnected
+    await settled(q.state);
+    expect(second.printer.status).toHaveBeenCalledTimes(2);
+    expect(first.printer.status).toHaveBeenCalledTimes(2);
   });
 
   it('a printer that throws fails the entry, and Retry resends the same ZPL', async () => {

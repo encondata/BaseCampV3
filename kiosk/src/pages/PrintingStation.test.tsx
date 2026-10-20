@@ -158,3 +158,25 @@ it('no_settings points to Kiosk Setup', async () => {
   expect(await screen.findByText(/No label printer is saved for this station/)).toBeTruthy();
   expect(screen.getByRole('link', { name: 'Kiosk Setup' }).getAttribute('href')).toBe('/setup');
 });
+
+it('Reprint prints again without recording, and the scan box gets focus back', async () => {
+  render_();
+  await scan('10042');
+  await screen.findAllByText('Printed');
+  await userEvent.click(screen.getByRole('button', { name: 'Reprint' }));
+  await waitFor(() => expect(station.sent).toHaveLength(2));
+  expect(api.postLabelPrinted).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Scan value')));
+});
+
+it('Retry prints a failed scan, records it once, and the scan box gets focus back', async () => {
+  api.getStationLabel.mockRejectedValueOnce(new ApiError(409, 'labels_regenerating'));
+  render_();
+  await scan('10042');
+  await userEvent.click(await screen.findByRole('button', { name: 'Retry' }));
+  await screen.findAllByText('Printed');
+  expect(station.sent).toHaveLength(1);
+  expect(api.postLabelPrinted).toHaveBeenCalledTimes(1);
+  expect(api.postLabelPrinted).toHaveBeenCalledWith(expect.objectContaining({ asset_id: 'a-1', scanned_value: '10042' }));
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Scan value')));
+});
