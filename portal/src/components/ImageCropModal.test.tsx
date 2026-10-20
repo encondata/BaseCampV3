@@ -9,6 +9,8 @@
  * call and the fill style in force when it was made.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -69,5 +71,18 @@ describe('ImageCropModal', () => {
     // drawn into the whole square
     expect(calls[1].args.slice(5)).toEqual([0, 0, 256, 256]);
     expect(blob.type).toBe('image/jpeg');
+  });
+
+  it('shows the picture on white, as it saves, and says so for a picture that can be transparent', () => {
+    const css = readFileSync(join(__dirname, '../styles/avatar-upload.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const at = css.indexOf('.crop-viewport {');
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(css.slice(at, css.indexOf('}', at))).toMatch(/background:\s*(#fff|#ffffff|white)\s*;/i);
+    const HINT = 'Transparent areas are saved as white.';
+    render(<ImageCropModal file={new File(['png'], 'logo.png', { type: 'image/png' })} onCancel={vi.fn()} onSave={vi.fn()} />);
+    expect(screen.getByText(HINT)).toBeTruthy();
+    cleanup();
+    render(<ImageCropModal file={new File(['jpg'], 'me.jpg', { type: 'image/jpeg' })} onCancel={vi.fn()} onSave={vi.fn()} />);
+    expect(screen.queryByText(HINT)).toBeNull();
   });
 });
