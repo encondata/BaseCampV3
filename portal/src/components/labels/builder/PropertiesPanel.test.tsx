@@ -6,6 +6,8 @@
  * from the field's sample.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -622,6 +624,17 @@ describe('PropertiesPanel: an image (ID badges)', () => {
     await act(async () => { await fetchRaster(logo, DPI, null).catch(() => null); });
     const said = within(panel()).getByText('Images unavailable right now.');
     expect(said.getAttribute('role')).toBe('status');
+  });
+
+  it('a note among the image controls sits on their gap: its margin rule wins (comes last)', () => {
+    const css = readFileSync(join(__dirname, '../../../styles/labelBuilder.css'), 'utf8');
+    const among = css.indexOf('.lbp-prop-controls > .lbp-hint {');
+    const any = css.indexOf('.lbp-prop .lbp-hint {');
+    expect(among).toBeGreaterThan(0);
+    expect(any).toBeGreaterThan(0);
+    // the same specificity: the later rule sets the margin
+    expect(among).toBeGreaterThan(any);
+    expect(css.slice(among, css.indexOf('}', among))).toMatch(/margin-top:\s*0/);
   });
 
   it('off an ID badge in ZPL, says images don’t print there', () => {

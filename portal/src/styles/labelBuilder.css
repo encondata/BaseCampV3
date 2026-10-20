@@ -490,8 +490,10 @@ textarea.lbp-text { resize: vertical; }
    Upload… and Delete… under it, its notes under them */
 .lbp-image-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 1 1 100%; min-width: 0; }
 .lbp-image-pick .combo-wrap { flex: 1 1 100%; min-width: 0; }
-.lbp-prop-controls > .lbp-hint { flex: 1 1 100%; margin-top: 0; }
 .lbp-prop .lbp-hint { margin-top: 5px; }
+/* a note among the controls (the image picker's) sits on their gap: after
+   the rule above, which has the same specificity */
+.lbp-prop-controls > .lbp-hint { flex: 1 1 100%; margin-top: 0; }
 .lbp-prop .lbp-hint.is-warning { color: var(--c-amber); }
 .lbp-static { font-size: 13px; color: var(--text-dark); }
 .lbp-unit { font-size: 11px; color: var(--text-mute); }

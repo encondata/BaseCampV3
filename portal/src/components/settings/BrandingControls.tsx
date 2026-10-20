@@ -178,7 +178,7 @@ function RemoveLogoDialog({ onClose, onRemoved }: {
           <button type="button" className="btn-solid btn-danger" disabled={busy} onClick={() => void remove()}>
             {busy ? 'Removing…' : 'Remove logo'}
           </button>
-          <button type="button" className="mini-btn" disabled={busy} onClick={onClose}>Cancel</button>
+          <button type="button" className="mini-btn" disabled={busy} onClick={onClose} autoFocus>Cancel</button>
           {error && <span className="pf-error" role="alert">{error}</span>}
         </div>
       </div>

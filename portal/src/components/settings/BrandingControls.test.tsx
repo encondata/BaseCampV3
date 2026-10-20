@@ -120,6 +120,14 @@ it('Remove asks once in the confirm dialog, then clears the logo', async () => {
   confirm.mockRestore();
 });
 
+it('the Remove confirm takes the focus, on Cancel', async () => {
+  api.getBranding.mockResolvedValue({ ...WITH_LOGO });
+  render(<BrandingControls canChange />);
+  await userEvent.click(await screen.findByRole('button', { name: 'Remove' }));
+  const dialog = screen.getByRole('dialog', { name: 'Remove the company logo' });
+  expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Cancel' }));
+});
+
 it('Cancel and Escape close the dialog without removing', async () => {
   api.getBranding.mockResolvedValue({ ...WITH_LOGO });
   render(<BrandingControls canChange />);

@@ -68,7 +68,10 @@ describe('LoadFromPersonModal', () => {
     setup();
     expect(within(dialog()).getByText('Crew badge · Load from person')).toBeTruthy();
     expect(within(dialog()).getByRole('heading', { name: 'Load samples from a person' })).toBeTruthy();
-    expect(within(dialog()).getByRole('searchbox', { name: 'Search people' }).closest('.dir-search')).not.toBeNull();
+    const search = within(dialog()).getByRole('searchbox', { name: 'Search people' }) as HTMLInputElement;
+    expect(search.closest('.dir-search')).not.toBeNull();
+    // the API takes 120 characters at most
+    expect(search.maxLength).toBe(120);
     await waitFor(() => expect(rows()).toHaveLength(3));
     expect(api.searchSamplePeople).toHaveBeenCalledTimes(1);
     expect(api.searchSamplePeople).toHaveBeenCalledWith('', PERSON_SEARCH_LIMIT);

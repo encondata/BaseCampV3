@@ -28,6 +28,8 @@ import '../../../styles/labelBuilder.css';
 
 /** How many people one search lists (the API allows 100). */
 export const PERSON_SEARCH_LIMIT = 50;
+/** The longest search the API takes (GET /labels/sample-people `q`). */
+const PERSON_SEARCH_MAX = 120;
 /** The quiet after typing before the search goes out. */
 export const PERSON_SEARCH_DEBOUNCE_MS = 250;
 
@@ -163,7 +165,7 @@ export default function LoadFromPersonModal({ templateName, onLoad, onClose }: L
               <div className="dir-search">
                 {SEARCH_ICON}
                 <input type="search" aria-label="Search people" placeholder="Search staff and workers by name…"
-                  value={query} autoFocus autoComplete="off" spellCheck={false}
+                  value={query} maxLength={PERSON_SEARCH_MAX} autoFocus autoComplete="off" spellCheck={false}
                   onChange={(e) => setQuery(e.target.value)} />
               </div>
             </div>
