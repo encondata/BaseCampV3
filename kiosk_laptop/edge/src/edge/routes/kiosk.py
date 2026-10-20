@@ -6,7 +6,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Request, Response
 
-from edge import laptop_setup, outbox, timeclock
+from edge import laptop_setup, outbox
 from edge.deps import err, require_session
 from edge.rfid import events, pairing, station_key
 from edge.routes.auth import passthrough
@@ -106,8 +106,10 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
     key (it covered the previous setup); an RFID, Label or Time Clock
     Station then asks the portal for a new one for this setup, and a failed issue is retried by
     the background loop. A Time Clock Station may have no move (its sync
-    target is then empty); any other setup drops the Time Clock's armed
-    screens."""
+    target is then empty, and no "Move loaded" event is recorded) and,
+    like a Label Station, drops the reader pairing; it uploads no scans,
+    so every pending one is rejected `station_changed`. Every setup
+    revokes the Time Clock's armed screens (they go with the key)."""
     st = request.app.state
     body, station = with_station(await request.body(), st.store)
     body = rewrite_body("/kiosk/setup", body, st.identity)
@@ -121,7 +123,7 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
         raise err(403, "cloud_sign_in_required")  # not 401: the edge session is still good
     if resp.status_code == 200:
         result = resp.json()
-        if station == "label":
+        if station in ("label", "timeclock"):
             previous = pairing.current_row(st.store)
             if previous is not None:  # best effort: the reader stops sending here
                 async with st.pair_lock:
@@ -130,17 +132,20 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
             # A Label Station's key uploads Labeled scans only: RFID scans
             # left pending could never upload, so say why instead of leaving
             # them pending forever. Labeled scans (scan_type 'barcode') stay.
+            # A Time Clock Station's key uploads no scans at all.
+            only_rfid = "AND scan_type IS NOT 'barcode'" if station == "label" else ""
             st.store.run("UPDATE pending_rfid_scans SET upload_state = 'rejected', "
                          "reject_code = 'station_changed', waiting_for_internet = 0, "
                          "next_attempt_at = NULL WHERE upload_state = 'pending' "
-                         "AND scan_type IS NOT 'barcode'")
-        station_key.clear(st.store)  # a key covers one setup; a station gets a new one
+                         f"{only_rfid}")
+        # a key covers one setup; a station gets a new one. Dropping it also
+        # revokes the Time Clock's armed screens: Start Time Clock arms again
+        station_key.clear(st.store)
         if isinstance(result, dict):
             laptop_setup.save(st.store, result, station)
-            if station != "timeclock":
-                timeclock.clear_displays(st.store)
-            events.record(st.store, "move_loaded", "Move loaded",
-                          str(result.get("initiative_name") or ""))
+            if result.get("initiative_id") is not None:
+                events.record(st.store, "move_loaded", "Move loaded",
+                              str(result.get("initiative_name") or ""))
             events.record(st.store, "scan_type_selected", "Scan type selected",
                           f"{result.get('scan_status_label') or ''} · {_station_name(station)}")
             if station in station_key.STATION_TYPES:

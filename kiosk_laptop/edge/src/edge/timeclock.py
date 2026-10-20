@@ -5,9 +5,10 @@ the station's own screen when a signed-in person presses Start Time Clock
 (POST /edge/timeclock/arm). A LAN device without one gets 403
 `not_timeclock_display`.
 
-Only the cookie's sha256 is stored. Displays are dropped by Clear Setup
-(`station_key.apply_clear_setup`), Wipe, and a Kiosk Setup saving any
-station type other than `timeclock`."""
+Only the cookie's sha256 is stored. A display is bound to the station key
+it was armed under: `station_key` drops every display whenever the key is
+cleared, refused or replaced, so every Kiosk Setup, Clear Setup and key
+drop revokes them, and Wipe empties the table."""
 
 import hashlib
 import secrets

@@ -49,6 +49,9 @@ RESUMED_TITLE = "Uploads resumed"
 
 
 def store_key(store: Store, keys: Keys, raw: str) -> None:
+    """Store (or replace) the key. Screens armed under a previous key are
+    revoked: a display cookie is good for one key."""
+    timeclock.clear_displays(store)
     store.run("INSERT INTO station_key (id, key_enc, stored_at) VALUES (1, ?, ?) "
               "ON CONFLICT (id) DO UPDATE SET key_enc = excluded.key_enc, "
               "stored_at = excluded.stored_at", (encrypt(keys, raw), now_iso()))
@@ -72,8 +75,15 @@ def has_key(store: Store) -> bool:
 
 
 def clear(store: Store) -> None:
+    """Drop the key, and with it the Time Clock's armed screens."""
     store.run("DELETE FROM station_key")
+    _dropped(store)
+
+
+def _dropped(store: Store) -> None:
+    """After the key is gone: no pause flag, no armed screens."""
     _clear_pause(store)
+    timeclock.clear_displays(store)
 
 
 def _clear_pause(store: Store) -> None:
@@ -89,10 +99,9 @@ def apply_clear_setup(store: Store) -> None:
     shell would load it straight back (GET /edge/setup), and the station key
     (the portal revoked it when Clear Setup was requested). The reader
     pairing stays: Kiosk Setup reuses it. A Time Clock station's armed
-    screens go too."""
+    screens go with the key."""
     laptop_setup.clear(store)
     clear(store)
-    timeclock.clear_displays(store)
 
 
 def is_paused(store: Store) -> bool:
@@ -267,7 +276,7 @@ async def request_as_station(upstream: Upstream, method: str, path: str,
         if not dropped:  # a newer key (a new setup) arrived meanwhile: this refusal is stale
             log.info("stale station refusal (%s): newer key kept", path.split("?", 1)[0])
             return resp
-        _clear_pause(upstream.store)
+        _dropped(upstream.store)
         log.warning("station key refused (%s): dropped", path.split("?", 1)[0])
         if _clear_setup_id(resp) is not None:
             apply_clear_setup(upstream.store)

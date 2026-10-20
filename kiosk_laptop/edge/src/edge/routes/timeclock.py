@@ -2,8 +2,9 @@
 time clock station spec §6, with the plan-time display-cookie adjustment).
 
 `GET /station` is public and says whether the laptop can run the time
-clock (never the key or the serial). `POST /arm`, as a signed-in person,
-hands this browser the display cookie (`edge.timeclock`). Everything else
+clock (never the key or the serial). `POST /arm`, as a signed-in person
+(not a move-password sign-in), hands this browser the display cookie
+(`edge.timeclock`), good until the key is dropped or replaced. Everything else
 answers only an armed display (403 `not_timeclock_display`): the cached
 people list, and a person's status, clock in and clock out forwarded to
 the portal's `/kiosk/station/timeclock/*` under the station key with the
@@ -59,9 +60,11 @@ async def station(request: Request) -> dict:
 
 
 @router.post("/arm", status_code=204)
-async def arm(request: Request, _: EdgeSession = Depends(require_session)) -> Response:
+async def arm(request: Request, session: EdgeSession = Depends(require_session)) -> Response:
     """Start Time Clock: this browser becomes the station's display."""
     st = request.app.state
+    if session.move_id is not None:  # a move-password sign-in can't arm the laptop
+        raise err(403, "move_locked")
     if not _ready(st.store):
         raise err(409, "not_timeclock_station")
     response = Response(status_code=204)

@@ -5,6 +5,7 @@ the signed-out /edge/timeclock/* routes forwarded under the station key."""
 
 import dataclasses
 import json
+import logging
 import uuid
 from urllib.parse import parse_qs, urlsplit
 
@@ -13,7 +14,7 @@ import httpx
 from edge import laptop_setup, timeclock
 from edge.rfid import station_key
 from tests.conftest import make_session
-from tests.test_laptop_setup import SETUP, ready
+from tests.test_laptop_setup import OUT, SETUP, paired, ready
 
 RAW = "stationkey-timeclock-0123456789-SECRET"
 PERSON = str(uuid.uuid4())
@@ -171,7 +172,9 @@ async def test_bad_person_and_no_key(app, client, cloud):
     assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_person"
     r = await client.get("/edge/timeclock/status/not-a-uuid", headers=headers)
     assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_person"
-    station_key.clear(app.state.store)
+    # the key gone from under an armed screen (station_key.clear would revoke
+    # the screen too): the defensive 409
+    app.state.store.run("DELETE FROM station_key")
     r = await client.post("/edge/timeclock/clock-in", headers=headers,
                           json={"person_id": PERSON})
     assert r.status_code == 409 and r.json()["detail"]["code"] == "station_not_ready"
@@ -257,6 +260,7 @@ async def test_setup_with_null_move_saves_and_issues_key(app, client, cloud):
     details = [row["detail"] for row in app.state.store.all(
         "SELECT detail FROM rfid_events WHERE kind = 'scan_type_selected'")]
     assert details and "Time Clock Station" in details[-1]
+    assert app.state.store.one("SELECT 1 FROM rfid_events WHERE kind = 'move_loaded'") is None
 
 
 async def test_setup_event_text_unchanged_for_other_stations(app, client, cloud):
@@ -285,18 +289,129 @@ async def test_clear_setup_and_wipe_drop_displays(app, client, cloud):
     assert r.status_code == 200
     assert not timeclock.is_display(store, token)
 
-    # setting up again as a Time Clock keeps the screen armed; any other type drops it
-    ready(app, cloud, body=NO_MOVE)
-    cloud.post("/kiosk/station-key").respond(200, json={"key": RAW})
-    token = timeclock.issue_display(store)
-    await client.post("/kiosk/setup", headers=make_session(app),
-                      json={"serial": "browser", "station_type": "timeclock"})
-    assert timeclock.is_display(store, token)
-    ready(app, cloud)
-    await client.post("/kiosk/setup", headers=make_session(app),
-                      json={**SETUP, "station_type": "label"})
-    assert not timeclock.is_display(store, token)
+    # every setup revokes armed screens, a Time Clock set up again included
+    for body in ({"serial": "browser", "station_type": "timeclock"},
+                 {**SETUP, "station_type": "label"}):
+        ready(app, cloud, body=NO_MOVE if body.get("station_type") == "timeclock" else OUT)
+        cloud.post("/kiosk/station-key").respond(200, json={"key": RAW})
+        token = timeclock.issue_display(store)
+        assert (await client.post("/kiosk/setup", headers=make_session(app),
+                                  json=body)).status_code == 200
+        assert not timeclock.is_display(store, token)
 
     token = timeclock.issue_display(store)
     timeclock.clear_displays(store)
     assert not timeclock.is_display(store, token)
+
+
+async def test_a_timeclock_resetup_revokes_the_armed_cookie(app, client, cloud):
+    ready(app, cloud, body=NO_MOVE)
+    cloud.post("/kiosk/station-key").respond(200, json={"key": RAW})
+    body = {"serial": "browser", "station_type": "timeclock"}
+    assert (await client.post("/kiosk/setup", headers=make_session(app),
+                              json=body)).status_code == 200
+    assert (await client.post("/edge/timeclock/arm", headers=make_session(app))).status_code \
+        == 204
+    people = await client.get("/edge/timeclock/people")      # the jar sends the cookie
+    assert people.json()["detail"]["code"] == "people_not_synced"
+    assert (await client.post("/kiosk/setup", headers=make_session(app),
+                              json=body)).status_code == 200
+    r = await client.get("/edge/timeclock/people")
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_timeclock_display"
+    assert (await client.get("/edge/timeclock/station")).json()["armed"] is False
+
+
+async def test_a_dropped_or_replaced_key_revokes_displays(app, client, cloud):
+    store = app.state.store
+    timeclock_setup(app)
+    headers = display(app)
+    cloud.post("/kiosk/station/timeclock/clock-in").respond(
+        401, json={"detail": {"code": "station_key_invalid"}})
+    r = await client.post("/edge/timeclock/clock-in", headers=headers,
+                          json={"person_id": PERSON})
+    assert r.status_code == 401                               # passed through
+    assert not station_key.has_key(store)
+    r = await client.get("/edge/timeclock/people", headers=headers)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "not_timeclock_display"
+
+    station_key.store_key(store, app.state.keys, RAW)
+    headers = display(app)
+    station_key.store_key(store, app.state.keys, "a-newer-key")   # replaced
+    r = await client.get("/edge/timeclock/people", headers=headers)
+    assert r.status_code == 403
+
+    headers = display(app)
+    station_key.clear(store)
+    assert (await client.get("/edge/timeclock/people", headers=headers)).status_code == 403
+
+
+async def test_arm_refuses_a_move_locked_session(app, client):
+    timeclock_setup(app, initiative_id="m-1")
+    locked = make_session(app, kiosk_move={"initiative_id": "m-1", "name": "Move 1"})
+    r = await client.post("/edge/timeclock/arm", headers=locked)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "move_locked"
+    assert "set-cookie" not in r.headers
+    assert app.state.store.one("SELECT 1 FROM timeclock_displays") is None
+
+
+def _pending(store, sid, scan_type):
+    store.run("INSERT INTO pending_rfid_scans (client_scan_id, epc, matched_kind, matched_id, "
+              "scanned_at, created_at, scan_type) VALUES (?, 'E1', 'asset', 'a-1', 'now', "
+              "'now', ?)", (sid, scan_type))
+
+
+async def test_a_timeclock_setup_drops_the_reader_and_rejects_every_pending_scan(app, client,
+                                                                                  cloud):
+    await paired(app, client)
+    store = app.state.store
+    _pending(store, "rfid-1", None)
+    _pending(store, "label-1", "barcode")
+    ready(app, cloud, body=NO_MOVE)
+    cloud.post("/kiosk/station-key").respond(200, json={"key": RAW})
+    r = await client.post("/kiosk/setup", headers=make_session(app),
+                          json={"serial": "browser", "station_type": "timeclock"})
+    assert r.status_code == 200, r.text
+    assert store.one("SELECT * FROM rfid_pairing") is None
+    rows = {row["client_scan_id"]: (row["upload_state"], row["reject_code"]) for row in
+            store.all("SELECT client_scan_id, upload_state, reject_code FROM pending_rfid_scans")}
+    assert rows == {"rfid-1": ("rejected", "station_changed"),
+                    "label-1": ("rejected", "station_changed")}
+
+
+async def test_a_label_setup_still_keeps_labeled_scans(app, client, cloud):
+    store = app.state.store
+    _pending(store, "rfid-1", None)
+    _pending(store, "label-1", "barcode")
+    ready(app, cloud)
+    cloud.post("/kiosk/station-key").respond(200, json={"key": RAW})
+    await client.post("/kiosk/setup", headers=make_session(app),
+                      json={**SETUP, "station_type": "label"})
+    rows = {row["client_scan_id"]: row["upload_state"] for row in
+            store.all("SELECT client_scan_id, upload_state FROM pending_rfid_scans")}
+    assert rows == {"rfid-1": "rejected", "label-1": "pending"}
+
+
+async def test_station_key_never_logged_on_timeclock_paths(app, client, cloud, caplog):
+    caplog.set_level(logging.DEBUG)
+    timeclock_setup(app)
+    headers = display(app)
+    app.state.syncer.set_target(None, "p-1")
+    cloud.get("/kiosk/station/sync/people").respond(500, text=f"echo {RAW}")
+    await app.state.syncer.run()
+    cloud.get("/kiosk/station/sync/people").respond(200, json={"people": []})
+    await app.state.syncer.run()
+    cloud.post("/kiosk/station/timeclock/clock-in").respond(409, json={"detail": {"code": "x"}})
+    cloud.post("/kiosk/station/timeclock/clock-out").respond(200, json=STATUS)
+    cloud.get(f"/kiosk/station/timeclock/{PERSON}").mock(side_effect=httpx.ConnectError(RAW))
+    for r in (await client.post("/edge/timeclock/clock-in", headers=headers,
+                                json={"person_id": PERSON}),
+              await client.post("/edge/timeclock/clock-out", headers=headers,
+                                json={"person_id": PERSON}),
+              await client.get(f"/edge/timeclock/status/{PERSON}", headers=headers),
+              await client.get("/edge/timeclock/station")):
+        assert RAW not in r.text
+    cloud.get("/kiosk/station/sync/people").respond(
+        401, json={"detail": {"code": "station_key_invalid"}})
+    await app.state.syncer.run()
+    assert caplog.records and RAW not in caplog.text
+    assert RAW not in json.dumps(app.state.syncer.meta())
