@@ -25,6 +25,7 @@ from serversherpa.labels.model import (
     BarcodeEl, BoxEl, Design, FieldEl, LineEl, QrEl, TextEl, element_hidden,
     element_value,
 )
+from serversherpa.labels.qr import qr_modules
 from serversherpa.labels.tokens import TOKEN_RE
 
 _ROT = {0: "N", 90: "R", 180: "I", 270: "B"}
@@ -172,16 +173,17 @@ def _v2_text(el: TextEl | FieldEl, value: str, dpi: int,
 
 def _v2_qr(el: QrEl | FieldEl, value: str, dpi: int) -> str:
     """Error correction M, automatic input (`MA,`). Magnification fills the
-    box (21 modules up to 25 characters, else 25), capped at the printer's
-    10; the symbol is centered on the box, so a capped one stays where the
-    design put it."""
-    modules = 21 if len(value) <= 25 else 25
+    box for the symbol size the value needs (labels.qr), capped at the
+    printer's 10; the symbol is centered on the box, so a capped one stays
+    where the design put it. ^BQ prints upright only (N): a square symbol
+    looks the same at any rotation, which stays in the model for the canvas."""
+    modules = qr_modules(value)
     wd, hd = _dots(el.w, dpi), _dots(el.h, dpi)
     mag = min(10, max(1, round(wd / modules)))
     side = modules * mag
     x = max(0, _dots(el.x, dpi) + (wd - side) // 2)
     y = max(0, _dots(el.y, dpi) + (hd - side) // 2)
-    return f"^FO{x},{y}^BQ{_ROT[el.rotation]},2,{mag}^FH_^FDMA,{_esc(value)}^FS"
+    return f"^FO{x},{y}^BQN,2,{mag}^FH_^FDMA,{_esc(value)}^FS"
 
 
 def _v2_shape(el: LineEl | BoxEl, dpi: int) -> str:

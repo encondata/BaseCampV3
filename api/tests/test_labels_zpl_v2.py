@@ -13,7 +13,9 @@ import serversherpa.labels as labels_pkg
 from serversherpa.labels.brother_escp import compile_escp
 from serversherpa.labels.brother_ptouch import compile_ptouch
 from serversherpa.labels.fields import MOCK_VALUES
+from serversherpa.labels.fonts import font_object
 from serversherpa.labels.model import parse_design
+from serversherpa.labels.qr import qr_modules
 from serversherpa.labels.render import render_template
 from serversherpa.labels.zpl import compile_zpl
 
@@ -157,14 +159,62 @@ def test_qr_uses_mode_m_and_caps_magnification_at_10():
     # 294 / 21 = 14 at 600: capped at 10 (210 dots), centered in the 294-dot box
     assert _body(_zpl(qr, values=values, dpi=600)) == [
         "^FO642,342^BQN,2,10^FH_^FDMA,100000^FS"]
-    # more than 25 characters needs version 2 (25 modules): 147 / 25 -> 6,
+    # 26 alphanumerics need version 2 (25 modules): 147 / 25 -> 6,
     # 150 dots, centered over the 147-dot box
     long = "X" * 26
     assert _body(_zpl(qr, values={"asset_id": long})) == [
         f"^FO298,148^BQN,2,6^FH_^FDMA,{long}^FS"]
+    # 14 x é is 28 UTF-8 bytes: version 3 (29 modules): 147 / 29 -> 5,
+    # 145 dots, one dot in from each side; ^FH_ hex-escapes every byte
+    accents = "é" * 14
+    assert _body(_zpl(qr, values={"asset_id": accents})) == [
+        "^FO301,151^BQN,2,5^FH_^FDMA," + "_c3_a9" * 14 + "^FS"]
     # static data works the same way
     static = {k: v for k, v in qr.items() if k != "field"} | {"data": "HELLO"}
     assert _body(_zpl(static, values={})) == ["^FO300,150^BQN,2,7^FH_^FDMA,HELLO^FS"]
+
+
+def test_qr_modules_pick_the_smallest_version_at_level_m():
+    assert qr_modules("10482") == 21                 # numeric, v1 holds 34
+    assert qr_modules("0" * 34) == 21
+    assert qr_modules("0" * 35) == 25                # v2 holds 63
+    assert qr_modules("RACK-14 $%*+./:") == 21       # alphanumeric, v1 holds 20
+    assert qr_modules("A" * 21) == 25
+    assert qr_modules("sample-server-1") == 25       # 15 lowercase: byte, v1 holds 14
+    assert qr_modules("s" * 14) == 21
+    assert qr_modules("é" * 7) == 21                 # 14 bytes
+    assert qr_modules("é" * 14) == 29                # 28 bytes: v3 holds 42
+    assert qr_modules("") == 21
+    assert qr_modules("0" * 513) == 57               # v10 (17 + 4 x 10)
+    assert qr_modules("٣" * 20) == 29                # non-ASCII digits are bytes (40), not numeric
+    with pytest.raises(ValueError):
+        qr_modules("x" * 214)                        # beyond v10's 213 bytes
+
+
+def test_qr_always_prints_upright():
+    """^BQ has one orientation (N); the rotation stays in the model for the
+    canvas, and a square symbol looks the same either way."""
+    for rotation in (90, 180, 270):
+        qr = {"id": "q1", "type": "qr", "field": "asset_id", "x": 1, "y": 0.5,
+              "w": 0.49, "h": 0.49, "rotation": rotation}
+        assert _body(_zpl(qr, values={"asset_id": "100000"})) == [
+            "^FO300,150^BQN,2,7^FH_^FDMA,100000^FS"]
+        as_field = _field(display="qr", w=0.49, h=0.49, rotation=rotation)
+        assert "^BQN,2,7^" in _zpl(as_field)
+
+
+def test_font_object_names_are_checked_before_they_are_emitted():
+    for bad in ("../x.TTF", "TOOLONGNAME.TTF", "rob_r.ttf", "X^XZ.TTF", "ROBO.OTF", ".TTF"):
+        with pytest.raises(ValueError, match="font object"):
+            _zpl(_field(font={"family": "roboto", "weight": "regular"}),
+                 font_objects={"roboto": {"regular": bad, "bold": None}})
+        with pytest.raises(ValueError, match="font object"):
+            font_object("roboto", "bold", objects={"regular": "ROBOTO_R.TTF", "bold": bad})
+    with pytest.raises(ValueError, match="regular"):
+        _zpl(_field(font={"family": "roboto", "weight": "bold"}),
+             font_objects={"roboto": {"bold": "ROBOTO_B.TTF"}})
+    # every built-in family's objects pass
+    assert font_object("swiss721-cond-bold", "regular") == ("TT0003M_.TTF", False)
 
 
 def test_values_are_hex_escaped():

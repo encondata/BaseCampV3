@@ -10,6 +10,7 @@ on it is faux (see `font_object`).
 Pure: the ZPL compiler imports this on the portal and on the laptop edge
 (which imports serversherpa.labels straight from api/src)."""
 
+import re
 from collections.abc import Mapping
 from typing import TypedDict
 
@@ -28,6 +29,8 @@ class Family(TypedDict):
 
 WEIGHTS = ("regular", "bold")
 DEFAULT_FAMILY = "swiss721-cond-bold"
+# an 8.3 printer object name, the only shape `^A@…,E:<object>` may carry
+OBJECT_NAME = re.compile(r"[A-Z0-9_]{1,8}\.TTF")
 
 
 def _family(label: str, regular: str, bold: str | None, *, resident: bool = False,
@@ -55,11 +58,17 @@ def font_object(family: str, weight: str, *,
     family with no Bold file prints the regular file with faux_bold set,
     and the compiler thickens it. `objects` replaces the family's own
     `{"regular", "bold"}` when the caller knows what the font library
-    actually holds (a missing Bold file there makes Bold faux too)."""
+    actually holds (a missing Bold file there makes Bold faux too).
+    Raises ValueError when `objects` has no regular file or the name to
+    print is not an 8.3 `.TTF` object name, so no raw text reaches ZPL."""
     if weight not in WEIGHTS:
         raise ValueError(f"unknown font weight: {weight!r}")
     objs = objects if objects is not None else FAMILIES[family]["objects"]
-    if weight == "bold":
-        bold = objs.get("bold")
-        return (bold, False) if bold else (objs["regular"], True)
-    return objs["regular"], False
+    if not objs.get("regular"):
+        raise ValueError(f"font objects for {family!r} have no regular object")
+    bold = objs.get("bold") if weight == "bold" else None
+    name, faux = (bold, False) if bold else (objs["regular"], weight == "bold")
+    if not isinstance(name, str) or not OBJECT_NAME.fullmatch(name):
+        raise ValueError(f"bad font object name {name!r} for {family!r}: "
+                         "expected an 8.3 name like ROBOTO_R.TTF")
+    return name, faux
