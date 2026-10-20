@@ -120,7 +120,7 @@ const STRIP_WHERES: { value: StripWhere; label: string }[] = [
 
 /** A family's name, shortened for the table. */
 export function shortFontName(family: string): string {
-  return (familyInfo(family)?.label ?? family).replace(' Condensed', ' Cond.');
+  return (familyInfo(family)?.label ?? family).replace(' Condensed', ' Cond.').replace(' (printer built-in)', ' (built-in)');
 }
 
 const NONE = <span className="lbp-none" aria-hidden="true">—</span>;

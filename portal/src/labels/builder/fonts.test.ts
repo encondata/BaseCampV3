@@ -38,6 +38,7 @@ describe('font families', () => {
   it('defaults to the resident Swiss cut and samples with 0O 1Il 7', () => {
     expect(DEFAULT_FAMILY).toBe('swiss721-cond-bold');
     expect(familyInfo(DEFAULT_FAMILY)?.resident).toBe(true);
+    expect(familyInfo(DEFAULT_FAMILY)?.label).toBe('Swiss 721 (printer built-in)');
     expect(FONT_SAMPLE).toBe('0O 1Il 7');
     expect(familyInfo('nope')).toBeUndefined();
   });
@@ -48,8 +49,9 @@ describe('which file draws and which file measures', () => {
   const swissBold = { family: 'swiss721-cond-bold', weight: 'bold' } as const;
   const robotoBold = { family: 'roboto', weight: 'bold' } as const;
 
-  it('draws the resident family with Roboto Condensed Bold over its own metrics', () => {
-    expect(STAND_IN).toEqual({ family: 'roboto-condensed', weight: 'bold' });
+  it('draws the resident family with Roboto Regular over its own metrics', () => {
+    // TT0003M_.TTF is Swis721 BT Roman: a regular-weight, normal-width sans
+    expect(STAND_IN).toEqual({ family: 'roboto', weight: 'regular' });
     expect(faceFile(swiss)).toEqual(STAND_IN);
     expect(faceFile(swissBold)).toEqual(STAND_IN);
     expect(metricsFile(swiss)).toEqual(swiss);

@@ -265,8 +265,9 @@ def seed_demo_warehouse() -> None:
 def seed_label_fonts() -> None:
     """Load the label builder's fonts into the font library: Regular and
     Bold of the seven open families, downloaded from pinned GitHub URLs,
-    plus the resident Swiss 721 Condensed Bold row (no file). Idempotent:
-    a family and weight already in the library is skipped."""
+    plus the resident Swiss 721 row, Zebra's built-in cut (no file).
+    Idempotent: a family and weight already in the library is skipped
+    (a resident row only gets its family's current label)."""
 
     _name_connections("seed-label-fonts")
 

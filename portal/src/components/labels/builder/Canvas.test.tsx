@@ -133,8 +133,8 @@ describe('rendering', () => {
 
     const pod = node('banner-pod').querySelector('text.lbc-text')!;
     expect(pod.textContent).toBe('07C');
-    // the resident Swiss cut draws with the Roboto Condensed Bold stand-in
-    expect(pod.getAttribute('font-family')).toContain('label-builder-roboto-condensed-bold');
+    // the resident Swiss cut draws with the Roboto Regular stand-in
+    expect(pod.getAttribute('font-family')).toContain('label-builder-roboto-regular');
     expect(metricsFor).toHaveBeenCalledWith('swiss721-cond-bold', 'regular');
     expect(node('banner-nap').querySelector('text.lbc-text')!.textContent).toBe('14');
     expect(node('banner-ru').querySelector('text.lbc-text')!.textContent).toBe('23');

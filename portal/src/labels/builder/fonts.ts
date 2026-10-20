@@ -4,11 +4,13 @@
  * without a round trip, with the printer object each weight prints with,
  * so the builder's Printer dialog can check a printer has them.
  *
- * Swiss 721 Condensed Bold is Zebra's resident cut: never served to a
- * browser, so the canvas draws it with Roboto Condensed Bold while every
- * width and baseline comes from the real file's metrics (spec §4.4). It has
- * no Bold file, so Bold on it is faux: the printer overprints one dot, or on
- * an inverted element widens the glyphs 15%.
+ * Swiss 721 (TT0003M_.TTF, Swis721 BT Roman: regular weight, normal width)
+ * is Zebra's resident cut: never served to a browser, so the canvas draws it
+ * with Roboto Regular while every width and baseline comes from the real
+ * file's metrics (spec §4.4). It has no Bold file, so Bold on it is faux: the
+ * printer overprints one dot, or on an inverted element widens the glyphs
+ * 15%. Its slug, `swiss721-cond-bold`, predates knowing the cut and stays as
+ * designs store it.
  */
 
 export type FontWeight = 'regular' | 'bold';
@@ -32,7 +34,7 @@ export interface FontFamilyInfo {
 }
 
 export const FONT_FAMILIES: readonly FontFamilyInfo[] = [
-  { slug: 'swiss721-cond-bold', label: 'Swiss 721 Condensed Bold', objects: { regular: 'TT0003M_.TTF', bold: null }, mono: false, resident: true, bold: false },
+  { slug: 'swiss721-cond-bold', label: 'Swiss 721 (printer built-in)', objects: { regular: 'TT0003M_.TTF', bold: null }, mono: false, resident: true, bold: false },
   { slug: 'roboto-condensed', label: 'Roboto Condensed', objects: { regular: 'ROBOCO_R.TTF', bold: 'ROBOCO_B.TTF' }, mono: false, resident: false, bold: true },
   { slug: 'roboto', label: 'Roboto', objects: { regular: 'ROBOTO_R.TTF', bold: 'ROBOTO_B.TTF' }, mono: false, resident: false, bold: true },
   { slug: 'oswald', label: 'Oswald', objects: { regular: 'OSWALD_R.TTF', bold: 'OSWALD_B.TTF' }, mono: false, resident: false, bold: true },
@@ -47,8 +49,10 @@ export const DEFAULT_FAMILY = 'swiss721-cond-bold';
 /** What the dropdown renders in each face. */
 export const FONT_SAMPLE = '0O 1Il 7';
 
-/** The face the canvas draws a resident family with. */
-export const STAND_IN: FontRef = { family: 'roboto-condensed', weight: 'bold' };
+/** The face the canvas draws a resident family with: the regular-weight,
+ *  normal-width sans closest to the printer's Swiss 721 (Roboto Regular is
+ *  in the seeded library as ROBOTO_R.TTF). */
+export const STAND_IN: FontRef = { family: 'roboto', weight: 'regular' };
 
 /** The printer's width factor for faux Bold on an inverted element. */
 export const FAUX_BOLD_INVERTED_WIDEN = 1.15;

@@ -60,7 +60,7 @@ describe('PlacedFieldsTable', () => {
     expect(rowFor('Name:')).toBeUndefined();
     expect(rowFor('Asset ID').cells[1].textContent).toBe('Barcode');
     expect(rowFor('Asset ID', 1).cells[1].textContent).toBe('QR code');
-    expect(rowFor('Asset name').cells[2].textContent).toBe('Swiss 721 Cond. Bold');
+    expect(rowFor('Asset name').cells[2].textContent).toBe('Swiss 721 (built-in)');
   });
 
   it('selects with the canvas: a click picks a row, ⇧ adds, the parent picks every piece', () => {

@@ -104,7 +104,7 @@ export function cssFamilyOf(file: FontRef): string {
 
 /** Loads one family and weight for the canvas: the metrics of the file the
  *  printer prints with, and the face to draw — that same file, or for a
- *  resident family the Roboto Condensed Bold stand-in. The face is fetched
+ *  resident family the Roboto Regular stand-in. The face is fetched
  *  only where the browser can use it. */
 export async function loadFont(family: string, weight: FontWeight, source: FontSource): Promise<LoadedFont> {
   if (!familyInfo(family)) throw new Error(`unknown font family: ${family}`);

@@ -7,12 +7,15 @@ browsers may load them) download from raw GitHub URLs pinned to a commit,
 and are stored the way an upload on Labels → Printers stores them
 (`label-fonts/<uuid>.ttf`). Static TTFs come from google/fonts where it
 ships them, otherwise from the family's own upstream repository at the
-commit google/fonts packaged. Swiss 721 Condensed Bold is Zebra's resident
+commit google/fonts packaged. Swiss 721 (TT0003M_.TTF) is Zebra's resident
 cut: it gets a row with no file (`resident`), never a download.
 
-Idempotent. A family and weight already in the library is left alone; a
-file uploaded earlier under a builder object name is adopted (given its
-family, weight and display name) instead of downloaded again. Each font
+Idempotent. A family and weight already in the library is left alone,
+except that a resident row whose display name isn't its family's label
+gets the label (the Swiss row was seeded as "Swiss 721 Condensed Bold"
+until 2026-10-20); a file uploaded earlier under a builder object name is
+adopted (given its family, weight and display name) instead of downloaded
+again. Each font
 commits on its own, so a failed download keeps the fonts before it."""
 
 import uuid
@@ -166,7 +169,11 @@ async def seed(db: AsyncSession, *, fetch: Fetch = http_fetch) -> list[str]:
         for weight, obj in fam["objects"].items():
             if not obj:
                 continue
-            if await _active(db, LabelFont.family == family, LabelFont.weight == weight):
+            have = await _active(db, LabelFont.family == family, LabelFont.weight == weight)
+            if have is not None:
+                if fam["resident"] and have.display_name != display_name(family, weight):
+                    await _adopt(db, have, family, weight)
+                    done.append(have.name)
                 continue
             existing = await _active(db, LabelFont.name == obj)
             if existing is not None:

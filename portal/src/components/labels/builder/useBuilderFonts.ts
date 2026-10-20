@@ -2,7 +2,7 @@
  * The builder page's fonts (labels/builder/metrics.ts loadFont): each family
  * and weight loads once, from the library file GET /labels/fonts lists for
  * it — its metrics (GET /labels/fonts/{id}/metrics) to measure with, its
- * face to draw with (for the resident Swiss cut, the Roboto Condensed Bold
+ * face to draw with (for the resident Swiss cut, the Roboto Regular
  * stand-in). A Bold the library has no file for measures as the Regular,
  * as the printer prints it.
  *

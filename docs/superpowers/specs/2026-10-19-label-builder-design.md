@@ -78,7 +78,7 @@ These came from the conversation on 2026-10-19 and are binding.
 - Font per field, defaulting to `TT0003M_.TTF`. Only fonts in the font
   library are offered, so a printer can be set up with them. About eight
   options, with a friendly name and a rendered sample in the dropdown.
-  The eight: Swiss 721 Condensed Bold (default), Roboto Condensed, Roboto,
+  The eight: Swiss 721 (printer built-in; the default), Roboto Condensed, Roboto,
   Oswald, Roboto Mono, IBM Plex Mono, Atkinson Hyperlegible, Source Sans 3.
   Roboto Mono and IBM Plex Mono are monospace.
 
@@ -199,7 +199,7 @@ or right-aligned), and the canvas shows the spill in red past the box so
 the author sets Max characters. Multi-line static text also uses `^FB`.
 
 **Bold.** When the chosen family has a Bold file in the library, Bold uses
-it. When it doesn't (Swiss 721 Condensed Bold has only the one cut), Bold
+it. When it doesn't (Swiss 721 has only the one cut), Bold
 overprints the text one dot to the right, except on an inverted element,
 where two reversed passes would cancel each other: there Bold widens the
 glyphs by 15% through the font's width parameter instead. Normal on the
@@ -266,13 +266,16 @@ codes and shapes use top-left `^FO`.
   fonts a template uses, as they do today.
 - The dropdown shows each font's name with the sample `0O 1Il 7`, rendered
   in that font.
-- **The default is different.** Swiss 721 Condensed Bold is a commercial
-  Bitstream cut that Zebra ships on the printer; its file may be installed
-  on a printer but not served to browsers. So: the library marks it
+- **The default is different.** Swiss 721, labeled "Swiss 721 (printer
+  built-in)", is a commercial Bitstream cut that Zebra ships on the
+  printer (`TT0003M_.TTF`, which identifies as Swis721 BT Roman: regular
+  weight, normal width; the slug `swiss721-cond-bold` predates knowing
+  that and stays, since designs store it). Its file may be installed on a
+  printer but not served to browsers. So: the library marks it
   *resident*, step 5 and Printer Setup only check it is present and never
-  push it; the canvas draws it with Roboto Condensed Bold as a stand-in
-  while reserving widths from the real file's metrics, which the server
-  reads once from the library copy. Spacing is exact; the glyph shapes on
+  push it; the canvas draws it with Roboto Regular as a stand-in while
+  reserving widths from the real file's metrics, which the server reads
+  once from the library copy. Spacing is exact; the glyph shapes on
   screen are close but not the printer's. The printed preview (Labelary)
   renders the default through Zebra's built-in font 0, which is the same
   face, so that preview is exact for it.
@@ -323,8 +326,11 @@ codes and shapes use top-left `^FO`.
   (Labelary) stays as a check, with sample values substituted and the
   template's open fonts embedded in the request (cached on the server);
   the resident default renders through Labelary's font 0 (§4.4).
-- The Roboto Condensed Bold stand-in for the default font on the canvas is
-  Jimmy's choice (2026-10-19) over buying a Swiss 721 webfont license.
+- A stand-in for the default font on the canvas is Jimmy's choice
+  (2026-10-19) over buying a Swiss 721 webfont license. It is Roboto
+  Regular since 2026-10-20, when the resident file turned out to be the
+  regular cut (it was Roboto Condensed Bold, which drew heavier and
+  narrower than the print).
 - Test print sends the label with sample values to a USB printer from the
   portal, as today.
 - **Printer**, beside Test print (off, with Test print's reason, for a
