@@ -1,7 +1,7 @@
 /**
  * The field panel's + picker (spec §3.5, §4.6): what can go on the label —
  * static text, a line, a box, then every field, unused ones first and
- * placed ones last in grey with "on label ×n" (pick one again for another
+ * placed ones last in gray with "on label ×n" (pick one again for another
  * copy), Split pieces under their field. Typing filters; on a label that
  * has a From-To row, a header the list hasn't seen can be added as typed
  * (`ft:<header>`). No images this round (spec §7.6).
@@ -192,7 +192,7 @@ const FieldPicker = forwardRef<FieldPickerHandle, FieldPickerProps>(function Fie
         )}
         {!all.length && <div className="pop-empty">Nothing matches “{query.trim()}”.</div>}
       </div>
-      <div className="lbp-picker-note">Placed fields sit last, in grey. Pick one again to add another copy.</div>
+      <div className="lbp-picker-note">Placed fields sit last, in gray. Pick one again to add another copy.</div>
     </div>
   );
 });

@@ -101,9 +101,9 @@ These came from the conversation on 2026-10-19 and are binding.
 - The DPI column reads "All" when all three children exist.
 
 ### 3.5 The screen
-- Fields on the left with a search and a **+** that opens a picker. Fields
-  already on the label sink to the end of their group in grey with a count;
-  duplicates are allowed.
+- Fields on the left: the panel lists the fields on the label, each with
+  its count; **+** and `/` open the catalog picker, where duplicates are
+  allowed.
 - The table of placed fields sits under the canvas, with the per-field
   controls in columns.
 - Grid, snap and rulers; alignment tools for multiple selected fields.
@@ -304,11 +304,12 @@ codes and shapes use top-left `^FO`.
   sample value, a placed Split piece nested under its field. Fields not on
   the label aren't listed. Each row has a remove × (on hover or focus) that
   takes every placement of the field (or the piece) off the label in one
-  undo step, with a notice that offers Undo. With nothing placed the panel
+  undo step, locked placements included (Undo restores them), with a
+  notice that offers Undo. With nothing placed the panel
   says "No fields on this label yet. Press + or / to add one."
 - The search box (`/`) and the **+** open the picker, which holds the
   catalog: static text, line, box, then every field, unused first and
-  placed last in grey with `on label ×n`. The search box filters it.
+  placed last in gray with `on label ×n`. The search box filters it.
 - The sample value of a field is edited in place in the list. **Load from
   asset…** picks a move and an asset and fills every sample from that row.
 - The "any column from the uploaded From-To row" fields are listed from

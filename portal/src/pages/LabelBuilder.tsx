@@ -307,6 +307,12 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
     return () => window.clearTimeout(t);
   }, [notice]);
 
+  // a notice about one step (a removal, with Undo) goes once that step is
+  // no longer the last: undone, or another edit on top of it
+  useEffect(() => {
+    if (notice?.undoOf && notice.undoOf !== history.current.present) setNotice(null);
+  }, [design, notice]);
+
   // the printer's own connect and disconnect messages
   useEffect(() => {
     if (!printer.notice) return;

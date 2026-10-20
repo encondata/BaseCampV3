@@ -408,7 +408,8 @@ describe('a parent template', () => {
     const racks = () => screen.getByRole('application', { name: 'Label canvas' })
       .querySelectorAll('[data-el-id^="banner-"], [data-el-id^="grid-"]:not([data-el-id^="grid-caption"])');
     expect(racks()).toHaveLength(12);   // 5 + 5 pieces, 2 RUs
-    fireEvent.click(within(fields).getByRole('button', { name: 'Remove Destination rack from the label' }));
+    // the field list fills once GET /labels/fields answers
+    fireEvent.click(await within(fields).findByRole('button', { name: 'Remove Destination rack from the label' }));
     expect(racks()).toHaveLength(2);
     const notice = screen.getByRole('status');
     expect(notice.textContent).toContain('Removed 10 placements of Destination rack.');
@@ -420,8 +421,14 @@ describe('a parent template', () => {
     expect(racks()).toHaveLength(2);
     ctrl('z');
     expect(racks()).toHaveLength(12);
-    // the notice's Undo is gone once something else is the last step
-    expect(within(screen.getByRole('status')).queryByRole('button', { name: 'Undo' })).toBeNull();
+    // undone: the notice goes with it, not just its Undo
+    await waitFor(() => expect(screen.queryByText(/Removed 10 placements/)).toBeNull());
+    // and once another step lands on top of the removal
+    fireEvent.click(within(fields).getByRole('button', { name: 'Remove Destination rack from the label' }));
+    expect(screen.getByText(/Removed 10 placements/)).toBeTruthy();
+    ctrl('a');
+    fireEvent.keyDown(document.body, { key: 'ArrowRight', code: 'ArrowRight' });
+    await waitFor(() => expect(screen.queryByText(/Removed 10 placements/)).toBeNull());
   });
 });
 
