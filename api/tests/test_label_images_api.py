@@ -491,6 +491,44 @@ async def test_raster_preps_in_a_thread_and_caches(client, db, seeded_user, stor
     assert threaded == ["gray_raster", "gray_raster"]
 
 
+async def test_a_freeze_still_serves_the_raster(client, db, seeded_user, store, monkeypatch):
+    """M5: the raster is a read made through POST (like /wiki/assets/urls):
+    a read-only freeze mustn't blank every badge picture on the canvas.
+    Real writes stay frozen."""
+    sa = await _super(db, client)
+    image_id = await _library_image(client, sa)
+
+    async def frozen(_db):
+        return {"read_only": True, "read_only_message": "Down for maintenance."}
+
+    monkeypatch.setattr("serversherpa.system.admin_config.read_admin_config", frozen)
+    r = await client.post("/labels/images/raster", headers=sa, json={
+        "source": "static", "image_id": image_id, "w_in": 0.1, "h_in": 0.1, "dpi": 300,
+        "fit": "contain", "rotation": 0})
+    assert r.status_code == 200, r.text
+    r = await _upload(client, sa)
+    assert (r.status_code, r.json()["detail"]["code"]) == (423, "read_only_mode")
+
+
+async def test_a_password_change_owed_blocks_the_raster(client, db, seeded_user, store):
+    """Exempt from the freeze is not exempt from signing in: a session that
+    owes a password change gets nothing but the change."""
+    from sqlalchemy import update
+
+    from serversherpa.db.models import UserAccount
+
+    sa = await _super(db, client)
+    image_id = await _library_image(client, sa)
+    await db.execute(update(UserAccount).where(UserAccount.email == "sa-img@test.example.com")
+                     .values(must_change_password=True))
+    await db.commit()
+    owes = await login(client, email="sa-img@test.example.com")
+    r = await client.post("/labels/images/raster", headers=owes, json={
+        "source": "static", "image_id": image_id, "w_in": 0.1, "h_in": 0.1, "dpi": 300,
+        "fit": "contain", "rotation": 0})
+    assert (r.status_code, r.json()["detail"]["code"]) == (403, "password_change_required")
+
+
 async def test_the_browser_can_read_the_raster_size(client, db, seeded_user, store):
     """The portal calls the API cross-origin: the size headers are exposed."""
     sa = await _super(db, client)

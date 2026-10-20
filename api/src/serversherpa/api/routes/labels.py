@@ -2382,7 +2382,9 @@ async def image_raster(
     `X-Raster-Height`. Bytes, not a URL, so the canvas never reads a
     cross-origin picture. 404 `no_image` when there is nothing to draw (no
     such library image, no photo or logo, a missing object); 422
-    `person_not_found`, `image_too_large`, `unreadable_image`."""
+    `person_not_found`, `image_too_large`, `unreadable_image`. A read made
+    through POST: a read-only freeze doesn't stop it (deps.py
+    READ_ONLY_EXEMPT_PATHS)."""
     from serversherpa.labels import image_prep
 
     width, height = box_dots(body.w_in, body.h_in, body.dpi)
