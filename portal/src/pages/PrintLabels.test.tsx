@@ -7,7 +7,7 @@
  * inline print path (settings applied, blanks in rack mode), the batch
  * modal path, settings persistence, and the offline fallback.
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -26,6 +26,8 @@ const printer = vi.hoisted(() => ({
   supported: true, connected: false, productName: null as string | null, notice: null,
   clearNotice: vi.fn(), connect: vi.fn(async () => undefined), disconnect: vi.fn(async () => undefined),
   send: vi.fn(async (_zpl: string) => undefined), waitForIdle: vi.fn(async (_n: number, onQueued?: (q: number) => void) => { onQueued?.(0); }),
+  // ~HI: a 203 DPI printer (the fixtures' labels) unless a test says otherwise
+  identify: vi.fn(async (): Promise<{ dpi: number } | null> => ({ dpi: 203 })),
 }));
 vi.mock('../lib/useZebraPrinter', () => ({ useZebraPrinter: () => printer }));
 
@@ -102,6 +104,7 @@ beforeEach(() => {
   localStorage.clear();
   cache.inis.clear(); cache.bundles.clear();
   printer.connected = false; printer.productName = null; printer.send.mockClear(); printer.connect.mockClear();
+  printer.identify.mockReset(); printer.identify.mockResolvedValue({ dpi: 203 });
   api.listInitiatives.mockResolvedValue([ini('i1', 'NAP11'), ini('i2', 'Done move', 'completed')]);
   api.listLabelVocab.mockResolvedValue(vocab);
   api.listInitiativeAssets.mockResolvedValue(ROWS);
@@ -196,7 +199,7 @@ it('blocks printing when selected assets lack labels and offers Deselect missing
   await screen.findByText('1 of 3 assets have a Front Label · 2 missing');
   await userEvent.click(screen.getByLabelText('Select all filtered assets'));
   await userEvent.click(screen.getByRole('button', { name: 'Print 3 labels' }));
-  expect(await screen.findByText('2 selected asset(s) do not have Front Label data. Please generate labels first.')).toBeTruthy();
+  expect(await screen.findByText('2 selected asset(s) have no Front Label at 203 DPI — generate at 203 DPI.')).toBeTruthy();
   expect(printer.send).not.toHaveBeenCalled();
   await userEvent.click(screen.getByRole('button', { name: 'Deselect missing' }));
   expect(screen.getByRole('button', { name: 'Print 1 label' })).toBeTruthy();
@@ -528,4 +531,103 @@ it("says plainly that container lists aren't available offline, instead of readi
   expect(await screen.findByText(/Container lists aren't available offline/)).toBeTruthy();
   expect(screen.queryByText('No containers found on this initiative')).toBeNull();
   expect(screen.queryByText("Couldn't load the initiative's containers.")).toBeNull();
+});
+
+it("print page filters to the connected printer's DPI", async () => {
+  const at = (id: string, dpi: string) => ({
+    id: `g-${id}-${dpi}`, entity_type: 'asset' as const, entity_id: id, template_id: `t${dpi}`,
+    template_name: `T · ${dpi}`, template_version: 1, language_key: 'zpl', size_key: '4x2',
+    dpi_key: dpi, stale: false, generated_at: 'now', code: `^XA^FD${id}@${dpi}^FS^XZ`,
+  });
+  api.getGeneratedLabelBundle.mockResolvedValue({
+    initiative_id: 'i1', label_type: 'top', fetched_at: 'now',
+    labels: [at('a1', '203'), at('a1', '300'), at('a2', '300'), at('a3', '203'), at('a3', '600')],
+  });
+
+  // no printer: every DPI's labels, with a DPI column saying which
+  renderPage();
+  await pickInitiative();
+  expect(screen.getByText('3 of 3 assets have a Top Label')).toBeTruthy();
+  const head = document.querySelector('.list-head') as HTMLElement;
+  expect(head.textContent).toContain('DPI');
+  // the DPI column is the row's last cell
+  const dpiCell = (name: string) => {
+    const cells = (screen.getByText(name).closest('.dir-row') as HTMLElement)
+      .querySelectorAll('.row-main > .cell');
+    return cells[cells.length - 1].textContent;
+  };
+  expect([dpiCell('asset-1'), dpiCell('asset-2'), dpiCell('asset-3')]).toEqual(
+    ['203 · 300', '300', '203 · 600']);
+  cleanup();
+
+  // a 300 DPI printer: only its labels, so the column goes
+  printer.connected = true;
+  printer.identify.mockResolvedValue({ dpi: 300 });
+  renderPage();
+  await pickInitiative();
+  expect(await screen.findByText('2 of 3 assets have a Top Label · 1 missing')).toBeTruthy();
+  expect(screen.getByText("Showing the labels generated for 300 DPI, this printer's resolution.")).toBeTruthy();
+  // the printer's DPI becomes Generate Labels' default
+  expect(localStorage.getItem('labels.generate.dpi')).toBe('300');
+  expect((document.querySelector('.list-head') as HTMLElement).textContent).not.toContain('DPI');
+  await userEvent.click(screen.getByLabelText('Select asset-1'));
+  await userEvent.click(screen.getByLabelText('Select asset-2'));
+  await userEvent.click(screen.getByRole('button', { name: 'Print 2 labels' }));
+  await waitFor(() => expect(printer.send).toHaveBeenCalledTimes(2));
+  // display order: Source rack, RU top-down — a2 (R1/42) before a1 (R1/40)
+  expect(printer.send.mock.calls.map((c) => c[0])).toEqual([
+    '^XA^FDa2@300^FS^XZ', '^XA^FDa1@300^FS^XZ']);
+
+  expect(await screen.findByText('Successfully printed 2 label(s)')).toBeTruthy();
+
+  // a3 has labels only at 203 and 600: it never prints on this printer
+  printer.send.mockClear();
+  await userEvent.click(screen.getByLabelText('Select asset-3'));
+  await userEvent.click(screen.getByRole('button', { name: 'Print 3 labels' }));
+  expect(await screen.findByText('1 selected asset(s) have no Top Label at 300 DPI — generate at 300 DPI.')).toBeTruthy();
+  expect(printer.send).not.toHaveBeenCalled();
+});
+
+it("a printer whose DPI can't be read prints nothing until its DPI is chosen", async () => {
+  const at = (id: string, dpi: string) => ({
+    id: `g-${id}-${dpi}`, entity_type: 'asset' as const, entity_id: id, template_id: `t${dpi}`,
+    template_name: `T · ${dpi}`, template_version: 1, language_key: 'zpl', size_key: '4x2',
+    dpi_key: dpi, stale: false, generated_at: 'now', code: `^XA^FD${id}@${dpi}^FS^XZ`,
+  });
+  api.getGeneratedLabelBundle.mockResolvedValue({
+    initiative_id: 'i1', label_type: 'top', fetched_at: 'now',
+    labels: [at('a1', '203'), at('a1', '300'), at('a2', '300'), at('a3', '203')],
+  });
+  localStorage.setItem('labels.generate.dpi', '600');
+  printer.connected = true;
+  printer.identify.mockResolvedValue(null);
+  renderPage();
+  await pickInitiative();
+  const choice = await screen.findByRole('radiogroup', { name: 'Printer DPI' });
+  expect(screen.getByText("Couldn't read this printer's resolution. Choose its DPI to print its labels.")).toBeTruthy();
+  expect(localStorage.getItem('labels.generate.dpi')).toBe('600');     // nothing learned yet
+  await userEvent.click(screen.getByLabelText('Select all filtered assets'));
+  const print = screen.getByRole('button', { name: 'Print 3 labels' }) as HTMLButtonElement;
+  expect(print.disabled).toBe(true);
+  expect(screen.getByText("Choose the printer's DPI (Step 3) to print.")).toBeTruthy();
+
+  await userEvent.click(within(choice).getByRole('radio', { name: '300 DPI' }));
+  expect(await screen.findByText('2 of 3 assets have a Top Label · 1 missing')).toBeTruthy();
+  expect(localStorage.getItem('labels.generate.dpi')).toBe('300');
+  await userEvent.click(screen.getByLabelText('Select asset-3'));     // a3 has no 300 label
+  await userEvent.click(screen.getByRole('button', { name: 'Print 2 labels' }));
+  await waitFor(() => expect(printer.send).toHaveBeenCalledTimes(2));
+  expect(printer.send.mock.calls.map((c) => c[0])).toEqual([
+    '^XA^FDa2@300^FS^XZ', '^XA^FDa1@300^FS^XZ']);
+});
+
+it("printing waits while the printer's resolution is being read", async () => {
+  printer.connected = true;
+  printer.identify.mockImplementation(() => new Promise(() => undefined));
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByLabelText('Select all filtered assets'));
+  expect((screen.getByRole('button', { name: 'Print 3 labels' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getAllByText("Reading the printer's resolution…").length).toBe(2);   // Step 3 + Step 5
+  expect(printer.send).not.toHaveBeenCalled();
 });

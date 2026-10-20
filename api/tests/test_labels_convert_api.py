@@ -9,7 +9,7 @@ DESIGN = {"size": {"w": 4, "h": 2}, "elements": [
 
 
 async def _admin(db, client):
-    return await _make(db, client, "admin", "adm@test.example.com")
+    return await _make(db, client, "super_admin", "adm@test.example.com")
 
 
 async def _make_template(client, hdrs, **over):

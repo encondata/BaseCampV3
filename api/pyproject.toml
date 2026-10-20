@@ -25,6 +25,7 @@ dependencies = [
     "jinja2>=3.1",
     "weasyprint>=62",
     "pdf417gen>=0.7",
+    "fonttools>=4.50",       # label font metrics (labels/font_metrics.py)
 ]
 
 [project.optional-dependencies]
@@ -45,6 +46,8 @@ where = ["src"]
 "serversherpa.reports.move_scan_history" = ["templates/*.html"]
 "serversherpa.wiki" = ["assets/*.png"]
 "serversherpa.mail" = ["templates/*"]
+# vegas_v2.json is the Vegas Destination design seed-label-templates loads
+"serversherpa.labels" = ["fixtures/*.json"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -5,7 +5,7 @@
  *  empty at Task 13 (Templates directory list) and grows through the
  *  Task 15-18 template builder / print / generate pages. */
 
-/* Label editor layout — Tasks 15-18 */
+/* The code template editor (pages/LabelTemplateEditor.tsx) */
 .label-editor-top { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
 .label-editor-top input, .label-editor-top select { min-width: 0; }
 .label-editor-sites { display: flex; align-items: center; gap: 10px; margin: -6px 0 12px; }
@@ -19,78 +19,14 @@
   margin: 0;
 }
 .label-editor-sites .tag-input-wrap { flex: 1; max-width: 520px; }
-.label-editor-body { display: grid; grid-template-columns: 180px 1fr 260px; gap: 14px; align-items: start; }
 .label-editor-code textarea { width: 100%; font-family: var(--mono, monospace); }
 
-/* EditorCanvas — Task 16 */
-.lbl-canvas { display: block; max-width: 100%; }
-.lbl-bg { fill: #fff; stroke: var(--line, #ccc); stroke-width: 0.01; }
-.lbl-grid { stroke: #eef1f4; stroke-width: 0.005; }
-.lbl-tab { fill: none; stroke: #c9d2da; stroke-dasharray: 0.05 0.05; stroke-width: 0.01; }
-.lbl-barcode { fill: #f4f6f8; stroke: #97a3ad; stroke-width: 0.008; }
-.lbl-qr { fill: #f4f6f8; stroke: #97a3ad; stroke-width: 0.008; }
-.lbl-selected { fill: none; stroke: var(--accent, #2563eb); stroke-dasharray: 0.06 0.04; stroke-width: 0.015; }
-
-/* ElementPalette — Task 16 */
-.lbl-palette { display: flex; flex-direction: column; gap: 6px; }
-/* directory.css/initiatives.css scope .eyebrow-sm to their own container — mirror it here */
-.lbl-palette .eyebrow-sm {
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: var(--text-mute);
-  margin: 10px 0 6px;
-}
-.lbl-layers { display: flex; flex-direction: column; gap: 2px; }
-.lbl-layer {
-  display: flex; align-items: center; gap: 4px;
-  padding: 4px 6px; border-radius: 6px; cursor: pointer;
-  font-size: 12px;
-}
-.lbl-layer:hover { background: var(--surface-2, #f4f6f8); }
-.lbl-layer.on { background: var(--accent-soft, #e8f0fe); }
-.lbl-layer-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lbl-layer .mini-btn { padding: 0 6px; height: 22px; font-size: 11px; }
-
-/* PropertiesPanel — Task 17 */
-.lbl-props { display: flex; flex-direction: column; gap: 14px; }
-.lbl-props-hint { font-size: 12.5px; color: var(--text-mute); }
-.lbl-props .pf-form { grid-template-columns: 1fr 1fr; gap: 10px 12px; }
-.lbl-props .pf-form textarea {
-  width: 100%;
-  box-sizing: border-box;
-  font-family: var(--font-display);
-  font-size: 13.5px;
-  color: var(--text-dark);
-  background: var(--surface-2, #f5f7fa);
-  border: 1px solid var(--paper-line);
-  border-radius: 9px;
-  padding: 10px 12px;
-  outline: none;
-  resize: vertical;
-}
-.lbl-props .pf-form select { width: 100%; box-sizing: border-box; }
-.lbl-props .mini-btn.danger { align-self: flex-start; }
-
-/* CodePanel — Task 18 */
+/* CodePanel — the code editor's generated code and printer preview */
 .lbl-code-panel { margin-top: 14px; }
 .lbl-code-panel-body { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
 .lbl-code-actions { display: flex; gap: 8px; }
 .lbl-code { max-height: 240px; overflow: auto; background: #0e141b0d; padding: 10px 12px; border-radius: 8px; white-space: pre-wrap; }
 .lbl-preview-img { max-width: 100%; border: 1px solid var(--line, #ccc); }
-
-/* GenerationRulesPanel — template editor's Generation rules section.
- * Layout only; no typography props on `.lbl-rules-*` (the family-prefix
- * scan in listTypography.test.ts would flag them if `-line`/`-panel`
- * matched a `-row`/`-list` suffix, which is exactly why "line" was
- * picked over "row" here). */
-.lbl-rules-panel { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; max-width: 560px; }
-.lbl-rules-group { display: flex; flex-direction: column; gap: 6px; }
-.lbl-rules-line { display: flex; align-items: center; gap: 8px; }
-.lbl-rules-pos { width: 64px; text-align: center; }
-.lbl-rules-arrow { color: var(--text-mute); }
-.lbl-rules-line input.lbl-rules-bad { border-color: var(--c-red, #c03540); }
 
 /* GenerateLabels */
 .glabels-progress { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; }
@@ -134,6 +70,9 @@
 .glabels-generate { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr); gap: 12px 28px; align-items: start; }
 @media (max-width: 900px) { .glabels-generate { grid-template-columns: 1fr; } }
 .glabels-generate .report-sections { max-width: none; }
+/* the DPI choice: its text over the segmented control (the column is too
+   narrow to sit them side by side) */
+.glabels-generate .glabels-dpi-row { grid-template-columns: minmax(0, 1fr); justify-items: start; cursor: default; }
 .glabels-generate .kv { margin: 0 0 12px; }
 .glabels-step-actions { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .glabels-step-actions .page-hint { margin: 0; }
@@ -206,6 +145,9 @@
 .plabels-printer-status .dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
 .plabels-printer-status .dot.on { background: var(--c-green); }
 .plabels-printer-status .dot.off { background: var(--c-red); }
+/* an unreadable printer's DPI choice: the hint over the segmented control */
+.plabels-dpi-pick { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.plabels-dpi-pick .page-hint { margin: 0; }
 
 /* full-width cards: assets + ready-to-print */
 .plabels-card {
@@ -268,3 +210,36 @@
 .plabels-cache-types { display: flex; gap: 14px; flex-wrap: wrap; }
 .plabels-cache-types label { display: inline-flex; align-items: center; gap: 6px; }
 .plabels-cache-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* ── Label templates list (pages/LabelTemplates.tsx): the tree ──
+   A DPI child sits one level in (directory.css `--depth`), on a faint
+   tint, its name in regular weight; a kept Old child is muted and italic.
+   Typography rides `.cell-top`/`.chip`; these rules are color and layout. */
+.dir-row.lt-child > .row-main { background: var(--surface-2); cursor: default; }
+.dir-row.lt-child > .row-main:hover { background: rgba(var(--accent-rgb), 0.045); }
+.dir-row.lt-old .cell-primary .cell-top { color: var(--text-mute); font-style: italic; }
+/* state chips: side by side, wrapping to a second line in a narrow column */
+.lt-chips { display: flex; flex-wrap: wrap; gap: 4px 6px; min-width: 0; }
+.lt-chips > .chip { flex: 0 1 auto; min-width: 0; }
+/* a parent the search holds open (a DPI version matched): its toggle rests */
+.dir-list .tree-toggle:disabled { cursor: default; opacity: 0.55; }
+.dir-list .tree-toggle:disabled:hover { background: none; color: var(--text-mute); }
+
+/* the list's dialogs: each sized to its content */
+.modal-card.reports-modal-card.rgm-card.lt-small-card { width: min(560px, 96vw); max-width: 96vw; }
+.modal-card.reports-modal-card.rgm-card.lt-delete-card { width: min(640px, 96vw); max-width: 96vw; }
+.modal-card.reports-modal-card.rgm-card.lt-replace-card { width: min(720px, 96vw); max-width: 96vw; }
+.lt-delete { display: flex; flex-direction: column; gap: 12px; }
+.lt-delete .page-hint.lt-delete-note { margin: 0; }
+.lt-delete .pf-form { margin: 0; }
+.lt-delete-load { display: flex; align-items: center; gap: 10px; }
+/* the name to type, inside an uppercase .pf-form label: shown as written,
+   since the match is case-sensitive */
+.lt-confirm-name {
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--text-dark);
+}

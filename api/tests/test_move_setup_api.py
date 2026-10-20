@@ -421,3 +421,23 @@ async def test_an_admin_without_initiatives_change_can_still_poll_the_check(clie
     await upload_assets(client, hdrs, draft["id"])
     resp = await client.get(f"{BASE}/{draft['id']}/assets", headers=hdrs)
     assert resp.status_code == 200, resp.text
+
+
+async def test_a_move_code_already_in_use_is_refused(client, db, admin_hdrs):
+    origin, destination = await make_sites(db)
+    db.add(Initiative(name="Earlier move", initiative_type="move", code="SJCDAL"))
+    await db.commit()
+    resp = await client.post(BASE, headers=admin_hdrs,
+                             json=move_body(origin, destination, code="sjcdal"))
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "code_in_use"
+
+    # a code taken after the draft was saved is caught when it is created
+    draft = await new_draft(client, admin_hdrs, origin, destination, code="LV3")
+    assert draft["payload"]["move"]["code"] == "LV3"
+    db.add(Initiative(name="Racing move", initiative_type="move", code="LV3"))
+    await db.commit()
+    resp = await client.post(f"{BASE}/{draft['id']}/create", headers=admin_hdrs)
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "setup_invalid", "reasons": [
+        "Another initiative already uses this move's code. Pick another on the first step."]}

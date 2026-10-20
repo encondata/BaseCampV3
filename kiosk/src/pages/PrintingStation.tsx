@@ -13,18 +13,24 @@
  * label" (peel mode) or what went wrong, with Reprint or Retry. Below it,
  * this session's prints, newest first. The whole screen flashes and the
  * scan sound plays when a label prints or a scan fails, like Scanning.
+ *
+ * A template designed in a newer label builder than this laptop's edge
+ * prints fails each of its scans with "This laptop needs an update to
+ * print this template.", and the header says how many templates need it
+ * (`unsupported` from GET /edge/labels/status: read on open, after a
+ * sync, every STATUS_REFRESH_MS, and when a scan hits one).
  */
 
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { Link } from 'react-router-dom';
 
-import { getStationLabel, postLabelPrinted } from '../lib/api';
+import { getLabelRunStatus, getStationLabel, postLabelPrinted } from '../lib/api';
 import { hslCss, useAppearance } from '../lib/appearance';
 import { flash } from '../lib/flash';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { getAll } from '../lib/localDb';
 import {
-  createPrintQueue, type PrintAsset, type PrintQueue, type QueueEntry,
+  createPrintQueue, NEEDS_UPDATE_TEXT, type PrintAsset, type PrintQueue, type QueueEntry,
 } from '../lib/printQueue';
 import { buildScanIndex, matchAssetOrSerial, type ScanIndex } from '../lib/scanMatch';
 import { playScanSound } from '../lib/sound';
@@ -32,6 +38,9 @@ import { useStationPrinter } from '../lib/useStationPrinter';
 import { useSyncStatus } from '../lib/sync';
 
 type LoadStatus = 'loading' | 'ready' | 'error';
+
+/** How often the edge's count of too-new templates is read again. */
+export const STATUS_REFRESH_MS = 30_000;
 
 /** Focus belongs to these when the person deliberately moved it there;
  *  the card's own buttons hand it back once they've been clicked. */
@@ -48,6 +57,11 @@ function printTime(iso: string): string {
   return new Date(iso).toLocaleTimeString(undefined, {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   });
+}
+
+/** "1 template needs a laptop update." */
+function updateNotice(n: number): string {
+  return `${n} ${n === 1 ? 'template needs' : 'templates need'} a laptop update.`;
 }
 
 /** "A12 · RU 22", or a dash when the move has neither. */
@@ -67,9 +81,25 @@ export default function PrintingStation() {
   const [index, setIndex] = useState<ScanIndex | null>(null);
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('loading');
   const [entries, setEntries] = useState<QueueEntry[]>([]);
+  // Templates too new for this laptop's edge (its label status).
+  const [unsupported, setUnsupported] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const loadId = useRef(0);
+  const statusId = useRef(0);
   const firstLoad = useRef(true);
+
+  // An older edge (no count) means none; no answer keeps what it last said.
+  const refreshStatus = () => {
+    const mine = ++statusId.current;
+    getLabelRunStatus()
+      .then((s) => {
+        if (mine !== statusId.current) return;
+        setUnsupported(typeof s.unsupported === 'number' && s.unsupported > 0 ? s.unsupported : 0);
+      })
+      .catch(() => {});
+  };
+  const refreshStatusRef = useRef(refreshStatus);
+  refreshStatusRef.current = refreshStatus;
 
   // The queue reads the printer, settings and appearance at print time,
   // so it is made once and handed refs.
@@ -94,6 +124,7 @@ export default function PrintingStation() {
         const a = appearanceRef.current;
         flash(hslCss(good ? a.good_scan : a.not_found_scan), a.flash_ms);
         playScanSound(good ? 'good' : 'not_found');
+        if (entry.message === NEEDS_UPDATE_TEXT) refreshStatusRef.current();
       },
     });
   }
@@ -117,10 +148,23 @@ export default function PrintingStation() {
     if (firstLoad.current) {
       firstLoad.current = false;
       load();
+      refreshStatus();
       return;
     }
-    if (phase === 'done' || phase === 'idle') load();
+    if (phase === 'done' || phase === 'idle') {
+      load();
+      refreshStatus();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => refreshStatusRef.current(), STATUS_REFRESH_MS);
+    return () => {
+      window.clearInterval(timer);
+      statusId.current += 1;  // an answer after leaving changes nothing
+    };
+  }, []);
 
   const empty = loadStatus === 'ready' && (index?.size ?? 0) === 0;
   const disabled = loadStatus !== 'ready' || empty || !setup || station.state !== 'ready';
@@ -192,6 +236,12 @@ export default function PrintingStation() {
       {setup
         ? <p className="page-hint">{subtitle}</p>
         : <p className="page-hint">Finish Kiosk Setup first.</p>}
+
+      {unsupported > 0 && (
+        <div className="station-printer-note" role="status">
+          <p>{updateNotice(unsupported)}</p>
+        </div>
+      )}
 
       {station.state === 'loading' && <p className="page-hint">Connecting to the label printer…</p>}
       {station.state === 'needs_usb' && (

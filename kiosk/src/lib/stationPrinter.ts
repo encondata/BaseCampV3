@@ -9,8 +9,10 @@
  * per-label print mode (`withPrintMode`) live here too.
  *
  * Also the pure helpers the setup step needs: which templates belong to
- * a label kind, the DPI check, the fonts those templates use, what a
- * printer status says to fix, and the mock-label template.
+ * a label kind, the DPI check, the fonts those templates use and what to
+ * do about missing ones (a resident font is only checked, never
+ * installed), what a printer status says to fix, and the mock-label
+ * template.
  */
 
 import {
@@ -175,11 +177,45 @@ export function fontsUsed(code: string): string[] {
   return [...names];
 }
 
-/** Every printer font the given templates use, natural-sorted. */
+/** Every printer font the given templates' code uses, natural-sorted: the
+ *  fonts the check looks for on E:, a resident one included (it must be
+ *  there too; it is just never installed from here, see `fontFixFor`). */
 export function neededFonts(templates: KioskLabelTemplate[]): string[] {
   const names = new Set<string>();
   for (const t of templates) for (const n of fontsUsed(t.code)) names.add(n);
   return [...names].sort(naturalCompare);
+}
+
+/** Zebra's resident fonts: built into the printer, so never pushed to it
+ *  (the kiosk font route refuses them). The printer objects of the
+ *  resident families in the API's labels/fonts.py, which the test pins. */
+export const RESIDENT_FONTS: readonly string[] = ['TT0003M_.TTF'];
+
+/** A resident font, by its name or by the library's `resident` flag. */
+export function isResidentFont(name: string, library: KioskLabelFont[] = []): boolean {
+  const upper = name.toUpperCase();
+  return RESIDENT_FONTS.includes(upper)
+    || library.some((f) => f.resident === true && f.name.toUpperCase() === upper);
+}
+
+/** What to do about the fonts missing from the printer: install the
+ *  library's (never a resident one), say a built-in one is missing, and
+ *  name the rest as not in the library. */
+export interface FontFix { installable: KioskLabelFont[]; builtIn: string[]; notInLibrary: string[] }
+
+export function fontFixFor(missing: string[], library: KioskLabelFont[]): FontFix {
+  const builtIn = missing.filter((n) => isResidentFont(n, library));
+  const rest = missing.filter((n) => !builtIn.includes(n));
+  const installable = library.filter((f) => rest.includes(f.name.toUpperCase()));
+  const inLibrary = new Set(installable.map((f) => f.name.toUpperCase()));
+  return { installable, builtIn, notInLibrary: rest.filter((n) => !inLibrary.has(n)) };
+}
+
+/** The fonts row's words for built-in fonts the printer doesn't have. */
+export function builtInFontText(names: string[]): string {
+  return names.length === 1
+    ? `Printer is missing its built-in font ${names[0]}.`
+    : `Printer is missing its built-in fonts ${names.join(', ')}.`;
 }
 
 export interface CheckOutcome { state: 'ok' | 'fail'; detail: string }
@@ -212,25 +248,35 @@ export function statusProblems(status: HostStatus): string[] {
 
 export const GENERIC_TEMPLATE_NAME = 'Generic Rack and RU';
 
-// A trailing DPI marker: " - 203DPI", " 300 dpi", "(600DPI)". Same rule as
-// the server's labels.kiosk_templates.family_name.
+// A trailing DPI marker: " - 203DPI", " 300 dpi", "(600DPI)", and a kept
+// older row's " Old" / " Old 2", in either order. Same rule as the server's
+// labels.kiosk_templates.family_name.
 const DPI_SUFFIX = /\s*[-–—]?\s*\(?\s*\d+\s*dpi\s*\)?\s*$/i;
+const OLD_SUFFIX = /\s+Old(?:\s+\d+)?\s*$/;
 
 /** The template's family: the name its DPI versions share. The server sends
  *  it; a set cached before that is grouped by the same name rule here. */
 export function templateFamily(t: KioskLabelTemplate): string {
   if (t.family) return t.family;
-  const base = t.name.replace(DPI_SUFFIX, '').trim();
-  return base || t.name.trim();
+  let base = t.name.trim();
+  for (;;) {
+    const stripped = base.replace(DPI_SUFFIX, '').replace(OLD_SUFFIX, '').trim();
+    if (!stripped || stripped === base) return base;
+    base = stripped;
+  }
 }
 
-/** The mock-data test label's template: the "Generic Rack and RU" family
- *  for a Top station, its Front template for a Front one, in the version
- *  at the printer's DPI. A template only at another DPI is skipped, and
- *  `note` says why. */
+/** The mock-data test label's template: the one the station's plan picks
+ *  (`planTemplateId`, from `GET /edge/labels/plan`) when it was
+ *  downloaded. Otherwise (no plan, it picked none, or that template isn't
+ *  here) the "Generic Rack and RU" family for a Top station, its Front
+ *  template for a Front one, in the version at the printer's DPI; a
+ *  template only at another DPI is skipped, and `note` says why. */
 export function mockTemplateFor(
-  templates: KioskLabelTemplate[], kind: LabelKind, dpi: number,
+  templates: KioskLabelTemplate[], kind: LabelKind, dpi: number, planTemplateId?: string | null,
 ): { template: KioskLabelTemplate | null; note: string } {
+  const planned = planTemplateId ? templates.find((t) => t.id === planTemplateId) : undefined;
+  if (planned) return { template: planned, note: '' };
   const candidates = kind === 'top'
     ? templates.filter((t) => templateFamily(t).toLowerCase() === GENERIC_TEMPLATE_NAME.toLowerCase())
     : templatesOfKind(templates, 'front');

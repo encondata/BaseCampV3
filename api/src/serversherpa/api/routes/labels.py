@@ -1,9 +1,13 @@
 """Labels: vocabularies, placeholder catalog, templates, compile/preview,
 and the label-generation queue (runs, preview, generated labels).
 
-Reads gate on labels:view; template mutations on labels:add/change/delete;
+Reads gate on labels:view; template mutations on labels:add/change/delete
+AND rank 80 (super admin or developer, spec §4.9 — the builder, its
+versions, clone, Replace… and delete); the tree itself
+(labels/templates_tree.py) owns every write to a template;
 vocab + placeholder mutations are devtools-gated (god-only), matching the
-rest of the Variables surface. Of the generate-labels routes, list/get/
+rest of the Variables surface — except a new size, which the builder's New
+template › Custom… lets a designer (labels:add and rank 80) add. Of the generate-labels routes, list/get/
 preview/generated stay view-gated, but creating a run is a mutation — it
 enqueues work and (with `regenerate_existing`) can redo prior output — so
 it gates on labels:add (labels:change for the regenerate flavor), and
@@ -13,8 +17,10 @@ scope-aware `_runs_query` the list/get routes use rather than a bare
 one. All mutations audit into the caller's txn.
 """
 
+import asyncio
 import re
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Annotated
@@ -24,31 +30,55 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
+from serversherpa.access.defaults import SUPER_ADMIN_RANK
 from serversherpa.access.scope import scope_conditions
-from serversherpa.api.deps import AuthContext, DbSession, require_permission
+from serversherpa.api.deps import (
+    AuthContext, CurrentUser, DbSession, require_permission, require_rank,
+)
 from serversherpa.api.schemas import (
     GeneratedLabelOut,
     GeneratedLabelBundleItemOut, GeneratedLabelBundleOut,
     LabelCompileIn, LabelCompileOut,
-    LabelFontOut, LabelFontUsedByOut,
+    LabelFieldsOut,
+    LabelFontMetricsOut, LabelFontOut, LabelFontUsedByOut,
     LabelGeneratePreviewCandidateOut, LabelGeneratePreviewInitiativeOut,
     LabelGeneratePreviewOut, LabelGeneratePreviewTemplateOut, LabelGeneratePreviewTypeOut,
     LabelPlaceholderCreateIn, LabelPlaceholderOut, LabelPlaceholderUpdateIn,
     LabelRunCreateIn, LabelRunOut,
-    LabelTemplateCreateIn, LabelTemplateOut, LabelTemplateUpdateIn,
+    LabelTemplateChildOut, LabelTemplateCloneIn, LabelTemplateCreateIn,
+    LabelTemplateDeleteIn, LabelTemplateDeleteSummaryOut, LabelTemplateDpiIn,
+    LabelTemplateOut, LabelTemplateReplaceIn, LabelTemplateSaveOut, LabelTemplateTreeOut,
+    LabelTemplateUpdateIn, LabelTemplateVersionDetailOut, LabelTemplateVersionNoteIn,
+    LabelTemplateVersionOut,
     LabelVocabCreateIn, LabelVocabOut, LabelVocabUpdateIn,
     LabelZplPreviewIn,
 )
 from serversherpa.db.models import (
-    Asset, Client, Container, GeneratedLabel, Initiative, InitiativeAsset,
+    Asset, AssetModel, Client, Container, GeneratedLabel, Initiative, InitiativeAsset,
     LabelFont, LabelGenerationRun, LabelPlaceholder, LabelTemplate, LabelTemplateSite,
-    LabelVocab, Person, Site,
+    LabelTemplateVersion, LabelVocab, Person, Site,
 )
-from serversherpa.db.ordering import natural
+from serversherpa.db.ordering import natural, natural_key
 from serversherpa.labels import labelary
+from serversherpa.labels import templates_tree as tree
 from serversherpa.labels.compile import UnsupportedLanguage, compile_design
-from serversherpa.labels.generate import InvalidLabelTypes, InvalidTemplates, RunActive, entity_for_type, enqueue_run
+from serversherpa.labels.fields import (
+    CONTAINER_LABEL_TYPES, design_field_keys, field_values, groups_for, mock_field_values,
+)
+from serversherpa.labels.font_metrics import UnreadableFont, metrics as font_metrics
+from serversherpa.labels.font_seed import (
+    FONT_FIELDS, MAX_FONT_BYTES, TRUETYPE_MAGICS, display_name as family_display_name,
+    new_storage_key,
+)
+from serversherpa.labels.fonts import FAMILIES, object_family, resident_object
+from serversherpa.labels.generate import (
+    InvalidDpi, InvalidLabelTypes, InvalidTemplates, RunActive, entity_for_type, enqueue_run,
+)
+from serversherpa.labels.generate.payloads import (
+    asset_payload, label_context, load_status_labels,
+)
 from serversherpa.labels.generate.select import candidate_templates
+from serversherpa.labels.kiosk_templates import family_name
 from serversherpa.labels.model import DesignError, parse_design
 from serversherpa.labels.tokens import apply_placeholders
 from serversherpa.services.audit import audit, diff, snapshot
@@ -57,12 +87,15 @@ from serversherpa.services.storage import delete_object, get_object, put_object
 router = APIRouter(prefix="/labels", tags=["labels"])
 
 VOCAB_FIELDS = ["label", "description", "meta", "sort_order", "is_active"]
-FONT_FIELDS = ["name", "display_name", "storage_key", "size_bytes",
-              "content_type", "uploaded_by"]
 
 
 def _err(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
+
+
+# The builder: its mutations, and what only the builder reads (sample
+# values), need labels:<action> AND rank 80 (spec §4.9).
+DESIGNER = require_rank(SUPER_ADMIN_RANK)
 
 
 def _validate_meta(kind: str, meta: dict) -> str | None:
@@ -117,9 +150,16 @@ async def list_vocab(
 
 @router.post("/vocab", response_model=LabelVocabOut, status_code=201)
 async def create_vocab(
-    body: LabelVocabCreateIn, db: DbSession,
-    actor: AuthContext = require_permission("devtools", "add"),
+    body: LabelVocabCreateIn, db: DbSession, actor: CurrentUser,
 ) -> LabelVocabOut:
+    """Devtools-gated, except a size: the builder's New template › Custom…
+    lets a designer (labels:add and rank 80, spec §4.10) add one, to the
+    list or (is_active false) for the one template it is made for."""
+    if not actor.access.can("devtools", "add"):
+        if body.kind != "size" or not actor.access.can("labels", "add"):
+            raise _err(403, "forbidden")
+        if actor.access.max_rank < SUPER_ADMIN_RANK:
+            raise _err(403, "forbidden", min_rank=SUPER_ADMIN_RANK)
     problem = _validate_meta(body.kind, body.meta)
     if problem:
         raise _err(422, "bad_meta", message=problem)
@@ -134,12 +174,29 @@ async def create_vocab(
     return LabelVocabOut.model_validate(row)
 
 
+async def _pending_size(db: DbSession, row: LabelVocab | None) -> bool:
+    """A custom size New template › Custom… posted for one template that
+    has no template on it yet: a size row, off the list, unused."""
+    if row is None or row.kind != "size" or row.is_active:
+        return False
+    return not await db.scalar(select(func.count()).select_from(LabelTemplate)
+                               .where(LabelTemplate.size_key == row.key))
+
+
 @router.patch("/vocab/{kind}/{key}", response_model=LabelVocabOut)
 async def update_vocab(
-    kind: str, key: str, body: LabelVocabUpdateIn, db: DbSession,
-    actor: AuthContext = require_permission("devtools", "change"),
+    kind: str, key: str, body: LabelVocabUpdateIn, db: DbSession, actor: CurrentUser,
 ) -> LabelVocabOut:
+    """Devtools-gated, except a designer's pending custom size (labels:add
+    and rank 80, as create_vocab): when the create it was posted for fails
+    and the size is changed, the dialog rewrites that row rather than
+    leaving it behind and posting another."""
     row = await db.get(LabelVocab, (kind, key))
+    if not actor.access.can("devtools", "change"):
+        if not (actor.access.can("labels", "add") and await _pending_size(db, row)):
+            raise _err(403, "forbidden")
+        if actor.access.max_rank < SUPER_ADMIN_RANK:
+            raise _err(403, "forbidden", min_rank=SUPER_ADMIN_RANK)
     if row is None:
         raise _err(404, "unknown_vocab")
     data = body.model_dump(exclude_unset=True)
@@ -186,6 +243,78 @@ async def _valid_type_keys(db: DbSession) -> set[str]:
     rows = (await db.execute(
         select(LabelVocab.key).where(LabelVocab.kind == "type"))).scalars()
     return set(rows)
+
+
+@router.get("/fields", response_model=LabelFieldsOut)
+async def list_fields(
+    db: DbSession,
+    label_type: str | None = None,
+    actor: AuthContext = require_permission("labels", "view"),
+) -> LabelFieldsOut:
+    """The label builder's fields for a template of `label_type` (every
+    group when omitted; labels/fields.py has the catalog), and the From-To
+    headers across the rosters of every move not archived, for the
+    `ft:<header>` fields. A container label has no From-To row, so it gets
+    no headers."""
+    headers: list[str] = []
+    if label_type not in CONTAINER_LABEL_TYPES:
+        key = func.jsonb_object_keys(InitiativeAsset.raw_ft)
+        q = (select(key).distinct()
+             .join(Initiative, Initiative.id == InitiativeAsset.initiative_id)
+             .where(Initiative.archived_at.is_(None),
+                    InitiativeAsset.raw_ft.is_not(None),
+                    func.jsonb_typeof(InitiativeAsset.raw_ft) == "object"))
+        # Defense in depth, same posture as _runs_query: `labels` is
+        # global-only today, so this leg is unreachable.
+        cond = scope_conditions("initiatives", actor.access, actor.person.id)
+        if cond is not None:
+            q = q.where(cond)
+        headers = sorted((await db.scalars(q)).all(), key=natural_key)
+    return LabelFieldsOut(groups=groups_for(label_type), ft_headers=headers)
+
+
+@router.get("/sample-values", response_model=dict[str, str])
+async def sample_values(
+    db: DbSession,
+    initiative_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    actor: AuthContext = require_permission("labels", "view"),
+    _rank: AuthContext = DESIGNER,
+) -> dict[str, str]:
+    """The builder's Load from asset…: one roster asset's field values as
+    its label prints them, {key: text} for every asset catalog key plus
+    `ft:<header>` for each column of its uploaded From-To row. The same
+    `field_values` over the same `asset_payload` and `label_context` the
+    kiosk sync and the portal generator use, except that the whole From-To
+    row comes back (the builder samples columns no template places yet),
+    so it needs the builder's rank 80 as well as labels:view.
+
+    404 `initiative_not_found` for an unknown initiative or one outside the
+    caller's scope; 404 `asset_not_on_move` when the asset is not on that
+    initiative's roster."""
+    q = select(Initiative).where(Initiative.id == initiative_id)
+    # Defense in depth, as list_fields: `labels` is global-only today.
+    cond = scope_conditions("initiatives", actor.access, actor.person.id)
+    if cond is not None:
+        q = q.where(cond)
+    initiative = await db.scalar(q)
+    if initiative is None:
+        raise _err(404, "initiative_not_found")
+    row = (await db.execute(
+        select(Asset, InitiativeAsset, AssetModel)
+        .join(InitiativeAsset, InitiativeAsset.asset_id == Asset.id)
+        .outerjoin(AssetModel, AssetModel.id == Asset.model_id)
+        .where(InitiativeAsset.initiative_id == initiative.id,
+               InitiativeAsset.asset_id == asset_id))).first()
+    if row is None:
+        raise _err(404, "asset_not_on_move")
+    asset, roster_row, model = row
+    origin = (await db.get(Site, initiative.origin_site_id)
+              if initiative.origin_site_id else None)
+    destination = (await db.get(Site, initiative.destination_site_id)
+                   if initiative.destination_site_id else None)
+    payload = asset_payload(asset, roster_row, model, await load_status_labels(db, "asset"))
+    return field_values(payload, label_context(initiative, origin, destination))
 
 
 @router.get("/placeholders", response_model=list[LabelPlaceholderOut])
@@ -252,9 +381,7 @@ async def update_placeholder(
     return LabelPlaceholderOut.model_validate(row)
 
 
-TEMPLATE_FIELDS = ["name", "description", "label_type", "size_key",
-                   "dpi_key", "language_key", "design", "code", "is_active",
-                   "generation_rules"]
+TEMPLATE_FIELDS = tree.TEMPLATE_FIELDS
 
 _TEMPLATE_VOCAB = (("type", "label_type"), ("size", "size_key"),
                    ("dpi", "dpi_key"), ("language", "language_key"))
@@ -320,6 +447,19 @@ async def _check_template_vocab(
                            key=values[field])
 
 
+async def _check_new_size(db: DbSession, size_key: str) -> None:
+    """A new builder template's size: a listed (active) size, or an
+    unlisted custom size (inactive) no template uses yet — the one New
+    template › Custom… just made for it. 422 unknown_vocab otherwise."""
+    row = await db.get(LabelVocab, ("size", size_key))
+    if row is not None and not row.is_active:
+        used = await db.scalar(select(func.count()).select_from(LabelTemplate)
+                               .where(LabelTemplate.size_key == size_key))
+        if not used:
+            return
+    await _check_template_vocab(db, {"size_key": size_key})
+
+
 async def _check_site_ids(db: DbSession, site_ids: list[uuid.UUID]) -> None:
     for sid in site_ids:
         if await db.get(Site, sid) is None:
@@ -335,12 +475,72 @@ async def _site_ids_map(db: DbSession) -> dict[uuid.UUID, list[uuid.UUID]]:
     return out
 
 
+
+def _tree_err(exc: tree.TreeError) -> HTTPException:
+    return _err(exc.status, exc.code, **exc.extra)
+
+
+@asynccontextmanager
+async def _create_race(db: DbSession, code: str, **extra):
+    """A create or Add DPI checks its name and DPI before it inserts; two at
+    once can both pass and the second trips the unique index. Answer that
+    with the check's own 409 instead of a 500 (as upload_label_font does)."""
+    try:
+        yield
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _err(409, code, **extra) from exc
+
+
+async def _template_or_404(db: DbSession, template_id: uuid.UUID) -> LabelTemplate:
+    row = (await db.execute(select(LabelTemplate)
+        .options(selectinload(LabelTemplate.site_links))
+        .where(LabelTemplate.id == template_id))).scalar_one_or_none()
+    if row is None:
+        raise _err(404, "unknown_template")
+    return row
+
+
+async def _template_site_ids(db: DbSession, template_id: uuid.UUID) -> list[uuid.UUID]:
+    return list((await db.execute(select(LabelTemplateSite.site_id).where(
+        LabelTemplateSite.template_id == template_id))).scalars())
+
+
+async def _template_out(db: DbSession, row: LabelTemplate, cls=LabelTemplateOut, **extra):
+    item = cls(**LabelTemplateOut.model_validate(row).model_dump(), **extra)
+    item.site_ids = await _template_site_ids(db, row.id)
+    return item
+
+
+def _parse_v2(design: object) -> None:
+    """422 bad_design unless `design` is a valid schema 2 design."""
+    if not isinstance(design, dict) or design.get("schema") != 2:
+        raise _err(422, "bad_design", problems=["a builder template needs a schema 2 design"])
+    try:
+        parse_design(design)
+    except DesignError as e:
+        raise _err(422, "bad_design", problems=e.problems) from e
+
+
+def _is_v2(design: object) -> bool:
+    return isinstance(design, dict) and design.get("schema", 1) == 2
+
+
+def _readable_samples(item, actor: AuthContext):
+    """A template's stored sample values are the builder's: they come from
+    Load from asset… (a whole From-To row, rank 80 like the sample-values
+    route), so the list, tree and get routes show them only at rank 80."""
+    if actor.access.max_rank < SUPER_ADMIN_RANK:
+        item.samples = {}
+    return item
+
+
 @router.get("/templates", response_model=list[LabelTemplateOut])
 async def list_templates(
     db: DbSession, label_type: str | None = None, size_key: str | None = None,
     dpi_key: str | None = None, language_key: str | None = None,
     active: bool | None = None, site_id: uuid.UUID | None = None,
-    _actor: AuthContext = require_permission("labels", "view"),
+    actor: AuthContext = require_permission("labels", "view"),
 ) -> list:
     q = select(LabelTemplate).order_by(natural(LabelTemplate.name))
     for col, val in ((LabelTemplate.label_type, label_type),
@@ -360,8 +560,40 @@ async def list_templates(
     site_map = await _site_ids_map(db)
     out = []
     for r in rows:
-        item = LabelTemplateOut.model_validate(r)
+        item = _readable_samples(LabelTemplateOut.model_validate(r), actor)
         item.site_ids = site_map.get(r.id, [])
+        out.append(item)
+    return out
+
+
+@router.get("/templates/tree", response_model=list[LabelTemplateTreeOut])
+async def template_tree(
+    db: DbSession, actor: AuthContext = require_permission("labels", "view"),
+) -> list[LabelTemplateTreeOut]:
+    """The templates list (spec §4.9): every top-level template, natural by
+    name — a builder parent with its DPI children (current and Old, natural
+    by name), or an older single row with none."""
+    rows = (await db.execute(select(LabelTemplate))).scalars().all()
+    site_map = await _site_ids_map(db)
+    children: dict[uuid.UUID, list[LabelTemplate]] = {}
+    tops: list[LabelTemplate] = []
+    for r in rows:
+        if r.parent_id is None:
+            tops.append(r)
+        else:
+            children.setdefault(r.parent_id, []).append(r)
+    designed = await tree.design_versions(db, children)
+    out = []
+    for top in sorted(tops, key=lambda r: natural_key(r.name)):
+        kids = [_readable_samples(LabelTemplateChildOut(
+                    **LabelTemplateOut.model_validate(c).model_dump(),
+                    out_of_date=tree.is_out_of_date(c, designed[top.id])), actor)
+                for c in sorted(children.get(top.id, []), key=lambda r: natural_key(r.name))]
+        item = _readable_samples(LabelTemplateTreeOut(
+            **LabelTemplateOut.model_validate(top).model_dump(),
+            family=top.name if top.is_tree_parent else family_name(top.name), children=kids),
+            actor)
+        item.site_ids = site_map.get(top.id, [])
         out.append(item)
     return out
 
@@ -369,14 +601,10 @@ async def list_templates(
 @router.get("/templates/{template_id}", response_model=LabelTemplateOut)
 async def get_template(
     template_id: uuid.UUID, db: DbSession,
-    _actor: AuthContext = require_permission("labels", "view"),
+    actor: AuthContext = require_permission("labels", "view"),
 ) -> LabelTemplateOut:
-    row = (await db.execute(select(LabelTemplate)
-        .options(selectinload(LabelTemplate.site_links))
-        .where(LabelTemplate.id == template_id))).scalar_one_or_none()
-    if row is None:
-        raise _err(404, "unknown_template")
-    item = LabelTemplateOut.model_validate(row)
+    row = await _template_or_404(db, template_id)
+    item = _readable_samples(LabelTemplateOut.model_validate(row), actor)
     item.site_ids = [l.site_id for l in row.site_links]
     return item
 
@@ -385,14 +613,21 @@ async def get_template(
 async def create_template(
     body: LabelTemplateCreateIn, db: DbSession,
     actor: AuthContext = require_permission("labels", "add"),
+    _rank: AuthContext = DESIGNER,
 ) -> LabelTemplateOut:
     if (body.kind == "design") != (body.design is not None) or \
        (body.kind == "code") != (body.code is not None):
         raise _err(422, "bad_payload",
                    message="kind must match exactly one of design/code")
-    values = body.model_dump()
-    site_ids = values.pop("site_ids", None) or []
-    site_ids = list(dict.fromkeys(site_ids))
+    site_ids = list(dict.fromkeys(body.site_ids or []))
+    if _is_v2(body.design):
+        return await _create_parent(db, body, site_ids, actor)
+    if body.dpi_key is None:
+        raise _err(422, "bad_field", field="dpi_key")
+    if body.samples:
+        raise _err(422, "bad_field", field="samples",
+                   message="sample values belong to builder templates")
+    values = body.model_dump(exclude={"site_ids", "samples"})
     problems = _validate_generation_rules(values.get("generation_rules") or {})
     if problems:
         raise _err(422, "bad_generation_rules", problems=problems)
@@ -403,44 +638,207 @@ async def create_template(
             raise _err(422, "bad_design", problems=e.problems) from e
     await _check_template_vocab(db, values)
     await _check_site_ids(db, site_ids)
-    existing = (await db.execute(select(LabelTemplate).where(
-        LabelTemplate.name == body.name))).scalar_one_or_none()
-    if existing is not None:
+    if await tree.name_taken(db, body.name):
         raise _err(409, "label_template_exists")
-    row = LabelTemplate(**values)
-    db.add(row)
-    await db.flush()  # server-generated UUID for the audit row
-    for sid in site_ids:
-        db.add(LabelTemplateSite(template_id=row.id, site_id=sid))
-    changes = diff({}, snapshot(row, TEMPLATE_FIELDS))
-    if site_ids:
-        changes["site_ids"] = {"from": [], "to": sorted(str(s) for s in site_ids)}
-    audit(db, actor_id=actor.person.id, entity_type="label_template",
-          entity_id=str(row.id), action="create", changes=changes)
-    await db.commit()
+    row = LabelTemplate(**values, dpis=[body.dpi_key])
+    async with _create_race(db, "label_template_exists"):
+        db.add(row)
+        await db.flush()  # server-generated UUID for the audit row
+        for sid in site_ids:
+            db.add(LabelTemplateSite(template_id=row.id, site_id=sid))
+        tree.add_version(db, row, version=1, summary="Created", actor_id=actor.person.id)
+        try:
+            await tree.guard_active(db, [row])
+        except tree.TreeError as e:
+            raise _tree_err(e) from e
+        changes = diff({}, snapshot(row, TEMPLATE_FIELDS))
+        if site_ids:
+            changes["site_ids"] = {"from": [], "to": sorted(str(s) for s in site_ids)}
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(row.id), action="create", changes=changes)
+        await db.commit()
     item = LabelTemplateOut.model_validate(row)
     item.site_ids = site_ids
     return item
 
 
-@router.patch("/templates/{template_id}", response_model=LabelTemplateOut)
+async def _create_parent(db: DbSession, body: LabelTemplateCreateIn,
+                         site_ids: list[uuid.UUID], actor: AuthContext) -> LabelTemplateOut:
+    """A schema 2 body: the builder parent and its three DPI children."""
+    if body.dpi_key not in (None, tree.PARENT_DPI):
+        raise _err(422, "bad_field", field="dpi_key",
+                   message="a builder template is designed at 300 DPI")
+    if body.generation_rules:
+        raise _err(422, "bad_field", field="generation_rules",
+                   message="a builder template carries its rules on each field")
+    _parse_v2(body.design)
+    _check_samples(body.samples)
+    await _check_template_vocab(db, {"label_type": body.label_type,
+                                     "language_key": body.language_key})
+    await _check_new_size(db, body.size_key)
+    for dpi in tree.TREE_DPIS:
+        await _check_template_vocab(db, {"dpi_key": dpi})
+    await _check_site_ids(db, site_ids)
+    async with _create_race(db, "label_template_exists"):
+        try:
+            parent = await tree.create_parent(
+                db, name=body.name, description=body.description, label_type=body.label_type,
+                size_key=body.size_key, language_key=body.language_key, design=body.design,
+                samples=body.samples or {}, site_ids=site_ids, actor_id=actor.person.id,
+                is_active=body.is_active)
+        except tree.TreeError as e:
+            raise _tree_err(e) from e
+        changes = diff({}, snapshot(parent, TEMPLATE_FIELDS))
+        changes["children"] = {"from": [], "to": [
+            tree.child_name(parent.name, d) for d in tree.TREE_DPIS]}
+        if site_ids:
+            changes["site_ids"] = {"from": [], "to": sorted(str(s) for s in site_ids)}
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(parent.id), action="create", changes=changes)
+        await db.commit()
+    return await _template_out(db, parent)
+
+
+@router.patch("/templates/{template_id}", response_model=LabelTemplateSaveOut)
 async def update_template(
     template_id: uuid.UUID, body: LabelTemplateUpdateIn, db: DbSession,
     actor: AuthContext = require_permission("labels", "change"),
-) -> LabelTemplateOut:
-    row = (await db.execute(select(LabelTemplate)
-        .options(selectinload(LabelTemplate.site_links))
-        .where(LabelTemplate.id == template_id))).scalar_one_or_none()
-    if row is None:
-        raise _err(404, "unknown_template")
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateSaveOut:
+    """A builder parent saves its next version (children without hand
+    edits follow, `out_of_date` lists the customized ones it has passed);
+    a child saves a hand edit (`v<parent>.<edits>`) and otherwise takes only
+    activation; an older row updates as it always has."""
+    row = await _template_or_404(db, template_id)
     data = body.model_dump(exclude_unset=True)
+    summary = data.pop("summary", None)
+    try:
+        if row.parent_id is not None:
+            out_of_date = await _patch_child(db, row, data, summary, actor)
+        elif row.is_tree_parent:
+            out_of_date = await _patch_parent(db, row, data, summary, actor)
+        else:
+            out_of_date = await _patch_single(db, row, data, actor)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+    await db.commit()
+    return await _template_out(db, row, LabelTemplateSaveOut, out_of_date=out_of_date)
+
+
+def _no_nulls(data: dict, *, allowed: tuple[str, ...] = ()) -> None:
+    for f, v in data.items():
+        if v is None and f not in allowed:
+            raise _err(422, "bad_field", field=f)
+
+
+async def _set_active(db: DbSession, row: LabelTemplate, active: bool) -> bool:
+    if active == row.is_active:
+        return False
+    if active:
+        await tree.activate(db, row)
+    else:
+        await tree.deactivate(db, row)
+    return True
+
+
+async def _patch_child(db: DbSession, row: LabelTemplate, data: dict, summary: str | None,
+                       actor: AuthContext) -> list[uuid.UUID]:
+    if "is_active" in data:
+        raise tree.ChildFollowsParent()
+    for f in data:
+        if f != "design":
+            raise _err(422, "bad_field", field=f, message="set on the parent template")
+    _no_nulls(data)
+    changes: dict = {}
+    if "design" in data:
+        _parse_v2(data["design"])
+        if data["design"] != row.design:
+            before = tree.version_label(row.generated_from_version or 0, row.child_edits)
+            await tree.save_child(db, row, design=data["design"], summary=summary,
+                                  actor_id=actor.person.id)
+            changes["version"] = {"from": before, "to": tree.version_label(
+                row.generated_from_version or 0, row.child_edits)}
+    if changes:
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(row.id), action="update", changes=changes)
+    return await _out_of_date(db, row)
+
+
+async def _patch_parent(db: DbSession, row: LabelTemplate, data: dict, summary: str | None,
+                        actor: AuthContext) -> list[uuid.UUID]:
+    for f in ("dpi_key", "code", "generation_rules"):
+        if f in data:
+            raise _err(422, "bad_field", field=f,
+                       message="a builder template has no " + f.replace("_", " "))
+    # site_ids as on an older row: absent or null leaves them, [] clears
+    new_site_ids = data.pop("site_ids", None)
+    _no_nulls(data)
+    if "design" in data:
+        _parse_v2(data["design"])
+    _check_samples(data.get("samples"))
+    await _check_template_vocab(db, data, current=row)
+    changes: dict = {}
+    if "name" in data and data["name"] != row.name:
+        before = row.name
+        await tree.rename_parent(db, row, data["name"])
+        changes["name"] = {"from": before, "to": row.name}
+    if "description" in data and data["description"] != row.description:
+        changes["description"] = {"from": row.description, "to": data["description"]}
+        row.description = data["description"]
+    fields = {f: data[f] for f in ("label_type", "size_key", "language_key")
+              if f in data and data[f] != getattr(row, f)}
+    if fields:
+        changes.update({f: {"from": getattr(row, f), "to": v} for f, v in fields.items()})
+        await tree.set_parent_fields(db, row, fields)
+    if new_site_ids is not None:
+        new_site_ids = list(dict.fromkeys(new_site_ids))
+        await _check_site_ids(db, new_site_ids)
+        current = sorted(str(link.site_id) for link in row.site_links)
+        incoming = sorted(str(s) for s in new_site_ids)
+        if current != incoming:
+            changes["site_ids"] = {"from": current, "to": incoming}
+            row.site_links = [LabelTemplateSite(template_id=row.id, site_id=sid)
+                              for sid in new_site_ids]
+    design = data.get("design", row.design)
+    samples = data.get("samples", row.samples or {})
+    child_summary = None
+    if "size_key" in fields:
+        # the design carries the size the canvas draws: a new size is a
+        # design change on the parent and every child that follows it
+        size = await db.get(LabelVocab, ("size", fields["size_key"]))
+        design = {**design, "size": {"w": size.meta["width_in"], "h": size.meta["height_in"]}}
+        if "design" not in data and summary is None:
+            summary = child_summary = f"Size changed to {fields['size_key']}"
+    if design != row.design or samples != (row.samples or {}):
+        before_version = row.version
+        await tree.save_parent(db, row, design=design, samples=samples, summary=summary,
+                               actor_id=actor.person.id, child_summary=child_summary)
+        changes["version"] = {"from": before_version, "to": row.version}
+    if "is_active" in data and await _set_active(db, row, data["is_active"]):
+        changes["is_active"] = {"from": not data["is_active"], "to": data["is_active"]}
+    elif "name" in changes or "label_type" in changes:
+        # a new family name or type can land on another active template
+        # (guard_active looks at the active rows only)
+        await tree.guard_active(db, await tree.printing_rows(db, row))
+    if changes:
+        row.updated_at = datetime.now(UTC)
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(row.id), action="update", changes=changes)
+    return await _out_of_date(db, row)
+
+
+async def _patch_single(db: DbSession, row: LabelTemplate, data: dict,
+                        actor: AuthContext) -> list[uuid.UUID]:
+    """An older (schema 1, no parent) row: the update as it always was,
+    plus a version per change and the one-active rule."""
+    if "samples" in data:
+        raise _err(422, "bad_field", field="samples",
+                   message="sample values belong to builder templates")
     new_site_ids = data.pop("site_ids", None)
     if new_site_ids is not None:
         new_site_ids = list(dict.fromkeys(new_site_ids))
     # design/code nullability is owned by kind; other fields reject null
-    for f, v in data.items():
-        if v is None and f not in ("design", "code"):
-            raise _err(422, "bad_field", field=f)
+    _no_nulls(data, allowed=("design", "code"))
     if row.kind == "design" and data.get("design", row.design) is None:
         raise _err(422, "bad_payload", message="design templates need design")
     if row.kind == "code" and data.get("code", row.code) is None:
@@ -454,6 +852,9 @@ async def update_template(
         if problems:
             raise _err(422, "bad_generation_rules", problems=problems)
     if data.get("design") is not None:
+        if _is_v2(data["design"]):
+            raise _err(422, "bad_design", problems=[
+                "a schema 2 design needs a builder template: create one"])
         try:
             parse_design(data["design"])
         except DesignError as e:
@@ -467,10 +868,12 @@ async def update_template(
     before = snapshot(row, TEMPLATE_FIELDS)
     for field, value in data.items():
         setattr(row, field, value)
+    if "dpi_key" in data:
+        row.dpis = [row.dpi_key]
     changes = diff(before, snapshot(row, TEMPLATE_FIELDS))
     if new_site_ids is not None:
         await _check_site_ids(db, new_site_ids)
-        current = sorted(str(l.site_id) for l in row.site_links)
+        current = sorted(str(link.site_id) for link in row.site_links)
         incoming = sorted(str(s) for s in new_site_ids)
         if current != incoming:
             changes["site_ids"] = {"from": current, "to": incoming}
@@ -480,17 +883,60 @@ async def update_template(
     if changes:
         row.version += 1
         row.updated_at = datetime.now(UTC)
+        tree.add_version(db, row, version=row.version, summary=_single_summary(before, changes),
+                         actor_id=actor.person.id)
         audit(db, actor_id=actor.person.id, entity_type="label_template",
               entity_id=str(row.id), action="update", changes=changes)
-    await db.commit()
-    item = LabelTemplateOut.model_validate(row)
-    item.site_ids = [l.site_id for l in row.site_links]
-    return item
+        if row.is_active and changes.keys() & {"is_active", "name", "label_type", "dpi_key"}:
+            await tree.guard_active(db, [row])
+    return []
+
+
+_FIELD_WORDS = {"site_ids": "sites", "is_active": "active", "label_type": "type",
+                "size_key": "size", "dpi_key": "DPI", "language_key": "language",
+                "generation_rules": "generation rules"}
+
+
+def _single_summary(before: dict, changes: dict) -> str:
+    """The version line for an older row's update."""
+    if "design" in changes:
+        return tree.change_summary(before.get("design"), changes["design"]["to"])
+    if "code" in changes:
+        return "Edited the code"
+    return "Changed " + ", ".join(_FIELD_WORDS.get(f, f) for f in sorted(changes))
 
 
 async def _sample_values(db: DbSession) -> dict[str, str]:
     rows = (await db.execute(select(LabelPlaceholder))).scalars().all()
     return {r.key: r.sample_value for r in rows}
+
+
+# A preview or test print compiles with the page's samples: a field's worth
+# each, not a payload.
+MAX_COMPILE_SAMPLES = 200
+MAX_SAMPLE_CHARS = 500
+
+
+def _check_samples(samples: dict[str, str] | None) -> None:
+    """422 bad_field (samples) past the caps: a preview's, a create's and a
+    save's sample values alike."""
+    if samples is not None and len(samples) > MAX_COMPILE_SAMPLES:
+        raise _err(422, "bad_field", field="samples",
+                   message=f"at most {MAX_COMPILE_SAMPLES} sample values")
+    if samples and max(map(len, samples.values())) > MAX_SAMPLE_CHARS:
+        raise _err(422, "bad_field", field="samples",
+                   message=f"a sample value is at most {MAX_SAMPLE_CHARS} characters")
+
+
+def _builder_values(design: dict, samples: dict[str, str] | None,
+                    label_type: str | None = None) -> dict[str, str]:
+    """What a schema 2 design prints in the builder's preview and test
+    print: the portal's mock values for the template's label type, shaped
+    like `field_values` (a From-To column prints its header; a key of
+    another type prints blank, as it does on a real label), with the
+    template's samples over them — never the placeholder catalog's v1
+    samples. No type: every catalog key."""
+    return {**mock_field_values(label_type, design_field_keys(design)), **(samples or {})}
 
 
 async def _compile_design(db: DbSession, design_json: dict, size_key: str,
@@ -524,7 +970,15 @@ async def compile_template(
     lang = await db.get(LabelVocab, ("language", body.language_key))
     if size is None or dpi is None or lang is None:
         raise _err(404, "unknown_vocab")
-    subs = await _sample_values(db) if body.mode == "sample" else None
+    v2 = body.kind == "design" and _is_v2(body.design)
+    if body.samples is not None and not v2:
+        raise _err(422, "bad_field", field="samples",
+                   message="sample values belong to builder templates")
+    _check_samples(body.samples)
+    if v2:
+        subs = _builder_values(body.design, body.samples, body.label_type)
+    else:
+        subs = await _sample_values(db) if body.mode == "sample" else None
 
     if body.kind == "code":
         if body.code is None:
@@ -544,14 +998,14 @@ async def compile_template(
 async def convert_template_to_code(
     template_id: uuid.UUID, db: DbSession,
     actor: AuthContext = require_permission("labels", "change"),
+    _rank: AuthContext = DESIGNER,
 ) -> LabelTemplateOut:
-    row = (await db.execute(select(LabelTemplate)
-        .options(selectinload(LabelTemplate.site_links))
-        .where(LabelTemplate.id == template_id))).scalar_one_or_none()
-    if row is None:
-        raise _err(404, "unknown_template")
+    row = await _template_or_404(db, template_id)
     if row.kind != "design":
         raise _err(409, "not_a_design_template")
+    if row.parent_id is not None or row.is_tree_parent or _is_v2(row.design):
+        # a schema 2 design has no token form to keep as code
+        raise _err(409, "builder_template")
     code = await _compile_design(db, row.design, row.size_key, row.dpi_key,
                                  row.language_key, None)
     row.kind = "code"
@@ -559,6 +1013,8 @@ async def convert_template_to_code(
     row.design = None
     row.version += 1
     row.updated_at = datetime.now(UTC)
+    tree.add_version(db, row, version=row.version, summary="Converted to code",
+                     actor_id=actor.person.id)
     audit(db, actor_id=actor.person.id, entity_type="label_template",
           entity_id=str(row.id), action="convert_to_code",
           changes={"kind": {"from": "design", "to": "code"}})
@@ -568,7 +1024,39 @@ async def convert_template_to_code(
     return item
 
 
-_DPMM = {203: 8, 300: 12}
+_DPMM = {203: 8, 300: 12, 600: 24}
+
+# The resident cut by its printer object name: Labelary has no copy, and
+# its font 0 is the same face (spec §4.4), so a preview draws it with that.
+_RESIDENT_A_AT = re.compile(
+    r"\^A@([NRIB]),(\d+),(\d+),E:(?:"
+    + "|".join(re.escape(obj) for f in FAMILIES.values() if f["resident"]
+               for obj in f["objects"].values() if obj)
+    + r")", re.IGNORECASE)
+
+# Font bytes per stored file, read once: (font id, storage key, size) → bytes.
+# Only the builder's few open fonts come through here; the cap bounds it.
+_FONT_BYTES_CACHE: dict[tuple[uuid.UUID, str, int], bytes] = {}
+_FONT_BYTES_CACHE_MAX = 32
+
+
+async def _font_download(db: DbSession, font_id: uuid.UUID) -> bytes:
+    """`~DY` of one library font, as Install Fonts sends it: the binary
+    TrueType header, then the file. Never the resident font (403
+    `font_not_servable`, as its content route)."""
+    font = await _font_or_404(db, font_id)
+    if font.resident or resident_object(font.name):
+        raise _err(403, "font_not_servable")
+    if not font.storage_key:
+        raise _err(404, "no_font_file")
+    key = (font.id, font.storage_key, font.size_bytes)
+    data = _FONT_BYTES_CACHE.get(key)
+    if data is None:
+        data = await get_object(font.storage_key)
+        if len(_FONT_BYTES_CACHE) >= _FONT_BYTES_CACHE_MAX:
+            _FONT_BYTES_CACHE.clear()
+        _FONT_BYTES_CACHE[key] = data
+    return f"~DYE:{font.name.upper()},B,T,{len(data)},,".encode() + data
 
 
 @router.post("/preview/zpl")
@@ -576,6 +1064,9 @@ async def preview_zpl(
     body: LabelZplPreviewIn, db: DbSession,
     _actor: AuthContext = require_permission("labels", "view"),
 ) -> Response:
+    """The printer-rendered preview (Labelary). `font_ids` embeds those
+    library fonts ahead of the label (`~DY`) so it renders in them; the
+    resident Swiss cut is drawn with Labelary's font 0 (`^A0`)."""
     size = await db.get(LabelVocab, ("size", body.size_key))
     dpi = await db.get(LabelVocab, ("dpi", body.dpi_key))
     if size is None or dpi is None:
@@ -583,29 +1074,316 @@ async def preview_zpl(
     dpmm = _DPMM.get(dpi.meta["dots"])
     if dpmm is None:
         raise _err(422, "unsupported_dpi", dots=dpi.meta["dots"])
+    zpl = _RESIDENT_A_AT.sub(r"^A0\1,\2,\3", body.zpl)
+    downloads = [await _font_download(db, fid) for fid in dict.fromkeys(body.font_ids)]
+    payload: str | bytes = b"".join(downloads) + zpl.encode("utf-8") if downloads else zpl
     try:
         png = await labelary.render_png(
-            body.zpl, size.meta["width_in"], size.meta["height_in"], dpmm)
+            payload, size.meta["width_in"], size.meta["height_in"], dpmm)
     except Exception:
         raise _err(502, "labelary_unavailable") from None
     return Response(png, media_type="image/png")
 
 
 @router.delete("/templates/{template_id}", status_code=204)
-async def deactivate_template(
-    template_id: uuid.UUID, db: DbSession,
+async def delete_template(
+    template_id: uuid.UUID, db: DbSession, body: LabelTemplateDeleteIn | None = None,
     actor: AuthContext = require_permission("labels", "delete"),
+    _rank: AuthContext = DESIGNER,
 ) -> None:
+    """Delete for real (spec §3.4, §4.1). A DPI child goes alone (a current
+    one leaves its parent's DPI set); a top-level template needs
+    `typed_name` to be exactly its name (422 `name_mismatch` with the
+    summary otherwise) and takes its children with it. Either way the
+    labels generated from them go too. Deactivating is POST …/deactivate."""
     row = await db.get(LabelTemplate, template_id)
     if row is None:
         raise _err(404, "unknown_template")
-    if row.is_active:
-        row.is_active = False
-        row.updated_at = datetime.now(UTC)
+    name = row.name
+    try:
+        if row.parent_id is not None:
+            summary = await tree.delete_child(db, row)
+        else:
+            summary = await tree.delete_parent(db, row, body.typed_name if body else None)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+    audit(db, actor_id=actor.person.id, entity_type="label_template",
+          entity_id=str(template_id), action="delete",
+          changes={"name": {"from": name, "to": None}, "children": summary["children"],
+                   "generated_labels": summary["generated_labels"]})
+    await db.commit()
+
+
+@router.get("/templates/{template_id}/delete-summary",
+            response_model=LabelTemplateDeleteSummaryOut)
+async def template_delete_summary(
+    template_id: uuid.UUID, db: DbSession,
+    _actor: AuthContext = require_permission("labels", "view"),
+    _rank: AuthContext = DESIGNER,
+) -> dict:
+    """What DELETE would take: the children by name and the count of
+    labels generated from the template and its children."""
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    return await tree.delete_summary(db, row)
+
+
+@router.post("/templates/{template_id}/deactivate", status_code=204)
+async def deactivate_template(
+    template_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("labels", "change"),
+    _rank: AuthContext = DESIGNER,
+) -> None:
+    """Turn a template off (a parent with its children). A child follows
+    its parent: 409 `child_follows_parent` on a child."""
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    try:
+        changed = await tree.deactivate(db, row)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+    if changed:
         audit(db, actor_id=actor.person.id, entity_type="label_template",
               entity_id=str(row.id), action="deactivate",
-              changes={"name": row.name})
+              changes={"name": row.name, "rows": [r.name for r in changed]})
     await db.commit()
+
+
+@router.post("/templates/{template_id}/activate", response_model=LabelTemplateOut)
+async def activate_template(
+    template_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("labels", "change"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateOut:
+    """Turn a template on (a parent with its current children) — refused
+    with 422 `active_conflict` while another active template prints the
+    same family, type and DPI; Replace… swaps them instead. A child follows
+    its parent: 409 `child_follows_parent` on a child."""
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    try:
+        changed = await tree.activate(db, row)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+    if changed:
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(row.id), action="activate",
+              changes={"name": row.name, "rows": [r.name for r in changed]})
+    await db.commit()
+    return await _template_out(db, row)
+
+
+@router.post("/templates/{template_id}/replace", response_model=LabelTemplateOut)
+async def replace_templates(
+    template_id: uuid.UUID, body: LabelTemplateReplaceIn, db: DbSession,
+    actor: AuthContext = require_permission("labels", "change"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateOut:
+    """Replace…: deactivate `old_template_ids` and activate this template in
+    one step (spec §4.1). On an `active_conflict` nothing changes."""
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    try:
+        off, on = await tree.replace(db, row, body.old_template_ids, actor.person.id)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+    audit(db, actor_id=actor.person.id, entity_type="label_template",
+          entity_id=str(row.id), action="replace",
+          changes={"deactivated": sorted((r.name for r in off), key=natural_key),
+                   "activated": sorted((r.name for r in on), key=natural_key)})
+    await db.commit()
+    return await _template_out(db, row)
+
+
+@router.post("/templates/{template_id}/update-from-parent", response_model=LabelTemplateOut,
+             status_code=201)
+async def update_child_from_parent(
+    template_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("labels", "change"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateOut:
+    """A customized child gives way to a fresh one generated from the
+    parent; it stays nested as "… Old", inactive. Returns the fresh child —
+    the same one again when the child was already updated (idempotent)."""
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    try:
+        fresh, created = await tree.update_from_parent(db, row, actor.person.id)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+    if created:
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(row.id), action="update_from_parent",
+              changes={"name": {"from": fresh.name, "to": row.name},
+                       "replaced_by": str(fresh.id)})
+    await db.commit()
+    return await _template_out(db, fresh)
+
+
+@router.post("/templates/{template_id}/dpis", response_model=LabelTemplateOut,
+             status_code=201)
+async def add_template_dpi(
+    template_id: uuid.UUID, body: LabelTemplateDpiIn, db: DbSession,
+    actor: AuthContext = require_permission("labels", "change"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateOut:
+    """Add DPI: bring a deleted DPI child back, generated from the parent."""
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    before = list(row.dpis or [])
+    async with _create_race(db, "dpi_exists", dpi=body.dpi):
+        try:
+            child = await tree.add_dpi(db, row, body.dpi, actor_id=actor.person.id)
+        except tree.TreeError as e:
+            raise _tree_err(e) from e
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(row.id), action="add_dpi",
+              changes={"dpis": {"from": before, "to": list(row.dpis)}, "child": child.name})
+        await db.commit()
+    return await _template_out(db, child)
+
+
+@router.post("/templates/{template_id}/clone", response_model=LabelTemplateOut,
+             status_code=201)
+async def clone_template(
+    template_id: uuid.UUID, body: LabelTemplateCloneIn, db: DbSession,
+    actor: AuthContext = require_permission("labels", "add"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateOut:
+    """Clone to a new, inactive template named `name`: design, samples,
+    sites and (for a parent) its current children, customizations and all."""
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    try:
+        copy_row = await tree.clone(db, row, body.name, actor.person.id)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+    audit(db, actor_id=actor.person.id, entity_type="label_template",
+          entity_id=str(copy_row.id), action="clone",
+          changes={"from": str(row.id), "name": {"from": None, "to": copy_row.name}})
+    await db.commit()
+    return await _template_out(db, copy_row)
+
+
+def _version_fields(v: LabelTemplateVersion, by: dict[uuid.UUID, str]) -> dict:
+    return {"version": v.version, "child_edits": v.child_edits,
+            "label": tree.version_label(v.version, v.child_edits), "summary": v.summary,
+            "note": v.note, "created_by": v.created_by,
+            "created_by_name": by.get(v.created_by) if v.created_by else None,
+            "created_at": v.created_at}
+
+
+async def _authors(db: DbSession, ids) -> dict[uuid.UUID, str]:
+    ids = {i for i in ids if i is not None}
+    if not ids:
+        return {}
+    rows = (await db.execute(select(Person.id, Person.preferred_name, Person.first_name,
+                                     Person.last_name).where(Person.id.in_(ids)))).all()
+    return {pid: _person_display(p, first, last) for pid, p, first, last in rows}
+
+
+async def _version_detail(db: DbSession, v: LabelTemplateVersion) -> LabelTemplateVersionDetailOut:
+    by = await _authors(db, [v.created_by])
+    return LabelTemplateVersionDetailOut(**_version_fields(v, by), design=v.design,
+                                         code=v.code, samples=v.samples or {})
+
+
+@router.get("/templates/{template_id}/versions", response_model=list[LabelTemplateVersionOut])
+async def list_template_versions(
+    template_id: uuid.UUID, db: DbSession,
+    _actor: AuthContext = require_permission("labels", "view"),
+    _rank: AuthContext = DESIGNER,
+) -> list[LabelTemplateVersionOut]:
+    """One line per save, newest first (`v7`, a child's `v7.2`)."""
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    rows = await tree.versions(db, row)
+    by = await _authors(db, (v.created_by for v in rows))
+    return [LabelTemplateVersionOut(**_version_fields(v, by)) for v in rows]
+
+
+async def _template_version(db: DbSession, template_id: uuid.UUID, version: int,
+                            child_edits: int) -> tuple[LabelTemplate, LabelTemplateVersion]:
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    try:
+        return row, await tree.get_version(db, row, version, child_edits)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+
+
+@router.get("/templates/{template_id}/versions/{version}/{child_edits}",
+            response_model=LabelTemplateVersionDetailOut)
+async def get_template_version(
+    template_id: uuid.UUID, version: int, child_edits: int, db: DbSession,
+    _actor: AuthContext = require_permission("labels", "view"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateVersionDetailOut:
+    """One saved state, to open read-only."""
+    _row, v = await _template_version(db, template_id, version, child_edits)
+    return await _version_detail(db, v)
+
+
+@router.patch("/templates/{template_id}/versions/{version}/{child_edits}",
+              response_model=LabelTemplateVersionDetailOut)
+async def note_template_version(
+    template_id: uuid.UUID, version: int, child_edits: int,
+    body: LabelTemplateVersionNoteIn, db: DbSession,
+    actor: AuthContext = require_permission("labels", "change"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateVersionDetailOut:
+    """The author's note on a version, added after the save (⌘S never asks)."""
+    row, v = await _template_version(db, template_id, version, child_edits)
+    if body.note != v.note:
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(row.id), action="version_note",
+              changes={"version": tree.version_label(version, child_edits),
+                       "note": {"from": v.note, "to": body.note}})
+        v.note = body.note
+    await db.commit()
+    return await _version_detail(db, v)
+
+
+@router.post("/templates/{template_id}/versions/{version}/{child_edits}/restore",
+             response_model=LabelTemplateSaveOut)
+async def restore_template_version(
+    template_id: uuid.UUID, version: int, child_edits: int, db: DbSession,
+    actor: AuthContext = require_permission("labels", "change"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateSaveOut:
+    """Save an older version again as the next one (a parent's children
+    follow as on any parent save)."""
+    row = await _template_or_404(db, template_id)
+    try:
+        await tree.restore(db, row, version, child_edits, actor.person.id)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+    audit(db, actor_id=actor.person.id, entity_type="label_template",
+          entity_id=str(row.id), action="restore",
+          changes={"restored": tree.version_label(version, child_edits),
+                   "version": row.version})
+    await db.commit()
+    return await _template_out(db, row, LabelTemplateSaveOut,
+                               out_of_date=await _out_of_date(db, row))
+
+
+async def _out_of_date(db: DbSession, row: LabelTemplate) -> list[uuid.UUID]:
+    """A parent's out-of-date children, or a child itself when it is one."""
+    if row.is_tree_parent:
+        return await tree.out_of_date_ids(db, row)
+    if row.parent_id is not None and tree.is_out_of_date(
+            row, await tree.design_version(db, await tree.parent_of(db, row))):
+        return [row.id]
+    return []
 
 
 # ── generate labels (runs, preview, generated) ─────────────────────
@@ -644,7 +1422,8 @@ def _run_out(run: LabelGenerationRun, initiative_name: str, requested_by_name: s
         error_details=run.error_details, error=run.error, requested_by=run.requested_by,
         requested_by_name=requested_by_name, notify=run.notify, created_at=run.created_at,
         started_at=run.started_at, finished_at=run.finished_at, worker_id=run.worker_id,
-        progress_pct=progress_pct, template_overrides=dict(run.template_overrides or {}))
+        progress_pct=progress_pct, template_overrides=dict(run.template_overrides or {}),
+        dpi_key=run.dpi_key)
 
 
 def _runs_query(actor: AuthContext):
@@ -685,9 +1464,12 @@ async def create_generation_run(
             db, initiative_id=body.initiative_id, label_types=body.label_types,
             regenerate_existing=body.regenerate_existing, requested_by=actor.person.id,
             notify=body.notify,
-            template_overrides={k: str(v) for k, v in body.templates.items()})
+            template_overrides={k: str(v) for k, v in body.templates.items()},
+            dpi_key=body.dpi_key)
     except InvalidLabelTypes as exc:
         raise _err(422, "invalid_label_types", problems=exc.problems) from exc
+    except InvalidDpi as exc:
+        raise _err(422, "invalid_dpi") from exc
     except InvalidTemplates as exc:
         raise _err(422, "invalid_templates", problems=exc.problems) from exc
     except RunActive as exc:
@@ -708,7 +1490,8 @@ async def create_generation_run(
     audit(db, actor_id=actor.person.id, entity_type="label_generation_run",
           entity_id=str(run.id), action="create",
           changes={"initiative_id": {"from": None, "to": str(body.initiative_id)},
-                   "label_types": {"from": [], "to": list(run.label_types)}})
+                   "label_types": {"from": [], "to": list(run.label_types)},
+                   "dpi_key": {"from": None, "to": run.dpi_key}})
     await db.commit()
     return await _run_out_for_id(db, run.id, actor)
 
@@ -777,9 +1560,11 @@ async def cancel_generation_run(
 
 @router.get("/generate/preview", response_model=LabelGeneratePreviewOut)
 async def preview_generation(
-    initiative_id: uuid.UUID, db: DbSession,
+    initiative_id: uuid.UUID, db: DbSession, dpi_key: str = "300",
     actor: AuthContext = require_permission("labels", "view"),
 ) -> LabelGeneratePreviewOut:
+    """What a run at `dpi_key` (300 by default, like a run) would do: each
+    type's templates at that DPI and the counts of its labels at that DPI."""
     ini = await _scoped_initiative(db, actor, initiative_id)
 
     client_name = (await db.scalar(select(Client.name).where(Client.id == ini.client_id))
@@ -810,7 +1595,7 @@ async def preview_generation(
 
     types: list[LabelGeneratePreviewTypeOut] = []
     for vocab in type_rows:
-        candidates = await candidate_templates(db, vocab.key, template_site_id)
+        candidates = await candidate_templates(db, vocab.key, template_site_id, dpi_key)
         template = None
         template_out = None
         if candidates and candidates[0].scope in ("site", "global"):
@@ -831,7 +1616,8 @@ async def preview_generation(
                    GeneratedLabel.stale)
             .where(GeneratedLabel.initiative_id == ini.id,
                    GeneratedLabel.entity_type == entity_for_type(vocab.key),
-                   GeneratedLabel.label_type == vocab.key))).all()
+                   GeneratedLabel.label_type == vocab.key,
+                   GeneratedLabel.dpi_key == dpi_key))).all()
         for template_id, template_version, is_stale in existing_rows:
             if (template is not None and template_id == template.id
                     and template_version == template.version and not is_stale):
@@ -860,6 +1646,7 @@ async def preview_generation(
 async def list_generated_labels(
     db: DbSession, initiative_id: uuid.UUID | None = None,
     label_type: str | None = None, entity_id: uuid.UUID | None = None,
+    dpi_key: str | None = None,
     limit: int = GENERATED_DEFAULT_LIMIT, before: datetime | None = None,
     actor: AuthContext = require_permission("labels", "view"),
 ) -> list[GeneratedLabelOut]:
@@ -882,6 +1669,8 @@ async def list_generated_labels(
         q = q.where(GeneratedLabel.label_type == label_type)
     if entity_id is not None:
         q = q.where(GeneratedLabel.entity_id == entity_id)
+    if dpi_key is not None:
+        q = q.where(GeneratedLabel.dpi_key == dpi_key)
     if before is not None:
         q = q.where(GeneratedLabel.generated_at < before)
     q = (q.order_by(GeneratedLabel.generated_at.desc(), GeneratedLabel.id.desc())
@@ -896,8 +1685,8 @@ async def list_generated_labels(
             serial_number=serial if is_asset else None,
             name=name if is_asset else None,
             label_type=gl.label_type, template_name=template_name,
-            template_version=template_version, generated_at=gl.generated_at,
-            stale=gl.stale, code=gl.code))
+            template_version=template_version, dpi_key=gl.dpi_key,
+            generated_at=gl.generated_at, stale=gl.stale, code=gl.code))
     return out
 
 
@@ -909,8 +1698,10 @@ async def get_generated_label_bundle(
     """Print Labels' data source: every label of one type on one
     initiative — asset or container, whichever `label_type` maps to —
     with the language/size/dpi keys the page needs to decide what a
-    Zebra printer can take. Unknown/archived/out-of-scope initiatives
-    read as 404 like the preview endpoint."""
+    Zebra printer can take. Every DPI's labels come down (an entity has
+    one per DPI it was generated at); the page keeps the connected
+    printer's, and its offline cache holds them all. Unknown/archived/
+    out-of-scope initiatives read as 404 like the preview endpoint."""
     ini = await _scoped_initiative(db, actor, initiative_id)
     # The entity filter is the whole point of the mapping: a container type
     # must never serve asset labels (or the reverse), whatever rows happen
@@ -940,8 +1731,6 @@ async def get_generated_label_bundle(
 # ── font library (Labels → Printers › Install Fonts) ─────────────────
 
 FONT_NAME_RE = re.compile(r"^[A-Z0-9_]{1,8}\.TTF$")
-MAX_FONT_BYTES = 2 * 1024 * 1024
-TRUETYPE_MAGICS = (b"\x00\x01\x00\x00", b"true")
 
 
 def font_object_name(filename: str | None) -> str | None:
@@ -976,7 +1765,8 @@ def _font_out(font: LabelFont, uploader: str | None, used_by: list[LabelFontUsed
     return LabelFontOut(
         id=font.id, name=font.name, display_name=font.display_name, size_bytes=font.size_bytes,
         content_type=font.content_type, uploaded_by=font.uploaded_by, uploaded_by_name=uploader,
-        created_at=font.created_at, used_by=used_by)
+        created_at=font.created_at, used_by=used_by, family=font.family, weight=font.weight,
+        resident=font.resident, source_url=font.source_url)
 
 
 async def _font_or_404(db: DbSession, font_id: uuid.UUID) -> LabelFont:
@@ -1025,14 +1815,52 @@ async def upload_label_font(
         raise _err(413, "file_too_large")
     if not data.startswith(TRUETYPE_MAGICS):
         raise _err(422, "not_a_truetype_font")
+    uploader = _person_display(actor.person.preferred_name, actor.person.first_name,
+                               actor.person.last_name)
+    # The resident font's row exists without a file until its library
+    # copy arrives (for its metrics): the upload fills that row. Locked, so
+    # a second concurrent upload finds it filled and gets the 409 below.
+    fileless = await db.scalar(
+        select(LabelFont).where(LabelFont.name == object_name, LabelFont.deleted_at.is_(None),
+                                LabelFont.resident.is_(True), LabelFont.storage_key.is_(None))
+        .with_for_update())
+    if fileless is not None:
+        before = snapshot(fileless, FONT_FIELDS)
+        key = new_storage_key()
+        await put_object(key, data, "font/ttf")
+        try:
+            fileless.storage_key, fileless.size_bytes = key, len(data)
+            fileless.content_type, fileless.uploaded_by = "font/ttf", actor.person.id
+            audit(db, actor_id=actor.person.id, entity_type="label_font",
+                  entity_id=str(fileless.id), action="update",
+                  changes=diff(before, snapshot(fileless, FONT_FIELDS)))
+            await db.commit()
+        except Exception:
+            # as on the create path: the key was never persisted, so nothing
+            # else can reach the blob; best-effort remove it
+            await db.rollback()
+            try:
+                await delete_object(key)
+            except Exception:
+                pass
+            raise
+        await db.refresh(fileless)
+        used = await _fonts_used_by(db)
+        return _font_out(fileless, uploader, used.get(object_name, []))
     if await _active_font_id(db, object_name) is not None:
         raise _err(409, "font_name_taken")
 
-    key = f"label-fonts/{uuid.uuid4()}.ttf"
+    # A file under one of the builder's object names joins that family (and
+    # the resident name stays resident, so it is never served).
+    family, weight = object_family(object_name) or (None, None)
+    key = new_storage_key()
     await put_object(key, data, "font/ttf")
-    font = LabelFont(name=object_name, display_name=file.filename or object_name,
+    font = LabelFont(name=object_name,
+                     display_name=(family_display_name(family, weight) if family
+                                   else file.filename or object_name),
                      storage_key=key, size_bytes=len(data), content_type="font/ttf",
-                     uploaded_by=actor.person.id)
+                     uploaded_by=actor.person.id, family=family, weight=weight,
+                     resident=bool(family and FAMILIES[family]["resident"]))
     try:
         db.add(font)
         await db.flush()
@@ -1054,8 +1882,6 @@ async def upload_label_font(
         raise _err(409, "font_name_taken") from exc
     await db.refresh(font)
     used = await _fonts_used_by(db)
-    uploader = _person_display(actor.person.preferred_name, actor.person.first_name,
-                               actor.person.last_name)
     return _font_out(font, uploader, used.get(object_name, []))
 
 
@@ -1077,8 +1903,44 @@ async def label_font_content(
     _actor: AuthContext = require_permission("labels", "view"),
 ) -> Response:
     """The raw TTF bytes — the browser pushes them to the printer over
-    WebUSB (`~DY`), so it needs the bytes, not a presigned URL."""
+    WebUSB (`~DY`), so it needs the bytes, not a presigned URL. Never the
+    resident font: Zebra's commercial file stays off browsers (403
+    `font_not_servable`)."""
     font = await _font_or_404(db, font_id)
+    if font.resident or resident_object(font.name):
+        raise _err(403, "font_not_servable")
     data = await get_object(font.storage_key)
     return Response(content=data, media_type=font.content_type,
                     headers={"Content-Disposition": f'attachment; filename="{font.name}"'})
+
+
+# Metrics per stored file, read once: (font id, storage key, size) → metrics.
+# Fonts are few; the cap only bounds a pathological library.
+_METRICS_CACHE: dict[tuple[uuid.UUID, str, int], dict] = {}
+_METRICS_CACHE_MAX = 128
+
+
+@router.get("/fonts/{font_id}/metrics", response_model=LabelFontMetricsOut)
+async def label_font_metrics(
+    font_id: uuid.UUID, db: DbSession,
+    _actor: AuthContext = require_permission("labels", "view"),
+) -> dict:
+    """Glyph metrics for the builder canvas (labels/font_metrics.py), read
+    from the library file with fontTools. The resident font has them only
+    once its library copy is uploaded (else 404 `no_font_file`); a file
+    fontTools can't read is 422 `unreadable_font`."""
+    font = await _font_or_404(db, font_id)
+    if not font.storage_key:
+        raise _err(404, "no_font_file")
+    cache_key = (font.id, font.storage_key, font.size_bytes)
+    cached = _METRICS_CACHE.get(cache_key)
+    if cached is None:
+        try:
+            # fontTools parses for ~10 ms: off the event loop
+            cached = await asyncio.to_thread(font_metrics, await get_object(font.storage_key))
+        except UnreadableFont as exc:
+            raise _err(422, "unreadable_font") from exc
+        if len(_METRICS_CACHE) >= _METRICS_CACHE_MAX:
+            _METRICS_CACHE.clear()
+        _METRICS_CACHE[cache_key] = cached
+    return cached

@@ -295,3 +295,54 @@ it('Generate fills a 12-character password from the unambiguous alphabet, unmask
   await waitFor(() => expect(api.updateInitiative).toHaveBeenCalledWith(
     'i1', expect.objectContaining({ kiosk_password: pwField().value })));
 });
+
+/* ── code ────────────────────────────────────────────────────────── */
+
+const codeField = () => screen.getByLabelText('Code') as HTMLInputElement;
+
+it('edit mode shows the stored code right after Name, and a new one is saved trimmed', async () => {
+  const user = userEvent.setup();
+  api.updateInitiative.mockResolvedValue(move());
+  renderModal(move({ code: 'LV3' }));
+
+  expect(codeField().value).toBe('LV3');
+  expect(screen.getAllByRole('textbox')[1]).toBe(codeField());
+  expect(codeField().maxLength).toBe(32);
+  await user.clear(codeField());
+  await user.type(codeField(), ' LV4 ');
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(api.updateInitiative).toHaveBeenCalledWith(
+    'i1', expect.objectContaining({ code: 'LV4' })));
+});
+
+it('a cleared code is sent as null, and create sends a typed one', async () => {
+  const user = userEvent.setup();
+  api.updateInitiative.mockResolvedValue(move());
+  renderModal(move({ code: 'LV3' }));
+  await user.clear(codeField());
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateInitiative).toHaveBeenCalledWith(
+    'i1', expect.objectContaining({ code: null })));
+  cleanup();
+
+  api.createInitiative.mockResolvedValue(initiative());
+  renderModal(null);
+  expect(codeField().value).toBe('');
+  await user.type(nameField(), 'Vegas NAP9 to NAP14');
+  await user.type(codeField(), 'LV3');
+  await user.click(screen.getByRole('button', { name: 'Create initiative' }));
+  await waitFor(() => expect(api.createInitiative).toHaveBeenCalledWith(
+    expect.objectContaining({ name: 'Vegas NAP9 to NAP14', code: 'LV3' })));
+});
+
+it('a code already in use shows its message', async () => {
+  const user = userEvent.setup();
+  api.updateInitiative.mockRejectedValue(new ApiError(409, 'code_in_use'));
+  renderModal(initiative());
+
+  await user.type(codeField(), 'LV3');
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+
+  expect(await screen.findByText('That code is already used by another initiative.')).toBeTruthy();
+});

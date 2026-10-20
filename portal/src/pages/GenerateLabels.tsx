@@ -5,6 +5,11 @@
  * progress (polled every ~1.75s while queued/running), and review recent
  * runs (with a per-run error drill-down) for the initiative in view.
  *
+ * A run generates for one printer DPI (203/300/600), chosen in Step 3
+ * and remembered in `localStorage` (`labels.generate.dpi`, else 300): the
+ * preview resolves each type's template at that DPI, and the labels it
+ * makes sit beside any other DPI's.
+ *
  * Layout is a three-step band (Initiative / Label types / Generate),
  * each an equal-height bordered card in the report Generate modals' own
  * look (`ChoiceCard`/`InitiativeSummary` from
@@ -22,8 +27,8 @@ import {
   type InitiativeItem, type LabelGeneratePreview, type LabelRun, type LabelVocab,
 } from '../lib/api';
 import {
-  canGenerate, firstUnresolvedType, isRunActive, templatesPayloadFor,
-  visibleInitiativesForGenerate,
+  GENERATE_DPIS, canGenerate, firstUnresolvedType, isRunActive, readGenerateDpi,
+  templatesPayloadFor, visibleInitiativesForGenerate, writeGenerateDpi,
 } from '../lib/generateLabels';
 import { isContainerLabelType, vocabLabel, vocabOfKind } from '../lib/labels';
 import { useSystemStatus } from '../lib/systemStatusContext';
@@ -78,6 +83,7 @@ export default function GenerateLabels() {
   const [templateOverrides, setTemplateOverrides] = useState<Record<string, string>>({});
   const [regenerateExisting, setRegenerateExisting] = useState(false);
   const [notify, setNotify] = useState(false);
+  const [dpi, setDpi] = useState(() => readGenerateDpi());
 
   const [preview, setPreview] = useState<LabelGeneratePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -143,13 +149,21 @@ export default function GenerateLabels() {
   };
   useEffect(() => { setRuns(null); void loadRuns(); }, [initiativeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Which initiative `preview` belongs to: a new DPI keeps its cards on
+  // screen while that DPI's templates load (Generate waits for them).
+  const previewForRef = useRef('');
   useEffect(() => {
-    if (!initiativeId) { setPreview(null); setPreviewLoading(false); setPreviewError(''); return; }
+    if (!initiativeId) {
+      previewForRef.current = '';
+      setPreview(null); setPreviewLoading(false); setPreviewError(''); return;
+    }
     let cancelled = false;
-    setPreview(null);   // never show the previous initiative's template resolution while the new one loads
+    // never show the previous initiative's template resolution while the new one loads
+    if (previewForRef.current !== initiativeId) setPreview(null);
+    previewForRef.current = initiativeId;
     setPreviewLoading(true);
     setPreviewError('');
-    getLabelGeneratePreview(initiativeId)
+    getLabelGeneratePreview(initiativeId, dpi)
       .then((p) => {
         if (cancelled) return;
         setPreview(p);
@@ -167,7 +181,7 @@ export default function GenerateLabels() {
         setPreviewLoading(false);
       });
     return () => { cancelled = true; };
-  }, [initiativeId]);
+  }, [initiativeId, dpi]);
 
   // Poll the active run while it's queued/running; once it settles,
   // refresh the runs list so the new row (with its final counts) shows.
@@ -202,9 +216,18 @@ export default function GenerateLabels() {
       return { ...cur, [key]: templateId };
     });
 
+  /** A template chosen by hand is one DPI's row, so a new DPI drops the
+   *  choices: each type goes back to that DPI's own match. */
+  const changeDpi = (next: string) => {
+    if (next === dpi) return;
+    setDpi(next);
+    writeGenerateDpi(next);
+    setTemplateOverrides({});
+  };
+
   const activeBlockingId = activeRun && isRunActive(activeRun) ? activeRun.id : null;
   const unresolvedType = firstUnresolvedType(preview?.types ?? null, selectedTypes, templateOverrides);
-  const canGo = canAdd && canGenerate({
+  const canGo = canAdd && !previewLoading && canGenerate({
     initiativeId: initiativeId || null, labelTypes: selectedTypes, activeRunId: activeBlockingId, unresolvedType,
   });
 
@@ -215,7 +238,7 @@ export default function GenerateLabels() {
       const templates = templatesPayloadFor(selectedTypes, templateOverrides);
       const run = await startLabelRun({
         initiative_id: initiativeId, label_types: selectedTypes,
-        regenerate_existing: regenerateExisting, notify,
+        regenerate_existing: regenerateExisting, notify, dpi_key: dpi,
         ...(Object.keys(templates).length ? { templates } : {}),
       });
       setActiveRun(run);
@@ -312,11 +335,11 @@ export default function GenerateLabels() {
           {!initiativeId && (
             <p className="page-hint">Pick an initiative to see its sites, its counts, and which template each label type will use.</p>
           )}
-          {initiativeId && previewLoading && <p className="page-hint">Loading preview…</p>}
+          {initiativeId && previewLoading && !preview && <p className="page-hint">Loading preview…</p>}
           {initiativeId && !previewLoading && previewError && (
             <div className="pf-error">{previewError}</div>
           )}
-          {initiativeId && !previewLoading && !previewError && preview && (
+          {initiativeId && !previewError && preview && (
             <div>
               <InitiativeSummary
                 initiative={{
@@ -370,6 +393,22 @@ export default function GenerateLabels() {
                   hint="Review the run, then queue it for the label worker.">
           <div className="glabels-generate">
           <div className="mini-list report-sections">
+            <div className="mini-row report-section-row glabels-dpi-row">
+              <span className="report-section-text">
+                <span className="cell-top">Printer DPI</span>
+                <span className="cell-sub">
+                  Labels are made for printers at this resolution. Each DPI keeps its own labels.
+                </span>
+              </span>
+              <div className="segmented" role="radiogroup" aria-label="Printer DPI">
+                {GENERATE_DPIS.map((d) => (
+                  <button key={d} type="button" role="radio" aria-checked={dpi === d}
+                          className={dpi === d ? 'on' : ''} onClick={() => changeDpi(d)}>
+                    {d} DPI
+                  </button>
+                ))}
+              </div>
+            </div>
             <label className="mini-row report-section-row" title={canChange ? undefined : NO_CHANGE_HINT}>
               <Switch checked={regenerateExisting} onChange={setRegenerateExisting} disabled={!canChange} />
               <span className="report-section-text">
@@ -401,6 +440,8 @@ export default function GenerateLabels() {
                   {selectedTypes.map((k) => <span key={k} className="chip tag">{typeLabelFor(k)}</span>)}
                 </span>
               </dd>
+              <dt>Printer DPI</dt>
+              <dd>{dpi} DPI</dd>
               {countsAssets && <>
                 <dt>Assets</dt>
                 <dd>{preview.initiative.asset_count.toLocaleString()}</dd>

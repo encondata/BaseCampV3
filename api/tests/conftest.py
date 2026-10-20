@@ -16,7 +16,7 @@ API_DIR = Path(__file__).resolve().parents[1]
 # heads — both collide): SS_TEST_DB=serversherpa_test_<branch> pytest …
 TEST_DB = os.environ.get("SS_TEST_DB", "serversherpa_test")
 
-# Labels seeds — 0042's rows as migration 0066 leaves them. This is the
+# Labels seeds — 0042's rows as migrations 0066 and 0102 leave them. This is the
 # baseline a migrated production database actually has, so it must be kept
 # in step with every later migration that touches label_vocab /
 # label_placeholders; a stale copy here silently tests a world that no
@@ -38,6 +38,8 @@ LABEL_VOCAB_SEEDS = """
       ('size','4x6','4" x 6"','Zebra roll label, portrait.','{"width_in": 4, "height_in": 6, "has_tab": false}',7),
       ('dpi','203','203 DPI','','{"dots": 203}',1),
       ('dpi','300','300 DPI','','{"dots": 300}',2),
+      -- 0102: the label builder's third DPI child
+      ('dpi','600','600 DPI','','{"dots": 600}',3),
       ('language','zpl','ZPL','Zebra Programming Language.','{"family": "zebra"}',1),
       ('language','escp','Brother ESC/P','','{"family": "brother"}',2),
       ('language','ptouch','Brother P-Touch Template','','{"family": "brother"}',3)
@@ -410,7 +412,7 @@ async def clean_db():
                 "syslog": {"host": "", "port": 514, "protocol": "udp"}}'::jsonb),
               ('logging_cursor', '{"last_forwarded_id": 0}'::jsonb)
         """))
-        # labels seeds (0042 as amended by 0066)
+        # labels seeds (0042 as amended by 0066 and 0102)
         await session.execute(text(LABEL_VOCAB_SEEDS))
         await session.execute(text(LABEL_PLACEHOLDER_SEEDS))
         await session.commit()

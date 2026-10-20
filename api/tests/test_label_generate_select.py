@@ -30,7 +30,7 @@ async def test_site_linked_beats_global(db):
     db.add(LabelTemplateSite(template_id=linked.id, site_id=site.id))
     await db.commit()
 
-    found = await select_template(db, "top", site.id)
+    found = await select_template(db, "top", site.id, "203")
     assert found.id == linked.id
 
 
@@ -45,7 +45,7 @@ async def test_other_site_never_falls_back_to_global(db):
     db.add(LabelTemplateSite(template_id=linked_b.id, site_id=site_b.id))
     await db.commit()
 
-    assert await select_template(db, "top", site_a.id) is None
+    assert await select_template(db, "top", site_a.id, "203") is None
 
 
 async def test_other_site_link_falls_back_to_global_when_one_exists(db):
@@ -60,7 +60,7 @@ async def test_other_site_link_falls_back_to_global_when_one_exists(db):
     db.add(LabelTemplateSite(template_id=linked_b.id, site_id=site_b.id))
     await db.commit()
 
-    found = await select_template(db, "top", site_a.id)
+    found = await select_template(db, "top", site_a.id, "203")
     assert found.id == glob.id
 
 
@@ -68,7 +68,7 @@ async def test_inactive_template_never_selected(db):
     inactive_global = _template("inactive-top", is_active=False)
     db.add(inactive_global)
     await db.commit()
-    assert await select_template(db, "top", None) is None
+    assert await select_template(db, "top", None, "203") is None
 
     site = Site(name="NAP11")
     db.add(site)
@@ -78,7 +78,7 @@ async def test_inactive_template_never_selected(db):
     await db.flush()
     db.add(LabelTemplateSite(template_id=inactive_linked.id, site_id=site.id))
     await db.commit()
-    assert await select_template(db, "top", site.id) is None
+    assert await select_template(db, "top", site.id, "203") is None
 
 
 async def test_ties_break_on_version_then_updated_at(db):
@@ -90,17 +90,17 @@ async def test_ties_break_on_version_then_updated_at(db):
     db.add_all([older_v1, newer_v1, v2])
     await db.commit()
 
-    found = await select_template(db, "top", None)
+    found = await select_template(db, "top", None, "203")
     assert found.id == v2.id                     # highest version wins outright
 
     await db.delete(v2)
     await db.commit()
-    found = await select_template(db, "top", None)
+    found = await select_template(db, "top", None, "203")
     assert found.id == newer_v1.id                # same version -> newest updated_at
 
 
 async def test_no_match_returns_none(db):
-    assert await select_template(db, "container", None) is None
+    assert await select_template(db, "container", None, "203") is None
 
 
 async def test_label_type_must_match(db):
@@ -108,7 +108,7 @@ async def test_label_type_must_match(db):
     rail = _template("rail-only", label_type="rail")
     db.add_all([top, rail])
     await db.commit()
-    found = await select_template(db, "rail", None)
+    found = await select_template(db, "rail", None, "203")
     assert found.id == rail.id
 
 
@@ -130,12 +130,12 @@ async def test_candidates_site_auto_match_first_then_remaining_groups(db):
     ])
     await db.commit()
 
-    candidates = await candidate_templates(db, "top", site.id)
+    candidates = await candidate_templates(db, "top", site.id, "203")
     assert [c.template.id for c in candidates] == [
         site_linked.id, glob.id, other_site_linked.id]
     assert [c.scope for c in candidates] == ["site", "global", "other"]
     # the auto-match (candidates[0]) matches select_template exactly
-    auto = await select_template(db, "top", site.id)
+    auto = await select_template(db, "top", site.id, "203")
     assert auto.id == candidates[0].template.id
     other = candidates[2]
     assert other.site_names == ["NAP-Other"]
@@ -157,11 +157,11 @@ async def test_candidates_other_only_type_has_no_auto_match(db):
     db.add(LabelTemplateSite(template_id=b_only.id, site_id=site_b.id))
     await db.commit()
 
-    candidates = await candidate_templates(db, "top", site_a.id)
+    candidates = await candidate_templates(db, "top", site_a.id, "203")
     assert len(candidates) == 1
     assert candidates[0].scope == "other"
     assert candidates[0].site_names == ["NAP-B"]
-    assert await select_template(db, "top", site_a.id) is None    # no auto-match
+    assert await select_template(db, "top", site_a.id, "203") is None    # no auto-match
 
 
 async def test_candidates_inactive_templates_excluded(db):
@@ -170,12 +170,12 @@ async def test_candidates_inactive_templates_excluded(db):
     db.add_all([active, inactive])
     await db.commit()
 
-    candidates = await candidate_templates(db, "top", None)
+    candidates = await candidate_templates(db, "top", None, "203")
     assert [c.template.id for c in candidates] == [active.id]
 
 
 async def test_candidates_empty_when_no_templates_of_type(db):
-    assert await candidate_templates(db, "container", None) == []
+    assert await candidate_templates(db, "container", None, "203") == []
 
 
 async def test_candidates_groups_ordered_by_version_then_updated_at(db):
@@ -191,6 +191,63 @@ async def test_candidates_groups_ordered_by_version_then_updated_at(db):
         db.add(LabelTemplateSite(template_id=tpl.id, site_id=site.id))
     await db.commit()
 
-    candidates = await candidate_templates(db, "top", site.id)
+    candidates = await candidate_templates(db, "top", site.id, "203")
     assert [c.template.id for c in candidates] == [v2.id, newer_v1.id, older_v1.id]
     assert all(c.scope == "site" for c in candidates)
+
+
+# ── the label builder's template tree: children per DPI ─────────────
+
+TREE_DESIGN = {"schema": 2, "size": {"w": 4, "h": 2}, "elements": [
+    {"id": "f1", "type": "field", "field": "asset_id", "x": 0.1, "y": 0.1, "w": 1.5,
+     "h": 0.3, "rotation": 0, "display": "text",
+     "font": {"family": "roboto", "weight": "regular"}, "sizePt": 18, "baselineIn": 0.2,
+     "align": "left"},
+]}
+
+
+async def _tree(db, name, *, site_ids=()):
+    from serversherpa.labels import templates_tree
+    parent = await templates_tree.create_parent(
+        db, name=name, description="", label_type="top", size_key="4x2", language_key="zpl",
+        design=TREE_DESIGN, samples={}, site_ids=list(site_ids), actor_id=None)
+    # the parent outranks every child on version, so a pick that let the
+    # parent through would take it
+    parent.version = 9
+    await db.commit()
+    children = await templates_tree.children_of(db, parent, include_old=False)
+    return parent, {c.dpi_key: c for c in children}
+
+
+async def test_select_prefers_the_child_at_the_run_dpi(db):
+    """A builder template prints through its DPI children: a run picks the
+    child at its own DPI (the parent never prints), the parent's site links
+    stand for its children, and an older single row matches by its own
+    dpi_key. A DPI with no template at a scope falls through to the next."""
+    site = Site(name="NAP11")
+    db.add(site)
+    await db.flush()
+    parent, children = await _tree(db, "Vegas Tag", site_ids=[site.id])
+    legacy = _template("Legacy Top - 203DPI", version=12)
+    db.add(legacy)
+    await db.commit()
+
+    for dpi in ("203", "300", "600"):
+        found = await select_template(db, "top", site.id, dpi)
+        assert found.id == children[dpi].id, dpi
+    # no site: only globals — the legacy row at its own DPI, nothing else
+    assert (await select_template(db, "top", None, "203")).id == legacy.id
+    assert await select_template(db, "top", None, "300") is None
+
+    # a deleted DPI child falls through to the next scope at that DPI
+    await db.delete(children["203"])
+    await db.commit()
+    assert (await select_template(db, "top", site.id, "203")).id == legacy.id
+
+    candidates = await candidate_templates(db, "top", site.id, "300")
+    assert [(c.template.id, c.scope) for c in candidates] == [(children["300"].id, "site")]
+    candidates = await candidate_templates(db, "top", None, "600")
+    assert [(c.template.id, c.scope, c.site_names) for c in candidates] == [
+        (children["600"].id, "other", ["NAP11"])]
+    assert parent.id not in {c.template.id for c in await candidate_templates(
+        db, "top", site.id, "300")}

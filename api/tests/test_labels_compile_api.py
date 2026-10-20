@@ -78,7 +78,7 @@ async def test_errors(client, db, seeded_user):
 
 async def test_template_create_now_validates_design(client, db, seeded_user):
     from tests.test_status_values_write import _make
-    hdrs = await _make(db, client, "admin", "adm@test.example.com")
+    hdrs = await _make(db, client, "super_admin", "adm@test.example.com")
     resp = await client.post("/labels/templates", headers=hdrs, json={
         "name": "bad-design", "label_type": "top", "size_key": "4x2",
         "dpi_key": "203", "language_key": "zpl", "kind": "design",
@@ -87,3 +87,137 @@ async def test_template_create_now_validates_design(client, db, seeded_user):
     })
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "bad_design"
+
+
+# ── a schema 2 design compiles with the builder's values: the portal's
+# mock values with the template's samples over them (spec §4.7) ──
+
+SWISS = {"family": "swiss721-cond-bold", "weight": "regular"}
+V2 = {"schema": 2, "size": {"w": 4, "h": 2}, "elements": [
+    {"id": "f1", "type": "field", "field": "asset_id", "x": 0.1, "y": 0.1, "w": 1.5, "h": 0.3,
+     "rotation": 0, "display": "text", "font": SWISS, "sizePt": 24, "baselineIn": 0.24},
+    {"id": "f2", "type": "field", "field": "serial_number", "x": 0.1, "y": 0.6, "w": 1.5,
+     "h": 0.3, "rotation": 0, "display": "text", "font": SWISS, "sizePt": 12, "baselineIn": 0.12},
+    {"id": "f3", "type": "field", "field": "ft:Notes", "x": 0.1, "y": 1.1, "w": 1.5, "h": 0.3,
+     "rotation": 0, "display": "text", "font": SWISS, "sizePt": 12, "baselineIn": 0.12},
+]}
+
+
+async def test_v2_design_compiles_with_samples_over_the_mock_values(client, db, seeded_user):
+    hdrs = await login(client)
+    resp = await client.post("/labels/templates/compile", headers=hdrs, json=_body(
+        design=V2, dpi_key="300", mode="sample", samples={"asset_id": "10482"}))
+    assert resp.status_code == 200, resp.text
+    code = resp.json()["code"]
+    assert "^FD10482^FS" in code            # the template's sample
+    assert "^FDSN0000001^FS" in code        # fields.MOCK_VALUES, not the placeholder catalog
+    assert "C7X-00412-A" not in code
+    assert "^FDNotes^FS" in code            # a From-To column prints its header
+    assert "E:TT0003M_.TTF" in code
+
+
+async def test_v2_design_compiles_without_samples(client, db, seeded_user):
+    hdrs = await login(client)
+    resp = await client.post("/labels/templates/compile", headers=hdrs,
+                             json=_body(design=V2, dpi_key="600"))
+    assert resp.status_code == 200, resp.text
+    assert "^FD100000^FS" in resp.json()["code"]
+
+
+async def test_samples_belong_to_builder_designs(client, db, seeded_user):
+    hdrs = await login(client)
+    resp = await client.post("/labels/templates/compile", headers=hdrs,
+                             json=_body(samples={"serial_number": "X"}))
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == {"code": "bad_field", "field": "samples",
+                                     "message": "sample values belong to builder templates"}
+
+
+async def test_samples_are_capped(client, db, seeded_user):
+    hdrs = await login(client)
+    many = {f"ft:col {i}": "x" for i in range(201)}
+    resp = await client.post("/labels/templates/compile", headers=hdrs,
+                             json=_body(design=V2, dpi_key="300", samples=many))
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == {"code": "bad_field", "field": "samples",
+                                     "message": "at most 200 sample values"}
+    resp = await client.post("/labels/templates/compile", headers=hdrs,
+                             json=_body(design=V2, dpi_key="300", samples={"asset_id": "9" * 501}))
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == {"code": "bad_field", "field": "samples",
+                                     "message": "a sample value is at most 500 characters"}
+    edge = {**{f"ft:col {i}": "x" for i in range(199)}, "asset_id": "9" * 500}
+    resp = await client.post("/labels/templates/compile", headers=hdrs,
+                             json=_body(design=V2, dpi_key="300", samples=edge))
+    assert resp.status_code == 200, resp.text
+
+
+async def test_an_unbounded_expected_length_is_refused(client, db, seeded_user):
+    """F1: a labels:view caller can't make the compile pad a value to a
+    billion characters; create and PATCH refuse the same design."""
+    hdrs = await login(client)  # labels:view only
+    huge = {**V2, "elements": [{**V2["elements"][0], "display": "number",
+                                "expectedLength": 10**9}]}
+    resp = await client.post("/labels/templates/compile", headers=hdrs,
+                             json=_body(design=huge, dpi_key="300"))
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "bad_design",
+                                     "problems": ["f1: expectedLength must be at most 64"]}
+
+    from tests.test_status_values_write import _make
+    sa = await _make(db, client, "super_admin", "adm@test.example.com")
+    tpl = {"name": "Bounded", "label_type": "top", "size_key": "4x2", "language_key": "zpl",
+           "kind": "design", "design": V2}
+    resp = await client.post("/labels/templates", headers=sa, json={**tpl, "design": huge})
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "bad_design"
+    resp = await client.post("/labels/templates", headers=sa, json=tpl)
+    assert resp.status_code == 201, resp.text
+    resp = await client.patch(f"/labels/templates/{resp.json()['id']}", headers=sa,
+                              json={"design": huge})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["problems"] == ["f1: expectedLength must be at most 64"]
+
+
+async def test_a_qr_value_too_long_is_a_design_problem(client, db, seeded_user):
+    """security-3: past QR version 10 the compile answers 422 with the QR
+    message, not a 500."""
+    hdrs = await login(client)
+    qr = {"schema": 2, "size": {"w": 4, "h": 2}, "elements": [
+        {"id": "q1", "type": "qr", "field": "asset_id", "x": 0.1, "y": 0.1, "w": 1, "h": 1,
+         "rotation": 0}]}
+    resp = await client.post("/labels/templates/compile", headers=hdrs, json=_body(
+        design=qr, dpi_key="300", samples={"asset_id": "a" * 300}))
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "bad_design", "problems": [
+        "q1: QR data too long for version 10 at error correction M (300 bytes)"]}
+    resp = await client.post("/labels/templates/compile", headers=hdrs, json=_body(
+        design=qr, dpi_key="300", samples={"asset_id": "a" * 213}))
+    assert resp.status_code == 200, resp.text
+
+
+async def test_a_preview_prints_only_the_template_types_fields(client, db, seeded_user):
+    """contracts-4: with the template's label_type, a key of another type
+    previews blank, as the generator, the kiosk and the station print it."""
+    hdrs = await login(client)
+    crate = {**V2["elements"][1], "id": "f9", "field": "container_name"}
+    design = {**V2, "elements": [V2["elements"][0], crate, V2["elements"][2]]}
+    resp = await client.post("/labels/templates/compile", headers=hdrs, json=_body(
+        design=design, dpi_key="300", label_type="top"))
+    assert resp.status_code == 200, resp.text
+    assert _data(resp.json()["code"]) == ["100000", "", "Notes"]
+    resp = await client.post("/labels/templates/compile", headers=hdrs, json=_body(
+        design=design, dpi_key="300", label_type="container"))
+    assert _data(resp.json()["code"]) == ["", "SAMPLE-CRATE-01", ""]
+    # without a type every catalog key previews (the older callers)
+    resp = await client.post("/labels/templates/compile", headers=hdrs, json=_body(
+        design=design, dpi_key="300"))
+    assert _data(resp.json()["code"]) == ["100000", "SAMPLE-CRATE-01", "Notes"]
+    # a sample still wins over the type's mock values
+    resp = await client.post("/labels/templates/compile", headers=hdrs, json=_body(
+        design=design, dpi_key="300", label_type="top", samples={"asset_id": "7"}))
+    assert _data(resp.json()["code"])[0] == "7"
+
+
+def _data(code):
+    import re
+    return re.findall(r"\^FD(.*?)\^FS", code)

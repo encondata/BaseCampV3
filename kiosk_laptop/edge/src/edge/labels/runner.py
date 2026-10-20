@@ -99,6 +99,13 @@ class LabelRunner:
             return
         if reason != "setup" and not self._has_labels(plan):
             reason = "setup"
+        if plan.template_json is not None and \
+                generate.template_schema(plan.template_json) > generate.SUPPORTED_SCHEMA:
+            # every label of it is stored as template_unsupported (the
+            # status's `unsupported` count); the station says to update
+            log.warning("label template %s is design schema %d; this edge prints up to %d",
+                        plan.template.id, generate.template_schema(plan.template_json),
+                        generate.SUPPORTED_SCHEMA)
         self.store.run(
             "INSERT INTO label_run (id, state, reason, total, done, started_at, finished_at) "
             "VALUES (1, 'running', ?, ?, 0, ?, NULL) ON CONFLICT (id) DO UPDATE SET "

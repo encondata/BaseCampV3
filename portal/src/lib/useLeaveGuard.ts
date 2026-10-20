@@ -5,8 +5,12 @@ import { useEffect, useRef } from 'react';
  * `onAttempt(to)` instead of navigating (the page asks first), and a reload
  * or tab close gets the browser's own "Leave site?" prompt. The app runs on
  * BrowserRouter, which has no navigation blocker, so links are caught in
- * the document's capture phase — before react-router's own handler. The
- * back button cannot be held; the page cleans up on unmount instead.
+ * the document's capture phase — before react-router's own handler.
+ *
+ * Not guarded: navigation made in code (`navigate()` — the command
+ * palette's jumps, a page's own buttons unless it routes them through its
+ * prompt) and the browser's Back and Forward. Those leave without asking;
+ * the page cleans up on unmount instead.
  */
 export function useLeaveGuard(active: boolean, onAttempt: (to: string) => void): void {
   const attempt = useRef(onAttempt);

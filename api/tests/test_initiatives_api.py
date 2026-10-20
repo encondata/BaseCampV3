@@ -316,3 +316,83 @@ async def test_next_color_endpoint(client, db, seeded_user):
     hdrs = await make_login(db, client, w, "nora@test.example.com")
     assert (await client.get("/initiatives/next-color",
                              headers=hdrs)).status_code == 403
+
+
+async def test_move_code_round_trips_and_is_unique(client, db, seeded_user):
+    headers = await login(client)
+    resp = await client.post("/initiatives", headers=headers, json={
+        "name": "Vegas NAP9 to NAP14", "initiative_type": "move", "code": "  LV3  "})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["code"] == "LV3"     # stripped
+    iid = resp.json()["id"]
+    assert [i["code"] for i in (await client.get(
+        "/initiatives", headers=headers)).json()] == ["LV3"]
+    assert (await client.get(f"/initiatives/{iid}", headers=headers)).json()["code"] == "LV3"
+
+    # unique when set, case-insensitively (CITEXT), on create and on edit
+    resp = await client.post("/initiatives", headers=headers, json={
+        "name": "Another move", "initiative_type": "move", "code": "lv3"})
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "code_in_use"
+    other = (await client.post("/initiatives", headers=headers, json={
+        "name": "Another move", "initiative_type": "move"})).json()
+    assert other["code"] is None
+    resp = await client.patch(f"/initiatives/{other['id']}", headers=headers,
+                              json={"code": "Lv3"})
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "code_in_use"
+
+    # any number of initiatives may have no code; "" clears one
+    resp = await client.post("/initiatives", headers=headers, json={
+        "name": "Third move", "initiative_type": "move", "code": "   "})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["code"] is None
+    resp = await client.patch(f"/initiatives/{iid}", headers=headers, json={"code": ""})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["code"] is None
+    # the freed code can be taken now, and re-saving your own code is fine
+    resp = await client.patch(f"/initiatives/{other['id']}", headers=headers,
+                              json={"code": "LV3"})
+    assert resp.status_code == 200, resp.text
+    resp = await client.patch(f"/initiatives/{other['id']}", headers=headers,
+                              json={"code": "LV3", "name": "Another move, renamed"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["code"] == "LV3"
+
+    # at most 32 characters
+    resp = await client.post("/initiatives", headers=headers, json={
+        "name": "Long code", "initiative_type": "move", "code": "X" * 33})
+    assert resp.status_code == 422, resp.text
+    assert "code_too_long" in resp.json()["detail"][0]["msg"], resp.text
+    resp = await client.post("/initiatives", headers=headers, json={
+        "name": "Long enough", "initiative_type": "move", "code": "X" * 32})
+    assert resp.status_code == 201, resp.text
+
+
+async def test_a_code_race_on_a_renamed_move_is_a_409(client, db, seeded_user, monkeypatch):
+    """ledger B9: renaming a move renames its kiosk identity, whose read
+    flushes the new code; a code another save took meanwhile (forced here
+    by skipping the check) is the same 409 as the check, not a 500."""
+    from serversherpa.api.routes import initiatives as routes
+    from tests.test_status_values_write import _make
+
+    hdrs = await _make(db, client, "super_admin", "sa-b9@test.example.com")
+    taken = await client.post("/initiatives", headers=hdrs, json={
+        "name": "Vegas NAP9", "initiative_type": "move", "code": "LV3"})
+    assert taken.status_code == 201, taken.text
+    move = (await client.post("/initiatives", headers=hdrs, json={
+        "name": "Dallas DC2", "initiative_type": "move"})).json()
+    r = await client.patch(f"/initiatives/{move['id']}", headers=hdrs,
+                           json={"kiosk_password": "granite-harbor-42"})
+    assert r.status_code == 200, r.text
+
+    async def never_taken(db, code, exclude_id=None):
+        return False
+
+    monkeypatch.setattr(routes, "code_taken", never_taken)
+    r = await client.patch(f"/initiatives/{move['id']}", headers=hdrs,
+                           json={"name": "Dallas DC3", "code": "LV3"})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "code_in_use"
+    got = (await client.get(f"/initiatives/{move['id']}", headers=hdrs)).json()
+    assert (got["name"], got["code"]) == ("Dallas DC2", None)

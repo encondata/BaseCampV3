@@ -5,11 +5,27 @@ substitutions=None leaves {tokens} intact (storage/generation form); a
 dict substitutes values (sample preview / generation output). Literal
 text rides behind ^FH_ hex escaping so ^ ~ _ and non-ASCII survive;
 tokens pass through untouched. Bold is approximated by a 1.2x glyph
-width (font 0 has no weight); canvas preview owns true bold rendering."""
+width (font 0 has no weight); canvas preview owns true bold rendering.
 
+A schema 2 design (the label builder's, spec §4.2 and §4.8) compiles
+differently and only with values (there is no token form): text sits on
+its baseline with `^FT`, in a named TrueType font (`^A@…,E:<object>`);
+center/right alignment is a one-line `^FB` over the reserved width
+(the element's w; the compiler never measures text); Bold on a family
+with no Bold file overprints one dot along the reading direction, or on
+an inverted element widens the glyphs 15%; inverted text is a filled
+`^GB` (the element box plus its pad) under `^FR` text; each field value
+goes through Split and its rules first (labels.field_rules). Barcodes,
+QR codes and shapes are placed top-left with `^FO`."""
+
+from collections.abc import Mapping
+
+from serversherpa.labels.fonts import font_object
 from serversherpa.labels.model import (
-    BarcodeEl, BoxEl, Design, LineEl, QrEl, TextEl,
+    BarcodeEl, BoxEl, Design, FieldEl, LineEl, QrEl, TextEl, element_hidden,
+    element_value,
 )
+from serversherpa.labels.qr import QrTooLong, qr_modules
 from serversherpa.labels.tokens import TOKEN_RE
 
 _ROT = {0: "N", 90: "R", 180: "I", 270: "B"}
@@ -58,7 +74,13 @@ def _text(el: TextEl, dpi: int, subs) -> str:
     return line + f"^FH_^FD{_fd(el.content, subs)}^FS"
 
 
-def _barcode(el: BarcodeEl, dpi: int, subs) -> str:
+def _barcode_field(el: BarcodeEl | FieldEl, dpi: int, fd: str) -> str:
+    """A barcode field around already-escaped data `fd`. In Code 128 data a
+    `>` starts an invocation code (`>;` subset C, `>8` FNC1, …), so a
+    literal one goes as `>0` (escaping never makes a `>`, so this is safe
+    on escaped data)."""
+    if el.symbology == "code128":
+        fd = fd.replace(">", ">0")
     hd = _dots(el.h, dpi)
     flag = "Y" if el.show_text else "N"
     # None keeps the historical ^BY2 exactly; a module width in inches is
@@ -68,7 +90,11 @@ def _barcode(el: BarcodeEl, dpi: int, subs) -> str:
            if el.symbology == "code128"
            else f"^B3{_ROT[el.rotation]},N,{hd},{flag},N")
     return (f"^FO{_dots(el.x, dpi)},{_dots(el.y, dpi)}^BY{module}{cmd}"
-            f"^FH_^FD{_fd(el.data, subs)}^FS")
+            f"^FH_^FD{fd}^FS")
+
+
+def _barcode(el: BarcodeEl, dpi: int, subs) -> str:
+    return _barcode_field(el, dpi, _fd(el.data, subs))
 
 
 def _qr(el: QrEl, dpi: int, subs) -> str:
@@ -84,12 +110,133 @@ def _shape(el, dpi: int) -> str:
     return f"^FO{_dots(el.x, dpi)},{_dots(el.y, dpi)}^GB{w},{h},{t}^FS"
 
 
+# ---- schema 2 ---------------------------------------------------------
+
+# one dot along each rotation's reading direction (the faux-bold overprint)
+_STEP = {0: (1, 0), 90: (0, 1), 180: (-1, 0), 270: (0, -1)}
+
+
+def _origin(el: TextEl | FieldEl, dpi: int, baseline_in: float) -> tuple[int, int]:
+    """The ^FT point: the start of the baseline. x, y is the footprint's
+    top-left; w runs along the text and h across it (model.py)."""
+    x, y, w, h, b = el.x, el.y, el.w, el.h, baseline_in
+    if el.rotation == 90:      # reads down, glyph tops to the right
+        pos = (x + h - b, y)
+    elif el.rotation == 180:   # upside down, starts at the right
+        pos = (x + w, y + h - b)
+    elif el.rotation == 270:   # reads up, glyph tops to the left
+        pos = (x + b, y + w)
+    else:
+        pos = (x, y + b)
+    return _dots(pos[0], dpi), _dots(pos[1], dpi)
+
+
+def _invert_box(el: TextEl | FieldEl, dpi: int) -> str:
+    """The filled block under inverted text: the element box plus its pad
+    (x along the text, y across), turned with the element."""
+    px, py = _dots(el.invert_pad.x, dpi), _dots(el.invert_pad.y, dpi)
+    along = _dots(el.w, dpi) + 2 * px
+    across = _dots(el.h, dpi) + 2 * py
+    x, y = _dots(el.x, dpi), _dots(el.y, dpi)
+    if el.rotation in (90, 270):
+        bx, by, bw, bh = x - py, y - px, across, along
+    else:
+        bx, by, bw, bh = x - px, y - py, along, across
+    # a pad past the label's top or left edge stops at the edge
+    if bx < 0:
+        bw, bx = bw + bx, 0
+    if by < 0:
+        bh, by = bh + by, 0
+    bw, bh = max(1, bw), max(1, bh)
+    # thickness = the short side fills the box (a thicker border would grow it)
+    return f"^FO{bx},{by}^GB{bw},{bh},{min(bw, bh)}^FS"
+
+
+def _text_data(el: TextEl | FieldEl, value: str, lines: int) -> str:
+    """The escaped ^FD of a text: a newline typed into static text is the
+    ^FB line break `\\&` when the text has lines to break onto, and
+    dropped on a one-line text (a hex LF would print as nothing or a box)."""
+    if not isinstance(el, TextEl):
+        return _esc(value)
+    parts = value.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return ("\\&" if lines > 1 else "").join(_esc(part) for part in parts)
+
+
+def _v2_text(el: TextEl | FieldEl, value: str, dpi: int) -> list[str]:
+    obj, faux = font_object(el.font.family, el.font.weight)
+    h = round(el.font_size_pt * dpi / 72)
+    w = round(h * 1.15) if faux and el.inverted else h
+    lines = el.lines if isinstance(el, TextEl) else 1
+    # with a ^FB, ^FT marks the LAST line's baseline; lines sit one font
+    # height apart (^FB line spacing 0)
+    ox, oy = _origin(el, dpi, el.baseline_in + (lines - 1) * el.font_size_pt / 72)
+    block = (f"^FB{_dots(el.w, dpi)},{lines},0,{_JUST[el.align]},0"
+             if el.align != "left" or lines > 1 else "")
+    rest = (f"{block}^A@{_ROT[el.rotation]},{h},{w},E:{obj}"
+            + ("^FR" if el.inverted else "") + f"^FH_^FD{_text_data(el, value, lines)}^FS")
+    out = [_invert_box(el, dpi)] if el.inverted else []
+    out.append(f"^FT{ox},{oy}{rest}")
+    if faux and not el.inverted:
+        dx, dy = _STEP[el.rotation]
+        out.append(f"^FT{max(0, ox + dx)},{max(0, oy + dy)}{rest}")
+    return out
+
+
+def _v2_qr(el: QrEl | FieldEl, value: str, dpi: int) -> str:
+    """Error correction M, automatic input (`MA,`). Magnification fills the
+    box for the symbol size the value needs (labels.qr), capped at the
+    printer's 10; the symbol is centered on the box, so a capped one stays
+    where the design put it. ^BQ prints upright only (N): a square symbol
+    looks the same at any rotation, which stays in the model for the canvas."""
+    try:
+        modules = qr_modules(value)
+    except QrTooLong as e:
+        raise QrTooLong(f"{el.id}: {e.problems[0]}") from e
+    wd, hd = _dots(el.w, dpi), _dots(el.h, dpi)
+    mag = min(10, max(1, round(wd / modules)))
+    side = modules * mag
+    x = max(0, _dots(el.x, dpi) + (wd - side) // 2)
+    y = max(0, _dots(el.y, dpi) + (hd - side) // 2)
+    return f"^FO{x},{y}^BQN,2,{mag}^FH_^FDMA,{_esc(value)}^FS"
+
+
+def _v2_shape(el: LineEl | BoxEl, dpi: int) -> str:
+    t = max(1, _dots(el.stroke_in, dpi))
+    along, across = _dots(el.w, dpi), _dots(el.h, dpi)
+    w, h = (across, along) if el.rotation in (90, 270) else (along, across)
+    w, h = max(t, w), max(t, h)
+    if isinstance(el, BoxEl) and el.fill:
+        t = min(w, h)
+    return f"^FO{_dots(el.x, dpi)},{_dots(el.y, dpi)}^GB{w},{h},{t}^FS"
+
+
+def _v2_element(el: object, dpi: int, values: Mapping[str, str]) -> list[str]:
+    if isinstance(el, (LineEl, BoxEl)):
+        return [_v2_shape(el, dpi)]
+    if element_hidden(el, values):
+        return []
+    value = element_value(el, values)
+    display = el.display if isinstance(el, FieldEl) else None
+    if isinstance(el, BarcodeEl) or display == "barcode":
+        return [_barcode_field(el, dpi, _esc(value))]
+    if isinstance(el, QrEl) or display == "qr":
+        return [_v2_qr(el, value, dpi)]
+    return _v2_text(el, value, dpi)
+
+
 def compile_zpl(design: Design, dpi: int,
                 substitutions: dict[str, str] | None = None) -> str:
     lines = ["^XA",
              f"^PW{_dots(design.width_in, dpi)}",
              f"^LL{_dots(design.height_in, dpi)}",
              "^CI28"]
+    if design.schema >= 2:
+        if substitutions is None:
+            raise ValueError("v2 designs render with values")
+        for el in design.elements:
+            lines.extend(_v2_element(el, dpi, substitutions))
+        lines.append("^XZ")
+        return "\n".join(lines)
     for el in design.elements:
         if isinstance(el, TextEl):
             lines.append(_text(el, dpi, substitutions))

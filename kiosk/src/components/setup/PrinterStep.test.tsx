@@ -404,6 +404,82 @@ describe('checks', () => {
     expect(screen.queryByRole('button', { name: /Install/ })).toBeNull();
     expect(finishButton().disabled).toBe(true);
   });
+
+  const SWISS_CODE = '^XA^A@N,40,40,E:TT0003M_.TTF^FDx^FS^XZ';
+  const SWISS_FONT = { id: 'f-s', name: 'TT0003M_.TTF', size: 0, resident: true };
+
+  it('a missing built-in font is red with no Install button, and is never installed', async () => {
+    const user = userEvent.setup();
+    templatesMock.templates = [template({ code: SWISS_CODE })];
+    apiMock.fetchKioskLabelFonts.mockResolvedValue({ fonts: [SWISS_FONT], missing: [] });
+    renderStep();
+    await connectUsb(user);
+    await failed('Fonts installed');
+    expect(within(row('Fonts installed')).getByText('Printer is missing its built-in font TT0003M_.TTF.'))
+      .toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Install/ })).toBeNull();
+    expect(screen.queryByText(/isn't in the font library/)).toBeNull();
+    expect(apiMock.printerSendFont).not.toHaveBeenCalled();
+    expect(apiMock.fetchKioskFontContent).not.toHaveBeenCalled();
+    expect(usb.sent.some((z) => z.startsWith('~DY'))).toBe(false);
+    // Finish anyway stays as it was: a user session may still finish
+    expect(finishButton().disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Finish anyway' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('a built-in font on the printer passes the check', async () => {
+    const user = userEvent.setup();
+    templatesMock.templates = [template({ code: SWISS_CODE })];
+    printerState.fonts.push('TT0003M_.TTF');
+    renderStep();
+    await connectUsb(user);
+    await allGreen();
+    expect(apiMock.fetchKioskLabelFonts).not.toHaveBeenCalled();
+  });
+
+  it('beside a missing library font, only the library font installs; the built-in one stays red', async () => {
+    const user = userEvent.setup();
+    templatesMock.templates = [template({
+      code: '^XA^A@N,40,40,E:TT0003M_.TTF^FDx^FS^A@N,30,30,E:ROBOTO.TTF^FDy^FS^XZ',
+    })];
+    // an older library row for the Swiss file, not yet flagged resident
+    apiMock.fetchKioskLabelFonts.mockResolvedValue({
+      fonts: [{ id: 'f-r', name: 'ROBOTO.TTF', size: 4 }, { ...SWISS_FONT, resident: false }], missing: [],
+    });
+    renderStep();
+    await connectUsb(user);
+    await failed('Fonts installed');
+    expect(within(row('Fonts installed')).getByText(
+      'Missing: ROBOTO.TTF. Printer is missing its built-in font TT0003M_.TTF.')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Install 1 missing font' }));
+    await waitFor(() => expect(within(row('Fonts installed')).getByText(
+      'Printer is missing its built-in font TT0003M_.TTF.')).toBeTruthy(), { timeout: 3000 });
+    expect(apiMock.fetchKioskFontContent).toHaveBeenCalledTimes(1);
+    expect(apiMock.fetchKioskFontContent).toHaveBeenCalledWith('f-r', 'i-1');
+    expect(usb.sent.filter((z) => z.startsWith('~DY'))).toEqual(['~DYE:ROBOTO.TTF,B,T,4,,']);
+    expect(screen.queryByRole('button', { name: /Install/ })).toBeNull();
+  });
+
+  it("a label builder template's fonts come from the plan (its code is empty)", async () => {
+    const user = userEvent.setup();
+    templatesMock.templates = [template({ id: 'v', code: '', kind: 'design', schema_version: 2 })];
+    apiMock.getLabelPlan.mockResolvedValue({
+      template: { id: 'v', name: 'Vegas · 203', family: 'Vegas', dpi_key: '203', version: 1 },
+      notes: [], fonts: ['ROBOTO_R.TTF', 'TT0003M_.TTF'],
+    });
+    apiMock.fetchKioskLabelFonts.mockResolvedValue({ fonts: [{ id: 'f-r', name: 'ROBOTO_R.TTF', size: 4 }], missing: [] });
+    renderStep();
+    await connectUsb(user);
+    await failed('Fonts installed');
+    expect(within(row('Fonts installed')).getByText(
+      'Missing: ROBOTO_R.TTF. Printer is missing its built-in font TT0003M_.TTF.')).toBeTruthy();
+
+    cleanup();
+    printerState.fonts = ['ROBOTO_R.TTF', 'TT0003M_.TTF'];
+    renderStep();
+    await connectUsb(user);
+    await allGreen();
+  });
 });
 
 describe('peeler', () => {

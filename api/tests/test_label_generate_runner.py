@@ -83,11 +83,13 @@ async def _seed_initiative(db, *, n_assets=3, top_template=True, destination_sit
 
 
 def _queued_run(initiative_id, requested_by, *, label_types=("top",), notify=False,
-               regenerate_existing=False):
+               regenerate_existing=False, dpi_key="203"):
+    # 203: the DPI every seeded template here prints at (a run only uses
+    # templates at its own DPI)
     return LabelGenerationRun(
         initiative_id=initiative_id, label_types=list(label_types),
         regenerate_existing=regenerate_existing, requested_by=requested_by,
-        notify=notify, status="running", started_at=datetime.now(UTC))
+        notify=notify, status="running", started_at=datetime.now(UTC), dpi_key=dpi_key)
 
 
 async def _add_containers(db, initiative, names, *, archived=False):
@@ -516,7 +518,7 @@ async def test_claim_next_oldest_first_skip_locked_and_requeue_stale(db):
 async def test_run_once_end_to_end(db):
     initiative, person, assets, template = await _seed_initiative(db, n_assets=2)
     run = LabelGenerationRun(initiative_id=initiative.id, label_types=["top"],
-                             requested_by=person.id, status="queued")
+                             requested_by=person.id, status="queued", dpi_key="203")
     db.add(run)
     await db.commit()
     run_id = run.id
@@ -595,7 +597,7 @@ async def test_enqueue_run_stores_valid_template_override(db):
     initiative, person, assets, template = await _seed_initiative(db, n_assets=1)
     run = await enqueue_run(
         db, initiative_id=initiative.id, label_types=["top"], regenerate_existing=False,
-        requested_by=person.id, notify=False,
+        requested_by=person.id, notify=False, dpi_key="203",
         template_overrides={"top": str(template.id)})
     assert run.template_overrides == {"top": str(template.id)}
 
@@ -684,7 +686,7 @@ async def test_runner_override_wins_over_auto_match(db):
     db.add(override_template)
     await db.commit()
     from serversherpa.labels.generate.select import select_template
-    auto = await select_template(db, "top", initiative.destination_site_id)
+    auto = await select_template(db, "top", initiative.destination_site_id, "203")
     assert auto is not None and auto.id == auto_template.id and auto.id != override_template.id
 
     run = _queued_run(initiative.id, person.id, label_types=["top"])
@@ -916,3 +918,151 @@ async def test_rerunning_a_container_type_skips_unchanged_labels(db):
     await process_run(db, second, sessionmaker=get_sessionmaker())
     await db.refresh(second)
     assert second.skipped == 1 and second.generated == 0
+
+
+# ── generated labels per DPI (label builder, spec §4.1) ──────────────
+
+def _builder_design(field):
+    return {"schema": 2, "size": {"w": 4, "h": 2}, "elements": [
+        {"id": "f1", "type": "field", "field": field, "x": 0.1, "y": 0.1, "w": 3.5,
+         "h": 0.3, "rotation": 0, "display": "text",
+         "font": {"family": "roboto", "weight": "regular"}, "sizePt": 18,
+         "baselineIn": 0.2, "align": "left"},
+    ]}
+
+
+async def _builder_tree(db, *, label_type="top", field="asset_id"):
+    """A global, active builder template and its 203/300/600 children."""
+    from serversherpa.labels import templates_tree
+    parent = await templates_tree.create_parent(
+        db, name=f"Builder {label_type} {uuid.uuid4().hex[:6]}", description="",
+        label_type=label_type, size_key="4x2", language_key="zpl",
+        design=_builder_design(field), samples={}, site_ids=[], actor_id=None)
+    await db.commit()
+    children = await templates_tree.children_of(db, parent, include_old=False)
+    return parent, {c.dpi_key: c.id for c in children}
+
+
+async def _labels_by_dpi(db, label_type="top"):
+    rows = (await db.execute(select(GeneratedLabel).where(
+        GeneratedLabel.label_type == label_type))).scalars().all()
+    out: dict[str, list[GeneratedLabel]] = {}
+    for row in rows:
+        out.setdefault(row.dpi_key, []).append(row)
+    return out
+
+
+async def test_runs_generate_per_dpi_and_keep_other_dpis(db):
+    """A run renders the builder template's child at the run's DPI from the
+    label builder's field values, and labels are keyed per DPI: a 300 run
+    leaves the 203 labels alone, and a rerun at 203 skips its own current
+    labels."""
+    initiative, person, _assets, _ = await _seed_initiative(db, n_assets=2, top_template=False)
+    _parent, children = await _builder_tree(db)
+
+    first = _queued_run(initiative.id, person.id, dpi_key="203")
+    db.add(first)
+    await db.commit()
+    assert await process_run(db, first, sessionmaker=get_sessionmaker()) == "completed"
+    await db.refresh(first)
+    assert (first.generated, first.errors, first.error_summary) == (2, 0, {})
+
+    second = _queued_run(initiative.id, person.id, dpi_key="300")
+    db.add(second)
+    await db.commit()
+    assert await process_run(db, second, sessionmaker=get_sessionmaker()) == "completed"
+    await db.refresh(second)
+    assert (second.generated, second.skipped, second.errors) == (2, 0, 0)
+
+    by_dpi = await _labels_by_dpi(db)
+    assert sorted(by_dpi) == ["203", "300"]
+    for dpi, width in (("203", 812), ("300", 1200)):
+        rows = by_dpi[dpi]
+        assert len(rows) == 2
+        assert {r.template_id for r in rows} == {children[dpi]}
+        assert all(f"^PW{width}" in r.code for r in rows)
+        assert sorted(r.values["asset_id"] for r in rows) == ["9000", "9001"]
+        assert all("^FD9000^FS" in r.code or "^FD9001^FS" in r.code for r in rows)
+
+    rerun = _queued_run(initiative.id, person.id, dpi_key="203")
+    db.add(rerun)
+    await db.commit()
+    assert await process_run(db, rerun, sessionmaker=get_sessionmaker()) == "completed"
+    await db.refresh(rerun)
+    assert (rerun.generated, rerun.skipped) == (0, 2)
+    assert {dpi: len(rows) for dpi, rows in (await _labels_by_dpi(db)).items()} == {
+        "203": 2, "300": 2}
+
+
+async def test_a_run_at_a_dpi_with_no_template_has_no_template(db):
+    """The older single rows print at their own DPI only: a 300 run never
+    falls back to a 203 template."""
+    initiative, person, *_ = await _seed_initiative(db, n_assets=2)
+    run = _queued_run(initiative.id, person.id, dpi_key="300")
+    db.add(run)
+    await db.commit()
+    assert await process_run(db, run, sessionmaker=get_sessionmaker()) == "completed"
+    await db.refresh(run)
+    assert (run.generated, run.errors) == (0, 2)
+    assert run.error_summary == {"no_template:top": 2}
+
+
+async def test_a_builder_container_template_prints_the_container_fields(db):
+    initiative, person, *_ = await _seed_initiative(db, n_assets=1, top_template=False)
+    await _add_containers(db, initiative, ["ATL1-W1M-DC-02"])
+    _parent, children = await _builder_tree(db, label_type="container", field="container_name")
+    run = _queued_run(initiative.id, person.id, label_types=["container"], dpi_key="600")
+    db.add(run)
+    await db.commit()
+    assert await process_run(db, run, sessionmaker=get_sessionmaker()) == "completed"
+    await db.refresh(run)
+    assert (run.generated, run.errors) == (1, 0)
+    [label] = (await _labels_by_dpi(db, "container"))["600"]
+    assert label.template_id == children["600"]
+    assert "ATL1-W1M-DC-02" in label.code and "^PW2400" in label.code
+
+
+async def test_enqueue_run_stores_the_dpi_and_rejects_an_unknown_one(db):
+    from serversherpa.labels.generate import InvalidDpi
+    initiative, person, *_ = await _seed_initiative(db, n_assets=1)
+    run = await enqueue_run(db, initiative_id=initiative.id, label_types=["top"],
+                            regenerate_existing=False, requested_by=person.id, notify=False)
+    assert run.dpi_key == "300"
+    run.status = "completed"
+    await db.commit()
+    run = await enqueue_run(db, initiative_id=initiative.id, label_types=["top"],
+                            regenerate_existing=False, requested_by=person.id, notify=False,
+                            dpi_key="203")
+    assert run.dpi_key == "203"
+    run.status = "completed"
+    await db.commit()
+    with pytest.raises(InvalidDpi):
+        await enqueue_run(db, initiative_id=initiative.id, label_types=["top"],
+                          regenerate_existing=False, requested_by=person.id, notify=False,
+                          dpi_key="150")
+
+
+async def test_enqueue_run_rejects_a_parent_or_another_dpi_as_an_override(db):
+    """An override must print at the run's DPI: a builder parent never
+    prints, and a child or row at another DPI would land in that DPI's
+    labels."""
+    initiative, person, _assets, legacy_203 = await _seed_initiative(db, n_assets=1)
+    parent, children = await _builder_tree(db)
+    with pytest.raises(InvalidTemplates) as exc:
+        await enqueue_run(
+            db, initiative_id=initiative.id, label_types=["top"], regenerate_existing=False,
+            requested_by=person.id, notify=False, dpi_key="300",
+            template_overrides={"top": str(parent.id)})
+    assert exc.value.problems == ["top: pick one of the template's DPI versions"]
+    for template_id in (children["203"], legacy_203.id):
+        with pytest.raises(InvalidTemplates) as exc:
+            await enqueue_run(
+                db, initiative_id=initiative.id, label_types=["top"],
+                regenerate_existing=False, requested_by=person.id, notify=False,
+                dpi_key="300", template_overrides={"top": str(template_id)})
+        assert exc.value.problems == ["top: template prints at 203 DPI, not 300"]
+    run = await enqueue_run(
+        db, initiative_id=initiative.id, label_types=["top"], regenerate_existing=False,
+        requested_by=person.id, notify=False, dpi_key="300",
+        template_overrides={"top": str(children["300"])})
+    assert run.template_overrides == {"top": str(children["300"])}

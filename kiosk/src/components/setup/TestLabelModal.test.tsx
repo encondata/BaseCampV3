@@ -5,13 +5,13 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { alignmentTestZpl, applyPrintSettings, DEFAULT_PRINT_SETTINGS } from '@portal/lib/printLabels';
 
-const apiMock = vi.hoisted(() => ({ postTestRender: vi.fn() }));
+const apiMock = vi.hoisted(() => ({ postTestRender: vi.fn(), getLabelPlan: vi.fn() }));
 vi.mock('../../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/api')>();
   return { ...actual, ...apiMock };
 });
 
-import type { KioskLabelTemplate } from '../../lib/api';
+import { ApiError, type KioskLabelTemplate } from '../../lib/api';
 import { withPrintMode, type StationPrinter } from '../../lib/stationPrinter';
 import TestLabelModal from './TestLabelModal';
 
@@ -26,7 +26,13 @@ function template(over: Partial<KioskLabelTemplate>): KioskLabelTemplate {
 const TEMPLATES = [
   template({ id: 'g203', name: 'Generic Rack and RU', dpi_key: '203' }),
   template({ id: 'f300', name: 'Front 2x1', label_type: 'front', size_key: '2x1', dpi_key: '300' }),
+  template({ id: 'v203', name: 'Vegas · 203', family: 'Vegas', dpi_key: '203', code: '', kind: 'design',
+             schema_version: 2 }),
 ];
+
+const plan = (id: string | null) => ({
+  template: id ? { id, name: id, family: id, dpi_key: '203', version: 1 } : null, notes: [], fonts: [],
+});
 
 function fakePrinter(): StationPrinter & { sent: string[] } {
   const sent: string[] = [];
@@ -44,6 +50,8 @@ const shifted = (zpl: string, x: number, y: number, peel = false) => withPrintMo
 
 beforeEach(() => {
   apiMock.postTestRender.mockReset().mockResolvedValue({ zpl: '^XA^PW812^FDrendered^FS^XZ', template_name: 'Generic Rack and RU' });
+  // An edge without the plan route: the mock label falls back to Generic Rack and RU / Front.
+  apiMock.getLabelPlan.mockReset().mockRejectedValue(new ApiError(404, 'unknown_error'));
 });
 afterEach(cleanup);
 
@@ -166,4 +174,45 @@ it('the offset hints say the printing moves, and give dots per mm at the printer
   cleanup();
   renderModal({ dpi: 300, offsets: { x: 4, y: 0 } });
   expect(screen.getByText('+ moves the printing right on the label, − moves it left. 12 dots ≈ 1 mm at 300 DPI.')).toBeTruthy();
+});
+
+it("prints the template the station's plan picks, with the portal's mock values", async () => {
+  const user = userEvent.setup();
+  apiMock.getLabelPlan.mockResolvedValue(plan('v203'));
+  const { printer } = renderModal();
+  expect(apiMock.getLabelPlan).toHaveBeenCalledWith({ dpi: 203, kind: 'top' });
+  await user.click(screen.getByRole('radio', { name: /Mock-data label/ }));
+  await screen.findByText(/Vegas · 203 at 203 DPI/);
+  await user.click(screen.getByRole('button', { name: 'Print test label' }));
+  await waitFor(() => expect(printer.sent).toHaveLength(1));
+  expect(apiMock.postTestRender).toHaveBeenCalledWith({ initiative_id: 'i-1', template_id: 'v203', dpi_key: '203' });
+  expect(await screen.findByText('Mock-data label (Vegas · 203) sent to the printer.')).toBeTruthy();
+});
+
+it("falls back to Generic Rack and RU when the plan's template wasn't downloaded or it picks none", async () => {
+  const user = userEvent.setup();
+  for (const picked of ['gone', null]) {
+    apiMock.getLabelPlan.mockResolvedValue(plan(picked));
+    apiMock.postTestRender.mockClear();
+    const { printer } = renderModal();
+    await user.click(screen.getByRole('radio', { name: /Mock-data label/ }));
+    await waitFor(() => expect(apiMock.getLabelPlan).toHaveBeenCalled());
+    await screen.findByText(/Generic Rack and RU at 203 DPI/);
+    await user.click(screen.getByRole('button', { name: 'Print test label' }));
+    await waitFor(() => expect(printer.sent).toHaveLength(1));
+    expect(apiMock.postTestRender).toHaveBeenCalledWith({ initiative_id: 'i-1', template_id: 'g203', dpi_key: '203' });
+    cleanup();
+  }
+});
+
+it('waits for the plan before the mock-data label can print', async () => {
+  const user = userEvent.setup();
+  apiMock.getLabelPlan.mockReturnValue(new Promise(() => {}));
+  renderModal();
+  await user.click(screen.getByRole('radio', { name: /Mock-data label/ }));
+  expect(screen.getByText("Finding the station's template…")).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'Print test label' }) as HTMLButtonElement).disabled).toBe(true);
+  // the alignment label never waits
+  await user.click(screen.getByRole('radio', { name: /Alignment label/ }));
+  expect((screen.getByRole('button', { name: 'Print test label' }) as HTMLButtonElement).disabled).toBe(false);
 });

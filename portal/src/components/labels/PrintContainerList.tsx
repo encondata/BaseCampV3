@@ -38,6 +38,10 @@ import { LABEL_TAG_OPTIONS } from '../../lib/labelTags';
 import type { LabelStatus } from '../../lib/printLabels';
 import { naturalCompare } from '../../lib/sites';
 import { VirtualRows } from '../../lib/virtualRows';
+// The DPI column (shown while no printer DPI filters the labels, after the
+// registry and always on) is the asset list's own; it stays within the fit
+// below.
+import { DPI_COL, dpiCell } from './PrintAssetList';
 import '../../styles/directory.css';
 
 export const PRINT_CONTAINER_LIST_PAGE_KEY = 'labels-print-containers';
@@ -113,6 +117,9 @@ export function sortContainerRows(
 interface Props {
   rows: ContainerItem[];
   statusOf: ((row: ContainerItem) => LabelStatus) | null;
+  /** The DPIs a row has a label at — a DPI column — when no printer DPI
+   *  narrows the labels; null hides the column. */
+  dpisOf?: ((row: ContainerItem) => string[]) | null;
   selected: string[];
   onSelectedChange: (next: string[]) => void;
   onDisplayedChange: (displayed: ContainerItem[]) => void;
@@ -123,7 +130,7 @@ interface Props {
 }
 
 export default function PrintContainerList({
-  rows, statusOf, selected, onSelectedChange, onDisplayedChange, onRefresh, refreshing, disabled = false, resetKey,
+  rows, statusOf, dpisOf = null, selected, onSelectedChange, onDisplayedChange, onRefresh, refreshing, disabled = false, resetKey,
 }: Props) {
   const { preferences } = useAuth();
   const listGridScale = listScale(preferences?.list_size);
@@ -199,7 +206,8 @@ export default function PrintContainerList({
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = listGridStyle([CHECKBOX_COL, ...shownCols], [], undefined, listGridScale);
+  const grid = listGridStyle([CHECKBOX_COL, ...shownCols, ...(dpisOf ? [DPI_COL] : [])], [],
+    undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cell = (r: ContainerItem, key: string) => {
@@ -270,6 +278,7 @@ export default function PrintContainerList({
                           sortDir={sortKey === c.key ? sortDir : null} onSort={(dir) => setSort(c.key, dir)} />
             </ColHead>
           ))}
+          {dpisOf && <ColHead col={DPI_COL} />}
         </div>
 
         {displayed.length === 0 && (
@@ -293,6 +302,7 @@ export default function PrintContainerList({
                 {shownCols.map((c) => (
                   <div key={c.key} className={`cell ${c.key === 'name' ? 'cell-primary' : ''}`}>{cell(r, c.key)}</div>
                 ))}
+                {dpisOf && <div className="cell">{dpiCell(dpisOf(r))}</div>}
               </div>
             </div>
           );

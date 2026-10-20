@@ -2012,9 +2012,26 @@ def _normalize_color(v: str | None) -> str | None:
     return v
 
 
+INITIATIVE_CODE_MAX = 32
+
+
+def _normalize_initiative_code(v: str | None) -> str | None:
+    """Initiative code: strip; empty -> None (no code); at most
+    INITIATIVE_CODE_MAX characters after the strip (`code_too_long`)."""
+    if v is None:
+        return None
+    v = v.strip()
+    if not v:
+        return None
+    if len(v) > INITIATIVE_CODE_MAX:
+        raise ValueError("code_too_long")
+    return v
+
+
 class InitiativeItem(BaseModel):
     id: uuid.UUID
     name: str
+    code: str | None = None
     description: str | None = None
     color: str | None = None   # stored value, not a fallback; null = unset
     initiative_type: str
@@ -2121,6 +2138,7 @@ class InitiativeLinksOut(BaseModel):
 class InitiativeCreateIn(BaseModel):
     name: str
     initiative_type: str
+    code: str | None = None    # stripped; "" -> None; unique when set (409 code_in_use)
     description: str | None = None
     color: str | None = None   # omitted on create -> one is assigned
     sub_type: str | None = None
@@ -2152,6 +2170,11 @@ class InitiativeCreateIn(BaseModel):
     @classmethod
     def _color_normalized(cls, v: str | None) -> str | None:
         return _normalize_color(v)
+
+    @field_validator("code")
+    @classmethod
+    def _code_normalized(cls, v: str | None) -> str | None:
+        return _normalize_initiative_code(v)
 
 
 class InitiativeUpdateIn(InitiativeCreateIn):
@@ -3208,16 +3231,38 @@ class KioskAssetOut(BaseModel):
     destination_pod: str | None = None
     priority_wave: str | None = None
     disposition: str | None = None
+    # The label builder's fields (labels/fields.py `field_values` reads
+    # them; labels/generate/payloads.py `asset_payload` builds every field
+    # above and below except `label`). Statuses come with their label.
+    pod_number: str | None = None
+    asset_status: str | None = None
+    asset_status_label: str | None = None
+    has_rails: bool | None = None
+    location_detail: str | None = None
+    owner: str | None = None
+    # The roster's cable_info parsed: the importer's JSON {"data_1".."data_6",
+    # "mgmt_1", "mgmt_2"} as is, free text as {"text": ...}, None when blank.
+    cable_info: dict[str, Any] | None = None
+    vendor_involved: bool | None = None
+    roster_status: str | None = None
+    roster_status_label: str | None = None
+    # the uploaded From-To row, headers verbatim, cut down to the columns
+    # the move's active templates place (`ft:<header>`); None when none
+    raw_ft: dict[str, Any] | None = None
     label: dict[str, str]
 
 
 class KioskLabelContextOut(BaseModel):
     """The move-level inputs an edge needs to rebuild each asset's label
-    values (labels/label_values.py `LabelMove`) plus the active catalog keys."""
+    values (labels/label_values.py `LabelMove`, labels/fields.py
+    `field_values`) plus the active catalog keys."""
     move_name: str | None = None
+    move_code: str | None = None
     move_day: date | None = None
     source_site: str | None = None
+    source_site_code: str | None = None
     destination_site: str | None = None
+    destination_site_code: str | None = None
     catalog_keys: list[str]
 
 
@@ -3492,9 +3537,11 @@ class KioskContainerOut(BaseModel):
 
     id: uuid.UUID
     name: str
+    legacy_id: int | None = None     # the human Container ID a label prints
     rfid_tag: str | None = None
     label_tag: str | None = None
     container_type: str | None = None
+    container_type_label: str | None = None
     status: str
     status_label: str
     site_id: uuid.UUID | None = None
@@ -3547,6 +3594,11 @@ class KioskLabelTemplateOut(BaseModel):
     kind: str = "code"
     design: dict | None = None
     scope: Literal["destination", "source", "both", "global", "other"] = "global"
+    # the design's schema (1 for code): an edge that knows a lower one
+    # reports the template unsupported. A label builder child arrives as
+    # schema 2 with `code` "" (the edge renders its design) and its
+    # parent's name as `family`; sample values never come down.
+    schema_version: int = 1
 
 
 class KioskLabelTemplatesSyncOut(BaseModel):
@@ -3557,10 +3609,13 @@ class KioskLabelTemplatesSyncOut(BaseModel):
 
 class KioskLabelFontOut(BaseModel):
     """A font-library font the move's label templates reference. `name` is
-    its printer object name (`NAME.TTF` on E:); `size` is in bytes."""
+    its printer object name (`NAME.TTF` on E:); `size` is in bytes. A
+    `resident` font is built into the printer: the station checks it is
+    there and never installs it (its content route refuses it)."""
     id: uuid.UUID
     name: str
     size: int
+    resident: bool = False
 
 
 class KioskLabelFontsOut(BaseModel):
@@ -3788,6 +3843,9 @@ class LabelVocabCreateIn(BaseModel):
     description: str = ""
     meta: dict = Field(default_factory=dict)
     sort_order: int = 0
+    # false keeps a row off the lists: a custom size made for one template
+    # and not saved to the list (the builder's New template › Custom…)
+    is_active: bool = True
 
 
 class LabelVocabUpdateIn(BaseModel):
@@ -3798,6 +3856,29 @@ class LabelVocabUpdateIn(BaseModel):
     meta: dict | None = None
     sort_order: int | None = None
     is_active: bool | None = None
+
+
+class LabelFieldOut(BaseModel):
+    """One field the label builder offers (labels/fields.py FieldDef)."""
+    key: str
+    label: str
+    kind: Literal["text", "number", "date"]
+    mock: str
+
+
+class LabelFieldGroupOut(BaseModel):
+    key: str
+    label: str
+    label_types: list[str]
+    fields: list[LabelFieldOut]
+
+
+class LabelFieldsOut(BaseModel):
+    """GET /labels/fields: the builder's field groups for one label type,
+    plus every From-To header seen on a roster (each one is a dynamic
+    `ft:<header>` field), in natural order."""
+    groups: list[LabelFieldGroupOut]
+    ft_headers: list[str]
 
 
 class LabelPlaceholderOut(BaseModel):
@@ -3857,6 +3938,94 @@ class LabelTemplateOut(BaseModel):
     site_ids: list[uuid.UUID] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+    # The label builder's tree (labels/templates_tree.py): a parent is
+    # schema_version 2 with no parent_id and owns `dpis` and `samples`; a
+    # child names its parent, the parent version it was generated from and
+    # its hand edits on top (v<generated_from_version>.<child_edits>).
+    parent_id: uuid.UUID | None = None
+    schema_version: int = 1
+    samples: dict[str, str] = Field(default_factory=dict)
+    dpis: list[str] = Field(default_factory=list)
+    generated_from_version: int | None = None
+    child_edits: int = 0
+    customized: bool = False
+    is_old: bool = False
+
+
+class LabelTemplateSaveOut(LabelTemplateOut):
+    """PATCH / restore: the saved template, and the ids of the parent's
+    customized children that this or an earlier parent save left out of
+    date (the builder offers "Update from parent" for each)."""
+    out_of_date: list[uuid.UUID] = Field(default_factory=list)
+
+
+class LabelTemplateChildOut(LabelTemplateOut):
+    """A DPI child in the tree. `out_of_date`: customized, and the parent
+    has saved past the version it was generated from."""
+    out_of_date: bool = False
+
+
+class LabelTemplateTreeOut(LabelTemplateOut):
+    """GET /labels/templates/tree: a top-level template — a builder parent
+    with its children (current and Old), or an older single row with none.
+    `family` is the name templates of one family share (a parent's name;
+    an older row's name without its DPI marker)."""
+    family: str
+    children: list[LabelTemplateChildOut] = Field(default_factory=list)
+
+
+class LabelTemplateVersionOut(BaseModel):
+    """One saved state of a template; `label` is v7 or v7.2."""
+    version: int
+    child_edits: int
+    label: str
+    summary: str
+    note: str
+    created_by: uuid.UUID | None
+    created_by_name: str | None
+    created_at: datetime
+
+
+class LabelTemplateVersionDetailOut(LabelTemplateVersionOut):
+    design: dict | None
+    code: str | None
+    samples: dict[str, str]
+
+
+class LabelTemplateVersionNoteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str = Field(max_length=2000)
+
+
+class LabelTemplateDeleteIn(BaseModel):
+    """DELETE on a top-level template must carry its exact name."""
+    model_config = ConfigDict(extra="forbid")
+
+    typed_name: str | None = None
+
+
+class LabelTemplateDeleteSummaryOut(BaseModel):
+    children: list[str]
+    generated_labels: int
+
+
+class LabelTemplateCloneIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
+
+
+class LabelTemplateDpiIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dpi: str
+
+
+class LabelTemplateReplaceIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    old_template_ids: list[uuid.UUID] = Field(min_length=1)
 
 
 class LabelFontUsedByOut(BaseModel):
@@ -3864,7 +4033,22 @@ class LabelFontUsedByOut(BaseModel):
     template_name: str
 
 
+class LabelFontMetricsOut(BaseModel):
+    """GET /labels/fonts/{id}/metrics, in font units: scale by font size /
+    unitsPerEm. ascent/descent are positive distances from the baseline;
+    advances covers printable ASCII (32-126)."""
+    unitsPerEm: int
+    ascent: int
+    descent: int
+    advances: dict[str, int]
+
+
 class LabelFontOut(BaseModel):
+    """A font-library file. `family`/`weight` place it in a label builder
+    family (null for any other font); a `resident` font is Zebra's own
+    (never pushed to a printer or served to a browser) and has
+    `size_bytes` 0 until a copy is uploaded for its metrics; `source_url`
+    is where `seed-label-fonts` downloaded it."""
     id: uuid.UUID
     name: str
     display_name: str
@@ -3874,22 +4058,31 @@ class LabelFontOut(BaseModel):
     uploaded_by_name: str | None
     created_at: datetime
     used_by: list[LabelFontUsedByOut]
+    family: str | None = None
+    weight: str | None = None
+    resident: bool = False
+    source_url: str | None = None
 
 
 class LabelTemplateCreateIn(BaseModel):
+    """A `design` with `"schema": 2` creates a builder parent (at 300 DPI)
+    and its 203/300/600 children; `dpi_key` is then not needed. Any other
+    body creates one row at `dpi_key`, as before."""
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=120)
     description: str = ""
     label_type: str
     size_key: str
-    dpi_key: str
+    dpi_key: str | None = None
     language_key: str
     kind: Literal["design", "code"]
     design: dict | None = None
     code: str | None = None
     generation_rules: dict = Field(default_factory=dict)
     site_ids: list[uuid.UUID] | None = None
+    samples: dict[str, str] | None = None
+    is_active: bool = True
 
 
 class LabelTemplateUpdateIn(BaseModel):
@@ -3906,6 +4099,10 @@ class LabelTemplateUpdateIn(BaseModel):
     is_active: bool | None = None
     generation_rules: dict | None = None
     site_ids: list[uuid.UUID] | None = None
+    # builder parents only
+    samples: dict[str, str] | None = None
+    # the version's "what changed" line; generated from the diff when absent
+    summary: str | None = Field(None, max_length=500)
 
 
 class LabelCompileIn(BaseModel):
@@ -3918,6 +4115,12 @@ class LabelCompileIn(BaseModel):
     dpi_key: str
     language_key: str
     mode: Literal["placeholders", "sample"] = "placeholders"
+    # a schema 2 design's sample values (the builder's), over the portal's
+    # mock values; refused for anything else
+    samples: dict[str, str] | None = None
+    # the template's label type: a schema 2 preview mocks only that type's
+    # fields (a key of another type previews blank, as it prints)
+    label_type: str | None = Field(None, max_length=64)
 
 
 class LabelCompileOut(BaseModel):
@@ -3930,6 +4133,9 @@ class LabelZplPreviewIn(BaseModel):
     zpl: str = Field(min_length=1, max_length=20000)
     size_key: str
     dpi_key: str
+    # library fonts to embed (~DY) ahead of the label: the open fonts a
+    # builder design prints with; never the resident one
+    font_ids: list[uuid.UUID] = Field(default_factory=list, max_length=16)
 
 
 # ── generate labels (runs, preview, generated) ──────────────────────
@@ -3951,6 +4157,9 @@ class LabelRunCreateIn(BaseModel):
     # a stock pydantic error, so it 422s as {"code": "invalid_templates",
     # "problems": [...]}.
     templates: dict[str, uuid.UUID] = Field(default_factory=dict)
+    # the printer DPI the run generates for: a `dpi` vocab key, checked by
+    # enqueue_run (422 {"code": "invalid_dpi"})
+    dpi_key: str = "300"
 
 
 class LabelRunOut(BaseModel):
@@ -3983,6 +4192,7 @@ class LabelRunOut(BaseModel):
     # type key -> template id (text) — the operator's per-type override,
     # as validated and stored by enqueue_run.
     template_overrides: dict[str, str]
+    dpi_key: str
 
 
 class LabelGeneratePreviewInitiativeOut(BaseModel):
@@ -4046,6 +4256,7 @@ class GeneratedLabelOut(BaseModel):
     label_type: str
     template_name: str
     template_version: int
+    dpi_key: str
     generated_at: datetime
     stale: bool
     code: str

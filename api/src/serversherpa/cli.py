@@ -262,6 +262,81 @@ def seed_demo_warehouse() -> None:
 
 
 @app.command()
+def seed_label_fonts() -> None:
+    """Load the label builder's fonts into the font library: Regular and
+    Bold of the seven open families, downloaded from pinned GitHub URLs,
+    plus the resident Swiss 721 Condensed Bold row (no file). Idempotent:
+    a family and weight already in the library is skipped."""
+
+    _name_connections("seed-label-fonts")
+
+    async def _run() -> None:
+        from serversherpa.labels import font_seed
+
+        try:
+            async with get_sessionmaker()() as db:
+                try:
+                    added = await font_seed.seed(db)
+                except font_seed.FontSeedError as exc:
+                    typer.secho(f"Font seed stopped: {exc}", fg="red", err=True)
+                    raise typer.Exit(EXIT_FAILED) from exc
+                fileless = [n for n in await font_seed.residents_without_file(db)
+                            if n in added]
+            for name in added:
+                typer.echo(f"added {name}")
+            typer.secho(f"Seeded {len(added)} label font(s).", fg="green")
+            for name in fileless:
+                typer.secho(f"Upload Zebra's {name} on Labels › Printers › Install Fonts: it "
+                            "fills the resident row so the builder can measure the default "
+                            "font (it is never pushed to a printer or served).", fg="yellow")
+        finally:
+            await dispose_engine()
+
+    asyncio.run(_run())
+
+
+@app.command()
+def seed_label_templates() -> None:
+    """Load the five label templates rebuilt in the label builder (Vegas
+    Destination, Amsterdam Destination, Generic Rack and RU, Front Asset
+    Tag, Switch Front Tag), each with its 203, 300 and 600 DPI children,
+    inactive and linked to no site. An older template holding one of those
+    names is renamed "<name> Old" first. Idempotent: a builder template
+    already under the name is left alone. Run seed-label-fonts first."""
+
+    _name_connections("seed-label-templates")
+
+    async def _run() -> None:
+        from serversherpa.labels import builtin_templates
+
+        try:
+            def show(report) -> None:
+                for old, new in report.renamed:
+                    typer.echo(f'renamed "{old}" to "{new}"')
+                for name in report.created:
+                    typer.echo(f"created {name}")
+                for name in report.skipped:
+                    typer.echo(f"skipped {name}: already a builder template")
+
+            async with get_sessionmaker()() as db:
+                try:
+                    report = await builtin_templates.seed(db)
+                except builtin_templates.TemplateSeedError as exc:
+                    # what it did before it stopped is committed: say so
+                    show(exc.report)
+                    typer.secho(f"Template seed stopped: {exc}", fg="red", err=True)
+                    raise typer.Exit(EXIT_FAILED) from exc
+            show(report)
+            typer.secho(f"Seeded {len(report.created)} label template(s), all inactive. "
+                        "Open each in the builder, then use Replace… on the templates page.",
+                        fg="green")
+        finally:
+            await dispose_engine()
+
+    asyncio.run(_run())
+
+
+@app.command()
 def import_v2_workers(
     dump: str = typer.Option(..., help="Path to the V2 pg_dump .sql file"),
     limit: int = typer.Option(200, help="Max workers to import this run"),

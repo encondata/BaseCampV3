@@ -26,7 +26,8 @@ class UnsupportedLanguage(ValueError):
 
 def compile_parsed_design(design: Design, *, dots: int, language_key: str,
                           subs: dict[str, str] | None) -> str:
-    """Dispatch an already-parsed Design to its language compiler."""
+    """Dispatch an already-parsed Design to its language compiler. A
+    schema 2 design needs `subs` (its values)."""
     if language_key == "zpl":
         return compile_zpl(design, dots, subs)
     if language_key == "escp":
@@ -41,6 +42,7 @@ def compile_design(design_json: dict, *, width_in: float, height_in: float,
                     subs: dict[str, str] | None) -> str:
     """Parse design_json (with the resolved size overridden in) and
     dispatch to the language's compiler. Raises DesignError (bad design
-    JSON) or UnsupportedLanguage — both left for the caller to map."""
+    JSON), UnsupportedLanguage, or ValueError (a schema 2 design with no
+    subs) — all left for the caller to map."""
     design = parse_design({**design_json, "size": {"w": width_in, "h": height_in}})
     return compile_parsed_design(design, dots=dots, language_key=language_key, subs=subs)

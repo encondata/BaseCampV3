@@ -147,6 +147,7 @@ async def test_import_creates_translated_inactive_template(db, tmp_path,
         LabelTemplate.name == "Vegas Destination"))).scalar_one()
     assert row.kind == "code" and row.is_active is False
     assert row.language_key == "zpl" and row.dpi_key == "203"
+    assert row.dpis == ["203"]              # one DPI, not the tree default
     assert row.size_key == "2x1"            # 406x203 dots @203dpi = 2x1
     assert row.label_type == "top"
     assert "{asset_id}" in row.code

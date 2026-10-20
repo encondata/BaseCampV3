@@ -7,7 +7,7 @@
  * API entirely (see the worktree brief: the API implementer's routes
  * land in parallel on this same branch).
  */
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -112,6 +112,7 @@ const run = (over: Partial<LabelRun> = {}): LabelRun => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   auth.can = () => true;
   api.listInitiatives.mockResolvedValue(INIS);
   api.listLabelVocab.mockResolvedValue(VOCAB);
@@ -228,7 +229,7 @@ it('overriding an auto-matched type via Change carries only that type in the tem
   await user.click(screen.getByRole('button', { name: 'Generate labels' }));
   await waitFor(() => expect(api.startLabelRun).toHaveBeenCalledWith({
     initiative_id: 'i2', label_types: ['top'], regenerate_existing: false, notify: false,
-    templates: { top: 't2' },
+    dpi_key: '300', templates: { top: 't2' },
   }));
 });
 
@@ -257,6 +258,7 @@ it('Generate posts the expected body and the progress panel polls until complete
 
   await waitFor(() => expect(api.startLabelRun).toHaveBeenCalledWith({
     initiative_id: 'i2', label_types: ['top'], regenerate_existing: false, notify: false,
+    dpi_key: '300',
   }));
 
   // progress replaces the button as soon as the run starts
@@ -494,4 +496,36 @@ it('a mixed selection is counted in both', async () => {
   expect(kpi('Assets')).toBe('42');
   expect(kpi('Containers')).toBe('7');
   expect(screen.getByText('Top + Container Label for 42 assets and 7 containers on NAP11')).not.toBeNull();
+});
+
+it('shows a DPI choice defaulting to 300 and remembers it', async () => {
+  const user = userEvent.setup();
+  api.startLabelRun.mockResolvedValue(run({ status: 'queued' }));
+  renderAt();
+  const dpiChoice = () => screen.getByRole('radiogroup', { name: 'Printer DPI' });
+  const checked = () => within(dpiChoice()).getAllByRole('radio')
+    .filter((r) => r.getAttribute('aria-checked') === 'true').map((r) => r.textContent);
+  expect(within(dpiChoice()).getAllByRole('radio').map((r) => r.textContent))
+    .toEqual(['203 DPI', '300 DPI', '600 DPI']);
+  expect(checked()).toEqual(['300 DPI']);
+
+  await pickNap11(user);
+  expect(api.getLabelGeneratePreview).toHaveBeenLastCalledWith('i2', '300');
+  await user.click(within(dpiChoice()).getByRole('radio', { name: '203 DPI' }));
+  expect(checked()).toEqual(['203 DPI']);
+  expect(localStorage.getItem('labels.generate.dpi')).toBe('203');
+  // the templates a run would use are the ones at the chosen DPI
+  await waitFor(() => expect(api.getLabelGeneratePreview).toHaveBeenLastCalledWith('i2', '203'));
+  await screen.findByText('Top asset tag v5 · site');
+
+  await user.click(screen.getByRole('checkbox', { name: /Top/ }));
+  await user.click(screen.getByRole('button', { name: 'Generate labels' }));
+  await waitFor(() => expect(api.startLabelRun).toHaveBeenCalledWith({
+    initiative_id: 'i2', label_types: ['top'], regenerate_existing: false, notify: false,
+    dpi_key: '203',
+  }));
+
+  cleanup();
+  renderAt();
+  expect(checked()).toEqual(['203 DPI']);
 });

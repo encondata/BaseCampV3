@@ -4,9 +4,11 @@ import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import ForceChangePassword from './ForceChangePassword';
 
+/** `fallback`: where an account below `minRank` is sent instead of the
+ *  No access page (a page it may still read, e.g. the templates list). */
 export default function ProtectedRoute({
-  children, resource, minRank,
-}: { children: ReactNode; resource?: string; minRank?: number }) {
+  children, resource, minRank, fallback,
+}: { children: ReactNode; resource?: string; minRank?: number; fallback?: string }) {
   const { status, mustChangePassword, can, maxRank } = useAuth();
   const location = useLocation();
 
@@ -31,6 +33,7 @@ export default function ProtectedRoute({
     );
   }
   if (minRank !== undefined && maxRank < minRank) {
+    if (fallback) return <Navigate to={fallback} replace />;
     return (
       <div className="portal-page">
         <div className="eyebrow">Access control</div>

@@ -40,6 +40,46 @@ export function canGenerate({ initiativeId, labelTypes, activeRunId, unresolvedT
   return !!initiativeId && labelTypes.length > 0 && !activeRunId && !unresolvedType;
 }
 
+// ── Printer DPI (a run generates for one) ────────────────────────────
+
+/** The DPIs a run can generate for: the label builder's three children. */
+export const GENERATE_DPIS = ['203', '300', '600'] as const;
+export const DEFAULT_GENERATE_DPI = '300';
+/** The last DPI the operator picked, so the next visit starts there. */
+export const GENERATE_DPI_STORAGE_KEY = 'labels.generate.dpi';
+
+function defaultStorage(): Storage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+export function isGenerateDpi(dpi: string | null | undefined): dpi is string {
+  return !!dpi && (GENERATE_DPIS as readonly string[]).includes(dpi);
+}
+
+/** The remembered DPI, or 300 when none (or something unknown) is stored.
+ *  Generate writes the operator's choice; Print Labels writes the DPI of
+ *  each printer it connects to, so Generate starts at the last printer's. */
+export function readGenerateDpi(storage: Pick<Storage, 'getItem'> | null = defaultStorage()): string {
+  try {
+    const raw = storage?.getItem(GENERATE_DPI_STORAGE_KEY) ?? null;
+    return isGenerateDpi(raw) ? raw : DEFAULT_GENERATE_DPI;
+  } catch {
+    return DEFAULT_GENERATE_DPI;
+  }
+}
+
+export function writeGenerateDpi(dpi: string, storage: Pick<Storage, 'setItem'> | null = defaultStorage()): void {
+  try {
+    storage?.setItem(GENERATE_DPI_STORAGE_KEY, dpi);
+  } catch {
+    /* private mode / quota — the choice just isn't remembered */
+  }
+}
+
 /** A run in flight — used to gate Generate/show Cancel/keep the progress
  *  panel and poll alive. */
 export function isRunActive(run: Pick<LabelRun, 'status'> | null): boolean {

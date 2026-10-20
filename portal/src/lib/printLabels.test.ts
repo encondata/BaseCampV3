@@ -6,8 +6,8 @@ import { describe, expect, it } from 'vitest';
 import type { ContainerItem, GeneratedLabelBundle, InitiativeAssetRow, LabelVocab } from './api';
 import {
   DEFAULT_PRINT_SETTINGS, alignmentTestZpl, applyPrintSettings, batchBounds, batchCount,
-  blankLabelsZpl, bundleByEntity, clampSetting, containerPrintOrder, defaultCopiesFor,
-  labelStatusFor, missingLabelIds, printOrder, readPrintSettings,
+  blankLabelsZpl, bundleAtDpi, bundleByEntity, clampSetting, containerPrintOrder, defaultCopiesFor,
+  dpisByEntity, labelStatusFor, missingLabelIds, printOrder, readPrintSettings,
   sanitizePrintSettings, settingsModified, staleLabelCount, writePrintSettings,
 } from './printLabels';
 
@@ -197,5 +197,36 @@ describe('label status', () => {
   it('lists the selected ids that cannot print and counts stale ones', () => {
     expect(missingLabelIds(['a', 'b', 'c', 'x'], by)).toEqual(['c', 'x']);
     expect(staleLabelCount(['a', 'b', 'c'], by)).toBe(1);
+  });
+});
+
+describe('labels per DPI', () => {
+  const at = (entity: string, dpi: string) => ({
+    id: `${entity}-${dpi}`, entity_type: 'asset' as const, entity_id: entity, template_id: 't',
+    template_name: 'T', template_version: 1, language_key: 'zpl', size_key: '4x2', dpi_key: dpi,
+    stale: false, generated_at: 'now', code: `^XA${entity}${dpi}^XZ`,
+  });
+  const bundle: GeneratedLabelBundle = {
+    initiative_id: 'i', label_type: 'top', fetched_at: 'now',
+    labels: [at('a', '600'), at('a', '203'), at('b', '300'), at('a', '300')],
+  };
+  it('keeps only the printer DPI, or everything without one', () => {
+    expect(bundleAtDpi(bundle, '300')?.labels.map((l) => l.id)).toEqual(['b-300', 'a-300']);
+    expect(bundleAtDpi(bundle, null)).toBe(bundle);
+    expect(bundleAtDpi(null, '300')).toBeNull();
+    expect(bundleByEntity(bundleAtDpi(bundle, '203')).get('a')?.code).toBe('^XAa203^XZ');
+  });
+  it("treats a label at another DPI than the printer's as missing", () => {
+    const by = bundleByEntity(bundle);              // no DPI filter: last wins, a-300
+    expect(labelStatusFor('a', by, '300')).toBe('ready');
+    expect(labelStatusFor('a', by, '203')).toBe('missing');
+    expect(missingLabelIds(['a', 'b'], by, '203')).toEqual(['a', 'b']);
+    expect(staleLabelCount(['a', 'b'], by, '300')).toBe(0);
+  });
+  it("lists each entity's DPIs lowest first", () => {
+    const dpis = dpisByEntity(bundle);
+    expect(dpis.get('a')).toEqual(['203', '300', '600']);
+    expect(dpis.get('b')).toEqual(['300']);
+    expect(dpisByEntity(null).size).toBe(0);
   });
 });

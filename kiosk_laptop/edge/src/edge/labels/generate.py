@@ -1,7 +1,7 @@
 """The Label Station's labels: one finished label per asset on the move,
 made with the portal's OWN label code (serversherpa.labels from api/src —
-label_values, render and pick, never a copy), so a label printed here is
-byte-equal to the one the portal generates.
+label_values, fields, render and pick, never a copy), so a label printed
+here is byte-equal to the one the portal generates.
 
 Inputs come from the sync cache only: the move's assets with their
 `label_context`, and the move's label template set. `build_plan` picks the
@@ -10,6 +10,15 @@ asset's values; each job carries a fingerprint of everything its label
 depends on, so `changed_jobs` re-renders only what changed. A design
 template renders from its `design` JSON (compiled with the values, as the
 portal does), never from its token-intact compiled `code`.
+
+Two value paths, by the picked template's schema (`template_schema`): a
+label builder design (schema 2) prints `fields.field_values(item,
+label_context)`, the text the portal's generator prints for it, kept to
+the fields the design places; a code template or an older design keeps
+the placeholder catalog (`asset_label_values`). A schema newer than
+SUPPORTED_SCHEMA is a design this edge's compiler predates: every label of
+it is `template_unsupported` and nothing prints until the laptop is
+updated (its fingerprint names SUPPORTED_SCHEMA, so the update redoes it).
 
 Never import serversherpa.labels.generate here: that package needs
 sqlalchemy, which the edge image doesn't have."""
@@ -21,9 +30,11 @@ from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 from typing import NamedTuple
 
+from serversherpa.labels.fields import design_field_keys, field_values
 from serversherpa.labels.label_values import LabelAsset, LabelMove, asset_label_values
 from serversherpa.labels.pick import TemplateChoice, pick_template
 from serversherpa.labels.render import render_template
+from serversherpa.labels.template_fonts import design_fonts, fonts_used
 
 from edge import laptop_setup
 from edge.db import Store, now_iso
@@ -31,6 +42,10 @@ from edge.sync import sync_paths
 
 NO_TEMPLATE = "no_template_at_dpi"
 TEMPLATE_FAILED = "template_failed"
+TEMPLATE_UNSUPPORTED = "template_unsupported"
+
+# The newest design schema this edge's compiler prints (labels/model.py).
+SUPPORTED_SCHEMA = 2
 
 
 class AssetJob(NamedTuple):
@@ -106,6 +121,32 @@ def _label_asset(a: dict) -> LabelAsset:
         destination_position=a.get("destination_position"))
 
 
+def _schema(value) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 1
+
+
+def template_schema(t: dict) -> int:
+    """A synced template's design schema, read like the server's
+    `kiosk_templates.design_schema` (1 for a code template, or a `schema`
+    that isn't an int), or its `schema_version` when that says more (a
+    kind of template this edge doesn't know yet)."""
+    design = t.get("design")
+    schema = (_schema(design.get("schema", 1))
+              if t.get("kind") == "design" and isinstance(design, dict) else 1)
+    return max(schema, _schema(t.get("schema_version", 1)))
+
+
+def template_fonts(t: dict | None) -> list[str]:
+    """The E: fonts a synced template prints with, the way the portal's
+    kiosk font routes count them: a builder design's from its text
+    elements (its `code` is ""), any other from its compiled code."""
+    if t is None:
+        return []
+    names = (design_fonts(t.get("design")) if template_schema(t) >= 2
+             else fonts_used(t.get("code") or ""))
+    return sorted(names)
+
+
 def _setting(raw, override, valid) -> object | None:
     value = override if override is not None else raw
     return value if valid(value) else None
@@ -150,6 +191,10 @@ def build_plan(store: Store, *, label_kind: str | None = None,
     template, notes = pick_template(choices, label_kind, str(dpi))
     template_json = by_id[template.id] if template else None
     rules = (template_json or {}).get("generation_rules") or None
+    schema = template_schema(template_json) if template_json is not None else 1
+    # a builder design's fields: the only values its label prints, so the
+    # only ones its fingerprint follows (statuses move with every scan)
+    placed = design_field_keys(template_json.get("design")) if schema >= 2 else set()
 
     context = (assets_body or {}).get("label_context")
     asset_rows = (assets_body or {}).get("assets")
@@ -163,9 +208,22 @@ def build_plan(store: Store, *, label_kind: str | None = None,
         for a in asset_rows:
             if not isinstance(a, dict) or not a.get("id"):
                 continue
-            values = asset_label_values(_label_asset(a), move, catalog_keys,
-                                        generation_rules=rules)
-            if template is not None:
+            if template is None:
+                values = asset_label_values(_label_asset(a), move, catalog_keys,
+                                            generation_rules=rules)
+                fingerprint = _fingerprint(["no_template", dpi, label_kind])
+            elif schema > SUPPORTED_SCHEMA:
+                # nothing to compute: the label is an error until an update
+                values = {}
+                fingerprint = _fingerprint(["unsupported", template.id, template.version,
+                                            schema, SUPPORTED_SCHEMA, dpi, label_kind])
+            else:
+                if schema >= 2:
+                    every = field_values(a, context)
+                    values = {k: every[k] for k in sorted(placed) if k in every}
+                else:
+                    values = asset_label_values(_label_asset(a), move, catalog_keys,
+                                                generation_rules=rules)
                 # the size/DPI vocabulary and language ride along: a vocab
                 # edit changes the label without bumping the template version
                 fingerprint = _fingerprint([values, template.id, template.version, dpi,
@@ -173,8 +231,6 @@ def build_plan(store: Store, *, label_kind: str | None = None,
                                             template_json.get("height_in"),
                                             template_json.get("dots"),
                                             template_json.get("language_key")])
-            else:
-                fingerprint = _fingerprint(["no_template", dpi, label_kind])
             jobs.append(AssetJob(str(a["id"]), values, fingerprint))
     return Plan(template, notes, jobs, template_json, label_kind, dpi, has_data)
 
@@ -190,9 +246,12 @@ def render_job(template_json: dict | None, job: AssetJob) -> tuple[str | None, s
     """`(zpl, None)`, or `(None, error)`. Unknown placeholders are not an
     error (they print blank, as on the portal). A design template whose size
     or DPI has no vocabulary details (width_in, height_in, dots) is
-    template_failed, never rendered at size 0."""
+    template_failed, never rendered at size 0; one newer than this edge's
+    compiler is template_unsupported, never guessed at."""
     if template_json is None:
         return None, NO_TEMPLATE
+    if template_schema(template_json) > SUPPORTED_SCHEMA:
+        return None, TEMPLATE_UNSUPPORTED
     kind = template_json.get("kind") or "code"
     if kind == "design" and not all(
             _positive(template_json.get(k)) for k in ("width_in", "height_in", "dots")):

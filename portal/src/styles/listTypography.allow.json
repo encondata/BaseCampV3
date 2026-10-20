@@ -80,11 +80,6 @@
     "reason": "not list content: eyebrow label (out of scope per spec)"
   },
   {
-    "file": "styles/labels.css",
-    "selector": ".lbl-palette .eyebrow-sm",
-    "reason": "not list content: eyebrow label (out of scope per spec)"
-  },
-  {
     "file": "styles/notifications.css",
     "selector": ".ngd-switch-row",
     "reason": "not list content: labeled settings-form switch row \u2014 per the design spec's migration map this stays permanently, it is a form row not a list"

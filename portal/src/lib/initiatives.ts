@@ -64,6 +64,7 @@ export function initiativeCellText(
 
 export const INITIATIVE_ERRORS: Record<string, string> = {
   name_required: 'Name is required.',
+  code_in_use: 'That code is already used by another initiative.',
   initiative_type_required: 'Type is required.',
   status_required: 'Status is required.',
   unknown_initiative_type: 'Pick a type from the list.',
@@ -170,7 +171,7 @@ export function sectionsForType(
 /* ── edit/create form ────────────────────────────────────────────── */
 
 export interface InitiativeFormState {
-  name: string; description: string;
+  name: string; code: string; description: string;
   initiative_type: string; sub_type: string; status: string;
   color: string;                                    // '#rrggbb' or ''
   client_id: string; site_id: string; location: string;
@@ -199,6 +200,7 @@ export function formFromInitiative(
 ): InitiativeFormState {
   return {
     name: i?.name ?? '',
+    code: i?.code ?? '',
     description: i?.description ?? '',
     initiative_type: i?.initiative_type ?? 'project',
     sub_type: i?.sub_type ?? '',
@@ -245,6 +247,8 @@ export function initiativePayload(
   out.name = form.name.trim();
   out.initiative_type = form.initiative_type;
   out.status = form.status;
+  // blank → null: no code (PATCH clears one)
+  put('code', form.code);
   put('description', form.description);
   put('sub_type', form.sub_type);
   // blank → null: on POST the API drops it and assigns the next palette

@@ -1,9 +1,10 @@
 import { expect, it } from 'vitest';
 
-import type { LabelPlaceholder, LabelVocab } from './api';
+import type { LabelPlaceholder, LabelTemplate, LabelTemplateChild, LabelTemplateTreeNode, LabelVocab } from './api';
 import {
-  dpiDots, isContainerLabelType, metaSummary, placeholdersFor, siteNames, sitesCellText, sizeMeta,
-  templateSearchText, vocabLabel, vocabOfKind,
+  childStateChips, dpiDots, isContainerLabelType, isTreeParent, keptChildName, metaSummary, missingDpis, placeholdersFor,
+  replaceCandidates, siteNames, sitesCellText, sizeMeta, templateDpiText, templateSearchText, vocabLabel,
+  vocabOfKind,
 } from './labels';
 
 const V = (over: Partial<LabelVocab>): LabelVocab => ({
@@ -92,4 +93,81 @@ it('isContainerLabelType knows the container-shaped types and treats everything 
   expect(isContainerLabelType('front')).toBe(false);
   expect(isContainerLabelType('custom')).toBe(false);
   expect(isContainerLabelType('')).toBe(false);
+});
+
+// ── the templates list tree ──
+
+const ROW: LabelTemplate = {
+  id: 'p1', name: 'Vegas Destination', description: '', label_type: 'top', size_key: '4x2', dpi_key: '300',
+  language_key: 'zpl', kind: 'design', design: { schema: 2 }, code: null, version: 7, is_active: true,
+  site_ids: [], created_at: '', updated_at: '', parent_id: null, schema_version: 2, dpis: ['203', '300', '600'],
+};
+
+const kid = (dpi: string, over: Partial<LabelTemplateChild> = {}): LabelTemplateChild => ({
+  ...ROW, id: `c${dpi}`, name: `Vegas Destination · ${dpi}`, dpi_key: dpi, parent_id: 'p1',
+  generated_from_version: 7, child_edits: 0, customized: false, is_old: false, out_of_date: false, ...over,
+});
+
+const node = (over: Partial<LabelTemplateTreeNode> = {}): LabelTemplateTreeNode => ({
+  ...ROW, family: ROW.name, children: [kid('203'), kid('300'), kid('600')], ...over,
+});
+
+const legacy = (id: string, name: string, over: Partial<LabelTemplateTreeNode> = {}): LabelTemplateTreeNode => ({
+  ...ROW, id, name, kind: 'code', design: null, code: '^XA^XZ', schema_version: 1, dpi_key: '203', dpis: [],
+  family: name.replace(/ - \d+DPI$/, ''), children: [], ...over,
+});
+
+it('isTreeParent: a top-level schema 2 design only', () => {
+  expect(isTreeParent(ROW)).toBe(true);
+  expect(isTreeParent(kid('203'))).toBe(false);
+  expect(isTreeParent({ ...ROW, schema_version: 1 })).toBe(false);
+  expect(isTreeParent(legacy('l1', 'Old tag'))).toBe(false);
+});
+
+it('templateDpiText: All with all three current children, else the ones present; a legacy row its own', () => {
+  expect(templateDpiText(node())).toBe('All');
+  expect(templateDpiText(node({ children: [kid('300'), kid('203')] }))).toBe('203 · 300');
+  // an Old child is history, not a DPI the template prints at
+  expect(templateDpiText(node({ children: [kid('203'), kid('300'), kid('600', { is_old: true })] })))
+    .toBe('203 · 300');
+  expect(templateDpiText(node({ children: [] }))).toBe('—');
+  expect(templateDpiText(legacy('l1', 'Vegas Destination - 203DPI'))).toBe('203');
+});
+
+it('missingDpis lists the DPIs a parent has no current child for', () => {
+  expect(missingDpis(node())).toEqual([]);
+  expect(missingDpis(node({ children: [kid('300'), kid('600', { is_old: true })] }))).toEqual(['203', '600']);
+  expect(missingDpis(legacy('l1', 'Old tag'))).toEqual([]);
+});
+
+it('childStateChips: From parent, Customized, Out of date (parent vN), Kept · inactive', () => {
+  const text = (c: LabelTemplateChild) => childStateChips(c, ROW).map((chip) => chip.text);
+  expect(text(kid('203'))).toEqual(['From parent']);
+  expect(text(kid('300', { customized: true, child_edits: 2 }))).toEqual(['Customized']);
+  expect(text(kid('300', { customized: true, child_edits: 2, generated_from_version: 6, out_of_date: true })))
+    .toEqual(['Customized', 'Out of date (parent v7)']);
+  expect(text(kid('300', { name: 'Vegas Destination · 300 Old', customized: true, is_old: true, is_active: false })))
+    .toEqual(['Kept · inactive']);
+});
+
+it('replaceCandidates: the other active top-level rows of the same family and type', () => {
+  const ams = node({ id: 'p2', name: 'Amsterdam Destination', family: 'Amsterdam Destination', is_active: false });
+  const rows = [
+    ams,
+    legacy('l1', 'Amsterdam Destination - 203DPI'),
+    legacy('l2', 'Amsterdam Destination - 300DPI'),
+    legacy('l3', 'amsterdam destination - 600DPI', { family: 'amsterdam destination' }),   // casefold
+    legacy('l4', 'Amsterdam Destination - 600DPI', { is_active: false }),                  // already off
+    legacy('l5', 'Amsterdam Destination - 203DPI', { id: 'l5', label_type: 'front' }),     // another type
+    legacy('l6', 'Vegas Destination - 203DPI'),                                              // another family
+  ];
+  expect(replaceCandidates(ams, rows).map((r) => r.id)).toEqual(['l1', 'l2', 'l3']);
+});
+
+it('keptChildName: the next free "… Old" name', () => {
+  expect(keptChildName('Vegas Destination', '300', new Set())).toBe('Vegas Destination · 300 Old');
+  expect(keptChildName('Vegas Destination', '300', new Set(['Vegas Destination · 300 Old'])))
+    .toBe('Vegas Destination · 300 Old 2');
+  expect(keptChildName('Vegas Destination', '300',
+    new Set(['Vegas Destination · 300 Old', 'Vegas Destination · 300 Old 2']))).toBe('Vegas Destination · 300 Old 3');
 });

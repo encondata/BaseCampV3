@@ -167,7 +167,8 @@ async def test_create_run_with_template_override_201(client, db, seeded_user):
     hdrs = await _make(db, client, "admin", "adm-tpl-override@test.example.com")
 
     resp = await client.post("/labels/generate/runs", headers=hdrs,
-                             json=_run_payload(ini, ["top"], templates={"top": str(tpl.id)}))
+                             json=_run_payload(ini, ["top"], templates={"top": str(tpl.id)},
+                                               dpi_key="203"))
     assert resp.status_code == 202, resp.text
     body = resp.json()
     assert body["template_overrides"] == {"top": str(tpl.id)}
@@ -494,7 +495,8 @@ async def test_preview_shape_with_site_and_global_templates(client, db, seeded_u
     await db.commit()
 
     hdrs = await login(client)
-    resp = await client.get(f"/labels/generate/preview?initiative_id={ini.id}", headers=hdrs)
+    resp = await client.get(f"/labels/generate/preview?initiative_id={ini.id}&dpi_key=203",
+                            headers=hdrs)
     assert resp.status_code == 200, resp.text
     body = resp.json()
 
@@ -539,7 +541,8 @@ async def test_preview_other_only_type_has_candidates_but_no_auto_match(client, 
     other_tpl = await _template(db, "rail", site=other_site)
 
     hdrs = await login(client)
-    resp = await client.get(f"/labels/generate/preview?initiative_id={ini.id}", headers=hdrs)
+    resp = await client.get(f"/labels/generate/preview?initiative_id={ini.id}&dpi_key=203",
+                            headers=hdrs)
     assert resp.status_code == 200, resp.text
     types = {t["key"]: t for t in resp.json()["types"]}
 
@@ -601,7 +604,8 @@ async def test_the_preview_counts_containers_for_a_container_type(client, db, se
     await db.commit()
 
     hdrs = await login(client)
-    resp = await client.get(f"/labels/generate/preview?initiative_id={ini.id}", headers=hdrs)
+    resp = await client.get(f"/labels/generate/preview?initiative_id={ini.id}&dpi_key=203",
+                            headers=hdrs)
     assert resp.status_code == 200, resp.text
     by_key = {t["key"]: t for t in resp.json()["types"]}
     assert by_key["container"]["current"] == 2      # two containers labeled
@@ -689,7 +693,7 @@ async def test_generated_list_filters(client, db, seeded_user):
 # ── generation_rules validation (template create/PATCH) ─────────────
 
 async def test_generation_rules_validation_on_create(client, db, seeded_user):
-    hdrs = await _make(db, client, "admin", "adm-gr@test.example.com")
+    hdrs = await _make(db, client, "super_admin", "adm-gr@test.example.com")
 
     resp = await client.post("/labels/templates", headers=hdrs,
                              json=_template_body(generation_rules={
@@ -725,7 +729,7 @@ async def test_generation_rules_validation_rejects_a_bad_token_alone(client, db,
     single violation must produce exactly one problem, and a validator
     that stopped checking tokens entirely (e.g. the regex weakened to
     `isinstance(name, str)`) would let this payload through as 201."""
-    hdrs = await _make(db, client, "admin", "adm-gr-token@test.example.com")
+    hdrs = await _make(db, client, "super_admin", "adm-gr-token@test.example.com")
 
     resp = await client.post("/labels/templates", headers=hdrs,
                              json=_template_body(
@@ -737,14 +741,14 @@ async def test_generation_rules_validation_rejects_a_bad_token_alone(client, db,
 
 
 async def test_generation_rules_default_is_empty_dict(client, db, seeded_user):
-    hdrs = await _make(db, client, "admin", "adm-gr3@test.example.com")
+    hdrs = await _make(db, client, "super_admin", "adm-gr3@test.example.com")
     resp = await client.post("/labels/templates", headers=hdrs, json=_template_body("gr-tpl-4"))
     assert resp.status_code == 201, resp.text
     assert resp.json()["generation_rules"] == {}
 
 
 async def test_generation_rules_validation_on_patch(client, db, seeded_user):
-    hdrs = await _make(db, client, "admin", "adm-gr2@test.example.com")
+    hdrs = await _make(db, client, "super_admin", "adm-gr2@test.example.com")
     tid = (await client.post("/labels/templates", headers=hdrs,
                              json=_template_body("gr-tpl-5"))).json()["id"]
 
@@ -766,7 +770,7 @@ async def test_generation_rules_null_side_is_rejected(client, db, seeded_user):
     value, not "not provided" — it must 422, not silently store as a
     JSON null (which values.py would tolerate at generation time but the
     portal's editor never sends)."""
-    hdrs = await _make(db, client, "admin", "adm-gr-null@test.example.com")
+    hdrs = await _make(db, client, "super_admin", "adm-gr-null@test.example.com")
 
     resp = await client.post("/labels/templates", headers=hdrs,
                              json=_template_body("gr-tpl-null-dest",
@@ -781,3 +785,69 @@ async def test_generation_rules_null_side_is_rejected(client, db, seeded_user):
     assert resp.status_code == 422
     problems = resp.json()["detail"]["problems"]
     assert any(p == "length_limits must be an object" for p in problems), problems
+
+
+# ── generated labels per DPI ─────────────────────────────────────────
+
+async def test_create_run_carries_its_dpi(client, db, seeded_user):
+    """A run prints at one DPI: 300 unless the body says otherwise, and only
+    a DPI the label vocabulary knows."""
+    hdrs = await _make(db, client, "admin", "adm-run-dpi@test.example.com")
+    first, second, third = [await _initiative(db) for _ in range(3)]
+    resp = await client.post("/labels/generate/runs", headers=hdrs,
+                             json=_run_payload(first, ["top"]))
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["dpi_key"] == "300"
+    resp = await client.post("/labels/generate/runs", headers=hdrs,
+                             json=_run_payload(second, ["top"], dpi_key="600"))
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["dpi_key"] == "600"
+    assert (await db.get(LabelGenerationRun, uuid.UUID(resp.json()["id"]))).dpi_key == "600"
+    resp = await client.post("/labels/generate/runs", headers=hdrs,
+                             json=_run_payload(third, ["top"], dpi_key="150"))
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_dpi"
+
+
+async def test_preview_and_generated_list_read_one_dpi(client, db, seeded_user):
+    """The preview resolves templates and counts labels at its DPI (300 by
+    default, like a run); the generated list filters on `dpi_key`."""
+    ini = await _initiative(db)
+    a1 = await _asset_on(db, ini, legacy_id=6001)
+    a2 = await _asset_on(db, ini, legacy_id=6002)
+    tpl_203 = await _template(db, "top")
+    tpl_300 = LabelTemplate(name=f"tpl-{uuid.uuid4()}", label_type="top", size_key="4x2",
+                            dpi_key="300", language_key="zpl", kind="code", code="{asset_id}")
+    db.add(tpl_300)
+    await db.flush()
+    for asset in (a1, a2):
+        db.add(GeneratedLabel(entity_type="asset", entity_id=asset.id, initiative_id=ini.id,
+                              label_type="top", template_id=tpl_203.id,
+                              template_version=tpl_203.version, language_key="zpl",
+                              dpi_key="203", size_key="4x2", code="^XA203^XZ"))
+    db.add(GeneratedLabel(entity_type="asset", entity_id=a1.id, initiative_id=ini.id,
+                          label_type="top", template_id=tpl_300.id,
+                          template_version=tpl_300.version, language_key="zpl",
+                          dpi_key="300", size_key="4x2", code="^XA300^XZ"))
+    await db.commit()
+
+    hdrs = await login(client)
+    for query, template, current in (("", tpl_300, 1), ("&dpi_key=300", tpl_300, 1),
+                                     ("&dpi_key=203", tpl_203, 2), ("&dpi_key=600", None, 0)):
+        resp = await client.get(f"/labels/generate/preview?initiative_id={ini.id}{query}",
+                                headers=hdrs)
+        assert resp.status_code == 200, resp.text
+        top = {t["key"]: t for t in resp.json()["types"]}["top"]
+        assert (top["template"] or {}).get("id") == (str(template.id) if template else None)
+        assert [c["id"] for c in top["candidates"]] == ([str(template.id)] if template else [])
+        assert (top["current"], top["stale"]) == (current, 0), query
+
+    rows = (await client.get(f"/labels/generated?initiative_id={ini.id}&dpi_key=300",
+                             headers=hdrs)).json()
+    assert [(r["code"], r["dpi_key"]) for r in rows] == [("^XA300^XZ", "300")]
+    rows = (await client.get(f"/labels/generated?initiative_id={ini.id}", headers=hdrs)).json()
+    assert sorted(r["dpi_key"] for r in rows) == ["203", "203", "300"]
+    # the print page's bundle carries every DPI; the page filters by printer
+    bundle = (await client.get(
+        f"/labels/generated/bundle?initiative_id={ini.id}&label_type=top", headers=hdrs)).json()
+    assert sorted(item["dpi_key"] for item in bundle["labels"]) == ["203", "203", "300"]

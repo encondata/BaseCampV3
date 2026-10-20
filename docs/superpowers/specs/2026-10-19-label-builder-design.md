@@ -369,6 +369,26 @@ saved to the list.
   old template was a typo.
 - "Edit as raw ZPL" stays as an escape hatch for a code template, but new
   templates are designs.
+- Operator steps, once per stack (the rebuilt designs live in
+  `serversherpa.labels.builtin_templates`):
+  1. `serversherpa seed-label-fonts`.
+  2. Upload Zebra's `TT0003M_.TTF` on Labels › Printers › Install Fonts.
+     It fills the resident Swiss 721 row's file, so the builder can
+     measure the default font (reserved widths, overflow, baselines); the
+     file is never pushed to a printer or served to a browser. The seed
+     command prints this reminder when it creates the row without a file.
+  3. `serversherpa seed-label-templates`. The five parents and their 203,
+     300 and 600 DPI children land inactive, linked to no site. An old
+     code row that holds one of the names is renamed "<name> Old" first
+     (the command lists each rename, also when it stops partway); running
+     it again changes nothing.
+  4. Open each parent in the builder and check it against the old tag.
+  5. Print the Vegas tag on the office ZD421 and compare it with the
+     canvas.
+  6. Per family, link the rebuilt parent to the old rows' sites first
+     (an unlinked active template counts as global and outranks the
+     Generic fallback), then Replace… the old code rows with it (the old
+     rows keep their links).
 
 ## 5. Keyboard shortcuts
 
@@ -379,9 +399,10 @@ resize by 1, ⇧⌥ by 10; ⇧-drag locks an axis; ⇧-resize keeps proportions;
 through elements, Enter opens a text element's content, ⌘[ ⌘] back and
 forward, ⌘⇧[ ⌘⇧] to back and front, ⌘L lock. Format: ⌘B bold, ⌘⇧I inverted.
 Align: ⌥A/D/W/S edges, ⌥H/V centers, ⇧⌥H/V distribute. Canvas: ⌘= ⌘- zoom,
-⌘0 fit, ⌘1 true size, space-drag pan, ⌘' grid, ⌘⇧' snap, ⌘R rulers, ⌘E
-field names / sample values. Workflow: ⌘S save, ⌘P test print, ⌘K field
-search, ⌘/ shortcut sheet.
+⌘0 fit, ⇧0 true size (⌘1 belongs to the browser), space-drag pan, ⌘' grid,
+⌘⇧' snap, ⌘R rulers, ⌘E field names / sample values. Workflow: ⌘S save,
+⌘P test print, / field search (⌘K is left to the browser), ⌘/ shortcut
+sheet.
 
 ## 6. Constraints
 - Byte-identical output between the portal and the kiosk, through the

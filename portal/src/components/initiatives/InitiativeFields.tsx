@@ -133,6 +133,9 @@ export default function InitiativeFields({
         <div><label>Name</label>
           <input value={form.name} disabled={locked} required
                  onChange={(e) => setField('name', e.target.value)} /></div>
+        <div><label>Code</label>
+          <input aria-label="Code" value={form.code} disabled={locked} maxLength={32}
+                 onChange={(e) => setField('code', e.target.value)} /></div>
         <div><label>Type</label>
           <ComboBox
             placeholder="Type to search types…"

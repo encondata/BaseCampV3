@@ -8,7 +8,9 @@
  * prefs under `labels-print`. Sorting by Source rack is numeric-aware
  * with RU top-down (largest first) as the tie-break — V2's own rule.
  * Selection is by asset id (`row.asset_id`); the parent gets the displayed
- * (sorted + filtered) rows so it can derive the print order.
+ * (sorted + filtered) rows so it can derive the print order. With no
+ * printer DPI to filter by, the parent passes `dpisOf` and a DPI column
+ * (not toggleable) lists the DPIs each asset has a label at.
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
@@ -38,26 +40,33 @@ export type LabelFilter = 'all' | 'ready' | 'missing';
 // the header cell below still renders the raw checkbox input.
 const CHECKBOX_COL: ColumnDef = { key: 'select', label: '', width: '32px', default: true };
 
-// Fit: default columns + trailing ≤ 1126px (1174 - 44 - 2 - 2 safety —
-// .plabels-card, labels.css: padding 18px 22px plus a 1px border,
-// 23px each side). `name` sits at 152 rather than the 158 it had while
-// the ceiling was 1132: the nine defaults now total exactly 1126, and
-// `name` is the widest floor and the most flexible track, so it is the
-// one place 6px comes off without squeezing a short identifier column.
+// Fit: default columns + the DPI column + trailing ≤ 1126px (1174 - 44 -
+// 2 - 2 safety — .plabels-card, labels.css: padding 18px 22px plus a 1px
+// border, 23px each side). The DPI column (below) shows while no printer
+// DPI filters the labels, so the floors leave room for it: the text tracks
+// gave up 100px between them (name 152 → 128, serial 120 → 100, make
+// 90 → 78, model 110 → 92, source rack 100 → 90, status 110 → 100, label
+// 110 → 104), all truncating with a tooltip. With a printer connected the
+// spare 100px goes back to the flexible tracks.
 export const COLUMNS: ColumnDef[] = [
   { key: 'asset_id', label: 'Asset ID', width: '90px', default: true },
-  { key: 'name', label: 'Name', width: '1.6fr', default: true, min: 152 },
-  { key: 'serial', label: 'Serial', width: '1fr', default: true, min: 120 },
-  { key: 'make', label: 'Make', width: '0.8fr', default: true, min: 90 },
-  { key: 'model', label: 'Model', width: '1fr', default: true, min: 110 },
+  { key: 'name', label: 'Name', width: '1.6fr', default: true, min: 128 },
+  { key: 'serial', label: 'Serial', width: '1fr', default: true, min: 100 },
+  { key: 'make', label: 'Make', width: '0.8fr', default: true, min: 78 },
+  { key: 'model', label: 'Model', width: '1fr', default: true, min: 92 },
   {
     key: 'source_rack', label: 'Source rack', short: 'Src Rack',
-    width: '0.9fr', default: true, min: 100,
+    width: '0.9fr', default: true, min: 90,
   },
   { key: 'source_ru', label: 'RU', width: '64px', default: true },
-  { key: 'status', label: 'Status', width: '0.9fr', default: true, min: 110 },
-  { key: 'label', label: 'Label', width: '110px', default: true },
+  { key: 'status', label: 'Status', width: '0.9fr', default: true, min: 100 },
+  { key: 'label', label: 'Label', width: '104px', default: true },
 ];
+// Shown only while no printer DPI filters the labels (`dpisOf`), after the
+// registry — always on, so a saved column set can't hide it. 88px holds
+// two DPIs ("203 · 600"); all three truncate, with the full list in the
+// tooltip.
+export const DPI_COL: ColumnDef = { key: 'dpi', label: 'DPI', width: '88px', default: true };
 const ALL_KEYS = new Set(COLUMNS.map((c) => c.key));
 const DEFAULT_VISIBLE = new Set(COLUMNS.filter((c) => c.default).map((c) => c.key));
 
@@ -107,9 +116,21 @@ export function sortRows(
   });
 }
 
+/** A row's DPIs, lowest first ("203 · 300"); a dash when it has no label.
+ *  The container list's DPI column too. */
+export function dpiCell(dpis: string[]) {
+  const text = dpis.join(' · ');
+  return text
+    ? <span className="mono cell-line" title={titleFor(text)}>{text}</span>
+    : <span className="cell-sub">—</span>;
+}
+
 interface Props {
   rows: InitiativeAssetRow[];
   statusOf: ((row: InitiativeAssetRow) => LabelStatus) | null;
+  /** The DPIs a row has a label at — a DPI column — when no printer DPI
+   *  narrows the labels; null hides the column. */
+  dpisOf?: ((row: InitiativeAssetRow) => string[]) | null;
   selected: string[];
   onSelectedChange: (next: string[]) => void;
   onDisplayedChange: (displayed: InitiativeAssetRow[]) => void;
@@ -120,7 +141,7 @@ interface Props {
 }
 
 export default function PrintAssetList({
-  rows, statusOf, selected, onSelectedChange, onDisplayedChange, onRefresh, refreshing, disabled = false, resetKey,
+  rows, statusOf, dpisOf = null, selected, onSelectedChange, onDisplayedChange, onRefresh, refreshing, disabled = false, resetKey,
 }: Props) {
   const { preferences } = useAuth();
   const listGridScale = listScale(preferences?.list_size);
@@ -192,7 +213,8 @@ export default function PrintAssetList({
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = listGridStyle([CHECKBOX_COL, ...shownCols], [], undefined, listGridScale);
+  const grid = listGridStyle([CHECKBOX_COL, ...shownCols, ...(dpisOf ? [DPI_COL] : [])], [],
+    undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cell = (r: InitiativeAssetRow, key: string) => {
@@ -257,6 +279,7 @@ export default function PrintAssetList({
                           sortDir={sortKey === c.key ? sortDir : null} onSort={(dir) => setSort(c.key, dir)} />
             </ColHead>
           ))}
+          {dpisOf && <ColHead col={DPI_COL} />}
         </div>
 
         {displayed.length === 0 && (
@@ -280,6 +303,7 @@ export default function PrintAssetList({
                 {shownCols.map((c) => (
                   <div key={c.key} className={`cell ${c.key === 'name' ? 'cell-primary' : ''}`}>{cell(r, c.key)}</div>
                 ))}
+                {dpisOf && <div className="cell">{dpiCell(dpisOf(r))}</div>}
               </div>
             </div>
           );

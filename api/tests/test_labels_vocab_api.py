@@ -81,3 +81,32 @@ async def test_patch_vocab(client, db, seeded_user):
                               json={"label": "x"})
     assert resp.status_code == 404
     assert resp.json()["detail"]["code"] == "unknown_vocab"
+
+
+async def test_designer_adds_a_custom_size(client, db, seeded_user):
+    """The builder's New template › Custom… (spec §4.10): a rank-80 designer
+    with labels:add posts a size row, listed or (is_active false) kept off
+    the list; every other kind stays devtools-only."""
+    sa = await _make(db, client, "super_admin", "sa-size@test.example.com")
+    resp = await client.post("/labels/vocab", headers=sa, json={
+        "kind": "size", "key": "3_25x1_5", "label": '3.25" x 1.5"',
+        "meta": {"width_in": 3.25, "height_in": 1.5, "has_tab": False}})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["is_active"] is True
+    resp = await client.post("/labels/vocab", headers=sa, json={
+        "kind": "size", "key": "2_5x1", "label": '2.5" x 1"', "is_active": False,
+        "meta": {"width_in": 2.5, "height_in": 1, "has_tab": False}})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["is_active"] is False
+    rows = (await client.get("/labels/vocab?kind=size", headers=sa)).json()
+    assert {r["key"]: r["is_active"] for r in rows}["2_5x1"] is False
+
+    resp = await client.post("/labels/vocab", headers=sa, json={
+        "kind": "type", "key": "side", "label": "Side Label"})
+    assert resp.status_code == 403
+    admin = await _make(db, client, "admin", "adm-size@test.example.com")
+    resp = await client.post("/labels/vocab", headers=admin, json={
+        "kind": "size", "key": "5x5", "label": '5" x 5"',
+        "meta": {"width_in": 5, "height_in": 5, "has_tab": False}})
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == {"code": "forbidden", "min_rank": 80}

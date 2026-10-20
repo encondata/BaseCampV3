@@ -1287,6 +1287,9 @@ class Initiative(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, server_default=text("gen_random_uuid()"))
     name: Mapped[str] = mapped_column(CITEXT)
+    # A short code labels print (migration 0100): unique when set
+    # (ux_initiatives_code, case-insensitive), NULL for most rows.
+    code: Mapped[str | None] = mapped_column(CITEXT)
     description: Mapped[str | None]
     # '#rrggbb' lowercase; the calendar and timeline bars paint with it.
     # NULL is legal and falls back to the status color at render time.
@@ -1673,7 +1676,16 @@ class LabelTemplate(Base):
     """kind='design' rows own element-model JSON (inches; compiled to
     printer code on demand); kind='code' rows own raw pasted code with
     {placeholder} tokens. Exactly one payload per row (CHECK, 0042).
-    Delete is deactivation; the creator is captured by the audit log."""
+    The creator is captured by the audit log.
+
+    The label builder's templates form a tree (0102, labels/templates_tree.py):
+    a parent (`schema_version` 2, no `parent_id`) holds the design and its
+    `samples`, and owns one child per DPI in `dpis`, each a full copy of
+    the design pinned to its `dpi_key`. A child counts its hand edits in
+    `child_edits` on top of the parent version it was generated from;
+    `customized` children are never regenerated, and an `is_old` child is a
+    customized one kept inactive after an update from the parent. Rows
+    from before the builder are schema 1 with no parent."""
     __tablename__ = "label_templates"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -1698,28 +1710,80 @@ class LabelTemplate(Base):
     # tokens; length_limits truncate named values. See labels/generate/values.py.
     generation_rules: Mapped[dict] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb"))
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("label_templates.id", ondelete="CASCADE"))
+    schema_version: Mapped[int] = mapped_column(Integer, server_default="1")
+    # the parent's sample values (field key -> text); never sent to kiosks
+    samples: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    # a parent's DPI set; any other row's one DPI
+    dpis: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), server_default=text("'{203,300,600}'::text[]"))
+    generated_from_version: Mapped[int | None] = mapped_column(Integer)
+    child_edits: Mapped[int] = mapped_column(Integer, server_default="0")
+    customized: Mapped[bool] = mapped_column(server_default=text("false"))
+    is_old: Mapped[bool] = mapped_column(server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
     site_links: Mapped[list["LabelTemplateSite"]] = relationship(
         cascade="all, delete-orphan")
 
+    @property
+    def is_tree_parent(self) -> bool:
+        return self.parent_id is None and self.schema_version >= 2
+
+
+class LabelTemplateVersion(Base):
+    """One saved state of a template (0102): its design or code and, on a
+    parent, its samples. Keyed (template, version, child_edits): a parent's
+    or older row's saves are (version, 0); a child's are (the parent
+    version it was generated from, its edits on top), shown `v7.2`.
+    `summary` says what changed; `note` is the author's, added later."""
+    __tablename__ = "label_template_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    template_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("label_templates.id", ondelete="CASCADE"))
+    version: Mapped[int] = mapped_column(Integer)
+    child_edits: Mapped[int] = mapped_column(Integer, server_default="0")
+    design: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    code: Mapped[str | None]
+    samples: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    summary: Mapped[str] = mapped_column(server_default="")
+    note: Mapped[str] = mapped_column(server_default="")
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
 
 class LabelFont(Base):
     """A TrueType font in the label font library: `name` is the Zebra
     object name it is installed under on the printer's E: drive
     (Install Fonts on Labels → Printers). Soft-deleted; the partial
-    unique index on (name) WHERE deleted_at IS NULL lives in 0060."""
+    unique index on (name) WHERE deleted_at IS NULL lives in 0060.
+
+    `family`/`weight` place the file in one of the label builder's
+    families (serversherpa.labels.fonts; one active file per pair, 0101).
+    `resident` is Zebra's own Swiss 721 Condensed Bold: never pushed to a
+    printer or served to a browser, and without a file (`storage_key` NULL,
+    `size_bytes` 0) until one is uploaded for its metrics. `source_url` is
+    where `seed-label-fonts` downloaded the file."""
     __tablename__ = "label_fonts"
 
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, server_default=text("gen_random_uuid()"))
     name: Mapped[str] = mapped_column(CITEXT)
     display_name: Mapped[str] = mapped_column(server_default="")
-    storage_key: Mapped[str]
+    storage_key: Mapped[str | None]
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     content_type: Mapped[str] = mapped_column(server_default="font/ttf")
     uploaded_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    family: Mapped[str | None]
+    weight: Mapped[str | None]
+    resident: Mapped[bool] = mapped_column(Boolean, default=False,
+                                           server_default=text("false"))
+    source_url: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     deleted_at: Mapped[datetime | None]
 
@@ -1775,13 +1839,17 @@ class LabelGenerationRun(Base):
     # since a template can be deactivated in between.
     template_overrides: Mapped[dict] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb"))
+    # the printer DPI this run generates for (0103): it uses only templates
+    # at that DPI, and its labels replace only that DPI's labels
+    dpi_key: Mapped[str] = mapped_column(server_default="300")
 
 
 class GeneratedLabel(Base):
-    """One row per (entity, initiative, label_type) — regenerating
-    replaces the row (upsert). `values` holds the substituted placeholder
-    values for audit/preview; `stale` is set only by explicit
-    regeneration (this phase never auto-invalidates it)."""
+    """One row per (entity, initiative, label_type, dpi_key) — regenerating
+    replaces the row (upsert); each DPI keeps its own (0103). `values`
+    holds the substituted placeholder values for audit/preview; `stale` is
+    set only by explicit regeneration (this phase never auto-invalidates
+    it)."""
     __tablename__ = "generated_labels"
 
     id: Mapped[uuid.UUID] = mapped_column(

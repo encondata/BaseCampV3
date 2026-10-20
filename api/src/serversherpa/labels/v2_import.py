@@ -270,7 +270,7 @@ async def import_label_templates(db: AsyncSession, dump_path: str) -> dict:
         mapped = {"code": code,
                   "description": f"Imported from V2 backup (v2 id {row['id']}).",
                   "label_type": label_type, "size_key": size_key,
-                  "dpi_key": dpi_key, "language_key": "zpl"}
+                  "dpi_key": dpi_key, "dpis": [dpi_key], "language_key": "zpl"}
         gen_rules = _map_generation_rules(row.get("label_generation_code"))
         if gen_rules is not None:
             mapped["generation_rules"] = gen_rules

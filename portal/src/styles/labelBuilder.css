@@ -1,0 +1,641 @@
+/* Label builder (labels/builder, components/labels/builder).
+ *
+ * The canvas (`lbc-`): a toolbar over a stage holding the label as an SVG
+ * in printer dots. The label is paper whatever the theme: white, black ink.
+ * Its overlays (box outlines, grid, selection) use the builder's own
+ * blue so they read on white in both themes. Stroke widths and dash
+ * lengths are set per element in dots from the zoom, so they stay one
+ * screen pixel; only colors live here.
+ *
+ * Guardrail note: no class here ends in -row/-cell/-list/-table/-grid or
+ * holds a list trigger word (row, head, mono, chip…), so the typography
+ * set on the rulers and the zoom readout stays out of the list scan. */
+
+.lbc {
+  --lbc-ink: #000;
+  --lbc-paper: #fff;
+  --lbc-blue: #1d5fa3;
+  --lbc-guide: rgba(29, 95, 163, 0.35);
+  --lbc-grid-minor: rgba(29, 95, 163, 0.07);
+  --lbc-grid-major: rgba(29, 95, 163, 0.16);
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+/* ── toolbar ─────────────────────────────────────────────── */
+
+.lbc-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--paper-line);
+  background: var(--surface);
+}
+.lbc-toolbar .segmented { padding: 3px; gap: 2px; }
+.lbc-toolbar .segmented button { padding: 5px 10px; }
+.lbc-tools button { padding: 5px 7px; }
+.lbc-group { display: inline-flex; align-items: center; gap: 4px; }
+.lbc-toolbar .mini-btn { height: 30px; padding: 0 10px; }
+.lbc-toolbar .mini-btn.lbc-icon-btn { width: 30px; padding: 0; justify-content: center; }
+.lbc-toolbar .mini-btn.on {
+  border-color: var(--amber);
+  background: rgba(var(--accent-rgb), 0.12);
+}
+.lbc-icon { width: 16px; height: 16px; display: block; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linejoin: round; }
+.lbc-icon.is-filled { fill: currentColor; stroke: none; }
+.lbc-zoom {
+  min-width: 44px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dark);
+}
+.lbc-status {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+
+/* ── stage ───────────────────────────────────────────────── */
+
+.lbc-stage {
+  position: relative;
+  flex: 1;
+  min-height: 360px;
+  overflow: hidden;
+  background: var(--paper-2);
+  touch-action: none;
+  user-select: none;
+  outline: none;
+}
+.lbc-stage.is-placing { cursor: crosshair; }
+.lbc-stage.is-space { cursor: grab; }
+.lbc-stage.is-panning { cursor: grabbing; }
+
+.lbc-label {
+  position: absolute;
+  display: block;
+  overflow: visible;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+}
+.lbc-paper { fill: var(--lbc-paper); }
+.lbc-gridlines path { stroke: var(--lbc-grid-minor); }
+.lbc-gridlines path.lbc-grid-major { stroke: var(--lbc-grid-major); }
+
+/* ── elements ────────────────────────────────────────────── */
+
+.lbc-box { fill: none; stroke: var(--lbc-guide); }
+.lbc-text { fill: var(--lbc-ink); white-space: pre; }
+.lbc-invert { fill: var(--lbc-ink); }
+.lbc-el.is-inverted .lbc-text { fill: var(--lbc-paper); }
+.lbc-el.is-names .lbc-text, .lbc-el.is-names .lbc-hri { fill: var(--lbc-blue); }
+.lbc-el.is-names.is-inverted .lbc-text { fill: var(--lbc-paper); }
+.lbc-overflow { fill: var(--c-red); fill-opacity: 0.28; }
+.lbc-el.is-overflow .lbc-box { stroke: var(--c-red); }
+.lbc-el.is-hidden { opacity: 0.45; }
+/* the bars and the QR data area fill with their pattern (the fill
+   attribute); a fill here would paint over it */
+.lbc-el-barcode pattern rect { fill: var(--lbc-ink); }
+.lbc-hri { fill: var(--lbc-ink); }
+.lbc-qr-symbol pattern rect, .lbc-qr-dark { fill: var(--lbc-ink); }
+.lbc-qr-light { fill: var(--lbc-paper); }
+.lbc-qr-symbol.is-capped .lbc-qr-dark { fill: var(--c-amber); }
+.lbc-qr-bad { fill: var(--c-red); fill-opacity: 0.25; }
+.lbc-shape { fill: var(--lbc-ink); }
+
+/* ── selection ───────────────────────────────────────────── */
+
+.lbc-sel { fill: none; stroke: var(--lbc-blue); pointer-events: none; }
+.lbc-sel.is-locked { stroke: var(--c-slate); }
+.lbc-handle { fill: var(--lbc-paper); stroke: var(--lbc-blue); }
+.lbc-handle[data-handle='n'], .lbc-handle[data-handle='s'] { cursor: ns-resize; }
+.lbc-handle[data-handle='e'], .lbc-handle[data-handle='w'] { cursor: ew-resize; }
+.lbc-handle[data-handle='nw'], .lbc-handle[data-handle='se'] { cursor: nwse-resize; }
+.lbc-handle[data-handle='ne'], .lbc-handle[data-handle='sw'] { cursor: nesw-resize; }
+.lbc-marquee { fill: rgba(29, 95, 163, 0.07); stroke: var(--lbc-blue); pointer-events: none; }
+
+/* ── rulers (dots at the viewed DPI) ─────────────────────── */
+
+.lbc-ruler {
+  position: absolute;
+  z-index: 1;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.lbc-ruler-x { left: 24px; right: 0; top: 0; height: 24px; border-bottom: 1px solid var(--paper-line); }
+.lbc-ruler-y { left: 0; top: 24px; bottom: 0; width: 24px; border-right: 1px solid var(--paper-line); }
+.lbc-ruler svg { display: block; }
+.lbc-ruler text {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  fill: var(--text-mute);
+}
+.lbc-ruler-span { fill: var(--surface); }
+.lbc-tick { stroke: var(--text-mute); stroke-width: 1; opacity: 0.5; }
+.lbc-tick-major { opacity: 0.6; }
+.lbc-ruler-cursor { stroke: var(--lbc-blue); opacity: 1; }
+.lbc-ruler-corner {
+  position: absolute;
+  z-index: 1;
+  left: 0;
+  top: 0;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 7px;
+  color: var(--text-mute);
+  background: var(--surface-2);
+  border-right: 1px solid var(--paper-line);
+  border-bottom: 1px solid var(--paper-line);
+}
+
+/* ── panels (`lbp-`): fields, + picker, placed fields, properties ──
+ *
+ * The side panels and the table under the canvas. Same guardrail rule as
+ * the canvas: no class here ends in -row/-cell/-list/-table/-grid or holds
+ * a list trigger word, so the panels' own small type stays out of the list
+ * scan; the placed-fields table itself is a DataTable and takes the list
+ * typography from directory.css (only layout and colors are set on it
+ * here). Scroll boxes carry no border-radius: the rounded box around them
+ * clips with overflow: hidden instead. */
+
+.lbp {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.lbp-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--paper-line);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.lbp-title .lbp-kbd,
+.lbp-title .lbp-hint { margin-left: auto; letter-spacing: 0; text-transform: none; }
+.lbp-kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 5px;
+  border: 1px solid var(--paper-line);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text-mute);
+}
+.lbp-hint { font-size: 11px; color: var(--text-mute); }
+.lbp-empty { padding: 14px 12px; font-size: 12.5px; color: var(--text-mute); }
+.lbp-icon { width: 14px; height: 14px; display: block; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+.lbp-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+
+/* the field panel */
+.lbp-search-bar { position: relative; display: flex; align-items: center; gap: 6px; padding: 8px 10px; }
+.lbp-search { flex: 1; min-width: 0; margin-left: 0; }
+.lbp-search input { width: 100%; padding-top: 7px; padding-bottom: 7px; }
+.lbp-add.mini-btn { width: 34px; height: 34px; padding: 0; justify-content: center; flex: none; }
+.lbp-fields-panel .lbp-scroll { padding: 2px 0 10px; }
+.lbp-group { padding-bottom: 4px; }
+.lbp-group-label { padding: 8px 12px 3px; font-size: 11px; font-weight: 600; color: var(--text-mute); }
+.lbp-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px 2px 14px;
+}
+.lbp-field:hover { background: var(--surface-2); }
+.lbp-field[draggable='true'] { cursor: grab; }
+.lbp-field.is-piece { padding-left: 33px; position: relative; }
+.lbp-field.is-piece::before {
+  content: '└';
+  position: absolute;
+  left: 16px;
+  color: var(--text-mute);
+  opacity: 0.6;
+}
+.lbp-field-name {
+  /* the name keeps its room; the sample gives way first */
+  flex: 1 0 auto;
+  max-width: 70%;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-dark);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.lbp-field-name:disabled { cursor: default; }
+.lbp-field.is-used .lbp-field-name { color: var(--text-mute); }
+.lbp-count {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--c-blue-bd, #b9d4ee);
+  border-radius: 999px;
+  background: var(--c-blue-bg, #e8f1fb);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--c-blue, #1668a7);
+  cursor: pointer;
+}
+.lbp-sample {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 112px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+button.lbp-sample { cursor: text; }
+button.lbp-sample:hover:not(:disabled) { background: var(--surface); box-shadow: inset 0 0 0 1px var(--paper-line); }
+button.lbp-sample:disabled { cursor: default; }
+.lbp-sample.is-empty { font-style: italic; opacity: 0.7; }
+.lbp-field.is-used .lbp-sample { opacity: 0.75; }
+.lbp-sample-input {
+  flex: none;
+  width: 124px;
+  padding: 2px 5px;
+  border: 1px solid var(--amber);
+  border-radius: 4px;
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dark);
+  outline: none;
+}
+.lbp-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--paper-line);
+}
+
+/* the + picker, under the search bar */
+.lbp-picker {
+  position: absolute;
+  top: calc(100% - 2px);
+  left: 10px;
+  right: 10px;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  max-height: min(460px, 70vh);
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  box-shadow: 0 18px 50px -18px rgba(12, 17, 23, 0.35);
+}
+.lbp-picker-search { margin: 8px; }
+.lbp-picker-search input { width: 100%; padding-top: 7px; padding-bottom: 7px; }
+.lbp-picker-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 5px 4px; }
+.lbp-pick-title {
+  padding: 6px 8px 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.lbp-pick {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: var(--text-dark);
+  cursor: pointer;
+}
+.lbp-pick.active { background: rgba(var(--accent-rgb), 0.12); }
+.lbp-pick.is-used { color: var(--text-mute); }
+.lbp-pick.is-piece { padding-left: 24px; position: relative; }
+.lbp-pick.is-piece::before { content: '└'; position: absolute; left: 10px; color: var(--text-mute); opacity: 0.6; }
+.lbp-pick-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lbp-pick-sub { flex: none; font-size: 10.5px; color: var(--text-mute); white-space: nowrap; }
+.lbp-pick.is-used .lbp-pick-sub { color: var(--c-blue, #1668a7); }
+.lbp-picker-note {
+  padding: 6px 12px 8px;
+  border-top: 1px solid var(--paper-line);
+  font-size: 11px;
+  color: var(--text-mute);
+}
+
+/* the placed-fields table under the canvas */
+.lbp-placed {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+  outline: none;
+}
+.lbp-placed:focus-visible { box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.25); }
+.lbp-placed .data-table-scroll { max-height: 300px; overflow-y: auto; }
+.lbp-placed b.cell-top { white-space: nowrap; }
+.lbp-placed thead th { position: sticky; top: 0; z-index: 1; }
+.lbp-placed tbody tr { cursor: pointer; }
+.lbp-placed tbody tr:hover td { background: var(--surface-2); }
+.lbp-placed tbody tr.is-split td { background: var(--surface-2); }
+.lbp-placed tbody tr.is-selected td { background: rgba(var(--accent-rgb), 0.12); }
+.lbp-piece-name { display: inline-block; position: relative; padding-left: 18px; }
+.lbp-piece-name::before { content: '└'; position: absolute; left: 2px; color: var(--text-mute); opacity: 0.6; }
+.lbp-font-short { white-space: nowrap; }
+.lbp-none { color: var(--text-mute); opacity: 0.6; }
+.lbp-strip { display: flex; align-items: center; gap: 6px; }
+.lbp-strip .combo-wrap { flex: 1 1 auto; }
+.lbp-strip-text.lbp-text { width: 52px; flex: none; }
+.lbp-placed .combo-wrap .org-select { padding-top: 5px; padding-bottom: 5px; }
+
+/* inputs and toggles the panels share */
+.lbp-num {
+  width: 58px;
+  padding: 4px 6px;
+  border: 1px solid var(--paper-line);
+  border-radius: 6px;
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dark);
+  text-align: right;
+  outline: none;
+}
+.lbp-text {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--paper-line);
+  border-radius: 6px;
+  background: var(--surface);
+  font-family: var(--font-display);
+  font-size: 13px;
+  color: var(--text-dark);
+  outline: none;
+  box-sizing: border-box;
+}
+textarea.lbp-text { resize: vertical; }
+.lbp-num:focus, .lbp-text:focus {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
+}
+.lbp-num:disabled, .lbp-text:disabled { opacity: 0.6; }
+.lbp-num.is-small { width: 48px; }
+.lbp-tg {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--paper-line);
+  border-radius: 5px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.lbp-tg svg { width: 12px; height: 12px; fill: none; stroke: #0c1117; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
+.lbp-tg.on { background: var(--accent); border-color: var(--accent); }
+.lbp-tg.on svg { opacity: 1; }
+.lbp-tg:disabled { cursor: default; opacity: 0.55; }
+.lbp-seg.segmented { padding: 3px; gap: 2px; }
+.lbp-seg.segmented button { padding: 4px 9px; font-size: 12px; }
+.lbp-seg.segmented button:disabled { opacity: 0.45; cursor: default; }
+.lbp-switch { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-dark); cursor: pointer; }
+
+/* the properties panel */
+.lbp-props-top { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-bottom: 1px solid var(--paper-line); }
+.lbp-subject { margin: 0; font-size: 15px; font-weight: 600; color: var(--text-dark); }
+.lbp-prop { padding: 9px 12px; border-bottom: 1px solid var(--paper-line); }
+.lbp-prop:last-child { border-bottom: 0; }
+.lbp-prop-label { margin-bottom: 6px; font-size: 11px; color: var(--text-mute); }
+.lbp-prop-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.lbp-prop-controls > .combo-wrap,
+.lbp-prop-controls > .lbp-text { flex: 1 1 100%; }
+.lbp-prop .lbp-hint { margin-top: 5px; }
+.lbp-static { font-size: 13px; color: var(--text-dark); }
+.lbp-unit { font-size: 11px; color: var(--text-mute); }
+
+/* the font dropdown: each family drawn in its own face (--lbp-face is
+   set inline from fonts.ts; a font preview is the content itself) */
+.lbp-font-select { width: 100%; }
+.lbp-font-trigger {
+  display: flex;
+  align-items: center;
+  padding-right: 32px;
+  text-align: left;
+  cursor: pointer;
+}
+.lbp-font-trigger:disabled { cursor: default; opacity: 0.6; }
+.lbp-face {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  font-family: var(--lbp-face, inherit);
+}
+.lbp-font-name { font-size: 14px; white-space: nowrap; }
+.lbp-font-sample { font-size: 13px; color: var(--text-mute); white-space: nowrap; letter-spacing: 0.02em; }
+.lbp-font-menu.combo-menu { max-width: min(400px, 92vw); max-height: 340px; }
+.lbp-font-option.kbar-item { padding: 7px 10px; }
+/* the weight shown is the font's own; the chosen one is marked instead */
+.combo-menu .lbp-font-option.kbar-item.selected { font-weight: inherit; box-shadow: inset 3px 0 0 var(--amber); }
+.lbp-font-option .sub { flex: none; padding-left: 12px; }
+
+/* ── the page (`lbb-`): top bar, notices, the three columns, dialogs ──
+ *
+ * The builder fills the main column: the top bar and notices, then the
+ * fields | canvas over the placed fields | properties over the printer
+ * preview, each panel scrolling inside itself. Same guardrail rule as the
+ * canvas and panels: no class here holds a list trigger word. */
+
+.portal-page.lbb-page {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 640px;
+  box-sizing: border-box;
+  padding: 14px 18px 18px;
+  min-width: 0;
+}
+
+.lbb-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.lbb-name {
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-dark);
+}
+.lbb-spacer { flex: 1 1 auto; }
+.lbb-group { display: inline-flex; gap: 4px; }
+.lbb-bar .mini-btn.lbb-icon-btn { width: 30px; padding: 0; justify-content: center; }
+.lbb-icon { width: 16px; height: 16px; display: block; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.lbb-bar .mini-btn, .lbb-bar .btn-solid { gap: 6px; }
+.lbb-save .lbp-kbd { background: rgba(255, 255, 255, 0.18); border-color: transparent; color: inherit; }
+/* the parent's DPIs: each one a button inside the chip */
+.lbb-dpi {
+  padding: 0 2px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  opacity: 0.65;
+  cursor: pointer;
+}
+.lbb-dpi:hover { opacity: 1; }
+.lbb-dpi.on { opacity: 1; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
+
+.lbb-notice,
+.lbb-viewing {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 13px;
+  color: var(--text-dark);
+}
+.lbb-notice.is-success { color: var(--c-green); background: var(--c-green-bg); border-color: var(--c-green-bd); }
+.lbb-notice.is-info { color: var(--c-blue); background: var(--c-blue-bg); border-color: var(--c-blue-bd); }
+.lbb-notice.is-warning { color: var(--c-amber); background: var(--c-amber-bg); border-color: var(--c-amber-bd); }
+.lbb-notice.is-error { color: var(--c-red); background: var(--c-red-bg); border-color: var(--c-red-bd); }
+.lbb-notice-close {
+  margin-left: auto;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 16px;
+  cursor: pointer;
+}
+.lbb-viewing { background: var(--c-violet-bg); border-color: var(--c-violet-bd); }
+.lbb-viewing > span { flex: 1 1 auto; }
+
+.lbb-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr) 300px;
+  gap: 12px;
+}
+.lbb-body > .lbp { min-height: 0; }
+.lbb-center,
+.lbb-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+}
+/* the canvas keeps room for its toolbar and stage (.lbc-stage's 360px
+   floor); the placed fields give way first and scroll inside */
+.lbb-center > .lbc { flex: 1 1 460px; min-height: 460px; }
+.lbb-center > .lbp-placed { flex: 0 1 auto; min-height: 140px; }
+.lbb-side > .lbp-props { flex: 1 1 auto; min-height: 0; }
+.lbb-side > .lbb-preview { flex: none; }
+@media (max-width: 1100px) {
+  .portal-page.lbb-page { height: auto; }
+  .lbb-body { grid-template-columns: minmax(0, 1fr); }
+  .lbb-body > .lbp-fields-panel { max-height: 360px; }
+  .lbb-center > .lbc { flex-basis: auto; }
+}
+
+/* the printer preview */
+.lbb-preview-body { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px 12px; }
+.lbb-preview-body .lbp-hint,
+.lbb-preview-body .pf-error { margin: 0; }
+.lbb-preview-img { display: block; max-width: 100%; border: 1px solid var(--paper-line); background: #fff; }
+
+/* dialogs */
+.modal-card.reports-modal-card.rgm-card.lbb-new-card { width: min(680px, 96vw); max-width: 96vw; }
+.modal-card.reports-modal-card.rgm-card.lbb-versions-card { width: min(1040px, 96vw); max-width: 96vw; }
+.modal-card.reports-modal-card.rgm-card.lbb-keys-card { width: min(920px, 96vw); max-width: 96vw; }
+.modal-card.reports-modal-card.rgm-card.lbb-small-card { width: min(580px, 96vw); max-width: 96vw; }
+.segmented.lbb-sizes { display: flex; flex-wrap: wrap; }
+.lbb-new-custom { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; }
+.lbb-new-keep { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dark); }
+.lbb-new-custom .lbb-new-inches { margin: 0; }
+.lbb-ver { display: inline-flex; align-items: center; gap: 6px; }
+.lbb-ver-actions { display: inline-flex; justify-content: flex-end; gap: 6px; }
+.lbb-note {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.lbb-note-empty { color: var(--text-mute); font-style: italic; }
+.lbb-foot-text { margin: 0; }
+.lbb-keys { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 22px; align-items: start; }
+@media (max-width: 760px) { .lbb-keys { grid-template-columns: minmax(0, 1fr); } }
+.lbb-keys-title {
+  margin: 0 0 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.lbb-stale { display: flex; flex-direction: column; gap: 8px; }
+.lbb-stale-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+}
+.lbb-stale-name { flex: 1 1 auto; min-width: 0; }
+.lbb-stale-actions { display: inline-flex; gap: 6px; }

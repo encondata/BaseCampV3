@@ -3238,6 +3238,9 @@ export async function getTimeSummary(initiativeId: string): Promise<TimeSummaryO
 
 export interface InitiativeItem {
   id: string; name: string; description: string | null;
+  /** The short code labels print (e.g. `LV3`): unique when set, null when
+   *  the initiative has none. Optional so older fixtures still type-check. */
+  code?: string | null;
   /** Sent on list rows and the detail alike, so the edit modal can offer Reveal from either page. */
   kiosk_password_set?: boolean;
   initiative_type: string; type_label: string; type_color: string;
@@ -5298,6 +5301,54 @@ export interface LabelTemplate {
   // API always sends, defaulting to `{}`) don't need updating.
   generation_rules?: LabelGenerationRules;
   created_at: string; updated_at: string;
+  // The label builder's tree (api labels/templates_tree.py), optional so
+  // fixtures predating it still type: a parent is schema_version 2 with no
+  // parent_id and owns `dpis` and `samples`; a child names its parent and
+  // is version v<generated_from_version>.<child_edits>.
+  parent_id?: string | null;
+  schema_version?: number;
+  samples?: Record<string, string>;
+  dpis?: string[];
+  generated_from_version?: number | null;
+  child_edits?: number;
+  customized?: boolean;
+  is_old?: boolean;
+}
+
+/** PATCH / restore: the saved template, and the parent's customized
+ *  children this or an earlier save left out of date. */
+export interface LabelTemplateSaved extends LabelTemplate {
+  out_of_date?: string[];
+}
+
+/** A DPI child in the tree; `out_of_date`: customized, and the parent has
+ *  saved past the version it was generated from. */
+export interface LabelTemplateChild extends LabelTemplate {
+  out_of_date: boolean;
+}
+
+/** GET /labels/templates/tree: a top-level template — a builder parent with
+ *  its DPI children (current and Old), or an older single row. */
+export interface LabelTemplateTreeNode extends LabelTemplate {
+  family: string;
+  children: LabelTemplateChild[];
+}
+
+/** One saved state of a template; `label` reads v7 or v7.2. */
+export interface LabelTemplateVersion {
+  version: number; child_edits: number; label: string; summary: string; note: string;
+  created_by: string | null; created_by_name: string | null; created_at: string;
+}
+
+export interface LabelTemplateVersionDetail extends LabelTemplateVersion {
+  design: Record<string, unknown> | null; code: string | null; samples: Record<string, string>;
+}
+
+/** v7, or v7.2 for a child's second hand edit on parent v7. */
+export function templateVersionLabel(t: Pick<LabelTemplate, 'version' | 'parent_id' | 'generated_from_version' | 'child_edits'>): string {
+  if (!t.parent_id) return `v${t.version}`;
+  const base = t.generated_from_version ?? 0;
+  return t.child_edits ? `v${base}.${t.child_edits}` : `v${base}`;
 }
 
 export async function listLabelVocab(kind?: string): Promise<LabelVocab[]> {
@@ -5386,7 +5437,7 @@ export async function createLabelTemplate(
 
 export async function updateLabelTemplate(
   id: string, body: Record<string, unknown>,
-): Promise<LabelTemplate> {
+): Promise<LabelTemplateSaved> {
   const resp = await apiFetch(`/labels/templates/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -5396,9 +5447,21 @@ export async function updateLabelTemplate(
   return resp.json();
 }
 
+/** Deactivates a template. DELETE on a template is now the real,
+ *  typed-name delete, so deactivation has its own route. */
 export async function deleteLabelTemplate(id: string): Promise<void> {
-  const resp = await apiFetch(`/labels/templates/${id}`, { method: 'DELETE' });
+  const resp = await apiFetch(`/labels/templates/${id}/deactivate`, { method: 'POST' });
   if (!resp.ok) throw await errorFrom(resp);
+}
+
+/** Turns a top-level template on (a parent with its current children).
+ *  422 `active_conflict` (`names`) while another active template prints
+ *  the same family, type and DPI: Replace… swaps them instead. A DPI child
+ *  follows its parent (409 `child_follows_parent`). */
+export async function activateLabelTemplate(id: string): Promise<LabelTemplate> {
+  const resp = await apiFetch(`/labels/templates/${encodeURIComponent(id)}/activate`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
 }
 
 export async function convertLabelTemplate(id: string): Promise<LabelTemplate> {
@@ -5409,16 +5472,152 @@ export async function convertLabelTemplate(id: string): Promise<LabelTemplate> {
   return resp.json();
 }
 
+// ── the label builder's template tree: versions, clone, Replace…, delete ──
+
+async function labelTemplatePost<T>(path: string, body?: unknown): Promise<T> {
+  const resp = await apiFetch(path, body === undefined ? { method: 'POST' } : {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+const templatePath = (id: string) => `/labels/templates/${encodeURIComponent(id)}`;
+const versionPath = (id: string, version: number, childEdits: number) =>
+  `${templatePath(id)}/versions/${version}/${childEdits}`;
+
+export async function listLabelTemplateTree(): Promise<LabelTemplateTreeNode[]> {
+  const resp = await apiFetch('/labels/templates/tree');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** One line per save, newest first. */
+export async function listLabelTemplateVersions(id: string): Promise<LabelTemplateVersion[]> {
+  const resp = await apiFetch(`${templatePath(id)}/versions`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getLabelTemplateVersion(
+  id: string, version: number, childEdits: number,
+): Promise<LabelTemplateVersionDetail> {
+  const resp = await apiFetch(versionPath(id, version, childEdits));
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** The author's note on a version, added after the save. */
+export async function noteLabelTemplateVersion(
+  id: string, version: number, childEdits: number, note: string,
+): Promise<LabelTemplateVersionDetail> {
+  const resp = await apiFetch(versionPath(id, version, childEdits), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Saves an older version again as the next one. */
+export async function restoreLabelTemplateVersion(
+  id: string, version: number, childEdits: number,
+): Promise<LabelTemplateSaved> {
+  return labelTemplatePost(`${versionPath(id, version, childEdits)}/restore`);
+}
+
+/** A new, inactive template named `name`: design, samples, sites and (for a
+ *  parent) its current children. */
+export async function cloneLabelTemplate(id: string, name: string): Promise<LabelTemplate> {
+  return labelTemplatePost(`${templatePath(id)}/clone`, { name });
+}
+
+/** A customized child gives way to a fresh one from its parent; it stays
+ *  nested, inactive, as "… Old". Returns the fresh child. */
+export async function updateLabelTemplateFromParent(id: string): Promise<LabelTemplate> {
+  return labelTemplatePost(`${templatePath(id)}/update-from-parent`);
+}
+
+/** Replace…: deactivates `oldIds` and activates this template in one step. */
+export async function replaceLabelTemplates(id: string, oldIds: string[]): Promise<LabelTemplate> {
+  return labelTemplatePost(`${templatePath(id)}/replace`, { old_template_ids: oldIds });
+}
+
+/** Add DPI: brings a deleted DPI child back, generated from the parent. */
+export async function addLabelTemplateDpi(id: string, dpi: string): Promise<LabelTemplate> {
+  return labelTemplatePost(`${templatePath(id)}/dpis`, { dpi });
+}
+
+export interface LabelTemplateDeleteSummary { children: string[]; generated_labels: number }
+
+export async function getLabelTemplateDeleteSummary(id: string): Promise<LabelTemplateDeleteSummary> {
+  const resp = await apiFetch(`${templatePath(id)}/delete-summary`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Deletes for real: a DPI child alone, or a top-level template (with its
+ *  children and generated labels) when `typedName` is exactly its name. */
+export async function deleteLabelTemplateForGood(id: string, typedName?: string): Promise<void> {
+  const resp = await apiFetch(templatePath(id), typedName === undefined ? { method: 'DELETE' } : {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ typed_name: typedName }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+// ── Label builder fields (the field panel, Load from asset…) ─────────
+
+/** One field the builder offers (api labels/fields.py `FIELD_GROUPS`). */
+export interface LabelFieldDef {
+  key: string; label: string; kind: 'text' | 'number' | 'date'; mock: string;
+}
+
+export interface LabelFieldGroup {
+  key: string; label: string; label_types: string[]; fields: LabelFieldDef[];
+}
+
+/** The groups a template of one label type offers, and every From-To
+ *  header seen across moves (each is a field keyed `ft:<header>`). */
+export interface LabelFields { groups: LabelFieldGroup[]; ft_headers: string[] }
+
+export async function listLabelFields(labelType?: string): Promise<LabelFields> {
+  const resp = await apiFetch(labelType
+    ? `/labels/fields?label_type=${encodeURIComponent(labelType)}` : '/labels/fields');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** GET /labels/sample-values: one roster asset's field values, {key: text}
+ *  for every catalog key plus `ft:<header>` for each From-To column, as its
+ *  label prints them (the kiosk sync's values). 404 `initiative_not_found`,
+ *  `asset_not_on_move`. */
+export async function loadSampleAsset(initiativeId: string, assetId: string): Promise<Record<string, string>> {
+  const q = new URLSearchParams({ initiative_id: initiativeId, asset_id: assetId });
+  const resp = await apiFetch(`/labels/sample-values?${q.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 // ── Label font library (Labels → Printers › Install Fonts) ───────────
 
 export interface LabelFontUsedBy { template_id: string; template_name: string }
 
 /** A TrueType font admins uploaded once; `name` is the Zebra object name
- *  it installs under on the printer's E: drive. */
+ *  it installs under on the printer's E: drive. `family`/`weight` place it
+ *  in a label builder family. A `resident` font is built into Zebra
+ *  printers: it is never pushed to one and its bytes are never served
+ *  (`size_bytes` is 0 until a copy is uploaded for its metrics). */
 export interface LabelFont {
   id: string; name: string; display_name: string; size_bytes: number; content_type: string;
   uploaded_by: string | null; uploaded_by_name: string | null; created_at: string;
   used_by: LabelFontUsedBy[];
+  family?: string | null; weight?: 'regular' | 'bold' | null;
+  resident?: boolean; source_url?: string | null;
 }
 
 export async function listLabelFonts(): Promise<LabelFont[]> {
@@ -5448,12 +5647,30 @@ export async function getLabelFontBytes(id: string): Promise<Uint8Array> {
   return new Uint8Array(await resp.arrayBuffer());
 }
 
+/** GET /labels/fonts/{id}/metrics: glyph metrics in font units for the
+ *  builder canvas (labels/builder/metrics.ts FontMetrics). */
+export interface LabelFontMetrics {
+  unitsPerEm: number; ascent: number; descent: number; advances: Record<string, number>;
+}
+
+export async function getLabelFontMetrics(id: string): Promise<LabelFontMetrics> {
+  const resp = await apiFetch(`/labels/fonts/${encodeURIComponent(id)}/metrics`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** A design kind compiles `design` (any JSON object: a schema 1 design or
+ *  the builder's schema 2 one); `samples` are a schema 2 design's sample
+ *  values, printed over the portal's mock values for `label_type` (the
+ *  template's: a key of another type prints blank, as on a real label). */
 export async function compileLabel(body: {
   kind: 'design' | 'code';
-  design?: Record<string, unknown> | null;
+  design?: object | null;
   code?: string | null;
   size_key: string; dpi_key: string; language_key: string;
   mode: 'placeholders' | 'sample';
+  samples?: Record<string, string>;
+  label_type?: string;
 }): Promise<{ code: string }> {
   const resp = await apiFetch('/labels/templates/compile', {
     method: 'POST',
@@ -5464,8 +5681,10 @@ export async function compileLabel(body: {
   return resp.json();
 }
 
+/** The printer-rendered preview (Labelary); `font_ids` are library fonts
+ *  embedded ahead of the label so it renders in them. */
 export async function previewZplRequest(body: {
-  zpl: string; size_key: string; dpi_key: string;
+  zpl: string; size_key: string; dpi_key: string; font_ids?: string[];
 }): Promise<Blob> {
   const resp = await apiFetch('/labels/preview/zpl', {
     method: 'POST',
@@ -5507,14 +5726,20 @@ export interface LabelRun {
   // the runs list uses it to mark a chip "manual" when that run's
   // operator overrode (or hand-picked) that type's template.
   template_overrides?: Record<string, string>;
+  /** The printer DPI the run generated for. Optional for the same reason
+   *  as `template_overrides`; the API always sends it. */
+  dpi_key?: string;
 }
 
 /** POST /labels/generate/runs — 404 `initiative_not_found`, 422
  *  `invalid_label_types`/`invalid_templates` (the latter's `err.detail`
- *  carries `problems: string[]` alongside `code`), 409 `run_active`
- *  (`err.detail` carries `run_id` alongside `code` for that one). */
+ *  carries `problems: string[]` alongside `code`)/`invalid_dpi`, 409
+ *  `run_active` (`err.detail` carries `run_id` alongside `code` for that
+ *  one). */
 export async function startLabelRun(body: {
   initiative_id: string; label_types: string[]; regenerate_existing: boolean; notify: boolean;
+  /** The printer DPI to generate for (the server defaults to 300). */
+  dpi_key?: string;
   /** Only the types the operator resolved themselves — an auto-matched
    *  type with no override never appears here. Omit entirely when empty
    *  rather than sending `{}`. */
@@ -5591,9 +5816,14 @@ export interface LabelGeneratePreview {
   active_run_id: string | null;
 }
 
-export async function getLabelGeneratePreview(initiativeId: string): Promise<LabelGeneratePreview> {
-  const resp = await apiFetch(
-    `/labels/generate/preview?initiative_id=${encodeURIComponent(initiativeId)}`);
+/** What a run at `dpiKey` would do: each type's templates at that DPI and
+ *  its labels' counts at that DPI (the server defaults to 300). */
+export async function getLabelGeneratePreview(
+  initiativeId: string, dpiKey?: string,
+): Promise<LabelGeneratePreview> {
+  const qs = new URLSearchParams({ initiative_id: initiativeId });
+  if (dpiKey) qs.set('dpi_key', dpiKey);
+  const resp = await apiFetch(`/labels/generate/preview?${qs.toString()}`);
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
@@ -5603,11 +5833,11 @@ export interface GeneratedLabel {
   // the human Asset ID (assets.legacy_id, a BigInteger) — not a UUID.
   asset_id: number | null; serial_number: string | null; name: string | null;
   label_type: string; template_name: string; template_version: number;
-  generated_at: string; stale: boolean; code: string;
+  dpi_key: string; generated_at: string; stale: boolean; code: string;
 }
 
 export async function listGeneratedLabels(params: {
-  initiative_id?: string; label_type?: string; limit?: number;
+  initiative_id?: string; label_type?: string; dpi_key?: string; limit?: number;
 } = {}): Promise<GeneratedLabel[]> {
   const qs = new URLSearchParams();
   Object.entries(params).forEach(([k, v]) => { if (v !== undefined) qs.set(k, String(v)); });
@@ -5627,8 +5857,10 @@ export interface GeneratedLabelBundleItem {
   stale: boolean; generated_at: string; code: string;
 }
 
-/** Every generated asset label of one type on one initiative — the Print
- *  Labels page's print payload and the unit its offline cache stores. */
+/** Every generated asset label of one type on one initiative, at every
+ *  DPI it was generated for — the Print Labels page's print payload (it
+ *  keeps the connected printer's DPI) and the unit its offline cache
+ *  stores. */
 export interface GeneratedLabelBundle {
   initiative_id: string; label_type: string; fetched_at: string;
   labels: GeneratedLabelBundleItem[];
