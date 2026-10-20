@@ -532,7 +532,7 @@ describe('PropertiesPanel: an image (ID badges)', () => {
   });
 
   describe('Delete… (the picked library picture)', () => {
-    const DELETED_NOTE = 'This picture was deleted from the library, so it prints nothing. Pick another.';
+    const DELETED_NOTE = 'This picture was deleted from the library, so no picture prints here. Pick another.';
     const staticOne = (imageId?: string) => badge(photo({ source: 'static', fit: 'contain', mode: 'threshold', imageId }));
     const confirmDialog = () => screen.getByRole('dialog', { name: 'Delete library image' });
 
@@ -548,7 +548,8 @@ describe('PropertiesPanel: an image (ID badges)', () => {
       expect(within(confirmDialog()).getByText('Logo 10 · Delete')).toBeTruthy();
       expect(within(confirmDialog()).getByRole('heading', { name: 'Delete “Logo 10”?' })).toBeTruthy();
       expect(within(confirmDialog()).getByText(
-        'Templates that use it will print nothing in its place until another image is picked.')).toBeTruthy();
+        'Templates that use it print no picture in its place (an outlined box where Hide when empty is off) '
+        + 'until another image is picked.')).toBeTruthy();
       expect(api.deleteLabelImage).not.toHaveBeenCalled();
     });
 

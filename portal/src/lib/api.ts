@@ -5849,7 +5849,8 @@ export async function uploadLabelImage(file: File, name?: string): Promise<Label
   return resp.json();
 }
 
-/** A soft delete: a template still using it prints no picture there. */
+/** A soft delete: a template still using it prints no picture there (an
+ *  outlined box where Hide when empty is off) until another is picked. */
 export async function deleteLabelImage(id: string): Promise<void> {
   const resp = await apiFetch(`/labels/images/${encodeURIComponent(id)}`, { method: 'DELETE' });
   if (!resp.ok) throw await errorFrom(resp);

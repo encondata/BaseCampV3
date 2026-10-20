@@ -4,7 +4,7 @@
  * natural order with each picture's size, and Upload… (POST /labels/images:
  * PNG, JPEG, WebP or GIF, 5 MB at most, kept as uploaded), which adds the
  * picture and picks it. A design holds the picture by its id; one deleted
- * from the library since prints nothing, and the picker says so.
+ * from the library since prints no picture, and the picker says so.
  *
  * An upload can take a while, and the user keeps working meanwhile: when
  * it lands, the picture goes to the elements it was started for, through
@@ -14,10 +14,11 @@
  * Delete… takes the picked picture out of the library (DELETE
  * /labels/images/{id}, a soft delete; allowed while templates use it)
  * after a confirm with the report-generate header. The element keeps the
- * id, so it prints nothing there until another picture is picked; the
- * canvas forgets the picture (imageRaster.ts forgetStaticRaster) and shows
- * its placeholder. `onDialog` tells the page while the confirm is open, so
- * the canvas keys stay off.
+ * id, so it prints no picture there (an outlined box where Hide when empty
+ * is off) until another picture is picked; the canvas forgets the picture
+ * (imageRaster.ts forgetStaticRaster) and shows its placeholder.
+ * `onDialog` tells the page while the confirm is open, so the canvas keys
+ * stay off.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -100,7 +101,10 @@ function DeleteImageDialog({ image, onDeleted, onClose }: {
           <div className="rgm-head-text">
             <div className="eyebrow">{image.name} · Delete</div>
             <h3>Delete “{image.name}”?</h3>
-            <p className="page-hint">Templates that use it will print nothing in its place until another image is picked.</p>
+            <p className="page-hint">
+              Templates that use it print no picture in its place (an outlined box where Hide when empty is off)
+              until another image is picked.
+            </p>
           </div>
           <button type="button" className="modal-close" aria-label="Close" onClick={onClose} disabled={busy}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
@@ -223,7 +227,7 @@ export default function ImageLibraryPicker({ value, target, onPick, disabled = f
       {loadFailed && <div className="lbp-hint is-warning" role="status">Couldn’t load the label image library.</div>}
       {missing && (
         <div className="lbp-hint is-warning" role="status">
-          This picture was deleted from the library, so it prints nothing. Pick another.
+          This picture was deleted from the library, so no picture prints here. Pick another.
         </div>
       )}
       {error && <div className="lbp-hint is-warning" role="alert">{error}</div>}
