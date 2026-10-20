@@ -314,9 +314,12 @@ export default function KioskSetup() {
         scan_status: scanKey, ...(station ? { station_type: station } : {}),
       });
       const saved: KioskSetupSelection = {
-        initiativeId: result.initiative_id, initiativeName: result.initiative_name,
-        siteId: result.site_id, siteName: result.site_name, siteRole: result.site_role,
-        scanStatus: result.scan_status, scanLabel: result.scan_status_label,
+        // The wizard only submits a move, site, and scan type today, so the
+        // nullable answer fields are always set; the Time Clock flow comes later.
+        initiativeId: result.initiative_id ?? '', initiativeName: result.initiative_name ?? '',
+        siteId: result.site_id ?? '', siteName: result.site_name ?? '',
+        siteRole: result.site_role ?? 'none',
+        scanStatus: result.scan_status ?? '', scanLabel: result.scan_status_label ?? '',
       };
       if (station) saved.stationType = station;
       if (station === 'rfid') {
@@ -354,7 +357,7 @@ export default function KioskSetup() {
       // Fire-and-forget: the summary appears immediately and the
       // download reports itself through `.sync-status`. A sync outcome
       // never changes the setup state — the kiosk IS set up either way.
-      void runSync(result.initiative_id, result.initiative_name);
+      void runSync(result.initiative_id ?? '', result.initiative_name ?? '');
     } catch (err) {
       // A transient save failure shouldn't downgrade a kiosk that was
       // already set up and working — only mark 'failed' when it wasn't

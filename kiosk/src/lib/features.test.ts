@@ -1,6 +1,8 @@
 import { expect, it } from 'vitest';
 
-import { FEATURES, featureAvailable } from './features';
+import {
+  FEATURES, TIMECLOCK_STATION_FEATURE, featureAvailable, homeFeatures,
+} from './features';
 
 const setup = FEATURES.find((f) => f.id === 'setup')!;
 const settings = FEATURES.find((f) => f.id === 'settings')!;
@@ -54,4 +56,13 @@ it('RFID Enroll sits immediately after Scanning, with its own route', () => {
   expect(enroll.path).toBe('/enroll');
   expect(enroll.title).toBe('RFID Enroll');
   expect(enroll.placeholder).toBeUndefined();
+});
+
+it('a Time Clock station shows Time Clock, Kiosk Setup and Settings', () => {
+  expect(homeFeatures(true, 'timeclock').map((f) => f.id)).toEqual(['clock', 'setup', 'settings']);
+  expect(TIMECLOCK_STATION_FEATURE).toEqual({
+    id: 'clock', path: '/timeclock/station', title: 'Time Clock',
+    blurb: 'Start the time clock for workers.',
+  });
+  expect(homeFeatures(false, 'timeclock')).toBe(FEATURES);
 });

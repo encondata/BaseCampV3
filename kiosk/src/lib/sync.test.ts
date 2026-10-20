@@ -411,3 +411,13 @@ it('clearing the local data empties the template set', async () => {
   await clearDb();
   expect(await count('label_templates')).toBe(0);
 });
+
+it('runSync with no move makes no fetch and leaves the status alone', async () => {
+  await runSync('', 'No move');
+  expect(apiMock.fetchAssetsSync).not.toHaveBeenCalled();
+  expect(apiMock.fetchPeopleSync).not.toHaveBeenCalled();
+  expect(apiMock.fetchContainersSync).not.toHaveBeenCalled();
+  expect(apiMock.fetchTrucksSync).not.toHaveBeenCalled();
+  expect(apiMock.fetchLabelTemplatesSync).not.toHaveBeenCalled();
+  expect(readSyncStatus().phase).toBe('idle');
+});

@@ -13,11 +13,16 @@ import { useSyncExternalStore } from 'react';
 const KEY = 'ss.kiosk.setup';
 
 export interface KioskSetupSelection {
+  /** Empty (name "No move") for a Time Clock station set up without a move. */
   initiativeId: string;
   initiativeName: string;
+  /** Empty (name "No site") for a Time Clock station set up without a site. */
   siteId: string;
   siteName: string;
-  siteRole: 'source' | 'destination';
+  /** `source`/`destination` for a move's site; a Time Clock station with
+   *  no move uses `other` for a chosen site and `none` for no site. */
+  siteRole: 'source' | 'destination' | 'other' | 'none';
+  /** Empty for a Time Clock station, which scans nothing. */
   scanStatus: string;
   scanLabel: string;
   /** What the laptop station is. Absent in web mode and in selections
@@ -27,15 +32,16 @@ export interface KioskSetupSelection {
   reader?: ReaderSummary;
 }
 
-export type StationType = 'label' | 'rfid';
+export type StationType = 'label' | 'rfid' | 'timeclock';
 
 export interface ReaderSummary { ip: string; serial: string; model: string }
 
-/** "RFID · Laptop" / "Label Station · Laptop"; the bare mode label when no
- *  station type was saved. */
+/** "RFID · Laptop" / "Label Station · Laptop" / "Time Clock · Laptop"; the
+ *  bare mode label when no station type was saved. */
 export function stationLabel(stationType: StationType | undefined, modeLabel: string): string {
   if (stationType === 'rfid') return `RFID · ${modeLabel}`;
   if (stationType === 'label') return `Label Station · ${modeLabel}`;
+  if (stationType === 'timeclock') return `Time Clock · ${modeLabel}`;
   return modeLabel;
 }
 
@@ -55,7 +61,7 @@ function isReader(value: unknown): value is ReaderSummary {
 function normalize(selection: KioskSetupSelection): KioskSetupSelection {
   const { stationType, reader, ...rest } = selection;
   const out: KioskSetupSelection = { ...rest };
-  if (stationType === 'label' || stationType === 'rfid') out.stationType = stationType;
+  if (stationType === 'label' || stationType === 'rfid' || stationType === 'timeclock') out.stationType = stationType;
   if (out.stationType === 'rfid' && isReader(reader)) out.reader = reader;
   return out;
 }
@@ -67,10 +73,17 @@ const listeners = new Set<Listener>();
 function isSelection(value: unknown): value is KioskSetupSelection {
   if (value === null || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
-  return typeof v.initiativeId === 'string' && typeof v.initiativeName === 'string'
-    && typeof v.siteId === 'string' && typeof v.siteName === 'string'
-    && (v.siteRole === 'source' || v.siteRole === 'destination')
-    && typeof v.scanStatus === 'string' && typeof v.scanLabel === 'string';
+  if (typeof v.initiativeId !== 'string' || typeof v.initiativeName !== 'string'
+      || typeof v.siteId !== 'string' || typeof v.siteName !== 'string'
+      || typeof v.scanStatus !== 'string' || typeof v.scanLabel !== 'string') return false;
+  // A Time Clock station may have no move, no site, and no scan type
+  // (empty ids/scan, role other/none); every other station needs all three.
+  if (v.stationType === 'timeclock') {
+    return v.siteRole === 'source' || v.siteRole === 'destination'
+      || v.siteRole === 'other' || v.siteRole === 'none';
+  }
+  return v.initiativeId !== '' && v.siteId !== '' && v.scanStatus !== ''
+    && (v.siteRole === 'source' || v.siteRole === 'destination');
 }
 
 // useSyncExternalStore requires a referentially stable snapshot when

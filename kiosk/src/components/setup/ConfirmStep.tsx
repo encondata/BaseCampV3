@@ -7,11 +7,12 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { ApiError, runCheck, startReader, type CheckName, type CheckResult } from '../../lib/api';
+import type { KioskSetupSelection } from '../../lib/kioskSetup';
 import CheckList from './CheckList';
 import { codeOf, readerErrorText } from './readerSetup';
 
 interface Props {
-  setup: { initiativeName: string; siteName: string; siteRole: 'source' | 'destination'; scanLabel: string };
+  setup: { initiativeName: string; siteName: string; siteRole: KioskSetupSelection['siteRole']; scanLabel: string };
   reader: { ip: string; serial: string; model: string; endpoint_url: string | null } | null;
   onBack: () => void;
   onStarted: () => void;

@@ -143,3 +143,22 @@ it('flags a value that is both an exact RFID match and a strict prefix of anothe
   // exact-length equality (no other tag) is never ambiguous
   expect(isAmbiguousPrefix(index, '100348')).toBe(false);
 });
+
+it('finds a person by badge UUID, in any case and with stray whitespace', () => {
+  const badge = 'AB12CD34-2222-4333-8444-555555555555';
+  const holder = person({ id: '44444444-2222-4333-8444-555555555555', display_name: 'Bea Badge',
+    badge_uid: badge.toLowerCase() });
+  const idx = buildPeopleIndex([JIMMY, holder]);
+  expect(matchPersonExact(idx, badge)?.display_name).toBe('Bea Badge');
+  expect(matchPersonExact(idx, `  ${badge.toLowerCase()}\n`)?.display_name).toBe('Bea Badge');
+});
+
+it('an RFID tag still wins over a badge, and a badge over nothing', () => {
+  const a = person({ id: 'a1a1a1a1-2222-4333-8444-555555555555', display_name: 'A', rfid_tag: '5555' });
+  const b = person({ id: 'b1b1b1b1-2222-4333-8444-555555555555', display_name: 'B',
+    badge_uid: 'b2b2b2b2-2222-4333-8444-555555555555' });
+  const idx = buildPeopleIndex([a, b]);
+  expect(matchPersonExact(idx, '5555')?.display_name).toBe('A');
+  expect(matchPersonExact(idx, 'b2b2b2b2-2222-4333-8444-555555555555')?.display_name).toBe('B');
+  expect(matchPersonExact(idx, 'c3c3c3c3-2222-4333-8444-555555555555')).toBeNull();
+});

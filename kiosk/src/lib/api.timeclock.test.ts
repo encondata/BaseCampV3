@@ -100,3 +100,19 @@ it('a network failure on a punch is ApiError network', async () => {
   await expect(api.postClockIn({ serial: 'k', person_id: 'p-1' }))
     .rejects.toMatchObject({ code: 'network', status: 0 });
 });
+
+it('fetchTimeclockStatus passes the kiosk serial as a query parameter', async () => {
+  const fetchMock = vi.fn(async () => json(STATUS));
+  vi.stubGlobal('fetch', fetchMock);
+  await api.fetchTimeclockStatus('p', 'SER');
+  const [url] = fetchMock.mock.calls.at(-1) as unknown as Call;
+  expect(url).toBe('http://api.test/kiosk/timeclock/p?serial=SER');
+});
+
+it('fetchTimeclockStatus url-encodes the serial', async () => {
+  const fetchMock = vi.fn(async () => json(STATUS));
+  vi.stubGlobal('fetch', fetchMock);
+  await api.fetchTimeclockStatus('p', 'a b&c');
+  const [url] = fetchMock.mock.calls.at(-1) as unknown as Call;
+  expect(url).toBe('http://api.test/kiosk/timeclock/p?serial=a%20b%26c');
+});
