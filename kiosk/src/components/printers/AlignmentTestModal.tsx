@@ -12,12 +12,17 @@
  * Print Labels' settings modal (`alignmentTestZpl`), with the offsets
  * editable here and saved to the shared `labels.print.settings` store so
  * Print Labels prints with them. DPI preselects from the printer's `~HI`.
+ *
+ * On a Label Station the offsets are the station's instead: `offsets`
+ * seeds them (x horizontal, y vertical, in dots), `onSaveOffsets` saves
+ * them, and localStorage is never read or written. `transform` gets the
+ * finished ZPL last (the station's per-label print mode).
  */
 import { useEffect, useMemo, useState } from 'react';
 
 import { dpiDots, sizeMeta, vocabOfKind } from '@portal/lib/labels';
 import {
-  alignmentTestZpl, applyPrintSettings, clampSetting, readPrintSettings, writePrintSettings,
+  alignmentTestZpl, applyPrintSettings, clampSetting, DEFAULT_PRINT_SETTINGS, readPrintSettings, writePrintSettings,
 } from '@portal/lib/printLabels';
 
 import type { LabelVocab } from '../../lib/api';
@@ -32,15 +37,21 @@ export function alignmentInsets(widthDots: number, heightDots: number): number[]
   return insets;
 }
 
-export default function AlignmentTestModal({ vocab, printerDpi, onPrint, onClose }: {
+export interface StationOffsets { x: number; y: number }
+
+export default function AlignmentTestModal({ vocab, printerDpi, onPrint, onClose, offsets, onSaveOffsets, transform }: {
   vocab: LabelVocab[]; printerDpi: number | null; onPrint: (zpl: string) => Promise<void>; onClose: () => void;
+  offsets?: StationOffsets; onSaveOffsets?: (o: StationOffsets) => Promise<void>; transform?: (zpl: string) => string;
 }) {
+  const station = onSaveOffsets !== undefined;
   const sizes = useMemo(() => vocabOfKind(vocab, 'size'), [vocab]);
   const dpis = useMemo(() => vocabOfKind(vocab, 'dpi'), [vocab]);
   const [sizeKey, setSizeKey] = useState(DEFAULT_SIZE);
   const [dpiKey, setDpiKey] = useState(() =>
     (printerDpi && dpis.some((d) => d.key === String(printerDpi))) ? String(printerDpi) : (dpis.some((d) => d.key === '300') ? '300' : (dpis[0]?.key ?? '300')));
-  const [stored] = useState(() => readPrintSettings());
+  const [stored] = useState(() => (offsets
+    ? { ...DEFAULT_PRINT_SETTINGS, horizontalOffset: offsets.x, verticalOffset: offsets.y }
+    : readPrintSettings()));
   const [vText, setVText] = useState(String(stored.verticalOffset));
   const [hText, setHText] = useState(String(stored.horizontalOffset));
   const [saved, setSaved] = useState({ v: stored.verticalOffset, h: stored.horizontalOffset });
@@ -67,7 +78,7 @@ export default function AlignmentTestModal({ vocab, printerDpi, onPrint, onClose
     try {
       const zpl = applyPrintSettings(alignmentTestZpl(dims.w, dims.h, size.key, dots),
         { ...stored, verticalOffset: vertical, horizontalOffset: horizontal }, { singleCopy: true });
-      await onPrint(zpl);
+      await onPrint(transform ? transform(zpl) : zpl);
       setNotice({ type: 'success', message: `Alignment test label (${size.key}) sent to printer` });
     } catch (err) {
       setNotice({ type: 'error', message: err instanceof Error && err.message ? err.message : 'Failed to print alignment test label' });
@@ -76,7 +87,21 @@ export default function AlignmentTestModal({ vocab, printerDpi, onPrint, onClose
     }
   };
 
-  const save = () => {
+  const save = async () => {
+    if (onSaveOffsets) {
+      setNotice(null);
+      setBusy(true);
+      try {
+        await onSaveOffsets({ x: horizontal, y: vertical });
+        setSaved({ v: vertical, h: horizontal });
+        setNotice({ type: 'success', message: 'Offsets saved — the Printing Station uses them from the next label.' });
+      } catch {
+        setNotice({ type: 'error', message: "Couldn't save the offsets to this station. Try again." });
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     writePrintSettings({ ...readPrintSettings(), verticalOffset: vertical, horizontalOffset: horizontal });
     setSaved({ v: vertical, h: horizontal });
     setNotice({ type: 'success', message: 'Offsets saved — Print Labels will use them.' });
@@ -99,7 +124,10 @@ export default function AlignmentTestModal({ vocab, printerDpi, onPrint, onClose
           <div className="rgm-head-text">
             <div className="eyebrow">Printers</div>
             <h3>Test label alignment</h3>
-            <p className="page-hint">Prints concentric boxes 25 dots apart so you can dial in the offsets. The same offsets are used by Print Labels.</p>
+            <p className="page-hint">
+              Prints concentric boxes 25 dots apart so you can dial in the offsets.
+              {station ? " These are the station's offsets: the Printing Station uses them." : ' The same offsets are used by Print Labels.'}
+            </p>
           </div>
           <button type="button" className="modal-close" aria-label="Close" onClick={onClose}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
@@ -147,7 +175,7 @@ export default function AlignmentTestModal({ vocab, printerDpi, onPrint, onClose
         </div>
         <div className="modal-foot">
           <button type="button" className="btn-solid" disabled={busy || !size} onClick={() => void print()}>{busy ? 'Sending…' : 'Print test label'}</button>
-          <button type="button" className="mini-btn" disabled={!dirty} onClick={save}>Save offsets</button>
+          <button type="button" className="mini-btn" disabled={!dirty || busy} onClick={() => void save()}>Save offsets</button>
           <button type="button" className="mini-btn" onClick={onClose}>Done</button>
         </div>
       </div>

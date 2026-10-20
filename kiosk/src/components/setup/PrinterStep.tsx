@@ -22,6 +22,12 @@
  * on the edge (`PUT /edge/label-station`), including the offsets set in
  * the test labels modal and whether to print peel-off. Setup never writes
  * printer settings: the print mode goes on each label instead.
+ *
+ * Printer Setup / Troubleshooting on a Label Station reuses this step as
+ * its Change printer / Check printer & fonts modal: no Back, its own
+ * Finish label, the page's USB printer (`zebra`) instead of a second
+ * hold on the same device, and `preselect` to start on the saved network
+ * printer.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -40,7 +46,7 @@ import {
   templatesOfKind, usbStationPrinter, type StationPrinter,
 } from '../../lib/stationPrinter';
 import { useSyncStatus } from '../../lib/sync';
-import { useZebraPrinter } from '../../lib/useZebraPrinter';
+import { useZebraPrinter, type ZebraPrinter } from '../../lib/useZebraPrinter';
 import PrinterHealth from '../printers/PrinterHealth';
 import CheckList, { type CheckRowResult } from './CheckList';
 import TestLabelModal, { type Offsets } from './TestLabelModal';
@@ -98,8 +104,15 @@ interface Props {
   labelKind: LabelKind;
   /** The station's saved settings, when it has some: their offsets carry over. */
   initial: LabelStationSettings | null;
-  onBack: () => void;
+  /** No Back button without it. */
+  onBack?: () => void;
   onFinish: () => void;
+  /** The Finish button's text when every check passed (default "Finish"). */
+  finishLabel?: string;
+  /** Start on the saved network printer instead of waiting for a pick. */
+  preselect?: boolean;
+  /** A USB printer hook the caller already holds; this step's own when absent. */
+  zebra?: ZebraPrinter;
 }
 
 /** What a found network printer said it is (its `~HI` answer), so the
@@ -109,16 +122,22 @@ function printerDetails(p: FoundPrinter): string {
   return parts.length > 0 ? parts.join(' · ') : "Didn't say what it is";
 }
 
-export default function PrinterStep({ initiativeId, labelKind, initial, onBack, onFinish }: Props) {
+export default function PrinterStep({
+  initiativeId, labelKind, initial, onBack, onFinish, finishLabel = 'Finish', preselect = false, zebra: sharedZebra,
+}: Props) {
   const { kioskMove } = useKioskAuth();
-  const zebra = useZebraPrinter();
+  // Always called (hooks can't be conditional); holds nothing when unused.
+  const ownZebra = useZebraPrinter();
+  const zebra = sharedZebra ?? ownZebra;
   const sync = useSyncStatus();
   const [type, setType] = useState<PrinterType>(initial?.printer.type ?? 'usb');
   const [known, setKnown] = useState<UsbDeviceLike[]>([]);
   const [scan, setScan] = useState<PrinterScan | null>(null);
   const [scanError, setScanError] = useState('');
   const [typedIp, setTypedIp] = useState(initial?.printer.type === 'network' ? initial.printer.ip ?? '' : '');
-  const [ip, setIp] = useState<string | null>(null);
+  const [ip, setIp] = useState<string | null>(
+    preselect && initial?.printer.type === 'network' ? initial.printer.ip : null,
+  );
   const [templates, setTemplates] = useState<KioskLabelTemplate[] | null>(null);
   const [results, setResults] = useState<Partial<Record<CheckKey, CheckRowResult>>>({});
   const [running, setRunning] = useState<CheckKey | null>(null);
@@ -505,7 +524,7 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
       {saveError && <p className="form-error" role="alert">{saveError}</p>}
 
       <div className="pf-form-actions">
-        <button type="button" className="mini-btn" disabled={saving} onClick={onBack}>Back</button>
+        {onBack && <button type="button" className="mini-btn" disabled={saving} onClick={onBack}>Back</button>}
         <button type="button" className="mini-btn" disabled={!printer || !identity || busy}
                 onClick={() => setTestOpen(true)}>
           Print test labels
@@ -519,7 +538,7 @@ export default function PrinterStep({ initiativeId, labelKind, initial, onBack, 
         )}
         <button type="button" className="btn-solid" disabled={!allOk || !printer || !identity || busy}
                 onClick={() => void save()}>
-          {saving ? 'Saving…' : 'Finish'}
+          {saving ? 'Saving…' : finishLabel}
         </button>
       </div>
 

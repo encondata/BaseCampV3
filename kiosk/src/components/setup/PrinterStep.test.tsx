@@ -525,3 +525,30 @@ it('a finished scan can run again, and re-choosing Network does not rescan', asy
   await user.click(screen.getByRole('button', { name: 'Scan again' }));
   await waitFor(() => expect(apiMock.startPrinterScan).toHaveBeenCalledTimes(2));
 });
+
+describe('in the Label Station printer tools', () => {
+  const saved = {
+    label_kind: 'top' as const, printer: { type: 'network' as const, ip: '10.0.0.40', model: 'ZD621', serial: null },
+    dpi: 203, offset_x: 2, offset_y: 1, peel: false,
+  };
+
+  it('preselect starts on the saved network printer; no Back; its own Finish label', async () => {
+    const user = userEvent.setup();
+    const { onFinish } = renderStep({ initial: saved, preselect: true, finishLabel: 'Save printer', onBack: undefined });
+    expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
+    await allGreen();
+    expect(apiMock.printerQuery).toHaveBeenCalledWith('10.0.0.40', '~HI');
+    expect(apiMock.startPrinterScan).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Save printer' }));
+    await waitFor(() => expect(onFinish).toHaveBeenCalled());
+    expect(apiMock.putLabelStation).toHaveBeenCalledWith(expect.objectContaining({
+      printer: expect.objectContaining({ type: 'network', ip: '10.0.0.40' }), offset_x: 2, offset_y: 1,
+    }));
+  });
+
+  it('without preselect a saved network printer waits for a pick', async () => {
+    renderStep({ initial: saved });
+    await screen.findByLabelText('Printer IP');
+    expect(apiMock.printerQuery).not.toHaveBeenCalled();
+  });
+});

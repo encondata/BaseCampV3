@@ -19,6 +19,9 @@
  * WebUSB needs Chrome or Edge on a secure origin (https or localhost) —
  * the kiosk is often a tablet, so an unsupported browser gets a banner
  * and a disabled Connect rather than a button that can only fail.
+ *
+ * A Label Station laptop gets `StationPrinterTools` instead: the same
+ * tools on the station's saved printer, USB or network.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -30,8 +33,11 @@ import FactoryResetModal from '../components/printers/FactoryResetModal';
 import PrinterHealth from '../components/printers/PrinterHealth';
 import PrinterSetupModal from '../components/printers/PrinterSetupModal';
 import { fetchLabelVocab, type LabelVocab } from '../lib/api';
+import { useKioskSetup } from '../lib/kioskSetup';
 import { LABEL_SECTIONS } from '../lib/labelSections';
+import { isLaptop } from '../lib/platform';
 import { useZebraPrinter } from '../lib/useZebraPrinter';
+import StationPrinterTools from './StationPrinterTools';
 
 const SECTION = LABEL_SECTIONS.find((s) => s.id === 'printers')!;
 
@@ -46,6 +52,11 @@ const TOOLS: { key: Tool; title: string; description: string; action: string; da
 ];
 
 export default function PrinterTools() {
+  const [setup] = useKioskSetup();
+  return isLaptop() && setup?.stationType === 'label' ? <StationPrinterTools /> : <UsbPrinterTools />;
+}
+
+function UsbPrinterTools() {
   const printer = useZebraPrinter();
   const [vocab, setVocab] = useState<LabelVocab[]>([]);
   const [identity, setIdentity] = useState<HostIdentification | null>(null);

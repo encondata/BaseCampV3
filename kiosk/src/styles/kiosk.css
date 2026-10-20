@@ -1136,3 +1136,19 @@
 .device-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
 .device-note { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 10px; font-size: 12.5px; color: var(--text-mute); }
 .device-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--paper-line); }
+
+/* ── Label Station printer card + step 5 modal ─────────────────────
+   The saved printer's Peeler and Offsets under its health chips, and
+   Kiosk Setup's printer step in a content-sized modal (same viewport cap
+   as the reset card). */
+.zp-station-facts { display: grid; gap: 6px; }
+.zp-station-facts > div { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.zp-station-facts .cell-sub { min-width: 64px; }
+.modal-card.reports-modal-card.rgm-card.zp-station-card { width: min(820px, 96vw); max-width: 96vw; }
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-station-card {
+  max-height: 92dvh;
+  display: flex;
+  flex-direction: column;
+}
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-station-card > .modal-body { overflow: auto; min-height: 0; }
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-station-card > .modal-head { flex: none; }
