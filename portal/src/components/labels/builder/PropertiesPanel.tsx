@@ -55,6 +55,7 @@ import { Segmented, TextBox, type SegmentedOption } from './controls';
 import { catalogGroups, fieldLabel, pieceNames, sampleOf } from './fieldCatalog';
 import FontSelect from './FontSelect';
 import ImageLibraryPicker from './ImageLibraryPicker';
+import { useRasterProblem } from './imageRaster';
 import NumberBox, { type NumberApply } from './NumberBox';
 
 export interface PropertiesPanelProps {
@@ -185,6 +186,9 @@ export default function PropertiesPanel({
   const picked = selection.map((id) => byId.get(id)).filter((e): e is ElementV2 => !!e);
   const el = picked[picked.length - 1];
   const ids = picked.map((e) => e.id);
+  // why the canvas can't draw the selected picture, said here too (the
+  // canvas's own note is a tooltip only)
+  const rasterProblem = useRasterProblem(el && isImage(el) ? el : null, dpi, samplePersonId(samples));
 
   const apply = (p: Patch) => {
     if (readOnly) return;
@@ -456,7 +460,8 @@ export default function PropertiesPanel({
         {image && look && imagesAllowed && (
           <>
             <Prop label="Source"
-              note={noPerson ? 'No sample person: the canvas shows where the picture goes until one is loaded.' : undefined}>
+              note={noPerson ? 'No sample person: the canvas shows where the picture goes until one is loaded.' : undefined}
+              warning={rasterProblem ?? undefined}>
               <Segmented label="Source" options={IMAGE_SOURCES} value={image.source} disabled={readOnly}
                 mixed={mixed((e) => (isImage(e) ? e.source : null), isImage)}
                 onChange={(source) => apply((e) => imageSourcePatch(e, source))} />

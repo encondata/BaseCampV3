@@ -21,7 +21,7 @@ vi.mock('../../../lib/api', async (importActual) => ({
 
 const {
   RASTER_CACHE_BYTES, RASTER_ERROR, clearRasterCache, compileImageErrorText, fetchRaster, forgetAllRasters,
-  forgetPersonRasters, forgetStaticRaster, rasterCacheBytes, rasterErrorText, useImageRaster,
+  forgetPersonRasters, forgetStaticRaster, rasterCacheBytes, rasterErrorText, useImageRaster, useRasterProblem,
 } = await import('./imageRaster');
 const { ApiError } = await import('../../../lib/api');
 
@@ -229,5 +229,32 @@ describe('what the errors say', () => {
   it('anything else is left to the caller', () => {
     expect(compileImageErrorText(new ApiError(500, 'labelary_unavailable'))).toBeNull();
     expect(compileImageErrorText(new Error('offline'))).toBeNull();
+  });
+});
+
+describe('useRasterProblem', () => {
+  it('says why the picture failed, as its element does, without asking the server itself', async () => {
+    const pic = el({ source: 'static', imageId: 'img-1', fit: 'contain', mode: 'threshold' });
+    const { result } = renderHook(() => useRasterProblem(pic, 300, null));
+    expect(result.current).toBeNull();
+    api.labelImageRaster.mockRejectedValueOnce(new ApiError(502, 'storage_unavailable'));
+    await act(async () => { await expect(fetchRaster(pic, 300, null)).rejects.toThrow(); });
+    expect(result.current).toBe('Images unavailable right now.');
+    // another size of it is another picture
+    const other = renderHook(() => useRasterProblem({ ...pic, w: 1 }, 300, null));
+    expect(other.result.current).toBeNull();
+    expect(api.labelImageRaster).toHaveBeenCalledTimes(1);
+    // asked again and had: no problem
+    await act(async () => { await fetchRaster(pic, 300, null); });
+    expect(result.current).toBeNull();
+  });
+
+  it('a forgotten picture’s problem goes with it', async () => {
+    api.labelImageRaster.mockRejectedValue(new ApiError(422, 'person_not_found'));
+    const { result } = renderHook(() => useRasterProblem(el(), 300, PERSON));
+    await act(async () => { await expect(fetchRaster(el(), 300, PERSON)).rejects.toThrow(); });
+    expect(result.current).toBe('The sample person is no longer on file.');
+    act(() => { forgetPersonRasters(); });
+    expect(result.current).toBeNull();
   });
 });

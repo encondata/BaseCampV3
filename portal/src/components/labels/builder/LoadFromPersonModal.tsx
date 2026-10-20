@@ -175,7 +175,8 @@ export default function LoadFromPersonModal({ templateName, onLoad, onClose }: L
               {searchError && <div className="ini-picker-empty">Couldn’t search people.</div>}
               {(people ?? []).map((p) => (
                 <label key={p.person_id} className={`mini-row ini-picker-row ${picked?.person_id === p.person_id ? 'on' : ''}`}>
-                  <input type="radio" name="lbp-load-person" aria-label={p.name}
+                  <input type="radio" name="lbp-load-person"
+                    aria-label={`${p.name}, ${p.company ?? 'no company'}, ${p.person_type}, ${pictures(p)}`}
                     checked={picked?.person_id === p.person_id} onChange={() => { setPicked(p); setError(null); }} />
                   <span className="cell-primary"><span className="pn"><b>{p.name}</b></span></span>
                   <span className="cell-sub">{p.company ?? '—'}</span>
@@ -188,7 +189,7 @@ export default function LoadFromPersonModal({ templateName, onLoad, onClose }: L
               <p className="page-hint">The first {PERSON_SEARCH_LIMIT} by name: type more of a name to narrow them.</p>
             )}
           </div>
-          {error && <div className="pf-error">{error}</div>}
+          {error && <div className="pf-error" role="alert">{error}</div>}
         </div>
         <div className="modal-foot">
           <button type="button" className="btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>

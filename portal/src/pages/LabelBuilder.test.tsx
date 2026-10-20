@@ -586,7 +586,7 @@ describe('an ID badge', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Load from person…' }));
       const dialog = await screen.findByRole('dialog', { name: 'Load samples from a person' });
       expect(within(dialog).getByText('Crew badge · Load from person')).toBeTruthy();
-      fireEvent.click(await within(dialog).findByRole('radio', { name }));
+      fireEvent.click(await within(dialog).findByRole('radio', { name: new RegExp(`^${name},`) }));
       fireEvent.click(within(dialog).getByRole('button', { name: 'Load samples' }));
       await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Load samples from a person' })).toBeNull());
     }

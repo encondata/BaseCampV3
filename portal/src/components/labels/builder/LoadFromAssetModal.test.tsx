@@ -104,7 +104,7 @@ describe('LoadFromAssetModal', () => {
     fireEvent.click(within(dialog()).getByRole('button', { name: 'Next' }));
     fireEvent.click(await within(dialog()).findByRole('radio', { name: 'lvn-hm1w2-vc1-c1n7' }));
     fireEvent.click(within(dialog()).getByRole('button', { name: 'Load samples' }));
-    expect(await within(dialog()).findByText('That asset is no longer on this move.')).toBeTruthy();
+    expect((await within(dialog()).findByRole('alert')).textContent).toBe('That asset is no longer on this move.');
     expect(onLoad).not.toHaveBeenCalled();
   });
 });

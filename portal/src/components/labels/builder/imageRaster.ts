@@ -23,8 +23,8 @@
  * resize, a new fit or DPI, a forgotten picture) after RASTER_DEBOUNCE_MS
  * without a further change, so a drag asks once, for the size it ends on.
  * Meanwhile the picture it had stays up. A request that fails is never
- * cached, its element says why (`rasterErrorText`) and asks again the next
- * time it changes. Test print and the printer preview say why a compile
+ * cached, its element says why (`rasterErrorText`; the properties panel
+ * too, `useRasterProblem`) and asks again the next time it changes. Test print and the printer preview say why a compile
  * was refused with `compileImageErrorText`.
  */
 
@@ -59,6 +59,11 @@ interface Entry {
 /** Oldest first: Map order, a kept or reused picture moved to the back. */
 const cache = new Map<string, Entry>();
 let bytes = 0;
+
+/** Why a picture couldn't be had (`rasterErrorText`), by its key, until it
+ *  is asked for again or forgotten: its element says it on the canvas and
+ *  in the properties (`useRasterProblem`). */
+const failures = new Map<string, { source: ImageSource; subject: string | null; message: string }>();
 
 /** How many times every picture, the sample person's pictures, and each
  *  library picture were forgotten: an element whose count moves asks again. */
@@ -96,6 +101,7 @@ function evict(except: string): void {
 /** Forgets every picture (tests; a new session starts empty anyway). */
 export function clearRasterCache(): void {
   cache.clear();
+  failures.clear();
   bytes = 0;
 }
 
@@ -110,6 +116,7 @@ export function rasterCacheBytes(): number {
  *  showing one ask again. */
 export function forgetAllRasters(): void {
   cache.clear();
+  failures.clear();
   bytes = 0;
   allEpoch += 1;
   listeners.forEach((l) => l());
@@ -122,6 +129,9 @@ export function forgetPersonRasters(): void {
   for (const [key, entry] of cache) {
     if (entry.source !== 'static') drop(key);
   }
+  for (const [key, failed] of failures) {
+    if (failed.source !== 'static') failures.delete(key);
+  }
   personEpoch += 1;
   listeners.forEach((l) => l());
 }
@@ -131,6 +141,9 @@ export function forgetPersonRasters(): void {
 export function forgetStaticRaster(imageId: string): void {
   for (const [key, entry] of cache) {
     if (entry.source === 'static' && entry.subject === imageId) drop(key);
+  }
+  for (const [key, failed] of failures) {
+    if (failed.source === 'static' && failed.subject === imageId) failures.delete(key);
   }
   staticEpochs.set(imageId, (staticEpochs.get(imageId) ?? 0) + 1);
   listeners.forEach((l) => l());
@@ -172,9 +185,13 @@ export function fetchRaster(el: ImageElement, dpi: number, personId: string | nu
     if (hit.value) settled(key);
     return hit.promise;
   }
+  const source = req.source;
+  const subject = (req.source === 'static' ? req.image_id : req.person_id) ?? null;
+  // asked again: the last failure no longer stands
+  if (failures.delete(key)) listeners.forEach((l) => l());
   const entry: Entry = {
-    source: req.source,
-    subject: (req.source === 'static' ? req.image_id : req.person_id) ?? null,
+    source,
+    subject,
     promise: load(req, el).then((value) => {
       const current = cache.get(key) === entry;
       if (!value) {
@@ -191,7 +208,11 @@ export function fetchRaster(el: ImageElement, dpi: number, personId: string | nu
       }
       return value;
     }, (err: unknown) => {
-      if (cache.get(key) === entry) cache.delete(key);
+      if (cache.get(key) === entry) {
+        cache.delete(key);
+        failures.set(key, { source, subject, message: rasterErrorText(err) });
+        listeners.forEach((l) => l());
+      }
       throw err;
     }),
   };
@@ -243,6 +264,15 @@ export function compileImageErrorText(err: unknown): string | null {
     case 'read_only_mode': return 'Labels can’t be compiled while the portal is in read-only maintenance mode.';
     default: return null;
   }
+}
+
+/** Why `el`'s picture at `dpi` (for `personId`) couldn't be had, as its
+ *  canvas element says it; null when it hasn't failed. Asks the server
+ *  nothing: the canvas does that. */
+export function useRasterProblem(el: ImageElement | null, dpi: number, personId: string | null): string | null {
+  const req = el ? rasterRequest(el, dpi, personId) : null;
+  const key = req ? rasterKey(req) : null;
+  return useSyncExternalStore(subscribe, () => (key === null ? null : failures.get(key)?.message ?? null));
 }
 
 /** The raster `el` draws, when `enabled` (a photo or logo in Field names

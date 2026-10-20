@@ -188,7 +188,7 @@ export default function LoadFromAssetModal({ onLoad, onClose }: LoadFromAssetMod
                   ))}
                 </div>
               </div>
-              {error && <div className="pf-error">{error}</div>}
+              {error && <div className="pf-error" role="alert">{error}</div>}
             </div>
             <div className="modal-foot">
               <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
@@ -233,7 +233,7 @@ export default function LoadFromAssetModal({ onLoad, onClose }: LoadFromAssetMod
                   ))}
                 </div>
               </div>
-              {error && <div className="pf-error">{error}</div>}
+              {error && <div className="pf-error" role="alert">{error}</div>}
             </div>
             <div className="modal-foot">
               <button type="button" className="btn-ghost" disabled={busy}

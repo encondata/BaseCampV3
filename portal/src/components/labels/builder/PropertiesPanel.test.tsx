@@ -20,7 +20,9 @@ import { FAKE_METRICS, FIELDS, SAMPLES, VEGAS, elementOf, fakeMetricsFor } from 
 import PlacedFieldsTable from './PlacedFieldsTable';
 import PropertiesPanel, { type PropertiesPanelProps } from './PropertiesPanel';
 
-const api = vi.hoisted(() => ({ listLabelImages: vi.fn(), uploadLabelImage: vi.fn(), deleteLabelImage: vi.fn() }));
+const api = vi.hoisted(() => ({
+  listLabelImages: vi.fn(), uploadLabelImage: vi.fn(), deleteLabelImage: vi.fn(), labelImageRaster: vi.fn(),
+}));
 vi.mock('../../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../../lib/api')>()), ...api,
 }));
@@ -608,6 +610,18 @@ describe('PropertiesPanel: an image (ID badges)', () => {
       await waitFor(() => expect(api.listLabelImages).toHaveBeenCalled());
       expect((within(panel()).getByRole('button', { name: 'Delete…' }) as HTMLButtonElement).disabled).toBe(true);
     });
+  });
+
+  it('says why the selected picture can’t be drawn, as the canvas does', async () => {
+    const { ApiError } = await import('../../../lib/api');
+    const { fetchRaster } = await import('./imageRaster');
+    const logo = photo({ source: 'static', imageId: 'img-10', fit: 'contain', mode: 'threshold' });
+    api.labelImageRaster.mockRejectedValue(new ApiError(502, 'storage_unavailable'));
+    setup({ design: badge(logo), selection: ['image-1'], props: { imagesAllowed: true } });
+    expect(within(panel()).queryByText('Images unavailable right now.')).toBeNull();
+    await act(async () => { await fetchRaster(logo, DPI, null).catch(() => null); });
+    const said = within(panel()).getByText('Images unavailable right now.');
+    expect(said.getAttribute('role')).toBe('status');
   });
 
   it('off an ID badge in ZPL, says images don’t print there', () => {
