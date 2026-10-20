@@ -62,7 +62,7 @@ import { ApiError } from '../lib/api';
 import { clearFlash } from '../lib/flash';
 import { writeKioskSetup } from '../lib/kioskSetup';
 import { closeDb, replaceAll } from '../lib/localDb';
-import PrintingStation, { RECORDED_POLL_MS } from './PrintingStation';
+import PrintingStation, { FAILED_ROW_MS, RECORDED_POLL_MS } from './PrintingStation';
 
 const SERVER = {
   id: 'a-1', asset_id: '10042', name: 'Rack 4 server', rfid: null,
@@ -272,4 +272,47 @@ it('a reprint never asks and never reads Recorded', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Reprint' }));
   await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(3));
   expect(statusCell().textContent).toBe('Printed (reprint)');
+});
+
+it('the card reads Printed + Recorded too once the portal accepts the scan', async () => {
+  api.getRecordedScans.mockResolvedValue(['scan-1']);
+  render_();
+  await scan('10042');
+  const card = () => document.querySelector('.station-result .station-status') as HTMLElement;
+  await waitFor(() => expect(card().textContent).toBe('Printed + Recorded'));
+});
+
+it('a red row leaves the list 5 s after it fails; the card keeps showing it', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    render_();
+    await scan('10042');            // a good row that stays
+    await screen.findAllByText('Printed');
+    await scan('NOPE-1');           // a red row that goes
+    const rowCount = () => screen.queryAllByRole('row').length;
+    await waitFor(() => expect(rowCount()).toBe(3));   // header + 2
+    await act(async () => { await vi.advanceTimersByTimeAsync(FAILED_ROW_MS - 500); });
+    expect(rowCount()).toBe(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    await waitFor(() => expect(rowCount()).toBe(2));   // header + the printed row
+    const rows = screen.getAllByRole('row');
+    expect(rows[1].textContent).toContain('10042');
+    const card = document.querySelector('.station-result .station-status') as HTMLElement;
+    expect(card.textContent).toBe("This asset isn't on this move.");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('when only red rows were left, the list goes back to its empty note', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    render_();
+    await scan('NOPE-1');
+    await waitFor(() => expect(screen.queryAllByRole('row').length).toBe(2));
+    await act(async () => { await vi.advanceTimersByTimeAsync(FAILED_ROW_MS + 100); });
+    await waitFor(() => expect(screen.getByText('Nothing printed yet.')).toBeTruthy());
+  } finally {
+    vi.useRealTimers();
+  }
 });
