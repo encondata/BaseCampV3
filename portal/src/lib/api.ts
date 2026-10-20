@@ -5763,6 +5763,10 @@ export async function compileLabel(body: {
   mode: 'placeholders' | 'sample';
   samples?: Record<string, string>;
   label_type?: string;
+  /** "print" (the default): the real pictures; "placeholder": a placeholder
+   *  for each image element (the printer preview: no picture goes to
+   *  Labelary). */
+  image_mode?: 'print' | 'placeholder';
 }): Promise<{ code: string }> {
   const resp = await apiFetch('/labels/templates/compile', {
     method: 'POST',

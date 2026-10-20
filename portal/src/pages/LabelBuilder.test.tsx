@@ -540,6 +540,23 @@ describe('an ID badge', () => {
       samples: BADGE_SAMPLES, label_type: 'id_badge', size_key: 'id-badge',
       design: expect.objectContaining({ schema: 3 }),
     }));
+    // Test print prints the real pictures: no placeholder mode
+    expect(api.compileLabel.mock.calls[0][0]).not.toHaveProperty('image_mode');
+  });
+
+  it('the printer preview asks for image placeholders: pictures never go to the preview service', async () => {
+    api.previewZplRequest.mockResolvedValue(new Blob(['png']));
+    URL.createObjectURL = vi.fn(() => 'blob:preview');
+    URL.revokeObjectURL = vi.fn();
+    await openBadge();
+    const preview = screen.getByRole('region', { name: 'Printer preview' });
+    fireEvent.click(within(preview).getByRole('button', { name: 'Render' }));
+    await waitFor(() => expect(api.compileLabel).toHaveBeenCalledTimes(1));
+    expect(api.compileLabel).toHaveBeenCalledWith(expect.objectContaining({
+      image_mode: 'placeholder', samples: BADGE_SAMPLES, label_type: 'id_badge',
+    }));
+    expect(await within(preview).findByText(
+      'Pictures show as placeholders in the preview; the canvas and Test print use the real pictures.')).toBeTruthy();
   });
 
   it('saves schema 3 with an image and schema 2 once the last one goes', async () => {
