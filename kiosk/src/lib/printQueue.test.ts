@@ -225,7 +225,8 @@ describe('createPrintQueue', () => {
     const q = setup({ getLabel: async (id) => label(id, { zpl: null, error: 'no_template_at_dpi' }) });
     q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
     await settled(q.state);
-    expect(q.state().entries[0].message).toBe("No label for this asset: no template at this printer's DPI");
+    expect(q.state().entries[0].message).toBe("No label for this asset: this move has no active label template "
+      + "at this printer's DPI. Someone with label access needs to activate one on Labels › Templates.");
     const q2 = setup({ getLabel: async (id) => label(id, { zpl: null, error: 'template_failed' }) });
     q2.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
     await settled(q2.state);

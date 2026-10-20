@@ -7,8 +7,11 @@
  * - Printer answers (`~HI`);
  * - DPI: the edge's label plan (`GET /edge/labels/plan`) finds a template
  *   of the station's kind at the printer's DPI, and names it; the plan's
- *   notes show under the row as warnings that never block. An edge
- *   without the plan route falls back to the downloaded templates;
+ *   notes show under the row as warnings that never block. With none, the
+ *   row says what to do: activate one in the portal (none at all), or a
+ *   version at this DPI / another printer (the plan's `available_dpis`).
+ *   An edge without the plan route falls back to the downloaded
+ *   templates, with the same messages;
  * - Ready to print: `~HS` reports no paper out, head open or pause;
  * - Peeler: whether a peeler is fitted (SGD `sensor.peeler_present`). It
  *   never fails; it decides whether labels print peel-off or tear-off;
@@ -48,8 +51,9 @@ import {
 } from '../../lib/api';
 import { getLabelTemplates } from '../../lib/labelTemplates';
 import {
-  builtInFontText, checkDpi, fontFixFor, isResidentFont, KIND_LABEL, neededFonts, networkStationPrinter,
-  readFonts, statusProblems, templatesOfKind, usbStationPrinter, type FontFix, type StationPrinter,
+  builtInFontText, checkDpi, downloadedDpis, fontFixFor, isResidentFont, KIND_LABEL, neededFonts,
+  networkStationPrinter, noTemplateText, readFonts, statusProblems, templatesOfKind, usbStationPrinter,
+  type FontFix, type StationPrinter,
 } from '../../lib/stationPrinter';
 import { useSyncStatus } from '../../lib/sync';
 import { useZebraPrinter, type ZebraPrinter } from '../../lib/useZebraPrinter';
@@ -249,9 +253,17 @@ export default function PrinterStep({
       if (plan.template && Array.isArray(plan.fonts)) {
         planFonts = [...new Set(plan.fonts.map((n) => n.toUpperCase()))].sort(naturalCompare);
       }
+      // with no template, what to do: the edge says at which DPIs the move
+      // has one (`available_dpis`); an edge from before that leaves it out,
+      // so the downloaded templates say instead
       dpiResult = plan.template
         ? { state: 'ok', detail: plan.template.name, notes: plan.notes }
-        : { state: 'fail', detail: `No ${KIND_LABEL[labelKind]} template at ${ident.dpi} DPI`, notes: plan.notes };
+        : {
+          state: 'fail',
+          detail: noTemplateText(labelKind, ident.dpi,
+            Array.isArray(plan.available_dpis) ? plan.available_dpis : downloadedDpis(ts, labelKind)),
+          notes: plan.notes,
+        };
     } catch {
       // An older edge (or a failed call): never a dead end in setup.
       dpiResult = checkDpi(ts, labelKind, ident.dpi);

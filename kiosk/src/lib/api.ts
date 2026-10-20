@@ -1355,8 +1355,15 @@ export interface LabelPlanTemplate { id: string; name: string; family: string; d
  *  none of the kind is at that DPI; `notes` say which steps fell through.
  *  `fonts`: the E: fonts that template prints with (a label builder
  *  design's `code` is "", so they can't be read off the template); an
- *  older edge leaves it out. */
-export interface LabelPlan { template: LabelPlanTemplate | null; notes: string[]; fonts?: string[] }
+ *  older edge leaves it out. `available_dpis`, with no template: the DPIs
+ *  at which the move's downloaded set has one of the kind (natural order;
+ *  [] for none); an older edge leaves it out. */
+export interface LabelPlan {
+  template: LabelPlanTemplate | null;
+  notes: string[];
+  fonts?: string[];
+  available_dpis?: string[];
+}
 
 /** The plan for the saved settings, or for `dpi` / `kind` when given.
  *  404 not_label_station; 422 for a bad dpi or kind. */

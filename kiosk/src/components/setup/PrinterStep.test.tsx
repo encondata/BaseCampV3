@@ -268,24 +268,82 @@ describe('checks', () => {
     await waitFor(() => expect(onFinish).toHaveBeenCalled());
   });
 
-  it('DPI fails when the edge plan has no template at the printer DPI', async () => {
+  it('DPI fails when the move has no active template at all, and says who fixes it', async () => {
     const user = userEvent.setup();
-    apiMock.getLabelPlan.mockResolvedValue({ template: null, notes: [] });
+    apiMock.getLabelPlan.mockResolvedValue({ template: null, notes: [], available_dpis: [] });
     renderStep();
     await connectUsb(user);
     await failed('DPI matches the templates');
-    expect(within(row('DPI matches the templates')).getByText('No Top template at 203 DPI')).toBeTruthy();
+    expect(within(row('DPI matches the templates')).getByText('No active Top template for this move. Someone '
+      + 'with label access needs to activate one on Labels › Templates in the portal (Generic Rack and RU '
+      + 'covers every move), then pick the move again.')).toBeTruthy();
     expect(finishButton().disabled).toBe(true);
+  });
+
+  it('DPI fails when the move\'s template is at other DPIs, and names them', async () => {
+    const user = userEvent.setup();
+    apiMock.getLabelPlan.mockResolvedValue({ template: null, notes: [], available_dpis: ['300'] });
+    renderStep();
+    await connectUsb(user);
+    await failed('DPI matches the templates');
+    expect(within(row('DPI matches the templates')).getByText('This move\'s Top template prints at 300 DPI only; '
+      + 'this printer is 203 DPI. Activate a 203 DPI version on Labels › Templates, or use a 300 DPI printer.'))
+      .toBeTruthy();
+  });
+
+  it('DPI names several other DPIs naturally', async () => {
+    const user = userEvent.setup();
+    apiMock.getLabelPlan.mockResolvedValue({ template: null, notes: [], available_dpis: ['300', '600'] });
+    renderStep();
+    await connectUsb(user);
+    await failed('DPI matches the templates');
+    expect(within(row('DPI matches the templates')).getByText('This move\'s Top template prints at 300 and 600 '
+      + 'DPI only; this printer is 203 DPI. Activate a 203 DPI version on Labels › Templates, or use a 300 or 600 '
+      + 'DPI printer.')).toBeTruthy();
   });
 
   it('DPI names the Front kind for a Front station', async () => {
     const user = userEvent.setup();
-    apiMock.getLabelPlan.mockResolvedValue({ template: null, notes: [] });
+    apiMock.getLabelPlan.mockResolvedValue({ template: null, notes: [], available_dpis: [] });
     renderStep({ labelKind: 'front' });
     await connectUsb(user);
     await failed('DPI matches the templates');
     expect(apiMock.getLabelPlan).toHaveBeenCalledWith({ dpi: 203, kind: 'front' });
-    expect(within(row('DPI matches the templates')).getByText('No Front template at 203 DPI')).toBeTruthy();
+    expect(within(row('DPI matches the templates')).getByText(/^No active Front template for this move\./))
+      .toBeTruthy();
+  });
+
+  it('an edge whose plan has no available_dpis reads them off the downloaded templates', async () => {
+    const user = userEvent.setup();
+    templatesMock.templates = [
+      template({ id: 'g203', name: 'Generic Rack and RU', dpi_key: '203' }),
+      template({ id: 'g600', name: 'Generic Rack and RU', dpi_key: '600' }),
+    ];
+    apiMock.getLabelPlan.mockResolvedValue({ template: null, notes: [] });
+    renderStep();
+    await connectUsb(user);
+    await failed('DPI matches the templates');
+    // the printer's own DPI isn't offered back: the plan found nothing there
+    expect(within(row('DPI matches the templates')).getByText(/^This move's Top template prints at 600 DPI only;/))
+      .toBeTruthy();
+  });
+
+  it('an older edge (no plan route) gets the same two messages from the downloaded templates', async () => {
+    const user = userEvent.setup();
+    templatesMock.templates = [template({ id: 'g300', name: 'Generic Rack and RU', dpi_key: '300' })];
+    renderStep();
+    await connectUsb(user);
+    await failed('DPI matches the templates');
+    expect(within(row('DPI matches the templates')).getByText('This move\'s Top template prints at 300 DPI only; '
+      + 'this printer is 203 DPI. Activate a 203 DPI version on Labels › Templates, or use a 300 DPI printer.'))
+      .toBeTruthy();
+    cleanup();
+    templatesMock.templates = [template({ id: 'f203', label_type: 'front', dpi_key: '203' })];
+    renderStep();
+    await connectUsb(user);
+    await failed('DPI matches the templates');
+    expect(within(row('DPI matches the templates')).getByText(/^No active Top template for this move\. Someone with label access/))
+      .toBeTruthy();
   });
 
   it('status problems say what to fix, and Recheck turns them green', async () => {
