@@ -14,11 +14,11 @@ from serversherpa.db.models import (
     LabelFont,
     LabelImage,
     Note,
-    SystemConfig,
     Partner,
     Person,
     ReportDefinition,
     ReportRun,
+    SystemConfig,
 )
 from tests.test_cleanup_api import _by_key, _developer, _run
 from tests.test_cleanup_history import _idmap, _ids, _key
