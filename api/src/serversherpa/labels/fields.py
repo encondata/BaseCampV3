@@ -277,9 +277,10 @@ PERSON_KEYS = catalog_keys(PERSON_LABEL_TYPES[0])
 
 
 def design_field_keys(design: dict | None) -> set[str]:
-    """Every field key a schema 2 design's elements place (catalog keys and
-    `ft:<header>` keys alike), read straight off the JSON. Anything else
-    (a schema 1 design, no design) places none."""
+    """Every field key a schema 2 or 3 design's elements place (catalog keys
+    and `ft:<header>` keys alike), read straight off the JSON. An image
+    element places none (its picture is its `source`, never a field), and
+    anything else (a schema 1 design, no design) places none either."""
     if not isinstance(design, dict):
         return set()
     schema = design.get("schema", 1)
@@ -287,7 +288,8 @@ def design_field_keys(design: dict | None) -> set[str]:
         return set()
     elements = design.get("elements")
     return {el["field"] for el in (elements if isinstance(elements, list) else [])
-            if isinstance(el, dict) and isinstance(el.get("field"), str) and el["field"]}
+            if isinstance(el, dict) and el.get("type") != "image"
+            and isinstance(el.get("field"), str) and el["field"]}
 
 
 def mock_field_values(label_type: str | None, field_keys: set[str] | None = None) -> dict[str, str]:

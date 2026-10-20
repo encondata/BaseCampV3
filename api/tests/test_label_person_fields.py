@@ -6,7 +6,6 @@ payload into the text each field prints; and a badge never reaches a kiosk
 or a generation run."""
 
 import uuid
-from pathlib import Path
 
 from serversherpa.db.models import LabelVocab
 from serversherpa.labels import fields
@@ -172,8 +171,6 @@ def test_kiosk_label_types_are_the_catalog_types():
 
     assert kiosk_templates.KIOSK_LABEL_TYPES == tuple(ALL_LABEL_TYPES)
     assert not set(kiosk_templates.KIOSK_LABEL_TYPES) & set(PERSON_LABEL_TYPES)
-    src = (Path(kiosk_templates.__file__)).read_text()
-    assert "KIOSK_LABEL_TYPES = tuple(ALL_LABEL_TYPES)" in src
 
 
 def test_person_values_roles_natural_and_once():

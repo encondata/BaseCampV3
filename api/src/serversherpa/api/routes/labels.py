@@ -18,13 +18,16 @@ one. All mutations audit into the caller's txn.
 """
 
 import asyncio
+import logging
 import re
 import uuid
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Annotated
 
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -35,6 +38,7 @@ from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import (
     AuthContext, CurrentUser, DbSession, require_permission, require_rank,
 )
+from serversherpa.api.routes.attachments import MAX_IMAGE_BYTES, _sniff_image
 from serversherpa.api.schemas import (
     GeneratedLabelOut,
     GeneratedLabelBundleItemOut, GeneratedLabelBundleOut,
@@ -43,6 +47,7 @@ from serversherpa.api.schemas import (
     LabelFontMetricsOut, LabelFontOut, LabelFontUsedByOut,
     LabelGeneratePreviewCandidateOut, LabelGeneratePreviewInitiativeOut,
     LabelGeneratePreviewOut, LabelGeneratePreviewTemplateOut, LabelGeneratePreviewTypeOut,
+    LabelImageOut, LabelImageRasterIn,
     LabelPlaceholderCreateIn, LabelPlaceholderOut, LabelPlaceholderUpdateIn,
     LabelRunCreateIn, LabelRunOut,
     LabelTemplateChildOut, LabelTemplateCloneIn, LabelTemplateCreateIn,
@@ -56,13 +61,14 @@ from serversherpa.api.schemas import (
 )
 from serversherpa.db.models import (
     Asset, AssetModel, Client, Container, GeneratedLabel, Initiative, InitiativeAsset,
-    LabelFont, LabelGenerationRun, LabelPlaceholder, LabelTemplate, LabelTemplateSite,
-    LabelTemplateVersion, LabelVocab, Person, Site,
+    LabelFont, LabelGenerationRun, LabelImage, LabelPlaceholder, LabelTemplate,
+    LabelTemplateSite, LabelTemplateVersion, LabelVocab, Person, Site,
 )
 from serversherpa.db.ordering import natural, natural_key
 from serversherpa.labels import labelary
 from serversherpa.labels import templates_tree as tree
-from serversherpa.labels.compile import UnsupportedLanguage, compile_design
+from serversherpa.labels import dither, people_badge
+from serversherpa.labels.compile import UnsupportedLanguage, compile_parsed_design
 from serversherpa.labels.fields import (
     PERSON_LABEL_TYPES, allows_from_to, design_field_keys, field_values, groups_for,
     mock_field_values,
@@ -81,8 +87,9 @@ from serversherpa.labels.generate.payloads import (
 )
 from serversherpa.labels.generate.select import candidate_templates
 from serversherpa.labels.kiosk_templates import family_name
-from serversherpa.labels.model import DesignError, parse_design
+from serversherpa.labels.model import Design, DesignError, ImageEl, parse_design
 from serversherpa.labels.tokens import apply_placeholders
+from serversherpa.labels.zpl import box_dots, image_box_dots
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.storage import delete_object, get_object, put_object
 
@@ -522,10 +529,17 @@ async def _template_out(db: DbSession, row: LabelTemplate, cls=LabelTemplateOut,
     return item
 
 
+# A builder design's schemas: 2, or 3 when it has an image element (spec
+# 2026-10-20-badge-templates §4.6).
+BUILDER_SCHEMAS = (2, 3)
+
+
 def _parse_v2(design: object) -> None:
-    """422 bad_design unless `design` is a valid schema 2 design."""
-    if not isinstance(design, dict) or design.get("schema") != 2:
-        raise _err(422, "bad_design", problems=["a builder template needs a schema 2 design"])
+    """422 bad_design unless `design` is a valid builder (schema 2 or 3)
+    design."""
+    if not isinstance(design, dict) or design.get("schema") not in BUILDER_SCHEMAS:
+        raise _err(422, "bad_design",
+                   problems=["a builder template needs a schema 2 or 3 design"])
     try:
         parse_design(design)
     except DesignError as e:
@@ -533,7 +547,24 @@ def _parse_v2(design: object) -> None:
 
 
 def _is_v2(design: object) -> bool:
-    return isinstance(design, dict) and design.get("schema", 1) == 2
+    """A builder design (schema 2, or 3 with images)."""
+    return isinstance(design, dict) and design.get("schema", 1) in BUILDER_SCHEMAS
+
+
+def _has_image(design: object) -> bool:
+    elements = design.get("elements") if isinstance(design, dict) else None
+    return isinstance(elements, list) and any(
+        isinstance(el, dict) and el.get("type") == "image" for el in elements)
+
+
+def _images_badge_only(design: object, label_type: str | None, language_key: str | None,
+                       **extra) -> None:
+    """Images print only on ID Badge templates in ZPL (spec
+    2026-10-20-badge-templates §4.10): 422 `images_badge_only` for a design
+    with an image element on any other type or language."""
+    if _has_image(design) and (label_type not in PERSON_LABEL_TYPES or language_key != "zpl"):
+        raise _err(422, "images_badge_only",
+                   message="Images print on ID Badge templates in ZPL only", **extra)
 
 
 def _readable_samples(item, actor: AuthContext):
@@ -674,7 +705,7 @@ async def create_template(
 
 async def _create_parent(db: DbSession, body: LabelTemplateCreateIn,
                          site_ids: list[uuid.UUID], actor: AuthContext) -> LabelTemplateOut:
-    """A schema 2 body: the builder parent and its three DPI children."""
+    """A schema 2 or 3 body: the builder parent and its three DPI children."""
     if body.dpi_key not in (None, tree.PARENT_DPI):
         raise _err(422, "bad_field", field="dpi_key",
                    message="a builder template is designed at 300 DPI")
@@ -682,6 +713,7 @@ async def _create_parent(db: DbSession, body: LabelTemplateCreateIn,
         raise _err(422, "bad_field", field="generation_rules",
                    message="a builder template carries its rules on each field")
     _parse_v2(body.design)
+    _images_badge_only(body.design, body.label_type, body.language_key)
     _check_samples(body.samples)
     await _check_template_vocab(db, {"language_key": body.language_key})
     await _check_new_vocab(db, "type", body.label_type)
@@ -768,6 +800,7 @@ async def _patch_child(db: DbSession, row: LabelTemplate, data: dict, summary: s
     changes: dict = {}
     if "design" in data:
         _parse_v2(data["design"])
+        _images_badge_only(data["design"], row.label_type, row.language_key)
         if data["design"] != row.design:
             before = tree.version_label(row.generated_from_version or 0, row.child_edits)
             await tree.save_child(db, row, design=data["design"], summary=summary,
@@ -791,6 +824,17 @@ async def _patch_parent(db: DbSession, row: LabelTemplate, data: dict, summary: 
     _no_nulls(data)
     if "design" in data:
         _parse_v2(data["design"])
+    label_type = data.get("label_type", row.label_type)
+    language_key = data.get("language_key", row.language_key)
+    _images_badge_only(data.get("design", row.design), label_type, language_key)
+    if (label_type, language_key) != (row.label_type, row.language_key):
+        # the children follow the parent's type and language; those that
+        # keep their own design (customized, or Old) may hold an image the
+        # parent's doesn't. The rest follow the parent's design.
+        for child in await tree.children_of(db, row):
+            if child.customized or child.is_old:
+                _images_badge_only(child.design, label_type, language_key,
+                                   template_id=str(child.id), template_name=child.name)
     _check_samples(data.get("samples"))
     await _check_template_vocab(db, data, current=row)
     changes: dict = {}
@@ -871,7 +915,7 @@ async def _patch_single(db: DbSession, row: LabelTemplate, data: dict,
     if data.get("design") is not None:
         if _is_v2(data["design"]):
             raise _err(422, "bad_design", problems=[
-                "a schema 2 design needs a builder template: create one"])
+                "a builder design needs a builder template: create one"])
         try:
             parse_design(data["design"])
         except DesignError as e:
@@ -958,19 +1002,26 @@ def _builder_values(design: dict, samples: dict[str, str] | None,
 
 async def _compile_design(db: DbSession, design_json: dict, size_key: str,
                           dpi_key: str, language_key: str,
-                          subs: dict[str, str] | None) -> str:
+                          subs: dict[str, str] | None, *,
+                          images_for: AuthContext | None = None,
+                          samples: dict[str, str] | None = None) -> str:
     """Shared by the compile endpoint and convert-to-code: resolves the
     size/dpi/language vocab rows, then calls the vocab-free core
-    (labels/compile.py, shared with the label-generation runner)."""
+    (labels/compile.py, shared with the label-generation runner). With
+    `images_for` (the actor), a schema 3 design's images are resolved
+    first (`resolve_images`, with the page's `samples`)."""
     size = await db.get(LabelVocab, ("size", size_key))
     dpi = await db.get(LabelVocab, ("dpi", dpi_key))
     lang = await db.get(LabelVocab, ("language", language_key))
     if size is None or dpi is None or lang is None:
         raise _err(404, "unknown_vocab")
     try:
-        return compile_design(
-            design_json, width_in=size.meta["width_in"], height_in=size.meta["height_in"],
-            dots=dpi.meta["dots"], language_key=lang.key, subs=subs)
+        design = parse_design({**design_json, "size": {"w": size.meta["width_in"],
+                                                       "h": size.meta["height_in"]}})
+        images = (await resolve_images(db, design, dpi.meta["dots"], samples, images_for)
+                  if images_for is not None else None)
+        return compile_parsed_design(design, dots=dpi.meta["dots"], language_key=lang.key,
+                                     subs=subs, images=images)
     except DesignError as e:
         raise _err(422, "bad_design", problems=e.problems) from e
     except UnsupportedLanguage as e:
@@ -980,8 +1031,13 @@ async def _compile_design(db: DbSession, design_json: dict, size_key: str,
 @router.post("/templates/compile", response_model=LabelCompileOut)
 async def compile_template(
     body: LabelCompileIn, db: DbSession,
-    _actor: AuthContext = require_permission("labels", "view"),
+    actor: AuthContext = require_permission("labels", "view"),
 ) -> LabelCompileOut:
+    """A preview's or test print's code. A builder design prints the page's
+    samples over the mock values, and its images (schema 3, ID Badge ZPL
+    only: 422 `images_badge_only`) resolved here: library images for anyone
+    with labels:view, the sample person's (`person:id`) photo and logo at
+    rank 80 only (below, they print as empty)."""
     size = await db.get(LabelVocab, ("size", body.size_key))
     dpi = await db.get(LabelVocab, ("dpi", body.dpi_key))
     lang = await db.get(LabelVocab, ("language", body.language_key))
@@ -993,6 +1049,7 @@ async def compile_template(
                    message="sample values belong to builder templates")
     _check_samples(body.samples)
     if v2:
+        _images_badge_only(body.design, body.label_type, lang.key)
         subs = _builder_values(body.design, body.samples, body.label_type)
     else:
         subs = await _sample_values(db) if body.mode == "sample" else None
@@ -1006,7 +1063,8 @@ async def compile_template(
     if body.design is None:
         raise _err(422, "bad_payload", message="design kind needs design")
     out = await _compile_design(db, body.design, body.size_key, body.dpi_key,
-                                body.language_key, subs)
+                                body.language_key, subs,
+                                images_for=actor if v2 else None, samples=body.samples)
     return LabelCompileOut(code=out)
 
 
@@ -1402,6 +1460,9 @@ async def restore_template_version(
     follow as on any parent save)."""
     row = await _template_or_404(db, template_id)
     try:
+        old = await tree.get_version(db, row, version, child_edits)
+        # the type or language may have changed since that version
+        _images_badge_only(old.design, row.label_type, row.language_key)
         await tree.restore(db, row, version, child_edits, actor.person.id)
     except tree.TreeError as e:
         raise _tree_err(e) from e
@@ -1984,3 +2045,314 @@ async def label_font_metrics(
             _METRICS_CACHE.clear()
         _METRICS_CACHE[cache_key] = cached
     return cached
+
+
+# ── badge images (spec 2026-10-20-badge-templates §4.3, §4.5, §4.11) ──
+#
+# A badge image prints from one gray raster per element, DPI and picture:
+# labels/image_prep.py (Pillow, imported lazily here and never by the
+# edge) fits and turns the stored picture, and the shared integer dither
+# (labels/dither.py, mirrored by the canvas's dither.ts) makes the dots. The
+# builder's canvas fetches the same raster (POST /labels/images/raster), so
+# its dots are the printed ones. A picture that is gone (a deleted library
+# image, an avatar or logo object missing from storage) prints as no image.
+
+logger = logging.getLogger(__name__)
+
+# The builder's sample person: their id among a template's samples
+# (Load from person…), whose photo and logo a badge previews and prints.
+SAMPLE_PERSON_KEY = "person:id"
+# One image's box at its DPI, and one compile's images together, in dots;
+# past these the picture is refused (422 image_too_large) instead of prepped
+# and dithered. A whole CR80 badge at 600 DPI is about 2.6 million dots.
+MAX_IMAGE_DOTS = 4_000_000
+MAX_DESIGN_IMAGE_DOTS = 8_000_000
+MAX_IMAGE_NAME = 120
+# Prepped rasters by (storage key, w, h, fit, rotation): stored objects
+# never change under a key (a new upload is a new key), so an entry never
+# goes stale. Bounded by count and bytes; least recently used goes first.
+_RASTER_CACHE_MAX_ITEMS = 64
+_RASTER_CACHE_MAX_BYTES = 64 * 1024 * 1024
+
+
+class _RasterCache:
+    def __init__(self) -> None:
+        self._items: OrderedDict[tuple, object] = OrderedDict()
+        self._bytes = 0
+
+    def get(self, key: tuple):
+        hit = self._items.get(key)
+        if hit is not None:
+            self._items.move_to_end(key)
+        return hit
+
+    def put(self, key: tuple, raster) -> None:
+        if key in self._items or len(raster.gray) > _RASTER_CACHE_MAX_BYTES:
+            return
+        self._items[key] = raster
+        self._bytes += len(raster.gray)
+        while (len(self._items) > _RASTER_CACHE_MAX_ITEMS
+               or self._bytes > _RASTER_CACHE_MAX_BYTES):
+            _key, old = self._items.popitem(last=False)
+            self._bytes -= len(old.gray)
+
+    def clear(self) -> None:
+        self._items.clear()
+        self._bytes = 0
+
+
+_RASTER_CACHE = _RasterCache()
+
+
+async def _stored_picture(key: str) -> bytes | None:
+    """A stored object's bytes, or None when the object is gone; any other
+    storage failure is a 502."""
+    try:
+        return await get_object(key)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+            return None
+        logger.warning("label image read failed for %s: %s", key, exc)
+        raise _err(502, "storage_unavailable") from exc
+
+
+async def _gray_raster(key: str, width: int, height: int, fit: str, rotation: int):
+    """The prepped raster (image_prep.Raster) of the stored picture at
+    `key`, cached; None when the object is gone. Prep runs in a worker
+    thread. Raises image_prep.ImageTooLarge / UnreadableImage."""
+    from serversherpa.labels import image_prep
+
+    cache_key = (key, width, height, fit, rotation)
+    raster = _RASTER_CACHE.get(cache_key)
+    if raster is None:
+        data = await _stored_picture(key)
+        if data is None:
+            return None
+        raster = await asyncio.to_thread(image_prep.gray_raster, data, width, height, fit,
+                                         rotation)
+        _RASTER_CACHE.put(cache_key, raster)
+    return raster
+
+
+async def _library_key(db: DbSession, image_id: object) -> str | None:
+    """A library image's storage key; None for a deleted or unknown image,
+    or an id that isn't a UUID."""
+    try:
+        iid = uuid.UUID(str(image_id))
+    except (TypeError, ValueError):
+        return None
+    row = await db.get(LabelImage, iid)
+    return row.storage_key if row is not None and row.deleted_at is None else None
+
+
+async def _sample_person(db: DbSession, samples: dict[str, str] | None) -> Person | None:
+    """The page's sample person (`person:id`), or None when it names none;
+    422 `person_not_found` unless it is a person a badge can be printed
+    for (a UUID of an existing person who isn't a hidden move identity)."""
+    value = (samples or {}).get(SAMPLE_PERSON_KEY)
+    if not value:
+        return None
+    person = await people_badge.find_person(db, value)
+    if person is None:
+        raise _err(422, "person_not_found", field=SAMPLE_PERSON_KEY)
+    return person
+
+
+async def resolve_images(db: DbSession, design: Design | dict, dpi: int,
+                         samples: dict[str, str] | None,
+                         actor: AuthContext) -> dict[str, dither.Bitmap]:
+    """Each image element's printed bitmap, by element id, at `dpi`: a
+    static image by its `imageId` (the library); a photo or logo from the
+    sample person (`samples["person:id"]`, checked when a photo or logo
+    needs it), at rank 80 only. An element
+    whose picture is missing, unreadable or past the size cap is left out
+    (it prints as empty); a box past MAX_IMAGE_DOTS, or images past
+    MAX_DESIGN_IMAGE_DOTS together, is 422 `image_too_large`. Each bitmap is
+    the element's box, prepped, turned and dithered: the footprint
+    `compile_zpl` places."""
+    from serversherpa.labels import image_prep
+
+    if isinstance(design, dict):
+        design = parse_design(design)
+    elements = [el for el in design.elements if isinstance(el, ImageEl)]
+    if not elements:
+        return {}
+    boxes = {el.id: image_box_dots(el, dpi) for el in elements}
+    for el in elements:
+        if boxes[el.id][0] * boxes[el.id][1] > MAX_IMAGE_DOTS:
+            raise _err(422, "image_too_large", element=el.id)
+    if sum(w * h for w, h in boxes.values()) > MAX_DESIGN_IMAGE_DOTS:
+        raise _err(422, "image_too_large")
+    person = None
+    if (actor.access.max_rank >= SUPER_ADMIN_RANK
+            and any(el.source != "static" for el in elements)):
+        person = await _sample_person(db, samples)
+    logo: list[str | None] = []     # the person's logo key, looked up once
+    out: dict[str, dither.Bitmap] = {}
+    for el in elements:
+        width, height = boxes[el.id]
+        if width < 1 or height < 1:
+            continue
+        if el.source == "static":
+            key = await _library_key(db, el.image_id) if el.image_id else None
+        elif person is None:
+            continue
+        elif el.source == "photo":
+            key = people_badge.photo_key(person)
+        else:
+            if not logo:
+                logo.append(await people_badge.logo_key(db, person))
+            key = logo[0]
+        if not key:
+            continue
+        try:
+            raster = await _gray_raster(key, width, height, el.fit, el.rotation)
+        except (image_prep.ImageTooLarge, image_prep.UnreadableImage) as exc:
+            logger.warning("label image %s (%s) prints empty: %s", el.id, key, exc)
+            continue
+        if raster is None:
+            continue
+        bits = await asyncio.to_thread(dither.bitmap, raster.gray, raster.width,
+                                       raster.height, el.params)
+        out[el.id] = dither.Bitmap(raster.width, raster.height, bits)
+    return out
+
+
+@router.post("/images/raster")
+async def image_raster(
+    body: LabelImageRasterIn, db: DbSession,
+    _actor: AuthContext = require_permission("labels", "view"),
+    _rank: AuthContext = DESIGNER,
+) -> Response:
+    """One image element's gray raster for the builder's canvas, the same
+    one a compile prints from (8-bit levels, row-major, 0 black, already
+    turned): `application/octet-stream`, its size in `X-Raster-Width` /
+    `X-Raster-Height`. Bytes, not a URL, so the canvas never reads a
+    cross-origin picture. 404 `no_image` when there is nothing to draw (no
+    such library image, no photo or logo, a missing object); 422
+    `person_not_found`, `image_too_large`, `unreadable_image`."""
+    from serversherpa.labels import image_prep
+
+    width, height = box_dots(body.w_in, body.h_in, body.dpi)
+    if width < 1 or height < 1:
+        raise _err(422, "bad_field", field="w_in", message="the box is under one dot")
+    if width * height > MAX_IMAGE_DOTS:
+        raise _err(422, "image_too_large")
+    if body.source == "static":
+        if not body.image_id:
+            raise _err(422, "bad_field", field="image_id")
+        key = await _library_key(db, body.image_id)
+    else:
+        if not body.person_id:
+            raise _err(422, "bad_field", field="person_id")
+        person = await people_badge.find_person(db, body.person_id)
+        if person is None:
+            raise _err(422, "person_not_found", field="person_id")
+        key = (people_badge.photo_key(person) if body.source == "photo"
+               else await people_badge.logo_key(db, person))
+    if not key:
+        raise _err(404, "no_image")
+    try:
+        raster = await _gray_raster(key, width, height, body.fit, body.rotation)
+    except image_prep.ImageTooLarge as exc:
+        raise _err(422, "image_too_large") from exc
+    except image_prep.UnreadableImage as exc:
+        raise _err(422, "unreadable_image") from exc
+    if raster is None:
+        raise _err(404, "no_image")
+    return Response(raster.gray, media_type="application/octet-stream", headers={
+        "X-Raster-Width": str(raster.width), "X-Raster-Height": str(raster.height),
+        "Cache-Control": "no-store"})
+
+
+IMAGE_FIELDS = ["name", "storage_key", "width", "height", "mime", "size_bytes"]
+
+
+def _image_out(row: LabelImage, uploader: str | None) -> LabelImageOut:
+    return LabelImageOut(id=row.id, name=row.name, width=row.width, height=row.height,
+                         mime=row.mime, size_bytes=row.size_bytes, created_by=row.created_by,
+                         created_by_name=uploader, created_at=row.created_at)
+
+
+@router.get("/images", response_model=list[LabelImageOut])
+async def list_label_images(
+    db: DbSession,
+    _actor: AuthContext = require_permission("labels", "view"),
+    _rank: AuthContext = DESIGNER,
+) -> list[LabelImageOut]:
+    """The label image library (static badge images), natural by name."""
+    rows = (await db.execute(
+        select(LabelImage, Person.preferred_name, Person.first_name, Person.last_name)
+        .outerjoin(Person, Person.id == LabelImage.created_by)
+        .where(LabelImage.deleted_at.is_(None))
+        .order_by(natural(LabelImage.name), LabelImage.created_at))).all()
+    return [_image_out(row, _person_display(p, fn, ln)) for row, p, fn, ln in rows]
+
+
+@router.post("/images", response_model=LabelImageOut, status_code=201)
+async def upload_label_image(
+    db: DbSession,
+    file: Annotated[UploadFile, File()],
+    name: Annotated[str | None, Form(max_length=MAX_IMAGE_NAME)] = None,
+    actor: AuthContext = require_permission("labels", "view"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelImageOut:
+    """Add a picture to the library: PNG, JPEG, WebP or GIF, up to 5 MiB
+    and 40 megapixels, stored as uploaded (uncropped). `name` defaults to
+    the file's. 413 `file_too_large`; 422 `empty_file`,
+    `invalid_file_type`, `unreadable_image`, `image_too_large`."""
+    from serversherpa.labels import image_prep
+
+    data = await file.read(MAX_IMAGE_BYTES + 1)
+    if not data:
+        raise _err(422, "empty_file")
+    if len(data) > MAX_IMAGE_BYTES:
+        raise _err(413, "file_too_large")
+    if _sniff_image(data) is None:
+        raise _err(422, "invalid_file_type")
+    try:
+        info = await asyncio.to_thread(image_prep.probe, data)
+    except image_prep.ImageTooLarge as exc:
+        raise _err(422, "image_too_large") from exc
+    except image_prep.UnreadableImage as exc:
+        raise _err(422, "unreadable_image") from exc
+    label = ((name or "").strip() or PurePosixPath(file.filename or "").name.strip()
+             or "Image")[:MAX_IMAGE_NAME]
+    key = f"label-images/{uuid.uuid4()}{info.ext}"
+    await put_object(key, data, info.mime)
+    row = LabelImage(name=label, storage_key=key, width=info.width, height=info.height,
+                     mime=info.mime, size_bytes=len(data), created_by=actor.person.id)
+    try:
+        db.add(row)
+        await db.flush()
+        audit(db, actor_id=actor.person.id, entity_type="label_image", entity_id=str(row.id),
+              action="create", changes=diff({}, snapshot(row, IMAGE_FIELDS)))
+        await db.commit()
+    except Exception:
+        # the key was never committed, so nothing else can reach the object
+        await db.rollback()
+        try:
+            await delete_object(key)
+        except Exception as exc:  # noqa: BLE001 - best effort, the first error wins
+            logger.warning("label image %s left behind after a failed upload: %s", key, exc)
+        raise
+    await db.refresh(row)
+    return _image_out(row, _person_display(actor.person.preferred_name,
+                                           actor.person.first_name, actor.person.last_name))
+
+
+@router.delete("/images/{image_id}", status_code=204)
+async def delete_label_image(
+    image_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("labels", "view"),
+    _rank: AuthContext = DESIGNER,
+) -> None:
+    """Soft delete: a design that still uses the image prints it as no
+    image. 404 `image_not_found`."""
+    row = await db.get(LabelImage, image_id)
+    if row is None or row.deleted_at is not None:
+        raise _err(404, "image_not_found")
+    row.deleted_at = datetime.now(UTC)
+    audit(db, actor_id=actor.person.id, entity_type="label_image", entity_id=str(row.id),
+          action="delete", changes={"name": {"from": row.name, "to": None}})
+    await db.commit()

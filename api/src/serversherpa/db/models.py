@@ -1679,7 +1679,8 @@ class LabelTemplate(Base):
     The creator is captured by the audit log.
 
     The label builder's templates form a tree (0102, labels/templates_tree.py):
-    a parent (`schema_version` 2, no `parent_id`) holds the design and its
+    a parent (`schema_version` 2, or 3 when its design has images; no
+    `parent_id`) holds the design and its
     `samples`, and owns one child per DPI in `dpis`, each a full copy of
     the design pinned to its `dpi_key`. A child counts its hand edits in
     `child_edits` on top of the parent version it was generated from;

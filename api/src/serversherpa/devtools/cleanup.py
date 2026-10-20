@@ -47,6 +47,7 @@ from serversherpa.db.models import (
     ImportJob,
     LabelFont,
     LabelGenerationRun,
+    LabelImage,
     Note,
     Notification,
     Partner,
@@ -55,6 +56,7 @@ from serversherpa.db.models import (
     ReportRun,
     SpecLookupJob,
     StatusRuleExecution,
+    SystemConfig,
     TrustedDevice,
 )
 from serversherpa.notifications.password_reminders import KIND as PASSWORD_EXPIRING_KIND
@@ -297,8 +299,9 @@ async def _purge_trusted_browsers(
 # ── stored files: who still uses a key ───────────────────────────────
 
 # Each table that holds a storage key, as (model, key column, "this row
-# is a kept row" filter or None). Soft-deleted attachments and fonts do
-# not count: nothing can reach their object any more.
+# is a kept row" filter or None). Soft-deleted attachments, fonts and label
+# images do not count: nothing can reach their object any more. The company
+# logo's key lives in the system config's branding section (JSON).
 def _key_sources() -> list[tuple[type, ColumnElement, ColumnElement | None]]:
     return [
         (Attachment, Attachment.storage_key, Attachment.deleted_at.is_(None)),
@@ -308,6 +311,9 @@ def _key_sources() -> list[tuple[type, ColumnElement, ColumnElement | None]]:
         (Client, Client.logo_key, None),
         (Partner, Partner.logo_key, None),
         (LabelFont, LabelFont.storage_key, LabelFont.deleted_at.is_(None)),
+        (LabelImage, LabelImage.storage_key, LabelImage.deleted_at.is_(None)),
+        (SystemConfig, SystemConfig.data["company_logo_key"].astext,
+         SystemConfig.section == "branding"),
     ]
 
 

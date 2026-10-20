@@ -3,8 +3,9 @@ one DPI child per entry of its `dpis`, versions, clone, Replace… and the
 typed-name delete. Every write to a builder template goes through here;
 api/routes/labels.py validates input, maps the errors and audits.
 
-- A parent (`schema_version` 2, no `parent_id`) is the design the builder
-  shows, at 300 DPI. It never prints: kiosks and the generator use its
+- A parent (`schema_version` 2 or 3, no `parent_id`) is the design the
+  builder shows, at 300 DPI. A builder row's `schema_version` is its
+  design's schema: 3 with an image element, else 2 (`design_schema`). It never prints: kiosks and the generator use its
   children.
 - A child is a full copy of the parent's design pinned to one DPI, named
   "<parent> · <dpi>". A parent save regenerates every child that has no
@@ -147,6 +148,15 @@ class DeleteSummaryOut(DeleteSummary):
 class DeactivateSummary(TypedDict):
     rows: list[str]
     fallback_dpis_lost: list[str]
+
+
+def design_schema(design: dict | None) -> int:
+    """A builder design's schema, stored as its row's `schema_version`: 3
+    when it has an image element, 2 otherwise (the routes validate it)."""
+    schema = design.get("schema") if isinstance(design, dict) else None
+    if isinstance(schema, int) and not isinstance(schema, bool) and schema >= 2:
+        return schema
+    return 2
 
 
 def _now() -> datetime:
@@ -486,8 +496,9 @@ async def create_parent(db: AsyncSession, *, name: str, description: str, label_
         name=name, description=description, label_type=label_type, size_key=size_key,
         dpi_key=PARENT_DPI, language_key=language_key, kind="design",
         design=copy.deepcopy(design), code=None, version=1, is_active=is_active,
-        generation_rules={}, schema_version=2, samples=dict(samples or {}),
-        dpis=list(TREE_DPIS), generated_from_version=None, child_edits=0,
+        generation_rules={}, schema_version=design_schema(design),
+        samples=dict(samples or {}), dpis=list(TREE_DPIS), generated_from_version=None,
+        child_edits=0,
         customized=False, is_old=False)
     db.add(parent)
     await db.flush()
@@ -517,7 +528,8 @@ async def generate_children(db: AsyncSession, parent: LabelTemplate, *,
             size_key=parent.size_key, dpi_key=dpi, language_key=parent.language_key,
             kind="design", design=copy.deepcopy(parent.design), code=None,
             version=parent.version, is_active=parent.is_active, generation_rules={},
-            parent_id=parent.id, schema_version=2, samples={}, dpis=[dpi],
+            parent_id=parent.id, schema_version=design_schema(parent.design), samples={},
+            dpis=[dpi],
             generated_from_version=parent.version, child_edits=0, customized=False,
             is_old=False)
         db.add(child)
@@ -545,6 +557,7 @@ async def save_parent(db: AsyncSession, parent: LabelTemplate, *, design: dict,
     auto = ("Changed sample values" if not design_changed else change_summary(
         parent.design, design, samples_changed=(parent.samples or {}) != (samples or {})))
     parent.design = copy.deepcopy(design)
+    parent.schema_version = design_schema(design)
     parent.samples = dict(samples or {})
     parent.version += 1
     parent.updated_at = _now()
@@ -559,6 +572,7 @@ async def save_parent(db: AsyncSession, parent: LabelTemplate, *, design: dict,
                 out_of_date.append(child.id)
             continue
         child.design = copy.deepcopy(design)
+        child.schema_version = design_schema(design)
         child.generated_from_version = parent.version
         child.version += 1
         child.updated_at = _now()
@@ -579,6 +593,7 @@ async def save_child(db: AsyncSession, child: LabelTemplate, *, design: dict,
     await _lock(db, child)
     auto = change_summary(child.design, design)
     child.design = copy.deepcopy(design)
+    child.schema_version = design_schema(design)
     child.customized = True
     child.child_edits += 1
     child.version += 1
@@ -777,7 +792,8 @@ async def clone(db: AsyncSession, source: LabelTemplate, new_name: str,
             name=child_name(new_name, c.dpi_key), description="", label_type=c.label_type,
             size_key=c.size_key, dpi_key=c.dpi_key, language_key=c.language_key,
             kind="design", design=copy.deepcopy(c.design), code=None, version=1,
-            is_active=False, generation_rules={}, parent_id=copy_row.id, schema_version=2,
+            is_active=False, generation_rules={}, parent_id=copy_row.id,
+            schema_version=design_schema(c.design),
             samples={}, dpis=[c.dpi_key], generated_from_version=1, child_edits=0,
             customized=c.customized, is_old=False))
     db.add_all(made)

@@ -22,6 +22,7 @@ from serversherpa.labels import dither
 from serversherpa.labels.brother_escp import compile_escp
 from serversherpa.labels.brother_ptouch import compile_ptouch
 from serversherpa.labels.compile import compile_design, compile_parsed_design
+from serversherpa.labels.fields import design_field_keys
 from serversherpa.labels.model import DesignError, FieldEl, ImageEl, parse_design
 from serversherpa.labels.render import render_template
 from serversherpa.labels.zpl import compile_zpl, crc16, image_box_dots, z64
@@ -164,6 +165,54 @@ def test_dither_hand_checked():
         == dither.bitmap(_flat(128, 13, 7), 13, 7, flat)
 
 
+def _reference_bits(gray: bytes, width: int, height: int, params: dict) -> bytes:
+    """The pinned algorithm written out again from the plan, sharing nothing
+    with dither.py: a grid of rows, every neighbor bounds-checked."""
+    b, c = params["brightness"], params["contrast"]
+    grid = [[min(255, max(0, ((gray[y * width + x] - 128) * c) // 100 + 128 + b * 255 // 100))
+             for x in range(width)] for y in range(height)]
+    black = [[False] * width for _ in range(height)]
+    for y in range(height):
+        for x in range(width):
+            if params["mode"] == "threshold":
+                black[y][x] = grid[y][x] < params["threshold"]
+                continue
+            acc = grid[y][x]
+            black[y][x] = acc < 128
+            err = (acc - (0 if black[y][x] else 255)) >> 3
+            for dx, dy in ((1, 0), (2, 0), (-1, 1), (0, 1), (1, 1), (0, 2)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < width and 0 <= ny < height:
+                    grid[ny][nx] += err
+    out = bytearray()
+    for row in black:
+        bits = "".join("1" if dot != params["invert"] else "0" for dot in row)
+        bits += "0" * (-len(bits) % 8)
+        out += bytes(int(bits[i:i + 8], 2) for i in range(0, len(bits), 8))
+    return bytes(out)
+
+
+def test_dither_matches_a_naive_reference():
+    """Every fixture input, through an independent reading of the algorithm."""
+    for case in fixture_inputs():
+        gray = bytes.fromhex(case["gray"])
+        assert dither.bitmap(gray, case["width"], case["height"], _p(case["params"])) \
+            == _reference_bits(gray, case["width"], case["height"], case["params"]), case["name"]
+
+
+def test_dither_hand_worked_3x3():
+    """Nine dots of level 100, worked by hand through the next-row
+    neighbors. Row 0: 100 (err 12), 112 (err 14), 126 (err 15), all black.
+    Row 1 starts at 126, 141 and 129 (each picked up error from row 0's
+    (-1,+1), (0,+1) and (+1,+1)); 126 is black (err 15, so 156 and 144),
+    156 is white (err -99 >> 3 = -13), 131 is white (err -124 >> 3 = -16).
+    Row 2 starts 112, 114, 115 (row 0's (0,+2)), becomes 114, 100, 86 with
+    row 1's errors, then 114, 114, 114 along the row: all black."""
+    flat = _params()
+    assert dither.bitmap(_flat(100, 3, 3), 3, 3, _p(flat)).hex() == "e080e0"
+    assert _reference_bits(_flat(100, 3, 3), 3, 3, flat).hex() == "e080e0"
+
+
 def test_lut_floors_like_python():
     """((v-128)*contrast)//100 + 128 + brightness*255//100, clamped: the
     quotients floor (a truncating mirror would be one level off)."""
@@ -263,6 +312,11 @@ def _graphics(zpl: str) -> list[tuple[int, int, int, int, int, bytes]]:
     return out
 
 
+def _sized(width: int, height: int, dpi: int = 300) -> dict:
+    """An image element whose box is exactly width x height dots at dpi."""
+    return _image(w=width / dpi, h=height / dpi)
+
+
 def test_gfa_placement_and_banding():
     bm = _pattern(120, 90)                       # 0.4 x 0.3 in at 300 dpi
     out = compile_zpl(parse_design(_design(_image())), 300, {}, images={"img": bm})
@@ -273,7 +327,7 @@ def test_gfa_placement_and_banding():
 
     # 800 dots wide: 100 bytes a row, so a band holds 99999 // 100 = 999 rows
     tall = _pattern(800, 2500)
-    out = compile_zpl(parse_design(_design(_image())), 300, {}, images={"img": tall})
+    out = compile_zpl(parse_design(_design(_sized(800, 2500))), 300, {}, images={"img": tall})
     bands = _graphics(out)
     assert [(x, y, c, d) for x, y, _b, c, d, _r in bands] == [
         (150, 75, 99_900, 100), (150, 75 + 999, 99_900, 100), (150, 75 + 1998, 50_200, 100)]
@@ -283,11 +337,11 @@ def test_gfa_placement_and_banding():
     # c may be exactly 99,999; one more row starts a band
     one = _pattern(8, 99_999)
     assert [(y, c) for _x, y, _b, c, _d, _r in _graphics(
-        compile_zpl(parse_design(_design(_image())), 300, {}, images={"img": one}))] \
+        compile_zpl(parse_design(_design(_sized(8, 99_999))), 300, {}, images={"img": one}))] \
         == [(75, 99_999)]
     two = _pattern(8, 100_000)
     assert [(y, c) for _x, y, _b, c, _d, _r in _graphics(
-        compile_zpl(parse_design(_design(_image())), 300, {}, images={"img": two}))] \
+        compile_zpl(parse_design(_design(_sized(8, 100_000))), 300, {}, images={"img": two}))] \
         == [(75, 99_999), (75 + 99_999, 1)]
 
 
@@ -336,8 +390,23 @@ def test_bitmap_must_match_its_size():
     with pytest.raises(ValueError):
         compile_zpl(design, 300, {}, images={"img": dither.Bitmap(120, 90, b"\0" * 10)})
     # a plain (width, height, bits) tuple is a Bitmap too
-    out = compile_zpl(design, 300, {}, images={"img": (8, 2, b"\x80\x01")})
+    small = parse_design(_design(_sized(8, 2)))
+    out = compile_zpl(small, 300, {}, images={"img": (8, 2, b"\x80\x01")})
     assert _graphics(out) == [(150, 75, 2, 2, 1, b"\x80\x01")]
+
+
+def test_bitmap_must_fill_the_footprint():
+    """A bitmap is the element's footprint at the DPI exactly (w x h, or
+    h x w at 90 and 270): any other size was prepped for another box."""
+    for rotation, good, bad in ((0, (120, 90), (90, 120)), (90, (90, 120), (120, 90)),
+                                (180, (120, 90), (121, 90)), (270, (90, 120), (90, 119))):
+        design = parse_design(_design(_image(rotation=rotation)))
+        assert "^GFA" in compile_zpl(design, 300, {}, images={"img": _pattern(*good)})
+        with pytest.raises(ValueError, match="footprint"):
+            compile_zpl(design, 300, {}, images={"img": _pattern(*bad)})
+    # the footprint at another DPI is another size
+    with pytest.raises(ValueError, match="footprint"):
+        compile_zpl(parse_design(_design(_image())), 203, {}, images={"img": _pattern(120, 90)})
 
 
 # ---- schema 3 ----------------------------------------------------------
@@ -432,6 +501,14 @@ def test_compile_and_render_pass_images_through():
     assert render_template(template, {"person_name": "Jo"}, width_in=3.375, height_in=2.125,
                            dots=300)[1] == set()
     assert isinstance(parsed.elements[1], FieldEl)
+
+
+def test_an_image_is_never_a_field_key():
+    """An image's source is `source`, never `field`: even a stray `field` on
+    an image element is no placed key (no mock value, no unknown key)."""
+    raw = _design(_image(field="person_name"), _image(id="i2", field="ft:Photo"), _field())
+    assert design_field_keys(raw) == {"person_name"}
+    assert design_field_keys(_design(_image(field="badge_id"))) == set()
 
 
 def test_brother_compilers_skip_images():

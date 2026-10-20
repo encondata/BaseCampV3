@@ -23,7 +23,9 @@ prints exactly as wide as the canvas draws it.
 A schema 3 design adds images (spec 2026-10-20-badge-templates §4.5,
 §4.12). The compiler stays pure: the caller resolves each image element to
 an already-dithered, already-rotated 1-bit bitmap (labels.dither) and
-passes them in by element id (`images=`). Each prints as `^GFA` with Z64
+passes them in by element id (`images=`), each exactly the element's
+footprint in dots (its box, turned at 90/270; any other size is a
+ValueError). Each prints as `^GFA` with Z64
 data at the footprint's top-left (`^FO`), banded when one `^GF` would
 pass 99,999 bytes; white dots are transparent, so the element order is
 the stacking order, as on the canvas. A graphic has no `^FH` (its data is
@@ -263,11 +265,22 @@ def z64(raw: bytes) -> str:
     return f":Z64:{b64}:{crc16(b64.encode('ascii'))}"
 
 
+def box_dots(w_in: float, h_in: float, dpi: int) -> tuple[int, int]:
+    """A w x h inch box in whole dots at `dpi`, rounded as every element is."""
+    return _dots(w_in, dpi), _dots(h_in, dpi)
+
+
 def image_box_dots(el: ImageEl, dpi: int) -> tuple[int, int]:
     """The image's unrotated w x h box in dots: the size its picture is
     fitted to before it is turned (the bitmap is then that, transposed at
     90 and 270)."""
-    return _dots(el.w, dpi), _dots(el.h, dpi)
+    return box_dots(el.w, el.h, dpi)
+
+
+def image_footprint_dots(el: ImageEl, dpi: int) -> tuple[int, int]:
+    """The dots the image covers on the label: its box, turned at 90 and 270."""
+    along, across = image_box_dots(el, dpi)
+    return (across, along) if el.rotation in (90, 270) else (along, across)
 
 
 def _graphic(x: int, y: int, bitmap: Bitmap) -> list[str]:
@@ -289,12 +302,15 @@ def _graphic(x: int, y: int, bitmap: Bitmap) -> list[str]:
 
 def _v2_image(el: ImageEl, dpi: int, bitmap: Bitmap | None) -> list[str]:
     x, y = _dots(el.x, dpi), _dots(el.y, dpi)
+    w, h = image_footprint_dots(el, dpi)
     if bitmap is not None and bitmap[0] > 0 and bitmap[1] > 0:
+        if (bitmap[0], bitmap[1]) != (w, h):
+            # prepped for another box, DPI or turn: it would print off its place
+            raise ValueError(f"image {el.id}: a {bitmap[0]} x {bitmap[1]} bitmap for a "
+                             f"{w} x {h} footprint")
         return _graphic(x, y, Bitmap(*bitmap))
     if el.hide_when_empty:
         return []
-    along, across = image_box_dots(el, dpi)
-    w, h = (across, along) if el.rotation in (90, 270) else (along, across)
     t = EMPTY_IMAGE_STROKE
     return [f"^FO{x},{y}^GB{max(t, w)},{max(t, h)},{t}^FS"]
 

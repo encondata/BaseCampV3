@@ -3939,7 +3939,8 @@ class LabelTemplateOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     # The label builder's tree (labels/templates_tree.py): a parent is
-    # schema_version 2 with no parent_id and owns `dpis` and `samples`; a
+    # schema_version 2 (3 when its design has images) with no parent_id and
+    # owns `dpis` and `samples`; a
     # child names its parent, the parent version it was generated from and
     # its hand edits on top (v<generated_from_version>.<child_edits>).
     parent_id: uuid.UUID | None = None
@@ -4074,9 +4075,9 @@ class LabelFontOut(BaseModel):
 
 
 class LabelTemplateCreateIn(BaseModel):
-    """A `design` with `"schema": 2` creates a builder parent (at 300 DPI)
-    and its 203/300/600 children; `dpi_key` is then not needed. Any other
-    body creates one row at `dpi_key`, as before."""
+    """A `design` with `"schema": 2` (or 3, with images) creates a builder
+    parent (at 300 DPI) and its 203/300/600 children; `dpi_key` is then not
+    needed. Any other body creates one row at `dpi_key`, as before."""
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=120)
@@ -4124,11 +4125,13 @@ class LabelCompileIn(BaseModel):
     dpi_key: str
     language_key: str
     mode: Literal["placeholders", "sample"] = "placeholders"
-    # a schema 2 design's sample values (the builder's), over the portal's
-    # mock values; refused for anything else
+    # a builder (schema 2 or 3) design's sample values, over the portal's
+    # mock values; refused for anything else. `person:id` names the sample
+    # person whose photo and logo a badge's images print (rank 80 only).
     samples: dict[str, str] | None = None
-    # the template's label type: a schema 2 preview mocks only that type's
-    # fields (a key of another type previews blank, as it prints)
+    # the template's label type: a builder preview mocks only that type's
+    # fields (a key of another type previews blank, as it prints); an image
+    # element needs `id_badge` (and language zpl)
     label_type: str | None = Field(None, max_length=64)
 
 
@@ -4139,12 +4142,44 @@ class LabelCompileOut(BaseModel):
 class LabelZplPreviewIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    zpl: str = Field(min_length=1, max_length=20000)
+    # a badge photo is ~12k characters of Z64 at 300 DPI and ~47k at 600
+    zpl: str = Field(min_length=1, max_length=250_000)
     size_key: str
     dpi_key: str
     # library fonts to embed (~DY) ahead of the label: the open fonts a
     # builder design prints with; never the resident one
     font_ids: list[uuid.UUID] = Field(default_factory=list, max_length=16)
+
+
+class LabelImageOut(BaseModel):
+    """A static image in the label image library (ID badge templates): the
+    original upload's upright pixel size, type and bytes."""
+    id: uuid.UUID
+    name: str
+    width: int
+    height: int
+    mime: str
+    size_bytes: int
+    created_by: uuid.UUID | None
+    created_by_name: str | None
+    created_at: datetime
+
+
+class LabelImageRasterIn(BaseModel):
+    """POST /labels/images/raster: an image element's picture as the gray
+    raster it prints from, at `dpi`: a library image (`static`, by
+    `image_id`), or a person's photo or logo (`person_id`). The box is
+    `w_in` x `h_in` before `rotation` (clockwise)."""
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["photo", "logo", "static"]
+    image_id: str | None = Field(None, max_length=64)
+    person_id: str | None = Field(None, max_length=64)
+    w_in: float = Field(gt=0, le=100)
+    h_in: float = Field(gt=0, le=100)
+    dpi: int = Field(ge=1, le=1200)
+    fit: Literal["cover", "contain"]
+    rotation: Literal[0, 90, 180, 270] = 0
 
 
 # ── generate labels (runs, preview, generated) ──────────────────────
