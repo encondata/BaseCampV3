@@ -276,3 +276,49 @@ async def test_printed_value_must_be_that_assets(app, client):
     r = await client.post("/edge/labels/printed", headers=headers, json=PRINTED)
     assert r.status_code == 422 and r.json()["detail"]["code"] == "scan_value_mismatch"
     assert _queued(app) == 0
+
+
+# ── GET /edge/labels/recorded ───────────────────────────────────────
+
+async def _printed_ids(app, client, n=2):
+    ids = []
+    for _ in range(n):
+        r = await client.post("/edge/labels/printed", headers=make_session(app), json=PRINTED)
+        ids.append(r.json()["client_scan_id"])
+    return ids
+
+
+async def test_recorded_lists_only_scans_the_portal_accepted(app, client):
+    await _label_setup(app)
+    accepted, pending = await _printed_ids(app, client)
+    app.state.store.run("UPDATE pending_rfid_scans SET upload_state = 'accepted', was_accepted = 1, "
+                        "accepted_at = '2026-10-19T14:06:00+00:00' WHERE client_scan_id = ?",
+                        (accepted,))
+    unknown = "00000000-0000-4000-8000-000000000000"
+    r = await client.get("/edge/labels/recorded", headers=make_session(app),
+                         params={"ids": f"{accepted},{pending},{unknown}"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"recorded": [accepted]}
+
+
+async def test_recorded_with_no_ids_is_empty(app, client):
+    await _label_setup(app)
+    r = await client.get("/edge/labels/recorded", headers=make_session(app), params={"ids": ""})
+    assert r.status_code == 200 and r.json() == {"recorded": []}
+
+
+async def test_recorded_refuses_bad_or_too_many_ids(app, client):
+    await _label_setup(app)
+    for ids in ("not-a-uuid", ",".join(["00000000-0000-4000-8000-000000000000"] * 101)):
+        r = await client.get("/edge/labels/recorded", headers=make_session(app),
+                             params={"ids": ids})
+        assert r.status_code == 422, ids
+
+
+async def test_recorded_needs_a_session_and_is_move_locked(app, client):
+    await _label_setup(app)
+    r = await client.get("/edge/labels/recorded", params={"ids": ""})
+    assert r.status_code == 401
+    other = make_session(app, kiosk_move={"initiative_id": "m-2", "name": "Other"})
+    r = await client.get("/edge/labels/recorded", headers=other, params={"ids": ""})
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "move_locked"

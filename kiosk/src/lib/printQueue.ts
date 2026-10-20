@@ -42,6 +42,9 @@ export interface QueueEntry {
   message: string | null;
   /** Printed, but the Labeled scan couldn't be recorded. */
   recordWarning: string | null;
+  /** The Labeled scan's id on the laptop, once queued (the page asks the
+   *  edge whether the portal has accepted it: "Printed + Recorded"). */
+  clientScanId: string | null;
 }
 
 /** Newest first. */
@@ -53,7 +56,8 @@ export interface PrintQueueDeps {
   printer: () => StationPrinter | null;
   settings: () => LabelStationSettings | null;
   getLabel: (assetId: string) => Promise<StationLabel>;
-  recordPrinted: (job: PrintedJob) => Promise<void>;
+  /** Queues the Labeled scan; resolves to its client_scan_id when known. */
+  recordPrinted: (job: PrintedJob) => Promise<string | null | void>;
   onChange: (s: QueueState) => void;
   /** An entry just finished, printed or failed (the page's flash and sound). */
   onSettled?: (entry: QueueEntry) => void;
@@ -127,7 +131,7 @@ export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
     nextId += 1;
     const entry: QueueEntry = {
       id: `p-${nextId}`, asset, scannedValue, scannedAt: new Date().toISOString(), reprint,
-      state: 'queued', message: null, recordWarning: null,
+      state: 'queued', message: null, recordWarning: null, clientScanId: null,
     };
     entries.unshift(entry);
     work.set(entry.id, { entry, sent: null, recorded: false });
@@ -180,9 +184,10 @@ export function createPrintQueue(deps: PrintQueueDeps): PrintQueue {
     if (!entry.reprint && !w.recorded) {
       w.recorded = true;
       try {
-        await deps.recordPrinted({
+        const id = await deps.recordPrinted({
           assetId: entry.asset.id, scannedValue: entry.scannedValue, scannedAt: entry.scannedAt,
         });
+        entry.clientScanId = typeof id === 'string' ? id : null;
       } catch (err) {
         entry.recordWarning = recordWarningText(err);
       }

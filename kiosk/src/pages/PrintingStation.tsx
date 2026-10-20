@@ -24,7 +24,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { Link } from 'react-router-dom';
 
-import { getLabelRunStatus, getStationLabel, postLabelPrinted } from '../lib/api';
+import { getLabelRunStatus, getRecordedScans, getStationLabel, postLabelPrinted } from '../lib/api';
 import { hslCss, useAppearance } from '../lib/appearance';
 import { flash } from '../lib/flash';
 import { useKioskSetup } from '../lib/kioskSetup';
@@ -52,6 +52,11 @@ const STATE_TEXT: Record<QueueEntry['state'], string> = {
   printed: 'Printed',
   failed: 'Failed',
 };
+
+/** How often the list asks the laptop which printed scans the portal has
+ *  accepted (a row then reads "Printed + Recorded"). */
+export const RECORDED_POLL_MS = 5000;
+const MAX_RECORDED_ASK = 100;  // the edge's limit per request
 
 function printTime(iso: string): string {
   return new Date(iso).toLocaleTimeString(undefined, {
@@ -81,6 +86,8 @@ export default function PrintingStation() {
   const [index, setIndex] = useState<ScanIndex | null>(null);
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('loading');
   const [entries, setEntries] = useState<QueueEntry[]>([]);
+  // client_scan_ids the portal has accepted: those rows read "Printed + Recorded"
+  const [recorded, setRecorded] = useState<ReadonlySet<string>>(() => new Set());
   // Templates too new for this laptop's edge (its label status).
   const [unsupported, setUnsupported] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -117,7 +124,7 @@ export default function PrintingStation() {
       getLabel: getStationLabel,
       recordPrinted: (job) => postLabelPrinted({
         asset_id: job.assetId, scanned_value: job.scannedValue, scanned_at: job.scannedAt,
-      }),
+      }),  // resolves to the scan's client_scan_id
       onChange: (s) => setEntries(s.entries),
       onSettled: (entry) => {
         const good = entry.state === 'printed';
@@ -165,6 +172,27 @@ export default function PrintingStation() {
       statusId.current += 1;  // an answer after leaving changes nothing
     };
   }, []);
+
+  // Ask the laptop about printed scans not yet known to be recorded: now
+  // (whenever that set changes) and every RECORDED_POLL_MS until they are.
+  const waitingKey = entries
+    .filter((e) => e.state === 'printed' && e.clientScanId && !recorded.has(e.clientScanId))
+    .map((e) => e.clientScanId as string)
+    .slice(0, MAX_RECORDED_ASK)
+    .join(',');
+  useEffect(() => {
+    if (!waitingKey) return undefined;
+    let alive = true;
+    const ids = waitingKey.split(',');
+    const check = () => {
+      getRecordedScans(ids).then((got) => {
+        if (alive && got.length > 0) setRecorded((prev) => new Set([...prev, ...got]));
+      }, () => {});  // offline or busy: ask again next time
+    };
+    check();
+    const timer = window.setInterval(check, RECORDED_POLL_MS);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [waitingKey]);
 
   const empty = loadStatus === 'ready' && (index?.size ?? 0) === 0;
   const disabled = loadStatus !== 'ready' || empty || !setup || station.state !== 'ready';
@@ -342,7 +370,9 @@ export default function PrintingStation() {
                   <td className="mono">{printTime(e.scannedAt)}</td>
                   <td>
                     <span className="scan-chip">
-                      {e.state === 'failed' ? e.message : STATE_TEXT[e.state]}
+                      {e.state === 'failed' ? e.message
+                        : e.state === 'printed' && e.clientScanId && recorded.has(e.clientScanId)
+                          ? 'Printed + Recorded' : STATE_TEXT[e.state]}
                       {e.reprint ? ' (reprint)' : ''}
                     </span>
                     {e.recordWarning && <div className="station-warning">{e.recordWarning}</div>}

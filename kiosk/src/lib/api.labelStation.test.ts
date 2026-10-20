@@ -107,8 +107,15 @@ it('posts a printed scan to /edge/labels/printed', async () => {
   const fetchMock = vi.fn(async () => json({ queued: true, client_scan_id: 'c1' }));
   vi.stubGlobal('fetch', fetchMock);
   const body = { asset_id: 'a1', scanned_value: 'SN1', scanned_at: '2026-10-19T12:00:00Z' };
-  await expect(api.postLabelPrinted(body)).resolves.toBeUndefined();
+  await expect(api.postLabelPrinted(body)).resolves.toBe('c1');
   expect(lastCall(fetchMock)).toEqual({ url: 'http://api.test/edge/labels/printed', method: 'POST', body });
   vi.stubGlobal('fetch', vi.fn(async () => json({ detail: { code: 'scan_value_mismatch' } }, 422)));
   await expect(api.postLabelPrinted(body)).rejects.toMatchObject({ status: 422, code: 'scan_value_mismatch' });
+});
+
+it('asks /edge/labels/recorded which printed scans the portal accepted', async () => {
+  const fetchMock = vi.fn(async () => json({ recorded: ['c1'] }));
+  vi.stubGlobal('fetch', fetchMock);
+  await expect(api.getRecordedScans(['c1', 'c2'])).resolves.toEqual(['c1']);
+  expect(lastCall(fetchMock)).toMatchObject({ url: 'http://api.test/edge/labels/recorded?ids=c1%2Cc2' });
 });
