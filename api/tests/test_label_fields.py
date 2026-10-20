@@ -274,3 +274,17 @@ async def test_fields_route_needs_labels_view(client, db, seeded_user):
     r = await client.get("/labels/fields", headers=hdrs, params={"label_type": "top"})
     assert r.status_code == 403, r.text
     assert (await client.get("/labels/fields")).status_code == 401
+
+
+def test_design_field_keys_reads_schema_2_only_and_tolerates_odd_schemas():
+    from serversherpa.labels.fields import design_field_keys
+    from serversherpa.labels.template_fonts import design_fonts
+
+    els = [{"id": "a", "type": "field", "field": "ft:Notes"}, {"id": "b", "type": "line"},
+           {"id": "c", "type": "qr", "field": "asset_id"}, "junk"]
+    assert design_field_keys({"schema": 2, "elements": els}) == {"ft:Notes", "asset_id"}
+    for odd in ("2", None, True, 2.0, [2]):
+        assert design_field_keys({"schema": odd, "elements": els}) == set()
+        assert design_fonts({"schema": odd, "elements": els}) == set()
+    assert design_field_keys({"elements": els}) == set()
+    assert design_field_keys(None) == set()

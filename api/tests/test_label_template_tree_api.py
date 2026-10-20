@@ -493,6 +493,108 @@ async def test_concurrent_activations_cannot_both_win(client, db, seeded_user):
     assert (a.is_active, b.is_active) == (True, False)
 
 
+async def test_child_activation_follows_its_parent(client, db, seeded_user):
+    hdrs = await _super(db, client)
+    parent = await _create(client, hdrs)
+    c300 = _child(await _node(client, hdrs, "Vegas Destination"), "300")
+    for call in (client.post(f"{URL}/{c300['id']}/activate", headers=hdrs),
+                 client.post(f"{URL}/{c300['id']}/deactivate", headers=hdrs),
+                 client.patch(f"{URL}/{c300['id']}", headers=hdrs, json={"is_active": False}),
+                 client.patch(f"{URL}/{c300['id']}", headers=hdrs, json={"is_active": True})):
+        r = await call
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"]["code"] == "child_follows_parent"
+    # a customized child kept as Old stays off whatever the parent does
+    await _customize_and_save(client, hdrs, parent["id"], c300["id"], 0.1)
+    r = await client.post(f"{URL}/{c300['id']}/update-from-parent", headers=hdrs)
+    assert r.status_code == 201, r.text
+
+    r = await client.post(f"{URL}/{parent['id']}/deactivate", headers=hdrs)
+    assert r.status_code == 204
+    node = await _node(client, hdrs, "Vegas Destination")
+    assert node["is_active"] is False and not any(c["is_active"] for c in node["children"])
+    r = await client.post(f"{URL}/{parent['id']}/activate", headers=hdrs)
+    assert r.status_code == 200, r.text
+    node = await _node(client, hdrs, "Vegas Destination")
+    assert node["is_active"] is True
+    assert {c["name"]: c["is_active"] for c in node["children"]} == {
+        "Vegas Destination · 203": True, "Vegas Destination · 300": True,
+        "Vegas Destination · 300 Old": False, "Vegas Destination · 600": True}
+    # and through PATCH on the parent
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"is_active": False})
+    assert r.status_code == 200, r.text
+    node = await _node(client, hdrs, "Vegas Destination")
+    assert not any(c["is_active"] for c in node["children"])
+    # an old id naming a child is refused: Replace… swaps top-level templates
+    await _create(client, hdrs, name="Other Tag", is_active=False)
+    other_child = _child(await _node(client, hdrs, "Other Tag"), "203")
+    r = await client.post(f"{URL}/{parent['id']}/replace", headers=hdrs,
+                          json={"old_template_ids": [other_child["id"]]})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "child_follows_parent"
+
+
+async def test_renaming_an_inactive_parent_checks_its_active_children(client, db, seeded_user):
+    """An active child under an inactive parent (written directly: the API
+    keeps them in step) still blocks a rename into an active family."""
+    from sqlalchemy import update
+
+    hdrs = await _super(db, client)
+    parent = await _create(client, hdrs, name="Alpha", is_active=False)
+    await db.execute(update(LabelTemplate).where(
+        LabelTemplate.parent_id == uuid.UUID(parent["id"]),
+        LabelTemplate.dpi_key == "203").values(is_active=True))
+    db.add(_legacy("Beta - 203DPI", "203"))
+    await db.commit()
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"name": "Beta"})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {"code": "active_conflict", "names": ["Beta - 203DPI"]}
+    assert (await client.get(f"{URL}/{parent['id']}", headers=hdrs)).json()["name"] == "Alpha"
+
+
+async def test_concurrent_update_from_parent_returns_the_same_fresh_child(
+        client, db, seeded_user):
+    """A second Update from parent (a double click) waits on the first and
+    gets the fresh child the first made, not an error or a second Old."""
+    import asyncio
+
+    from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.labels import templates_tree
+
+    hdrs = await _super(db, client)
+    parent = await _create(client, hdrs)
+    c300 = _child(await _node(client, hdrs, "Vegas Destination"), "300")
+    await _customize_and_save(client, hdrs, parent["id"], c300["id"], 0.1)
+    child_id = uuid.UUID(c300["id"])
+    second_loaded, first_done = asyncio.Event(), asyncio.Event()
+
+    async def first():
+        async with get_sessionmaker()() as s:
+            await second_loaded.wait()
+            fresh, created = await templates_tree.update_from_parent(
+                s, await s.get(LabelTemplate, child_id), None)
+            first_done.set()
+            await asyncio.sleep(0.3)  # the second is waiting on the row lock
+            await s.commit()
+            return fresh.id, created
+
+    async def second():
+        async with get_sessionmaker()() as s:
+            child = await s.get(LabelTemplate, child_id)  # still customized, not Old
+            second_loaded.set()
+            await first_done.wait()
+            fresh, created = await templates_tree.update_from_parent(s, child, None)
+            await s.commit()
+            return fresh.id, created
+
+    (one, made_one), (two, made_two) = await asyncio.gather(first(), second())
+    assert (one == two, made_one, made_two) == (True, True, False)
+    node = await _node(client, hdrs, "Vegas Destination")
+    assert [c["name"] for c in node["children"] if c["is_old"]] == [
+        "Vegas Destination · 300 Old"]
+    r = await client.post(f"{URL}/{c300['id']}/update-from-parent", headers=hdrs)
+    assert r.status_code == 201 and r.json()["id"] == str(one)  # idempotent over HTTP too
+
+
 # ── access ──────────────────────────────────────────────────────────
 
 async def test_mutations_need_rank_80(client, db, seeded_user):
@@ -530,6 +632,8 @@ async def test_mutations_need_rank_80(client, db, seeded_user):
     for method, url, body in calls:
         r = await client.request(method, url, headers=admin, json=body)
         assert r.status_code == 403, (method, url, r.status_code, r.text)
+        # the rank gate refused, not a missing labels:* permission
+        assert r.json()["detail"] == {"code": "forbidden", "min_rank": 80}, (method, url)
     assert (await client.get(f"{URL}/tree", headers=admin)).status_code == 200
     assert await db.scalar(select(func.count()).select_from(LabelTemplate)) == 5
 

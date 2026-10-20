@@ -42,7 +42,10 @@ def design_fonts(design: dict | None) -> set[str]:
     Bold on a family with no Bold file prints its Regular file). A field
     shown as a barcode or QR code prints no font. Nothing for a schema 1
     design (its fonts are in its compiled code) or one that doesn't parse."""
-    if not isinstance(design, dict) or design.get("schema", 1) < 2:
+    if not isinstance(design, dict):
+        return set()
+    schema = design.get("schema", 1)
+    if not isinstance(schema, int) or isinstance(schema, bool) or schema < 2:
         return set()
     try:
         parsed = parse_design(design)

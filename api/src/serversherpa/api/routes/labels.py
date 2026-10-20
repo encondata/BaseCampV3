@@ -622,8 +622,10 @@ async def _set_active(db: DbSession, row: LabelTemplate, active: bool) -> bool:
 
 async def _patch_child(db: DbSession, row: LabelTemplate, data: dict, summary: str | None,
                        actor: AuthContext) -> list[uuid.UUID]:
+    if "is_active" in data:
+        raise tree.ChildFollowsParent()
     for f in data:
-        if f not in ("design", "is_active"):
+        if f != "design":
             raise _err(422, "bad_field", field=f, message="set on the parent template")
     _no_nulls(data)
     changes: dict = {}
@@ -635,8 +637,6 @@ async def _patch_child(db: DbSession, row: LabelTemplate, data: dict, summary: s
                                   actor_id=actor.person.id)
             changes["version"] = {"from": before, "to": tree.version_label(
                 row.generated_from_version or 0, row.child_edits)}
-    if "is_active" in data and await _set_active(db, row, data["is_active"]):
-        changes["is_active"] = {"from": not data["is_active"], "to": data["is_active"]}
     if changes:
         audit(db, actor_id=actor.person.id, entity_type="label_template",
               entity_id=str(row.id), action="update", changes=changes)
@@ -685,8 +685,9 @@ async def _patch_parent(db: DbSession, row: LabelTemplate, data: dict, summary: 
         changes["version"] = {"from": before_version, "to": row.version}
     if "is_active" in data and await _set_active(db, row, data["is_active"]):
         changes["is_active"] = {"from": not data["is_active"], "to": data["is_active"]}
-    elif row.is_active and ("name" in changes or "label_type" in changes):
+    elif "name" in changes or "label_type" in changes:
         # a new family name or type can land on another active template
+        # (guard_active looks at the active rows only)
         await tree.guard_active(db, await tree.printing_rows(db, row))
     if changes:
         row.updated_at = datetime.now(UTC)
@@ -929,11 +930,15 @@ async def deactivate_template(
     actor: AuthContext = require_permission("labels", "change"),
     _rank: AuthContext = DESIGNER,
 ) -> None:
-    """Turn a template off (a parent with all its children)."""
+    """Turn a template off (a parent with its children). A child follows
+    its parent: 409 `child_follows_parent` on a child."""
     row = await db.get(LabelTemplate, template_id)
     if row is None:
         raise _err(404, "unknown_template")
-    changed = await tree.deactivate(db, row)
+    try:
+        changed = await tree.deactivate(db, row)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
     if changed:
         audit(db, actor_id=actor.person.id, entity_type="label_template",
               entity_id=str(row.id), action="deactivate",
@@ -949,7 +954,8 @@ async def activate_template(
 ) -> LabelTemplateOut:
     """Turn a template on (a parent with its current children) — refused
     with 422 `active_conflict` while another active template prints the
-    same family, type and DPI; Replace… swaps them instead."""
+    same family, type and DPI; Replace… swaps them instead. A child follows
+    its parent: 409 `child_follows_parent` on a child."""
     row = await db.get(LabelTemplate, template_id)
     if row is None:
         raise _err(404, "unknown_template")
@@ -996,17 +1002,20 @@ async def update_child_from_parent(
     _rank: AuthContext = DESIGNER,
 ) -> LabelTemplateOut:
     """A customized child gives way to a fresh one generated from the
-    parent; it stays nested as "… Old", inactive. Returns the fresh child."""
+    parent; it stays nested as "… Old", inactive. Returns the fresh child —
+    the same one again when the child was already updated (idempotent)."""
     row = await db.get(LabelTemplate, template_id)
     if row is None:
         raise _err(404, "unknown_template")
     try:
-        fresh = await tree.update_from_parent(db, row, actor.person.id)
+        fresh, created = await tree.update_from_parent(db, row, actor.person.id)
     except tree.TreeError as e:
         raise _tree_err(e) from e
-    audit(db, actor_id=actor.person.id, entity_type="label_template",
-          entity_id=str(row.id), action="update_from_parent",
-          changes={"name": {"from": fresh.name, "to": row.name}, "replaced_by": str(fresh.id)})
+    if created:
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(row.id), action="update_from_parent",
+              changes={"name": {"from": fresh.name, "to": row.name},
+                       "replaced_by": str(fresh.id)})
     await db.commit()
     return await _template_out(db, fresh)
 

@@ -16,6 +16,8 @@ api/routes/labels.py validates input, maps the errors and audits.
   parent's, (generated_from_version, child_edits), shown `v7.2`. A
   child's own `version` is its revision counter, bumped on every change,
   so a kiosk sees an edit as a new version.
+- A child is on or off with its parent, never alone (an Old child is
+  always off).
 - One active template per family, label type and DPI (parents aside: they
   never print). Every activation runs `guard_active` under one advisory
   lock, so two concurrent activations can't both pass the check.
@@ -80,6 +82,11 @@ class NotAParent(TreeError):
 
 class NotAChild(TreeError):
     status, code = 409, "not_a_child"
+
+
+class ChildFollowsParent(TreeError):
+    """A DPI child is on or off with its parent, never on its own."""
+    status, code = 409, "child_follows_parent"
 
 
 class NotCustomized(TreeError):
@@ -324,7 +331,10 @@ async def out_of_date_ids(db: AsyncSession, parent: LabelTemplate) -> list[uuid.
 
 async def activate(db: AsyncSession, template: LabelTemplate) -> list[LabelTemplate]:
     """Turn on a template (a parent with its current children) under the
-    one-active guard. Returns the rows whose state changed."""
+    one-active guard. Returns the rows whose state changed. A child is
+    never turned on alone (ChildFollowsParent)."""
+    if template.parent_id is not None:
+        raise ChildFollowsParent()
     rows = await printing_rows(db, template)
     changed = [r for r in rows if not r.is_active]
     for row in changed:
@@ -334,9 +344,11 @@ async def activate(db: AsyncSession, template: LabelTemplate) -> list[LabelTempl
 
 
 async def deactivate(db: AsyncSession, template: LabelTemplate) -> list[LabelTemplate]:
-    """Turn off a template; a parent takes all its children with it."""
-    rows = ([template, *await children_of(db, template)] if template.is_tree_parent
-            else [template])
+    """Turn off a template; a parent takes its current children with it
+    (an Old child is always off). A child is never turned off alone."""
+    if template.parent_id is not None:
+        raise ChildFollowsParent()
+    rows = await printing_rows(db, template)
     changed = [r for r in rows if r.is_active]
     for row in changed:
         row.is_active, row.updated_at = False, _now()
@@ -453,12 +465,30 @@ async def _old_name(db: AsyncSession, parent: LabelTemplate, dpi: str) -> str:
     return name
 
 
+async def current_child(db: AsyncSession, parent: LabelTemplate,
+                        dpi: str) -> LabelTemplate | None:
+    return await db.scalar(select(LabelTemplate).where(
+        LabelTemplate.parent_id == parent.id, LabelTemplate.dpi_key == dpi,
+        LabelTemplate.is_old.is_(False)))
+
+
 async def update_from_parent(db: AsyncSession, child: LabelTemplate,
-                             actor_id: uuid.UUID | None) -> LabelTemplate:
+                             actor_id: uuid.UUID | None) -> tuple[LabelTemplate, bool]:
     """Keep the customized child as "… Old" (nested, inactive) and generate
-    a fresh child at its DPI from the parent's current design."""
+    a fresh child at its DPI from the parent's current design. Returns
+    (the fresh child, whether this call made it): the child row is locked
+    and re-read first, so a second call — a double click, or one that
+    waited on the first — finds it already Old and gets the same fresh
+    child back."""
     parent = await parent_of(db, child)
-    if child.is_old or not child.customized:
+    await db.execute(select(LabelTemplate).where(LabelTemplate.id == child.id)
+                     .with_for_update().execution_options(populate_existing=True))
+    if child.is_old:
+        fresh = await current_child(db, parent, child.dpi_key)
+        if fresh is not None:
+            return fresh, False
+        raise NotCustomized()
+    if not child.customized:
         raise NotCustomized()
     child.name = await _old_name(db, parent, child.dpi_key)
     child.is_old, child.is_active, child.updated_at = True, False, _now()
@@ -469,7 +499,7 @@ async def update_from_parent(db: AsyncSession, child: LabelTemplate,
                 if c.dpi_key == child.dpi_key]
     if fresh.is_active:
         await guard_active(db, [fresh])
-    return fresh
+    return fresh, True
 
 
 async def rename_parent(db: AsyncSession, parent: LabelTemplate, name: str) -> None:
@@ -627,8 +657,9 @@ async def replace(db: AsyncSession, new: LabelTemplate, old_template_ids: list[u
                   actor_id: uuid.UUID | None) -> tuple[list[LabelTemplate], list[LabelTemplate]]:
     """Replace…: deactivate the old rows (a parent with its children) and
     activate `new` (with its current children) in one transaction, under
-    the one-active guard — on a conflict nothing is kept. Returns (rows
-    turned off, rows turned on)."""
+    the one-active guard — on a conflict nothing is kept. Old ids name
+    top-level templates (a child among them is ChildFollowsParent).
+    Returns (rows turned off, rows turned on)."""
     if new.parent_id is not None:
         raise NotAParent()
     own = {new.id, *(c.id for c in await children_of(db, new))}

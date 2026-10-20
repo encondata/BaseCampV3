@@ -213,7 +213,10 @@ def design_field_keys(design: dict | None) -> set[str]:
     """Every field key a schema 2 design's elements place (catalog keys and
     `ft:<header>` keys alike), read straight off the JSON. Anything else
     (a schema 1 design, no design) places none."""
-    if not isinstance(design, dict) or design.get("schema", 1) < 2:
+    if not isinstance(design, dict):
+        return set()
+    schema = design.get("schema", 1)
+    if not isinstance(schema, int) or isinstance(schema, bool) or schema < 2:
         return set()
     elements = design.get("elements")
     return {el["field"] for el in (elements if isinstance(elements, list) else [])
