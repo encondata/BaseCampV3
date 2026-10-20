@@ -44,6 +44,9 @@ ACTIVE_STATUSES = ("queued", "running")
 # roster and Generate Labels uses to count them. A new container-shaped
 # label type must be added to BOTH or the page will offer the ASSET roster
 # for a type whose labels are keyed by container id. Never edit one alone.
+# A THIRD copy, `CONTAINER_LABEL_TYPES` in labels/fields.py (pure, so it
+# can't import this module), picks the label builder's field groups; a test
+# in tests/test_label_fields.py keeps it equal to this one.
 ENTITY_FOR_TYPE: dict[str, str] = {"container": "container",
                                    "container_info": "container"}
 

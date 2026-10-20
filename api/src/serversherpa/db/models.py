@@ -1287,6 +1287,9 @@ class Initiative(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, server_default=text("gen_random_uuid()"))
     name: Mapped[str] = mapped_column(CITEXT)
+    # A short code labels print (migration 0100): unique when set
+    # (ux_initiatives_code, case-insensitive), NULL for most rows.
+    code: Mapped[str | None] = mapped_column(CITEXT)
     description: Mapped[str | None]
     # '#rrggbb' lowercase; the calendar and timeline bars paint with it.
     # NULL is legal and falls back to the status color at render time.

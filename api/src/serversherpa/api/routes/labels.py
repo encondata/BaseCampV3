@@ -30,6 +30,7 @@ from serversherpa.api.schemas import (
     GeneratedLabelOut,
     GeneratedLabelBundleItemOut, GeneratedLabelBundleOut,
     LabelCompileIn, LabelCompileOut,
+    LabelFieldsOut,
     LabelFontOut, LabelFontUsedByOut,
     LabelGeneratePreviewCandidateOut, LabelGeneratePreviewInitiativeOut,
     LabelGeneratePreviewOut, LabelGeneratePreviewTemplateOut, LabelGeneratePreviewTypeOut,
@@ -44,9 +45,10 @@ from serversherpa.db.models import (
     LabelFont, LabelGenerationRun, LabelPlaceholder, LabelTemplate, LabelTemplateSite,
     LabelVocab, Person, Site,
 )
-from serversherpa.db.ordering import natural
+from serversherpa.db.ordering import natural, natural_key
 from serversherpa.labels import labelary
 from serversherpa.labels.compile import UnsupportedLanguage, compile_design
+from serversherpa.labels.fields import CONTAINER_LABEL_TYPES, groups_for
 from serversherpa.labels.generate import InvalidLabelTypes, InvalidTemplates, RunActive, entity_for_type, enqueue_run
 from serversherpa.labels.generate.select import candidate_templates
 from serversherpa.labels.model import DesignError, parse_design
@@ -186,6 +188,31 @@ async def _valid_type_keys(db: DbSession) -> set[str]:
     rows = (await db.execute(
         select(LabelVocab.key).where(LabelVocab.kind == "type"))).scalars()
     return set(rows)
+
+
+@router.get("/fields", response_model=LabelFieldsOut)
+async def list_fields(
+    db: DbSession,
+    label_type: str | None = None,
+    actor: AuthContext = require_permission("labels", "view"),
+) -> LabelFieldsOut:
+    """The label builder's fields for a template of `label_type` (every
+    group when omitted; labels/fields.py has the catalog), and the From-To
+    headers across every move's roster for the `ft:<header>` fields. A
+    container label has no From-To row, so it gets no headers."""
+    headers: list[str] = []
+    if label_type not in CONTAINER_LABEL_TYPES:
+        key = func.jsonb_object_keys(InitiativeAsset.raw_ft)
+        q = (select(key).distinct()
+             .where(InitiativeAsset.raw_ft.is_not(None),
+                    func.jsonb_typeof(InitiativeAsset.raw_ft) == "object"))
+        # Defense in depth, same posture as _runs_query: `labels` is
+        # global-only today, so this leg is unreachable.
+        cond = scope_conditions("initiatives", actor.access, actor.person.id)
+        if cond is not None:
+            q = q.join(Initiative, Initiative.id == InitiativeAsset.initiative_id).where(cond)
+        headers = sorted((await db.scalars(q)).all(), key=natural_key)
+    return LabelFieldsOut(groups=groups_for(label_type), ft_headers=headers)
 
 
 @router.get("/placeholders", response_model=list[LabelPlaceholderOut])

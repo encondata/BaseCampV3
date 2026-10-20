@@ -42,7 +42,7 @@ from serversherpa.scans.manual import record_status_edit, stamp_rule_failure
 from serversherpa.services import move_password as move_password_service
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.initiatives import (
-    SITE_FIELDS, create_initiative_row, next_color, ref_problem,
+    SITE_FIELDS, code_taken, create_initiative_row, is_code_clash, next_color, ref_problem,
 )
 from serversherpa.services.initiatives import INITIATIVE_PALETTE  # noqa: F401  (tests import it from here)
 from serversherpa.services.storage import put_object
@@ -194,7 +194,7 @@ def _item(i: Initiative, vocab: dict, sites: dict, clients: dict,
         i.sub_type, (i.sub_type, "#51606f"))
         if i.sub_type is not None else (None, None))
     return {
-        "id": i.id, "name": i.name, "description": i.description,
+        "id": i.id, "name": i.name, "code": i.code, "description": i.description,
         "color": i.color,
         "initiative_type": i.initiative_type,
         "type_label": t_label, "type_color": t_color,
@@ -372,8 +372,17 @@ async def create_initiative(
     if not data.get("name"):
         raise _err(422, "name_required")
     await _check_refs(db, data)
-    initiative = await create_initiative_row(db, data, actor.person.id)
-    await db.commit()
+    if await code_taken(db, data.get("code")):
+        raise _err(409, "code_in_use")
+    try:
+        initiative = await create_initiative_row(db, data, actor.person.id)
+        await db.commit()
+    except IntegrityError as exc:
+        # another save took the same code between our check and the insert
+        if not is_code_clash(exc):
+            raise
+        await db.rollback()
+        raise _err(409, "code_in_use") from None
     return await _detail(db, initiative, actor)
 
 
@@ -403,6 +412,8 @@ async def update_initiative(
             and actor.access.max_rank < GATE_BYPASS_RANK:
         raise _err(403, "type_change_forbidden")
     await _check_refs(db, data)
+    if "code" in data and await code_taken(db, data["code"], exclude_id=initiative.id):
+        raise _err(409, "code_in_use")
 
     fields = list(data.keys())
     before = snapshot(initiative, fields)
@@ -425,7 +436,11 @@ async def update_initiative(
             raise _err(422, exc.code) from None
         except IntegrityError as exc:
             # the flush inside the service can hit the unique fingerprint
-            # index when two admins race for the same password
+            # index when two admins race for the same password (or the code
+            # index, when two saves race for the same code)
+            if is_code_clash(exc):
+                await db.rollback()
+                raise _err(409, "code_in_use") from None
             if not (new_password and _is_password_clash(exc)):
                 raise
             await db.rollback()
@@ -438,8 +453,12 @@ async def update_initiative(
     try:
         await db.commit()
     except IntegrityError as exc:
-        # a racing admin took the same password between our check and commit;
-        # any other integrity failure is not a password clash
+        # a racing save took the same code, or a racing admin the same
+        # password, between our check and commit; any other integrity
+        # failure is neither
+        if is_code_clash(exc):
+            await db.rollback()
+            raise _err(409, "code_in_use") from None
         if not (wants_password and new_password and _is_password_clash(exc)):
             raise
         await db.rollback()

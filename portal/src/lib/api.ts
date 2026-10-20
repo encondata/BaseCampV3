@@ -3238,6 +3238,9 @@ export async function getTimeSummary(initiativeId: string): Promise<TimeSummaryO
 
 export interface InitiativeItem {
   id: string; name: string; description: string | null;
+  /** The short code labels print (e.g. `LV3`): unique when set, null when
+   *  the initiative has none. Optional so older fixtures still type-check. */
+  code?: string | null;
   /** Sent on list rows and the detail alike, so the edit modal can offer Reveal from either page. */
   kiosk_password_set?: boolean;
   initiative_type: string; type_label: string; type_color: string;

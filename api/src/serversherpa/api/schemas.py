@@ -2012,9 +2012,26 @@ def _normalize_color(v: str | None) -> str | None:
     return v
 
 
+INITIATIVE_CODE_MAX = 32
+
+
+def _normalize_initiative_code(v: str | None) -> str | None:
+    """Initiative code: strip; empty -> None (no code); at most
+    INITIATIVE_CODE_MAX characters after the strip (`code_too_long`)."""
+    if v is None:
+        return None
+    v = v.strip()
+    if not v:
+        return None
+    if len(v) > INITIATIVE_CODE_MAX:
+        raise ValueError("code_too_long")
+    return v
+
+
 class InitiativeItem(BaseModel):
     id: uuid.UUID
     name: str
+    code: str | None = None
     description: str | None = None
     color: str | None = None   # stored value, not a fallback; null = unset
     initiative_type: str
@@ -2121,6 +2138,7 @@ class InitiativeLinksOut(BaseModel):
 class InitiativeCreateIn(BaseModel):
     name: str
     initiative_type: str
+    code: str | None = None    # stripped; "" -> None; unique when set (409 code_in_use)
     description: str | None = None
     color: str | None = None   # omitted on create -> one is assigned
     sub_type: str | None = None
@@ -2152,6 +2170,11 @@ class InitiativeCreateIn(BaseModel):
     @classmethod
     def _color_normalized(cls, v: str | None) -> str | None:
         return _normalize_color(v)
+
+    @field_validator("code")
+    @classmethod
+    def _code_normalized(cls, v: str | None) -> str | None:
+        return _normalize_initiative_code(v)
 
 
 class InitiativeUpdateIn(InitiativeCreateIn):
@@ -3208,16 +3231,36 @@ class KioskAssetOut(BaseModel):
     destination_pod: str | None = None
     priority_wave: str | None = None
     disposition: str | None = None
+    # The label builder's fields (labels/fields.py `field_values` reads
+    # them; labels/generate/payloads.py `asset_payload` builds every field
+    # above and below except `label`). Statuses come with their label.
+    pod_number: str | None = None
+    asset_status: str | None = None
+    asset_status_label: str | None = None
+    has_rails: bool | None = None
+    location_detail: str | None = None
+    owner: str | None = None
+    # The roster's cable_info parsed: the importer's JSON {"data_1".."data_6",
+    # "mgmt_1", "mgmt_2"} as is, free text as {"text": ...}, None when blank.
+    cable_info: dict[str, Any] | None = None
+    vendor_involved: bool | None = None
+    roster_status: str | None = None
+    roster_status_label: str | None = None
+    raw_ft: dict[str, Any] | None = None   # the uploaded From-To row, headers verbatim
     label: dict[str, str]
 
 
 class KioskLabelContextOut(BaseModel):
     """The move-level inputs an edge needs to rebuild each asset's label
-    values (labels/label_values.py `LabelMove`) plus the active catalog keys."""
+    values (labels/label_values.py `LabelMove`, labels/fields.py
+    `field_values`) plus the active catalog keys."""
     move_name: str | None = None
+    move_code: str | None = None
     move_day: date | None = None
     source_site: str | None = None
+    source_site_code: str | None = None
     destination_site: str | None = None
+    destination_site_code: str | None = None
     catalog_keys: list[str]
 
 
@@ -3492,9 +3535,11 @@ class KioskContainerOut(BaseModel):
 
     id: uuid.UUID
     name: str
+    legacy_id: int | None = None     # the human Container ID a label prints
     rfid_tag: str | None = None
     label_tag: str | None = None
     container_type: str | None = None
+    container_type_label: str | None = None
     status: str
     status_label: str
     site_id: uuid.UUID | None = None
@@ -3798,6 +3843,29 @@ class LabelVocabUpdateIn(BaseModel):
     meta: dict | None = None
     sort_order: int | None = None
     is_active: bool | None = None
+
+
+class LabelFieldOut(BaseModel):
+    """One field the label builder offers (labels/fields.py FieldDef)."""
+    key: str
+    label: str
+    kind: Literal["text", "number", "date"]
+    mock: str
+
+
+class LabelFieldGroupOut(BaseModel):
+    key: str
+    label: str
+    label_types: list[str]
+    fields: list[LabelFieldOut]
+
+
+class LabelFieldsOut(BaseModel):
+    """GET /labels/fields: the builder's field groups for one label type,
+    plus every From-To header seen on a roster (each one is a dynamic
+    `ft:<header>` field), in natural order."""
+    groups: list[LabelFieldGroupOut]
+    ft_headers: list[str]
 
 
 class LabelPlaceholderOut(BaseModel):

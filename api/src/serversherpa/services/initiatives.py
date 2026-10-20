@@ -20,7 +20,7 @@ PARTNER_FIELDS = (
 )
 SITE_FIELDS = ("site_id", "origin_site_id", "destination_site_id")
 INITIATIVE_FIELDS = [
-    "name", "description", "color", "initiative_type", "sub_type", "status",
+    "name", "code", "description", "color", "initiative_type", "sub_type", "status",
     "client_id", "site_id", "location", "scheduled_start", "scheduled_end",
     "sky_command_project_id", "origin_site_id", "destination_site_id",
     "real_start_at", "real_end_at", "priority_devices", "shipping_types",
@@ -49,6 +49,29 @@ async def next_color(db: AsyncSession) -> str:
         .group_by(Initiative.color)
     )).all())
     return min(INITIATIVE_PALETTE, key=lambda c: counts.get(c, 0))
+
+
+# The partial unique index on initiatives.code (migration 0100).
+CODE_INDEX = "ux_initiatives_code"
+
+
+async def code_taken(db: AsyncSession, code: str | None,
+                     exclude_id: uuid.UUID | None = None) -> bool:
+    """True when another initiative (archived ones too) already has `code`,
+    compared case-insensitively like the CITEXT column. A blank code is
+    never taken: any number of initiatives may have none."""
+    if not code:
+        return False
+    q = select(Initiative.id).where(Initiative.code == code)
+    if exclude_id is not None:
+        q = q.where(Initiative.id != exclude_id)
+    return await db.scalar(q.limit(1)) is not None
+
+
+def is_code_clash(exc: Exception) -> bool:
+    """True only when an IntegrityError is the unique code index (two saves
+    racing for one code); any other integrity failure is not."""
+    return CODE_INDEX in str(getattr(exc, "orig", "")) or CODE_INDEX in str(exc)
 
 
 async def ref_problem(db: AsyncSession, data: dict) -> tuple[str, dict] | None:

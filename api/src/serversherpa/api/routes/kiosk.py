@@ -64,10 +64,14 @@ from serversherpa.db.models import (
     WorkerProfile,
 )
 from serversherpa.db.ordering import natural, natural_key
+from serversherpa.labels.fields import PLACEHOLDER_MOCK_VALUES
 from serversherpa.labels.generate.engine import render_label
+from serversherpa.labels.generate.payloads import (
+    asset_payload, container_payload, load_status_labels,
+)
 from serversherpa.labels.generate.values import (
     CONTAINER_KEYS, AssetRow, Sites, _apply_length_limits, _apply_position_rules,
-    make_model_text, placeholder_values,
+    placeholder_values,
 )
 from serversherpa.labels.kiosk_templates import (
     family_name, move_template_set, template_code,
@@ -935,18 +939,6 @@ async def sync_assets(
     return await _assets_body(db, initiative_id)
 
 
-def _ru_text(ru) -> str | None:
-    """A roster RU (Numeric) as plain text: 14 → "14", 14.50 → "14.5"."""
-    if ru is None:
-        return None
-    return format(ru.normalize(), "f")
-
-
-def _ru_raw(ru) -> str | None:
-    """The stored RU exactly ("14.50"), so the edge rebuilds the Decimal."""
-    return None if ru is None else str(ru)
-
-
 async def _assets_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskAssetsSyncOut:
     initiative = await db.get(Initiative, initiative_id)
     if initiative is None:
@@ -960,6 +952,7 @@ async def _assets_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskAsset
                    if initiative.destination_site_id else None)
     sites = Sites(origin=origin, destination=destination)
     catalog_keys = await _label_catalog_keys(db)
+    asset_statuses = await load_status_labels(db, "asset")
 
     # Which crate holds each asset — one row per asset by the unique
     # constraint on `container_assets.asset_id`. The Trucks screen resolves
@@ -979,47 +972,33 @@ async def _assets_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskAsset
 
     assets: list[KioskAssetOut] = []
     for asset, ia, model in rows:
-        make = model.make if model else None
-        model_name = model.model if model else None
+        # Everything but `label` comes from asset_payload, the same dict the
+        # portal hands labels.fields.field_values, so the two can't drift.
+        item = asset_payload(asset, ia, model, asset_statuses,
+                             container_id=packed_in.get(asset.id))
         asset_row = AssetRow(
             asset_id=asset.id, legacy_id=asset.legacy_id, name=asset.name,
             serial_number=asset.serial_number,
-            make=make, model=model_name,
+            make=item["make"], model=item["model"],
             source_rack=ia.source_rack, source_ru=ia.source_ru,
             source_position=ia.source_position, destination_rack=ia.destination_rack,
             destination_ru=ia.destination_ru,
             destination_position=ia.destination_position)
-        # asset_id/make/model/make_model are this endpoint's own top-level
-        # fields, computed straight from the asset/model columns (same join
-        # rule as values.py) — never read out of `label`, which is filtered
-        # to the active placeholder catalog and can lose keys (or the whole
-        # catalog) to an admin's edits without touching what the kiosk needs.
-        asset_id = str(asset.legacy_id) if asset.legacy_id is not None else ""
-        make_model = make_model_text(make or "", model_name or "")
         label = placeholder_values(asset_row, initiative, sites, catalog_keys)
-        assets.append(KioskAssetOut(
-            id=asset.id, asset_id=asset_id, legacy_id=asset.legacy_id, name=asset.name,
-            rfid=asset.rfid_tag, serial_number=asset.serial_number,
-            make=make, model=model_name, make_model=make_model,
-            container_id=packed_in.get(asset.id),
-            source_rack=ia.source_rack, source_ru=_ru_text(ia.source_ru),
-            source_ru_raw=_ru_raw(ia.source_ru),
-            source_position=ia.source_position, source_pod=ia.source_pod,
-            destination_rack=ia.destination_rack, destination_ru=_ru_text(ia.destination_ru),
-            destination_ru_raw=_ru_raw(ia.destination_ru),
-            destination_position=ia.destination_position, destination_pod=ia.destination_pod,
-            priority_wave=ia.priority_wave, disposition=ia.disposition,
-            label=label))
+        assets.append(KioskAssetOut(**item, label=label))
 
     return KioskAssetsSyncOut(
         initiative_id=initiative.id, initiative_name=initiative.name,
         generated_at=datetime.now(UTC), assets=assets,
         label_context=KioskLabelContextOut(
             move_name=initiative.name,
+            move_code=initiative.code,
             move_day=(stored_day(initiative.scheduled_start)
                       if initiative.scheduled_start is not None else None),
             source_site=origin.name if origin else None,
+            source_site_code=origin.code if origin else None,
             destination_site=destination.name if destination else None,
+            destination_site_code=destination.code if destination else None,
             catalog_keys=catalog_keys))
 
 
@@ -1101,29 +1080,25 @@ async def _containers_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskC
         raise _err(422, "bad_initiative")
 
     rows = (await db.execute(
-        select(Container, Site.name, StatusValue.label)
+        select(Container, Site.name)
         .outerjoin(Site, Site.id == Container.site_id)
-        .outerjoin(StatusValue,
-                   (StatusValue.record_type == "container")
-                   & (StatusValue.key == Container.status))
         .where(Container.initiative_id == initiative.id,
                Container.archived_at.is_(None))
         .order_by(natural(Container.name)))).all()
 
-    ids = [c.id for c, _, _ in rows]
+    ids = [c.id for c, _ in rows]
     counts = dict((await db.execute(
         select(ContainerAsset.container_id, func.count())
         .where(ContainerAsset.container_id.in_(ids))
         .group_by(ContainerAsset.container_id))).all()) if ids else {}
+    statuses = await load_status_labels(db, "container")
+    types = await load_status_labels(db, "container_type")
 
     return KioskContainersSyncOut(
         initiative_id=initiative.id, generated_at=datetime.now(UTC),
-        containers=[KioskContainerOut(
-            id=c.id, name=c.name, rfid_tag=c.rfid_tag, label_tag=c.label_tag,
-            container_type=c.container_type, status=c.status,
-            status_label=status_label or c.status,
-            site_id=c.site_id, site_name=site_name,
-            asset_count=counts.get(c.id, 0)) for c, site_name, status_label in rows])
+        containers=[KioskContainerOut(**container_payload(
+            c, status_labels=statuses, type_labels=types, site_name=site_name,
+            asset_count=counts.get(c.id, 0))) for c, site_name in rows])
 
 
 @router.get("/sync/label-templates", response_model=KioskLabelTemplatesSyncOut)
@@ -1199,29 +1174,10 @@ async def _label_templates_body(
 # Same access as /sync/label-templates. No station-key twins: setup always
 # has a person signed in.
 
-# Fixed sample values for the mock-data test label: one per catalog
-# placeholder (asset and container keys alike). Raw positions are
-# dot-separated so a template's position-split rules have parts to split.
-MOCK_VALUES: dict[str, str] = {
-    "asset_id": "100000",
-    "asset_name": "SAMPLE-SERVER-01",
-    "serial_number": "SN0000001",
-    "make": "Dell",
-    "model": "PowerEdge R740",
-    "make_model": "Dell PowerEdge R740",
-    "source_raw": "A1.R01.U12",
-    "source_ru": "U12",
-    "source_site": "Sample Site A",
-    "destination_raw": "B2.R04.U12",
-    "destination_ru": "U12",
-    "destination_site": "Sample Site B",
-    "move_name": "Sample Move",
-    "move_date": "09/01/2026",
-    "move_date_long": "01-SEP-2026",
-    "container_name": "SAMPLE-CRATE-01",
-    "container_id": "200000",
-    "label_tag": "PRIORITY",
-}
+# Fixed sample values for the mock-data test label of a code template (or
+# a v1 design), one per placeholder catalog key: they live in labels/fields.py
+# beside the builder's own mocks.
+MOCK_VALUES = PLACEHOLDER_MOCK_VALUES
 
 
 def mock_label_values(catalog_keys: list[str], generation_rules: dict | None) -> dict[str, str]:

@@ -47,7 +47,7 @@ from serversherpa.logistics.bulk_create import (
 )
 from serversherpa.logistics.bulk_create import find_clashes as container_clashes
 from serversherpa.services.audit import audit
-from serversherpa.services.initiatives import create_initiative_row, ref_problem
+from serversherpa.services.initiatives import code_taken, create_initiative_row, ref_problem
 from serversherpa.services.storage import get_object
 from serversherpa.trucks.bulk_create import TruckBulkError, create_trucks
 from serversherpa.trucks.bulk_create import find_clashes as truck_clashes
@@ -123,6 +123,9 @@ async def move_problems(db: AsyncSession, move: dict) -> list[str]:
     if problem := await ref_problem(db, data):
         out.append(MOVE_REF_SENTENCES.get(problem[0],
                                           "Check the move's details on the first step."))
+    if await code_taken(db, data.get("code")):
+        out.append("Another initiative already uses this move's code. "
+                   "Pick another on the first step.")
     return out
 
 

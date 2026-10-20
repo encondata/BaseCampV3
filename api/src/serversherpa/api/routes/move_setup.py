@@ -23,7 +23,7 @@ from serversherpa.imports.naming import CRATE_MAX, TRUCK_MAX, NamingError, gener
 from serversherpa.imports.parsing import MAX_BYTES
 from serversherpa.logistics import bulk_create as container_create
 from serversherpa.services.audit import audit
-from serversherpa.services.initiatives import ref_problem
+from serversherpa.services.initiatives import code_taken, ref_problem
 from serversherpa.services.storage import put_object
 
 router = APIRouter(prefix="/bulk/move-setup", tags=["bulk"])
@@ -69,6 +69,8 @@ async def _move_data(db: DbSession, body: MoveSetupMoveIn) -> dict:
     if problem := await ref_problem(db, typed):
         code, extra = problem
         raise _err(422, code, **extra)
+    if await code_taken(db, typed.get("code")):
+        raise _err(409, "code_in_use")
     stored = body.model_dump(mode="json", exclude_none=True)
     stored["initiative_type"] = "move"
     stored["name"] = stored["name"].strip()
