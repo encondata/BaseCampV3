@@ -1,31 +1,34 @@
 /**
- * The builder's left panel (spec §3.5, §4.6): the fields a template of its
- * label type can print, grouped as GET /labels/fields returns them, then
- * the From-To columns. Each field shows its sample value, edited in place
- * (click it; Enter or leaving keeps it, Escape drops it). Unused fields come
- * first in their group; placed ones follow in grey with how many times
- * they are on the label, and a field's Split pieces sit under it with
- * their own counts and their piece of the sample.
+ * The builder's left panel (spec §3.5, §4.6): the fields on the label,
+ * grouped as GET /labels/fields returns them, then the From-To columns,
+ * each with how many times it is placed and its sample value, edited in
+ * place (click it; Enter or leaving keeps it, Escape drops it). A field's
+ * placed Split pieces sit under it with their own counts and their piece
+ * of the sample. Fields not on the label aren't listed: the search box and
+ * the + open the picker (FieldPicker), which holds the whole catalog, and
+ * the search box filters it (↓ ↑ Enter pick, Escape closes).
  *
- * A click on a name places another copy of the field (as the + picker
- * does); a click on its ×n selects its placements on the canvas. A field
- * can also be dragged out (FIELD_DRAG_TYPE, for the canvas to take).
- * The page wires `/` to `focusSearch()` (a ref, FieldPanelHandle) and shows
- * LoadFromAssetModal when Load from asset… is pressed.
+ * A click on a name places another copy of the field (as the picker does);
+ * a click on its ×n selects its placements on the canvas; its × removes
+ * every one of them (or of a piece) in one change, dropping them from the
+ * selection. A field can also be dragged out (FIELD_DRAG_TYPE, for the
+ * canvas to take). The page wires `/` to `focusSearch()` (a ref,
+ * FieldPanelHandle), which opens the picker, and shows LoadFromAssetModal
+ * when Load from asset… is pressed.
  */
 
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useEffect, useId, useImperativeHandle, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent } from 'react';
 
-import type { DesignV2 } from '../../../labels/builder/model';
+import { removeElements, type DesignV2 } from '../../../labels/builder/model';
 import type { LabelFields } from '../../../lib/api';
 import '../../../styles/directory.css';
 import '../../../styles/labelBuilder.css';
 import { placeField } from './builderEdits';
 import type { MetricsFor } from './Canvas';
-import FieldPicker from './FieldPicker';
+import FieldPicker, { type FieldPickerHandle } from './FieldPicker';
 import {
-  allowsFromTo, byUse, catalogGroups, FIELD_DRAG_TYPE, matches, pieceSample, placementsOf, sampleOf,
+  allowsFromTo, byUse, catalogGroups, FIELD_DRAG_TYPE, pieceSample, placementsOf, sampleOf,
   type FieldUse,
 } from './fieldCatalog';
 
@@ -39,6 +42,10 @@ export interface FieldPanelProps {
   onSamples: (samples: Record<string, string>) => void;
   onChange: (design: DesignV2) => void;
   onSelect: (ids: string[]) => void;
+  /** The canvas's selection: a removed field's placements leave it. */
+  selection?: readonly string[];
+  /** A field's (or piece's) placements were removed, for a notice. */
+  onRemoved?: (count: number, name: string) => void;
   metricsFor: MetricsFor;
   /** The template's label type: container labels have no From-To row and
    *  no asset to load samples from. */
@@ -54,7 +61,7 @@ export interface FieldPanelProps {
 }
 
 export interface FieldPanelHandle {
-  /** `/`: focus the search box. */
+  /** `/`: focus the search box and open the picker. */
   focusSearch: () => void;
 }
 
@@ -102,33 +109,70 @@ function SampleValue({ label, value, onCommit, readOnly, fromParent = false }: {
 }
 
 const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldPanel({
-  fields, design, samples, onSamples, onChange, onSelect, metricsFor, labelType, onLoadFromAsset,
-  loadError = null, readOnly = false, samplesFromParent = false,
+  fields, design, samples, onSamples, onChange, onSelect, selection = [], onRemoved, metricsFor, labelType,
+  onLoadFromAsset, loadError = null, readOnly = false, samplesFromParent = false,
 }, ref) {
   const [query, setQuery] = useState('');
   const [picking, setPicking] = useState(false);
+  const [activeOption, setActiveOption] = useState<string | undefined>(undefined);
   const searchRef = useRef<HTMLInputElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const plusRef = useRef<HTMLButtonElement>(null);
+  const pickerRef = useRef<FieldPickerHandle>(null);
+  const listId = `${useId().replace(/[^a-zA-Z0-9_-]/g, '')}-picks`;
+
+  const open = () => {
+    if (!readOnly) setPicking(true);
+  };
+  /** Closes the picker; the search only ever filtered it. */
+  const close = () => {
+    setPicking(false);
+    setQuery('');
+  };
 
   useImperativeHandle(ref, () => ({
     focusSearch: () => {
       searchRef.current?.focus();
       searchRef.current?.select();
+      if (!readOnly) setPicking(true);
     },
-  }), []);
+  }), [readOnly]);
 
   // a click outside the search bar (which holds the picker) closes it,
-  // leaving focus where the click put it; any other close (a pick, Escape,
-  // Tab) puts focus back on the +
+  // leaving focus where the click put it; a pick puts focus on the +
   useEffect(() => {
     if (!picking) return undefined;
     const onDown = (e: MouseEvent) => {
-      if (!barRef.current?.contains(e.target as Node)) setPicking(false);
+      if (!barRef.current?.contains(e.target as Node)) {
+        setPicking(false);
+        setQuery('');
+      }
     };
     document.addEventListener('mousedown', onDown, true);
     return () => document.removeEventListener('mousedown', onDown, true);
   }, [picking]);
+
+  const onSearchKey = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') {
+      if (picking || query) {
+        e.preventDefault();
+        close();
+      }
+      return;
+    }
+    if (e.key === 'Tab') {
+      if (picking) close();
+      return;
+    }
+    if (!picking) {
+      if (e.key === 'ArrowDown' && !readOnly) {
+        e.preventDefault();
+        open();
+      }
+      return;
+    }
+    if (pickerRef.current?.key(e.key)) e.preventDefault();
+  };
 
   const add = (key: string, kind: FieldUse['field']['kind'], piece: number | null) => {
     if (readOnly) return;
@@ -149,18 +193,34 @@ const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldP
     e.dataTransfer.effectAllowed = 'copy';
   };
 
+  // only what is on the label, pieces included, in catalog order
   const groups = catalogGroups(fields, design, labelType)
     .map((g) => ({
       ...g,
-      uses: byUse(g.fields, design).flatMap((u) => {
-        const own = matches(u.field.label, query);
-        const pieces = u.pieces.filter((p) => own || matches(p.name, query));
-        return own || pieces.length ? [{ ...u, pieces }] : [];
-      }),
+      uses: byUse(g.fields, design)
+        .filter((u) => u.count > 0)
+        .map((u) => ({ ...u, pieces: u.pieces.filter((p) => p.count > 0) })),
     }))
     .filter((g) => g.uses.length);
 
   const select = (key: string, piece?: number | null) => onSelect(placementsOf(design, key, piece).map((e) => e.id));
+
+  /** Every placement of `key` (or of one Split piece), in one change. */
+  const remove = (name: string, key: string, piece?: number | null) => {
+    if (readOnly) return;
+    const gone = placementsOf(design, key, piece).map((e) => e.id);
+    if (!gone.length) return;
+    onChange(removeElements(design, gone));
+    if (selection.some((id) => gone.includes(id))) onSelect(selection.filter((id) => !gone.includes(id)));
+    onRemoved?.(gone.length, name);
+  };
+
+  const removeButton = (name: string, key: string, piece?: number | null) => (readOnly ? null : (
+    <button type="button" className="lbp-remove" aria-label={`Remove ${name} from the label`}
+      title="Remove from the label" onClick={() => remove(name, key, piece)}>
+      <svg viewBox="0 0 16 16" aria-hidden="true" className="lbp-icon"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg>
+    </button>
+  ));
 
   return (
     <aside className="lbp lbp-fields-panel" aria-label="Fields">
@@ -172,36 +232,47 @@ const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldP
         <div className="dir-search lbp-search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
             aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
-          <input ref={searchRef} type="search" aria-label="Search fields" placeholder="Search fields…" value={query}
-            autoComplete="off" spellCheck={false} onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape' && query) {
-                e.preventDefault();
-                setQuery('');
-              }
-            }} />
+          <input ref={searchRef} type="search" role="combobox" aria-label="Search fields"
+            placeholder="Search fields to add…" value={query} autoComplete="off" spellCheck={false}
+            aria-autocomplete="list" aria-expanded={picking} aria-controls={picking ? listId : undefined}
+            aria-activedescendant={picking ? activeOption : undefined}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              open();
+            }}
+            onClick={open} onKeyDown={onSearchKey} />
         </div>
         <button ref={plusRef} type="button" className="mini-btn lbp-add" aria-label="Add to the label" title="Add to the label"
-          aria-haspopup="dialog" aria-expanded={picking} disabled={readOnly} onClick={() => setPicking((p) => !p)}>
+          aria-haspopup="dialog" aria-expanded={picking} disabled={readOnly}
+          onClick={() => {
+            if (picking) {
+              close();
+            } else {
+              open();
+              searchRef.current?.focus({ preventScroll: true });
+            }
+          }}>
           <svg viewBox="0 0 16 16" aria-hidden="true" className="lbp-icon"><path d="M8 3v10M3 8h10" /></svg>
         </button>
         {picking && (
-          <FieldPicker fields={fields} design={design} samples={samples} metricsFor={metricsFor} labelType={labelType}
+          <FieldPicker ref={pickerRef} fields={fields} design={design} samples={samples} metricsFor={metricsFor}
+            labelType={labelType} query={query} listId={listId} onActive={setActiveOption}
             onChange={onChange} onSelect={onSelect}
-            onClose={() => { setPicking(false); plusRef.current?.focus({ preventScroll: true }); }} />
+            onClose={() => { close(); plusRef.current?.focus({ preventScroll: true }); }} />
         )}
       </div>
       <div className="lbp-scroll">
         {loadError && <div className="pf-error">{loadError}</div>}
         {!fields && !loadError && <div className="lbp-empty">Loading fields…</div>}
-        {fields && !groups.length && <div className="lbp-empty">No fields match “{query.trim()}”.</div>}
+        {fields && !groups.length && (
+          <div className="lbp-empty">No fields on this label yet. Press + or / to add one.</div>
+        )}
         {groups.map((g) => (
           <div key={g.key} role="group" aria-label={g.label} className="lbp-group">
             <div className="lbp-group-label" aria-hidden="true">{g.label}</div>
             {g.uses.map((u) => (
               <div key={u.field.key} className="lbp-field-wrap">
-                <div className={`lbp-field${u.count ? ' is-used' : ''}`} draggable={!readOnly}
-                  onDragStart={drag(u.field.key, null)}>
+                <div className="lbp-field" draggable={!readOnly} onDragStart={drag(u.field.key, null)}>
                   <button type="button" className="lbp-field-name" disabled={readOnly} title="Add to the label"
                     aria-label={`Add ${u.field.label} to the label`} onClick={() => add(u.field.key, u.field.kind, null)}>
                     {u.field.label}
@@ -213,9 +284,10 @@ const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldP
                   <SampleValue label={u.field.label} value={sampleOf(samples, u.field.key)} readOnly={readOnly}
                     fromParent={samplesFromParent}
                     onCommit={(v) => setSample(u.field.key, v)} />
+                  {removeButton(u.field.label, u.field.key)}
                 </div>
                 {u.pieces.map((p) => (
-                  <div key={p.index} className={`lbp-field is-piece${p.count ? ' is-used' : ''}`} draggable={!readOnly}
+                  <div key={p.index} className="lbp-field is-piece" draggable={!readOnly}
                     onDragStart={drag(u.field.key, p.index)}>
                     <button type="button" className="lbp-field-name" disabled={readOnly} title="Add to the label"
                       aria-label={`Add ${p.name} to the label`} onClick={() => add(u.field.key, u.field.kind, p.index)}>
@@ -228,6 +300,7 @@ const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldP
                     <span className="lbp-sample" title="This piece of the sample">
                       {pieceSample(sampleOf(samples, u.field.key), p.index)}
                     </span>
+                    {removeButton(p.name, u.field.key, p.index)}
                   </div>
                 ))}
               </div>

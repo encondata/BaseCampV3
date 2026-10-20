@@ -203,7 +203,8 @@ function EditTemplate({ id }: { id: string }) {
   return <Builder initial={loaded} handed={handed} />;
 }
 
-type Notice = { type: 'success' | 'info' | 'warning' | 'error'; message: string };
+/** A notice; `undoOf` offers Undo while that design is still the last step. */
+type Notice = { type: 'success' | 'info' | 'warning' | 'error'; message: string; undoOf?: DesignV2 };
 type Modal = 'versions' | 'clone' | 'sheet' | 'asset';
 interface Viewing { label: string; version: number; childEdits: number; design: DesignV2; samples: Record<string, string> }
 
@@ -640,6 +641,13 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
 
   // ── the page ───────────────────────────────────────────────────────
 
+  /** The field panel removed a field's placements (one step): say so, with Undo. */
+  const onRemoved = (count: number, name: string) => setNotice({
+    type: 'info',
+    message: `Removed ${count} placement${count === 1 ? '' : 's'} of ${name}.`,
+    undoOf: history.current.present,
+  });
+
   const typeSize = `${vocabLabel(vocab, 'type', template.label_type)} · ${vocabLabel(vocab, 'size', template.size_key)}`;
   const fieldName = useCallback((key: string) => fieldLabel(fields, key), [fields]);
   const onSelect = useCallback((ids: string[]) => setSelection(ids), []);
@@ -666,6 +674,9 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
       {notice && (
         <div className={`lbb-notice is-${notice.type}`} role={notice.type === 'error' ? 'alert' : 'status'}>
           <span>{notice.message}</span>
+          {notice.undoOf && notice.undoOf === history.current.present && !readOnly && (
+            <button type="button" className="mini-btn" onClick={() => { undo(); setNotice(null); }}>Undo</button>
+          )}
           <button type="button" className="lbb-notice-close" aria-label="Dismiss" onClick={() => setNotice(null)}>×</button>
         </div>
       )}
@@ -693,7 +704,8 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
 
       <div className="lbb-body">
         <FieldPanel ref={panelRef} fields={fields} design={shownDesign} samples={shownSamples} onSamples={setSamples}
-          onChange={editChange} onSelect={onSelect} metricsFor={metricsFor} labelType={template.label_type}
+          onChange={editChange} onSelect={onSelect} selection={selection} onRemoved={onRemoved}
+          metricsFor={metricsFor} labelType={template.label_type}
           onLoadFromAsset={() => setModal('asset')} loadError={fieldsError} readOnly={readOnly}
           samplesFromParent={isChild} />
         <div className="lbb-center">

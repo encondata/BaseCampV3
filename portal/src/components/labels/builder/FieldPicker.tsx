@@ -9,9 +9,14 @@
  * A pick places the element at the next free spot, selects it and closes
  * the picker. Keyboard: the filter box keeps focus, ↓ ↑ move, Enter picks,
  * Escape or Tab closes. The panel closes it on a click outside.
+ *
+ * The field panel drives it from its own search box (`query`): the picker
+ * then shows no filter box, the panel's box forwards ↓ ↑ Enter (`key`, a
+ * FieldPickerHandle) and points at the active option (`onActive`), and the
+ * panel handles Escape and Tab itself.
  */
 
-import { useEffect, useId, useMemo, useState } from 'react';
+import { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 
 import type { DesignV2 } from '../../../labels/builder/model';
@@ -31,6 +36,19 @@ export interface FieldPickerProps {
   onClose: () => void;
   /** The template's label type: a container label has no From-To row. */
   labelType?: string;
+  /** The filter typed in the field panel's search box; the picker then has
+   *  no filter box of its own. */
+  query?: string;
+  /** The listbox's id, for the panel's box to point at (aria-controls). */
+  listId?: string;
+  /** The active option's id as it moves (the panel's aria-activedescendant). */
+  onActive?: (optionId: string | undefined) => void;
+}
+
+export interface FieldPickerHandle {
+  /** A key from the panel's search box: ↓ ↑ move, Enter picks. True when
+   *  the picker took it. */
+  key: (key: string) => boolean;
 }
 
 type PickItem =
@@ -78,13 +96,16 @@ function fieldItems(fields: LabelFields | null, design: DesignV2, labelType: str
   return out;
 }
 
-export default function FieldPicker({
-  fields, design, samples, metricsFor, onChange, onSelect, onClose, labelType,
-}: FieldPickerProps) {
-  const [query, setQuery] = useState('');
+const FieldPicker = forwardRef<FieldPickerHandle, FieldPickerProps>(function FieldPicker({
+  fields, design, samples, metricsFor, onChange, onSelect, onClose, labelType, query: given, listId: givenList,
+  onActive,
+}, ref) {
+  const [own, setOwn] = useState('');
+  const query = given ?? own;
   const [active, setActive] = useState(0);
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
-  const optionId = (i: number) => `${uid}-pick-${i}`;
+  const listId = givenList ?? `${uid}-picks`;
+  const optionId = (i: number) => `${listId}-${i}`;
 
   const shapes = useMemo(() => SHAPES.filter((s) => matches(s.name, query)), [query]);
   const items = useMemo(() => fieldItems(fields, design, labelType, query), [fields, design, labelType, query]);
@@ -94,6 +115,8 @@ export default function FieldPicker({
   useEffect(() => {
     document.getElementById(optionId(active))?.scrollIntoView?.({ block: 'nearest' });
   }, [active]); // eslint-disable-line react-hooks/exhaustive-deps
+  const activeId = all.length ? optionId(Math.min(active, all.length - 1)) : undefined;
+  useEffect(() => { onActive?.(activeId); }, [activeId, onActive]);
 
   const run = (item: PickItem | undefined) => {
     if (!item) return;
@@ -107,16 +130,25 @@ export default function FieldPicker({
     onClose();
   };
 
-  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    switch (e.key) {
-      case 'ArrowDown': setActive((a) => Math.min(all.length - 1, a + 1)); break;
-      case 'ArrowUp': setActive((a) => Math.max(0, a - 1)); break;
-      case 'Enter': run(all[active]); break;
-      case 'Escape': onClose(); break;
-      case 'Tab': onClose(); return;
-      default: return;
+  const step = (key: string): boolean => {
+    switch (key) {
+      case 'ArrowDown': setActive((a) => Math.min(all.length - 1, a + 1)); return true;
+      case 'ArrowUp': setActive((a) => Math.max(0, a - 1)); return true;
+      case 'Enter': run(all[active]); return true;
+      default: return false;
     }
-    e.preventDefault();
+  };
+  useImperativeHandle(ref, () => ({ key: step }));
+
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (step(e.key)) {
+      e.preventDefault();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      onClose();
+    } else if (e.key === 'Tab') {
+      onClose();
+    }
   };
 
   const option = (item: PickItem, i: number) => {
@@ -135,15 +167,17 @@ export default function FieldPicker({
   };
 
   return (
-    <div className="lbp-picker" role="dialog" aria-label="Add to the label">
-      <div className="dir-search lbp-picker-search">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
-          aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
-        <input autoFocus role="combobox" aria-label="Filter fields" aria-expanded="true" aria-controls={`${uid}-picks`}
-          aria-activedescendant={all.length ? optionId(active) : undefined} placeholder="Filter…" value={query}
-          onChange={(e) => setQuery(e.target.value)} onKeyDown={onKeyDown} autoComplete="off" spellCheck={false} />
-      </div>
-      <div className="lbp-picker-scroll" role="listbox" id={`${uid}-picks`} aria-label="What to add">
+    <div className={`lbp-picker${given === undefined ? '' : ' is-driven'}`} role="dialog" aria-label="Add to the label">
+      {given === undefined && (
+        <div className="dir-search lbp-picker-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+            aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+          <input autoFocus role="combobox" aria-label="Filter fields" aria-expanded="true" aria-controls={listId}
+            aria-activedescendant={activeId} placeholder="Filter…" value={query}
+            onChange={(e) => setOwn(e.target.value)} onKeyDown={onKeyDown} autoComplete="off" spellCheck={false} />
+        </div>
+      )}
+      <div className="lbp-picker-scroll" role="listbox" id={listId} aria-label="What to add">
         {shapes.length > 0 && (
           <div role="group" aria-label="Add to the label">
             <div className="lbp-pick-title" aria-hidden="true">Add to the label</div>
@@ -161,4 +195,6 @@ export default function FieldPicker({
       <div className="lbp-picker-note">Placed fields sit last, in grey. Pick one again to add another copy.</div>
     </div>
   );
-}
+});
+
+export default FieldPicker;

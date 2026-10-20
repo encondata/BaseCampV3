@@ -367,11 +367,34 @@ describe('a parent template', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Back to editing' })).toBeNull());
   });
 
-  it('/ puts the cursor in the field search', async () => {
+  it('/ puts the cursor in the field search and opens the picker', async () => {
     await openParent();
     fireEvent.keyDown(document.body, { key: '/', code: 'Slash' });
     expect(document.activeElement).toBe(screen.getByRole('complementary', { name: 'Fields' })
       .querySelector('.lbp-search input'));
+    expect(screen.getByRole('dialog', { name: 'Add to the label' })).toBeTruthy();
+  });
+
+  it('removing a field from the panel is one undo step, with a notice that undoes it', async () => {
+    await openParent();
+    const fields = screen.getByRole('complementary', { name: 'Fields' });
+    const racks = () => screen.getByRole('application', { name: 'Label canvas' })
+      .querySelectorAll('[data-el-id^="banner-"], [data-el-id^="grid-"]:not([data-el-id^="grid-caption"])');
+    expect(racks()).toHaveLength(12);   // 5 + 5 pieces, 2 RUs
+    fireEvent.click(within(fields).getByRole('button', { name: 'Remove Destination rack from the label' }));
+    expect(racks()).toHaveLength(2);
+    const notice = screen.getByRole('status');
+    expect(notice.textContent).toContain('Removed 10 placements of Destination rack.');
+    fireEvent.click(within(notice).getByRole('button', { name: 'Undo' }));
+    expect(racks()).toHaveLength(12);
+    expect(screen.queryByText(/Removed 10 placements/)).toBeNull();
+    // ⌘Z takes it back in one step too
+    fireEvent.click(within(fields).getByRole('button', { name: 'Remove Destination rack from the label' }));
+    expect(racks()).toHaveLength(2);
+    ctrl('z');
+    expect(racks()).toHaveLength(12);
+    // the notice's Undo is gone once something else is the last step
+    expect(within(screen.getByRole('status')).queryByRole('button', { name: 'Undo' })).toBeNull();
   });
 });
 

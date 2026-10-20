@@ -292,9 +292,15 @@ codes and shapes use top-left `^FO`.
 - A dirty indicator and an unsaved-changes guard.
 
 ### 4.6 The field panel and the field table
-- Left panel: search (⌘K), the **+** picker (static text, line, box, then
-  the fields), and the grouped field list with sample values. Unused fields
-  first; placed fields last in their group, greyed, with `×n`.
+- Left panel: the fields on this label, grouped, each with `×n` and its
+  sample value, a placed Split piece nested under its field. Fields not on
+  the label aren't listed. Each row has a remove × (on hover or focus) that
+  takes every placement of the field (or the piece) off the label in one
+  undo step, with a notice that offers Undo. With nothing placed the panel
+  says "No fields on this label yet. Press + or / to add one."
+- The search box (`/`) and the **+** open the picker, which holds the
+  catalog: static text, line, box, then every field, unused first and
+  placed last in grey with `on label ×n`. The search box filters it.
 - The sample value of a field is edited in place in the list. **Load from
   asset…** picks a move and an asset and fills every sample from that row.
 - The "any column from the uploaded From-To row" fields are listed from
