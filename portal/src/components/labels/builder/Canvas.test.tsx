@@ -17,8 +17,9 @@ import { align } from '../../../labels/builder/align';
 import { faceFile, type FontWeight } from '../../../labels/builder/fonts';
 import { cssFamilyOf, textBoxFor, textWidthIn, type FontMetrics, type LoadedFont } from '../../../labels/builder/metrics';
 import {
-  parseDesign, replaceElements, updateElement, type DesignV2, type ElementV2,
+  parseDesign, replaceElements, updateElement, type DesignV2, type ElementV2, type TextElement,
 } from '../../../labels/builder/model';
+import { toDots } from '../../../labels/builder/units';
 import Canvas, { DEFAULT_VIEW, type CanvasProps, type CanvasView } from './Canvas';
 
 const DPI = 300;
@@ -60,7 +61,7 @@ function el(d: DesignV2, id: string): ElementV2 {
 
 /** Pointer event init at a point on the label, in inches. */
 function at(xIn: number, yIn: number, extra: Record<string, unknown> = {}) {
-  return { clientX: xIn * DPI * Z, clientY: yIn * DPI * Z, pointerId: 1, button: 0, ...extra };
+  return { clientX: xIn * DPI * Z, clientY: yIn * DPI * Z, pointerId: 1, isPrimary: true, button: 0, ...extra };
 }
 
 interface Setup {
@@ -143,15 +144,55 @@ describe('rendering', () => {
     expect(node('side-site').querySelector('.lbc-frame')!.getAttribute('transform')).toContain('rotate(270)');
   });
 
-  it('draws an inverted element as the black box plus its pad, with the text in white', () => {
+  it('draws an inverted element as the black box plus its pad, in printer dots, with the text in white', () => {
     const { node } = setup();
     const sector = node('banner-sector');
     const box = sector.querySelector('rect.lbc-invert')!;
-    expect(Number(box.getAttribute('x'))).toBeCloseTo(-0.0667 * DPI, 6);
-    expect(Number(box.getAttribute('y'))).toBeCloseTo(-0.0333 * DPI, 6);
-    expect(Number(box.getAttribute('width'))).toBeCloseTo((0.4167 + 2 * 0.0667) * DPI, 6);
-    expect(Number(box.getAttribute('height'))).toBeCloseTo((0.24 + 2 * 0.0333) * DPI, 6);
+    // labels/zpl.py _invert_box: ^FO190,18^GB165,92
+    expect(box.getAttribute('x')).toBe('190');
+    expect(box.getAttribute('y')).toBe('18');
+    expect(box.getAttribute('width')).toBe('165');
+    expect(box.getAttribute('height')).toBe('92');
     expect(sector.classList.contains('is-inverted')).toBe(true);
+  });
+
+  it('stops the inverted block at the label\'s top and left edges, like the compiler', () => {
+    const d = updateElement(VEGAS(), 'banner-sector', { x: 0.02, y: 0.01 });
+    const { node } = setup({ design: d });
+    const box = node('banner-sector').querySelector('rect.lbc-invert')!;
+    // x 6 - pad 20 = -14 → 0, width 165 - 14 = 151; y 3 - 10 = -7 → 0, height 92 - 7 = 85
+    expect(box.getAttribute('x')).toBe('0');
+    expect(box.getAttribute('y')).toBe('0');
+    expect(box.getAttribute('width')).toBe('151');
+    expect(box.getAttribute('height')).toBe('85');
+  });
+
+  it('puts every edge on the dot the printer rounds to', () => {
+    // 0.05 in at 203 DPI is 10.15 dots: the printer's 10
+    function At203() {
+      const [v, setV] = useState<CanvasView>({ ...DEFAULT_VIEW, zoom: Z });
+      const box: ElementV2 = { id: 'b', type: 'box', x: 0.05, y: 0.05, w: 0.55, h: 0.35, rotation: 0, strokeIn: 0.01 };
+      const text: TextElement = {
+        id: 't', type: 'text', content: 'AB', x: 0.05, y: 0.55, w: 0.55, h: 0.15, rotation: 0,
+        sizePt: 10, baselineIn: 0.1,
+      };
+      const design: DesignV2 = { schema: 2, size: { w: 2, h: 1 }, splits: {}, elements: [box, text] };
+      return <Canvas design={design} dpi={203} view={v} onView={setV} samples={{}} selection={[]}
+        metricsFor={metricsFor} platform="mac" onChange={() => {}} onSelect={() => {}} onGesture={() => {}} />;
+    }
+    const { container } = render(<At203 />);
+    const shape = container.querySelector('[data-el-id="b"] .lbc-shape')!;
+    expect(shape.getAttribute('d')).toMatch(/^M10 10h112v71h-112Z/);
+    const frame = container.querySelector('[data-el-id="t"] .lbc-frame')!;
+    expect(frame.getAttribute('transform')).toBe('translate(10 112)');
+    const box = container.querySelector('[data-el-id="t"] rect.lbc-box')!;
+    expect(box.getAttribute('width')).toBe('112');
+    expect(box.getAttribute('height')).toBe('30');
+    const text = container.querySelector('[data-el-id="t"] text.lbc-text')!;
+    // ^FT10,132 (0.65 in = 131.95 dots); the font is round(10 × 203 / 72) = 28 dots
+    expect(text.getAttribute('x')).toBe('0');
+    expect(text.getAttribute('y')).toBe(String(132 - 112));
+    expect(text.getAttribute('font-size')).toBe('28');
   });
 
   it('an inverted element with a blank value prints no box', () => {
@@ -175,8 +216,8 @@ describe('rendering', () => {
     const grid = node('grid-pod');
     expect(grid.classList.contains('is-overflow')).toBe(true);
     const red = grid.querySelector('rect.lbc-overflow')!;
-    expect(Number(red.getAttribute('x'))).toBeCloseTo(0.1733 * DPI, 6);
-    expect(Number(red.getAttribute('width'))).toBeCloseTo(textWidthIn(METRICS, 8.4, '07CXXXXX') * DPI - 0.1733 * DPI, 6);
+    expect(Number(red.getAttribute('x'))).toBe(toDots(0.1733, DPI));
+    expect(Number(red.getAttribute('width'))).toBeCloseTo(textWidthIn(METRICS, 8.4, '07CXXXXX') * DPI - toDots(0.1733, DPI), 6);
     // the banner's Max characters keeps it to 07C
     expect(node('banner-pod').classList.contains('is-overflow')).toBe(false);
   });
@@ -193,8 +234,8 @@ describe('rendering', () => {
     const sector = node('banner-sector');
     const text = sector.querySelector('text.lbc-text')!;
     expect(text.textContent).toBe('Sector');
-    expect(Number(text.getAttribute('textLength'))).toBeCloseTo(0.4167 * DPI, 6);
-    expect(Number(text.getAttribute('font-size'))).toBeCloseTo((24 / 72) * DPI * ((0.4167 * DPI) / 245), 6);
+    expect(Number(text.getAttribute('textLength'))).toBe(125);
+    expect(Number(text.getAttribute('font-size'))).toBeCloseTo(100 * (125 / 245), 6);
     expect(sector.classList.contains('is-overflow')).toBe(false);
   });
 
@@ -539,5 +580,145 @@ describe('space', () => {
     expect(fireEvent.keyDown(grid, { key: ' ', code: 'Space' })).toBe(true);
     expect(fireEvent.keyDown(document.body, { key: ' ', code: 'Space' })).toBe(false);
     fireEvent.keyUp(document.body, { key: ' ', code: 'Space' });
+  });
+});
+
+/** A design on its own at `dpi`, no interaction. */
+function renderDesign(design: DesignV2, dpi: number) {
+  function Alone() {
+    const [v, setV] = useState<CanvasView>({ ...DEFAULT_VIEW, zoom: Z });
+    return <Canvas design={design} dpi={dpi} view={v} onView={setV} samples={{}} selection={[]}
+      metricsFor={metricsFor} platform="mac" onChange={() => {}} onSelect={() => {}} onGesture={() => {}} />;
+  }
+  return render(<Alone />);
+}
+
+describe('rotation', () => {
+  /** labels/zpl.py _origin: the ^FT point, the start of the baseline. */
+  function ft(t: TextElement, dpi: number): [number, number] {
+    const { x, y, w, h, baselineIn: b } = t;
+    const pos = t.rotation === 90 ? [x + h - b, y] : t.rotation === 180 ? [x + w, y + h - b]
+      : t.rotation === 270 ? [x + b, y + w] : [x, y + b];
+    return [toDots(pos[0], dpi), toDots(pos[1], dpi)];
+  }
+
+  /** Where the frame's transform puts the text's (x, y) on the label. */
+  function placed(frame: Element, text: Element): [number, number] {
+    const m = /^translate\(([-\d.]+) ([-\d.]+)\)(?: rotate\((\d+)\))?$/.exec(frame.getAttribute('transform')!)!;
+    const [tx, ty, r] = [Number(m[1]), Number(m[2]), Number(m[3] ?? 0)];
+    const u = Number(text.getAttribute('x'));
+    const v = Number(text.getAttribute('y'));
+    const a = (r * Math.PI) / 180;
+    return [tx + u * Math.cos(a) - v * Math.sin(a), ty + u * Math.sin(a) + v * Math.cos(a)];
+  }
+
+  it.each([0, 90, 180, 270] as const)('at %i° the baseline starts on the compiler\'s ^FT origin', (rotation) => {
+    const t: TextElement = {
+      id: 't', type: 'text', content: 'AB', x: 0.517, y: 0.333, w: 0.611, h: 0.153, rotation,
+      sizePt: 10, baselineIn: 0.117,
+    };
+    const { container } = renderDesign({ schema: 2, size: { w: 2, h: 1.5 }, splits: {}, elements: [t] }, 203);
+    const frame = container.querySelector('[data-el-id="t"] .lbc-frame')!;
+    const [x, y] = placed(frame, container.querySelector('[data-el-id="t"] text.lbc-text')!);
+    const [fx, fy] = ft(t, 203);
+    expect(x).toBeCloseTo(fx, 6);
+    expect(y).toBeCloseTo(fy, 6);
+  });
+});
+
+describe('gesture hygiene', () => {
+  it('pointercancel ends a drag\'s gesture', () => {
+    const { svg, gesture, select } = setup({ selection: ['banner-pod', 'banner-nap'] });
+    fireEvent.pointerDown(svg, at(1.5, 0.2));
+    fireEvent.pointerMove(svg, at(1.6, 0.2));
+    fireEvent.pointerCancel(svg, at(1.6, 0.2));
+    expect(gesture.mock.calls).toEqual([['begin'], ['end']]);
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it('pointercancel never click-selects', () => {
+    const { svg, select } = setup({ selection: ['banner-pod', 'banner-nap'] });
+    fireEvent.pointerDown(svg, at(1.5, 0.2));
+    fireEvent.pointerCancel(svg, at(1.5, 0.2));
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it('pointercancel drops a marquee instead of selecting with it', () => {
+    const { svg, container, select } = setup({ selection: ['banner-pod'] });
+    fireEvent.pointerDown(svg, at(0.05, 1.05, { shiftKey: true }));
+    fireEvent.pointerMove(svg, at(0.3, 1.65, { shiftKey: true }));
+    fireEvent.pointerCancel(svg, at(3.9, 1.95, { shiftKey: true }));
+    expect(select).not.toHaveBeenCalled();
+    expect(container.querySelector('rect.lbc-marquee')).toBeNull();
+  });
+
+  it('a second pointer mid-drag is ignored', () => {
+    const { svg, gesture, select, change, last } = setup();
+    fireEvent.pointerDown(svg, at(1.5, 0.2));
+    fireEvent.pointerMove(svg, at(1.62, 0.2));
+    // would clear the selection and start a marquee, then move the drag
+    fireEvent.pointerDown(svg, at(2.0, 1.9, { pointerId: 2 }));
+    fireEvent.pointerMove(svg, at(3.0, 1.9, { pointerId: 2 }));
+    fireEvent.pointerUp(svg, at(3.0, 1.9, { pointerId: 2 }));
+    expect(el(last(), 'banner-pod').x).toBeCloseTo(1.4333, 9);
+    fireEvent.pointerUp(svg, at(1.62, 0.2));
+    expect(select.mock.calls).toEqual([[['banner-pod']]]);
+    expect(change).toHaveBeenCalledTimes(1);
+    expect(gesture.mock.calls).toEqual([['begin'], ['end']]);
+  });
+
+  it('a pointer that is not the primary one starts nothing', () => {
+    const { svg, select } = setup();
+    click(svg, 1.5, 0.2, { isPrimary: false, pointerId: 3 });
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it('unmounting mid-arrow-hold ends the key gesture', () => {
+    const { gesture, unmount } = setup({ selection: ['banner-pod'] });
+    fireEvent.keyDown(document.body, { key: 'ArrowRight', code: 'ArrowRight' });
+    expect(gesture.mock.calls).toEqual([['begin']]);
+    unmount();
+    expect(gesture.mock.calls).toEqual([['begin'], ['end']]);
+  });
+
+  it('unmounting mid-drag ends the drag gesture', () => {
+    const { svg, gesture, unmount } = setup();
+    fireEvent.pointerDown(svg, at(1.5, 0.2));
+    fireEvent.pointerMove(svg, at(1.62, 0.2));
+    unmount();
+    expect(gesture.mock.calls).toEqual([['begin'], ['end']]);
+  });
+
+  it('⌥-drag copies only the unlocked elements, and nothing when all are locked', () => {
+    const one = setup({ design: updateElement(VEGAS(), 'banner-nap', { locked: true }), selection: ['banner-pod', 'banner-nap'] });
+    drag(one.svg, [1.5, 0.2], [1.6, 0.2], { down: { altKey: true }, move: { altKey: true } });
+    const d = one.last();
+    expect(d.elements).toHaveLength(vegas.elements.length + 1);
+    const copy = d.elements[d.elements.length - 1];
+    expect(copy.type === 'field' && copy.piece).toBe(2);
+    expect(copy.x).toBeCloseTo(1.4333, 9);
+    expect(one.select).toHaveBeenLastCalledWith([copy.id]);
+    cleanup();
+    const all = setup({ design: updateElement(VEGAS(), 'banner-pod', { locked: true }), selection: ['banner-pod'] });
+    drag(all.svg, [1.5, 0.2], [1.6, 0.2], { down: { altKey: true }, move: { altKey: true } });
+    expect(all.change).not.toHaveBeenCalled();
+    expect(all.select).not.toHaveBeenCalled();
+  });
+});
+
+describe('multi-line text', () => {
+  it('marks each spilling line on its own line', () => {
+    const t: TextElement = {
+      id: 't', type: 'text', content: 'AAAA BBBBBBBBBBBB', x: 0.1, y: 0.1, w: 0.3, h: 0.25, rotation: 0,
+      sizePt: 12, baselineIn: 0.125, lines: 2,
+    };
+    const { container } = renderDesign({ schema: 2, size: { w: 2, h: 1 }, splits: {}, elements: [t] }, 300);
+    const texts = container.querySelectorAll('[data-el-id="t"] text.lbc-text');
+    expect(Array.from(texts, (n) => n.textContent)).toEqual(['AAAA', 'BBBBBBBBBBBB']);
+    const red = container.querySelectorAll('[data-el-id="t"] rect.lbc-overflow');
+    expect(red).toHaveLength(1);
+    // the second line: one font height (round(12 × 300 / 72) = 50 dots) below the first, one tall
+    expect(red[0].getAttribute('y')).toBe('50');
+    expect(red[0].getAttribute('height')).toBe('50');
   });
 });

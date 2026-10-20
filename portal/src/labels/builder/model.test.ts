@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import vegas from '../../../../api/src/serversherpa/labels/fixtures/vegas_v2.json';
 import {
-  DesignError, addElement, addSplit, duplicate, elementHidden, elementValue, newDesign, nextId,
+  DesignError, addElement, addSplit, duplicate, elementHidden, elementValue, invertPadOf, newDesign, nextId,
   parseDesign, placementsOf, removeElements, renamePiece, reorder, replaceElements,
   serializeDesign, updateElement, validate, type DesignV2, type ElementV2, type FieldElement,
 } from './model';
@@ -280,5 +280,28 @@ describe('field keys that name Object.prototype members', () => {
     expect(msgs({ ...own, elements: [piece('__proto__', 0)] })).toEqual([]);
     expect(msgs({ ...own, elements: [piece('__proto__', 1)] }))
       .toEqual(["piece 1 is beyond '__proto__''s Split (1 pieces)"]);
+  });
+});
+
+describe('invertPadOf (mirrors model.py _invert_pad)', () => {
+  const text = (extra: Record<string, unknown>) => ({
+    id: 't', type: 'text', content: 'X', x: 0, y: 0, w: 1, h: 0.2, rotation: 0, sizePt: 24, baselineIn: 0.15,
+    ...extra,
+  }) as ElementV2 & { type: 'text' };
+
+  it('defaults to a quarter of the font size along the text and a tenth across', () => {
+    expect(invertPadOf(text({}))).toEqual({ x: (0.25 * 24) / 72, y: (0.1 * 24) / 72 });
+    expect(invertPadOf(text({ invertPad: null }))).toEqual({ x: (0.25 * 24) / 72, y: (0.1 * 24) / 72 });
+  });
+
+  it('keeps a stored pad, and falls back to the default for a bad one', () => {
+    expect(invertPadOf(text({ invertPad: { x: 0.0667, y: 0 } }))).toEqual({ x: 0.0667, y: 0 });
+    expect(invertPadOf(text({ invertPad: { x: -1, y: 0.1 } }))).toEqual({ x: (0.25 * 24) / 72, y: (0.1 * 24) / 72 });
+    expect(invertPadOf(text({ invertPad: { x: 0.1 } }))).toEqual({ x: (0.25 * 24) / 72, y: (0.1 * 24) / 72 });
+  });
+
+  it('a field with no size pads nothing', () => {
+    const field = { id: 'f', type: 'field', field: 'asset_id', display: 'qr', x: 0, y: 0, w: 1, h: 1, rotation: 0 } as ElementV2;
+    expect(invertPadOf(field as ElementV2 & { type: 'field' })).toEqual({ x: 0, y: 0 });
   });
 });

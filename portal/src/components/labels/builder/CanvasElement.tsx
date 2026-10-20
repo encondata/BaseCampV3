@@ -1,14 +1,17 @@
 /**
  * One element on the builder canvas, drawn in printer dots at the viewed
- * DPI the way the v2 compiler (labels/zpl.py) prints it:
+ * DPI the way the v2 compiler (labels/zpl.py) prints it, every edge on the
+ * dot the compiler rounds it to (`_dots`, units.ts toDots):
  *  - text (static text, a field shown as text or a number) in its own frame
  *    (w along the text, h across it), turned about the footprint for 90 /
- *    180 / 270 (model.ts). The reserved box is outlined; the text sits on
- *    its baseline, aligned inside the box, in the loaded face, stretched to
- *    the width the printer's metrics give (`textLength`), so spacing is
- *    exact even under the resident font's stand-in. Past the box the text's
- *    extent shows in red. Inverted: the black block is the box plus its pad
- *    and the text is white. Faux bold overprints one dot along the text;
+ *    180 / 270 (model.ts). The reserved box is outlined; the text starts at
+ *    the compiler's ^FT point (`_origin`), at the printer's font height,
+ *    aligned inside the box, in the loaded face, stretched to the width the
+ *    printer's metrics give (`textLength`), so spacing is exact even under
+ *    the resident font's stand-in. Past the box the text's extent shows in
+ *    red. Inverted: the black block is the box plus its pad, stopped at the
+ *    label's top and left edges (`_invert_box`), and the text is white.
+ *    Faux bold overprints one dot along the text;
  *  - a barcode: stripes in its narrow module over the box, the
  *    human-readable line under the bars;
  *  - a QR code: a placeholder symbol where and as big as the printer puts
@@ -23,11 +26,11 @@
 import { memo } from 'react';
 
 import { faceFile, fauxBold, glyphWidthScale } from '../../../labels/builder/fonts';
-import { barcodeModuleDots, footprint } from '../../../labels/builder/geometry';
+import { barcodeModuleDots } from '../../../labels/builder/geometry';
 import { cssFamilyOf, textWidthIn, type LoadedFont } from '../../../labels/builder/metrics';
-import type { ElementV2, FieldElement, TextElement } from '../../../labels/builder/model';
+import { invertPadOf, type ElementV2, type FieldElement, type TextElement } from '../../../labels/builder/model';
 import { qrLayout, type QrLayout } from '../../../labels/builder/qr';
-import { toDots } from '../../../labels/builder/units';
+import { pyRound, toDots } from '../../../labels/builder/units';
 import { DEFAULT_FONT } from './canvasActions';
 
 export type ElementKind = 'text' | 'barcode' | 'qr' | 'shape';
@@ -43,19 +46,81 @@ export function kindOf(el: ElementV2): ElementKind {
   }
 }
 
-/** The element's frame: local (0, 0) at its top-left before turning, x
- *  along the text; the footprint's top-left stays at (x, y). */
+/** A box in printer dots. */
+export interface DotRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** The element's x, y, w (along) and h (across) in whole dots, as the
+ *  compiler rounds each one. */
+export function dotBox(el: ElementV2, dpi: number): DotRect {
+  return { x: toDots(el.x, dpi), y: toDots(el.y, dpi), w: toDots(el.w, dpi), h: toDots(el.h, dpi) };
+}
+
+/** What the element covers on the label, in dots (h wide and w tall at
+ *  90 and 270). */
+export function dotFootprint(el: ElementV2, dpi: number): DotRect {
+  const b = dotBox(el, dpi);
+  return el.rotation === 90 || el.rotation === 270 ? { x: b.x, y: b.y, w: b.h, h: b.w } : b;
+}
+
+/** The element's frame: local (0, 0) at its top-left before turning, u
+ *  along the text and v across it; the footprint's top-left stays at (x, y). */
 export function frameTransform(el: ElementV2, dpi: number): string {
-  const x = el.x * dpi;
-  const y = el.y * dpi;
-  const w = el.w * dpi;
-  const h = el.h * dpi;
+  const { x, y, w, h } = dotBox(el, dpi);
   switch (el.rotation) {
     case 90: return `translate(${x + h} ${y}) rotate(90)`;
     case 180: return `translate(${x + w} ${y + h}) rotate(180)`;
     case 270: return `translate(${x} ${y + w}) rotate(270)`;
     default: return `translate(${x} ${y})`;
   }
+}
+
+/** A label point in dots, in the element's frame (frameTransform's inverse). */
+export function toFrame(el: ElementV2, dpi: number, p: { x: number; y: number }): { u: number; v: number } {
+  const b = dotBox(el, dpi);
+  switch (el.rotation) {
+    case 90: return { u: p.y - b.y, v: b.x + b.h - p.x };
+    case 180: return { u: b.x + b.w - p.x, v: b.y + b.h - p.y };
+    case 270: return { u: b.y + b.w - p.y, v: p.x - b.x };
+    default: return { u: p.x - b.x, v: p.y - b.y };
+  }
+}
+
+/** The compiler's ^FT point for a baseline `baselineIn` below the top of
+ *  the text, in label dots (labels/zpl.py `_origin`). */
+export function textOrigin(el: ElementV2, dpi: number, baselineIn: number): { x: number; y: number } {
+  const { x, y, w, h } = el;
+  const b = baselineIn;
+  const [ox, oy] = el.rotation === 90 ? [x + h - b, y]
+    : el.rotation === 180 ? [x + w, y + h - b]
+      : el.rotation === 270 ? [x + b, y + w] : [x, y + b];
+  return { x: toDots(ox, dpi), y: toDots(oy, dpi) };
+}
+
+/** The printer's font height in dots (^A@'s h: round(size × dpi / 72)). */
+export function fontDots(sizePt: number, dpi: number): number {
+  return pyRound((sizePt * dpi) / 72);
+}
+
+/** An inverted element's block in label dots: its box plus the pad (x along
+ *  the text, y across), turned with it and stopped at the label's top and
+ *  left edges (labels/zpl.py `_invert_box`). */
+export function invertBlock(el: FieldElement | TextElement, dpi: number): DotRect {
+  const pad = invertPadOf(el);
+  const px = toDots(pad.x, dpi);
+  const py = toDots(pad.y, dpi);
+  const b = dotBox(el, dpi);
+  const along = b.w + 2 * px;
+  const across = b.h + 2 * py;
+  const turned = el.rotation === 90 || el.rotation === 270;
+  let [x, y, w, h] = turned ? [b.x - py, b.y - px, across, along] : [b.x - px, b.y - py, along, across];
+  if (x < 0) [w, x] = [w + x, 0];
+  if (y < 0) [h, y] = [h + y, 0];
+  return { x, y, w: Math.max(1, w), h: Math.max(1, h) };
 }
 
 // a hair under a dot: what counts as spilling past the box
@@ -65,7 +130,7 @@ export interface TextLayout {
   lines: string[];
   /** Each line's width in dots as drawn, or null until the font's metrics load. */
   widths: (number | null)[];
-  /** Each line's start in the frame, after alignment. */
+  /** Each line's start after alignment, from the ^FT point along the text. */
   starts: number[];
   /** The font size drawn, as a share of the element's (names shrink to fit). */
   scale: number;
@@ -102,7 +167,7 @@ export function layoutText(el: FieldElement | TextElement, text: string, dpi: nu
   font: LoadedFont | null, names = false): TextLayout {
   const ref = el.font ?? DEFAULT_FONT;
   const sizePt = el.sizePt ?? 0;
-  const w = el.w * dpi;
+  const w = toDots(el.w, dpi);
   const scale = glyphWidthScale(ref, !!el.inverted);
   const measure = font ? (s: string) => textWidthIn(font.metrics, sizePt, s, scale) * dpi : null;
   const lines = wrap(text, el.type === 'text' ? el.lines ?? 1 : 1, w, measure);
@@ -179,59 +244,60 @@ function TextBody({ el, dpi, hidden, font, px, layout, overflow }: CanvasElement
   el: FieldElement | TextElement; layout: TextLayout; overflow: boolean;
 }) {
   const ref = el.font ?? DEFAULT_FONT;
-  const sizePt = el.sizePt ?? 0;
-  const em = (sizePt / 72) * dpi;
+  const em = fontDots(el.sizePt ?? 0, dpi);
   const drawn = em * layout.scale;
-  const w = el.w * dpi;
-  const h = el.h * dpi;
-  const baseline = (el.baselineIn ?? 0) * dpi;
-  const pad = el.invertPad ?? { x: (0.25 * sizePt) / 72, y: (0.1 * sizePt) / 72 };
+  const { w, h } = dotBox(el, dpi);
+  // the first line's ^FT point in the frame; the lines sit one font height apart
+  const o = toFrame(el, dpi, textOrigin(el, dpi, el.baselineIn ?? 0));
   const align = el.align ?? 'left';
   const anchor = align === 'center' ? 'middle' : align === 'right' ? 'end' : 'start';
-  const ax = align === 'center' ? w / 2 : align === 'right' ? w : 0;
+  const ax = o.u + (align === 'center' ? w / 2 : align === 'right' ? w : 0);
   const family = `${font?.cssFamily ?? cssFamilyOf(faceFile(ref))}, sans-serif`;
   // faux bold overprints one dot along the text; inverted widens instead
   const overprint = fauxBold(ref) && !el.inverted;
+  const block = el.inverted && !hidden ? invertBlock(el, dpi) : null;
   return (
-    <g className="lbc-frame" transform={frameTransform(el, dpi)}>
-      {el.inverted && !hidden && (
-        <rect className="lbc-invert" x={-pad.x * dpi} y={-pad.y * dpi}
-          width={w + 2 * pad.x * dpi} height={h + 2 * pad.y * dpi} />
-      )}
-      <Outline w={w} h={h} px={px} />
-      {!hidden && layout.lines.map((line, i) => {
-        const lw = layout.widths[i];
-        const fit = lw !== null && lw > 0 ? { textLength: lw, lengthAdjust: 'spacingAndGlyphs' as const } : {};
-        const y = baseline + i * em;
-        return (
-          <g key={i}>
-            <text className="lbc-text" x={ax} y={y} fontFamily={family} fontSize={drawn}
-              textAnchor={anchor} {...fit}>{line}</text>
-            {overprint && (
-              <text className="lbc-text lbc-overprint" x={ax + 1} y={y} fontFamily={family} fontSize={drawn}
+    <>
+      {block && <rect className="lbc-invert" x={block.x} y={block.y} width={block.w} height={block.h} />}
+      <g className="lbc-frame" transform={frameTransform(el, dpi)}>
+        <Outline w={w} h={h} px={px} />
+        {!hidden && layout.lines.map((line, i) => {
+          const lw = layout.widths[i];
+          const fit = lw !== null && lw > 0 ? { textLength: lw, lengthAdjust: 'spacingAndGlyphs' as const } : {};
+          const y = o.v + i * em;
+          return (
+            <g key={i}>
+              <text className="lbc-text" x={ax} y={y} fontFamily={family} fontSize={drawn}
                 textAnchor={anchor} {...fit}>{line}</text>
-            )}
-          </g>
-        );
-      })}
-      {overflow && layout.lines.map((_, i) => {
-        const lw = layout.widths[i];
-        if (lw === null) return null;
-        const start = layout.starts[i];
-        const end = start + lw;
-        const top = i * em;
-        return (
-          <g key={`spill-${i}`}>
-            {end > w + SPILL && (
-              <rect className="lbc-overflow" x={w} y={top} width={end - w} height={Math.max(h, px)} />
-            )}
-            {start < -SPILL && (
-              <rect className="lbc-overflow" x={start} y={top} width={Math.min(0, end) - start} height={Math.max(h, px)} />
-            )}
-          </g>
-        );
-      })}
-    </g>
+              {overprint && (
+                <text className="lbc-text lbc-overprint" x={ax + 1} y={y} fontFamily={family} fontSize={drawn}
+                  textAnchor={anchor} {...fit}>{line}</text>
+              )}
+            </g>
+          );
+        })}
+        {overflow && layout.lines.map((_, i) => {
+          const lw = layout.widths[i];
+          if (lw === null) return null;
+          const start = o.u + layout.starts[i];
+          const end = start + lw;
+          const right = o.u + w;
+          // the first line spans the box; each later one is a font height tall
+          const top = i * em;
+          const tall = i === 0 ? Math.max(h, px) : em;
+          return (
+            <g key={`spill-${i}`}>
+              {end > right + SPILL && (
+                <rect className="lbc-overflow" x={right} y={top} width={end - right} height={tall} />
+              )}
+              {start < o.u - SPILL && (
+                <rect className="lbc-overflow" x={start} y={top} width={Math.min(o.u, end) - start} height={tall} />
+              )}
+            </g>
+          );
+        })}
+      </g>
+    </>
   );
 }
 
@@ -239,8 +305,7 @@ function BarcodeBody({ el, dpi, text, hidden, px, uid }: CanvasElementProps) {
   const moduleIn = el.type === 'barcode' || el.type === 'field' ? el.moduleIn : null;
   const showText = el.type === 'barcode' || el.type === 'field' ? el.showText ?? true : true;
   const m = barcodeModuleDots(moduleIn, dpi);
-  const w = el.w * dpi;
-  const h = el.h * dpi;
+  const { w, h } = dotBox(el, dpi);
   const hri = Math.max(8, 9 * m);
   const id = `${uid}-bars`;
   return (
@@ -296,7 +361,7 @@ function QrSymbol({ layout, uid }: { layout: QrLayout; uid: string }) {
 }
 
 function QrBody({ el, dpi, hidden, qrValue, px, uid }: CanvasElementProps) {
-  const fp = footprint(el);
+  const fp = dotFootprint(el, dpi);
   let layout: QrLayout | null = null;
   try {
     layout = qrLayout(el, qrValue, dpi);
@@ -304,30 +369,29 @@ function QrBody({ el, dpi, hidden, qrValue, px, uid }: CanvasElementProps) {
     layout = null;
   }
   return (
-    <g transform={`translate(${fp.x * dpi} ${fp.y * dpi})`}>
-      <Outline w={fp.w * dpi} h={fp.h * dpi} px={px} />
-      {!hidden && !layout && (
-        <rect className="lbc-qr-bad" x={0} y={0} width={fp.w * dpi} height={fp.h * dpi}>
-          <title>Too long for a QR code (version 10 at error correction M).</title>
-        </rect>
-      )}
-      {!hidden && layout && (
-        <g transform={`translate(${-fp.x * dpi} ${-fp.y * dpi})`}>
-          <QrSymbol layout={layout} uid={uid} />
-        </g>
-      )}
-    </g>
+    <>
+      <g transform={`translate(${fp.x} ${fp.y})`}>
+        <Outline w={fp.w} h={fp.h} px={px} />
+        {!hidden && !layout && (
+          <rect className="lbc-qr-bad" x={0} y={0} width={fp.w} height={fp.h}>
+            <title>Too long for a QR code (version 10 at error correction M).</title>
+          </rect>
+        )}
+      </g>
+      {!hidden && layout && <QrSymbol layout={layout} uid={uid} />}
+    </>
   );
 }
 
+/** The compiler's ^GB: a border of the stroke width, solid when that (or
+ *  a box's fill) fills it. */
 function ShapeBody({ el, dpi }: CanvasElementProps) {
   if (el.type !== 'line' && el.type !== 'box') return null;
-  const fp = footprint(el);
+  const fp = dotFootprint(el, dpi);
   const t = Math.max(1, toDots(el.strokeIn, dpi));
-  const x = fp.x * dpi;
-  const y = fp.y * dpi;
-  const w = Math.max(t, fp.w * dpi);
-  const h = Math.max(t, fp.h * dpi);
+  const { x, y } = fp;
+  const w = Math.max(t, fp.w);
+  const h = Math.max(t, fp.h);
   const border = el.type === 'box' && el.fill ? Math.min(w, h) : t;
   if (2 * border >= Math.min(w, h)) {
     return <rect className="lbc-shape" x={x} y={y} width={w} height={h} />;

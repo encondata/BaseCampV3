@@ -332,6 +332,17 @@ export function placementsOf(d: DesignV2, fieldKey: string): ElementV2[] {
 
 // ---- what an element prints (model.py element_value / element_hidden) -------
 
+/** The padding round an inverted element's block (model.py `_invert_pad`):
+ *  the stored pad, else a quarter of the font size along the text and a
+ *  tenth across. A pad that isn't two non-negative numbers takes the
+ *  default, as the compiler does (validate reports it). */
+export function invertPadOf(el: FieldElement | TextElement): Pad {
+  const pad = el.invertPad as unknown;
+  if (isObject(pad) && num(pad.x) && pad.x >= 0 && num(pad.y) && pad.y >= 0) return { x: pad.x, y: pad.y };
+  const sizePt = el.sizePt ?? 0;
+  return { x: (0.25 * sizePt) / 72, y: (0.1 * sizePt) / 72 };
+}
+
 /** A field placement's rules for ../fieldRules.ts (model.py `FieldEl.rules`). */
 export function fieldRules(el: FieldElement): FieldRules {
   const rules: FieldRules = { display: el.display };

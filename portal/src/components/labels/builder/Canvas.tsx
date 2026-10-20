@@ -15,6 +15,10 @@
  * ⌥ moves a copy), the eight handles resize one unlocked element (⇧ keeps
  * its proportions), Space-drag or the wheel pans, ⌘-wheel zooms about the
  * pointer. With Snap on a move goes in grid steps, else in whole dots.
+ * One press at a time, from the primary pointer; a pointercancel ends the
+ * gesture without selecting, and unmounting closes any gesture still open.
+ * Pointer positions stay in exact inches; everything drawn is in whole
+ * dots as the compiler rounds them (CanvasElement).
  * Keyboard (useBuilderShortcuts): tools, arrows (⇧ ten dots, ⌥ to resize),
  * Tab, ⌘A, Delete, ⌘D, stacking, ⌘L, the align keys, zoom and the view
  * toggles. Undo, the clipboard, Format and Workflow keys are the page's.
@@ -25,21 +29,22 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 
 import type { FontWeight } from '../../../labels/builder/fonts';
 import {
-  clampToLabel, footprint, hitTest, marqueeSelect, resize, snap, type Handle, type Point, type Rect, type ResizeContext,
+  clampToLabel, hitTest, marqueeSelect, resize, snap, type Handle, type Point, type Rect, type ResizeContext,
 } from '../../../labels/builder/geometry';
 import type { LoadedFont } from '../../../labels/builder/metrics';
 import {
   addElement, elementHidden, elementValue, replaceElements, type DesignV2, type ElementV2,
 } from '../../../labels/builder/model';
 import { detectPlatform, type Platform } from '../../../labels/builder/shortcuts';
+import { toDots } from '../../../labels/builder/units';
 import '../../../styles/directory.css';
 import '../../../styles/labelBuilder.css';
 import {
   alignSelection, arrangeSelection, canAlign, clampZoom, DEFAULT_FONT, DEFAULT_GRID_IN, deleteSelection,
-  duplicateSelection, fitZoom, moveSelection, newElement, resizeSelection, stepSelection, stepZoom,
+  duplicateSelection, fitZoom, moveSelection, newElement, resizeSelection, selected, stepSelection, stepZoom,
   toggleLock, type AlignOp, type CanvasTool, type CanvasView, type Zoom,
 } from './canvasActions';
-import CanvasElement, { kindOf } from './CanvasElement';
+import CanvasElement, { dotFootprint, kindOf } from './CanvasElement';
 import CanvasToolbar from './CanvasToolbar';
 import Rulers, { RULER_PX } from './Rulers';
 import {
@@ -92,12 +97,14 @@ const HIT_PX = 4;
 /** The space round the label before the stage is measured. */
 const MARGIN_PX = 24;
 
-type Drag =
+/** One pointer's press, from pointerdown to pointerup or pointercancel;
+ *  every other pointer is ignored meanwhile. */
+type Drag = { pointerId: number } & (
   | { kind: 'move'; start: Point; client: Point; base: DesignV2; ids: string[]; began: boolean;
       copy: boolean; frozen: boolean; clickSelect: string[] | null; last: string; shown: DesignV2 }
   | { kind: 'resize'; start: Point; client: Point; base: DesignV2; id: string; handle: Handle; began: boolean; last: string }
   | { kind: 'marquee'; start: Point; client: Point; additive: boolean; prior: string[]; began: boolean }
-  | { kind: 'pan'; client: Point; pan: Point };
+  | { kind: 'pan'; client: Point; pan: Point });
 
 function fontOf(el: ElementV2) {
   return el.type === 'text' || el.type === 'field' ? el.font ?? DEFAULT_FONT : null;
@@ -146,7 +153,8 @@ export default function Canvas({
   const [panning, setPanning] = useState(false);
 
   // ---- view geometry -------------------------------------------------------
-  const label = { w: design.size.w * dpi, h: design.size.h * dpi };
+  // the paper the printer sets (^PW, ^LL), in whole dots
+  const label = { w: toDots(design.size.w, dpi), h: toDots(design.size.h, dpi) };
   const ruler = view.rulers ? RULER_PX : 0;
   const avail = { w: stage.w - ruler, h: stage.h - ruler };
   const zoom = view.zoom === 'fit' ? fitZoom(label, avail) : view.zoom;
@@ -410,14 +418,16 @@ export default function Canvas({
   };
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0 && e.button !== 1) return;
+    // one press at a time, from the primary pointer (a second finger or pen waits)
+    if (!e.isPrimary || drag.current || (e.button !== 0 && e.button !== 1)) return;
     endKeyGesture();
     stageRef.current?.focus({ preventScroll: true });
     e.currentTarget.setPointerCapture?.(e.pointerId);
+    const { pointerId } = e;
     const client = { x: e.clientX, y: e.clientY };
     if (spaceHeld.current || e.button === 1) {
       e.preventDefault();
-      drag.current = { kind: 'pan', client, pan };
+      drag.current = { pointerId, kind: 'pan', client, pan };
       setPanning(true);
       return;
     }
@@ -431,7 +441,7 @@ export default function Canvas({
     const handle = (e.target as Element).closest?.('[data-handle]')?.getAttribute('data-handle') as Handle | null;
     const only = selection.length === 1 ? design.elements.find((x) => x.id === selection[0]) : undefined;
     if (handle && only && !only.locked && !readOnly) {
-      drag.current = { kind: 'resize', start: p, client, base: design, id: only.id, handle, began: false, last: '' };
+      drag.current = { pointerId, kind: 'resize', start: p, client, base: design, id: only.id, handle, began: false, last: '' };
       return;
     }
     const hit = hitTest(design.elements, p, HIT_PX / zoom / dpi);
@@ -452,19 +462,22 @@ export default function Canvas({
         clickSelect = [hit];
       }
       drag.current = {
-        kind: 'move', start: p, client, base: design, ids, began: false, copy: e.altKey,
+        pointerId, kind: 'move', start: p, client, base: design, ids, began: false, copy: e.altKey,
         frozen: readOnly, clickSelect, last: '', shown: design,
       };
       return;
     }
     if (!e.shiftKey && selection.length) onSelect([]);
-    drag.current = { kind: 'marquee', start: p, client, additive: e.shiftKey, prior: e.shiftKey ? [...selection] : [], began: false };
+    drag.current = {
+      pointerId, kind: 'marquee', start: p, client, additive: e.shiftKey, prior: e.shiftKey ? [...selection] : [], began: false,
+    };
   };
 
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = drag.current;
+    if (d ? e.pointerId !== d.pointerId : !e.isPrimary) return;
     const p = toLabel(e);
     setCursor({ x: p.x * dpi, y: p.y * dpi });
-    const d = drag.current;
     if (!d) return;
     if (d.kind === 'pan') {
       setPan({ x: d.pan.x + e.clientX - d.client.x, y: d.pan.y + e.clientY - d.client.y });
@@ -480,6 +493,15 @@ export default function Canvas({
     if (d.kind === 'move' && d.frozen) return;
     if (!d.began) {
       if (!far) return;
+      if (d.kind === 'move') {
+        // locked elements never move, and ⌥ never copies them
+        const movable = selected(d.base, d.ids).filter((x) => !x.locked).map((x) => x.id);
+        if (!movable.length) {
+          d.frozen = true;
+          return;
+        }
+        d.ids = movable;
+      }
       d.began = true;
       onGesture('begin');
       if (d.kind === 'move' && d.copy) {
@@ -515,31 +537,41 @@ export default function Canvas({
     }
   };
 
-  const onPointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+  /** The press ends: released, or cancelled by the browser (a cancel ends
+   *  any gesture but never selects). */
+  const finish = (e: ReactPointerEvent<HTMLDivElement>, cancelled: boolean) => {
     const d = drag.current;
+    if (!d || e.pointerId !== d.pointerId) return;
     drag.current = null;
     if (e.currentTarget.hasPointerCapture?.(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-    if (!d) return;
     switch (d.kind) {
       case 'pan':
         setPanning(false);
         return;
       case 'move':
         if (d.began) onGesture('end');
-        else if (d.clickSelect) onSelect(d.clickSelect);
+        else if (d.clickSelect && !cancelled) onSelect(d.clickSelect);
         return;
       case 'resize':
         if (d.began) onGesture('end');
         return;
       case 'marquee': {
         setMarquee(null);
-        if (!d.began) return;
+        if (!d.began || cancelled) return;
         const p = toLabel(e);
         const ids = marqueeSelect(design.elements, { x: d.start.x, y: d.start.y, w: p.x - d.start.x, h: p.y - d.start.y });
         onSelect(d.additive ? [...d.prior, ...ids.filter((id) => !d.prior.includes(id))] : ids);
       }
     }
   };
+
+  // leaving mid-gesture still closes it, so every begin has its end
+  useEffect(() => () => {
+    const d = drag.current;
+    drag.current = null;
+    if (d && (d.kind === 'move' || d.kind === 'resize') && d.began) live.current.onGesture('end');
+    endKeyGesture();
+  }, [endKeyGesture]);
 
   // ---- drawing -----------------------------------------------------------------------
   const byId = new Map(design.elements.map((el) => [el.id, el]));
@@ -566,8 +598,8 @@ export default function Canvas({
         selectionCount={selection.length} onAlign={(op) => { runAlign(op); }} readOnly={readOnly}
         platform={os} status={status} />
       <div ref={stageRef} className={stageCls.join(' ')} tabIndex={-1} role="application" aria-label="Label canvas"
-        onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp} onPointerLeave={() => setCursor(null)}>
+        onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={(e) => finish(e, false)}
+        onPointerCancel={(e) => finish(e, true)} onPointerLeave={() => setCursor(null)}>
         <svg ref={svgRef} className="lbc-label" width={label.w * zoom} height={label.h * zoom}
           viewBox={`0 0 ${label.w} ${label.h}`} style={{ left: origin.x, top: origin.y }}
           overflow="visible" aria-hidden="true">
@@ -602,19 +634,19 @@ export default function Canvas({
           </g>
           <g className="lbc-overlay">
             {picked.map((el) => {
-              const f = footprint(el);
+              const f = dotFootprint(el, dpi);
               return (
                 <rect key={el.id} className={`lbc-sel${picked.length > 1 ? ' is-multi' : ''}${el.locked ? ' is-locked' : ''}`}
-                  x={f.x * dpi} y={f.y * dpi} width={Math.max(f.w * dpi, px)} height={Math.max(f.h * dpi, px)}
+                  x={f.x} y={f.y} width={Math.max(f.w, px)} height={Math.max(f.h, px)}
                   strokeWidth={1.5 * px} strokeDasharray={picked.length > 1 || el.locked ? `${4 * px} ${3 * px}` : undefined} />
               );
             })}
             {handleFor && (() => {
-              const f = footprint(handleFor);
+              const f = dotFootprint(handleFor, dpi);
               const s = HANDLE_PX * px;
               return HANDLES.map(([h, fx, fy]) => (
-                <rect key={h} data-handle={h} className="lbc-handle" x={(f.x + f.w * fx) * dpi - s / 2}
-                  y={(f.y + f.h * fy) * dpi - s / 2} width={s} height={s} strokeWidth={1.5 * px} />
+                <rect key={h} data-handle={h} className="lbc-handle" x={f.x + f.w * fx - s / 2}
+                  y={f.y + f.h * fy - s / 2} width={s} height={s} strokeWidth={1.5 * px} />
               ));
             })()}
             {marquee && (
