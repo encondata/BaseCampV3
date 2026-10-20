@@ -267,7 +267,7 @@ def seed_label_fonts() -> None:
     Bold of the seven open families, downloaded from pinned GitHub URLs,
     plus the resident Swiss 721 row, Zebra's built-in cut (no file).
     Idempotent: a family and weight already in the library is skipped
-    (a resident row only gets its family's current label)."""
+    (a row still under a label an earlier seed gave it gets the current one)."""
 
     _name_connections("seed-label-fonts")
 

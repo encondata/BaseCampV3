@@ -213,10 +213,32 @@ describe('BuilderPrinterModal', () => {
     release();
   });
 
-  it('hides Install without labels:add', async () => {
+  it('hides Install without labels:add, and says why', async () => {
     setup({ canInstall: false });
     await waitFor(() => expect(within(fontRow('ROBOTO_B.TTF')).getByText('Missing')).toBeTruthy());
     expect(screen.queryByRole('button', { name: 'Install' })).toBeNull();
+    expect(within(fontRow('ROBOTO_B.TTF')).getByText("You don't have permission to install fonts.")).toBeTruthy();
+  });
+
+  it('without a Z: listing still shows E:, and says it couldn\'t read the built-in fonts', async () => {
+    const zFails = (onE: string[]) => fakePrinter({
+      query: vi.fn(async (cmd: string) => {
+        if (cmd === '^XA^HWZ:*.TTF^XZ') throw new Error('Read timed out');
+        return dirReply('E', onE);
+      }),
+    });
+    setup({ printer: zFails(['ROBOTO_R.TTF']) });
+    await waitFor(() => expect(within(fontRow('ROBOTO_R.TTF')).getByText('Present')).toBeTruthy());
+    expect(within(fontRow('ROBOTO_B.TTF')).getByText('Missing')).toBeTruthy();
+    expect(within(fontRow('ROBOTO_B.TTF')).getByRole('button', { name: 'Install' })).toBeTruthy();
+    expect(within(fontRow('TT0003M_.TTF')).getByText("Couldn't read the printer's built-in fonts")).toBeTruthy();
+    expect(within(fontRow('TT0003M_.TTF')).queryByText('Missing')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    cleanup();
+
+    // a built-in font on E: is present whatever Z: says
+    setup({ printer: zFails(['TT0003M_.TTF']) });
+    await waitFor(() => expect(within(fontRow('TT0003M_.TTF')).getByText('Present')).toBeTruthy());
   });
 
   it('sends raw ZPL as typed, and says so', async () => {

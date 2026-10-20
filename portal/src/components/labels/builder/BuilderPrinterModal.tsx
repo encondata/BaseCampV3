@@ -13,7 +13,7 @@
  *    `designFonts`, the TS side of `design_fonts`), checked against the
  *    printer's E: and Z: TrueType listings (`fontStates`: a built-in font
  *    counts on either drive, a library font only on E:, where templates
- *    name it). A missing library font has Install (labels:add), the same
+ *    name it; with no Z: listing, a built-in font not on E: is unknown). A missing library font has Install (labels:add), the same
  *    push as Install Fonts (`installFont`), one at a time; a missing
  *    built-in font can't be installed and says so.
  *  - Send raw ZPL: the text as typed, straight to the printer.
@@ -145,10 +145,17 @@ export default function BuilderPrinterModal({
         next.identity = await printerRef.current.identify();
         next.status = await printerRef.current.status();
         next.e = await readE();
-        next.z = parseDirectory(await printerRef.current.query(directoryQuery('Z', '*.TTF')));
-        if (!next.e || !next.z) next.error = "Couldn't read the printer's font drives.";
+        if (!next.e) next.error = "Couldn't read the printer's E: drive.";
       } catch (err) {
         next.error = message(err, "Couldn't read the printer.");
+      }
+      if (!next.e) return;
+      // Z: holds only the built-in fonts: without it, E: still answers for
+      // the library's (each built-in row says what is unknown)
+      try {
+        next.z = parseDirectory(await printerRef.current.query(directoryQuery('Z', '*.TTF')));
+      } catch {
+        next.z = null;
       }
     });
     if (gen === generation.current) {
@@ -168,7 +175,10 @@ export default function BuilderPrinterModal({
   })), [design, library]);
 
   const states = useMemo(() => fontStates(used.map((u) => ({ name: u.object, resident: u.resident })),
-    read.e && read.z ? read.e : null, read.z), [used, read.e, read.z]);
+    read.e, read.z), [used, read.e, read.z]);
+  /** E: was read and Z: wasn't: a built-in font not on E: is unknown, not missing. */
+  const zUnread = read.e !== null && read.z === null;
+  const builtInUnknown = (u: (typeof used)[number]) => u.resident && zUnread && states.resident[u.object] === 'missing';
 
   const install = async (font: LabelFont) => {
     if (busy) return;
@@ -197,6 +207,7 @@ export default function BuilderPrinterModal({
     if (!printer.connected) return <span className="cell-sub">Not checked</span>;
     const state = u.resident ? states.resident[u.object] : states.library[u.object];
     if (!state) return <span className="cell-sub">{reading ? 'Reading…' : '—'}</span>;
+    if (builtInUnknown(u)) return <span className="chip c-slate">Unknown</span>;
     return state === 'installed'
       ? <span className="chip c-green">Present</span>
       : <span className="chip c-amber">Missing</span>;
@@ -205,6 +216,7 @@ export default function BuilderPrinterModal({
   const actionCell = (u: (typeof used)[number]) => {
     const state = u.resident ? states.resident[u.object] : states.library[u.object];
     if (state !== 'missing') return null;
+    if (builtInUnknown(u)) return <span className="cell-sub">Couldn&apos;t read the printer&apos;s built-in fonts</span>;
     if (u.resident) return <span className="cell-sub">Built into Zebra printers; this one doesn&apos;t have it</span>;
     if (!u.row) return <span className="cell-sub">Not in the font library</span>;
     const p = progress[u.object];
@@ -229,7 +241,7 @@ export default function BuilderPrinterModal({
         </div>
       );
     }
-    if (!canInstall) return <span className="cell-sub">Installing needs labels add access</span>;
+    if (!canInstall) return <span className="cell-sub">You don&apos;t have permission to install fonts.</span>;
     return (
       <button type="button" className="mini-btn" disabled={busy} onClick={() => void install(u.row as LabelFont)}>
         Install

@@ -771,7 +771,7 @@ export default function PrintLabels() {
                     : readingDpi ? READING_DPI
                     : printer.connected && !isCustom && labelType && !printerDpi ? CHOOSE_DPI
                     : activeSelected.length === 0
-                      ? (isCustom ? 'The ZPL prints once; select assets to print it once per asset' : `Select ${entityNoun}s to print labels`)
+                      ? (isCustom ? `The ZPL prints once; select ${entityNoun}s to print it once per ${entityNoun}` : `Select ${entityNoun}s to print labels`)
                     : `${printableIds.length} label(s) will be printed${activeSelected.length > printableIds.length ? ` · ${activeSelected.length - printableIds.length} selected ${entityNoun}(s) are hidden by the current filters` : ''}`}>
           <div className="plabels-ready-actions">
             <button type="button" className="btn-ghost plabels-gear" aria-label="Print settings" title="Print settings"

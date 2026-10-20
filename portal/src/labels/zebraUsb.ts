@@ -239,9 +239,10 @@ export function parseDirectory(text: string): DirectoryListing | null {
   const byName = new Map<string, { name: string; bytes: number }>();
   let bytesFree: number | null = null;
   for (const line of body.split(/\r?\n/)) {
-    // A size may be followed by an attribute flag column (a ZT220 lists a
-    // stored font as `E:TT0003M_.TTF  160676  K`), so allow letters after it.
-    const obj = line.match(/^\s*\*?\s*(?:[A-Z]:)?([A-Z0-9_]{1,8}\.[A-Z0-9]{1,3})\s+(\d+)(?:\s+[A-Z]+)*\s*$/i);
+    // A size may be followed by attribute columns: a ZT220 lists a stored
+    // font as `E:TT0003M_.TTF  160676  K`, and a ZD421 lists a ROM font as
+    // `Z:0.TTF    125904  P    0`, so allow letter or digit tokens after it.
+    const obj = line.match(/^\s*\*?\s*(?:[A-Z]:)?([A-Z0-9_]{1,8}\.[A-Z0-9]{1,3})\s+(\d+)(?:\s+[A-Z0-9]+)*\s*$/i);
     if (obj) { const name = obj[1].toUpperCase(); byName.delete(name); byName.set(name, { name, bytes: parseInt(obj[2], 10) }); continue; }
     const free = line.match(/(\d+)\s+bytes free/i);
     if (free) bytesFree = parseInt(free[1], 10);

@@ -171,6 +171,18 @@ async def test_seed_renames_a_resident_row_seeded_under_an_older_label(db, fake_
     assert await font_seed.seed(db, fetch=fetch) == []
 
 
+async def test_seed_leaves_a_resident_row_under_a_custom_name_alone(db, fake_io):
+    """Only the old seeded label is replaced: a name someone chose stays."""
+    fetch, _fetched, _stored = fake_io
+    await font_seed.seed(db, fetch=fetch)
+    swiss = (await _active(db))["TT0003M_.TTF"]
+    swiss.display_name = "Zebra Swiss (ours)"
+    await db.commit()
+
+    assert await font_seed.seed(db, fetch=fetch) == []
+    assert (await _active(db))["TT0003M_.TTF"].display_name == "Zebra Swiss (ours)"
+
+
 async def test_residents_without_file_lists_the_fileless_resident_row(db, fake_io):
     fetch, _fetched, _stored = fake_io
     assert await font_seed.residents_without_file(db) == []

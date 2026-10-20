@@ -326,7 +326,11 @@ codes and shapes use top-left `^FO`.
 - The canvas is the preview. The existing printer-rendered preview
   (Labelary) stays as a check, with sample values substituted and the
   template's open fonts embedded in the request (cached on the server);
-  the resident default renders through Labelary's font 0 (§4.4).
+  the resident default renders through Labelary's font 0 (§4.4). Labelary
+  draws a QR code about 0.2 in higher than a Zebra prints it (the compiler
+  sets `^FO` for the printer, §4.8), so a render with a QR code says so
+  under it: "The preview shows QR codes about 0.2 in higher than the
+  printer; the canvas is right."
 - A stand-in for the default font on the canvas is Jimmy's choice
   (2026-10-19) over buying a Swiss 721 webfont license. It is Roboto
   Regular since 2026-10-20, when the resident file turned out to be the
@@ -350,7 +354,9 @@ codes and shapes use top-left `^FO`.
     E:, a library font only on E:, where the label names it. A missing
     library font has Install (labels:add), the same push as Install Fonts,
     one at a time; a missing built-in font says "Built into Zebra printers;
-    this one doesn't have it"; a font not in the library says so.
+    this one doesn't have it"; a font not in the library says so. When Z:
+    can't be read, E: still answers for the library fonts, and a built-in
+    font not on E: says "Couldn't read the printer's built-in fonts".
   - Send raw ZPL: a box whose text goes to the printer exactly as typed.
 - **Sample values never leave the portal.** They can hold one client's real
   asset data, and a global template reaches every kiosk, so the kiosk sync

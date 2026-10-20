@@ -11,12 +11,13 @@ commit google/fonts packaged. Swiss 721 (TT0003M_.TTF) is Zebra's resident
 cut: it gets a row with no file (`resident`), never a download.
 
 Idempotent. A family and weight already in the library is left alone,
-except that a resident row whose display name isn't its family's label
-gets the label (the Swiss row was seeded as "Swiss 721 Condensed Bold"
-until 2026-10-20); a file uploaded earlier under a builder object name is
-adopted (given its family, weight and display name) instead of downloaded
-again. Each font
-commits on its own, so a failed download keeps the fonts before it."""
+except that a row still under a label the seed itself used to give it
+(`OLD_LABELS`: the Swiss row was seeded as "Swiss 721 Condensed Bold"
+until 2026-10-20) gets its family's current label; a name someone chose
+stays. A file uploaded earlier under a builder object name is adopted
+(given its family, weight and display name) instead of downloaded again.
+Each font commits on its own, so a failed download keeps the fonts before
+it."""
 
 import uuid
 from collections.abc import Awaitable, Callable
@@ -69,6 +70,12 @@ SOURCES: dict[tuple[str, str], str] = {
 }
 
 Fetch = Callable[[str], Awaitable[bytes]]
+
+# (family, weight) -> a display name an earlier seed gave the row, which a
+# re-seed replaces with the family's current label.
+OLD_LABELS: dict[tuple[str, str], str] = {
+    ("swiss721-cond-bold", "regular"): "Swiss 721 Condensed Bold",
+}
 
 
 class FontSeedError(RuntimeError):
@@ -171,7 +178,7 @@ async def seed(db: AsyncSession, *, fetch: Fetch = http_fetch) -> list[str]:
                 continue
             have = await _active(db, LabelFont.family == family, LabelFont.weight == weight)
             if have is not None:
-                if fam["resident"] and have.display_name != display_name(family, weight):
+                if have.display_name == OLD_LABELS.get((family, weight)):
                     await _adopt(db, have, family, weight)
                     done.append(have.name)
                 continue
