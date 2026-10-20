@@ -168,10 +168,10 @@ today.
    - over USB through WebUSB, or over the network through the edge;
    - with the saved offsets (`applyPrintSettings`, `^LS`/`^LT`) and the
      saved peel or tear mode (`withPrintMode`).
-4. **Peel mode.** After sending, the kiosk waits until the printed label
-   is taken before sending the next one, polling `~HS` for "labels
-   waiting to be taken" *(my call on the method)*. It shows "Take the
-   label".
+4. **No status checks between labels** (Jimmy, 2026-10-19: "I never
+   asked for status checks between each"). Each label is sent straight to
+   the printer. In peel mode the printer itself holds the next label until
+   the current one is taken.
 5. **Record.** Once the label is sent, a **Labeled** scan is queued on
    the laptop and uploaded with retries, like RFID scans (§3).
 6. **Show the result.**
@@ -185,12 +185,12 @@ today.
 - the asset isn't on the move;
 - the asset has no generated label, with the stored reason;
 - generation is running (the yellow screen covers this anyway);
-- the printer doesn't answer, or reports paper out, head open or paused.
-  The message says what to fix and offers a **Retry** that resends the
-  same label.
+- the printer can't be reached when the label is sent. The message says
+  so and offers a **Retry** that resends the same label. (Paper out, head
+  open or paused are not checked per label; the printer holds the job.)
 
-**Scans in a row.** Scans that arrive while a label is printing or waiting
-to be taken are queued in order and printed one after another *(my call)*.
+**Scans in a row.** Scans that arrive while a label is being sent are
+queued in order and sent one after another *(my call)*.
 
 ## 6. Printer Setup / Troubleshooting (`/labels/printers`) on a Label Station
 

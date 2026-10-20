@@ -1,13 +1,11 @@
 /** The Printing Station's queue against a fake printer: what it sends,
- *  when it records a Labeled scan, the peel wait, failures and Retry. */
-import type { HostStatus } from '@portal/labels/zebraUsb';
+ *  when it records a Labeled scan, failures and Retry. */
 import { applyPrintSettings, DEFAULT_PRINT_SETTINGS } from '@portal/lib/printLabels';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ApiError, type LabelStationSettings, type StationLabel } from './api';
 import {
-  createPrintQueue, NO_SETTINGS_TEXT, PRINTER_SILENT_TEXT, TAKE_LABEL_IDLE_MS,
-  TAKE_LABEL_UNREACHABLE_MS, TAKE_UNCONFIRMED_TEXT,
+  createPrintQueue, NO_SETTINGS_TEXT, PRINTER_SILENT_TEXT,
   type PrintAsset, type PrintedJob, type QueueState,
 } from './printQueue';
 import { withPrintMode, type StationPrinter } from './stationPrinter';
@@ -18,15 +16,6 @@ const asset = (n: number): PrintAsset => ({
   id: `a-${n}`, asset_id: String(10000 + n), name: `Server ${n}`, rfid: null,
   serial_number: `SN-${n}`, make: 'Dell', model: 'R640', make_model: 'Dell R640',
 });
-
-function hs(over: Partial<HostStatus> = {}): HostStatus {
-  return {
-    paperOut: false, paused: false, labelLength: 0, formatsQueued: 0, bufferFull: false,
-    partialFormat: false, corruptRam: false, underTemp: false, overTemp: false,
-    headOpen: false, ribbonOut: false, thermalTransfer: false, printMode: 'T',
-    labelWaiting: false, labelsRemaining: 0, ...over,
-  };
-}
 
 function settings(over: Partial<LabelStationSettings> = {}): LabelStationSettings {
   return {
@@ -39,20 +28,14 @@ function label(assetId: string, over: Partial<StationLabel> = {}): StationLabel 
   return { asset_id: assetId, zpl: ZPL, error: null, template_name: 'Generic', dpi: 203, label_kind: 'top', ...over };
 }
 
-/** A fake printer: `statuses` are answered in turn (the last one repeats);
- *  a status that is an Error is thrown. */
-function fakePrinter(statuses: (HostStatus | Error | null)[] = [hs()]) {
+/** A fake printer that records what it is sent. `status` exists only so a
+ *  test can prove it is never called. */
+function fakePrinter() {
   const sent: string[] = [];
-  let i = 0;
   const printer = {
     kind: 'network', ip: '10.0.0.40', serial: null,
     identify: vi.fn(), peeler: vi.fn(), query: vi.fn(), sendFont: vi.fn(),
-    status: vi.fn(async () => {
-      const s = statuses[Math.min(i, statuses.length - 1)];
-      i += 1;
-      if (s instanceof Error) throw s;
-      return s;
-    }),
+    status: vi.fn(async () => null),
     send: vi.fn(async (zpl: string) => { sent.push(zpl); }),
   } as unknown as StationPrinter & { status: ReturnType<typeof vi.fn>; send: ReturnType<typeof vi.fn> };
   return { printer, sent };
@@ -60,37 +43,24 @@ function fakePrinter(statuses: (HostStatus | Error | null)[] = [hs()]) {
 
 function setup(opts: {
   printer?: StationPrinter | null;
-  /** Read on every call, so a test can swap the printer mid-wait. */
   printerRef?: { current: StationPrinter | null };
   settings?: LabelStationSettings | null;
   getLabel?: (id: string) => Promise<StationLabel>;
   recordPrinted?: (job: PrintedJob) => Promise<void>;
-  sleep?: (ms: number) => Promise<void>;
 } = {}) {
   let state: QueueState = { entries: [] };
-  // A fake clock that only the queue's sleeps move.
-  const clock = { t: 0 };
   const recordPrinted = vi.fn(opts.recordPrinted ?? (async (_job: PrintedJob) => {}));
   const getLabel = vi.fn(opts.getLabel ?? (async (id: string) => label(id)));
   const ref = opts.printerRef
     ?? { current: opts.printer === undefined ? fakePrinter().printer : opts.printer };
-  const sleep = opts.sleep ?? (async () => {});
   const queue = createPrintQueue({
     printer: () => ref.current,
     settings: () => (opts.settings === undefined ? settings() : opts.settings),
     getLabel,
     recordPrinted,
-    // Each sleep also yields a real tick, so a poll loop can't starve
-    // vi.waitFor's timers.
-    sleep: async (ms) => {
-      clock.t += ms;
-      await new Promise<void>((r) => { setTimeout(r, 0); });
-      await sleep(ms);
-    },
-    now: () => clock.t,
     onChange: (s) => { state = s; },
   });
-  return { queue, recordPrinted, getLabel, state: () => state, clock };
+  return { queue, recordPrinted, getLabel, state: () => state };
 }
 
 const settled = (get: () => QueueState) => vi.waitFor(() => {
@@ -117,6 +87,18 @@ describe('createPrintQueue', () => {
     expect(q.state().entries[0].state).toBe('printed');
   });
 
+  it('sends straight to the printer: no status check before or after, even in peel mode', async () => {
+    // Jimmy: no status checks between labels. In peel mode the printer
+    // itself holds the next label until this one is taken.
+    const { printer, sent } = fakePrinter();
+    const q = setup({ printer, settings: settings({ peel: true }) });
+    for (const n of [1, 2, 3]) q.queue.enqueue({ asset: asset(n), scannedValue: String(10000 + n) });
+    await settled(q.state);
+    expect(sent).toHaveLength(3);
+    expect(printer.status).not.toHaveBeenCalled();
+    expect(q.state().entries.every((e) => e.state === 'printed')).toBe(true);
+  });
+
   it('prints tear-off (^MMT) when peel is off', async () => {
     const { printer, sent } = fakePrinter();
     const q = setup({ printer });
@@ -139,7 +121,8 @@ describe('createPrintQueue', () => {
   });
 
   it('a scan that fails and then prints on Retry records exactly once', async () => {
-    const { printer, sent } = fakePrinter([hs({ paperOut: true }), hs()]);
+    const { printer, sent } = fakePrinter();
+    printer.send.mockImplementationOnce(async () => { throw new Error('network'); });
     const q = setup({ printer });
     q.queue.enqueue({ asset: asset(1), scannedValue: 'SN-1' });
     await settled(q.state);
@@ -192,166 +175,6 @@ describe('createPrintQueue', () => {
     expect(q.recordPrinted).not.toHaveBeenCalled();
   });
 
-  it('a printer status problem fails the entry, sends nothing and records nothing', async () => {
-    const { printer, sent } = fakePrinter([hs({ headOpen: true, paused: true })]);
-    const q = setup({ printer });
-    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
-    await settled(q.state);
-    expect(q.state().entries[0]).toMatchObject({
-      state: 'failed', message: 'Head open: close the print head. Paused: press Pause on the printer to resume.',
-    });
-    expect(sent).toEqual([]);
-    expect(q.recordPrinted).not.toHaveBeenCalled();
-  });
-
-  it('peel mode waits while a label is waiting to be taken, and the next job waits too', async () => {
-    const { printer, sent } = fakePrinter([
-      hs(),                         // job 1: before sending
-      hs({ labelWaiting: true }),   // job 1: polls
-      new Error('timeout'),         // a failed poll keeps waiting
-      hs({ labelWaiting: true }),
-      hs(),                         // taken
-      hs(),                         // job 2: before sending
-      hs(),                         // job 2: never waiting, idle until the timeout
-    ]);
-    let release: () => void = () => {};
-    const sleeps: number[] = [];
-    const sleep = vi.fn((ms: number) => {
-      sleeps.push(ms);
-      // Hold the second poll until the test has looked.
-      if (sleeps.length === 2) return new Promise<void>((r) => { release = r; });
-      return Promise.resolve();
-    });
-    const q = setup({ printer, settings: settings({ peel: true }), sleep });
-    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
-    q.queue.enqueue({ asset: asset(2), scannedValue: '10002' });
-    await vi.waitFor(() => expect(sleeps).toHaveLength(2));
-    const byAsset = (id: string) => q.state().entries.find((e) => e.asset?.id === id)!;
-    expect(byAsset('a-1').state).toBe('take_label');
-    expect(byAsset('a-2').state).toBe('queued');
-    expect(sent).toHaveLength(1);
-    release();
-    await settled(q.state);
-    expect(byAsset('a-1').state).toBe('printed');
-    expect(byAsset('a-2').state).toBe('printed');
-    expect(sent).toHaveLength(2);
-    expect(sleeps.every((ms) => ms === 500)).toBe(true);
-  });
-
-  it('peel mode keeps waiting while the format is still queued, then waiting → taken completes', async () => {
-    const { printer } = fakePrinter([
-      hs(),                                   // before sending
-      hs({ formatsQueued: 1 }),               // not printed yet
-      hs({ labelsRemaining: 1 }),
-      hs({ labelWaiting: true }),
-      hs(),                                   // taken
-    ]);
-    const q = setup({ printer, settings: settings({ peel: true }) });
-    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
-    await settled(q.state);
-    expect(printer.status).toHaveBeenCalledTimes(5);
-    expect(q.clock.t).toBe(2000);
-  });
-
-  it('peel mode: a printer that never reports a waiting label moves on after the idle timeout', async () => {
-    const { printer } = fakePrinter([hs(), hs({ formatsQueued: 1 }), hs()]);
-    const q = setup({ printer, settings: settings({ peel: true }) });
-    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
-    await settled(q.state);
-    // 500 ms queued, then idle from 1000 ms until 10 s later.
-    expect(q.clock.t).toBe(1000 + TAKE_LABEL_IDLE_MS);
-    expect(q.state().entries[0].state).toBe('printed');
-  });
-
-  it('peel mode polls the printer it has now, so a reconnect mid-wait completes', async () => {
-    const first = fakePrinter([hs(), hs({ labelWaiting: true }), new Error('device gone')]);
-    const second = fakePrinter([hs({ labelWaiting: true }), hs()]);
-    const ref = { current: first.printer as StationPrinter | null };
-    let release: () => void = () => {};
-    let sleeps = 0;
-    const sleep = () => {
-      sleeps += 1;
-      if (sleeps === 2) return new Promise<void>((r) => { release = r; });
-      return Promise.resolve();
-    };
-    const q = setup({ printerRef: ref, settings: settings({ peel: true }), sleep });
-    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
-    await vi.waitFor(() => expect(sleeps).toBe(2));
-    expect(q.state().entries[0].state).toBe('take_label');
-    ref.current = null;             // unplugged: keeps waiting
-    release();
-    await vi.waitFor(() => expect(sleeps).toBeGreaterThan(3));
-    ref.current = second.printer;   // reconnected
-    await settled(q.state);
-    expect(second.printer.status).toHaveBeenCalledTimes(2);
-    expect(first.printer.status).toHaveBeenCalledTimes(2);
-  });
-
-  it('peel mode: a printer that stays unreadable for a minute settles printed with a warning', async () => {
-    const { printer, sent } = fakePrinter([
-      hs(),                         // job 1: before sending
-      new Error('timeout'),         // every poll after that fails
-    ]);
-    const q = setup({ printer, settings: settings({ peel: true }) });
-    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
-    q.queue.enqueue({ asset: asset(2), scannedValue: '10002' });
-    await vi.waitFor(() => expect(q.state().entries.find((e) => e.asset?.id === 'a-1')!.state)
-      .toBe('printed'), { timeout: 5000 });
-    const first = q.state().entries.find((e) => e.asset?.id === 'a-1')!;
-    expect(first.takeWarning).toBe(TAKE_UNCONFIRMED_TEXT);
-    expect(first.recordWarning).toBeNull();
-    // first failed poll at 500 ms, given up 60 s later
-    expect(q.clock.t).toBeGreaterThanOrEqual(500 + TAKE_LABEL_UNREACHABLE_MS);
-    expect(q.clock.t).toBeLessThan(500 + TAKE_LABEL_UNREACHABLE_MS + 1000);
-    // the queue moved on: job 2's status check failed (nothing sent for it)
-    await settled(q.state);
-    expect(sent).toHaveLength(1);
-  });
-
-  it('peel mode: no printer for a minute gives up too; any answer resets the timer', async () => {
-    const { printer } = fakePrinter([hs()]);
-    const ref = { current: printer as StationPrinter | null };
-    const statuses = vi.mocked(printer.status);
-    let polls = 0;
-    // Before sending: fine. Then: no printer for 59 s, one answer with a
-    // label waiting, then gone again until the timeout.
-    const sleep = async () => {
-      polls += 1;
-      const t = polls * 500;
-      if (t < 59_500) ref.current = null;
-      else if (t === 59_500) ref.current = printer;
-      else ref.current = null;
-    };
-    statuses.mockResolvedValue(hs({ labelWaiting: true }));
-    const q = setup({ printerRef: ref, settings: settings({ peel: true }), sleep });
-    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
-    await settled(q.state);
-    expect(q.state().entries[0].state).toBe('printed');
-    expect(q.state().entries[0].takeWarning).toBe(TAKE_UNCONFIRMED_TEXT);
-    // the answer at 59.5 s reset the timer: given up a minute after the next failure
-    expect(q.clock.t).toBe(60_000 + TAKE_LABEL_UNREACHABLE_MS);
-  }, 20_000);
-
-  it('peel mode: a label left waiting keeps the queue waiting past a minute', async () => {
-    const { printer } = fakePrinter([hs(), hs({ labelWaiting: true })]);
-    let release: () => void = () => {};
-    let polls = 0;
-    const sleep = (ms: number) => {
-      polls += 1;
-      if (polls * ms > TAKE_LABEL_UNREACHABLE_MS * 2) {
-        return new Promise<void>((r) => { release = r; });
-      }
-      return Promise.resolve();
-    };
-    const q = setup({ printer, settings: settings({ peel: true }), sleep });
-    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
-    await vi.waitFor(() => expect(polls * 500).toBeGreaterThan(TAKE_LABEL_UNREACHABLE_MS * 2),
-      { timeout: 10_000 });
-    expect(q.state().entries[0].state).toBe('take_label');
-    expect(q.state().entries[0].takeWarning).toBeNull();
-    release();
-  }, 20_000);
-
   it('a printer that throws fails the entry, and Retry resends the same ZPL', async () => {
     const { printer, sent } = fakePrinter();
     printer.send.mockImplementationOnce(async () => { throw new Error('network'); });
@@ -366,15 +189,6 @@ describe('createPrintQueue', () => {
     expect(sent).toEqual([first]);
     expect(q.getLabel).toHaveBeenCalledTimes(1);
     expect(q.state().entries).toHaveLength(1);
-  });
-
-  it('a status that throws fails the entry before anything is sent', async () => {
-    const { printer, sent } = fakePrinter([new Error('timeout')]);
-    const q = setup({ printer });
-    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
-    await settled(q.state);
-    expect(q.state().entries[0]).toMatchObject({ state: 'failed', message: PRINTER_SILENT_TEXT });
-    expect(sent).toEqual([]);
   });
 
   it('runs jobs strictly one at a time in arrival order', async () => {

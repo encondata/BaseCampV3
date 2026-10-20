@@ -43,6 +43,7 @@ import ipaddress
 import logging
 import socket
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -497,13 +498,16 @@ class Printers:
         finally:
             self._io.release()
 
-    async def query(self, ip: str, data: bytes) -> tuple[bytes, bool]:
-        """Send `data`, then read the reply: (bytes, truncated). Ends at EOF,
-        at MAX_READ bytes, after IDLE_S without new bytes, or at TOTAL_S."""
+    async def query(self, ip: str, data: bytes, *,
+                    complete: Callable[[bytes], bool] | None = None) -> tuple[bytes, bool]:
+        """Send `data`, then read the reply: (bytes, truncated). Ends when
+        `complete(reply)` says it is whole, at EOF, at MAX_READ bytes, after
+        IDLE_S without new bytes, or at TOTAL_S."""
         async with self._slot():
-            return await self._query(ip, data)
+            return await self._query(ip, data, complete)
 
-    async def _query(self, ip: str, data: bytes) -> tuple[bytes, bool]:
+    async def _query(self, ip: str, data: bytes,
+                     complete: Callable[[bytes], bool] | None = None) -> tuple[bytes, bool]:
         reader, writer = await self._open(ip)
         loop = asyncio.get_running_loop()
         out = bytearray()
@@ -534,6 +538,8 @@ class Printers:
                 if len(out) > MAX_READ:
                     del out[MAX_READ:]
                     truncated = True
+                    break
+                if complete is not None and complete(bytes(out)):
                     break
         finally:
             await _close(writer)
