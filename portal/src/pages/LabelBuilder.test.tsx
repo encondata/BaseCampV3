@@ -36,6 +36,7 @@ const api = vi.hoisted(() => ({
   listLabelFields: vi.fn(), getLabelFontMetrics: vi.fn(), getLabelFontBytes: vi.fn(),
   updateLabelTemplate: vi.fn(), updateLabelTemplateFromParent: vi.fn(), compileLabel: vi.fn(),
   previewZplRequest: vi.fn(), createLabelTemplate: vi.fn(), createLabelVocab: vi.fn(),
+  listLabelTemplateVersions: vi.fn(), getLabelTemplateVersion: vi.fn(), restoreLabelTemplateVersion: vi.fn(),
 }));
 vi.mock('../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../lib/api')>()), ...api,
@@ -293,6 +294,33 @@ describe('a parent template', () => {
     expect(el.baselineIn).toBeCloseTo((0.9 * 8.4) / 72, 9);
   });
 
+  it('a restored version the builder can’t read still counts as restored', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    api.listLabelTemplateVersions.mockResolvedValue([
+      { version: 7, child_edits: 0, label: 'v7', summary: 'Moved', note: '', created_by: null, created_by_name: null, created_at: '' },
+      { version: 6, child_edits: 0, label: 'v6', summary: 'Created', note: '', created_by: null, created_by_name: null, created_at: '' },
+    ]);
+    api.getLabelTemplateVersion.mockResolvedValue({
+      version: 6, child_edits: 0, label: 'v6', summary: 'Created', note: '', created_by: null, created_by_name: null,
+      created_at: '', design: vegas, code: null, samples: SAMPLES,
+    });
+    api.restoreLabelTemplateVersion.mockResolvedValue({ ...PARENT, version: 8, design: { schema: 9 }, out_of_date: [] });
+    await openParent();
+    fireEvent.click(screen.getByRole('button', { name: 'Versions' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Versions of Vegas Destination' });
+    const v6 = (await within(dialog).findByText('Created')).closest('tr') as HTMLElement;
+    fireEvent.click(within(v6).getByRole('button', { name: 'Open' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore this version' }));
+    await waitFor(() => expect(api.restoreLabelTemplateVersion).toHaveBeenCalledWith('p1', 6, 0));
+    const bar = screen.getByRole('group', { name: 'Template' });
+    await waitFor(() => expect(within(bar).getByLabelText('Version v8')).toBeTruthy());
+    expect(screen.queryByText(/Couldn.t restore/)).toBeNull();
+    expect(screen.getByText(/Restored as v8/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Back to editing' })).toBeNull();
+    expect(consoleError).toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
   it('/ puts the cursor in the field search', async () => {
     await openParent();
     fireEvent.keyDown(document.body, { key: '/', code: 'Slash' });
@@ -302,6 +330,16 @@ describe('a parent template', () => {
 });
 
 describe('a DPI child', () => {
+  it('shows the parent’s samples read-only', async () => {
+    renderAt('/labels/templates/c300/edit');
+    const fields = await screen.findByRole('complementary', { name: 'Fields' });
+    expect(within(fields).getByText('Samples belong to the parent template.')).toBeTruthy();
+    const serial = within(fields).getByRole('button', { name: 'Edit the sample of Serial number' }) as HTMLButtonElement;
+    expect(serial.textContent).toBe('36B7144');
+    expect(serial.disabled).toBe(true);
+    expect((within(fields).getByRole('button', { name: 'Load from asset…' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('shows its DPI and saves only its design', async () => {
     api.updateLabelTemplate.mockResolvedValue({ ...child('300'), customized: true, child_edits: 1, version: 8 });
     renderAt('/labels/templates/c300/edit');

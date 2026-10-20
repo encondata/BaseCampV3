@@ -163,3 +163,18 @@ describe('FieldPanel', () => {
       .toBe(true);
   });
 });
+
+describe('a DPI child', () => {
+  it('shows the parent template’s samples read-only', () => {
+    const onLoadFromAsset = vi.fn();
+    setup({ samplesFromParent: true, onLoadFromAsset });
+    const sample = screen.getByRole('button', { name: 'Edit the sample of Serial number' }) as HTMLButtonElement;
+    expect(sample.disabled).toBe(true);
+    expect(sample.textContent).toBe('36B7144');
+    expect((screen.getByRole('button', { name: 'Load from asset…' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('Samples belong to the parent template.')).toBeTruthy();
+    // placing a field still works
+    expect((screen.getByRole('button', { name: 'Add to the label' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: 'Add RFID tag to the label' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});

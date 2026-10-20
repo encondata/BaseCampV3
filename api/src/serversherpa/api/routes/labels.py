@@ -856,6 +856,12 @@ async def _sample_values(db: DbSession) -> dict[str, str]:
     return {r.key: r.sample_value for r in rows}
 
 
+# A preview or test print compiles with the page's samples: a field's worth
+# each, not a payload.
+MAX_COMPILE_SAMPLES = 200
+MAX_SAMPLE_CHARS = 500
+
+
 def _builder_values(design: dict, samples: dict[str, str] | None) -> dict[str, str]:
     """What a schema 2 design prints in the builder's preview and test
     print: the portal's mock values, shaped like `field_values` (a From-To
@@ -899,6 +905,12 @@ async def compile_template(
     if body.samples is not None and not v2:
         raise _err(422, "bad_field", field="samples",
                    message="sample values belong to builder templates")
+    if body.samples is not None and len(body.samples) > MAX_COMPILE_SAMPLES:
+        raise _err(422, "bad_field", field="samples",
+                   message=f"at most {MAX_COMPILE_SAMPLES} sample values")
+    if body.samples and max(map(len, body.samples.values())) > MAX_SAMPLE_CHARS:
+        raise _err(422, "bad_field", field="samples",
+                   message=f"a sample value is at most {MAX_SAMPLE_CHARS} characters")
     if v2:
         subs = _builder_values(body.design, body.samples)
     else:

@@ -48,6 +48,9 @@ export interface FieldPanelProps {
   /** Why the fields could not load. */
   loadError?: string | null;
   readOnly?: boolean;
+  /** A DPI child: the samples shown are its parent template's, so they and
+   *  Load from asset… are read-only here (fields can still be placed). */
+  samplesFromParent?: boolean;
 }
 
 export interface FieldPanelHandle {
@@ -60,15 +63,17 @@ function placements(n: number): string {
 }
 
 /** A field's sample: a button showing it, an input while editing. */
-function SampleValue({ label, value, onCommit, readOnly }: {
-  label: string; value: string; onCommit: (v: string) => void; readOnly: boolean;
+function SampleValue({ label, value, onCommit, readOnly, fromParent = false }: {
+  label: string; value: string; onCommit: (v: string) => void; readOnly: boolean; fromParent?: boolean;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   const done = useRef(false);
   if (draft === null) {
+    const title = fromParent ? `The parent template's sample: ${value || 'none'}`
+      : value ? `Sample: ${value}` : 'Give this field a sample';
     return (
-      <button type="button" className={`lbp-sample${value ? '' : ' is-empty'}`} disabled={readOnly}
-        aria-label={`Edit the sample of ${label}`} title={value ? `Sample: ${value}` : 'Give this field a sample'}
+      <button type="button" className={`lbp-sample${value ? '' : ' is-empty'}`} disabled={readOnly || fromParent}
+        aria-label={`Edit the sample of ${label}`} title={title}
         onClick={() => { done.current = false; setDraft(value); }}>
         {value || 'No sample'}
       </button>
@@ -98,7 +103,7 @@ function SampleValue({ label, value, onCommit, readOnly }: {
 
 const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldPanel({
   fields, design, samples, onSamples, onChange, onSelect, metricsFor, labelType, onLoadFromAsset,
-  loadError = null, readOnly = false,
+  loadError = null, readOnly = false, samplesFromParent = false,
 }, ref) {
   const [query, setQuery] = useState('');
   const [picking, setPicking] = useState(false);
@@ -206,6 +211,7 @@ const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldP
                       title={placements(u.count)} onClick={() => select(u.field.key)}>×{u.count}</button>
                   )}
                   <SampleValue label={u.field.label} value={sampleOf(samples, u.field.key)} readOnly={readOnly}
+                    fromParent={samplesFromParent}
                     onCommit={(v) => setSample(u.field.key, v)} />
                 </div>
                 {u.pieces.map((p) => (
@@ -229,10 +235,15 @@ const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldP
           </div>
         ))}
       </div>
-      {onLoadFromAsset && allowsFromTo(labelType) && (
+      {(samplesFromParent || (onLoadFromAsset && allowsFromTo(labelType))) && (
         <div className="lbp-foot">
-          <button type="button" className="mini-btn" disabled={readOnly} onClick={onLoadFromAsset}>Load from asset…</button>
-          <span className="lbp-hint">Fills every sample from a real roster row.</span>
+          {onLoadFromAsset && allowsFromTo(labelType) && (
+            <button type="button" className="mini-btn" disabled={readOnly || samplesFromParent}
+              onClick={onLoadFromAsset}>Load from asset…</button>
+          )}
+          <span className="lbp-hint">
+            {samplesFromParent ? 'Samples belong to the parent template.' : 'Fills every sample from a real roster row.'}
+          </span>
         </div>
       )}
     </aside>

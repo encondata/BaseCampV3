@@ -14,7 +14,7 @@
  * The report-generate header; the card sizes to its content.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { newDesign, serializeDesign } from '../../../labels/builder/model';
 import {
@@ -71,7 +71,7 @@ function sameSize(row: LabelVocab, w: number, h: number): boolean {
 const ERRORS: Record<string, string> = {
   label_template_exists: 'A template, or one of its DPI versions, already has that name.',
   unknown_vocab: 'That type or size is no longer offered. Pick another.',
-  label_vocab_exists: 'Someone just added that size. Pick it from the list.',
+  label_vocab_exists: 'Someone added a size under the same name just now. Press Create template again.',
   forbidden: 'Only a super admin or a developer can create templates.',
 };
 
@@ -87,6 +87,12 @@ export default function NewTemplateModal({ vocab, onCreated, onCancel }: NewTemp
   const [keepSize, setKeepSize] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The custom size row this dialog last posted, so a retry after a failed
+   *  create uses it instead of posting another: `made` once the API has it
+   *  (or a repeat of the post found it there). */
+  const ownSize = useRef<{ key: string; w: number; h: number; active: boolean; made: boolean } | null>(null);
+  /** Keys this dialog posted or found taken: never offered again. */
+  const usedKeys = useRef(new Set<string>());
 
   const custom = size === CUSTOM;
   const w = toInches(width, unit);
@@ -102,12 +108,29 @@ export default function NewTemplateModal({ vocab, onCreated, onCancel }: NewTemp
     }
     const listed = sizes.find((s) => sameSize(s, w!, h!));
     if (listed) return { key: listed.key, w: w!, h: h! };
-    const taken = new Set(vocab.filter((v) => v.kind === 'size').map((v) => v.key));
-    const key = customSizeKey(w!, h!, taken);
-    await createLabelVocab({
-      kind: 'size', key, label: `${fmt(w!)}" x ${fmt(h!)}"`, is_active: keepSize,
-      meta: { width_in: w, height_in: h, has_tab: false },
-    });
+    const own = ownSize.current;
+    const again = own !== null && own.w === w && own.h === h && own.active === keepSize;
+    if (again && own.made) return { key: own.key, w: w!, h: h! };
+    // a repeat of a post whose answer was lost: a 409 now means it landed
+    const repeat = again && !own.made;
+    const taken = new Set([...vocab.filter((v) => v.kind === 'size').map((v) => v.key), ...usedKeys.current]);
+    const key = repeat ? own.key : customSizeKey(w!, h!, taken);
+    usedKeys.current.add(key);
+    ownSize.current = { key, w: w!, h: h!, active: keepSize, made: false };
+    try {
+      await createLabelVocab({
+        kind: 'size', key, label: `${fmt(w!)}" x ${fmt(h!)}"`, is_active: keepSize,
+        meta: { width_in: w, height_in: h, has_tab: false },
+      });
+    } catch (err) {
+      const landed = repeat && err instanceof ApiError && err.code === 'label_vocab_exists';
+      if (!landed) {
+        // another's row under that key: the next try takes a new one
+        if (err instanceof ApiError && err.code === 'label_vocab_exists') ownSize.current = null;
+        throw err;
+      }
+    }
+    ownSize.current.made = true;
     return { key, w: w!, h: h! };
   };
 

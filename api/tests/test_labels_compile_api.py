@@ -131,3 +131,22 @@ async def test_samples_belong_to_builder_designs(client, db, seeded_user):
     assert resp.status_code == 422
     assert resp.json()["detail"] == {"code": "bad_field", "field": "samples",
                                      "message": "sample values belong to builder templates"}
+
+
+async def test_samples_are_capped(client, db, seeded_user):
+    hdrs = await login(client)
+    many = {f"ft:col {i}": "x" for i in range(201)}
+    resp = await client.post("/labels/templates/compile", headers=hdrs,
+                             json=_body(design=V2, dpi_key="300", samples=many))
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == {"code": "bad_field", "field": "samples",
+                                     "message": "at most 200 sample values"}
+    resp = await client.post("/labels/templates/compile", headers=hdrs,
+                             json=_body(design=V2, dpi_key="300", samples={"asset_id": "9" * 501}))
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == {"code": "bad_field", "field": "samples",
+                                     "message": "a sample value is at most 500 characters"}
+    edge = {**{f"ft:col {i}": "x" for i in range(199)}, "asset_id": "9" * 500}
+    resp = await client.post("/labels/templates/compile", headers=hdrs,
+                             json=_body(design=V2, dpi_key="300", samples=edge))
+    assert resp.status_code == 200, resp.text

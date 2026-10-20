@@ -156,3 +156,62 @@ describe('custom size helpers', () => {
     expect(customSizeKey(3, 1, new Set(['3x1', '3x1-2']))).toBe('3x1-3');
   });
 });
+
+describe('a retry after a failed create', () => {
+  it('reuses the custom size row it already made', async () => {
+    api.createLabelTemplate.mockRejectedValueOnce(new ApiError(409, 'label_template_exists'));
+    const { dialog, onCreated } = setup();
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Vegas Destination' } });
+    custom(dialog, '3.25', '1.5', 'Inches');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    expect((await within(dialog).findByRole('alert')).textContent)
+      .toBe('A template, or one of its DPI versions, already has that name.');
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Vegas Destination 2' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(api.createLabelVocab).toHaveBeenCalledTimes(1);
+    expect(api.createLabelTemplate).toHaveBeenCalledTimes(2);
+    expect(api.createLabelTemplate.mock.calls[1][0]).toMatchObject({ name: 'Vegas Destination 2', size_key: '3_25x1_5' });
+  });
+
+  it('takes a 409 on its own size row, after a lost answer, as made', async () => {
+    api.createLabelVocab.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(new ApiError(409, 'label_vocab_exists'));
+    const { dialog, onCreated } = setup();
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Odd' } });
+    custom(dialog, '3.25', '1.5', 'Inches');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    await within(dialog).findByRole('alert');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(api.createLabelVocab.mock.calls.map((c) => c[0].key)).toEqual(['3_25x1_5', '3_25x1_5']);
+    expect(api.createLabelTemplate.mock.calls[0][0].size_key).toBe('3_25x1_5');
+  });
+
+  it('makes a new row when the size or the list switch changed', async () => {
+    api.createLabelTemplate.mockRejectedValueOnce(new ApiError(409, 'label_template_exists'));
+    const { dialog, onCreated } = setup();
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Odd' } });
+    custom(dialog, '3.25', '1.5', 'Inches');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    await within(dialog).findByRole('alert');
+    fireEvent.click(within(dialog).getByLabelText('Save this size to the list'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(api.createLabelVocab.mock.calls.map((c) => [c[0].key, c[0].is_active]))
+      .toEqual([['3_25x1_5', false], ['3_25x1_5-2', true]]);
+  });
+
+  it('a size row someone else just made moves the next try to a new key', async () => {
+    api.createLabelVocab.mockRejectedValueOnce(new ApiError(409, 'label_vocab_exists'));
+    const { dialog, onCreated } = setup();
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Odd' } });
+    custom(dialog, '3.25', '1.5', 'Inches');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    expect((await within(dialog).findByRole('alert')).textContent)
+      .toBe('Someone added a size under the same name just now. Press Create template again.');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(api.createLabelVocab.mock.calls.map((c) => c[0].key)).toEqual(['3_25x1_5', '3_25x1_5-2']);
+  });
+});

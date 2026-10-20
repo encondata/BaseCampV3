@@ -18,7 +18,7 @@
  * the browser.
  *
  * Save (⌘S) sends the design (and a parent's samples, which belong to the
- * parent: a child shows them but keeps any change to itself). A parent's
+ * parent: a child shows them read-only). A parent's
  * save lists the customized children it passed by, and the page asks about
  * each one. Unsaved changes are guarded: in-app links ask first and a
  * reload gets the browser's prompt. Test print (⌘P) compiles the label with
@@ -326,10 +326,11 @@ function Builder({ initial }: { initial: Loaded }) {
     setHistoryTick((n) => n + 1);
   }, []);
 
-  // refit what was waiting on a font, once the font is here
+  // refit what was waiting on a font, once the font is here (not while an
+  // old version is shown: the edit would land unseen; it runs on return)
   useEffect(() => {
     const pending = pendingRefit.current;
-    if (!pending.size || gestureOpen.current) return;
+    if (!pending.size || gestureOpen.current || viewing) return;
     const d = history.current.present;
     const ready: ElementV2[] = [];
     for (const id of [...pending]) {
@@ -345,7 +346,7 @@ function Builder({ initial }: { initial: Loaded }) {
     if (!ready.length) return;
     const next = replaceElements(d, ready);
     if (json(next) !== json(d)) apply(next);
-  }, [metricsFor, gestures, apply]);
+  }, [metricsFor, gestures, apply, viewing]);
 
   // every font the design uses starts loading, and the default one
   useEffect(() => {
@@ -377,19 +378,29 @@ function Builder({ initial }: { initial: Loaded }) {
     return true;
   };
 
-  /** A whole new state from the server (a restore): no undo past it. */
-  const adopt = (row: LabelTemplateSaved) => {
-    const d = parseDesign(row.design);
-    history.current.reset(d);
-    pendingRefit.current.clear();
+  /** A whole new state from the server (a restore): no undo past it.
+   *  False when its design can't be read here: the row (version, samples)
+   *  is still the server's, and the canvas keeps what it showed. */
+  const adopt = (row: LabelTemplateSaved): boolean => {
     setTemplate(row);
-    setDesign(d);
-    setSelection([]);
     setViewing(null);
     setConfirmRestore(false);
     if (!isChild) setSamples({ ...(row.samples ?? {}) });
+    let d: DesignV2;
+    try {
+      d = parseDesign(row.design);
+    } catch (err) {
+      console.error('label builder: the restored design cannot be read', err);
+      setSaved((prev) => ({ ...prev, samples: isChild ? prev.samples : json(row.samples ?? {}) }));
+      return false;
+    }
+    history.current.reset(d);
+    pendingRefit.current.clear();
+    setDesign(d);
+    setSelection([]);
     setSaved((prev) => ({ design: json(serializeDesign(d)), samples: isChild ? prev.samples : json(row.samples ?? {}) }));
     setHistoryTick((n) => n + 1);
+    return true;
   };
 
   // ── save, out-of-date children ────────────────────────────────────
@@ -468,8 +479,10 @@ function Builder({ initial }: { initial: Loaded }) {
 
   const restored = async (s: LabelTemplateSaved) => {
     setModal(null);
-    adopt(s);
-    setNotice({ type: 'success', message: `Restored as ${templateVersionLabel(s)}.` });
+    const label = templateVersionLabel(s);
+    setNotice(adopt(s)
+      ? { type: 'success', message: `Restored as ${label}.` }
+      : { type: 'warning', message: `Restored as ${label}, but its design can't be shown here. Reload the page to see it.` });
     await askAboutStale(s);
   };
 
@@ -632,7 +645,8 @@ function Builder({ initial }: { initial: Loaded }) {
       <div className="lbb-body">
         <FieldPanel ref={panelRef} fields={fields} design={shownDesign} samples={shownSamples} onSamples={setSamples}
           onChange={editChange} onSelect={onSelect} metricsFor={metricsFor} labelType={template.label_type}
-          onLoadFromAsset={() => setModal('asset')} loadError={fieldsError} readOnly={readOnly} />
+          onLoadFromAsset={() => setModal('asset')} loadError={fieldsError} readOnly={readOnly}
+          samplesFromParent={isChild} />
         <div className="lbb-center">
           <Canvas design={shownDesign} dpi={dpi} view={view} onView={setView} samples={shownSamples}
             selection={selection} onSelect={onSelect} onChange={editChange} onGesture={onGesture}
