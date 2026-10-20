@@ -133,13 +133,15 @@ async def cutoff_for(db: AsyncSession, older_than_days: int | None) -> datetime 
 
 async def delete_objects(keys: Iterable[str], result: CategoryResult) -> None:
     """Delete stored objects once the rows that used them are gone. Call
-    AFTER the chunk commits. A failure is counted and logged; it never
-    stops the run and is not retried."""
+    AFTER the chunk commits. A failure is counted and logged (the error's
+    class and S3 code only: botocore's message carries the endpoint); it
+    never stops the run and is not retried."""
     for key in keys:
         try:
             await storage.delete_object(key)
-        except Exception:
-            logger.warning("cleanup: could not delete object %s", key, exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - counted, the run goes on
+            logger.warning("cleanup: could not delete object %s: %s", key,
+                           storage.loggable(exc))
             result.files_failed += 1
         else:
             result.files_deleted += 1

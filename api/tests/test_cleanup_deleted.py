@@ -251,6 +251,37 @@ async def test_label_images_deleted_before_the_cutoff_go_with_their_object(
     assert await _ids(db, LabelImage, *ids.values()) == {ids["recent"], ids["live"]}
 
 
+async def test_label_images_failed_delete_logs_no_storage_message(
+        client, db, seeded_user, storage_calls, monkeypatch, caplog):
+    """R3: a stored picture the cleanup can't delete is counted and logged
+    with the error's class and S3 code only: no traceback, and never
+    botocore's message (it carries the endpoint)."""
+    import logging
+
+    from botocore.exceptions import ClientError
+
+    bad, good = _key(), _key()
+    db.add_all([_image(bad), _image(good)])
+    await db.commit()
+
+    async def refused(key):
+        if key == bad:
+            raise ClientError({"Error": {"Code": "AccessDenied",
+                                         "Message": "at http://storage.internal:9000"}},
+                              "DeleteObject")
+        storage_calls.deleted.append(key)
+
+    monkeypatch.setattr("serversherpa.devtools.cleanup.storage.delete_object", refused)
+    with caplog.at_level(logging.WARNING, logger="serversherpa.devtools.cleanup"):
+        res, _ = await _go(client, db, seeded_user, "label_images")
+    assert (res["rows_deleted"], res["files_deleted"], res["files_failed"]) == (2, 1, 1)
+    (record,) = [r for r in caplog.records if r.name == "serversherpa.devtools.cleanup"]
+    assert bad in record.getMessage()
+    assert "ClientError" in record.getMessage() and "AccessDenied" in record.getMessage()
+    assert record.exc_info is None and record.exc_text is None
+    assert "storage.internal" not in caplog.text
+
+
 async def test_label_images_object_still_in_use_is_kept(client, db, seeded_user, storage_calls):
     """The row goes, but an object a live library image or the company logo
     still points at stays."""
