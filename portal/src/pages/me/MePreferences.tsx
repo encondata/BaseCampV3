@@ -126,7 +126,7 @@ export default function MePreferences({ appName = 'portal' }: { appName?: string
           <div className="set-row">
             <div className="set-label">
               <b>Sidebar</b>
-              <span>Collapse to an icon rail or hide it; Ctrl/⌘+B toggles from anywhere.</span>
+              <span>Collapse to an icon rail or hide it; Ctrl/⌘+\ toggles from anywhere.</span>
             </div>
             <div className="seg-mini">
               {NAV_MODES.map((m) => (

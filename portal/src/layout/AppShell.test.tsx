@@ -5,7 +5,7 @@
  * item; what is asserted here is that AppShell actually routes every nav item
  * through that gate, which no unit test can see. Also covers the
  * collapsible-nav shell: rail/hidden modes, the flyout, the hidden-mode
- * overlay, the collapse toggle, and the Ctrl/⌘+B shortcut.
+ * overlay, the collapse toggle, and the Ctrl/⌘+\ shortcut.
  */
 
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
@@ -203,25 +203,35 @@ it('the collapse toggle calls updatePreferences with the next nav mode', () => {
   );
 });
 
-it('Ctrl+B cycles the nav mode', () => {
+it('Ctrl+\\ cycles the nav mode', () => {
   auth.navMode = 'expanded';
 
   renderShell();
 
-  fireEvent.keyDown(document, { key: 'b', ctrlKey: true });
+  fireEvent.keyDown(document, { key: '\\', ctrlKey: true });
 
   expect(auth.updatePreferences).toHaveBeenCalledWith(
     expect.objectContaining({ nav_mode: 'rail' }),
   );
 });
 
-it('Ctrl+B is ignored while typing in an input', () => {
+it('Ctrl+B no longer cycles the nav (the label builder owns it for bold)', () => {
+  auth.navMode = 'expanded';
+
+  renderShell();
+
+  fireEvent.keyDown(document, { key: 'b', ctrlKey: true });
+
+  expect(auth.updatePreferences).not.toHaveBeenCalled();
+});
+
+it('Ctrl+\\ is ignored while typing in an input', () => {
   auth.navMode = 'expanded';
 
   renderShell(<input data-testid="typing-target" />);
   const input = screen.getByTestId('typing-target');
 
-  fireEvent.keyDown(input, { key: 'b', ctrlKey: true });
+  fireEvent.keyDown(input, { key: '\\', ctrlKey: true });
 
   expect(auth.updatePreferences).not.toHaveBeenCalled();
 });
