@@ -38,7 +38,10 @@ _STEPS = {
     "destination": ("The destination site's", lambda t: t.scope in ("destination", "both")),
     "source": ("The source site's", lambda t: t.scope == "source"),
     "global": ("The global", lambda t: t.scope == "global" and not _is_generic(t)),
-    "generic": ("The fallback", lambda t: t.scope == "global" and _is_generic(t)),
+    # The fallback is the move's last resort whatever its site links: the
+    # sync always sends the Generic Rack and RU family, even when it is
+    # linked only to sites outside this move.
+    "generic": ("The fallback", _is_generic),
 }
 _ORDER = {
     "top": ("destination", "source", "global", "generic"),

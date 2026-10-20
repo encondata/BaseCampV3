@@ -329,6 +329,7 @@
 .check-row .form-error { margin: 0; flex-basis: 100%; padding-left: 28px; }
 .check-row .check-note { margin: 0; flex-basis: 100%; padding-left: 28px; color: var(--text-mute); }
 .check-row .check-warning::before { content: '⚠ '; color: var(--amber); }
+.check-row .check-note.check-inline { flex-basis: auto; padding-left: 0; }
 .check-info { margin: 12px 0; }
 .setup-wizard .form-error { max-width: clamp(20rem, 62vw, 62rem); }
 .setup-summary {
