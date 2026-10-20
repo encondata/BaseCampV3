@@ -20,7 +20,7 @@ import { useEffect, useRef } from 'react';
 import type { KeyboardEvent, MouseEvent, ReactNode } from 'react';
 
 import { familyInfo } from '../../../labels/builder/fonts';
-import type { DesignV2, ElementV2, FieldElement, StripWhere, Trim } from '../../../labels/builder/model';
+import { MAX_COUNT, type DesignV2, type ElementV2, type FieldElement, type StripWhere, type Trim } from '../../../labels/builder/model';
 import type { LabelFields } from '../../../lib/api';
 import '../../../styles/directory.css';
 import '../../../styles/labelBuilder.css';
@@ -201,10 +201,10 @@ export default function PlacedFieldsTable({
           onToggle={(on) => patch(el.id, { inverted: on })} />
       ) : NONE,
       typeset ? (
-        <NumberBox ariaLabel="Expected length" value={el.expectedLength ?? null} allowEmpty integer min={1} max={99}
+        <NumberBox ariaLabel="Expected length" value={el.expectedLength ?? null} allowEmpty integer min={1} max={MAX_COUNT}
           disabled={readOnly} onCommit={(v) => patch(el.id, { expectedLength: v })} />
       ) : NONE,
-      <NumberBox key="max" ariaLabel="Max characters" value={el.maxChars ?? null} allowEmpty integer min={1} max={999}
+      <NumberBox key="max" ariaLabel="Max characters" value={el.maxChars ?? null} allowEmpty integer min={1} max={MAX_COUNT}
         disabled={readOnly}
         onCommit={(v) => patch(el.id, v === null ? { maxChars: null, trim: null } : { maxChars: v, trim: el.trim ?? 'rear' })} />,
       el.maxChars ? (

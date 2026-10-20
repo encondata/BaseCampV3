@@ -18,8 +18,9 @@ import type { ReactNode } from 'react';
 
 import { barcodeModuleDots, footprint, resize, type ResizeContext } from '../../../labels/builder/geometry';
 import {
-  elementValue, invertPadOf, renamePiece, replaceElements, type Align, type DesignV2, type ElementPatch, type ElementV2,
-  type FieldElement, type Rotation, type StripWhere, type Symbology, type TextElement, type Trim,
+  MAX_COUNT, MAX_LINES, elementValue, invertPadOf, renamePiece, replaceElements, type Align, type DesignV2,
+  type ElementPatch, type ElementV2, type FieldElement, type Rotation, type StripWhere, type Symbology,
+  type TextElement, type Trim,
 } from '../../../labels/builder/model';
 import { toDots } from '../../../labels/builder/units';
 import type { LabelFields } from '../../../lib/api';
@@ -249,7 +250,7 @@ export default function PropertiesPanel({
                 onCommit={(content) => apply({ content })} />
             </Prop>
             <Prop label="Lines" note="More than one wraps the text in its box (^FB).">
-              <NumberBox ariaLabel="Lines" integer min={1} max={20} disabled={readOnly}
+              <NumberBox ariaLabel="Lines" integer min={1} max={MAX_LINES} disabled={readOnly}
                 {...numberOf((e) => e.type === 'text', (e) => (e.type === 'text' ? e.lines ?? 1 : null),
                   (_, v) => ({ lines: v ?? 1 }))} />
             </Prop>
@@ -292,7 +293,7 @@ export default function PropertiesPanel({
               note={field?.expectedLength ? 'The box reserves this many of the widest characters.' : undefined}>
               {field && (
                 <>
-                  <NumberBox ariaLabel="Expected length" allowEmpty integer min={1} max={99} disabled={readOnly}
+                  <NumberBox ariaLabel="Expected length" allowEmpty integer min={1} max={MAX_COUNT} disabled={readOnly}
                     {...numberOf(isFieldEl, (e) => (e.type === 'field' ? e.expectedLength ?? null : null),
                       (_, v) => ({ expectedLength: v }))} />
                   <span className="lbp-unit">chars</span>
@@ -308,7 +309,7 @@ export default function PropertiesPanel({
         {field && (
           <>
             <Prop label="Max characters">
-              <NumberBox ariaLabel="Max characters" allowEmpty integer min={1} max={999} disabled={readOnly}
+              <NumberBox ariaLabel="Max characters" allowEmpty integer min={1} max={MAX_COUNT} disabled={readOnly}
                 placeholder="Off"
                 {...numberOf(isFieldEl, (e) => (e.type === 'field' ? e.maxChars ?? null : null),
                   (e, v) => (e.type !== 'field' ? null

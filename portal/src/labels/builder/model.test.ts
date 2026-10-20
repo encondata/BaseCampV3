@@ -1,11 +1,15 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import vegas from '../../../../api/src/serversherpa/labels/fixtures/vegas_v2.json';
 import {
-  DesignError, addElement, addSplit, duplicate, elementHidden, elementValue, invertPadOf, newDesign, nextId,
-  parseDesign, placementsOf, removeElements, renamePiece, reorder, replaceElements,
+  DesignError, MAX_COUNT, MAX_LINES, addElement, addSplit, duplicate, elementHidden, elementValue, invertPadOf,
+  newDesign, nextId, parseDesign, placementsOf, removeElements, renamePiece, reorder, replaceElements,
   serializeDesign, updateElement, validate, type DesignV2, type ElementV2, type FieldElement,
 } from './model';
+
+const MODEL_PY = join(__dirname, '../../../../api/src/serversherpa/labels/model.py');
 
 const RACK = { destination_rack: '14.01.07C.02.03', destination_ru: '3.5', asset_id: '100000' };
 
@@ -209,6 +213,33 @@ describe('validate (mirrors labels/model.py parse_design v2)', () => {
     const d = design(box('b1'), box('b2'));
     const twin = { ...d, elements: [d.elements[0], { ...d.elements[1], id: 'b1' }] };
     expect(messages(twin)).toEqual(['b1: id is used by another element']);
+  });
+
+  it('caps expected length and max characters at 64, lines at 50 (model.py MAX_COUNT, MAX_LINES)', () => {
+    const text = (lines: number) => ({
+      id: 't1', type: 'text', content: 'a', x: 0, y: 0, w: 1, h: 0.1, rotation: 0, sizePt: 8, baselineIn: 0.1, lines,
+    });
+    expect(messages(design(field({ expectedLength: 64, maxChars: 64 }), text(50)))).toEqual([]);
+    expect(messages(design(field({ expectedLength: 65, maxChars: 10 ** 9 }), text(51)))).toEqual([
+      'f1: expectedLength must be at most 64',
+      'f1: maxChars must be at most 64',
+      't1: lines must be at most 50',
+    ]);
+  });
+
+  it('mirrors the caps in labels/model.py', () => {
+    const src = readFileSync(MODEL_PY, 'utf8');
+    expect(Number(/^MAX_COUNT = (\d+)$/m.exec(src)?.[1])).toBe(MAX_COUNT);
+    expect(Number(/^MAX_LINES = (\d+)$/m.exec(src)?.[1])).toBe(MAX_LINES);
+  });
+
+  it('prints a field as the compiler would read it: a count past the cap is no rule at all', () => {
+    // model.py _opt_count reads an over-cap count as None (and refuses the
+    // design); the canvas must never pad a value to a billion characters
+    const d = design(field({ field: 'asset_id', piece: undefined, display: 'number', expectedLength: 10 ** 9, maxChars: 10 ** 9 }));
+    expect(elementValue(d.elements[0], { asset_id: '42' })).toBe('42');
+    const ok = design(field({ field: 'asset_id', piece: undefined, display: 'number', expectedLength: 6 }));
+    expect(elementValue(ok.elements[0], { asset_id: '42' })).toBe('000042');
   });
 
   it('flags a bad Split and size', () => {

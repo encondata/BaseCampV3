@@ -12,7 +12,7 @@ import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { reservedWidthIn } from '../../../labels/builder/metrics';
-import type { DesignV2, FieldElement } from '../../../labels/builder/model';
+import { MAX_COUNT, type DesignV2, type FieldElement } from '../../../labels/builder/model';
 import { FAKE_METRICS, FIELDS, SAMPLES, VEGAS, elementOf, fakeMetricsFor } from './builderTestKit';
 import Canvas, { DEFAULT_VIEW } from './Canvas';
 import PlacedFieldsTable, { type PlacedFieldsTableProps } from './PlacedFieldsTable';
@@ -144,6 +144,16 @@ describe('PlacedFieldsTable', () => {
     fireEvent.click(within(rowFor('Destination RU', 1)).getByRole('combobox', { name: 'Strip from' }));
     fireEvent.mouseDown(screen.getByRole('button', { name: 'Anywhere' }));
     expect(elementOf(last(), 'grid-ru')).toMatchObject({ strip: '0', stripWhere: 'anywhere' });
+  });
+
+  it('expected length and max characters stop at 64 (the API cap)', () => {
+    const { last } = setup();
+    for (const name of ['Expected length', 'Max characters']) {
+      const box = within(rowFor('Asset name')).getByRole('textbox', { name });
+      fireEvent.change(box, { target: { value: '999' } });
+      fireEvent.keyDown(box, { key: 'Enter' });
+    }
+    expect(elementOf(last(), 'value-name')).toMatchObject({ expectedLength: MAX_COUNT, maxChars: MAX_COUNT });
   });
 
   it('read-only: rows still select, nothing edits', () => {

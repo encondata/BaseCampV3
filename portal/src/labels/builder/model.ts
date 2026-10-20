@@ -151,6 +151,11 @@ const TRIMS: readonly string[] = ['front', 'rear'];
 const STRIP_WHERES: readonly string[] = ['front', 'rear', 'anywhere'];
 const WEIGHTS: readonly string[] = ['regular', 'bold'];
 
+/** model.py's caps: a field's expected length and max characters (a glyph
+ *  count, nothing needs more than two digits) and static text's lines. */
+export const MAX_COUNT = 64;
+export const MAX_LINES = 50;
+
 type Raw = Record<string, unknown>;
 
 function isObject(v: unknown): v is Raw {
@@ -343,11 +348,19 @@ export function invertPadOf(el: FieldElement | TextElement): Pad {
   return { x: (0.25 * sizePt) / 72, y: (0.1 * sizePt) / 72 };
 }
 
+/** A count as model.py `_opt_count` reads it: one outside 1..MAX_COUNT is
+ *  none at all (validate reports it), so nothing pads past the cap. */
+function countOf(v: number | null | undefined): number | undefined {
+  return int(v) && v >= 1 && v <= MAX_COUNT ? v : undefined;
+}
+
 /** A field placement's rules for ../fieldRules.ts (model.py `FieldEl.rules`). */
 export function fieldRules(el: FieldElement): FieldRules {
   const rules: FieldRules = { display: el.display };
-  if (el.expectedLength != null) rules.expectedLength = el.expectedLength;
-  if (el.maxChars != null) rules.maxChars = el.maxChars;
+  const expectedLength = countOf(el.expectedLength);
+  const maxChars = countOf(el.maxChars);
+  if (expectedLength !== undefined) rules.expectedLength = expectedLength;
+  if (maxChars !== undefined) rules.maxChars = maxChars;
   if (el.trim != null) rules.trim = el.trim;
   if (el.strip) rules.strip = el.strip;
   if (el.stripWhere != null) rules.stripWhere = el.stripWhere;
@@ -423,6 +436,7 @@ const checkAlign: Check = (el, p) => {
 const checkLines: Check = (el, p) => {
   const lines = withDefault(el.lines, 1);
   if (!int(lines) || lines < 1) p.push('lines must be an integer of 1 or more');
+  else if (lines > MAX_LINES) p.push(`lines must be at most ${MAX_LINES}`);
 };
 
 const checkSymbology: Check = (el, p) => {
@@ -467,7 +481,9 @@ const checkPad: Check = (el, p) => {
 
 const optCount = (key: string): Check => (el, p) => {
   const v = el[key];
-  if (present(v) && (!int(v) || v < 1)) p.push(`${key} must be a whole number of 1 or more`);
+  if (!present(v)) return;
+  if (!int(v) || v < 1) p.push(`${key} must be a whole number of 1 or more`);
+  else if (v > MAX_COUNT) p.push(`${key} must be at most ${MAX_COUNT}`);
 };
 
 const optChoice = (key: string, choices: readonly string[]): Check => (el, p) => {

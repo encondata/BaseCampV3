@@ -11,7 +11,7 @@ import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { textBoxFor } from '../../../labels/builder/metrics';
-import type { DesignV2, FieldElement } from '../../../labels/builder/model';
+import { MAX_COUNT, MAX_LINES, validate, type DesignV2, type FieldElement } from '../../../labels/builder/model';
 import { FAKE_METRICS, FIELDS, SAMPLES, VEGAS, elementOf, fakeMetricsFor } from './builderTestKit';
 import PlacedFieldsTable from './PlacedFieldsTable';
 import PropertiesPanel, { type PropertiesPanelProps } from './PropertiesPanel';
@@ -219,6 +219,21 @@ describe('PropertiesPanel', () => {
     expect(box.last().elements[0]).toMatchObject({ strokeIn: 6 / DPI });
     fireEvent.click(within(panel()).getByRole('checkbox', { name: 'Fill' }));
     expect(box.last().elements[0]).toMatchObject({ fill: true });
+  });
+
+  it('expected length and max characters stop at 64, lines at 50 (the API caps)', () => {
+    const { last } = setup({ selection: ['value-name'] });
+    commit('Expected length', '500');
+    expect((elementOf(last(), 'value-name') as FieldElement).expectedLength).toBe(MAX_COUNT);
+    commit('Max characters', '10*100');
+    expect((elementOf(last(), 'value-name') as FieldElement).maxChars).toBe(MAX_COUNT);
+    cleanup();
+
+    const text = setup({ selection: ['caption-name'] });
+    commit('Lines', '99');
+    expect(elementOf(text.last(), 'caption-name')).toMatchObject({ lines: MAX_LINES });
+    commit('Lines', '50');
+    expect(validate(text.last())).toEqual([]);
   });
 
   it('read-only: everything shows, nothing edits', () => {
