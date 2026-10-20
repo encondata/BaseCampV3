@@ -321,6 +321,24 @@ describe('a parent template', () => {
     consoleError.mockRestore();
   });
 
+  it('opens on a version handed over by the templates list, read-only', async () => {
+    const v6 = {
+      version: 6, child_edits: 0, label: 'v6', summary: 'Created', note: '', created_by: null, created_by_name: null,
+      created_at: '', design: vegas, code: null, samples: SAMPLES,
+    };
+    render(
+      <MemoryRouter initialEntries={[{ pathname: '/labels/templates/p1/edit', state: { openVersion: v6 } }]}>
+        <Routes>
+          <Route path="/labels/templates/:id/edit" element={<LabelBuilder />} />
+        </Routes>
+      </MemoryRouter>);
+    await screen.findByRole('group', { name: 'Template' });
+    expect((await screen.findByRole('status')).textContent).toContain('Viewing v6, read-only.');
+    // Back to editing leaves the version, and it doesn't come back
+    fireEvent.click(screen.getByRole('button', { name: 'Back to editing' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Back to editing' })).toBeNull());
+  });
+
   it('/ puts the cursor in the field search', async () => {
     await openParent();
     fireEvent.keyDown(document.body, { key: '/', code: 'Slash' });

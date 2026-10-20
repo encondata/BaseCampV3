@@ -5454,6 +5454,16 @@ export async function deleteLabelTemplate(id: string): Promise<void> {
   if (!resp.ok) throw await errorFrom(resp);
 }
 
+/** Turns a top-level template on (a parent with its current children).
+ *  422 `active_conflict` (`names`) while another active template prints
+ *  the same family, type and DPI: Replace… swaps them instead. A DPI child
+ *  follows its parent (409 `child_follows_parent`). */
+export async function activateLabelTemplate(id: string): Promise<LabelTemplate> {
+  const resp = await apiFetch(`/labels/templates/${encodeURIComponent(id)}/activate`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 export async function convertLabelTemplate(id: string): Promise<LabelTemplate> {
   const resp = await apiFetch(`/labels/templates/${id}/convert-to-code`, {
     method: 'POST',

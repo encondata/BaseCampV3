@@ -24,6 +24,9 @@
  * reload gets the browser's prompt. Test print (⌘P) compiles the label with
  * its samples at the DPI shown and sends it to a USB Zebra printer.
  *
+ * Versions' Open on the templates list lands here with that version in the
+ * navigation state (`openVersion`), and the page opens on it, read-only.
+ *
  * Fonts load as they are needed (useBuilderFonts). A text element whose
  * font changed before that font's metrics arrived is refit when they do,
  * so its box is one line of the new font tall.
@@ -31,7 +34,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
+import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import BuilderTopBar from '../components/labels/builder/BuilderTopBar';
 import {
@@ -136,7 +139,17 @@ function loadError(err: unknown): string {
   return "Couldn't load the template.";
 }
 
+/** A version the templates list's Versions panel opened (its Open), handed
+ *  over in the navigation state: the builder opens on it, read-only. */
+function handedVersion(state: unknown): LabelTemplateVersionDetail | null {
+  const v = (state as { openVersion?: unknown } | null)?.openVersion;
+  return v && typeof v === 'object' && typeof (v as LabelTemplateVersionDetail).label === 'string'
+    ? v as LabelTemplateVersionDetail : null;
+}
+
 function EditTemplate({ id }: { id: string }) {
+  const location = useLocation();
+  const [handed] = useState(() => handedVersion(location.state));
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [code, setCode] = useState(false);
   const [error, setError] = useState<{ title: string; message: string } | null>(null);
@@ -171,7 +184,7 @@ function EditTemplate({ id }: { id: string }) {
   if (code) return <Navigate to={`${TEMPLATES}/${id}/code`} replace />;
   if (error) return <PageMessage title={error.title} message={error.message} />;
   if (!loaded) return <div className="portal-page lbb-page"><p className="page-hint">Loading the template…</p></div>;
-  return <Builder initial={loaded} />;
+  return <Builder initial={loaded} handed={handed} />;
 }
 
 type Notice = { type: 'success' | 'info' | 'warning' | 'error'; message: string };
@@ -217,8 +230,9 @@ function staleChildren(node: LabelTemplateTreeNode | null, ids: readonly string[
   });
 }
 
-function Builder({ initial }: { initial: Loaded }) {
+function Builder({ initial, handed = null }: { initial: Loaded; handed?: LabelTemplateVersionDetail | null }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const platform = useMemo(() => detectPlatform(), []);
   const printer = useZebraPrinter();
   const { vocab, fonts: library } = initial;
@@ -476,6 +490,14 @@ function Builder({ initial }: { initial: Loaded }) {
       setNotice({ type: 'error', message: `${v.label} can't be shown: its design can't be read.` });
     }
   };
+
+  // a version handed over by the templates list opens once; the state is
+  // dropped so a reload or Back lands on the template itself
+  useEffect(() => {
+    if (!handed) return;
+    openVersion(handed);
+    navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const restored = async (s: LabelTemplateSaved) => {
     setModal(null);

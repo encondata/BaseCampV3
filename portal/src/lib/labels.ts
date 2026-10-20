@@ -4,7 +4,9 @@
  */
 
 import { naturalCompare } from './naturalSort';
-import type { LabelPlaceholder, LabelTemplate, LabelVocab } from './api';
+import type {
+  LabelPlaceholder, LabelTemplate, LabelTemplateChild, LabelTemplateTreeNode, LabelVocab,
+} from './api';
 
 export type VocabKind = 'type' | 'size' | 'dpi' | 'language';
 
@@ -106,4 +108,70 @@ export function sitesCellText(
 export function templateSearchText(t: LabelTemplate): string {
   return `${t.name} ${t.description} ${t.label_type} ${t.size_key} ${t.dpi_key} ${t.language_key} ${t.kind}`
     .toLowerCase();
+}
+
+// ── the templates list tree (spec §3.4, §4.1, §4.9) ──────────────────
+
+/** The DPIs a builder template has children for (api templates_tree.py). */
+export const TREE_DPIS = ['203', '300', '600'] as const;
+
+/** A builder parent: a top-level schema 2 design. Anything else at the top
+ *  of the tree is an older single row. */
+export function isTreeParent(t: LabelTemplate): boolean {
+  return !t.parent_id && t.kind === 'design' && (t.schema_version ?? 1) >= 2;
+}
+
+/** The DPIs a parent prints at: its current children's (an Old child is
+ *  kept history), in DPI order. */
+function currentDpis(node: LabelTemplateTreeNode): string[] {
+  return [...new Set(node.children.filter((c) => !c.is_old).map((c) => c.dpi_key))].sort(naturalCompare);
+}
+
+/** The DPI column: "All" when a parent has all three DPIs, else the ones it
+ *  has ("203 · 300"); an older single row shows its own. */
+export function templateDpiText(node: LabelTemplateTreeNode): string {
+  if (!isTreeParent(node)) return node.dpi_key;
+  const dpis = currentDpis(node);
+  if (TREE_DPIS.every((d) => dpis.includes(d))) return 'All';
+  return dpis.length ? dpis.join(' · ') : '—';
+}
+
+/** The DPIs Add DPI can bring back to a parent. */
+export function missingDpis(node: LabelTemplateTreeNode): string[] {
+  if (!isTreeParent(node)) return [];
+  const dpis = currentDpis(node);
+  return TREE_DPIS.filter((d) => !dpis.includes(d));
+}
+
+export interface StateChip { text: string; color: string }
+
+/** A DPI child's state: From parent, or Customized (Out of date once the
+ *  parent has saved past it); a kept Old child is Kept · inactive. */
+export function childStateChips(child: LabelTemplateChild, parent: LabelTemplate): StateChip[] {
+  if (child.is_old) return [{ text: 'Kept · inactive', color: 'c-slate' }];
+  if (!child.customized) return [{ text: 'From parent', color: 'c-blue' }];
+  return [
+    { text: 'Customized', color: 'c-violet' },
+    ...(child.out_of_date ? [{ text: `Out of date (parent v${parent.version})`, color: 'c-amber' }] : []),
+  ];
+}
+
+/** What Replace… on `node` can turn off: the other active top-level
+ *  templates of its family (case-insensitive, as the API compares) and
+ *  label type. */
+export function replaceCandidates(
+  node: LabelTemplateTreeNode, nodes: LabelTemplateTreeNode[],
+): LabelTemplateTreeNode[] {
+  const family = node.family.toLowerCase();
+  return nodes.filter((n) => n.id !== node.id && n.is_active && n.label_type === node.label_type
+    && n.family.toLowerCase() === family);
+}
+
+/** The name "Update from parent" gives a customized child it keeps: "<parent>
+ *  · <dpi> Old", then " Old 2", … (api templates_tree._old_name). */
+export function keptChildName(parentName: string, dpi: string, taken: ReadonlySet<string>): string {
+  const base = `${parentName} · ${dpi} Old`;
+  let name = base;
+  for (let n = 2; taken.has(name); n += 1) name = `${base} ${n}`;
+  return name;
 }

@@ -210,3 +210,36 @@
 .plabels-cache-types { display: flex; gap: 14px; flex-wrap: wrap; }
 .plabels-cache-types label { display: inline-flex; align-items: center; gap: 6px; }
 .plabels-cache-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* ── Label templates list (pages/LabelTemplates.tsx): the tree ──
+   A DPI child sits one level in (directory.css `--depth`), on a faint
+   tint, its name in regular weight; a kept Old child is muted and italic.
+   Typography rides `.cell-top`/`.chip`; these rules are color and layout. */
+.dir-row.lt-child > .row-main { background: var(--surface-2); cursor: default; }
+.dir-row.lt-child > .row-main:hover { background: rgba(var(--accent-rgb), 0.045); }
+.dir-row.lt-old .cell-primary .cell-top { color: var(--text-mute); font-style: italic; }
+/* state chips: side by side, wrapping to a second line in a narrow column */
+.lt-chips { display: flex; flex-wrap: wrap; gap: 4px 6px; min-width: 0; }
+.lt-chips > .chip { flex: 0 1 auto; min-width: 0; }
+/* a parent the search holds open (a DPI version matched): its toggle rests */
+.dir-list .tree-toggle:disabled { cursor: default; opacity: 0.55; }
+.dir-list .tree-toggle:disabled:hover { background: none; color: var(--text-mute); }
+
+/* the list's dialogs: each sized to its content */
+.modal-card.reports-modal-card.rgm-card.lt-small-card { width: min(560px, 96vw); max-width: 96vw; }
+.modal-card.reports-modal-card.rgm-card.lt-delete-card { width: min(640px, 96vw); max-width: 96vw; }
+.modal-card.reports-modal-card.rgm-card.lt-replace-card { width: min(720px, 96vw); max-width: 96vw; }
+.lt-delete { display: flex; flex-direction: column; gap: 12px; }
+.lt-delete .page-hint.lt-delete-note { margin: 0; }
+.lt-delete .pf-form { margin: 0; }
+.lt-delete-load { display: flex; align-items: center; gap: 10px; }
+/* the name to type, inside an uppercase .pf-form label: shown as written,
+   since the match is case-sensitive */
+.lt-confirm-name {
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--text-dark);
+}
