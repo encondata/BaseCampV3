@@ -1,0 +1,19 @@
+/* ChipPicker (components/ChipPicker.tsx): picked values as chips with a ×,
+   the ComboBox below. Used by Copy access (PersonChipPicker) and the label
+   templates' Sites… dialog. */
+.chip-picker { display: flex; flex-direction: column; gap: 8px; }
+.chip-picker-list { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.chip-picker .chip { display: inline-flex; align-items: center; gap: 6px; }
+/* font: inherit (not font-size/line-height) keeps this off the list-typography
+   guardrail's radar — it pulls the same values from .chip's own font-size token. */
+.chip-x { border: 0; background: transparent; cursor: pointer; font: inherit; color: inherit; padding: 3px 5px; border-radius: 6px; }
+.chip-x:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chip-x:disabled { cursor: default; opacity: 0.5; }
+/* "Clear all": a text button after the chips (same font: inherit idiom) */
+.chip-picker-clear {
+  border: 0; background: transparent; padding: 3px 4px; cursor: pointer;
+  font: inherit; color: var(--text-mute); text-decoration: underline; text-underline-offset: 2px;
+}
+.chip-picker-clear:hover { color: var(--text-dark); }
+.chip-picker-clear:disabled { cursor: default; opacity: 0.5; }
+.chip-picker .chip-picker-note { margin: 0; }

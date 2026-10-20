@@ -3,7 +3,8 @@
  * report-generate header and sized to its content:
  *  - ListDialog: the shared frame (DeleteTemplateModal and
  *    ReplaceTemplateModal use it too).
- *  - SitesModal: a parent's sites (its children follow them).
+ *  - SitesModal: a parent's sites (its children follow them), as chips
+ *    (ChipPicker) in natural order, with a line saying what they mean.
  *  - AddDpiModal: brings back a DPI the parent lost to "Delete this DPI".
  *  - UpdateFromParentModal: a customized child gives way to a fresh one
  *    from the parent and is kept, inactive, as "… Old".
@@ -16,12 +17,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
-import TagInput from '../TagInput';
+import ChipPicker from '../ChipPicker';
 import {
   ApiError, addLabelTemplateDpi, deleteLabelTemplate, getLabelTemplateDeactivateSummary, updateLabelTemplate,
   updateLabelTemplateFromParent,
   type LabelTemplate, type LabelTemplateDeactivateSummary, type SiteItem,
 } from '../../lib/api';
+import { naturalCompare } from '../../lib/naturalSort';
 import '../../styles/directory.css';
 import '../../styles/profile.css';   /* .pf-form, .btn-solid, .pf-error */
 import '../../styles/reports.css';
@@ -65,7 +67,11 @@ export function SitesModal({ template, sites, onSaved, onClose }: {
   onSaved: () => void;
   onClose: () => void;
 }) {
-  const [siteIds, setSiteIds] = useState<string[]>(template.site_ids);
+  // chips in natural order by site name; Save sends them in that order
+  const nameOf = (id: string) => sites.find((x) => x.id === id)?.name ?? id;
+  const ordered = (ids: string[]) => [...ids].sort((a, b) => naturalCompare(nameOf(a), nameOf(b)));
+  const [siteIds, setSiteIdsRaw] = useState<string[]>(() => ordered(template.site_ids));
+  const setSiteIds = (ids: string[]) => setSiteIdsRaw(ordered(ids));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const save = async () => {
@@ -95,9 +101,12 @@ export function SitesModal({ template, sites, onSaved, onClose }: {
         </>
       )}>
       <div className="lt-sites">
-        <TagInput value={siteIds} onChange={setSiteIds} disabled={busy}
-          options={sites.map((s) => ({ value: s.id, label: s.name }))}
-          placeholder={siteIds.length ? 'Add a site…' : 'All sites — add to narrow'} />
+        <ChipPicker selected={siteIds} onChange={setSiteIds} disabled={busy} clearAll
+          options={sites.map((x) => ({ value: x.id, label: x.name }))}
+          placeholder="Add a site…" ariaLabel="Add a site"
+          note={siteIds.length
+            ? `Linked to ${siteIds.length} ${siteIds.length === 1 ? 'site' : 'sites'}.`
+            : 'No sites: this template applies everywhere (global).'} />
       </div>
     </ListDialog>
   );

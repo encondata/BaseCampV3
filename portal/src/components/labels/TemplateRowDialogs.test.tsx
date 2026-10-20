@@ -8,13 +8,16 @@
  * RenameTemplateModal: the current name prefilled and selected, a live
  * preview of a parent's DPI version names, Save off while blank or
  * unchanged, the name trimmed, and each refusal in words.
+ *
+ * SitesModal: the linked sites as chips (natural order) with a × each,
+ * Clear all, the global / linked line, and Save sending the chips' order.
  */
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import { ApiError } from '../../lib/api';
+import { ApiError, type SiteItem } from '../../lib/api';
 
 const api = vi.hoisted(() => ({
   getLabelTemplateDeactivateSummary: vi.fn(),
@@ -25,7 +28,7 @@ vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()), ...api,
 }));
 
-const { DeactivateTemplateModal, RenameTemplateModal, fallbackDpiText } = await import('./TemplateRowDialogs');
+const { DeactivateTemplateModal, RenameTemplateModal, SitesModal, fallbackDpiText } = await import('./TemplateRowDialogs');
 
 const GENERIC = { id: 'g1', name: 'Generic Rack and RU' };
 const ROWS = ['Generic Rack and RU', 'Generic Rack and RU · 203', 'Generic Rack and RU · 300',
@@ -199,4 +202,74 @@ it.each([
   expect((await screen.findByRole('alert')).textContent).toBe(message);
   expect(onRenamed).not.toHaveBeenCalled();
   expect(screen.getByRole('dialog')).toBeTruthy();
+});
+
+// ── Sites… ──────────────────────────────────────────────────────────
+
+const SITES = [
+  { id: 's10', name: 'NAP10' }, { id: 's2', name: 'NAP2' }, { id: 's1', name: 'NAP1' }, { id: 'sa', name: 'Ashburn' },
+] as SiteItem[];
+
+function renderSites(siteIds: string[], onSaved = vi.fn(), onClose = vi.fn()) {
+  render(
+    <div className="portal-shell">
+      <SitesModal template={{ id: 'p1', name: 'Vegas Destination', site_ids: siteIds }} sites={SITES}
+        onSaved={onSaved} onClose={onClose} />
+    </div>,
+  );
+  return { onSaved, onClose };
+}
+
+const siteChips = () => [...document.querySelectorAll('.chip-picker-list .chip')].map((c) => c.firstChild?.textContent);
+
+it('Sites… shows the linked sites as chips in natural order, with how many', () => {
+  renderSites(['s10', 's1', 's2']);
+  expect(siteChips()).toEqual(['NAP1', 'NAP2', 'NAP10']);
+  expect(screen.getByText('Linked to 3 sites.')).toBeTruthy();
+  expect(screen.getByRole('combobox').getAttribute('placeholder')).toBe('Add a site…');
+});
+
+it('Sites… × removes one site; Save sends the chips in order', async () => {
+  const { onSaved } = renderSites(['s10', 's1', 's2']);
+  await userEvent.click(screen.getByRole('button', { name: 'Remove NAP2' }));
+  expect(siteChips()).toEqual(['NAP1', 'NAP10']);
+  expect(screen.getByText('Linked to 2 sites.')).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  expect(api.updateLabelTemplate).toHaveBeenCalledWith('p1', { site_ids: ['s1', 's10'] });
+});
+
+it('Sites… adds a site in its natural place, from a menu of the others', async () => {
+  renderSites(['s10']);
+  expect(screen.getByText('Linked to 1 site.')).toBeTruthy();
+  fireEvent.focus(screen.getByRole('combobox'));
+  const menu = document.querySelector('.combo-menu') as HTMLElement;
+  // portaled out of the dialog's scrolling body into the shell
+  expect(menu.closest('.modal-card')).toBeNull();
+  expect(menu.closest('.portal-shell')).toBeTruthy();
+  expect([...menu.querySelectorAll('.kbar-item')].map((b) => b.textContent)).toEqual(['Ashburn', 'NAP1', 'NAP2']);
+  fireEvent.mouseDown(within(menu).getByText('NAP2'));
+  expect(siteChips()).toEqual(['NAP2', 'NAP10']);
+});
+
+it('Sites… Clear all leaves the template global', async () => {
+  const { onSaved } = renderSites(['s1', 's2']);
+  await userEvent.click(screen.getByRole('button', { name: 'Clear all' }));
+  expect(siteChips()).toEqual([]);
+  expect(screen.getByText('No sites: this template applies everywhere (global).')).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  expect(api.updateLabelTemplate).toHaveBeenCalledWith('p1', { site_ids: [] });
+});
+
+it('Sites… Escape in the site box closes its menu, not the dialog', async () => {
+  const { onClose } = renderSites(['s1']);
+  await userEvent.click(screen.getByRole('combobox'));
+  expect(document.querySelector('.combo-menu')).toBeTruthy();
+  await userEvent.keyboard('{Escape}');
+  expect(document.querySelector('.combo-menu')).toBeNull();
+  expect(onClose).not.toHaveBeenCalled();
+  // a second Escape, with the menu closed, closes the dialog
+  await userEvent.keyboard('{Escape}');
+  expect(onClose).toHaveBeenCalled();
 });
