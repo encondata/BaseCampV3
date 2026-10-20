@@ -7,7 +7,8 @@
  * The printer encodes at error correction M in automatic mode. A symbol is
  * 17 + 4 × version modules a side; the magnification (dots per module)
  * comes from the box width only, capped at the printer's 10, and the symbol
- * is centered on the box.
+ * is centered on the box. `qrLayout` is where the symbol prints; the
+ * compiler's ^FO sits the printer's offset above that (`qrFoOffsetDots`).
  */
 
 import { toDots } from './units';
@@ -21,6 +22,18 @@ export const CAPACITY_M: readonly (readonly [number, number, number])[] = [
 ];
 
 export const QR_MAX_MAGNIFICATION = 10;
+
+/** How far below its ^FO y the printer draws a ^BQ symbol's top edge, in
+ *  inches (labels/qr.py QR_FO_OFFSET_IN; qr.test.ts pins the mirror): 60
+ *  dots on a ZD421-300dpi, measured; other DPIs scaled, unverified on
+ *  hardware. The compiler sets ^FO this far above where the symbol prints,
+ *  and clamps it at 0, so a symbol can't print nearer the top edge. */
+export const QR_FO_OFFSET_IN = 0.2;
+
+/** The offset at `dpi` in dots (`qr_fo_offset_dots`): 41, 60, 120. */
+export function qrFoOffsetDots(dpi: number): number {
+  return toDots(QR_FO_OFFSET_IN, dpi);
+}
 
 const NUMERIC = /^[0-9]*$/;
 // the QR alphanumeric set: digits, upper-case letters, space and $ % * + - . / :
@@ -63,7 +76,8 @@ export interface QrLayout {
   magnification: number;
   /** The symbol's side in dots. */
   side: number;
-  /** The symbol's top-left in dots (the compiler's `^FO`). */
+  /** The symbol's top-left in dots, where it prints (the compiler's `^FO`
+   *  is `qrFoOffsetDots` higher). */
   x: number;
   y: number;
   /** The box asks for more than the printer's magnification cap. */
@@ -87,4 +101,18 @@ export function qrLayout(box: { x: number; y: number; w: number; h: number }, va
     y: Math.max(0, toDots(box.y, dpi) + Math.floor((hd - side) / 2)),
     capped: Math.round(wd / modules) > QR_MAX_MAGNIFICATION,
   };
+}
+
+/** The symbol's top is nearer the label's top edge than the printer's ^FO
+ *  offset, so it can't print where it is drawn (the compiler clamps ^FO y
+ *  at 0 and the printer puts it lower). False for a value no symbol holds. */
+export function qrTooHigh(box: { x: number; y: number; w: number; h: number }, value: string,
+  dpi: number): boolean {
+  let layout: QrLayout;
+  try {
+    layout = qrLayout(box, value, dpi);
+  } catch {
+    return false;
+  }
+  return layout.y < qrFoOffsetDots(dpi);
 }

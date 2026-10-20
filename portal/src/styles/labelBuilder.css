@@ -475,6 +475,7 @@ textarea.lbp-text { resize: vertical; }
 .lbp-prop-controls > .combo-wrap,
 .lbp-prop-controls > .lbp-text { flex: 1 1 100%; }
 .lbp-prop .lbp-hint { margin-top: 5px; }
+.lbp-prop .lbp-hint.is-warning { color: var(--c-amber); }
 .lbp-static { font-size: 13px; color: var(--text-dark); }
 .lbp-unit { font-size: 11px; color: var(--text-mute); }
 

@@ -2,7 +2,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { CAPACITY_M, QR_MAX_MAGNIFICATION, qrLayout, qrModules } from './qr';
+import {
+  CAPACITY_M, QR_FO_OFFSET_IN, QR_MAX_MAGNIFICATION, qrFoOffsetDots, qrLayout, qrModules, qrTooHigh,
+} from './qr';
 
 const QR_PY = join(__dirname, '../../../../api/src/serversherpa/labels/qr.py');
 
@@ -34,8 +36,33 @@ describe('qrModules', () => {
   });
 });
 
+describe('the printer\'s ^FO offset', () => {
+  it('mirrors QR_FO_OFFSET_IN in labels/qr.py', () => {
+    const src = readFileSync(QR_PY, 'utf8');
+    const m = src.match(/^QR_FO_OFFSET_IN = ([0-9.]+)$/m);
+    expect(m).not.toBeNull();
+    expect(QR_FO_OFFSET_IN).toBe(Number(m![1]));
+  });
+
+  it('is 60 dots at 300 and scales with the DPI, as qr_fo_offset_dots does', () => {
+    expect([203, 300, 600].map(qrFoOffsetDots)).toEqual([41, 60, 120]);
+  });
+
+  it('flags a symbol whose top is nearer the label\'s top edge than the offset', () => {
+    const box = { x: 1, w: 0.49, h: 0.49 };
+    expect(qrTooHigh({ ...box, y: 0.1 }, '100000', 300)).toBe(true);
+    expect(qrTooHigh({ ...box, y: 0.19 }, '100000', 300)).toBe(true);    // top at 57
+    expect(qrTooHigh({ ...box, y: 0.2 }, '100000', 300)).toBe(false);    // top at 60: ^FO y 0
+    expect(qrTooHigh({ ...box, y: 0.4933 }, '100000', 300)).toBe(false);
+    // a box taller than the symbol centers it lower: top at 30 + (300 - 147) // 2 = 106
+    expect(qrTooHigh({ x: 1, y: 0.1, w: 0.49, h: 1 }, '100000', 300)).toBe(false);
+    // a value no symbol holds prints nothing to warn about
+    expect(qrTooHigh({ ...box, y: 0 }, 'x'.repeat(214), 300)).toBe(false);
+  });
+});
+
 describe('qrLayout', () => {
-  it('places the Vegas QR where the compiler does (^FO1000,148^BQN,2,7 at 300)', () => {
+  it('places the Vegas QR where it prints: top at 148 (^FO1000,88^BQN,2,7 at 300)', () => {
     expect(qrLayout({ x: 3.3333, y: 0.4933, w: 0.49, h: 0.49 }, '100000', 300)).toEqual({
       modules: 21, magnification: 7, side: 147, x: 1000, y: 148, capped: false,
     });

@@ -63,7 +63,7 @@ def test_what_each_asset_prints_at_300(app):
                    "^FT400,100^A@N,100,100,E:TT0003M_.TTF^FH_^FD07C^FS",
                    "^FO1030,18^GB165,92,92^FS",
                    "^FT1050,100^A@N,100,100,E:TT0003M_.TTF^FR^FH_^FD12^FS",
-                   "^FO1000,148^BQN,2,7^FH_^FDMA,100000^FS"):
+                   "^FO1000,88^BQN,2,7^FH_^FDMA,100000^FS"):
         assert anchor in zpl["a-1"], anchor
 
     # the sixth piece is ignored; a blank RU prints no box; the long name
@@ -73,7 +73,7 @@ def test_what_each_asset_prints_at_300(app):
     assert "^FT850,100^A@N,100,100,E:TT0003M_.TTF^FH_^FD17^FS" in two
     assert "^GB165,92,92" in two and "^FO1030,18^" not in two and "^FT1050,100^" not in two
     assert "^FDvegas-db-primary-0417.prod.example.internal^FS" in two
-    assert "^FO1000,148^BQN,2,7^FH_^FDMA,100417^FS" in two
+    assert "^FO1000,88^BQN,2,7^FH_^FDMA,100417^FS" in two
 
     # two pieces: NAP and Sector print, the rest are blank (an inverted
     # blank prints nothing); the half RU pads its integer part

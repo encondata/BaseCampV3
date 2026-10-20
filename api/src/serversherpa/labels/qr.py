@@ -1,10 +1,11 @@
-"""QR code sizing for the v2 ZPL compiler: how many modules a value needs.
+"""QR code sizing for the v2 ZPL compiler: how many modules a value needs,
+and where the printer draws a symbol relative to its ^FO.
 
 The printer encodes `^BQ` data at error correction M in automatic mode
 (`^FDMA,`). The compiler has to know the symbol's size in modules up front
 so it can pick a magnification that fills the element's box and center the
-symbol on it. The canvas (portal labels code) mirrors this table, so change
-the two together.
+symbol on it. The canvas (portal labels code) mirrors this table and the
+^FO offset, so change the two together.
 
 Pure: no IO (the laptop edge imports serversherpa.labels from api/src)."""
 
@@ -28,6 +29,20 @@ CAPACITY_M: tuple[tuple[int, int, int], ...] = (
     (255, 154, 106), (293, 178, 122), (365, 221, 152), (432, 262, 180),
     (513, 311, 213),
 )
+
+# How far below its ^FO y the printer draws a ^BQ symbol's top edge, in
+# inches: 60 dots on a ZD421-300dpi (measured with a ruler probe,
+# 2026-10-20), the same at magnification 5 and 10, with no sideways shift.
+# The compiler sets ^FO this far above where the symbol should print. The
+# other DPIs scale it (41 dots at 203, 120 at 600): unverified on hardware.
+# The canvas (portal labels/builder/qr.ts) mirrors it.
+QR_FO_OFFSET_IN = 0.2
+
+
+def qr_fo_offset_dots(dpi: int) -> int:
+    """The printer's ^BQ offset below ^FO at `dpi`, in dots."""
+    return round(QR_FO_OFFSET_IN * dpi)
+
 
 NUMERIC = frozenset("0123456789")
 # the QR alphanumeric set: digits, upper-case letters, space and $ % * + - . / :

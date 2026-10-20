@@ -175,7 +175,7 @@ stacking order, lock, and hide-when-empty (data elements only).
 | Static text | content; font; size; weight; inverted; alignment |
 | Line, Box | stroke width; box: fill |
 | Barcode | field or static data; Code 128 or Code 39; bar height from the box; module width; human-readable line on/off; width follows the data and the module; the canvas shows the printed width |
-| QR code | field or static data; size from the box (magnification in printer steps); error correction M |
+| QR code | field or static data; size from the box (magnification in printer steps); error correction M; the canvas draws the symbol where it prints, and the compiler sets `^FO` the printer's 0.2 in QR offset above it, so a symbol can't sit nearer the top edge than 0.2 in (the Properties panel warns) |
 
 **Field value pipeline** (in this order): take the raw value → Split (if the
 display type is Split: the piece for this sub-field) → Strip → Max
@@ -367,6 +367,11 @@ codes and shapes use top-left `^FO`.
   for alignment inside the reserved width, per-element QR magnification and
   Code 128 options. Positions stay top-left `^FO`; the browser's font
   metrics decide where text sits, so no printer-side metrics are needed.
+  One printer quirk is absorbed: a Zebra draws a `^BQ` symbol's top edge
+  0.2 in below its `^FO` y (60 dots measured on a ZD421 at 300 DPI, at any
+  magnification; scaled for 203 and 600, unverified there), so the QR's
+  `^FO` y is the symbol's top less that, clamped at 0 (labels/qr.py
+  `QR_FO_OFFSET_IN`, mirrored in the portal's qr.ts).
 - The sync carries the fields in §3.6 (several are new to the sync) and the
   move's new code.
 - Every design carries a schema version. A laptop whose edge is older than
