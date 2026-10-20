@@ -379,8 +379,10 @@ saved to the list.
   3. Open each parent in the builder and check it against the old tag.
   4. Print the Vegas tag on the office ZD421 and compare it with the
      canvas.
-  5. Per family, Replace… the old code rows with the rebuilt parent, then
-     link its sites (the old rows keep theirs).
+  5. Per family, link the rebuilt parent to the old rows' sites first
+     (an unlinked active template counts as global and outranks the
+     Generic fallback), then Replace… the old code rows with it (the old
+     rows keep their links).
 
 ## 5. Keyboard shortcuts
 
@@ -391,9 +393,10 @@ resize by 1, ⇧⌥ by 10; ⇧-drag locks an axis; ⇧-resize keeps proportions;
 through elements, Enter opens a text element's content, ⌘[ ⌘] back and
 forward, ⌘⇧[ ⌘⇧] to back and front, ⌘L lock. Format: ⌘B bold, ⌘⇧I inverted.
 Align: ⌥A/D/W/S edges, ⌥H/V centers, ⇧⌥H/V distribute. Canvas: ⌘= ⌘- zoom,
-⌘0 fit, ⌘1 true size, space-drag pan, ⌘' grid, ⌘⇧' snap, ⌘R rulers, ⌘E
-field names / sample values. Workflow: ⌘S save, ⌘P test print, ⌘K field
-search, ⌘/ shortcut sheet.
+⌘0 fit, ⇧0 true size (⌘1 belongs to the browser), space-drag pan, ⌘' grid,
+⌘⇧' snap, ⌘R rulers, ⌘E field names / sample values. Workflow: ⌘S save,
+⌘P test print, / field search (⌘K is left to the browser), ⌘/ shortcut
+sheet.
 
 ## 6. Constraints
 - Byte-identical output between the portal and the kiosk, through the
