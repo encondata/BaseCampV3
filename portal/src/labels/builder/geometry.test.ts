@@ -7,7 +7,7 @@ import {
 } from './geometry';
 import { reservedWidthIn, textBoxFor, type FontMetrics } from './metrics';
 import {
-  parseDesign, type BarcodeElement, type BoxElement, type ElementV2, type FieldElement,
+  parseDesign, type BarcodeElement, type BoxElement, type ElementV2, type FieldElement, type ImageElement,
   type QrElement, type TextElement,
 } from './model';
 
@@ -110,6 +110,33 @@ describe('resize: shapes', () => {
     // a line at 90: its footprint is h wide and w tall; dragging s lengthens it
     const line = { ...byId('rule'), rotation: 90 as const };
     expect(resize(line, 's', 0, 0.5, CTX)).toMatchObject({ w: 3.7333 + 0.5, h: 0 });
+  });
+});
+
+describe('resize: image', () => {
+  const photo = (extra: Partial<ImageElement> = {}): ImageElement => ({
+    id: 'image-1', type: 'image', source: 'photo', x: 1, y: 0.5, w: 0.8, h: 1, rotation: 0, ...extra,
+  });
+
+  it('is a free box: each side on its own, the picture fitting inside it', () => {
+    const e = resize(photo(), 'e', 0.4, 0, CTX);
+    expect(e).toMatchObject({ x: 1, h: 1 });
+    expect(e.w).toBeCloseTo(1.2, 10);
+    expect(resize(photo(), 's', 0, -0.5, CTX)).toMatchObject({ w: 0.8, h: 0.5 });
+    const nw = resize(photo(), 'nw', -0.2, 0.25, CTX);
+    expect(nw).toMatchObject({ x: 0.8, y: 0.75 });
+    expect(nw.w).toBeCloseTo(1, 10);
+    expect(nw.h).toBeCloseTo(0.75, 10);
+  });
+
+  it('keeps its proportions with ⇧', () => {
+    const out = resize(photo(), 'se', 0.4, 0.1, { ...CTX, keepRatio: true });
+    expect(out.w).toBeCloseTo(1.2, 10);
+    expect(out.h).toBeCloseTo(1.5, 10);
+  });
+
+  it('turns its handles with it: at 90 the footprint is h wide and w tall', () => {
+    expect(resize(photo({ rotation: 90 }), 'e', 0.5, 0, CTX)).toMatchObject({ w: 0.8, h: 1.5 });
   });
 });
 

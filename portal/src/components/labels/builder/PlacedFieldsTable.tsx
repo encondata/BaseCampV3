@@ -1,7 +1,8 @@
 /**
  * The table of placed fields under the canvas (spec §3.5, §4.6): one row
- * per placement of a field (a barcode or QR code bound to one included),
- * in stacking order, with a field's Split pieces nested under one parent
+ * per placement of a field (a barcode or QR code bound to one included)
+ * and per image (an ID badge's Photo, Logo or static Image), in stacking
+ * order, with a field's Split pieces nested under one parent
  * row standing where its first piece is. Columns: Field, Display, Font,
  * B, Inv, Expected, Max, Trim, Strip — the per-placement controls, each
  * edit going through builderEdits so a text field stays as wide as it
@@ -20,6 +21,7 @@ import { useEffect, useRef } from 'react';
 import type { KeyboardEvent, MouseEvent, ReactNode } from 'react';
 
 import { familyInfo } from '../../../labels/builder/fonts';
+import { imageName } from '../../../labels/builder/image';
 import { MAX_COUNT, type DesignV2, type ElementV2, type FieldElement, type StripWhere, type Trim } from '../../../labels/builder/model';
 import type { LabelFields } from '../../../lib/api';
 import '../../../styles/directory.css';
@@ -48,6 +50,7 @@ export interface PlacedRow {
   /** The element's id, or `split:<field>` for a Split's parent row. */
   key: string;
   kind: 'placement' | 'split';
+  /** The field it prints; '' for an image. */
   field: string;
   label: string;
   /** The placement, or every placement of the Split's pieces. */
@@ -57,12 +60,16 @@ export interface PlacedRow {
   piece: boolean;
 }
 
-/** The table's rows: one per field placement in stacking order, Split
- *  pieces gathered under one parent row where the first piece stands. */
+/** The table's rows: one per field placement and image in stacking order,
+ *  Split pieces gathered under one parent row where the first piece stands. */
 export function placedRows(design: DesignV2, fields: LabelFields | null): PlacedRow[] {
   const out: (PlacedRow | { split: PlacedRow; children: PlacedRow[] })[] = [];
   const splits = new Map<string, { split: PlacedRow; children: PlacedRow[] }>();
   for (const el of design.elements) {
+    if (el.type === 'image') {
+      out.push({ key: el.id, kind: 'placement', field: '', label: imageName(el), ids: [el.id], el, piece: false });
+      continue;
+    }
     const key = boundField(el);
     if (!key) continue;
     const label = fieldLabel(fields, key);
@@ -230,7 +237,7 @@ export default function PlacedFieldsTable({
     if (row.kind === 'split') return [name, <span key="d" className="chip tag">Split</span>, '', '', '', '', '', '', ''];
     const el = row.el!;
     if (el.type === 'field') return [name, ...fieldCells(el)];
-    const kind = el.type === 'barcode' ? 'Barcode' : 'QR code';
+    const kind = el.type === 'barcode' ? 'Barcode' : el.type === 'image' ? 'Image' : 'QR code';
     return [name, <span key="d" className="chip tag">{kind}</span>, NONE, NONE, NONE, NONE, NONE, NONE, NONE];
   };
 

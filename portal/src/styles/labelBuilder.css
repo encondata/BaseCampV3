@@ -88,6 +88,8 @@
   display: block;
   overflow: visible;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+  /* inverted text blends with the label only, never the stage behind it */
+  isolation: isolate;
 }
 .lbc-paper { fill: var(--lbc-paper); }
 .lbc-gridlines path { stroke: var(--lbc-grid-minor); }
@@ -98,7 +100,9 @@
 .lbc-box { fill: none; stroke: var(--lbc-guide); }
 .lbc-text { fill: var(--lbc-ink); white-space: pre; }
 .lbc-invert { fill: var(--lbc-ink); }
-.lbc-el.is-inverted .lbc-text { fill: var(--lbc-paper); }
+/* ^FR: inverted text reverses whatever lies under it (white on its black
+   block, black off it, the opposite of a picture's dots), as it prints */
+.lbc-el.is-inverted .lbc-text { fill: var(--lbc-paper); mix-blend-mode: difference; }
 .lbc-el.is-names .lbc-text, .lbc-el.is-names .lbc-hri { fill: var(--lbc-blue); }
 .lbc-el.is-names.is-inverted .lbc-text { fill: var(--lbc-paper); }
 .lbc-overflow { fill: var(--c-red); fill-opacity: 0.28; }
@@ -113,6 +117,12 @@
 .lbc-qr-symbol.is-capped .lbc-qr-dark { fill: var(--c-amber); }
 .lbc-qr-bad { fill: var(--c-red); fill-opacity: 0.25; }
 .lbc-shape { fill: var(--lbc-ink); }
+/* an image (ID badges): its printed dots, or where it goes when it has none */
+.lbc-image.is-stale { opacity: 0.55; }
+.lbc-image-placeholder { fill: var(--lbc-blue); fill-opacity: 0.06; stroke: var(--lbc-blue); }
+.lbc-image-placeholder.is-error { fill: var(--c-red); stroke: var(--c-red); }
+.lbc-image-outline { fill: var(--lbc-ink); }
+.lbc-image-name { fill: var(--lbc-blue); pointer-events: none; }
 
 /* ── selection ───────────────────────────────────────────── */
 
@@ -474,6 +484,10 @@ textarea.lbp-text { resize: vertical; }
 .lbp-prop-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
 .lbp-prop-controls > .combo-wrap,
 .lbp-prop-controls > .lbp-text { flex: 1 1 100%; }
+/* a static image: the library pick beside Upload…, its notes under them */
+.lbp-image-pick { display: flex; align-items: center; gap: 6px; flex: 1 1 100%; min-width: 0; }
+.lbp-image-pick .combo-wrap { flex: 1 1 auto; min-width: 0; }
+.lbp-prop-controls > .lbp-hint { flex: 1 1 100%; margin-top: 0; }
 .lbp-prop .lbp-hint { margin-top: 5px; }
 .lbp-prop .lbp-hint.is-warning { color: var(--c-amber); }
 .lbp-static { font-size: 13px; color: var(--text-dark); }

@@ -5773,6 +5773,88 @@ export async function compileLabel(body: {
   return resp.json();
 }
 
+// ── Label images (ID badges: the image element) ──────────────────────
+
+/** POST /labels/images/raster: one image element's picture, prepped as the
+ *  compiler preps it (labels/image_prep.py) — fitted to the element's
+ *  `w_in` x `h_in` box at `dpi` by `fit`, turned by `rotation` — for the
+ *  builder canvas to dither. A photo or logo is `person_id`'s, a static
+ *  picture is `image_id`. */
+export interface LabelImageRasterBody {
+  source: 'photo' | 'logo' | 'static';
+  image_id?: string;
+  person_id?: string;
+  w_in: number;
+  h_in: number;
+  dpi: number;
+  fit: 'cover' | 'contain';
+  rotation: 0 | 90 | 180 | 270;
+}
+
+/** 8-bit gray levels, row-major (0 black, 255 white), already turned. The
+ *  size is the X-Raster-Width / X-Raster-Height headers' (the API exposes
+ *  them over CORS), null if they can't be read: the caller knows the size
+ *  it asked for. */
+export interface LabelImageRaster { width: number | null; height: number | null; gray: Uint8Array }
+
+function rasterSide(resp: Response, header: string): number | null {
+  const v = resp.headers.get(header);
+  const n = v === null ? NaN : Number(v);
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+/** null when there is no picture to draw (404 `no_image`: no sample
+ *  person, a person with no photo or logo, a static image missing or
+ *  deleted). Refusals are ApiErrors: 422 `bad_field`, `person_not_found`,
+ *  `image_too_large` (past 4,000,000 dots), `unreadable_image`; 502
+ *  `storage_unavailable`. Rank 80 + labels:view. */
+export async function labelImageRaster(body: LabelImageRasterBody): Promise<LabelImageRaster | null> {
+  const resp = await apiFetch('/labels/images/raster', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (resp.status === 204) return null;
+  if (!resp.ok) {
+    const err = await errorFrom(resp);
+    if (err.status === 404 && err.code === 'no_image') return null;
+    throw err;
+  }
+  return {
+    width: rasterSide(resp, 'X-Raster-Width'),
+    height: rasterSide(resp, 'X-Raster-Height'),
+    gray: new Uint8Array(await resp.arrayBuffer()),
+  };
+}
+
+/** A static picture in the label image library (`label_images`): the
+ *  original as uploaded, its size in pixels. */
+export interface LabelImage {
+  id: string; name: string; width: number; height: number; mime: string; created_at: string;
+}
+
+export async function listLabelImages(): Promise<LabelImage[]> {
+  const resp = await apiFetch('/labels/images');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** PNG, JPEG, WebP or GIF, 5 MiB at most; `name` defaults to the file's. */
+export async function uploadLabelImage(file: File, name?: string): Promise<LabelImage> {
+  const form = new FormData();
+  form.set('file', file);
+  if (name) form.set('name', name);
+  const resp = await apiFetch('/labels/images', { method: 'POST', body: form });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** A soft delete: a template still using it prints no picture there. */
+export async function deleteLabelImage(id: string): Promise<void> {
+  const resp = await apiFetch(`/labels/images/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
 /** The printer-rendered preview (Labelary); `font_ids` are library fonts
  *  embedded ahead of the label so it renders in them. */
 export async function previewZplRequest(body: {

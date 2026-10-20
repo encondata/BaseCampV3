@@ -1,6 +1,6 @@
 /**
  * The bar over the builder canvas: the tools (select, static text, barcode,
- * QR code, box, line), zoom (out, in, fit, true size), the Grid / Snap /
+ * QR code, box, line, and on an ID badge in ZPL an image), zoom (out, in, fit, true size), the Grid / Snap /
  * Rulers toggles, the Align group (one element aligns to the label, two or
  * more to the first selected, the anchor; distribute needs three, match
  * size two) and the Field names / Sample values choice. Each button has a
@@ -27,6 +27,9 @@ export interface CanvasToolbarProps {
   selectionCount: number;
   onAlign: (op: AlignOp) => void;
   readOnly?: boolean;
+  /** Offer the Image tool: an ID badge template in ZPL (spec
+   *  2026-10-20-badge-templates §4.10). */
+  imageTool?: boolean;
   platform: Platform;
   /** Right-hand readout (label size, pointer position). */
   status?: ReactNode;
@@ -46,6 +49,7 @@ const TOOLS: { tool: CanvasTool; id: string; label: string; icon: ReactNode }[] 
   { tool: 'qr', id: 'tool.qr', label: 'QR code', icon: <I d="M2.5 2.5h4v4h-4zM9.5 2.5h4v4h-4zM2.5 9.5h4v4h-4zM9.5 9.5h1.5v1.5M12.5 12.5h1M9.5 13.5h1M13.5 9.5v1" /> },
   { tool: 'box', id: 'tool.box', label: 'Box', icon: <I d="M2.5 4.5h11v7h-11z" /> },
   { tool: 'line', id: 'tool.line', label: 'Line', icon: <I d="M2.5 13.5l11-11" /> },
+  { tool: 'image', id: 'tool.image', label: 'Image', icon: <I d="M2.5 3.5h11v9h-11zM2.5 10.5l3.5-3.5 3 3 1.5-1.5 3 3M10 5.5h1.5V7H10z" /> },
 ];
 
 const ALIGNS: { op: AlignOp; id: string | null; label: string; icon: ReactNode }[] = [
@@ -89,7 +93,8 @@ function alignNote(op: AlignOp): string {
 }
 
 export default function CanvasToolbar({
-  tool, onTool, zoom, onZoom, view, onView, selectionCount, onAlign, readOnly = false, platform, status,
+  tool, onTool, zoom, onZoom, view, onView, selectionCount, onAlign, readOnly = false, imageTool = false, platform,
+  status,
 }: CanvasToolbarProps) {
   const toggle = (key: 'grid' | 'snap' | 'rulers', label: string, id: string) => (
     <Tip label={`${label} ${view[key] ? 'on' : 'off'}`} keys={keysOf(id, platform)}>
@@ -102,7 +107,7 @@ export default function CanvasToolbar({
   return (
     <div className="lbc-toolbar" role="toolbar" aria-label="Canvas">
       <div className="segmented lbc-tools" role="group" aria-label="Tools">
-        {TOOLS.map((t) => {
+        {TOOLS.filter((t) => t.tool !== 'image' || imageTool).map((t) => {
           const off = readOnly && t.tool !== 'select';
           return (
             <Tip key={t.tool} label={t.label} keys={keysOf(t.id, platform)} note={off ? READ_ONLY_NOTE : null}>

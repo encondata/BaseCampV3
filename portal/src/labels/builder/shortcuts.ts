@@ -54,6 +54,7 @@ const DEFS: Def[] = [
   { id: 'tool.qr', keys: ['Q'], label: 'QR code', group: 'Tools' },
   { id: 'tool.box', keys: ['R'], label: 'Box', group: 'Tools' },
   { id: 'tool.line', keys: ['L'], label: 'Line', group: 'Tools' },
+  { id: 'tool.image', keys: ['I'], label: 'Image (ID badges)', group: 'Tools' },
   { id: 'tool.escape', keys: ['Escape'], label: 'Back to select', group: 'Tools' },
   // Move and size
   ...ARROWS.map(([, key, dir]): Def => (

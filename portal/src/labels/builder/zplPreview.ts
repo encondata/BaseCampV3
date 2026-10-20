@@ -5,10 +5,23 @@
  * fonts the design uses embedded (`POST /labels/preview/zpl`, `font_ids`).
  * The resident Swiss cut is never sent: the preview draws it with the
  * printer's font 0, the same face.
+ *
+ * A badge's samples carry its sample person (`person:id`), so the compile
+ * resolves the same photo and logo the canvas draws. A picture makes a big
+ * ZPL (a square inch is ~47k characters at 600 DPI): past
+ * PREVIEW_MAX_CHARS the preview route won't take it.
  */
 
 import { familyInfo, fontObject, metricsFile, type FontRef, type FontWeight } from './fonts';
 import { serializeDesign, type DesignV2, type ElementV2 } from './model';
+
+/** The longest ZPL POST /labels/preview/zpl renders. */
+export const PREVIEW_MAX_CHARS = 250_000;
+
+/** Whether `zpl` is past what the preview renders. */
+export function previewTooLarge(zpl: string): boolean {
+  return zpl.length > PREVIEW_MAX_CHARS;
+}
 
 export interface CompileBody {
   kind: 'design';
@@ -17,7 +30,8 @@ export interface CompileBody {
   dpi_key: string;
   language_key: 'zpl';
   mode: 'sample';
-  /** Field key → sample value: what the design prints with. */
+  /** Field key → sample value: what the design prints with; a badge's
+   *  sample person under `person:id`. */
   samples: Record<string, string>;
   /** The template's label type: only its fields take mock values, so a key
    *  of another type previews blank, as it prints. */

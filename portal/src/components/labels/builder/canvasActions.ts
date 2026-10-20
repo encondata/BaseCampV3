@@ -10,12 +10,16 @@
 import { align, distribute, matchSize, type AlignEdge } from '../../../labels/builder/align';
 import { DEFAULT_FAMILY, type FontRef } from '../../../labels/builder/fonts';
 import { footprint, move, resize, type Handle, type Point, type ResizeContext } from '../../../labels/builder/geometry';
+import { IMAGE_SIZES } from '../../../labels/builder/image';
 import { textBoxFor, textWidthIn, type FontMetrics } from '../../../labels/builder/metrics';
 import {
-  duplicate, removeElements, reorder, replaceElements, type DesignV2, type ElementV2, type ReorderMove,
+  duplicate, IMAGE_DEFAULTS, removeElements, reorder, replaceElements, type DesignV2, type ElementV2, type ImageElement,
+  type ImageSource, type ReorderMove,
 } from '../../../labels/builder/model';
 
-export type CanvasTool = 'select' | 'text' | 'barcode' | 'qr' | 'box' | 'line';
+/** `image` is offered on ID badge templates in ZPL only (spec
+ *  2026-10-20-badge-templates §4.10). */
+export type CanvasTool = 'select' | 'text' | 'barcode' | 'qr' | 'box' | 'line' | 'image';
 
 export type AlignOp = AlignEdge | 'distributeH' | 'distributeV' | 'matchW' | 'matchH';
 
@@ -166,9 +170,25 @@ const NEW_TEXT = 'Text';
 const NEW_SIZE_PT = 12;
 const NEW_DATA = '12345678';
 
+/** A new image of `source` with its top-left at `at` (inches): the
+ *  source's fit and look (a photo fills its box and is dithered, a logo or
+ *  a static picture fits inside it and is thresholded), its box
+ *  (image.ts IMAGE_SIZES), the default brightness, contrast and threshold,
+ *  and hidden when the person has no picture. A static image has no
+ *  picture until one is picked. */
+export function newImage(source: ImageSource, at: Point): ImageElement {
+  const { fit, mode } = IMAGE_DEFAULTS[source];
+  const { w, h } = IMAGE_SIZES[source];
+  return {
+    id: '', type: 'image', source, x: at.x, y: at.y, w, h, rotation: 0, locked: false,
+    fit, mode, brightness: 0, contrast: 100, threshold: 128, invert: false, hideWhenEmpty: true,
+  };
+}
+
 /** The element a tool places with its top-left at `at` (inches); the id is
  *  left for addElement. New text is one line of its font tall
- *  (metrics.ts textBoxFor) once the default font's metrics are loaded. */
+ *  (metrics.ts textBoxFor) once the default font's metrics are loaded; the
+ *  Image tool places a photo. */
 export function newElement(tool: Exclude<CanvasTool, 'select'>, at: Point,
   metrics: FontMetrics | null): ElementV2 {
   const base = { id: '', x: at.x, y: at.y, rotation: 0 as const, locked: false };
@@ -189,5 +209,7 @@ export function newElement(tool: Exclude<CanvasTool, 'select'>, at: Point,
       return { ...base, type: 'box', strokeIn: 0.01, fill: false, w: 1, h: 0.5 };
     case 'line':
       return { ...base, type: 'line', strokeIn: 0.01, w: 1, h: 0 };
+    case 'image':
+      return newImage('photo', at);
   }
 }
