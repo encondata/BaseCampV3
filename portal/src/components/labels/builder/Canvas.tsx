@@ -14,9 +14,11 @@
  * draws a marquee (⇧ adds), dragging moves the selection (⇧ locks the axis,
  * ⌥ moves a copy), the eight handles resize one unlocked element (⇧ keeps
  * its proportions), Space-drag or the wheel pans, ⌘-wheel zooms about the
- * pointer. With Snap on a move goes in grid steps, else in whole dots.
+ * pointer. With Snap on a move goes in grid steps, else in whole dots. A
+ * tool places its element where pressed, on release.
  * One press at a time, from the primary pointer; a pointercancel ends the
- * gesture without selecting, and unmounting closes any gesture still open.
+ * gesture without selecting or placing, and unmounting closes any gesture
+ * still open.
  * Pointer positions stay in exact inches; everything drawn is in whole
  * dots as the compiler rounds them (CanvasElement).
  * Keyboard (useBuilderShortcuts): tools, arrows (⇧ ten dots, ⌥ to resize),
@@ -98,12 +100,14 @@ const HIT_PX = 4;
 const MARGIN_PX = 24;
 
 /** One pointer's press, from pointerdown to pointerup or pointercancel;
- *  every other pointer is ignored meanwhile. */
+ *  every other pointer is ignored meanwhile. A move's or resize's `base` is
+ *  the design the gesture works from, read when it begins (see onPointerDown). */
 type Drag = { pointerId: number } & (
   | { kind: 'move'; start: Point; client: Point; base: DesignV2; ids: string[]; began: boolean;
       copy: boolean; frozen: boolean; clickSelect: string[] | null; last: string; shown: DesignV2 }
   | { kind: 'resize'; start: Point; client: Point; base: DesignV2; id: string; handle: Handle; began: boolean; last: string }
   | { kind: 'marquee'; start: Point; client: Point; additive: boolean; prior: string[]; began: boolean }
+  | { kind: 'place'; tool: Exclude<CanvasTool, 'select'>; at: Point }
   | { kind: 'pan'; client: Point; pan: Point });
 
 function fontOf(el: ElementV2) {
@@ -316,8 +320,9 @@ export default function Canvas({
 
   const place = (t: Exclude<CanvasTool, 'select'>, at: Point) => {
     const metrics = metricsFor(DEFAULT_FONT.family, DEFAULT_FONT.weight)?.metrics ?? null;
-    const fresh = clampToLabel(newElement(t, { x: snap(at.x, step), y: snap(at.y, step) }, metrics), design.size);
-    const next = addElement(design, fresh);
+    const base = live.current.design;
+    const fresh = clampToLabel(newElement(t, { x: snap(at.x, step), y: snap(at.y, step) }, metrics), base.size);
+    const next = addElement(base, fresh);
     onChange(next);
     onSelect([next.elements[next.elements.length - 1].id]);
   };
@@ -417,6 +422,11 @@ export default function Canvas({
     return { x: (e.clientX - (r?.left ?? 0)) / zoom / dpi, y: (e.clientY - (r?.top ?? 0)) / zoom / dpi };
   };
 
+  /** A press. Taking focus commits whatever a properties or table box still
+   *  holds (its blur), and that edit reaches the page's design only after
+   *  this event: a drag reads the design it works from when it begins, and
+   *  a tool places on release, both from `live.current.design`, so the
+   *  typed value is never built over. */
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     // one press at a time, from the primary pointer (a second finger or pen waits)
     if (!e.isPrimary || drag.current || (e.button !== 0 && e.button !== 1)) return;
@@ -433,13 +443,17 @@ export default function Canvas({
     }
     const p = toLabel(e);
     if (tool !== 'select') {
-      if (!readOnly) place(tool, p);
-      setTool('select');
-      drag.current = null;
+      if (readOnly) {
+        setTool('select');
+        drag.current = null;
+      } else {
+        drag.current = { pointerId, kind: 'place', tool, at: p };
+      }
       return;
     }
     const handle = (e.target as Element).closest?.('[data-handle]')?.getAttribute('data-handle') as Handle | null;
     const only = selection.length === 1 ? design.elements.find((x) => x.id === selection[0]) : undefined;
+    // `design` here is what the press landed on; `base` is read again when the gesture begins
     if (handle && only && !only.locked && !readOnly) {
       drag.current = { pointerId, kind: 'resize', start: p, client, base: design, id: only.id, handle, began: false, last: '' };
       return;
@@ -483,6 +497,7 @@ export default function Canvas({
       setPan({ x: d.pan.x + e.clientX - d.client.x, y: d.pan.y + e.clientY - d.client.y });
       return;
     }
+    if (d.kind === 'place') return;
     const far = Math.hypot(e.clientX - d.client.x, e.clientY - d.client.y) >= DRAG_PX;
     if (d.kind === 'marquee') {
       if (!d.began && !far) return;
@@ -493,7 +508,10 @@ export default function Canvas({
     if (d.kind === 'move' && d.frozen) return;
     if (!d.began) {
       if (!far) return;
+      // the page's design now, with any value the press committed
+      d.base = live.current.design;
       if (d.kind === 'move') {
+        d.shown = d.base;
         // locked elements never move, and ⌥ never copies them
         const movable = selected(d.base, d.ids).filter((x) => !x.locked).map((x) => x.id);
         if (!movable.length) {
@@ -547,6 +565,12 @@ export default function Canvas({
     switch (d.kind) {
       case 'pan':
         setPanning(false);
+        return;
+      case 'place':
+        // a cancelled press places nothing and keeps the tool
+        if (cancelled) return;
+        place(d.tool, d.at);
+        setTool('select');
         return;
       case 'move':
         if (d.began) onGesture('end');

@@ -20,7 +20,9 @@ import {
   parseDesign, replaceElements, updateElement, type DesignV2, type ElementV2, type TextElement,
 } from '../../../labels/builder/model';
 import { toDots } from '../../../labels/builder/units';
+import { FIELDS } from './builderTestKit';
 import Canvas, { DEFAULT_VIEW, type CanvasProps, type CanvasView } from './Canvas';
+import PropertiesPanel from './PropertiesPanel';
 
 const DPI = 300;
 const Z = 0.5;
@@ -626,6 +628,65 @@ describe('rotation', () => {
   });
 });
 
+describe('a value typed into a box, then a press on the stage', () => {
+  // the stage takes focus on pointerdown, which commits the box's draft
+  // (blur) into the page's design before the press does anything with it
+  function withPanel(selection: string[]) {
+    const change = vi.fn<(d: DesignV2) => void>();
+    function Harness() {
+      const [d, setD] = useState<DesignV2>(VEGAS());
+      const [sel, setSel] = useState<string[]>(selection);
+      const onChange = (next: DesignV2) => { change(next); setD(next); };
+      return (
+        <>
+          <Canvas design={d} dpi={DPI} view={{ ...DEFAULT_VIEW, zoom: Z }} samples={SAMPLES} selection={sel}
+            metricsFor={metricsFor} platform="mac" onChange={onChange} onSelect={setSel}
+            onGesture={() => {}} onView={() => {}} />
+          <PropertiesPanel design={d} selection={sel} samples={SAMPLES} fields={FIELDS} dpi={DPI}
+            metricsFor={metricsFor} onChange={onChange} onSelect={setSel} />
+        </>
+      );
+    }
+    const utils = render(<Harness />);
+    const svg = utils.container.querySelector('svg.lbc-label') as SVGSVGElement;
+    const last = (): DesignV2 => change.mock.calls[change.mock.calls.length - 1][0];
+    /** Types `value` into the box and leaves it there, uncommitted. */
+    const draft = (name: string, value: string) => {
+      const box = screen.getByRole('textbox', { name });
+      act(() => box.focus());
+      fireEvent.change(box, { target: { value } });
+      expect(change).not.toHaveBeenCalled();
+    };
+    return { ...utils, svg, change, last, draft };
+  }
+
+  it('a drag keeps the typed value and moves on top of it', () => {
+    const { svg, last, draft } = withPanel(['banner-pod']);
+    draft('X', '+15');                                       // 400 → 415 dots
+    drag(svg, [1.5, 0.2], [1.62, 0.2]);                      // snapped: +0.1 in
+    expect(el(last(), 'banner-pod').x).toBeCloseTo(415 / DPI + 0.1, 9);
+  });
+
+  it('a handle drag resizes the box as typed', () => {
+    const { container, last, draft } = withPanel(['value-name']);
+    const v = el(VEGAS(), 'value-name');
+    draft('X', '+15');                                       // 185 → 200 dots
+    drag(container.querySelector('[data-handle="e"]')!, [v.x + v.w, v.y + v.h / 2], [v.x + v.w + 0.2, v.y + v.h / 2]);
+    expect(el(last(), 'value-name').x).toBeCloseTo(200 / DPI, 9);
+    expect(el(last(), 'value-name').w).toBeCloseTo(2.6667 + 0.2, 9);
+  });
+
+  it('a tool places its element on the design as typed', () => {
+    const { svg, last, draft } = withPanel(['banner-pod']);
+    fireEvent.click(within(screen.getByRole('group', { name: 'Tools' })).getByRole('button', { name: 'Box' }));
+    draft('X', '+15');
+    click(svg, 2.02, 0.88);
+    const d = last();
+    expect(d.elements[d.elements.length - 1].type).toBe('box');
+    expect(el(d, 'banner-pod').x).toBeCloseTo(415 / DPI, 9);
+  });
+});
+
 describe('gesture hygiene', () => {
   it('pointercancel ends a drag\'s gesture', () => {
     const { svg, gesture, select } = setup({ selection: ['banner-pod', 'banner-nap'] });
@@ -634,6 +695,19 @@ describe('gesture hygiene', () => {
     fireEvent.pointerCancel(svg, at(1.6, 0.2));
     expect(gesture.mock.calls).toEqual([['begin'], ['end']]);
     expect(select).not.toHaveBeenCalled();
+  });
+
+  it('pointercancel places nothing and keeps the tool', () => {
+    const { svg, change } = setup();
+    const tools = within(screen.getByRole('group', { name: 'Tools' }));
+    fireEvent.click(tools.getByRole('button', { name: 'Box' }));
+    fireEvent.pointerDown(svg, at(2, 1));
+    fireEvent.pointerCancel(svg, at(2, 1));
+    expect(change).not.toHaveBeenCalled();
+    expect(tools.getByRole('button', { name: 'Box' }).getAttribute('aria-pressed')).toBe('true');
+    click(svg, 2, 1);
+    expect(change).toHaveBeenCalledTimes(1);
+    expect(tools.getByRole('button', { name: 'Select' }).getAttribute('aria-pressed')).toBe('true');
   });
 
   it('pointercancel never click-selects', () => {
