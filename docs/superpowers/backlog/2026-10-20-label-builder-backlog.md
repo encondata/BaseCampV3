@@ -94,8 +94,17 @@ QR).
     nothing half-written). Fix: lock the whole family in one statement
     (`WHERE id = :p OR parent_id = :p ORDER BY id FOR UPDATE`) in both save
     functions, or make every family write take the parent lock first.
-31. **Size-only or samples-only parent PATCH reads the design before the
-    lock.** `routes/labels.py` `_patch_parent` builds `design` (plus the
+    Update 2026-10-20 (badge templates, main 83386106): design, type,
+    language and size PATCHes now take `tree.lock_tree` (parent, then
+    children) before the images check, and a samples-only save takes the
+    parent lock alone (`tree.lock_parent`), so it no longer joins this race.
+    A reviewer reproduced the deadlock between a children-locking save and
+    Deactivate; the remaining fix is for activate, deactivate, replace and
+    delete_parent to call `lock_tree` before they change rows.
+31. **Done 2026-10-20 (badge templates, main 83386106).** ~~**Size-only or
+    samples-only parent PATCH reads the design before the lock.**~~ The PATCH
+    now locks first and writes the design and samples as locked; regression
+    tests in `api/tests/test_label_images_api.py`. Original note: `routes/labels.py` `_patch_parent` builds `design` (plus the
     size rewrite) before `save_parent` locks; a save committed in between is
     overwritten. API-only today (the portal always sends design and samples,
     and nothing PATCHes `size_key`). Fix: apply the size inside
