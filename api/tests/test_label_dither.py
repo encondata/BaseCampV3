@@ -9,6 +9,7 @@ because zlib's output may vary between builds (zlib-ng)."""
 
 import base64
 import binascii
+import importlib.util
 import json
 import re
 import zlib
@@ -28,6 +29,9 @@ from serversherpa.labels.render import render_template
 from serversherpa.labels.zpl import compile_zpl, crc16, image_box_dots, z64
 
 FIXTURE = Path(labels_pkg.__file__).parent / "fixtures" / "dither.json"
+# the builder canvas's parity fixture and its generator (written by the
+# Python core, checked by portal/src/labels/builder/imageParity.test.ts)
+IMAGE_PARITY = Path(__file__).resolve().parents[2] / "portal/src/labels/builder/fixtures"
 SWISS = {"family": "swiss721-cond-bold", "weight": "regular"}
 SPLITS = {"destination_rack": {"pieces": ["NAP", "Sector", "POD", "Row", "Rack"]}}
 GFA = re.compile(r"\^FO(\d+),(\d+)\^GFA,(\d+),(\d+),(\d+),:Z64:([A-Za-z0-9+/=]*):([0-9A-F]{4})\^FS")
@@ -409,7 +413,91 @@ def test_bitmap_must_fill_the_footprint():
         compile_zpl(parse_design(_design(_image())), 203, {}, images={"img": _pattern(120, 90)})
 
 
+def _placeholder(x: int, y: int, w: int, h: int) -> list[str]:
+    return [f"^FO{x},{y}^GB{w},{h},2^FS", f"^FO{x},{y}^GD{w},{h},2,B,R^FS",
+            f"^FO{x},{y}^GD{w},{h},2,B,L^FS"]
+
+
+def test_image_placeholders_draw_every_image_as_a_crossed_box():
+    """A preview never carries a picture (it goes to Labelary): with
+    image_placeholders every image element, whatever its source and its
+    Hide when empty, is its footprint outlined with both diagonals, and a
+    bitmap passed in is ignored."""
+    design = parse_design(_design(
+        _image(id="photo", rotation=90),
+        _image(id="logo", source="logo", x=1.0, hideWhenEmpty=True),
+        _image(id="static", source="static", imageId="i-1", x=1.5, y=1.0, w=0.5, h=0.2,
+               hideWhenEmpty=False)))
+    body = _body(compile_zpl(design, 300, {}, image_placeholders=True,
+                             images={"logo": _pattern(120, 90)}))
+    assert body == [*_placeholder(150, 75, 90, 120),       # turned 90: h wide, w tall
+                    *_placeholder(300, 75, 120, 90),
+                    *_placeholder(450, 300, 150, 60)]
+    assert not any("^GF" in line for line in body)
+    # the same at another DPI, and a box under 2 dots still draws at 2
+    tiny = parse_design(_design(_image(w=0.001, h=0.3)))
+    assert _body(compile_zpl(tiny, 203, {}, image_placeholders=True)) \
+        == _placeholder(102, 51, 2, 61)
+    # off (the default), images print as they always have
+    assert _body(compile_zpl(design, 300, {})) == ["^FO450,300^GB150,60,2^FS"]
+
+
+def test_compile_and_render_pass_image_placeholders_through():
+    raw = _design(_image(), _field())
+    crossed = _placeholder(150, 75, 120, 90)
+    code = compile_design(raw, width_in=3.375, height_in=2.125, dots=300, language_key="zpl",
+                          subs={"person_name": "Jo"}, image_placeholders=True)
+    assert _body(code)[:3] == crossed
+    template = SimpleNamespace(kind="design", code=None, design=raw, language_key="zpl")
+    code, _unknown = render_template(template, {}, width_in=3.375, height_in=2.125, dots=300,
+                                     image_placeholders=True)
+    assert _body(code)[:3] == crossed
+    # Brother languages print no images either way
+    parsed = parse_design(raw)
+    assert compile_parsed_design(parsed, dots=300, language_key="escp", subs={},
+                                 image_placeholders=True) \
+        == compile_parsed_design(parsed, dots=300, language_key="escp", subs={})
+
+
+def test_the_canvas_parity_fixture_is_what_the_python_core_writes(tmp_path):
+    """image_parity.json pins the dots the canvas draws for image elements
+    (imageParity.test.ts). Its generator runs the real model.py, zpl.py and
+    dither.py: re-run it here, so a core change that moves a printed dot
+    fails on this side too, not only when the portal suite next runs."""
+    spec = importlib.util.spec_from_file_location("image_parity", IMAGE_PARITY / "image_parity.py")
+    generator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generator)
+    generator.OUT = tmp_path / "image_parity.json"
+    generator.main()
+    assert generator.OUT.read_text() == (IMAGE_PARITY / "image_parity.json").read_text(), (
+        "the core moved: rerun `PYTHONPATH=api/src python3 "
+        "portal/src/labels/builder/fixtures/image_parity.py` and check the canvas still matches")
+
+
 # ---- schema 3 ----------------------------------------------------------
+
+def test_a_design_holds_at_most_eight_images():
+    """Each image is a storage read and a decode at compile time: a badge
+    needs a photo, a logo and a few static pictures, never hundreds."""
+    eight = [_image(id=f"i{n}") for n in range(8)]
+    assert len(parse_design(_design(*eight, _field())).elements) == 9
+    with pytest.raises(DesignError) as exc:
+        parse_design(_design(*eight, _image(id="i8"), _field()))
+    assert exc.value.problems == ["a design holds at most 8 images"]
+
+
+def test_schema_3_refuses_duplicate_element_ids():
+    """Images are resolved by element id: two elements sharing one would
+    share one picture (or fail the compile), so schema 3 refuses them, with
+    the builder's message."""
+    with pytest.raises(DesignError) as exc:
+        parse_design(_design(_image(), _image(x=1.5), _field(), _field(id="img")))
+    assert exc.value.problems == ["img: id is used by another element",
+                                  "img: id is used by another element"]
+    assert len(parse_design(_design(_image(), _image(id="img2"), _field())).elements) == 3
+    # schema 2 designs keep parsing as they always have
+    assert len(parse_design(_design(_field(), _field(), schema=2)).elements) == 2
+
 
 def test_schema_rules():
     with pytest.raises(DesignError) as exc:

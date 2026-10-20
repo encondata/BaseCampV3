@@ -700,9 +700,29 @@ async def record_rename(db: AsyncSession, parent: LabelTemplate, before: str,
                 actor_id=actor_id)
 
 
+async def lock_tree(db: AsyncSession, parent: LabelTemplate) -> list[LabelTemplate]:
+    """Lock the parent and then its children (Old ones too), the order every
+    save takes them in, re-reading what a save decides from; returns the
+    children. A write that checks the tree first (an image only on an ID
+    Badge in ZPL) checks the rows as locked, so a concurrent save can't
+    change them under it."""
+    await _lock(db, parent)
+    return await children_of(db, parent, for_update=True)
+
+
+async def lock_child(db: AsyncSession, child: LabelTemplate) -> LabelTemplate:
+    """Lock the child's parent and then the child (the order every save
+    takes them in), re-reading both; returns the parent."""
+    parent = await parent_of(db, child)
+    await _lock(db, parent)
+    await _lock(db, child)
+    return parent
+
+
 async def set_parent_fields(db: AsyncSession, parent: LabelTemplate, values: dict) -> None:
-    """label_type / size_key / language_key on a parent and every child."""
-    rows = [parent, *await children_of(db, parent)]
+    """label_type / size_key / language_key on a parent and every child,
+    the tree locked first (`lock_tree`)."""
+    rows = [parent, *await lock_tree(db, parent)]
     for row in rows:
         for field, value in values.items():
             setattr(row, field, value)

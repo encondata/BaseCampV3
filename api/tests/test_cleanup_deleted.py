@@ -1,5 +1,5 @@
-"""Data cleanup, "Deleted files" group: soft-deleted attachments, notes and
-label fonts past the cutoff, with their stored objects."""
+"""Data cleanup, "Deleted files" group: soft-deleted attachments, notes,
+label fonts and label images past the cutoff, with their stored objects."""
 
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -12,11 +12,13 @@ from serversherpa.db.models import (
     Client,
     Initiative,
     LabelFont,
+    LabelImage,
     Note,
     Partner,
     Person,
     ReportDefinition,
     ReportRun,
+    SystemConfig,
 )
 from tests.test_cleanup_api import _by_key, _developer, _run
 from tests.test_cleanup_history import _idmap, _ids, _key
@@ -53,10 +55,15 @@ def _font(key, *, name=None, deleted=OLD):
                      size_bytes=1, deleted_at=deleted)
 
 
+def _image(key, *, deleted=OLD):
+    return LabelImage(name="Crest", storage_key=key, width=1, height=1, mime="image/png",
+                      size_bytes=1, deleted_at=deleted)
+
+
 # -- registry ----------------------------------------------------------
 
 
-def test_deleted_group_has_the_three_categories_in_order():
+def test_deleted_group_has_its_categories_in_order():
     from serversherpa.devtools import cleanup
 
     group = cleanup.GROUPS["deleted"]
@@ -64,6 +71,7 @@ def test_deleted_group_has_the_three_categories_in_order():
         ("attachments", "Deleted files"),
         ("notes", "Deleted notes"),
         ("label_fonts", "Deleted label fonts"),
+        ("label_images", "Deleted label images"),
     ]
     assert all(c.description for c in group.categories)
 
@@ -224,6 +232,37 @@ async def test_label_fonts_a_live_font_with_the_same_name_does_not_stop_the_purg
     assert storage_calls.deleted == [k_old]
 
 
+# -- label images ------------------------------------------------------
+
+
+async def test_label_images_deleted_before_the_cutoff_go_with_their_object(
+        client, db, seeded_user, storage_calls):
+    """M4: a library image's Delete only sets deleted_at; the cleanup purges
+    the row and its stored picture once it is past the age."""
+    k_old, k_recent, k_live = _key(), _key(), _key()
+    rows = {"old": _image(k_old), "recent": _image(k_recent, deleted=RECENT),
+            "live": _image(k_live, deleted=None)}
+    db.add_all(rows.values())
+    await db.commit()
+    ids = _idmap(rows)
+    res, _ = await _go(client, db, seeded_user, "label_images")
+    assert (res["rows_deleted"], res["files_deleted"], res["files_kept"]) == (1, 1, 0)
+    assert storage_calls.deleted == [k_old]
+    assert await _ids(db, LabelImage, *ids.values()) == {ids["recent"], ids["live"]}
+
+
+async def test_label_images_object_still_in_use_is_kept(client, db, seeded_user, storage_calls):
+    """The row goes, but an object a live library image or the company logo
+    still points at stays."""
+    shared, logo = _key(), _key()
+    db.add_all([_image(shared), _image(shared, deleted=None), _image(logo),
+                SystemConfig(section="branding", data={"company_logo_key": logo})])
+    await db.commit()
+    res, _ = await _go(client, db, seeded_user, "label_images")
+    assert (res["rows_deleted"], res["files_deleted"], res["files_kept"]) == (2, 0, 2)
+    assert storage_calls.deleted == []
+
+
 # -- preview and audit -------------------------------------------------
 
 
@@ -232,7 +271,7 @@ async def test_preview_counts_rows_and_only_files_that_would_go(client, db, seed
     d = ReportDefinition(name=f"d-{uuid.uuid4().hex[:6]}", report_type="x", is_system=False)
     db.add(d)
     await db.flush()
-    shared, f_shared, f_solo = _key(), _key(), _key()
+    shared, f_shared, f_solo, i_shared, i_solo = _key(), _key(), _key(), _key(), _key()
     db.add_all([
         ReportRun(definition_id=d.id, report_type="x", initiative_id=ini.id,
                   requested_by=seeded_user.id, status="completed",
@@ -241,6 +280,7 @@ async def test_preview_counts_rows_and_only_files_that_would_go(client, db, seed
         _att(ini, _key(), deleted=RECENT),                      # too recent
         Note(entity_type="initiative", entity_id=ini.id, body="b", deleted_at=OLD),
         _font(f_shared), _font(f_shared, deleted=None), _font(f_solo),
+        _image(i_shared), _image(i_shared, deleted=None), _image(i_solo), _image(i_solo),
     ])
     await db.commit()
     hdrs = await _developer(db, client, seeded_user)
@@ -252,6 +292,7 @@ async def test_preview_counts_rows_and_only_files_that_would_go(client, db, seed
     assert (cats["attachments"]["rows"], cats["attachments"]["files"]) == (2, 1)
     assert (cats["notes"]["rows"], cats["notes"]["files"]) == (1, 0)
     assert (cats["label_fonts"]["rows"], cats["label_fonts"]["files"]) == (2, 1)
+    assert (cats["label_images"]["rows"], cats["label_images"]["files"]) == (3, 1)
 
 
 async def test_a_deleted_run_writes_one_audit_row(client, db, seeded_user, storage_calls):

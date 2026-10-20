@@ -341,6 +341,104 @@ def test_a_corrupt_picture_is_unreadable_not_a_black_slab():
         gray_raster(corrupt_png(400, 300), 20, 10, "cover", 0)
 
 
+def _decodes(monkeypatch) -> dict[int, Image.Image]:
+    """The distinct pictures image_prep decodes (every image `_load`ed),
+    held here so no id is reused while the test counts them."""
+    loaded: dict[int, Image.Image] = {}
+    real = image_prep._load
+
+    def counting(im):
+        loaded[id(im)] = im
+        real(im)
+
+    monkeypatch.setattr(image_prep, "_load", counting)
+    return loaded
+
+
+def _exif_jpeg(width: int, height: int, orientation: int | None = None) -> bytes:
+    im = Image.new("RGB", (width, height), (200, 200, 200))
+    im.paste((10, 60, 30), (0, 0, width // 3, height // 2))     # a dark corner
+    buf = io.BytesIO()
+    if orientation is None:
+        im.save(buf, "JPEG", quality=90)
+    else:
+        exif = Image.Exif()
+        exif[0x0112] = orientation
+        im.save(buf, "JPEG", quality=90, exif=exif)
+    return buf.getvalue()
+
+
+BOXES = [(40, 20, "contain", 0), (60, 30, "cover", 90), (25, 25, "contain", 180),
+         (100, 70, "cover", 270)]
+
+
+def test_several_boxes_of_one_picture_decode_it_once(monkeypatch):
+    """gray_rasters: one picture in several elements is opened and decoded
+    once, and each box gets exactly the raster gray_raster makes for it
+    alone (the canvas asks for one box at a time)."""
+    logo = Image.new("RGBA", (300, 200), (0, 0, 0, 0))
+    logo.paste((0, 0, 0, 255), (0, 0, 150, 200))
+    exif = Image.Exif()
+    exif[0x0112] = 6
+    turned = io.BytesIO()
+    Image.new("L", (90, 160), 80).save(turned, "PNG", exif=exif)
+    sixteen = io.BytesIO()
+    Image.frombytes("I;16", (200, 100), ((1000).to_bytes(2, "little") * 200) * 100).save(
+        sixteen, "PNG", transparency=1000)
+    for source in (_png(logo), turned.getvalue(), sixteen.getvalue(), _exif_jpeg(160, 90, 8)):
+        loaded = _decodes(monkeypatch)
+        rasters = image_prep.gray_rasters(source, BOXES)
+        assert len(loaded) == 1
+        assert rasters == [gray_raster(source, *box) for box in BOXES]
+
+
+def test_a_jpeg_decodes_once_per_draft_scale(monkeypatch):
+    """A JPEG is decoded small for a small box (1/2, 1/4 or 1/8), so the
+    boxes of one picture share a decode per scale: four boxes at 1/8 are one
+    decode, one more box at 1/2 a second, and each raster is still exactly
+    the one gray_raster makes for its box alone."""
+    jpeg = _exif_jpeg(1600, 1200, 6)            # stored 1600 x 1200, upright 1200 x 1600
+    small = [(20, 40, "cover", 0), (30, 60, "contain", 90), (35, 50, "cover", 180),
+             (70, 100, "contain", 270)]          # all drafted at 1/8
+    loaded = _decodes(monkeypatch)
+    rasters = image_prep.gray_rasters(jpeg, small)
+    assert len(loaded) == 1
+    assert rasters == [gray_raster(jpeg, *box) for box in small]
+    both = [*small, (200, 300, "cover", 0), (600, 800, "contain", 0)]   # 1/2, then whole
+    loaded = _decodes(monkeypatch)
+    rasters = image_prep.gray_rasters(jpeg, both)
+    assert len(loaded) == 3
+    assert rasters == [gray_raster(jpeg, *box) for box in both]
+
+
+def test_gray_rasters_answers_each_box(monkeypatch):
+    """A picture that can't be prepped is that error for every box; a box
+    that isn't one is the caller's mistake (ValueError, nothing decoded)."""
+    assert all(isinstance(r, UnreadableImage)
+               for r in image_prep.gray_rasters(corrupt_png(), BOXES))
+    monkeypatch.setattr(image_prep, "MAX_PIXELS", 10)
+    assert all(isinstance(r, ImageTooLarge)
+               for r in image_prep.gray_rasters(_png(Image.new("L", (4, 4))), BOXES))
+    monkeypatch.undo()
+    loaded = _decodes(monkeypatch)
+    with pytest.raises(ValueError):
+        image_prep.gray_rasters(_png(Image.new("L", (4, 4))), [*BOXES, (4, 4, "stretch", 0)])
+    assert loaded == {}
+    assert image_prep.gray_rasters(_png(Image.new("L", (4, 4))), []) == []
+
+
+def test_the_reduce_factor_stops_at_255(monkeypatch):
+    """Pillow's box reduction loses precision past a factor of 255 (an L
+    picture drifts a level or more): a huge picture for a tiny box is
+    reduced by 255 at most, and the fit does the rest (by 300, white came
+    out 254)."""
+    reduce_calls = _spy(monkeypatch, Image.Image, "reduce")
+    big = _png(Image.new("L", (6000, 6000), 255))
+    r = gray_raster(big, 10, 10, "cover", 0)
+    assert reduce_calls[0][0] == 255
+    assert (r.width, r.height) == (10, 10) and set(r.gray) == {255}
+
+
 # the reviewer's sources and boxes where the centered crop came out a hair
 # below zero (Pillow: "box offset can't be negative")
 COVER_EDGES = [((94, 662), (210, 340)), ((425, 862), (592, 695)), ((1603, 1426), (436, 197))]

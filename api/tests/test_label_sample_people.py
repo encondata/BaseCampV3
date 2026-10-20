@@ -136,6 +136,60 @@ async def test_natural_order_and_the_limit(client, db, seeded_user):
     assert len(await _search(client, hdrs, limit=3)) == 3
 
 
+async def test_blacklisted_workers_are_listed(client, db, seeded_user):
+    """A designer may need a blacklisted worker's badge layout: the search
+    lists them like anyone else."""
+    hdrs = await _super(db, client)
+    crew = await _partner(db, "Quarry Crew")
+    barred = await _person(db, "Quinn", "Quarry", roles=("worker",),
+                           profile={"partner_id": crew.id, "status": "blacklist",
+                                    "status_note": "Site rules"})
+    got = await _search(client, hdrs, "quinn")
+    assert [(r["person_id"], r["person_type"], r["company"]) for r in got] == [
+        (str(barred.id), "Worker", "Quarry Crew")]
+
+
+async def test_the_search_reads_partners_once_for_every_row(client, db, seeded_user):
+    """Each row's badge (type, company, logo up the partner chain) comes from
+    lookups made once for the whole page: 50 workers under a 3-level partner
+    chain cost what 5 do (it was 5 queries a worker)."""
+    from sqlalchemy import event
+
+    from serversherpa.db.engine import get_engine
+
+    hdrs = await _super(db, client)
+    top = await _partner(db, "Ridge Holdings", logo="partners/ridge.png")
+    mid = await _partner(db, "Ridge Region", parent=top)
+    low = await _partner(db, "Ridge Crew", parent=mid)
+    engine = get_engine().sync_engine
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, *rest):
+        statements.append(statement)
+
+    async def workers(first, count):
+        for n in range(count):
+            await _person(db, "Ridge", f"Worker {first + n}", roles=("worker",),
+                          profile={"partner_id": low.id})
+
+    async def measure(expected):
+        statements.clear()
+        event.listen(engine, "before_cursor_execute", record)
+        try:
+            got = await _search(client, hdrs, "ridge", limit=100)
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
+        assert len(got) == expected
+        assert {(r["company"], r["has_logo"]) for r in got} == {("Ridge Crew", True)}
+        return len(statements)
+
+    await workers(0, 5)
+    few = await measure(5)
+    await workers(5, 45)
+    many = await measure(50)
+    assert few == many <= 15, (few, many)
+
+
 async def test_sample_people_needs_rank_80(client, db, seeded_user):
     admin = await _make(db, client, "admin", "sp-admin@test.example.com")   # rank 60
     assert (await client.get(PEOPLE, headers=admin)).status_code == 403
@@ -172,6 +226,27 @@ async def test_values_for_a_worker(client, db, seeded_user):
     assert values["badge_id"] == str(worker.id)
     assert values["badge_short"] == str(worker.id)[:8]
     assert values["roles"] == ""
+
+
+async def test_sample_person_works_the_badge_out_once(client, db, seeded_user, monkeypatch):
+    """Its values and its photo and logo flags come from one badge lookup."""
+    from serversherpa.labels import people_badge
+
+    hdrs = await _super(db, client)
+    crew = await _partner(db, "Once Crew", logo="partners/once.png")
+    worker = await _person(db, "Oona", "Once", roles=("worker",),
+                           profile={"partner_id": crew.id})
+    calls = []
+    real = people_badge._badge
+
+    async def counting(*args, **kwargs):
+        calls.append(args[1].id)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(people_badge, "_badge", counting)
+    body = (await client.get(ONE, headers=hdrs, params={"person_id": str(worker.id)})).json()
+    assert (body["values"]["company"], body["has_logo"]) == ("Once Crew", True)
+    assert calls == [worker.id]
 
 
 async def test_a_person_with_no_photo_or_logo(client, db, seeded_user):

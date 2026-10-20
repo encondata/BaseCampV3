@@ -568,6 +568,10 @@ def _old_fonts(cutoff: datetime) -> ColumnElement[bool]:
     return LabelFont.deleted_at < cutoff
 
 
+def _old_label_images(cutoff: datetime) -> ColumnElement[bool]:
+    return LabelImage.deleted_at < cutoff
+
+
 async def _count_attachments(db: AsyncSession, cutoff: datetime | None) -> tuple[int, int]:
     where = _old_attachments(cutoff)
     return (await _count_rows(db, Attachment, where),
@@ -618,6 +622,27 @@ async def _purge_fonts(maker: async_sessionmaker, cutoff: datetime | None) -> Ca
     result = CategoryResult("label_fonts")
     await purge_in_chunks(maker, LabelFont, _old_fonts(cutoff), result,
                           before=_chunk_keys(LabelFont, LabelFont.storage_key),
+                          still_used=keys_in_use)
+    return result
+
+
+# Nothing points at a label image row either: a badge design names its
+# library image by id inside the design JSON, and a deleted one already
+# prints as no picture there (routes/labels.py _library_key). Its object
+# stays while another row (another library image, an avatar, a logo) uses
+# the same key.
+async def _count_label_images(db: AsyncSession, cutoff: datetime | None) -> tuple[int, int]:
+    where = _old_label_images(cutoff)
+    return (await _count_rows(db, LabelImage, where),
+            await _count_unused_keys(db, LabelImage, LabelImage.storage_key, where))
+
+
+async def _purge_label_images(
+    maker: async_sessionmaker, cutoff: datetime | None,
+) -> CategoryResult:
+    result = CategoryResult("label_images")
+    await purge_in_chunks(maker, LabelImage, _old_label_images(cutoff), result,
+                          before=_chunk_keys(LabelImage, LabelImage.storage_key),
                           still_used=keys_in_use)
     return result
 
@@ -700,8 +725,8 @@ GROUPS: dict[str, Group] = {g.key: g for g in (
         )),
     Group(
         key="deleted", label="Deleted files",
-        description="Files, notes and fonts that were deleted and are past the age you "
-                    "choose, along with their stored copies.",
+        description="Files, notes, fonts and label images that were deleted and are past "
+                    "the age you choose, along with their stored copies.",
         needs_age=True,
         categories=(
             Category(
@@ -721,6 +746,13 @@ GROUPS: dict[str, Group] = {g.key: g for g in (
                             "stored font file. A file another font in the library still "
                             "uses stays.",
                 count=_count_fonts, purge=_purge_fonts),
+            Category(
+                key="label_images", label="Deleted label images",
+                description="Pictures that were removed from the label image library, with "
+                            "the stored picture. A badge template that still names one already "
+                            "prints no picture in its place. A picture something else still "
+                            "uses stays.",
+                count=_count_label_images, purge=_purge_label_images),
         )),
 )}
 

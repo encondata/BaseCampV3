@@ -14,6 +14,7 @@ from pydantic import (
     ConfigDict,
     EmailStr,
     Field,
+    StringConstraints,
     field_validator,
 )
 
@@ -2500,11 +2501,11 @@ class BrandingOut(BaseModel):
 
 
 class BrandingIn(BaseModel):
-    """PATCH /system/branding: the company name (trimmed, never blank). The
-    logo has its own routes."""
+    """PATCH /system/branding: the company name, trimmed before its
+    200-character cap (never blank). The logo has its own routes."""
     model_config = ConfigDict(extra="forbid")
 
-    company_name: str = Field(max_length=200)
+    company_name: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)]
 
 
 class AdminConfigIn(BaseModel):
@@ -4149,6 +4150,10 @@ class LabelCompileIn(BaseModel):
     # fields (a key of another type previews blank, as it prints); an image
     # element needs `id_badge` (and language zpl)
     label_type: str | None = Field(None, max_length=64)
+    # `print` resolves a builder design's images into their pictures (Test
+    # print); `placeholder` (the preview, rendered by Labelary, which is
+    # never sent a picture) prints each as a crossed box and reads none
+    image_mode: Literal["print", "placeholder"] = "print"
 
 
 class LabelCompileOut(BaseModel):

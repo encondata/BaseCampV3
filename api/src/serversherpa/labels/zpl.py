@@ -30,7 +30,12 @@ data at the footprint's top-left (`^FO`), banded when one `^GF` would
 pass 99,999 bytes; white dots are transparent, so the element order is
 the stacking order, as on the canvas. A graphic has no `^FH` (its data is
 never escaped). An image with no bitmap prints nothing, or a 2-dot outline
-of its footprint when its hideWhenEmpty is off."""
+of its footprint when its hideWhenEmpty is off.
+
+`image_placeholders` is the builder's preview (rendered by Labelary, which
+must never be sent a picture): every image element, whatever its source,
+its bitmap and its hideWhenEmpty, prints as a placeholder, its footprint's
+2-dot outline with both diagonals (`^GB` and two `^GD`)."""
 
 import base64
 import binascii
@@ -248,7 +253,8 @@ def _v2_shape(el: LineEl | BoxEl, dpi: int) -> str:
 
 # ^GFa,b,c,d: c (the graphic's bytes) runs 1 to 99,999
 GF_MAX_BYTES = 99_999
-# the outline an empty photo or logo prints when hideWhenEmpty is off
+# the outline an empty photo or logo prints when hideWhenEmpty is off, and
+# a preview's placeholder
 EMPTY_IMAGE_STROKE = 2
 
 
@@ -315,9 +321,22 @@ def _v2_image(el: ImageEl, dpi: int, bitmap: Bitmap | None) -> list[str]:
     return [f"^FO{x},{y}^GB{max(t, w)},{max(t, h)},{t}^FS"]
 
 
+def _image_placeholder(el: ImageEl, dpi: int) -> list[str]:
+    """The footprint outlined, with both diagonals: a picture's place on a
+    preview, which never carries the picture."""
+    x, y = _dots(el.x, dpi), _dots(el.y, dpi)
+    t = EMPTY_IMAGE_STROKE
+    w, h = (max(t, n) for n in image_footprint_dots(el, dpi))
+    return [f"^FO{x},{y}^GB{w},{h},{t}^FS",
+            f"^FO{x},{y}^GD{w},{h},{t},B,R^FS",
+            f"^FO{x},{y}^GD{w},{h},{t},B,L^FS"]
+
+
 def _v2_element(el: object, dpi: int, values: Mapping[str, str],
-                images: Mapping[str, Bitmap]) -> list[str]:
+                images: Mapping[str, Bitmap], image_placeholders: bool) -> list[str]:
     if isinstance(el, ImageEl):
+        if image_placeholders:
+            return _image_placeholder(el, dpi)
         return _v2_image(el, dpi, images.get(el.id))
     if isinstance(el, (LineEl, BoxEl)):
         return [_v2_shape(el, dpi)]
@@ -334,9 +353,12 @@ def _v2_element(el: object, dpi: int, values: Mapping[str, str],
 
 def compile_zpl(design: Design, dpi: int,
                 substitutions: dict[str, str] | None = None, *,
-                images: Mapping[str, Bitmap] | None = None) -> str:
+                images: Mapping[str, Bitmap] | None = None,
+                image_placeholders: bool = False) -> str:
     """`images` maps an image element's id to its bitmap (schema 3); an
-    image element with none prints as empty."""
+    image element with none prints as empty. With `image_placeholders`
+    every image element prints as a placeholder instead, and `images` is
+    not looked at (module docstring)."""
     lines = ["^XA",
              f"^PW{_dots(design.width_in, dpi)}",
              f"^LL{_dots(design.height_in, dpi)}",
@@ -345,7 +367,7 @@ def compile_zpl(design: Design, dpi: int,
         if substitutions is None:
             raise ValueError("v2 designs render with values")
         for el in design.elements:
-            lines.extend(_v2_element(el, dpi, substitutions, images or {}))
+            lines.extend(_v2_element(el, dpi, substitutions, images or {}, image_placeholders))
         lines.append("^XZ")
         return "\n".join(lines)
     for el in design.elements:

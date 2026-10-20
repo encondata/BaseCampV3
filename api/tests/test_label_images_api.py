@@ -25,6 +25,7 @@ from serversherpa.api.routes import labels as labels_module
 from serversherpa.db.models import (
     AuditLog,
     LabelImage,
+    LabelTemplate,
     Partner,
     Person,
     PersonRole,
@@ -274,6 +275,47 @@ async def test_get_object_wraps_a_client_that_cannot_be_built(malformed_endpoint
     assert caught.value.__cause__ is None and caught.value.__suppress_context__
 
 
+async def test_put_and_delete_wrap_a_client_that_cannot_be_built(malformed_endpoint):
+    """M9: writes and deletes as well as reads: StorageConfigError with the
+    class name only, never boto3's "Invalid endpoint: <url>"."""
+    for call in (lambda: storage.put_object("label-images/x.png", b"x", "image/png"),
+                 lambda: storage.delete_object("label-images/x.png")):
+        with pytest.raises(storage.StorageConfigError) as caught:
+            await call()
+        assert caught.value.cause == "ValueError"
+        assert "secret" not in str(caught.value).lower()
+        assert caught.value.__cause__ is None and caught.value.__suppress_context__
+
+
+async def test_a_failed_upload_deletes_its_object_and_logs_no_endpoint(
+        client, db, seeded_user, store, monkeypatch, caplog):
+    """The picture is stored before its row: when the row can't be written
+    the object is deleted again. When that delete fails too, the log names
+    the error's class and S3 code, never its message (botocore's carries
+    the endpoint)."""
+    sa = await _super(db, client)
+
+    def broken_audit(*args, **kwargs):
+        raise RuntimeError("the database write failed")
+
+    monkeypatch.setattr(labels_module, "audit", broken_audit)
+    with pytest.raises(RuntimeError):
+        await _upload(client, sa)
+    assert store.blobs == {}
+
+    async def refused(key):
+        raise ClientError({"Error": {"Code": "AccessDenied",
+                                     "Message": "at http://storage.internal:9000"}},
+                          "DeleteObject")
+
+    monkeypatch.setattr(labels_module, "delete_object", refused)
+    with pytest.raises(RuntimeError):
+        await _upload(client, sa)
+    assert "ClientError" in caplog.text and "AccessDenied" in caplog.text
+    assert "storage.internal" not in caplog.text
+    assert await db.scalar(select(LabelImage.id)) is None
+
+
 async def test_unconfigured_storage_is_a_502(client, db, seeded_user, store, malformed_endpoint,
                                              monkeypatch, caplog):
     """A storage client that can't even be built (a malformed endpoint) is
@@ -316,6 +358,24 @@ async def test_upload_validation(client, db, seeded_user, store):
         r = await _upload(client, sa, buf.getvalue(), filename=f"x.{fmt.lower()}")
         assert r.status_code == 201 and r.json()["mime"] == mime, fmt
     assert len((await client.get("/labels/images", headers=sa)).json()) == 3
+
+
+async def test_a_name_with_control_characters_is_refused(client, db, seeded_user, store):
+    """M3: a NUL in a name was a 500 (Postgres refuses it in text); any
+    control character in the name, or in the file name it defaults to, is
+    422 bad_field, and nothing is stored."""
+    sa = await _super(db, client)
+    for name, filename in (("Acme\x00 logo", "logo.png"), ("Acme\nlogo", "logo.png"),
+                           (None, "lo\x7fgo.png"), (None, "lo\x1bgo.png")):
+        r = await _upload(client, sa, filename=filename, name=name)
+        assert r.status_code == 422, (name, filename, r.text)
+        assert r.json()["detail"]["code"] == "bad_field"
+        assert r.json()["detail"]["field"] == "name"
+    assert store.blobs == {}
+    assert (await client.get("/labels/images", headers=sa)).json() == []
+    # surrounding white space is trimmed, not refused
+    r = await _upload(client, sa, name="  Acme logo \t")
+    assert (r.status_code, r.json()["name"]) == (201, "Acme logo")
 
 
 async def test_the_library_and_raster_need_rank_80(client, db, seeded_user, store):
@@ -472,6 +532,44 @@ async def test_raster_preps_in_a_thread_and_caches(client, db, seeded_user, stor
     assert threaded == ["gray_raster", "gray_raster"]
 
 
+async def test_a_freeze_still_serves_the_raster(client, db, seeded_user, store, monkeypatch):
+    """M5: the raster is a read made through POST (like /wiki/assets/urls):
+    a read-only freeze mustn't blank every badge picture on the canvas.
+    Real writes stay frozen."""
+    sa = await _super(db, client)
+    image_id = await _library_image(client, sa)
+
+    async def frozen(_db):
+        return {"read_only": True, "read_only_message": "Down for maintenance."}
+
+    monkeypatch.setattr("serversherpa.system.admin_config.read_admin_config", frozen)
+    r = await client.post("/labels/images/raster", headers=sa, json={
+        "source": "static", "image_id": image_id, "w_in": 0.1, "h_in": 0.1, "dpi": 300,
+        "fit": "contain", "rotation": 0})
+    assert r.status_code == 200, r.text
+    r = await _upload(client, sa)
+    assert (r.status_code, r.json()["detail"]["code"]) == (423, "read_only_mode")
+
+
+async def test_a_password_change_owed_blocks_the_raster(client, db, seeded_user, store):
+    """Exempt from the freeze is not exempt from signing in: a session that
+    owes a password change gets nothing but the change."""
+    from sqlalchemy import update
+
+    from serversherpa.db.models import UserAccount
+
+    sa = await _super(db, client)
+    image_id = await _library_image(client, sa)
+    await db.execute(update(UserAccount).where(UserAccount.email == "sa-img@test.example.com")
+                     .values(must_change_password=True))
+    await db.commit()
+    owes = await login(client, email="sa-img@test.example.com")
+    r = await client.post("/labels/images/raster", headers=owes, json={
+        "source": "static", "image_id": image_id, "w_in": 0.1, "h_in": 0.1, "dpi": 300,
+        "fit": "contain", "rotation": 0})
+    assert (r.status_code, r.json()["detail"]["code"]) == (403, "password_change_required")
+
+
 async def test_the_browser_can_read_the_raster_size(client, db, seeded_user, store):
     """The portal calls the API cross-origin: the size headers are exposed."""
     sa = await _super(db, client)
@@ -519,6 +617,51 @@ async def test_compile_prints_photo_logo_and_static_at_rank_80(client, db, seede
         assert bits == dither.bitmap(raster.content, w, h, p)
     # the photo turned 90: 120 dots wide, 150 tall
     assert graphics[0][2] == dither.bytes_per_row(120) and len(graphics[0][3]) == 15 * 150
+
+
+def _crossed(x: int, y: int, w: int, h: int) -> list[str]:
+    return [f"^FO{x},{y}^GB{w},{h},2^FS", f"^FO{x},{y}^GD{w},{h},2,B,R^FS",
+            f"^FO{x},{y}^GD{w},{h},2,B,L^FS"]
+
+
+async def test_a_preview_compile_draws_placeholders_and_reads_nothing(
+        client, db, seeded_user, store, monkeypatch):
+    """The builder's Render goes to Labelary, so its compile asks for
+    image_mode placeholder: every image is a crossed box at its footprint,
+    no picture is read (not even at rank 80 with a sample person), and the
+    sample person isn't looked up at all."""
+    sa = await _super(db, client)
+    jo = await _worker(db, store)
+    image_id = await _library_image(client, sa, _photo_png())
+    design = _design(_image("photo", "photo", rotation=90),
+                     _image("logo", "logo", x=0.7),
+                     _image("static", "static", x=1.4, imageId=image_id, hideWhenEmpty=False))
+    labels_module._RASTER_CACHE.clear()
+    store.gets.clear()
+    lookups = []
+    real_find = labels_module.people_badge.find_person
+
+    async def counting_find(*args):
+        lookups.append(args[1])
+        return await real_find(*args)
+
+    monkeypatch.setattr(labels_module.people_badge, "find_person", counting_find)
+    for samples in ({"person:id": str(jo.id)}, {"person:id": "nope"}):
+        r = await client.post(f"{URL}/compile", headers=sa, json={
+            **_compile_body(design, samples=samples), "image_mode": "placeholder"})
+        assert r.status_code == 200, r.text
+        code = r.json()["code"]
+        assert "^GF" not in code
+        lines = code.split("\n")
+        assert lines[4:13] == [*_crossed(30, 30, 120, 150), *_crossed(210, 30, 150, 120),
+                               *_crossed(420, 30, 150, 120)]
+    assert store.gets == [] and lookups == []
+    # the default (Test print, generation) still prints the pictures
+    r = await _compile(client, sa, design, samples={"person:id": str(jo.id)})
+    assert len(_graphics(r.json()["code"])) == 3
+    r = await client.post(f"{URL}/compile", headers=sa, json={
+        **_compile_body(design), "image_mode": "pictures"})
+    assert r.status_code == 422
 
 
 async def test_below_rank_80_photo_and_logo_print_empty(client, db, seeded_user, store):
@@ -589,6 +732,155 @@ async def test_compile_caps_the_image_size(client, db, seeded_user, store):
     many = _design(*[_image(f"i{n}", "static", imageId=image_id, w=3, h=2) for n in range(4)])
     r = await _compile(client, sa, many, dpi_key="600")
     assert r.status_code == 422 and r.json()["detail"]["code"] == "image_too_large"
+
+
+def _loads(monkeypatch) -> dict:
+    """The distinct pictures image_prep decodes, held so no id is reused."""
+    loaded: dict = {}
+    real = image_prep._load
+
+    def counting(im):
+        loaded[id(im)] = im
+        real(im)
+
+    monkeypatch.setattr(image_prep, "_load", counting)
+    return loaded
+
+
+async def test_compile_reads_and_decodes_each_picture_once(
+        client, db, seeded_user, store, monkeypatch):
+    """F2: eight image elements over two pictures are two storage reads and
+    two decodes, not eight; each element still prints exactly the raster the
+    canvas gets for it."""
+    sa = await _super(db, client)
+    photo = await _library_image(client, sa, _photo_png())
+    crest = await _library_image(client, sa, _png(40, 30, 90))
+    shapes = [(0.3, 0.2, 0), (0.25, 0.4, 90), (0.5, 0.3, 180), (0.2, 0.2, 270)]
+    elements = []
+    for n, (w, h, rotation) in enumerate(shapes):
+        elements.append(_image(f"p{n}", "static", imageId=photo, x=0.1 + n * 0.8, y=0.1,
+                               w=w, h=h, rotation=rotation, mode="dither"))
+        elements.append(_image(f"c{n}", "static", imageId=crest, x=0.1 + n * 0.8, y=1.0,
+                               w=w, h=h, rotation=rotation, fit="cover"))
+    keys = {(await db.get(LabelImage, uuid.UUID(i))).storage_key for i in (photo, crest)}
+    labels_module._RASTER_CACHE.clear()
+    store.gets.clear()
+    loaded = _loads(monkeypatch)
+    r = await _compile(client, sa, _design(*elements))
+    assert r.status_code == 200, r.text
+    assert sorted(store.gets) == sorted(keys)
+    assert len(loaded) == 2
+    graphics = _graphics(r.json()["code"])
+    assert len(graphics) == 8
+    labels_module._RASTER_CACHE.clear()          # the canvas preps each box on its own
+    for el, (_x, _y, d, bits) in zip(elements, graphics, strict=True):
+        raster = await client.post("/labels/images/raster", headers=sa, json={
+            "source": "static", "image_id": el["imageId"], "w_in": el["w"], "h_in": el["h"],
+            "dpi": 300, "fit": el.get("fit", "contain"), "rotation": el["rotation"]})
+        assert raster.status_code == 200, raster.text
+        w, h = int(raster.headers["x-raster-width"]), int(raster.headers["x-raster-height"])
+        params = dither.Params(0, 100, 128, el.get("mode", "threshold"), False)
+        assert d == dither.bytes_per_row(w)
+        assert bits == dither.bitmap(raster.content, w, h, params), el["id"]
+    # a second compile of the same design is served from the raster cache
+    store.gets.clear()
+    assert (await _compile(client, sa, _design(*elements))).status_code == 200
+    assert store.gets == []
+
+
+async def test_prep_and_dither_run_inside_the_gate(client, db, seeded_user, store, monkeypatch):
+    """F2: prep and dither share asyncio's default executor with every other
+    to_thread (storage calls included), so at most four run at once, the
+    compile's and the canvas's alike."""
+    sa = await _super(db, client)
+    image_id = await _library_image(client, sa, _photo_png())
+    assert labels_module._PREP_GATE._value == 4
+    seen = []
+    real_to_thread = labels_module.asyncio.to_thread
+
+    async def recording_to_thread(func, *args, **kwargs):
+        seen.append((getattr(func, "__name__", func), labels_module._PREP_GATE._value))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(labels_module.asyncio, "to_thread", recording_to_thread)
+    r = await _compile(client, sa, _design(_image("s", "static", imageId=image_id)))
+    assert r.status_code == 200, r.text
+    r = await client.post("/labels/images/raster", headers=sa, json={
+        "source": "static", "image_id": image_id, "w_in": 0.2, "h_in": 0.2, "dpi": 300,
+        "fit": "cover", "rotation": 0})
+    assert r.status_code == 200, r.text
+    # each ran holding one of the four slots
+    assert seen == [("gray_rasters", 3), ("bitmap", 3), ("gray_raster", 3)]
+    assert labels_module._PREP_GATE._value == 4
+
+
+async def test_a_design_holds_at_most_eight_images(client, db, seeded_user, store):
+    sa = await _super(db, client)
+    image_id = await _library_image(client, sa)
+    nine = [_image(f"i{n}", "static", imageId=image_id, x=0.1 + (n % 5) * 0.6,
+                   y=0.1 + (n // 5) * 0.6, w=0.2, h=0.2) for n in range(9)]
+    store.gets.clear()
+    r = await _compile(client, sa, _design(*nine))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["code"] == "bad_design"
+    assert r.json()["detail"]["problems"] == ["a design holds at most 8 images"]
+    assert store.gets == []                      # refused before any picture is read
+    assert (await _compile(client, sa, _design(*nine[:8]))).status_code == 200
+    r = await client.post(URL, headers=sa, json=_badge(_design(*nine), name="Too many"))
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_design"
+
+
+async def test_duplicate_element_ids_are_a_bad_design(client, db, seeded_user, store):
+    """M1: two image elements sharing an id would share one picture (or 500
+    the compile when their sizes differ)."""
+    sa = await _super(db, client)
+    image_id = await _library_image(client, sa)
+    twins = _design(_image("img", "static", imageId=image_id),
+                    _image("img", "static", imageId=image_id, x=1.4, w=0.3))
+    r = await _compile(client, sa, twins)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["code"] == "bad_design"
+    assert "img: id is used by another element" in r.json()["detail"]["problems"]
+    r = await client.post(URL, headers=sa, json=_badge(twins, name="Twins"))
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_design"
+
+
+async def test_a_row_wider_than_one_graphic_holds_is_too_large(
+        client, db, seeded_user, store, monkeypatch):
+    """M1: a box under the dot cap can still be wider than one ^GF row holds
+    (99,999 bytes): 422 image_too_large, never a compile 500. The row is the
+    footprint's, so a box turned 90 counts its height."""
+    sa = await _super(db, client)
+    image_id = await _library_image(client, sa)
+    for w, h, rotation in ((2700, 1 / 300, 0), (1 / 300, 2700, 90)):   # 810,000 x 1 dots
+        r = await _compile(client, sa, _design(_image("wide", "static", imageId=image_id,
+                                                      w=w, h=h, rotation=rotation)))
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"] == {"code": "image_too_large", "element": "wide"}
+    # the raster route's own bounds (100 in, 1200 DPI) keep it far below one
+    # row; the same rule applies there all the same
+    monkeypatch.setattr(labels_module, "GF_MAX_BYTES", 10)
+    body = {"source": "static", "image_id": image_id, "w_in": 0.3, "h_in": 0.1, "dpi": 300,
+            "fit": "contain", "rotation": 0}
+    r = await client.post("/labels/images/raster", headers=sa, json=body)
+    assert (r.status_code, r.json()["detail"]["code"]) == (422, "image_too_large")
+    r = await client.post("/labels/images/raster", headers=sa, json={**body, "rotation": 90})
+    assert r.status_code == 200, r.text       # turned: 30 dots wide, 4 bytes a row
+
+
+async def test_a_compile_value_error_is_a_bad_design(client, db, seeded_user, store, monkeypatch):
+    """M1: whatever else the compiler refuses is the design's fault (422),
+    not a 500."""
+    sa = await _super(db, client)
+
+    def refuse(*args, **kwargs):
+        raise ValueError("a 3 x 3 bitmap for a 4 x 4 footprint")
+
+    monkeypatch.setattr(labels_module, "compile_parsed_design", refuse)
+    r = await _compile(client, sa, _design(_image("photo", "photo")))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {"code": "bad_design",
+                                  "problems": ["a 3 x 3 bitmap for a 4 x 4 footprint"]}
 
 
 # ── images only on ID Badge ZPL templates ────────────────────────────
@@ -701,6 +993,135 @@ async def test_a_customized_childs_image_blocks_a_type_change(client, db, seeded
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "images_badge_only"
     assert r.json()["detail"]["template_id"] == child["id"]
+
+
+async def _actor(db, email="sa-img@test.example.com"):
+    """What the PATCH helpers use of the AuthContext: the person."""
+    return SimpleNamespace(person=await db.scalar(select(Person).where(Person.email == email)))
+
+
+async def _plain_badge(client, sa, name):
+    r = await client.post(URL, headers=sa, json=_badge(_design(), name=name))
+    assert r.status_code == 201, r.text
+    node = await _node(client, sa, name)
+    return uuid.UUID(node["id"]), uuid.UUID(node["children"][0]["id"])
+
+
+async def test_an_image_save_checks_the_type_as_locked(client, db, seeded_user, store):
+    """M2: an image save decides from the template as locked, not as the
+    request first read it: a type change to Top committed in between
+    refuses it, on a child and on the parent."""
+    from fastapi import HTTPException
+
+    from serversherpa.db.engine import get_sessionmaker
+
+    sa = await _super(db, client)
+    actor = await _actor(db)
+    with_image = {"design": _design(_image("logo", "logo"))}
+    for target in ("child", "parent"):
+        parent_id, child_id = await _plain_badge(client, sa, f"Race Badge {target}")
+        async with get_sessionmaker()() as s:
+            row = await s.get(LabelTemplate, child_id if target == "child" else parent_id)
+            # another request turns the whole tree into a Top template meanwhile
+            r = await client.patch(f"{URL}/{parent_id}", headers=sa, json={"label_type": "top"})
+            assert r.status_code == 200, r.text
+            patch = labels_module._patch_child if target == "child" else labels_module._patch_parent
+            with pytest.raises(HTTPException) as caught:
+                await patch(s, row, dict(with_image), None, actor)
+            assert caught.value.detail["code"] == "images_badge_only", target
+            await s.rollback()
+
+
+async def test_a_restore_checks_the_type_as_locked(client, db, seeded_user, store):
+    """M2 on the other write that brings a design back: restoring a version
+    with an image checks the type as locked too."""
+    from fastapi import HTTPException
+
+    from serversherpa.db.engine import get_sessionmaker
+
+    sa = await _super(db, client)
+    actor = await _actor(db)
+    r = await client.post(URL, headers=sa, json=_badge(_design(_image("logo", "logo")),
+                                                       name="Restore Badge"))
+    assert r.status_code == 201, r.text
+    pid = uuid.UUID(r.json()["id"])
+    r = await client.patch(f"{URL}/{pid}", headers=sa, json={"design": _design()})   # v2: none
+    assert r.status_code == 200, r.text
+    async with get_sessionmaker()() as s:
+        stale = await s.get(LabelTemplate, pid)             # read as an ID badge
+        assert stale.label_type == "id_badge"
+        r = await client.patch(f"{URL}/{pid}", headers=sa, json={"label_type": "top"})
+        assert r.status_code == 200, r.text
+        with pytest.raises(HTTPException) as caught:
+            await labels_module.restore_template_version(pid, 1, 0, s, actor=actor, _rank=actor)
+        assert caught.value.detail["code"] == "images_badge_only"
+        assert stale.label_type == "top"                    # the row as locked
+        await s.rollback()
+
+
+async def test_a_type_change_waits_for_an_image_save_in_flight(client, db, seeded_user, store):
+    """M2, the other way round: a child's image save in flight when the
+    parent's type change starts lands first, and the type change then sees
+    the customized child's image and is refused (both used to commit,
+    leaving a picture on a Top template)."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from serversherpa.db.engine import get_sessionmaker
+
+    sa = await _super(db, client)
+    actor = await _actor(db)
+    parent_id, child_id = await _plain_badge(client, sa, "Busy Badge")
+    saved = asyncio.Event()
+
+    async def child_save():
+        async with get_sessionmaker()() as s:
+            child = await s.get(LabelTemplate, child_id)
+            await labels_module._patch_child(s, child, {"design": _design(_image("logo", "logo"))},
+                                             None, actor)
+            await s.flush()
+            saved.set()
+            await asyncio.sleep(0.3)      # the type change starts meanwhile
+            await s.commit()
+
+    async def type_change():
+        async with get_sessionmaker()() as s:
+            parent = await s.get(LabelTemplate, parent_id)   # read before the child save
+            await saved.wait()
+            try:
+                await labels_module._patch_parent(s, parent, {"label_type": "top"}, None, actor)
+            except HTTPException as e:
+                await s.rollback()
+                return e.detail["code"]
+            await s.commit()
+            return None
+
+    _, refused = await asyncio.gather(child_save(), type_change())
+    assert refused == "images_badge_only"
+    db.expire_all()
+    assert (await db.get(LabelTemplate, parent_id)).label_type == "id_badge"
+
+
+async def test_set_parent_fields_locks_the_tree(client, db, seeded_user, store):
+    """A type, size or language change locks the parent and its children
+    (the order every save takes them in) before it writes them."""
+    from sqlalchemy.exc import DBAPIError
+
+    from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.labels import templates_tree
+
+    sa = await _super(db, client)
+    parent_id, child_id = await _plain_badge(client, sa, "Locked Badge")
+    async with get_sessionmaker()() as s, get_sessionmaker()() as other:
+        parent = await s.get(LabelTemplate, parent_id)
+        await templates_tree.set_parent_fields(s, parent, {"size_key": "4x2"})
+        for row_id in (parent_id, child_id):
+            with pytest.raises(DBAPIError):
+                await other.execute(select(LabelTemplate.id).where(LabelTemplate.id == row_id)
+                                    .with_for_update(nowait=True))
+            await other.rollback()
+        await s.rollback()
 
 
 # ── the preview's cap ────────────────────────────────────────────────
