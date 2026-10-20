@@ -38,6 +38,13 @@
  * A barcode's box is as wide as it prints its sample at the DPI shown
  * (geometry.ts withBarcodeWidths): the design opens that way (and counts
  * as unchanged), and every edit keeps it so. The compiler never reads it.
+ *
+ * An ID badge in ZPL takes images (spec 2026-10-20-badge-templates §4.10):
+ * the Image tool and the image properties are there only, a design with
+ * an image saves as schema 3 (model.ts serializeDesign) and anywhere else
+ * one is refused before the API would. The badge's sample person rides in
+ * the samples (`person:id`), so the canvas, the preview and Test print draw
+ * the same photo and logo.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -78,7 +85,7 @@ import {
   type LabelFields, type LabelFont, type LabelTemplate, type LabelTemplateSaved, type LabelTemplateTreeNode,
   type LabelTemplateVersionDetail, type LabelVocab,
 } from '../lib/api';
-import { dpiDots, vocabLabel } from '../lib/labels';
+import { dpiDots, isPersonLabelType, vocabLabel } from '../lib/labels';
 import { naturalCompare } from '../lib/naturalSort';
 import { useLeaveGuard } from '../lib/useLeaveGuard';
 import { useZebraPrinter } from '../lib/useZebraPrinter';
@@ -215,8 +222,12 @@ interface Viewing { label: string; version: number; childEdits: number; design: 
 
 const json = (v: unknown) => JSON.stringify(v);
 
+/** Why an image can't be on this template (the API's `images_badge_only`). */
+const IMAGES_BADGE_ONLY = 'Images print on ID Badge templates in ZPL only.';
+
 function saveError(err: unknown): string {
   if (err instanceof ApiError) {
+    if (err.code === 'images_badge_only') return `Not saved: ${IMAGES_BADGE_ONLY}`;
     if (err.code === 'bad_design') {
       const problems = (err.detail as { problems?: string[] } | undefined)?.problems;
       return problems?.length ? `Not saved: ${problems[0]}` : 'Not saved: the design has a problem.';
@@ -230,6 +241,7 @@ function saveError(err: unknown): string {
 
 function printError(err: unknown): string {
   if (err instanceof ApiError) {
+    if (err.code === 'images_badge_only') return `Can't print: ${IMAGES_BADGE_ONLY}`;
     if (err.code === 'bad_design') {
       const problems = (err.detail as { problems?: string[] } | undefined)?.problems;
       return problems?.length ? `Can't print yet: ${problems[0]}` : "Can't print yet: the design has a problem.";
@@ -330,6 +342,7 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
   const dirty = designJson !== saved.design || (!isChild && json(samples) !== saved.samples);
   const version = templateVersionLabel(template);
   const isZpl = template.language_key === 'zpl';
+  const imagesAllowed = isZpl && isPersonLabelType(template.label_type);
   const modalOpen = modal !== null || outOfDate !== null || leaveTo !== null;
 
   // ── the history ────────────────────────────────────────────────────
@@ -474,6 +487,10 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
     if (problems.length) {
       const p = problems[0];
       setNotice({ type: 'error', message: `Not saved: ${p.elementId ? `${p.elementId}: ` : ''}${p.message}` });
+      return;
+    }
+    if (!imagesAllowed && design.elements.some((e) => e.type === 'image')) {
+      setNotice({ type: 'error', message: `Not saved: ${IMAGES_BADGE_ONLY} Remove the image.` });
       return;
     }
     const sent = serializeDesign(design);
@@ -725,14 +742,14 @@ function Builder({ initial, handed = NOTHING_HANDED }: { initial: Loaded; handed
           <Canvas design={shownDesign} dpi={dpi} view={view} onView={setView} samples={shownSamples}
             selection={selection} onSelect={onSelect} onChange={editChange} onGesture={onGesture}
             metricsFor={metricsFor} fieldName={fieldName} readOnly={readOnly} keyboard={!modalOpen}
-            platform={platform} />
+            imageTool={imagesAllowed} platform={platform} />
           <PlacedFieldsTable design={shownDesign} fields={fields} samples={shownSamples} selection={selection}
             onSelect={onSelect} onChange={editChange} metricsFor={metricsFor} readOnly={readOnly} />
         </div>
         <div className="lbb-side" ref={sideRef}>
           <PropertiesPanel design={shownDesign} selection={selection} samples={shownSamples} fields={fields} dpi={dpi}
             metricsFor={metricsFor} onChange={editChange} onSelect={onSelect} labelType={template.label_type}
-            readOnly={readOnly} />
+            imagesAllowed={imagesAllowed} readOnly={readOnly} />
           <PreviewPanel design={shownDesign} dpi={dpi} samples={shownSamples} library={library}
             sizeKey={template.size_key} labelType={template.label_type} disabled={!isZpl} />
         </div>

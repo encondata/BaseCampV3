@@ -43,6 +43,7 @@ const api = vi.hoisted(() => ({
   updateLabelTemplate: vi.fn(), updateLabelTemplateFromParent: vi.fn(), compileLabel: vi.fn(),
   previewZplRequest: vi.fn(), createLabelTemplate: vi.fn(), createLabelVocab: vi.fn(),
   listLabelTemplateVersions: vi.fn(), getLabelTemplateVersion: vi.fn(), restoreLabelTemplateVersion: vi.fn(),
+  labelImageRaster: vi.fn(), listLabelImages: vi.fn(), uploadLabelImage: vi.fn(),
 }));
 vi.mock('../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../lib/api')>()), ...api,
@@ -63,7 +64,9 @@ const vocabRow = (kind: string, key: string, label: string, meta: Record<string,
 
 const VOCAB: LabelVocab[] = [
   vocabRow('type', 'top', 'Top Label'),
+  vocabRow('type', 'id_badge', 'ID Badge'),
   vocabRow('size', '4x2', '4" x 2"', { width_in: 4, height_in: 2, has_tab: false }),
+  vocabRow('size', 'id-badge', 'ID Badge', { width_in: 3.375, height_in: 2.125, has_tab: false }),
   vocabRow('dpi', '203', '203 DPI', { dots: 203 }, 1),
   vocabRow('dpi', '300', '300 DPI', { dots: 300 }, 2),
   vocabRow('dpi', '600', '600 DPI', { dots: 600 }, 3),
@@ -156,6 +159,8 @@ beforeEach(() => {
   api.listLabelFields.mockResolvedValue(FIELDS);
   api.getLabelFontMetrics.mockResolvedValue(FAKE_METRICS);
   api.compileLabel.mockResolvedValue({ code: '^XA^FD10482^FS^XZ' });
+  api.labelImageRaster.mockResolvedValue(null);
+  api.listLabelImages.mockResolvedValue([]);
   api.updateLabelTemplate.mockImplementation(async (id: string, body: Record<string, unknown>) => (
     { ...PARENT, ...body, id, version: 8, out_of_date: [] }));
   printer.send.mockResolvedValue(undefined);
@@ -468,6 +473,88 @@ describe('a DPI child', () => {
     expect(id).toBe('c300');
     expect(Object.keys(body)).toEqual(['design']);
     await waitFor(() => expect(within(bar).getByLabelText('Version v7.1')).toBeTruthy());
+  });
+});
+
+describe('an ID badge', () => {
+  const PERSON = '0b7f3c52-6a2e-4c41-9d1e-3f2a9b8c7d10';
+  const BADGE_SAMPLES = { person_name: 'Ada Lovelace', 'person:id': PERSON };
+  const BADGE_DESIGN = {
+    schema: 3, size: { w: 3.375, h: 2.125 }, splits: {}, elements: [
+      { id: 'image-1', type: 'image', source: 'photo', fit: 'cover', mode: 'dither', x: 0.1, y: 0.1, w: 0.8, h: 1,
+        rotation: 0, hideWhenEmpty: true },
+      { id: 'field-1', type: 'field', field: 'person_name', display: 'text', x: 1.1, y: 0.1, w: 1.5, h: 0.2,
+        rotation: 0, font: { family: 'swiss721-cond-bold', weight: 'regular' }, sizePt: 12, baselineIn: 0.15 },
+    ],
+  };
+  const BADGE: LabelTemplate = {
+    ...PARENT, id: 'b1', name: 'Crew badge', label_type: 'id_badge', size_key: 'id-badge', schema_version: 3,
+    design: BADGE_DESIGN as Record<string, unknown>, samples: BADGE_SAMPLES, dpis: ['300'],
+  };
+
+  async function openBadge(over: Partial<LabelTemplate> = {}) {
+    api.getLabelTemplate.mockResolvedValue({ ...BADGE, ...over });
+    api.listLabelTemplateTree.mockResolvedValue([{ ...BADGE, ...over, family: 'Crew badge', children: [] }]);
+    renderAt('/labels/templates/b1/edit');
+    await builderReady();
+  }
+
+  it('opens a schema 3 design with the Image tool, and asks for the sample person’s photo', async () => {
+    await openBadge();
+    const tools = screen.getByRole('group', { name: 'Tools' });
+    expect(within(tools).getByRole('button', { name: 'Image' })).toBeTruthy();
+    expect(screen.getByRole('group', { name: 'Template' }).textContent).toContain('ID Badge · ID Badge');
+    await waitFor(() => expect(api.labelImageRaster).toHaveBeenCalledWith({
+      source: 'photo', person_id: PERSON, w_in: 0.8, h_in: 1, dpi: 300, fit: 'cover', rotation: 0,
+    }));
+    // the person has no photo: the placeholder
+    const canvas = screen.getByRole('application', { name: 'Label canvas' });
+    expect(within(canvas).getByText('Photo')).toBeTruthy();
+    expect(within(screen.getByRole('group', { name: 'Template' })).queryByText('Unsaved')).toBeNull();
+  });
+
+  it('the Image tool is not on a top label', async () => {
+    await openParent();
+    expect(within(screen.getByRole('group', { name: 'Tools' })).queryByRole('button', { name: 'Image' })).toBeNull();
+  });
+
+  it('⌘P sends the samples with the sample person and the design as schema 3', async () => {
+    await openBadge();
+    ctrl('p');
+    await waitFor(() => expect(printer.send).toHaveBeenCalled());
+    expect(api.compileLabel).toHaveBeenCalledWith(expect.objectContaining({
+      samples: BADGE_SAMPLES, label_type: 'id_badge', size_key: 'id-badge',
+      design: expect.objectContaining({ schema: 3 }),
+    }));
+  });
+
+  it('saves schema 3 with an image and schema 2 once the last one goes', async () => {
+    await openBadge();
+    edit();
+    ctrl('s');
+    await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledTimes(1));
+    expect(api.updateLabelTemplate.mock.calls[0][1].design.schema).toBe(3);
+    expect(api.updateLabelTemplate.mock.calls[0][1].samples).toEqual(BADGE_SAMPLES);
+    // select the photo alone and delete it
+    const canvas = screen.getByRole('application', { name: 'Label canvas' });
+    fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
+    fireEvent.keyDown(document.body, { key: 'Tab', code: 'Tab' });
+    fireEvent.keyDown(document.body, { key: 'Backspace', code: 'Backspace' });
+    await waitFor(() => expect(within(canvas).queryByText('Photo')).toBeNull());
+    ctrl('s');
+    await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledTimes(2));
+    const sent = api.updateLabelTemplate.mock.calls[1][1].design;
+    expect(sent.schema).toBe(2);
+    expect(sent.elements.map((e: { type: string }) => e.type)).toEqual(['field']);
+  });
+
+  it('refuses to save an image on a template that isn’t an ID badge in ZPL', async () => {
+    await openBadge({ label_type: 'top' });
+    edit();
+    ctrl('s');
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('Not saved: Images print on ID Badge templates in ZPL only.');
+    expect(api.updateLabelTemplate).not.toHaveBeenCalled();
   });
 });
 

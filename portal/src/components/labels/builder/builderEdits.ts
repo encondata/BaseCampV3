@@ -16,10 +16,11 @@
 
 import { clampToLabel, type Point } from '../../../labels/builder/geometry';
 import { glyphWidthScale, metricsFile, type FontRef } from '../../../labels/builder/fonts';
+import { IMAGE_SIZES } from '../../../labels/builder/image';
 import { reservedWidthIn, textBoxFor, textWidthIn, type FontMetrics } from '../../../labels/builder/metrics';
 import {
-  addElement, addSplit, invertPadOf, nextId, type DesignV2, type Display, type ElementPatch, type ElementV2,
-  type FieldElement, type TextElement,
+  addElement, addSplit, IMAGE_DEFAULTS, invertPadOf, nextId, type DesignV2, type Display, type ElementPatch,
+  type ElementV2, type FieldElement, type ImageSource, type TextElement,
 } from '../../../labels/builder/model';
 import { piece as splitPiece, splitValue } from '../../../labels/fieldRules';
 import type { MetricsFor } from './Canvas';
@@ -111,6 +112,7 @@ const FIELD_ONLY = (el: ElementV2) => el.type === 'field';
 /** A barcode, or a field placement shown as one. */
 const BARCODE_PARTS = (el: ElementV2) => el.type === 'barcode' || (el.type === 'field' && el.display === 'barcode');
 const SOURCE_PARTS = (el: ElementV2) => el.type === 'barcode' || el.type === 'qr';
+const IMAGE_ONLY = (el: ElementV2) => el.type === 'image';
 
 /** Which elements hold each property (model.ts ElementV2). */
 const HOLDERS: Record<string, (el: ElementV2) => boolean> = {
@@ -120,11 +122,13 @@ const HOLDERS: Record<string, (el: ElementV2) => boolean> = {
   content: (el) => el.type === 'text', lines: (el) => el.type === 'text',
   display: FIELD_ONLY, expectedLength: FIELD_ONLY, maxChars: FIELD_ONLY, trim: FIELD_ONLY,
   strip: FIELD_ONLY, stripWhere: FIELD_ONLY,
-  hideWhenEmpty: (el) => el.type === 'field' || el.type === 'barcode' || el.type === 'qr',
+  hideWhenEmpty: (el) => el.type === 'field' || el.type === 'barcode' || el.type === 'qr' || el.type === 'image',
   symbology: BARCODE_PARTS, moduleIn: BARCODE_PARTS, showText: BARCODE_PARTS,
   field: SOURCE_PARTS, data: SOURCE_PARTS,
   strokeIn: (el) => el.type === 'line' || el.type === 'box',
   fill: (el) => el.type === 'box',
+  source: IMAGE_ONLY, imageId: IMAGE_ONLY, fit: IMAGE_ONLY, mode: IMAGE_ONLY,
+  brightness: IMAGE_ONLY, contrast: IMAGE_ONLY, threshold: IMAGE_ONLY, invert: IMAGE_ONLY,
 };
 
 export function holds(el: ElementV2, key: string): boolean {
@@ -200,6 +204,23 @@ export function placeField(design: DesignV2, key: string, kind: FieldKind,
     font, sizePt: NEW_SIZE_PT, baselineIn: box.baselineIn, align: 'left', inverted: false,
   };
   return added(design, el);
+}
+
+/** An image switched to `source`: that source's fit and look (a photo
+ *  fills and dithers, a logo or a static picture fits and thresholds), its
+ *  box while the old source's new box is untouched (a photo placed, then
+ *  made a logo, turns landscape; a box sized by hand stays), and no
+ *  library picture off a static image. Null for anything else, or no
+ *  change. */
+export function imageSourcePatch(el: ElementV2, source: ImageSource): ElementPatch | null {
+  if (el.type !== 'image' || el.source === source) return null;
+  const was = IMAGE_SIZES[el.source];
+  const untouched = !!was && Math.abs(el.w - was.w) < 1e-9 && Math.abs(el.h - was.h) < 1e-9;
+  return {
+    source, ...IMAGE_DEFAULTS[source],
+    ...(untouched ? IMAGE_SIZES[source] : {}),
+    ...(source === 'static' ? {} : { imageId: undefined }),
+  };
 }
 
 /** Static text, a line or a box from the picker, at the next free spot. */

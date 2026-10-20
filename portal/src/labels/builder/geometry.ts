@@ -18,7 +18,12 @@
  *    modules of its own;
  *  - QR code: square, in whole magnification steps of the symbol the value
  *    needs (qr.ts), capped at the printer's 10;
- *  - line and box: free.
+ *  - line and box: free;
+ *  - image: a free box, the picture fitting inside it by its fit (cover
+ *    crops it to fill the box, contain leaves white round it).
+ *
+ * With ⇧ a drag keeps the footprint's proportions before the type's rule
+ * applies, so a photo keeps its shape.
  *
  * Handles act on the footprint the element covers on the label: at
  * rotation 90 or 270 that is h wide and w tall (model.ts). A locked element
@@ -178,11 +183,11 @@ export function withBarcodeWidths(design: DesignV2, values: Readonly<Record<stri
   return changed ? { ...design, elements } : design;
 }
 
-type Kind = 'text' | 'barcode' | 'qr' | 'free';
+type Kind = 'text' | 'barcode' | 'qr' | 'image' | 'free';
 
 function kindOf(el: ElementV2): Kind {
   if (el.type === 'text') return 'text';
-  if (el.type === 'barcode' || el.type === 'qr') return el.type;
+  if (el.type === 'barcode' || el.type === 'qr' || el.type === 'image') return el.type;
   if (el.type === 'field') return el.display === 'text' || el.display === 'number' ? 'text' : el.display;
   return 'free';
 }
@@ -247,6 +252,7 @@ function qrSide(el: ElementV2, wantIn: number, ctx: ResizeContext): number {
 function sized<T extends ElementV2>(el: T, along: number, across: number, ctx: ResizeContext): T {
   const kind = kindOf(el);
   if (kind === 'barcode' && isBarcode(el)) return sizedBarcode(el, along, across, ctx);
+  // a line, a box or an image: the box is what was asked
   if (kind !== 'text' || (el.type !== 'text' && el.type !== 'field')) return { ...el, w: along, h: across };
 
   const sizePt = el.sizePt ?? 0;

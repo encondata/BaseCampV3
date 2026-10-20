@@ -26,7 +26,10 @@ beforeEach(() => {
   URL.createObjectURL = vi.fn(() => 'blob:preview');
   URL.revokeObjectURL = vi.fn();
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
 
 function renderWith(design: DesignV2) {
   render(<PreviewPanel design={design} dpi={300} samples={SAMPLES} library={[]} sizeKey="4x2" labelType="top" />);
@@ -39,6 +42,23 @@ describe('PreviewPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Render' }));
     expect(await screen.findByRole('img', { name: 'The label as the printer renders it' })).toBeTruthy();
     expect(screen.getByText(NOTE)).toBeTruthy();
+  });
+
+  it('a label too large to render (a big picture at a high DPI) says so, without asking Labelary', async () => {
+    api.compileLabel.mockResolvedValue({ code: `^XA${'A'.repeat(250_000)}^XZ` });
+    renderWith(VEGAS());
+    fireEvent.click(screen.getByRole('button', { name: 'Render' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('Too large to preview at this DPI.');
+    expect(api.previewZplRequest).not.toHaveBeenCalled();
+  });
+
+  it('a preview the server refuses for its length says the same', async () => {
+    const { ApiError } = await import('../../../lib/api');
+    api.previewZplRequest.mockRejectedValue(new ApiError(422, 'unknown_error',
+      [{ loc: ['body', 'zpl'], type: 'string_too_long', msg: 'String should have at most 20000 characters' }]));
+    renderWith(VEGAS());
+    fireEvent.click(screen.getByRole('button', { name: 'Render' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('Too large to preview at this DPI.');
   });
 
   it('says nothing about QR codes when the design has none', async () => {

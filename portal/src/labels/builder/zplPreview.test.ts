@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import vegas from '../../../../api/src/serversherpa/labels/fixtures/vegas_v2.json';
 import { addElement, newDesign, parseDesign, type DesignV2, type ElementV2 } from './model';
-import { designFonts, fontIdsFor, previewRequest, type LibraryFont } from './zplPreview';
+import {
+  PREVIEW_MAX_CHARS, designFonts, fontIdsFor, previewRequest, previewTooLarge, type LibraryFont,
+} from './zplPreview';
 
 const LIBRARY: LibraryFont[] = [
   { id: 'swiss', family: 'swiss721-cond-bold', weight: 'regular', resident: true },
@@ -34,6 +36,20 @@ describe('previewRequest', () => {
     expect(req.preview('^XA^XZ')).toEqual({
       zpl: '^XA^XZ', size_key: '4x2', dpi_key: '600', font_ids: ['rc-r'],
     });
+  });
+
+  it('sends a badge’s sample person (person:id) with its samples, and the design as schema 3', () => {
+    const photo: ElementV2 = { id: 'image-1', type: 'image', source: 'photo', x: 0.1, y: 0.1, w: 0.8, h: 1, rotation: 0 };
+    const samples = { person_name: 'Ada Lovelace', 'person:id': '0b7f3c52-6a2e-4c41-9d1e-3f2a9b8c7d10' };
+    const req = previewRequest(design(photo), 300, samples, [], 'id-badge', 'id_badge');
+    expect(req.compile.samples).toEqual(samples);
+    expect(req.compile.design.schema).toBe(3);
+  });
+
+  it('knows a ZPL too large to preview', () => {
+    expect(PREVIEW_MAX_CHARS).toBe(250_000);
+    expect(previewTooLarge('x'.repeat(250_000))).toBe(false);
+    expect(previewTooLarge('x'.repeat(250_001))).toBe(true);
   });
 
   it('sends copies, so a later edit never changes a body already built', () => {

@@ -23,6 +23,13 @@ describe('evalNumber', () => {
     expect(evalNumber('-5', null)).toBe(-5);
   });
 
+  it('signed: a leading minus is a negative number, the other operators still act on the value', () => {
+    expect(evalNumber('-20', 10, true)).toBe(-20);
+    expect(evalNumber('+5', 10, true)).toBe(15);
+    expect(evalNumber('*2', 10, true)).toBe(20);
+    expect(evalNumber('10-25', 3, true)).toBe(-15);
+  });
+
   it('refuses what is not arithmetic', () => {
     for (const bad of ['', 'abc', '1+', '(2', '2)', '1/0', '1e400', 'alert(1)']) {
       expect(evalNumber(bad, 1)).toBeNull();

@@ -6,19 +6,29 @@
  * from the field's sample.
  */
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { textBoxFor } from '../../../labels/builder/metrics';
 import {
-  MAX_COUNT, MAX_LINES, updateElement, validate, type DesignV2, type FieldElement,
+  MAX_COUNT, MAX_LINES, updateElement, validate, type DesignV2, type ElementV2, type FieldElement, type ImageElement,
+  type TextElement,
 } from '../../../labels/builder/model';
+import type { LabelImage } from '../../../lib/api';
 import { FAKE_METRICS, FIELDS, SAMPLES, VEGAS, elementOf, fakeMetricsFor } from './builderTestKit';
 import PlacedFieldsTable from './PlacedFieldsTable';
 import PropertiesPanel, { type PropertiesPanelProps } from './PropertiesPanel';
 
-afterEach(cleanup);
+const api = vi.hoisted(() => ({ listLabelImages: vi.fn(), uploadLabelImage: vi.fn() }));
+vi.mock('../../../lib/api', async (importActual) => ({
+  ...(await importActual<typeof import('../../../lib/api')>()), ...api,
+}));
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
 
 const DPI = 300;
 
@@ -312,5 +322,138 @@ describe('PropertiesPanel', () => {
     setup({ selection: ['value-name'], props: { readOnly: true } });
     expect((within(panel()).getByRole('textbox', { name: 'Size (pt)' }) as HTMLInputElement).disabled).toBe(true);
     expect((within(panel()).getByRole('button', { name: 'Center' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe('PropertiesPanel: an image (ID badges)', () => {
+  const LIBRARY: LabelImage[] = [
+    { id: 'img-10', name: 'Logo 10', width: 400, height: 200, mime: 'image/png', created_at: '' },
+    { id: 'img-2', name: 'Logo 2', width: 300, height: 100, mime: 'image/png', created_at: '' },
+  ];
+
+  beforeEach(() => {
+    api.listLabelImages.mockResolvedValue(LIBRARY);
+  });
+
+  const photo = (over: Partial<ImageElement> = {}): ImageElement => ({
+    id: 'image-1', type: 'image', source: 'photo', fit: 'cover', mode: 'dither', brightness: 0, contrast: 100,
+    threshold: 128, invert: false, hideWhenEmpty: true, x: 0.1, y: 0.1, w: 0.8, h: 1, rotation: 0, ...over,
+  });
+  const caption: TextElement = {
+    id: 'text-1', type: 'text', content: 'Crew', x: 1.2, y: 0.1, w: 0.5, h: 0.2, rotation: 0, sizePt: 12,
+    baselineIn: 0.15, font: { family: 'swiss721-cond-bold', weight: 'regular' },
+  };
+  const badge = (...elements: ElementV2[]): DesignV2 => ({ schema: 3, size: { w: 3.375, h: 2.125 }, splits: {}, elements });
+  const imageOf = (d: DesignV2) => elementOf(d, 'image-1') as ImageElement;
+  const pressIn = (group: string, name: string) =>
+    fireEvent.click(within(within(panel()).getByRole('group', { name: group })).getByRole('button', { name }));
+
+  it('shows the image section on an ID badge: Source, Fit, Look, Brightness, Contrast, Invert', () => {
+    setup({ design: badge(photo()), selection: ['image-1'], props: { imagesAllowed: true } });
+    expect(within(panel()).getByRole('heading').textContent).toBe('Photo');
+    const pressed = (group: string) => within(within(panel()).getByRole('group', { name: group }))
+      .getAllByRole('button').filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.textContent);
+    expect(pressed('Source')).toEqual(['Photo']);
+    expect(pressed('Fit')).toEqual(['Fill']);
+    expect(pressed('Look')).toEqual(['Photo']);
+    expect((within(panel()).getByRole('textbox', { name: 'Brightness' }) as HTMLInputElement).value).toBe('0');
+    expect((within(panel()).getByRole('textbox', { name: 'Contrast (%)' }) as HTMLInputElement).value).toBe('100');
+    // a dithered photo has no threshold
+    expect(within(panel()).queryByRole('textbox', { name: 'Threshold' })).toBeNull();
+    expect(within(panel()).getByRole('checkbox', { name: 'Invert' })).toBeTruthy();
+    expect((within(panel()).getByRole('checkbox', { name: 'Hide when empty' }) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('edits change only the images in a mixed selection', () => {
+    const { last } = setup({ design: badge(caption, photo()), selection: ['text-1', 'image-1'],
+      props: { imagesAllowed: true } });
+    commit('Brightness', '0-25');
+    commit('Contrast (%)', '140');
+    fireEvent.click(within(panel()).getByRole('checkbox', { name: 'Invert' }));
+    pressIn('Look', 'Logo');
+    commit('Threshold', '90');
+    expect(imageOf(last())).toMatchObject({ brightness: -25, contrast: 140, invert: true, mode: 'threshold', threshold: 90 });
+    expect(elementOf(last(), 'text-1')).toEqual(caption);
+    // a shared property still goes to both
+    press('90°');
+    expect(imageOf(last()).rotation).toBe(90);
+    expect(elementOf(last(), 'text-1').rotation).toBe(90);
+  });
+
+  it('a minus in Brightness is a darker picture, not a subtraction', () => {
+    const { last } = setup({ design: badge(photo({ brightness: 10 })), selection: ['image-1'], props: { imagesAllowed: true } });
+    commit('Brightness', '-20');
+    expect(imageOf(last()).brightness).toBe(-20);
+    commit('Brightness', '500');
+    expect(imageOf(last()).brightness).toBe(100);
+  });
+
+  it('switching the source takes its fit and look, and a logo’s box while the photo’s is untouched', () => {
+    const { last } = setup({ design: badge(photo()), selection: ['image-1'], props: { imagesAllowed: true } });
+    pressIn('Source', 'Logo');
+    expect(imageOf(last())).toMatchObject({ source: 'logo', fit: 'contain', mode: 'threshold', w: 1, h: 0.5 });
+    pressIn('Source', 'Static image');
+    expect(imageOf(last())).toMatchObject({ source: 'static', fit: 'contain', mode: 'threshold', w: 1, h: 0.5 });
+    pressIn('Source', 'Photo');
+    expect(imageOf(last())).toMatchObject({ source: 'photo', fit: 'cover', mode: 'dither', w: 0.8, h: 1 });
+    cleanup();
+    // sized by hand: the box stays
+    const resized = setup({ design: badge(photo({ w: 0.6, h: 0.6 })), selection: ['image-1'], props: { imagesAllowed: true } });
+    pressIn('Source', 'Logo');
+    expect(imageOf(resized.last())).toMatchObject({ source: 'logo', w: 0.6, h: 0.6 });
+  });
+
+  it('a static image picks from the label image library, natural order', async () => {
+    const { last } = setup({ design: badge(photo({ source: 'static', fit: 'contain', mode: 'threshold' })),
+      selection: ['image-1'], props: { imagesAllowed: true } });
+    expect(within(panel()).getByRole('heading').textContent).toBe('Image');
+    await waitFor(() => expect(api.listLabelImages).toHaveBeenCalledTimes(1));
+    const pick = within(panel()).getByRole('combobox', { name: 'Static image' });
+    fireEvent.focus(pick);
+    fireEvent.click(pick);
+    await waitFor(() => expect(document.querySelectorAll('.combo-menu .kbar-item')).toHaveLength(2));
+    const options = [...document.querySelectorAll('.combo-menu .kbar-item')];
+    expect(options.map((o) => o.textContent)).toEqual(['Logo 2300 × 100', 'Logo 10400 × 200']);
+    fireEvent.mouseDown(options[1]);
+    expect(imageOf(last()).imageId).toBe('img-10');
+  });
+
+  it('Upload… posts the file and picks it', async () => {
+    const made: LabelImage = { id: 'img-new', name: 'Cumulus', width: 600, height: 200, mime: 'image/png', created_at: '' };
+    api.uploadLabelImage.mockResolvedValue(made);
+    const { last } = setup({ design: badge(photo({ source: 'static', fit: 'contain', mode: 'threshold' })),
+      selection: ['image-1'], props: { imagesAllowed: true } });
+    await waitFor(() => expect(api.listLabelImages).toHaveBeenCalled());
+    const file = new File(['png'], 'Cumulus.png', { type: 'image/png' });
+    fireEvent.change(within(panel()).getByLabelText('Image file'), { target: { files: [file] } });
+    await waitFor(() => expect(api.uploadLabelImage).toHaveBeenCalledWith(file));
+    await waitFor(() => expect(imageOf(last()).imageId).toBe('img-new'));
+    expect((within(panel()).getByRole('combobox', { name: 'Static image' }) as HTMLInputElement).value).toBe('Cumulus');
+  });
+
+  it('an upload the server refuses says why and changes nothing', async () => {
+    const { ApiError } = await import('../../../lib/api');
+    api.uploadLabelImage.mockRejectedValue(new ApiError(413, 'file_too_large'));
+    const { change } = setup({ design: badge(photo({ source: 'static', fit: 'contain', mode: 'threshold' })),
+      selection: ['image-1'], props: { imagesAllowed: true } });
+    fireEvent.change(within(panel()).getByLabelText('Image file'),
+      { target: { files: [new File(['x'], 'big.png', { type: 'image/png' })] } });
+    expect(await within(panel()).findByText('That file is over 5 MB.')).toBeTruthy();
+    expect(change).not.toHaveBeenCalled();
+  });
+
+  it('off an ID badge in ZPL, says images don’t print there', () => {
+    setup({ design: badge(photo()), selection: ['image-1'], props: { imagesAllowed: false } });
+    expect(within(panel()).getByText('Images print on ID Badge templates in ZPL only. Remove this one.')).toBeTruthy();
+    expect(within(panel()).queryByRole('group', { name: 'Source' })).toBeNull();
+  });
+
+  it('the placed-fields table lists images as Photo, Logo and Image', () => {
+    setup({ design: badge(photo(), photo({ id: 'image-2', source: 'logo' }), photo({ id: 'image-3', source: 'static' })),
+      selection: [], props: { imagesAllowed: true } });
+    const table = screen.getByRole('region', { name: 'Fields on this label' });
+    const rows = within(table).getAllByRole('row').slice(1);
+    expect(rows.map((r) => within(r).getAllByRole('cell')[0].textContent)).toEqual(['Photo', 'Logo', 'Image']);
+    expect(rows.map((r) => within(r).getAllByRole('cell')[1].textContent)).toEqual(['Image', 'Image', 'Image']);
   });
 });

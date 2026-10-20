@@ -7,13 +7,14 @@
  * It renders when asked: Labelary is an outside service. Labelary draws a
  * QR code about 0.2 in higher than a Zebra prints it (the compiler sets ^FO
  * for the printer, qr.ts QR_FO_OFFSET_IN), so a render of a design with
- * one says the canvas is the one to trust there.
+ * one says the canvas is the one to trust there. A label whose ZPL is too
+ * long to render (a big picture at a high DPI) says so instead.
  */
 
 import { useEffect, useState } from 'react';
 
 import type { DesignV2 } from '../../../labels/builder/model';
-import { fontIdsFor, previewRequest } from '../../../labels/builder/zplPreview';
+import { fontIdsFor, previewRequest, previewTooLarge } from '../../../labels/builder/zplPreview';
 import { ApiError, compileLabel, previewZplRequest, type LabelFont } from '../../../lib/api';
 import '../../../styles/directory.css';
 import '../../../styles/labelBuilder.css';
@@ -31,8 +32,17 @@ export interface PreviewPanelProps {
   disabled?: boolean;
 }
 
+const TOO_LARGE = 'Too large to preview at this DPI.';
+
+/** The preview route refused the ZPL for its length (a request check). */
+function refusedForLength(err: ApiError): boolean {
+  return err.status === 422 && Array.isArray(err.detail)
+    && err.detail.some((d) => Array.isArray((d as { loc?: unknown })?.loc) && (d as { loc: unknown[] }).loc.includes('zpl'));
+}
+
 function errorText(err: unknown): string {
   if (err instanceof ApiError) {
+    if (refusedForLength(err)) return TOO_LARGE;
     if (err.code === 'labelary_unavailable') return 'The preview service is not answering. Try again in a moment.';
     if (err.code === 'bad_design') {
       const problems = (err.detail as { problems?: string[] } | undefined)?.problems;
@@ -59,6 +69,10 @@ export default function PreviewPanel({
     try {
       const req = previewRequest(design, dpi, samples, fontIdsFor(design, library ?? []), sizeKey, labelType);
       const { code } = await compileLabel(req.compile);
+      if (previewTooLarge(code)) {
+        setError(TOO_LARGE);
+        return;
+      }
       const blob = await previewZplRequest(req.preview(code));
       setUrl(URL.createObjectURL(blob));
       setShown({ design, dpi, samples });

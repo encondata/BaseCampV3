@@ -10,7 +10,9 @@
  *    printer's metrics give (`textLength`), so spacing is exact even under
  *    the resident font's stand-in. Past the box the text's extent shows in
  *    red. Inverted: the black block is the box plus its pad, stopped at the
- *    label's top and left edges (`_invert_box`), and the text is white.
+ *    label's top and left edges (`_invert_box`), and the text is white,
+ *    blended by difference (labelBuilder.css) so it reverses whatever is
+ *    under it, a picture's dots included, as ^FR prints.
  *    Faux bold overprints one dot along the text;
  *  - a barcode: stripes in its narrow module, as wide as the printer
  *    prints its value (the value's modules × the module: barcode.ts), the
@@ -20,22 +22,35 @@
  *    it (qr.ts qrLayout: centered, whole magnification steps, capped at 10),
  *    always upright, as ^BQ prints;
  *  - a line or box: the compiler's ^GB, a border of the stroke width (solid
- *    when that fills it).
+ *    when that fills it);
+ *  - an image (ID badges): the dots it prints — the server's gray picture
+ *    of it (imageRaster.ts) dithered by dither.ts with its look, painted
+ *    one dot a pixel into an <image> at the footprint's top-left
+ *    (pixelated, white transparent: the printer prints no white). With no
+ *    picture (no sample person, none picked, none on file) a dashed
+ *    placeholder named Photo, Logo or Image, plus the 2-dot ^GB outline
+ *    the printer prints when hide-when-empty is off. In Field names a photo
+ *    or logo is only its placeholder; a static picture still shows.
  * An element that prints nothing (hide-when-empty with a blank value, or
  * inverted with nothing to reverse) keeps only its outline, dimmed.
  */
 
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 
+import { ditherBitmap } from '../../../labels/builder/dither';
 import { faceFile, fauxBold, glyphWidthScale } from '../../../labels/builder/fonts';
 import { barcodeModuleDots, barcodeWidthIn } from '../../../labels/builder/geometry';
+import { bitsToRgba, EMPTY_IMAGE_STROKE_DOTS, imageName } from '../../../labels/builder/image';
 import { cssFamilyOf, textWidthIn, type LoadedFont } from '../../../labels/builder/metrics';
-import { invertPadOf, type ElementV2, type FieldElement, type TextElement } from '../../../labels/builder/model';
+import {
+  imageParams, invertPadOf, type ElementV2, type FieldElement, type ImageElement, type TextElement,
+} from '../../../labels/builder/model';
 import { qrLayout, type QrLayout } from '../../../labels/builder/qr';
 import { pyRound, toDots } from '../../../labels/builder/units';
 import { DEFAULT_FONT } from './canvasActions';
+import { useImageRaster, type GrayRaster } from './imageRaster';
 
-export type ElementKind = 'text' | 'barcode' | 'qr' | 'shape';
+export type ElementKind = 'text' | 'barcode' | 'qr' | 'shape' | 'image';
 
 export function kindOf(el: ElementV2): ElementKind {
   switch (el.type) {
@@ -44,9 +59,7 @@ export function kindOf(el: ElementV2): ElementKind {
     case 'qr': return 'qr';
     case 'line':
     case 'box': return 'shape';
-    // a free box like a shape; ShapeBody draws nothing for it, so only its
-    // frame shows until the canvas draws the picture
-    case 'image': return 'shape';
+    case 'image': return 'image';
     case 'field': return el.display === 'barcode' ? 'barcode' : el.display === 'qr' ? 'qr' : 'text';
   }
 }
@@ -210,6 +223,9 @@ export interface CanvasElementProps {
   px: number;
   /** A prefix for the SVG ids this element defines, unique on the page. */
   uid: string;
+  /** An image's sample person (the samples' `person:id`): whose photo or
+   *  logo it draws. */
+  personId?: string | null;
 }
 
 function CanvasElement(props: CanvasElementProps) {
@@ -233,6 +249,7 @@ function CanvasElement(props: CanvasElementProps) {
       {kind === 'barcode' && <BarcodeBody {...props} />}
       {kind === 'qr' && <QrBody {...props} />}
       {kind === 'shape' && (el.type === 'line' || el.type === 'box') && <ShapeBody {...props} />}
+      {kind === 'image' && el.type === 'image' && <ImageBody {...props} el={el} />}
     </g>
   );
 }
@@ -392,20 +409,108 @@ function QrBody({ el, dpi, hidden, value, px, uid }: CanvasElementProps) {
   );
 }
 
+/** A ^GB of `w` x `h` dots at (x, y) with a border of `t`: a solid
+ *  rectangle when the border fills it, else a frame. */
+function GraphicBox({ x, y, w: fw, h: fh, t, border = t, className }: DotRect & {
+  t: number; border?: number; className: string;
+}) {
+  const w = Math.max(t, fw);
+  const h = Math.max(t, fh);
+  if (2 * border >= Math.min(w, h)) {
+    return <rect className={className} x={x} y={y} width={w} height={h} />;
+  }
+  const d = `M${x} ${y}h${w}v${h}h${-w}Z`
+    + `M${x + border} ${y + border}v${h - 2 * border}h${w - 2 * border}v${-(h - 2 * border)}Z`;
+  return <path className={className} d={d} fillRule="evenodd" />;
+}
+
 /** The compiler's ^GB: a border of the stroke width, solid when that (or
  *  a box's fill) fills it. */
 function ShapeBody({ el, dpi }: CanvasElementProps) {
   if (el.type !== 'line' && el.type !== 'box') return null;
   const fp = dotFootprint(el, dpi);
   const t = Math.max(1, toDots(el.strokeIn, dpi));
-  const { x, y } = fp;
-  const w = Math.max(t, fp.w);
-  const h = Math.max(t, fp.h);
-  const border = el.type === 'box' && el.fill ? Math.min(w, h) : t;
-  if (2 * border >= Math.min(w, h)) {
-    return <rect className="lbc-shape" x={x} y={y} width={w} height={h} />;
+  const border = el.type === 'box' && el.fill ? Math.min(Math.max(t, fp.w), Math.max(t, fp.h)) : t;
+  return <GraphicBox {...fp} t={t} border={border} className="lbc-shape" />;
+}
+
+/** Packed bits painted into a PNG, one dot a pixel, black opaque and white
+ *  transparent. Only ever writes the canvas (no readback); null without a
+ *  2D canvas. */
+function paintBits(bits: Uint8Array, width: number, height: number): string | null {
+  if (!width || !height) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  const img = ctx.createImageData(width, height);
+  img.data.set(bitsToRgba(bits, width, height));
+  ctx.putImageData(img, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
+interface Painted {
+  url: string | null;
+  /** Why nothing could be drawn (settings out of range). */
+  problem: string | null;
+}
+
+/** `raster` dithered with the element's look and painted, as it prints. */
+function usePainted(raster: GrayRaster | null, el: ImageElement): Painted | null {
+  const p = imageParams(el);
+  return useMemo(() => {
+    if (!raster) return null;
+    try {
+      const bits = ditherBitmap(raster.gray, raster.width, raster.height, p);
+      return { url: paintBits(bits, raster.width, raster.height), problem: null };
+    } catch (err) {
+      // the settings validate() reports: nothing the printer would print
+      return { url: null, problem: err instanceof RangeError ? err.message : 'This picture can’t be drawn.' };
+    }
+    // the look's five settings, not the params object made each render
+  }, [raster, p.brightness, p.contrast, p.threshold, p.mode, p.invert]); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+function ImageBody({ el, dpi, names, px, personId = null }: CanvasElementProps & { el: ImageElement }) {
+  const fp = dotFootprint(el, dpi);
+  // in Field names a photo or a logo is where it goes; a static picture shows itself
+  const draws = !names || el.source === 'static';
+  const state = useImageRaster(el, dpi, personId, draws);
+  const raster = state.status === 'ready' ? state.raster : state.status === 'none' ? null : state.stale;
+  const painted = usePainted(raster, el);
+  const stale = state.status !== 'ready';
+  const title = state.status === 'error' ? state.message : painted?.problem ?? null;
+
+  if (painted?.url && raster) {
+    // a picture on its way is the one before, stretched over the new box
+    const w = stale ? fp.w : raster.width;
+    const h = stale ? fp.h : raster.height;
+    return (
+      <>
+        <image className={`lbc-image${stale ? ' is-stale' : ''}`} href={painted.url} x={fp.x} y={fp.y}
+          width={w} height={h} preserveAspectRatio="none" style={{ imageRendering: 'pixelated' }} />
+        <rect className="lbc-box" x={fp.x} y={fp.y} width={fp.w} height={fp.h}
+          strokeWidth={px} strokeDasharray={`${3 * px} ${2 * px}`} />
+      </>
+    );
   }
-  const d = `M${x} ${y}h${w}v${h}h${-w}Z`
-    + `M${x + border} ${y + border}v${h - 2 * border}h${w - 2 * border}v${-(h - 2 * border)}Z`;
-  return <path className="lbc-shape" d={d} fillRule="evenodd" />;
+  // no picture to print: the printer's outline when hide-when-empty is off
+  const outline = state.status === 'none' && draws && el.hideWhenEmpty === false;
+  const label = Math.max(0, Math.min(12 * px, fp.h / 2, fp.w / 4));
+  return (
+    <g className="lbc-image-empty">
+      {title && <title>{title}</title>}
+      <rect className={`lbc-image-placeholder${title ? ' is-error' : ''}`} x={fp.x} y={fp.y}
+        width={Math.max(fp.w, px)} height={Math.max(fp.h, px)} strokeWidth={px}
+        strokeDasharray={`${4 * px} ${3 * px}`} />
+      {outline && (
+        <GraphicBox x={fp.x} y={fp.y} w={fp.w} h={fp.h} t={EMPTY_IMAGE_STROKE_DOTS} className="lbc-image-outline" />
+      )}
+      {label > 0 && (
+        <text className="lbc-image-name" x={fp.x + fp.w / 2} y={fp.y + fp.h / 2} fontSize={label}
+          textAnchor="middle" dominantBaseline="central">{imageName(el)}</text>
+      )}
+    </g>
+  );
 }
