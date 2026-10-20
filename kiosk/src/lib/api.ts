@@ -1387,8 +1387,17 @@ export async function getStationLabel(assetId: string): Promise<StationLabel> {
 
 /** Queues a Labeled scan once a label was sent. Throws ApiError
  *  `label_not_found` / `not_label_station` (409) or `scan_value_mismatch` (422). */
+/** Queues the printed label's Labeled scan; resolves to its client_scan_id. */
 export async function postLabelPrinted(body: {
   asset_id: string; scanned_value: string; scanned_at: string;
-}): Promise<void> {
-  await jsonFrom<{ queued: true; client_scan_id: string }>(await postJson('/edge/labels/printed', body));
+}): Promise<string> {
+  const r = await jsonFrom<{ queued: true; client_scan_id: string }>(
+    await postJson('/edge/labels/printed', body));
+  return r.client_scan_id;
+}
+
+/** Which of these Labeled scans the portal has accepted (at most 100 ids). */
+export async function getRecordedScans(ids: string[]): Promise<string[]> {
+  const resp = await apiFetch(`/edge/labels/recorded?ids=${encodeURIComponent(ids.join(','))}`);
+  return (await jsonFrom<{ recorded: string[] }>(resp)).recorded;
 }

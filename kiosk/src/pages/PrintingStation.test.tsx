@@ -3,7 +3,7 @@
  *  station printer and stubbed edge label routes: scanning prints and
  *  shows the asset, and the problems say what's wrong. */
 import 'fake-indexeddb/auto';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { IDBFactory } from 'fake-indexeddb';
 import { MemoryRouter } from 'react-router-dom';
@@ -11,7 +11,9 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { HostStatus } from '@portal/labels/zebraUsb';
 
-const api = vi.hoisted(() => ({ getStationLabel: vi.fn(), postLabelPrinted: vi.fn(), getLabelRunStatus: vi.fn() }));
+const api = vi.hoisted(() => ({
+  getStationLabel: vi.fn(), postLabelPrinted: vi.fn(), getLabelRunStatus: vi.fn(), getRecordedScans: vi.fn(),
+}));
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
   return { ...actual, ...api };
@@ -60,7 +62,7 @@ import { ApiError } from '../lib/api';
 import { clearFlash } from '../lib/flash';
 import { writeKioskSetup } from '../lib/kioskSetup';
 import { closeDb, replaceAll } from '../lib/localDb';
-import PrintingStation from './PrintingStation';
+import PrintingStation, { RECORDED_POLL_MS } from './PrintingStation';
 
 const SERVER = {
   id: 'a-1', asset_id: '10042', name: 'Rack 4 server', rfid: null,
@@ -82,7 +84,8 @@ beforeEach(async () => {
   api.getStationLabel.mockReset().mockImplementation(async (id: string) => ({
     asset_id: id, zpl: '^XA^FDLABEL^FS^XZ', error: null, template_name: 'Generic', dpi: 203, label_kind: 'top',
   }));
-  api.postLabelPrinted.mockReset().mockResolvedValue(undefined);
+  api.postLabelPrinted.mockReset().mockResolvedValue('scan-1');
+  api.getRecordedScans.mockReset().mockResolvedValue([]);
   api.getLabelRunStatus.mockReset().mockResolvedValue(runStatus(0));
 });
 
@@ -234,4 +237,39 @@ it('a scan that hits a too-new template refreshes the header count', async () =>
   api.getLabelRunStatus.mockResolvedValue(runStatus(1));
   await scan('10042');
   expect(await screen.findByText('1 template needs a laptop update.')).toBeTruthy();
+});
+
+const statusCell = () => screen.getAllByRole('row')[1].querySelector('.scan-chip') as HTMLElement;
+
+it('a printed scan the portal accepted reads Printed + Recorded in the list', async () => {
+  api.getRecordedScans.mockResolvedValue(['scan-1']);
+  render_();
+  await scan('10042');
+  await waitFor(() => expect(statusCell().textContent).toBe('Printed + Recorded'));
+  expect(api.getRecordedScans).toHaveBeenCalledWith(['scan-1']);
+});
+
+it('stays Printed until the portal accepts the scan, then reads Printed + Recorded', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    render_();
+    await scan('10042');
+    await waitFor(() => expect(api.getRecordedScans).toHaveBeenCalled());
+    expect(statusCell().textContent).toBe('Printed');
+    api.getRecordedScans.mockResolvedValue(['scan-1']);
+    await act(async () => { await vi.advanceTimersByTimeAsync(RECORDED_POLL_MS); });
+    await waitFor(() => expect(statusCell().textContent).toBe('Printed + Recorded'));
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('a reprint never asks and never reads Recorded', async () => {
+  api.getRecordedScans.mockResolvedValue(['scan-1']);
+  render_();
+  await scan('10042');
+  await waitFor(() => expect(statusCell().textContent).toBe('Printed + Recorded'));
+  await userEvent.click(screen.getByRole('button', { name: 'Reprint' }));
+  await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(3));
+  expect(statusCell().textContent).toBe('Printed (reprint)');
 });

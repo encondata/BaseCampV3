@@ -1,7 +1,8 @@
 """/edge/labels/* — the Label Station's generated labels (edge/labels/):
 the run's progress for the regeneration screen, the template a setup
 choice would use, one asset's finished label for the Printing Station, and
-the Labeled scan queued once a label has printed. A session locked to
+the Labeled scan queued once a label has printed, and which of those scans
+the portal has accepted ("Printed + Recorded"). A session locked to
 another move is 403 move_locked (deps.setup_move)."""
 
 import uuid
@@ -132,6 +133,33 @@ async def printed(request: Request, _: EdgeSession = Depends(setup_move)) -> dic
          LABELED, now_iso()))
     st.rfid_upload_wake.set()
     return {"queued": True, "client_scan_id": client_scan_id}
+
+
+MAX_RECORDED_IDS = 100
+
+
+@router.get("/recorded")
+async def recorded(request: Request, ids: str = "",
+                   _: EdgeSession = Depends(setup_move)) -> dict:
+    """Which of these Labeled scans (`client_scan_id`s from /printed, comma
+    separated, at most MAX_RECORDED_IDS) the portal has accepted, so the
+    Printing Station can show "Printed + Recorded". Unknown ids are simply
+    not listed; a malformed id or too many is 422 bad_request."""
+    wanted = [i for i in (p.strip() for p in ids.split(",")) if i]
+    if len(wanted) > MAX_RECORDED_IDS:
+        raise err(422, "bad_request")
+    try:
+        wanted = [str(uuid.UUID(i)) for i in wanted]
+    except ValueError:
+        raise err(422, "bad_request") from None
+    if not wanted:
+        return {"recorded": []}
+    marks = ",".join("?" * len(wanted))
+    rows = request.app.state.store.all(
+        f"SELECT client_scan_id FROM pending_rfid_scans "
+        f"WHERE was_accepted = 1 AND client_scan_id IN ({marks})", tuple(wanted))
+    accepted = {r["client_scan_id"] for r in rows}
+    return {"recorded": [i for i in wanted if i in accepted]}
 
 
 def _norm(value) -> str | None:
