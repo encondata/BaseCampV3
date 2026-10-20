@@ -743,6 +743,15 @@ async def lock_tree(db: AsyncSession, parent: LabelTemplate) -> list[LabelTempla
     return await children_of(db, parent, for_update=True)
 
 
+async def lock_parent(db: AsyncSession, parent: LabelTemplate) -> None:
+    """Lock the parent alone, re-reading what a save decides from (the lock
+    save_parent takes first). For a write that touches no child, such as a
+    samples-only save: its children stay unlocked, so it never holds a
+    child's row against a write that takes the rows in another order
+    (activate, deactivate and delete flush theirs in id order)."""
+    await _lock(db, parent)
+
+
 async def lock_child(db: AsyncSession, child: LabelTemplate) -> LabelTemplate:
     """Lock the child's parent and then the child (the order every save
     takes them in), re-reading both; returns the parent."""

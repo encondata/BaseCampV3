@@ -1153,6 +1153,32 @@ async def test_a_samples_only_patch_still_saves_the_samples(client, db, seeded_u
         assert row.schema_version == templates_tree.design_schema(row.design) == 3, row.name
 
 
+async def test_a_samples_only_patch_locks_the_parent_alone(client, db, seeded_user, store):
+    """R5: a samples-only save writes no child, so it locks the parent
+    alone. Locking every child too could deadlock against a Deactivate,
+    which flushes the rows in id order: here a child stays locked by
+    another transaction, and the save completes inside a short
+    lock_timeout instead of waiting on it."""
+    from sqlalchemy import text
+
+    from serversherpa.db.engine import get_sessionmaker
+
+    sa = await _super(db, client)
+    actor = await _actor(db)
+    parent_id, child_id = await _plain_badge(client, sa, "Busy Child Badge")
+    async with get_sessionmaker()() as s, get_sessionmaker()() as other:
+        await other.execute(select(LabelTemplate.id).where(LabelTemplate.id == child_id)
+                            .with_for_update())
+        await s.execute(text("SET LOCAL lock_timeout = '300ms'"))
+        parent = await s.get(LabelTemplate, parent_id)
+        await labels_module._patch_parent(s, parent, {"samples": {"asset_id": "7"}}, None,
+                                          actor)
+        await s.commit()
+        await other.rollback()
+    db.expire_all()
+    assert (await db.get(LabelTemplate, parent_id)).samples == {"asset_id": "7"}
+
+
 async def test_a_restore_checks_the_type_as_locked(client, db, seeded_user, store):
     """M2 on the other write that brings a design back: restoring a version
     with an image checks the type as locked too."""

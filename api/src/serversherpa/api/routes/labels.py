@@ -910,12 +910,17 @@ async def _patch_parent(db: DbSession, row: LabelTemplate, data: dict, summary: 
     if "design" in data:
         _parse_v2(data["design"])
     children: list[LabelTemplate] = []
-    if data.keys() & {"design", "label_type", "language_key", "samples", "size_key"}:
-        # anything that can reach save_parent reads the tree as locked (the
+    if data.keys() & {"design", "label_type", "language_key", "size_key"}:
+        # a save that can write the children reads the tree as locked (the
         # parent, then its children): the images check, so an image save and
-        # a type change never both land, and the design and samples written
-        # back below, so a samples-only save never writes a stale design
+        # a type change never both land, and the design written back below
         children = await tree.lock_tree(db, row)
+    elif "samples" in data:
+        # a samples-only save writes no child: the parent's lock alone, so
+        # the design and samples written back below are the ones as locked,
+        # never a stale read, and no child row is held against a write that
+        # locks the rows in another order (tree.lock_parent)
+        await tree.lock_parent(db, row)
     label_type = data.get("label_type", row.label_type)
     language_key = data.get("language_key", row.language_key)
     _images_badge_only(data.get("design", row.design), label_type, language_key)
