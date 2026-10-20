@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FONT_FAMILIES } from '../../../labels/builder/fonts';
 import { fakeMetricsFor } from './builderTestKit';
 import FontSelect from './FontSelect';
+import { useBuilderShortcuts } from './useBuilderShortcuts';
 
 afterEach(cleanup);
 
@@ -77,5 +78,34 @@ describe('FontSelect', () => {
     fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Escape' });
     expect(screen.queryByRole('listbox')).toBeNull();
     expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('Tab closes the list and moves on from the trigger; the trigger names the list it opens', () => {
+    const { trigger, onChange } = setup('roboto');
+    expect(trigger.hasAttribute('aria-controls')).toBe(false);
+    fireEvent.click(trigger);
+    const list = screen.getByRole('listbox');
+    expect(trigger.getAttribute('aria-controls')).toBe(list.id);
+    // not prevented: the browser's Tab goes on from the trigger
+    expect(fireEvent.keyDown(list, { key: 'Tab' })).toBe(true);
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('`/` on the trigger is the field search, and never reaches the Topbar', () => {
+    const search = vi.fn();
+    function Page() {
+      useBuilderShortcuts({ 'workflow.fieldSearch': search }, { platform: 'mac' });
+      return <FontSelect value="roboto" onChange={vi.fn()} />;
+    }
+    render(<Page />);
+    const topbar = vi.fn();
+    document.addEventListener('keydown', topbar);
+    const ok = fireEvent.keyDown(screen.getByRole('button', { name: /^Font/ }), { key: '/', code: 'Slash' });
+    document.removeEventListener('keydown', topbar);
+    expect(ok).toBe(false);
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(topbar).not.toHaveBeenCalled();
   });
 });

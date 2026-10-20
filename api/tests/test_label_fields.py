@@ -304,7 +304,8 @@ async def test_sample_values_are_one_assets_field_values(client, db, seeded_user
     move = await _seed_builder(db)
     zero = await db.scalar(select(Asset).where(Asset.name == "bld-0"))
     one = await db.scalar(select(Asset).where(Asset.name == "bld-1"))
-    hdrs = await login(client)
+    # the builder's rank (a super admin)
+    hdrs = await _make(db, client, "super_admin", "sa@test.example.com")
 
     r = await client.get("/labels/sample-values", headers=hdrs,
                          params={"initiative_id": str(move.id), "asset_id": str(zero.id)})
@@ -341,7 +342,7 @@ async def test_sample_values_404s(client, db, seeded_user):
     stray = Asset(name="stray", serial_number="STRAY")
     db.add_all([other, stray])
     await db.commit()
-    hdrs = await login(client)
+    hdrs = await _make(db, client, "super_admin", "sa@test.example.com")
 
     async def get(initiative_id, asset_id):
         return await client.get("/labels/sample-values", headers=hdrs, params={
@@ -358,11 +359,24 @@ async def test_sample_values_404s(client, db, seeded_user):
     assert r.status_code == 422
 
 
-async def test_sample_values_need_labels_view(client, db, seeded_user):
+async def test_sample_values_need_labels_view_and_rank_80(client, db, seeded_user):
     import uuid
 
-    params = {"initiative_id": str(uuid.uuid4()), "asset_id": str(uuid.uuid4())}
+    from sqlalchemy import select
+
+    from tests.test_kiosk_label_inputs_sync import _seed_builder
+
+    move = await _seed_builder(db)
+    zero = await db.scalar(select(Asset).where(Asset.name == "bld-0"))
+    params = {"initiative_id": str(move.id), "asset_id": str(zero.id)}
     hdrs = await _make(db, client, "worker", "worker@test.example.com")
     r = await client.get("/labels/sample-values", headers=hdrs, params=params)
     assert r.status_code == 403, r.text
+    # labels:view at rank 60 still reads the field catalog, not an asset's
+    # whole From-To row: that is the builder's (rank 80)
+    admin = await _make(db, client, "admin", "adm@test.example.com")
+    assert (await client.get("/labels/fields", headers=admin)).status_code == 200
+    r = await client.get("/labels/sample-values", headers=admin, params=params)
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == {"code": "forbidden", "min_rank": 80}
     assert (await client.get("/labels/sample-values", params=params)).status_code == 401

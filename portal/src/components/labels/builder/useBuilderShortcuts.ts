@@ -5,10 +5,13 @@
  * the browser acts on ⌘S, ⌘P or ⌘R.
  *
  * A key runs the handler of the shortcut it matches. While focus is in a
- * text box only the `always` shortcuts (save, test print, the sheet) run;
- * in a menu, a listbox, tabs or the placed-fields table the plain keys
- * (arrows, letters, Delete, Tab) stay with it and only ⌘ / ⌥ ones run;
- * Enter and Tab stay with a focused button or link. A handled key has its
+ * text box only the `always` shortcuts (save, test print, the sheet) run.
+ * A widget that runs its own keys (a menu, a listbox, tabs, a trigger that
+ * opens a list, the placed-fields table) keeps the keys it uses — arrows,
+ * Tab, Enter and Space, and inside an open menu or list its letters and
+ * Escape — while `/`, Delete, Escape elsewhere and every ⌘ / ⌥ shortcut
+ * still reach the builder (widgetKeeps). Enter and Tab stay with a focused
+ * button or link. A handled key has its
  * default prevented and, Escape aside (the Topbar closes its popovers on
  * it), stops propagating. A handler that returns `false` declines: the key
  * then goes on as if nothing listened. Several hooks can listen at once
@@ -38,15 +41,18 @@ const CONTROL_KEYS = new Set(['select.next', 'select.previous', 'edit.content'])
 /** A key the Topbar must still see. */
 const SHARED_KEYS = new Set(['tool.escape']);
 
-/** Widgets that run their own plain keys (arrows, letters, Delete, Tab,
- *  Enter, Escape): menus, listboxes, tabs, a trigger that opens one, and
- *  anything marked `data-builder-keys="own"` (the placed-fields table). */
+/** Widgets that run their own keys: menus, listboxes, tabs, a trigger that
+ *  opens one, and anything marked `data-builder-keys="own"` (the
+ *  placed-fields table). Which keys they keep: widgetKeeps. */
 const OWN_KEYS = [
   '[role="menu"]', '[role="menubar"]', '[role="menuitem"]', '[role="menuitemcheckbox"]',
   '[role="menuitemradio"]', '[role="listbox"]', '[role="option"]', '[role="tablist"]', '[role="tab"]',
   '[role="grid"]', '[aria-haspopup="listbox"]', '[aria-haspopup="menu"]', '[aria-haspopup="true"]',
   '[data-builder-keys="own"]',
 ].join(', ');
+
+/** An open menu or list, where letters jump and Escape closes it. */
+const OPEN_LIST = '[role="menu"], [role="menubar"], [role="listbox"]';
 
 export function isTypingTarget(target: EventTarget | null): boolean {
   const el = target as Element | null;
@@ -65,6 +71,18 @@ export function ownsKeys(target: EventTarget | null): boolean {
   const el = target as Element | null;
   if (!el || typeof el.closest !== 'function') return false;
   return !!el.closest(OWN_KEYS);
+}
+
+/** Whether the widget focus is in keeps `shortcut`'s key: arrows (move),
+ *  Tab and ⇧Tab (select.next / previous) and Enter (edit.content), plus the
+ *  letters (tool.*) and Escape inside an open menu or list. Never a ⌘ /
+ *  Ctrl / ⌥ shortcut, nor `/` (field search), Delete, or Escape outside a
+ *  list (it deselects). */
+export function widgetKeeps(shortcutId: string, e: Pick<KeyboardEvent, 'target' | 'metaKey' | 'ctrlKey' | 'altKey'>): boolean {
+  if (e.metaKey || e.ctrlKey || e.altKey || !ownsKeys(e.target)) return false;
+  if (shortcutId.startsWith('move.') || CONTROL_KEYS.has(shortcutId)) return true;
+  const inList = !!(e.target as Element).closest(OPEN_LIST);
+  return inList && shortcutId.startsWith('tool.');
 }
 
 /** A button or link the keyboard reached (Tab), not one a click left focus
@@ -91,8 +109,7 @@ export function useBuilderShortcuts(handlers: ShortcutHandlers, options: Shortcu
       const shortcut = matchShortcut(e, os);
       if (!shortcut) return;
       if (shortcut.when !== 'always' && isTypingTarget(e.target)) return;
-      // ⌘ / Ctrl and ⌥ shortcuts still reach the builder from a menu or list
-      if (shortcut.when !== 'always' && !e.metaKey && !e.ctrlKey && !e.altKey && ownsKeys(e.target)) return;
+      if (shortcut.when !== 'always' && widgetKeeps(shortcut.id, e)) return;
       if (CONTROL_KEYS.has(shortcut.id) && isControl(e.target)) return;
       const run = latest.current[shortcut.id];
       if (!run || run(e) === false) return;

@@ -86,38 +86,74 @@ describe('useBuilderShortcuts', () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
-  it('leaves plain keys to a widget that runs its own (a listbox, a menu, the placed-fields table)', () => {
-    const nudge = vi.fn();
-    const remove = vi.fn();
-    const tool = vi.fn();
-    const undo = vi.fn();
-    const handlers = { 'move.down': nudge, 'edit.delete': remove, 'tool.text': tool, 'edit.undo': undo };
-    function Widgets() {
+  describe('a widget that runs its own keys', () => {
+    function Widgets({ handlers }: { handlers: ShortcutHandlers }) {
       useBuilderShortcuts(handlers, { platform: 'mac' });
       return (
         <div>
           <div role="listbox" tabIndex={-1} aria-label="Fonts"><div role="option" aria-selected="false">Roboto</div></div>
           <div role="menu" aria-label="Add"><button type="button" role="menuitem">Box</button></div>
           <button type="button" aria-haspopup="listbox">Font</button>
-          <div data-builder-keys="own" tabIndex={0} aria-label="Fields on this label" />
+          <div data-builder-keys="own" tabIndex={0} aria-label="Fields on this label">
+            <button type="button" aria-pressed="false">Bold</button>
+          </div>
         </div>
       );
     }
-    const { getByLabelText, getByText } = render(<Widgets />);
-    for (const target of [getByLabelText('Fonts'), getByText('Roboto'), getByText('Box'), getByText('Font'),
-      getByLabelText('Fields on this label')]) {
-      expect(fireEvent.keyDown(target, { key: 'ArrowDown', code: 'ArrowDown' })).toBe(true);
-      fireEvent.keyDown(target, { key: 'Delete', code: 'Delete' });
-      fireEvent.keyDown(target, { key: 't', code: 'KeyT' });
-      // ⌘ shortcuts still reach the builder
-      fireEvent.keyDown(target, { key: 'z', code: 'KeyZ', metaKey: true });
+
+    function setup() {
+      const h = {
+        nudge: vi.fn(), next: vi.fn(), remove: vi.fn(), tool: vi.fn(), escape: vi.fn(), search: vi.fn(), undo: vi.fn(),
+      };
+      const handlers: ShortcutHandlers = {
+        'move.down': h.nudge, 'select.next': h.next, 'edit.delete': h.remove, 'tool.text': h.tool,
+        'tool.escape': h.escape, 'workflow.fieldSearch': h.search, 'edit.undo': h.undo,
+      };
+      const utils = render(<Widgets handlers={handlers} />);
+      const lists = [utils.getByLabelText('Fonts'), utils.getByText('Roboto'), utils.getByText('Box')];
+      const others = [utils.getByText('Font'), utils.getByLabelText('Fields on this label'), utils.getByText('Bold')];
+      return { h, lists, others };
     }
-    expect(nudge).not.toHaveBeenCalled();
-    expect(remove).not.toHaveBeenCalled();
-    expect(tool).not.toHaveBeenCalled();
-    expect(undo).toHaveBeenCalledTimes(5);
-    fireEvent.keyDown(document.body, { key: 'ArrowDown', code: 'ArrowDown' });
-    expect(nudge).toHaveBeenCalledTimes(1);
+
+    it('keeps arrows and Tab; in an open list also letters and Escape', () => {
+      const { h, lists, others } = setup();
+      for (const target of [...lists, ...others]) {
+        expect(fireEvent.keyDown(target, { key: 'ArrowDown', code: 'ArrowDown' })).toBe(true);
+      }
+      fireEvent.keyDown(others[1], { key: 'Tab', code: 'Tab' });
+      for (const target of lists) {
+        fireEvent.keyDown(target, { key: 't', code: 'KeyT' });
+        fireEvent.keyDown(target, { key: 'Escape', code: 'Escape' });
+      }
+      expect(h.nudge).not.toHaveBeenCalled();
+      expect(h.next).not.toHaveBeenCalled();
+      expect(h.tool).not.toHaveBeenCalled();
+      expect(h.escape).not.toHaveBeenCalled();
+      // a trigger or the table leaves the tool letters to the canvas
+      for (const target of others) fireEvent.keyDown(target, { key: 't', code: 'KeyT' });
+      expect(h.tool).toHaveBeenCalledTimes(3);
+      fireEvent.keyDown(document.body, { key: 'ArrowDown', code: 'ArrowDown' });
+      expect(h.nudge).toHaveBeenCalledTimes(1);
+    });
+
+    it('never keeps `/`, Delete, ⌘ shortcuts, or Escape outside a list', () => {
+      const { h, lists, others } = setup();
+      const topbar = vi.fn();
+      document.addEventListener('keydown', topbar);
+      for (const target of [...lists, ...others]) {
+        expect(fireEvent.keyDown(target, { key: '/', code: 'Slash' })).toBe(false);
+        fireEvent.keyDown(target, { key: 'Delete', code: 'Delete' });
+        fireEvent.keyDown(target, { key: 'z', code: 'KeyZ', metaKey: true });
+      }
+      document.removeEventListener('keydown', topbar);
+      // `/` is the field search, stopped before the Topbar's own
+      expect(h.search).toHaveBeenCalledTimes(6);
+      expect(topbar).not.toHaveBeenCalled();
+      expect(h.remove).toHaveBeenCalledTimes(6);
+      expect(h.undo).toHaveBeenCalledTimes(6);
+      for (const target of others) fireEvent.keyDown(target, { key: 'Escape', code: 'Escape' });
+      expect(h.escape).toHaveBeenCalledTimes(3);
+    });
   });
 
   it('does not prevent the default when a handler declines', () => {

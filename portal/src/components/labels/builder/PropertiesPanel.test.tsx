@@ -146,6 +146,47 @@ describe('PropertiesPanel', () => {
     expect(elementOf(d, 'grid-pod').w).toBeCloseTo(3 * 450 * (8.4 / 72 / 1000));
   });
 
+  it('typed arithmetic and steps act on each selected element; differing values show Mixed', () => {
+    const { last } = setup({ selection: ['banner-nap', 'grid-pod'] });
+    const x = within(panel()).getByRole('textbox', { name: 'X' }) as HTMLInputElement;
+    expect(x.value).toBe('');
+    expect(x.placeholder).toBe('Mixed');
+    commit('X', '+15');
+    // banner-nap sat at 10 dots, grid-pod at 185
+    expect(elementOf(last(), 'banner-nap').x).toBeCloseTo(25 / DPI);
+    expect(elementOf(last(), 'grid-pod').x).toBeCloseTo(200 / DPI);
+    commit('Size (pt)', '*2');
+    expect((elementOf(last(), 'banner-nap') as FieldElement).sizePt).toBeCloseTo(48);
+    expect((elementOf(last(), 'grid-pod') as FieldElement).sizePt).toBeCloseTo(16.8);
+    fireEvent.keyDown(within(panel()).getByRole('textbox', { name: 'Expected length' }), { key: 'ArrowUp' });
+    expect((elementOf(last(), 'banner-nap') as FieldElement).expectedLength).toBe(3);
+    expect((elementOf(last(), 'grid-pod') as FieldElement).expectedLength).toBe(4);
+    // a plain number sets them all, and the box shows it again
+    commit('Expected length', '2');
+    expect((elementOf(last(), 'grid-pod') as FieldElement).expectedLength).toBe(2);
+    expect((within(panel()).getByRole('textbox', { name: 'Expected length' }) as HTMLInputElement).value).toBe('2');
+  });
+
+  it('barcode settings reach only barcodes in a mixed selection; a placement shown as one takes them', () => {
+    const mixedSel = setup({ selection: ['value-name', 'barcode'] });
+    press('Code 39');
+    expect(elementOf(mixedSel.last(), 'barcode')).toMatchObject({ symbology: 'code39' });
+    expect('symbology' in elementOf(mixedSel.last(), 'value-name')).toBe(false);
+    cleanup();
+    const shown = setup({ selection: ['value-name'] });
+    press('Barcode');
+    expect(elementOf(shown.last(), 'value-name')).toMatchObject({ display: 'barcode', symbology: 'code128', showText: true });
+  });
+
+  it('Split pieces keep the lock of the placement they replace', () => {
+    const design = oneRack();
+    design.elements[0] = { ...design.elements[0], locked: true };
+    const { last } = setup({ design, selection: ['rack'] });
+    press('Split');
+    expect(last().elements).toHaveLength(5);
+    expect(last().elements.every((e) => e.locked === true)).toBe(true);
+  });
+
   it('picks a font from the font list', () => {
     const { last } = setup({ selection: ['value-name'] });
     fireEvent.click(within(panel()).getByRole('button', { name: /^Font/ }));

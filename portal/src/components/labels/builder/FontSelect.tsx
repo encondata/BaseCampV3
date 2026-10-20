@@ -16,7 +16,7 @@
  *
  * Keyboard: ↓ ↑ Enter or Space on the trigger open the list and focus it;
  * in the list ↓ ↑ Home End move, Enter or Space pick, Escape closes, Tab
- * closes and moves on. The canvas leaves these keys alone in a listbox
+ * closes and moves on from the trigger. The canvas leaves these keys alone in a listbox
  * (useBuilderShortcuts ownsKeys).
  */
 
@@ -69,6 +69,7 @@ export default function FontSelect({ value, weight = 'regular', onChange, metric
   const triggerRef = useRef<HTMLButtonElement>(null);
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const optionId = (i: number) => `${uid}-font-${i}`;
+  const listId = `${uid}-fonts`;
 
   const close = (refocus: boolean) => {
     setOpen(false);
@@ -151,7 +152,8 @@ export default function FontSelect({ value, weight = 'regular', onChange, metric
         close(true);
         break;
       case 'Tab':
-        setOpen(false);
+        // back on the trigger, the browser's Tab moves on from there
+        close(true);
         return;
       default:
         return;
@@ -162,7 +164,7 @@ export default function FontSelect({ value, weight = 'regular', onChange, metric
   const label = familyInfo(value)?.label ?? value;
   const menu = (
     <div ref={listRef} className={`combo-menu lbp-font-menu${dropUp ? ' drop-up' : ''}`} style={placed}
-      role="listbox" tabIndex={-1} aria-label="Fonts" aria-activedescendant={optionId(active)} onKeyDown={onListKey}>
+      role="listbox" id={listId} tabIndex={-1} aria-label="Fonts" aria-activedescendant={optionId(active)} onKeyDown={onListKey}>
       {FONT_FAMILIES.map((f, i) => (
         <div key={f.slug} id={optionId(i)} role="option" aria-selected={f.slug === value} aria-label={f.label}
           className={`kbar-item lbp-font-option${i === active ? ' active' : ''}${f.slug === value ? ' selected' : ''}`}
@@ -177,7 +179,8 @@ export default function FontSelect({ value, weight = 'regular', onChange, metric
   return (
     <div className="combo-wrap lbp-font-select" ref={wrapRef}>
       <button ref={triggerRef} type="button" id={id} className="org-select lbp-font-trigger" disabled={disabled}
-        aria-haspopup="listbox" aria-expanded={open} aria-label={`Font: ${label}`}
+        aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? listId : undefined}
+        aria-label={`Font: ${label}`}
         onClick={() => (open ? close(false) : openList())} onKeyDown={onTriggerKey}>
         <Sample family={value} weight={weight} />
         <span className="combo-caret" aria-hidden>

@@ -6,6 +6,10 @@
  * anything that isn't arithmetic puts the value back. A committed value is
  * kept inside `min` and `max` and rounded when `integer`.
  *
+ * Over a selection, `onCommitEach` gets the edit as a function of each
+ * element's own value, so `+15` or a step adds to each of them; `mixed`
+ * (their values differ) shows "Mixed" in the box.
+ *
  * It is a text input, so the canvas leaves its arrows, Delete and letters
  * alone (useBuilderShortcuts skips typing targets).
  */
@@ -76,9 +80,18 @@ export function evalNumber(text: string, current: number | null): number | null 
   return value !== null && i === tokens.length && Number.isFinite(value) ? value : null;
 }
 
+/** An edit worked out from one element's own value. */
+export type NumberApply = (current: number | null) => number | null;
+
 export interface NumberBoxProps {
+  /** The value shown (the last-picked element's). */
   value: number | null;
-  onCommit: (value: number | null) => void;
+  /** One value for the box. */
+  onCommit?: (value: number | null) => void;
+  /** Instead of onCommit: the edit for each selected element. */
+  onCommitEach?: (apply: NumberApply) => void;
+  /** The selection's values differ: the box shows "Mixed". */
+  mixed?: boolean;
   ariaLabel: string;
   id?: string;
   /** ↑ / ↓ step (default 1). */
@@ -102,8 +115,8 @@ function show(value: number | null, decimals: number): string {
 }
 
 export default function NumberBox({
-  value, onCommit, ariaLabel, id, step = 1, min, max, integer = false, allowEmpty = false, disabled = false,
-  placeholder, className, decimals = 2,
+  value, onCommit, onCommitEach, mixed = false, ariaLabel, id, step = 1, min, max, integer = false,
+  allowEmpty = false, disabled = false, placeholder, className, decimals = 2,
 }: NumberBoxProps) {
   const [draft, setDraft] = useState<string | null>(null);
 
@@ -115,13 +128,26 @@ export default function NumberBox({
   };
 
   const send = (v: number | null) => {
-    if (v !== value) onCommit(v);
+    if (v !== value) onCommit?.(v);
   };
 
   const commit = () => {
     if (draft === null) return;
     const text = draft.trim();
     setDraft(null);
+    if (onCommitEach) {
+      if (!text) {
+        // an empty box over differing values changes nothing
+        if (allowEmpty && !mixed) onCommitEach(() => null);
+        return;
+      }
+      if (evalNumber(text, value ?? 0) === null) return;
+      onCommitEach((current) => {
+        const v = evalNumber(text, current);
+        return v === null ? current : settle(v);
+      });
+      return;
+    }
     if (!text) {
       if (allowEmpty) send(null);
       return;
@@ -139,16 +165,19 @@ export default function NumberBox({
       setDraft(null);
     } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       e.preventDefault();
-      const base = (draft !== null ? evalNumber(draft, value) : null) ?? value ?? 0;
       const by = step * (e.shiftKey ? 10 : 1) * (e.key === 'ArrowUp' ? 1 : -1);
+      const typed = draft;
+      const from = (current: number | null) => (typed !== null ? evalNumber(typed, current) : null) ?? current ?? 0;
       setDraft(null);
-      send(settle(base + by));
+      if (onCommitEach) onCommitEach((current) => settle(from(current) + by));
+      else send(settle(from(value) + by));
     }
   };
 
   return (
     <input type="text" inputMode="decimal" id={id} aria-label={ariaLabel} className={className ?? 'lbp-num'}
-      value={draft ?? show(value, decimals)} placeholder={placeholder} disabled={disabled} autoComplete="off"
+      value={draft ?? (mixed ? '' : show(value, decimals))} placeholder={mixed ? 'Mixed' : placeholder}
+      disabled={disabled} autoComplete="off"
       spellCheck={false}
       onChange={(e: ChangeEvent<HTMLInputElement>) => setDraft(e.target.value)}
       onBlur={commit} onKeyDown={onKeyDown} />

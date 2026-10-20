@@ -104,6 +104,7 @@ const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldP
   const [picking, setPicking] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
+  const plusRef = useRef<HTMLButtonElement>(null);
 
   useImperativeHandle(ref, () => ({
     focusSearch: () => {
@@ -112,7 +113,9 @@ const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldP
     },
   }), []);
 
-  // a click outside the search bar (which holds the picker) closes it
+  // a click outside the search bar (which holds the picker) closes it,
+  // leaving focus where the click put it; any other close (a pick, Escape,
+  // Tab) puts focus back on the +
   useEffect(() => {
     if (!picking) return undefined;
     const onDown = (e: MouseEvent) => {
@@ -173,13 +176,14 @@ const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldP
               }
             }} />
         </div>
-        <button type="button" className="mini-btn lbp-add" aria-label="Add to the label" title="Add to the label"
+        <button ref={plusRef} type="button" className="mini-btn lbp-add" aria-label="Add to the label" title="Add to the label"
           aria-haspopup="dialog" aria-expanded={picking} disabled={readOnly} onClick={() => setPicking((p) => !p)}>
           <svg viewBox="0 0 16 16" aria-hidden="true" className="lbp-icon"><path d="M8 3v10M3 8h10" /></svg>
         </button>
         {picking && (
           <FieldPicker fields={fields} design={design} samples={samples} metricsFor={metricsFor} labelType={labelType}
-            onChange={onChange} onSelect={onSelect} onClose={() => setPicking(false)} />
+            onChange={onChange} onSelect={onSelect}
+            onClose={() => { setPicking(false); plusRef.current?.focus({ preventScroll: true }); }} />
         )}
       </div>
       <div className="lbp-scroll">

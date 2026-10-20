@@ -87,4 +87,25 @@ describe('NumberBox', () => {
     rerender(<NumberBox ariaLabel="Y" value={2.346} onCommit={onCommit} />);
     expect((screen.getByRole('textbox', { name: 'Y' }) as HTMLInputElement).value).toBe('2.35');
   });
+
+  it('over a selection: the edit for each element, Mixed when they differ', () => {
+    const each = vi.fn<(apply: (current: number | null) => number | null) => void>();
+    render(<NumberBox ariaLabel="Z" value={10} mixed allowEmpty integer min={1} onCommitEach={each} />);
+    const box = screen.getByRole('textbox', { name: 'Z' }) as HTMLInputElement;
+    expect(box.value).toBe('');
+    expect(box.placeholder).toBe('Mixed');
+    // an empty box over differing values changes nothing
+    fireEvent.change(box, { target: { value: ' ' } });
+    fireEvent.blur(box);
+    expect(each).not.toHaveBeenCalled();
+    fireEvent.change(box, { target: { value: '+5' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    const add = each.mock.calls[0][0];
+    expect([add(10), add(185), add(null)]).toEqual([15, 190, 5]);
+    fireEvent.change(box, { target: { value: '7' } });
+    fireEvent.blur(box);
+    expect(each.mock.calls[1][0](3)).toBe(7);
+    fireEvent.keyDown(box, { key: 'ArrowDown', shiftKey: true });
+    expect([each.mock.calls[2][0](30), each.mock.calls[2][0](4)]).toEqual([20, 1]);
+  });
 });

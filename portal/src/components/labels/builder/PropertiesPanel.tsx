@@ -18,7 +18,7 @@ import type { ReactNode } from 'react';
 
 import { barcodeModuleDots, footprint, resize, type ResizeContext } from '../../../labels/builder/geometry';
 import {
-  elementValue, invertPadOf, renamePiece, replaceElements, type Align, type DesignV2, type ElementV2,
+  elementValue, invertPadOf, renamePiece, replaceElements, type Align, type DesignV2, type ElementPatch, type ElementV2,
   type FieldElement, type Rotation, type StripWhere, type Symbology, type TextElement, type Trim,
 } from '../../../labels/builder/model';
 import { toDots } from '../../../labels/builder/units';
@@ -35,7 +35,7 @@ import type { MetricsFor } from './Canvas';
 import { Segmented, TextBox, type SegmentedOption } from './controls';
 import { catalogGroups, fieldLabel, pieceNames, sampleOf } from './fieldCatalog';
 import FontSelect from './FontSelect';
-import NumberBox from './NumberBox';
+import NumberBox, { type NumberApply } from './NumberBox';
 
 export interface PropertiesPanelProps {
   design: DesignV2;
@@ -71,6 +71,11 @@ const ROTATIONS: SegmentedOption<Rotation>[] = [0, 90, 180, 270].map((r) => ({ v
 const SOURCES: SegmentedOption<'field' | 'data'>[] = [{ value: 'field', label: 'Field' }, { value: 'data', label: 'Static data' }];
 
 const STATIC_DATA = '12345678';
+
+const isFieldEl = (e: ElementV2) => e.type === 'field';
+const invertedText = (e: ElementV2) => isTypeset(e) && !!e.inverted;
+/** A barcode, or a field placement shown as one. */
+const barcodeLike = (e: ElementV2) => e.type === 'barcode' || (e.type === 'field' && e.display === 'barcode');
 
 function Prop({ label, children, note }: { label: string; children: ReactNode; note?: ReactNode }) {
   return (
@@ -122,17 +127,39 @@ export default function PropertiesPanel({
     valueFor: (e) => elementValue(e, samples),
   };
 
-  /** Each selected element's footprint W or H set to `dots`, through the
-   *  canvas's resize rules (geometry.ts) exactly as a handle drag. */
-  const sizeTo = (dim: 'w' | 'h', dots: number) => {
-    if (readOnly) return;
-    const want = Math.max(1, dots) / dpi;
-    const changed = picked.filter((e) => !e.locked).flatMap((e) => {
-      const fp = footprint(e);
-      const out = resize(e, 'se', dim === 'w' ? want - fp.w : 0, dim === 'h' ? want - fp.h : 0, resizeCtx);
-      return JSON.stringify(out) === JSON.stringify(e) ? [] : [out];
-    });
-    if (changed.length) onChange(replaceElements(design, changed));
+  /** A number property over the selection (the elements `has` picks): the
+   *  last-picked one's value, Mixed when theirs differ, and an edit worked
+   *  out from each element's own value, so `+15` adds 15 to each. */
+  const numberOf = (has: (e: ElementV2) => boolean, get: (e: ElementV2) => number | null,
+    set: (e: ElementV2, v: number | null) => ElementPatch | null) => {
+    const values = picked.filter(has).map(get);
+    return {
+      value: el && has(el) ? get(el) : values[0] ?? null,
+      mixed: values.some((v) => v !== values[0]),
+      onCommitEach: (edit: NumberApply) => apply((e) => (has(e) ? set(e, edit(get(e))) : null)),
+    };
+  };
+
+  /** Each unlocked element's footprint W or H in dots, resized by the
+   *  canvas's rules (geometry.ts) exactly as a handle drag: a text height
+   *  sets the font size, a QR code stays square. */
+  const sizeOf = (dim: 'w' | 'h') => {
+    const dotsOf = (e: ElementV2) => toDots(footprint(e)[dim], dpi);
+    const values = picked.map(dotsOf);
+    return {
+      value: el ? dotsOf(el) : null,
+      mixed: values.some((v) => v !== values[0]),
+      onCommitEach: (edit: NumberApply) => {
+        if (readOnly) return;
+        const changed = picked.filter((e) => !e.locked).flatMap((e) => {
+          const fp = footprint(e);
+          const want = Math.max(1, edit(dotsOf(e)) ?? 1) / dpi;
+          const out = resize(e, 'se', dim === 'w' ? want - fp.w : 0, dim === 'h' ? want - fp.h : 0, resizeCtx);
+          return JSON.stringify(out) === JSON.stringify(e) ? [] : [out];
+        });
+        if (changed.length) onChange(replaceElements(design, changed));
+      },
+    };
   };
 
   if (!el) {
@@ -149,7 +176,6 @@ export default function PropertiesPanel({
   const textEl = el.type === 'text' ? el as TextElement : null;
   const typeset = isTypeset(el);
   const font = fontOf(el);
-  const fp = footprint(el);
   const pieces = field ? pieceNames(design, field.field) : [];
 
   const title = field
@@ -223,8 +249,9 @@ export default function PropertiesPanel({
                 onCommit={(content) => apply({ content })} />
             </Prop>
             <Prop label="Lines" note="More than one wraps the text in its box (^FB).">
-              <NumberBox ariaLabel="Lines" value={textEl.lines ?? 1} integer min={1} max={20} disabled={readOnly}
-                onCommit={(v) => apply({ lines: v ?? 1 })} />
+              <NumberBox ariaLabel="Lines" integer min={1} max={20} disabled={readOnly}
+                {...numberOf((e) => e.type === 'text', (e) => (e.type === 'text' ? e.lines ?? 1 : null),
+                  (_, v) => ({ lines: v ?? 1 }))} />
             </Prop>
           </>
         )}
@@ -236,8 +263,9 @@ export default function PropertiesPanel({
                 onChange={(family) => apply((e) => ({ font: { family, weight: fontOf(e).weight } }))} />
             </Prop>
             <Prop label="Size · Weight · Inverted">
-              <NumberBox ariaLabel="Size (pt)" value={'sizePt' in el ? el.sizePt ?? null : null} min={1} max={400}
-                disabled={readOnly} onCommit={(v) => { if (v) apply({ sizePt: v }); }} />
+              <NumberBox ariaLabel="Size (pt)" min={1} max={400} disabled={readOnly}
+                {...numberOf(isTypeset, (e) => (e.type === 'text' || e.type === 'field' ? e.sizePt ?? null : null),
+                  (_, v) => (v ? { sizePt: v } : null))} />
               <span className="lbp-unit">pt</span>
               <Segmented label="Weight" options={WEIGHTS} value={font.weight} disabled={readOnly}
                 mixed={mixed((e) => fontOf(e).weight, isTypeset)}
@@ -251,21 +279,22 @@ export default function PropertiesPanel({
             {'inverted' in el && el.inverted && (
               <Prop label="Inverted padding (dots)" note="Black box around the reserved width.">
                 <span className="lbp-unit">Sides</span>
-                <NumberBox ariaLabel="Side padding (dots)" value={toDots(invertPadOf(el as FieldElement).x, dpi)} integer
-                  min={0} max={200} disabled={readOnly}
-                  onCommit={(v) => apply((e) => (isTypeset(e) ? { invertPad: { ...invertPadOf(e), x: (v ?? 0) / dpi } } : null))} />
+                <NumberBox ariaLabel="Side padding (dots)" integer min={0} max={200} disabled={readOnly}
+                  {...numberOf(invertedText, (e) => (isTypeset(e) ? toDots(invertPadOf(e).x, dpi) : null),
+                    (e, v) => (isTypeset(e) ? { invertPad: { ...invertPadOf(e), x: (v ?? 0) / dpi } } : null))} />
                 <span className="lbp-unit">Top</span>
-                <NumberBox ariaLabel="Top padding (dots)" value={toDots(invertPadOf(el as FieldElement).y, dpi)} integer
-                  min={0} max={200} disabled={readOnly}
-                  onCommit={(v) => apply((e) => (isTypeset(e) ? { invertPad: { ...invertPadOf(e), y: (v ?? 0) / dpi } } : null))} />
+                <NumberBox ariaLabel="Top padding (dots)" integer min={0} max={200} disabled={readOnly}
+                  {...numberOf(invertedText, (e) => (isTypeset(e) ? toDots(invertPadOf(e).y, dpi) : null),
+                    (e, v) => (isTypeset(e) ? { invertPad: { ...invertPadOf(e), y: (v ?? 0) / dpi } } : null))} />
               </Prop>
             )}
             <Prop label={field ? 'Expected length · Align' : 'Align'}
               note={field?.expectedLength ? 'The box reserves this many of the widest characters.' : undefined}>
               {field && (
                 <>
-                  <NumberBox ariaLabel="Expected length" value={field.expectedLength ?? null} allowEmpty integer min={1}
-                    max={99} disabled={readOnly} onCommit={(v) => apply({ expectedLength: v })} />
+                  <NumberBox ariaLabel="Expected length" allowEmpty integer min={1} max={99} disabled={readOnly}
+                    {...numberOf(isFieldEl, (e) => (e.type === 'field' ? e.expectedLength ?? null : null),
+                      (_, v) => ({ expectedLength: v }))} />
                   <span className="lbp-unit">chars</span>
                 </>
               )}
@@ -279,10 +308,11 @@ export default function PropertiesPanel({
         {field && (
           <>
             <Prop label="Max characters">
-              <NumberBox ariaLabel="Max characters" value={field.maxChars ?? null} allowEmpty integer min={1} max={999}
-                disabled={readOnly} placeholder="Off"
-                onCommit={(v) => apply((e) => (e.type !== 'field' ? null
-                  : v === null ? { maxChars: null, trim: null } : { maxChars: v, trim: e.trim ?? 'rear' }))} />
+              <NumberBox ariaLabel="Max characters" allowEmpty integer min={1} max={999} disabled={readOnly}
+                placeholder="Off"
+                {...numberOf(isFieldEl, (e) => (e.type === 'field' ? e.maxChars ?? null : null),
+                  (e, v) => (e.type !== 'field' ? null
+                    : v === null ? { maxChars: null, trim: null } : { maxChars: v, trim: e.trim ?? 'rear' }))} />
               {field.maxChars ? (
                 <Segmented label="Trim" options={TRIMS} value={field.trim ?? 'rear'} disabled={readOnly}
                   mixed={mixed((e) => (e.type === 'field' ? e.trim ?? 'rear' : null), (e) => e.type === 'field')}
@@ -323,8 +353,9 @@ export default function PropertiesPanel({
             <Segmented label="Symbology" options={SYMBOLOGIES} value={symbology} disabled={readOnly}
               onChange={(v) => apply({ symbology: v })} />
             <span className="lbp-unit">Module</span>
-            <NumberBox ariaLabel="Module width (dots)" value={barcodeModuleDots('moduleIn' in el ? el.moduleIn : null, dpi)}
-              integer min={1} max={10} disabled={readOnly} onCommit={(v) => apply({ moduleIn: (v ?? 2) / dpi })} />
+            <NumberBox ariaLabel="Module width (dots)" integer min={1} max={10} disabled={readOnly}
+              {...numberOf(barcodeLike, (e) => barcodeModuleDots('moduleIn' in e ? e.moduleIn : null, dpi),
+                (_, v) => ({ moduleIn: (v ?? 2) / dpi }))} />
             <label className="lbp-switch">
               <Switch label="Human-readable line" checked={'showText' in el ? el.showText ?? true : true} disabled={readOnly}
                 onChange={(showText) => apply({ showText })} />
@@ -335,8 +366,10 @@ export default function PropertiesPanel({
 
         {(el.type === 'line' || el.type === 'box') && (
           <Prop label={el.type === 'box' ? 'Stroke · Fill' : 'Stroke'}>
-            <NumberBox ariaLabel="Stroke (dots)" value={toDots(el.strokeIn, dpi)} integer min={1} max={200}
-              disabled={readOnly} onCommit={(v) => apply({ strokeIn: Math.max(1, v ?? 1) / dpi })} />
+            <NumberBox ariaLabel="Stroke (dots)" integer min={1} max={200} disabled={readOnly}
+              {...numberOf((e) => e.type === 'line' || e.type === 'box',
+                (e) => (e.type === 'line' || e.type === 'box' ? toDots(e.strokeIn, dpi) : null),
+                (_, v) => ({ strokeIn: Math.max(1, v ?? 1) / dpi }))} />
             <span className="lbp-unit">dots</span>
             {el.type === 'box' && (
               <label className="lbp-switch">
@@ -349,17 +382,17 @@ export default function PropertiesPanel({
 
         <Prop label="Position & size (dots)">
           <span className="lbp-unit">X</span>
-          <NumberBox ariaLabel="X" className="lbp-num is-small" value={toDots(fp.x, dpi)} integer min={0} disabled={readOnly || !!el.locked}
-            onCommit={(v) => apply((e) => (e.locked ? null : { x: (v ?? 0) / dpi }))} />
+          <NumberBox ariaLabel="X" className="lbp-num is-small" integer min={0} disabled={readOnly || !!el.locked}
+            {...numberOf(() => true, (e) => toDots(footprint(e).x, dpi), (e, v) => (e.locked ? null : { x: (v ?? 0) / dpi }))} />
           <span className="lbp-unit">Y</span>
-          <NumberBox ariaLabel="Y" className="lbp-num is-small" value={toDots(fp.y, dpi)} integer min={0} disabled={readOnly || !!el.locked}
-            onCommit={(v) => apply((e) => (e.locked ? null : { y: (v ?? 0) / dpi }))} />
+          <NumberBox ariaLabel="Y" className="lbp-num is-small" integer min={0} disabled={readOnly || !!el.locked}
+            {...numberOf(() => true, (e) => toDots(footprint(e).y, dpi), (e, v) => (e.locked ? null : { y: (v ?? 0) / dpi }))} />
           <span className="lbp-unit">W</span>
-          <NumberBox ariaLabel="W" className="lbp-num is-small" value={toDots(fp.w, dpi)} integer min={1} disabled={readOnly || !!el.locked}
-            onCommit={(v) => sizeTo('w', v ?? 1)} />
+          <NumberBox ariaLabel="W" className="lbp-num is-small" integer min={1} disabled={readOnly || !!el.locked}
+            {...sizeOf('w')} />
           <span className="lbp-unit">H</span>
-          <NumberBox ariaLabel="H" className="lbp-num is-small" value={toDots(fp.h, dpi)} integer min={1} disabled={readOnly || !!el.locked}
-            onCommit={(v) => sizeTo('h', v ?? 1)} />
+          <NumberBox ariaLabel="H" className="lbp-num is-small" integer min={1} disabled={readOnly || !!el.locked}
+            {...sizeOf('h')} />
         </Prop>
         <Prop label={isField || el.type === 'barcode' || el.type === 'qr' ? 'Rotation · Hide when empty · Lock' : 'Rotation · Lock'}>
           <Segmented label="Rotation" options={ROTATIONS} value={el.rotation} disabled={readOnly}

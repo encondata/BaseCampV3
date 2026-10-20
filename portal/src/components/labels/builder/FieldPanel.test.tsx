@@ -138,6 +138,23 @@ describe('FieldPanel', () => {
     expect(screen.queryByRole('button', { name: 'Load from asset…' })).toBeNull();
   });
 
+  it('closing the picker puts focus back on the +; Tab then moves on from it', () => {
+    const { change } = setup();
+    const plus = screen.getByRole('button', { name: 'Add to the label' });
+    fireEvent.click(plus);
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Filter fields' }), { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Add to the label' })).toBeNull();
+    expect(document.activeElement).toBe(plus);
+    fireEvent.click(plus);
+    expect(fireEvent.keyDown(screen.getByRole('combobox', { name: 'Filter fields' }), { key: 'Tab' })).toBe(true);
+    expect(document.activeElement).toBe(plus);
+    fireEvent.click(plus);
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter fields' }), { target: { value: 'line' } });
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Filter fields' }), { key: 'Enter' });
+    expect(change.mock.calls.at(-1)![0].elements.at(-1)).toMatchObject({ type: 'line' });
+    expect(document.activeElement).toBe(plus);
+  });
+
   it('read-only: no adding and no editing', () => {
     setup({ readOnly: true });
     expect((screen.getByRole('button', { name: 'Add to the label' }) as HTMLButtonElement).disabled).toBe(true);

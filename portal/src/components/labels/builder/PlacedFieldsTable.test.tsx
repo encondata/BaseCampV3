@@ -14,7 +14,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { reservedWidthIn } from '../../../labels/builder/metrics';
 import type { DesignV2, FieldElement } from '../../../labels/builder/model';
 import { FAKE_METRICS, FIELDS, SAMPLES, VEGAS, elementOf, fakeMetricsFor } from './builderTestKit';
+import Canvas, { DEFAULT_VIEW } from './Canvas';
 import PlacedFieldsTable, { type PlacedFieldsTableProps } from './PlacedFieldsTable';
+import { useBuilderShortcuts } from './useBuilderShortcuts';
 
 afterEach(cleanup);
 
@@ -151,5 +153,63 @@ describe('PlacedFieldsTable', () => {
       .toBe(true);
     fireEvent.click(rowFor('Asset name').cells[0]);
     expect(select).toHaveBeenLastCalledWith(['value-name']);
+  });
+
+  describe('with the canvas and the page listening', () => {
+    function setupPage(selection: string[]) {
+      const search = vi.fn();
+      const select = vi.fn<(ids: string[]) => void>();
+      let current: DesignV2 = VEGAS();
+      function Page() {
+        const [design, setDesign] = useState<DesignV2>(VEGAS());
+        const [sel, setSel] = useState<string[]>(selection);
+        current = design;
+        useBuilderShortcuts({ 'workflow.fieldSearch': search }, { platform: 'mac' });
+        const onSelect = (ids: string[]) => { select(ids); setSel(ids); };
+        return (
+          <>
+            <Canvas design={design} dpi={300} view={{ ...DEFAULT_VIEW, zoom: 0.5 }} onView={vi.fn()} samples={SAMPLES}
+              selection={sel} onSelect={onSelect} onChange={setDesign} onGesture={vi.fn()} metricsFor={fakeMetricsFor}
+              platform="mac" />
+            <PlacedFieldsTable fields={FIELDS} samples={SAMPLES} metricsFor={fakeMetricsFor} design={design}
+              selection={sel} onChange={setDesign} onSelect={onSelect} />
+          </>
+        );
+      }
+      render(<Page />);
+      return { search, select, design: () => current };
+    }
+
+    it('`/` on the table or a row toggle is the field search, and never reaches the Topbar', () => {
+      const { search } = setupPage(['value-name']);
+      const topbar = vi.fn();
+      document.addEventListener('keydown', topbar);
+      const table = screen.getByRole('region', { name: 'Fields on this label' });
+      table.focus();
+      expect(fireEvent.keyDown(table, { key: '/', code: 'Slash' })).toBe(false);
+      fireEvent.keyDown(within(rowFor('NAP')).getByRole('button', { name: 'Bold' }), { key: '/', code: 'Slash' });
+      document.removeEventListener('keydown', topbar);
+      expect(search).toHaveBeenCalledTimes(2);
+      expect(topbar).not.toHaveBeenCalled();
+    });
+
+    it('Delete in the table deletes the selection; Escape deselects', () => {
+      const { select, design } = setupPage(['value-name']);
+      const table = screen.getByRole('region', { name: 'Fields on this label' });
+      table.focus();
+      fireEvent.keyDown(table, { key: 'Delete', code: 'Delete' });
+      expect(design().elements.some((e) => e.id === 'value-name')).toBe(false);
+      expect(rowFor('Asset name')).toBeUndefined();
+      fireEvent.click(rowFor('Serial number').cells[0]);
+      expect(select).toHaveBeenLastCalledWith(['value-serial']);
+      fireEvent.keyDown(table, { key: 'Escape', code: 'Escape' });
+      expect(select).toHaveBeenLastCalledWith([]);
+      // arrows in the table step its rows; they never nudge the element
+      fireEvent.click(rowFor('Serial number').cells[0]);
+      const before = design().elements.find((e) => e.id === 'value-serial')!.x;
+      fireEvent.keyDown(table, { key: 'ArrowDown', code: 'ArrowDown' });
+      expect(select).toHaveBeenLastCalledWith(['value-model']);
+      expect(design().elements.find((e) => e.id === 'value-serial')!.x).toBe(before);
+    });
   });
 });

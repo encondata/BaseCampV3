@@ -86,6 +86,11 @@ def _err(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
 
 
+# The builder: its mutations, and what only the builder reads (sample
+# values), need labels:<action> AND rank 80 (spec §4.9).
+DESIGNER = require_rank(SUPER_ADMIN_RANK)
+
+
 def _validate_meta(kind: str, meta: dict) -> str | None:
     """Kind-specific meta contract; returns a problem string or None."""
     if kind == "size":
@@ -240,13 +245,15 @@ async def sample_values(
     initiative_id: uuid.UUID,
     asset_id: uuid.UUID,
     actor: AuthContext = require_permission("labels", "view"),
+    _rank: AuthContext = DESIGNER,
 ) -> dict[str, str]:
     """The builder's Load from asset…: one roster asset's field values as
     its label prints them, {key: text} for every asset catalog key plus
     `ft:<header>` for each column of its uploaded From-To row. The same
     `field_values` over the same `asset_payload` and `label_context` the
     kiosk sync and the portal generator use, except that the whole From-To
-    row comes back (the builder samples columns no template places yet).
+    row comes back (the builder samples columns no template places yet),
+    so it needs the builder's rank 80 as well as labels:view.
 
     404 `initiative_not_found` for an unknown initiative or one outside the
     caller's scope; 404 `asset_not_on_move` when the asset is not on that
@@ -422,9 +429,6 @@ async def _site_ids_map(db: DbSession) -> dict[uuid.UUID, list[uuid.UUID]]:
         out.setdefault(tid, []).append(sid)
     return out
 
-
-# The builder's mutations: labels:<action> AND rank 80 (spec §4.9).
-DESIGNER = require_rank(SUPER_ADMIN_RANK)
 
 
 def _tree_err(exc: tree.TreeError) -> HTTPException:

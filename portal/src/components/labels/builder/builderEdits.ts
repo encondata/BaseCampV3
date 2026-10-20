@@ -108,7 +108,8 @@ export function refit<T extends Typeset>(el: T, before: ElementV2 | null, metric
 const ANY = () => true;
 const TYPESET_PARTS = (el: ElementV2) => el.type === 'text' || el.type === 'field';
 const FIELD_ONLY = (el: ElementV2) => el.type === 'field';
-const BARCODE_PARTS = (el: ElementV2) => el.type === 'barcode' || el.type === 'field';
+/** A barcode, or a field placement shown as one. */
+const BARCODE_PARTS = (el: ElementV2) => el.type === 'barcode' || (el.type === 'field' && el.display === 'barcode');
 const SOURCE_PARTS = (el: ElementV2) => el.type === 'barcode' || el.type === 'qr';
 
 /** Which elements hold each property (model.ts ElementV2). */
@@ -138,7 +139,8 @@ function typographyChanged(before: ElementV2, after: ElementV2): boolean {
   return !isTypeset(before) || heightKey(before) !== heightKey(after) || widthKey(before) !== widthKey(after);
 }
 
-/** Applies `patch` to each element in `ids` that holds the property, and
+/** Applies `patch` to each element in `ids` that holds the property (as
+ *  patched: a placement turned into a barcode takes a symbology), and
  *  refits the text-set ones whose typography changed. */
 export function patchElements(design: DesignV2, ids: readonly string[], patch: Patch,
   metricsFor: MetricsFor): DesignV2 {
@@ -148,7 +150,8 @@ export function patchElements(design: DesignV2, ids: readonly string[], patch: P
     if (!wanted.has(el.id)) return el;
     const raw = typeof patch === 'function' ? patch(el) : patch;
     if (!raw) return el;
-    const applied = Object.fromEntries(Object.entries(raw).filter(([key]) => holds(el, key)));
+    const candidate = { ...el, ...raw } as ElementV2;
+    const applied = Object.fromEntries(Object.entries(raw).filter(([key]) => holds(candidate, key)));
     if (!Object.keys(applied).length) return el;
     let next = { ...el, ...applied } as ElementV2;
     if (isTypeset(next) && typographyChanged(el, next)) next = refit(next, el, metricsFor);
@@ -239,8 +242,8 @@ export function canSplit(design: DesignV2, el: ElementV2, samples: Readonly<Reco
 /** Each selected whole-value placement becomes one placement per piece of
  *  its field's Split (defined from the sample when the field has none:
  *  model.ts addSplit), with the placement's own font, size, weight,
- *  inverted, alignment and hide-when-empty, and no rules (they were the
- *  whole value's). The pieces run along the text from where the placement
+ *  inverted, alignment, hide-when-empty and lock, and no rules (they were
+ *  the whole value's). The pieces run along the text from where the placement
  *  was, wrapping at the label's edge, and take its place in the stacking
  *  order. Returns the pieces' ids. */
 export function splitPlacements(design: DesignV2, ids: readonly string[],
@@ -268,7 +271,8 @@ export function splitPlacements(design: DesignV2, ids: readonly string[],
       const base: FieldElement = {
         id: '', type: 'field', field: el.field, piece: i,
         display: el.display === 'number' ? 'number' : 'text',
-        x: 0, y: 0, w: 0, h: el.h, rotation: el.rotation, locked: false, hideWhenEmpty: el.hideWhenEmpty ?? false,
+        x: 0, y: 0, w: 0, h: el.h, rotation: el.rotation, locked: el.locked ?? false,
+        hideWhenEmpty: el.hideWhenEmpty ?? false,
         font, sizePt: size, baselineIn: el.baselineIn, align: el.align ?? 'left', inverted: el.inverted ?? false,
         ...(el.invertPad ? { invertPad: el.invertPad } : {}),
         expectedLength: null, maxChars: null, trim: null, strip: null, stripWhere: null,
