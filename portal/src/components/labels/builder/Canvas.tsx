@@ -11,7 +11,10 @@
  * core (geometry, align, model, metrics) through canvasActions.ts.
  *
  * Pointer: click selects, ⇧-click adds or removes, a drag on empty space
- * draws a marquee (⇧ adds), dragging moves the selection (⇧ locks the axis,
+ * draws a marquee (⇧ adds). The selection keeps the order things were
+ * picked in (a marquee and ⌘A add in stacking order), and with two or more
+ * the first one picked is the align anchor, outlined apart (align.ts).
+ * Dragging moves the selection (⇧ locks the axis,
  * ⌥ moves a copy), the eight handles resize one unlocked element (⇧ keeps
  * its proportions), Space-drag or the wheel pans, ⌘-wheel zooms about the
  * pointer. With Snap on a move goes in grid steps, else in whole dots. A
@@ -672,6 +675,19 @@ export default function Canvas({
                   strokeWidth={1.5 * px} strokeDasharray={picked.length > 1 || el.locked ? `${4 * px} ${3 * px}` : undefined} />
               );
             })}
+            {picked.length > 1 && (() => {
+              // the first picked: what Align and Match size line the rest up on
+              const f = dotFootprint(picked[0], dpi);
+              return (
+                <g className="lbc-anchor-mark">
+                  <rect className="lbc-anchor" x={f.x} y={f.y} width={Math.max(f.w, px)} height={Math.max(f.h, px)}
+                    strokeWidth={2 * px} />
+                  <rect className="lbc-anchor-tag-bg" x={f.x} y={f.y - 15 * px} width={42 * px} height={13 * px}
+                    rx={3 * px} />
+                  <text className="lbc-anchor-tag" x={f.x + 5 * px} y={f.y - 5.5 * px} fontSize={9.5 * px}>anchor</text>
+                </g>
+              );
+            })()}
             {handleFor && (() => {
               const f = dotFootprint(handleFor, dpi);
               const s = HANDLE_PX * px;

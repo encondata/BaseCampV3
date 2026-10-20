@@ -314,6 +314,23 @@ describe('selection', () => {
     expect(select).toHaveBeenLastCalledWith([]);
   });
 
+  it('the selection keeps the order things were picked in: ⇧-click and ⇧-marquee append', () => {
+    const { svg, select } = setup();
+    click(svg, 1.5, 0.2);                               // banner-pod
+    click(svg, 3.0, 0.2, { shiftKey: true });           // banner-rack
+    click(svg, 0.1, 0.2, { shiftKey: true });           // banner-nap, left of both
+    expect(select).toHaveBeenLastCalledWith(['banner-pod', 'banner-rack', 'banner-nap']);
+    // a ⇧-marquee adds what it touches after them, in stacking order
+    fireEvent.pointerDown(svg, at(0.05, 1.05, { shiftKey: true }));
+    fireEvent.pointerMove(svg, at(0.3, 1.65, { shiftKey: true }));
+    fireEvent.pointerUp(svg, at(0.3, 1.65, { shiftKey: true }));
+    expect(select).toHaveBeenLastCalledWith([
+      'banner-pod', 'banner-rack', 'banner-nap', 'grid-caption-nap', 'grid-caption-pod', 'grid-caption-rack']);
+    // ⌘A is stacking order
+    fireEvent.keyDown(document.body, { key: 'a', code: 'KeyA', metaKey: true });
+    expect(select).toHaveBeenLastCalledWith(vegas.elements.map((e) => e.id));
+  });
+
   it('a click on one element of a multi-selection selects just it', () => {
     const { svg, select } = setup({ selection: ['banner-pod', 'banner-nap'] });
     click(svg, 1.5, 0.2);
@@ -504,7 +521,37 @@ describe('align', () => {
     const d = withBarcodeWidths(VEGAS(), SAMPLES, DPI);
     const expected = replaceElements(d, align(selected.map((id) => el(d, id)), 'left', d.size));
     expect(last()).toEqual(expected);
-    for (const id of selected) expect(el(last(), id).x).toBeCloseTo(0.0333, 9);
+    // the first selected (banner-pod, at 400 dots) is the anchor and stays put
+    for (const id of selected) expect(el(last(), id).x).toBeCloseTo(1.3333, 9);
+  });
+
+  it('the first selected is the anchor: outlined apart from the rest with two or more selected', () => {
+    const { container, unmount } = setup({ selection: ['banner-rack', 'banner-nap', 'caption-name'] });
+    const anchors = container.querySelectorAll('.lbc-anchor');
+    expect(anchors).toHaveLength(1);
+    const rack = el(VEGAS(), 'banner-rack');
+    expect(anchors[0].getAttribute('x')).toBe(String(toDots(rack.x, DPI)));
+    expect(anchors[0].getAttribute('y')).toBe(String(toDots(rack.y, DPI)));
+    expect(container.querySelector('.lbc-anchor-tag')!.textContent).toBe('anchor');
+    fireEvent.click(screen.getByRole('button', { name: 'Align bottom' }));
+    expect(container.querySelector('.lbc-anchor')).not.toBeNull();
+    unmount();
+    // one element aligns to the label: no anchor
+    const one = setup({ selection: ['banner-rack'] });
+    expect(one.container.querySelector('.lbc-anchor')).toBeNull();
+    expect(one.container.querySelector('.lbc-anchor-tag')).toBeNull();
+  });
+
+  it('the align tooltips say what they align to', () => {
+    const { unmount } = setup({ selection: ['banner-pod', 'banner-nap'] });
+    const title = (name: string) => screen.getByRole('button', { name }).getAttribute('title');
+    expect(title('Align left')).toBe('Align left edges to the first selected · ⌥A');
+    expect(title('Align centers')).toMatch(/^Align centers to the first selected/);
+    expect(title('Align bottom')).toMatch(/^Align bottom edges to the first selected/);
+    expect(title('Match width')).toBe('Match the first selected’s width');
+    unmount();
+    setup({ selection: ['banner-pod'] });
+    expect(title('Align left')).toBe('Align left to the label · ⌥A');
   });
 
   it('one element aligns to the label', () => {
@@ -525,7 +572,7 @@ describe('align', () => {
   it('⌥A aligns left from the keyboard', () => {
     const { last } = setup({ selection: selected });
     fireEvent.keyDown(document.body, { key: 'å', code: 'KeyA', altKey: true });
-    for (const id of selected) expect(el(last(), id).x).toBeCloseTo(0.0333, 9);
+    for (const id of selected) expect(el(last(), id).x).toBeCloseTo(1.3333, 9);
   });
 });
 

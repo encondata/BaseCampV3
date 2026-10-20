@@ -118,6 +118,11 @@
 
 .lbc-sel { fill: none; stroke: var(--lbc-blue); pointer-events: none; }
 .lbc-sel.is-locked { stroke: var(--c-slate); }
+/* the align anchor: the first one picked, with two or more selected */
+.lbc-anchor-mark { pointer-events: none; }
+.lbc-anchor { fill: none; stroke: var(--accent); }
+.lbc-anchor-tag-bg { fill: var(--accent); }
+.lbc-anchor-tag { fill: #0c1117; font-family: var(--font-mono); font-weight: 600; letter-spacing: 0.02em; }
 .lbc-handle { fill: var(--lbc-paper); stroke: var(--lbc-blue); }
 .lbc-handle[data-handle='n'], .lbc-handle[data-handle='s'] { cursor: ns-resize; }
 .lbc-handle[data-handle='e'], .lbc-handle[data-handle='w'] { cursor: ew-resize; }

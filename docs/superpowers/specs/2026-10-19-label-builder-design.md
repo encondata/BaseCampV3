@@ -285,7 +285,12 @@ codes and shapes use top-left `^FO`.
   rotation choice, drag with axis lock, Alt-drag duplicate.
 - Alignment tools for a selection: left, center, right, top, middle,
   bottom, distribute horizontally and vertically, match width and height.
-  With one element selected they align to the label.
+  With one element selected they align to the label. With two or more,
+  the first-selected element is the anchor: it stays put and the others
+  line up on its edge or center (match width and height take its size).
+  The selection keeps the order elements were picked in (⇧-click and a
+  ⇧-marquee append; a marquee and ⌘A add in stacking order), and the
+  canvas outlines the anchor in the accent color with an "anchor" tag.
 - Field names / Sample values toggle. Sample values are the default.
 - `/` focuses the field search; ⌘K stays the portal's command palette.
 - Every number box accepts arithmetic (`+5`, `*2`) and steps with arrows.
