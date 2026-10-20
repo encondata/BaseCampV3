@@ -351,6 +351,75 @@ async def test_status_last_entry_is_the_most_recently_closed_one(client, db, see
     assert body["last_entry"]["minutes"] == 120
 
 
+# ── today's hours + the "Is this you?" fields ─────────────────────────
+
+def _midday_zone() -> str:
+    """A fixed-offset zone where it is roughly noon right now, so a
+    90-minute shift seeded relative to now never straddles local
+    midnight, whatever hour the suite runs. Etc/GMT names invert the
+    sign: Etc/GMT-5 is UTC+5."""
+    offset = 12 - datetime.now(UTC).hour      # -11 .. +12
+    return f"Etc/GMT{-offset:+d}"
+
+
+async def test_status_includes_today_and_person_fields(client, db, seeded_user):
+    hdrs = await login(client)
+    site, initiative, device = await _seed_context(db)
+    site.timezone = _midday_zone()
+    await db.commit()
+    person = await _seed_worker(db)
+    person.job_title = "Rack Technician"
+    person.external_id = "EMP-0042"
+    await db.commit()
+    await _seed_open_entry(
+        db, person=person, site=site, initiative=initiative, device=device,
+        started_ago=timedelta(hours=1, minutes=30), created_by=seeded_user.id)
+
+    resp = await client.get(f"/kiosk/timeclock/{person.id}",
+                            params={"serial": SERIAL}, headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["person"]["job_title"] == "Rack Technician"
+    assert body["person"]["external_id"] == "EMP-0042"
+    assert body["today_minutes"] in (90, 91)
+    assert len(body["today_entries"]) == 1
+    assert body["today_entries"][0]["clock_out_at"] is None
+    assert body["today_entries"][0]["minutes"] == body["today_minutes"]
+    # existing fields are untouched
+    assert body["clocked_in"] is True
+    assert body["entry"]["site_id"] == str(site.id)
+
+    # an unknown serial is not a 404 — the day is just read in UTC
+    resp = await client.get(f"/kiosk/timeclock/{person.id}",
+                            params={"serial": "no-such-kiosk"}, headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert "today_minutes" in resp.json()
+
+    # clock-out answers with the closed span counted for today
+    resp = await client.post("/kiosk/timeclock/clock-out", headers=hdrs,
+                             json=_in(person))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["today_minutes"] in (90, 91)
+    assert body["today_entries"][0]["clock_out_at"] is not None
+
+
+async def test_sync_people_includes_badge_uid(client, db, seeded_user):
+    hdrs = await login(client)
+    person = await _seed_worker(db)
+    person.job_title = "Rack Technician"
+    person.external_id = "EMP-0042"
+    await db.commit()
+    await db.refresh(person)
+
+    resp = await client.get("/kiosk/sync/people", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    row = next(p for p in resp.json()["people"] if p["id"] == str(person.id))
+    assert row["badge_uid"] == str(person.badge_uid)
+    assert row["job_title"] == "Rack Technician"
+    assert row["external_id"] == "EMP-0042"
+
+
 # ── create_open_entry's IntegrityError classification ─────────────────
 
 async def test_create_open_entry_only_maps_the_one_open_entry_index_to_409(db):

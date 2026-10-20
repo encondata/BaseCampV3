@@ -10,6 +10,7 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 from argon2 import PasswordHasher
 from botocore.exceptions import ClientError
@@ -47,7 +48,8 @@ from serversherpa.api.schemas import (
     KioskStationScanBatchOut, KioskSetupIn, KioskSetupOut, KioskSetupReadOut, KioskSetupReaderOut,
     KioskStationKeyIn, KioskStationKeyOut,
     KioskSignOutIn, KioskTestRenderIn, KioskTestRenderOut, KioskTimeclockEntry, KioskTimeclockLastEntry,
-    KioskTimeclockPerson, KioskTimeclockStatusOut, KioskTruckContainerIn,
+    KioskTimeclockPerson, KioskTimeclockStatusOut, KioskTimeclockTodayEntry,
+    KioskTruckContainerIn,
     KioskTruckContainerOut, KioskTruckContainerRow, KioskTruckOut,
     KioskTruckRef, KioskTrucksSyncOut, KioskTruckStateOut, LabelVocabOut,
     MoveLoginIn, PairCreateIn, PairCreateOut,
@@ -1087,8 +1089,9 @@ async def _people_body(db: AsyncSession) -> KioskPeopleSyncOut:
         people=[KioskPersonOut(id=p.id, display_name=p.display_name,
                                first_name=p.first_name, last_name=p.last_name,
                                preferred_name=p.preferred_name,
-                               rfid_tag=p.rfid_tag, is_worker=is_worker,
-                               has_account=has_account)
+                               rfid_tag=p.rfid_tag, badge_uid=p.badge_uid,
+                               job_title=p.job_title, external_id=p.external_id,
+                               is_worker=is_worker, has_account=has_account)
                 for p, is_worker, has_account in rows])
 
 
@@ -2295,7 +2298,8 @@ def _person_out(person: Person) -> KioskTimeclockPerson:
         id=person.id, display_name=person.display_name,
         first_name=person.first_name, last_name=person.last_name,
         preferred_name=person.preferred_name,
-        avatar_url=presign_get(person.avatar_key), rfid_tag=person.rfid_tag)
+        avatar_url=presign_get(person.avatar_key), rfid_tag=person.rfid_tag,
+        job_title=person.job_title, external_id=person.external_id)
 
 
 async def _entry_out(db: AsyncSession, entry: TimeEntry) -> KioskTimeclockEntry:
@@ -2311,8 +2315,12 @@ async def _entry_out(db: AsyncSession, entry: TimeEntry) -> KioskTimeclockEntry:
 
 async def _status_out(
     db: AsyncSession, person: Person, entry: TimeEntry | None, *,
-    last_entry: TimeEntry | None = None,
+    last_entry: TimeEntry | None = None, tz: ZoneInfo,
 ) -> KioskTimeclockStatusOut:
+    """`tz` is the kiosk's site zone — it decides where "today" starts
+    for today_minutes / today_entries."""
+    today_minutes, spans = await timeclock.today_summary(
+        db, person.id, tz=tz, now=datetime.now(UTC))
     return KioskTimeclockStatusOut(
         person=_person_out(person),
         clocked_in=entry is not None,
@@ -2320,12 +2328,17 @@ async def _status_out(
         last_entry=None if last_entry is None else KioskTimeclockLastEntry(
             id=last_entry.id, started_at=last_entry.clock_in_at,
             ended_at=last_entry.clock_out_at,
-            minutes=timeclock.worked_minutes(last_entry)))
+            minutes=timeclock.worked_minutes(last_entry)),
+        today_minutes=today_minutes,
+        today_entries=[KioskTimeclockTodayEntry(
+            clock_in_at=s.clock_in_at, clock_out_at=s.clock_out_at,
+            minutes=s.minutes) for s in spans])
 
 
 @router.get("/timeclock/{person_id}", response_model=KioskTimeclockStatusOut)
 async def timeclock_status(
     person_id: uuid.UUID, db: DbSession,
+    serial: str | None = Query(None),
     actor: AuthContext = require_permission("kiosk", "view"),
 ) -> KioskTimeclockStatusOut:
     """Is this person on the clock right now, and since when? The kiosk
@@ -2335,12 +2348,20 @@ async def timeclock_status(
     recently CLOSED entry (ordered by `clock_out_at`), so the "Not
     clocked in" card can say "Last clock-out {time}" — null when they
     have never punched out at all. While clocked in, `last_entry` is
-    left null; the card has the open entry to show instead."""
+    left null; the card has the open entry to show instead.
+
+    `serial` names the asking kiosk so "today" is its site's day; an
+    unknown serial (or none) reads the day in UTC rather than failing —
+    the hours line is a courtesy, not a reason to 404 a status poll."""
     person = await _timeclock_person(db, person_id)
+    device = (await db.scalar(select(Device).where(
+        Device.serial == serial, Device.device_type == "kiosk"))
+        if serial else None)
+    tz = await timeclock.site_zone(db, device.site_id if device else None)
     entry = await timeclock.open_entry_for(db, person.id)
     last_entry = (None if entry is not None
                   else await timeclock.last_closed_entry_for(db, person.id))
-    return await _status_out(db, person, entry, last_entry=last_entry)
+    return await _status_out(db, person, entry, last_entry=last_entry, tz=tz)
 
 
 @router.post("/timeclock/clock-in", response_model=KioskTimeclockStatusOut)
@@ -2392,7 +2413,8 @@ async def timeclock_clock_in(
                    "initiative_id": str(initiative_id) if initiative_id else None,
                    "device_id": str(device.id)})
     await db.commit()
-    return await _status_out(db, person, entry)
+    return await _status_out(db, person, entry,
+                             tz=await timeclock.site_zone(db, device.site_id))
 
 
 @router.post("/timeclock/clock-out", response_model=KioskTimeclockStatusOut)
@@ -2427,7 +2449,8 @@ async def timeclock_clock_out(
           changes={**changes, "person_id": str(person.id),
                    "device_id": str(device.id)})
     await db.commit()
-    return await _status_out(db, person, None, last_entry=entry)
+    return await _status_out(db, person, None, last_entry=entry,
+                             tz=await timeclock.site_zone(db, device.site_id))
 
 
 # ── printer maintenance (kiosk:view) ─────────────────────────────────

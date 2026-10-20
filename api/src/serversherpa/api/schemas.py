@@ -3319,6 +3319,9 @@ class KioskPersonOut(BaseModel):
     last_name: str
     preferred_name: str | None = None
     rfid_tag: str | None = None
+    badge_uid: uuid.UUID               # what a printed badge's QR code carries
+    job_title: str | None = None
+    external_id: str | None = None     # shown as "Employee ID"
     is_worker: bool
     has_account: bool
 
@@ -3505,6 +3508,8 @@ class KioskTimeclockPerson(BaseModel):
     preferred_name: str | None = None
     avatar_url: str | None = None      # presigned, short-lived; None without an avatar
     rfid_tag: str | None = None
+    job_title: str | None = None
+    external_id: str | None = None     # shown as "Employee ID"
 
 
 class KioskTimeclockEntry(BaseModel):
@@ -3529,11 +3534,25 @@ class KioskTimeclockLastEntry(BaseModel):
     minutes: int
 
 
+class KioskTimeclockTodayEntry(BaseModel):
+    """One entry's share of today, for the Clock Out screen's list of
+    today's punches. `minutes` is clipped to today and net of break when
+    the shift started today; `clock_out_at` is None while still open."""
+
+    clock_in_at: datetime
+    clock_out_at: datetime | None = None
+    minutes: int
+
+
 class KioskTimeclockStatusOut(BaseModel):
     person: KioskTimeclockPerson
     clocked_in: bool
     entry: KioskTimeclockEntry | None = None
     last_entry: KioskTimeclockLastEntry | None = None
+    # "You've been working for 7h 24m today" — today is local to the
+    # kiosk's site (UTC without one), oldest punch first
+    today_minutes: int = 0
+    today_entries: list[KioskTimeclockTodayEntry] = []
 
 
 # ── kiosk containers (pack / unpack) ──
