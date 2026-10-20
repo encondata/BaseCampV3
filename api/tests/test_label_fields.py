@@ -288,3 +288,81 @@ def test_design_field_keys_reads_schema_2_only_and_tolerates_odd_schemas():
         assert design_fonts({"schema": odd, "elements": els}) == set()
     assert design_field_keys({"elements": els}) == set()
     assert design_field_keys(None) == set()
+
+
+# ── GET /labels/sample-values ────────────────────────────────────────
+
+
+async def test_sample_values_are_one_assets_field_values(client, db, seeded_user):
+    """Load from asset…: one roster asset's values exactly as the kiosk
+    sync item gives them to field_values, but with the whole From-To row
+    (the builder samples columns no template places yet)."""
+    from sqlalchemy import select
+
+    from tests.test_kiosk_label_inputs_sync import _builder_body, _seed_builder
+
+    move = await _seed_builder(db)
+    zero = await db.scalar(select(Asset).where(Asset.name == "bld-0"))
+    one = await db.scalar(select(Asset).where(Asset.name == "bld-1"))
+    hdrs = await login(client)
+
+    r = await client.get("/labels/sample-values", headers=hdrs,
+                         params={"initiative_id": str(move.id), "asset_id": str(zero.id)})
+    assert r.status_code == 200, r.text
+    values = r.json()
+    body = await _builder_body(client, move)
+    item = next(i for i in body["assets"] if i["name"] == "bld-0")
+    ctx = {k: v for k, v in body["label_context"].items() if k != "catalog_keys"}
+    assert values == field_values(item, ctx)
+    assert values["destination_rack"] == "14.01.07C.02.03"
+    assert values["destination_ru"] == "14" and values["source_ru"] == "33.2"
+    assert values["make_model"] == "Dell R660" and values["move_code"] == "LV3"
+    assert values["ft:Notes"] == "Fragile"
+
+    r = await client.get("/labels/sample-values", headers=hdrs,
+                         params={"initiative_id": str(move.id), "asset_id": str(one.id)})
+    assert r.status_code == 200, r.text
+    values = r.json()
+    # every From-To column of the row, placed by a template or not
+    assert values["ft:Notes"] == "Heavy" and values["ft:Data 1"] == "sw02/01"
+    assert values["source_ru"] == "3.5" and values["cable_data_1"] == ""
+
+
+async def test_sample_values_404s(client, db, seeded_user):
+    import uuid
+
+    from sqlalchemy import select
+
+    from tests.test_kiosk_label_inputs_sync import _seed_builder
+
+    move = await _seed_builder(db)
+    zero = await db.scalar(select(Asset).where(Asset.name == "bld-0"))
+    other = Initiative(name="Other Move", initiative_type="move", status="planned")
+    stray = Asset(name="stray", serial_number="STRAY")
+    db.add_all([other, stray])
+    await db.commit()
+    hdrs = await login(client)
+
+    async def get(initiative_id, asset_id):
+        return await client.get("/labels/sample-values", headers=hdrs, params={
+            "initiative_id": str(initiative_id), "asset_id": str(asset_id)})
+
+    r = await get(uuid.uuid4(), zero.id)
+    assert r.status_code == 404 and r.json()["detail"]["code"] == "initiative_not_found"
+    # on a roster, but not this move's
+    r = await get(other.id, zero.id)
+    assert r.status_code == 404 and r.json()["detail"]["code"] == "asset_not_on_move"
+    r = await get(move.id, stray.id)
+    assert r.status_code == 404 and r.json()["detail"]["code"] == "asset_not_on_move"
+    r = await get(move.id, "not-a-uuid")
+    assert r.status_code == 422
+
+
+async def test_sample_values_need_labels_view(client, db, seeded_user):
+    import uuid
+
+    params = {"initiative_id": str(uuid.uuid4()), "asset_id": str(uuid.uuid4())}
+    hdrs = await _make(db, client, "worker", "worker@test.example.com")
+    r = await client.get("/labels/sample-values", headers=hdrs, params=params)
+    assert r.status_code == 403, r.text
+    assert (await client.get("/labels/sample-values", params=params)).status_code == 401

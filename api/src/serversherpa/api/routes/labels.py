@@ -49,7 +49,7 @@ from serversherpa.api.schemas import (
     LabelZplPreviewIn,
 )
 from serversherpa.db.models import (
-    Asset, Client, Container, GeneratedLabel, Initiative, InitiativeAsset,
+    Asset, AssetModel, Client, Container, GeneratedLabel, Initiative, InitiativeAsset,
     LabelFont, LabelGenerationRun, LabelPlaceholder, LabelTemplate, LabelTemplateSite,
     LabelTemplateVersion, LabelVocab, Person, Site,
 )
@@ -57,7 +57,7 @@ from serversherpa.db.ordering import natural, natural_key
 from serversherpa.labels import labelary
 from serversherpa.labels import templates_tree as tree
 from serversherpa.labels.compile import UnsupportedLanguage, compile_design
-from serversherpa.labels.fields import CONTAINER_LABEL_TYPES, groups_for
+from serversherpa.labels.fields import CONTAINER_LABEL_TYPES, field_values, groups_for
 from serversherpa.labels.font_metrics import UnreadableFont, metrics as font_metrics
 from serversherpa.labels.font_seed import (
     FONT_FIELDS, MAX_FONT_BYTES, TRUETYPE_MAGICS, display_name as family_display_name,
@@ -66,6 +66,9 @@ from serversherpa.labels.font_seed import (
 from serversherpa.labels.fonts import FAMILIES, object_family, resident_object
 from serversherpa.labels.generate import (
     InvalidDpi, InvalidLabelTypes, InvalidTemplates, RunActive, entity_for_type, enqueue_run,
+)
+from serversherpa.labels.generate.payloads import (
+    asset_payload, label_context, load_status_labels,
 )
 from serversherpa.labels.generate.select import candidate_templates
 from serversherpa.labels.kiosk_templates import family_name
@@ -229,6 +232,48 @@ async def list_fields(
             q = q.join(Initiative, Initiative.id == InitiativeAsset.initiative_id).where(cond)
         headers = sorted((await db.scalars(q)).all(), key=natural_key)
     return LabelFieldsOut(groups=groups_for(label_type), ft_headers=headers)
+
+
+@router.get("/sample-values", response_model=dict[str, str])
+async def sample_values(
+    db: DbSession,
+    initiative_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    actor: AuthContext = require_permission("labels", "view"),
+) -> dict[str, str]:
+    """The builder's Load from asset…: one roster asset's field values as
+    its label prints them, {key: text} for every asset catalog key plus
+    `ft:<header>` for each column of its uploaded From-To row. The same
+    `field_values` over the same `asset_payload` and `label_context` the
+    kiosk sync and the portal generator use, except that the whole From-To
+    row comes back (the builder samples columns no template places yet).
+
+    404 `initiative_not_found` for an unknown initiative or one outside the
+    caller's scope; 404 `asset_not_on_move` when the asset is not on that
+    initiative's roster."""
+    q = select(Initiative).where(Initiative.id == initiative_id)
+    # Defense in depth, as list_fields: `labels` is global-only today.
+    cond = scope_conditions("initiatives", actor.access, actor.person.id)
+    if cond is not None:
+        q = q.where(cond)
+    initiative = await db.scalar(q)
+    if initiative is None:
+        raise _err(404, "initiative_not_found")
+    row = (await db.execute(
+        select(Asset, InitiativeAsset, AssetModel)
+        .join(InitiativeAsset, InitiativeAsset.asset_id == Asset.id)
+        .outerjoin(AssetModel, AssetModel.id == Asset.model_id)
+        .where(InitiativeAsset.initiative_id == initiative.id,
+               InitiativeAsset.asset_id == asset_id))).first()
+    if row is None:
+        raise _err(404, "asset_not_on_move")
+    asset, roster_row, model = row
+    origin = (await db.get(Site, initiative.origin_site_id)
+              if initiative.origin_site_id else None)
+    destination = (await db.get(Site, initiative.destination_site_id)
+                   if initiative.destination_site_id else None)
+    payload = asset_payload(asset, roster_row, model, await load_status_labels(db, "asset"))
+    return field_values(payload, label_context(initiative, origin, destination))
 
 
 @router.get("/placeholders", response_model=list[LabelPlaceholderOut])

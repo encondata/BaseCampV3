@@ -48,7 +48,7 @@ import CanvasElement, { dotFootprint, kindOf } from './CanvasElement';
 import CanvasToolbar from './CanvasToolbar';
 import Rulers, { RULER_PX } from './Rulers';
 import {
-  isKeyboardControl, isTypingTarget, useBuilderShortcuts, type ShortcutHandlers,
+  isKeyboardControl, isTypingTarget, ownsKeys, useBuilderShortcuts, type ShortcutHandlers,
 } from './useBuilderShortcuts';
 
 export { DEFAULT_GRID_IN, DEFAULT_VIEW } from './canvasActions';
@@ -256,7 +256,7 @@ export default function Canvas({
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.code === 'Space' || e.key === ' ') && !e.metaKey && !e.ctrlKey
-        && !isTypingTarget(e.target) && !isKeyboardControl(e.target)) {
+        && !isTypingTarget(e.target) && !isKeyboardControl(e.target) && !ownsKeys(e.target)) {
         e.preventDefault();
         if (!spaceHeld.current) {
           spaceHeld.current = true;

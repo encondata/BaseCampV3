@@ -6,6 +6,8 @@
  *
  * A key runs the handler of the shortcut it matches. While focus is in a
  * text box only the `always` shortcuts (save, test print, the sheet) run;
+ * in a menu, a listbox, tabs or the placed-fields table the plain keys
+ * (arrows, letters, Delete, Tab) stay with it and only ⌘ / ⌥ ones run;
  * Enter and Tab stay with a focused button or link. A handled key has its
  * default prevented and, Escape aside (the Topbar closes its popovers on
  * it), stops propagating. A handler that returns `false` declines: the key
@@ -36,6 +38,16 @@ const CONTROL_KEYS = new Set(['select.next', 'select.previous', 'edit.content'])
 /** A key the Topbar must still see. */
 const SHARED_KEYS = new Set(['tool.escape']);
 
+/** Widgets that run their own plain keys (arrows, letters, Delete, Tab,
+ *  Enter, Escape): menus, listboxes, tabs, a trigger that opens one, and
+ *  anything marked `data-builder-keys="own"` (the placed-fields table). */
+const OWN_KEYS = [
+  '[role="menu"]', '[role="menubar"]', '[role="menuitem"]', '[role="menuitemcheckbox"]',
+  '[role="menuitemradio"]', '[role="listbox"]', '[role="option"]', '[role="tablist"]', '[role="tab"]',
+  '[role="grid"]', '[aria-haspopup="listbox"]', '[aria-haspopup="menu"]', '[aria-haspopup="true"]',
+  '[data-builder-keys="own"]',
+].join(', ');
+
 export function isTypingTarget(target: EventTarget | null): boolean {
   const el = target as Element | null;
   if (!el || typeof el.closest !== 'function') return false;
@@ -46,6 +58,13 @@ export function isControl(target: EventTarget | null): boolean {
   const el = target as Element | null;
   if (!el || typeof el.closest !== 'function') return false;
   return !!el.closest('button, a[href], summary, [role="button"], [role="link"], [role="menuitem"], [role="option"], [role="tab"]');
+}
+
+/** Focus is in a widget that runs its own plain keys (OWN_KEYS). */
+export function ownsKeys(target: EventTarget | null): boolean {
+  const el = target as Element | null;
+  if (!el || typeof el.closest !== 'function') return false;
+  return !!el.closest(OWN_KEYS);
 }
 
 /** A button or link the keyboard reached (Tab), not one a click left focus
@@ -72,6 +91,8 @@ export function useBuilderShortcuts(handlers: ShortcutHandlers, options: Shortcu
       const shortcut = matchShortcut(e, os);
       if (!shortcut) return;
       if (shortcut.when !== 'always' && isTypingTarget(e.target)) return;
+      // ⌘ / Ctrl and ⌥ shortcuts still reach the builder from a menu or list
+      if (shortcut.when !== 'always' && !e.metaKey && !e.ctrlKey && !e.altKey && ownsKeys(e.target)) return;
       if (CONTROL_KEYS.has(shortcut.id) && isControl(e.target)) return;
       const run = latest.current[shortcut.id];
       if (!run || run(e) === false) return;

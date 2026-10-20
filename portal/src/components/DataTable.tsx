@@ -23,12 +23,17 @@
  *     ProcessedScansTab.tsx:348).
  *   - never combine `cell-sub` with `mono` on the same element.
  */
-import type { ReactNode } from 'react';
+import type { MouseEvent, ReactNode } from 'react';
 
 export interface DataTableColumn {
   key: string; label: ReactNode; align?: 'left' | 'right' | 'center'; mono?: boolean; width?: string;
 }
-export interface DataTableRow { key: string; cells: ReactNode[]; className?: string; }
+/** `onClick` and `selected` make a row pickable (the label builder's placed
+ *  fields); `selected` sets aria-selected, left off when undefined. */
+export interface DataTableRow {
+  key: string; cells: ReactNode[]; className?: string;
+  onClick?: (e: MouseEvent<HTMLTableRowElement>) => void; selected?: boolean;
+}
 
 export default function DataTable({ columns, rows, className, emptyText, ariaLabel }: {
   columns: DataTableColumn[]; rows: DataTableRow[]; className?: string;
@@ -48,7 +53,7 @@ export default function DataTable({ columns, rows, className, emptyText, ariaLab
           {rows.length === 0 ? (
             <tr><td className="data-table-empty" colSpan={columns.length}>{emptyText ?? 'Nothing here yet.'}</td></tr>
           ) : rows.map((r) => (
-            <tr key={r.key} className={r.className}>
+            <tr key={r.key} className={r.className} onClick={r.onClick} aria-selected={r.selected}>
               {r.cells.map((cell, i) => <td key={columns[i]?.key ?? i} className={columns[i] ? cls(columns[i]) : ''}>{cell}</td>)}
             </tr>
           ))}

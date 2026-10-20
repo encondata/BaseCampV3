@@ -86,6 +86,40 @@ describe('useBuilderShortcuts', () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
+  it('leaves plain keys to a widget that runs its own (a listbox, a menu, the placed-fields table)', () => {
+    const nudge = vi.fn();
+    const remove = vi.fn();
+    const tool = vi.fn();
+    const undo = vi.fn();
+    const handlers = { 'move.down': nudge, 'edit.delete': remove, 'tool.text': tool, 'edit.undo': undo };
+    function Widgets() {
+      useBuilderShortcuts(handlers, { platform: 'mac' });
+      return (
+        <div>
+          <div role="listbox" tabIndex={-1} aria-label="Fonts"><div role="option" aria-selected="false">Roboto</div></div>
+          <div role="menu" aria-label="Add"><button type="button" role="menuitem">Box</button></div>
+          <button type="button" aria-haspopup="listbox">Font</button>
+          <div data-builder-keys="own" tabIndex={0} aria-label="Fields on this label" />
+        </div>
+      );
+    }
+    const { getByLabelText, getByText } = render(<Widgets />);
+    for (const target of [getByLabelText('Fonts'), getByText('Roboto'), getByText('Box'), getByText('Font'),
+      getByLabelText('Fields on this label')]) {
+      expect(fireEvent.keyDown(target, { key: 'ArrowDown', code: 'ArrowDown' })).toBe(true);
+      fireEvent.keyDown(target, { key: 'Delete', code: 'Delete' });
+      fireEvent.keyDown(target, { key: 't', code: 'KeyT' });
+      // ⌘ shortcuts still reach the builder
+      fireEvent.keyDown(target, { key: 'z', code: 'KeyZ', metaKey: true });
+    }
+    expect(nudge).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(tool).not.toHaveBeenCalled();
+    expect(undo).toHaveBeenCalledTimes(5);
+    fireEvent.keyDown(document.body, { key: 'ArrowDown', code: 'ArrowDown' });
+    expect(nudge).toHaveBeenCalledTimes(1);
+  });
+
   it('does not prevent the default when a handler declines', () => {
     render(<Harness handlers={{ 'move.right': () => false }} />);
     expect(fireEvent.keyDown(document.body, { key: 'ArrowRight', code: 'ArrowRight' })).toBe(true);

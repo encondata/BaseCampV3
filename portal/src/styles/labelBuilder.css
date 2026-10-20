@@ -161,3 +161,316 @@
   border-right: 1px solid var(--paper-line);
   border-bottom: 1px solid var(--paper-line);
 }
+
+/* ── panels (`lbp-`): fields, + picker, placed fields, properties ──
+ *
+ * The side panels and the table under the canvas. Same guardrail rule as
+ * the canvas: no class here ends in -row/-cell/-list/-table/-grid or holds
+ * a list trigger word, so the panels' own small type stays out of the list
+ * scan; the placed-fields table itself is a DataTable and takes the list
+ * typography from directory.css (only layout and colors are set on it
+ * here). Scroll boxes carry no border-radius: the rounded box around them
+ * clips with overflow: hidden instead. */
+
+.lbp {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.lbp-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--paper-line);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.lbp-title .lbp-kbd,
+.lbp-title .lbp-hint { margin-left: auto; letter-spacing: 0; text-transform: none; }
+.lbp-kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 5px;
+  border: 1px solid var(--paper-line);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text-mute);
+}
+.lbp-hint { font-size: 11px; color: var(--text-mute); }
+.lbp-empty { padding: 14px 12px; font-size: 12.5px; color: var(--text-mute); }
+.lbp-icon { width: 14px; height: 14px; display: block; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+.lbp-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+
+/* the field panel */
+.lbp-search-bar { position: relative; display: flex; align-items: center; gap: 6px; padding: 8px 10px; }
+.lbp-search { flex: 1; min-width: 0; margin-left: 0; }
+.lbp-search input { width: 100%; padding-top: 7px; padding-bottom: 7px; }
+.lbp-add.mini-btn { width: 34px; height: 34px; padding: 0; justify-content: center; flex: none; }
+.lbp-fields-panel .lbp-scroll { padding: 2px 0 10px; }
+.lbp-group { padding-bottom: 4px; }
+.lbp-group-label { padding: 8px 12px 3px; font-size: 11px; font-weight: 600; color: var(--text-mute); }
+.lbp-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px 2px 14px;
+}
+.lbp-field:hover { background: var(--surface-2); }
+.lbp-field[draggable='true'] { cursor: grab; }
+.lbp-field.is-piece { padding-left: 33px; position: relative; }
+.lbp-field.is-piece::before {
+  content: '└';
+  position: absolute;
+  left: 16px;
+  color: var(--text-mute);
+  opacity: 0.6;
+}
+.lbp-field-name {
+  /* the name keeps its room; the sample gives way first */
+  flex: 1 0 auto;
+  max-width: 70%;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-dark);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.lbp-field-name:disabled { cursor: default; }
+.lbp-field.is-used .lbp-field-name { color: var(--text-mute); }
+.lbp-count {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--c-blue-bd, #b9d4ee);
+  border-radius: 999px;
+  background: var(--c-blue-bg, #e8f1fb);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--c-blue, #1668a7);
+  cursor: pointer;
+}
+.lbp-sample {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 112px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+button.lbp-sample { cursor: text; }
+button.lbp-sample:hover:not(:disabled) { background: var(--surface); box-shadow: inset 0 0 0 1px var(--paper-line); }
+button.lbp-sample:disabled { cursor: default; }
+.lbp-sample.is-empty { font-style: italic; opacity: 0.7; }
+.lbp-field.is-used .lbp-sample { opacity: 0.75; }
+.lbp-sample-input {
+  flex: none;
+  width: 124px;
+  padding: 2px 5px;
+  border: 1px solid var(--amber);
+  border-radius: 4px;
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dark);
+  outline: none;
+}
+.lbp-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--paper-line);
+}
+
+/* the + picker, under the search bar */
+.lbp-picker {
+  position: absolute;
+  top: calc(100% - 2px);
+  left: 10px;
+  right: 10px;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  max-height: min(460px, 70vh);
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  box-shadow: 0 18px 50px -18px rgba(12, 17, 23, 0.35);
+}
+.lbp-picker-search { margin: 8px; }
+.lbp-picker-search input { width: 100%; padding-top: 7px; padding-bottom: 7px; }
+.lbp-picker-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 5px 4px; }
+.lbp-pick-title {
+  padding: 6px 8px 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.lbp-pick {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: var(--text-dark);
+  cursor: pointer;
+}
+.lbp-pick.active { background: rgba(var(--accent-rgb), 0.12); }
+.lbp-pick.is-used { color: var(--text-mute); }
+.lbp-pick.is-piece { padding-left: 24px; position: relative; }
+.lbp-pick.is-piece::before { content: '└'; position: absolute; left: 10px; color: var(--text-mute); opacity: 0.6; }
+.lbp-pick-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lbp-pick-sub { flex: none; font-size: 10.5px; color: var(--text-mute); white-space: nowrap; }
+.lbp-pick.is-used .lbp-pick-sub { color: var(--c-blue, #1668a7); }
+.lbp-picker-note {
+  padding: 6px 12px 8px;
+  border-top: 1px solid var(--paper-line);
+  font-size: 11px;
+  color: var(--text-mute);
+}
+
+/* the placed-fields table under the canvas */
+.lbp-placed {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+  outline: none;
+}
+.lbp-placed:focus-visible { box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.25); }
+.lbp-placed .data-table-scroll { max-height: 300px; overflow-y: auto; }
+.lbp-placed b.cell-top { white-space: nowrap; }
+.lbp-placed thead th { position: sticky; top: 0; z-index: 1; }
+.lbp-placed tbody tr { cursor: pointer; }
+.lbp-placed tbody tr:hover td { background: var(--surface-2); }
+.lbp-placed tbody tr.is-split td { background: var(--surface-2); }
+.lbp-placed tbody tr.is-selected td { background: rgba(var(--accent-rgb), 0.12); }
+.lbp-piece-name { display: inline-block; position: relative; padding-left: 18px; }
+.lbp-piece-name::before { content: '└'; position: absolute; left: 2px; color: var(--text-mute); opacity: 0.6; }
+.lbp-font-short { white-space: nowrap; }
+.lbp-none { color: var(--text-mute); opacity: 0.6; }
+.lbp-strip { display: flex; align-items: center; gap: 6px; }
+.lbp-strip .combo-wrap { flex: 1 1 auto; }
+.lbp-strip-text.lbp-text { width: 52px; flex: none; }
+.lbp-placed .combo-wrap .org-select { padding-top: 5px; padding-bottom: 5px; }
+
+/* inputs and toggles the panels share */
+.lbp-num {
+  width: 58px;
+  padding: 4px 6px;
+  border: 1px solid var(--paper-line);
+  border-radius: 6px;
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dark);
+  text-align: right;
+  outline: none;
+}
+.lbp-text {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--paper-line);
+  border-radius: 6px;
+  background: var(--surface);
+  font-family: var(--font-display);
+  font-size: 13px;
+  color: var(--text-dark);
+  outline: none;
+  box-sizing: border-box;
+}
+textarea.lbp-text { resize: vertical; }
+.lbp-num:focus, .lbp-text:focus {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
+}
+.lbp-num:disabled, .lbp-text:disabled { opacity: 0.6; }
+.lbp-num.is-small { width: 48px; }
+.lbp-tg {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--paper-line);
+  border-radius: 5px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.lbp-tg svg { width: 12px; height: 12px; fill: none; stroke: #0c1117; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
+.lbp-tg.on { background: var(--accent); border-color: var(--accent); }
+.lbp-tg.on svg { opacity: 1; }
+.lbp-tg:disabled { cursor: default; opacity: 0.55; }
+.lbp-seg.segmented { padding: 3px; gap: 2px; }
+.lbp-seg.segmented button { padding: 4px 9px; font-size: 12px; }
+.lbp-seg.segmented button:disabled { opacity: 0.45; cursor: default; }
+.lbp-switch { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-dark); cursor: pointer; }
+
+/* the properties panel */
+.lbp-props-top { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-bottom: 1px solid var(--paper-line); }
+.lbp-subject { margin: 0; font-size: 15px; font-weight: 600; color: var(--text-dark); }
+.lbp-prop { padding: 9px 12px; border-bottom: 1px solid var(--paper-line); }
+.lbp-prop:last-child { border-bottom: 0; }
+.lbp-prop-label { margin-bottom: 6px; font-size: 11px; color: var(--text-mute); }
+.lbp-prop-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.lbp-prop-controls > .combo-wrap,
+.lbp-prop-controls > .lbp-text { flex: 1 1 100%; }
+.lbp-prop .lbp-hint { margin-top: 5px; }
+.lbp-static { font-size: 13px; color: var(--text-dark); }
+.lbp-unit { font-size: 11px; color: var(--text-mute); }
+
+/* the font dropdown: each family drawn in its own face (--lbp-face is
+   set inline from fonts.ts; a font preview is the content itself) */
+.lbp-font-select { width: 100%; }
+.lbp-font-trigger {
+  display: flex;
+  align-items: center;
+  padding-right: 32px;
+  text-align: left;
+  cursor: pointer;
+}
+.lbp-font-trigger:disabled { cursor: default; opacity: 0.6; }
+.lbp-face {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  font-family: var(--lbp-face, inherit);
+}
+.lbp-font-name { font-size: 14px; white-space: nowrap; }
+.lbp-font-sample { font-size: 13px; color: var(--text-mute); white-space: nowrap; letter-spacing: 0.02em; }
+.lbp-font-menu.combo-menu { max-width: min(400px, 92vw); max-height: 340px; }
+.lbp-font-option.kbar-item { padding: 7px 10px; }
+/* the weight shown is the font's own; the chosen one is marked instead */
+.combo-menu .lbp-font-option.kbar-item.selected { font-weight: inherit; box-shadow: inset 3px 0 0 var(--amber); }
+.lbp-font-option .sub { flex: none; padding-left: 12px; }

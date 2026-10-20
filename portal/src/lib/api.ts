@@ -5414,6 +5414,39 @@ export async function convertLabelTemplate(id: string): Promise<LabelTemplate> {
   return resp.json();
 }
 
+// ── Label builder fields (the field panel, Load from asset…) ─────────
+
+/** One field the builder offers (api labels/fields.py `FIELD_GROUPS`). */
+export interface LabelFieldDef {
+  key: string; label: string; kind: 'text' | 'number' | 'date'; mock: string;
+}
+
+export interface LabelFieldGroup {
+  key: string; label: string; label_types: string[]; fields: LabelFieldDef[];
+}
+
+/** The groups a template of one label type offers, and every From-To
+ *  header seen across moves (each is a field keyed `ft:<header>`). */
+export interface LabelFields { groups: LabelFieldGroup[]; ft_headers: string[] }
+
+export async function listLabelFields(labelType?: string): Promise<LabelFields> {
+  const resp = await apiFetch(labelType
+    ? `/labels/fields?label_type=${encodeURIComponent(labelType)}` : '/labels/fields');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** GET /labels/sample-values: one roster asset's field values, {key: text}
+ *  for every catalog key plus `ft:<header>` for each From-To column, as its
+ *  label prints them (the kiosk sync's values). 404 `initiative_not_found`,
+ *  `asset_not_on_move`. */
+export async function loadSampleAsset(initiativeId: string, assetId: string): Promise<Record<string, string>> {
+  const q = new URLSearchParams({ initiative_id: initiativeId, asset_id: assetId });
+  const resp = await apiFetch(`/labels/sample-values?${q.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 // ── Label font library (Labels → Printers › Install Fonts) ───────────
 
 export interface LabelFontUsedBy { template_id: string; template_name: string }

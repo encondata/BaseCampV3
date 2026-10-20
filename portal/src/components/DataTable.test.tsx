@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import DataTable from './DataTable';
 
@@ -41,5 +41,17 @@ describe('DataTable', () => {
     const wrap = container.querySelector('.data-table-scroll') as HTMLElement;
     expect(wrap).not.toBeNull();
     expect(wrap.querySelector('table.data-table')).not.toBeNull();
+  });
+  it('a row can take clicks and say it is selected', () => {
+    const onClick = vi.fn();
+    render(<DataTable columns={[{ key: 'a', label: 'A' }]}
+      rows={[{ key: '1', cells: ['x'], onClick, selected: true }, { key: '2', cells: ['y'], selected: false },
+        { key: '3', cells: ['z'] }]} />);
+    const [x, y, z] = ['x', 'y', 'z'].map((t) => screen.getByText(t).closest('tr') as HTMLTableRowElement);
+    fireEvent.click(screen.getByText('x'));
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(x.getAttribute('aria-selected')).toBe('true');
+    expect(y.getAttribute('aria-selected')).toBe('false');
+    expect(z.hasAttribute('aria-selected')).toBe(false);
   });
 });
