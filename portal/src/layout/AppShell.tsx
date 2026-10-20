@@ -5,7 +5,7 @@
  * notifications / ⌘K), user chip with account menu, and the command
  * palette. The nav's own markup lives in NavPanel.tsx; this file owns mode
  * state (preference + viewport), the overlay, the rail flyout, the
- * account menu, and the Ctrl/⌘+B shortcut.
+ * account menu, and the Ctrl/⌘+\ shortcut.
  */
 
 import { useEffect, useState, type ReactNode } from 'react';
@@ -107,7 +107,7 @@ function AppShellInner({ children }: { children: ReactNode }) {
 
   // navigating into a section opens it in the accordion (rail's flyout is a
   // separate, click-driven concept — it does not track the route). Entering
-  // rail (from expanded/hidden, via toggle or Ctrl/⌘+B) must clear whatever
+  // rail (from expanded/hidden, via toggle or Ctrl/⌘+\) must clear whatever
   // section was open, so the flyout never auto-opens on mode change — only
   // a click on a section icon opens it. Leaving rail restores the section
   // for the current route.
@@ -187,11 +187,12 @@ function AppShellInner({ children }: { children: ReactNode }) {
     void updatePreferences({ ...preferences, nav_mode: nextNavMode(preferences.nav_mode) });
   };
 
-  // Ctrl/⌘+B — cycles the mode, or in hidden mode toggles the overlay.
-  // Ignored while typing, or while the command palette is open.
+  // Ctrl/⌘+\ — cycles the mode, or in hidden mode toggles the overlay.
+  // Ignored while typing, or while the command palette is open. (It was
+  // Ctrl/⌘+B until 2026-10-19; the label builder needs ⌘B for bold.)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'b') return;
+      if (!(e.ctrlKey || e.metaKey) || e.key !== '\\') return;
       if (paletteOpen || isTypingTarget(e)) return;
       e.preventDefault();
       if (mode === 'hidden') {
