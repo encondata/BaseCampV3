@@ -120,9 +120,20 @@ const ctrl = (key: string, extra: Record<string, unknown> = {}) => {
   fireEvent.keyDown(document.body, { key, code, ctrlKey: true, ...extra });
 };
 
+/** The builder has mounted AND run its mount effects. The page renders
+ *  when its loads resolve, outside act, so its effects (the key listeners
+ *  among them) can still be pending when the top bar shows; under a busy
+ *  suite a key pressed then went nowhere. Builder's fields request is one
+ *  of those effects, and a commit's effects all run together. */
+async function builderReady() {
+  const bar = await screen.findByRole('group', { name: 'Template' });
+  await waitFor(() => expect(api.listLabelFields).toHaveBeenCalled());
+  return bar;
+}
+
 async function openParent() {
   renderAt('/labels/templates/p1/edit');
-  await screen.findByRole('group', { name: 'Template' });
+  await builderReady();
 }
 
 /** Select everything and nudge it a dot right: an unsaved change. */
@@ -446,7 +457,7 @@ describe('a DPI child', () => {
   it('shows its DPI and saves only its design', async () => {
     api.updateLabelTemplate.mockResolvedValue({ ...child('300'), customized: true, child_edits: 1, version: 8 });
     renderAt('/labels/templates/c300/edit');
-    const bar = await screen.findByRole('group', { name: 'Template' });
+    const bar = await builderReady();
     expect(within(bar).getByText('Child · 300')).toBeTruthy();
     expect(within(bar).getByLabelText('Version v7').textContent).toBe('v7');
     expect(within(bar).queryByRole('button', { name: 'Clone' })).toBeNull();
