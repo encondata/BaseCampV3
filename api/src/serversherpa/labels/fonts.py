@@ -52,6 +52,17 @@ FAMILIES: dict[str, Family] = {
 }
 
 
+def object_family(name: str) -> tuple[str, str] | None:
+    """(family slug, weight) of a builder printer object name, matched
+    without regard to case, or None for any other font."""
+    upper = (name or "").upper()
+    for slug, fam in FAMILIES.items():
+        for weight, obj in fam["objects"].items():
+            if obj == upper:
+                return slug, weight
+    return None
+
+
 def font_object(family: str, weight: str, *,
                 objects: Mapping[str, str | None] | None = None) -> tuple[str, bool]:
     """(object name, faux_bold) for one weight of a family. Bold on a

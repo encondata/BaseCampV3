@@ -3602,10 +3602,13 @@ class KioskLabelTemplatesSyncOut(BaseModel):
 
 class KioskLabelFontOut(BaseModel):
     """A font-library font the move's label templates reference. `name` is
-    its printer object name (`NAME.TTF` on E:); `size` is in bytes."""
+    its printer object name (`NAME.TTF` on E:); `size` is in bytes. A
+    `resident` font is built into the printer: the station checks it is
+    there and never installs it (its content route refuses it)."""
     id: uuid.UUID
     name: str
     size: int
+    resident: bool = False
 
 
 class KioskLabelFontsOut(BaseModel):
@@ -3932,7 +3935,22 @@ class LabelFontUsedByOut(BaseModel):
     template_name: str
 
 
+class LabelFontMetricsOut(BaseModel):
+    """GET /labels/fonts/{id}/metrics, in font units: scale by font size /
+    unitsPerEm. ascent/descent are positive distances from the baseline;
+    advances covers printable ASCII (32-126)."""
+    unitsPerEm: int
+    ascent: int
+    descent: int
+    advances: dict[str, int]
+
+
 class LabelFontOut(BaseModel):
+    """A font-library file. `family`/`weight` place it in a label builder
+    family (null for any other font); a `resident` font is Zebra's own
+    (never pushed to a printer or served to a browser) and has
+    `size_bytes` 0 until a copy is uploaded for its metrics; `source_url`
+    is where `seed-label-fonts` downloaded it."""
     id: uuid.UUID
     name: str
     display_name: str
@@ -3942,6 +3960,10 @@ class LabelFontOut(BaseModel):
     uploaded_by_name: str | None
     created_at: datetime
     used_by: list[LabelFontUsedByOut]
+    family: str | None = None
+    weight: str | None = None
+    resident: bool = False
+    source_url: str | None = None
 
 
 class LabelTemplateCreateIn(BaseModel):

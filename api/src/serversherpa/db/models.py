@@ -1712,17 +1712,29 @@ class LabelFont(Base):
     """A TrueType font in the label font library: `name` is the Zebra
     object name it is installed under on the printer's E: drive
     (Install Fonts on Labels → Printers). Soft-deleted; the partial
-    unique index on (name) WHERE deleted_at IS NULL lives in 0060."""
+    unique index on (name) WHERE deleted_at IS NULL lives in 0060.
+
+    `family`/`weight` place the file in one of the label builder's
+    families (serversherpa.labels.fonts; one active file per pair, 0101).
+    `resident` is Zebra's own Swiss 721 Condensed Bold: never pushed to a
+    printer or served to a browser, and without a file (`storage_key` NULL,
+    `size_bytes` 0) until one is uploaded for its metrics. `source_url` is
+    where `seed-label-fonts` downloaded the file."""
     __tablename__ = "label_fonts"
 
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, server_default=text("gen_random_uuid()"))
     name: Mapped[str] = mapped_column(CITEXT)
     display_name: Mapped[str] = mapped_column(server_default="")
-    storage_key: Mapped[str]
+    storage_key: Mapped[str | None]
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     content_type: Mapped[str] = mapped_column(server_default="font/ttf")
     uploaded_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    family: Mapped[str | None]
+    weight: Mapped[str | None]
+    resident: Mapped[bool] = mapped_column(Boolean, default=False,
+                                           server_default=text("false"))
+    source_url: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     deleted_at: Mapped[datetime | None]
 

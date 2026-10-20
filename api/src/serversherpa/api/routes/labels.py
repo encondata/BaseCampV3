@@ -31,7 +31,7 @@ from serversherpa.api.schemas import (
     GeneratedLabelBundleItemOut, GeneratedLabelBundleOut,
     LabelCompileIn, LabelCompileOut,
     LabelFieldsOut,
-    LabelFontOut, LabelFontUsedByOut,
+    LabelFontMetricsOut, LabelFontOut, LabelFontUsedByOut,
     LabelGeneratePreviewCandidateOut, LabelGeneratePreviewInitiativeOut,
     LabelGeneratePreviewOut, LabelGeneratePreviewTemplateOut, LabelGeneratePreviewTypeOut,
     LabelPlaceholderCreateIn, LabelPlaceholderOut, LabelPlaceholderUpdateIn,
@@ -49,6 +49,12 @@ from serversherpa.db.ordering import natural, natural_key
 from serversherpa.labels import labelary
 from serversherpa.labels.compile import UnsupportedLanguage, compile_design
 from serversherpa.labels.fields import CONTAINER_LABEL_TYPES, groups_for
+from serversherpa.labels.font_metrics import UnreadableFont, metrics as font_metrics
+from serversherpa.labels.font_seed import (
+    FONT_FIELDS, MAX_FONT_BYTES, TRUETYPE_MAGICS, display_name as family_display_name,
+    new_storage_key,
+)
+from serversherpa.labels.fonts import FAMILIES, object_family
 from serversherpa.labels.generate import InvalidLabelTypes, InvalidTemplates, RunActive, entity_for_type, enqueue_run
 from serversherpa.labels.generate.select import candidate_templates
 from serversherpa.labels.model import DesignError, parse_design
@@ -59,8 +65,6 @@ from serversherpa.services.storage import delete_object, get_object, put_object
 router = APIRouter(prefix="/labels", tags=["labels"])
 
 VOCAB_FIELDS = ["label", "description", "meta", "sort_order", "is_active"]
-FONT_FIELDS = ["name", "display_name", "storage_key", "size_bytes",
-              "content_type", "uploaded_by"]
 
 
 def _err(status: int, code: str, **extra) -> HTTPException:
@@ -967,8 +971,6 @@ async def get_generated_label_bundle(
 # ── font library (Labels → Printers › Install Fonts) ─────────────────
 
 FONT_NAME_RE = re.compile(r"^[A-Z0-9_]{1,8}\.TTF$")
-MAX_FONT_BYTES = 2 * 1024 * 1024
-TRUETYPE_MAGICS = (b"\x00\x01\x00\x00", b"true")
 
 
 def font_object_name(filename: str | None) -> str | None:
@@ -1003,7 +1005,8 @@ def _font_out(font: LabelFont, uploader: str | None, used_by: list[LabelFontUsed
     return LabelFontOut(
         id=font.id, name=font.name, display_name=font.display_name, size_bytes=font.size_bytes,
         content_type=font.content_type, uploaded_by=font.uploaded_by, uploaded_by_name=uploader,
-        created_at=font.created_at, used_by=used_by)
+        created_at=font.created_at, used_by=used_by, family=font.family, weight=font.weight,
+        resident=font.resident, source_url=font.source_url)
 
 
 async def _font_or_404(db: DbSession, font_id: uuid.UUID) -> LabelFont:
@@ -1052,14 +1055,41 @@ async def upload_label_font(
         raise _err(413, "file_too_large")
     if not data.startswith(TRUETYPE_MAGICS):
         raise _err(422, "not_a_truetype_font")
+    uploader = _person_display(actor.person.preferred_name, actor.person.first_name,
+                               actor.person.last_name)
+    # The resident font's row exists without a file until its library
+    # copy arrives (for its metrics): the upload fills that row. Locked, so
+    # a second concurrent upload finds it filled and gets the 409 below.
+    fileless = await db.scalar(
+        select(LabelFont).where(LabelFont.name == object_name, LabelFont.deleted_at.is_(None),
+                                LabelFont.resident.is_(True), LabelFont.storage_key.is_(None))
+        .with_for_update())
+    if fileless is not None:
+        before = snapshot(fileless, FONT_FIELDS)
+        key = new_storage_key()
+        await put_object(key, data, "font/ttf")
+        fileless.storage_key, fileless.size_bytes = key, len(data)
+        fileless.content_type, fileless.uploaded_by = "font/ttf", actor.person.id
+        audit(db, actor_id=actor.person.id, entity_type="label_font", entity_id=str(fileless.id),
+              action="update", changes=diff(before, snapshot(fileless, FONT_FIELDS)))
+        await db.commit()
+        await db.refresh(fileless)
+        used = await _fonts_used_by(db)
+        return _font_out(fileless, uploader, used.get(object_name, []))
     if await _active_font_id(db, object_name) is not None:
         raise _err(409, "font_name_taken")
 
-    key = f"label-fonts/{uuid.uuid4()}.ttf"
+    # A file under one of the builder's object names joins that family (and
+    # the resident name stays resident, so it is never served).
+    family, weight = object_family(object_name) or (None, None)
+    key = new_storage_key()
     await put_object(key, data, "font/ttf")
-    font = LabelFont(name=object_name, display_name=file.filename or object_name,
+    font = LabelFont(name=object_name,
+                     display_name=(family_display_name(family, weight) if family
+                                   else file.filename or object_name),
                      storage_key=key, size_bytes=len(data), content_type="font/ttf",
-                     uploaded_by=actor.person.id)
+                     uploaded_by=actor.person.id, family=family, weight=weight,
+                     resident=bool(family and FAMILIES[family]["resident"]))
     try:
         db.add(font)
         await db.flush()
@@ -1081,8 +1111,6 @@ async def upload_label_font(
         raise _err(409, "font_name_taken") from exc
     await db.refresh(font)
     used = await _fonts_used_by(db)
-    uploader = _person_display(actor.person.preferred_name, actor.person.first_name,
-                               actor.person.last_name)
     return _font_out(font, uploader, used.get(object_name, []))
 
 
@@ -1104,8 +1132,43 @@ async def label_font_content(
     _actor: AuthContext = require_permission("labels", "view"),
 ) -> Response:
     """The raw TTF bytes — the browser pushes them to the printer over
-    WebUSB (`~DY`), so it needs the bytes, not a presigned URL."""
+    WebUSB (`~DY`), so it needs the bytes, not a presigned URL. Never the
+    resident font: Zebra's commercial file stays off browsers (403
+    `font_not_servable`)."""
     font = await _font_or_404(db, font_id)
+    if font.resident:
+        raise _err(403, "font_not_servable")
     data = await get_object(font.storage_key)
     return Response(content=data, media_type=font.content_type,
                     headers={"Content-Disposition": f'attachment; filename="{font.name}"'})
+
+
+# Metrics per stored file, read once: (font id, storage key, size) → metrics.
+# Fonts are few; the cap only bounds a pathological library.
+_METRICS_CACHE: dict[tuple[uuid.UUID, str, int], dict] = {}
+_METRICS_CACHE_MAX = 128
+
+
+@router.get("/fonts/{font_id}/metrics", response_model=LabelFontMetricsOut)
+async def label_font_metrics(
+    font_id: uuid.UUID, db: DbSession,
+    _actor: AuthContext = require_permission("labels", "view"),
+) -> dict:
+    """Glyph metrics for the builder canvas (labels/font_metrics.py), read
+    from the library file with fontTools. The resident font has them only
+    once its library copy is uploaded (else 404 `no_font_file`); a file
+    fontTools can't read is 422 `unreadable_font`."""
+    font = await _font_or_404(db, font_id)
+    if not font.storage_key:
+        raise _err(404, "no_font_file")
+    cache_key = (font.id, font.storage_key, font.size_bytes)
+    cached = _METRICS_CACHE.get(cache_key)
+    if cached is None:
+        try:
+            cached = font_metrics(await get_object(font.storage_key))
+        except UnreadableFont as exc:
+            raise _err(422, "unreadable_font") from exc
+        if len(_METRICS_CACHE) >= _METRICS_CACHE_MAX:
+            _METRICS_CACHE.clear()
+        _METRICS_CACHE[cache_key] = cached
+    return cached

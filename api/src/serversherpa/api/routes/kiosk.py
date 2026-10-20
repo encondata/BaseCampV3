@@ -1235,7 +1235,8 @@ async def kiosk_label_fonts(
 ) -> KioskLabelFontsOut:
     """The printer fonts the move's label template set references: library
     fonts (not deleted) in `fonts`, natural by name, and referenced names
-    the library doesn't have in `missing`. Same contract as
+    the library doesn't have in `missing`. A `resident` font is built into
+    the printer: the station only checks it is there. Same contract as
     /sync/label-templates (404 / 422 `bad_initiative` / 403 `move_locked`)."""
     _require_move(actor, initiative_id)
     initiative = await _label_move(db, initiative_id)
@@ -1248,7 +1249,8 @@ async def kiosk_label_fonts(
             .order_by(natural(LabelFont.name)))).scalars().all()
     found = {f.name.upper() for f in fonts}
     return KioskLabelFontsOut(
-        fonts=[KioskLabelFontOut(id=f.id, name=f.name, size=f.size_bytes) for f in fonts],
+        fonts=[KioskLabelFontOut(id=f.id, name=f.name, size=f.size_bytes, resident=f.resident)
+               for f in fonts],
         missing=sorted(names - found, key=natural_key))
 
 
@@ -1261,13 +1263,16 @@ async def kiosk_label_font_content(
     """A font's raw TTF bytes for the station to push to its printer
     (`~DY`) — only when the move's templates reference that font. Any
     other font, a deleted one, or an unknown id is 404 `font_not_found`,
-    so a move-password session can never fetch another font."""
+    so a move-password session can never fetch another font. The resident
+    font is never served (403 `font_not_servable`): it is never installed."""
     _require_move(actor, initiative_id)
     initiative = await _label_move(db, initiative_id)
     font = await db.get(LabelFont, font_id)
     if (font is None or font.deleted_at is not None
             or font.name.upper() not in await _move_font_names(db, initiative)):
         raise _err(404, "font_not_found")
+    if font.resident:
+        raise _err(403, "font_not_servable")
     data = await get_object(font.storage_key)
     return Response(content=data, media_type=font.content_type or "font/ttf",
                     headers={"Content-Disposition": f'attachment; filename="{font.name}"'})

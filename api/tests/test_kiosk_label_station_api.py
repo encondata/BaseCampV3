@@ -105,8 +105,9 @@ async def test_font_list_returns_library_fonts_and_missing_names(client, db, see
     r = await _fonts(client, hdrs, move.id)
     assert r.status_code == 200, r.text
     assert r.json() == {
-        "fonts": [{"id": str(aaa.id), "name": "AAA.TTF", "size": len(TTF)},
-                  {"id": str(bbb.id), "name": "BBB.TTF", "size": len(TTF) + 2}],
+        "fonts": [{"id": str(aaa.id), "name": "AAA.TTF", "size": len(TTF), "resident": False},
+                  {"id": str(bbb.id), "name": "BBB.TTF", "size": len(TTF) + 2,
+                   "resident": False}],
         "missing": ["GONE.TTF", "NOPE.TTF"],
     }
 

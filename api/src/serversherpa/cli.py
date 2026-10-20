@@ -262,6 +262,34 @@ def seed_demo_warehouse() -> None:
 
 
 @app.command()
+def seed_label_fonts() -> None:
+    """Load the label builder's fonts into the font library: Regular and
+    Bold of the seven open families, downloaded from pinned GitHub URLs,
+    plus the resident Swiss 721 Condensed Bold row (no file). Idempotent:
+    a family and weight already in the library is skipped."""
+
+    _name_connections("seed-label-fonts")
+
+    async def _run() -> None:
+        from serversherpa.labels.font_seed import FontSeedError, seed
+
+        try:
+            async with get_sessionmaker()() as db:
+                try:
+                    added = await seed(db)
+                except FontSeedError as exc:
+                    typer.secho(f"Font seed stopped: {exc}", fg="red", err=True)
+                    raise typer.Exit(EXIT_FAILED) from exc
+            for name in added:
+                typer.echo(f"added {name}")
+            typer.secho(f"Seeded {len(added)} label font(s).", fg="green")
+        finally:
+            await dispose_engine()
+
+    asyncio.run(_run())
+
+
+@app.command()
 def import_v2_workers(
     dump: str = typer.Option(..., help="Path to the V2 pg_dump .sql file"),
     limit: int = typer.Option(200, help="Max workers to import this run"),
