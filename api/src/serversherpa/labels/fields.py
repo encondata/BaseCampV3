@@ -209,6 +209,29 @@ _ASSET_KEYS = catalog_keys("top")
 _CONTAINER_KEYS = catalog_keys("container")
 
 
+def design_field_keys(design: dict | None) -> set[str]:
+    """Every field key a schema 2 design's elements place (catalog keys and
+    `ft:<header>` keys alike), read straight off the JSON. Anything else
+    (a schema 1 design, no design) places none."""
+    if not isinstance(design, dict) or design.get("schema", 1) < 2:
+        return set()
+    elements = design.get("elements")
+    return {el["field"] for el in (elements if isinstance(elements, list) else [])
+            if isinstance(el, dict) and isinstance(el.get("field"), str) and el["field"]}
+
+
+def mock_field_values(label_type: str | None, field_keys: set[str] | None = None) -> dict[str, str]:
+    """The portal's mock values for a schema 2 test label, shaped like
+    `field_values`: MOCK_VALUES for every catalog key of the type, and each
+    `ft:<header>` key in `field_keys` printing its header (a From-To column
+    has no catalog sample)."""
+    out = {key: MOCK_VALUES[key] for key in catalog_keys(label_type)}
+    for key in sorted(field_keys or ()):
+        if key.startswith(FT_PREFIX):
+            out[key] = key[len(FT_PREFIX):]
+    return out
+
+
 def ru_text(raw) -> str:
     """An RU as the bare number it prints: `"14.0"` -> `14`, `"3.50"` ->
     `3.5`. Blank -> ''. Text that is not a number prints as it is."""

@@ -20,15 +20,23 @@ Templates come in DPI versions named like "Generic Rack and RU - 203DPI" /
 trailing DPI marker, so every client groups the versions the same way and
 picks the one whose `dpi_key` matches its printer.
 
+The label builder's templates (labels/templates_tree.py) reach a kiosk as
+their DPI children only, never the parent: a child takes its family (the
+parent's name) and its site links from the parent, and an Old child is
+inactive, so it never qualifies. A child's schema 2 design has no token
+form: the edge renders it from the design itself, so its `code` is "".
+
 The kiosk device's own site plays no part. Conversion goes through the
 portal's own compiler (labels/compile.py) with `subs=None`, built the same
 way labels/generate/engine.py's `render_label` builds the design and size."""
 
 import re
 import uuid
+from typing import NamedTuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from serversherpa.db.models import Initiative, LabelTemplate, LabelTemplateSite, Site
 from serversherpa.db.ordering import natural, natural_key
@@ -45,7 +53,24 @@ def family_name(name: str) -> str:
     versions share. Never empty: a name that is only a marker stays as is."""
     base = _DPI_SUFFIX.sub("", name).strip()
     return base or name.strip()
+
+
+def row_family(name: str, parent_name: str | None) -> str:
+    """A template's family: a builder child's is its parent's name; any
+    other row's is its own name without the DPI marker."""
+    return parent_name if parent_name is not None else family_name(name)
+
+
 CONTAINER_TYPES = ("container", "container_info")
+
+
+class PickedTemplate(NamedTuple):
+    """One template of a move's set (move_template_set)."""
+    template: LabelTemplate
+    reasons: set[str]
+    move_site_names: list[str]
+    scope: str
+    family: str
 
 
 class TemplateConvertError(ValueError):
@@ -69,22 +94,28 @@ def link_scope(sites: set[uuid.UUID], origin_id: uuid.UUID | None,
     return "other" if sites else "global"
 
 
-async def move_template_set(
-    db: AsyncSession, initiative: Initiative,
-) -> list[tuple[LabelTemplate, set[str], list[str], str]]:
+async def move_template_set(db: AsyncSession, initiative: Initiative) -> list[PickedTemplate]:
     """Every active template the move's kiosk needs, ordered by
     natural(name), each with the set of reasons it was picked and
     `move_site_names`: the names of the move's OWN origin/destination
     sites the template is linked to (natural-sorted). Links to any other
     site are never named — a Front/Generic/Container template linked only
-    elsewhere is still picked, with an empty list. The fourth item is the
-    template's `link_scope`."""
-    templates = (await db.execute(
-        select(LabelTemplate)
-        .where(LabelTemplate.is_active.is_(True))
-        .order_by(natural(LabelTemplate.name), LabelTemplate.id))).scalars().all()
-    if not templates:
+    elsewhere is still picked, with an empty list. Then the template's
+    `link_scope` and its family (`row_family`). Builder parents are never
+    in the set; their children are, with the parent's site links."""
+    parent = aliased(LabelTemplate)
+    rows = (await db.execute(
+        select(LabelTemplate, parent.name)
+        .outerjoin(parent, parent.id == LabelTemplate.parent_id)
+        .where(LabelTemplate.is_active.is_(True),
+               (LabelTemplate.parent_id.is_not(None)) | (LabelTemplate.schema_version < 2))
+        .order_by(natural(LabelTemplate.name), LabelTemplate.id))).all()
+    if not rows:
         return []
+    templates = [t for t, _ in rows]
+    parent_names = {t.id: pname for t, pname in rows}
+    # a child's site links are its parent's
+    link_owner = {t.id: t.parent_id or t.id for t in templates}
 
     origin_id = initiative.origin_site_id
     destination_id = initiative.destination_site_id
@@ -95,15 +126,17 @@ async def move_template_set(
     for template_id, site_id, site_name in (await db.execute(
             select(LabelTemplateSite.template_id, LabelTemplateSite.site_id, Site.name)
             .join(Site, Site.id == LabelTemplateSite.site_id)
-            .where(LabelTemplateSite.template_id.in_([t.id for t in templates])))).all():
+            .where(LabelTemplateSite.template_id.in_(set(link_owner.values()))))).all():
         links.setdefault(template_id, set()).add(site_id)
         if site_id in move_sites:
             move_names.setdefault(template_id, []).append(site_name)
 
-    picked: list[tuple[LabelTemplate, set[str], list[str], str]] = []
+    picked: list[PickedTemplate] = []
     for template in templates:
-        sites = links.get(template.id, set())
+        owner = link_owner[template.id]
+        sites = links.get(owner, set())
         name = template.name.lower()
+        family = row_family(template.name, parent_names[template.id])
         reasons: set[str] = set()
         if template.label_type == "front":
             reasons.add("front")
@@ -117,23 +150,26 @@ async def move_template_set(
             reasons.add("container")
         if template.label_type in ("top", "front") and not sites:
             reasons.add("global")
-        if family_name(name) == FALLBACK_NAME:
+        if family.lower() == FALLBACK_NAME:
             reasons.add("fallback")
         if reasons:
-            picked.append((template, reasons,
-                           sorted(move_names.get(template.id, []), key=natural_key),
-                           link_scope(sites, origin_id, destination_id)))
+            picked.append(PickedTemplate(
+                template, reasons, sorted(move_names.get(owner, []), key=natural_key),
+                link_scope(sites, origin_id, destination_id), family))
     return picked
 
 
 def template_code(template: LabelTemplate, size_meta: dict, dpi_meta: dict) -> str:
     """Printer code with {placeholder} tokens intact. A `code` template's
     stored code as is; a `design` template compiled with no substitutions
-    at its own size and DPI. Raises a ValueError (DesignError,
-    UnsupportedLanguage or TemplateConvertError) when a design can't
-    convert."""
+    at its own size and DPI; "" for a schema 2 design, which has no token
+    form (the edge renders it from the design). Raises a ValueError
+    (DesignError, UnsupportedLanguage or TemplateConvertError) when a
+    design can't convert."""
     if template.kind == "code":
         return template.code or ""
+    if design_schema(template) >= 2:
+        return ""
     width = size_meta.get("width_in")
     height = size_meta.get("height_in")
     dots = dpi_meta.get("dots")
@@ -144,3 +180,11 @@ def template_code(template: LabelTemplate, size_meta: dict, dpi_meta: dict) -> s
     design = parse_design({**(template.design or {}), "size": {"w": width, "h": height}})
     return compile_parsed_design(design, dots=dots, language_key=template.language_key,
                                  subs=None)
+
+
+def design_schema(template: LabelTemplate) -> int:
+    """The schema of a template's design (1 for a code template)."""
+    if template.kind != "design" or not isinstance(template.design, dict):
+        return 1
+    schema = template.design.get("schema", 1)
+    return schema if isinstance(schema, int) and not isinstance(schema, bool) else 1

@@ -336,3 +336,58 @@ async def test_test_render_works_during_read_only_mode(client, db, seeded_user):
         "initiative_id": str(move.id), "template_id": str(tpl.id), "dpi_key": "203"})
     assert r.status_code == 200, r.text
     assert r.json()["zpl"] == "^XA^FD100000^FS^XZ"
+
+
+# ── v2 designs (the label builder's children) ────────────────────────
+
+async def _v2_child(db, name="Front Tag", *, label_type="front", dpi="203"):
+    from sqlalchemy import select
+
+    from tests.test_kiosk_label_templates_sync import make_tree
+    parent = await make_tree(db, name, label_type=label_type,
+                             samples={"asset_id": "SAMPLE-ONLY-777"})
+    return await db.scalar(select(LabelTemplate).where(
+        LabelTemplate.parent_id == parent.id, LabelTemplate.dpi_key == dpi))
+
+
+async def test_test_render_handles_v2(client, db, seeded_user):
+    from serversherpa.labels.fields import MOCK_VALUES, catalog_keys
+    from serversherpa.labels.render import render_template
+
+    hdrs = await login(client)
+    move, *_ = await _move(db)
+    child = await _v2_child(db)
+    r = await client.post(RENDER_URL, headers=hdrs, json={
+        "initiative_id": str(move.id), "template_id": str(child.id), "dpi_key": "203"})
+    assert r.status_code == 200, r.text
+    # the portal's mock values, shaped like field_values: every catalog key
+    # of the type, and each From-To column the design places printing its header
+    values = {**{k: MOCK_VALUES[k] for k in catalog_keys("front")}, "ft:Notes": "Notes"}
+    expected, unknown = render_template(child, values, width_in=4, height_in=2, dots=203)
+    assert unknown == set()
+    assert r.json() == {"zpl": expected, "template_name": "Front Tag · 203"}
+    zpl = r.json()["zpl"]
+    assert "^FD100000^FS" in zpl and "^FDNotes^FS" in zpl
+    # the template's own sample values never reach a kiosk, not even here
+    assert "SAMPLE-ONLY" not in zpl
+
+    # the parent is never in the move's set
+    r = await client.post(RENDER_URL, headers=hdrs, json={
+        "initiative_id": str(move.id), "template_id": str(child.parent_id), "dpi_key": "300"})
+    assert r.status_code == 404 and r.json()["detail"]["code"] == "template_not_found"
+
+
+async def test_font_list_covers_v2_design_fonts(client, db, seeded_user):
+    hdrs = await login(client)
+    move, *_ = await _move(db)
+    await _v2_child(db)
+    roboto = await _font(db, "ROBOTO_B.TTF")
+    await db.commit()
+    r = await _fonts(client, hdrs, move.id)
+    assert r.status_code == 200, r.text
+    # the field in Roboto Bold and the static text in the resident Swiss 721
+    assert r.json() == {
+        "fonts": [{"id": str(roboto.id), "name": "ROBOTO_B.TTF", "size": len(TTF),
+                   "resident": False}],
+        "missing": ["TT0003M_.TTF"],
+    }

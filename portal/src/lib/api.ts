@@ -5399,8 +5399,10 @@ export async function updateLabelTemplate(
   return resp.json();
 }
 
+/** Deactivates a template. DELETE on a template is now the real,
+ *  typed-name delete, so deactivation has its own route. */
 export async function deleteLabelTemplate(id: string): Promise<void> {
-  const resp = await apiFetch(`/labels/templates/${id}`, { method: 'DELETE' });
+  const resp = await apiFetch(`/labels/templates/${id}/deactivate`, { method: 'POST' });
   if (!resp.ok) throw await errorFrom(resp);
 }
 

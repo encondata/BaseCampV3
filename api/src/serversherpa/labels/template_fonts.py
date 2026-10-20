@@ -19,6 +19,9 @@ is still reported (as missing) rather than silently skipped."""
 
 import re
 
+from serversherpa.labels.fonts import font_object
+from serversherpa.labels.model import FieldEl, parse_design
+
 _NAME = r"([A-Z0-9_\-]+\.TTF)"
 # ^A@ then its parameters (no other command in between) then the E: drive.
 _A_AT_RE = re.compile(r"\^A@[^\^~]*?E:" + _NAME, re.IGNORECASE)
@@ -31,3 +34,25 @@ def fonts_used(code: str) -> set[str]:
     upper-cased (`NAME.TTF`)."""
     text = code or ""
     return {m.upper() for rx in (_A_AT_RE, _CW_RE) for m in rx.findall(text)}
+
+
+def design_fonts(design: dict | None) -> set[str]:
+    """The printer objects a schema 2 design's text prints with: one per
+    family and weight its static text and text fields use (labels.fonts;
+    Bold on a family with no Bold file prints its Regular file). A field
+    shown as a barcode or QR code prints no font. Nothing for a schema 1
+    design (its fonts are in its compiled code) or one that doesn't parse."""
+    if not isinstance(design, dict) or design.get("schema", 1) < 2:
+        return set()
+    try:
+        parsed = parse_design(design)
+    except ValueError:
+        return set()
+    names: set[str] = set()
+    for el in parsed.elements:
+        if isinstance(el, FieldEl) and el.display not in ("text", "number"):
+            continue
+        font = getattr(el, "font", None)
+        if font is not None:
+            names.add(font_object(font.family, font.weight)[0])
+    return names

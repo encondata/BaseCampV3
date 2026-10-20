@@ -347,7 +347,8 @@ async def test_code_template_is_returned_verbatim(client, db, seeded_user):
     assert set(row) == {
         "id", "name", "family", "label_type", "size_key", "dpi_key", "language_key", "version",
         "updated_at", "move_site_names", "reasons", "code", "generation_rules",
-        "width_in", "height_in", "dots", "error", "kind", "design", "scope"}
+        "width_in", "height_in", "dots", "error", "kind", "design", "scope",
+        "schema_version"}
     assert (row["size_key"], row["language_key"], row["version"]) == ("4x2", "zpl", 1)
 
 
@@ -549,3 +550,80 @@ async def test_fallback_matches_dpi_variants_and_lists_their_family(client, db, 
     for name in ("Generic Rack and RU - 203DPI", "Generic Rack and RU - 300DPI"):
         assert rows[name]["reasons"] == ["fallback", "generic", "global"]
         assert rows[name]["family"] == "Generic Rack and RU"
+
+
+# ── the label builder's template tree (spec §4.1) ───────────────────
+
+SWISS = {"family": "swiss721-cond-bold", "weight": "regular"}
+V2_DESIGN = {"schema": 2, "size": {"w": 4, "h": 2}, "elements": [
+    {"id": "f1", "type": "field", "field": "asset_id", "x": 0.1, "y": 0.1, "w": 1.5,
+     "h": 0.3, "rotation": 0, "display": "text", "font": SWISS, "sizePt": 24,
+     "baselineIn": 0.24, "align": "left"},
+    {"id": "f2", "type": "field", "field": "ft:Notes", "x": 0.1, "y": 0.6, "w": 3,
+     "h": 0.3, "rotation": 0, "display": "text",
+     "font": {"family": "roboto", "weight": "bold"}, "sizePt": 14, "baselineIn": 0.2,
+     "align": "left"},
+    {"id": "t1", "type": "text", "x": 2.0, "y": 0.1, "w": 1.5, "h": 0.3, "rotation": 0,
+     "content": "RU", "font": SWISS, "sizePt": 18, "baselineIn": 0.2, "align": "left"},
+]}
+
+
+async def make_tree(db, name, *, label_type="top", site_ids=(), design=V2_DESIGN,
+                    samples=None, is_active=True):
+    """A builder parent and its three DPI children, written the way the
+    routes write them (labels/templates_tree.py)."""
+    from serversherpa.labels import templates_tree
+    parent = await templates_tree.create_parent(
+        db, name=name, description="", label_type=label_type, size_key="4x2",
+        language_key="zpl", design=design, samples=samples or {}, site_ids=list(site_ids),
+        actor_id=None, is_active=is_active)
+    await db.commit()
+    return parent
+
+
+async def test_sync_sends_children_with_parent_family_and_no_samples(client, db, seeded_user):
+    hdrs = await login(client)
+    move, _src, dst, _other = await _move(db)
+    await make_tree(db, "Vegas Destination", site_ids=[dst.id],
+                    samples={"asset_id": "SECRET-SAMPLE-10482"})
+    db.add(_tpl("Front Code", label_type="front"))
+    await db.commit()
+
+    r = await _get(client, hdrs, move.id)
+    assert r.status_code == 200, r.text
+    rows = _by_name(r.json())
+    # the parent is the design the builder edits; only its children print
+    assert sorted(rows, key=natural_key) == [
+        "Front Code", "Vegas Destination · 203", "Vegas Destination · 300",
+        "Vegas Destination · 600"]
+    for dpi in ("203", "300", "600"):
+        t = rows[f"Vegas Destination · {dpi}"]
+        assert t["family"] == "Vegas Destination" and t["dpi_key"] == dpi
+        assert (t["kind"], t["schema_version"], t["design"]) == ("design", 2, V2_DESIGN)
+        # the edge renders a v2 child from its design: no token code, no error
+        assert (t["code"], t["error"]) == ("", None)
+        # the parent's site links apply to its children
+        assert t["reasons"] == ["destination_site"] and t["scope"] == "destination"
+        assert t["move_site_names"] == ["Dst Hall"]
+        assert "samples" not in t
+    assert rows["Vegas Destination · 600"]["dots"] == 600
+    assert rows["Front Code"]["schema_version"] == 1
+    assert "SECRET-SAMPLE" not in r.text
+
+
+async def test_sync_leaves_out_inactive_and_old_children(client, db, seeded_user):
+    from sqlalchemy import update
+
+    hdrs = await login(client)
+    move, *_ = await _move(db)
+    parent = await make_tree(db, "Generic Rack and RU")
+    await db.execute(update(LabelTemplate)
+                     .where(LabelTemplate.parent_id == parent.id,
+                            LabelTemplate.dpi_key == "600")
+                     .values(is_active=False))
+    await db.commit()
+    rows = _by_name((await _get(client, hdrs, move.id)).json())
+    assert sorted(rows, key=natural_key) == ["Generic Rack and RU · 203",
+                                             "Generic Rack and RU · 300"]
+    # the fallback is matched on the family, which a child takes from its parent
+    assert rows["Generic Rack and RU · 203"]["reasons"] == ["fallback", "generic", "global"]

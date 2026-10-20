@@ -78,7 +78,7 @@ async def test_errors(client, db, seeded_user):
 
 async def test_template_create_now_validates_design(client, db, seeded_user):
     from tests.test_status_values_write import _make
-    hdrs = await _make(db, client, "admin", "adm@test.example.com")
+    hdrs = await _make(db, client, "super_admin", "adm@test.example.com")
     resp = await client.post("/labels/templates", headers=hdrs, json={
         "name": "bad-design", "label_type": "top", "size_key": "4x2",
         "dpi_key": "203", "language_key": "zpl", "kind": "design",

@@ -689,7 +689,7 @@ async def test_generated_list_filters(client, db, seeded_user):
 # ── generation_rules validation (template create/PATCH) ─────────────
 
 async def test_generation_rules_validation_on_create(client, db, seeded_user):
-    hdrs = await _make(db, client, "admin", "adm-gr@test.example.com")
+    hdrs = await _make(db, client, "super_admin", "adm-gr@test.example.com")
 
     resp = await client.post("/labels/templates", headers=hdrs,
                              json=_template_body(generation_rules={
@@ -725,7 +725,7 @@ async def test_generation_rules_validation_rejects_a_bad_token_alone(client, db,
     single violation must produce exactly one problem, and a validator
     that stopped checking tokens entirely (e.g. the regex weakened to
     `isinstance(name, str)`) would let this payload through as 201."""
-    hdrs = await _make(db, client, "admin", "adm-gr-token@test.example.com")
+    hdrs = await _make(db, client, "super_admin", "adm-gr-token@test.example.com")
 
     resp = await client.post("/labels/templates", headers=hdrs,
                              json=_template_body(
@@ -737,14 +737,14 @@ async def test_generation_rules_validation_rejects_a_bad_token_alone(client, db,
 
 
 async def test_generation_rules_default_is_empty_dict(client, db, seeded_user):
-    hdrs = await _make(db, client, "admin", "adm-gr3@test.example.com")
+    hdrs = await _make(db, client, "super_admin", "adm-gr3@test.example.com")
     resp = await client.post("/labels/templates", headers=hdrs, json=_template_body("gr-tpl-4"))
     assert resp.status_code == 201, resp.text
     assert resp.json()["generation_rules"] == {}
 
 
 async def test_generation_rules_validation_on_patch(client, db, seeded_user):
-    hdrs = await _make(db, client, "admin", "adm-gr2@test.example.com")
+    hdrs = await _make(db, client, "super_admin", "adm-gr2@test.example.com")
     tid = (await client.post("/labels/templates", headers=hdrs,
                              json=_template_body("gr-tpl-5"))).json()["id"]
 
@@ -766,7 +766,7 @@ async def test_generation_rules_null_side_is_rejected(client, db, seeded_user):
     value, not "not provided" — it must 422, not silently store as a
     JSON null (which values.py would tolerate at generation time but the
     portal's editor never sends)."""
-    hdrs = await _make(db, client, "admin", "adm-gr-null@test.example.com")
+    hdrs = await _make(db, client, "super_admin", "adm-gr-null@test.example.com")
 
     resp = await client.post("/labels/templates", headers=hdrs,
                              json=_template_body("gr-tpl-null-dest",

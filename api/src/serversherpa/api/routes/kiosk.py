@@ -64,7 +64,9 @@ from serversherpa.db.models import (
     WorkerProfile,
 )
 from serversherpa.db.ordering import natural, natural_key
-from serversherpa.labels.fields import PLACEHOLDER_MOCK_VALUES
+from serversherpa.labels.fields import (
+    FT_PREFIX, PLACEHOLDER_MOCK_VALUES, design_field_keys, mock_field_values,
+)
 from serversherpa.labels.fonts import resident_object
 from serversherpa.labels.generate.engine import render_label
 from serversherpa.labels.generate.payloads import (
@@ -75,9 +77,9 @@ from serversherpa.labels.generate.values import (
     placeholder_values,
 )
 from serversherpa.labels.kiosk_templates import (
-    family_name, move_template_set, template_code,
+    design_schema, move_template_set, template_code,
 )
-from serversherpa.labels.template_fonts import fonts_used
+from serversherpa.labels.template_fonts import design_fonts, fonts_used
 from serversherpa.services import auth as auth_service
 from serversherpa.services import kiosk_config
 from serversherpa.services import kiosk_pairing as pairing
@@ -924,7 +926,8 @@ async def sync_assets(
     serial, make/model) plus `label` — the full label placeholder map
     for that asset on this move, computed by the label generator's own
     `placeholder_values` so an offline kiosk renders the same values a
-    generated label carries.
+    generated label carries. Of the uploaded From-To row (`raw_ft`) only
+    the columns the move's active templates place come down.
 
     One response, no paging: the whole roster comes down in a single
     fetch (the portal's convention for roster-shaped data — see
@@ -954,6 +957,7 @@ async def _assets_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskAsset
     sites = Sites(origin=origin, destination=destination)
     catalog_keys = await _label_catalog_keys(db)
     asset_statuses = await load_status_labels(db, "asset")
+    ft_headers = await _placed_ft_headers(db, initiative)
 
     # Which crate holds each asset — one row per asset by the unique
     # constraint on `container_assets.asset_id`. The Trucks screen resolves
@@ -977,6 +981,7 @@ async def _assets_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskAsset
         # portal hands labels.fields.field_values, so the two can't drift.
         item = asset_payload(asset, ia, model, asset_statuses,
                              container_id=packed_in.get(asset.id))
+        item["raw_ft"] = _placed_ft(item["raw_ft"], ft_headers)
         asset_row = AssetRow(
             asset_id=asset.id, legacy_id=asset.legacy_id, name=asset.name,
             serial_number=asset.serial_number,
@@ -1001,6 +1006,21 @@ async def _assets_body(db: AsyncSession, initiative_id: uuid.UUID) -> KioskAsset
             destination_site=destination.name if destination else None,
             destination_site_code=destination.code if destination else None,
             catalog_keys=catalog_keys))
+
+
+async def _placed_ft_headers(db: AsyncSession, initiative: Initiative) -> set[str]:
+    """The From-To headers the move's template set places (`ft:<header>`
+    field keys of its schema 2 designs): the only uploaded columns an asset
+    sync sends."""
+    return {key[len(FT_PREFIX):] for picked in await move_template_set(db, initiative)
+            for key in design_field_keys(picked.template.design) if key.startswith(FT_PREFIX)}
+
+
+def _placed_ft(raw_ft: dict | None, headers: set[str]) -> dict | None:
+    """An asset's From-To row cut down to `headers`; None when nothing is left."""
+    if not raw_ft or not headers:
+        return None
+    return {h: v for h, v in raw_ft.items() if h in headers} or None
 
 
 @router.get("/sync/people", response_model=KioskPeopleSyncOut)
@@ -1115,7 +1135,10 @@ async def sync_label_templates(
     when no active template is linked to the destination
     (labels/kiosk_templates.py). Each template once, with every reason it
     matched; design templates come down as printer code with their
-    {placeholder} tokens intact. The full set every call, no paging.
+    {placeholder} tokens intact, except a label builder template: its DPI
+    children come down (never the parent), each with its schema 2 design,
+    `code` "" and the parent's name as `family`, and never its sample
+    values. The full set every call, no paging.
 
     Same contract as /sync/containers: 404 `initiative_not_found`, 422
     `bad_initiative` for a non-move, 403 `move_locked` for another move
@@ -1137,7 +1160,7 @@ async def _label_templates_body(
         select(LabelVocab).where(LabelVocab.kind.in_(("size", "dpi"))))).scalars()}
 
     templates: list[KioskLabelTemplateOut] = []
-    for template, reasons, move_site_names, scope in picked:
+    for template, reasons, move_site_names, scope, family in picked:
         size_meta = vocab.get(("size", template.size_key), {})
         dpi_meta = vocab.get(("dpi", template.dpi_key), {})
         try:
@@ -1153,7 +1176,7 @@ async def _label_templates_body(
             error = ((str(exc) or type(exc).__name__) if isinstance(exc, ValueError)
                      else type(exc).__name__)
         templates.append(KioskLabelTemplateOut(
-            id=template.id, name=template.name, family=family_name(template.name),
+            id=template.id, name=template.name, family=family,
             label_type=template.label_type,
             size_key=template.size_key, dpi_key=template.dpi_key,
             language_key=template.language_key, version=template.version,
@@ -1164,7 +1187,7 @@ async def _label_templates_body(
             dots=dpi_meta.get("dots"), error=error,
             kind=template.kind,
             design=(template.design if template.kind == "design" else None),
-            scope=scope))
+            scope=scope, schema_version=design_schema(template)))
 
     return KioskLabelTemplatesSyncOut(
         initiative_id=initiative.id, generated_at=datetime.now(UTC), templates=templates)
@@ -1211,12 +1234,17 @@ async def _label_vocab(db: AsyncSession) -> dict[tuple[str, str], dict]:
 
 
 async def _move_font_names(db: AsyncSession, initiative: Initiative) -> set[str]:
-    """Every E: font the move's template set references (upper-cased).
-    A template that can't convert contributes nothing — the label-templates
+    """Every E: font the move's template set references (upper-cased): in
+    the compiled code, or the fonts a schema 2 design's text uses. A
+    template that can't convert contributes nothing — the label-templates
     sync lists it with its error."""
     vocab = await _label_vocab(db)
     names: set[str] = set()
-    for template, _reasons, _sites, _scope in await move_template_set(db, initiative):
+    for picked in await move_template_set(db, initiative):
+        template = picked.template
+        if design_schema(template) >= 2:
+            names |= design_fonts(template.design)
+            continue
         try:
             code = template_code(template, vocab.get(("size", template.size_key), {}),
                                  vocab.get(("dpi", template.dpi_key), {}))
@@ -1286,7 +1314,9 @@ async def kiosk_label_test_render(
 ) -> KioskTestRenderOut:
     """One mock-data test label: the template filled with MOCK_VALUES
     (plus its generation_rules) and rendered by the label generator's own
-    `render_label`, so the station never fills placeholders itself. The
+    `render_label`, so the station never fills placeholders itself. A
+    schema 2 design (a label builder child) gets the builder's mock values
+    instead (labels.fields.mock_field_values), never its own samples. The
     template must be in the move's (active) set — 404 `template_not_found`
     otherwise — and `dpi_key` must be the template's own (422
     `dpi_mismatch`). A design that can't convert is 422
@@ -1295,7 +1325,8 @@ async def kiosk_label_test_render(
     _require_move(actor, body.initiative_id)
     initiative = await _label_move(db, body.initiative_id)
     template: LabelTemplate | None = next(
-        (t for t, _r, _s, _sc in await move_template_set(db, initiative) if t.id == body.template_id),
+        (p.template for p in await move_template_set(db, initiative)
+         if p.template.id == body.template_id),
         None)
     if template is None:
         raise _err(404, "template_not_found")
@@ -1304,7 +1335,11 @@ async def kiosk_label_test_render(
     vocab = await _label_vocab(db)
     size_meta = vocab.get(("size", template.size_key), {})
     dpi_meta = vocab.get(("dpi", template.dpi_key), {})
-    values = mock_label_values(await _label_catalog_keys(db), template.generation_rules)
+    if design_schema(template) >= 2:
+        # the builder's mock values, shaped like labels.fields.field_values
+        values = mock_field_values(template.label_type, design_field_keys(template.design))
+    else:
+        values = mock_label_values(await _label_catalog_keys(db), template.generation_rules)
     try:
         if template.kind != "code" and (
                 size_meta.get("width_in") is None or size_meta.get("height_in") is None

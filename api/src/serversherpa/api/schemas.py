@@ -3246,7 +3246,9 @@ class KioskAssetOut(BaseModel):
     vendor_involved: bool | None = None
     roster_status: str | None = None
     roster_status_label: str | None = None
-    raw_ft: dict[str, Any] | None = None   # the uploaded From-To row, headers verbatim
+    # the uploaded From-To row, headers verbatim, cut down to the columns
+    # the move's active templates place (`ft:<header>`); None when none
+    raw_ft: dict[str, Any] | None = None
     label: dict[str, str]
 
 
@@ -3592,6 +3594,11 @@ class KioskLabelTemplateOut(BaseModel):
     kind: str = "code"
     design: dict | None = None
     scope: Literal["destination", "source", "both", "global", "other"] = "global"
+    # the design's schema (1 for code): an edge that knows a lower one
+    # reports the template unsupported. A label builder child arrives as
+    # schema 2 with `code` "" (the edge renders its design) and its
+    # parent's name as `family`; sample values never come down.
+    schema_version: int = 1
 
 
 class KioskLabelTemplatesSyncOut(BaseModel):
@@ -3928,6 +3935,94 @@ class LabelTemplateOut(BaseModel):
     site_ids: list[uuid.UUID] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+    # The label builder's tree (labels/templates_tree.py): a parent is
+    # schema_version 2 with no parent_id and owns `dpis` and `samples`; a
+    # child names its parent, the parent version it was generated from and
+    # its hand edits on top (v<generated_from_version>.<child_edits>).
+    parent_id: uuid.UUID | None = None
+    schema_version: int = 1
+    samples: dict[str, str] = Field(default_factory=dict)
+    dpis: list[str] = Field(default_factory=list)
+    generated_from_version: int | None = None
+    child_edits: int = 0
+    customized: bool = False
+    is_old: bool = False
+
+
+class LabelTemplateSaveOut(LabelTemplateOut):
+    """PATCH / restore: the saved template, and the ids of the parent's
+    customized children that this or an earlier parent save left out of
+    date (the builder offers "Update from parent" for each)."""
+    out_of_date: list[uuid.UUID] = Field(default_factory=list)
+
+
+class LabelTemplateChildOut(LabelTemplateOut):
+    """A DPI child in the tree. `out_of_date`: customized, and the parent
+    has saved past the version it was generated from."""
+    out_of_date: bool = False
+
+
+class LabelTemplateTreeOut(LabelTemplateOut):
+    """GET /labels/templates/tree: a top-level template — a builder parent
+    with its children (current and Old), or an older single row with none.
+    `family` is the name templates of one family share (a parent's name;
+    an older row's name without its DPI marker)."""
+    family: str
+    children: list[LabelTemplateChildOut] = Field(default_factory=list)
+
+
+class LabelTemplateVersionOut(BaseModel):
+    """One saved state of a template; `label` is v7 or v7.2."""
+    version: int
+    child_edits: int
+    label: str
+    summary: str
+    note: str
+    created_by: uuid.UUID | None
+    created_by_name: str | None
+    created_at: datetime
+
+
+class LabelTemplateVersionDetailOut(LabelTemplateVersionOut):
+    design: dict | None
+    code: str | None
+    samples: dict[str, str]
+
+
+class LabelTemplateVersionNoteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str = Field(max_length=2000)
+
+
+class LabelTemplateDeleteIn(BaseModel):
+    """DELETE on a top-level template must carry its exact name."""
+    model_config = ConfigDict(extra="forbid")
+
+    typed_name: str | None = None
+
+
+class LabelTemplateDeleteSummaryOut(BaseModel):
+    children: list[str]
+    generated_labels: int
+
+
+class LabelTemplateCloneIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
+
+
+class LabelTemplateDpiIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dpi: str
+
+
+class LabelTemplateReplaceIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    old_template_ids: list[uuid.UUID] = Field(min_length=1)
 
 
 class LabelFontUsedByOut(BaseModel):
@@ -3967,19 +4062,24 @@ class LabelFontOut(BaseModel):
 
 
 class LabelTemplateCreateIn(BaseModel):
+    """A `design` with `"schema": 2` creates a builder parent (at 300 DPI)
+    and its 203/300/600 children; `dpi_key` is then not needed. Any other
+    body creates one row at `dpi_key`, as before."""
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=120)
     description: str = ""
     label_type: str
     size_key: str
-    dpi_key: str
+    dpi_key: str | None = None
     language_key: str
     kind: Literal["design", "code"]
     design: dict | None = None
     code: str | None = None
     generation_rules: dict = Field(default_factory=dict)
     site_ids: list[uuid.UUID] | None = None
+    samples: dict[str, str] | None = None
+    is_active: bool = True
 
 
 class LabelTemplateUpdateIn(BaseModel):
@@ -3996,6 +4096,10 @@ class LabelTemplateUpdateIn(BaseModel):
     is_active: bool | None = None
     generation_rules: dict | None = None
     site_ids: list[uuid.UUID] | None = None
+    # builder parents only
+    samples: dict[str, str] | None = None
+    # the version's "what changed" line; generated from the diff when absent
+    summary: str | None = Field(None, max_length=500)
 
 
 class LabelCompileIn(BaseModel):

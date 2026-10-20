@@ -315,6 +315,20 @@ def require_permission(resource: str, action: str):
     return Depends(guard)
 
 
+def require_rank(min_rank: int):
+    """Route guard: require the actor's highest role rank to be at least
+    `min_rank` (e.g. SUPER_ADMIN_RANK). It checks rank only — pair it with
+    require_permission for the action itself."""
+
+    async def guard(user: CurrentUser) -> AuthContext:
+        if user.access.max_rank < min_rank:
+            raise HTTPException(status_code=403,
+                                detail={"code": "forbidden", "min_rank": min_rank})
+        return user
+
+    return Depends(guard)
+
+
 def require_password_length(password: str) -> None:
     """One policy gate for every password the API accepts. The schemas keep
     only a non-empty floor — the real bar lives in settings so ops can

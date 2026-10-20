@@ -3,13 +3,17 @@ rebuild each asset's label values: raw RUs, the legacy id, and a
 `label_context` for the move. Rebuilding with labels/label_values.py must
 give back exactly the `label` map the portal computed."""
 
+import copy
 from datetime import UTC, date, datetime
 from decimal import Decimal
+
+from sqlalchemy import select, update
 
 from serversherpa.db.models import Asset, AssetModel, Initiative, InitiativeAsset, Site
 from serversherpa.labels.label_values import LabelAsset, LabelMove, asset_label_values
 from serversherpa.services import station_keys
 from serversherpa.db.models import Device
+from tests.test_kiosk_label_templates_sync import V2_DESIGN, make_tree
 from tests.test_kiosk_station_key import SERIAL, _device
 from tests.test_sites_api import login
 
@@ -126,7 +130,18 @@ async def _seed_builder(db):
         InitiativeAsset(initiative_id=move.id, asset_id=assets[2].id),
     ])
     await db.commit()
+    # the sync sends only the From-To columns a template places
+    await make_tree(db, "Builder Front", label_type="front",
+                    design=_ft_design("Notes", "Source Rack", "Data 1"))
     return move
+
+
+def _ft_design(*headers):
+    design = copy.deepcopy(V2_DESIGN)
+    design["elements"] = [
+        {**design["elements"][1], "id": f"ft{i}", "field": f"ft:{h}"}
+        for i, h in enumerate(headers)]
+    return design
 
 
 async def _builder_body(client, move):
@@ -248,3 +263,28 @@ async def test_container_field_values_match_portal_payload(client, db, seeded_us
     assert out == field_values(payload, ctx)
     assert (out["container_id"], out["label_tag"], out["container_type"],
             out["container_status"]) == ("4417", "E-WASTE", "D-container", "In transit")
+
+
+async def test_asset_sync_sends_only_the_from_to_columns_templates_place(
+        client, db, seeded_user):
+    from serversherpa.db.models import LabelTemplate
+    from serversherpa.labels import templates_tree
+
+    move = await _seed_builder(db)
+    parent = await db.scalar(select(LabelTemplate).where(LabelTemplate.name == "Builder Front"))
+    await templates_tree.save_parent(db, parent, design=_ft_design("Notes"), samples={},
+                                     summary=None, actor_id=None)
+    await db.commit()
+    rows = {i["name"]: i for i in (await _builder_body(client, move))["assets"]}
+    assert rows["bld-0"]["raw_ft"] == {"Notes": "Fragile"}
+    assert rows["bld-1"]["raw_ft"] == {"Notes": "Heavy"}
+    assert rows["bld-2"]["raw_ft"] is None
+
+    # a column only an inactive template places stays home, and with no
+    # template placing any column, raw_ft is left out altogether
+    await make_tree(db, "Builder Top", design=_ft_design("Source Rack"), is_active=False)
+    await db.execute(update(LabelTemplate).where(LabelTemplate.name.like("Builder Front%"))
+                     .values(is_active=False))
+    await db.commit()
+    rows = {i["name"]: i for i in (await _builder_body(client, move))["assets"]}
+    assert [r["raw_ft"] for r in rows.values()] == [None, None, None]

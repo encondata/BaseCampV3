@@ -1,7 +1,10 @@
 """Labels: vocabularies, placeholder catalog, templates, compile/preview,
 and the label-generation queue (runs, preview, generated labels).
 
-Reads gate on labels:view; template mutations on labels:add/change/delete;
+Reads gate on labels:view; template mutations on labels:add/change/delete
+AND rank 80 (super admin or developer, spec §4.9 — the builder, its
+versions, clone, Replace… and delete); the tree itself
+(labels/templates_tree.py) owns every write to a template;
 vocab + placeholder mutations are devtools-gated (god-only), matching the
 rest of the Variables surface. Of the generate-labels routes, list/get/
 preview/generated stay view-gated, but creating a run is a mutation — it
@@ -24,8 +27,9 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
+from serversherpa.access.defaults import SUPER_ADMIN_RANK
 from serversherpa.access.scope import scope_conditions
-from serversherpa.api.deps import AuthContext, DbSession, require_permission
+from serversherpa.api.deps import AuthContext, DbSession, require_permission, require_rank
 from serversherpa.api.schemas import (
     GeneratedLabelOut,
     GeneratedLabelBundleItemOut, GeneratedLabelBundleOut,
@@ -36,17 +40,22 @@ from serversherpa.api.schemas import (
     LabelGeneratePreviewOut, LabelGeneratePreviewTemplateOut, LabelGeneratePreviewTypeOut,
     LabelPlaceholderCreateIn, LabelPlaceholderOut, LabelPlaceholderUpdateIn,
     LabelRunCreateIn, LabelRunOut,
-    LabelTemplateCreateIn, LabelTemplateOut, LabelTemplateUpdateIn,
+    LabelTemplateChildOut, LabelTemplateCloneIn, LabelTemplateCreateIn,
+    LabelTemplateDeleteIn, LabelTemplateDeleteSummaryOut, LabelTemplateDpiIn,
+    LabelTemplateOut, LabelTemplateReplaceIn, LabelTemplateSaveOut, LabelTemplateTreeOut,
+    LabelTemplateUpdateIn, LabelTemplateVersionDetailOut, LabelTemplateVersionNoteIn,
+    LabelTemplateVersionOut,
     LabelVocabCreateIn, LabelVocabOut, LabelVocabUpdateIn,
     LabelZplPreviewIn,
 )
 from serversherpa.db.models import (
     Asset, Client, Container, GeneratedLabel, Initiative, InitiativeAsset,
     LabelFont, LabelGenerationRun, LabelPlaceholder, LabelTemplate, LabelTemplateSite,
-    LabelVocab, Person, Site,
+    LabelTemplateVersion, LabelVocab, Person, Site,
 )
 from serversherpa.db.ordering import natural, natural_key
 from serversherpa.labels import labelary
+from serversherpa.labels import templates_tree as tree
 from serversherpa.labels.compile import UnsupportedLanguage, compile_design
 from serversherpa.labels.fields import CONTAINER_LABEL_TYPES, groups_for
 from serversherpa.labels.font_metrics import UnreadableFont, metrics as font_metrics
@@ -57,6 +66,7 @@ from serversherpa.labels.font_seed import (
 from serversherpa.labels.fonts import FAMILIES, object_family, resident_object
 from serversherpa.labels.generate import InvalidLabelTypes, InvalidTemplates, RunActive, entity_for_type, enqueue_run
 from serversherpa.labels.generate.select import candidate_templates
+from serversherpa.labels.kiosk_templates import family_name
 from serversherpa.labels.model import DesignError, parse_design
 from serversherpa.labels.tokens import apply_placeholders
 from serversherpa.services.audit import audit, diff, snapshot
@@ -285,7 +295,7 @@ async def update_placeholder(
 
 TEMPLATE_FIELDS = ["name", "description", "label_type", "size_key",
                    "dpi_key", "language_key", "design", "code", "is_active",
-                   "generation_rules"]
+                   "generation_rules", "samples"]
 
 _TEMPLATE_VOCAB = (("type", "label_type"), ("size", "size_key"),
                    ("dpi", "dpi_key"), ("language", "language_key"))
@@ -366,6 +376,48 @@ async def _site_ids_map(db: DbSession) -> dict[uuid.UUID, list[uuid.UUID]]:
     return out
 
 
+# The builder's mutations: labels:<action> AND rank 80 (spec §4.9).
+DESIGNER = require_rank(SUPER_ADMIN_RANK)
+
+
+def _tree_err(exc: tree.TreeError) -> HTTPException:
+    return _err(exc.status, exc.code, **exc.extra)
+
+
+async def _template_or_404(db: DbSession, template_id: uuid.UUID) -> LabelTemplate:
+    row = (await db.execute(select(LabelTemplate)
+        .options(selectinload(LabelTemplate.site_links))
+        .where(LabelTemplate.id == template_id))).scalar_one_or_none()
+    if row is None:
+        raise _err(404, "unknown_template")
+    return row
+
+
+async def _template_site_ids(db: DbSession, template_id: uuid.UUID) -> list[uuid.UUID]:
+    return list((await db.execute(select(LabelTemplateSite.site_id).where(
+        LabelTemplateSite.template_id == template_id))).scalars())
+
+
+async def _template_out(db: DbSession, row: LabelTemplate, cls=LabelTemplateOut, **extra):
+    item = cls(**LabelTemplateOut.model_validate(row).model_dump(), **extra)
+    item.site_ids = await _template_site_ids(db, row.id)
+    return item
+
+
+def _parse_v2(design: object) -> None:
+    """422 bad_design unless `design` is a valid schema 2 design."""
+    if not isinstance(design, dict) or design.get("schema") != 2:
+        raise _err(422, "bad_design", problems=["a builder template needs a schema 2 design"])
+    try:
+        parse_design(design)
+    except DesignError as e:
+        raise _err(422, "bad_design", problems=e.problems) from e
+
+
+def _is_v2(design: object) -> bool:
+    return isinstance(design, dict) and design.get("schema", 1) == 2
+
+
 @router.get("/templates", response_model=list[LabelTemplateOut])
 async def list_templates(
     db: DbSession, label_type: str | None = None, size_key: str | None = None,
@@ -397,16 +449,41 @@ async def list_templates(
     return out
 
 
+@router.get("/templates/tree", response_model=list[LabelTemplateTreeOut])
+async def template_tree(
+    db: DbSession, _actor: AuthContext = require_permission("labels", "view"),
+) -> list[LabelTemplateTreeOut]:
+    """The templates list (spec §4.9): every top-level template, natural by
+    name — a builder parent with its DPI children (current and Old, natural
+    by name), or an older single row with none."""
+    rows = (await db.execute(select(LabelTemplate))).scalars().all()
+    site_map = await _site_ids_map(db)
+    children: dict[uuid.UUID, list[LabelTemplate]] = {}
+    tops: list[LabelTemplate] = []
+    for r in rows:
+        if r.parent_id is None:
+            tops.append(r)
+        else:
+            children.setdefault(r.parent_id, []).append(r)
+    out = []
+    for top in sorted(tops, key=lambda r: natural_key(r.name)):
+        kids = [LabelTemplateChildOut(**LabelTemplateOut.model_validate(c).model_dump(),
+                                      out_of_date=tree.is_out_of_date(c, top))
+                for c in sorted(children.get(top.id, []), key=lambda r: natural_key(r.name))]
+        item = LabelTemplateTreeOut(
+            **LabelTemplateOut.model_validate(top).model_dump(),
+            family=top.name if top.is_tree_parent else family_name(top.name), children=kids)
+        item.site_ids = site_map.get(top.id, [])
+        out.append(item)
+    return out
+
+
 @router.get("/templates/{template_id}", response_model=LabelTemplateOut)
 async def get_template(
     template_id: uuid.UUID, db: DbSession,
     _actor: AuthContext = require_permission("labels", "view"),
 ) -> LabelTemplateOut:
-    row = (await db.execute(select(LabelTemplate)
-        .options(selectinload(LabelTemplate.site_links))
-        .where(LabelTemplate.id == template_id))).scalar_one_or_none()
-    if row is None:
-        raise _err(404, "unknown_template")
+    row = await _template_or_404(db, template_id)
     item = LabelTemplateOut.model_validate(row)
     item.site_ids = [l.site_id for l in row.site_links]
     return item
@@ -416,14 +493,21 @@ async def get_template(
 async def create_template(
     body: LabelTemplateCreateIn, db: DbSession,
     actor: AuthContext = require_permission("labels", "add"),
+    _rank: AuthContext = DESIGNER,
 ) -> LabelTemplateOut:
     if (body.kind == "design") != (body.design is not None) or \
        (body.kind == "code") != (body.code is not None):
         raise _err(422, "bad_payload",
                    message="kind must match exactly one of design/code")
-    values = body.model_dump()
-    site_ids = values.pop("site_ids", None) or []
-    site_ids = list(dict.fromkeys(site_ids))
+    site_ids = list(dict.fromkeys(body.site_ids or []))
+    if _is_v2(body.design):
+        return await _create_parent(db, body, site_ids, actor)
+    if body.dpi_key is None:
+        raise _err(422, "bad_field", field="dpi_key")
+    if body.samples:
+        raise _err(422, "bad_field", field="samples",
+                   message="sample values belong to builder templates")
+    values = body.model_dump(exclude={"site_ids", "samples"})
     problems = _validate_generation_rules(values.get("generation_rules") or {})
     if problems:
         raise _err(422, "bad_generation_rules", problems=problems)
@@ -438,11 +522,16 @@ async def create_template(
         LabelTemplate.name == body.name))).scalar_one_or_none()
     if existing is not None:
         raise _err(409, "label_template_exists")
-    row = LabelTemplate(**values)
+    row = LabelTemplate(**values, dpis=[body.dpi_key])
     db.add(row)
     await db.flush()  # server-generated UUID for the audit row
     for sid in site_ids:
         db.add(LabelTemplateSite(template_id=row.id, site_id=sid))
+    tree.add_version(db, row, version=1, summary="Created", actor_id=actor.person.id)
+    try:
+        await tree.guard_active(db, [row])
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
     changes = diff({}, snapshot(row, TEMPLATE_FIELDS))
     if site_ids:
         changes["site_ids"] = {"from": [], "to": sorted(str(s) for s in site_ids)}
@@ -454,24 +543,170 @@ async def create_template(
     return item
 
 
-@router.patch("/templates/{template_id}", response_model=LabelTemplateOut)
+async def _create_parent(db: DbSession, body: LabelTemplateCreateIn,
+                         site_ids: list[uuid.UUID], actor: AuthContext) -> LabelTemplateOut:
+    """A schema 2 body: the builder parent and its three DPI children."""
+    if body.dpi_key not in (None, tree.PARENT_DPI):
+        raise _err(422, "bad_field", field="dpi_key",
+                   message="a builder template is designed at 300 DPI")
+    if body.generation_rules:
+        raise _err(422, "bad_field", field="generation_rules",
+                   message="a builder template carries its rules on each field")
+    _parse_v2(body.design)
+    await _check_template_vocab(db, {"label_type": body.label_type,
+                                     "size_key": body.size_key,
+                                     "language_key": body.language_key})
+    for dpi in tree.TREE_DPIS:
+        await _check_template_vocab(db, {"dpi_key": dpi})
+    await _check_site_ids(db, site_ids)
+    try:
+        parent = await tree.create_parent(
+            db, name=body.name, description=body.description, label_type=body.label_type,
+            size_key=body.size_key, language_key=body.language_key, design=body.design,
+            samples=body.samples or {}, site_ids=site_ids, actor_id=actor.person.id,
+            is_active=body.is_active)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+    changes = diff({}, snapshot(parent, TEMPLATE_FIELDS))
+    changes["children"] = {"from": [], "to": [
+        tree.child_name(parent.name, d) for d in tree.TREE_DPIS]}
+    if site_ids:
+        changes["site_ids"] = {"from": [], "to": sorted(str(s) for s in site_ids)}
+    audit(db, actor_id=actor.person.id, entity_type="label_template",
+          entity_id=str(parent.id), action="create", changes=changes)
+    await db.commit()
+    return await _template_out(db, parent)
+
+
+@router.patch("/templates/{template_id}", response_model=LabelTemplateSaveOut)
 async def update_template(
     template_id: uuid.UUID, body: LabelTemplateUpdateIn, db: DbSession,
     actor: AuthContext = require_permission("labels", "change"),
-) -> LabelTemplateOut:
-    row = (await db.execute(select(LabelTemplate)
-        .options(selectinload(LabelTemplate.site_links))
-        .where(LabelTemplate.id == template_id))).scalar_one_or_none()
-    if row is None:
-        raise _err(404, "unknown_template")
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateSaveOut:
+    """A builder parent saves its next version (children without hand
+    edits follow, `out_of_date` lists the customized ones it has passed);
+    a child saves a hand edit (`v<parent>.<edits>`) and otherwise takes only
+    activation; an older row updates as it always has."""
+    row = await _template_or_404(db, template_id)
     data = body.model_dump(exclude_unset=True)
+    summary = data.pop("summary", None)
+    try:
+        if row.parent_id is not None:
+            out_of_date = await _patch_child(db, row, data, summary, actor)
+        elif row.is_tree_parent:
+            out_of_date = await _patch_parent(db, row, data, summary, actor)
+        else:
+            out_of_date = await _patch_single(db, row, data, actor)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+    await db.commit()
+    return await _template_out(db, row, LabelTemplateSaveOut, out_of_date=out_of_date)
+
+
+def _no_nulls(data: dict, *, allowed: tuple[str, ...] = ()) -> None:
+    for f, v in data.items():
+        if v is None and f not in allowed:
+            raise _err(422, "bad_field", field=f)
+
+
+async def _set_active(db: DbSession, row: LabelTemplate, active: bool) -> bool:
+    if active == row.is_active:
+        return False
+    if active:
+        await tree.activate(db, row)
+    else:
+        await tree.deactivate(db, row)
+    return True
+
+
+async def _patch_child(db: DbSession, row: LabelTemplate, data: dict, summary: str | None,
+                       actor: AuthContext) -> list[uuid.UUID]:
+    for f in data:
+        if f not in ("design", "is_active"):
+            raise _err(422, "bad_field", field=f, message="set on the parent template")
+    _no_nulls(data)
+    changes: dict = {}
+    if "design" in data:
+        _parse_v2(data["design"])
+        if data["design"] != row.design:
+            before = tree.version_label(row.generated_from_version or 0, row.child_edits)
+            await tree.save_child(db, row, design=data["design"], summary=summary,
+                                  actor_id=actor.person.id)
+            changes["version"] = {"from": before, "to": tree.version_label(
+                row.generated_from_version or 0, row.child_edits)}
+    if "is_active" in data and await _set_active(db, row, data["is_active"]):
+        changes["is_active"] = {"from": not data["is_active"], "to": data["is_active"]}
+    if changes:
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(row.id), action="update", changes=changes)
+    return await _out_of_date(db, row)
+
+
+async def _patch_parent(db: DbSession, row: LabelTemplate, data: dict, summary: str | None,
+                        actor: AuthContext) -> list[uuid.UUID]:
+    for f in ("dpi_key", "code", "generation_rules"):
+        if f in data:
+            raise _err(422, "bad_field", field=f,
+                       message="a builder template has no " + f.replace("_", " "))
+    _no_nulls(data)
+    new_site_ids = data.pop("site_ids", None)
+    if "design" in data:
+        _parse_v2(data["design"])
+    await _check_template_vocab(db, data, current=row)
+    changes: dict = {}
+    if "name" in data and data["name"] != row.name:
+        before = row.name
+        await tree.rename_parent(db, row, data["name"])
+        changes["name"] = {"from": before, "to": row.name}
+    if "description" in data and data["description"] != row.description:
+        changes["description"] = {"from": row.description, "to": data["description"]}
+        row.description = data["description"]
+    fields = {f: data[f] for f in ("label_type", "size_key", "language_key")
+              if f in data and data[f] != getattr(row, f)}
+    if fields:
+        changes.update({f: {"from": getattr(row, f), "to": v} for f, v in fields.items()})
+        await tree.set_parent_fields(db, row, fields)
+    if new_site_ids is not None:
+        new_site_ids = list(dict.fromkeys(new_site_ids))
+        await _check_site_ids(db, new_site_ids)
+        current = sorted(str(link.site_id) for link in row.site_links)
+        incoming = sorted(str(s) for s in new_site_ids)
+        if current != incoming:
+            changes["site_ids"] = {"from": current, "to": incoming}
+            row.site_links = [LabelTemplateSite(template_id=row.id, site_id=sid)
+                              for sid in new_site_ids]
+    design = data.get("design", row.design)
+    samples = data.get("samples", row.samples or {})
+    if design != row.design or samples != (row.samples or {}):
+        before_version = row.version
+        await tree.save_parent(db, row, design=design, samples=samples, summary=summary,
+                               actor_id=actor.person.id)
+        changes["version"] = {"from": before_version, "to": row.version}
+    if "is_active" in data and await _set_active(db, row, data["is_active"]):
+        changes["is_active"] = {"from": not data["is_active"], "to": data["is_active"]}
+    elif row.is_active and ("name" in changes or "label_type" in changes):
+        # a new family name or type can land on another active template
+        await tree.guard_active(db, await tree.printing_rows(db, row))
+    if changes:
+        row.updated_at = datetime.now(UTC)
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(row.id), action="update", changes=changes)
+    return await _out_of_date(db, row)
+
+
+async def _patch_single(db: DbSession, row: LabelTemplate, data: dict,
+                        actor: AuthContext) -> list[uuid.UUID]:
+    """An older (schema 1, no parent) row: the update as it always was,
+    plus a version per change and the one-active rule."""
+    if "samples" in data:
+        raise _err(422, "bad_field", field="samples",
+                   message="sample values belong to builder templates")
     new_site_ids = data.pop("site_ids", None)
     if new_site_ids is not None:
         new_site_ids = list(dict.fromkeys(new_site_ids))
     # design/code nullability is owned by kind; other fields reject null
-    for f, v in data.items():
-        if v is None and f not in ("design", "code"):
-            raise _err(422, "bad_field", field=f)
+    _no_nulls(data, allowed=("design", "code"))
     if row.kind == "design" and data.get("design", row.design) is None:
         raise _err(422, "bad_payload", message="design templates need design")
     if row.kind == "code" and data.get("code", row.code) is None:
@@ -485,6 +720,9 @@ async def update_template(
         if problems:
             raise _err(422, "bad_generation_rules", problems=problems)
     if data.get("design") is not None:
+        if _is_v2(data["design"]):
+            raise _err(422, "bad_design", problems=[
+                "a schema 2 design needs a builder template: create one"])
         try:
             parse_design(data["design"])
         except DesignError as e:
@@ -498,10 +736,12 @@ async def update_template(
     before = snapshot(row, TEMPLATE_FIELDS)
     for field, value in data.items():
         setattr(row, field, value)
+    if "dpi_key" in data:
+        row.dpis = [row.dpi_key]
     changes = diff(before, snapshot(row, TEMPLATE_FIELDS))
     if new_site_ids is not None:
         await _check_site_ids(db, new_site_ids)
-        current = sorted(str(l.site_id) for l in row.site_links)
+        current = sorted(str(link.site_id) for link in row.site_links)
         incoming = sorted(str(s) for s in new_site_ids)
         if current != incoming:
             changes["site_ids"] = {"from": current, "to": incoming}
@@ -511,12 +751,27 @@ async def update_template(
     if changes:
         row.version += 1
         row.updated_at = datetime.now(UTC)
+        tree.add_version(db, row, version=row.version, summary=_single_summary(before, changes),
+                         actor_id=actor.person.id)
         audit(db, actor_id=actor.person.id, entity_type="label_template",
               entity_id=str(row.id), action="update", changes=changes)
-    await db.commit()
-    item = LabelTemplateOut.model_validate(row)
-    item.site_ids = [l.site_id for l in row.site_links]
-    return item
+        if row.is_active and changes.keys() & {"is_active", "name", "label_type", "dpi_key"}:
+            await tree.guard_active(db, [row])
+    return []
+
+
+_FIELD_WORDS = {"site_ids": "sites", "is_active": "active", "label_type": "type",
+                "size_key": "size", "dpi_key": "DPI", "language_key": "language",
+                "generation_rules": "generation rules"}
+
+
+def _single_summary(before: dict, changes: dict) -> str:
+    """The version line for an older row's update."""
+    if "design" in changes:
+        return tree.change_summary(before.get("design"), changes["design"]["to"])
+    if "code" in changes:
+        return "Edited the code"
+    return "Changed " + ", ".join(_FIELD_WORDS.get(f, f) for f in sorted(changes))
 
 
 async def _sample_values(db: DbSession) -> dict[str, str]:
@@ -575,14 +830,14 @@ async def compile_template(
 async def convert_template_to_code(
     template_id: uuid.UUID, db: DbSession,
     actor: AuthContext = require_permission("labels", "change"),
+    _rank: AuthContext = DESIGNER,
 ) -> LabelTemplateOut:
-    row = (await db.execute(select(LabelTemplate)
-        .options(selectinload(LabelTemplate.site_links))
-        .where(LabelTemplate.id == template_id))).scalar_one_or_none()
-    if row is None:
-        raise _err(404, "unknown_template")
+    row = await _template_or_404(db, template_id)
     if row.kind != "design":
         raise _err(409, "not_a_design_template")
+    if row.parent_id is not None or row.is_tree_parent or _is_v2(row.design):
+        # a schema 2 design has no token form to keep as code
+        raise _err(409, "builder_template")
     code = await _compile_design(db, row.design, row.size_key, row.dpi_key,
                                  row.language_key, None)
     row.kind = "code"
@@ -590,6 +845,8 @@ async def convert_template_to_code(
     row.design = None
     row.version += 1
     row.updated_at = datetime.now(UTC)
+    tree.add_version(db, row, version=row.version, summary="Converted to code",
+                     actor_id=actor.person.id)
     audit(db, actor_id=actor.person.id, entity_type="label_template",
           entity_id=str(row.id), action="convert_to_code",
           changes={"kind": {"from": "design", "to": "code"}})
@@ -623,20 +880,294 @@ async def preview_zpl(
 
 
 @router.delete("/templates/{template_id}", status_code=204)
-async def deactivate_template(
-    template_id: uuid.UUID, db: DbSession,
+async def delete_template(
+    template_id: uuid.UUID, db: DbSession, body: LabelTemplateDeleteIn | None = None,
     actor: AuthContext = require_permission("labels", "delete"),
+    _rank: AuthContext = DESIGNER,
 ) -> None:
+    """Delete for real (spec §3.4, §4.1). A DPI child goes alone (a current
+    one leaves its parent's DPI set); a top-level template needs
+    `typed_name` to be exactly its name (422 `name_mismatch` with the
+    summary otherwise) and takes its children with it. Either way the
+    labels generated from them go too. Deactivating is POST …/deactivate."""
     row = await db.get(LabelTemplate, template_id)
     if row is None:
         raise _err(404, "unknown_template")
-    if row.is_active:
-        row.is_active = False
-        row.updated_at = datetime.now(UTC)
+    name = row.name
+    try:
+        if row.parent_id is not None:
+            summary = await tree.delete_child(db, row)
+        else:
+            summary = await tree.delete_parent(db, row, body.typed_name if body else None)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+    audit(db, actor_id=actor.person.id, entity_type="label_template",
+          entity_id=str(template_id), action="delete",
+          changes={"name": {"from": name, "to": None}, "children": summary["children"],
+                   "generated_labels": summary["generated_labels"]})
+    await db.commit()
+
+
+@router.get("/templates/{template_id}/delete-summary",
+            response_model=LabelTemplateDeleteSummaryOut)
+async def template_delete_summary(
+    template_id: uuid.UUID, db: DbSession,
+    _actor: AuthContext = require_permission("labels", "view"),
+    _rank: AuthContext = DESIGNER,
+) -> dict:
+    """What DELETE would take: the children by name and the count of
+    labels generated from the template and its children."""
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    return await tree.delete_summary(db, row)
+
+
+@router.post("/templates/{template_id}/deactivate", status_code=204)
+async def deactivate_template(
+    template_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("labels", "change"),
+    _rank: AuthContext = DESIGNER,
+) -> None:
+    """Turn a template off (a parent with all its children)."""
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    changed = await tree.deactivate(db, row)
+    if changed:
         audit(db, actor_id=actor.person.id, entity_type="label_template",
               entity_id=str(row.id), action="deactivate",
-              changes={"name": row.name})
+              changes={"name": row.name, "rows": [r.name for r in changed]})
     await db.commit()
+
+
+@router.post("/templates/{template_id}/activate", response_model=LabelTemplateOut)
+async def activate_template(
+    template_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("labels", "change"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateOut:
+    """Turn a template on (a parent with its current children) — refused
+    with 422 `active_conflict` while another active template prints the
+    same family, type and DPI; Replace… swaps them instead."""
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    try:
+        changed = await tree.activate(db, row)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+    if changed:
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(row.id), action="activate",
+              changes={"name": row.name, "rows": [r.name for r in changed]})
+    await db.commit()
+    return await _template_out(db, row)
+
+
+@router.post("/templates/{template_id}/replace", response_model=LabelTemplateOut)
+async def replace_templates(
+    template_id: uuid.UUID, body: LabelTemplateReplaceIn, db: DbSession,
+    actor: AuthContext = require_permission("labels", "change"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateOut:
+    """Replace…: deactivate `old_template_ids` and activate this template in
+    one step (spec §4.1). On an `active_conflict` nothing changes."""
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    try:
+        off, on = await tree.replace(db, row, body.old_template_ids, actor.person.id)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+    audit(db, actor_id=actor.person.id, entity_type="label_template",
+          entity_id=str(row.id), action="replace",
+          changes={"deactivated": sorted((r.name for r in off), key=natural_key),
+                   "activated": sorted((r.name for r in on), key=natural_key)})
+    await db.commit()
+    return await _template_out(db, row)
+
+
+@router.post("/templates/{template_id}/update-from-parent", response_model=LabelTemplateOut,
+             status_code=201)
+async def update_child_from_parent(
+    template_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("labels", "change"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateOut:
+    """A customized child gives way to a fresh one generated from the
+    parent; it stays nested as "… Old", inactive. Returns the fresh child."""
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    try:
+        fresh = await tree.update_from_parent(db, row, actor.person.id)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+    audit(db, actor_id=actor.person.id, entity_type="label_template",
+          entity_id=str(row.id), action="update_from_parent",
+          changes={"name": {"from": fresh.name, "to": row.name}, "replaced_by": str(fresh.id)})
+    await db.commit()
+    return await _template_out(db, fresh)
+
+
+@router.post("/templates/{template_id}/dpis", response_model=LabelTemplateOut,
+             status_code=201)
+async def add_template_dpi(
+    template_id: uuid.UUID, body: LabelTemplateDpiIn, db: DbSession,
+    actor: AuthContext = require_permission("labels", "change"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateOut:
+    """Add DPI: bring a deleted DPI child back, generated from the parent."""
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    before = list(row.dpis or [])
+    try:
+        child = await tree.add_dpi(db, row, body.dpi, actor_id=actor.person.id)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+    audit(db, actor_id=actor.person.id, entity_type="label_template",
+          entity_id=str(row.id), action="add_dpi",
+          changes={"dpis": {"from": before, "to": list(row.dpis)}, "child": child.name})
+    await db.commit()
+    return await _template_out(db, child)
+
+
+@router.post("/templates/{template_id}/clone", response_model=LabelTemplateOut,
+             status_code=201)
+async def clone_template(
+    template_id: uuid.UUID, body: LabelTemplateCloneIn, db: DbSession,
+    actor: AuthContext = require_permission("labels", "add"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateOut:
+    """Clone to a new, inactive template named `name`: design, samples,
+    sites and (for a parent) its current children, customizations and all."""
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    try:
+        copy_row = await tree.clone(db, row, body.name, actor.person.id)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+    audit(db, actor_id=actor.person.id, entity_type="label_template",
+          entity_id=str(copy_row.id), action="clone",
+          changes={"from": str(row.id), "name": {"from": None, "to": copy_row.name}})
+    await db.commit()
+    return await _template_out(db, copy_row)
+
+
+def _version_fields(v: LabelTemplateVersion, by: dict[uuid.UUID, str]) -> dict:
+    return {"version": v.version, "child_edits": v.child_edits,
+            "label": tree.version_label(v.version, v.child_edits), "summary": v.summary,
+            "note": v.note, "created_by": v.created_by,
+            "created_by_name": by.get(v.created_by) if v.created_by else None,
+            "created_at": v.created_at}
+
+
+async def _authors(db: DbSession, ids) -> dict[uuid.UUID, str]:
+    ids = {i for i in ids if i is not None}
+    if not ids:
+        return {}
+    rows = (await db.execute(select(Person.id, Person.preferred_name, Person.first_name,
+                                     Person.last_name).where(Person.id.in_(ids)))).all()
+    return {pid: _person_display(p, first, last) for pid, p, first, last in rows}
+
+
+async def _version_detail(db: DbSession, v: LabelTemplateVersion) -> LabelTemplateVersionDetailOut:
+    by = await _authors(db, [v.created_by])
+    return LabelTemplateVersionDetailOut(**_version_fields(v, by), design=v.design,
+                                         code=v.code, samples=v.samples or {})
+
+
+@router.get("/templates/{template_id}/versions", response_model=list[LabelTemplateVersionOut])
+async def list_template_versions(
+    template_id: uuid.UUID, db: DbSession,
+    _actor: AuthContext = require_permission("labels", "view"),
+    _rank: AuthContext = DESIGNER,
+) -> list[LabelTemplateVersionOut]:
+    """One line per save, newest first (`v7`, a child's `v7.2`)."""
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    rows = await tree.versions(db, row)
+    by = await _authors(db, (v.created_by for v in rows))
+    return [LabelTemplateVersionOut(**_version_fields(v, by)) for v in rows]
+
+
+async def _template_version(db: DbSession, template_id: uuid.UUID, version: int,
+                            child_edits: int) -> tuple[LabelTemplate, LabelTemplateVersion]:
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    try:
+        return row, await tree.get_version(db, row, version, child_edits)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+
+
+@router.get("/templates/{template_id}/versions/{version}/{child_edits}",
+            response_model=LabelTemplateVersionDetailOut)
+async def get_template_version(
+    template_id: uuid.UUID, version: int, child_edits: int, db: DbSession,
+    _actor: AuthContext = require_permission("labels", "view"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateVersionDetailOut:
+    """One saved state, to open read-only."""
+    _row, v = await _template_version(db, template_id, version, child_edits)
+    return await _version_detail(db, v)
+
+
+@router.patch("/templates/{template_id}/versions/{version}/{child_edits}",
+              response_model=LabelTemplateVersionDetailOut)
+async def note_template_version(
+    template_id: uuid.UUID, version: int, child_edits: int,
+    body: LabelTemplateVersionNoteIn, db: DbSession,
+    actor: AuthContext = require_permission("labels", "change"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateVersionDetailOut:
+    """The author's note on a version, added after the save (⌘S never asks)."""
+    row, v = await _template_version(db, template_id, version, child_edits)
+    if body.note != v.note:
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(row.id), action="version_note",
+              changes={"version": tree.version_label(version, child_edits),
+                       "note": {"from": v.note, "to": body.note}})
+        v.note = body.note
+    await db.commit()
+    return await _version_detail(db, v)
+
+
+@router.post("/templates/{template_id}/versions/{version}/{child_edits}/restore",
+             response_model=LabelTemplateSaveOut)
+async def restore_template_version(
+    template_id: uuid.UUID, version: int, child_edits: int, db: DbSession,
+    actor: AuthContext = require_permission("labels", "change"),
+    _rank: AuthContext = DESIGNER,
+) -> LabelTemplateSaveOut:
+    """Save an older version again as the next one (a parent's children
+    follow as on any parent save)."""
+    row = await _template_or_404(db, template_id)
+    try:
+        await tree.restore(db, row, version, child_edits, actor.person.id)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
+    audit(db, actor_id=actor.person.id, entity_type="label_template",
+          entity_id=str(row.id), action="restore",
+          changes={"restored": tree.version_label(version, child_edits),
+                   "version": row.version})
+    await db.commit()
+    return await _template_out(db, row, LabelTemplateSaveOut,
+                               out_of_date=await _out_of_date(db, row))
+
+
+async def _out_of_date(db: DbSession, row: LabelTemplate) -> list[uuid.UUID]:
+    """A parent's out-of-date children, or a child itself when it is one."""
+    if row.is_tree_parent:
+        return await tree.out_of_date_ids(db, row)
+    if row.parent_id is not None and tree.is_out_of_date(row, await tree.parent_of(db, row)):
+        return [row.id]
+    return []
 
 
 # ── generate labels (runs, preview, generated) ─────────────────────

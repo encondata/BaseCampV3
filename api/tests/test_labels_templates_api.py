@@ -1,4 +1,4 @@
-"""Template CRUD: filters, version bump, deactivate-on-delete, vocab checks."""
+"""Template CRUD: filters, version bump, deactivate, vocab checks."""
 
 from sqlalchemy import text
 
@@ -17,7 +17,7 @@ def _body(name="tpl-1", **over):
 
 
 async def _admin(db, client):
-    return await _make(db, client, "admin", "adm@test.example.com")
+    return await _make(db, client, "super_admin", "adm@test.example.com")
 
 
 async def test_create_and_get(client, db, seeded_user):
@@ -121,11 +121,13 @@ async def test_kind_is_immutable(client, db, seeded_user):
     assert resp.status_code == 422  # extra="forbid"
 
 
-async def test_delete_deactivates(client, db, seeded_user):
+async def test_deactivate(client, db, seeded_user):
+    """Deactivation moved from DELETE (now a real, typed-name delete) to
+    POST …/deactivate."""
     hdrs = await _admin(db, client)
     tid = (await client.post("/labels/templates", headers=hdrs,
                              json=_body())).json()["id"]
-    resp = await client.delete(f"/labels/templates/{tid}", headers=hdrs)
+    resp = await client.post(f"/labels/templates/{tid}/deactivate", headers=hdrs)
     assert resp.status_code == 204
     got = (await client.get(f"/labels/templates/{tid}", headers=hdrs)).json()
     assert got["is_active"] is False
@@ -143,3 +145,42 @@ async def test_staff_reads_but_cannot_write(client, db, seeded_user):
     resp = await client.post("/labels/templates", headers=staff,
                              json=_body("s1"))
     assert resp.status_code == 403
+
+
+async def test_delete_needs_the_typed_name(client, db, seeded_user):
+    hdrs = await _admin(db, client)
+    tid = (await client.post("/labels/templates", headers=hdrs,
+                             json=_body())).json()["id"]
+    resp = await client.delete(f"/labels/templates/{tid}", headers=hdrs)
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == {"code": "name_mismatch", "children": [],
+                                     "generated_labels": 0}
+    resp = await client.request("DELETE", f"/labels/templates/{tid}", headers=hdrs,
+                                json={"typed_name": "tpl-1"})
+    assert resp.status_code == 204
+    assert (await client.get(f"/labels/templates/{tid}", headers=hdrs)).status_code == 404
+
+
+async def test_older_rows_keep_versions_and_one_active_per_family(client, db, seeded_user):
+    hdrs = await _admin(db, client)
+    tid = (await client.post("/labels/templates", headers=hdrs,
+                             json=_body("Front Tag - 203DPI"))).json()["id"]
+    await client.patch(f"/labels/templates/{tid}", headers=hdrs,
+                       json={"description": "front rack tag"})
+    rows = (await client.get(f"/labels/templates/{tid}/versions", headers=hdrs)).json()
+    assert [(v["label"], v["summary"]) for v in rows] == [
+        ("v2", "Changed description"), ("v1", "Created")]
+    # a second active row of the family, type and DPI is refused
+    resp = await client.post("/labels/templates", headers=hdrs,
+                             json=_body("Front Tag 203dpi"))
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == {"code": "active_conflict",
+                                     "names": ["Front Tag - 203DPI"]}
+    other = (await client.post("/labels/templates", headers=hdrs,
+                               json=_body("Front Tag 203dpi", dpi_key="300"))).json()
+    resp = await client.patch(f"/labels/templates/{other['id']}", headers=hdrs,
+                              json={"dpi_key": "203"})
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "active_conflict"
+    resp = await client.post(f"/labels/templates/{tid}/versions/1/0/restore", headers=hdrs)
+    assert resp.status_code == 200 and resp.json()["version"] == 3
+    assert resp.json()["description"] == "front rack tag"  # versions hold the payload only
