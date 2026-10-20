@@ -222,6 +222,25 @@ async def test_the_company_name(client, db, seeded_user, store):
     assert (await _stored(db)) == {"company_name": "Cumulus West", "company_logo_key": key}
 
 
+async def test_the_company_name_is_one_line_and_trimmed_before_its_cap(
+        client, db, seeded_user, store):
+    """A NUL was a 500 (Postgres refuses it in JSON text); any control
+    character is 422 company_name_invalid. The 200-character cap counts the
+    name as trimmed."""
+    hdrs = await _super(db, client)
+    for bad in ("Cumulus\x00East", "Cumulus\nEast", "Cumulus\tEast", "Cumulus\x7f", "\x1fCumulus"):
+        resp = await client.patch(URL, headers=hdrs, json={"company_name": bad})
+        assert (resp.status_code, resp.json()["detail"]["code"]) == (422, "company_name_invalid"), \
+            repr(bad)
+    assert await _stored(db) is None                       # nothing was written
+    padded = "   " + "x" * 200 + " \n"
+    resp = await client.patch(URL, headers=hdrs, json={"company_name": padded})
+    assert resp.status_code == 200, resp.text
+    assert (await _stored(db))["company_name"] == "x" * 200
+    resp = await client.patch(URL, headers=hdrs, json={"company_name": " " + "x" * 201 + " "})
+    assert resp.status_code == 422
+
+
 async def test_staff_badges_use_the_configured_company(client, db, seeded_user, store):
     """person_values for staff: the company name and logo come from Branding."""
     hdrs = await _super(db, client)

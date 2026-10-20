@@ -96,6 +96,7 @@ from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.storage import (
     STORAGE_ERRORS, delete_object, get_object, is_missing, put_object,
 )
+from serversherpa.services.text import has_control_chars
 
 router = APIRouter(prefix="/labels", tags=["labels"])
 
@@ -2448,11 +2449,16 @@ async def upload_label_image(
     _rank: AuthContext = DESIGNER,
 ) -> LabelImageOut:
     """Add a picture to the library: PNG, JPEG, WebP or GIF, up to 5 MiB
-    and 40 megapixels, stored as uploaded (uncropped). `name` defaults to
-    the file's. 413 `file_too_large`; 422 `empty_file`,
+    and 40 megapixels, stored as uploaded (uncropped). `name` (trimmed)
+    defaults to the file's; 422 `bad_field` (name) when it holds a control
+    character. 413 `file_too_large`; 422 `empty_file`,
     `invalid_file_type`, `unreadable_image`, `image_too_large`."""
     from serversherpa.labels import image_prep
 
+    label = ((name or "").strip() or PurePosixPath(file.filename or "").name.strip()
+             or "Image")[:MAX_IMAGE_NAME]
+    if has_control_chars(label):
+        raise _err(422, "bad_field", field="name", message="the name holds a control character")
     data = await file.read(MAX_IMAGE_BYTES + 1)
     if not data:
         raise _err(422, "empty_file")
@@ -2466,8 +2472,6 @@ async def upload_label_image(
         raise _err(422, "image_too_large") from exc
     except image_prep.UnreadableImage as exc:
         raise _err(422, "unreadable_image") from exc
-    label = ((name or "").strip() or PurePosixPath(file.filename or "").name.strip()
-             or "Image")[:MAX_IMAGE_NAME]
     key = f"label-images/{uuid.uuid4()}{info.ext}"
     await put_object(key, data, info.mime)
     row = LabelImage(name=label, storage_key=key, width=info.width, height=info.height,

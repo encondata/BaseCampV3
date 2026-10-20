@@ -39,6 +39,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.services.audit import audit
 from serversherpa.services.storage import delete_object, presign_get, put_object
+from serversherpa.services.text import has_control_chars
 from serversherpa.system.admin_config import read_admin_config
 from serversherpa.system.config_store import read_section
 from serversherpa.system.forwarders import (
@@ -343,10 +344,14 @@ async def patch_branding(
     db: DbSession,
     actor: AuthContext = require_permission("settings", "change"),
 ) -> BrandingOut:
-    """The company name, trimmed; 422 `company_name_required` when blank."""
-    name = body.company_name.strip()
+    """The company name, trimmed (BrandingIn); 422 `company_name_required`
+    when blank, `company_name_invalid` when it holds a control character
+    (a badge prints it on one line)."""
+    name = body.company_name
     if not name:
         raise _err(422, "company_name_required")
+    if has_control_chars(name):
+        raise _err(422, "company_name_invalid")
     row = await _locked_branding(db)
     await _save_branding(db, row, actor, {"company_name": name})
     await db.commit()

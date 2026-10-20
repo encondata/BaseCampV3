@@ -319,6 +319,24 @@ async def test_upload_validation(client, db, seeded_user, store):
     assert len((await client.get("/labels/images", headers=sa)).json()) == 3
 
 
+async def test_a_name_with_control_characters_is_refused(client, db, seeded_user, store):
+    """M3: a NUL in a name was a 500 (Postgres refuses it in text); any
+    control character in the name, or in the file name it defaults to, is
+    422 bad_field, and nothing is stored."""
+    sa = await _super(db, client)
+    for name, filename in (("Acme\x00 logo", "logo.png"), ("Acme\nlogo", "logo.png"),
+                           (None, "lo\x7fgo.png"), (None, "lo\x1bgo.png")):
+        r = await _upload(client, sa, filename=filename, name=name)
+        assert r.status_code == 422, (name, filename, r.text)
+        assert r.json()["detail"]["code"] == "bad_field"
+        assert r.json()["detail"]["field"] == "name"
+    assert store.blobs == {}
+    assert (await client.get("/labels/images", headers=sa)).json() == []
+    # surrounding white space is trimmed, not refused
+    r = await _upload(client, sa, name="  Acme logo \t")
+    assert (r.status_code, r.json()["name"]) == (201, "Acme logo")
+
+
 async def test_the_library_and_raster_need_rank_80(client, db, seeded_user, store):
     sa = await _super(db, client)
     image_id = await _library_image(client, sa)

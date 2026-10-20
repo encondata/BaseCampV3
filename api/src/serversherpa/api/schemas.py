@@ -14,6 +14,7 @@ from pydantic import (
     ConfigDict,
     EmailStr,
     Field,
+    StringConstraints,
     field_validator,
 )
 
@@ -2500,11 +2501,11 @@ class BrandingOut(BaseModel):
 
 
 class BrandingIn(BaseModel):
-    """PATCH /system/branding: the company name (trimmed, never blank). The
-    logo has its own routes."""
+    """PATCH /system/branding: the company name, trimmed before its
+    200-character cap (never blank). The logo has its own routes."""
     model_config = ConfigDict(extra="forbid")
 
-    company_name: str = Field(max_length=200)
+    company_name: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)]
 
 
 class AdminConfigIn(BaseModel):
