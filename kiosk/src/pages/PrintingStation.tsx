@@ -56,7 +56,20 @@ const STATE_TEXT: Record<QueueEntry['state'], string> = {
 /** How often the list asks the laptop which printed scans the portal has
  *  accepted (a row then reads "Printed + Recorded"). */
 export const RECORDED_POLL_MS = 5000;
+/** A red (failed) row leaves the list this long after it fails; the big
+ *  card keeps showing the latest scan, Retry and all (Jimmy, 2026-10-20). */
+export const FAILED_ROW_MS = 5000;
 const MAX_RECORDED_ASK = 100;  // the edge's limit per request
+
+/** A row's (or the card's) status: the failure message, or the state, with
+ *  "+ Recorded" once the portal has accepted the printed scan. */
+function statusText(e: QueueEntry, recorded: ReadonlySet<string>): string {
+  if (e.state === 'failed') return e.message ?? STATE_TEXT.failed;
+  if (e.state === 'printed' && e.clientScanId && recorded.has(e.clientScanId)) {
+    return 'Printed + Recorded';
+  }
+  return STATE_TEXT[e.state];
+}
 
 function printTime(iso: string): string {
   return new Date(iso).toLocaleTimeString(undefined, {
@@ -88,6 +101,9 @@ export default function PrintingStation() {
   const [entries, setEntries] = useState<QueueEntry[]>([]);
   // client_scan_ids the portal has accepted: those rows read "Printed + Recorded"
   const [recorded, setRecorded] = useState<ReadonlySet<string>>(() => new Set());
+  // failed rows whose FAILED_ROW_MS is up: hidden from the list
+  const [expired, setExpired] = useState<ReadonlySet<string>>(() => new Set());
+  const failTimers = useRef(new Map<string, number>());
   // Templates too new for this laptop's edge (its label status).
   const [unsupported, setUnsupported] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -193,6 +209,30 @@ export default function PrintingStation() {
     const timer = window.setInterval(check, RECORDED_POLL_MS);
     return () => { alive = false; window.clearInterval(timer); };
   }, [waitingKey]);
+
+  // Each failed row gets FAILED_ROW_MS from when it failed; one that is
+  // retried (no longer failed) comes back and starts over if it fails again.
+  useEffect(() => {
+    const timers = failTimers.current;
+    const failed = new Set(entries.filter((e) => e.state === 'failed').map((e) => e.id));
+    for (const id of failed) {
+      if (timers.has(id) || expired.has(id)) continue;
+      timers.set(id, window.setTimeout(() => {
+        timers.delete(id);
+        setExpired((prev) => new Set(prev).add(id));
+      }, FAILED_ROW_MS));
+    }
+    for (const [id, timer] of timers) {
+      if (!failed.has(id)) { window.clearTimeout(timer); timers.delete(id); }
+    }
+    if ([...expired].some((id) => !failed.has(id))) {
+      setExpired((prev) => new Set([...prev].filter((id) => failed.has(id))));
+    }
+  }, [entries, expired]);
+  useEffect(() => () => {
+    for (const timer of failTimers.current.values()) window.clearTimeout(timer);
+  }, []);
+  const listed = entries.filter((e) => !(e.state === 'failed' && expired.has(e.id)));
 
   const empty = loadStatus === 'ready' && (index?.size ?? 0) === 0;
   const disabled = loadStatus !== 'ready' || empty || !setup || station.state !== 'ready';
@@ -330,7 +370,7 @@ export default function PrintingStation() {
           )}
           <div className="station-outcome">
             <p className="station-status">
-              {current.state === 'failed' ? current.message : STATE_TEXT[current.state]}
+              {statusText(current, recorded)}
             </p>
             {current.recordWarning && <p className="station-warning">{current.recordWarning}</p>}
             {current.state === 'printed' && current.asset && (
@@ -347,7 +387,7 @@ export default function PrintingStation() {
         </section>
       )}
 
-      {entries.length === 0 ? (
+      {listed.length === 0 ? (
         <p className="page-hint">Nothing printed yet.</p>
       ) : (
         <div className="local-table-wrap">
@@ -362,7 +402,7 @@ export default function PrintingStation() {
               </tr>
             </thead>
             <tbody>
-              {entries.map((e) => (
+              {listed.map((e) => (
                 <tr key={e.id} className={`station-row is-${e.state}`}>
                   <td className="mono">{e.asset?.asset_id ?? e.scannedValue}</td>
                   <td>{e.asset?.name ?? '—'}</td>
@@ -370,9 +410,7 @@ export default function PrintingStation() {
                   <td className="mono">{printTime(e.scannedAt)}</td>
                   <td>
                     <span className="scan-chip">
-                      {e.state === 'failed' ? e.message
-                        : e.state === 'printed' && e.clientScanId && recorded.has(e.clientScanId)
-                          ? 'Printed + Recorded' : STATE_TEXT[e.state]}
+                      {statusText(e, recorded)}
                       {e.reprint ? ' (reprint)' : ''}
                     </span>
                     {e.recordWarning && <div className="station-warning">{e.recordWarning}</div>}
