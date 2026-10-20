@@ -233,7 +233,8 @@ def test_values_are_hex_escaped():
                 "sizePt": 10, "baselineIn": 0.1, "x": 0, "y": 1.5, "w": 1, "h": 0.1,
                 "rotation": 0},
                values={"asset_name": nasty})
-    assert _data(out) == ["X_5eXZ_7eJR", "MA,X_5eXZ_7eJR", "X_5eXZ_7eJR", "a_5fb_5cc"]
+    # (the barcode's Code 128 data starts in subset B: labels.barcode)
+    assert _data(out) == ["X_5eXZ_7eJR", "MA,X_5eXZ_7eJR", ">:X_5eXZ_7eJR", "a_5fb_5cc"]
     assert out.count("^XZ") == 1 and "~JR" not in out
     # v2 values are never token-expanded: `{asset_id}` prints as itself
     # (its `_` hex-escaped), never as asset_id's value
@@ -243,7 +244,8 @@ def test_values_are_hex_escaped():
     assert _data(_zpl(_field(field="asset_name", piece=None, maxChars=None),
                       values={"asset_name": "Café ☃ 1"})) == ["Caf_c3_a9 _e2_98_83 1"]
     # api-core-2: in Code 128 data a `>` starts an invocation code (`>;`,
-    # `>8`, …), so a literal one is `>0`; text, QR and Code 39 keep it
+    # `>8`, …), so a literal one is `>0`, behind the compiler's own start
+    # code (`>:` subset B); text, QR and Code 39 keep it
     code39 = {"id": "b2", "type": "barcode", "field": "asset_name", "symbology": "code39",
               "x": 0, "y": 1.3, "w": 2, "h": 0.2, "rotation": 0}
     as_barcode = _field(id="f2", field="asset_name", piece=None, maxChars=None,
@@ -254,7 +256,7 @@ def test_values_are_hex_escaped():
                {"id": "b1", "type": "barcode", "field": "asset_name",
                 "symbology": "code128", "x": 0, "y": 1, "w": 2, "h": 0.2, "rotation": 0},
                as_barcode, code39, values={"asset_name": "A>;B>"})
-    assert _data(out) == ["A>;B>", "MA,A>;B>", "A>0;B>0", "A>0;B>0", "A>;B>"]
+    assert _data(out) == ["A>;B>", "MA,A>;B>", ">:A>0;B>0", ">:A>0;B>0", "A>;B>"]
 
 
 def test_field_keys_are_opaque():
@@ -324,7 +326,7 @@ def test_field_displayed_as_barcode_or_qr_applies_its_rules():
                   h=0.1667)
     qr = _field(id="f2", display="qr", w=0.49, h=0.49)
     assert _body(_zpl(code, qr)) == [
-        "^FO400,28^BY4^BCN,50,N,N,N^FH_^FD07C^FS",
+        "^FO400,28^BY4^BCN,50,N,N,N^FH_^FD>:07C^FS",
         "^FO400,28^BQN,2,7^FH_^FDMA,07C^FS"]
 
 
