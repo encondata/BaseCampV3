@@ -122,3 +122,22 @@ async def test_site_zone_falls_back_to_utc(db):
     assert (await timeclock.site_zone(db, bogus.id)).key == "UTC"
     assert (await timeclock.site_zone(db, blank.id)).key == "UTC"
     assert (await timeclock.site_zone(db, good.id)).key == "America/Los_Angeles"
+
+
+async def test_today_counts_a_25_hour_dst_day(db):
+    """2026-11-01 in New York is 25 hours long (2:00 EDT falls back to
+    1:00 EST). A shift from 23:00 the night before to 23:30 that night
+    counts 24h 30m today — and the same answer comes back whether `now`
+    is passed in UTC or in the site's own zone (same-zone aware
+    subtraction is wall-clock, which would lose the extra hour)."""
+    person = await _person(db)
+    start = datetime(2026, 11, 1, 3, 0, tzinfo=UTC)      # Oct 31 23:00 EDT
+    await _entry(db, person, start)
+    now = datetime(2026, 11, 2, 4, 30, tzinfo=UTC)       # Nov 1 23:30 EST
+
+    total, spans = await timeclock.today_summary(db, person.id, tz=NY, now=now)
+    assert total == 1470
+    total_local, _ = await timeclock.today_summary(
+        db, person.id, tz=NY, now=now.astimezone(NY))
+    assert total_local == 1470
+    assert [s.minutes for s in spans] == [1470]

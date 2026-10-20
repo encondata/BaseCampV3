@@ -12,7 +12,7 @@ break, never negative.
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import UTC, datetime, time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
@@ -89,7 +89,11 @@ async def today_summary(
     that started yesterday is clipped at midnight and an open one runs to
     `now`. Break comes off only a shift that started today (a shift from
     yesterday has nowhere today to put it); each span floors at 0."""
-    day_start = datetime.combine(now.astimezone(tz).date(), time.min, tzinfo=tz)
+    # All arithmetic in UTC: subtracting two aware datetimes that share a
+    # ZoneInfo is wall-clock math, which loses or gains an hour on a DST day.
+    now = now.astimezone(UTC)
+    day_start = datetime.combine(
+        now.astimezone(tz).date(), time.min, tzinfo=tz).astimezone(UTC)
     entries = (await db.scalars(select(TimeEntry).where(
         TimeEntry.person_id == person_id,
         TimeEntry.clock_in_at < now,

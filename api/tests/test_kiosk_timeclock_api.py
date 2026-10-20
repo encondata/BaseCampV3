@@ -6,7 +6,8 @@ are kiosk:view, act on ANOTHER person, and write (so read-only mode
 blocks the two POSTs)."""
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
@@ -381,7 +382,7 @@ async def test_status_includes_today_and_person_fields(client, db, seeded_user):
     body = resp.json()
     assert body["person"]["job_title"] == "Rack Technician"
     assert body["person"]["external_id"] == "EMP-0042"
-    assert body["today_minutes"] in (90, 91)
+    assert 90 <= body["today_minutes"] <= 92
     assert len(body["today_entries"]) == 1
     assert body["today_entries"][0]["clock_out_at"] is None
     assert body["today_entries"][0]["minutes"] == body["today_minutes"]
@@ -400,8 +401,74 @@ async def test_status_includes_today_and_person_fields(client, db, seeded_user):
                              json=_in(person))
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["today_minutes"] in (90, 91)
+    assert 90 <= body["today_minutes"] <= 92
     assert body["today_entries"][0]["clock_out_at"] is not None
+
+
+def _just_past_midnight_zone() -> str:
+    """A fixed-offset zone (never UTC) whose local midnight is more
+    recent than UTC's: local hour 0 — or local hour 1 when it is already
+    hour 0 in UTC, the one case where hour 0 would BE UTC. A shift that
+    started an hour before that local midnight is clipped there, but not
+    at UTC's, so a route that read "today" in UTC gives a different
+    total. Etc/GMT names invert the sign: Etc/GMT-5 is UTC+5."""
+    hour = datetime.now(UTC).hour
+    local_hour = 1 if hour == 0 else 0
+    offset = (local_hour - hour + 12) % 24 - 12       # -12 .. +11, never 0
+    return f"Etc/GMT{-offset:+d}"
+
+
+def _minutes_since(start: datetime, end: datetime, day_start: datetime) -> int:
+    span = (end - max(start, day_start)).total_seconds() // 60
+    return max(0, int(span))
+
+
+async def test_today_reads_the_day_in_the_kiosks_site_zone(client, db, seeded_user):
+    """`serial` (GET) and the body's device (clock-in / clock-out) pick
+    the site zone that decides where today starts. The zone is chosen
+    so its midnight clips the seeded shift differently than UTC's would,
+    so this fails if any of the three routes ignores the kiosk's site."""
+    hdrs = await login(client)
+    site, _initiative, _device = await _seed_context(db)
+    zone = ZoneInfo(_just_past_midnight_zone())
+    site.timezone = zone.key
+    await db.commit()
+    person = await _seed_worker(db)
+
+    now = datetime.now(UTC)
+    local_midnight = datetime.combine(now.astimezone(zone).date(), time.min,
+                                      tzinfo=zone)
+    utc_midnight = datetime.combine(now.date(), time.min, tzinfo=UTC)
+    start = local_midnight - timedelta(hours=1)
+    end = now - timedelta(minutes=1)
+    db.add(TimeEntry(person_id=person.id, clock_in_at=start, clock_out_at=end,
+                     status="pending"))
+    await db.commit()
+    local = _minutes_since(start, end, local_midnight)
+    in_utc = _minutes_since(start, end, utc_midnight)
+    assert abs(local - in_utc) >= 30         # the zone choice really discriminates
+
+    def assert_local(body):
+        assert local <= body["today_minutes"] <= local + 2, (body, local, in_utc)
+
+    resp = await client.get(f"/kiosk/timeclock/{person.id}",
+                            params={"serial": SERIAL}, headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert_local(resp.json())
+
+    # without a serial the day is read in UTC
+    body = (await client.get(f"/kiosk/timeclock/{person.id}", headers=hdrs)).json()
+    assert in_utc <= body["today_minutes"] <= in_utc + 2
+
+    resp = await client.post("/kiosk/timeclock/clock-in", headers=hdrs,
+                             json=_in(person))
+    assert resp.status_code == 200, resp.text
+    assert_local(resp.json())
+
+    resp = await client.post("/kiosk/timeclock/clock-out", headers=hdrs,
+                             json=_in(person))
+    assert resp.status_code == 200, resp.text
+    assert_local(resp.json())
 
 
 async def test_sync_people_includes_badge_uid(client, db, seeded_user):
