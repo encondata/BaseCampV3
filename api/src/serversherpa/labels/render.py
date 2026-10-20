@@ -20,8 +20,8 @@ A schema 2 design has no tokens: its elements name field keys, and the
 values pass straight to the compiler. The keys it names that `values`
 lacks are reported the same way (they print blank). A schema 3 design is
 schema 2 plus images: `images` (element id -> dithered bitmap, resolved by
-the caller) passes through to the compiler, and an image is never a key,
-so never unknown."""
+the caller) passes through to the compiler, or `image_placeholders` (every
+image a crossed box), and an image is never a key, so never unknown."""
 
 from collections.abc import Mapping
 from typing import Protocol
@@ -47,6 +47,7 @@ def render_template(
     template: TemplateSource, values: dict[str, str], *,
     width_in: float, height_in: float, dots: int,
     images: Mapping[str, Bitmap] | None = None,
+    image_placeholders: bool = False,
 ) -> tuple[str, set[str]]:
     """The printer code for one label and the tokens it left unresolved."""
     if template.kind == "code":
@@ -61,7 +62,8 @@ def render_template(
     if design.schema >= 2:
         keys = {el.field for el in design.elements if getattr(el, "field", None)}
         code = compile_parsed_design(design, dots=dots, language_key=template.language_key,
-                                     subs=values, images=images)
+                                     subs=values, images=images,
+                                     image_placeholders=image_placeholders)
         return code, _unknown(keys, values)
     tokens: set[str] = set()
     for el in design.elements:

@@ -10,8 +10,10 @@ tokens before compiling it) can dispatch straight to the language
 compiler without parsing the same JSON twice.
 
 `images` (schema 3) maps an image element's id to its dithered bitmap; the
-caller resolves them, so the compile stays pure. Only ZPL prints images;
-the Brother compilers leave image elements out."""
+caller resolves them, so the compile stays pure. `image_placeholders`
+prints every image as a crossed box instead (a preview, which never
+carries a picture). Only ZPL prints images; the Brother compilers leave
+image elements out."""
 
 from collections.abc import Mapping
 
@@ -33,11 +35,13 @@ class UnsupportedLanguage(ValueError):
 
 def compile_parsed_design(design: Design, *, dots: int, language_key: str,
                           subs: dict[str, str] | None,
-                          images: Mapping[str, Bitmap] | None = None) -> str:
+                          images: Mapping[str, Bitmap] | None = None,
+                          image_placeholders: bool = False) -> str:
     """Dispatch an already-parsed Design to its language compiler. A
     schema 2 or 3 design needs `subs` (its values)."""
     if language_key == "zpl":
-        return compile_zpl(design, dots, subs, images=images)
+        return compile_zpl(design, dots, subs, images=images,
+                           image_placeholders=image_placeholders)
     if language_key == "escp":
         return compile_escp(design, subs)
     if language_key == "ptouch":
@@ -48,11 +52,12 @@ def compile_parsed_design(design: Design, *, dots: int, language_key: str,
 def compile_design(design_json: dict, *, width_in: float, height_in: float,
                     dots: int, language_key: str,
                     subs: dict[str, str] | None,
-                    images: Mapping[str, Bitmap] | None = None) -> str:
+                    images: Mapping[str, Bitmap] | None = None,
+                    image_placeholders: bool = False) -> str:
     """Parse design_json (with the resolved size overridden in) and
     dispatch to the language's compiler. Raises DesignError (bad design
     JSON), UnsupportedLanguage, or ValueError (a schema 2 or 3 design with
     no subs) — all left for the caller to map."""
     design = parse_design({**design_json, "size": {"w": width_in, "h": height_in}})
     return compile_parsed_design(design, dots=dots, language_key=language_key, subs=subs,
-                                 images=images)
+                                 images=images, image_placeholders=image_placeholders)

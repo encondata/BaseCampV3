@@ -1097,13 +1097,15 @@ async def _compile_design(db: DbSession, design_json: dict, size_key: str,
                           dpi_key: str, language_key: str,
                           subs: dict[str, str] | None, *,
                           images_for: AuthContext | None = None,
-                          samples: dict[str, str] | None = None) -> str:
+                          samples: dict[str, str] | None = None,
+                          image_placeholders: bool = False) -> str:
     """Shared by the compile endpoint and convert-to-code: resolves the
     size/dpi/language vocab rows, then calls the vocab-free core
     (labels/compile.py, shared with the label-generation runner). With
     `images_for` (the actor), a schema 3 design's images are resolved
-    first (`resolve_images`, with the page's `samples`). Anything the
-    design or the compiler refuses is 422 `bad_design`."""
+    first (`resolve_images`, with the page's `samples`); with
+    `image_placeholders` none are, and each prints as a crossed box.
+    Anything the design or the compiler refuses is 422 `bad_design`."""
     size = await db.get(LabelVocab, ("size", size_key))
     dpi = await db.get(LabelVocab, ("dpi", dpi_key))
     lang = await db.get(LabelVocab, ("language", language_key))
@@ -1115,7 +1117,8 @@ async def _compile_design(db: DbSession, design_json: dict, size_key: str,
         images = (await resolve_images(db, design, dpi.meta["dots"], samples, images_for)
                   if images_for is not None else None)
         return compile_parsed_design(design, dots=dpi.meta["dots"], language_key=lang.key,
-                                     subs=subs, images=images)
+                                     subs=subs, images=images,
+                                     image_placeholders=image_placeholders)
     except DesignError as e:
         raise _err(422, "bad_design", problems=e.problems) from e
     except UnsupportedLanguage as e:
@@ -1135,7 +1138,9 @@ async def compile_template(
     samples over the mock values, and its images (schema 3, ID Badge ZPL
     only: 422 `images_badge_only`) resolved here: library images for anyone
     with labels:view, the sample person's (`person:id`) photo and logo at
-    rank 80 only (below, they print as empty)."""
+    rank 80 only (below, they print as empty). `image_mode` placeholder
+    (the preview, which goes to Labelary) prints every image as a crossed
+    box instead: no picture is read and no sample person looked up."""
     size = await db.get(LabelVocab, ("size", body.size_key))
     dpi = await db.get(LabelVocab, ("dpi", body.dpi_key))
     lang = await db.get(LabelVocab, ("language", body.language_key))
@@ -1160,9 +1165,11 @@ async def compile_template(
 
     if body.design is None:
         raise _err(422, "bad_payload", message="design kind needs design")
+    placeholders = body.image_mode == "placeholder"
     out = await _compile_design(db, body.design, body.size_key, body.dpi_key,
                                 body.language_key, subs,
-                                images_for=actor if v2 else None, samples=body.samples)
+                                images_for=actor if v2 and not placeholders else None,
+                                samples=body.samples, image_placeholders=placeholders)
     return LabelCompileOut(code=out)
 
 

@@ -4150,6 +4150,10 @@ class LabelCompileIn(BaseModel):
     # fields (a key of another type previews blank, as it prints); an image
     # element needs `id_badge` (and language zpl)
     label_type: str | None = Field(None, max_length=64)
+    # `print` resolves a builder design's images into their pictures (Test
+    # print); `placeholder` (the preview, rendered by Labelary, which is
+    # never sent a picture) prints each as a crossed box and reads none
+    image_mode: Literal["print", "placeholder"] = "print"
 
 
 class LabelCompileOut(BaseModel):

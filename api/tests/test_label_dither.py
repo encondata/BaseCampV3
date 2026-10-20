@@ -413,6 +413,52 @@ def test_bitmap_must_fill_the_footprint():
         compile_zpl(parse_design(_design(_image())), 203, {}, images={"img": _pattern(120, 90)})
 
 
+def _placeholder(x: int, y: int, w: int, h: int) -> list[str]:
+    return [f"^FO{x},{y}^GB{w},{h},2^FS", f"^FO{x},{y}^GD{w},{h},2,B,R^FS",
+            f"^FO{x},{y}^GD{w},{h},2,B,L^FS"]
+
+
+def test_image_placeholders_draw_every_image_as_a_crossed_box():
+    """A preview never carries a picture (it goes to Labelary): with
+    image_placeholders every image element, whatever its source and its
+    Hide when empty, is its footprint outlined with both diagonals, and a
+    bitmap passed in is ignored."""
+    design = parse_design(_design(
+        _image(id="photo", rotation=90),
+        _image(id="logo", source="logo", x=1.0, hideWhenEmpty=True),
+        _image(id="static", source="static", imageId="i-1", x=1.5, y=1.0, w=0.5, h=0.2,
+               hideWhenEmpty=False)))
+    body = _body(compile_zpl(design, 300, {}, image_placeholders=True,
+                             images={"logo": _pattern(120, 90)}))
+    assert body == [*_placeholder(150, 75, 90, 120),       # turned 90: h wide, w tall
+                    *_placeholder(300, 75, 120, 90),
+                    *_placeholder(450, 300, 150, 60)]
+    assert not any("^GF" in line for line in body)
+    # the same at another DPI, and a box under 2 dots still draws at 2
+    tiny = parse_design(_design(_image(w=0.001, h=0.3)))
+    assert _body(compile_zpl(tiny, 203, {}, image_placeholders=True)) \
+        == _placeholder(102, 51, 2, 61)
+    # off (the default), images print as they always have
+    assert _body(compile_zpl(design, 300, {})) == ["^FO450,300^GB150,60,2^FS"]
+
+
+def test_compile_and_render_pass_image_placeholders_through():
+    raw = _design(_image(), _field())
+    crossed = _placeholder(150, 75, 120, 90)
+    code = compile_design(raw, width_in=3.375, height_in=2.125, dots=300, language_key="zpl",
+                          subs={"person_name": "Jo"}, image_placeholders=True)
+    assert _body(code)[:3] == crossed
+    template = SimpleNamespace(kind="design", code=None, design=raw, language_key="zpl")
+    code, _unknown = render_template(template, {}, width_in=3.375, height_in=2.125, dots=300,
+                                     image_placeholders=True)
+    assert _body(code)[:3] == crossed
+    # Brother languages print no images either way
+    parsed = parse_design(raw)
+    assert compile_parsed_design(parsed, dots=300, language_key="escp", subs={},
+                                 image_placeholders=True) \
+        == compile_parsed_design(parsed, dots=300, language_key="escp", subs={})
+
+
 def test_the_canvas_parity_fixture_is_what_the_python_core_writes(tmp_path):
     """image_parity.json pins the dots the canvas draws for image elements
     (imageParity.test.ts). Its generator runs the real model.py, zpl.py and

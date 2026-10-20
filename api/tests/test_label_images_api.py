@@ -619,6 +619,51 @@ async def test_compile_prints_photo_logo_and_static_at_rank_80(client, db, seede
     assert graphics[0][2] == dither.bytes_per_row(120) and len(graphics[0][3]) == 15 * 150
 
 
+def _crossed(x: int, y: int, w: int, h: int) -> list[str]:
+    return [f"^FO{x},{y}^GB{w},{h},2^FS", f"^FO{x},{y}^GD{w},{h},2,B,R^FS",
+            f"^FO{x},{y}^GD{w},{h},2,B,L^FS"]
+
+
+async def test_a_preview_compile_draws_placeholders_and_reads_nothing(
+        client, db, seeded_user, store, monkeypatch):
+    """The builder's Render goes to Labelary, so its compile asks for
+    image_mode placeholder: every image is a crossed box at its footprint,
+    no picture is read (not even at rank 80 with a sample person), and the
+    sample person isn't looked up at all."""
+    sa = await _super(db, client)
+    jo = await _worker(db, store)
+    image_id = await _library_image(client, sa, _photo_png())
+    design = _design(_image("photo", "photo", rotation=90),
+                     _image("logo", "logo", x=0.7),
+                     _image("static", "static", x=1.4, imageId=image_id, hideWhenEmpty=False))
+    labels_module._RASTER_CACHE.clear()
+    store.gets.clear()
+    lookups = []
+    real_find = labels_module.people_badge.find_person
+
+    async def counting_find(*args):
+        lookups.append(args[1])
+        return await real_find(*args)
+
+    monkeypatch.setattr(labels_module.people_badge, "find_person", counting_find)
+    for samples in ({"person:id": str(jo.id)}, {"person:id": "nope"}):
+        r = await client.post(f"{URL}/compile", headers=sa, json={
+            **_compile_body(design, samples=samples), "image_mode": "placeholder"})
+        assert r.status_code == 200, r.text
+        code = r.json()["code"]
+        assert "^GF" not in code
+        lines = code.split("\n")
+        assert lines[4:13] == [*_crossed(30, 30, 120, 150), *_crossed(210, 30, 150, 120),
+                               *_crossed(420, 30, 150, 120)]
+    assert store.gets == [] and lookups == []
+    # the default (Test print, generation) still prints the pictures
+    r = await _compile(client, sa, design, samples={"person:id": str(jo.id)})
+    assert len(_graphics(r.json()["code"])) == 3
+    r = await client.post(f"{URL}/compile", headers=sa, json={
+        **_compile_body(design), "image_mode": "pictures"})
+    assert r.status_code == 422
+
+
 async def test_below_rank_80_photo_and_logo_print_empty(client, db, seeded_user, store):
     sa = await _super(db, client)
     jo = await _worker(db, store)
