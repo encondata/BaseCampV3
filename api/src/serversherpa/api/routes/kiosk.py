@@ -46,7 +46,7 @@ from serversherpa.api.schemas import (
     KioskScanBatchOut, KioskScanIn, KioskScanRejected, KioskStationScanBatchIn,
     KioskStationHeartbeatIn, KioskStationHeartbeatOut,
     KioskStationScanBatchOut, KioskSetupIn, KioskSetupOut, KioskSetupReadOut, KioskSetupReaderOut,
-    KioskStationKeyIn, KioskStationKeyOut,
+    KioskStationClockIn, KioskStationKeyIn, KioskStationKeyOut,
     KioskSignOutIn, KioskTestRenderIn, KioskTestRenderOut, KioskTimeclockEntry, KioskTimeclockLastEntry,
     KioskTimeclockPerson, KioskTimeclockStatusOut, KioskTimeclockTodayEntry,
     KioskTruckContainerIn,
@@ -1456,13 +1456,20 @@ async def _client_assets_body(
         generated_at=datetime.now(UTC), assets=assets)
 
 
-async def _station_sync_device(request: Request, db: AsyncSession,
-                               serial: str, initiative_id: uuid.UUID) -> Device:
-    """Station sync serves only the move the key was issued for, and only an
-    RFID or Label Station (a Time Clock key is 403 wrong_station_type)."""
-    device = await station_device(request, db, serial,
-                                  types=station_keys.UPLOAD_STATION_TYPES)
-    if device.station_key_initiative_id != initiative_id:
+async def _station_sync_device(
+    request: Request, db: AsyncSession, serial: str,
+    initiative_id: uuid.UUID | None, *,
+    types: tuple[str, ...] = station_keys.UPLOAD_STATION_TYPES,
+) -> Device:
+    """Station sync serves only the move the key was issued for, and by
+    default only an RFID or Label Station (a Time Clock key is 403
+    wrong_station_type). A Time Clock key, where `types` admits one, may
+    leave `initiative_id` out (its move is optional); any other key must
+    name its own move (absent is `move_locked`)."""
+    device = await station_device(request, db, serial, types=types)
+    if initiative_id is None and device.station_type == station_keys.TIMECLOCK:
+        return device
+    if initiative_id is None or device.station_key_initiative_id != initiative_id:
         raise _err(403, "move_locked")
     return device
 
@@ -1500,12 +1507,15 @@ async def station_sync_label_templates(
 @router.get("/station/sync/people", response_model=KioskPeopleSyncOut)
 async def station_sync_people(
     request: Request, db: DbSession, serial: str = Query(...),
-    initiative_id: uuid.UUID = Query(...),
+    initiative_id: uuid.UUID | None = Query(None),
 ) -> KioskPeopleSyncOut:
     """Station-key twin of /sync/people, for the key move only. Same data and
     the same accepted-risk note as /kiosk/sync/people, served under the
-    station key instead of a person session."""
-    await _station_sync_device(request, db, serial, initiative_id)
+    station key instead of a person session. A Time Clock key may call it
+    too, with `initiative_id` left out or equal to its key move (it looks
+    up whoever badges in); an RFID or Label key must name its move."""
+    await _station_sync_device(request, db, serial, initiative_id,
+                               types=station_keys.STATION_TYPES)
     return await _people_body(db)
 
 
@@ -2262,6 +2272,11 @@ async def load_truck_container(
 # them); the audit row names the operator, so every punch is attributable.
 # See the spec's security notes. Both POSTs write, so neither is
 # read-only exempt.
+#
+# The /kiosk/station/timeclock/* twins serve a signed-out Time Clock
+# laptop under its station key instead of a person session. They punch
+# with no operator (audit `via: "station_key"`), always against the
+# device's own setup, and close any open shift: anyone can punch anywhere.
 
 
 async def _require_move_asset(db: AsyncSession, actor: AuthContext,
@@ -2335,6 +2350,61 @@ async def _status_out(
             minutes=s.minutes) for s in spans])
 
 
+async def _open_shift(
+    db: AsyncSession, device: Device, person: Person, *,
+    actor_id: uuid.UUID | None, initiative_id: uuid.UUID | None,
+    site_id: uuid.UUID | None, via: str,
+) -> TimeEntry:
+    """Open `person`'s shift on `device`, stamped now, and audit it
+    (`kiosk_clock_in`, `via` "session" or "station_key"). 409
+    `already_clocked_in` carries the open entry's id. Not committed."""
+    open_entry = await timeclock.open_entry_for(db, person.id)
+    if open_entry is not None:
+        raise _err(409, "already_clocked_in", entry_id=str(open_entry.id))
+
+    now = datetime.now(UTC)
+    try:
+        entry = await timeclock.create_open_entry(
+            db, person_id=person.id, initiative_id=initiative_id, site_id=site_id,
+            clock_in_at=now, created_by=actor_id,
+            source="kiosk", device_id=device.id)
+    except timeclock.AlreadyClockedIn:
+        # the one-open-entry index caught a punch that raced the check above
+        racing = await timeclock.open_entry_for(db, person.id)
+        raise _err(409, "already_clocked_in",
+                   entry_id=str(racing.id) if racing else None) from None
+
+    device.last_seen_at = now
+    audit(db, actor_id=actor_id, entity_type="time_entry",
+          entity_id=str(entry.id), action="kiosk_clock_in",
+          changes={"person_id": str(person.id),
+                   "site_id": str(site_id) if site_id else None,
+                   "initiative_id": str(initiative_id) if initiative_id else None,
+                   "device_id": str(device.id), "via": via})
+    return entry
+
+
+async def _close_shift(
+    db: AsyncSession, device: Device, person: Person, *,
+    actor_id: uuid.UUID | None, via: str,
+) -> TimeEntry:
+    """Close `person`'s open shift, stamped now, and audit it
+    (`kiosk_clock_out`, `via` as in _open_shift). 409 `not_clocked_in`
+    when there is none. Any move lock is the caller's check. Not
+    committed."""
+    entry = await timeclock.open_entry_for(db, person.id)
+    if entry is None:
+        raise _err(409, "not_clocked_in")
+    now = datetime.now(UTC)
+    changes = timeclock.close_open_entry(entry, clock_out_at=now, now=now)
+    device.last_seen_at = now
+    audit(db, actor_id=actor_id, entity_type="time_entry",
+          entity_id=str(entry.id), action="kiosk_clock_out",
+          changes={**changes, "person_id": str(person.id),
+                   "device_id": str(device.id), "via": via})
+    return entry
+
+
 @router.get("/timeclock/{person_id}", response_model=KioskTimeclockStatusOut)
 async def timeclock_status(
     person_id: uuid.UUID, db: DbSession,
@@ -2388,30 +2458,9 @@ async def timeclock_clock_in(
         raise _err(422, "bad_site")
     if initiative_id is not None and await db.get(Initiative, initiative_id) is None:
         raise _err(422, "bad_initiative")
-
-    open_entry = await timeclock.open_entry_for(db, person.id)
-    if open_entry is not None:
-        raise _err(409, "already_clocked_in", entry_id=str(open_entry.id))
-
-    now = datetime.now(UTC)
-    try:
-        entry = await timeclock.create_open_entry(
-            db, person_id=person.id, initiative_id=initiative_id, site_id=site_id,
-            clock_in_at=now, created_by=actor.person.id,
-            source="kiosk", device_id=device.id)
-    except timeclock.AlreadyClockedIn:
-        # the one-open-entry index caught a punch that raced the check above
-        racing = await timeclock.open_entry_for(db, person.id)
-        raise _err(409, "already_clocked_in",
-                   entry_id=str(racing.id) if racing else None) from None
-
-    device.last_seen_at = now
-    audit(db, actor_id=actor.person.id, entity_type="time_entry",
-          entity_id=str(entry.id), action="kiosk_clock_in",
-          changes={"person_id": str(person.id),
-                   "site_id": str(site_id) if site_id else None,
-                   "initiative_id": str(initiative_id) if initiative_id else None,
-                   "device_id": str(device.id)})
+    entry = await _open_shift(db, device, person, actor_id=actor.person.id,
+                              initiative_id=initiative_id, site_id=site_id,
+                              via="session")
     await db.commit()
     return await _status_out(db, person, entry,
                              tz=await timeclock.site_zone(db, device.site_id))
@@ -2432,22 +2481,73 @@ async def timeclock_clock_out(
     against `clock_in_at` and no `bad_time` error to raise."""
     device = await _kiosk_device(db, body.serial)
     person = await _timeclock_person(db, body.person_id)
-    entry = await timeclock.open_entry_for(db, person.id)
-    if entry is None:
-        raise _err(409, "not_clocked_in")
-    if entry.initiative_id is not None:
+    open_entry = await timeclock.open_entry_for(db, person.id)
+    if open_entry is not None and open_entry.initiative_id is not None:
         # a move-password kiosk may close a shift on its own move, or one
         # that names no move (a portal self-service punch), never one
         # another move's kiosk opened
-        _require_move(actor, entry.initiative_id)
+        _require_move(actor, open_entry.initiative_id)
+    entry = await _close_shift(db, device, person, actor_id=actor.person.id,
+                               via="session")
+    await db.commit()
+    return await _status_out(db, person, None, last_entry=entry,
+                             tz=await timeclock.site_zone(db, device.site_id))
 
-    now = datetime.now(UTC)
-    changes = timeclock.close_open_entry(entry, clock_out_at=now, now=now)
-    device.last_seen_at = now
-    audit(db, actor_id=actor.person.id, entity_type="time_entry",
-          entity_id=str(entry.id), action="kiosk_clock_out",
-          changes={**changes, "person_id": str(person.id),
-                   "device_id": str(device.id)})
+
+async def _timeclock_station(request: Request, db: AsyncSession, serial: str) -> Device:
+    """The Time Clock laptop holding `serial`'s station key; an RFID or
+    Label key is 403 `wrong_station_type`."""
+    return await station_device(request, db, serial, types=(station_keys.TIMECLOCK,))
+
+
+@router.get("/station/timeclock/{person_id}", response_model=KioskTimeclockStatusOut)
+async def station_timeclock_status(
+    person_id: uuid.UUID, request: Request, db: DbSession,
+    serial: str = Query(..., min_length=1, max_length=120),
+) -> KioskTimeclockStatusOut:
+    """Station-key twin of GET /kiosk/timeclock/{person_id}: the same reply,
+    with "today" in the station's site zone."""
+    device = await _timeclock_station(request, db, serial)
+    person = await _timeclock_person(db, person_id)
+    entry = await timeclock.open_entry_for(db, person.id)
+    last_entry = (None if entry is not None
+                  else await timeclock.last_closed_entry_for(db, person.id))
+    return await _status_out(db, person, entry, last_entry=last_entry,
+                             tz=await timeclock.site_zone(db, device.site_id))
+
+
+@router.post("/station/timeclock/clock-in", response_model=KioskTimeclockStatusOut)
+async def station_timeclock_clock_in(
+    body: KioskStationClockIn, request: Request, db: DbSession,
+) -> KioskTimeclockStatusOut:
+    """Clock a worker in at a Time Clock station under its station key, no
+    person session and no operator (`created_by` and the audit actor are
+    null). Move and site always come from the device's setup; either may
+    be empty. 409 `already_clocked_in` as the session route. Read-only
+    mode refuses it with 423."""
+    device = await _timeclock_station(request, db, body.serial)
+    await enforce_read_only_config(db, request)
+    person = await _timeclock_person(db, body.person_id)
+    entry = await _open_shift(db, device, person, actor_id=None,
+                              initiative_id=device.current_initiative_id,
+                              site_id=device.site_id, via="station_key")
+    await db.commit()
+    return await _status_out(db, person, entry,
+                             tz=await timeclock.site_zone(db, device.site_id))
+
+
+@router.post("/station/timeclock/clock-out", response_model=KioskTimeclockStatusOut)
+async def station_timeclock_clock_out(
+    body: KioskStationClockIn, request: Request, db: DbSession,
+) -> KioskTimeclockStatusOut:
+    """Clock a worker out at a Time Clock station under its station key.
+    Closes whatever shift is open, whichever move or kiosk opened it (no
+    move lock: anyone can punch anywhere). 409 `not_clocked_in` as the
+    session route. Read-only mode refuses it with 423."""
+    device = await _timeclock_station(request, db, body.serial)
+    await enforce_read_only_config(db, request)
+    person = await _timeclock_person(db, body.person_id)
+    entry = await _close_shift(db, device, person, actor_id=None, via="station_key")
     await db.commit()
     return await _status_out(db, person, None, last_entry=entry,
                              tz=await timeclock.site_zone(db, device.site_id))

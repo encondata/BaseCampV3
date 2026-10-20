@@ -139,7 +139,7 @@ async def test_clock_in_creates_an_open_entry_and_audits(client, db, seeded_user
     assert row.actor_person_id == seeded_user.id
     assert row.changes == {"person_id": str(person.id), "site_id": str(site.id),
                            "initiative_id": str(initiative.id),
-                           "device_id": str(device.id)}
+                           "device_id": str(device.id), "via": "session"}
 
 
 async def test_clock_in_ignores_an_at_in_the_body(client, db, seeded_user):
@@ -293,6 +293,7 @@ async def test_clock_out_closes_the_entry_and_audits(client, db, seeded_user):
     assert row.actor_person_id == seeded_user.id
     assert row.changes["status"] == {"from": "open", "to": "pending"}
     assert row.changes["device_id"] == str(device.id)
+    assert row.changes["via"] == "session"
 
 
 async def test_clock_out_twice_is_409(client, db, seeded_user):

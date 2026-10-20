@@ -3846,6 +3846,16 @@ class KioskClockOutIn(BaseModel):
     person_id: uuid.UUID
 
 
+class KioskStationClockIn(BaseModel):
+    """A Time Clock station's punch under its station key, for both
+    clock-in and clock-out. No site or move: a station punch always uses
+    the device's own setup. No `at`, for the same reason as
+    `KioskClockInIn`."""
+
+    serial: str = Field(min_length=1, max_length=120)
+    person_id: uuid.UUID
+
+
 # ── Labels ──
 
 

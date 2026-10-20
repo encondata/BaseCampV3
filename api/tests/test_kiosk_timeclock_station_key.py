@@ -1,6 +1,6 @@
 """Time Clock station type (migration 0105): `devices.station_type` accepts
 'timeclock', a Time Clock laptop's station key verifies, and the existing
-station-key routes (sync, scans, heartbeat, sounds) refuse it with 403
+station-key routes (sync except people, scans, heartbeat, sounds) refuse it with 403
 `wrong_station_type` while keeping the key. RFID and Label keys are
 unchanged."""
 
@@ -58,8 +58,9 @@ async def test_verify_accepts_timeclock_laptop_key(client, db, seeded_user):
 async def test_timeclock_key_refused_on_upload_routes(client, db, seeded_user):
     device, init, key = await _timeclock_station(db)
     params = {"serial": SERIAL, "initiative_id": str(init.id)}
+    # (people sync takes a Time Clock key: test_kiosk_station_timeclock.py)
     for path in ("/kiosk/station/sync/assets", "/kiosk/station/sync/containers",
-                 "/kiosk/station/sync/label-templates", "/kiosk/station/sync/people",
+                 "/kiosk/station/sync/label-templates",
                  "/kiosk/station/sync/client-assets"):
         r = await client.get(path, headers=_auth(key), params=params)
         assert r.status_code == 403, (path, r.text)
