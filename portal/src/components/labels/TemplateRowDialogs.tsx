@@ -7,15 +7,18 @@
  *  - AddDpiModal: brings back a DPI the parent lost to "Delete this DPI".
  *  - UpdateFromParentModal: a customized child gives way to a fresh one
  *    from the parent and is kept, inactive, as "… Old".
+ *  - DeactivateTemplateModal: names what goes off and warns, like Delete,
+ *    when it leaves no active Generic Rack and RU at a DPI (FallbackCallout).
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 
 import TagInput from '../TagInput';
 import {
-  ApiError, addLabelTemplateDpi, updateLabelTemplate, updateLabelTemplateFromParent,
-  type LabelTemplate, type SiteItem,
+  ApiError, addLabelTemplateDpi, deleteLabelTemplate, getLabelTemplateDeactivateSummary, updateLabelTemplate,
+  updateLabelTemplateFromParent,
+  type LabelTemplate, type LabelTemplateDeactivateSummary, type SiteItem,
 } from '../../lib/api';
 import '../../styles/directory.css';
 import '../../styles/profile.css';   /* .pf-form, .btn-solid, .pf-error */
@@ -174,5 +177,99 @@ export function UpdateFromParentModal({ child, parentVersion, keptName, onUpdate
           {error && <span className="pf-error" role="alert">{error}</span>}
         </>
       )} />
+  );
+}
+
+/** "a", "a and b", "a, b and c". */
+export function joinAnd(items: readonly string[]): string {
+  if (items.length <= 1) return items.join('');
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/** "203 DPI", "203 and 300 DPI", "203, 300 and 600 DPI" (the API's natural
+ *  order kept). */
+export const fallbackDpiText = (dpis: readonly string[]) => `${joinAnd(dpis)} DPI`;
+
+/** The amber warning on Delete and Deactivate when the change leaves no
+ *  active Generic Rack and RU — the template every move without its own Top
+ *  template prints from — at a DPI (`fallback_dpis_lost`). Nothing when the
+ *  list is empty; the change itself stays allowed. */
+export function FallbackCallout({ dpis }: { dpis: readonly string[] }) {
+  if (!dpis.length) return null;
+  return (
+    <div className="lt-fallback-note" role="note">
+      This is the only active Generic Rack and RU template at {fallbackDpiText(dpis)}. Moves without their own
+      Top template will have nothing to print at {dpis.length > 1 ? 'those DPIs' : 'that DPI'} until another one
+      is active. To swap templates without a gap, use Replace…
+    </div>
+  );
+}
+
+function deactivateError(err: unknown): string {
+  if (err instanceof ApiError && err.status === 404) return 'This template no longer exists.';
+  return "Couldn't deactivate the template.";
+}
+
+export function DeactivateTemplateModal({ template, onDeactivated, onClose }: {
+  /** A top-level template: a builder parent (its current DPI versions go off
+   *  with it) or an older single row. */
+  template: Pick<LabelTemplate, 'id' | 'name'>;
+  onDeactivated: () => void;
+  onClose: () => void;
+}) {
+  const [summary, setSummary] = useState<LabelTemplateDeactivateSummary | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    let live = true;
+    setLoadError(false);
+    getLabelTemplateDeactivateSummary(template.id)
+      .then((s) => { if (live) setSummary(s); })
+      .catch(() => { if (live) setLoadError(true); });
+    return () => { live = false; };
+  }, [template.id]);
+
+  useEffect(() => load(), [load]);
+
+  const deactivate = async () => {
+    if (!summary || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteLabelTemplate(template.id);   // POST …/deactivate
+      onDeactivated();
+    } catch (err) {
+      setError(deactivateError(err));
+      setBusy(false);
+    }
+  };
+
+  const hint = summary === null
+    ? (loadError ? 'Kiosks stop printing from it until it is activated again.' : 'Checking what goes off…')
+    : summary.rows.length ? `Turns off ${joinAnd(summary.rows)}.` : 'It is already off.';
+
+  return (
+    <ListDialog label="Deactivate template" eyebrow={`${template.name} · Deactivate`} title="Deactivate"
+      hint={hint} card="lt-small-card" busy={busy} onClose={onClose}
+      foot={(
+        <>
+          <button type="button" className="btn-solid" disabled={!summary || busy} onClick={() => void deactivate()}>
+            {busy ? 'Deactivating…' : 'Deactivate'}
+          </button>
+          <button type="button" className="mini-btn" onClick={onClose} disabled={busy}>Cancel</button>
+          {error && <span className="pf-error" role="alert">{error}</span>}
+        </>
+      )}>
+      {loadError ? (
+        <div className="lt-delete-load">
+          <span className="pf-error">Couldn&apos;t check what goes off.</span>
+          <button type="button" className="mini-btn" onClick={load}>Retry</button>
+        </div>
+      ) : summary?.fallback_dpis_lost.length ? (
+        <FallbackCallout dpis={summary.fallback_dpis_lost} />
+      ) : null}
+    </ListDialog>
   );
 }

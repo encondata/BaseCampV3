@@ -516,7 +516,8 @@ async def test_delete_parent_requires_typed_name_and_cascades(client, db, seeded
     r = await client.get(f"{URL}/{parent['id']}/delete-summary", headers=hdrs)
     assert r.status_code == 200, r.text
     summary = {"children": ["Vegas Destination · 203", "Vegas Destination · 300",
-                            "Vegas Destination · 600"], "generated_labels": 1}
+                            "Vegas Destination · 600"], "generated_labels": 1,
+               "fallback_dpis_lost": []}
     assert r.json() == summary
 
     for body in ({"typed_name": "vegas destination"}, {"typed_name": ""}, None):
@@ -882,6 +883,7 @@ async def test_mutations_need_rank_80(client, db, seeded_user):
         ("PATCH", f"{URL}/{pid}/versions/1/0", {"note": "x"}),
         ("POST", f"{URL}/{pid}/versions/1/0/restore", None),
         ("GET", f"{URL}/{pid}/delete-summary", None),
+        ("GET", f"{URL}/{pid}/deactivate-summary", None),
         ("POST", f"{URL}/{legacy.id}/convert-to-code", None),
     ]
     for method, url, body in calls:

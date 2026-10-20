@@ -9,6 +9,10 @@
  *
  * A DPI child goes on a plain confirmation: a current one leaves its
  * parent's DPI set (Add DPI brings it back), an Old one just goes.
+ *
+ * Either way, when the delete leaves no active Generic Rack and RU (the
+ * fallback every move without its own Top template prints from) at a DPI,
+ * an amber callout says so above the typed-name box. Delete stays allowed.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -19,7 +23,7 @@ import {
   type LabelTemplate, type LabelTemplateChild, type LabelTemplateDeleteSummary,
 } from '../../lib/api';
 import { childStateChips } from '../../lib/labels';
-import { ListDialog } from './TemplateRowDialogs';
+import { FallbackCallout, ListDialog } from './TemplateRowDialogs';
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
@@ -137,6 +141,7 @@ export default function DeleteTemplateModal({ template, dpiChildren = [], onDele
               ? `${plural(generated, 'generated label goes', 'generated labels go')} with it; they can be generated again. Kiosks keep their copies until their next regeneration.`
               : 'No labels have been generated from it.'}
           </p>
+          <FallbackCallout dpis={summary.fallback_dpis_lost ?? []} />
           {!isChild && (
             <div className="pf-form">
               <div className="full">

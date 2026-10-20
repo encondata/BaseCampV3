@@ -62,6 +62,7 @@ const api = vi.hoisted(() => ({
   addLabelTemplateDpi: vi.fn(),
   cloneLabelTemplate: vi.fn(),
   getLabelTemplateDeleteSummary: vi.fn(),
+  getLabelTemplateDeactivateSummary: vi.fn(),
   deleteLabelTemplateForGood: vi.fn(),
   listLabelTemplateVersions: vi.fn(),
   getLabelTemplateVersion: vi.fn(),
@@ -167,7 +168,11 @@ beforeEach(() => {
   api.addLabelTemplateDpi.mockResolvedValue(kid(AMS_ROW, '600'));
   api.cloneLabelTemplate.mockResolvedValue({ ...VEGAS_ROW, id: 'p9', name: 'Vegas Destination copy' });
   api.getLabelTemplateDeleteSummary.mockResolvedValue({
-    children: VEGAS.children.map((c) => c.name), generated_labels: 12,
+    children: VEGAS.children.map((c) => c.name), generated_labels: 12, fallback_dpis_lost: [],
+  });
+  api.getLabelTemplateDeactivateSummary.mockResolvedValue({
+    rows: ['Vegas Destination', ...VEGAS.children.filter((c) => !c.is_old).map((c) => c.name)],
+    fallback_dpis_lost: [],
   });
   api.deleteLabelTemplateForGood.mockResolvedValue(undefined);
   api.listLabelTemplateVersions.mockResolvedValue([
@@ -464,13 +469,33 @@ it('a refused activation offers Replace… with the rows in the way', async () =
   expect(within(dialog).getByRole('heading', { name: 'Replace with “Amsterdam Destination”' })).toBeTruthy();
 });
 
-it('Deactivate asks first and turns the parent off', async () => {
-  vi.spyOn(window, 'confirm').mockReturnValue(true);
+it('Deactivate asks first in a dialog, then turns the parent off', async () => {
+  const confirm = vi.spyOn(window, 'confirm');
   renderRouted();
   await ready();
   await openMenu('Vegas Destination');
   await userEvent.click(screen.getByRole('menuitem', { name: 'Deactivate' }));
-  expect(api.deleteLabelTemplate).toHaveBeenCalledWith('p1');
+  const dialog = await screen.findByRole('dialog', { name: 'Deactivate template' });
+  await within(dialog).findByText(/^Turns off Vegas Destination,/);
+  expect(api.getLabelTemplateDeactivateSummary).toHaveBeenCalledWith('p1');
+  expect(api.deleteLabelTemplate).not.toHaveBeenCalled();
+  expect(confirm).not.toHaveBeenCalled();
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Deactivate' }));
+  await waitFor(() => expect(api.deleteLabelTemplate).toHaveBeenCalledWith('p1'));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await waitFor(() => expect(api.listLabelTemplateTree).toHaveBeenCalledTimes(2));
+});
+
+it('Deactivate warns when it leaves no active fallback', async () => {
+  api.getLabelTemplateDeactivateSummary.mockResolvedValue({
+    rows: ['Vegas Destination'], fallback_dpis_lost: ['203'],
+  });
+  renderRouted();
+  await ready();
+  await openMenu('Vegas Destination');
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Deactivate' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Deactivate template' });
+  expect((await within(dialog).findByRole('note')).textContent).toMatch(/at 203 DPI\./);
 });
 
 it('Add DPI… brings back a missing DPI', async () => {

@@ -46,7 +46,8 @@ from serversherpa.api.schemas import (
     LabelPlaceholderCreateIn, LabelPlaceholderOut, LabelPlaceholderUpdateIn,
     LabelRunCreateIn, LabelRunOut,
     LabelTemplateChildOut, LabelTemplateCloneIn, LabelTemplateCreateIn,
-    LabelTemplateDeleteIn, LabelTemplateDeleteSummaryOut, LabelTemplateDpiIn,
+    LabelTemplateDeactivateSummaryOut, LabelTemplateDeleteIn, LabelTemplateDeleteSummaryOut,
+    LabelTemplateDpiIn,
     LabelTemplateOut, LabelTemplateReplaceIn, LabelTemplateSaveOut, LabelTemplateTreeOut,
     LabelTemplateUpdateIn, LabelTemplateVersionDetailOut, LabelTemplateVersionNoteIn,
     LabelTemplateVersionOut,
@@ -1121,12 +1122,33 @@ async def template_delete_summary(
     _actor: AuthContext = require_permission("labels", "view"),
     _rank: AuthContext = DESIGNER,
 ) -> dict:
-    """What DELETE would take: the children by name and the count of
-    labels generated from the template and its children."""
+    """What DELETE would take: the children by name, the count of labels
+    generated from the template and its children, and the DPIs it would
+    leave with no active Generic Rack and RU (`fallback_dpis_lost`)."""
     row = await db.get(LabelTemplate, template_id)
     if row is None:
         raise _err(404, "unknown_template")
     return await tree.delete_summary(db, row)
+
+
+@router.get("/templates/{template_id}/deactivate-summary",
+            response_model=LabelTemplateDeactivateSummaryOut)
+async def template_deactivate_summary(
+    template_id: uuid.UUID, db: DbSession,
+    _actor: AuthContext = require_permission("labels", "change"),
+    _rank: AuthContext = DESIGNER,
+) -> dict:
+    """What POST …/deactivate would turn off (`rows`, by name) and the DPIs
+    it would leave with no active Generic Rack and RU
+    (`fallback_dpis_lost`). Gated like the deactivate itself; a child
+    follows its parent (409 `child_follows_parent`)."""
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    try:
+        return await tree.deactivate_summary(db, row)
+    except tree.TreeError as e:
+        raise _tree_err(e) from e
 
 
 @router.post("/templates/{template_id}/deactivate", status_code=204)

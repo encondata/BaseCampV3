@@ -44,7 +44,7 @@ const CHILDREN = [
 beforeEach(() => {
   vi.clearAllMocks();
   api.getLabelTemplateDeleteSummary.mockResolvedValue({
-    children: CHILDREN.map((c) => c.name), generated_labels: 12,
+    children: CHILDREN.map((c) => c.name), generated_labels: 12, fallback_dpis_lost: [],
   });
   api.deleteLabelTemplateForGood.mockResolvedValue(undefined);
 });
@@ -85,7 +85,7 @@ it('enables Delete only when the typed name matches exactly', async () => {
 });
 
 it('a template with no DPI versions says so and still asks for its name', async () => {
-  api.getLabelTemplateDeleteSummary.mockResolvedValue({ children: [], generated_labels: 0 });
+  api.getLabelTemplateDeleteSummary.mockResolvedValue({ children: [], generated_labels: 0, fallback_dpis_lost: [] });
   const legacy = { ...PARENT, id: 'l1', name: 'Front tag - 203DPI', kind: 'code' as const, schema_version: 1 };
   render(<DeleteTemplateModal template={legacy} onDeleted={vi.fn()} onClose={vi.fn()} />);
   const button = await screen.findByRole('button', { name: 'Delete template' }) as HTMLButtonElement;
@@ -96,7 +96,7 @@ it('a template with no DPI versions says so and still asks for its name', async 
 });
 
 it('a DPI child goes on a plain confirmation, without a typed name', async () => {
-  api.getLabelTemplateDeleteSummary.mockResolvedValue({ children: [], generated_labels: 3 });
+  api.getLabelTemplateDeleteSummary.mockResolvedValue({ children: [], generated_labels: 3, fallback_dpis_lost: [] });
   const onDeleted = vi.fn();
   render(<DeleteTemplateModal template={CHILDREN[1]} onDeleted={onDeleted} onClose={vi.fn()} />);
   expect(screen.getByRole('heading', { name: 'Delete “Vegas Destination · 300”?' })).toBeTruthy();
@@ -126,4 +126,42 @@ it('Cancel closes without deleting', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   expect(onClose).toHaveBeenCalled();
   expect(api.deleteLabelTemplateForGood).not.toHaveBeenCalled();
+});
+
+it('says nothing about the fallback when the delete leaves one active', async () => {
+  render(<DeleteTemplateModal template={PARENT} dpiChildren={CHILDREN} onDeleted={vi.fn()} onClose={vi.fn()} />);
+  await screen.findByText('Vegas Destination · 600');
+  expect(screen.queryByText(/only active Generic Rack and RU/)).toBeNull();
+});
+
+it('warns when the delete leaves no active fallback at a DPI, and still deletes', async () => {
+  api.getLabelTemplateDeleteSummary.mockResolvedValue({ children: [], generated_labels: 0, fallback_dpis_lost: ['203'] });
+  const legacy = { ...PARENT, id: 'g1', name: 'Generic Rack and RU - 203DPI', kind: 'code' as const, schema_version: 1 };
+  const onDeleted = vi.fn();
+  render(<DeleteTemplateModal template={legacy} onDeleted={onDeleted} onClose={vi.fn()} />);
+  const note = await screen.findByRole('note');
+  expect(note.textContent).toBe('This is the only active Generic Rack and RU template at 203 DPI. Moves without '
+    + 'their own Top template will have nothing to print at that DPI until another one is active. To swap '
+    + 'templates without a gap, use Replace…');
+  // above the typed-name box
+  const box = screen.getByLabelText('Type Generic Rack and RU - 203DPI to confirm');
+  expect(note.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  await userEvent.type(box, 'Generic Rack and RU - 203DPI');
+  await userEvent.click(screen.getByRole('button', { name: 'Delete template' }));
+  await waitFor(() => expect(onDeleted).toHaveBeenCalled());
+});
+
+it('names every DPI the delete leaves without a fallback', async () => {
+  api.getLabelTemplateDeleteSummary.mockResolvedValue({
+    children: CHILDREN.map((c) => c.name), generated_labels: 0, fallback_dpis_lost: ['203', '300'],
+  });
+  const { unmount } = render(<DeleteTemplateModal template={PARENT} dpiChildren={CHILDREN} onDeleted={vi.fn()} onClose={vi.fn()} />);
+  expect((await screen.findByRole('note')).textContent).toMatch(
+    /^This is the only active Generic Rack and RU template at 203 and 300 DPI\. Moves without their own Top template will have nothing to print at those DPIs until/);
+  unmount();
+  api.getLabelTemplateDeleteSummary.mockResolvedValue({
+    children: CHILDREN.map((c) => c.name), generated_labels: 0, fallback_dpis_lost: ['203', '300', '600'],
+  });
+  render(<DeleteTemplateModal template={PARENT} dpiChildren={CHILDREN} onDeleted={vi.fn()} onClose={vi.fn()} />);
+  expect((await screen.findByRole('note')).textContent).toMatch(/template at 203, 300 and 600 DPI\./);
 });

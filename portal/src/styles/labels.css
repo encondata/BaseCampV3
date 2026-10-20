@@ -233,6 +233,12 @@
 .lt-delete .page-hint.lt-delete-note { margin: 0; }
 .lt-delete .pf-form { margin: 0; }
 .lt-delete-load { display: flex; align-items: center; gap: 10px; }
+/* Delete / Deactivate leaving no active Generic Rack and RU at a DPI */
+.lt-fallback-note {
+  padding: 10px 14px; border: 1px solid var(--c-amber-bd, #efd39a); border-radius: 10px;
+  background: var(--c-amber-bg, #fff7e6); color: var(--text-dark);
+  font-size: 12.5px; line-height: 1.5;
+}
 /* the name to type, inside an uppercase .pf-form label: shown as written,
    since the match is case-sensitive */
 .lt-confirm-name {

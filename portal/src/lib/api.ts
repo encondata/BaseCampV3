@@ -5551,7 +5551,24 @@ export async function addLabelTemplateDpi(id: string, dpi: string): Promise<Labe
   return labelTemplatePost(`${templatePath(id)}/dpis`, { dpi });
 }
 
-export interface LabelTemplateDeleteSummary { children: string[]; generated_labels: number }
+export interface LabelTemplateDeleteSummary {
+  children: string[];
+  generated_labels: number;
+  /** The DPIs the delete leaves with no active Generic Rack and RU (Top),
+   *  the fallback moves without their own Top template print from. */
+  fallback_dpis_lost: string[];
+}
+
+/** What POST …/deactivate would turn off (names, natural order) and the
+ *  DPIs it would leave with no active Generic Rack and RU (Top). */
+export interface LabelTemplateDeactivateSummary { rows: string[]; fallback_dpis_lost: string[] }
+
+/** A child follows its parent: 409 `child_follows_parent`. */
+export async function getLabelTemplateDeactivateSummary(id: string): Promise<LabelTemplateDeactivateSummary> {
+  const resp = await apiFetch(`${templatePath(id)}/deactivate-summary`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
 
 export async function getLabelTemplateDeleteSummary(id: string): Promise<LabelTemplateDeleteSummary> {
   const resp = await apiFetch(`${templatePath(id)}/delete-summary`);
