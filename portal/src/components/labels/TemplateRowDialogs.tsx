@@ -3,20 +3,27 @@
  * report-generate header and sized to its content:
  *  - ListDialog: the shared frame (DeleteTemplateModal and
  *    ReplaceTemplateModal use it too).
- *  - SitesModal: a parent's sites (its children follow them).
+ *  - SitesModal: a parent's sites (its children follow them), as chips
+ *    (ChipPicker) in natural order, with a line saying what they mean.
  *  - AddDpiModal: brings back a DPI the parent lost to "Delete this DPI".
  *  - UpdateFromParentModal: a customized child gives way to a fresh one
  *    from the parent and is kept, inactive, as "… Old".
+ *  - DeactivateTemplateModal: names what goes off and warns, like Delete,
+ *    when it leaves no active Generic Rack and RU at a DPI (FallbackCallout).
+ *  - RenameTemplateModal: Rename… for an inactive parent (its DPI versions
+ *    follow, previewed live) or an older single row.
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
-import TagInput from '../TagInput';
+import ChipPicker from '../ChipPicker';
 import {
-  ApiError, addLabelTemplateDpi, updateLabelTemplate, updateLabelTemplateFromParent,
-  type LabelTemplate, type SiteItem,
+  ApiError, addLabelTemplateDpi, deleteLabelTemplate, getLabelTemplateDeactivateSummary, updateLabelTemplate,
+  updateLabelTemplateFromParent,
+  type LabelTemplate, type LabelTemplateDeactivateSummary, type SiteItem,
 } from '../../lib/api';
+import { naturalCompare } from '../../lib/naturalSort';
 import '../../styles/directory.css';
 import '../../styles/profile.css';   /* .pf-form, .btn-solid, .pf-error */
 import '../../styles/reports.css';
@@ -60,7 +67,11 @@ export function SitesModal({ template, sites, onSaved, onClose }: {
   onSaved: () => void;
   onClose: () => void;
 }) {
-  const [siteIds, setSiteIds] = useState<string[]>(template.site_ids);
+  // chips in natural order by site name; Save sends them in that order
+  const nameOf = (id: string) => sites.find((x) => x.id === id)?.name ?? id;
+  const ordered = (ids: string[]) => [...ids].sort((a, b) => naturalCompare(nameOf(a), nameOf(b)));
+  const [siteIds, setSiteIdsRaw] = useState<string[]>(() => ordered(template.site_ids));
+  const setSiteIds = (ids: string[]) => setSiteIdsRaw(ordered(ids));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const save = async () => {
@@ -90,9 +101,12 @@ export function SitesModal({ template, sites, onSaved, onClose }: {
         </>
       )}>
       <div className="lt-sites">
-        <TagInput value={siteIds} onChange={setSiteIds} disabled={busy}
-          options={sites.map((s) => ({ value: s.id, label: s.name }))}
-          placeholder={siteIds.length ? 'Add a site…' : 'All sites — add to narrow'} />
+        <ChipPicker selected={siteIds} onChange={setSiteIds} disabled={busy} clearAll
+          options={sites.map((x) => ({ value: x.id, label: x.name }))}
+          placeholder="Add a site…" ariaLabel="Add a site"
+          note={siteIds.length
+            ? `Linked to ${siteIds.length} ${siteIds.length === 1 ? 'site' : 'sites'}.`
+            : 'No sites: this template applies everywhere (global).'} />
       </div>
     </ListDialog>
   );
@@ -174,5 +188,198 @@ export function UpdateFromParentModal({ child, parentVersion, keptName, onUpdate
           {error && <span className="pf-error" role="alert">{error}</span>}
         </>
       )} />
+  );
+}
+
+/** "a", "a and b", "a, b and c". */
+export function joinAnd(items: readonly string[]): string {
+  if (items.length <= 1) return items.join('');
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/** "203 DPI", "203 and 300 DPI", "203, 300 and 600 DPI" (the API's natural
+ *  order kept). */
+export const fallbackDpiText = (dpis: readonly string[]) => `${joinAnd(dpis)} DPI`;
+
+/** The amber warning on Delete and Deactivate when the change leaves no
+ *  active Generic Rack and RU — the template every move without its own Top
+ *  template prints from — at a DPI (`fallback_dpis_lost`). Nothing when the
+ *  list is empty; the change itself stays allowed. */
+export function FallbackCallout({ dpis }: { dpis: readonly string[] }) {
+  if (!dpis.length) return null;
+  return (
+    <div className="lt-fallback-note" role="note">
+      This is the only active Generic Rack and RU template at {fallbackDpiText(dpis)}. Moves without their own
+      Top template will have nothing to print at {dpis.length > 1 ? 'those DPIs' : 'that DPI'} until another one
+      is active. To swap templates without a gap, use Replace…
+    </div>
+  );
+}
+
+function deactivateError(err: unknown): string {
+  if (err instanceof ApiError && err.status === 404) return 'This template no longer exists.';
+  return "Couldn't deactivate the template.";
+}
+
+export function DeactivateTemplateModal({ template, onDeactivated, onClose }: {
+  /** A top-level template: a builder parent (its current DPI versions go off
+   *  with it) or an older single row. */
+  template: Pick<LabelTemplate, 'id' | 'name'>;
+  onDeactivated: () => void;
+  onClose: () => void;
+}) {
+  const [summary, setSummary] = useState<LabelTemplateDeactivateSummary | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    let live = true;
+    setLoadError(false);
+    getLabelTemplateDeactivateSummary(template.id)
+      .then((s) => { if (live) setSummary(s); })
+      .catch(() => { if (live) setLoadError(true); });
+    return () => { live = false; };
+  }, [template.id]);
+
+  useEffect(() => load(), [load]);
+
+  const deactivate = async () => {
+    if (!summary || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteLabelTemplate(template.id);   // POST …/deactivate
+      onDeactivated();
+    } catch (err) {
+      setError(deactivateError(err));
+      setBusy(false);
+    }
+  };
+
+  const hint = summary === null
+    ? (loadError ? 'Kiosks stop printing from it until it is activated again.' : 'Checking what goes off…')
+    : summary.rows.length ? `Turns off ${joinAnd(summary.rows)}.` : 'It is already off.';
+
+  return (
+    <ListDialog label="Deactivate template" eyebrow={`${template.name} · Deactivate`} title="Deactivate"
+      hint={hint} card="lt-small-card" busy={busy} onClose={onClose}
+      foot={(
+        <>
+          <button type="button" className="btn-solid" disabled={!summary || busy} onClick={() => void deactivate()}>
+            {busy ? 'Deactivating…' : 'Deactivate'}
+          </button>
+          <button type="button" className="mini-btn" onClick={onClose} disabled={busy}>Cancel</button>
+          {error && <span className="pf-error" role="alert">{error}</span>}
+        </>
+      )}>
+      {loadError ? (
+        <div className="lt-delete-load">
+          <span className="pf-error">Couldn&apos;t check what goes off.</span>
+          <button type="button" className="mini-btn" onClick={load}>Retry</button>
+        </div>
+      ) : summary?.fallback_dpis_lost.length ? (
+        <FallbackCallout dpis={summary.fallback_dpis_lost} />
+      ) : null}
+    </ListDialog>
+  );
+}
+
+/** A DPI version as Rename… previews it. */
+export interface RenamedChild { name: string; dpi_key: string; is_old?: boolean }
+
+/** What a parent's DPI version is called once the parent is `name` (the
+ *  API's rename_parent rule: the part after the parent's old name is kept,
+ *  " · <dpi>" and " Old" when the name doesn't start with it). */
+export function renamedChildName(oldParent: string, name: string, child: RenamedChild): string {
+  const suffix = child.name.startsWith(oldParent)
+    ? child.name.slice(oldParent.length)
+    : ` · ${child.dpi_key}${child.is_old ? ' Old' : ''}`;
+  return `${name}${suffix}`;
+}
+
+function renameError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === 'name_taken' || err.code === 'label_template_exists') {
+      return 'That name is already used by another template.';
+    }
+    if (err.code === 'template_active') return 'This template was activated; deactivate it to rename it.';
+    if (err.status === 404) return 'This template no longer exists.';
+  }
+  return "Couldn't rename the template.";
+}
+
+export function RenameTemplateModal({ template, dpiChildren = [], onRenamed, onClose }: {
+  /** An inactive top-level template: a builder parent or an older row. */
+  template: Pick<LabelTemplate, 'id' | 'name'>;
+  /** A parent's DPI versions (current and Old), for the preview. */
+  dpiChildren?: RenamedChild[];
+  onRenamed: () => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(template.name);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const box = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    box.current?.focus();
+    box.current?.select();
+  }, []);
+
+  const next = name.trim();
+  const ready = next !== '' && next !== template.name && !busy;
+  const rename = async () => {
+    if (!ready) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await updateLabelTemplate(template.id, { name: next });
+      onRenamed();
+    } catch (err) {
+      setError(renameError(err));
+      setBusy(false);
+    }
+  };
+
+  const shown = next || template.name;
+  return (
+    <ListDialog label="Rename template" eyebrow={`${template.name} · Rename`} title="Rename" card="lt-small-card"
+      busy={busy} onClose={onClose}
+      hint={dpiChildren.length
+        ? 'A new name for this template; its DPI versions take it too. Only an inactive template can be renamed.'
+        : 'A new name for this template. Only an inactive template can be renamed.'}
+      foot={(
+        <>
+          <button type="button" className="btn-solid" disabled={!ready} onClick={() => void rename()}>
+            {busy ? 'Renaming…' : 'Rename'}
+          </button>
+          <button type="button" className="mini-btn" onClick={onClose} disabled={busy}>Cancel</button>
+          {error && <span className="pf-error" role="alert">{error}</span>}
+        </>
+      )}>
+      <div className="lt-rename">
+        <div className="pf-form">
+          <div className="full">
+            <label htmlFor="lt-rename-name">New name</label>
+            <input id="lt-rename-name" ref={box} value={name} maxLength={120} autoComplete="off"
+              spellCheck={false} disabled={busy} onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void rename(); }} />
+          </div>
+        </div>
+        {dpiChildren.length > 0 && (
+          <div className="lt-rename-preview">
+            <span className="page-hint">Its DPI versions become</span>
+            <ul aria-label="DPI versions after the rename">
+              {dpiChildren.map((c) => (
+                <li key={c.name} className={`chip ${c.is_old ? 'c-slate' : 'tag'}`}>
+                  {renamedChildName(template.name, shown, c)}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </ListDialog>
   );
 }

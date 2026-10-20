@@ -45,7 +45,7 @@ from serversherpa.db.models import (
     GeneratedLabel, LabelTemplate, LabelTemplateSite, LabelTemplateVersion,
 )
 from serversherpa.db.ordering import natural_key
-from serversherpa.labels.kiosk_templates import row_family
+from serversherpa.labels.kiosk_templates import FALLBACK_NAME, row_family
 
 TREE_DPIS = ("203", "300", "600")
 PARENT_DPI = "300"   # the design DPI the builder shows
@@ -99,6 +99,16 @@ class ChildFollowsParent(TreeError):
     status, code = 409, "child_follows_parent"
 
 
+class TemplateActive(TreeError):
+    """Rename… on the templates list: a template renames only while it is
+    off (the PATCH route's rule; the seed's rename of an old row is not
+    bound by it)."""
+    status, code = 409, "template_active"
+
+    def __init__(self):
+        super().__init__(message="Deactivate the template to rename it.")
+
+
 class NotCustomized(TreeError):
     status, code = 409, "not_customized"
 
@@ -126,6 +136,17 @@ class ParentSaveResult(TypedDict):
 class DeleteSummary(TypedDict):
     children: list[str]
     generated_labels: int
+
+
+class DeleteSummaryOut(DeleteSummary):
+    """What GET …/delete-summary answers: DeleteSummary and the DPIs the
+    delete would leave without an active fallback (`fallback_dpis_lost`)."""
+    fallback_dpis_lost: list[str]
+
+
+class DeactivateSummary(TypedDict):
+    rows: list[str]
+    fallback_dpis_lost: list[str]
 
 
 def _now() -> datetime:
@@ -255,14 +276,47 @@ async def get_version(db: AsyncSession, template: LabelTemplate, version: int,
     return row
 
 
-async def delete_summary(db: AsyncSession, template: LabelTemplate) -> DeleteSummary:
-    """What deleting `template` takes with it: its children (by name) and
-    how many generated labels the template and its children have."""
+async def delete_summary(db: AsyncSession, template: LabelTemplate) -> DeleteSummaryOut:
+    """What deleting `template` takes with it: its children (by name), how
+    many generated labels the template and its children have, and the DPIs
+    it leaves without an active fallback (`fallback_dpis_lost`)."""
     children = await children_of(db, template) if template.parent_id is None else []
     ids = [template.id, *(c.id for c in children)]
     count = await db.scalar(select(func.count()).select_from(GeneratedLabel)
                             .where(GeneratedLabel.template_id.in_(ids)))
-    return {"children": [c.name for c in children], "generated_labels": count or 0}
+    return {"children": [c.name for c in children], "generated_labels": count or 0,
+            "fallback_dpis_lost": await fallback_dpis_lost(db, [template, *children])}
+
+
+async def fallback_dpis_lost(db: AsyncSession, going_off: list[LabelTemplate]) -> list[str]:
+    """The DPIs (natural order) at which an active Top template of the
+    fallback family (Generic Rack and RU, kiosk_templates.FALLBACK_NAME)
+    prints now but none would once every row in `going_off` is gone or off.
+    Moves without their own Top template print from it, so a DPI here is
+    one those moves would have nothing to print at.
+
+    A tree parent never prints: its active children count, at their own
+    DPIs, and a parent in `going_off` takes its children with it. An older
+    row counts at its own `dpi_key`. Inactive rows count for nothing."""
+    gone = {r.id for r in going_off}
+    parent = aliased(LabelTemplate)
+    rows = (await db.execute(
+        select(LabelTemplate.id, LabelTemplate.parent_id, LabelTemplate.name,
+               LabelTemplate.dpi_key, parent.name)
+        .outerjoin(parent, parent.id == LabelTemplate.parent_id)
+        .where(LabelTemplate.is_active.is_(True),
+               LabelTemplate.label_type == "top",
+               (LabelTemplate.parent_id.is_not(None)) | (LabelTemplate.schema_version < 2)))
+    ).all()
+    now: set[str] = set()
+    after: set[str] = set()
+    for row_id, parent_id, name, dpi_key, parent_name in rows:
+        if row_family(name, parent_name).casefold() != FALLBACK_NAME:
+            continue
+        now.add(dpi_key)
+        if row_id not in gone and parent_id not in gone:
+            after.add(dpi_key)
+    return sorted(now - after, key=natural_key)
 
 
 # ── versions ────────────────────────────────────────────────────────
@@ -392,13 +446,28 @@ async def activate(db: AsyncSession, template: LabelTemplate) -> list[LabelTempl
     return changed
 
 
+async def deactivation_rows(db: AsyncSession, template: LabelTemplate) -> list[LabelTemplate]:
+    """The rows deactivating `template` turns off: its active printing rows
+    (a parent and its current children; an Old child is always off). A
+    child is never turned off alone (ChildFollowsParent)."""
+    if template.parent_id is not None:
+        raise ChildFollowsParent()
+    return [r for r in await printing_rows(db, template) if r.is_active]
+
+
+async def deactivate_summary(db: AsyncSession, template: LabelTemplate) -> DeactivateSummary:
+    """What deactivating `template` would turn off (names, natural order)
+    and the DPIs it would leave without an active fallback. Changes
+    nothing."""
+    rows = await deactivation_rows(db, template)
+    return {"rows": sorted((r.name for r in rows), key=natural_key),
+            "fallback_dpis_lost": await fallback_dpis_lost(db, rows)}
+
+
 async def deactivate(db: AsyncSession, template: LabelTemplate) -> list[LabelTemplate]:
     """Turn off a template; a parent takes its current children with it
     (an Old child is always off). A child is never turned off alone."""
-    if template.parent_id is not None:
-        raise ChildFollowsParent()
-    rows = await printing_rows(db, template)
-    changed = [r for r in rows if r.is_active]
+    changed = await deactivation_rows(db, template)
     for row in changed:
         row.is_active, row.updated_at = False, _now()
     return changed
@@ -593,6 +662,27 @@ async def rename_parent(db: AsyncSession, parent: LabelTemplate, name: str) -> N
     parent.name, parent.updated_at = name, _now()
     for c in children:
         c.name, c.updated_at = renames[c.id], _now()
+
+
+async def lock_for_rename(db: AsyncSession, row: LabelTemplate) -> None:
+    """Rename… is for an inactive template (the PATCH route's rule): lock
+    the row and re-read it, so an activation committed since the request
+    read it counts, and refuse with TemplateActive while it is on."""
+    await _lock(db, row)
+    if row.is_active:
+        raise TemplateActive()
+
+
+async def record_rename(db: AsyncSession, parent: LabelTemplate, before: str,
+                        actor_id: uuid.UUID | None) -> None:
+    """A parent's rename as its next version ("Renamed from <before>"),
+    the design unchanged, so no child goes out of date. The parent is
+    locked first, like a save, so the version number is its own."""
+    await _lock(db, parent)
+    parent.version += 1
+    parent.updated_at = _now()
+    add_version(db, parent, version=parent.version, summary=f"Renamed from {before}",
+                actor_id=actor_id)
 
 
 async def set_parent_fields(db: AsyncSession, parent: LabelTemplate, values: dict) -> None:

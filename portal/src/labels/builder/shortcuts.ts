@@ -156,6 +156,13 @@ export const SHORTCUTS: Shortcut[] = DEFS.map((def) => ({
   win: def.keys.map((k) => show(k, 'win', !!def.pointer)).join(' / '),
 }));
 
+/** A shortcut's keys as `platform` shows them ("⌘⇧Z", "Ctrl+Shift+Z"),
+ *  or "" for no shortcut: what the toolbars' hover tips show as keycaps. */
+export function shortcutKeys(id: string | null, platform: Platform): string {
+  const s = id ? SHORTCUTS.find((x) => x.id === id) : undefined;
+  return s ? (platform === 'mac' ? s.mac : s.win) : '';
+}
+
 // the physical keys the bindings use, for a press whose character Shift or ⌥ changed
 const CODE_KEYS: Record<string, string> = {
   BracketLeft: '[', BracketRight: ']', Quote: "'", Equal: '=', Minus: '-', Slash: '/',

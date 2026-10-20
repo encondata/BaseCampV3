@@ -438,12 +438,7 @@
 
 /* ── copy access ─────────────────────────────────────────── */
 .modal-card.reports-modal-card.rgm-card.copy-access-card { width: min(720px, 96vw); max-width: 96vw; overflow: visible; max-height: none; }
-.chip-picker { display: flex; flex-direction: column; gap: 8px; }
-.chip-picker-list { display: flex; flex-wrap: wrap; gap: 6px; }
-.chip-picker .chip { display: inline-flex; align-items: center; gap: 6px; }
-/* font: inherit (not font-size/line-height) keeps this off the list-typography
-   guardrail's radar — it pulls the same values from .chip's own font-size token. */
-.chip-x { border: 0; background: transparent; cursor: pointer; font: inherit; color: inherit; padding: 3px 5px; }
+/* the Copy to picker: components/ChipPicker.tsx (styles/chipPicker.css) */
 .copy-parts { display: flex; flex-wrap: wrap; gap: 12px; padding-top: 6px; }
 /* font-size lives on .copy-plan (not list-ish) and cascades to .copy-plan-row's
    children — putting it directly on -row would trip the list-typography guardrail. */

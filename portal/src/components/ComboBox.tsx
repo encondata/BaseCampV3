@@ -16,9 +16,14 @@
  * server and passes the matches back as `options`; the list then shows
  * them as given instead of filtering them again (a match on a field the
  * label doesn't show — an email — would otherwise disappear).
+ *
+ * `handle` (opt-in) gives the caller `focusQuietly()`: the box takes focus
+ * without opening its list (a ChipPicker after its last chip goes), which
+ * then opens only on a click, typing or ↓/Enter.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import type { Ref } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useMenuPlacement } from './useMenuPlacement';
@@ -26,6 +31,11 @@ import { useMenuPlacement } from './useMenuPlacement';
 // The flip decision lives with the shared placement hook; re-exported here
 // for the callers and tests that import it from ComboBox.
 export { shouldDropUp } from './useMenuPlacement';
+
+export interface ComboBoxHandle {
+  /** Focus the box without opening its list. */
+  focusQuietly: () => void;
+}
 
 export interface ComboOption {
   value: string;
@@ -45,11 +55,12 @@ interface Props {
   ariaLabel?: string;
   portal?: boolean;                    // always portal the menu (it portals by itself inside a .modal-card)
   onSearch?: (text: string) => void;   // the caller filters `options` (server search)
+  handle?: Ref<ComboBoxHandle>;        // focusQuietly()
 }
 
 export default function ComboBox({
   options, value, onChange, placeholder = 'Select…',
-  onOpen, clearable = false, disabled = false, inputId, ariaLabel, portal = false, onSearch,
+  onOpen, clearable = false, disabled = false, inputId, ariaLabel, portal = false, onSearch, handle,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
@@ -57,6 +68,14 @@ export default function ComboBox({
   const wrapRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  // set while focusQuietly() focuses the box: that focus doesn't open the list
+  const quiet = useRef(false);
+  useImperativeHandle(handle, () => ({
+    focusQuietly: () => {
+      quiet.current = true;
+      try { inputRef.current?.focus(); } finally { quiet.current = false; }
+    },
+  }), []);
 
   // Drop-up flip, plus the portal (asked for, or inside a modal card) and
   // its placement and close-on-scroll/resize.
@@ -179,7 +198,7 @@ export default function ComboBox({
         value={open ? filter : (selected?.label ?? '')}
         placeholder={selected && !open ? selected.label : placeholder}
         disabled={disabled}
-        onFocus={openList}
+        onFocus={() => { if (!quiet.current) openList(); }}
         onClick={openList}
         onChange={(e) => { setFilter(e.target.value); setOpen(true); }}
         onKeyDown={onKey}

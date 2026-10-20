@@ -191,12 +191,12 @@ FIELD_GROUPS: list[FieldGroup] = [
 
 def groups_for(label_type: str | None) -> list[FieldGroup]:
     """The groups a template of `label_type` offers, in catalog order; every
-    group when None. A type outside the five known ones is an asset label,
-    the way labels.generate's `entity_for_type` treats it."""
-    if label_type is None:
+    group when None, and for a type outside the five known ones (a custom
+    type from New template › Custom…, an ID badge), so it can place any
+    field. It still prints as an asset label (labels.generate's
+    `entity_for_type`): a container field prints blank there."""
+    if label_type is None or label_type not in ALL_LABEL_TYPES:
         return list(FIELD_GROUPS)
-    if label_type not in ALL_LABEL_TYPES:
-        label_type = "top"
     return [g for g in FIELD_GROUPS if label_type in g["label_types"]]
 
 
@@ -225,9 +225,10 @@ def design_field_keys(design: dict | None) -> set[str]:
 
 def mock_field_values(label_type: str | None, field_keys: set[str] | None = None) -> dict[str, str]:
     """The portal's mock values for a schema 2 test label, shaped like
-    `field_values`: MOCK_VALUES for every catalog key of the type, and each
-    `ft:<header>` key in `field_keys` printing its header (a From-To column
-    has no catalog sample; a container label has no From-To row, so none)."""
+    `field_values`: MOCK_VALUES for every catalog key of the type (every key
+    for a custom type, as `groups_for`), and each `ft:<header>` key in
+    `field_keys` printing its header (a From-To column has no catalog
+    sample; a container label has no From-To row, so none)."""
     out = {key: MOCK_VALUES[key] for key in catalog_keys(label_type)}
     if label_type in CONTAINER_LABEL_TYPES:
         return out

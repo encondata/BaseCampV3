@@ -118,11 +118,40 @@ async def test_plan_route_reports_fallthrough_note(app, client):
     r = await client.get("/edge/labels/plan?dpi=203", headers=headers)
     assert r.json()["template"]["id"] == "dest-203" and r.json()["notes"] == []
     r = await client.get("/edge/labels/plan?kind=front", headers=headers)
-    assert r.json() == {"template": None, "notes": [], "fonts": []}
+    assert r.json() == {"template": None, "notes": [], "fonts": [], "available_dpis": []}
 
     for bad in ("dpi=abc", "dpi=0", "dpi=-3", "kind=side"):
         r = await client.get(f"/edge/labels/plan?{bad}", headers=headers)
         assert r.status_code == 422, bad
+
+
+async def test_plan_route_says_at_which_dpis_the_move_has_a_template(app, client):
+    """With no template picked, `available_dpis`: the DPIs at which the
+    move's downloaded set has an active template of the kind (natural
+    order), so the kiosk can say what to do. Absent once one is picked."""
+    headers = make_session(app)
+    # none at all
+    _seed(app, dpi=300, templates=[])
+    r = await client.get("/edge/labels/plan", headers=headers)
+    assert r.json()["template"] is None and r.json()["available_dpis"] == []
+
+    # only at other DPIs (a Front one doesn't count for Top, nor a Top
+    # template linked only to other sites, which the pick never uses)
+    _seed(app, dpi=300, templates=[
+        _template("g-600", family="Generic Rack and RU", scope="other", dpi="600"),
+        _template("d-203", family="Dest", scope="destination", dpi="203"),
+        _template("f-300", family="Front", scope="global", dpi="300", label_type="front"),
+        _template("o-1200", family="Elsewhere", scope="other", dpi="1200"),
+    ])
+    r = await client.get("/edge/labels/plan", headers=headers)
+    body = r.json()
+    assert body["template"] is None and body["available_dpis"] == ["203", "600"]
+    r = await client.get("/edge/labels/plan?kind=front&dpi=203", headers=headers)
+    assert r.json()["template"] is None and r.json()["available_dpis"] == ["300"]
+
+    # picked: no list
+    r = await client.get("/edge/labels/plan?dpi=203", headers=headers)
+    assert r.json()["template"]["id"] == "d-203" and "available_dpis" not in r.json()
 
 
 async def test_plan_route_previews_before_settings_are_saved(app, client):

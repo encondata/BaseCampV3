@@ -25,6 +25,8 @@ const SAVE_ERROR_MAP: Record<string, string> = {
   label_template_exists: 'A template with this name already exists.',
   unknown_vocab: 'One of the selected options no longer exists.',
   active_conflict: 'Another active template already prints this family, type and DPI.',
+  // a new name only while the template is off (Rename… on the list)
+  template_active: 'This template is active; deactivate it on Labels › Templates to rename it.',
 };
 
 interface Meta {

@@ -154,7 +154,7 @@ async def test_delete_needs_the_typed_name(client, db, seeded_user):
     resp = await client.delete(f"/labels/templates/{tid}", headers=hdrs)
     assert resp.status_code == 422
     assert resp.json()["detail"] == {"code": "name_mismatch", "children": [],
-                                     "generated_labels": 0}
+                                     "generated_labels": 0, "fallback_dpis_lost": []}
     resp = await client.request("DELETE", f"/labels/templates/{tid}", headers=hdrs,
                                 json={"typed_name": "tpl-1"})
     assert resp.status_code == 204

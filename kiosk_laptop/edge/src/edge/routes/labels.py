@@ -61,7 +61,10 @@ async def plan(request: Request, dpi: str | None = None, kind: str | None = None
     template that isn't available at this DPI, and `fonts`: the E: fonts
     it prints with (setup step 5 checks the printer has them; a builder
     design's `code` is "", so the kiosk can't read them off it). `dpi` /
-    `kind` override the saved settings (setup asks before saving them)."""
+    `kind` override the saved settings (setup asks before saving them).
+    With no template, `available_dpis` too: the DPIs at which the move's
+    downloaded set has one of this kind (natural order; [] for none), so
+    the kiosk can say what to do. Older kiosks ignore it."""
     if kind is not None and kind not in laptop_setup.LABEL_KINDS:
         raise err(422, "bad_request")
     built = generate.build_plan(request.app.state.store, label_kind=kind, dpi=_dpi(dpi))
@@ -71,8 +74,11 @@ async def plan(request: Request, dpi: str | None = None, kind: str | None = None
     template = None if t is None else {
         "id": t.id, "name": (built.template_json or {}).get("name"), "family": t.family,
         "dpi_key": t.dpi_key, "version": t.version}
-    return {"template": template, "notes": built.notes,
+    body = {"template": template, "notes": built.notes,
             "fonts": generate.template_fonts(built.template_json)}
+    if t is None:
+        body["available_dpis"] = list(built.available_dpis)
+    return body
 
 
 @router.get("/asset/{asset_id}")

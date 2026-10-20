@@ -3,13 +3,15 @@
  * QR code, box, line), zoom (out, in, fit, true size), the Grid / Snap /
  * Rulers toggles, the Align group (one element aligns to the label, two or
  * more to the first selected, the anchor; distribute needs three, match
- * size two) and the Field names / Sample values choice. Each control's
- * tooltip carries its shortcut.
+ * size two) and the Field names / Sample values choice. Each button has a
+ * hover tip (components/Tip.tsx) with its label and shortcut keys, and,
+ * when it's off, why; no native `title`, so never two tooltips.
  */
 
 import type { ReactNode } from 'react';
 
-import { SHORTCUTS, type Platform } from '../../../labels/builder/shortcuts';
+import { shortcutKeys as keysOf, type Platform } from '../../../labels/builder/shortcuts';
+import Tip from '../../Tip';
 import {
   canAlign, stepZoom, type AlignOp, type CanvasTool, type CanvasView, type Zoom,
 } from './canvasActions';
@@ -30,15 +32,8 @@ export interface CanvasToolbarProps {
   status?: ReactNode;
 }
 
-function keysOf(id: string, platform: Platform): string {
-  const s = SHORTCUTS.find((x) => x.id === id);
-  return s ? (platform === 'mac' ? s.mac : s.win) : '';
-}
-
-function tip(label: string, id: string | null, platform: Platform): string {
-  const keys = id ? keysOf(id, platform) : '';
-  return keys ? `${label} · ${keys}` : label;
-}
+/** Why a control is off while an older version is open. */
+const READ_ONLY_NOTE = 'An older version is open.';
 
 const I = ({ d, fill = false }: { d: string; fill?: boolean }) => (
   <svg viewBox="0 0 16 16" aria-hidden="true" className={fill ? 'lbc-icon is-filled' : 'lbc-icon'}><path d={d} /></svg>
@@ -85,45 +80,67 @@ function alignLabel(op: AlignOp, label: string, count: number): string {
   return label;
 }
 
+/** Why an align button is off with this many selected (canAlign's rule):
+ *  an edge needs one (it aligns to the label), match two, distribute three. */
+function alignNote(op: AlignOp): string {
+  if (op === 'distributeH' || op === 'distributeV') return 'Select three or more elements';
+  if (op === 'matchW' || op === 'matchH') return 'Select two or more elements';
+  return 'Select one or more elements';
+}
+
 export default function CanvasToolbar({
   tool, onTool, zoom, onZoom, view, onView, selectionCount, onAlign, readOnly = false, platform, status,
 }: CanvasToolbarProps) {
   const toggle = (key: 'grid' | 'snap' | 'rulers', label: string, id: string) => (
-    <button type="button" className={`mini-btn lbc-toggle${view[key] ? ' on' : ''}`} aria-pressed={view[key]}
-      title={tip(`${label} ${view[key] ? 'on' : 'off'}`, id, platform)} onClick={() => onView({ ...view, [key]: !view[key] })}>
-      {label}
-    </button>
+    <Tip label={`${label} ${view[key] ? 'on' : 'off'}`} keys={keysOf(id, platform)}>
+      <button type="button" className={`mini-btn lbc-toggle${view[key] ? ' on' : ''}`} aria-pressed={view[key]}
+        onClick={() => onView({ ...view, [key]: !view[key] })}>
+        {label}
+      </button>
+    </Tip>
   );
   return (
     <div className="lbc-toolbar" role="toolbar" aria-label="Canvas">
       <div className="segmented lbc-tools" role="group" aria-label="Tools">
-        {TOOLS.map((t) => (
-          <button key={t.tool} type="button" className={tool === t.tool ? 'on' : ''} aria-pressed={tool === t.tool}
-            aria-label={t.label} title={tip(t.label, t.id, platform)} disabled={readOnly && t.tool !== 'select'}
-            onClick={() => onTool(t.tool)}>
-            {t.icon}
-          </button>
-        ))}
+        {TOOLS.map((t) => {
+          const off = readOnly && t.tool !== 'select';
+          return (
+            <Tip key={t.tool} label={t.label} keys={keysOf(t.id, platform)} note={off ? READ_ONLY_NOTE : null}>
+              <button type="button" className={tool === t.tool ? 'on' : ''} aria-pressed={tool === t.tool}
+                aria-label={t.label} disabled={off} onClick={() => onTool(t.tool)}>
+                {t.icon}
+              </button>
+            </Tip>
+          );
+        })}
       </div>
 
       <div className="lbc-group" role="group" aria-label="Zoom">
-        <button type="button" className="mini-btn lbc-icon-btn" aria-label="Zoom out"
-          title={tip('Zoom out', 'canvas.zoomOut', platform)} onClick={() => onZoom(stepZoom(zoom, 'out'))}>
-          <I d="M3 8h10" />
-        </button>
+        <Tip label="Zoom out" keys={keysOf('canvas.zoomOut', platform)}>
+          <button type="button" className="mini-btn lbc-icon-btn" aria-label="Zoom out"
+            onClick={() => onZoom(stepZoom(zoom, 'out'))}>
+            <I d="M3 8h10" />
+          </button>
+        </Tip>
         <span className="lbc-zoom" aria-live="polite">{`${Math.round(zoom * 100)}%`}</span>
-        <button type="button" className="mini-btn lbc-icon-btn" aria-label="Zoom in"
-          title={tip('Zoom in', 'canvas.zoomIn', platform)} onClick={() => onZoom(stepZoom(zoom, 'in'))}>
-          <I d="M3 8h10M8 3v10" />
-        </button>
-        <button type="button" className={`mini-btn${view.zoom === 'fit' ? ' on' : ''}`} aria-label="Fit"
-          title={tip('Zoom to fit', 'canvas.fit', platform)} onClick={() => onZoom('fit')}>
-          Fit
-        </button>
-        <button type="button" className={`mini-btn${view.zoom === 1 ? ' on' : ''}`} aria-label="True size"
-          title={tip('True size, one dot a pixel', 'canvas.trueSize', platform)} onClick={() => onZoom(1)}>
-          1:1
-        </button>
+        <Tip label="Zoom in" keys={keysOf('canvas.zoomIn', platform)}>
+          <button type="button" className="mini-btn lbc-icon-btn" aria-label="Zoom in"
+            onClick={() => onZoom(stepZoom(zoom, 'in'))}>
+            <I d="M3 8h10M8 3v10" />
+          </button>
+        </Tip>
+        <Tip label="Zoom to fit" keys={keysOf('canvas.fit', platform)}>
+          <button type="button" className={`mini-btn${view.zoom === 'fit' ? ' on' : ''}`} aria-label="Fit"
+            onClick={() => onZoom('fit')}>
+            Fit
+          </button>
+        </Tip>
+        <Tip label="True size, one dot a pixel" keys={keysOf('canvas.trueSize', platform)}>
+          <button type="button" className={`mini-btn${view.zoom === 1 ? ' on' : ''}`} aria-label="True size"
+            onClick={() => onZoom(1)}>
+            1:1
+          </button>
+        </Tip>
       </div>
 
       <div className="lbc-group" role="group" aria-label="Guides">
@@ -133,24 +150,33 @@ export default function CanvasToolbar({
       </div>
 
       <div className="lbc-group" role="group" aria-label="Align">
-        {ALIGNS.map((a) => (
-          <button key={a.op} type="button" className="mini-btn lbc-icon-btn" aria-label={a.label}
-            title={tip(alignLabel(a.op, a.label, selectionCount), a.id, platform)}
-            disabled={readOnly || !canAlign(a.op, selectionCount)} onClick={() => onAlign(a.op)}>
-            {a.icon}
-          </button>
-        ))}
+        {ALIGNS.map((a) => {
+          const note = readOnly ? READ_ONLY_NOTE : canAlign(a.op, selectionCount) ? null : alignNote(a.op);
+          return (
+            <Tip key={a.op} label={alignLabel(a.op, a.label, selectionCount)} keys={keysOf(a.id, platform)}
+              note={note}>
+              <button type="button" className="mini-btn lbc-icon-btn" aria-label={a.label}
+                disabled={note !== null} onClick={() => onAlign(a.op)}>
+                {a.icon}
+              </button>
+            </Tip>
+          );
+        })}
       </div>
 
       <div className="segmented lbc-show" role="group" aria-label="Show">
-        <button type="button" className={view.showSamples ? '' : 'on'} aria-pressed={!view.showSamples}
-          title={tip('Field names', 'canvas.samples', platform)} onClick={() => onView({ ...view, showSamples: false })}>
-          Field names
-        </button>
-        <button type="button" className={view.showSamples ? 'on' : ''} aria-pressed={view.showSamples}
-          title={tip('Sample values', 'canvas.samples', platform)} onClick={() => onView({ ...view, showSamples: true })}>
-          Sample values
-        </button>
+        <Tip label="Field names" keys={keysOf('canvas.samples', platform)}>
+          <button type="button" className={view.showSamples ? '' : 'on'} aria-pressed={!view.showSamples}
+            onClick={() => onView({ ...view, showSamples: false })}>
+            Field names
+          </button>
+        </Tip>
+        <Tip label="Sample values" keys={keysOf('canvas.samples', platform)}>
+          <button type="button" className={view.showSamples ? 'on' : ''} aria-pressed={view.showSamples}
+            onClick={() => onView({ ...view, showSamples: true })}>
+            Sample values
+          </button>
+        </Tip>
       </div>
 
       {status && <span className="lbc-status">{status}</span>}
