@@ -11,7 +11,10 @@
  * core (geometry, align, model, metrics) through canvasActions.ts.
  *
  * Pointer: click selects, ⇧-click adds or removes, a drag on empty space
- * draws a marquee (⇧ adds), dragging moves the selection (⇧ locks the axis,
+ * draws a marquee (⇧ adds). The selection keeps the order things were
+ * picked in (a marquee and ⌘A add in stacking order), and with two or more
+ * the first one picked is the align anchor, outlined apart (align.ts).
+ * Dragging moves the selection (⇧ locks the axis,
  * ⌥ moves a copy), the eight handles resize one unlocked element (⇧ keeps
  * its proportions), Space-drag or the wheel pans, ⌘-wheel zooms about the
  * pointer. With Snap on a move goes in grid steps, else in whole dots. A
@@ -20,7 +23,10 @@
  * gesture without selecting or placing, and unmounting closes any gesture
  * still open.
  * Pointer positions stay in exact inches; everything drawn is in whole
- * dots as the compiler rounds them (CanvasElement).
+ * dots as the compiler rounds them (CanvasElement). A barcode is as wide as
+ * it prints for its sample at the viewed DPI (geometry.ts withBarcodeWidths):
+ * the canvas works from the design with those widths, so its edits carry
+ * them.
  * Keyboard (useBuilderShortcuts): tools, arrows (⇧ ten dots, ⌥ to resize),
  * Tab, ⌘A, Delete, ⌘D, stacking, ⌘L, the align keys, zoom and the view
  * toggles. Undo, the clipboard, Format and Workflow keys are the page's.
@@ -31,7 +37,8 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 
 import type { FontWeight } from '../../../labels/builder/fonts';
 import {
-  clampToLabel, hitTest, marqueeSelect, resize, snap, type Handle, type Point, type Rect, type ResizeContext,
+  clampToLabel, hitTest, marqueeSelect, resize, snap, withBarcodeWidths, type Handle, type Point, type Rect,
+  type ResizeContext,
 } from '../../../labels/builder/geometry';
 import type { LoadedFont } from '../../../labels/builder/metrics';
 import {
@@ -137,9 +144,11 @@ function inches(v: number): string {
 const identity = (key: string) => key;
 
 export default function Canvas({
-  design, dpi, view, onView, samples, selection, onSelect, onChange, onGesture, metricsFor,
+  design: given, dpi, view, onView, samples, selection, onSelect, onChange, onGesture, metricsFor,
   fieldName = identity, gridIn = DEFAULT_GRID_IN, readOnly = false, keyboard = true, platform,
 }: CanvasProps) {
+  // every barcode as wide as it prints (the same design when they already are)
+  const design = useMemo(() => withBarcodeWidths(given, samples, dpi), [given, samples, dpi]);
   const os = useMemo(() => platform ?? detectPlatform(), [platform]);
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const stageRef = useRef<HTMLDivElement>(null);
@@ -284,7 +293,7 @@ export default function Canvas({
   }, [keyboard, endKeyGesture]);
 
   // ---- editing helpers ------------------------------------------------------------
-  const resizeCtx = (keepRatio = false): ResizeContext => ({
+  const resizeCtx = (keepRatio = false, byKey = false): ResizeContext => ({
     dpi,
     metricsFor: (el) => {
       const f = fontOf(el);
@@ -292,6 +301,7 @@ export default function Canvas({
     },
     valueFor: (el) => elementValue(el, samples),
     keepRatio,
+    byKey,
   });
 
   const step = view.snap ? gridIn : 1 / dpi;
@@ -310,7 +320,7 @@ export default function Canvas({
 
   const sizeBy = (handle: Handle, dxDots: number, dyDots: number) => (): boolean | void => {
     if (readOnly || !selection.length) return false;
-    keyEdit(resizeSelection(live.current.design, selection, handle, dxDots / dpi, dyDots / dpi, resizeCtx()));
+    keyEdit(resizeSelection(live.current.design, selection, handle, dxDots / dpi, dyDots / dpi, resizeCtx(false, true)));
   };
 
   const edit = (next: DesignV2): boolean | void => {
@@ -652,7 +662,7 @@ export default function Canvas({
               return (
                 <CanvasElement key={el.id} el={el} dpi={dpi} names={names} px={px} uid={`${uid}-${i}`}
                   text={names ? nameOf(el, design, fieldName) : value}
-                  hidden={!names && elementHidden(el, samples)} font={font} qrValue={value} />
+                  hidden={!names && elementHidden(el, samples)} font={font} value={value} />
               );
             })}
           </g>
@@ -665,6 +675,19 @@ export default function Canvas({
                   strokeWidth={1.5 * px} strokeDasharray={picked.length > 1 || el.locked ? `${4 * px} ${3 * px}` : undefined} />
               );
             })}
+            {picked.length > 1 && (() => {
+              // the first picked: what Align and Match size line the rest up on
+              const f = dotFootprint(picked[0], dpi);
+              return (
+                <g className="lbc-anchor-mark">
+                  <rect className="lbc-anchor" x={f.x} y={f.y} width={Math.max(f.w, px)} height={Math.max(f.h, px)}
+                    strokeWidth={2 * px} />
+                  <rect className="lbc-anchor-tag-bg" x={f.x} y={f.y - 15 * px} width={42 * px} height={13 * px}
+                    rx={3 * px} />
+                  <text className="lbc-anchor-tag" x={f.x + 5 * px} y={f.y - 5.5 * px} fontSize={9.5 * px}>anchor</text>
+                </g>
+              );
+            })()}
             {handleFor && (() => {
               const f = dotFootprint(handleFor, dpi);
               const s = HANDLE_PX * px;

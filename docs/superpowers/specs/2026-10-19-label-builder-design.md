@@ -174,7 +174,7 @@ stacking order, lock, and hide-when-empty (data elements only).
 | Field (data) | field key; display type; sub-fields when Split; font; size (pt); weight; inverted + padding; expected length; alignment; max characters + trim; strip; sample value |
 | Static text | content; font; size; weight; inverted; alignment |
 | Line, Box | stroke width; box: fill |
-| Barcode | field or static data; Code 128 or Code 39; bar height from the box; module width; human-readable line on/off |
+| Barcode | field or static data; Code 128 or Code 39; bar height from the box; module width; human-readable line on/off; width follows the data and the module; the canvas shows the printed width |
 | QR code | field or static data; size from the box (magnification in printer steps); error correction M |
 
 **Field value pipeline** (in this order): take the raw value → Split (if the
@@ -212,9 +212,18 @@ reverse. A blank value prints nothing, no box.
 
 **Resizing.** For text elements, dragging the box height scales the font
 size and the width follows the expected length (or is free when no length
-is set). For barcodes, height sets the bar height and width snaps to whole
-module widths. For QR codes, the box snaps to magnification steps. Line and
-box resize freely.
+is set). For barcodes, height sets the bar height and the width is derived:
+the printer draws the value's modules × the module whatever the box says,
+so the canvas draws that width (from the sample, also in Field names),
+resizing along the bars sets the module (whole dots, 1 to 10; ⌥←/→ steps it
+a dot), and the properties show the width read-only with "Width follows the
+data: N characters → W dots at this DPI." The compiler starts Code 128 data
+in the subset it counts: digits only, an even count of 2 or more, in subset
+C (`>;`, 11 × (n/2 + 2) + 13 modules); anything else in subset B (`>:`,
+11 × (n + 2) + 13, a `>0` or a hex-escaped byte one character each). Code 39
+is 16 × (n + 2) − 1. `labels/barcode.py` and the portal's mirror share
+`fixtures/barcode_modules.json`. For QR codes, the box snaps to
+magnification steps. Line and box resize freely.
 
 **QR codes at 600 DPI.** Zebra caps QR magnification at 10 dots per module,
 so a QR wider than about 0.35 in cannot be reproduced at 600 DPI. The
@@ -276,16 +285,27 @@ codes and shapes use top-left `^FO`.
   rotation choice, drag with axis lock, Alt-drag duplicate.
 - Alignment tools for a selection: left, center, right, top, middle,
   bottom, distribute horizontally and vertically, match width and height.
-  With one element selected they align to the label.
+  With one element selected they align to the label. With two or more,
+  the first-selected element is the anchor: it stays put and the others
+  line up on its edge or center (match width and height take its size).
+  The selection keeps the order elements were picked in (⇧-click and a
+  ⇧-marquee append; a marquee and ⌘A add in stacking order), and the
+  canvas outlines the anchor in the accent color with an "anchor" tag.
 - Field names / Sample values toggle. Sample values are the default.
 - `/` focuses the field search; ⌘K stays the portal's command palette.
 - Every number box accepts arithmetic (`+5`, `*2`) and steps with arrows.
 - A dirty indicator and an unsaved-changes guard.
 
 ### 4.6 The field panel and the field table
-- Left panel: search (⌘K), the **+** picker (static text, line, box, then
-  the fields), and the grouped field list with sample values. Unused fields
-  first; placed fields last in their group, greyed, with `×n`.
+- Left panel: the fields on this label, grouped, each with `×n` and its
+  sample value, a placed Split piece nested under its field. Fields not on
+  the label aren't listed. Each row has a remove × (on hover or focus) that
+  takes every placement of the field (or the piece) off the label in one
+  undo step, with a notice that offers Undo. With nothing placed the panel
+  says "No fields on this label yet. Press + or / to add one."
+- The search box (`/`) and the **+** open the picker, which holds the
+  catalog: static text, line, box, then every field, unused first and
+  placed last in grey with `on label ×n`. The search box filters it.
 - The sample value of a field is edited in place in the list. **Load from
   asset…** picks a move and an asset and fills every sample from that row.
 - The "any column from the uploaded From-To row" fields are listed from

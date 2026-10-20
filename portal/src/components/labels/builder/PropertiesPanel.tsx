@@ -8,7 +8,11 @@
  * Positions, sizes, strokes, barcode modules and inverted padding are in
  * dots at the DPI being viewed, and every number box takes arithmetic
  * (NumberBox). W and H go through the canvas's own resize rules, so a text
- * element's height scales its font size and a QR code stays square. A text
+ * element's height scales its font size and a QR code stays square. A
+ * barcode is as wide as it prints its sample (geometry.ts
+ * withBarcodeWidths): its length is read-only, Module sets it, and H (W
+ * when it is turned) is the bar height; every edit here keeps each
+ * barcode's width in step. A text
  * field is refit whenever its font, size, weight, inverted or expected
  * length changes, keeping it as wide as it reserves. Display type Split
  * turns a placement into one placement per piece of its sample.
@@ -16,7 +20,9 @@
 
 import type { ReactNode } from 'react';
 
-import { barcodeModuleDots, footprint, resize, type ResizeContext } from '../../../labels/builder/geometry';
+import {
+  barcodeModuleDots, barcodeWidthIn, footprint, isBarcode, resize, withBarcodeWidths, type ResizeContext,
+} from '../../../labels/builder/geometry';
 import {
   MAX_COUNT, MAX_LINES, elementValue, invertPadOf, renamePiece, replaceElements, type Align, type DesignV2,
   type ElementPatch, type ElementV2, type FieldElement, type Rotation, type StripWhere, type Symbology,
@@ -75,8 +81,6 @@ const STATIC_DATA = '12345678';
 
 const isFieldEl = (e: ElementV2) => e.type === 'field';
 const invertedText = (e: ElementV2) => isTypeset(e) && !!e.inverted;
-/** A barcode, or a field placement shown as one. */
-const barcodeLike = (e: ElementV2) => e.type === 'barcode' || (e.type === 'field' && e.display === 'barcode');
 
 function Prop({ label, children, note }: { label: string; children: ReactNode; note?: ReactNode }) {
   return (
@@ -99,9 +103,20 @@ function kindName(el: ElementV2): string {
   }
 }
 
+/** The hint under a barcode's position and size. */
+function barcodeHint(el: ElementV2, value: string, dpi: number): string {
+  const width = barcodeWidthIn(el, value, dpi);
+  if (width === null) return 'Width follows the data: no sample value, so nothing prints.';
+  const chars = [...value].length;
+  return `Width follows the data: ${chars} character${chars === 1 ? '' : 's'} → ${toDots(width, dpi)} dots at this DPI.`;
+}
+
 export default function PropertiesPanel({
-  design, selection, samples, fields, dpi, metricsFor, onChange, onSelect, labelType, readOnly = false,
+  design: given, selection, samples, fields, dpi, metricsFor, onChange: emit, onSelect, labelType, readOnly = false,
 }: PropertiesPanelProps) {
+  // every barcode as wide as it prints, here and in every edit sent up
+  const design = withBarcodeWidths(given, samples, dpi);
+  const onChange = (next: DesignV2) => emit(withBarcodeWidths(next, samples, dpi));
   const byId = new Map(design.elements.map((e) => [e.id, e]));
   const picked = selection.map((id) => byId.get(id)).filter((e): e is ElementV2 => !!e);
   const el = picked[picked.length - 1];
@@ -207,7 +222,10 @@ export default function PropertiesPanel({
     .map((f) => ({ value: f.key, label: f.label, sub: g.label })));
 
   const sourceOf = (e: ElementV2) => ((e.type === 'barcode' || e.type === 'qr') && e.field ? 'field' : 'data');
-  const barcodeOptions = el.type === 'barcode' || (field && field.display === 'barcode');
+  const barcodeOptions = isBarcode(el);
+  // a barcode's length (W, or H when turned) follows its data
+  const turned = el.rotation === 90 || el.rotation === 270;
+  const lengthBox = barcodeOptions ? (turned ? 'h' : 'w') : null;
   const symbology = 'symbology' in el ? el.symbology ?? 'code128' : 'code128';
 
   return (
@@ -359,7 +377,7 @@ export default function PropertiesPanel({
               onChange={(v) => apply({ symbology: v })} />
             <span className="lbp-unit">Module</span>
             <NumberBox ariaLabel="Module width (dots)" integer min={1} max={10} disabled={readOnly}
-              {...numberOf(barcodeLike, (e) => barcodeModuleDots('moduleIn' in e ? e.moduleIn : null, dpi),
+              {...numberOf(isBarcode, (e) => barcodeModuleDots('moduleIn' in e ? e.moduleIn : null, dpi),
                 (_, v) => ({ moduleIn: (v ?? 2) / dpi }))} />
             <label className="lbp-switch">
               <Switch label="Human-readable line" checked={'showText' in el ? el.showText ?? true : true} disabled={readOnly}
@@ -385,7 +403,8 @@ export default function PropertiesPanel({
           </Prop>
         )}
 
-        <Prop label="Position & size (dots)">
+        <Prop label="Position & size (dots)"
+          note={barcodeOptions ? barcodeHint(el, elementValue(el, samples), dpi) : undefined}>
           <span className="lbp-unit">X</span>
           <NumberBox ariaLabel="X" className="lbp-num is-small" integer min={0} disabled={readOnly || !!el.locked}
             {...numberOf(() => true, (e) => toDots(footprint(e).x, dpi), (e, v) => (e.locked ? null : { x: (v ?? 0) / dpi }))} />
@@ -393,11 +412,11 @@ export default function PropertiesPanel({
           <NumberBox ariaLabel="Y" className="lbp-num is-small" integer min={0} disabled={readOnly || !!el.locked}
             {...numberOf(() => true, (e) => toDots(footprint(e).y, dpi), (e, v) => (e.locked ? null : { y: (v ?? 0) / dpi }))} />
           <span className="lbp-unit">W</span>
-          <NumberBox ariaLabel="W" className="lbp-num is-small" integer min={1} disabled={readOnly || !!el.locked}
-            {...sizeOf('w')} />
+          <NumberBox ariaLabel="W" className="lbp-num is-small" integer min={1}
+            disabled={readOnly || !!el.locked || lengthBox === 'w'} {...sizeOf('w')} />
           <span className="lbp-unit">H</span>
-          <NumberBox ariaLabel="H" className="lbp-num is-small" integer min={1} disabled={readOnly || !!el.locked}
-            {...sizeOf('h')} />
+          <NumberBox ariaLabel="H" className="lbp-num is-small" integer min={1}
+            disabled={readOnly || !!el.locked || lengthBox === 'h'} {...sizeOf('h')} />
         </Prop>
         <Prop label={isField || el.type === 'barcode' || el.type === 'qr' ? 'Rotation · Hide when empty · Lock' : 'Rotation · Lock'}>
           <Segmented label="Rotation" options={ROTATIONS} value={el.rotation} disabled={readOnly}

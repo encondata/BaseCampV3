@@ -1,0 +1,28 @@
+{
+  "cases": [
+    {"name": "six digits go in subset C", "symbology": "code128", "value": "100000",
+     "subset": "C", "modules": 68, "data": ">;100000"},
+    {"name": "an odd count of digits stays in subset B", "symbology": "code128",
+     "value": "1000001", "subset": "B", "modules": 112, "data": ">:1000001"},
+    {"name": "two digits are the shortest subset C", "symbology": "code128", "value": "12",
+     "subset": "C", "modules": 46, "data": ">;12"},
+    {"name": "one digit stays in subset B", "symbology": "code128", "value": "1",
+     "subset": "B", "modules": 46, "data": ">:1"},
+    {"name": "a literal > is one character after its >0 escape", "symbology": "code128",
+     "value": "A>B", "subset": "B", "modules": 68, "data": ">:A>0B"},
+    {"name": "letters and digits go in subset B", "symbology": "code128", "value": "ORD1-F01",
+     "subset": "B", "modules": 123, "data": ">:ORD1-F01"},
+    {"name": "each UTF-8 byte is one hex-escaped character", "symbology": "code128",
+     "value": "é1", "subset": "B", "modules": 68},
+    {"name": "non-ASCII digits are not subset C", "symbology": "code128", "value": "٣٣",
+     "subset": "B", "modules": 79},
+    {"name": "an empty value prints no barcode", "symbology": "code128", "value": "",
+     "subset": "B", "modules": 0, "data": ""},
+    {"name": "Code 39 is 16 modules a character with start and stop", "symbology": "code39",
+     "value": "A1", "subset": null, "modules": 63},
+    {"name": "Code 39 has no subsets", "symbology": "code39", "value": "100000",
+     "subset": null, "modules": 127},
+    {"name": "an empty Code 39 value prints no barcode", "symbology": "code39", "value": "",
+     "subset": null, "modules": 0}
+  ]
+}

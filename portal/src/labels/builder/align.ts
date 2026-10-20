@@ -2,7 +2,9 @@
  * The alignment tools for a selection (spec §4.5): align edges or centers,
  * distribute, match width or height. Every tool works on footprints (what
  * an element covers on the label, geometry.ts), returns the elements in the
- * order given, and leaves a locked element where it is.
+ * order given (the selection's, the order they were picked), and leaves a
+ * locked element where it is. Align and match size take the first one
+ * picked as the anchor.
  */
 
 import { footprint, resize, type Rect, type ResizeContext } from './geometry';
@@ -15,21 +17,14 @@ function place<T extends ElementV2>(el: T, x: number, y: number): T {
   return { ...el, x, y };
 }
 
-function bounds(rects: readonly Rect[]): Rect {
-  const x = Math.min(...rects.map((r) => r.x));
-  const y = Math.min(...rects.map((r) => r.y));
-  const right = Math.max(...rects.map((r) => r.x + r.w));
-  const bottom = Math.max(...rects.map((r) => r.y + r.h));
-  return { x, y, w: right - x, h: bottom - y };
-}
-
-/** Lines the elements up on the selection's bounds; one element alone
- *  aligns to the label. */
+/** Lines every element up on the first one's edge or center (the anchor,
+ *  which stays put); one element alone aligns to the label. */
 export function align<T extends ElementV2>(elements: readonly T[], edge: AlignEdge,
   labelSize: { w: number; h: number }): T[] {
   const rects = elements.map(footprint);
-  const b = elements.length === 1 ? { x: 0, y: 0, ...labelSize } : bounds(rects);
+  const b = elements.length === 1 ? { x: 0, y: 0, ...labelSize } : rects[0];
   return elements.map((el, i) => {
+    if (i === 0 && elements.length > 1) return el;
     const r = rects[i];
     switch (edge) {
       case 'left': return place(el, b.x, el.y);

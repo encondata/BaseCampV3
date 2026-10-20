@@ -16,13 +16,23 @@ with no Bold file overprints one dot along the reading direction, or on
 an inverted element widens the glyphs 15%; inverted text is a filled
 `^GB` (the element box plus its pad) under `^FR` text; each field value
 goes through Split and its rules first (labels.field_rules). Barcodes,
-QR codes and shapes are placed top-left with `^FO`."""
+QR codes and shapes are placed top-left with `^FO`; a Code 128 barcode's
+data starts in the subset labels.barcode counted (`>;` C, `>:` B), so it
+prints exactly as wide as the canvas draws it."""
 
 from collections.abc import Mapping
 
+from serversherpa.labels.barcode import code128_data
 from serversherpa.labels.fonts import font_object
 from serversherpa.labels.model import (
-    BarcodeEl, BoxEl, Design, FieldEl, LineEl, QrEl, TextEl, element_hidden,
+    BarcodeEl,
+    BoxEl,
+    Design,
+    FieldEl,
+    LineEl,
+    QrEl,
+    TextEl,
+    element_hidden,
     element_value,
 )
 from serversherpa.labels.qr import QrTooLong, qr_modules
@@ -74,13 +84,15 @@ def _text(el: TextEl, dpi: int, subs) -> str:
     return line + f"^FH_^FD{_fd(el.content, subs)}^FS"
 
 
-def _barcode_field(el: BarcodeEl | FieldEl, dpi: int, fd: str) -> str:
+def _barcode_field(el: BarcodeEl | FieldEl, dpi: int, fd: str, *, start: bool = False) -> str:
     """A barcode field around already-escaped data `fd`. In Code 128 data a
     `>` starts an invocation code (`>;` subset C, `>8` FNC1, …), so a
     literal one goes as `>0` (escaping never makes a `>`, so this is safe
-    on escaped data)."""
+    on escaped data). With `start` (schema 2, whose data is a value) the
+    data also opens with its subset's start code (labels.barcode); schema
+    1 data may still hold {tokens}, so it can't be counted and has none."""
     if el.symbology == "code128":
-        fd = fd.replace(">", ">0")
+        fd = code128_data(fd) if start else fd.replace(">", ">0")
     hd = _dots(el.h, dpi)
     flag = "Y" if el.show_text else "N"
     # None keeps the historical ^BY2 exactly; a module width in inches is
@@ -218,7 +230,7 @@ def _v2_element(el: object, dpi: int, values: Mapping[str, str]) -> list[str]:
     value = element_value(el, values)
     display = el.display if isinstance(el, FieldEl) else None
     if isinstance(el, BarcodeEl) or display == "barcode":
-        return [_barcode_field(el, dpi, _esc(value))]
+        return [_barcode_field(el, dpi, _esc(value), start=True)]
     if isinstance(el, QrEl) or display == "qr":
         return [_v2_qr(el, value, dpi)]
     return _v2_text(el, value, dpi)

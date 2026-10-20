@@ -20,13 +20,44 @@ function xs(els: ElementV2[]) { return els.map((e) => e.x); }
 function ys(els: ElementV2[]) { return els.map((e) => e.y); }
 
 describe('align', () => {
-  it('lines a selection up on its own bounds', () => {
-    expect(xs(align([A, B], 'left', LABEL))).toEqual([0.5, 0.5]);
-    expect(xs(align([A, B], 'right', LABEL)).map((v) => +v.toFixed(10))).toEqual([0.7, 1.2]);
-    expect(xs(align([A, B], 'center', LABEL)).map((v) => +v.toFixed(10))).toEqual([0.6, 0.85]);
-    expect(ys(align([A, B], 'top', LABEL))).toEqual([0.2, 0.2]);
-    expect(ys(align([A, B], 'bottom', LABEL)).map((v) => +v.toFixed(10))).toEqual([0.3, 0.6]);
-    expect(ys(align([A, B], 'middle', LABEL)).map((v) => +v.toFixed(10))).toEqual([0.25, 0.4]);
+  const round = (vs: number[]) => vs.map((v) => +v.toFixed(10));
+
+  it('lines the others up on the first selected, which stays put', () => {
+    // A first: 0.5..1.5 × 0.2..0.7
+    expect(round(xs(align([A, B], 'left', LABEL)))).toEqual([0.5, 0.5]);
+    expect(round(xs(align([A, B], 'right', LABEL)))).toEqual([0.5, 1]);
+    expect(round(xs(align([A, B], 'center', LABEL)))).toEqual([0.5, 0.75]);
+    expect(round(ys(align([A, B], 'top', LABEL)))).toEqual([0.2, 0.2]);
+    expect(round(ys(align([A, B], 'bottom', LABEL)))).toEqual([0.2, 0.5]);
+    expect(round(ys(align([A, B], 'middle', LABEL)))).toEqual([0.2, 0.35]);
+  });
+
+  it('the anchor is the first selected, not the leftmost or the topmost', () => {
+    // B first: 1.2..1.7 × 0.6..0.8
+    expect(round(xs(align([B, A], 'left', LABEL)))).toEqual([1.2, 1.2]);
+    expect(round(xs(align([B, A], 'right', LABEL)))).toEqual([1.2, 0.7]);
+    expect(round(xs(align([B, A], 'center', LABEL)))).toEqual([1.2, 0.95]);
+    expect(round(ys(align([B, A], 'top', LABEL)))).toEqual([0.6, 0.6]);
+    expect(round(ys(align([B, A], 'bottom', LABEL)))).toEqual([0.6, 0.3]);
+    expect(round(ys(align([B, A], 'middle', LABEL)))).toEqual([0.6, 0.45]);
+    // and only the one axis moves
+    expect(ys(align([B, A], 'left', LABEL))).toEqual([0.6, 0.2]);
+    expect(xs(align([B, A], 'top', LABEL))).toEqual([1.2, 0.5]);
+  });
+
+  it('aligns every other element to the first, by footprint, leaving the locked ones', () => {
+    const C = box('c', 3, 1, 0.4, 0.4);
+    const locked = box('l', 2, 1.5, 0.2, 0.2, { locked: true });
+    const out = align([C, A, locked, B], 'right', LABEL);
+    expect(round(xs(out))).toEqual([3, 2.4, 2, 2.9]);
+    expect(out[0]).toBe(C);
+    expect(out[2]).toBe(locked);
+    // a locked anchor is still the anchor
+    const lockedFirst = { ...B, locked: true };
+    expect(round(xs(align([lockedFirst, A], 'left', LABEL)))).toEqual([1.2, 1.2]);
+    // a turned element lines up by what it covers
+    const side = byId<FieldElement>('side-site');      // 270: 0.108 wide
+    expect(align([A, side], 'right', LABEL)[1].x).toBeCloseTo(1.5 - 0.108, 10);
   });
 
   it('aligns one element to the label', () => {

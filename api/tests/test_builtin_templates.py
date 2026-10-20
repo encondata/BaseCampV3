@@ -25,6 +25,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.labels import builtin_templates
 from serversherpa.labels import templates_tree as tree
+from serversherpa.labels.barcode import barcode_modules
 from serversherpa.labels.builtin_templates import (
     AMSTERDAM_DESTINATION,
     BUILTIN_TEMPLATES,
@@ -35,7 +36,14 @@ from serversherpa.labels.builtin_templates import (
 )
 from serversherpa.labels.field_rules import split_value
 from serversherpa.labels.fields import design_field_keys, field_values
-from serversherpa.labels.model import FieldEl, QrEl, element_hidden, element_value, parse_design
+from serversherpa.labels.model import (
+    BarcodeEl,
+    FieldEl,
+    QrEl,
+    element_hidden,
+    element_value,
+    parse_design,
+)
 from serversherpa.labels.qr import qr_modules
 from serversherpa.labels.render import render_template
 
@@ -146,7 +154,7 @@ def test_the_three_location_tags_cap_their_qr_at_600_only():
 # test_labels_zpl_v2.py pins the Vegas fixture: every rebuilt element
 # prints where the old template put it.
 _SHARED_4X2 = ("^FT38,173^", "^FT185,173^", "^FT38,220^", "^FT185,220^", "^FT38,270^",
-               "^FT185,270^", "^FO38,295^GB1120,5,5^FS", "^FO440,500^BY4^BCN,50,Y,N,N^FH_^FD100000^FS",
+               "^FT185,270^", "^FO38,295^GB1120,5,5^FS", "^FO440,500^BY4^BCN,50,Y,N,N^FH_^FD>;100000^FS",
                "^FO1000,148^BQN,2,7^FH_^FDMA,100000^FS", "^FT1120,580^A@B,45,45,",
                "^FT1160,580^A@B,45,45,")
 _GRID_759 = ("^FT38,351^", "^FT185,351^", "^FT627,351^", "^FT759,351^", "^FT38,420^",
@@ -210,7 +218,7 @@ def test_the_old_typos_are_gone():
 def test_front_asset_tag_keeps_the_stored_layout():
     zpl, _ = _render(BY_NAME["Front Asset Tag"], 300)
     assert zpl.startswith("^XA\n^PW600\n^LL300\n")
-    for anchor in ("^FO15,2^BY2^BCN,35,Y,N,N^FH_^FD100000^FS",
+    for anchor in ("^FO15,2^BY2^BCN,35,Y,N,N^FH_^FD>;100000^FS",
                    "^FT15,110^A@N,35,35,E:TT0003M_.TTF^FH_^FDTarget:^FS",
                    "^FT140,110^A@N,35,35,E:TT0003M_.TTF^FH_^FD14.01.07C.02.03^FS",
                    "^FT450,110^A@N,35,35,E:TT0003M_.TTF^FH_^FDRU:^FS",
@@ -232,18 +240,33 @@ def test_front_asset_tag_keeps_the_stored_layout():
 
 
 def test_front_asset_tag_barcode_box_is_the_printed_symbol():
-    """ledger B1: ^BC in mode N starts in subset B, so the six-digit sample
-    is start + six characters + check (11 modules each) + stop (13): 101
-    modules, at 2 dots a module 202 dots at 300 DPI, inside the 600-dot
-    label from x 15."""
+    """The compiler starts the six-digit sample in subset C (`>;`, two
+    digits a character): start + three characters + check (11 modules
+    each) + stop (13) = 68 modules, at 2 dots a module 136 dots at 300 DPI,
+    inside the 600-dot label from x 15."""
     (bar,) = [el for el in FRONT_ASSET_TAG["elements"] if el["type"] == "barcode"]
     digits = len(BY_NAME["Front Asset Tag"].samples["asset_id"])
-    modules = 11 + 11 * digits + 11 + 13
-    assert (digits, modules) == (6, 101)
+    modules = 11 + 11 * digits // 2 + 11 + 13
+    assert (digits, modules) == (6, 68)
     module_dots = round(bar["moduleIn"] * 300)
     assert module_dots == 2
-    assert round(bar["w"] * 300) == modules * module_dots == 202
+    assert round(bar["w"] * 300) == modules * module_dots == 136
     assert round((bar["x"] + bar["w"]) * 300) <= 600
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_every_barcode_box_is_as_wide_as_it_prints(name):
+    """The canvas draws a barcode at modules x module (labels.barcode), so
+    each stored box is that wide at 300 DPI for the template's sample."""
+    b = BY_NAME[name]
+    design = parse_design(b.design)
+    for el in design.elements:
+        if not (isinstance(el, BarcodeEl) or (isinstance(el, FieldEl) and el.display == "barcode")):
+            continue
+        modules = barcode_modules(el.symbology, element_value(el, b.samples))
+        assert modules == 68, el.id   # the six-digit asset ID, subset C
+        module_dots = max(1, min(10, round(el.module_in * 300)))
+        assert round(el.w * 300) == modules * module_dots, (name, el.id)
 
 
 def test_switch_front_tag_is_one_serial_number():

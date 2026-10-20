@@ -1,9 +1,10 @@
 /**
  * The bar over the builder canvas: the tools (select, static text, barcode,
  * QR code, box, line), zoom (out, in, fit, true size), the Grid / Snap /
- * Rulers toggles, the Align group (one element aligns to the label;
- * distribute needs three, match size two) and the Field names / Sample
- * values choice. Each control's tooltip carries its shortcut.
+ * Rulers toggles, the Align group (one element aligns to the label, two or
+ * more to the first selected, the anchor; distribute needs three, match
+ * size two) and the Field names / Sample values choice. Each control's
+ * tooltip carries its shortcut.
  */
 
 import type { ReactNode } from 'react';
@@ -65,6 +66,25 @@ const ALIGNS: { op: AlignOp; id: string | null; label: string; icon: ReactNode }
   { op: 'matchH', id: null, label: 'Match height', icon: <I d="M3.5 3v10h3V3zM9.5 3v10h3V3z" /> },
 ];
 
+/** What an align button's tooltip says it lines up on, by selection size. */
+const TO_ANCHOR: Partial<Record<AlignOp, string>> = {
+  left: 'Align left edges to the first selected',
+  center: 'Align centers to the first selected',
+  right: 'Align right edges to the first selected',
+  top: 'Align top edges to the first selected',
+  middle: 'Align middles to the first selected',
+  bottom: 'Align bottom edges to the first selected',
+  matchW: 'Match the first selected’s width',
+  matchH: 'Match the first selected’s height',
+};
+const EDGES: readonly AlignOp[] = ['left', 'center', 'right', 'top', 'middle', 'bottom'];
+
+function alignLabel(op: AlignOp, label: string, count: number): string {
+  if (count >= 2) return TO_ANCHOR[op] ?? label;
+  if (count === 1 && EDGES.includes(op)) return `${label} to the label`;
+  return label;
+}
+
 export default function CanvasToolbar({
   tool, onTool, zoom, onZoom, view, onView, selectionCount, onAlign, readOnly = false, platform, status,
 }: CanvasToolbarProps) {
@@ -115,8 +135,7 @@ export default function CanvasToolbar({
       <div className="lbc-group" role="group" aria-label="Align">
         {ALIGNS.map((a) => (
           <button key={a.op} type="button" className="mini-btn lbc-icon-btn" aria-label={a.label}
-            title={tip(selectionCount === 1 && a.id?.startsWith('align.') && !a.op.startsWith('distribute')
-              ? `${a.label} to the label` : a.label, a.id, platform)}
+            title={tip(alignLabel(a.op, a.label, selectionCount), a.id, platform)}
             disabled={readOnly || !canAlign(a.op, selectionCount)} onClick={() => onAlign(a.op)}>
             {a.icon}
           </button>

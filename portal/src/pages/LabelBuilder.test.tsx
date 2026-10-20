@@ -11,7 +11,7 @@
  */
 
 import { StrictMode } from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -42,6 +42,12 @@ const api = vi.hoisted(() => ({
 vi.mock('../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../lib/api')>()), ...api,
 }));
+
+// the whole page renders in jsdom, several times a test: run beside the rest
+// of the suite one step can take longer than the default second, and a test
+// longer than the default five
+configure({ asyncUtilTimeout: 4000 });
+vi.setConfig({ testTimeout: 20000 });
 
 const { default: LabelBuilder } = await import('./LabelBuilder');
 const { default: ProtectedRoute } = await import('../components/ProtectedRoute');
@@ -182,6 +188,21 @@ describe('a parent template', () => {
     await waitFor(() => expect(within(bar).getByLabelText('Version v8').textContent).toBe('v8'));
     expect(within(bar).queryByText('Unsaved')).toBeNull();
     expect(screen.getByRole('status').textContent).toContain('Saved v8.');
+  });
+
+  it('keeps each barcode as wide as it prints its sample: opening is no change, an edit stores it', async () => {
+    // the fixture's box is 272 dots; the sample '10482' prints 90 modules of 4 = 360
+    await openParent();
+    const bar = screen.getByRole('group', { name: 'Template' });
+    expect(within(bar).queryByText('Unsaved')).toBeNull();
+    // a page edit (⌘B on the selected text), not one of the canvas's
+    ctrl('a');
+    ctrl('b');
+    await waitFor(() => expect(within(bar).queryByText('Unsaved')).not.toBeNull());
+    ctrl('s');
+    await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledTimes(1));
+    const sent = api.updateLabelTemplate.mock.calls[0][1].design.elements as { id: string; w: number }[];
+    expect(sent.find((e) => e.id === 'barcode')!.w).toBeCloseTo(360 / 300, 9);
   });
 
   it('asks about each customized child the save passed by', async () => {
@@ -352,11 +373,34 @@ describe('a parent template', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Back to editing' })).toBeNull());
   });
 
-  it('/ puts the cursor in the field search', async () => {
+  it('/ puts the cursor in the field search and opens the picker', async () => {
     await openParent();
     fireEvent.keyDown(document.body, { key: '/', code: 'Slash' });
     expect(document.activeElement).toBe(screen.getByRole('complementary', { name: 'Fields' })
       .querySelector('.lbp-search input'));
+    expect(screen.getByRole('dialog', { name: 'Add to the label' })).toBeTruthy();
+  });
+
+  it('removing a field from the panel is one undo step, with a notice that undoes it', async () => {
+    await openParent();
+    const fields = screen.getByRole('complementary', { name: 'Fields' });
+    const racks = () => screen.getByRole('application', { name: 'Label canvas' })
+      .querySelectorAll('[data-el-id^="banner-"], [data-el-id^="grid-"]:not([data-el-id^="grid-caption"])');
+    expect(racks()).toHaveLength(12);   // 5 + 5 pieces, 2 RUs
+    fireEvent.click(within(fields).getByRole('button', { name: 'Remove Destination rack from the label' }));
+    expect(racks()).toHaveLength(2);
+    const notice = screen.getByRole('status');
+    expect(notice.textContent).toContain('Removed 10 placements of Destination rack.');
+    fireEvent.click(within(notice).getByRole('button', { name: 'Undo' }));
+    expect(racks()).toHaveLength(12);
+    expect(screen.queryByText(/Removed 10 placements/)).toBeNull();
+    // ⌘Z takes it back in one step too
+    fireEvent.click(within(fields).getByRole('button', { name: 'Remove Destination rack from the label' }));
+    expect(racks()).toHaveLength(2);
+    ctrl('z');
+    expect(racks()).toHaveLength(12);
+    // the notice's Undo is gone once something else is the last step
+    expect(within(screen.getByRole('status')).queryByRole('button', { name: 'Undo' })).toBeNull();
   });
 });
 

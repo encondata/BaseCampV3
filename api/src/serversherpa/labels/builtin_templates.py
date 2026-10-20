@@ -182,12 +182,12 @@ FRONT_ASSET_TAG: dict = {
     "schema": 2,
     "size": {"w": 2, "h": 1},
     "elements": [
-        # ^BC in mode N starts in subset B: the six-digit sample is start,
-        # six characters and the check (11 modules each) plus stop (13) =
-        # 101 modules, 2 dots each = 202 dots (at 203 DPI the module is
-        # one dot, ^BY1)
+        # the compiler starts the six-digit sample in subset C (`>;`, two
+        # digits a character): start, three characters and the check (11
+        # modules each) plus stop (13) = 68 modules, 2 dots each = 136 dots
+        # (at 203 DPI the module is one dot, ^BY1); the box is what prints
         {"id": "barcode", "type": "barcode", "field": "asset_id", "symbology": "code128",
-         "moduleIn": _in(2), "showText": True, "x": _in(15), "y": _in(2), "w": _in(202),
+         "moduleIn": _in(2), "showText": True, "x": _in(15), "y": _in(2), "w": _in(136),
          "h": _in(35), "rotation": 0, "locked": False, "hideWhenEmpty": False},
         _text("caption-target", "Target:", 15, 110, _BODY, 120),
         _field("value-target", "destination_rack", 140, 110, _BODY, 300),
