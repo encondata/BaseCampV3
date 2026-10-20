@@ -638,6 +638,7 @@ async def _create_parent(db: DbSession, body: LabelTemplateCreateIn,
         raise _err(422, "bad_field", field="generation_rules",
                    message="a builder template carries its rules on each field")
     _parse_v2(body.design)
+    _check_samples(body.samples)
     await _check_template_vocab(db, {"label_type": body.label_type,
                                      "language_key": body.language_key})
     await _check_new_size(db, body.size_key)
@@ -738,6 +739,7 @@ async def _patch_parent(db: DbSession, row: LabelTemplate, data: dict, summary: 
     new_site_ids = data.pop("site_ids", None)
     if "design" in data:
         _parse_v2(data["design"])
+    _check_samples(data.get("samples"))
     await _check_template_vocab(db, data, current=row)
     changes: dict = {}
     if "name" in data and data["name"] != row.name:
@@ -871,6 +873,17 @@ MAX_COMPILE_SAMPLES = 200
 MAX_SAMPLE_CHARS = 500
 
 
+def _check_samples(samples: dict[str, str] | None) -> None:
+    """422 bad_field (samples) past the caps: a preview's, a create's and a
+    save's sample values alike."""
+    if samples is not None and len(samples) > MAX_COMPILE_SAMPLES:
+        raise _err(422, "bad_field", field="samples",
+                   message=f"at most {MAX_COMPILE_SAMPLES} sample values")
+    if samples and max(map(len, samples.values())) > MAX_SAMPLE_CHARS:
+        raise _err(422, "bad_field", field="samples",
+                   message=f"a sample value is at most {MAX_SAMPLE_CHARS} characters")
+
+
 def _builder_values(design: dict, samples: dict[str, str] | None) -> dict[str, str]:
     """What a schema 2 design prints in the builder's preview and test
     print: the portal's mock values, shaped like `field_values` (a From-To
@@ -914,12 +927,7 @@ async def compile_template(
     if body.samples is not None and not v2:
         raise _err(422, "bad_field", field="samples",
                    message="sample values belong to builder templates")
-    if body.samples is not None and len(body.samples) > MAX_COMPILE_SAMPLES:
-        raise _err(422, "bad_field", field="samples",
-                   message=f"at most {MAX_COMPILE_SAMPLES} sample values")
-    if body.samples and max(map(len, body.samples.values())) > MAX_SAMPLE_CHARS:
-        raise _err(422, "bad_field", field="samples",
-                   message=f"a sample value is at most {MAX_SAMPLE_CHARS} characters")
+    _check_samples(body.samples)
     if v2:
         subs = _builder_values(body.design, body.samples)
     else:

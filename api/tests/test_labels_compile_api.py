@@ -176,3 +176,20 @@ async def test_an_unbounded_expected_length_is_refused(client, db, seeded_user):
                               json={"design": huge})
     assert resp.status_code == 422
     assert resp.json()["detail"]["problems"] == ["f1: expectedLength must be at most 64"]
+
+
+async def test_a_qr_value_too_long_is_a_design_problem(client, db, seeded_user):
+    """security-3: past QR version 10 the compile answers 422 with the QR
+    message, not a 500."""
+    hdrs = await login(client)
+    qr = {"schema": 2, "size": {"w": 4, "h": 2}, "elements": [
+        {"id": "q1", "type": "qr", "field": "asset_id", "x": 0.1, "y": 0.1, "w": 1, "h": 1,
+         "rotation": 0}]}
+    resp = await client.post("/labels/templates/compile", headers=hdrs, json=_body(
+        design=qr, dpi_key="300", samples={"asset_id": "a" * 300}))
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "bad_design", "problems": [
+        "q1: QR data too long for version 10 at error correction M (300 bytes)"]}
+    resp = await client.post("/labels/templates/compile", headers=hdrs, json=_body(
+        design=qr, dpi_key="300", samples={"asset_id": "a" * 213}))
+    assert resp.status_code == 200, resp.text

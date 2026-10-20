@@ -170,3 +170,33 @@ def test_counts_and_lines_are_bounded():
     d = parse_design(_v2(_field(expectedLength=64, maxChars=64), {**text, "lines": 50}))
     assert (d.elements[0].expected_length, d.elements[0].max_chars) == (64, 64)
     assert d.elements[1].lines == 50
+
+
+def test_non_finite_numbers_are_refused():
+    """security-2: Infinity/NaN parse from JSON; they must be a design
+    problem, not an OverflowError in the compiler."""
+    line = {"id": "l1", "type": "line", "strokeIn": 0.02, "x": 0, "y": 0, "w": 1, "h": 0,
+            "rotation": 0}
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        for el, key in ((_field(x=bad), "x"), (_field(sizePt=bad), "sizePt"),
+                        ({**line, "strokeIn": bad}, "strokeIn")):
+            with pytest.raises(DesignError) as exc:
+                parse_design(_v2(el))
+            assert key in str(exc.value), (el, str(exc.value))
+        with pytest.raises(DesignError) as exc:
+            parse_design({**_v2(), "size": {"w": bad, "h": 2}})
+        assert "size" in str(exc.value)
+        with pytest.raises(DesignError) as exc:
+            parse_design({**V1, "elements": [{**V1["elements"][0], "fontSizePt": bad}]})
+        assert "fontSizePt" in str(exc.value)
+
+
+def test_element_count_is_bounded():
+    """M3: a design holds at most 500 elements (each save copies the design
+    into versions and every child, and rides every kiosk sync)."""
+    line = {"id": "l", "type": "line", "strokeIn": 0.02, "x": 0, "y": 0, "w": 1, "h": 0,
+            "rotation": 0}
+    assert len(parse_design(_v2(*[line] * 500)).elements) == 500
+    with pytest.raises(DesignError) as exc:
+        parse_design(_v2(*[line] * 501))
+    assert exc.value.problems == ["a design holds at most 500 elements"]

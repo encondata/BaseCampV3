@@ -24,6 +24,7 @@ metrics, and the compiler never measures text."""
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -44,6 +45,9 @@ STRIP_WHERES = ("front", "rear", "anywhere")
 # allocate whatever a request asks for.
 MAX_COUNT = 64
 MAX_LINES = 50
+# every save copies the design into a version row and each DPI child, and
+# it rides every kiosk sync
+MAX_ELEMENTS = 500
 
 
 class DesignError(ValueError):
@@ -204,7 +208,8 @@ def element_hidden(el: object, values: Mapping[str, str]) -> bool:
 
 
 def _num(v) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
+    """A finite number: JSON's Infinity/NaN parse, but no length is one."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
 def _int(v) -> bool:
@@ -488,6 +493,8 @@ def parse_design(raw: object) -> Design:
     elements = raw.get("elements")
     if not isinstance(elements, list):
         raise DesignError(["elements must be a list"])
+    if len(elements) > MAX_ELEMENTS:
+        raise DesignError([f"a design holds at most {MAX_ELEMENTS} elements"])
     splits = _splits(raw.get("splits"), problems) if schema == 2 else {}
 
     parsed: list[object] = []

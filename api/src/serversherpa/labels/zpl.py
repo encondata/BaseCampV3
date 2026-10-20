@@ -25,7 +25,7 @@ from serversherpa.labels.model import (
     BarcodeEl, BoxEl, Design, FieldEl, LineEl, QrEl, TextEl, element_hidden,
     element_value,
 )
-from serversherpa.labels.qr import qr_modules
+from serversherpa.labels.qr import QrTooLong, qr_modules
 from serversherpa.labels.tokens import TOKEN_RE
 
 _ROT = {0: "N", 90: "R", 180: "I", 270: "B"}
@@ -177,7 +177,10 @@ def _v2_qr(el: QrEl | FieldEl, value: str, dpi: int) -> str:
     printer's 10; the symbol is centered on the box, so a capped one stays
     where the design put it. ^BQ prints upright only (N): a square symbol
     looks the same at any rotation, which stays in the model for the canvas."""
-    modules = qr_modules(value)
+    try:
+        modules = qr_modules(value)
+    except QrTooLong as e:
+        raise QrTooLong(f"{el.id}: {e.problems[0]}") from e
     wd, hd = _dots(el.w, dpi), _dots(el.h, dpi)
     mag = min(10, max(1, round(wd / modules)))
     side = modules * mag

@@ -193,6 +193,31 @@ async def test_parent_metadata_flows_to_children(client, db, seeded_user):
     assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_field"
 
 
+async def test_stored_samples_are_capped_like_the_compile(client, db, seeded_user):
+    """M3: create and PATCH hold samples to the compile route's caps."""
+    hdrs = await _super(db, client)
+    many = {f"ft:col {i}": "x" for i in range(201)}
+    long_one = {"asset_id": "9" * 501}
+    for samples, message in ((many, "at most 200 sample values"),
+                             (long_one, "a sample value is at most 500 characters")):
+        r = await client.post(URL, headers=hdrs, json=_body(samples=samples))
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"] == {"code": "bad_field", "field": "samples",
+                                      "message": message}
+    assert await db.scalar(select(func.count()).select_from(LabelTemplate)) == 0
+    parent = await _create(client, hdrs)
+    for samples, message in ((many, "at most 200 sample values"),
+                             (long_one, "a sample value is at most 500 characters")):
+        r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs,
+                               json={"samples": samples})
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"] == {"code": "bad_field", "field": "samples",
+                                      "message": message}
+    edge = {**{f"ft:col {i}": "x" for i in range(199)}, "asset_id": "9" * 500}
+    r = await client.patch(f"{URL}/{parent['id']}", headers=hdrs, json={"samples": edge})
+    assert r.status_code == 200, r.text
+
+
 # ── update from parent ──────────────────────────────────────────────
 
 async def _customize_and_save(client, hdrs, parent_id, child_id, dx):

@@ -6,7 +6,17 @@ so it can pick a magnification that fills the element's box and center the
 symbol on it. The canvas (portal labels code) mirrors this table, so change
 the two together.
 
-Pure: stdlib only (the laptop edge imports serversherpa.labels from api/src)."""
+Pure: no IO (the laptop edge imports serversherpa.labels from api/src)."""
+
+from serversherpa.labels.model import DesignError
+
+
+class QrTooLong(DesignError):
+    """A QR value no level-M symbol up to version 10 holds: a problem with
+    the design's data (422 bad_design on the compile route), not a crash."""
+
+    def __init__(self, message: str):
+        super().__init__([message])
 
 # Data capacity at error correction level M for versions 1-10, as
 # (numeric digits, alphanumeric characters, bytes):
@@ -28,7 +38,7 @@ def qr_modules(value: str) -> int:
     """Modules per side (17 + 4 x version) of the smallest version whose
     level-M capacity holds `value`: numeric when it is ASCII digits only,
     alphanumeric when every character is in the QR alphanumeric set, else
-    byte mode counting UTF-8 bytes. Raises ValueError past version 10."""
+    byte mode counting UTF-8 bytes. Raises QrTooLong past version 10."""
     if set(value) <= NUMERIC:
         mode, length = 0, len(value)
     elif set(value) <= ALPHANUMERIC:
@@ -38,5 +48,5 @@ def qr_modules(value: str) -> int:
     for version, capacity in enumerate(CAPACITY_M, start=1):
         if length <= capacity[mode]:
             return 17 + 4 * version
-    raise ValueError(f"QR data too long for version 10 at error correction M "
-                     f"({length} {('digits', 'characters', 'bytes')[mode]})")
+    raise QrTooLong(f"QR data too long for version 10 at error correction M "
+                    f"({length} {('digits', 'characters', 'bytes')[mode]})")
