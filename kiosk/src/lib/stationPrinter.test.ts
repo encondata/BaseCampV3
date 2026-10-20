@@ -1,14 +1,18 @@
 // @vitest-environment jsdom
 /** One printer interface over WebUSB and the laptop edge's network
  *  transport: the same commands and the same bytes go out either way. */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as api from './api';
 import {
-  checkDpi, fontsUsed, mockTemplateFor, templateFamily, neededFonts, networkStationPrinter, statusProblems,
-  templatesOfKind, usbStationPrinter, parseGetvar, withPrintMode, PEELER_PRESENT_QUERY,
+  builtInFontText, checkDpi, fontFixFor, fontsUsed, isResidentFont, mockTemplateFor, templateFamily,
+  neededFonts, networkStationPrinter, statusProblems, templatesOfKind, usbStationPrinter, parseGetvar,
+  withPrintMode, PEELER_PRESENT_QUERY, RESIDENT_FONTS,
 } from './stationPrinter';
-import type { KioskLabelTemplate } from './api';
+import type { KioskLabelFont, KioskLabelTemplate } from './api';
 import type { ZebraPrinter } from './useZebraPrinter';
 
 const json = (body: unknown, status = 200) =>
@@ -262,5 +266,69 @@ describe('pure helpers', () => {
     const skipped = mockTemplateFor(ts.slice(0, 1), 'top', 300);
     expect(skipped.template).toBeNull();
     expect(skipped.note).toBe('"Generic Rack and RU" is only available at 203 DPI, so the mock-data label is skipped.');
+  });
+});
+
+describe('resident fonts', () => {
+  it("mirrors the resident families' printer objects in the API's labels/fonts.py", () => {
+    const src = readFileSync(join(__dirname, '../../../api/src/serversherpa/labels/fonts.py'), 'utf8');
+    const rows = [...src.matchAll(/_family\("[^"]+", "([^"]+)", (None|"([^"]+)")([^)]*)\)/g)];
+    expect(rows).toHaveLength(8);
+    const resident = rows.filter((m) => /resident=True/.test(m[4])).flatMap((m) => [m[1], m[3]])
+      .filter((n): n is string => Boolean(n));
+    expect([...RESIDENT_FONTS]).toEqual(resident);
+    expect(RESIDENT_FONTS).toEqual(['TT0003M_.TTF']);
+  });
+
+  it('neededFonts still lists a resident font: the check confirms it is on the printer', () => {
+    const t = template({ code: '^XA^A@N,40,40,E:TT0003M_.TTF^FDx^FS^A@N,1,1,E:ROBOTO_R.TTF^FDy^FS^XZ' });
+    expect(neededFonts([t])).toEqual(['ROBOTO_R.TTF', 'TT0003M_.TTF']);
+  });
+
+  it('a resident font is known by name, or by the library flag', () => {
+    expect(isResidentFont('TT0003M_.TTF')).toBe(true);
+    expect(isResidentFont('tt0003m_.ttf')).toBe(true);
+    expect(isResidentFont('ROBOTO_R.TTF')).toBe(false);
+    const flagged: KioskLabelFont = { id: 'f-x', name: 'swiss2.ttf', size: 0, resident: true };
+    expect(isResidentFont('SWISS2.TTF', [flagged])).toBe(true);
+    expect(isResidentFont('SWISS2.TTF')).toBe(false);
+  });
+
+  it('the fix for missing fonts never installs a resident one', () => {
+    const library: KioskLabelFont[] = [
+      // an older library row not yet flagged: the name still keeps it off the install list
+      { id: 'f-s', name: 'TT0003M_.TTF', size: 160676 },
+      { id: 'f-r', name: 'ROBOTO_R.TTF', size: 4, resident: false },
+      { id: 'f-x', name: 'SWISS2.TTF', size: 0, resident: true },
+    ];
+    expect(fontFixFor(['NOPE.TTF', 'ROBOTO_R.TTF', 'SWISS2.TTF', 'TT0003M_.TTF'], library)).toEqual({
+      installable: [library[1]], builtIn: ['SWISS2.TTF', 'TT0003M_.TTF'], notInLibrary: ['NOPE.TTF'],
+    });
+    // missing from the library too: still built in, never "upload it"
+    expect(fontFixFor(['TT0003M_.TTF'], [])).toEqual({
+      installable: [], builtIn: ['TT0003M_.TTF'], notInLibrary: [],
+    });
+  });
+
+  it('says which built-in font the printer is missing', () => {
+    expect(builtInFontText(['TT0003M_.TTF'])).toBe('Printer is missing its built-in font TT0003M_.TTF.');
+    expect(builtInFontText(['A.TTF', 'B.TTF'])).toBe('Printer is missing its built-in fonts A.TTF, B.TTF.');
+  });
+});
+
+describe('the mock-data template', () => {
+  const ts = [
+    template({ id: 'g203', name: 'Generic Rack and RU', dpi_key: '203' }),
+    template({ id: 'v203', name: 'Vegas · 203', family: 'Vegas', dpi_key: '203', code: '', kind: 'design' }),
+  ];
+
+  it("is the station plan's template when it was downloaded", () => {
+    expect(mockTemplateFor(ts, 'top', 203, 'v203')).toEqual({ template: ts[1], note: '' });
+  });
+
+  it("falls back to the Generic Rack and RU rule when the plan's template isn't downloaded or there is none", () => {
+    expect(mockTemplateFor(ts, 'top', 203, 'gone').template?.id).toBe('g203');
+    expect(mockTemplateFor(ts, 'top', 203, null).template?.id).toBe('g203');
+    expect(mockTemplateFor(ts, 'top', 203).template?.id).toBe('g203');
   });
 });

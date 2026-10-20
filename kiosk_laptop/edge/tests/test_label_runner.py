@@ -162,6 +162,22 @@ async def test_no_asset_data_never_prunes(app):
     assert _labels(store) == {}
 
 
+async def test_an_unsupported_template_stores_error_rows(app, caplog):
+    """A design newer than this edge's compiler prints nothing: every label
+    is stored as template_unsupported, the run still finishes, and the log
+    says why."""
+    newer = {"schema": 3, "elements": []}
+    store = _seed(app, templates=[{**_template("t-203", design=newer), "schema_version": 3}])
+    runner = LabelRunner(store)
+    runner.request("setup")
+    await runner.run_pending()
+    labels = _labels(store)
+    assert set(labels) == {"a-1", "a-2"}
+    assert {(r["zpl"], r["error"]) for r in labels.values()} == {(None, "template_unsupported")}
+    assert _run_row(store)["state"] == "idle" and runner.pending is None
+    assert "label template t-203 is design schema 3; this edge prints up to 2" in caplog.text
+
+
 async def test_malformed_saved_settings_give_no_plan(app):
     store = _seed(app)
     for bad in ({"dpi": 203}, {"label_kind": "top", "dpi": "203"},

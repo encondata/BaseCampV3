@@ -25,16 +25,23 @@ router = APIRouter(prefix="/edge/labels")
 
 @router.get("/status")
 async def status(request: Request, _: EdgeSession = Depends(setup_move)) -> dict:
-    """`state` is 'running' only while a run that renders labels is in progress."""
+    """`state` is 'running' only while a run that renders labels is in
+    progress. `unsupported` counts the templates (not labels) whose design
+    is newer than this edge prints: their labels are errors until the
+    laptop is updated."""
     store = request.app.state.store
     row = store.one("SELECT state, reason, total, done FROM label_run WHERE id = 1")
-    counts = store.one("SELECT COUNT(zpl) AS ready, COUNT(error) AS errors FROM station_labels")
+    counts = store.one(
+        "SELECT COUNT(zpl) AS ready, COUNT(error) AS errors, "
+        "COUNT(DISTINCT CASE WHEN error = ? THEN COALESCE(template_id, '') END) AS unsupported "
+        "FROM station_labels", (generate.TEMPLATE_UNSUPPORTED,))
     running = row is not None and row["state"] == "running"
     return {"state": "running" if running else "idle",
             "reason": row["reason"] if row is not None else None,
             "total": row["total"] if row is not None else 0,
             "done": row["done"] if row is not None else 0,
-            "ready": counts["ready"], "errors": counts["errors"]}
+            "ready": counts["ready"], "errors": counts["errors"],
+            "unsupported": counts["unsupported"]}
 
 
 def _dpi(raw: str | None) -> int | None:
@@ -50,8 +57,10 @@ def _dpi(raw: str | None) -> int | None:
 async def plan(request: Request, dpi: str | None = None, kind: str | None = None,
                _: EdgeSession = Depends(setup_move)) -> dict:
     """The template the station's labels would use, with a note per earlier
-    template that isn't available at this DPI. `dpi` / `kind` override the
-    saved settings (setup asks before saving them)."""
+    template that isn't available at this DPI, and `fonts`: the E: fonts
+    it prints with (setup step 5 checks the printer has them; a builder
+    design's `code` is "", so the kiosk can't read them off it). `dpi` /
+    `kind` override the saved settings (setup asks before saving them)."""
     if kind is not None and kind not in laptop_setup.LABEL_KINDS:
         raise err(422, "bad_request")
     built = generate.build_plan(request.app.state.store, label_kind=kind, dpi=_dpi(dpi))
@@ -61,7 +70,8 @@ async def plan(request: Request, dpi: str | None = None, kind: str | None = None
     template = None if t is None else {
         "id": t.id, "name": (built.template_json or {}).get("name"), "family": t.family,
         "dpi_key": t.dpi_key, "version": t.version}
-    return {"template": template, "notes": built.notes}
+    return {"template": template, "notes": built.notes,
+            "fonts": generate.template_fonts(built.template_json)}
 
 
 @router.get("/asset/{asset_id}")

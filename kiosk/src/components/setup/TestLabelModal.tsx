@@ -3,10 +3,14 @@
  * - an alignment label: Printer tools' concentric boxes
  *   (`alignmentTestZpl`, previewed with `alignmentInsets`) at 4x2 or 2x1
  *   (4x2 for a Top station, 2x1 for Front) at the printer's DPI;
- * - a mock-data label: "Generic Rack and RU" for Top, the Front template
- *   for Front, at the printer's DPI, filled with sample values by the
- *   portal's own renderer (`POST /kiosk/labels/test-render`). The kiosk
- *   never fills placeholders itself. A template only at another DPI is
+ * - a mock-data label: the template the station's plan picks at the
+ *   printer's DPI (`GET /edge/labels/plan`, the one its labels print
+ *   with), filled with the portal's fixed mock values by the portal's own
+ *   renderer (`POST /kiosk/labels/test-render`). The kiosk never fills
+ *   placeholders itself, and a template's own sample values never reach
+ *   it. When the plan can't be read, picks none, or picks a template that
+ *   wasn't downloaded: "Generic Rack and RU" for Top, the Front template
+ *   for Front, at the printer's DPI; a template only at another DPI is
  *   skipped with a note.
  *
  * Every print goes through `applyPrintSettings` with the station's
@@ -23,7 +27,9 @@ import {
   alignmentTestZpl, applyPrintSettings, clampSetting, DEFAULT_PRINT_SETTINGS,
 } from '@portal/lib/printLabels';
 
-import { ApiError, postTestRender, type KioskLabelTemplate, type LabelKind } from '../../lib/api';
+import {
+  ApiError, getLabelPlan, postTestRender, type KioskLabelTemplate, type LabelKind,
+} from '../../lib/api';
 import { mockTemplateFor, withPrintMode, type StationPrinter } from '../../lib/stationPrinter';
 import { ChoiceCard } from '../printers/ChoiceCard';
 import { alignmentInsets } from '../printers/AlignmentTestModal';
@@ -69,12 +75,28 @@ export default function TestLabelModal({
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose, busy]);
 
-  const mock = useMemo(() => mockTemplateFor(templates, labelKind, dpi), [templates, labelKind, dpi]);
+  // The plan's template id: undefined while asking, null when the plan
+  // can't be read or picks none (then the Generic / Front rule decides).
+  const [planId, setPlanId] = useState<string | null | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    setPlanId(undefined);
+    getLabelPlan({ dpi, kind: labelKind })
+      .then((plan) => { if (live) setPlanId(plan.template?.id ?? null); })
+      .catch(() => { if (live) setPlanId(null); });
+    return () => { live = false; };
+  }, [dpi, labelKind]);
+
+  const planning = planId === undefined;
+  const mock = useMemo(
+    () => mockTemplateFor(templates, labelKind, dpi, planId),
+    [templates, labelKind, dpi, planId],
+  );
   const size = SIZES[sizeKey];
   const dims = { w: Math.round(size.w * dpi), h: Math.round(size.h * dpi) };
   const x = clampSetting('horizontalOffset', hText);
   const y = clampSetting('verticalOffset', vText);
-  const canPrint = choice === 'alignment' || mock.template !== null;
+  const canPrint = choice === 'alignment' || (!planning && mock.template !== null);
 
   const setOffset = (axis: 'x' | 'y', text: string) => {
     if (axis === 'x') setHText(text); else setVText(text);
@@ -191,6 +213,8 @@ export default function TestLabelModal({
                   </div>
                   <p className="page-hint">{dims.w} × {dims.h} dots at {dpi} DPI</p>
                 </>
+              ) : planning ? (
+                <p className="page-hint" role="status">Finding the station&apos;s template…</p>
               ) : mock.template ? (
                 <p className="page-hint">
                   Prints {mock.template.name} at {dpi} DPI with sample values, filled in by the portal.

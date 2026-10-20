@@ -69,15 +69,19 @@ export const NOT_ON_MOVE_TEXT = "This asset isn't on this move.";
 export const PRINTER_SILENT_TEXT = "The printer didn't answer. Check that it's on and connected.";
 export const REGENERATING_TEXT = 'Labels are being regenerated. Scan again when it finishes.';
 export const NO_SETTINGS_TEXT = "This station's printer settings couldn't be read. Open Kiosk Setup.";
+/** The template is a newer design than this laptop's edge prints. */
+export const NEEDS_UPDATE_TEXT = 'This laptop needs an update to print this template.';
 
+/** What an entry says for each error the edge stores on a label. */
 const LABEL_REASONS: Record<string, string> = {
-  no_template_at_dpi: "no template at this printer's DPI",
-  template_failed: "the label template couldn't be built",
+  no_template_at_dpi: "No label for this asset: no template at this printer's DPI",
+  template_failed: "No label for this asset: the label template couldn't be built",
+  template_unsupported: NEEDS_UPDATE_TEXT,
 };
 
 export function noLabelText(reason: string | null): string {
-  const why = reason ? (LABEL_REASONS[reason] ?? reason) : 'none was generated for it';
-  return `No label for this asset: ${why}`;
+  if (reason && Object.hasOwn(LABEL_REASONS, reason)) return LABEL_REASONS[reason];
+  return `No label for this asset: ${reason || 'none was generated for it'}`;
 }
 
 function labelErrorText(err: unknown): string {

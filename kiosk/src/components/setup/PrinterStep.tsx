@@ -12,10 +12,14 @@
  * - Ready to print: `~HS` reports no paper out, head open or pause;
  * - Peeler: whether a peeler is fitted (SGD `sensor.peeler_present`). It
  *   never fails; it decides whether labels print peel-off or tear-off;
- * - Fonts: every E: font the plan's template uses is on the printer (when
- *   the plan call failed, every template of the kind's fonts). A missing
- *   font that's in the portal's library installs from here; one that isn't
- *   stays red with what to do.
+ * - Fonts: every E: font the plan's template uses is on the printer (the
+ *   plan names them, since a label builder design's `code` is empty; an
+ *   edge that doesn't reads them off the template's code, and when the
+ *   plan call failed, off every template of the kind). A missing font
+ *   that's in the portal's library installs from here; one that isn't
+ *   stays red with what to do. A resident font (Zebra's built-in Swiss
+ *   721, `TT0003M_.TTF`) is only checked: missing, it stays red with no
+ *   Install button.
  *
  * Problems say what to fix, with Recheck. Finish needs every row green;
  * "Finish anyway" is for a person signed in with a user account and never
@@ -34,6 +38,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { HostIdentification, HostStatus, UsbDeviceLike } from '@portal/labels/zebraUsb';
+import { naturalCompare } from '@portal/lib/naturalSort';
 
 import { useKioskAuth } from '../../auth/KioskAuthContext';
 import {
@@ -43,8 +48,8 @@ import {
 } from '../../lib/api';
 import { getLabelTemplates } from '../../lib/labelTemplates';
 import {
-  checkDpi, KIND_LABEL, neededFonts, networkStationPrinter, readFonts, statusProblems,
-  templatesOfKind, usbStationPrinter, type StationPrinter,
+  builtInFontText, checkDpi, fontFixFor, isResidentFont, KIND_LABEL, neededFonts, networkStationPrinter,
+  readFonts, statusProblems, templatesOfKind, usbStationPrinter, type FontFix, type StationPrinter,
 } from '../../lib/stationPrinter';
 import { useSyncStatus } from '../../lib/sync';
 import { useZebraPrinter, type ZebraPrinter } from '../../lib/useZebraPrinter';
@@ -144,7 +149,7 @@ export default function PrinterStep({
   const [running, setRunning] = useState<CheckKey | null>(null);
   const [identity, setIdentity] = useState<HostIdentification | null>(null);
   const [hostStatus, setHostStatus] = useState<HostStatus | null>(null);
-  const [fontFix, setFontFix] = useState<{ installable: KioskLabelFont[]; notInLibrary: string[] } | null>(null);
+  const [fontFix, setFontFix] = useState<FontFix | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState('');
   const [offsets, setOffsets] = useState<Offsets>({ x: initial?.offset_x ?? 0, y: initial?.offset_y ?? 0 });
@@ -233,11 +238,17 @@ export default function PrinterStep({
     // (none when it picks none); every template of the kind when there is
     // no plan, or its template isn't among the downloaded ones.
     let fontTemplates = templatesOfKind(ts, labelKind);
+    // The plan's own list when the edge sends one (a builder design's
+    // fonts aren't in its code).
+    let planFonts: string[] | null = null;
     try {
       const plan = await getLabelPlan({ dpi: ident.dpi, kind: labelKind });
       const picked = plan.template ? ts.find((t) => t.id === plan.template?.id) : undefined;
       if (!plan.template) fontTemplates = [];
       else if (picked) fontTemplates = [picked];
+      if (plan.template && Array.isArray(plan.fonts)) {
+        planFonts = [...new Set(plan.fonts.map((n) => n.toUpperCase()))].sort(naturalCompare);
+      }
       dpiResult = plan.template
         ? { state: 'ok', detail: plan.template.name, notes: plan.notes }
         : { state: 'fail', detail: `No ${KIND_LABEL[labelKind]} template at ${ident.dpi} DPI`, notes: plan.notes };
@@ -272,7 +283,7 @@ export default function PrinterStep({
     put('peeler', { state: 'ok', detail: peelerDetail(present) });
 
     setRunning('fonts');
-    const needed = neededFonts(fontTemplates);
+    const needed = planFonts ?? neededFonts(fontTemplates);
     if (needed.length === 0) {
       put('fonts', { state: 'ok', detail: 'No printer fonts needed.' });
     } else {
@@ -291,19 +302,26 @@ export default function PrinterStep({
         if (missing.length === 0) {
           put('fonts', { state: 'ok' });
         } else {
-          try {
-            const library = await fetchKioskLabelFonts(initiativeId);
+          // A built-in font is never installed, so it needs no library.
+          let library: KioskLabelFont[] = [];
+          let libraryError = '';
+          if (missing.some((n) => !isResidentFont(n))) {
+            try {
+              library = (await fetchKioskLabelFonts(initiativeId)).fonts;
+            } catch (err) {
+              libraryError = codeOf(err);
+            }
             if (!live()) return;
-            const installable = library.fonts.filter((f) => missing.includes(f.name.toUpperCase()));
-            const inLibrary = new Set(installable.map((f) => f.name.toUpperCase()));
-            setFontFix({ installable, notInLibrary: missing.filter((n) => !inLibrary.has(n)) });
-            put('fonts', { state: 'fail', detail: `Missing: ${missing.join(', ')}.` });
-          } catch (err) {
-            put('fonts', {
-              state: 'fail',
-              detail: `Missing: ${missing.join(', ')}. Couldn't load the font library (${codeOf(err)}).`,
-            });
           }
+          const fix = fontFixFor(missing, library);
+          const others = missing.filter((n) => !fix.builtIn.includes(n));
+          const parts = [
+            others.length > 0 ? `Missing: ${others.join(', ')}.` : '',
+            others.length > 0 && libraryError ? `Couldn't load the font library (${libraryError}).` : '',
+            fix.builtIn.length > 0 ? builtInFontText(fix.builtIn) : '',
+          ];
+          if (!libraryError) setFontFix(fix);
+          put('fonts', { state: 'fail', detail: parts.filter(Boolean).join(' ') });
         }
       }
     }

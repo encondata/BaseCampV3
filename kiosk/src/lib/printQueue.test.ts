@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ApiError, type LabelStationSettings, type StationLabel } from './api';
 import {
-  createPrintQueue, NO_SETTINGS_TEXT, PRINTER_SILENT_TEXT,
+  createPrintQueue, NEEDS_UPDATE_TEXT, NO_SETTINGS_TEXT, noLabelText, PRINTER_SILENT_TEXT,
   type PrintAsset, type PrintedJob, type QueueState,
 } from './printQueue';
 import { withPrintMode, type StationPrinter } from './stationPrinter';
@@ -230,6 +230,20 @@ describe('createPrintQueue', () => {
     q2.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
     await settled(q2.state);
     expect(q2.state().entries[0].message).toBe("No label for this asset: the label template couldn't be built");
+  });
+
+  it('a template too new for this laptop says to update it, and prints nothing', async () => {
+    const { printer, sent } = fakePrinter();
+    const q = setup({ printer, getLabel: async (id) => label(id, { zpl: null, error: 'template_unsupported' }) });
+    q.queue.enqueue({ asset: asset(1), scannedValue: '10001' });
+    await settled(q.state);
+    const entry = q.state().entries[0];
+    expect(entry.state).toBe('failed');
+    expect(entry.message).toBe('This laptop needs an update to print this template.');
+    expect(entry.message).toBe(NEEDS_UPDATE_TEXT);
+    expect(noLabelText('template_unsupported')).toBe(NEEDS_UPDATE_TEXT);
+    expect(sent).toEqual([]);
+    expect(q.recordPrinted).not.toHaveBeenCalled();
   });
 
   it('labels_regenerating asks to scan again when it finishes', async () => {

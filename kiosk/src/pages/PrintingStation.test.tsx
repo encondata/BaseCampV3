@@ -11,7 +11,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { HostStatus } from '@portal/labels/zebraUsb';
 
-const api = vi.hoisted(() => ({ getStationLabel: vi.fn(), postLabelPrinted: vi.fn() }));
+const api = vi.hoisted(() => ({ getStationLabel: vi.fn(), postLabelPrinted: vi.fn(), getLabelRunStatus: vi.fn() }));
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
   return { ...actual, ...api };
@@ -83,7 +83,12 @@ beforeEach(async () => {
     asset_id: id, zpl: '^XA^FDLABEL^FS^XZ', error: null, template_name: 'Generic', dpi: 203, label_kind: 'top',
   }));
   api.postLabelPrinted.mockReset().mockResolvedValue(undefined);
+  api.getLabelRunStatus.mockReset().mockResolvedValue(runStatus(0));
 });
+
+function runStatus(unsupported: number | undefined) {
+  return { state: 'idle', reason: 'setup', total: 1, done: 1, ready: 1, errors: 0, unsupported };
+}
 
 afterEach(() => { cleanup(); clearFlash(); vi.clearAllMocks(); });
 
@@ -179,4 +184,54 @@ it('Retry prints a failed scan, records it once, and the scan box gets focus bac
   expect(api.postLabelPrinted).toHaveBeenCalledTimes(1);
   expect(api.postLabelPrinted).toHaveBeenCalledWith(expect.objectContaining({ asset_id: 'a-1', scanned_value: '10042' }));
   await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Scan value')));
+});
+
+it('a template too new for this laptop says to update it, and prints nothing', async () => {
+  api.getStationLabel.mockImplementation(async (id: string) => ({
+    asset_id: id, zpl: null, error: 'template_unsupported', template_name: 'Vegas · 203', dpi: 203,
+    label_kind: 'top',
+  }));
+  render_();
+  await scan('10042');
+  expect((await screen.findAllByText('This laptop needs an update to print this template.')).length)
+    .toBeGreaterThan(0);
+  expect(station.sent).toEqual([]);
+  expect(api.postLabelPrinted).not.toHaveBeenCalled();
+  expect(sound.playScanSound).toHaveBeenCalledWith('not_found');
+});
+
+it('the header says how many templates need a laptop update', async () => {
+  api.getLabelRunStatus.mockResolvedValue(runStatus(1));
+  render_();
+  expect(await screen.findByText('1 template needs a laptop update.')).toBeTruthy();
+  cleanup();
+
+  api.getLabelRunStatus.mockResolvedValue(runStatus(2));
+  render_();
+  expect(await screen.findByText('2 templates need a laptop update.')).toBeTruthy();
+  cleanup();
+
+  // none, an older edge that doesn't count them, or no answer: nothing to say
+  for (const answer of [runStatus(0), runStatus(undefined), null]) {
+    if (answer) api.getLabelRunStatus.mockResolvedValue(answer);
+    else api.getLabelRunStatus.mockRejectedValue(new Error('offline'));
+    api.getLabelRunStatus.mockClear();
+    render_();
+    await waitFor(() => expect(api.getLabelRunStatus).toHaveBeenCalled());
+    await screen.findByLabelText('Scan value');
+    expect(screen.queryByText(/need(s)? a laptop update/)).toBeNull();
+    cleanup();
+  }
+});
+
+it('a scan that hits a too-new template refreshes the header count', async () => {
+  api.getStationLabel.mockImplementation(async (id: string) => ({
+    asset_id: id, zpl: null, error: 'template_unsupported', template_name: 'Vegas · 203', dpi: 203,
+    label_kind: 'top',
+  }));
+  render_();
+  await waitFor(() => expect(api.getLabelRunStatus).toHaveBeenCalledTimes(1));
+  api.getLabelRunStatus.mockResolvedValue(runStatus(1));
+  await scan('10042');
+  expect(await screen.findByText('1 template needs a laptop update.')).toBeTruthy();
 });

@@ -3,7 +3,10 @@ with the portal's own label code (api/src/serversherpa/labels)."""
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import serversherpa.labels as labels_pkg
+from serversherpa.labels.fields import MOCK_VALUES, design_field_keys, field_values
 from serversherpa.labels.render import render_template
 
 from edge import laptop_setup
@@ -62,7 +65,7 @@ def _put_cache(store, path: str, body: dict) -> None:
                   "ON CONFLICT(key) DO UPDATE SET body = excluded.body", (path, json.dumps(body)))
 
 
-def _seed(app, *, assets=None, templates=None, dpi=203, label_kind="top"):
+def _seed(app, *, assets=None, templates=None, dpi=203, label_kind="top", context=None):
     store = app.state.store
     laptop_setup.save(store, {"initiative_id": MOVE}, "label")
     laptop_setup.save_label_station(store, {
@@ -74,9 +77,9 @@ def _seed(app, *, assets=None, templates=None, dpi=203, label_kind="top"):
         "initiative_id": MOVE, "initiative_name": "Move 1",
         "generated_at": "2026-10-19T00:00:00Z",
         "assets": [_asset(1), _asset(2)] if assets is None else assets,
-        "label_context": {"move_name": "Move 1", "move_day": "2026-11-03",
-                          "source_site": "Old DC", "destination_site": "New DC",
-                          "catalog_keys": CATALOG}})
+        "label_context": context or {"move_name": "Move 1", "move_day": "2026-11-03",
+                                     "source_site": "Old DC", "destination_site": "New DC",
+                                     "catalog_keys": CATALOG}})
     _put_cache(store, templates_path, {
         "initiative_id": MOVE, "generated_at": "2026-10-19T00:00:00Z",
         "templates": [_template("t-203")] if templates is None else templates})
@@ -318,6 +321,132 @@ def test_sync_json_round_trip_renders_the_portals_bytes(app):
         zpl, error = generate.render_job(plan.template_json, job)
         assert error is None and zpl == expected, job.asset_id
     assert "U14.5 U3" in generate.render_job(plan.template_json, plan.assets[0])[0]
+
+
+# ── schema 2: label builder designs ─────────────────────────────────
+
+FIXTURES = Path(labels_pkg.__file__).parent / "fixtures"
+VEGAS = json.loads((FIXTURES / "vegas_v2.json").read_text())
+VEGAS_KEYS = design_field_keys(VEGAS)
+VEGAS_CONTEXT = {"move_name": "Sample Move", "move_code": "SMPL", "move_day": "2026-09-01",
+                 "source_site": "Sample Site A", "source_site_code": "SITE-A",
+                 "destination_site": "Sample Site B", "destination_site_code": "SITE-B",
+                 "catalog_keys": CATALOG}
+
+
+def _sync_item(**over) -> dict:
+    """One asset as /kiosk/sync/assets serializes it, every builder field
+    included, holding MOCK_VALUES' text (the RUs as the stored numeric text)."""
+    item = {
+        "id": "a-1", "asset_id": "100000", "legacy_id": 100000, "name": "SAMPLE-SERVER-01",
+        "rfid": "000000000000000000100000", "serial_number": "SN0000001", "make": "Dell",
+        "model": "PowerEdge R740", "make_model": "Dell PowerEdge R740", "container_id": None,
+        "source_rack": "09.01.05D.02.10", "source_ru": "12", "source_ru_raw": "12.00",
+        "source_position": "Front", "source_pod": "P4",
+        "destination_rack": "14.01.07C.02.03", "destination_ru": "12",
+        "destination_ru_raw": "12.00", "destination_position": "Front",
+        "destination_pod": "D4", "priority_wave": "Wave 1", "disposition": "Relocate",
+        "pod_number": "P4", "asset_status": "racked", "asset_status_label": "Racked",
+        "has_rails": True, "location_detail": "F01 U18", "owner": "Data Services",
+        "cable_info": {**{f"data_{i}": f"SW01/0{i}" for i in range(1, 7)},
+                       "mgmt_1": "MGMT01/01", "mgmt_2": "MGMT01/02"},
+        "vendor_involved": False, "roster_status": "labeled",
+        "roster_status_label": "Labeled", "raw_ft": None, "label": {}}
+    item.update(over)
+    return item
+
+
+def _vegas(tid="v-300", **over) -> dict:
+    """The Vegas fixture as the template sync sends a builder child."""
+    return {**_template(tid, family="Vegas", dpi="300", design=VEGAS), "schema_version": 2,
+            **over}
+
+
+def _seed_vegas(app, *, item=None, context=VEGAS_CONTEXT, templates=None):
+    return _seed(app, dpi=300, assets=[item or _sync_item()],
+                 templates=templates or [_vegas()], context=context)
+
+
+def test_a_v2_design_prints_the_builder_field_values(app):
+    """The Vegas fixture from a sync-shaped item and label_context: the
+    edge's bytes are render_template's with field_values(item, context).
+    The item holds MOCK_VALUES' text for every field the fixture places,
+    so the bytes are also the golden the compiler test pins."""
+    store = _seed_vegas(app)
+    plan = generate.build_plan(store)
+    values = field_values(_sync_item(), VEGAS_CONTEXT)
+    assert {k: values[k] for k in VEGAS_KEYS} == {k: MOCK_VALUES[k] for k in VEGAS_KEYS}
+    source = SimpleNamespace(kind="design", code=None, design=VEGAS, language_key="zpl")
+    expected, unknown = render_template(source, values, width_in=4.0, height_in=2.0, dots=300)
+    zpl, error = generate.render_job(plan.template_json, plan.assets[0])
+    assert error is None and unknown == set()
+    assert zpl == expected
+    assert zpl + "\n" == (FIXTURES / "vegas_v2_300.zpl").read_text()
+    assert "^FD07C^FS" in zpl and "^A@N," in zpl
+
+
+def test_a_v2_label_changes_only_with_what_it_prints(app):
+    """A v2 job carries only the fields its design places: a status that
+    moves as the asset is scanned never regenerates its label."""
+    store = _seed_vegas(app)
+    plan = generate.build_plan(store)
+    assert set(plan.assets[0].values) == VEGAS_KEYS
+    _apply_all(store, plan)
+    assert generate.changed_jobs(store, generate.build_plan(store)) == []
+
+    _seed_vegas(app, item=_sync_item(roster_status="received", roster_status_label="Received",
+                                     asset_status_label="In transit", owner="Ops"))
+    assert generate.changed_jobs(store, generate.build_plan(store)) == []
+
+    _seed_vegas(app, item=_sync_item(destination_rack="14.01.07C.02.04"))
+    changed = generate.changed_jobs(store, generate.build_plan(store))
+    assert [j.asset_id for j in changed] == ["a-1"]
+    assert "^FD04^FS" in generate.render_job(generate.build_plan(store).template_json,
+                                             changed[0])[0]
+
+    _seed_vegas(app, context={**VEGAS_CONTEXT, "source_site_code": "SITE-Z"})
+    assert len(generate.changed_jobs(store, generate.build_plan(store))) == 1
+
+
+def test_a_v1_design_keeps_the_catalog_values(app):
+    store = _seed(app, templates=[{**_template("t-203", design={**DESIGN, "schema": 1}),
+                                   "schema_version": 1}])
+    plan = generate.build_plan(store)
+    assert plan.assets[0].values == {k: _asset(1)["label"][k] for k in CATALOG}
+    zpl, error = generate.render_job(plan.template_json, plan.assets[0])
+    assert error is None and "web01 / U14.5" in zpl
+
+
+def test_template_schema_reads_the_design_like_the_server(app):
+    schema = generate.template_schema
+    assert schema(_template("c", kind="code", code="^XA^XZ")) == 1
+    assert schema(_template("d", design=DESIGN)) == 1
+    assert schema(_vegas()) == 2
+    for odd in (True, "3", 3.0, None, [3]):
+        assert schema(_template("d", design={**DESIGN, "schema": odd})) == 1, odd
+    assert schema(_template("d", design={**DESIGN, "schema": 3})) == 3
+    # the sync's own schema_version counts too (a kind this edge doesn't know)
+    assert schema({**_template("x", kind="hologram"), "schema_version": 4}) == 4
+    assert schema({**_template("d", design=DESIGN), "schema_version": True}) == 1
+    assert generate.SUPPORTED_SCHEMA == 2
+
+
+def test_a_newer_schema_is_template_unsupported_and_prints_nothing(app, monkeypatch):
+    newer = {"schema": 3, "elements": [{"type": "hologram", "field": "asset_id"}]}
+    store = _seed(app, templates=[{**_template("t-203", design=newer), "schema_version": 3}])
+    plan = generate.build_plan(store)
+    assert plan.template.id == "t-203"  # still the station's pick: it fails visibly
+    assert generate.render_job(plan.template_json, plan.assets[0]) \
+        == (None, "template_unsupported")
+    _apply_all(store, plan)
+    rows = _rows(store)
+    assert {(r["zpl"], r["error"], r["template_id"]) for r in rows.values()} \
+        == {(None, "template_unsupported", "t-203")}
+    assert generate.changed_jobs(store, generate.build_plan(store)) == []
+
+    # a laptop update that knows schema 3 redoes every label
+    monkeypatch.setattr(generate, "SUPPORTED_SCHEMA", 3)
+    assert len(generate.changed_jobs(store, generate.build_plan(store))) == 2
 
 
 def test_prune_removes_assets_off_the_move(app):

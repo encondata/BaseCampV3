@@ -466,8 +466,9 @@ export type KioskLabelTemplateReason =
 /** One label template from the move's set (`/kiosk/sync/label-templates`).
  *  `code` is the printer code at the template's own size and DPI with its
  *  `{placeholder}` tokens intact — a design template arrives already
- *  converted. When a design could not convert, `code` is `""` and `error`
- *  says why. `move_site_names` lists only the move's own origin and
+ *  converted, except a label builder design (`schema_version` 2), whose
+ *  `code` is `""`. When a design could not convert, `code` is `""` and
+ *  `error` says why. `move_site_names` lists only the move's own origin and
  *  destination sites the template is linked to. */
 export interface KioskLabelTemplate {
   id: string;
@@ -496,6 +497,11 @@ export interface KioskLabelTemplate {
   design?: Record<string, unknown> | null;
   /** How its site links relate to this move: 'global' when it has none. */
   scope?: 'destination' | 'source' | 'both' | 'global' | 'other';
+  /** The design's schema (1 for code). A label builder child is 2, with
+   *  `code` "" (the laptop edge renders its design); an edge that knows a
+   *  lower schema reports its labels `template_unsupported`. Missing from
+   *  sets cached before it was added. */
+  schema_version?: number;
 }
 
 export interface KioskLabelTemplatesSync {
@@ -1237,8 +1243,10 @@ export interface LabelStationSettings {
   peel: boolean;
 }
 
-/** One font from the portal's library that the move's templates use. */
-export interface KioskLabelFont { id: string; name: string; size: number }
+/** One font from the portal's library that the move's templates use.
+ *  `resident`: built into Zebra printers; the station checks it is there
+ *  and never installs it (its content route refuses it). */
+export interface KioskLabelFont { id: string; name: string; size: number; resident?: boolean }
 
 /** `missing`: fonts the move's templates use that aren't in the library. */
 export interface KioskLabelFonts { fonts: KioskLabelFont[]; missing: string[] }
@@ -1324,7 +1332,9 @@ export async function putLabelStation(settings: LabelStationSettings): Promise<L
 // move gets 403 move_locked.
 
 /** The edge's label run. `reason` keeps the last run's value while idle:
- *  only `state` says whether a run is going. */
+ *  only `state` says whether a run is going. `unsupported` counts the
+ *  templates (not labels) too new for this laptop's edge to print; an
+ *  older edge leaves it out. */
 export interface LabelRunStatus {
   state: 'idle' | 'running';
   reason: 'setup' | 'updates' | null;
@@ -1332,6 +1342,7 @@ export interface LabelRunStatus {
   done: number;
   ready: number;
   errors: number;
+  unsupported?: number;
 }
 
 export async function getLabelRunStatus(): Promise<LabelRunStatus> {
@@ -1341,8 +1352,11 @@ export async function getLabelRunStatus(): Promise<LabelRunStatus> {
 export interface LabelPlanTemplate { id: string; name: string; family: string; dpi_key: string; version: number }
 
 /** Which template the station would print with. `template` is null when
- *  none of the kind is at that DPI; `notes` say which steps fell through. */
-export interface LabelPlan { template: LabelPlanTemplate | null; notes: string[] }
+ *  none of the kind is at that DPI; `notes` say which steps fell through.
+ *  `fonts`: the E: fonts that template prints with (a label builder
+ *  design's `code` is "", so they can't be read off the template); an
+ *  older edge leaves it out. */
+export interface LabelPlan { template: LabelPlanTemplate | null; notes: string[]; fonts?: string[] }
 
 /** The plan for the saved settings, or for `dpi` / `kind` when given.
  *  404 not_label_station; 422 for a bad dpi or kind. */
@@ -1355,7 +1369,8 @@ export async function getLabelPlan(opts: { dpi?: number; kind?: LabelKind } = {}
 }
 
 /** One asset's finished label. `zpl` is null (with `error`) when it
- *  couldn't be generated. */
+ *  couldn't be generated: `no_template_at_dpi`, `template_failed`, or
+ *  `template_unsupported` (a design newer than this laptop's edge). */
 export interface StationLabel {
   asset_id: string;
   zpl: string | null;

@@ -4,7 +4,7 @@ the template a choice would use, and one asset's finished label."""
 import json
 
 from tests.conftest import make_session
-from tests.test_label_generate import _seed, _template
+from tests.test_label_generate import _seed, _template, _vegas
 
 from edge import laptop_setup
 
@@ -18,7 +18,7 @@ async def test_status_and_asset_routes(app, client):
     headers = make_session(app)
     r = await client.get("/edge/labels/status", headers=headers)
     assert r.json() == {"state": "idle", "reason": None, "total": 0, "done": 0,
-                        "ready": 0, "errors": 0}
+                        "ready": 0, "errors": 0, "unsupported": 0}
 
     store = _seed(app, templates=[_template("t-203")])
     runner = app.state.label_runner
@@ -26,7 +26,7 @@ async def test_status_and_asset_routes(app, client):
     await runner.run_pending()
     r = await client.get("/edge/labels/status", headers=headers)
     assert r.json() == {"state": "idle", "reason": "setup", "total": 2, "done": 2,
-                        "ready": 2, "errors": 0}
+                        "ready": 2, "errors": 0, "unsupported": 0}
 
     r = await client.get("/edge/labels/asset/a-1", headers=headers)
     assert r.status_code == 200
@@ -56,6 +56,48 @@ async def test_status_and_asset_routes(app, client):
     assert r.json()["zpl"] is None and r.json()["error"] == "no_template_at_dpi"
 
 
+async def test_unsupported_templates_are_counted_and_each_label_says_so(app, client):
+    """`unsupported` counts the templates (not labels) this laptop's edge
+    is too old to print; their labels are errors with that reason."""
+    headers = make_session(app)
+    newer = {"schema": 3, "elements": []}
+    _seed(app, templates=[{**_template("t-203", design=newer), "schema_version": 3}])
+    runner = app.state.label_runner
+    runner.request("setup")
+    await runner.run_pending()
+    r = await client.get("/edge/labels/status", headers=headers)
+    body = r.json()
+    assert (body["ready"], body["errors"], body["unsupported"]) == (0, 2, 1)
+    r = await client.get("/edge/labels/asset/a-1", headers=headers)
+    assert r.status_code == 200
+    assert r.json()["zpl"] is None and r.json()["error"] == "template_unsupported"
+
+    # the move's template is replaced with one this edge knows
+    _seed(app, templates=[_template("t-203", version=2)])
+    runner.request("updates")
+    await runner.run_pending()
+    body = (await client.get("/edge/labels/status", headers=headers)).json()
+    assert (body["ready"], body["errors"], body["unsupported"]) == (2, 0, 0)
+
+
+async def test_plan_route_names_the_fonts_the_template_prints_with(app, client):
+    """The station checks the plan template's fonts: a code template's from
+    its code, a builder design's from its text elements (its `code` is "")."""
+    headers = make_session(app)
+    _seed(app, templates=[_template("c-203", kind="code",
+                                    code="^XA^A@N,30,30,E:ROBOTO_R.TTF^FDx^FS"
+                                         "^CW1,E:OSWALD_B.TTF^XZ")])
+    r = await client.get("/edge/labels/plan", headers=headers)
+    assert r.json()["fonts"] == ["OSWALD_B.TTF", "ROBOTO_R.TTF"]
+
+    _seed(app, dpi=300, templates=[_vegas()])
+    r = await client.get("/edge/labels/plan", headers=headers)
+    assert r.json()["template"]["id"] == "v-300" and r.json()["fonts"] == ["TT0003M_.TTF"]
+
+    r = await client.get("/edge/labels/plan?dpi=203", headers=headers)
+    assert r.json()["template"] is None and r.json()["fonts"] == []
+
+
 async def test_plan_route_reports_fallthrough_note(app, client):
     headers = make_session(app)
     r = await client.get("/edge/labels/plan", headers=headers)
@@ -76,7 +118,7 @@ async def test_plan_route_reports_fallthrough_note(app, client):
     r = await client.get("/edge/labels/plan?dpi=203", headers=headers)
     assert r.json()["template"]["id"] == "dest-203" and r.json()["notes"] == []
     r = await client.get("/edge/labels/plan?kind=front", headers=headers)
-    assert r.json() == {"template": None, "notes": []}
+    assert r.json() == {"template": None, "notes": [], "fonts": []}
 
     for bad in ("dpi=abc", "dpi=0", "dpi=-3", "kind=side"):
         r = await client.get(f"/edge/labels/plan?{bad}", headers=headers)
