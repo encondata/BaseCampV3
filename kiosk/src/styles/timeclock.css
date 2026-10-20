@@ -222,7 +222,7 @@
   .tcx .tcx-search { max-width: none }
   .tcx .tcx-name-body { max-width: none; display: grid; grid-template-columns: minmax(240px, 1fr) minmax(0, 1.7fr);
     align-items: start }
-  .tcx .tcx-key { min-height: clamp(52px, 8vh, 80px) }
+  .tcx .tcx-key { min-height: clamp(56px, 8vh, 80px) }
 
   .tcx .tcx-confirm { max-width: 1100px; flex-direction: row; justify-content: center; text-align: left;
     gap: clamp(24px, 5vw, 72px) }

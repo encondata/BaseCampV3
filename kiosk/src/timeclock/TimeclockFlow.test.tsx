@@ -15,6 +15,22 @@ vi.mock('../lib/sound', async (importOriginal) => {
   return { ...actual, playScanSound: sound.playScanSound };
 });
 
+// The kiosk's sync status, driven by the tests (kiosk mode re-reads the
+// people list when a sync finishes).
+const syncStore = vi.hoisted(() => {
+  let current: { phase: string } = { phase: 'idle' };
+  const listeners = new Set<() => void>();
+  return {
+    get: () => current,
+    set(next: { phase: string }) { current = next; listeners.forEach((fn) => fn()); },
+    subscribe(fn: () => void) { listeners.add(fn); return () => { listeners.delete(fn); }; },
+  };
+});
+vi.mock('../lib/sync', async () => {
+  const { useSyncExternalStore } = await import('react');
+  return { useSyncStatus: () => useSyncExternalStore(syncStore.subscribe, syncStore.get) };
+});
+
 import { ApiError, type KioskPersonRow, type KioskTimeclockStatus } from '../lib/api';
 import { DEFAULT_APPEARANCE, hslCss } from '../lib/appearance';
 import { clearFlash, readFlash } from '../lib/flash';
@@ -128,6 +144,7 @@ async function toAction(code = `${BADGE}{Enter}`) {
 }
 
 beforeEach(() => {
+  syncStore.set({ phase: 'idle' });
   vi.useFakeTimers({ shouldAdvanceTime: true });
   user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
   backend = fakeBackend();
@@ -230,6 +247,53 @@ describe('Welcome (station)', () => {
     renderFlow();
     await scan('1003{Enter}');
     await waitFor(() => expect(backend.status).toHaveBeenCalledWith('p-short'));
+  });
+
+  it('a partial value with no Enter is cleared after 1.5 s of quiet', async () => {
+    renderFlow();
+    await scan('zz9');
+    expect(scanInput().value).toBe('zz9');
+    act(() => { vi.advanceTimersByTime(1_000); });
+    expect(scanInput().value).toBe('zz9');
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(scanInput().value).toBe('');
+    expect(backend.status).not.toHaveBeenCalled();
+  });
+
+  it('an ambiguous prefix that never gets Enter selects its exact match after 1.5 s', async () => {
+    backend = fakeBackend([SHORT_TAG, LONG_TAG]);
+    renderFlow();
+    await scan('1003');
+    expect(backend.status).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(1_600); });
+    await waitFor(() => expect(backend.status).toHaveBeenCalledWith('p-short'));
+  });
+
+  it('a hung lookup that times out releases the input and says the portal is unreachable', async () => {
+    backend.status.mockImplementation(() => new Promise((_resolve, reject) => {
+      setTimeout(() => reject(new ApiError(0, 'network')), 10_000);
+    }));
+    renderFlow();
+    await scan(`${BADGE}{Enter}`);
+    await waitFor(() => expect(scanInput().disabled).toBe(true));
+    act(() => { vi.advanceTimersByTime(10_000); });
+    expect(await screen.findByText("Can't reach the portal. Try again.")).toBeTruthy();
+    expect(scanInput().disabled).toBe(false);
+    await waitFor(() => expect(document.activeElement).toBe(scanInput()));
+  });
+
+  it('a lookup that answers after the flow unmounted does nothing', async () => {
+    let resolve!: (s: KioskTimeclockStatus) => void;
+    backend.status.mockImplementation(() => new Promise((r) => { resolve = r; }));
+    const { unmount } = renderFlow();
+    await scan(`${BADGE}{Enter}`);
+    await waitFor(() => expect(backend.status).toHaveBeenCalled());
+    unmount();
+    clearFlash();
+    sound.playScanSound.mockClear();
+    await act(async () => { resolve(statusOf(ALEX, false)); });
+    expect(sound.playScanSound).not.toHaveBeenCalled();
+    expect(readFlash()).toBeNull();
   });
 
   it('paused: says so, and both cards are disabled', async () => {
@@ -459,6 +523,27 @@ describe('idle and exits', () => {
     expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Back' }));
     expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
+  it('kiosk mode with no people synced says so, and re-reads the list when a sync finishes', async () => {
+    backend.people.mockResolvedValueOnce([]);
+    renderFlow('kiosk', { onExit: vi.fn() });
+    expect(await screen.findByText('No people on this kiosk. Sync from Kiosk Setup.')).toBeTruthy();
+
+    act(() => { syncStore.set({ phase: 'running' }); });
+    act(() => { syncStore.set({ phase: 'done' }); });
+    await waitFor(() => expect(
+      screen.queryByText('No people on this kiosk. Sync from Kiosk Setup.'),
+    ).toBeNull());
+    await user.type(searchBox(), 'alex');
+    expect(await screen.findByRole('button', { name: /Alex Johnson/ })).toBeTruthy();
+  });
+
+  it('station mode never shows the kiosk sync hint', async () => {
+    backend.people.mockResolvedValue([]);
+    renderFlow();
+    await peopleLoaded();
+    expect(screen.queryByText('No people on this kiosk. Sync from Kiosk Setup.')).toBeNull();
   });
 
   it('Done in kiosk mode calls onExit', async () => {

@@ -31,8 +31,15 @@ import PairPanel from '../components/PairPanel';
 import { ApiError, CLOUD_SIGN_IN_TEXT, type SessionData } from '../lib/api';
 import { useEdgeStatus } from '../lib/edgeStatus';
 import { getIdentity } from '../lib/identity';
+import { useStationInfo } from '../timeclock/stationApi';
+import { useIdle } from '../timeclock/useIdle';
 
 type View = 'password' | 'chooser' | 'link' | 'move';
+
+/** On an armed Time Clock station, an untouched sign-in page goes back to
+ *  the time clock after this long — the station's Welcome gear lands here,
+ *  and a worker who tapped it by mistake must not strand the screen. */
+const TIMECLOCK_RETURN_MS = 60_000;
 
 /** The kiosk's own line under its headline. It is repeated as the form's
  *  hint for narrow screens, where login-light.css hides the whole story
@@ -96,7 +103,7 @@ function KeyIcon() {
 export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { login, loginWithMovePassword, completePair } = useKioskAuth();
+  const { status, login, loginWithMovePassword, completePair } = useKioskAuth();
   const fromState = (location.state as { from?: { pathname?: string } } | null)?.from;
   const from = fromState?.pathname && !fromState.pathname.startsWith('/login') ? fromState.pathname : '/';
 
@@ -180,6 +187,13 @@ export default function Login() {
     navigate(from, { replace: true });
   }, [completePair, navigate, from]);
 
+  // An armed Time Clock station, signed out: offer the way back to its
+  // Welcome screen (`/`), and take it on our own after a quiet minute.
+  const { info: station } = useStationInfo();
+  const timeclockStation = !!station?.timeclock && station.armed && status === 'anon';
+  const backToTimeclock = useCallback(() => navigate('/', { replace: true }), [navigate]);
+  useIdle(timeclockStation, TIMECLOCK_RETURN_MS, backToTimeclock);
+
   const identity = getIdentity();
   // The laptop edge serves the UI on the LAN over plain HTTP too.
   const lanAccess = typeof window !== 'undefined' && window.__KIOSK_CONFIG__?.lanAccess === true;
@@ -216,6 +230,11 @@ export default function Login() {
             )}
             <KioskBanners />
           </div>
+          {timeclockStation && (
+            <button type="button" className="btn-alt kiosk-login-timeclock" onClick={backToTimeclock}>
+              Back to the time clock
+            </button>
+          )}
           <h2 className="form-title">Sign in</h2>
 
           {(view === 'password' || view === 'chooser') && (

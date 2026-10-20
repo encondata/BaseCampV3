@@ -36,3 +36,15 @@ it('scopes every selector under .tcx', () => {
     for (const sel of group.split(',')) expect(sel.trim()).toMatch(/^\.tcx\b/);
   }
 });
+
+it('keyboard keys never shrink below a 56 px touch target', () => {
+  const keyRules = [...rules.matchAll(/([^{}]*\.tcx-key[^{}]*)\{([^}]*)\}/g)]
+    .map((m) => m[2])
+    .filter((body) => /min-height/.test(body));
+  expect(keyRules.length).toBeGreaterThan(0);
+  for (const body of keyRules) {
+    const value = /min-height:\s*([^;]+)/.exec(body)![1].trim();
+    const floor = /^clamp\(\s*(\d+(?:\.\d+)?)px/.exec(value)?.[1] ?? /^(\d+(?:\.\d+)?)px$/.exec(value)?.[1];
+    expect(Number(floor), value).toBeGreaterThanOrEqual(56);
+  }
+});

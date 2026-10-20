@@ -275,6 +275,8 @@
 }
 .login-shell.login-light .btn-alt:hover { border-color: var(--lx-ink); background: #fff }
 .login-shell.login-light .btn-alt svg { width: 22px; height: 22px }
+/* An armed Time Clock station's way back from the sign-in page. */
+.login-shell.login-light .kiosk-login-timeclock { margin: 0 0 18px; min-height: 56px; font-weight: 600 }
 .login-shell .alt-methods { display: grid; gap: 10px; }
 .login-shell .form-error { font-size: 13px; margin: 0; }
 

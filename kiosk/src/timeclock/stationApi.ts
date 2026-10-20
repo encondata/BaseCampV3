@@ -45,6 +45,10 @@ async function edgeError(resp: Response): Promise<ApiError> {
   return new ApiError(resp.status, code, detail);
 }
 
+/** How long a read may hang before it counts as unreachable. A stuck
+ *  status lookup would otherwise freeze the Welcome screen. */
+export const READ_TIMEOUT_MS = 10_000;
+
 async function edgeFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   let resp: Response;
   try {
@@ -54,6 +58,22 @@ async function edgeFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (!resp.ok) throw await edgeError(resp);
   return resp.json() as Promise<T>;
+}
+
+/** A GET that gives up after READ_TIMEOUT_MS as `network`. Punches are
+ *  never timed out here: an abandoned POST may still have been recorded,
+ *  and "not recorded" would then be a lie. */
+async function edgeRead<T>(path: string): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
+  try {
+    return await edgeFetch<T>(path, { signal: controller.signal });
+  } catch (err) {
+    // an abort while the body is still arriving rejects outside edgeFetch's guard
+    throw err instanceof ApiError ? err : new ApiError(0, 'network');
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function postPerson(path: string, personId: string): Promise<KioskTimeclockStatus> {
@@ -67,7 +87,7 @@ function postPerson(path: string, personId: string): Promise<KioskTimeclockStatu
 /** What the edge says about this laptop's station; null on any failure. */
 export async function getStationInfo(): Promise<StationInfo | null> {
   try {
-    return await edgeFetch<StationInfo>('/station');
+    return await edgeRead<StationInfo>('/station');
   } catch {
     return null;
   }
@@ -82,11 +102,11 @@ export async function armDisplay(): Promise<void> {
 }
 
 export async function stationPeople(): Promise<KioskPersonRow[]> {
-  return (await edgeFetch<KioskPeopleSync>('/people')).people;
+  return (await edgeRead<KioskPeopleSync>('/people')).people;
 }
 
 export function stationStatus(personId: string): Promise<KioskTimeclockStatus> {
-  return edgeFetch<KioskTimeclockStatus>(`/status/${encodeURIComponent(personId)}`);
+  return edgeRead<KioskTimeclockStatus>(`/status/${encodeURIComponent(personId)}`);
 }
 
 export function stationClockIn(personId: string): Promise<KioskTimeclockStatus> {

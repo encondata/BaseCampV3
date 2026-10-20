@@ -35,6 +35,7 @@ import {
   buildPeopleIndex, isAmbiguousPrefix, matchPersonExact, searchPeople, type PeopleIndex,
 } from '../lib/peopleMatch';
 import { playScanSound } from '../lib/sound';
+import { useSyncStatus } from '../lib/sync';
 import type { TimeclockBackend } from './backend';
 import {
   DONE_MS, IDLE_MS, PRINTING_MS, START_STEP, initialState, reducer,
@@ -65,6 +66,9 @@ export interface TimeclockFlowProps {
 }
 
 const MAX_RESULTS = 8;
+/** Welcome's hidden input forgets a half-typed value after this much
+ *  quiet: a reader types a whole code in well under it. */
+const SCAN_QUIET_MS = 1_500;
 /** How long "We couldn't find that code." and its kind stay up. */
 const MESSAGE_MS = 5_000;
 
@@ -72,6 +76,7 @@ const NOT_FOUND = "We couldn't find that code.";
 const NO_NAME_MATCH = 'No one matches that name.';
 const LOOKUP_UNREACHABLE = "Can't reach the portal. Try again.";
 const LOOKUP_FAILED = 'Something went wrong. Try again.';
+const NO_PEOPLE = 'No people on this kiosk. Sync from Kiosk Setup.';
 
 /** Focus is only reclaimed from things nobody deliberately moved it to. */
 const KEEPS_FOCUS = new Set(['INPUT', 'BUTTON', 'SELECT', 'TEXTAREA', 'A']);
@@ -111,22 +116,40 @@ export default function TimeclockFlow({ mode, backend, onExit, paused = false }:
   const atStart = step === START_STEP(mode);
   const typing = step === 'welcome' || step === 'name';
 
+  // Nothing answers into a flow that is gone (StationRoot switching to
+  // Home, the kiosk route changing): every pending result sees a new session.
+  useEffect(() => () => { session.current += 1; }, []);
+
   // The people list, read again each time the flow is back at its start so
-  // a station that runs all day picks up new hires. The old index stays in
-  // use until the new one arrives.
-  useEffect(() => {
-    if (!atStart) return undefined;
-    let live = true;
+  // a station that runs all day picks up new hires, and on a kiosk again
+  // whenever a sync finishes (the kiosk's list is its local copy). The old
+  // index stays in use until the new one arrives; a superseded read loses.
+  const peopleRead = useRef(0);
+  const loadPeople = useCallback(() => {
+    const mine = ++peopleRead.current;
     backend.people().then(
       (people) => {
-        if (!live) return;
+        if (mine !== peopleRead.current) return;
         setIndex(buildPeopleIndex(people));
         setPeopleFailed(false);
       },
-      () => { if (live) setPeopleFailed(true); },
+      () => { if (mine === peopleRead.current) setPeopleFailed(true); },
     );
-    return () => { live = false; };
-  }, [backend, atStart]);
+  }, [backend]);
+
+  useEffect(() => {
+    if (atStart) loadPeople();
+  }, [loadPeople, atStart]);
+
+  const { phase: syncPhase } = useSyncStatus();
+  const firstSyncPhase = useRef(true);
+  useEffect(() => {
+    if (firstSyncPhase.current) {
+      firstSyncPhase.current = false;
+      return;
+    }
+    if (mode === 'kiosk' && (syncPhase === 'done' || syncPhase === 'idle')) loadPeople();
+  }, [mode, syncPhase, loadPeople]);
 
   useEffect(() => {
     if (!message) return undefined;
@@ -215,6 +238,22 @@ export default function TimeclockFlow({ mode, backend, onExit, paused = false }:
     }
     notFound(NOT_FOUND, true);
   };
+
+  // Welcome's hidden input: a value nobody finished (no Enter) is cleared
+  // after a moment of quiet, so it can't spoil the next scan. A value that
+  // waited only because it was also the start of a longer tag is settled
+  // instead: the reader has stopped, so the exact match was meant.
+  const identifyRef = useRef(identify);
+  identifyRef.current = identify;
+  useEffect(() => {
+    if (step !== 'welcome' || !value || looking) return undefined;
+    const id = setTimeout(() => {
+      const exact = index ? matchPersonExact(index, value) : null;
+      if (exact) identifyRef.current(exact);
+      else setValue('');
+    }, SCAN_QUIET_MS);
+    return () => clearTimeout(id);
+  }, [step, value, looking, index]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     // Enter is handled on the key: Chrome performs no implicit submission
@@ -340,7 +379,10 @@ export default function TimeclockFlow({ mode, backend, onExit, paused = false }:
     [index, step, value],
   );
 
-  const shownMessage = message ?? (peopleFailed && !index ? "Can't load the people list. Try again shortly." : null);
+  const noPeople = mode === 'kiosk' && !!index && index.size === 0;
+  const shownMessage = message
+    ?? (peopleFailed && !index ? "Can't load the people list. Try again shortly." : null)
+    ?? (noPeople ? NO_PEOPLE : null);
 
   // ---- screens ----
 

@@ -46,7 +46,9 @@ afterEach(() => {
 it('getStationInfo reads the public station info same-origin', async () => {
   fetchMock.mockResolvedValue(json(200, INFO));
   expect(await getStationInfo()).toEqual(INFO);
-  expect(fetchMock).toHaveBeenCalledWith('/edge/timeclock/station', { credentials: 'same-origin' });
+  expect(fetchMock).toHaveBeenCalledWith('/edge/timeclock/station', {
+    credentials: 'same-origin', signal: expect.any(AbortSignal),
+  });
   expect(apiMock.apiFetch).not.toHaveBeenCalled();
 });
 
@@ -81,13 +83,42 @@ it('stationPeople returns the cached people list', async () => {
   const people = [{ id: 'p-1', display_name: 'Alex Worker' }];
   fetchMock.mockResolvedValue(json(200, { generated_at: '2026-10-20T00:00:00Z', people }));
   expect(await stationPeople()).toEqual(people);
-  expect(fetchMock).toHaveBeenCalledWith('/edge/timeclock/people', { credentials: 'same-origin' });
+  expect(fetchMock).toHaveBeenCalledWith('/edge/timeclock/people', {
+    credentials: 'same-origin', signal: expect.any(AbortSignal),
+  });
 });
 
 it('stationStatus reads one person', async () => {
   fetchMock.mockResolvedValue(json(200, STATUS));
   expect(await stationStatus('p-1')).toEqual(STATUS);
-  expect(fetchMock).toHaveBeenCalledWith('/edge/timeclock/status/p-1', { credentials: 'same-origin' });
+  expect(fetchMock).toHaveBeenCalledWith('/edge/timeclock/status/p-1', {
+    credentials: 'same-origin', signal: expect.any(AbortSignal),
+  });
+});
+
+it.each([
+  ['stationStatus', () => stationStatus('p-1')],
+  ['stationPeople', () => stationPeople()],
+] as const)('%s gives up after 10 s as a network error', async (_name, call) => {
+  vi.useFakeTimers();
+  try {
+    fetchMock.mockImplementation((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    }));
+    const pending = (call() as Promise<unknown>).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(9_999);
+    let settled = false;
+    void pending.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const err = await pending;
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).code).toBe('network');
+    expect((err as ApiError).status).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it.each([
