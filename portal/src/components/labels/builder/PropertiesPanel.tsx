@@ -107,7 +107,7 @@ const IMAGE_SOURCES: SegmentedOption<ImageSource>[] = [
 ];
 const FITS: SegmentedOption<ImageFit>[] = [
   { value: 'cover', label: 'Fill', title: 'Fill the box, cropping what spills over' },
-  { value: 'contain', label: 'Fit', title: 'Fit the whole picture inside the box, white round it' },
+  { value: 'contain', label: 'Fit', title: 'Fit the whole picture inside the box, white around it' },
 ];
 const LOOKS: SegmentedOption<DitherMode>[] = [
   { value: 'dither', label: 'Photo', title: 'Dots spread to show shades of gray' },

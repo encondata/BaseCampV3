@@ -27,7 +27,8 @@
  *    of it (imageRaster.ts) dithered by dither.ts with its look, painted
  *    one dot a pixel into an <image> at the footprint's top-left
  *    (pixelated, white transparent: the printer prints no white). With no
- *    picture (no sample person, none picked, none on file) a dashed
+ *    picture (no sample person, none picked, none on file, or one that
+ *    can't be had, which the placeholder's tooltip says) a dashed
  *    placeholder named Photo, Logo or Image, plus the 2-dot ^GB outline
  *    the printer prints when hide-when-empty is off. In Field names a photo
  *    or logo is only its placeholder; a static picture still shows.
@@ -495,8 +496,9 @@ function ImageBody({ el, dpi, names, px, personId = null }: CanvasElementProps &
       </>
     );
   }
-  // no picture to print: the printer's outline when hide-when-empty is off
-  const outline = state.status === 'none' && draws && el.hideWhenEmpty === false;
+  // no picture to print (none, or one that can't be had): the printer's
+  // outline when hide-when-empty is off
+  const outline = (state.status === 'none' || state.status === 'error') && draws && el.hideWhenEmpty === false;
   const label = Math.max(0, Math.min(12 * px, fp.h / 2, fp.w / 4));
   return (
     <g className="lbc-image-empty">

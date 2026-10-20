@@ -209,13 +209,13 @@ export function placeField(design: DesignV2, key: string, kind: FieldKind,
 /** An image switched to `source`: that source's fit and look (a photo
  *  fills and dithers, a logo or a static picture fits and thresholds), its
  *  box while the old source's new box is untouched (a photo placed, then
- *  made a logo, turns landscape; a box sized by hand stays), and no
- *  library picture off a static image. Null for anything else, or no
- *  change. */
+ *  made a logo, turns landscape; a box sized by hand, or a locked one,
+ *  stays), and no library picture off a static image. Null for anything
+ *  else, or no change. */
 export function imageSourcePatch(el: ElementV2, source: ImageSource): ElementPatch | null {
   if (el.type !== 'image' || el.source === source) return null;
   const was = IMAGE_SIZES[el.source];
-  const untouched = !!was && Math.abs(el.w - was.w) < 1e-9 && Math.abs(el.h - was.h) < 1e-9;
+  const untouched = !el.locked && !!was && Math.abs(el.w - was.w) < 1e-9 && Math.abs(el.h - was.h) < 1e-9;
   return {
     source, ...IMAGE_DEFAULTS[source],
     ...(untouched ? IMAGE_SIZES[source] : {}),

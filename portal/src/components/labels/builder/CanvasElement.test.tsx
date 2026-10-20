@@ -126,6 +126,29 @@ describe('an image with a picture', () => {
     expect(Array.from(painted[0].data)).toEqual(expected(gray, 300, 240, el));
   });
 
+  // the box in whole dots as the compiler rounds it, turned with the element:
+  // 0.1, 0.2, 0.8 x 1 in at 203 is (20, 41) 162 x 203; at 600, (60, 120) 480 x 600
+  it.each([
+    [203, 0, { x: '20', y: '41', w: 162, h: 203 }],
+    [203, 90, { x: '20', y: '41', w: 203, h: 162 }],
+    [600, 0, { x: '60', y: '120', w: 480, h: 600 }],
+    [600, 90, { x: '60', y: '120', w: 600, h: 480 }],
+  ] as const)('at %i DPI turned %i, draws the picture dot for dot over its footprint', async (dpi, rotation, box) => {
+    const gray = picture(box.w, box.h);
+    api.labelImageRaster.mockResolvedValue({ width: box.w, height: box.h, gray });
+    const el = photo({ rotation });
+    const { image } = draw(el, { dpi });
+    await waitFor(() => expect(image()).not.toBeNull());
+    expect(api.labelImageRaster).toHaveBeenCalledWith({
+      source: 'photo', person_id: PERSON, w_in: 0.8, h_in: 1, dpi, fit: 'cover', rotation,
+    });
+    const img = image()!;
+    expect([img.getAttribute('x'), img.getAttribute('y')]).toEqual([box.x, box.y]);
+    expect([img.getAttribute('width'), img.getAttribute('height')]).toEqual([`${box.w}`, `${box.h}`]);
+    expect(painted[0]).toMatchObject({ width: box.w, height: box.h });
+    expect(Array.from(painted[0].data)).toEqual(expected(gray, box.w, box.h, el));
+  });
+
   it('Brightness and Contrast change the bits drawn, from the same picture (no new request)', async () => {
     const gray = picture(240, 300);
     api.labelImageRaster.mockResolvedValue({ width: 240, height: 300, gray });
@@ -249,6 +272,19 @@ describe('an image without a picture', () => {
     const { container } = draw(photo());
     await waitFor(() => expect(container.querySelector('title')?.textContent).toBe(text));
     expect(container.querySelector('rect.lbc-image-placeholder.is-error')).not.toBeNull();
+  });
+
+  it('a request that fails, with hide-when-empty off: the 2-dot outline still shows, as it prints', async () => {
+    api.labelImageRaster.mockRejectedValue(new ApiError(422, 'unreadable_image'));
+    const { container } = draw(photo({ hideWhenEmpty: false }));
+    await waitFor(() => expect(container.querySelector('title')?.textContent).toBe('Can’t read this image.'));
+    expect(container.querySelector('.lbc-image-outline')!.getAttribute('d'))
+      .toBe('M30 60h240v300h-240ZM32 62v296h236v-296Z');
+    cleanup();
+    // hide-when-empty on: nothing prints there, no outline
+    const hidden = draw(photo());
+    await waitFor(() => expect(hidden.container.querySelector('title')?.textContent).toBe('Can’t read this image.'));
+    expect(hidden.container.querySelector('.lbc-image-outline')).toBeNull();
   });
 
   it('a failure is never kept: the element’s next change asks again, and only then', async () => {

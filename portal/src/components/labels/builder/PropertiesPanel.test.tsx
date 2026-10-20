@@ -409,6 +409,17 @@ describe('PropertiesPanel: an image (ID badges)', () => {
     const resized = setup({ design: badge(photo({ w: 0.6, h: 0.6 })), selection: ['image-1'], props: { imagesAllowed: true } });
     pressIn('Source', 'Logo');
     expect(imageOf(resized.last())).toMatchObject({ source: 'logo', w: 0.6, h: 0.6 });
+    cleanup();
+    // locked: never resized, even at the old source's size
+    const locked = setup({ design: badge(photo({ locked: true })), selection: ['image-1'], props: { imagesAllowed: true } });
+    pressIn('Source', 'Logo');
+    expect(imageOf(locked.last())).toMatchObject({ source: 'logo', fit: 'contain', w: 0.8, h: 1 });
+  });
+
+  it('Fit says what fills the rest of the box', () => {
+    setup({ design: badge(photo()), selection: ['image-1'], props: { imagesAllowed: true } });
+    const fit = within(within(panel()).getByRole('group', { name: 'Fit' })).getByRole('button', { name: 'Fit' });
+    expect(fit.getAttribute('title')).toBe('Fit the whole picture inside the box, white around it');
   });
 
   it('a static image picks from the label image library, natural order', async () => {
