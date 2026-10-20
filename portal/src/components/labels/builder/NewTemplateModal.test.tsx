@@ -4,7 +4,9 @@
  * schema 2 design of that size, inactive, no samples). A custom size typed
  * in inches or millimeters is posted in inches as a size row, listed only
  * when "Save this size to the list" is on; a listed size of the same
- * dimensions is used instead of a new row.
+ * dimensions is used instead of a new row. A retry after a failed create
+ * rewrites the dialog's own pending row (off the list, unused) rather than
+ * leaving it behind.
  */
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -12,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { LabelVocab } from '../../../lib/api';
 
-const api = vi.hoisted(() => ({ createLabelTemplate: vi.fn(), createLabelVocab: vi.fn() }));
+const api = vi.hoisted(() => ({ createLabelTemplate: vi.fn(), createLabelVocab: vi.fn(), updateLabelVocab: vi.fn() }));
 vi.mock('../../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../../lib/api')>()), ...api,
 }));
@@ -50,6 +52,8 @@ function custom(dialog: HTMLElement, w: string, h: string, unit: 'Inches' | 'Mil
 
 beforeEach(() => {
   api.createLabelVocab.mockImplementation(async (body: Record<string, unknown>) => ({ ...body }));
+  api.updateLabelVocab.mockImplementation(async (kind: string, key: string, body: Record<string, unknown>) => (
+    { kind, key, ...body }));
   api.createLabelTemplate.mockImplementation(async (body: Record<string, unknown>) => ({ ...body, id: 'p9' }));
 });
 
@@ -188,18 +192,78 @@ describe('a retry after a failed create', () => {
     expect(api.createLabelTemplate.mock.calls[0][0].size_key).toBe('3_25x1_5');
   });
 
-  it('makes a new row when the size or the list switch changed', async () => {
+  /** A custom 3.25" x 1.5" whose first create fails on the name. */
+  async function failedOnce(listed = false) {
     api.createLabelTemplate.mockRejectedValueOnce(new ApiError(409, 'label_template_exists'));
-    const { dialog, onCreated } = setup();
-    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Odd' } });
-    custom(dialog, '3.25', '1.5', 'Inches');
+    const utils = setup();
+    fireEvent.change(within(utils.dialog).getByLabelText('Name'), { target: { value: 'Odd' } });
+    custom(utils.dialog, '3.25', '1.5', 'Inches');
+    if (listed) fireEvent.click(within(utils.dialog).getByLabelText('Save this size to the list'));
+    fireEvent.click(within(utils.dialog).getByRole('button', { name: 'Create template' }));
+    await within(utils.dialog).findByRole('alert');
+    return utils;
+  }
+
+  it('rewrites its own pending row when the size changed, instead of leaving it and posting another', async () => {
+    const { dialog, onCreated } = await failedOnce();
+    fireEvent.change(within(dialog).getByLabelText(/^Width/), { target: { value: '3.5' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
-    await within(dialog).findByRole('alert');
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(api.createLabelVocab).toHaveBeenCalledTimes(1);
+    expect(api.updateLabelVocab).toHaveBeenCalledWith('size', '3_25x1_5', {
+      label: '3.5" x 1.5"', is_active: false, meta: { width_in: 3.5, height_in: 1.5, has_tab: false },
+    });
+    expect(api.createLabelTemplate.mock.calls[1][0]).toMatchObject({
+      size_key: '3_25x1_5', design: { schema: 2, size: { w: 3.5, h: 1.5 }, splits: {}, elements: [] },
+    });
+  });
+
+  it('puts its own pending row on the list when the switch is turned on', async () => {
+    const { dialog, onCreated } = await failedOnce();
     fireEvent.click(within(dialog).getByLabelText('Save this size to the list'));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(api.createLabelVocab).toHaveBeenCalledTimes(1);
+    expect(api.updateLabelVocab).toHaveBeenCalledWith('size', '3_25x1_5', {
+      label: '3.25" x 1.5"', is_active: true, meta: { width_in: 3.25, height_in: 1.5, has_tab: false },
+    });
+    expect(api.createLabelTemplate.mock.calls[1][0].size_key).toBe('3_25x1_5');
+  });
+
+  it('leaves a size it put on the list there, and posts a new row for a changed size', async () => {
+    // a listed size isn't pending: it stays for the next template, and a
+    // designer can't rewrite it
+    const { dialog, onCreated } = await failedOnce(true);
+    fireEvent.change(within(dialog).getByLabelText(/^Width/), { target: { value: '3.5' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(api.updateLabelVocab).not.toHaveBeenCalled();
     expect(api.createLabelVocab.mock.calls.map((c) => [c[0].key, c[0].is_active]))
-      .toEqual([['3_25x1_5', false], ['3_25x1_5-2', true]]);
+      .toEqual([['3_25x1_5', true], ['3_5x1_5', true]]);
+  });
+
+  it('posts a new row when its pending one can no longer be rewritten', async () => {
+    api.updateLabelVocab.mockRejectedValueOnce(new ApiError(403, 'forbidden'));
+    const { dialog, onCreated } = await failedOnce();
+    fireEvent.change(within(dialog).getByLabelText(/^Width/), { target: { value: '3.5' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(api.updateLabelVocab).toHaveBeenCalledTimes(1);
+    expect(api.createLabelVocab.mock.calls.map((c) => c[0].key)).toEqual(['3_25x1_5', '3_5x1_5']);
+    expect(api.createLabelTemplate.mock.calls[1][0].size_key).toBe('3_5x1_5');
+  });
+
+  it('a lost answer to the rewrite rewrites again on the next try', async () => {
+    api.updateLabelVocab.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const { dialog, onCreated } = await failedOnce();
+    fireEvent.change(within(dialog).getByLabelText(/^Width/), { target: { value: '3.5' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    expect((await within(dialog).findByRole('alert')).textContent).toBe("Couldn't create the template.");
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(api.createLabelVocab).toHaveBeenCalledTimes(1);
+    expect(api.updateLabelVocab.mock.calls.map((c) => c[1])).toEqual(['3_25x1_5', '3_25x1_5']);
+    expect(api.createLabelTemplate.mock.calls.at(-1)![0].size_key).toBe('3_25x1_5');
   });
 
   it('a size row someone else just made moves the next try to a new key', async () => {

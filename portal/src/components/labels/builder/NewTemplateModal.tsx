@@ -9,7 +9,11 @@
  * or millimeters, always sent in inches. A custom size is a size row
  * (POST /labels/vocab): "Save this size to the list" leaves it listed for
  * the next template, otherwise it is kept off the list for this template
- * alone. A listed size of the same dimensions is reused instead.
+ * alone. A listed size of the same dimensions is reused instead. When a
+ * create fails and the size or the switch changes before the retry, the
+ * dialog rewrites the row it made off the list (PATCH /labels/vocab, which
+ * lets a designer change a pending size: off the list, on no template)
+ * rather than leave it behind and post another.
  *
  * The report-generate header; the card sizes to its content.
  */
@@ -18,7 +22,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { newDesign, serializeDesign } from '../../../labels/builder/model';
 import {
-  ApiError, createLabelTemplate, createLabelVocab, type LabelTemplate, type LabelVocab,
+  ApiError, createLabelTemplate, createLabelVocab, updateLabelVocab, type LabelTemplate, type LabelVocab,
 } from '../../../lib/api';
 import { sizeMeta, vocabOfKind } from '../../../lib/labels';
 import '../../../styles/directory.css';
@@ -111,6 +115,22 @@ export default function NewTemplateModal({ vocab, onCreated, onCancel }: NewTemp
     const own = ownSize.current;
     const again = own !== null && own.w === w && own.h === h && own.active === keepSize;
     if (again && own.made) return { key: own.key, w: w!, h: h! };
+    // the size or the switch changed since this dialog made its row off the list
+    if (own !== null && own.made && !own.active) {
+      try {
+        await updateLabelVocab('size', own.key, {
+          label: `${fmt(w!)}" x ${fmt(h!)}"`, is_active: keepSize,
+          meta: { width_in: w, height_in: h, has_tab: false },
+        });
+        ownSize.current = { key: own.key, w: w!, h: h!, active: keepSize, made: true };
+        return { key: own.key, w: w!, h: h! };
+      } catch (err) {
+        // no longer a pending row (a template took it, it was listed or
+        // removed): post a new one; anything else, the next try rewrites again
+        if (!(err instanceof ApiError) || (err.status !== 403 && err.status !== 404)) throw err;
+        ownSize.current = null;
+      }
+    }
     // a repeat of a post whose answer was lost: a 409 now means it landed
     const repeat = again && !own.made;
     const taken = new Set([...vocab.filter((v) => v.kind === 'size').map((v) => v.key), ...usedKeys.current]);
