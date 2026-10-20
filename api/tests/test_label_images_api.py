@@ -275,6 +275,47 @@ async def test_get_object_wraps_a_client_that_cannot_be_built(malformed_endpoint
     assert caught.value.__cause__ is None and caught.value.__suppress_context__
 
 
+async def test_put_and_delete_wrap_a_client_that_cannot_be_built(malformed_endpoint):
+    """M9: writes and deletes as well as reads: StorageConfigError with the
+    class name only, never boto3's "Invalid endpoint: <url>"."""
+    for call in (lambda: storage.put_object("label-images/x.png", b"x", "image/png"),
+                 lambda: storage.delete_object("label-images/x.png")):
+        with pytest.raises(storage.StorageConfigError) as caught:
+            await call()
+        assert caught.value.cause == "ValueError"
+        assert "secret" not in str(caught.value).lower()
+        assert caught.value.__cause__ is None and caught.value.__suppress_context__
+
+
+async def test_a_failed_upload_deletes_its_object_and_logs_no_endpoint(
+        client, db, seeded_user, store, monkeypatch, caplog):
+    """The picture is stored before its row: when the row can't be written
+    the object is deleted again. When that delete fails too, the log names
+    the error's class and S3 code, never its message (botocore's carries
+    the endpoint)."""
+    sa = await _super(db, client)
+
+    def broken_audit(*args, **kwargs):
+        raise RuntimeError("the database write failed")
+
+    monkeypatch.setattr(labels_module, "audit", broken_audit)
+    with pytest.raises(RuntimeError):
+        await _upload(client, sa)
+    assert store.blobs == {}
+
+    async def refused(key):
+        raise ClientError({"Error": {"Code": "AccessDenied",
+                                     "Message": "at http://storage.internal:9000"}},
+                          "DeleteObject")
+
+    monkeypatch.setattr(labels_module, "delete_object", refused)
+    with pytest.raises(RuntimeError):
+        await _upload(client, sa)
+    assert "ClientError" in caplog.text and "AccessDenied" in caplog.text
+    assert "storage.internal" not in caplog.text
+    assert await db.scalar(select(LabelImage.id)) is None
+
+
 async def test_unconfigured_storage_is_a_502(client, db, seeded_user, store, malformed_endpoint,
                                              monkeypatch, caplog):
     """A storage client that can't even be built (a malformed endpoint) is

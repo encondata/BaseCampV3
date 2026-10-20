@@ -71,6 +71,14 @@ def is_missing(exc: BaseException) -> bool:
             and exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"))
 
 
+def loggable(exc: BaseException) -> str:
+    """What a log line may say about a failed storage call: the error's
+    class, plus the S3 error code when there is one, never its message
+    (STORAGE_ERRORS)."""
+    code = exc.response.get("Error", {}).get("Code") if isinstance(exc, ClientError) else None
+    return f"{type(exc).__name__} (code={code})" if code else type(exc).__name__
+
+
 def _preload_ca_bundle(client) -> None:
     """Load the CA bundle into the client's shared SSLContext once, before
     any request can use it.
@@ -182,10 +190,11 @@ async def head_object(key: str) -> dict | None:
 
 
 async def put_object(key: str, data: bytes, content_type: str) -> None:
-    """Blocking boto3 call moved off the event loop."""
+    """Blocking boto3 call moved off the event loop. Raises one of
+    STORAGE_ERRORS (StorageConfigError for unbuildable settings)."""
     s = get_settings()
     await asyncio.to_thread(partial(
-        _client().put_object,
+        _built_client().put_object,
         Bucket=s.spaces_bucket,
         Key=key,
         Body=data,
@@ -221,10 +230,12 @@ async def delete_object(key: str) -> None:
     """Delete a private object. S3-compatible DELETE is idempotent (no error
     for a key that's already gone), so callers never need to check
     existence first — a delete of a key that was never written, or was
-    already removed, succeeds exactly like one that removes something."""
+    already removed, succeeds exactly like one that removes something.
+    Raises one of STORAGE_ERRORS (StorageConfigError for unbuildable
+    settings)."""
     s = get_settings()
     await asyncio.to_thread(partial(
-        _client().delete_object,
+        _built_client().delete_object,
         Bucket=s.spaces_bucket,
         Key=key,
     ))

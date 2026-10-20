@@ -27,7 +27,6 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Annotated
 
-from botocore.exceptions import ClientError
 from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
 from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -94,7 +93,7 @@ from serversherpa.labels.zpl import GF_MAX_BYTES, box_dots, image_box_dots
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.storage import (
-    STORAGE_ERRORS, delete_object, get_object, is_missing, put_object,
+    STORAGE_ERRORS, delete_object, get_object, is_missing, loggable, put_object,
 )
 from serversherpa.services.text import has_control_chars
 
@@ -2223,9 +2222,7 @@ async def _stored_picture(key: str) -> bytes | None:
         if is_missing(exc):
             return None
         # the class and S3 code only: botocore's message carries the endpoint
-        code = exc.response.get("Error", {}).get("Code") if isinstance(exc, ClientError) else None
-        logger.warning("label image read failed for %s: %s (code=%s)", key,
-                       type(exc).__name__, code)
+        logger.warning("label image read failed for %s: %s", key, loggable(exc))
         raise _err(502, "storage_unavailable") from exc
 
 
@@ -2490,7 +2487,8 @@ async def upload_label_image(
         try:
             await delete_object(key)
         except Exception as exc:  # noqa: BLE001 - best effort, the first error wins
-            logger.warning("label image %s left behind after a failed upload: %s", key, exc)
+            logger.warning("label image %s left behind after a failed upload: %s", key,
+                           loggable(exc))
         raise
     await db.refresh(row)
     return _image_out(row, _person_display(actor.person.preferred_name,

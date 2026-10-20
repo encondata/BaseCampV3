@@ -11,6 +11,7 @@ import re
 from types import SimpleNamespace
 
 import pytest
+from botocore.exceptions import EndpointConnectionError
 from PIL import Image
 from sqlalchemy import select
 
@@ -239,6 +240,40 @@ async def test_the_company_name_is_one_line_and_trimmed_before_its_cap(
     assert (await _stored(db))["company_name"] == "x" * 200
     resp = await client.patch(URL, headers=hdrs, json={"company_name": " " + "x" * 201 + " "})
     assert resp.status_code == 422
+
+
+async def test_a_new_logo_is_deleted_when_the_config_write_fails(
+        client, db, seeded_user, store, monkeypatch):
+    """The logo is stored before the config points at it: when the config
+    write fails, nothing can reach the new object, so it is deleted."""
+    hdrs = await _super(db, client)
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("the database write failed")
+
+    monkeypatch.setattr(system_module, "_save_branding", broken)
+    with pytest.raises(RuntimeError):
+        await _upload(client, hdrs, _image())
+    assert store.blobs == {}
+    assert len(store.deleted) == 1 and KEY.match(store.deleted[0])
+    assert await _stored(db) is None
+
+
+async def test_a_logo_left_behind_logs_the_class_not_the_text(
+        client, db, seeded_user, store, monkeypatch, caplog):
+    """M9: the replaced logo's delete is best effort; when it fails the log
+    names the error's class, never its message (it carries the endpoint)."""
+    hdrs = await _super(db, client)
+    assert (await _upload(client, hdrs, _image())).status_code == 200
+
+    async def down(key):
+        raise EndpointConnectionError(endpoint_url="http://storage.internal:9000")
+
+    monkeypatch.setattr(system_module, "delete_object", down)
+    resp = await _upload(client, hdrs, _image())          # a replace: the old one stays
+    assert resp.status_code == 200, resp.text
+    assert "EndpointConnectionError" in caplog.text
+    assert "storage.internal" not in caplog.text
 
 
 async def test_staff_badges_use_the_configured_company(client, db, seeded_user, store):
