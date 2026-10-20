@@ -664,22 +664,42 @@ async def test_a_preview_compile_draws_placeholders_and_reads_nothing(
     assert r.status_code == 422
 
 
-async def test_below_rank_80_photo_and_logo_print_empty(client, db, seeded_user, store):
+async def test_below_rank_80_every_image_prints_a_placeholder(client, db, seeded_user, store,
+                                                              monkeypatch):
+    """Below rank 80 a compile reads no picture at all: every image is the
+    preview's crossed box, whatever the image_mode. Only the builder (rank
+    80) needs real pictures, and resolving library images for any
+    labels:view caller let one keep the API dithering up to 8 million dots
+    per request."""
     sa = await _super(db, client)
     jo = await _worker(db, store)
     image_id = await _library_image(client, sa)
     design = _design(_image("photo", "photo"), _image("logo", "logo", x=0.7),
                      _image("static", "static", x=1.4, imageId=image_id))
-    admin = await _admin(db, client)
-    r = await _compile(client, admin, design, samples={"person:id": str(jo.id)})
-    assert r.status_code == 200, r.text
-    assert [(x, y) for x, y, _d, _b in _graphics(r.json()["code"])] == [(420, 30)]   # static only
-    # nothing about the sample person is checked below rank 80 either
-    r = await _compile(client, admin, design, samples={"person:id": "nope"})
-    assert r.status_code == 200 and len(_graphics(r.json()["code"])) == 1
-    # staff (labels:view) the same
-    r = await _compile(client, await login(client), design, samples={"person:id": str(jo.id)})
-    assert r.status_code == 200 and len(_graphics(r.json()["code"])) == 1
+    labels_module._RASTER_CACHE.clear()
+    store.gets.clear()
+    prepped = []
+    real_prep = labels_module._prep
+
+    async def counting_prep(*args):
+        prepped.append(args[0])
+        return await real_prep(*args)
+
+    monkeypatch.setattr(labels_module, "_prep", counting_prep)
+    boxes = [*_crossed(30, 30, 150, 120), *_crossed(210, 30, 150, 120),
+             *_crossed(420, 30, 150, 120)]
+    for hdrs in (await _admin(db, client), await login(client)):     # rank 60, rank 40
+        # nothing about the sample person is checked below rank 80 either
+        for samples in ({"person:id": str(jo.id)}, {"person:id": "nope"}):
+            r = await _compile(client, hdrs, design, samples=samples)
+            assert r.status_code == 200, r.text
+            code = r.json()["code"]
+            assert "^GF" not in code
+            assert code.split("\n")[4:13] == boxes
+    assert store.gets == [] and prepped == []
+    # rank 80 still prints the pictures
+    r = await _compile(client, sa, design, samples={"person:id": str(jo.id)})
+    assert r.status_code == 200 and len(_graphics(r.json()["code"])) == 3
 
 
 async def test_the_sample_person_must_be_a_person(client, db, seeded_user, store):
