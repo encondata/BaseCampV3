@@ -43,7 +43,10 @@ export default function StationRoot() {
 
   if (loading) return null;
   if (station?.timeclock && station.armed && status === 'anon') {
-    return <TimeclockFlow mode="station" backend={backend} paused={!station.ready} />;
+    return (
+      <TimeclockFlow mode="station" backend={backend} paused={!station.ready}
+                     keyMissing={!!station.key_missing && !station.paused} />
+    );
   }
   return <KioskGuard><KioskShell><Home /></KioskShell></KioskGuard>;
 }

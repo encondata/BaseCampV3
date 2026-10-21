@@ -63,6 +63,9 @@ export interface TimeclockFlowProps {
   /** Station mode: the station key is missing or lapsed — Welcome says so
    *  and takes nobody. */
   paused?: boolean;
+  /** Station mode, with `paused`: the key never arrived (rather than the
+   *  registration lapsing), so Welcome's notice says that instead. */
+  keyMissing?: boolean;
 }
 
 const MAX_RESULTS = 8;
@@ -85,7 +88,9 @@ function codeOf(err: unknown): string {
   return err instanceof ApiError ? err.code : 'unknown_error';
 }
 
-export default function TimeclockFlow({ mode, backend, onExit, paused = false }: TimeclockFlowProps) {
+export default function TimeclockFlow({
+  mode, backend, onExit, paused = false, keyMissing = false,
+}: TimeclockFlowProps) {
   const navigate = useNavigate();
   const [appearance] = useAppearance();
 
@@ -393,6 +398,7 @@ export default function TimeclockFlow({ mode, backend, onExit, paused = false }:
       screen = (
         <Welcome
           paused={paused}
+          keyMissing={keyMissing}
           message={shownMessage}
           onScan={() => { setMessage(null); inputRef.current?.focus(); }}
           onName={() => { setValue(''); setMessage(null); apply({ type: 'enterName' }); }}

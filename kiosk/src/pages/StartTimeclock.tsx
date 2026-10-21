@@ -1,7 +1,8 @@
 /** Start Time Clock: the Time Clock station's Home tile. The signed-in
  *  person arms this browser as the station's display (the edge sets its
  *  display cookie), is signed out, and lands on `/`, where the signed-out
- *  time clock takes over. A failed arm keeps them signed in here. */
+ *  time clock takes over. A failed arm, or a failed sign-out, keeps them
+ *  here with the button free for another try. */
 
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -14,6 +15,9 @@ function messageFor(err: unknown): string {
   const code = err instanceof ApiError ? err.code : '';
   if (code === 'not_timeclock_station') {
     return "This kiosk isn't set up as a Time Clock station yet. Run Kiosk Setup first.";
+  }
+  if (code === 'station_key_missing') {
+    return "The station key hasn't arrived yet. Check the connection and try again in a minute.";
   }
   if (code === 'move_locked') {
     return "A move password can't start the time clock. Sign in with your own account.";
@@ -37,7 +41,14 @@ export default function StartTimeclock() {
       setBusy(false);
       return;
     }
-    await logout();
+    try {
+      await logout();
+    } catch {
+      // Still signed in: stay here rather than land on `/` as this person.
+      setError("Couldn't sign you out. Try again.");
+      setBusy(false);
+      return;
+    }
     navigate('/', { replace: true });
   };
 

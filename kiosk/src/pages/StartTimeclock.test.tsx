@@ -48,6 +48,7 @@ it('Start Time Clock arms the display, signs out, then goes to /', async () => {
 
 it.each([
   ['not_timeclock_station', 409, "This kiosk isn't set up as a Time Clock station yet. Run Kiosk Setup first."],
+  ['station_key_missing', 409, "The station key hasn't arrived yet. Check the connection and try again in a minute."],
   ['move_locked', 403, "A move password can't start the time clock. Sign in with your own account."],
   ['network', 0, "Couldn't start the time clock. Try again."],
   ['unknown_error', 500, "Couldn't start the time clock. Try again."],
@@ -71,4 +72,17 @@ it('a non-API failure shows the generic message', async () => {
   renderPage();
   await user.click(screen.getByRole('button', { name: 'Start Time Clock' }));
   expect((await screen.findByRole('alert')).textContent).toBe("Couldn't start the time clock. Try again.");
+});
+
+it('a failed sign-out says so, stays put, and frees the button', async () => {
+  auth.logout.mockRejectedValue(new Error('storage unavailable'));
+  const user = userEvent.setup();
+  renderPage();
+  await user.click(screen.getByRole('button', { name: 'Start Time Clock' }));
+  expect((await screen.findByRole('alert')).textContent).toBe("Couldn't sign you out. Try again.");
+  expect(stationMock.armDisplay).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText('Welcome route')).toBeNull();
+  await waitFor(() => expect(
+    (screen.getByRole('button', { name: 'Start Time Clock' }) as HTMLButtonElement).disabled,
+  ).toBe(false));
 });

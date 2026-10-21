@@ -11,3 +11,20 @@ export function formatWorked(minutes: number): string {
 export function formatClock(iso: string): string {
   return new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
+
+function localDay(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+/** A punch on Clock Out's table: its clock time, prefixed "yesterday" when
+ *  it falls on the previous local day ("yesterday 10:00 PM"), or its short
+ *  date when older ("Oct 18 10:00 PM"), so an overnight span reads right. */
+export function formatPunch(iso: string, now: Date = new Date()): string {
+  const at = new Date(iso);
+  const time = formatClock(iso);
+  const day = localDay(at);
+  if (day >= localDay(now)) return time;
+  const yesterday = localDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+  if (day === yesterday) return `yesterday ${time}`;
+  return `${at.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`;
+}

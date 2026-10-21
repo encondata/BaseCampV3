@@ -26,6 +26,8 @@ export interface StationInfo {
   ready: boolean;
   paused: boolean;
   armed: boolean;
+  /** Set up as a Time Clock, but the station key never arrived (or was dropped). */
+  key_missing: boolean;
   initiative_name: string | null;
   site_name: string | null;
 }

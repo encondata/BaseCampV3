@@ -4,7 +4,8 @@ time clock station spec §6, with the plan-time display-cookie adjustment).
 `GET /station` is public and says whether the laptop can run the time
 clock (never the key or the serial). `POST /arm`, as a signed-in person
 (not a move-password sign-in), hands this browser the display cookie
-(`edge.timeclock`), good until the key is dropped or replaced. Everything else
+(`edge.timeclock`), good until the key is dropped or replaced; a Time Clock
+setup still waiting for its key is 409 `station_key_missing`. Everything else
 answers only an armed display (403 `not_timeclock_display`): the cached
 people list, and a person's status, clock in and clock out forwarded to
 the portal's `/kiosk/station/timeclock/*` under the station key with the
@@ -54,6 +55,8 @@ async def station(request: Request) -> dict:
         "ready": _ready(store) and not paused,
         "paused": paused,
         "armed": timeclock.is_display(store, request.cookies.get(timeclock.DISPLAY_COOKIE)),
+        # set up as a Time Clock, but the key issue failed (or the key was dropped)
+        "key_missing": is_timeclock and not station_key.has_key(store),
         "initiative_name": setup.get("initiative_name") if setup else None,
         "site_name": setup.get("site_name") if setup else None,
     }
@@ -65,8 +68,10 @@ async def arm(request: Request, session: EdgeSession = Depends(require_session))
     st = request.app.state
     if session.move_id is not None:  # a move-password sign-in can't arm the laptop
         raise err(403, "move_locked")
-    if not _ready(st.store):
+    if not station_key.is_timeclock_setup(st.store):
         raise err(409, "not_timeclock_station")
+    if not station_key.has_key(st.store):
+        raise err(409, "station_key_missing")
     response = Response(status_code=204)
     response.set_cookie(timeclock.DISPLAY_COOKIE, timeclock.issue_display(st.store),
                         max_age=timeclock.DISPLAY_MAX_AGE_S, path=timeclock.DISPLAY_PATH,

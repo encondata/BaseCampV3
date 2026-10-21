@@ -34,6 +34,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import { useKioskAuth } from '../auth/KioskAuthContext';
 import ConfirmStep from '../components/setup/ConfirmStep';
 import ConnectStep from '../components/setup/ConnectStep';
 import LabelKindStep from '../components/setup/LabelKindStep';
@@ -110,6 +111,8 @@ function formatMoveDates(initiative: SetupOptionInitiative): string | null {
 
 export default function KioskSetup() {
   const navigate = useNavigate();
+  // A move-password session is locked to its move: no "No move" for it.
+  const { kioskMove } = useKioskAuth();
   const [setupState] = useKioskSetupState();
   const [selection, setSelection] = useKioskSetup();
   const [wizardOpen, setWizardOpen] = useState(!(selection && isSetupComplete(setupState)));
@@ -630,7 +633,7 @@ export default function KioskSetup() {
           <div>
             <h2>Which move?</h2>
             <div className="setup-cards" role="listbox" aria-label="Moves">
-              {timeclock && (
+              {timeclock && !kioskMove && (
                 <button type="button" role="option" aria-selected={noMove} className="setup-card"
                         onClick={selectNoMove}>
                   <div className="setup-card-title">No move</div>

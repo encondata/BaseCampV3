@@ -359,7 +359,8 @@ check cannot be trusted. The edge uses a **display cookie** instead.
 - The edge stores only a hash of the token, never the token.
 - Only `POST /edge/timeclock/arm` sets it. Arming needs a signed-in session
   that is **not** a move-password session (403 `move_locked`), and the laptop
-  must be a Time Clock station with a key (409 `not_timeclock_station`). The
+  must be a Time Clock station (409 `not_timeclock_station`) with a key (409
+  `station_key_missing` when the setup saved but the key issue failed). The
   browser gets there through **Start Time Clock**. No rank rule was added.
 - Displays are revoked on every Kiosk Setup, every station-key clear or
   replacement, Clear Setup and Wipe. A dropped key therefore needs a person
@@ -392,8 +393,9 @@ and RFID keys against the Time Clock routes.
 - `POST /kiosk/setup` accepts `timeclock` from any kiosk sub-type, with no
   laptop check, since phases 2 and 3 need it. Keys are still issued to the
   laptop only.
-- `setup-options.sites` is empty for move-password sessions. Such a session
-  cannot do a no-move setup, so listing every site name would only leak.
+- `setup-options.sites` is empty for move-password sessions, online and from
+  the edge's offline cache. Such a session cannot do a no-move setup, so
+  listing every site name would only leak; the wizard hides **No move** for it.
 - A move with no site is a 422 `bad_site` for `timeclock`, so the wizard
   always sends a site when a move is picked.
 
@@ -411,7 +413,9 @@ and the laptop's serial. The portal's status and JSON body come back as they
 are, so the browser sees `{"detail": {"code": ...}}`.
 
 - `GET /station`: public. `timeclock`, `ready`, `paused`, `armed`,
-  `initiative_name`, `site_name`. Never the key or the serial.
+  `key_missing`, `initiative_name`, `site_name`. Never the key or the serial.
+  `key_missing` is a Time Clock setup with no key; Welcome then says it is
+  waiting for its station key (a paused registration keeps its own notice).
 - `POST /arm`: described above. Answers 204.
 - `GET /people`: the cached people list (needs an armed display). 503
   `people_not_synced` before the first sync.
@@ -424,7 +428,8 @@ Error codes across the routes:
 |---|---|---|
 | `not_timeclock_display` | 403 | no armed display cookie |
 | `move_locked` | 403 | arming from a move-password session |
-| `not_timeclock_station` | 409 | arming when the laptop is not a ready Time Clock station |
+| `not_timeclock_station` | 409 | arming when the laptop is not set up as a Time Clock station |
+| `station_key_missing` | 409 | arming a Time Clock station whose key hasn't arrived |
 | `station_not_ready` | 409 | punching with no Time Clock setup or no key |
 | `edge_offline` | 503 | the portal is unreachable (punches still need a connection) |
 | `people_not_synced` | 503 | no people list cached yet |

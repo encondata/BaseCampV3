@@ -11,6 +11,7 @@ const auth = vi.hoisted(() => ({
   mustChangePassword: false, sessionExpiresAt: '2030-01-01T00:00:00Z', registration: 'ok',
   heartbeatNow: vi.fn(() => Promise.resolve()),
   login: vi.fn(), completePair: vi.fn(), logout: vi.fn(), can: () => true,
+  kioskMove: null as null | { initiative_id: string; name: string },
 }));
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 
@@ -59,6 +60,7 @@ const NO_MOVE_RESULT = {
 };
 
 beforeEach(() => {
+  auth.kioskMove = null;
   localStorage.clear();
   window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1', name: 'Kiosk 0001' } };
   apiMock.getSetupOptions.mockReset().mockResolvedValue(OPTIONS);
@@ -249,5 +251,15 @@ it('web mode offers no No move card', async () => {
   delete window.__KIOSK_CONFIG__;
   renderPage();
   await screen.findByText('NAP11 Hall Migration (demo)');
+  expect(screen.queryByText('No move')).toBeNull();
+});
+
+it('a move-password session gets no No move card (it is locked to its move)', async () => {
+  auth.kioskMove = { initiative_id: 'i-1', name: 'NAP11 Hall Migration (demo)' };
+  apiMock.getSetupOptions.mockResolvedValue({ ...OPTIONS, sites: [] });
+  const user = userEvent.setup();
+  renderPage();
+  await toMoveStep(user);
+  expect(cardTitles('Moves')).toEqual(['NAP11 Hall Migration (demo)']);
   expect(screen.queryByText('No move')).toBeNull();
 });

@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 
-import { formatClock, formatWorked } from './format';
+import { formatClock, formatPunch, formatWorked } from './format';
 
 it('formats worked minutes', () => {
   expect(formatWorked(0)).toBe('0m');
@@ -22,4 +22,30 @@ it('formats a clock time as a short locale time', () => {
     new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
   );
   expect(formatClock(iso)).toMatch(/8:02/);
+});
+
+it('a punch today is just its clock time', () => {
+  const now = new Date(2026, 9, 20, 15, 0);
+  const iso = new Date(2026, 9, 20, 0, 5).toISOString();
+  expect(formatPunch(iso, now)).toBe(formatClock(iso));
+});
+
+it('a punch on the previous local day says yesterday', () => {
+  const now = new Date(2026, 9, 20, 6, 30);
+  const iso = new Date(2026, 9, 19, 22, 0).toISOString();
+  expect(formatPunch(iso, now)).toBe(`yesterday ${formatClock(iso)}`);
+  expect(formatPunch(iso, now)).toMatch(/^yesterday 10:00/);
+  // across a month boundary too
+  const first = new Date(2026, 10, 1, 7, 0);
+  const late = new Date(2026, 9, 31, 23, 15).toISOString();
+  expect(formatPunch(late, first)).toBe(`yesterday ${formatClock(late)}`);
+});
+
+it('an older punch carries its short date', () => {
+  const now = new Date(2026, 9, 20, 6, 30);
+  const at = new Date(2026, 9, 18, 22, 0);
+  const iso = at.toISOString();
+  const date = at.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  expect(formatPunch(iso, now)).toBe(`${date} ${formatClock(iso)}`);
+  expect(formatPunch(iso, now)).toMatch(/18/);
 });

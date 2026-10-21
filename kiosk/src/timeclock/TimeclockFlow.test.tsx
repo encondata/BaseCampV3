@@ -36,7 +36,7 @@ import { DEFAULT_APPEARANCE, hslCss } from '../lib/appearance';
 import { clearFlash, readFlash } from '../lib/flash';
 import type { TimeclockBackend } from './backend';
 import { DONE_MS, IDLE_MS, PRINTING_MS, type FlowMode } from './flow';
-import { formatClock } from './format';
+import { formatClock, formatPunch } from './format';
 import TimeclockFlow from './TimeclockFlow';
 
 const BADGE = '6f1c2a9e-1b2c-4d3e-8f90-1234567890ab';
@@ -106,7 +106,10 @@ function fakeBackend(people: KioskPersonRow[] = [ALEX, TINA]): Fake {
 let backend: Fake;
 let user: ReturnType<typeof userEvent.setup>;
 
-function renderFlow(mode: FlowMode = 'station', extra: { onExit?: () => void; paused?: boolean } = {}) {
+function renderFlow(
+  mode: FlowMode = 'station',
+  extra: { onExit?: () => void; paused?: boolean; keyMissing?: boolean } = {},
+) {
   return render(
     <MemoryRouter initialEntries={['/']}>
       <Routes>
@@ -305,6 +308,16 @@ describe('Welcome (station)', () => {
     expect((screen.getByRole('button', { name: /Enter Your Name/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it('waiting for the station key: says so, and both cards are disabled', async () => {
+    renderFlow('station', { paused: true, keyMissing: true });
+    expect(await screen.findByText(
+      'This time clock is waiting for its station key. Check the connection, or ask an administrator to sign in here.',
+    )).toBeTruthy();
+    expect(screen.queryByText(/This time clock is paused\./)).toBeNull();
+    expect((screen.getByRole('button', { name: /Scan Your QR Code/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: /Enter Your Name/ }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('a status lookup that cannot reach the portal says so and stays put', async () => {
     backend.status.mockRejectedValue(new ApiError(0, 'network'));
     renderFlow();
@@ -456,6 +469,7 @@ describe('Clock In', () => {
 
 describe('Clock Out', () => {
   it('shows the day so far, then Confirm Clock Out punches and lands on All Set', async () => {
+    vi.setSystemTime(new Date(BACK_AT).getTime() + 60_000);
     backend.status.mockResolvedValue(ON_444());
     renderFlow();
     await toAction();
@@ -469,10 +483,12 @@ describe('Clock Out', () => {
     expect(screen.getAllByText('7h 24m').length).toBe(2);   // the big total and the table's Total
     expect(screen.getByText('today')).toBeTruthy();
     const rows = within(screen.getByRole('table')).getAllByRole('row').map((r) => r.textContent);
+    // a punch on an earlier local day than now would carry a day prefix
+    const now = new Date();
     expect(rows).toEqual([
-      `Clock In${formatClock(IN_AT)}`,
-      `Clock Out${formatClock(OUT_AT)}`,
-      `Clock In${formatClock(BACK_AT)}`,
+      `Clock In${formatPunch(IN_AT, now)}`,
+      `Clock Out${formatPunch(OUT_AT, now)}`,
+      `Clock In${formatPunch(BACK_AT, now)}`,
       'Clock Outnow',
       'Total7h 24m',
     ]);
@@ -481,6 +497,22 @@ describe('Clock Out', () => {
     expect(backend.clockOut).toHaveBeenCalledTimes(1);
     expect(backend.clockOut).toHaveBeenCalledWith('p-alex');
     expect(await heading("You're All Set!")).toBeTruthy();
+  });
+
+  it('an overnight span marks its Clock In as yesterday', async () => {
+    vi.setSystemTime(new Date(2026, 9, 20, 6, 30));
+    const lateIn = new Date(2026, 9, 19, 22, 0).toISOString();
+    backend.status.mockResolvedValue(statusOf(ALEX, true, {
+      today_minutes: 510,
+      today_entries: [{ clock_in_at: lateIn, clock_out_at: null, minutes: 510 }],
+    }));
+    renderFlow();
+    await toAction();
+    await user.click(screen.getByRole('button', { name: /Clock Out/ }));
+    expect(await heading('Clock Out')).toBeTruthy();
+    const rows = within(screen.getByRole('table')).getAllByRole('row').map((r) => r.textContent);
+    expect(rows[0]).toBe(`Clock Inyesterday ${formatClock(lateIn)}`);
+    expect(rows[1]).toBe('Clock Outnow');
   });
 
   it('Back from Clock Out returns to the choice', async () => {

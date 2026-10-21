@@ -1,8 +1,9 @@
 /** Clock Out: today so far (the big total and the day's punches), then
- *  Confirm Clock Out. In landscape the total sits left of the table. */
+ *  Confirm Clock Out. In landscape the total sits left of the table. A
+ *  span that began before today shows its day ("yesterday 10:00 PM"). */
 
 import type { KioskTimeclockStatus } from '../../lib/api';
-import { formatClock, formatWorked } from '../format';
+import { formatPunch, formatWorked } from '../format';
 import { IconArrowRight, IconClockIn, IconClockOut } from '../icons';
 import PunchError from './PunchError';
 
@@ -30,11 +31,11 @@ export default function ClockOutSummary({ status, busy, error, onConfirm, onRetr
             {status.today_entries.flatMap((entry, i) => [
               <tr key={`in-${i}`}>
                 <th scope="row"><IconClockIn className="tcx-row-icon" />Clock In</th>
-                <td>{formatClock(entry.clock_in_at)}</td>
+                <td>{formatPunch(entry.clock_in_at)}</td>
               </tr>,
               <tr key={`out-${i}`}>
                 <th scope="row"><IconClockOut className="tcx-row-icon" />Clock Out</th>
-                <td>{entry.clock_out_at ? formatClock(entry.clock_out_at) : 'now'}</td>
+                <td>{entry.clock_out_at ? formatPunch(entry.clock_out_at) : 'now'}</td>
               </tr>,
             ])}
             <tr className="is-total">

@@ -38,20 +38,21 @@ async def test_station_info_public_and_flags(app, client):
     r = await client.get("/edge/timeclock/station")
     assert r.status_code == 200
     assert r.json() == {"timeclock": False, "ready": False, "paused": False, "armed": False,
-                        "initiative_name": None, "site_name": None}
+                        "key_missing": False, "initiative_name": None, "site_name": None}
     timeclock_setup(app, site_name="Dock 4")
     body = (await client.get("/edge/timeclock/station")).json()
     assert body == {"timeclock": True, "ready": True, "paused": False, "armed": False,
-                    "initiative_name": None, "site_name": "Dock 4"}
+                    "key_missing": False, "initiative_name": None, "site_name": "Dock 4"}
     assert RAW not in json.dumps(body) and app.state.identity.serial not in json.dumps(body)
     assert (await client.get("/edge/timeclock/station", headers=display(app))).json()["armed"]
     app.state.store.run("INSERT INTO station_status (id, paused) VALUES (1, ?)",
                         (station_key.NOT_REGISTERED,))
     body = (await client.get("/edge/timeclock/station")).json()
-    assert body["ready"] is False and body["paused"] is True
+    assert body["ready"] is False and body["paused"] is True and body["key_missing"] is False
     station_key.clear(app.state.store)
     body = (await client.get("/edge/timeclock/station")).json()
     assert body["timeclock"] is True and body["ready"] is False
+    assert body["key_missing"] is True and body["paused"] is False
 
 
 async def test_a_label_station_is_not_a_timeclock(app, client):
@@ -59,6 +60,9 @@ async def test_a_label_station_is_not_a_timeclock(app, client):
     station_key.store_key(app.state.store, app.state.keys, RAW)
     body = (await client.get("/edge/timeclock/station")).json()
     assert body["timeclock"] is False and body["ready"] is False
+    assert body["key_missing"] is False
+    station_key.clear(app.state.store)
+    assert (await client.get("/edge/timeclock/station")).json()["key_missing"] is False
     assert station_key.is_timeclock_setup(app.state.store) is False
 
 
@@ -69,9 +73,10 @@ async def test_arm_requires_session_and_timeclock_key(app, client):
     r = await client.post("/edge/timeclock/arm", headers=make_session(app))
     assert r.status_code == 409 and r.json()["detail"]["code"] == "not_timeclock_station"
     station_key.clear(app.state.store)
+    # a Time Clock setup whose key issue failed: the key, not the setup, is missing
     timeclock_setup(app, key=False)
     r = await client.post("/edge/timeclock/arm", headers=make_session(app))
-    assert r.status_code == 409 and r.json()["detail"]["code"] == "not_timeclock_station"
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "station_key_missing"
     timeclock_setup(app)
     r = await client.post("/edge/timeclock/arm", headers=make_session(app))
     assert r.status_code == 204

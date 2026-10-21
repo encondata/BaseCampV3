@@ -8,9 +8,13 @@ import { IconChevron, IconKeyboard, IconQr } from '../icons';
 
 export const PAUSED_TEXT = 'This time clock is paused. Ask an administrator to sign in here '
   + 'or renew this kiosk on Kiosk Devices.';
+export const KEY_MISSING_TEXT = 'This time clock is waiting for its station key. '
+  + 'Check the connection, or ask an administrator to sign in here.';
 
 export interface WelcomeProps {
   paused: boolean;
+  /** Paused because the station key never arrived, not a lapsed registration. */
+  keyMissing?: boolean;
   /** "We couldn't find that code." and the like. */
   message: string | null;
   /** The hidden, always-focused input the reader types into. */
@@ -19,12 +23,16 @@ export interface WelcomeProps {
   onName(): void;
 }
 
-export default function Welcome({ paused, message, scanInput, onScan, onName }: WelcomeProps) {
+export default function Welcome({
+  paused, keyMissing = false, message, scanInput, onScan, onName,
+}: WelcomeProps) {
   return (
     <section className="tcx-screen tcx-welcome">
       <h1 className="tcx-hero">Welcome!</h1>
       <p className="tcx-lead">Please identify yourself to continue.</p>
-      {paused && <p className="tcx-notice" role="status">{PAUSED_TEXT}</p>}
+      {paused && (
+        <p className="tcx-notice" role="status">{keyMissing ? KEY_MISSING_TEXT : PAUSED_TEXT}</p>
+      )}
       {message && <p className="tcx-error-text" role="alert">{message}</p>}
       <div className="tcx-cards">
         <button type="button" className="tcx-card" disabled={paused} onClick={onScan}>

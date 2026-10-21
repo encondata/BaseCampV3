@@ -169,6 +169,7 @@ def _cached(store: Store, session: EdgeSession | None, path: str, query: str) ->
             data = json.loads(row["body"])
             data["initiatives"] = [i for i in data.get("initiatives", [])
                                    if str(i.get("id")) == session.move_id]
+            data["sites"] = []  # as the portal answers a move-password session
             return JSONResponse(data, status_code=row["status"], headers=hit)
     return Response(row["body"], status_code=row["status"], media_type="application/json",
                     headers=hit)

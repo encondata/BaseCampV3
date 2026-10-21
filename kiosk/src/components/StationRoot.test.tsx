@@ -28,8 +28,12 @@ vi.mock('../pages/Home', () => ({ default: () => <div>Home page</div> }));
 import StationRoot from './StationRoot';
 
 const INFO = {
-  timeclock: true, ready: true, paused: false, armed: true, initiative_name: null, site_name: 'ACC4',
+  timeclock: true, ready: true, paused: false, armed: true, key_missing: false,
+  initiative_name: null, site_name: 'ACC4',
 };
+
+const KEY_MISSING = 'This time clock is waiting for its station key. '
+  + 'Check the connection, or ask an administrator to sign in here.';
 
 function renderRoot() {
   return render(
@@ -63,6 +67,26 @@ it('an armed station that is not ready shows Welcome paused', async () => {
   station.value = { loading: false, info: { ...INFO, ready: false, paused: true }, refresh: () => {} };
   renderRoot();
   expect(await screen.findByText(/This time clock is paused\./)).toBeTruthy();
+  expect(screen.queryByText(KEY_MISSING)).toBeNull();
+});
+
+it('an armed station waiting for its key says so instead of the registration notice', async () => {
+  station.value = {
+    loading: false, info: { ...INFO, ready: false, paused: false, key_missing: true }, refresh: () => {},
+  };
+  renderRoot();
+  expect(await screen.findByText(KEY_MISSING)).toBeTruthy();
+  expect(screen.queryByText(/This time clock is paused\./)).toBeNull();
+  expect((screen.getByRole('button', { name: /Enter Your Name/ }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('a paused registration keeps the registration notice even with no key', async () => {
+  station.value = {
+    loading: false, info: { ...INFO, ready: false, paused: true, key_missing: true }, refresh: () => {},
+  };
+  renderRoot();
+  expect(await screen.findByText(/This time clock is paused\./)).toBeTruthy();
+  expect(screen.queryByText(KEY_MISSING)).toBeNull();
 });
 
 it('anon + a time clock that is not armed goes to sign-in', async () => {
