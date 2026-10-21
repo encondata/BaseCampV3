@@ -16,7 +16,7 @@ struct KioskSetupViewModelTests {
 
     init() throws {
         identity = Identity(prefs: prefs, secrets: MemorySecretStore())
-        let store = KioskStore(modelContainer: try KioskSchema.container(inMemory: true))
+        let store = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
         sync = Sync(api: api, store: store)
         auth = KioskAuth(api: api, refresher: FakeRefresher(), identity: identity, prefs: prefs)
         let options = Self.options

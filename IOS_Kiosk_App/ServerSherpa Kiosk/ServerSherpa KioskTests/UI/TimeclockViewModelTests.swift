@@ -53,7 +53,7 @@ struct TimeclockViewModelTests {
     private let sleeper = ManualSleeper()
 
     init() throws {
-        store = KioskStore(modelContainer: try KioskSchema.container(inMemory: true))
+        store = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
     }
 
     private func build(nowMs: @escaping @Sendable () -> Int64 = { 0 }, zone: TimeZone = TimeZone(identifier: "UTC")!, extraPeople: [KioskPersonRow] = []) async throws -> TimeclockViewModel {

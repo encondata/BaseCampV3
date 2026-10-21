@@ -4,7 +4,7 @@ import SwiftData
 @testable import ServerSherpa_Kiosk
 
 struct KioskStoreTests {
-    private func store() throws -> KioskStore { KioskStore(modelContainer: try KioskSchema.container(inMemory: true)) }
+    private func store() throws -> KioskStore { KioskStore(modelContainer: try KioskSchema.inMemoryContainer()) }
 
     private func meta(_ name: String = "Move A", assets: Int = 0) -> SyncMeta {
         SyncMeta(initiativeId: "i1", initiativeName: name, assets: assets, people: 0, containers: 0, trucks: 0, syncedAt: "2023-11-14T22:13:20Z")
@@ -55,7 +55,7 @@ struct KioskStoreTests {
     }
 
     @Test func corruptMetaReadsAsNil() async throws {
-        let container = try KioskSchema.container(inMemory: true)
+        let container = try KioskSchema.inMemoryContainer()
         let context = ModelContext(container)
         context.insert(MetaRecord(key: "sync", value: "{broken"))
         try context.save()

@@ -1,5 +1,4 @@
 import Foundation
-import os
 import SwiftData
 import SwiftUI
 import UIKit
@@ -23,11 +22,15 @@ final class AppContainer {
     let flash = FlashController()
     let sound: SoundPlayer
     let toast = ToastCenter()
+    /// True when the on-disk store could not be used this launch and the kiosk
+    /// runs in memory: nothing written (queued scans included) survives a relaunch.
+    let storeIsTemporary: Bool
 
     private var active = false
     private var launched = false
 
-    init(defaults: UserDefaults, secrets: SecretStore, modelContainer: ModelContainer, backgroundTask: BackgroundTasking) {
+    init(defaults: UserDefaults, secrets: SecretStore, modelContainer: ModelContainer, storeIsTemporary: Bool = false,
+         backgroundTask: BackgroundTasking) {
         let prefs = KioskPrefs(defaults: defaults)
         let config = KioskConfig(prefs: prefs)
         let identity = Identity(prefs: prefs, secrets: secrets)
@@ -52,6 +55,7 @@ final class AppContainer {
         self.heartbeat = heartbeat
         self.coordinator = SessionCoordinator(refresher: sessionStore, auth: auth, heartbeat: heartbeat)
         self.store = store
+        self.storeIsTemporary = storeIsTemporary
         self.sync = Sync(api: api, store: store)
         self.outbox = Outbox(store: store, api: api, serial: { identity.current.serial }, backgroundTask: backgroundTask)
         self.sound = SoundPlayer(prefs: prefs)
@@ -59,8 +63,9 @@ final class AppContainer {
 
     /// Keychain, UserDefaults.standard and the on-disk store (see `openStore`).
     static func live() -> AppContainer {
-        AppContainer(defaults: .standard, secrets: KeychainSecretStore(), modelContainer: openStore(),
-                     backgroundTask: UIKitBackgroundTasking())
+        let opened = openStore()
+        return AppContainer(defaults: .standard, secrets: KeychainSecretStore(), modelContainer: opened.container,
+                            storeIsTemporary: opened.isTemporary, backgroundTask: UIKitBackgroundTasking())
     }
 
     /// For SwiftUI previews: nothing touches the Keychain, the real defaults or the disk.
@@ -70,43 +75,16 @@ final class AppContainer {
                             modelContainer: inMemoryStore(), backgroundTask: NoBackgroundTasking())
     }
 
-    private static let storeLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "ServerSherpa Kiosk", category: "store")
-
-    /// The on-disk store in `directory`, migrated when older. A store that will
-    /// not open is never deleted: its files are moved aside to
-    /// `serversherpa-kiosk.store.failed-<yyyyMMdd-HHmmss>` (+ `-shm`/`-wal`) and
-    /// a fresh store opens; failing that, the kiosk runs in memory.
-    static func openStore(directory: URL = .applicationSupportDirectory, now: Date = Date()) -> ModelContainer {
-        let fm = FileManager.default
-        let url = directory.appending(path: KioskSchema.storeFileName)
-        do {
-            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
-            return try KioskSchema.container(url: url)
-        } catch {
-            storeLog.error("The kiosk store would not open: \(String(describing: error), privacy: .public)")
-        }
-        let failed = KioskSchema.failedStoreName(at: now)
-        // The main file first: a stray -wal or -shm beside a fresh store is never
-        // left behind, because any failed move stops here and runs in memory.
-        for suffix in ["", "-wal", "-shm"] {
-            let from = directory.appending(path: KioskSchema.storeFileName + suffix)
-            guard fm.fileExists(atPath: from.path(percentEncoded: false)) else { continue }
-            do {
-                try fm.moveItem(at: from, to: directory.appending(path: failed + suffix))
-            } catch {
-                storeLog.error("The kiosk store could not be moved aside: \(String(describing: error), privacy: .public)")
-                return inMemoryStore()
-            }
-        }
-        storeLog.error("The kiosk store was moved aside to \(failed, privacy: .public); opening a fresh one")
-        do { return try KioskSchema.container(url: url) } catch {
-            storeLog.error("A fresh kiosk store would not open either: \(String(describing: error), privacy: .public)")
-            return inMemoryStore()
-        }
+    /// The on-disk store in `directory`, migrated when older. A store file is
+    /// never deleted: only a corrupt one is moved aside (its queued scans are
+    /// salvaged); any other failure runs in memory this launch (`KioskStoreOpener`).
+    static func openStore(directory: URL = .applicationSupportDirectory, now: Date = Date()) -> OpenedStore {
+        KioskStoreOpener.open(directory: directory, now: now,
+                              protectedDataAvailable: { UIApplication.shared.isProtectedDataAvailable }, inMemory: inMemoryStore)
     }
 
     private static func inMemoryStore() -> ModelContainer {
-        do { return try KioskSchema.container(inMemory: true) } catch {
+        do { return try KioskSchema.inMemoryContainer() } catch {
             fatalError("An in-memory SwiftData store could not be created: \(error)")
         }
     }

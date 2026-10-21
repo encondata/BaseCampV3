@@ -246,21 +246,15 @@ import SwiftData
 }
 
 enum KioskSchema {
-    static let models: [any PersistentModel.Type] = KioskSchemaV2.models
-
     /// The store's file name in Application Support (plus SQLite's `-shm` and `-wal`).
     static let storeFileName = "serversherpa-kiosk.store"
 
-    /// On disk at Application Support/serversherpa-kiosk.store; in memory for tests.
-    static func container(inMemory: Bool) throws -> ModelContainer {
-        if inMemory {
-            let schema = Schema(versionedSchema: KioskSchemaV2.self)
-            return try ModelContainer(for: schema, migrationPlan: KioskMigrationPlan.self,
-                                      configurations: ModelConfiguration(schema: schema, isStoredInMemoryOnly: true))
-        }
-        let dir = URL.applicationSupportDirectory
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return try container(url: dir.appending(path: storeFileName))
+    /// An in-memory store at the current version: tests, previews, and the
+    /// fallback when the on-disk store cannot be used (see `KioskStoreOpener`).
+    static func inMemoryContainer() throws -> ModelContainer {
+        let schema = Schema(versionedSchema: KioskSchemaV2.self)
+        return try ModelContainer(for: schema, migrationPlan: KioskMigrationPlan.self,
+                                  configurations: ModelConfiguration(schema: schema, isStoredInMemoryOnly: true))
     }
 
     /// The store at `url`, migrated to the current version when older.
@@ -270,7 +264,7 @@ enum KioskSchema {
                                   configurations: ModelConfiguration(schema: schema, url: url))
     }
 
-    /// Where a store that would not open is moved: `serversherpa-kiosk.store.failed-<yyyyMMdd-HHmmss>` (local time).
+    /// The folder a corrupt store is moved into: `serversherpa-kiosk.store.failed-<yyyyMMdd-HHmmss>` (local time).
     static func failedStoreName(at date: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")

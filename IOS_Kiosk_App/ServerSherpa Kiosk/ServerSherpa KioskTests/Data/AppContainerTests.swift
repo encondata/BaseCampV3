@@ -9,7 +9,7 @@ struct AppContainerTests {
         let defaults = freshDefaults()
         KioskPrefs(defaults: defaults).apiUrl = "http://127.0.0.1:9"   // nothing listens: a stray heartbeat fails at once
         let c = AppContainer(defaults: defaults, secrets: MemorySecretStore(),
-                             modelContainer: try KioskSchema.container(inMemory: true), backgroundTask: NoBackgroundTasking())
+                             modelContainer: try KioskSchema.inMemoryContainer(), backgroundTask: NoBackgroundTasking())
         c.onActive()
         #expect(!c.outbox.isRunning)                 // in front, signed out
         await c.auth.completePair(fakeSession())

@@ -14,7 +14,7 @@ struct SyncTests {
         api.people = { KioskPeopleSync(generatedAt: "now") }
         api.containers = { KioskContainersSync(initiativeId: "i1", generatedAt: "now") }
         api.trucks = { KioskTrucksSync(initiativeId: "i1", generatedAt: "now") }
-        store = KioskStore(modelContainer: try KioskSchema.container(inMemory: true))
+        store = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
     }
 
     private func sync() -> Sync { Sync(api: api, store: store, clock: { 1_700_000_000_000 }) }

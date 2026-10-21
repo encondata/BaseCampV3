@@ -4,9 +4,12 @@ import SwiftData
 import CoreData
 @testable import ServerSherpa_Kiosk
 
+private final class FixtureBundle {}
+
 /// Upgrading a kiosk with unsent scans keeps every queued scan and the synced
-/// move (Android `MigrationTest`), and a store that will not open is moved
-/// aside, never deleted. Every store here lives in its own temp directory.
+/// move (Android `MigrationTest`), and a store that will not open is never
+/// deleted: only a corrupt one is moved aside, with its queued scans salvaged.
+/// Every store here lives in its own temp directory.
 struct StoreMigrationTests {
     private func tempDir() throws -> URL {
         let dir = FileManager.default.temporaryDirectory.appending(path: "store-migration-\(UUID().uuidString)")
@@ -16,14 +19,19 @@ struct StoreMigrationTests {
 
     private func storeUrl(_ dir: URL) -> URL { dir.appending(path: KioskSchema.storeFileName) }
 
+    private func names(_ dir: URL) throws -> [String] {
+        try FileManager.default.contentsOfDirectory(atPath: dir.path(percentEncoded: false)).sorted()
+    }
+
+    private func hashes(_ models: [any PersistentModel.Type]) throws -> [String: String] {
+        try #require(KioskStoreOpener.frozenModel(models)).entityVersionHashesByName.mapValues { $0.base64EncodedString() }
+    }
+
     /// The entity version hashes of the models the app shipped before V2,
-    /// captured from that build. SwiftData recognizes an installed store by
-    /// these, so `KioskSchemaV1` must never drift from them.
+    /// captured from that build (6d1a7ce0). SwiftData recognizes an installed
+    /// store by these, so `KioskSchemaV1` must never drift from them.
     @Test func v1MatchesTheShippedModels() throws {
-        let model = try #require(NSManagedObjectModel.makeManagedObjectModel(for: KioskSchemaV1.models))
-        _ = NSPersistentStoreCoordinator(managedObjectModel: model)   // freezes the model, so its checksums are stable
-        let hashes = model.entityVersionHashesByName.mapValues { $0.base64EncodedString() }
-        #expect(hashes == [
+        #expect(try hashes(KioskSchemaV1.models) == [
             "AssetRecord": "2RsC4/0nScdnLr3WAjUe6/Y6+OAdoimSQ2cV4VH+Fz8=",
             "ContainerRecord": "xiV4SI2FytLhhQH6ZURpHBRwAzqC2PgaAA720FvmiYA=",
             "MetaRecord": "/UsUMHs8eOmw2h9ICHj44owKFCHIXCyREfIUyZs+UB4=",
@@ -35,12 +43,23 @@ struct StoreMigrationTests {
         #expect(KioskSchemaV2.versionIdentifier == Schema.Version(2, 0, 0))
     }
 
-    /// Writes a V1 store on disk and closes it. It goes through Core Data with
-    /// the V1 model SwiftData builds (same entity hashes as the shipped store,
-    /// history tracking on as SwiftData sets it) rather than through the
-    /// `KioskSchemaV1` classes: those share entity names with the V2 classes,
-    /// and SwiftData throws when both are instantiated at once in one process,
-    /// which parallel suites do. The app itself never instantiates V1 classes.
+    /// V2's hashes. They may change only until V2 first ships. After that,
+    /// V2's models must be frozen into nested classes (as V1's are) before any
+    /// V3 changes the top-level models, and these hashes never change again.
+    @Test func v2MatchesTheCurrentModels() throws {
+        #expect(try hashes(KioskSchemaV2.models) == [
+            "AssetRecord": "fQPXcFmSak5wb8ueyeBQXH8WchqGLrsHYvemHcL3f+Y=",
+            "ContainerRecord": "xiV4SI2FytLhhQH6ZURpHBRwAzqC2PgaAA720FvmiYA=",
+            "GeneratedLabelRecord": "egCgr0FGUJOcr4veGo1Vfeq3x4RZ9OPZgFQ8UegKD4g=",
+            "LabelFontRecord": "ge1ILpgy/XJqzTU14LZUEFLD3ZF1UISrWhdEwiPEYBs=",
+            "LabelTemplateRecord": "UslMw+yEjcSV88BaUmgxPwj4u5j0NP/5T6CbSktt3/U=",
+            "MetaRecord": "/UsUMHs8eOmw2h9ICHj44owKFCHIXCyREfIUyZs+UB4=",
+            "OutboxRecord": "LROWuRXnVT8xKmpj7+FimZDHwkXZWcCls0WiL4Az55Q=",
+            "PersonRecord": "o81WD8FTA0vSjoC8WW5EEbkPnBxlVXEa7AgcLUNxy58=",
+            "TruckRecord": "xLvsfmI3+YrAuHc1P+zEeNpKSfFEEiMahUiLhWPYmBI=",
+        ])
+    }
+
     private func seedV1(at url: URL) throws {
         let model = try #require(NSManagedObjectModel.makeManagedObjectModel(for: KioskSchemaV1.models))
         let coordinator = NSPersistentStoreCoordinator(managedObjectModel: model)
@@ -73,6 +92,56 @@ struct StoreMigrationTests {
         for store in coordinator.persistentStores { try coordinator.remove(store) }
     }
 
+    /// A V2 store with two queued scans and one asset, written by the app's own code.
+    private func seedV2(at url: URL) async throws {
+        let store = KioskStore(modelContainer: try KioskSchema.container(url: url))
+        try await store.outboxUpsert(outboxRows())
+        try await store.replaceRoster(assets: [KioskAssetRow(id: "a1", assetId: "A-1")], people: [], containers: [], trucks: [],
+                                      meta: SyncMeta(initiativeId: "i1", initiativeName: "Move", assets: 1, people: 0, containers: 0,
+                                                     trucks: 0, syncedAt: "2026-10-21T10:00:00Z"))
+    }
+
+    /// The two rows `seedV1` writes, as the app reads them.
+    private func outboxRows() -> [OutboxRow] {
+        let asset = OutboxAsset(id: "a2", assetId: "A-2", name: "Rack 2", rfid: nil, serialNumber: "SN2", makeModel: "Dell R740")
+        return (1...2).map { (i: Int) -> OutboxRow in
+            OutboxRow(clientScanId: "c\(i)", seq: Int64(i), scannedValue: "A-\(i)", scanType: "barcode", scannedAt: "2026-10-21T10:00:0\(i)Z",
+                      asset: i == 2 ? asset : nil, matched: true, status: i == 1 ? .queued : .retrying, attempts: i - 1, nextAttemptAt: nil,
+                      lastError: nil, siteId: "s1", initiativeId: "i1", scanStatus: "pre_stage")
+        }
+    }
+
+    /// A store a newer build wrote: V2 plus an attribute this build does not know.
+    private func seedNewerVersion(at url: URL) throws {
+        let model = try #require(KioskStoreOpener.frozenModel(KioskSchemaV2.models)?.copy() as? NSManagedObjectModel)
+        let extra = NSAttributeDescription()
+        extra.name = "fromTheFuture"
+        extra.type = .string
+        extra.isOptional = true
+        try #require(model.entitiesByName["AssetRecord"]).properties.append(extra)
+        let coordinator = NSPersistentStoreCoordinator(managedObjectModel: model)
+        _ = try coordinator.addPersistentStore(type: .sqlite, at: url, options: [NSPersistentHistoryTrackingKey: true])
+        let context = NSManagedObjectContext(.privateQueue)
+        context.persistentStoreCoordinator = coordinator
+        try context.performAndWait {
+            NSManagedObject(entity: model.entitiesByName["MetaRecord"]!, insertInto: context).setValuesForKeys(["key": "sync", "value": "{}"])
+            try context.save()
+        }
+        for store in coordinator.persistentStores { try coordinator.remove(store) }
+    }
+
+    /// An opener whose first open fails (a full disk, say) and whose later opens are real.
+    private final class FailOnce {
+        var calls = 0
+        func open(_ url: URL) throws -> ModelContainer {
+            calls += 1
+            if calls == 1 { throw CocoaError(.fileWriteOutOfSpace) }
+            return try KioskSchema.container(url: url)
+        }
+    }
+
+    private func inMemory() -> ModelContainer { try! KioskSchema.inMemoryContainer() }
+
     @Test func v1StoreOpensAtV2WithEveryRow() async throws {
         let dir = try tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -80,12 +149,7 @@ struct StoreMigrationTests {
 
         let container = try KioskSchema.container(url: storeUrl(dir))
         let store = KioskStore(modelContainer: container)
-        let outbox = try await store.outboxAll().sorted { $0.seq < $1.seq }
-        #expect(outbox.map(\.clientScanId) == ["c1", "c2"])
-        #expect(outbox.map(\.status) == [.queued, .retrying])
-        #expect(outbox.map(\.attempts) == [0, 1])
-        #expect(outbox[1].asset?.name == "Rack 2")
-        #expect(outbox[0].asset == nil)
+        #expect(try await store.outboxAll().sorted { $0.seq < $1.seq } == outboxRows())
         let assets = try await store.assets().sorted { $0.id < $1.id }
         #expect(assets.map(\.id) == ["a1", "a2", "a3"])
         #expect(assets[2].label["asset_id"] == "A-3")
@@ -122,48 +186,164 @@ struct StoreMigrationTests {
         #expect(try reopened.fetchCount(FetchDescriptor<OutboxRecord>()) == 2)
     }
 
+    /// `Fixtures/PrechangeKioskStore.sqlite` was written by SwiftData in the
+    /// build before versioning (6d1a7ce0): 3 assets, 1 unmatched scan, the sync
+    /// meta row. Checkpointed to a single file.
+    @Test func aStoreFromThePrechangeBuildOpensAtV2() async throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let fixture = try #require(Bundle(for: FixtureBundle.self).url(forResource: "PrechangeKioskStore", withExtension: "sqlite"))
+        try FileManager.default.copyItem(at: fixture, to: storeUrl(dir))
+
+        let container = try KioskSchema.container(url: storeUrl(dir))
+        let store = KioskStore(modelContainer: container)
+        #expect(try await store.assets().map(\.id).sorted() == ["a1", "a2", "a3"])
+        let outbox = try await store.outboxAll()
+        #expect(outbox.map(\.clientScanId) == ["c1"])
+        #expect(outbox.first?.status == .nomatch)
+        let context = ModelContext(container)
+        #expect(try context.fetch(FetchDescriptor<AssetRecord>()).map(\.payloadJson) == ["{}", "{}", "{}"])
+        #expect(try context.fetch(FetchDescriptor<MetaRecord>()).map(\.value) == ["{\"initiativeId\":\"i1\"}"])
+    }
+
     @Test func inMemoryContainerIsV2() throws {
-        let context = ModelContext(try KioskSchema.container(inMemory: true))
+        let context = ModelContext(try KioskSchema.inMemoryContainer())
         context.insert(LabelTemplateRecord(id: "tpl1", position: 0, json: "{}"))
         try context.save()
         #expect(try context.fetchCount(FetchDescriptor<LabelTemplateRecord>()) == 1)
     }
 
-    @MainActor @Test func aStoreThatWillNotOpenIsMovedAsideNeverDeleted() async throws {
+    @Test func classifyReadsTheFileWithoutOpeningIt() async throws {
         let dir = try tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let garbage = Data("this is not a SQLite database, but it is somebody's data".utf8)
-        try garbage.write(to: storeUrl(dir))
-        try Data("wal bytes".utf8).write(to: dir.appending(path: KioskSchema.storeFileName + "-wal"))
-
-        let container = AppContainer.openStore(directory: dir)
-
-        let names = try FileManager.default.contentsOfDirectory(atPath: dir.path(percentEncoded: false))
-        let failed = try #require(names.first { $0.hasPrefix("serversherpa-kiosk.store.failed-") && !$0.hasSuffix("-wal") && !$0.hasSuffix("-shm") })
-        #expect(failed.wholeMatch(of: /serversherpa-kiosk\.store\.failed-\d{8}-\d{6}/) != nil)
-        #expect(try Data(contentsOf: dir.appending(path: failed)) == garbage)
-        #expect(names.contains(failed + "-wal"))
-        #expect(try Data(contentsOf: dir.appending(path: failed + "-wal")) == Data("wal bytes".utf8))
-
-        // A fresh, working store on disk at the usual name.
-        #expect(container.configurations.first?.url == storeUrl(dir))
-        #expect(container.configurations.first?.isStoredInMemoryOnly == false)
-        let store = KioskStore(modelContainer: container)
-        try await store.replaceRoster(assets: [KioskAssetRow(id: "a1", assetId: "A-1")], people: [], containers: [], trucks: [],
-                                      meta: SyncMeta(initiativeId: "i1", initiativeName: "Move", assets: 1, people: 0, containers: 0,
-                                                     trucks: 0, syncedAt: "2026-10-21T10:00:00Z"))
-        #expect(try await store.counts().assets == 1)
+        #expect(KioskStoreOpener.classify(storeAt: dir.appending(path: "missing.store")) == .missing)
+        let garbage = dir.appending(path: "garbage.store")
+        try Data("not a database".utf8).write(to: garbage)
+        #expect(KioskStoreOpener.classify(storeAt: garbage) == .corrupt)
+        let v1 = dir.appending(path: "v1.store")
+        try seedV1(at: v1)
+        #expect(KioskStoreOpener.classify(storeAt: v1) == .known)
+        let v2 = dir.appending(path: "v2.store")
+        try await seedV2(at: v2)
+        #expect(KioskStoreOpener.classify(storeAt: v2) == .known)
+        let newer = dir.appending(path: "newer.store")
+        try seedNewerVersion(at: newer)
+        #expect(KioskStoreOpener.classify(storeAt: newer) == .unknownVersion)
     }
 
-    @MainActor @Test func aHealthyStoreIsLeftInPlace() async throws {
+    @Test func aCorruptStoreIsMovedAsideWithItsSiblings() async throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let files = ["": Data("this is not a SQLite database, but it is somebody's data".utf8),
+                     "-wal": Data("wal bytes".utf8), "-shm": Data("shm bytes".utf8)]
+        for (suffix, bytes) in files { try bytes.write(to: dir.appending(path: KioskSchema.storeFileName + suffix)) }
+
+        let opened = KioskStoreOpener.open(directory: dir, now: Date(), protectedDataAvailable: { true }, inMemory: inMemory)
+
+        let folder = try #require(opened.movedAsideTo)
+        #expect(folder.lastPathComponent.wholeMatch(of: /serversherpa-kiosk\.store\.failed-\d{8}-\d{6}/) != nil)
+        #expect(try names(folder) == ["serversherpa-kiosk.store", "serversherpa-kiosk.store-shm", "serversherpa-kiosk.store-wal"])
+        for (suffix, bytes) in files {
+            #expect(try Data(contentsOf: folder.appending(path: KioskSchema.storeFileName + suffix)) == bytes)
+        }
+        #expect(!opened.isTemporary)
+        #expect(opened.salvagedScans == 0)
+        #expect(opened.container.configurations.first?.url == storeUrl(dir))
+        #expect(opened.container.configurations.first?.isStoredInMemoryOnly == false)
+        let store = KioskStore(modelContainer: opened.container)
+        try await store.outboxUpsert(outboxRows())
+        #expect(try await store.outboxAll().count == 2)
+    }
+
+    @Test func aLockedDeviceNeverMovesTheStore() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let garbage = Data("unreadable while locked".utf8)
+        try garbage.write(to: storeUrl(dir))
+
+        let opened = KioskStoreOpener.open(directory: dir, now: Date(), protectedDataAvailable: { false }, inMemory: inMemory)
+
+        #expect(opened.isTemporary)
+        #expect(opened.movedAsideTo == nil)
+        #expect(opened.container.configurations.first?.isStoredInMemoryOnly == true)
+        #expect(try names(dir) == ["serversherpa-kiosk.store"])
+        #expect(try Data(contentsOf: storeUrl(dir)) == garbage)
+    }
+
+    @Test func aHealthyStoreThatWillNotOpenIsLeftInPlace() async throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try await seedV2(at: storeUrl(dir))
+        let before = try names(dir)
+
+        let opener = FailOnce()
+        let opened = KioskStoreOpener.open(directory: dir, now: Date(), protectedDataAvailable: { true }, open: opener.open, inMemory: inMemory)
+
+        #expect(opener.calls == 1)
+        #expect(opened.isTemporary)
+        #expect(opened.movedAsideTo == nil)
+        #expect(opened.container.configurations.first?.isStoredInMemoryOnly == true)
+        #expect(try names(dir) == before)
+        // The next launch finds every queued scan.
+        let next = KioskStore(modelContainer: try KioskSchema.container(url: storeUrl(dir)))
+        #expect(try await next.outboxAll().count == 2)
+    }
+
+    @Test func aStoreFromANewerBuildIsLeftInPlace() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try seedNewerVersion(at: storeUrl(dir))
+        let before = try names(dir)
+
+        let opened = KioskStoreOpener.open(directory: dir, now: Date(), protectedDataAvailable: { true }, inMemory: inMemory)
+
+        #expect(opened.isTemporary)
+        #expect(opened.movedAsideTo == nil)
+        #expect(try names(dir) == before)
+        #expect(KioskStoreOpener.classify(storeAt: storeUrl(dir)) == .unknownVersion)
+    }
+
+    /// A corrupt file cannot be read for salvage, so these force the move on a
+    /// readable store to prove the salvage reads V1 and V2 stores alike.
+    @Test(arguments: [1, 2]) func aMovedStoreHasItsOutboxSalvaged(version: Int) async throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        if version == 1 { try seedV1(at: storeUrl(dir)) } else { try await seedV2(at: storeUrl(dir)) }
+
+        let opened = KioskStoreOpener.open(directory: dir, now: Date(), protectedDataAvailable: { true }, open: FailOnce().open,
+                                           classify: { _ in .corrupt }, inMemory: inMemory)
+
+        let folder = try #require(opened.movedAsideTo)
+        #expect(try names(folder).contains(KioskSchema.storeFileName))
+        #expect(!opened.isTemporary)
+        #expect(opened.salvagedScans == 2)
+        let fresh = KioskStore(modelContainer: opened.container)
+        #expect(try await fresh.outboxAll().sorted { $0.seq < $1.seq } == outboxRows())
+        #expect(try await fresh.assets().isEmpty)
+    }
+
+    @Test func aSecondFailureInTheSameSecondGetsItsOwnFolder() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date()
+        try Data("one".utf8).write(to: storeUrl(dir))
+        let first = try #require(KioskStoreOpener.moveAside(directory: dir, now: now))
+        try Data("two".utf8).write(to: storeUrl(dir))
+        let second = try #require(KioskStoreOpener.moveAside(directory: dir, now: now))
+        #expect(second.lastPathComponent == first.lastPathComponent + "-2")
+        #expect(try Data(contentsOf: first.appending(path: KioskSchema.storeFileName)) == Data("one".utf8))
+        #expect(try Data(contentsOf: second.appending(path: KioskSchema.storeFileName)) == Data("two".utf8))
+    }
+
+    @MainActor @Test func theAppOpensAHealthyStoreInPlace() async throws {
         let dir = try tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         try seedV1(at: storeUrl(dir))
 
-        let store = KioskStore(modelContainer: AppContainer.openStore(directory: dir))
-        #expect(try await store.outboxAll().count == 2)
-        let names = try FileManager.default.contentsOfDirectory(atPath: dir.path(percentEncoded: false))
-        #expect(!names.contains { $0.contains(".failed-") })
+        let opened = AppContainer.openStore(directory: dir)
+        #expect(!opened.isTemporary)
+        #expect(try await KioskStore(modelContainer: opened.container).outboxAll().count == 2)
+        #expect(!(try names(dir)).contains { $0.contains(".failed-") })
     }
 
     @Test func failedNameStampsTheMoment() {
