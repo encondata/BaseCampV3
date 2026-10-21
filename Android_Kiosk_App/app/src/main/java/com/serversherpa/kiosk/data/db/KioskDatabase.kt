@@ -9,7 +9,7 @@ const val MOVE_META_KEY = "sync"
 
 @Database(
     entities = [AssetEntity::class, PersonEntity::class, ContainerEntity::class, TruckEntity::class, MetaEntity::class, OutboxEntity::class],
-    version = 1, exportSchema = false,
+    version = 1, exportSchema = true,
 )
 abstract class KioskDatabase : RoomDatabase() {
     abstract fun assets(): AssetDao

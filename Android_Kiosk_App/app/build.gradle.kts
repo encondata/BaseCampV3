@@ -44,10 +44,18 @@ android {
         unitTests.isIncludeAndroidResources = true
         unitTests.isReturnDefaultValues = true
     }
+    sourceSets {
+        getByName("test").assets.srcDir("$projectDir/schemas")
+    }
 
 }
 
-ksp { arg("room.generateKotlin", "true") }
+ksp {
+    arg("room.generateKotlin", "true")
+    // Exported schemas are committed: MigrationTestHelper reads them to
+    // build each old version for real (data/db/MigrationTest).
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
 
 dependencies {
     implementation(libs.androidx.core.ktx)
