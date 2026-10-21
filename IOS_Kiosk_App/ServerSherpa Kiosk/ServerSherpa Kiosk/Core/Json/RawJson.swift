@@ -5,6 +5,9 @@ import Foundation
 /// written (Android keeps kotlinx's literal text for the same reason). A pure
 /// scanner over the UTF-8 bytes that honors strings and their escapes.
 enum RawJson {
+    /// Containers nested deeper than this throw instead of scanning on.
+    static let maxDepth = 512
+
     struct Malformed: Error, Equatable, Sendable {
         /// The byte offset where scanning stopped.
         let offset: Int
@@ -13,32 +16,45 @@ enum RawJson {
     /// Each element's raw text from the top-level object's array member `key`,
     /// in order. Empty when the member is absent, `null` or not an array.
     static func arrayElements(of text: String, key: String) throws -> [String] {
-        let bytes = Array(text.utf8)
-        var scanner = Scanner(bytes: bytes)
-        guard let range = try scanner.topLevelMember(key), bytes[range.lowerBound] == UInt8(ascii: "[") else { return [] }
-        var inner = Scanner(bytes: bytes, at: range.lowerBound + 1)
-        var elements: [String] = []
-        inner.skipWhitespace()
-        if inner.peek == UInt8(ascii: "]") { return [] }
-        while true {
-            inner.skipWhitespace()
-            let start = inner.index
-            try inner.skipValue()
-            elements.append(String(decoding: bytes[start..<inner.index], as: UTF8.self))
-            inner.skipWhitespace()
-            switch inner.peek {
-            case UInt8(ascii: ","): inner.index += 1
-            case UInt8(ascii: "]"): return elements
-            default: throw Malformed(offset: inner.index)
-            }
-        }
+        try arrayElementsAndMember(of: text, arrayKey: key, memberKey: nil).elements
     }
 
     /// The raw text of the top-level object's member `key`; nil when absent or `null`.
     static func member(of text: String, key: String) throws -> String? {
         let bytes = Array(text.utf8)
         var scanner = Scanner(bytes: bytes)
-        guard let range = try scanner.topLevelMember(key) else { return nil }
+        guard let range = try scanner.topLevelMembers([key])[key] else { return nil }
+        return rawValue(bytes, range)
+    }
+
+    /// `arrayElements` and `member` from ONE scan of the body: the array member's elements
+    /// and the other member's raw text (nil when absent or `null`).
+    static func arrayElementsAndMember(of text: String, arrayKey: String, memberKey: String?) throws -> (elements: [String], member: String?) {
+        let bytes = Array(text.utf8)
+        var scanner = Scanner(bytes: bytes)
+        let found = try scanner.topLevelMembers(Set([arrayKey] + (memberKey.map { [$0] } ?? [])))
+        let member = memberKey.flatMap { found[$0] }.flatMap { rawValue(bytes, $0) }
+        guard let range = found[arrayKey], bytes[range.lowerBound] == UInt8(ascii: "[") else { return ([], member) }
+        // The array was validated by the scan: split it at its top-level commas.
+        var inner = Scanner(bytes: bytes, at: range.lowerBound + 1)
+        var elements: [String] = []
+        inner.skipWhitespace()
+        if inner.peek == UInt8(ascii: "]") { return ([], member) }
+        while true {
+            inner.skipWhitespace()
+            let start = inner.index
+            try inner.skipValue(depth: 1)
+            elements.append(String(decoding: bytes[start..<inner.index], as: UTF8.self))
+            inner.skipWhitespace()
+            switch inner.peek {
+            case UInt8(ascii: ","): inner.index += 1
+            case UInt8(ascii: "]"): return (elements, member)
+            default: throw Malformed(offset: inner.index)
+            }
+        }
+    }
+
+    private static func rawValue(_ bytes: [UInt8], _ range: Range<Int>) -> String? {
         let raw = String(decoding: bytes[range], as: UTF8.self)
         return raw == "null" ? nil : raw
     }
@@ -64,12 +80,12 @@ enum RawJson {
         }
 
         /// Scans the whole top-level object (so a malformed body always throws)
-        /// and returns the byte range of member `key`'s value; the last one wins
-        /// when a key repeats, as with JSONDecoder.
-        mutating func topLevelMember(_ key: String) throws -> Range<Int>? {
+        /// and returns the byte range of each wanted member's value; the last one
+        /// wins when a key repeats.
+        mutating func topLevelMembers(_ keys: Set<String>) throws -> [String: Range<Int>] {
             skipWhitespace()
             try expect("{")
-            var found: Range<Int>?
+            var found: [String: Range<Int>] = [:]
             skipWhitespace()
             if peek == UInt8(ascii: "}") {
                 index += 1
@@ -81,8 +97,8 @@ enum RawJson {
                     try expect(":")
                     skipWhitespace()
                     let start = index
-                    try skipValue()
-                    if name == key { found = start..<index }
+                    try skipValue(depth: 1)
+                    if keys.contains(name) { found[name] = start..<index }
                     skipWhitespace()
                     if peek == UInt8(ascii: ",") { index += 1; continue }
                     try expect("}")
@@ -94,9 +110,11 @@ enum RawJson {
             return found
         }
 
-        /// Skips one value of any kind, leaving `index` just past it.
-        mutating func skipValue() throws {
+        /// Skips one value of any kind, leaving `index` just past it. `depth` counts
+        /// the containers already open around it.
+        mutating func skipValue(depth: Int) throws {
             guard let b = peek else { throw Malformed(offset: index) }
+            if (b == UInt8(ascii: "{") || b == UInt8(ascii: "[")) && depth >= RawJson.maxDepth { throw Malformed(offset: index) }
             switch b {
             case UInt8(ascii: "{"):
                 index += 1
@@ -108,7 +126,7 @@ enum RawJson {
                     skipWhitespace()
                     try expect(":")
                     skipWhitespace()
-                    try skipValue()
+                    try skipValue(depth: depth + 1)
                     skipWhitespace()
                     if peek == UInt8(ascii: ",") { index += 1; continue }
                     try expect("}")
@@ -120,7 +138,7 @@ enum RawJson {
                 if peek == UInt8(ascii: "]") { index += 1; return }
                 while true {
                     skipWhitespace()
-                    try skipValue()
+                    try skipValue(depth: depth + 1)
                     skipWhitespace()
                     if peek == UInt8(ascii: ",") { index += 1; continue }
                     try expect("]")

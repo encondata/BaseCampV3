@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 
 enum SyncPhase: Sendable { case idle, running, done, error }
 
@@ -108,10 +109,12 @@ struct SyncMeta: Codable, Equatable, Sendable {
         let assets: ParsedAssets, people: KioskPeopleSync, containers: KioskContainersSync, trucks: KioskTrucksSync
         let templates: [LabelTemplateRow]?, templatesError: String?
         do {
-            async let a = part(myRun, "assets") { try await Self.parseAssets(try await self.api.assetsSyncRaw(initiativeId: initiativeId)) }
-            async let p = part(myRun, "people") { try await self.api.syncPeople() }
-            async let c = part(myRun, "containers") { try await self.api.syncContainers(initiativeId: initiativeId) }
-            async let t = part(myRun, "trucks") { try await self.api.syncTrucks(initiativeId: initiativeId) }
+            // Each download and its decoding run off the main actor; only the part states hop back.
+            let api = self.api
+            async let a = part(myRun, "assets") { try await Self.fetchAssets(api, initiativeId) }
+            async let p = part(myRun, "people") { try await Self.fetchPeople(api) }
+            async let c = part(myRun, "containers") { try await Self.fetchContainers(api, initiativeId) }
+            async let t = part(myRun, "trucks") { try await Self.fetchTrucks(api, initiativeId) }
             async let l = fetchTemplates(myRun, initiativeId: initiativeId)
             (assets, people, containers, trucks, (templates, templatesError)) = try await (a, p, c, t, l)
         } catch is CancellationError {
@@ -172,7 +175,8 @@ struct SyncMeta: Codable, Equatable, Sendable {
     /// The templates part: never throws. Returns the rows, or nil with the failure code.
     private func fetchTemplates(_ myRun: Int, initiativeId: String) async -> ([LabelTemplateRow]?, String?) {
         do {
-            return (try await part(myRun, "templates") { try await Self.parseTemplates(try await self.api.labelTemplatesRaw(initiativeId: initiativeId)) }, nil)
+            let api = self.api
+            return (try await part(myRun, "templates") { try await Self.fetchTemplates(api, initiativeId) }, nil)
         } catch is CancellationError {
             return (nil, nil)
         } catch {
@@ -186,7 +190,7 @@ struct SyncMeta: Codable, Equatable, Sendable {
     private func syncFonts(_ myRun: Int, initiativeId: String, moveChanged: Bool) async -> String? {
         setPart(myRun, "fonts", .running)
         do {
-            let listed = try await api.labelFonts(initiativeId: initiativeId)
+            let listed = try await Self.listFonts(api, initiativeId)
             var rows: [LabelFontRow] = []
             for f in listed.fonts {
                 let resident = isResidentFont(f.name, residentFlag: f.resident)
@@ -198,29 +202,30 @@ struct SyncMeta: Codable, Equatable, Sendable {
                 guard LabelFontFiles.isSafeId(f.id) else { throw LabelFontFiles.BadFontId() }
                 let fileName = "\(f.id).ttf"
                 let file = fontsDir.appendingPathComponent(fileName)
-                if !LabelFontFiles.hasFile(file, size: f.size) {
+                if await !LabelFontFiles.hasFile(file, size: f.size) {
                     let bytes: Data
                     do {
-                        bytes = try await api.labelFontContent(id: f.id, initiativeId: initiativeId)
+                        bytes = try await Self.downloadFont(api, id: f.id, initiativeId)
                     } catch let e as ApiError where e.status == 403 && e.code == "font_not_servable" {
                         // The server's own resident rule (flag or object name) refused it: built in.
                         rows.append(LabelFontRow(id: f.id, name: f.name, size: f.size, resident: true, fileName: nil))
                         continue
                     }
-                    try LabelFontFiles.write(bytes, to: file)
+                    try await LabelFontFiles.write(bytes, to: file)
                 }
                 rows.append(LabelFontRow(id: f.id, name: f.name, size: f.size, resident: false, fileName: fileName))
             }
             if myRun != currentRun { return nil }
             try await store.replaceLabelFonts(rows)
-            if let fontsDir { try LabelFontFiles.deleteUnused(in: fontsDir, keep: Set(rows.compactMap(\.fileName))) }
+            // Never throws: a cleanup failure must not undo the swap (stray files go next time).
+            if let fontsDir { await LabelFontFiles.deleteUnused(in: fontsDir, keep: Set(rows.compactMap(\.fileName))) }
             setPart(myRun, "fonts", .done, rows.count)
             return nil
         } catch {
             if moveChanged && myRun == currentRun {
                 // Best effort: a cleanup that throws too must not hide the original failure.
                 try? await store.replaceLabelFonts([])
-                if let fontsDir { try? LabelFontFiles.deleteUnused(in: fontsDir, keep: []) }
+                if let fontsDir { await LabelFontFiles.deleteUnused(in: fontsDir, keep: []) }
             }
             setPart(myRun, "fonts", .failed)
             return Self.code(of: error)
@@ -233,7 +238,7 @@ struct SyncMeta: Codable, Equatable, Sendable {
         hydrated = false
         status = SyncStatus()
         rosterVersion += 1
-        if let fontsDir { try LabelFontFiles.deleteUnused(in: fontsDir, keep: []) }
+        if let fontsDir { await LabelFontFiles.deleteUnused(in: fontsDir, keep: []) }
     }
 
     /// Runs one download with its part running; a failure marks it failed and rethrows.
@@ -270,23 +275,54 @@ struct SyncMeta: Codable, Equatable, Sendable {
         var labelContext: String
     }
 
+    // The downloads. `@concurrent`: the API members, their JSON decoding and the parsing below
+    // run off the main actor (a nonisolated async member otherwise runs on its caller's actor).
+
+    @concurrent nonisolated static func fetchAssets(_ api: KioskApi, _ initiativeId: String) async throws -> ParsedAssets {
+        try parseAssets(try await api.assetsSyncRaw(initiativeId: initiativeId))
+    }
+
+    @concurrent nonisolated static func fetchPeople(_ api: KioskApi) async throws -> KioskPeopleSync {
+        try await api.syncPeople()
+    }
+
+    @concurrent nonisolated static func fetchContainers(_ api: KioskApi, _ initiativeId: String) async throws -> KioskContainersSync {
+        try await api.syncContainers(initiativeId: initiativeId)
+    }
+
+    @concurrent nonisolated static func fetchTrucks(_ api: KioskApi, _ initiativeId: String) async throws -> KioskTrucksSync {
+        try await api.syncTrucks(initiativeId: initiativeId)
+    }
+
+    @concurrent nonisolated static func fetchTemplates(_ api: KioskApi, _ initiativeId: String) async throws -> [LabelTemplateRow] {
+        try parseTemplates(try await api.labelTemplatesRaw(initiativeId: initiativeId))
+    }
+
+    @concurrent nonisolated static func listFonts(_ api: KioskApi, _ initiativeId: String) async throws -> KioskLabelFonts {
+        try await api.labelFonts(initiativeId: initiativeId)
+    }
+
+    @concurrent nonisolated static func downloadFont(_ api: KioskApi, id: String, _ initiativeId: String) async throws -> Data {
+        try await api.labelFontContent(id: id, initiativeId: initiativeId)
+    }
+
     /// One /kiosk/sync/assets body: the typed rows as before, decoded from the same text, plus
-    /// each asset's exact JSON object text (`RawJson` never re-serializes, so `12.0` and
-    /// `1e-05` stay as sent). Off the main actor: a move can have thousands of assets.
-    @concurrent nonisolated static func parseAssets(_ raw: String) async throws -> ParsedAssets {
+    /// each asset's exact JSON object text and the raw `label_context`, from one `RawJson` scan
+    /// (it never re-serializes, so `12.0` and `1e-05` stay as sent).
+    nonisolated static func parseAssets(_ raw: String) throws -> ParsedAssets {
         do {
             let typed = try KioskJSON.decoder.decode(KioskAssetsSync.self, from: Data(raw.utf8))
-            let elements = try RawJson.arrayElements(of: raw, key: "assets")
-            guard elements.count == typed.assets.count else { throw RawJson.Malformed(offset: 0) }
-            return ParsedAssets(rows: typed.assets, payloads: elements,
-                                labelContext: try RawJson.member(of: raw, key: "label_context") ?? "null")
+            let scanned = try RawJson.arrayElementsAndMember(of: raw, arrayKey: "assets", memberKey: "label_context")
+            guard scanned.elements.count == typed.assets.count else { throw RawJson.Malformed(offset: 0) }
+            return ParsedAssets(rows: typed.assets, payloads: scanned.elements, labelContext: scanned.member ?? "null")
         } catch {
             throw ApiError(status: 200, code: "unknown_error")
         }
     }
 
-    /// Each template's JSON object text with its string id, in the server's order.
-    @concurrent nonisolated static func parseTemplates(_ raw: String) async throws -> [LabelTemplateRow] {
+    /// Each template's JSON object text with its string id, in the server's order; elements
+    /// that are not objects or have no string id are skipped.
+    nonisolated static func parseTemplates(_ raw: String) throws -> [LabelTemplateRow] {
         do {
             return try RawJson.arrayElements(of: raw, key: "templates").compactMap { element in
                 guard element.hasPrefix("{"),
@@ -327,9 +363,12 @@ struct SyncMeta: Codable, Equatable, Sendable {
     }
 }
 
-/// The downloaded label font files, one `<id>.ttf` per font in the fonts folder.
+/// The downloaded label font files, one `<id>.ttf` per font in the fonts folder. The file
+/// operations are `@concurrent`: never on the main actor.
 enum LabelFontFiles {
     struct BadFontId: Error {}
+
+    private static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "ServerSherpa Kiosk", category: "sync")
 
     /// `[A-Za-z0-9-]{1,64}`: the id becomes a file name, so never a path.
     static func isSafeId(_ id: String) -> Bool {
@@ -340,7 +379,7 @@ enum LabelFontFiles {
     }
 
     /// A regular file already there at the listed size.
-    static func hasFile(_ url: URL, size: Int) -> Bool {
+    @concurrent static func hasFile(_ url: URL, size: Int) async -> Bool {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               attrs[.type] as? FileAttributeType == .typeRegular,
               let length = attrs[.size] as? NSNumber else { return false }
@@ -348,17 +387,29 @@ enum LabelFontFiles {
     }
 
     /// Written whole or not at all (a temporary file renamed into place).
-    static func write(_ data: Data, to url: URL) throws {
+    @concurrent static func write(_ data: Data, to url: URL) async throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)
     }
 
-    /// Deletes every file in `dir` not named in `keep`. A missing folder is nothing to do; a
-    /// folder that cannot be listed throws.
-    static func deleteUnused(in dir: URL, keep: Set<String>) throws {
+    /// Deletes every file in `dir` not named in `keep`. Never throws (Android's
+    /// `listFiles()?.forEach`): a folder that is missing or cannot be listed, or a file that
+    /// will not go, is logged and skipped.
+    @concurrent static func deleteUnused(in dir: URL, keep: Set<String>) async {
         guard FileManager.default.fileExists(atPath: dir.path) else { return }
-        for name in try FileManager.default.contentsOfDirectory(atPath: dir.path) where !keep.contains(name) {
-            try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
+        let names: [String]
+        do {
+            names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        } catch {
+            log.error("label fonts folder could not be listed: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        for name in names where !keep.contains(name) {
+            do {
+                try FileManager.default.removeItem(at: dir.appendingPathComponent(name))
+            } catch {
+                log.error("label font file could not be deleted: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 }

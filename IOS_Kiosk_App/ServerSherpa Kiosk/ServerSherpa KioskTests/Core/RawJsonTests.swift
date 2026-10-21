@@ -4,7 +4,7 @@ import Foundation
 
 struct RawJsonTests {
     // Number literals, escapes and non-ASCII text the label generator must see as sent.
-    private let first = #"{"id":"a1","raw_ft":{"RU":12.0,"Qty":7,"Tiny":1e-05,"Neg":-0.5E+3,"Flag":true,"Off":false,"None":null},"name":"é😀\"\\ é \/","nest":[[1,2.50],{"k":[]}]}"#
+    private let first = #"{"id":"a1","raw_ft":{"RU":12.0,"Qty":7,"Tiny":1e-05,"Neg":-0.5E+3,"Flag":true,"Off":false,"None":null},"name":"é😀\"\\ \u00e9 \/","nest":[[1,2.50],{"k":[]}]}"#
     private let second = #"{"id":"a2","label":{},"raw_ft":{}}"#
 
     @Test func arrayElementsAreTheExactTextSent() throws {
@@ -12,7 +12,7 @@ struct RawJsonTests {
         let elements = try RawJson.arrayElements(of: body, key: "assets")
         #expect(elements == [first, second])
         #expect(elements[0].contains(#""RU":12.0,"Qty":7,"Tiny":1e-05,"Neg":-0.5E+3,"Flag":true,"Off":false,"None":null"#))
-        #expect(elements[0].contains(#""name":"é😀\"\\ é \/""#))
+        #expect(elements[0].contains(#""name":"é😀\"\\ \u00e9 \/""#))
         #expect(try RawJson.member(of: body, key: "label_context") == #"{"move_name":"Move A","n":3.0}"#)
         #expect(try RawJson.member(of: body, key: "initiative_id") == #""i1""#)
     }
@@ -43,7 +43,49 @@ struct RawJsonTests {
     }
 
     @Test func escapedMemberNamesAreCompared() throws {
-        #expect(try RawJson.arrayElements(of: #"{"assets":[2]}"#, key: "assets") == ["2"])
+        // Written with escapes; the bytes really hold the backslashes.
+        let spelled = #"{"\u0061\u0073\u0073\u0065\u0074\u0073":[1]}"#
+        #expect(spelled.utf8.filter { $0 == UInt8(ascii: "\\") }.count == 6)
+        #expect(try RawJson.arrayElements(of: spelled, key: "assets") == ["1"])
+        #expect(try RawJson.arrayElements(of: #"{"\u0061ssets":[2]}"#, key: "assets") == ["2"])
+        // A surrogate pair spells one emoji.
+        let emoji = #"{"\ud83d\ude00":[2],"x":0}"#
+        #expect(try RawJson.arrayElements(of: emoji, key: "😀") == ["2"])
+        #expect(try RawJson.arrayElements(of: emoji, key: #"\ud83d\ude00"#) == [])
+        // An escaped quote and backslash inside a member name.
+        #expect(try RawJson.arrayElements(of: #"{"a\"b\\c":[3]}"#, key: #"a"b\c"#) == ["3"])
+        #expect(try RawJson.member(of: #"{"\n\t":true}"#, key: "\n\t") == "true")
+    }
+
+    @Test func elementEscapesComeBackExactlyAsWritten() throws {
+        let element = #"{"name":"\u00e9\ud83d\ude00","plain":"é😀","q":"\"\\\/\b\f\n\r\t"}"#
+        let body = #"{"assets":["# + element + #","\u00e9"]}"#
+        let out = try RawJson.arrayElements(of: body, key: "assets")
+        #expect(out == [element, #""\u00e9""#])
+        #expect(Array(out[0].utf8) == Array(element.utf8))
+        #expect(out[0].contains(#""\u00e9\ud83d\ude00""#))
+        #expect(out[0].contains("\"é😀\""))
+    }
+
+    @Test func oneScanReadsTheElementsAndTheMember() throws {
+        let body = #"{"label_context":{"n":1.0},"assets":[{"id":"a"},7.50]}"#
+        let both = try RawJson.arrayElementsAndMember(of: body, arrayKey: "assets", memberKey: "label_context")
+        #expect(both.elements == [#"{"id":"a"}"#, "7.50"])
+        #expect(both.member == #"{"n":1.0}"#)
+        let none = try RawJson.arrayElementsAndMember(of: #"{"assets":[],"label_context":null}"#, arrayKey: "assets", memberKey: "label_context")
+        #expect(none.elements == []); #expect(none.member == nil)
+        #expect(throws: RawJson.Malformed.self) {
+            try RawJson.arrayElementsAndMember(of: #"{"assets":[1,]}"#, arrayKey: "assets", memberKey: "label_context")
+        }
+    }
+
+    @Test func nestingDeeperThanTheLimitThrows() throws {
+        let ok = #"{"v":["# + String(repeating: "[", count: 500) + String(repeating: "]", count: 500) + "]}"
+        #expect(try RawJson.arrayElements(of: ok, key: "v").count == 1)
+        let deep = #"{"v":["# + String(repeating: "[", count: 600) + String(repeating: "]", count: 600) + "]}"
+        #expect(throws: RawJson.Malformed.self) { try RawJson.arrayElements(of: deep, key: "v") }
+        let objects = #"{"v":"# + String(repeating: #"{"a":"#, count: 600) + "1" + String(repeating: "}", count: 600) + "}"
+        #expect(throws: RawJson.Malformed.self) { try RawJson.member(of: objects, key: "v") }
     }
 
     @Test func malformedTextThrows() {

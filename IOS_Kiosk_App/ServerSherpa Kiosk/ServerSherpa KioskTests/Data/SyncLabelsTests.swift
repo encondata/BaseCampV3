@@ -11,6 +11,37 @@ private final class Seen: @unchecked Sendable {
     subscript(_ key: String) -> SyncStatus? { lock.withLock { values[key] } }
 }
 
+/// Which fake API answers ran on the main thread.
+private final class MainThreadLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hits: [String: Bool] = [:]
+    func mark(_ name: String) {
+        let onMain = pthread_main_np() != 0
+        lock.withLock { hits[name] = onMain }
+    }
+    var all: [String: Bool] { lock.withLock { hits } }
+}
+
+/// Built outside the main actor so the closures carry no isolation of their own: each runs
+/// wherever the sync's call to the API runs.
+private func installProbes(on api: FakeKioskApi, log: MainThreadLog, assets: String, templates: String) {
+    api.assetsRaw = { log.mark("assets"); return assets }
+    api.people = { log.mark("people"); return KioskPeopleSync(generatedAt: "now") }
+    api.containers = { log.mark("containers"); return KioskContainersSync(initiativeId: "i1", generatedAt: "now") }
+    api.trucks = { log.mark("trucks"); return KioskTrucksSync(initiativeId: "i1", generatedAt: "now") }
+    api.templatesRaw = { log.mark("templates"); return templates }
+    api.fonts = { log.mark("fonts"); return KioskLabelFonts(fonts: [KioskLabelFont(id: "f1", name: "ROBOTO.TTF", size: 4)]) }
+    api.fontContent = { _ in log.mark("fontContent"); return Data([1, 2, 3, 4]) }
+}
+
+extension KioskStore {
+    /// Test-only: drops one meta row.
+    func deleteMeta(_ key: String) throws {
+        try modelContext.delete(model: MetaRecord.self, where: #Predicate { $0.key == key })
+        try modelContext.save()
+    }
+}
+
 /// Port of Android `SyncLabelsTest`.
 @MainActor
 final class SyncLabelsTests {
@@ -336,8 +367,46 @@ final class SyncLabelsTests {
         #expect(fresh.status.parts.allSatisfy { $0.state == .waiting })
     }
 
-    /// A fonts "directory" that is really a file: listing, writing and cleanup all throw,
-    /// like a read-only or vanished volume.
+    @Test func downloadsAndDecodingRunOffTheMainThread() async throws {
+        let log = MainThreadLog()
+        installProbes(on: api, log: log, assets: assetsBody(asset1), templates: templatesBody(tplA))
+        let s = sync()
+        await s.runNow(initiativeId: "i1", initiativeName: "Move A")
+        #expect(s.status.phase == .done); #expect(s.status.labelsError == nil)
+        #expect(log.all == ["assets": false, "people": false, "containers": false, "trucks": false,
+                            "templates": false, "fonts": false, "fontContent": false])
+        // The API members themselves (where the real client decodes) ran off the main thread.
+        #expect(Set(api.calls) == ["syncAssets", "syncPeople", "syncContainers", "syncTrucks", "labelTemplates", "labelFonts", "fontContent:f1"])
+        #expect(api.mainThreadCalls == [])
+        #expect(fileExists("f1.ttf"))
+    }
+
+    @Test func templatesThatAreNotObjectsOrLackAStringIdAreSkipped() async throws {
+        let body = templatesBody("7", #""t9""#, "null", "[]", #"{"id":5,"name":"N"}"#, #"{"name":"no id"}"#, #"{"id":null}"#, tplA, tplB)
+        api.templatesRaw = { body }
+        let s = sync()
+        await s.runNow(initiativeId: "i1", initiativeName: "Move A")
+        #expect(s.status.part("templates").state == .done); #expect(s.status.part("templates").count == 2)
+        #expect(try await store.labelTemplates() == [LabelTemplateRow(id: "t1", json: tplA), LabelTemplateRow(id: "t0", json: tplB)])
+    }
+
+    @Test func aFontCleanupFailureAfterTheSwapKeepsTheNewRows() async throws {
+        // A move change (no stored move yet) with only resident fonts: nothing is written, the
+        // rows are swapped, then the folder cannot be listed. The new rows must stay.
+        let s = sync(fontsDir: try brokenFontsDir())
+        api.fonts = { KioskLabelFonts(fonts: [KioskLabelFont(id: "f2", name: "TT0003M_.TTF", size: 9)]) }
+        await s.runNow(initiativeId: "i1", initiativeName: "Move A")
+        #expect(s.status.phase == .done); #expect(s.status.labelsError == nil)
+        #expect(s.status.part("fonts").state == .done)
+        #expect(try await store.labelFonts().map(\.id) == ["f2"])
+        // Clearing local data still succeeds when the folder cannot be cleaned.
+        try await s.clearLocalData()
+        #expect(try await store.labelFonts().isEmpty)
+        #expect(s.status == SyncStatus())
+    }
+
+    /// A fonts "directory" that is really a file: listing and writing fail, like a read-only
+    /// or vanished volume.
     private func brokenFontsDir() throws -> URL {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let file = root.appendingPathComponent("not-a-dir")

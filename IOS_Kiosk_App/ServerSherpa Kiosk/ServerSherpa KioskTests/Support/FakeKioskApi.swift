@@ -52,7 +52,15 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     /// The status reads and image fetches that have returned (answered or thrown), in order.
     var finished: [String] { lock.lock(); defer { lock.unlock() }; return _finished }
 
-    private func record(_ name: String) { lock.lock(); _calls.append(name); lock.unlock() }
+    /// The calls whose body ran on the main thread. A member body runs where its caller runs
+    /// (nonisolated async), as URLSessionKioskApi's JSON decoding does.
+    var mainThreadCalls: [String] { lock.lock(); defer { lock.unlock() }; return _mainThreadCalls }
+    private var _mainThreadCalls: [String] = []
+
+    private func record(_ name: String) {
+        let onMain = pthread_main_np() != 0
+        lock.lock(); _calls.append(name); if onMain { _mainThreadCalls.append(name) }; lock.unlock()
+    }
     private func finish(_ name: String) { lock.lock(); _finished.append(name); lock.unlock() }
 
     func login(email: String, password: String) async throws -> SessionData { record("login"); return try loginResult() }

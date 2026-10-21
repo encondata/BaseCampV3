@@ -116,16 +116,6 @@ let labelContextMetaKey = "label_context"
         }
     }
 
-    func deleteMeta(_ key: String) throws {
-        do {
-            try deleteMetaRow(key)
-            try modelContext.save()
-        } catch {
-            modelContext.rollback()
-            throw error
-        }
-    }
-
     /// "Clear local data": the move tables, label data and the meta rows — never the outbox.
     func clearLocalData() throws {
         do {
