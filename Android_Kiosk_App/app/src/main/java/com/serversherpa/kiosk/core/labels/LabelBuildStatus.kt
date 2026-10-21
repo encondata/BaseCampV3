@@ -41,6 +41,25 @@ data class LabelBuildStatus(
         }
 }
 
+/**
+ * The latest build's template pick for [kind] at [dpi]: Printer Setup's DPI and font checks read
+ * it, and its alignment label takes the template's size ([widthIn] x [heightIn] inches). [synced]
+ * is false when the kiosk had no label data to plan with (never synced, or not since the version 2
+ * upgrade); nothing was picked then.
+ */
+data class LabelPick(
+    val kind: LabelKind,
+    val dpi: Int,
+    val synced: Boolean,
+    val templateId: String? = null,
+    val templateName: String? = null,
+    val notes: List<String> = emptyList(),
+    val fonts: List<String> = emptyList(),
+    val availableDpis: List<Int> = emptyList(),
+    val widthIn: Double? = null,
+    val heightIn: Double? = null,
+)
+
 data class LabelTally(val ready: Int, val problems: Map<String, Int>)
 
 /** Ready labels and the rest counted by outcome. */

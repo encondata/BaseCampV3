@@ -519,4 +519,27 @@ class LabelBuilderTest {
         val logged = org.robolectric.shadows.ShadowLog.getLogsForTag("LabelBuilder").map { it.msg }
         assertTrue(logged.toString(), logged.any { it.contains("1 labels missing") && it.contains("1 with a fingerprint unlike the plan's") })
     }
+    @Test fun thePickNamesTheTemplateWithItsSizeForPrinterSetup() = runBlocking<Unit> {
+        seed(listOf("a1"))
+        db.labelTemplates().insertAll(listOf(LabelTemplateEntity("t1", """{"id":"t1","name":"Vegas Top","width_in":4,"height_in":2.5,"design":{"schema":2.0}}""")))
+        val b = builder()
+        b.buildNow("sync")
+        val pick = b.pick.value!!
+        assertEquals(LabelKind.TOP, pick.kind); assertEquals(203, pick.dpi); assertTrue(pick.synced)
+        assertEquals("t1", pick.templateId); assertEquals("Vegas Top", pick.templateName)
+        assertEquals(listOf("ROBOTO.TTF"), pick.fonts); assertEquals(listOf("a pick note"), pick.notes)
+        assertEquals(4.0, pick.widthIn!!, 0.0); assertEquals(2.5, pick.heightIn!!, 0.0)
+    }
+
+    @Test fun neverSyncedPicksNothingAndStopClearsThePick() = runBlocking<Unit> {
+        val b = builder()
+        b.buildNow("sync")
+        assertEquals(com.serversherpa.kiosk.core.labels.LabelPick(LabelKind.TOP, 203, synced = false), b.pick.value)
+        seed(listOf("a1"))
+        b.buildNow("sync")
+        assertTrue(b.pick.value!!.synced)
+        b.stop()
+        withTimeout(5_000) { b.status.first { it.phase == LabelBuildPhase.IDLE } }
+        assertNull(b.pick.value)
+    }
 }

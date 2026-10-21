@@ -6,10 +6,14 @@ import com.serversherpa.kiosk.core.labels.LabelBuildNeed
 import com.serversherpa.kiosk.core.labels.LabelBuildPhase
 import com.serversherpa.kiosk.core.labels.LabelBuildStatus
 import com.serversherpa.kiosk.core.labels.LabelGenArgs
+import com.serversherpa.kiosk.core.labels.LabelKind
+import com.serversherpa.kiosk.core.labels.LabelPick
+import com.serversherpa.kiosk.core.labels.LabelPlan
 import com.serversherpa.kiosk.core.labels.LabelSettings
 import com.serversherpa.kiosk.core.labels.parsePlan
 import com.serversherpa.kiosk.core.labels.parseRendered
 import com.serversherpa.kiosk.core.labels.tallyOutcomes
+import com.serversherpa.kiosk.data.api.KioskJson
 import com.serversherpa.kiosk.data.db.GeneratedLabelEntity
 import com.serversherpa.kiosk.data.db.KioskDatabase
 import com.serversherpa.kiosk.data.db.LABEL_CONTEXT_META_KEY
@@ -30,6 +34,10 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.jsonObject
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -63,6 +71,10 @@ class LabelBuilder(
 ) {
     private val _status = MutableStateFlow(LabelBuildStatus())
     val status: StateFlow<LabelBuildStatus> = _status
+    private val _pick = MutableStateFlow<LabelPick?>(null)
+    /** The latest build's template pick (null before the first build with a printer, and after a
+     *  stop); read-only, for Printer Setup. */
+    val pick: StateFlow<LabelPick?> = _pick
     private val lock = Mutex()
     private var job: Job? = null
 
@@ -70,7 +82,7 @@ class LabelBuilder(
     fun rebuild(reason: String) = replace { buildNow(reason) }
 
     /** Stops any build and resets the status ("Clear local data" emptied the labels). */
-    fun stop() = replace { lock.withLock { _status.value = LabelBuildStatus() } }
+    fun stop() = replace { lock.withLock { _pick.value = null; _status.value = LabelBuildStatus() } }
 
     /** Cancels the running or waiting request at once, then runs [block] after it has finished. */
     private fun replace(block: suspend () -> Unit) {
@@ -129,15 +141,16 @@ class LabelBuilder(
             _status.value = LabelBuildStatus(LabelBuildPhase.UNSUPPORTED_DEVICE)
             return
         }
+        val settings = settingsSource.settings.first()
+        val printer = settings.printer
         val meta = Sync.readMeta(db)
         val labelContext = db.meta().get(LABEL_CONTEXT_META_KEY)?.value
         if (meta == null || labelContext == null) {
             // Never synced, or not since the version 2 upgrade: keep whatever is stored.
+            _pick.value = printer?.let { LabelPick(settings.kind, it.dpi, synced = false) }
             _status.value = LabelBuildStatus(LabelBuildPhase.DONE, needs = LabelBuildNeed.SYNC)
             return
         }
-        val settings = settingsSource.settings.first()
-        val printer = settings.printer
         if (printer == null) {
             _status.value = LabelBuildStatus(LabelBuildPhase.DONE, needs = LabelBuildNeed.PRINTER)
             return
@@ -146,9 +159,11 @@ class LabelBuilder(
         val dpi = printer.dpi
 
         val payloads = db.assets().payloads()
-        val templatesJson = LabelGenArgs.templatesBody(db.labelTemplates().all().map { it.json })
+        val templates = db.labelTemplates().all()
+        val templatesJson = LabelGenArgs.templatesBody(templates.map { it.json })
         val fullBody = LabelGenArgs.assetsBody(meta.initiativeId, payloads.map { it.payloadJson }, labelContext)
         val plan = parsePlan(engine.call("buildPlan", LabelGenArgs.plan(fullBody, templatesJson, kind, dpi)))
+        _pick.value = pickOf(kind, dpi, plan.templateId?.let { id -> templates.firstOrNull { it.id == id }?.json }, plan)
         val planned = LabelBuildStatus(
             LabelBuildPhase.RUNNING, notes = plan.notes, templateId = plan.templateId, fonts = plan.fonts,
             availableDpis = plan.availableDpis,
@@ -212,6 +227,18 @@ class LabelBuilder(
     }
 
     private class MoveChanged : Exception()
+
+    /** The pick with the picked template's name and size read off its synced JSON. */
+    private fun pickOf(kind: LabelKind, dpi: Int, templateJson: String?, plan: LabelPlan): LabelPick {
+        val t = templateJson?.let { runCatching { KioskJson.parseToJsonElement(it).jsonObject }.getOrNull() }
+        fun num(key: String) = (t?.get(key) as? JsonPrimitive)?.takeIf { !it.isString }?.doubleOrNull?.takeIf { it > 0 }
+        return LabelPick(
+            kind, dpi, synced = true, templateId = plan.templateId,
+            templateName = (t?.get("name") as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull,
+            notes = plan.notes, fonts = plan.fonts, availableDpis = plan.availableDpis,
+            widthIn = num("width_in"), heightIn = num("height_in"),
+        )
+    }
 
     companion object {
         private const val TAG = "LabelBuilder"

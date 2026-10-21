@@ -52,6 +52,16 @@ object LabelGenArgs {
     /** `withPrintMode` arguments: peel-off (`^MMP`) or tear-off (`^MMT`). */
     fun printMode(zpl: String, peel: Boolean): String =
         buildJsonObject { put("zpl", zpl); put("peel", peel) }.toString()
+
+    /** `sampleLabel` arguments: the mock-data label of the template [kind] at [dpi] picks. */
+    fun sample(templatesJson: String, kind: LabelKind, dpi: Int): String =
+        buildJsonObject { put("templatesJson", templatesJson); put("kind", kind.wire); put("dpi", dpi) }.toString()
+
+    /** `alignmentTestZpl` arguments: the label's size in dots and its caption (`4x2`). */
+    fun alignment(widthDots: Int, heightDots: Int, sizeLabel: String, dpi: Int): String =
+        buildJsonObject {
+            put("widthDots", widthDots); put("heightDots", heightDots); put("sizeLabel", sizeLabel); put("dpi", dpi)
+        }.toString()
 }
 
 /** One asset's job in a plan: its label is current when the stored fingerprint matches. */
@@ -108,6 +118,17 @@ fun parsePlan(json: String): LabelPlan = decoding { SurfaceJson.decodeFromJsonEl
 
 fun parseRendered(json: String): List<RenderedLabel> =
     decoding { SurfaceJson.decodeFromJsonElement(RenderedLabels.serializer(), answer(json)).results }
+
+/** `sampleLabel`'s answer: [zpl], or null with [reason] (the pick's notes or an outcome code). */
+data class SampleLabel(val zpl: String?, val reason: String?)
+
+fun parseSample(json: String): SampleLabel = decoding {
+    val obj = answer(json)
+    fun text(key: String) = (obj[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    val zpl = text("zpl")
+    if (zpl == null && text("reason") == null) throw LabelGenException("the label generator's answer has neither zpl nor reason")
+    SampleLabel(zpl, if (zpl == null) text("reason") else null)
+}
 
 /** The `{zpl}` answer of `applyPrintSettings`, `withPrintMode` and `alignmentTestZpl`. */
 fun parseZpl(json: String): String = decoding {
