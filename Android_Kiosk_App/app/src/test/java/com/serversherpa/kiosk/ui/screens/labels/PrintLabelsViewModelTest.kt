@@ -25,7 +25,11 @@ import com.serversherpa.kiosk.data.outbox.Outbox
 import com.serversherpa.kiosk.data.printer.PrinterTimeout
 import com.serversherpa.kiosk.data.printer.PrinterUnreachable
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
+import com.serversherpa.kiosk.data.api.KioskApi
+import com.serversherpa.kiosk.core.model.KioskPeopleSync
 import com.serversherpa.kiosk.data.sync.Sync
+import com.serversherpa.kiosk.data.sync.SyncPhase
+import kotlinx.coroutines.CompletableDeferred
 import com.serversherpa.kiosk.ui.flash.FlashController
 import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -83,10 +87,14 @@ class PrintLabelsViewModelTest {
     private class Harness(
         val vm: PrintLabelsViewModel, val db: KioskDatabase, val outbox: Outbox, val engine: PrintHelperEngine,
         val sent: MutableList<Pair<String, String>>, val status: MutableStateFlow<LabelBuildStatus>,
-        val sendFailures: IntArray, val timeoutSends: BooleanArray,
+        val sendFailures: IntArray, val timeoutSends: BooleanArray, val sync: Sync,
     )
 
-    private suspend fun TestScope.harness(name: String, settings: LabelSettings = LabelSettings(printer = printer, offsetX = 4, offsetY = -2, peel = true)): Harness {
+    /** [syncGate]: when set, a sync waits for it (holding the RUNNING phase). */
+    private suspend fun TestScope.harness(
+        name: String, settings: LabelSettings = LabelSettings(printer = printer, offsetX = 4, offsetY = -2, peel = true),
+        syncGate: CompletableDeferred<Unit>? = null,
+    ): Harness {
         val db = KioskDatabase.inMemory(ApplicationProvider.getApplicationContext())
         db.assets().insertAll(listOf(
             KioskAssetRow("a1", "A-1", "Rack 1", rfid = "000000000000000000100348", serial_number = "SN1", make_model = "Dell").toEntity(),
@@ -106,8 +114,12 @@ class PrintLabelsViewModelTest {
         val timeoutSends = booleanArrayOf(false)
         val status = MutableStateFlow(LabelBuildStatus(LabelBuildPhase.DONE, ready = 1, problems = mapOf("no_template_at_dpi" to 1), templateId = "t1"))
         val source = object : LabelSettingsSource { override val settings = MutableStateFlow(settings) }
+        val syncApi = if (syncGate == null) api else object : KioskApi by api {
+            override suspend fun syncPeople(): KioskPeopleSync { syncGate.await(); return api.syncPeople() }
+        }
+        val sync = Sync(syncApi, db, backgroundScope)
         val vm = PrintLabelsViewModel(
-            db, Sync(api, db, backgroundScope), outbox, prefs, source, status, engine,
+            db, sync, outbox, prefs, source, status, engine,
             sender = { host, zpl ->
                 if (sendFailures[0] > 0) { sendFailures[0]--; throw if (timeoutSends[0]) PrinterTimeout(host) else PrinterUnreachable(host) }
                 sent += host to zpl
@@ -115,7 +127,7 @@ class PrintLabelsViewModelTest {
             flash = FlashController(backgroundScope), sound = null, scopeOverride = backgroundScope,
         )
         settle()
-        return Harness(vm, db, outbox, engine, sent, status, sendFailures, timeoutSends)
+        return Harness(vm, db, outbox, engine, sent, status, sendFailures, timeoutSends, sync)
     }
 
     @Test fun aScannedAssetIdPrintsItsStoredLabelWithTheSendSettingsAndRecordsOneLabeledScan() = runTest {
@@ -185,8 +197,27 @@ class PrintLabelsViewModelTest {
         val h = harness("p10")
         h.status.value = LabelBuildStatus(LabelBuildPhase.RUNNING, done = 0, total = 0)
         h.vm.onScan("A-1"); settle()
-        assertEquals("Labels are still being made (0 of 0).", h.vm.entries.value[0].message)
+        assertEquals("Labels are being prepared.", h.vm.entries.value[0].message)
         assertTrue(h.sent.isEmpty())
+        h.db.close()
+    }
+
+    @Test fun aScanWhileTheKioskSyncsIsRefusedEvenWithAStoredLabel() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val h = harness("p11", syncGate = gate)
+        h.sync.run("i1", "Move"); settle()
+        assertEquals(SyncPhase.RUNNING, h.sync.status.value.phase)
+
+        h.vm.onScan("A-1"); settle()
+        assertEquals(PrintState.FAILED, h.vm.entries.value[0].state)
+        assertEquals("This kiosk is syncing. Labels will be ready shortly.", h.vm.entries.value[0].message)
+        assertTrue(h.sent.isEmpty())
+        assertTrue(h.outbox.snapshot.value.rows.isEmpty())
+
+        // Let the sync finish before the database closes.
+        gate.complete(Unit)
+        repeat(40) { if (h.sync.status.value.phase == SyncPhase.RUNNING) settle() }
+        assertTrue(h.sync.status.value.phase != SyncPhase.RUNNING)
         h.db.close()
     }
 

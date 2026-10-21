@@ -18,7 +18,13 @@ const val LABEL_READ_FAILED_TEXT = "Couldn't read this asset's label on the kios
 const val PREPARE_FAILED_TEXT = "Couldn't get this label ready for the printer. Try again."
 const val RECORD_FAILED_TEXT = "Printed, but the scan wasn't recorded: this kiosk couldn't save it."
 
-fun stillBeingMadeText(done: Int, total: Int) = "Labels are still being made ($done of $total)."
+/** While a sync runs, stored labels may be for the data it replaces. */
+const val SYNCING_TEXT = "This kiosk is syncing. Labels will be ready shortly."
+/** The build's plan step, before it has counted the labels to make. */
+const val PREPARING_TEXT = "Labels are being prepared."
+
+fun stillBeingMadeText(done: Int, total: Int) =
+    if (total == 0) PREPARING_TEXT else "Labels are still being made ($done of $total)."
 fun printerUnreachableText(host: String) = "Can't reach the printer at $host."
 /** The printer took the connection but not the whole job in time: the label may be out. */
 const val PRINTER_TIMEOUT_TEXT = "The printer didn't finish answering. It may have printed the label — check before you retry."
@@ -48,10 +54,12 @@ sealed interface PrintStep {
 /**
  * What a scan prints, from the asset's stored label and the label build. While a build runs no
  * label prints, as on the laptop (its edge answers `labels_regenerating`): any stored label may
- * be the one being replaced.
+ * be the one being replaced. Nor while the kiosk [syncing]: the build that follows the sync
+ * hasn't started yet, so a stored label may be for the data the sync replaces.
  */
-fun labelFor(stored: StoredLabel?, status: LabelBuildStatus): PrintStep {
+fun labelFor(stored: StoredLabel?, status: LabelBuildStatus, syncing: Boolean = false): PrintStep {
     if (status.phase == LabelBuildPhase.UNSUPPORTED_DEVICE) return PrintStep.Refused(DEVICE_UNSUPPORTED_TEXT)
+    if (syncing) return PrintStep.Refused(SYNCING_TEXT)
     if (status.phase == LabelBuildPhase.RUNNING) return PrintStep.Refused(stillBeingMadeText(status.done, status.total))
     if (stored == null) {
         return PrintStep.Refused(if (status.needs == LabelBuildNeed.SYNC) SYNC_NEEDED_TEXT else noLabelText(null))

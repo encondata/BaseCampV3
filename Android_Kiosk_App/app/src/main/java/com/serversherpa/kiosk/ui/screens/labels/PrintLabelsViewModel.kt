@@ -91,7 +91,10 @@ class PrintLabelsViewModel(
 
         override suspend fun label(asset: AssetEntity): PrintStep {
             val row = db.generatedLabels().get(asset.id)
-            return labelFor(row?.let { StoredLabel(it.zpl, it.outcome, it.templateId) }, build.value)
+            return labelFor(
+                row?.let { StoredLabel(it.zpl, it.outcome, it.templateId) }, build.value,
+                syncing = sync.status.value.phase == SyncPhase.RUNNING,
+            )
         }
 
         override suspend fun prepare(zpl: String, settings: LabelSettings): PrintStep = try {

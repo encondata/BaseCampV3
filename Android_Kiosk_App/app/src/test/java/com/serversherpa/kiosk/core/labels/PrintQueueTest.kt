@@ -228,11 +228,26 @@ class PrintQueueTest {
         assertEquals(waiting, labelFor(StoredLabel("^XA^XZ", OUTCOME_OK, "t2"), running))
         assertEquals(waiting, labelFor(StoredLabel("^XA^XZ", OUTCOME_OK, "t1"), running))
         assertEquals(waiting, labelFor(StoredLabel(null, NO_TEMPLATE_AT_DPI, "t2"), running))
-        // The plan step: no template picked yet.
+        // The plan step: nothing counted yet.
         assertEquals(
-            PrintStep.Refused("Labels are still being made (0 of 0)."),
+            PrintStep.Refused("Labels are being prepared."),
             labelFor(StoredLabel("^XA^XZ", OUTCOME_OK, "t2"), LabelBuildStatus(LabelBuildPhase.RUNNING)),
         )
+    }
+
+    /** A stored label may be for the data the running sync replaces: none prints until it's done. */
+    @Test fun whileTheKioskSyncsNoStoredLabelPrints() {
+        val syncing = PrintStep.Refused("This kiosk is syncing. Labels will be ready shortly.")
+        val done = LabelBuildStatus(LabelBuildPhase.DONE)
+        assertEquals(syncing, labelFor(StoredLabel("^XA^XZ", OUTCOME_OK, "t1"), done, syncing = true))
+        assertEquals(syncing, labelFor(null, done, syncing = true))
+        assertEquals(syncing, labelFor(null, LabelBuildStatus(LabelBuildPhase.RUNNING, done = 1, total = 4), syncing = true))
+        // A device that can't make labels says so first.
+        assertEquals(
+            PrintStep.Refused("This device can't make labels (its system WebView is too old)."),
+            labelFor(null, LabelBuildStatus(LabelBuildPhase.UNSUPPORTED_DEVICE), syncing = true),
+        )
+        assertEquals(PrintStep.Ready("^XA^XZ"), labelFor(StoredLabel("^XA^XZ", OUTCOME_OK, "t1"), done, syncing = false))
     }
 
     @Test fun anUnsupportedDeviceNeverPrints() {
