@@ -1,6 +1,7 @@
 package com.serversherpa.kiosk.data.labels
 
 import android.util.Log
+import androidx.room.withTransaction
 import com.serversherpa.kiosk.core.labels.LabelBuildNeed
 import com.serversherpa.kiosk.core.labels.LabelBuildPhase
 import com.serversherpa.kiosk.core.labels.LabelBuildStatus
@@ -18,13 +19,13 @@ import com.serversherpa.kiosk.data.sync.SyncStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -49,8 +50,9 @@ interface LabelSettingsSource {
  * templates, never on another asset, and the generator re-reads the bodies on every call, so a
  * full body per batch would make a large move quadratic.
  *
- * Builds run one at a time; [rebuild] cancels a build in progress and starts over (what it
- * stored is current for its own inputs, so nothing is lost).
+ * One build at a time: a new request cancels the build in progress (and any request still
+ * waiting) before it starts. A build never writes into a move that changed or was cleared
+ * while it ran: each write checks the move first, in the same transaction.
  */
 class LabelBuilder(
     private val db: KioskDatabase,
@@ -64,33 +66,43 @@ class LabelBuilder(
     private val lock = Mutex()
     private var job: Job? = null
 
-    /** Builds in the background: after a sync, a Kiosk Setup save (kind) or a printer DPI change. */
-    fun rebuild(reason: String) {
+    /** Builds in the background. [start] calls it after a sync and a kind or printer DPI change. */
+    fun rebuild(reason: String) = replace { buildNow(reason) }
+
+    /** Stops any build and resets the status ("Clear local data" emptied the labels). */
+    fun stop() = replace { lock.withLock { _status.value = LabelBuildStatus() } }
+
+    /** Cancels the running or waiting request at once, then runs [block] after it has finished. */
+    private fun replace(block: suspend () -> Unit) {
         synchronized(this) {
             val previous = job
+            previous?.cancel()
             job = scope.launch {
-                previous?.cancelAndJoin()
-                buildNow(reason)
+                previous?.join()
+                block()
             }
         }
     }
 
-    /** Follows the sync: each finished sync (and the relaunch's restored one) builds; a cleared
-     *  sync (IDLE: "Clear local data" emptied the labels) stops any build and resets the status. */
+    /**
+     * Follows the sync and the settings: each finished sync (and the relaunch's restored one)
+     * builds; a cleared sync (IDLE) stops; a change of label kind or printer DPI builds again.
+     */
     fun start(syncStatus: Flow<SyncStatus>): Job = scope.launch {
-        syncStatus.map { it.phase }.distinctUntilChanged().collect { phase ->
-            when (phase) {
-                SyncPhase.DONE -> rebuild("sync")
-                SyncPhase.IDLE -> stop()
-                else -> Unit
+        launch {
+            syncStatus.map { it.phase }.distinctUntilChanged().collect { phase ->
+                when (phase) {
+                    SyncPhase.DONE -> rebuild("sync")
+                    SyncPhase.IDLE -> stop()
+                    else -> Unit
+                }
             }
         }
-    }
-
-    private suspend fun stop() {
-        val running = synchronized(this) { job.also { job = null } }
-        running?.cancelAndJoin()
-        _status.value = LabelBuildStatus()
+        launch {
+            settingsSource.settings.map { it.kind to it.printer?.dpi }.distinctUntilChanged().drop(1).collect {
+                rebuild("settings")
+            }
+        }
     }
 
     suspend fun buildNow(reason: String) = lock.withLock {
@@ -100,6 +112,10 @@ class LabelBuilder(
             build()
         } catch (e: CancellationException) {
             throw e
+        } catch (e: MoveChanged) {
+            // The labels belong to a move that is gone; the sync that changed it starts over.
+            Log.i(TAG, "label build stopped: the move changed or was cleared")
+            _status.value = LabelBuildStatus()
         } catch (e: LabelEngineUnsupportedException) {
             _status.value = LabelBuildStatus(LabelBuildPhase.UNSUPPORTED_DEVICE)
         } catch (e: Exception) {
@@ -146,7 +162,7 @@ class LabelBuilder(
         // One job per asset; a repeated id keeps its last row, as the store does.
         val jobs = LinkedHashMap<String, String>()
         plan.jobs.forEach { jobs[it.assetId] = it.fingerprint }
-        val stored = db.generatedLabels().all().associateBy { it.assetId }
+        val stored = db.generatedLabels().states().associateBy { it.assetId }
         val changed = jobs.filter { (id, fp) -> stored[id]?.fingerprint != fp }.keys.toList()
         // The current outcome of every asset whose label is up to date.
         val outcomes = HashMap<String, String>()
@@ -158,30 +174,53 @@ class LabelBuilder(
         _status.value = progress(0)
 
         val payloadById = payloads.associate { it.id to it.payloadJson }
+        val perCall = minOf(batchSize, engine.maxBatch()).coerceAtLeast(1)
         var done = 0
-        for (batch in changed.chunked(batchSize)) {
+        var missing = 0
+        var mismatched = 0
+        for (batch in changed.chunked(perCall)) {
             currentCoroutineContext().ensureActive()
             val body = LabelGenArgs.assetsBody(meta.initiativeId, batch.mapNotNull { payloadById[it] }, labelContext)
             val results = parseRendered(engine.call("renderLabels", LabelGenArgs.render(body, templatesJson, kind, dpi, batch)))
-            db.generatedLabels().upsert(results.map { GeneratedLabelEntity(it.assetId, it.zpl, it.outcome, it.fingerprint, plan.templateId) })
+            val returned = results.mapTo(HashSet()) { it.assetId }
+            missing += batch.count { it !in returned }
+            mismatched += results.count { jobs[it.assetId] != it.fingerprint }
+            inSameMove(meta.initiativeId) {
+                db.generatedLabels().upsert(results.map { GeneratedLabelEntity(it.assetId, it.zpl, it.outcome, it.fingerprint, plan.templateId) })
+            }
             results.forEach { outcomes[it.assetId] = it.outcome }
             done += batch.size
             _status.value = progress(done)
         }
+        if (missing > 0 || mismatched > 0) {
+            // Never expected: a missing label renders again next build; a fingerprint unlike the
+            // plan's means the batch body changed what the generator saw (renders every build).
+            Log.w(TAG, "label build: $missing labels missing from their batch, $mismatched with a fingerprint unlike the plan's")
+        }
 
         val gone = stored.keys.filter { it !in jobs }
-        gone.chunked(DELETE_CHUNK).forEach { db.generatedLabels().delete(it) }
+        inSameMove(meta.initiativeId) { gone.chunked(DELETE_CHUNK).forEach { db.generatedLabels().delete(it) } }
         _status.value = progress(done).copy(phase = LabelBuildPhase.DONE)
     }
+
+    /** Runs [write] only while the stored move is still [initiativeId] (not changed, not cleared). */
+    private suspend fun inSameMove(initiativeId: String, write: suspend () -> Unit) {
+        db.withTransaction {
+            if (Sync.readMeta(db)?.initiativeId != initiativeId) throw MoveChanged()
+            write()
+        }
+    }
+
+    private class MoveChanged : Exception()
 
     companion object {
         private const val TAG = "LabelBuilder"
 
         /**
-         * Assets per `renderLabels` call. Each call carries its batch's payloads and the
-         * templates, and returns the batch's ZPL: 200 assets is about 0.4 MB each way (under the
-         * Binder limit without EVALUATE_WITHOUT_TRANSACTION_LIMIT) and about 60 ms of generator
-         * work on a laptop, so the progress bar moves and a print waits little behind a batch.
+         * Assets per `renderLabels` call (the engine may ask for fewer). Each call carries its
+         * batch's payloads and the templates, and returns the batch's ZPL: 200 assets is about
+         * 0.4 MB each way and about 60 ms of generator work on a laptop, so the progress bar
+         * moves and a print waits little behind a batch.
          */
         const val BATCH_SIZE = 200
 

@@ -19,6 +19,7 @@ import com.serversherpa.kiosk.data.db.MetaEntity
 import com.serversherpa.kiosk.data.sync.SyncMeta
 import com.serversherpa.kiosk.data.sync.SyncPhase
 import com.serversherpa.kiosk.data.sync.SyncStatus
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -59,12 +60,22 @@ class FakeLabelEngine : LabelEngine {
     /** Replaces buildPlan's answer. */
     var planAnswer: (() -> String)? = null
     var renderAnswer: (() -> String)? = null
-    var onRender: () -> Unit = {}
+    /** Rewrites each renderLabels answer's result objects (missing or odd results). */
+    var mutateResults: ((List<JsonObject>) -> List<JsonObject>)? = null
+    var onRender: suspend () -> Unit = {}
+    /** When set, the next renderLabels call waits for it (cancellable), then clears it. */
+    var gate: CompletableDeferred<Unit>? = null
+    /** Set when a call is waiting at the gate. */
+    val atGate = CompletableDeferred<Unit>()
+    var gatePassed = 0
+    var maxBatchValue = Int.MAX_VALUE
+    var lastPlan: String? = null
     var unsupportedOnCall = false
     var renders = 0
         private set
 
     override fun isSupported(): Boolean = supported
+    override fun maxBatch(): Int = maxBatchValue
 
     override suspend fun call(fn: String, argsJson: String): String {
         if (unsupportedOnCall) throw LabelEngineUnsupportedException()
@@ -79,23 +90,29 @@ class FakeLabelEngine : LabelEngine {
         fun id(row: JsonObject) = row["id"]!!.jsonPrimitive.content
         fun fp(row: JsonObject) = "${row.toString().hashCode()}:${templates.hashCode()}:$kind:$dpi"
         return when (fn) {
-            "buildPlan" -> planAnswer?.invoke() ?: buildJsonObject {
+            "buildPlan" -> (planAnswer?.invoke() ?: buildJsonObject {
                 put("templateId", "t1"); put("templateFamily", "vegas")
                 put("notes", buildJsonArray { add(kotlinx.serialization.json.JsonPrimitive("a pick note")) })
                 put("fonts", buildJsonArray { add(kotlinx.serialization.json.JsonPrimitive("ROBOTO.TTF")) })
                 put("availableDpis", JsonArray(emptyList()))
                 put("hasAssetData", hasData)
                 put("jobs", JsonArray(rows.map { r -> buildJsonObject { put("assetId", id(r)); put("fingerprint", fp(r)) } }))
-            }.toString()
+            }.toString()).also { lastPlan = it }
             "renderLabels" -> {
                 renders++
                 onRender()
+                gate?.let { g ->
+                    atGate.complete(Unit)
+                    try { g.await() } finally { gate = null }
+                    gatePassed++
+                }
                 if (renders == failRender) throw IllegalStateException("isolate died")
                 renderAnswer?.let { return it() }
                 val ids = args["assetIds"]!!.jsonArray.map { it.jsonPrimitive.content }
                 val byId = rows.associateBy(::id)
+                val transform = mutateResults ?: { it }
                 buildJsonObject {
-                    put("results", JsonArray(ids.mapNotNull { byId[it] }.map { r ->
+                    put("results", JsonArray(transform(ids.mapNotNull { byId[it] }.map { r ->
                         val outcome = r["outcome"]?.jsonPrimitive?.content
                         buildJsonObject {
                             put("assetId", id(r))
@@ -103,7 +120,7 @@ class FakeLabelEngine : LabelEngine {
                             put("outcome", outcome ?: "ok")
                             put("fingerprint", fp(r))
                         }
-                    }))
+                    })))
                 }.toString()
             }
             else -> error("unexpected $fn")
@@ -178,6 +195,8 @@ class LabelBuilderTest {
         assertNull(rows["a4"]!!.zpl)
         assertEquals(NO_TEMPLATE_AT_DPI, rows["a4"]!!.outcome)
         // Stored fingerprints are the plan's.
+        val planned = com.serversherpa.kiosk.core.labels.parsePlan(engine.lastPlan!!).jobs.associate { it.assetId to it.fingerprint }
+        assertEquals(planned, rows.mapValues { it.value.fingerprint })
         val plan = engine.calls.first().second
         assertEquals("top", plan["kind"]!!.jsonPrimitive.content)
         assertEquals(203, plan["dpi"]!!.jsonPrimitive.int)
@@ -393,5 +412,111 @@ class LabelBuilderTest {
                 kotlinx.coroutines.delay(20)
             }
         }
+    }
+
+    private suspend fun waitFor(what: String, check: suspend () -> Boolean) {
+        try {
+            withTimeout(5_000) { while (!check()) kotlinx.coroutines.delay(20) }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            throw AssertionError("timed out waiting for $what")
+        }
+    }
+
+    @Test fun aKindOrDpiChangeAfterStartRebuildsOnItsOwn() = runBlocking<Unit> {
+        seed(listOf("a1", "a2"))
+        val b = builder()
+        b.start(MutableStateFlow(SyncStatus(phase = SyncPhase.DONE)))
+        waitFor("the first build") { stored().size == 2 && b.status.value.phase == LabelBuildPhase.DONE }
+        // The settings' current value is not a change: one build so far.
+        kotlinx.coroutines.delay(200)
+        assertEquals(1, engine.count("buildPlan"))
+
+        settings.value = settings.value.copy(kind = LabelKind.FRONT)
+        waitFor("a front build") { stored().values.all { it.zpl!!.contains("front") } && b.status.value.phase == LabelBuildPhase.DONE }
+
+        settings.value = settings.value.copy(printer = printer.copy(dpi = 300))
+        waitFor("a 300 dpi build") { stored().values.all { it.zpl!!.contains("300") } && b.status.value.phase == LabelBuildPhase.DONE }
+
+        // Offsets and peel never rebuild.
+        val plans = engine.count("buildPlan")
+        settings.value = settings.value.copy(offsetX = 12, peel = true)
+        kotlinx.coroutines.delay(200)
+        assertEquals(plans, engine.count("buildPlan"))
+    }
+
+    @Test fun clearingLocalDataMidBuildWritesNothing() = runBlocking<Unit> {
+        seed(listOf("a1", "a2", "a3"))
+        engine.onRender = { db.meta().delete(MOVE_META_KEY); db.meta().delete(LABEL_CONTEXT_META_KEY) }
+        val b = builder(batch = 2)
+
+        b.buildNow("sync")
+
+        assertTrue(stored().isEmpty())
+        assertEquals(1, engine.count("renderLabels"))
+        assertEquals(LabelBuildPhase.IDLE, b.status.value.phase)
+    }
+
+    @Test fun aMoveChangeMidBuildWritesNothingAndPrunesNothing() = runBlocking<Unit> {
+        seed(listOf("a1"))
+        db.generatedLabels().upsert(listOf(GeneratedLabelEntity("other-move", "^XA^XZ", "ok", "x", "t9")))
+        engine.onRender = {
+            val meta = SyncMeta("i2", "Move B", 1, 0, 0, 0, "2026-10-21T01:00:00Z")
+            db.meta().put(MetaEntity(MOVE_META_KEY, KioskJson.encodeToString(SyncMeta.serializer(), meta)))
+        }
+        builder().buildNow("sync")
+        assertEquals(setOf("other-move"), stored().keys)
+    }
+
+    @Test fun aNewRequestCancelsTheRunningBuildAndAnyWaitingOne() = runBlocking<Unit> {
+        seed(listOf("a1", "a2", "a3"))
+        val b = builder(batch = 1)
+        engine.gate = CompletableDeferred()
+        b.rebuild("A")
+        withTimeout(5_000) { engine.atGate.await() }
+
+        settings.value = settings.value.copy(kind = LabelKind.FRONT)
+        b.rebuild("B")
+        b.rebuild("C")
+
+        waitFor("the front build") {
+            b.status.value.phase == LabelBuildPhase.DONE && stored().size == 3 && stored().values.all { it.zpl!!.contains("front") }
+        }
+        // A was cancelled while rendering: its batch never finished or stored.
+        assertEquals(0, engine.gatePassed)
+        // A and C planned; B was cancelled before it began.
+        assertEquals(2, engine.count("buildPlan"))
+    }
+
+    @Test fun stopCancelsTheBuildAndItWritesNothingAfter() = runBlocking<Unit> {
+        seed(listOf("a1", "a2"))
+        val b = builder(batch = 1)
+        engine.gate = CompletableDeferred()
+        b.rebuild("sync")
+        withTimeout(5_000) { engine.atGate.await() }
+
+        b.stop()
+
+        waitFor("IDLE") { b.status.value.phase == LabelBuildPhase.IDLE }
+        kotlinx.coroutines.delay(200)
+        assertEquals(LabelBuildPhase.IDLE, b.status.value.phase)
+        assertTrue(stored().isEmpty())
+        assertEquals(0, engine.gatePassed)
+    }
+
+    @Test fun theEngineCanAskForSmallerBatches() = runBlocking<Unit> {
+        seed(listOf("a1", "a2", "a3"))
+        engine.maxBatchValue = 1
+        builder(batch = 200).buildNow("sync")
+        assertEquals(3, engine.count("renderLabels"))
+        assertEquals(3, stored().size)
+    }
+
+    @Test fun missingAndMismatchedResultsAreCountedInTheLog() = runBlocking<Unit> {
+        seed(listOf("a1", "a2"))
+        engine.mutateResults = { list -> list.drop(1).map { JsonObject(it + ("fingerprint" to kotlinx.serialization.json.JsonPrimitive("other"))) } }
+        org.robolectric.shadows.ShadowLog.clear()
+        builder().buildNow("sync")
+        val logged = org.robolectric.shadows.ShadowLog.getLogsForTag("LabelBuilder").map { it.msg }
+        assertTrue(logged.toString(), logged.any { it.contains("1 labels missing") && it.contains("1 with a fingerprint unlike the plan's") })
     }
 }

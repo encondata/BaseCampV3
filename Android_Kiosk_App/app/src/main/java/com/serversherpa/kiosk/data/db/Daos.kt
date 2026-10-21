@@ -75,9 +75,17 @@ interface LabelFontDao {
     @Query("SELECT COUNT(*) FROM label_fonts") suspend fun count(): Int
 }
 
+/** A stored label without its ZPL: what a build compares against. */
+data class GeneratedLabelState(
+    @ColumnInfo(name = "asset_id") val assetId: String,
+    val outcome: String,
+    val fingerprint: String,
+)
+
 @Dao
 interface GeneratedLabelDao {
     @Query("SELECT * FROM generated_labels") suspend fun all(): List<GeneratedLabelEntity>
+    @Query("SELECT asset_id, outcome, fingerprint FROM generated_labels") suspend fun states(): List<GeneratedLabelState>
     @Query("SELECT * FROM generated_labels WHERE asset_id = :assetId") suspend fun get(assetId: String): GeneratedLabelEntity?
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsert(rows: List<GeneratedLabelEntity>)
     @Query("DELETE FROM generated_labels WHERE asset_id IN (:assetIds)") suspend fun delete(assetIds: List<String>)
