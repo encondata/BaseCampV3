@@ -45,8 +45,10 @@ android {
         unitTests.isReturnDefaultValues = true
     }
     sourceSets {
-        // Robolectric reads the tested variant's merged assets, never test assets: the exported
-        // schemas ride in debug builds only so MigrationTestHelper can find them.
+        // MigrationTestHelper loads exported schemas from the instrumentation context's assets,
+        // and under Robolectric that is the tested variant's merged assets (src/test assets are
+        // never merged). So the schemas ride in debug builds only (release stays clean), and
+        // testReleaseUnitTest does not see them: run the migration tests with testDebugUnitTest.
         getByName("debug").assets.srcDir("$projectDir/schemas")
     }
 

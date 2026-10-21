@@ -2,6 +2,7 @@ package com.serversherpa.kiosk.data.sync
 
 import androidx.room.withTransaction
 import com.serversherpa.kiosk.core.ApiError
+import com.serversherpa.kiosk.core.labels.isResidentFont
 import com.serversherpa.kiosk.core.model.KioskAssetsSync
 import com.serversherpa.kiosk.core.model.KioskContainersSync
 import com.serversherpa.kiosk.core.model.KioskPeopleSync
@@ -44,8 +45,10 @@ enum class PartState { WAITING, RUNNING, DONE, FAILED }
 data class SyncPart(val name: String, val state: PartState, val count: Int? = null)
 
 /** The parts in display order. The first four are the move (all or nothing); templates and
- *  fonts are soft: a failure keeps their previous rows and sets [SyncStatus.labelsError]. */
+ *  fonts are soft: a failure sets [SyncStatus.labelsError] and keeps their previous rows when
+ *  the move is unchanged (a move change clears them instead). */
 val SYNC_PARTS = listOf("assets", "people", "containers", "trucks", "templates", "fonts")
+private val MOVE_PARTS = SYNC_PARTS.take(4)
 
 private fun waitingParts() = SYNC_PARTS.map { SyncPart(it, PartState.WAITING) }
 
@@ -91,13 +94,18 @@ class Sync(
         if (hydrated) return
         hydrated = true
         val meta = readMeta(db) ?: return
+        // No label_context row: the labels were never synced (e.g. right after the version 2
+        // upgrade), so templates and fonts read WAITING and the UI can prompt a sync.
+        val labelsSynced = db.meta().get(LABEL_CONTEXT_META_KEY) != null
         val templates = db.labelTemplates().count()
         val fonts = db.labelFonts().count()
         if (_status.value.phase != SyncPhase.IDLE) return
         val counts = listOf(meta.assets, meta.people, meta.containers, meta.trucks, templates, fonts)
         _status.value = SyncStatus(
             SyncPhase.DONE, meta.assets, meta.people, meta.containers, meta.trucks, meta.syncedAt,
-            parts = SYNC_PARTS.zip(counts) { name, n -> SyncPart(name, PartState.DONE, n) },
+            parts = SYNC_PARTS.zip(counts) { name, n ->
+                if (labelsSynced || name in MOVE_PARTS) SyncPart(name, PartState.DONE, n) else SyncPart(name, PartState.WAITING)
+            },
         )
     }
 
@@ -140,8 +148,10 @@ class Sync(
         }
         if (myRun != currentRun) return
         val syncedAt = Instant.ofEpochMilli(clock()).toString()
+        var moveChanged = false
         try {
             db.withTransaction {
+                moveChanged = readMeta(db)?.initiativeId != initiativeId
                 db.assets().deleteAll(); db.assets().insertAll(fetched.assets.rows)
                 db.people().deleteAll(); db.people().insertAll(fetched.people.people.map { it.toEntity() })
                 db.containers().deleteAll(); db.containers().insertAll(fetched.containers.containers.map { it.toEntity() })
@@ -149,6 +159,9 @@ class Sync(
                 db.meta().put(MetaEntity(LABEL_CONTEXT_META_KEY, fetched.assets.labelContext))
                 if (fetched.templates != null) {
                     db.labelTemplates().deleteAll(); db.labelTemplates().insertAll(fetched.templates)
+                } else if (moveChanged) {
+                    // Another move's templates must never pick labels for this one.
+                    db.labelTemplates().deleteAll()
                 }
                 val meta = SyncMeta(
                     initiativeId, initiativeName, fetched.assets.rows.size, fetched.people.people.size,
@@ -178,7 +191,7 @@ class Sync(
         setPart(myRun, "trucks", PartState.DONE, trucks)
         if (fetched.templates != null) setPart(myRun, "templates", PartState.DONE, db.labelTemplates().count())
 
-        val fontsError = syncFonts(myRun, initiativeId)
+        val fontsError = syncFonts(myRun, initiativeId, moveChanged)
         if (myRun != currentRun) return
         _status.update { s ->
             s.copy(
@@ -189,22 +202,30 @@ class Sync(
     }
 
     /** The fonts part: list, download what is missing, then swap the rows and drop unused files.
-     *  Returns the failure code, or null. A failure leaves the previous rows and files in place. */
-    private suspend fun syncFonts(myRun: Int, initiativeId: String): String? {
+     *  Returns the failure code, or null. A failure leaves the previous rows and files in place
+     *  for the same move; on a move change it clears them (they belonged to the other move). */
+    private suspend fun syncFonts(myRun: Int, initiativeId: String, moveChanged: Boolean): String? {
         setPart(myRun, "fonts", PartState.RUNNING)
         return try {
             val listed = api.labelFonts(initiativeId)
             val rows = listed.fonts.map { f ->
-                if (f.resident || fontsDir == null) return@map LabelFontEntity(f.id, f.name, f.size, f.resident, null)
+                val resident = isResidentFont(f.name, f.resident)
+                if (resident || fontsDir == null) return@map LabelFontEntity(f.id, f.name, f.size, resident, null)
                 // The id names the file: only plain UUID-like ids, never a path.
                 if (!SAFE_FONT_ID.matches(f.id)) throw IllegalStateException("bad font id")
                 val fileName = "${f.id}.ttf"
                 val file = File(fontsDir, fileName)
                 if (!(file.isFile && file.length() == f.size.toLong())) {
-                    val bytes = api.labelFontContent(f.id, initiativeId)
+                    val bytes = try {
+                        api.labelFontContent(f.id, initiativeId)
+                    } catch (e: ApiError) {
+                        // The server's own resident rule (flag or object name) refused it: built in.
+                        if (e.status == 403 && e.code == "font_not_servable") return@map LabelFontEntity(f.id, f.name, f.size, true, null)
+                        throw e
+                    }
                     writeAtomically(file, bytes)
                 }
-                LabelFontEntity(f.id, f.name, f.size, f.resident, fileName)
+                LabelFontEntity(f.id, f.name, f.size, false, fileName)
             }
             if (myRun != currentRun) return null
             db.withTransaction { db.labelFonts().deleteAll(); db.labelFonts().insertAll(rows) }
@@ -214,6 +235,10 @@ class Sync(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            if (moveChanged && myRun == currentRun) {
+                db.labelFonts().deleteAll()
+                fontsDir?.let { deleteUnused(it, emptySet()) }
+            }
             setPart(myRun, "fonts", PartState.FAILED)
             codeOf(e)
         }

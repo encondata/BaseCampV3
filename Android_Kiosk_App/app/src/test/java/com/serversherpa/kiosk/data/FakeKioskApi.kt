@@ -53,7 +53,8 @@ open class FakeKioskApi : KioskApi {
             .also { calls += "syncAssets" }
     override suspend fun labelTemplatesRaw(initiativeId: String) = templatesRaw().also { calls += "labelTemplates" }
     override suspend fun labelFonts(initiativeId: String) = fonts().also { calls += "labelFonts" }
-    override suspend fun labelFontContent(id: String, initiativeId: String) = fontContent(id).also { calls += "fontContent:$id" }
+    /** Recorded before answering, so a refused download still shows as a call. */
+    override suspend fun labelFontContent(id: String, initiativeId: String): ByteArray { calls += "fontContent:$id"; return fontContent(id) }
     override suspend fun postScans(body: KioskScanBatchIn): KioskScanBatchOut { calls += "postScans"; scanBatches += body; return postScansResult(body) }
     override suspend fun postRfidEnroll(assetId: String, body: KioskRfidEnrollIn) = rfidResult(assetId, body).also { calls += "rfid" }
     override suspend fun timeclockStatus(personId: String) = statusResult(personId).also { calls += "timeclockStatus" }

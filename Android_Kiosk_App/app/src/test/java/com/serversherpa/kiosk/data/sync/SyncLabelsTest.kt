@@ -163,6 +163,64 @@ class SyncLabelsTest {
         assertFalse(File(fontsDir, "f1.ttf").exists())
     }
 
+    @Test fun residentFontsAreNeverDownloadedByNameOrServerRefusal() = runBlocking {
+        // Flag false, but the name is Zebra's resident object; a second font the server refuses.
+        api.fonts = { KioskLabelFonts(listOf(KioskLabelFont("f2", "tt0003m_.ttf", 100), KioskLabelFont("f5", "OTHER.TTF", 7))) }
+        api.fontContent = { id ->
+            assertEquals("f5", id)
+            throw ApiError(403, "font_not_servable")
+        }
+        val s = sync(); s.runNow("i1", "Move A")
+        val st = s.status.value
+        assertEquals(PartState.DONE, st.part("fonts").state); assertEquals(2, st.part("fonts").count); assertNull(st.labelsError)
+        assertEquals(listOf("fontContent:f5"), api.calls.filter { it.startsWith("fontContent") })
+        val fonts = db.labelFonts().all().associateBy { it.id }
+        assertTrue(fonts.getValue("f2").resident); assertNull(fonts.getValue("f2").fileName)
+        assertTrue(fonts.getValue("f5").resident); assertNull(fonts.getValue("f5").fileName)
+        assertTrue(fontsDir.listFiles().isNullOrEmpty())
+        assertTrue(com.serversherpa.kiosk.core.labels.isResidentFont("TT0003M_.TTF"))
+        assertFalse(com.serversherpa.kiosk.core.labels.isResidentFont("ROBOTO.TTF"))
+    }
+
+    @Test fun failedLabelsAreKeptForTheSameMoveButClearedOnAMoveChange() = runBlocking {
+        api.assetsRaw = { assetsBody(asset1) }
+        api.templatesRaw = { templatesBody(tplA) }
+        api.fonts = { KioskLabelFonts(listOf(KioskLabelFont("f1", "ROBOTO.TTF", 4))) }
+        api.fontContent = { fontBytes }
+        val s = sync(); s.runNow("i1", "Move A")
+
+        // Same move, both label steps fail: the previous rows stay.
+        api.templatesRaw = { throw ApiError(500, "unknown_error") }
+        api.fonts = { throw ApiError(0, "network") }
+        s.runNow("i1", "Move A")
+        assertEquals(SyncPhase.DONE, s.status.value.phase); assertEquals("unknown_error", s.status.value.labelsError)
+        assertEquals(listOf(tplA), db.labelTemplates().all().map { it.json })
+        assertEquals(listOf("f1"), db.labelFonts().all().map { it.id })
+        assertTrue(File(fontsDir, "f1.ttf").isFile)
+
+        // Another move, both fail: the old move's templates and fonts must not drive this one.
+        s.runNow("i2", "Move B")
+        val st = s.status.value
+        assertEquals(SyncPhase.DONE, st.phase); assertNull(st.error); assertEquals("unknown_error", st.labelsError)
+        assertEquals(PartState.FAILED, st.part("templates").state); assertEquals(PartState.FAILED, st.part("fonts").state)
+        assertEquals(0, db.labelTemplates().count())
+        assertEquals(0, db.labelFonts().count())
+        assertFalse(File(fontsDir, "f1.ttf").exists())
+        assertEquals("i2", Sync.readMeta(db)?.initiativeId)
+    }
+
+    @Test fun hydrateShowsLabelsWaitingWhenNeverSynced() = runBlocking {
+        sync().runNow("i1", "Move A")
+        // As after the version 2 upgrade: a synced move but no label data yet.
+        db.meta().delete(LABEL_CONTEXT_META_KEY)
+        val fresh = sync(); fresh.hydrate()
+        val st = fresh.status.value
+        assertEquals(SyncPhase.DONE, st.phase)
+        for (n in listOf("assets", "people", "containers", "trucks")) assertEquals(n, PartState.DONE, st.part(n).state)
+        assertEquals(PartState.WAITING, st.part("templates").state); assertNull(st.part("templates").count)
+        assertEquals(PartState.WAITING, st.part("fonts").state)
+    }
+
     @Test fun aMoveFailureMarksItsPartAndKeepsEverything() = runBlocking {
         api.assetsRaw = { assetsBody(asset1) }
         api.templatesRaw = { templatesBody(tplA) }
