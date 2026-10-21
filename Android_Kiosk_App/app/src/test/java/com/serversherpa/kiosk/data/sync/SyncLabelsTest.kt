@@ -255,4 +255,31 @@ class SyncLabelsTest {
         assertFalse(File(fontsDir, "f1.ttf").exists())
         assertTrue(fresh.status.value.parts.all { it.state == PartState.WAITING })
     }
+
+    /** A fonts directory whose cleanup throws, like a read-only or vanished volume. */
+    private class BrokenDir(path: File) : File(path.path) {
+        override fun listFiles(): Array<File>? = throw java.io.IOException("volume gone")
+    }
+
+    @Test fun aThrowingFontCleanupEndsTheSyncDoneWithALabelsError() = runBlocking {
+        // A move change makes a failed font step clear the fonts; that cleanup throws too.
+        val s = Sync(api, db, kotlinx.coroutines.GlobalScope, clock = { 1_700_000_000_000L }, fontsDir = BrokenDir(fontsDir))
+        api.fonts = { throw ApiError(0, "network") }
+        s.runNow("i1", "Move A")
+        val st = s.status.value
+        assertEquals(SyncPhase.DONE, st.phase); assertNull(st.error)
+        assertEquals("network", st.labelsError)
+        assertEquals(PartState.FAILED, st.part("fonts").state)
+        assertFalse(st.parts.any { it.state == PartState.RUNNING })
+        assertEquals("i1", Sync.readMeta(db)?.initiativeId)
+    }
+
+    @Test fun aDatabaseThatDiesDuringTheFontStepNeverLeavesTheSyncRunning() = runBlocking {
+        val s = sync()
+        api.fonts = { db.close(); throw ApiError(0, "network") }
+        s.runNow("i1", "Move A")
+        val st = s.status.value
+        assertTrue("phase ${st.phase}", st.phase != SyncPhase.RUNNING)
+        assertFalse(st.parts.any { it.state == PartState.RUNNING })
+    }
 }

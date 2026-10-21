@@ -20,8 +20,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import com.serversherpa.kiosk.LocalAppContainer
-import com.serversherpa.kiosk.data.sync.Sync
-import com.serversherpa.kiosk.data.sync.SyncPhase
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.components.KioskChip
 import com.serversherpa.kiosk.ui.components.KioskToast
@@ -56,17 +54,7 @@ fun KioskSetupScreen(nav: NavHostController) {
         if (!wizardOpen && sel != null) {
             Text(buildString { append("This kiosk is set up for "); append(sel.initiativeName); append(" at "); append(sel.siteName); append(" ("); append(sel.siteRole); append(") · scan type "); append(sel.scanLabel) },
                 style = MaterialTheme.typography.bodyLarge)
-            Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                when (sync.phase) {
-                    SyncPhase.IDLE -> { Text("No move data on this kiosk yet."); MiniButton("Sync now", { vm.resync() }) }
-                    SyncPhase.RUNNING -> Text("Downloading move data…")
-                    SyncPhase.DONE -> {
-                        Text("Local data: ${sync.assets ?: 0} assets · ${sync.people ?: 0} people · ${sync.containers ?: 0} containers · ${sync.trucks ?: 0} trucks" + (sync.syncedAt?.let { " · synced ${Sync.formatSyncedAt(it)}" } ?: ""), modifier = Modifier.weight(1f))
-                        MiniButton("Sync again", { vm.resync() })
-                    }
-                    SyncPhase.ERROR -> { KioskToast("Couldn't download move data (${sync.error ?: "unknown_error"}).", error = true); MiniButton("Try again", { vm.resync() }) }
-                }
-            }
+            SyncSection(sync, onSync = { vm.resync() })
             Row(Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 MiniButton("Change setup", { vm.openWizard(true) })
                 SolidButton("Go to home", { nav.navigate(Routes.HOME) { popUpTo(Routes.HOME) { inclusive = true } } })

@@ -183,21 +183,35 @@ class Sync(
         }
         if (myRun != currentRun) return
         hydrated = true
-        val assets = db.assets().count(); val people = db.people().count()
-        val containers = db.containers().count(); val trucks = db.trucks().count()
-        setPart(myRun, "assets", PartState.DONE, assets)
-        setPart(myRun, "people", PartState.DONE, people)
-        setPart(myRun, "containers", PartState.DONE, containers)
-        setPart(myRun, "trucks", PartState.DONE, trucks)
-        if (fetched.templates != null) setPart(myRun, "templates", PartState.DONE, db.labelTemplates().count())
+        // The move is stored; whatever happens from here must still end the sync in a terminal
+        // phase. A sync left RUNNING makes Print Labels refuse until the app restarts.
+        try {
+            val assets = db.assets().count(); val people = db.people().count()
+            val containers = db.containers().count(); val trucks = db.trucks().count()
+            setPart(myRun, "assets", PartState.DONE, assets)
+            setPart(myRun, "people", PartState.DONE, people)
+            setPart(myRun, "containers", PartState.DONE, containers)
+            setPart(myRun, "trucks", PartState.DONE, trucks)
+            if (fetched.templates != null) setPart(myRun, "templates", PartState.DONE, db.labelTemplates().count())
 
-        val fontsError = syncFonts(myRun, initiativeId, moveChanged)
-        if (myRun != currentRun) return
-        _status.update { s ->
-            s.copy(
-                phase = SyncPhase.DONE, assets = assets, people = people, containers = containers, trucks = trucks,
-                syncedAt = syncedAt, error = null, labelsError = templatesError ?: fontsError,
-            )
+            val fontsError = syncFonts(myRun, initiativeId, moveChanged)
+            if (myRun != currentRun) return
+            _status.update { s ->
+                s.copy(
+                    phase = SyncPhase.DONE, assets = assets, people = people, containers = containers, trucks = trucks,
+                    syncedAt = syncedAt, error = null, labelsError = templatesError ?: fontsError,
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (myRun != currentRun) return
+            _status.update { s ->
+                s.copy(
+                    phase = SyncPhase.ERROR, error = "storage",
+                    parts = s.parts.map { if (it.state == PartState.RUNNING) it.copy(state = PartState.FAILED) else it },
+                )
+            }
         }
     }
 
@@ -236,8 +250,14 @@ class Sync(
             throw e
         } catch (e: Exception) {
             if (moveChanged && myRun == currentRun) {
-                db.labelFonts().deleteAll()
-                fontsDir?.let { deleteUnused(it, emptySet()) }
+                // Best effort: a cleanup that throws too must not hide the original failure.
+                try {
+                    db.labelFonts().deleteAll()
+                    fontsDir?.let { deleteUnused(it, emptySet()) }
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (_: Exception) {
+                }
             }
             setPart(myRun, "fonts", PartState.FAILED)
             codeOf(e)

@@ -445,6 +445,16 @@ what shipped, the rulings made on the way and what is still open.
   context and the templates, since batches and plan chunks rely on it. The
   sandbox recovery and the heap cap are unit-tested over fakes only; the
   real library's behavior needs the emulator check above.
+- **A sync never stays RUNNING:** Print Labels refuses while the sync phase is
+  RUNNING, so `Sync.runNow` now guards everything after the write transaction
+  (the counts, the part updates and the fonts step). An unexpected throw ends
+  the sync in ERROR (`storage`); the font step's own failure cleanup is best
+  effort, so a cleanup that throws too still ends DONE with `labelsError`.
+  The counts guard has no test of its own (no seam makes a DAO count throw).
+- **Kiosk Setup shows the label parts:** the summary's "Local data" line adds
+  label templates and fonts when those parts finished, a running sync lists
+  all six parts with their state, and a failed templates or fonts download
+  shows a warning line (`SyncSummary.kt`).
 - **Deferred minors worth naming:**
   - A build ERROR leaves changed-but-unrendered rows printing their old ZPL
     (the laptop does too; the header shows the error).
