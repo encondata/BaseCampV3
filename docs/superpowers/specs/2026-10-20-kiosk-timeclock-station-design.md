@@ -376,6 +376,11 @@ sees the station flow, so a worker never lands in Setup or Settings.
 
 - Kiosk Setup's Time Clock finish lands on Start Time Clock, not on Welcome,
   because arming needs the signed-in session. Both cost one extra tap.
+- Start Time Clock's own sign-out makes the session anon while the page is
+  still on screen, so its guard sends anon to `/` (the station Welcome, or
+  sign-in on a kiosk that isn't armed), not to `/login`. A plain `/login`
+  redirect beat the page's own `navigate('/')` and stranded the station on
+  the sign-in page.
 - On an armed station, the login page shows **Back to the time clock**, and
   returns there by itself after 60 seconds idle. Without it, the gear on
   Welcome stranded the station on the sign-in page.

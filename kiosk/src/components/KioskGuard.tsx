@@ -1,6 +1,7 @@
 /** The kiosk's ProtectedRoute: wait for the cookie restore, bounce to
- *  /login when anonymous, and hold accounts that must set a new password
- *  (temporary or expired) on a notice (the kiosk hosts no change-password form). */
+ *  /login when anonymous (or to `anonTo`), and hold accounts that must set
+ *  a new password (temporary or expired) on a notice (the kiosk hosts no
+ *  change-password form). */
 
 import type { ReactNode } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
@@ -9,13 +10,24 @@ import { useKioskAuth } from '../auth/KioskAuthContext';
 import KioskShell from '../layout/KioskShell';
 import { portalUrl } from '../lib/config';
 
-export default function KioskGuard({ children }: { children: ReactNode }) {
+export default function KioskGuard({ children, anonTo }: {
+  children: ReactNode;
+  /** Where an anonymous visitor goes instead of /login. Start Time Clock
+   *  uses `/`: its own sign-out turns the session anon while it is still
+   *  on screen, and the station Welcome — not sign-in — is where that
+   *  sign-out belongs. `/` still sends anyone else on to sign-in. */
+  anonTo?: string;
+}) {
   const { status, mustChangePassword, mustChangeReason, logout } = useKioskAuth();
   const location = useLocation();
   const navigate = useNavigate();
 
   if (status === 'loading') return null;
-  if (status === 'anon') return <Navigate to="/login" replace state={{ from: location }} />;
+  if (status === 'anon') {
+    return anonTo
+      ? <Navigate to={anonTo} replace />
+      : <Navigate to="/login" replace state={{ from: location }} />;
+  }
   if (mustChangePassword) {
     return (
       <KioskShell>

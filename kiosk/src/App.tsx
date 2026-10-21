@@ -58,8 +58,14 @@ export default function App() {
           <Route path="/rfid_status" element={<KioskGuard><KioskShell><RfidStatus /></KioskShell></KioskGuard>} />
           {/* Start Time Clock — the Time Clock station's Home tile and where
               its Kiosk Setup lands. Signed in like /rfid_status: it arms
-              this browser as the station's display, then signs out. */}
-          <Route path="/timeclock/station" element={<KioskGuard><KioskShell><StartTimeclock /></KioskShell></KioskGuard>} />
+              this browser as the station's display, then signs out. That
+              sign-out makes the session anon while the page is still up,
+              so anon here goes to `/` (the station Welcome, or sign-in on
+              a kiosk that isn't armed), never straight to /login. */}
+          <Route
+            path="/timeclock/station"
+            element={<KioskGuard anonTo="/"><KioskShell><StartTimeclock /></KioskShell></KioskGuard>}
+          />
           <Route path="/settings" element={<KioskShell><Settings /></KioskShell>} />
           {/* Home — or, on an armed Time Clock station with nobody signed
               in, the signed-out time clock's Welcome screen. */}
