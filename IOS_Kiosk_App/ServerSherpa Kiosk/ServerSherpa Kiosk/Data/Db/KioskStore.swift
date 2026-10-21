@@ -4,6 +4,10 @@ import SwiftData
 /// The meta row holding the last sync (Android `MOVE_META_KEY`).
 let syncMetaKey = "sync"
 
+/// The meta row holding the move's `label_context` object from /kiosk/sync/assets,
+/// raw JSON text (Android `LABEL_CONTEXT_META_KEY`).
+let labelContextMetaKey = "label_context"
+
 /// The only thing that touches the SwiftData container. Everything crossing
 /// the actor boundary is a Core value type, never a `@Model` object.
 @ModelActor actor KioskStore {

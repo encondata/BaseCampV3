@@ -1,8 +1,9 @@
 import Foundation
 import SwiftData
 
-// The local tables (Android `data/db/Entities.kt`). Records never leave
-// `KioskStore`: each maps to and from its Core value type.
+// The local tables (Android `data/db/Entities.kt`), schema version 2 (see
+// `KioskSchemaVersions.swift`). Records never leave `KioskStore`: each maps to
+// and from its Core value type.
 
 @Model final class AssetRecord {
     #Index<AssetRecord>([\.rfid], [\.assetId], [\.serialNumber])
@@ -17,8 +18,13 @@ import SwiftData
     var containerId: String?
     /// The label map as a JSON object string.
     var labelJson: String
+    /// The asset's JSON object exactly as /kiosk/sync/assets sent it (number
+    /// literals intact): the label generator's input. `{}` on rows synced before V2.
+    var payloadJson: String = "{}"
+    /// The asset's place in the server's order.
+    var position: Int = 0
 
-    init(_ row: KioskAssetRow) {
+    init(_ row: KioskAssetRow, payloadJson: String = "{}", position: Int = 0) {
         id = row.id
         assetId = row.assetId
         name = row.name
@@ -29,6 +35,8 @@ import SwiftData
         makeModel = row.makeModel
         containerId = row.containerId
         labelJson = encodeJson(row.label) ?? "{}"
+        self.payloadJson = payloadJson
+        self.position = position
     }
 
     var row: KioskAssetRow {
@@ -132,7 +140,8 @@ import SwiftData
     }
 }
 
-/// A key/value row; `value` is a JSON string (the `sync` row holds `SyncMeta`).
+/// A key/value row; `value` is a JSON string (the `sync` row holds `SyncMeta`;
+/// the `label_context` row holds the move's label context as raw JSON text).
 @Model final class MetaRecord {
     @Attribute(.unique) var key: String
     var value: String
@@ -187,21 +196,88 @@ import SwiftData
     }
 }
 
+/// A label template the move uses, as the server sent it (raw JSON), in server order.
+@Model final class LabelTemplateRecord {
+    @Attribute(.unique) var id: String
+    var position: Int
+    var json: String
+
+    init(id: String, position: Int, json: String) {
+        self.id = id
+        self.position = position
+        self.json = json
+    }
+}
+
+/// A library font the move's templates use. The bytes live in a file, never in
+/// the store; `fileName` is nil for a resident font (built into the printer).
+@Model final class LabelFontRecord {
+    @Attribute(.unique) var id: String
+    var name: String
+    var size: Int
+    var resident: Bool
+    var fileName: String?
+
+    init(id: String, name: String, size: Int, resident: Bool, fileName: String?) {
+        self.id = id
+        self.name = name
+        self.size = size
+        self.resident = resident
+        self.fileName = fileName
+    }
+}
+
+/// The label generated for one asset: `zpl` when `outcome` is `ok`, else nil
+/// with the outcome code. `fingerprint` says which inputs produced it.
+@Model final class GeneratedLabelRecord {
+    @Attribute(.unique) var assetId: String
+    var zpl: String?
+    var outcome: String
+    var fingerprint: String
+    var templateId: String?
+
+    init(assetId: String, zpl: String?, outcome: String, fingerprint: String, templateId: String?) {
+        self.assetId = assetId
+        self.zpl = zpl
+        self.outcome = outcome
+        self.fingerprint = fingerprint
+        self.templateId = templateId
+    }
+}
+
 enum KioskSchema {
-    static let models: [any PersistentModel.Type] = [
-        AssetRecord.self, PersonRecord.self, ContainerRecord.self, TruckRecord.self, MetaRecord.self, OutboxRecord.self,
-    ]
+    static let models: [any PersistentModel.Type] = KioskSchemaV2.models
+
+    /// The store's file name in Application Support (plus SQLite's `-shm` and `-wal`).
+    static let storeFileName = "serversherpa-kiosk.store"
 
     /// On disk at Application Support/serversherpa-kiosk.store; in memory for tests.
     static func container(inMemory: Bool) throws -> ModelContainer {
-        let schema = Schema(models)
         if inMemory {
-            return try ModelContainer(for: schema, configurations: ModelConfiguration(schema: schema, isStoredInMemoryOnly: true))
+            let schema = Schema(versionedSchema: KioskSchemaV2.self)
+            return try ModelContainer(for: schema, migrationPlan: KioskMigrationPlan.self,
+                                      configurations: ModelConfiguration(schema: schema, isStoredInMemoryOnly: true))
         }
         let dir = URL.applicationSupportDirectory
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appending(path: "serversherpa-kiosk.store")
-        return try ModelContainer(for: schema, configurations: ModelConfiguration(schema: schema, url: url))
+        return try container(url: dir.appending(path: storeFileName))
+    }
+
+    /// The store at `url`, migrated to the current version when older.
+    static func container(url: URL) throws -> ModelContainer {
+        let schema = Schema(versionedSchema: KioskSchemaV2.self)
+        return try ModelContainer(for: schema, migrationPlan: KioskMigrationPlan.self,
+                                  configurations: ModelConfiguration(schema: schema, url: url))
+    }
+
+    /// Where a store that would not open is moved: `serversherpa-kiosk.store.failed-<yyyyMMdd-HHmmss>` (local time).
+    static func failedStoreName(at date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return "\(storeFileName).failed-\(formatter.string(from: date))"
     }
 }
 
