@@ -235,3 +235,205 @@ accepts a per-scan `scan_status` override for a person session.)*
   or Edge (network printers are out of reach from a browser).
 - Bluetooth printing.
 - Schema 3 (pictures) in the shared generator.
+
+## Implementation notes
+
+Written after the build (branch `android-labels`, plan
+`docs/superpowers/plans/2026-10-21-android-label-printing.md`). It records
+what shipped, the rulings made on the way and what is still open.
+
+### The generator
+
+- It lives in `kiosk/src/labelgen/` (the kiosk package already has vitest and
+  vite, and is the future web adopter). Every file is pure ECMAScript: no
+  DOM, `Intl`, `TextEncoder`, Node or `console`, because the Android sandbox
+  has none of them. Each file's header names the Python it ports.
+- The surface is a few functions on `globalThis.labelgen`, all taking and
+  returning JSON strings (`buildPlan`, `renderLabels`, `applyPrintSettings`,
+  `withPrintMode`, `alignmentTestZpl`, `sampleLabel`). A failure comes back as
+  `{error}`, never a throw across the boundary.
+- Asset payloads are read with a number-preserving JSON reader (`pyjson.ts`)
+  so `12.0`, `7` and `1e-05` print as Python prints them. Python's `round()`,
+  floor division, code-point string handling, `Decimal` and `str()` rules are
+  ported on purpose (see the porting traps in section 4).
+- Fingerprints are cyrb53 over canonical JSON, not Python's sha256. They are
+  device-local, so they only need to be stable here.
+
+### Reference labels
+
+- `kiosk/src/labelgen/fixtures/reference.json` holds what the laptop's own
+  code path prints: 55 cases, 243 labels (built-in designs at 203/300/600,
+  schema 1 and 2, code templates, pick order, generation and field rules,
+  QR and Code 128 values, odd names, raw From-To values, RU forms, no-data and
+  bad-design cases).
+- `make_reference.py` seeds a temporary edge store the way the edge tests do
+  and calls the edge's real `build_plan` and `render_job`. It imports the
+  built-in designs rather than copying them. Regenerate from the repo root
+  with the api venv (it needs sqlalchemy):
+  `api/.venv/bin/python kiosk/src/labelgen/fixtures/make_reference.py`.
+  The script puts `api/src` and `kiosk_laptop/edge/src` on `sys.path` itself,
+  so no `PYTHONPATH` is needed.
+- `reference.json` records a `source_hash` over `api/src/serversherpa/labels/*.py`
+  and the edge's `labels/generate.py`. `reference.test.ts` recomputes it and
+  fails with "Regenerate ..." when the Python changes, so the TypeScript
+  cannot silently fall behind the laptop. The test then holds every ZPL
+  byte-identical, or the same outcome code, and checks the plan (template id,
+  notes, DPIs, fonts).
+
+### The bundle
+
+- `npm --prefix kiosk run build:labelgen` writes
+  `Android_Kiosk_App/app/src/main/assets/labelgen.js` (an unminified IIFE,
+  `es2020`, about 86 KB, byte-stable across rebuilds). It is committed so the
+  Gradle build needs no Node.
+- `bundle.test.ts` fails when the committed file differs from a fresh build
+  ("run npm --prefix kiosk run build:labelgen"), greps it for anything outside
+  the ES built-ins, and runs it in a bare `vm` context with every host global
+  deleted, comparing one reference case.
+- The IIFE is named `labelgenModule`, not `labelgen`, so it cannot overwrite
+  `globalThis.labelgen`.
+
+### Android
+
+- **Database.** Room goes to version 2 with `MIGRATION_1_2`: `assets.payload_json`
+  (default `'{}'`) plus `label_templates`, `label_fonts` and `generated_labels`.
+  Schemas are exported to `app/schemas/` (v1 was exported before any change)
+  and `MigrationTest` upgrades a real v1 file, keeping the outbox. The schemas
+  also ride in debug APKs only, because Robolectric reads merged assets.
+  There is no destructive fallback: the outbox must survive.
+- **Sync.** The assets and templates bodies are fetched raw and each asset's
+  element text is stored verbatim, so number literals survive. Sync now shows
+  six parts (assets, people, containers, trucks, templates, fonts) with
+  Waiting/Running/Done/Failed. Templates and fonts are soft: a failure keeps
+  the previous set on the same move. Resident fonts (by name or a 403
+  `font_not_servable`) are never downloaded; other fonts go to
+  `filesDir/label-fonts/<id>.ttf` (temp file, then rename).
+- **LabelBuilder** runs `androidx.javascriptengine` (1.1.1) in a V8 isolate.
+  Build order: unsupported device, no sync data (`needs = SYNC`, nothing
+  pruned), no printer (`needs = PRINTER`), `buildPlan`, then changed jobs
+  (fingerprint differs) in batches of 200, then prune assets no longer on the
+  move. A batch carries only its own payloads (verified equal on all 243
+  reference labels), which keeps render time linear: about 2.9 s for 8,000
+  assets on a Mac, versus 20 s with the full body per batch.
+  - Bounded transfers: without `EVALUATE_WITHOUT_TRANSACTION_LIMIT`, arguments
+    and results move in 64K-character pieces measured after escaping, never
+    splitting a surrogate pair, and batches shrink to 50.
+  - Timeouts: 120 s plan, 60 s render, 5 s print helpers, 30 s connect. A
+    timeout closes the isolate and sandbox (closing is what stops the
+    script); a dead sandbox is replaced and the call retried once.
+  - Cancel safety: a new `rebuild()` cancels the running one at once; every
+    write re-reads the move meta in the same transaction and aborts if the
+    move changed or was cleared. A kind or DPI change rebuilds on its own; a
+    build error keeps whatever is stored.
+- **Printer core.** `NetworkZebra` (port 9100; one connection per command;
+  `~HI`, `~HS`, `^HWE:*.*`, peeler and serial getvar, `send`, `installFont`)
+  and `ZebraScanner` (64-way probe, `~HI`, 10 s budget, scans each connected
+  Wi-Fi/Ethernet network through its own socket factory, RFC 1918 only).
+  Reply parsers are pure Kotlin in `core/printer/` and tested against the
+  edge's real ZD421 and ZT220 replies. `installFont` refuses names that could
+  inject ZPL into the `~DY` header.
+- **Kiosk Setup** has a fourth step, Top or Front (Top preselected; `labelKind`
+  in the saved selection, defaulting to Top for older saves). Printer, offsets
+  and peel are stored on the device (`ss.kiosk.labels`), per section 6.
+- **Print Labels.** A port of the web kiosk's print queue: one job at a time,
+  Queued, Sending, Printed or Failed, Retry resends the exact bytes built the
+  first time, Reprint never records. Offsets and peel are applied at send
+  through `applyPrintSettings` then `withPrintMode`. The send and the Labeled
+  scan (`barcode`, `labeled`, per-scan `scan_status`, which `/kiosk/scans`
+  accepts) are one non-cancellable step, so a label that went out is always
+  recorded. A send that times out says the label may have printed and records
+  nothing.
+- **Printer Setup.** Choose by scan or typed IP (Bluetooth shown, disabled);
+  checks for the printer, DPI against the picked template, status, peeler and
+  fonts; Install missing fonts from the synced copies; alignment and sample
+  test labels; offset fields and a peel switch. All printer calls take one
+  VM-wide lock, so a test label waits for a running check.
+
+### Rulings
+
+- Non-ZPL templates (ESC/P, P-touch) are `template_unsupported` on Android,
+  where the laptop would compile them. Cost: none for Zebra printing.
+- The generator lives in `kiosk/src/labelgen` and its bundle is committed with
+  a freshness test instead of running Node inside Gradle. Cost: one extra
+  build command when labelgen changes.
+- Font bytes are files under `filesDir`, not Room BLOBs (CursorWindow 2 MB
+  limit). Cost: none.
+- The live test sends to a fake ZPL listener on a Mac; the ZD421 at
+  10.10.48.67 gets only read-only queries, and the ZT220 at 10.10.48.90 is
+  sent nothing.
+- Decimal values with an exponent beyond 1e6 throw in labelgen where Python
+  would print them. Cost: one unlabelable absurd asset (`template_failed`).
+- The reference generator runs with the api venv and imports the built-in
+  designs, so a design change marks the fixtures stale. Cost: none.
+- On a move change, a failed templates or fonts download clears the old move's
+  rows (the plan said keep them), since old templates would pick wrong-move
+  labels. Cost: no labels until the next good sync on the new move.
+- The chosen printer's connect timeout is 3 s and the scan probe's is 500 ms
+  (the constraints' 500 ms read as the probe, matching the edge). Cost: a dead
+  chosen printer takes 3 s to report.
+- The printer serial comes from the read-only `getvar "device.unique_id"`,
+  sent only after `~HI` named a Zebra, because `~HI` has no serial. Cost: one
+  extra query per printer; the reply format is unconfirmed on the ZD421.
+- Every print scan is refused while a label build runs (laptop parity).
+  Cost: short waits after a sync.
+- The Labeled scan's time is the enqueue time (`EnqueueInput` has no scan
+  time; a Retry records the retry time). Cost: `scanned_at` is off by the
+  print or retry delay.
+- Rapid double scans print and record twice (laptop parity). Cost: a duplicate
+  label if a scanner double-fires.
+- A Not Present peeler check flips a saved peel setting to tear-off (the web
+  kiosk takes peel from the same check); the row says so. Cost: none.
+- Check again that finds a different DPI or model at the same address updates
+  the saved printer, which rebuilds. Cost: a rebuild.
+- Printer checks run on save and Check again, not when the screen opens.
+  Cost: one tap; easy to change if Jimmy wants an automatic check.
+- ZPL injection through code-template placeholder values (`render.ts`) is kept
+  as is: it mirrors the Python `tokens.py` byte for byte. Escaping belongs in
+  the shared Python, fixed for the portal and the edge together; the source
+  hash then forces the TypeScript to follow. Cost: the same exposure as the
+  laptop until then. Surface this to Jimmy.
+
+### Open follow-ups
+
+- **ZPL injection** (above), shared with the laptop. One fix in Python plus a
+  regenerated reference file closes it everywhere.
+- **Live checks owed:** emulator against the dev API on a cloned database
+  (sign in, setup with Top, sync progress with templates and fonts, build
+  progress, support detection and the transaction-limit feature, real
+  timings); Printer Setup and a print against a fake ZPL listener, comparing
+  one captured label byte for byte with the laptop's for the same
+  asset, template and DPI; read-only `~HI`, `~HS` and `^HW` on the ZD421, plus
+  the serial getvar reply; the offset keypad on a TC-series handheld
+  (it uses the phone keypad because Compose's number pad has no minus sign);
+  the VPN exclusion in `LocalNetworks`.
+- **Test gaps:** no Compose tests for the Print Labels, Labels home, Printer
+  Setup or test-label screens (the view models and queue are tested). A
+  kiosk test should pin that a label depends only on its own asset, the
+  context and the templates, since batches rely on it. The committed bundle
+  should be run over every reference case in the bare `vm`, and the
+  host-global ban list extended (`setTimeout`, `structuredClone`, `atob`,
+  `btoa`, `queueMicrotask`).
+- **Deferred minors worth naming:**
+  - A build ERROR leaves changed-but-unrendered rows printing their old ZPL
+    (the laptop does too; the header shows the error).
+  - Fonts: stray files after a partial failure; the fonts clear on failure
+    runs outside the transaction; the resident list is duplicated in
+    Kotlin, TypeScript and the server.
+  - `installFont` allows hyphenated or long names the `^HW` parser never
+    lists (an edge and portal parity gap).
+  - A Room read failure before `buildPlan` still leaves the DPI check
+    waiting its full 30 s; a stale failed pick can show briefly after a resync.
+  - A refusal during the plan step reads "(0 of 0)"; "Labels are being
+    prepared" would be clearer.
+  - Printer Setup has no Cancel for a running scan (leaving cancels it).
+  - Memory: large asset bodies are held about 3 to 4 times over during sync
+    and double-escaped in the engine call; watch it on low-memory handhelds.
+  - `zebraSession` maps only `IOException`; runtime exceptions from a block
+    escape raw on chosen-printer calls.
+  - A plain coroutine cancellation does not stop a running script; it ends
+    within its own timeout while the next call queues behind it.
+  - APK grows 2 to 3 MB from Guava (release builds are not minified).
+  - Integers past 2^53 lose precision in labelgen (no real label gets near).
+  - Labelgen internals: `model.ts` is 704 lines and an `own`/`has` helper is
+    duplicated; `sampleLabel`'s `reason` mixes notes and codes; the plan's
+    font lookup swallows errors.
