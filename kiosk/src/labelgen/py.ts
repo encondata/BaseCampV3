@@ -61,6 +61,21 @@ export function cpSlice(s: string, start: number, end?: number): string {
   return a < b ? cps.slice(a, b).join('') : '';
 }
 
+/** Python's `a < b` order on strings (code points, not UTF-16 units):
+ *  negative, zero or positive. */
+export function cmpCodePoints(a: string, b: string): number {
+  const x = codePoints(a);
+  const y = codePoints(b);
+  for (let i = 0; i < Math.min(x.length, y.length); i += 1) {
+    const d = x[i].codePointAt(0)! - y[i].codePointAt(0)!;
+    if (d !== 0) return d;
+  }
+  return x.length - y.length;
+}
+
+/** Python's `sorted()` of strings. */
+export const sortedStrings = (items: Iterable<string>): string[] => [...items].sort(cmpCodePoints);
+
 /** Python's `s.rjust(width, fill)` (`fill` one character). */
 export function rjust(s: string, width: number, fill: string): string {
   const pad = width - cpLength(s);
@@ -69,7 +84,7 @@ export function rjust(s: string, width: number, fill: string): string {
 
 // str.isspace(): not JavaScript's trim() set (that has U+FEFF, lacks
 // U+001C..U+001F and U+0085)
-const PY_SPACE = '\t\n\x0b\x0c\r\x1c\x1d\x1e\x1f \x85\xa0\u1680\u2000\u2001\u2002\u2003'
+export const PY_SPACE = '\t\n\x0b\x0c\r\x1c\x1d\x1e\x1f \x85\xa0\u1680\u2000\u2001\u2002\u2003'
   + '\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000';
 
 export function isPySpace(ch: string): boolean {
@@ -322,6 +337,41 @@ export function ruText(raw: PyValue | undefined): string {
   const text = pyStrip(pyStr(raw));
   if (!text) return '';
   return decimalNormalize(text) ?? text;
+}
+
+// int(str): optional sign, decimal digits with single underscores between
+// them; CPython refuses more than 4300 digits (sys.int_info.str_digits_check_threshold)
+const INT_RE = /^([+-])?(\p{Nd}(?:_?\p{Nd})*)$/u;
+const INT_MAX_DIGITS = 4300;
+
+/** Python's `int(text)` of a str, or null where it raises ValueError.
+ *  Whitespace at the ends is stripped and any Unicode decimal digit reads
+ *  as its ASCII digit. Past 2**53 the value is a float's (no label setting
+ *  comes near that). */
+export function pyIntFromStr(text: string): number | null {
+  const m = INT_RE.exec(pyStrip(text));
+  if (!m) return null;
+  const digits = codePoints(m[2]).filter((ch) => ch !== '_');
+  if (digits.length > INT_MAX_DIGITS) return null;
+  const ascii = digits.map((ch) => String(digitValue(ch.codePointAt(0)!))).join('');
+  const n = Number(ascii);
+  return m[1] === '-' && n !== 0 ? -n : n;
+}
+
+/** Python's `int(v)` of a parsed JSON value, or null where it raises
+ *  TypeError or ValueError (None, a list or dict, text that isn't an int,
+ *  NaN). A bool is 0 or 1 and a float truncates toward zero. An infinite
+ *  float throws a RangeError (Python's OverflowError, which no caller
+ *  catches). */
+export function pyInt(v: PyValue | undefined): number | null {
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  if (typeof v === 'string') return pyIntFromStr(v);
+  if (!isPyNumber(v)) return null;
+  const n = Number(v.text);
+  if (v.kind === 'int') return n;
+  if (Number.isNaN(n)) return null;
+  if (!Number.isFinite(n)) throw new RangeError('cannot convert float infinity to integer');
+  return Math.trunc(n) || 0;
 }
 
 const rstrip = (s: string, ch: string) => {
