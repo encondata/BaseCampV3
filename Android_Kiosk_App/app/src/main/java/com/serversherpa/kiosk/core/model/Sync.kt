@@ -58,3 +58,12 @@ data class KioskTruckRow(
 
 @Serializable
 data class KioskTrucksSync(val initiative_id: String, val generated_at: String, val trucks: List<KioskTruckRow> = emptyList())
+
+/** GET /kiosk/labels/fonts: a library font the move's label templates use. `size` is in bytes;
+ *  a `resident` font is built into the printer and is never downloaded or installed. */
+@Serializable
+data class KioskLabelFont(val id: String, val name: String, val size: Int, val resident: Boolean = false)
+
+/** `missing`: font names the templates reference that the library lacks. */
+@Serializable
+data class KioskLabelFonts(val fonts: List<KioskLabelFont> = emptyList(), val missing: List<String> = emptyList())

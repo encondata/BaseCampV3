@@ -45,7 +45,9 @@ android {
         unitTests.isReturnDefaultValues = true
     }
     sourceSets {
-        getByName("test").assets.srcDir("$projectDir/schemas")
+        // Robolectric reads the tested variant's merged assets, never test assets: the exported
+        // schemas ride in debug builds only so MigrationTestHelper can find them.
+        getByName("debug").assets.srcDir("$projectDir/schemas")
     }
 
 }

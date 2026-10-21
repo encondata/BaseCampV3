@@ -29,6 +29,9 @@ data class AssetEntity(
     @ColumnInfo(name = "make_model") override val makeModel: String,
     @ColumnInfo(name = "container_id") val containerId: String?,
     @ColumnInfo(name = "label_json") val labelJson: String,
+    /** The asset's JSON object exactly as /kiosk/sync/assets sent it (number literals intact):
+     *  the label generator's input. `{}` on rows synced before version 2. */
+    @ColumnInfo(name = "payload_json", defaultValue = "'{}'") val payloadJson: String = "{}",
 ) : ScanAsset {
     fun label(): Map<String, String> = try {
         KioskJson.decodeFromString(MapSerializer(String.serializer(), String.serializer()), labelJson)
@@ -37,9 +40,10 @@ data class AssetEntity(
     fun toOutboxAsset() = OutboxAsset(id, assetId, name, rfid, serialNumber, makeModel)
 }
 
-fun KioskAssetRow.toEntity() = AssetEntity(
+fun KioskAssetRow.toEntity(payloadJson: String = "{}") = AssetEntity(
     id, asset_id, name, rfid, serial_number, make, model, make_model, container_id,
     KioskJson.encodeToString(MapSerializer(String.serializer(), String.serializer()), label),
+    payloadJson,
 )
 
 @Entity(tableName = "people", indices = [Index("rfid_tag")])
@@ -77,6 +81,33 @@ data class TruckEntity(
 )
 
 fun KioskTruckRow.toEntity() = TruckEntity(id, name, load_number, status, status_label, driver_name, start_site_id, start_site_name, end_site_id, end_site_name, container_count)
+
+/** One synced label template: its JSON object exactly as /kiosk/sync/label-templates sent it.
+ *  Read back in insertion order (the server's), which template ties depend on. */
+@Entity(tableName = "label_templates")
+data class LabelTemplateEntity(@PrimaryKey val id: String, val json: String)
+
+/** A library font the move's templates use. The bytes live in `filesDir/label-fonts/<fileName>`,
+ *  never in Room; [fileName] is null for a resident font (built into the printer, never downloaded). */
+@Entity(tableName = "label_fonts")
+data class LabelFontEntity(
+    @PrimaryKey val id: String,
+    val name: String,
+    val size: Int,
+    val resident: Boolean,
+    @ColumnInfo(name = "file_name") val fileName: String?,
+)
+
+/** The label generated for one asset: [zpl] when [outcome] is `ok`, else null with the outcome code.
+ *  [fingerprint] says which inputs produced it, so only changed assets are rendered again. */
+@Entity(tableName = "generated_labels")
+data class GeneratedLabelEntity(
+    @PrimaryKey @ColumnInfo(name = "asset_id") val assetId: String,
+    val zpl: String?,
+    val outcome: String,
+    val fingerprint: String,
+    @ColumnInfo(name = "template_id") val templateId: String?,
+)
 
 @Entity(tableName = "meta")
 data class MetaEntity(@PrimaryKey val key: String, val value: String)

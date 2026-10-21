@@ -37,6 +37,7 @@ import com.serversherpa.kiosk.input.rfid.RfidReader
 import com.serversherpa.kiosk.input.rfid.ZebraRfidReader
 import com.serversherpa.kiosk.ui.flash.FlashController
 import com.serversherpa.kiosk.ui.sound.SoundPlayer
+import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -75,7 +76,7 @@ class AppContainer(
     val session = SessionStore(httpClient, config, scope)
     val api: KioskApi = OkHttpKioskApi(httpClient, config, session)
     val auth = KioskAuth(api, session, identity, scope)
-    val sync = Sync(api, db, scope)
+    val sync = Sync(api, db, scope, fontsDir = File(app.filesDir, "label-fonts"))
     val outbox = Outbox(RoomOutboxStore(db.outbox()), api, identity, scope)
     val hasDataWedge: Boolean = DataWedge.isPresent(app)
     val hasCamera: Boolean = hasCamera(app)

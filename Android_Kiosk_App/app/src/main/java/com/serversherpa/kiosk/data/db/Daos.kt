@@ -51,3 +51,29 @@ interface OutboxDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsert(rows: List<OutboxEntity>)
     @Query("DELETE FROM outbox WHERE client_scan_id IN (:ids)") suspend fun delete(ids: List<String>)
 }
+
+@Dao
+interface LabelTemplateDao {
+    /** In insertion order: the server's order, which template ties depend on. */
+    @Query("SELECT * FROM label_templates ORDER BY rowid") suspend fun all(): List<LabelTemplateEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertAll(rows: List<LabelTemplateEntity>)
+    @Query("DELETE FROM label_templates") suspend fun deleteAll()
+    @Query("SELECT COUNT(*) FROM label_templates") suspend fun count(): Int
+}
+
+@Dao
+interface LabelFontDao {
+    @Query("SELECT * FROM label_fonts") suspend fun all(): List<LabelFontEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertAll(rows: List<LabelFontEntity>)
+    @Query("DELETE FROM label_fonts") suspend fun deleteAll()
+    @Query("SELECT COUNT(*) FROM label_fonts") suspend fun count(): Int
+}
+
+@Dao
+interface GeneratedLabelDao {
+    @Query("SELECT * FROM generated_labels") suspend fun all(): List<GeneratedLabelEntity>
+    @Query("SELECT * FROM generated_labels WHERE asset_id = :assetId") suspend fun get(assetId: String): GeneratedLabelEntity?
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsert(rows: List<GeneratedLabelEntity>)
+    @Query("DELETE FROM generated_labels WHERE asset_id IN (:assetIds)") suspend fun delete(assetIds: List<String>)
+    @Query("DELETE FROM generated_labels") suspend fun deleteAll()
+}
