@@ -40,6 +40,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -265,15 +266,21 @@ class LabelBuilderTest {
      *  payloads and the templates are read in one transaction. */
     @Test fun theBuildReadsTheMoveAndTheTemplatesInOneTransaction() = runBlocking<Unit> {
         db.close()
-        val sql = java.util.Collections.synchronizedList(ArrayList<String>())
+        // Each statement is logged with the thread that issued it: Room's InvalidationTracker refreshes
+        // on a background thread (BEGIN / room_table_modification_log / END TRANSACTION), and those
+        // statements must not be mistaken for the build's own.
+        val sql = java.util.Collections.synchronizedList(ArrayList<Pair<Thread, String>>())
         db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), KioskDatabase::class.java)
-            .allowMainThreadQueries().setQueryCallback({ q, _ -> sql += q }, Runnable::run).build()
+            .allowMainThreadQueries().setQueryCallback({ q, _ -> sql += Thread.currentThread() to q }, Runnable::run).build()
         seed(listOf("a1", "a2"))
         sql.clear()
 
         builder().buildNow("sync")
 
-        val log = synchronized(sql) { sql.toList() }
+        val all = synchronized(sql) { sql.toList() }
+        val reader = all.firstOrNull { it.second.startsWith("SELECT id, payload_json FROM assets") }?.first
+        assertNotNull("the build never read the payloads", reader)
+        val log = all.filter { it.first === reader && !it.second.contains("room_table_modification_log") }.map { it.second }
         val payloads = log.indexOfFirst { it.startsWith("SELECT id, payload_json FROM assets") }
         val templates = log.indexOfFirst { it.startsWith("SELECT * FROM label_templates") }
         assertTrue(payloads >= 0 && templates >= 0)

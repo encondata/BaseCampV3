@@ -45,7 +45,8 @@ private fun SyncStatus.doneCount(name: String): Int? = parts.firstOrNull { it.na
 /** "Local data: 10 assets · … · 4 label templates · 2 fonts · synced 2:14 PM". Label counts
  *  appear only for a part that finished: never-synced or failed ones are left out. */
 fun localDataLine(s: SyncStatus): String = buildString {
-    append("Local data: ${s.assets ?: 0} assets · ${s.people ?: 0} people · ${s.containers ?: 0} containers · ${s.trucks ?: 0} trucks")
+    fun n(count: Int?, one: String, many: String) = (count ?: 0).let { "$it ${if (it == 1) one else many}" }
+    append("Local data: ${n(s.assets, "asset", "assets")} · ${n(s.people, "person", "people")} · ${n(s.containers, "container", "containers")} · ${n(s.trucks, "truck", "trucks")}")
     s.doneCount("templates")?.let { append(" · $it label ${if (it == 1) "template" else "templates"}") }
     s.doneCount("fonts")?.let { append(" · $it ${if (it == 1) "font" else "fonts"}") }
     s.syncedAt?.let { append(" · synced ${Sync.formatSyncedAt(it)}") }

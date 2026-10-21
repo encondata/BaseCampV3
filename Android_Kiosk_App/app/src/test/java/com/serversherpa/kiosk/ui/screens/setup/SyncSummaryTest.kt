@@ -38,18 +38,20 @@ class SyncSummaryTest {
 
     @Test fun localDataLineAddsTemplatesAndFontsWhenSynced() {
         val line = localDataLine(done())
-        assertEquals("Local data: 10 assets · 3 people · 2 containers · 1 trucks · 4 label templates · 2 fonts", line.substringBefore(" · synced"))
+        assertEquals("Local data: 10 assets · 3 people · 2 containers · 1 truck · 4 label templates · 2 fonts", line.substringBefore(" · synced"))
         org.junit.Assert.assertTrue(" · synced " in line)
     }
 
     @Test fun localDataLineSaysSingularAndSkipsPartsThatAreNotDone() {
         val one = localDataLine(done(templates = 1, fonts = 1)).substringBefore(" · synced")
-        assertEquals("Local data: 10 assets · 3 people · 2 containers · 1 trucks · 1 label template · 1 font", one)
+        assertEquals("Local data: 10 assets · 3 people · 2 containers · 1 truck · 1 label template · 1 font", one)
+        val ones = localDataLine(SyncStatus(SyncPhase.DONE, 1, 1, 1, 1, null)).substringBefore(" · synced")
+        assertEquals("Local data: 1 asset · 1 person · 1 container · 1 truck", ones)
         // Never synced (after the version 2 upgrade) or failed: no label counts at all.
         val waiting = localDataLine(done(templatesState = PartState.WAITING, fontsState = PartState.WAITING)).substringBefore(" · synced")
-        assertEquals("Local data: 10 assets · 3 people · 2 containers · 1 trucks", waiting)
+        assertEquals("Local data: 10 assets · 3 people · 2 containers · 1 truck", waiting)
         val failed = localDataLine(done(templatesState = PartState.FAILED, fontsState = PartState.FAILED)).substringBefore(" · synced")
-        assertEquals("Local data: 10 assets · 3 people · 2 containers · 1 trucks", failed)
+        assertEquals("Local data: 10 assets · 3 people · 2 containers · 1 truck", failed)
     }
 
     @Test fun partLinesCoverEveryPartInOrderWithItsState() {
