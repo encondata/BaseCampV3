@@ -29,8 +29,9 @@ final class AppContainer {
     private var active = false
     private var launched = false
 
+    /// `fontsDir` holds downloaded label fonts; nil keeps font metadata only.
     init(defaults: UserDefaults, secrets: SecretStore, modelContainer: ModelContainer, storeIsTemporary: Bool = false,
-         backgroundTask: BackgroundTasking) {
+         backgroundTask: BackgroundTasking, fontsDir: URL? = nil) {
         let prefs = KioskPrefs(defaults: defaults)
         let config = KioskConfig(prefs: prefs)
         let identity = Identity(prefs: prefs, secrets: secrets)
@@ -56,7 +57,7 @@ final class AppContainer {
         self.coordinator = SessionCoordinator(refresher: sessionStore, auth: auth, heartbeat: heartbeat)
         self.store = store
         self.storeIsTemporary = storeIsTemporary
-        self.sync = Sync(api: api, store: store)
+        self.sync = Sync(api: api, store: store, fontsDir: fontsDir)
         self.outbox = Outbox(store: store, api: api, serial: { identity.current.serial }, backgroundTask: backgroundTask)
         self.sound = SoundPlayer(prefs: prefs)
     }
@@ -65,7 +66,8 @@ final class AppContainer {
     static func live() -> AppContainer {
         let opened = openStore()
         return AppContainer(defaults: .standard, secrets: KeychainSecretStore(), modelContainer: opened.container,
-                            storeIsTemporary: opened.isTemporary, backgroundTask: UIKitBackgroundTasking())
+                            storeIsTemporary: opened.isTemporary, backgroundTask: UIKitBackgroundTasking(),
+                            fontsDir: Sync.defaultFontsDir)
     }
 
     /// For SwiftUI previews: nothing touches the Keychain, the real defaults or the disk.

@@ -124,6 +124,14 @@ final class URLSessionKioskApi: KioskApi {
         }
     }
 
+    /// Non-2xx → `ApiError` from the body; else the body as UTF-8 text, untouched.
+    private static func text(_ response: Response) throws -> String {
+        guard (200..<300).contains(response.http.statusCode) else {
+            throw ApiError.from(status: response.http.statusCode, body: response.data)
+        }
+        return String(decoding: response.data, as: UTF8.self)
+    }
+
     /// Unauthenticated call. `build` gets the API base URL.
     private func plain(_ build: (String) throws -> URLRequest) async throws -> Response {
         try await execute(try build(await apiUrl()))
@@ -237,8 +245,14 @@ final class URLSessionKioskApi: KioskApi {
         try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/setup"), post: body) })
     }
 
+    /// Decodes the same text `assetsSyncRaw` keeps.
     func syncAssets(initiativeId: String) async throws -> KioskAssetsSync {
-        try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/sync/assets?initiative_id=\(Self.q(initiativeId))")) })
+        let text = try await assetsSyncRaw(initiativeId: initiativeId)
+        do {
+            return try KioskJSON.decoder.decode(KioskAssetsSync.self, from: Data(text.utf8))
+        } catch {
+            throw ApiError(status: 200, code: "unknown_error")
+        }
     }
 
     func syncPeople() async throws -> KioskPeopleSync {
@@ -251,6 +265,30 @@ final class URLSessionKioskApi: KioskApi {
 
     func syncTrucks(initiativeId: String) async throws -> KioskTrucksSync {
         try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/sync/trucks?initiative_id=\(Self.q(initiativeId))")) })
+    }
+
+    // MARK: labels
+
+    func assetsSyncRaw(initiativeId: String) async throws -> String {
+        try Self.text(await authed { try Self.request(Self.url("\($0)/kiosk/sync/assets?initiative_id=\(Self.q(initiativeId))")) })
+    }
+
+    func labelTemplatesRaw(initiativeId: String) async throws -> String {
+        try Self.text(await authed { try Self.request(Self.url("\($0)/kiosk/sync/label-templates?initiative_id=\(Self.q(initiativeId))")) })
+    }
+
+    func labelFonts(initiativeId: String) async throws -> KioskLabelFonts {
+        try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/labels/fonts?initiative_id=\(Self.q(initiativeId))")) })
+    }
+
+    func labelFontContent(id: String, initiativeId: String) async throws -> Data {
+        let response = try await authed {
+            try Self.request(Self.url("\($0)/kiosk/labels/fonts/\(Self.q(id))/content?initiative_id=\(Self.q(initiativeId))"))
+        }
+        guard (200..<300).contains(response.http.statusCode) else {
+            throw ApiError.from(status: response.http.statusCode, body: response.data)
+        }
+        return response.data
     }
 
     // MARK: scans, RFID, timeclock

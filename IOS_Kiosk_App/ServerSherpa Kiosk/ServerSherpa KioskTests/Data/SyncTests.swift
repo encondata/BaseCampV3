@@ -50,9 +50,10 @@ struct SyncTests {
         api.trucks = { KioskTrucksSync(initiativeId: "i1", generatedAt: "now", trucks: [KioskTruckRow(id: "t1", name: "T1")]) }
         let s = sync()
         await s.runNow(initiativeId: "i1", initiativeName: "Move A")
-        #expect(s.status == SyncStatus(phase: .done, assets: 1, people: 2, containers: 3, trucks: 1, syncedAt: "2023-11-14T22:13:20Z", error: nil))
+        let parts = zip(SyncPart.names, [1, 2, 3, 1, 0, 0]).map { SyncPart(name: $0, state: .done, count: $1) }
+        #expect(s.status == SyncStatus(phase: .done, assets: 1, people: 2, containers: 3, trucks: 1, syncedAt: "2023-11-14T22:13:20Z", error: nil, parts: parts))
         #expect(try await store.meta() == SyncMeta(initiativeId: "i1", initiativeName: "Move A", assets: 1, people: 2, containers: 3, trucks: 1, syncedAt: "2023-11-14T22:13:20Z"))
-        #expect(Set(api.calls) == ["syncAssets", "syncPeople", "syncContainers", "syncTrucks"])
+        #expect(Set(api.calls) == ["syncAssets", "syncPeople", "syncContainers", "syncTrucks", "labelTemplates", "labelFonts"])
     }
 
     @Test func failedFetchLeavesTablesAndReportsCode() async throws {

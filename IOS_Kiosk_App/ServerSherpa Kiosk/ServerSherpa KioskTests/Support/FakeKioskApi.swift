@@ -24,6 +24,11 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     var people: @Sendable () async throws -> KioskPeopleSync = { throw unset }
     var containers: @Sendable () async throws -> KioskContainersSync = { throw unset }
     var trucks: @Sendable () async throws -> KioskTrucksSync = { throw unset }
+    /// The /kiosk/sync/assets body; when nil, `assets()` encoded (Android's fake does the same).
+    var assetsRaw: (@Sendable () async throws -> String)?
+    var templatesRaw: @Sendable () async throws -> String = { #"{"initiative_id":"i1","generated_at":"now","templates":[]}"# }
+    var fonts: @Sendable () async throws -> KioskLabelFonts = { KioskLabelFonts() }
+    var fontContent: @Sendable (String) async throws -> Data = { _ in throw ApiError(status: 404, code: "font_not_found") }
     var postScansResult: @Sendable (KioskScanBatchIn) async throws -> KioskScanBatchOut = { KioskScanBatchOut(accepted: $0.scans.map(\.clientScanId)) }
     var rfidResult: @Sendable (String, KioskRfidEnrollIn) throws -> KioskRfidEnroll = { id, b in KioskRfidEnroll(assetId: id, rfidTag: b.rfidTag) }
     /// When set, `postRfidEnroll` awaits this before answering (holds a POST in flight).
@@ -67,6 +72,14 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     func syncPeople() async throws -> KioskPeopleSync { record("syncPeople"); return try await people() }
     func syncContainers(initiativeId: String) async throws -> KioskContainersSync { record("syncContainers"); return try await containers() }
     func syncTrucks(initiativeId: String) async throws -> KioskTrucksSync { record("syncTrucks"); return try await trucks() }
+    func assetsSyncRaw(initiativeId: String) async throws -> String {
+        record("syncAssets")
+        if let assetsRaw { return try await assetsRaw() }
+        return String(decoding: try KioskJSON.encoder.encode(try await assets()), as: UTF8.self)
+    }
+    func labelTemplatesRaw(initiativeId: String) async throws -> String { record("labelTemplates"); return try await templatesRaw() }
+    func labelFonts(initiativeId: String) async throws -> KioskLabelFonts { record("labelFonts"); return try await fonts() }
+    func labelFontContent(id: String, initiativeId: String) async throws -> Data { record("fontContent:\(id)"); return try await fontContent(id) }
     func postScans(_ body: KioskScanBatchIn) async throws -> KioskScanBatchOut {
         lock.lock(); _calls.append("postScans"); _scanBatches.append(body); lock.unlock()
         return try await postScansResult(body)
