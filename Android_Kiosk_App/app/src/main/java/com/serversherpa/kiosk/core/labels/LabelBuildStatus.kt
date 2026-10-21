@@ -45,7 +45,8 @@ data class LabelBuildStatus(
  * The latest build's template pick for [kind] at [dpi]: Printer Setup's DPI and font checks read
  * it, and its alignment label takes the template's size ([widthIn] x [heightIn] inches). [synced]
  * is false when the kiosk had no label data to plan with (never synced, or not since the version 2
- * upgrade); nothing was picked then.
+ * upgrade); nothing was picked then. [failed] is true when the plan itself failed (the build is
+ * an error); nothing was picked then either.
  */
 data class LabelPick(
     val kind: LabelKind,
@@ -58,6 +59,7 @@ data class LabelPick(
     val availableDpis: List<Int> = emptyList(),
     val widthIn: Double? = null,
     val heightIn: Double? = null,
+    val failed: Boolean = false,
 )
 
 data class LabelTally(val ready: Int, val problems: Map<String, Int>)

@@ -70,5 +70,6 @@ fun builtInFontText(names: List<String>): String =
 
 private val IPV4 = Regex("""(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})""")
 
-/** A dotted IPv4 address, each part 0..255. */
-fun isIpv4(text: String): Boolean = IPV4.matchEntire(text)?.groupValues?.drop(1)?.all { it.toInt() <= 255 } == true
+/** A dotted IPv4 address, each part 0..255 without leading zeros (`010` could be read as octal). */
+fun isIpv4(text: String): Boolean = IPV4.matchEntire(text)?.groupValues?.drop(1)
+    ?.all { it.toInt() <= 255 && (it.length == 1 || !it.startsWith('0')) } == true

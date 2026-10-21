@@ -162,7 +162,17 @@ class LabelBuilder(
         val templates = db.labelTemplates().all()
         val templatesJson = LabelGenArgs.templatesBody(templates.map { it.json })
         val fullBody = LabelGenArgs.assetsBody(meta.initiativeId, payloads.map { it.payloadJson }, labelContext)
-        val plan = parsePlan(engine.call("buildPlan", LabelGenArgs.plan(fullBody, templatesJson, kind, dpi)))
+        val plan = try {
+            parsePlan(engine.call("buildPlan", LabelGenArgs.plan(fullBody, templatesJson, kind, dpi)))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: LabelEngineUnsupportedException) {
+            throw e
+        } catch (e: Exception) {
+            // Printer Setup's checks stop waiting for this kind and DPI's pick.
+            _pick.value = LabelPick(kind, dpi, synced = true, failed = true)
+            throw e
+        }
         _pick.value = pickOf(kind, dpi, plan.templateId?.let { id -> templates.firstOrNull { it.id == id }?.json }, plan)
         val planned = LabelBuildStatus(
             LabelBuildPhase.RUNNING, notes = plan.notes, templateId = plan.templateId, fonts = plan.fonts,

@@ -28,6 +28,7 @@ import com.serversherpa.kiosk.core.printer.missingFonts
 import com.serversherpa.kiosk.core.printer.noTemplateText
 import com.serversherpa.kiosk.core.printer.statusProblems
 import com.serversherpa.kiosk.data.db.KioskDatabase
+import com.serversherpa.kiosk.data.db.LABEL_CONTEXT_META_KEY
 import com.serversherpa.kiosk.data.labels.LabelEngine
 import com.serversherpa.kiosk.data.labels.LabelEngineTimeoutException
 import com.serversherpa.kiosk.data.labels.LabelEngineUnsupportedException
@@ -36,6 +37,7 @@ import com.serversherpa.kiosk.data.printer.FoundPrinter
 import com.serversherpa.kiosk.data.printer.NetworkZebra
 import com.serversherpa.kiosk.data.printer.PrinterException
 import com.serversherpa.kiosk.data.printer.PrinterTimeout
+import com.serversherpa.kiosk.data.sync.Sync
 import java.io.File
 import java.io.IOException
 import kotlin.math.roundToInt
@@ -53,6 +55,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -76,6 +80,27 @@ class NetworkSetupZebra(private val zebra: NetworkZebra) : SetupZebra {
     override suspend fun fonts() = zebra.fonts()
     override suspend fun send(zpl: String) = zebra.send(zpl)
     override suspend fun installFont(name: String, bytes: ByteArray) = zebra.installFont(name, bytes)
+}
+
+/** [inner] with every call made under [lock]: one connection to the printer at a time. */
+private class LockedZebra(private val inner: SetupZebra, private val lock: Mutex) : SetupZebra {
+    override suspend fun identify() = lock.withLock { inner.identify() }
+    override suspend fun serial() = lock.withLock { inner.serial() }
+    override suspend fun status() = lock.withLock { inner.status() }
+    override suspend fun peelerPresent() = lock.withLock { inner.peelerPresent() }
+    override suspend fun fonts() = lock.withLock { inner.fonts() }
+    override suspend fun send(zpl: String) = lock.withLock { inner.send(zpl) }
+    override suspend fun installFont(name: String, bytes: ByteArray) = lock.withLock { inner.installFont(name, bytes) }
+}
+
+/** The Peeler check's detail: what the printer said, and how labels print (PrinterStep's words). */
+fun peelerDetail(present: Boolean?, peel: Boolean): String {
+    val mode = if (peel) "printing in peel-off mode" else "printing in tear-off mode"
+    return when (present) {
+        true -> "Peeler detected · $mode"
+        false -> "No peeler · $mode"
+        null -> "Printer doesn't report a peeler · $mode"
+    }
 }
 
 /** The checks, in the order they run (the web kiosk's PrinterStep rows). */
@@ -167,7 +192,7 @@ class PrinterSetupViewModel(
     private val db: KioskDatabase,
     private val fontsDir: File,
     private val scanner: suspend () -> List<FoundPrinter>,
-    private val zebraAt: (host: String) -> SetupZebra,
+    zebraAt: (host: String) -> SetupZebra,
     scopeOverride: CoroutineScope? = null,
     /** Finishes an offsets save that is still waiting when the screen closes. */
     private val saveScope: CoroutineScope? = null,
@@ -180,6 +205,10 @@ class PrinterSetupViewModel(
     val settings: StateFlow<LabelSettings?> = store.settings.stateIn(scope, SharingStarted.Eagerly, null)
     val currentPick: StateFlow<LabelPick?> = pick
 
+    /** Every printer call (checks, font installs, test labels) takes this lock, so a test label
+     *  never opens a second connection while a check is talking to the printer. */
+    private val printerLock = Mutex()
+    private val printerAt: (String) -> SetupZebra = { host -> LockedZebra(zebraAt(host), printerLock) }
     private var checksJob: Job? = null
     private var offsetsJob: Job? = null
     @Volatile private var pendingOffsets: Pair<Int, Int>? = null
@@ -247,7 +276,7 @@ class PrinterSetupViewModel(
                 if (dpi != null) {
                     SavedPrinter(host, found.model ?: DEFAULT_MODEL, found.serial.orEmpty(), dpi)
                 } else {
-                    val zebra = zebraAt(host)
+                    val zebra = printerAt(host)
                     val id = zebra.identify()
                     SavedPrinter(host, id.model.ifBlank { DEFAULT_MODEL }, (found?.serial ?: quietly { zebra.serial() }).orEmpty(), id.dpi)
                 }
@@ -286,7 +315,7 @@ class PrinterSetupViewModel(
                 fontMessage = if (keepFontMessage) it.fontMessage else null, fontError = keepFontMessage && it.fontError)
         }
         try {
-            val zebra = zebraAt(saved.host)
+            val zebra = printerAt(saved.host)
             put(CheckRow(CheckKey.ANSWERS, CheckState.RUNNING))
             val id = quietly { zebra.identify() }
             if (id == null) {
@@ -295,15 +324,17 @@ class PrinterSetupViewModel(
             }
             put(CheckRow(CheckKey.ANSWERS, CheckState.OK, "${id.model} · ${id.dpi} DPI"))
             var printer = saved
-            if (id.dpi != saved.dpi) {
+            val model = id.model.ifBlank { DEFAULT_MODEL }
+            if (id.dpi != saved.dpi || model != saved.model) {
                 // Another printer took this address: its DPI picks the template (the builder rebuilds).
-                printer = saved.copy(model = id.model.ifBlank { saved.model }, dpi = id.dpi)
+                printer = SavedPrinter(saved.host, model, quietly { zebra.serial() }.orEmpty(), id.dpi)
                 store.setPrinter(printer)
             }
 
             put(CheckRow(CheckKey.DPI, CheckState.RUNNING))
             val kind = store.settings.first().kind
-            val picked = awaitPick(kind, printer.dpi)
+            // Unsynced, no build will pick a template: don't wait for one.
+            val picked = if (synced()) awaitPick(kind, printer.dpi) else PickWait.Unsynced
             put(dpiRow(picked, kind, printer.dpi))
 
             put(CheckRow(CheckKey.STATUS, CheckState.RUNNING))
@@ -320,11 +351,7 @@ class PrinterSetupViewModel(
             _state.update { it.copy(peeler = peeler) }
             // Peel-off on a printer without a peeler would hold every label: print tear-off.
             if (peeler == false && store.settings.first().peel) store.setPeel(false)
-            put(CheckRow(CheckKey.PEELER, CheckState.OK, when (peeler) {
-                true -> "Peeler detected"
-                false -> "No peeler"
-                null -> "Printer doesn't report a peeler"
-            }))
+            put(CheckRow(CheckKey.PEELER, CheckState.OK, peelerDetail(peeler, store.settings.first().peel)))
 
             put(CheckRow(CheckKey.FONTS, CheckState.RUNNING))
             put(fontsRow(zebra, (picked as? PickWait.Got)?.pick))
@@ -337,7 +364,12 @@ class PrinterSetupViewModel(
         data class Got(val pick: LabelPick) : PickWait
         data object Unsupported : PickWait
         data object Unknown : PickWait
+        data object Unsynced : PickWait
     }
+
+    /** The kiosk has the move's label data (the label build's own precondition). */
+    private suspend fun synced(): Boolean =
+        Sync.readMeta(db) != null && db.meta().get(LABEL_CONTEXT_META_KEY) != null
 
     /** The builder's pick for [kind] at [dpi]: a DPI just saved waits for the build it starts. */
     private suspend fun awaitPick(kind: LabelKind, dpi: Int): PickWait = withTimeoutOrNull(pickWaitMs) {
@@ -353,10 +385,12 @@ class PrinterSetupViewModel(
     private fun dpiRow(picked: PickWait, kind: LabelKind, dpi: Int): CheckRow = when (picked) {
         PickWait.Unsupported -> CheckRow(CheckKey.DPI, CheckState.WARN, DEVICE_UNSUPPORTED_TEXT)
         PickWait.Unknown -> CheckRow(CheckKey.DPI, CheckState.WARN, TEMPLATES_UNKNOWN_TEXT)
+        PickWait.Unsynced -> CheckRow(CheckKey.DPI, CheckState.WARN, SYNC_TO_CHECK_TEXT)
         is PickWait.Got -> {
             val p = picked.pick
             when {
                 !p.synced -> CheckRow(CheckKey.DPI, CheckState.WARN, SYNC_TO_CHECK_TEXT)
+                p.failed -> CheckRow(CheckKey.DPI, CheckState.WARN, BUILD_FAILED_TEXT)
                 p.templateId != null -> CheckRow(CheckKey.DPI, CheckState.OK, p.templateName ?: "$dpi DPI", p.notes)
                 else -> CheckRow(CheckKey.DPI, CheckState.WARN, noTemplateText(kind, dpi, p.availableDpis), p.notes)
             }
@@ -364,7 +398,7 @@ class PrinterSetupViewModel(
     }
 
     private suspend fun fontsRow(zebra: SetupZebra, pick: LabelPick?): CheckRow {
-        if (pick == null || !pick.synced) return CheckRow(CheckKey.FONTS, CheckState.WARN, FONTS_UNCHECKED_TEXT)
+        if (pick == null || !pick.synced || pick.failed) return CheckRow(CheckKey.FONTS, CheckState.WARN, FONTS_UNCHECKED_TEXT)
         val needed = pick.fonts.map { it.uppercase() }.distinct()
         if (needed.isEmpty()) return CheckRow(CheckKey.FONTS, CheckState.OK, "No printer fonts needed.")
         val onPrinter = quietly { zebra.fonts() }
@@ -394,7 +428,7 @@ class PrinterSetupViewModel(
                 _state.update { it.copy(installing = false) }
                 return@launch
             }
-            val zebra = zebraAt(printer.host)
+            val zebra = printerAt(printer.host)
             var failed: String? = null
             val files = db.labelFonts().all().associateBy { it.name.uppercase() }
             for (font in fix.installable) {
@@ -458,7 +492,15 @@ class PrinterSetupViewModel(
 
     fun setPeel(peel: Boolean) {
         if (peel && !_state.value.peelAllowed) return
-        scope.launch { store.setPeel(peel) }
+        scope.launch {
+            store.setPeel(peel)
+            // The Peeler row says how labels print.
+            _state.update { s ->
+                s.copy(checks = s.checks.map {
+                    if (it.key == CheckKey.PEELER && it.state == CheckState.OK) it.copy(detail = peelerDetail(s.peeler, peel)) else it
+                })
+            }
+        }
     }
 
     // --- test labels --------------------------------------------------------------------------
@@ -499,7 +541,7 @@ class PrinterSetupViewModel(
                     label.second to true
                 } else {
                     val shifted = parseZpl(helper("applyPrintSettings", LabelGenArgs.printSettings(zpl, offsets.first, offsets.second)))
-                    zebraAt(printer.host).send(parseZpl(helper("withPrintMode", LabelGenArgs.printMode(shifted, s.peel))))
+                    printerAt(printer.host).send(parseZpl(helper("withPrintMode", LabelGenArgs.printMode(shifted, s.peel))))
                     label.second to false
                 }
             } catch (e: CancellationException) {

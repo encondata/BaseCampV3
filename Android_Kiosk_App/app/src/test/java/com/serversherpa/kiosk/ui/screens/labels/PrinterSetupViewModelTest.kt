@@ -25,6 +25,7 @@ import com.serversherpa.kiosk.data.sync.SyncPhase
 import com.serversherpa.kiosk.data.sync.SyncStatus
 import java.io.File
 import java.util.Collections
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -65,6 +66,7 @@ import org.robolectric.annotation.Config
 private class SetupEngine : LabelEngine {
     val calls: MutableList<Pair<String, JsonObject>> = Collections.synchronizedList(ArrayList())
     @Volatile var planFonts: List<String> = emptyList()
+    @Volatile var planFails = false
 
     override suspend fun call(fn: String, argsJson: String): String {
         val a = KioskJson.parseToJsonElement(argsJson).jsonObject
@@ -72,6 +74,7 @@ private class SetupEngine : LabelEngine {
         fun zplOut(z: String) = buildJsonObject { put("zpl", z) }.toString()
         return when (fn) {
             "buildPlan" -> {
+                if (planFails) throw IllegalStateException("isolate died")
                 val dpi = a["dpi"]!!.jsonPrimitive.int
                 val picked = dpi == 203
                 buildJsonObject {
@@ -103,6 +106,9 @@ private class FakeZebra(val host: String) : SetupZebra {
     @Volatile var serialNo: String? = "S-$host"
     @Volatile var peeler: Boolean? = null
     @Volatile var paperOut = false
+    /** When set, status() waits for it (after completing [inStatus]). */
+    @Volatile var statusGate: CompletableDeferred<Unit>? = null
+    val inStatus = CompletableDeferred<Unit>()
     val onE: MutableList<String> = Collections.synchronizedList(ArrayList())
     val sent: MutableList<String> = Collections.synchronizedList(ArrayList())
     val installed: MutableList<Pair<String, ByteArray>> = Collections.synchronizedList(ArrayList())
@@ -112,6 +118,7 @@ private class FakeZebra(val host: String) : SetupZebra {
     override suspend fun serial(): String? { check(); return serialNo }
     override suspend fun status(): HostStatus {
         check()
+        statusGate?.let { inStatus.complete(Unit); it.await() }
         return HostStatus(paperOut, false, 0, 0, false, false, false, false, false, false, false, false, "0", false, 0)
     }
     override suspend fun peelerPresent(): Boolean? = if (answers) peeler else null
@@ -154,9 +161,9 @@ class PrinterSetupViewModelTest {
 
     @After fun tearDown() { scope.cancel(); db.close() }
 
-    private fun vm() = PrinterSetupViewModel(
+    private fun vm(pickWaitMs: Long = 5_000) = PrinterSetupViewModel(
         store, builder.pick, builder.status, engine, db, fontsDir,
-        scanner = { scanResult }, zebraAt = ::zebra, scopeOverride = scope, pickWaitMs = 5_000,
+        scanner = { scanResult }, zebraAt = ::zebra, scopeOverride = scope, pickWaitMs = pickWaitMs,
     )
 
     /** Waits (real time: Room, DataStore and the builder run on their own threads) for [cond]. */
@@ -180,7 +187,7 @@ class PrinterSetupViewModelTest {
     @Test fun aScanListsTheFoundPrintersAndSavingOneWithANewDpiRebuildsTheLabels() = runBlocking<Unit> {
         val found = listOf(FoundPrinter("10.0.0.7", "ZT230", "SER9", 300), FoundPrinter("10.0.0.8", null, null, null))
         scanResult = found
-        zebra("10.0.0.7").dpi = 300
+        zebra("10.0.0.7").apply { dpi = 300; model = "ZT230"; serialNo = "SER9" }
         val vm = vm()
         vm.scan()
         eventually("scan done") { vm.state.value.found == found }
@@ -191,7 +198,7 @@ class PrinterSetupViewModelTest {
         // the builder rebuilt by itself: a plan at the new DPI
         assertTrue(engine.calls.any { it.first == "buildPlan" && it.second["dpi"]!!.jsonPrimitive.int == 300 })
         assertEquals(CheckState.OK, vm.row(CheckKey.ANSWERS)!!.state)
-        assertEquals("ZD421 · 300 DPI", vm.row(CheckKey.ANSWERS)!!.detail)
+        assertEquals("ZT230 · 300 DPI", vm.row(CheckKey.ANSWERS)!!.detail)
         val dpi = vm.row(CheckKey.DPI)!!
         assertEquals(CheckState.WARN, dpi.state)
         assertEquals(
@@ -219,6 +226,9 @@ class PrinterSetupViewModelTest {
     @Test fun aTypedIpIsValidatedAndOneThatDoesNotAnswerIsNotSaved() = runBlocking<Unit> {
         val vm = vm()
         vm.setIpText("10.0.300.1")
+        vm.useIp()
+        assertEquals("That isn't a valid IP address.", vm.state.value.chooseError)
+        vm.setIpText("010.0.0.1") // a leading zero could be read as octal
         vm.useIp()
         assertEquals("That isn't a valid IP address.", vm.state.value.chooseError)
 
@@ -284,7 +294,7 @@ class PrinterSetupViewModelTest {
         vm.checked { vm.checkAgain() }
         assertEquals(false, vm.state.value.peeler)
         assertFalse(vm.state.value.peelAllowed)
-        assertEquals("No peeler", vm.row(CheckKey.PEELER)!!.detail)
+        assertEquals("No peeler · printing in tear-off mode", vm.row(CheckKey.PEELER)!!.detail)
         // a peel setting the printer can't honor falls back to tear-off
         eventually("tear") { !store.settings.first().peel }
         vm.setPeel(true)
@@ -295,8 +305,62 @@ class PrinterSetupViewModelTest {
         vm.checked { vm.checkAgain() }
         assertNull(vm.state.value.peeler)
         assertTrue(vm.state.value.peelAllowed)
+        assertEquals("Printer doesn't report a peeler · printing in tear-off mode", vm.row(CheckKey.PEELER)!!.detail)
         vm.setPeel(true)
         eventually("peel") { store.settings.first().peel }
+        eventually("row says peel-off") { vm.row(CheckKey.PEELER)!!.detail == "Printer doesn't report a peeler · printing in peel-off mode" }
+    }
+
+    @Test fun anUnsyncedKioskSaysToSyncWithoutWaiting() = runBlocking<Unit> {
+        db.meta().delete(MOVE_META_KEY)
+        builder.stop()
+        eventually("pick cleared") { builder.pick.value == null }
+        val vm = vm(pickWaitMs = 60_000)
+        val started = System.nanoTime()
+        vm.checked { vm.checkAgain() }
+        assertTrue((System.nanoTime() - started) / 1_000_000 < 5_000)
+        assertEquals("Sync this kiosk to check its label templates.", vm.row(CheckKey.DPI)!!.detail)
+        assertEquals(CheckState.WARN, vm.row(CheckKey.FONTS)!!.state)
+    }
+
+    @Test fun aFailedBuildEndsTheWaitAtOnce() = runBlocking<Unit> {
+        eventually("first build") { builder.pick.value?.dpi == 203 }
+        engine.planFails = true
+        builder.rebuild("templates changed")
+        eventually("failed pick") { builder.pick.value?.failed == true }
+        val vm = vm(pickWaitMs = 60_000)
+        val started = System.nanoTime()
+        vm.checked { vm.checkAgain() }
+        assertTrue((System.nanoTime() - started) / 1_000_000 < 5_000)
+        assertEquals("Labels couldn't be made. Try syncing again.", vm.row(CheckKey.DPI)!!.detail)
+    }
+
+    @Test fun aTestLabelWaitsForTheCheckThatIsTalkingToThePrinter() = runBlocking<Unit> {
+        eventually("pick") { builder.pick.value?.dpi == 203 }
+        val z = zebra(saved.host)
+        val gate = CompletableDeferred<Unit>()
+        z.statusGate = gate
+        val vm = vm()
+        vm.checkAgain()
+        withTimeout(8_000) { z.inStatus.await() }
+        vm.printTest(TestLabel.ALIGNMENT)
+        delay(400)
+        assertTrue(z.sent.isEmpty())
+        assertTrue(vm.state.value.testing)
+        gate.complete(Unit)
+        eventually("sent after the status query") { z.sent.size == 1 && !vm.state.value.testing }
+    }
+
+    @Test fun checkAgainSavesTheModelSerialAndDpiOfAnotherPrinterAtTheSameAddress() = runBlocking<Unit> {
+        val z = zebra(saved.host)
+        z.model = "ZT230"; z.dpi = 300; z.serialNo = "NEW1"
+        val vm = vm()
+        vm.checked { vm.checkAgain() }
+        assertEquals(SavedPrinter(saved.host, "ZT230", "NEW1", 300), store.settings.first().printer)
+
+        z.model = "ZT410"; z.serialNo = null
+        vm.checked { vm.checkAgain() }
+        assertEquals(SavedPrinter(saved.host, "ZT410", "", 300), store.settings.first().printer)
     }
 
     @Test fun testLabelsAreSentWithTheCurrentOffsetsAndPrintMode() = runBlocking<Unit> {
