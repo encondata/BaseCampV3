@@ -2,14 +2,23 @@ package com.serversherpa.kiosk.data.printer
 
 import com.serversherpa.kiosk.core.printer.HostId
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketException
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import javax.net.SocketFactory
 import kotlin.concurrent.thread
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
@@ -99,9 +108,9 @@ class NetworkZebraTest {
     @Test fun identifyParsesTheHostIdentificationReply() = runBlocking<Unit> {
         val p = fake(mapOf("~HI" to hi))
         val started = System.nanoTime()
-        assertEquals(HostId("ZD421-300dpi", "V93.21.38Z", 12, "8176KB", 300), zebra(p).identify())
-        // the reply is whole at its ETX: no waiting out the idle time on an open connection
-        assertTrue(System.nanoTime() - started < TimeUnit.MILLISECONDS.toNanos(250))
+        // the reply is whole at its ETX: no waiting out the (2 s) idle time on an open connection
+        assertEquals(HostId("ZD421-300dpi", "V93.21.38Z", 12, "8176KB", 300), NetworkZebra("127.0.0.1", p.port).identify())
+        assertTrue(System.nanoTime() - started < TimeUnit.MILLISECONDS.toNanos(1_000))
         assertEquals("~HI", String(p.received().single(), Charsets.US_ASCII))
     }
 
@@ -161,20 +170,53 @@ class NetworkZebraTest {
         assertThrows(PrinterUnreachable::class.java) { runBlocking { z.send("^XA^XZ") } }
     }
 
+    @Test fun aSocketThatCantBeCreatedIsUnreachable() {
+        // a Network-bound factory throws when its network has gone
+        val gone = object : SocketFactory() {
+            override fun createSocket(): Socket = throw SocketException("network gone")
+            override fun createSocket(host: String?, port: Int): Socket = createSocket()
+            override fun createSocket(host: String?, port: Int, localHost: InetAddress?, localPort: Int): Socket = createSocket()
+            override fun createSocket(host: InetAddress?, port: Int): Socket = createSocket()
+            override fun createSocket(address: InetAddress?, port: Int, localAddress: InetAddress?, localPort: Int): Socket = createSocket()
+        }
+        val z = NetworkZebra("127.0.0.1", fake().port, fast, gone)
+        assertThrows(PrinterUnreachable::class.java) { runBlocking { z.identify() } }
+        assertThrows(PrinterUnreachable::class.java) { runBlocking { z.send("^XA^XZ") } }
+    }
+
+    @Test fun aSendPastItsBudgetIsATimeout() {
+        // accepts, never reads: the write blocks once the buffers fill
+        val silent = ServerSocket().apply {
+            receiveBufferSize = 4096
+            bind(InetSocketAddress(InetAddress.getLoopbackAddress(), 0))
+        }
+        val held = ArrayList<Socket>()
+        thread(isDaemon = true) { try { while (true) held += silent.accept() } catch (_: Exception) {} }
+        try {
+            val z = NetworkZebra("127.0.0.1", silent.localPort, ZebraTimeouts(connectMs = 1_000, sendMs = 300))
+            val e = assertThrows(PrinterTimeout::class.java) { runBlocking { z.installFont("BIG.TTF", ByteArray(64 shl 20)) } }
+            assertEquals("127.0.0.1", e.host)
+        } finally {
+            silent.close()
+            held.forEach { it.close() }
+        }
+    }
+
     @Test fun anEmptyReplyIsNoReply() {
         val p = fake()
         val started = System.nanoTime()
-        assertThrows(PrinterNoReply::class.java) { runBlocking { zebra(p).identify() } }
+        val z = NetworkZebra("127.0.0.1", p.port, ZebraTimeouts(idleMs = 300, totalMs = 10_000))
+        assertThrows(PrinterNoReply::class.java) { runBlocking { z.identify() } }
         // ended at the idle wait, not the total
-        assertTrue(System.nanoTime() - started < TimeUnit.MILLISECONDS.toNanos(1_500))
+        assertTrue(System.nanoTime() - started < TimeUnit.MILLISECONDS.toNanos(5_000))
     }
 
     @Test fun aCancelledQueryStopsAtOnceAndStaysACancellation() = runBlocking<Unit> {
         val p = fake()
-        val slow = NetworkZebra("127.0.0.1", p.port, ZebraTimeouts(idleMs = 5_000, totalMs = 5_000))
+        val slow = NetworkZebra("127.0.0.1", p.port, ZebraTimeouts(idleMs = 15_000, totalMs = 15_000))
         val started = System.nanoTime()
         assertNull(withTimeoutOrNull(200) { slow.identify() })
-        assertTrue(System.nanoTime() - started < TimeUnit.MILLISECONDS.toNanos(1_000))
+        assertTrue(System.nanoTime() - started < TimeUnit.MILLISECONDS.toNanos(5_000))
     }
 
     @Test fun anUnreadableReplyIsABadReply() {
@@ -191,9 +233,44 @@ class NetworkZebraTest {
     }
 
     @Test fun theScanKeepsAResponderThatWontSayWhatItIs() = runBlocking<Unit> {
-        val p = fake()
-        val scanner = ZebraScanner(subnets = { listOf(ScanSubnet(listOf("127.0.0.1"))) }, port = p.port, identifyMs = 300)
-        assertEquals(listOf(FoundPrinter("127.0.0.1", null, null, null)), scanner.scan())
+        // silent, an unreadable answer, and an answer without the STX frame a network Zebra sends
+        for (replies in listOf(emptyMap(), mapOf("~HI" to "\u0002nope\u0003"), mapOf("~HI" to "ZD421-300dpi,V93.21.38Z,12,8176KB\r\n"))) {
+            val p = fake(replies)
+            val scanner = ZebraScanner(subnets = { listOf(ScanSubnet(listOf("127.0.0.1"))) }, port = p.port, identifyMs = 300)
+            assertEquals(listOf(FoundPrinter("127.0.0.1", null, null, null)), scanner.scan())
+            // asked ~HI and nothing else: the serial getvar goes only to a Zebra
+            assertEquals("~HI", String(p.received().single(), Charsets.US_ASCII))
+        }
+    }
+
+    @Test fun aHostThatFailsDoesntFailTheScan() = runBlocking<Unit> {
+        val scanner = ZebraScanner(
+            subnets = { listOf(ScanSubnet(listOf("10.0.0.1", "10.0.0.2", "10.0.0.3"))) },
+            probe = { host, _ ->
+                when (host) {
+                    "10.0.0.1" -> throw IOException("network gone")
+                    "10.0.0.2" -> throw IllegalStateException("bug")
+                    else -> FoundPrinter(host, "ZD421", null, 203)
+                }
+            },
+        )
+        assertEquals(listOf(FoundPrinter("10.0.0.3", "ZD421", null, 203)), scanner.scan())
+    }
+
+    @Test fun aScanLeavesTheSharedIoThreadsFree() = runBlocking<Unit> {
+        // 128 probes that block their threads (as socket connects and reads do) for 1 s
+        val started = CountDownLatch(64)
+        val scanner = ZebraScanner(
+            subnets = { listOf(ScanSubnet((1..128).map { "10.0.0.$it" })) },
+            probe = { _, _ -> started.countDown(); Thread.sleep(1_000); null },
+        )
+        val scan = async(Dispatchers.Default) { scanner.scan() }
+        assertTrue(started.await(5, TimeUnit.SECONDS))
+        val t0 = System.nanoTime()
+        // every Dispatchers.IO thread at once: none may be waiting behind the scan
+        coroutineScope { repeat(64) { launch(Dispatchers.IO) { Thread.sleep(10) } } }
+        assertTrue(System.nanoTime() - t0 < TimeUnit.MILLISECONDS.toNanos(800))
+        scan.await()
     }
 
     @Test fun theScanSkipsHostsThatDontAnswer() = runBlocking<Unit> {
@@ -225,13 +302,13 @@ class NetworkZebraTest {
             subnets = { listOf(ScanSubnet(listOf("10.0.0.1", "10.0.0.2"))) },
             budgetMs = 300,
             probe = { host, _ ->
-                if (host == "10.0.0.2") delay(10_000)
+                if (host == "10.0.0.2") delay(30_000)
                 FoundPrinter(host, "ZD421", null, 203)
             },
         )
         val started = System.nanoTime()
         assertEquals(listOf(FoundPrinter("10.0.0.1", "ZD421", null, 203)), scanner.scan())
-        assertTrue(System.nanoTime() - started < TimeUnit.SECONDS.toNanos(2))
+        assertTrue(System.nanoTime() - started < TimeUnit.SECONDS.toNanos(5))
     }
 
     @Test fun scanTargetsAreTheDevicesPrivateSlash24() {

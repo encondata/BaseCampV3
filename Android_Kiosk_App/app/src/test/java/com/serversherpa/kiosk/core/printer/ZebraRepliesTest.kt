@@ -44,6 +44,14 @@ class ZebraRepliesTest {
         )
     }
 
+    @Test fun aNetworkIdentificationNeedsItsStxFrame() {
+        // the laptop edge's network parser: a reply over port 9100 without STX isn't a Zebra's
+        assertEquals(parseHostIdentification(netHi), parseNetworkHostIdentification(netHi))
+        assertNull(parseNetworkHostIdentification("ZD421-300dpi,V93.21.38Z,12,8176KB\r\n"))
+        assertEquals(300, parseHostIdentification("ZD421-300dpi,V93.21.38Z,12,8176KB\r\n")?.dpi) // portal parity
+        assertNull(parseNetworkHostIdentification(""))
+    }
+
     @Test fun dpiFromDotsPerMmUsesTheNominalValues() {
         assertEquals(150, dpiFromDotsPerMm(6))
         assertEquals(203, dpiFromDotsPerMm(8))

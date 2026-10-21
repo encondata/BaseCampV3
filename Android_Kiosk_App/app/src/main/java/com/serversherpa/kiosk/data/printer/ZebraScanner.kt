@@ -6,12 +6,14 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import com.serversherpa.kiosk.core.printer.ZebraCommands
 import com.serversherpa.kiosk.core.printer.parseGetvar
-import com.serversherpa.kiosk.core.printer.parseHostIdentification
+import com.serversherpa.kiosk.core.printer.parseNetworkHostIdentification
 import java.io.IOException
 import java.net.Inet4Address
 import java.net.Socket
 import java.util.Collections
 import javax.net.SocketFactory
+import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -32,7 +34,11 @@ data class ScanSubnet(val hosts: List<String>, val socketFactory: SocketFactory 
  * printer port (64 at once, 0.5 s each), and each one that answers is asked `~HI` (1.5 s, read to
  * its ETX) and, when that names a Zebra, its serial number. The whole scan ends within ~10 s with
  * whatever it found, sorted by address. Sending `~HI` to everything on the port is the laptop
- * edge's own scan (kiosk_laptop/edge/src/edge/printers.py).
+ * edge's own scan (kiosk_laptop/edge/src/edge/printers.py). A host that fails in any way is just
+ * left out (one that took the connection stays listed), never the whole scan.
+ *
+ * Probes block their threads (socket connects and reads), so they run on [dispatcher]: by default
+ * the scan's own view of the IO pool, whose threads don't count against Dispatchers.IO's 64.
  */
 class ZebraScanner(
     private val subnets: suspend () -> List<ScanSubnet>,
@@ -41,6 +47,7 @@ class ZebraScanner(
     private val identifyMs: Long = ZebraNetwork.IDENTIFY_MS,
     private val budgetMs: Long = ZebraNetwork.SCAN_BUDGET_MS,
     private val concurrency: Int = ZebraNetwork.SCAN_CONCURRENCY,
+    private val dispatcher: CoroutineDispatcher = SCAN_DISPATCHER,
     probe: (suspend (host: String, subnet: ScanSubnet) -> FoundPrinter?)? = null,
 ) {
     /** Scans the device's own Wi-Fi and Ethernet networks ([LocalNetworks.subnets]). */
@@ -58,7 +65,18 @@ class ZebraScanner(
                 for (subnet in targets) {
                     for (host in subnet.hosts) {
                         if (!seen.add(host)) continue
-                        launch { gate.withPermit { probe(host, subnet)?.let { found += it } } }
+                        launch(dispatcher) {
+                            gate.withPermit {
+                                val printer = try {
+                                    probe(host, subnet)
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (_: Exception) {
+                                    null // a network that vanished, a bad host: skip it, keep scanning
+                                }
+                                printer?.let { found += it }
+                            }
+                        }
                     }
                 }
             }
@@ -66,19 +84,28 @@ class ZebraScanner(
         return synchronized(found) { found.toList() }.sortedBy { ipv4Key(it.host) }
     }
 
-    /** One connection: the probe, then `~HI` and the serial on it. Null when nothing listens. */
+    /** One connection: the probe, then `~HI` and the serial on it. Null when nothing listens; a
+     *  host that took the connection is listed even if it won't say what it is. */
     private suspend fun identifyAt(host: String, subnet: ScanSubnet): FoundPrinter? = try {
-        zebraSession(subnet.socketFactory, host, port, probeConnectMs, 2 * identifyMs + 500) { socket ->
-            val id = ask(socket, ZebraCommands.HOST_IDENTIFICATION) { r -> r.contains(0x03.toByte()) }
-                ?.let(::parseHostIdentification)
-            val serial = if (id == null) null else {
-                ask(socket, ZebraCommands.SERIAL_NUMBER) { r -> r.count { it == '"'.code.toByte() } >= 2 }
-                    ?.let(::parseGetvar)
+        zebraSession(subnet.socketFactory, host, port, probeConnectMs, 2 * identifyMs + 500, dispatcher) { socket ->
+            try {
+                val id = ask(socket, ZebraCommands.HOST_IDENTIFICATION) { r -> r.contains(0x03.toByte()) }
+                    ?.let(::parseNetworkHostIdentification)
+                val serial = if (id == null) null else {
+                    ask(socket, ZebraCommands.SERIAL_NUMBER) { r -> r.count { it == '"'.code.toByte() } >= 2 }
+                        ?.let(::parseGetvar)
+                }
+                FoundPrinter(host, id?.model, serial, id?.dpi)
+            } catch (_: Exception) {
+                FoundPrinter(host, null, null, null)
             }
-            FoundPrinter(host, id?.model, serial, id?.dpi)
         }
-    } catch (_: PrinterUnreachable) {
+    } catch (_: PrinterException) {
         null
+    }
+
+    private companion object {
+        val SCAN_DISPATCHER: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(ZebraNetwork.SCAN_CONCURRENCY)
     }
 
     /** A short query on an open connection; null when it can't be written. */
@@ -92,7 +119,7 @@ class ZebraScanner(
 
 /** The device's Wi-Fi and Ethernet networks, from ConnectivityManager's link properties (needs
  *  only ACCESS_NETWORK_STATE). Every such network is used, not just the default one: a printer
- *  Wi-Fi without internet is often not the default network. */
+ *  Wi-Fi without internet is often not the default network. A VPN is never scanned. */
 object LocalNetworks {
     /** Each LAN network's scan targets ([scanTargets]) with that network's socket factory. */
     fun subnets(context: Context): List<ScanSubnet> {
@@ -116,7 +143,8 @@ object LocalNetworks {
         val all = cm.allNetworks.toList()
         return (listOfNotNull(cm.activeNetwork) + all).distinct().filter { n ->
             val caps = cm.getNetworkCapabilities(n) ?: return@filter false
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+            !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
         }
     }
 

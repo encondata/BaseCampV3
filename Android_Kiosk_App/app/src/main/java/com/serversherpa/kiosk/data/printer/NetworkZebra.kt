@@ -7,14 +7,16 @@ import com.serversherpa.kiosk.core.printer.ZebraCommands
 import com.serversherpa.kiosk.core.printer.isDirectoryListing
 import com.serversherpa.kiosk.core.printer.parseDirectory
 import com.serversherpa.kiosk.core.printer.parseGetvar
-import com.serversherpa.kiosk.core.printer.parseHostIdentification
+import com.serversherpa.kiosk.core.printer.parseNetworkHostIdentification
 import com.serversherpa.kiosk.core.printer.parseHostStatus
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.SocketFactory
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -47,10 +49,14 @@ data class ZebraTimeouts(
 /** A network printer that couldn't be used; [host] is the address asked. */
 sealed class PrinterException(val host: String, message: String, cause: Throwable? = null) : Exception(message, cause)
 
-/** Nothing accepted a connection on the port in time, or the connection failed or timed out
- *  while the command was being written. */
+/** No socket could be opened (its network is gone), nothing accepted a connection on the port in
+ *  time, or the connection failed while the command was being written. */
 class PrinterUnreachable(host: String, cause: Throwable? = null) :
     PrinterException(host, "No printer answered at $host", cause)
+
+/** The connection didn't take the whole job within its time (the edge's `printer_timeout`). */
+class PrinterTimeout(host: String, cause: Throwable? = null) :
+    PrinterException(host, "The printer at $host didn't take the job in time", cause)
 
 /** The printer took the query but said nothing before the read gave up. */
 class PrinterNoReply(host: String) : PrinterException(host, "The printer at $host didn't reply")
@@ -76,7 +82,7 @@ class NetworkZebra(
 ) {
     /** `~HI`: model, firmware, resolution. */
     suspend fun identify(): HostId =
-        parseHostIdentification(query(ZebraCommands.HOST_IDENTIFICATION, frames(1)))
+        parseNetworkHostIdentification(query(ZebraCommands.HOST_IDENTIFICATION, frames(1)))
             ?: throw PrinterBadReply(host, "identification")
 
     /** `~HS`: paper, head, pause and the rest (three frames). */
@@ -150,10 +156,13 @@ class NetworkZebra(
 }
 
 /**
- * Opens a connection (at most [connectMs]) and runs [block] on it on the IO dispatcher. The socket
- * is closed when [block] ends, when the coroutine is cancelled, and [deadlineMs] after it connects
- * (a blocking write can't time out by itself), so nothing hangs past the deadline. A failure to
- * connect or an I/O failure in [block] is [PrinterUnreachable]; a cancellation stays one.
+ * Opens a connection (at most [connectMs]) and runs [block] on it on [dispatcher] (the scan passes
+ * its own threads, so it never ties up the app's shared IO pool). The socket is closed when [block]
+ * ends, when the coroutine is cancelled, and [deadlineMs] after [connectMs] (a blocking write can't
+ * time out by itself), so nothing hangs past the deadline; the watchdog runs on Dispatchers.Default
+ * so it still fires when every thread of [dispatcher] is blocked. A socket that can't be created or
+ * connected, or an I/O failure in [block], is [PrinterUnreachable]; one cut off at the deadline is
+ * [PrinterTimeout]; a cancellation stays one.
  */
 internal suspend fun <T> zebraSession(
     socketFactory: SocketFactory,
@@ -161,12 +170,19 @@ internal suspend fun <T> zebraSession(
     port: Int,
     connectMs: Long,
     deadlineMs: Long,
+    dispatcher: CoroutineDispatcher = Dispatchers.IO,
     block: (Socket) -> T,
-): T = withContext(Dispatchers.IO) {
-    val socket = socketFactory.createSocket()
-    val watchdog = launch {
+): T = withContext(dispatcher) {
+    val socket = try {
+        socketFactory.createSocket()
+    } catch (e: IOException) {
+        throw PrinterUnreachable(host, e)
+    }
+    val timedOut = AtomicBoolean(false)
+    val watchdog = launch(Dispatchers.Default) {
         try {
             delay(connectMs + deadlineMs)
+            timedOut.set(true)
         } finally {
             socket.closeQuietly()
         }
@@ -176,7 +192,7 @@ internal suspend fun <T> zebraSession(
         block(socket).also { ensureActive() }
     } catch (e: IOException) {
         ensureActive()
-        throw PrinterUnreachable(host, e)
+        throw if (timedOut.get()) PrinterTimeout(host, e) else PrinterUnreachable(host, e)
     } finally {
         watchdog.cancel()
         socket.closeQuietly()

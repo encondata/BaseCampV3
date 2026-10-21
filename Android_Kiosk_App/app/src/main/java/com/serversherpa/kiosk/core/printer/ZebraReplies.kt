@@ -126,3 +126,6 @@ fun parseGetvar(text: String): String? {
     if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) v = v.substring(1, v.length - 1).trim()
     return if (v.isEmpty() || v == "?") null else v
 }
+
+/** `~HI` over the network, as the laptop edge reads it: the reply must carry an STX frame. */
+fun parseNetworkHostIdentification(text: String): HostId? = if (STX in text) parseHostIdentification(text) else null
