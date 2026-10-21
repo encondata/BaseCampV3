@@ -166,6 +166,43 @@ async def test_clock_out_and_status_forward(app, client, cloud):
     assert parse_qs(urlsplit(str(sent.url)).query) == {"serial": [app.state.identity.serial]}
 
 
+async def test_the_kiosks_zone_is_forwarded(app, client, cloud):
+    """`tz` (the browser's own zone, "today" when the site has none) rides
+    along: the query on the status read, the body on punches. A value that
+    is not a short string is dropped, not forwarded and not an error."""
+    timeclock_setup(app)
+    headers = display(app)
+    serial = app.state.identity.serial
+    zone = "America/Chicago"
+    status = cloud.get(f"/kiosk/station/timeclock/{PERSON}").respond(200, json=STATUS)
+    cin = cloud.post("/kiosk/station/timeclock/clock-in").respond(200, json=STATUS)
+    cout = cloud.post("/kiosk/station/timeclock/clock-out").respond(200, json=STATUS)
+
+    r = await client.get(f"/edge/timeclock/status/{PERSON}", headers=headers,
+                         params={"tz": zone})
+    assert r.status_code == 200
+    assert parse_qs(urlsplit(str(status.calls[-1].request.url)).query) == {
+        "serial": [serial], "tz": [zone]}
+    for path, route in (("clock-in", cin), ("clock-out", cout)):
+        r = await client.post(f"/edge/timeclock/{path}", headers=headers,
+                              json={"person_id": PERSON, "tz": zone})
+        assert r.status_code == 200
+        assert json.loads(route.calls[-1].request.content) == {
+            "serial": serial, "person_id": PERSON, "tz": zone}
+
+    too_long = "A" * 65
+    r = await client.get(f"/edge/timeclock/status/{PERSON}", headers=headers,
+                         params={"tz": too_long})
+    assert r.status_code == 200
+    assert parse_qs(urlsplit(str(status.calls[-1].request.url)).query) == {"serial": [serial]}
+    for bad in (too_long, "", 5, None, ["UTC"]):
+        r = await client.post("/edge/timeclock/clock-in", headers=headers,
+                              json={"person_id": PERSON, "tz": bad})
+        assert r.status_code == 200, bad
+        assert json.loads(cin.calls[-1].request.content) == {
+            "serial": serial, "person_id": PERSON}, bad
+
+
 async def test_bad_person_and_no_key(app, client, cloud):
     timeclock_setup(app)
     headers = display(app)

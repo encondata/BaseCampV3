@@ -1,6 +1,8 @@
-import { expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 
-import { formatClock, formatPunch, formatWorked } from './format';
+import { formatClock, formatPunch, formatWorked, kioskZone } from './format';
+
+afterEach(() => vi.restoreAllMocks());
 
 it('formats worked minutes', () => {
   expect(formatWorked(0)).toBe('0m');
@@ -48,4 +50,13 @@ it('an older punch carries its short date', () => {
   const date = at.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   expect(formatPunch(iso, now)).toBe(`${date} ${formatClock(iso)}`);
   expect(formatPunch(iso, now)).toMatch(/18/);
+});
+
+it('kioskZone is the browser\'s own IANA zone', () => {
+  expect(kioskZone()).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+});
+
+it('kioskZone is undefined when the browser cannot say', () => {
+  vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(() => { throw new Error('no Intl'); });
+  expect(kioskZone()).toBeUndefined();
 });

@@ -4,6 +4,8 @@
  * synced people list in IndexedDB, the kiosk's own session for status and
  * punches) and on the signed-out Time Clock station (`stationBackend`:
  * the edge's `/edge/timeclock/*` routes, which hold the station key).
+ * Both send the browser's own zone (`kioskZone`) for "today" when the
+ * site has none.
  */
 
 import {
@@ -11,6 +13,7 @@ import {
   type KioskPersonRow, type KioskTimeclockStatus,
 } from '../lib/api';
 import { getAll } from '../lib/localDb';
+import { kioskZone } from './format';
 import {
   stationClockIn, stationClockOut, stationPeople, stationStatus,
 } from './stationApi';
@@ -25,9 +28,9 @@ export interface TimeclockBackend {
 export function sessionBackend(serial: string): TimeclockBackend {
   return {
     people: () => getAll<KioskPersonRow>('people'),
-    status: (personId) => fetchTimeclockStatus(personId, serial),
-    clockIn: (personId) => postClockIn({ serial, person_id: personId }),
-    clockOut: (personId) => postClockOut({ serial, person_id: personId }),
+    status: (personId) => fetchTimeclockStatus(personId, serial, kioskZone()),
+    clockIn: (personId) => postClockIn({ serial, person_id: personId, tz: kioskZone() }),
+    clockOut: (personId) => postClockOut({ serial, person_id: personId, tz: kioskZone() }),
   };
 }
 

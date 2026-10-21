@@ -7,6 +7,8 @@
  * - `armDisplay` is the one signed-in call (Start Time Clock): it goes
  *   through `apiFetch` so the session bearer rides along, and the edge
  *   answers with the HttpOnly display cookie the signed-out routes need.
+ * - Status and punches carry the browser's own zone (`tz`): the portal's
+ *   "today" when the station's site has none.
  * - The people list, status and punches run signed out, so they are plain
  *   same-origin fetches (the display cookie rides along on its own), never
  *   `apiFetch`, which would read a 401 as the session ending. Their errors
@@ -20,6 +22,7 @@ import {
   ApiError, apiFetch, type KioskPeopleSync, type KioskPersonRow, type KioskTimeclockStatus,
 } from '../lib/api';
 import { isLaptop } from '../lib/platform';
+import { kioskZone } from './format';
 
 export interface StationInfo {
   timeclock: boolean;
@@ -82,7 +85,7 @@ function postPerson(path: string, personId: string): Promise<KioskTimeclockStatu
   return edgeFetch<KioskTimeclockStatus>(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ person_id: personId }),
+    body: JSON.stringify({ person_id: personId, tz: kioskZone() }),
   });
 }
 
@@ -108,7 +111,9 @@ export async function stationPeople(): Promise<KioskPersonRow[]> {
 }
 
 export function stationStatus(personId: string): Promise<KioskTimeclockStatus> {
-  return edgeRead<KioskTimeclockStatus>(`/status/${encodeURIComponent(personId)}`);
+  const tz = kioskZone();
+  const query = tz ? `?tz=${encodeURIComponent(tz)}` : '';
+  return edgeRead<KioskTimeclockStatus>(`/status/${encodeURIComponent(personId)}${query}`);
 }
 
 export function stationClockIn(personId: string): Promise<KioskTimeclockStatus> {

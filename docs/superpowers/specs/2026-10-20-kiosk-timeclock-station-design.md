@@ -467,7 +467,17 @@ from Label to Time Clock, as `laptop_setup.save` already does.
   floored per span, so the total can be a minute or so under the exact sum.
 - `break_minutes` is subtracted only for shifts that **started today**. A
   shift that began yesterday is clipped at midnight and loses no break.
-- With no site, or a site with no usable zone, the zone is UTC.
+- **Which zone ("today" precedence).** The site's zone, else the kiosk's
+  own zone, else UTC. §7's plain UTC fallback reset "today" around 7 PM on
+  US stations, since most sites have no zone set. The browser sends its
+  IANA zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`) as `tz`:
+  in the query on `GET /kiosk/timeclock/{person_id}` and
+  `GET /kiosk/station/timeclock/{person_id}`, and in the body of every
+  clock-in and clock-out (session and station). On a station the browser
+  sends it to `/edge/timeclock/*`, and the edge forwards it only when it is
+  a non-empty string of at most 64 characters (otherwise it is dropped).
+  The API takes `tz` as optional, at most 64 characters (422 past that).
+  A name it does not know is skipped, never an error.
 
 ### Kiosk UI
 

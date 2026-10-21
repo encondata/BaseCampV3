@@ -65,18 +65,28 @@ class TodaySpan:
     minutes: int
 
 
-async def site_zone(db: AsyncSession, site_id: uuid.UUID | None) -> ZoneInfo:
-    """The site's time zone — UTC when there is no site, the site has no
-    zone, or its zone name is not one this host knows."""
+def _zone(name: str | None) -> ZoneInfo | None:
+    """`name` as a zone, or None when it is empty or not one this host knows.
+    The kiosk's `tz` is client input, so any lookup failure (an odd path
+    included) counts as unknown."""
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return None
+
+
+async def site_zone(
+    db: AsyncSession, site_id: uuid.UUID | None, fallback: str | None = None,
+) -> ZoneInfo:
+    """The zone "today" is read in: the site's own zone; else `fallback`
+    (the kiosk's own zone, sent by its browser as `tz`); else UTC. A name
+    that is empty or not one this host knows is skipped, never an error."""
     name = None
     if site_id is not None:
         name = await db.scalar(select(Site.timezone).where(Site.id == site_id))
-    if name:
-        try:
-            return ZoneInfo(name)
-        except (ZoneInfoNotFoundError, ValueError):
-            pass
-    return ZoneInfo("UTC")
+    return _zone(name) or _zone(fallback) or ZoneInfo("UTC")
 
 
 async def today_summary(

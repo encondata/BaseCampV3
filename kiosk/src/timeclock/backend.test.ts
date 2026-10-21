@@ -18,6 +18,8 @@ import { ApiError } from '../lib/api';
 import { sessionBackend, stationBackend } from './backend';
 
 const STATUS = { person: { id: 'p-1' }, clocked_in: false };
+// The browser's own zone: "today" on the portal when the site has none.
+const ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const fetchMock = vi.fn();
 
 beforeEach(() => {
@@ -33,20 +35,20 @@ it('sessionBackend reads people from the local people store', async () => {
   expect(mocks.getAll).toHaveBeenCalledWith('people');
 });
 
-it('sessionBackend.status passes the serial', async () => {
+it('sessionBackend.status passes the serial and the kiosk zone', async () => {
   mocks.fetchTimeclockStatus.mockResolvedValue(STATUS);
   expect(await sessionBackend('SER1').status('p-1')).toBe(STATUS);
-  expect(mocks.fetchTimeclockStatus).toHaveBeenCalledWith('p-1', 'SER1');
+  expect(mocks.fetchTimeclockStatus).toHaveBeenCalledWith('p-1', 'SER1', ZONE);
 });
 
-it('sessionBackend punches carry the serial and the person', async () => {
+it('sessionBackend punches carry the serial, the person and the kiosk zone', async () => {
   mocks.postClockIn.mockResolvedValue(STATUS);
   mocks.postClockOut.mockResolvedValue(STATUS);
   const b = sessionBackend('SER1');
   await b.clockIn('p-1');
   await b.clockOut('p-1');
-  expect(mocks.postClockIn).toHaveBeenCalledWith({ serial: 'SER1', person_id: 'p-1' });
-  expect(mocks.postClockOut).toHaveBeenCalledWith({ serial: 'SER1', person_id: 'p-1' });
+  expect(mocks.postClockIn).toHaveBeenCalledWith({ serial: 'SER1', person_id: 'p-1', tz: ZONE });
+  expect(mocks.postClockOut).toHaveBeenCalledWith({ serial: 'SER1', person_id: 'p-1', tz: ZONE });
 });
 
 it('stationBackend reads through the edge', async () => {
@@ -55,13 +57,20 @@ it('stationBackend reads through the edge', async () => {
   expect(fetchMock.mock.calls[0][0]).toBe('/edge/timeclock/people');
 });
 
-it('stationBackend punches post the person to the edge', async () => {
+it('stationBackend punches post the person and the kiosk zone to the edge', async () => {
   fetchMock.mockImplementation(async () => new Response(JSON.stringify(STATUS), { status: 200 }));
   await stationBackend().clockIn('p-1');
   await stationBackend().clockOut('p-1');
   expect(fetchMock.mock.calls[0][0]).toBe('/edge/timeclock/clock-in');
   expect(fetchMock.mock.calls[1][0]).toBe('/edge/timeclock/clock-out');
-  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ person_id: 'p-1' });
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ person_id: 'p-1', tz: ZONE });
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ person_id: 'p-1', tz: ZONE });
+});
+
+it('stationBackend.status asks the edge with the kiosk zone', async () => {
+  fetchMock.mockResolvedValue(new Response(JSON.stringify(STATUS), { status: 200 }));
+  await stationBackend().status('p-1');
+  expect(fetchMock.mock.calls[0][0]).toBe(`/edge/timeclock/status/p-1?tz=${encodeURIComponent(ZONE)}`);
 });
 
 it('stationBackend maps an edge_offline 503 to ApiError edge_offline', async () => {

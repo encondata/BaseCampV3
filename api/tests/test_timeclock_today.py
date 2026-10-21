@@ -124,6 +124,24 @@ async def test_site_zone_falls_back_to_utc(db):
     assert (await timeclock.site_zone(db, good.id)).key == "America/Los_Angeles"
 
 
+async def test_site_zone_falls_back_to_the_kiosks_own_zone(db):
+    """Precedence: the site's zone, then the zone the kiosk sends, then
+    UTC. A fallback this host does not know never errors."""
+    blank = Site(name="Zoneless Hall")
+    bogus = Site(name="Bad Zone Hall", timezone="Not/AZone")
+    good = Site(name="Eastern Hall", timezone="America/New_York")
+    db.add_all([blank, bogus, good])
+    await db.flush()
+    la = "America/Los_Angeles"
+
+    assert (await timeclock.site_zone(db, blank.id, la)).key == la
+    assert (await timeclock.site_zone(db, None, la)).key == la
+    assert (await timeclock.site_zone(db, bogus.id, la)).key == la
+    assert (await timeclock.site_zone(db, good.id, la)).key == "America/New_York"
+    for bad in ("Not/AZone", "", "../../etc/passwd", None):
+        assert (await timeclock.site_zone(db, blank.id, bad)).key == "UTC"
+
+
 async def test_today_counts_a_25_hour_dst_day(db):
     """2026-11-01 in New York is 25 hours long (2:00 EDT falls back to
     1:00 EST). A shift from 23:00 the night before to 23:30 that night

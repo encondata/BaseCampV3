@@ -28,3 +28,15 @@ export function formatPunch(iso: string, now: Date = new Date()): string {
   if (day === yesterday) return `yesterday ${time}`;
   return `${at.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`;
 }
+
+/** The browser's own IANA zone ("America/Chicago"), sent with every status
+ *  read and punch as `tz`: the portal reads "today" in it when the kiosk's
+ *  site has no zone. Undefined when the browser can't say, so the portal
+ *  falls back to UTC. */
+export function kioskZone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
+}

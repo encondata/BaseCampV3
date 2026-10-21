@@ -812,7 +812,8 @@ export interface KioskTimeclockStatus {
   clocked_in: boolean;
   entry: KioskTimeclockEntry | null;
   last_entry: KioskTimeclockLastEntry | null;
-  /** Minutes worked today (UTC day), open entry counted to now. */
+  /** Minutes worked today (the site's day, else the kiosk's, else UTC's),
+   *  open entry counted to now. */
   today_minutes: number;
   /** Today's entries, oldest first. */
   today_entries: { clock_in_at: string; clock_out_at: string | null; minutes: number }[];
@@ -820,11 +821,17 @@ export interface KioskTimeclockStatus {
 
 /** Is this person on the clock right now, and since when? 404
  *  `person_not_found` for someone the portal no longer has (or has
- *  archived) — a kiosk holding a stale local copy is the likely cause. */
+ *  archived) — a kiosk holding a stale local copy is the likely cause.
+ *  `serial` names the kiosk so "today" is its site's day; `tz` (the
+ *  kiosk's own zone) is the day when the site has no zone. */
 export async function fetchTimeclockStatus(
-  personId: string, serial?: string,
+  personId: string, serial?: string, tz?: string,
 ): Promise<KioskTimeclockStatus> {
-  const query = serial ? `?serial=${encodeURIComponent(serial)}` : '';
+  const params = [
+    serial ? `serial=${encodeURIComponent(serial)}` : '',
+    tz ? `tz=${encodeURIComponent(tz)}` : '',
+  ].filter(Boolean);
+  const query = params.length ? `?${params.join('&')}` : '';
   const resp = await apiFetch(`/kiosk/timeclock/${encodeURIComponent(personId)}${query}`);
   return jsonFrom<KioskTimeclockStatus>(resp);
 }
@@ -839,6 +846,8 @@ export async function fetchTimeclockStatus(
 export async function postClockIn(body: {
   serial: string; person_id: string;
   site_id?: string | null; initiative_id?: string | null;
+  /** The kiosk's own zone, as for `fetchTimeclockStatus`. */
+  tz?: string;
 }): Promise<KioskTimeclockStatus> {
   const resp = await apiFetch('/kiosk/timeclock/clock-in', {
     method: 'POST',
@@ -852,7 +861,7 @@ export async function postClockIn(body: {
  *  the minutes worked. 409 `not_clocked_in` when there is none. No
  *  `at` either, for the same reason as `postClockIn`. */
 export async function postClockOut(body: {
-  serial: string; person_id: string;
+  serial: string; person_id: string; tz?: string;
 }): Promise<KioskTimeclockStatus> {
   const resp = await apiFetch('/kiosk/timeclock/clock-out', {
     method: 'POST',

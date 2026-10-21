@@ -26,6 +26,8 @@ const STATUS = {
   last_entry: null, today_minutes: 0, today_entries: [],
 };
 
+const ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
@@ -88,10 +90,10 @@ it('stationPeople returns the cached people list', async () => {
   });
 });
 
-it('stationStatus reads one person', async () => {
+it('stationStatus reads one person, in the kiosk zone', async () => {
   fetchMock.mockResolvedValue(json(200, STATUS));
   expect(await stationStatus('p-1')).toEqual(STATUS);
-  expect(fetchMock).toHaveBeenCalledWith('/edge/timeclock/status/p-1', {
+  expect(fetchMock).toHaveBeenCalledWith(`/edge/timeclock/status/p-1?tz=${encodeURIComponent(ZONE)}`, {
     credentials: 'same-origin', signal: expect.any(AbortSignal),
   });
 });
@@ -124,13 +126,13 @@ it.each([
 it.each([
   ['clock-in', stationClockIn],
   ['clock-out', stationClockOut],
-] as const)('%s posts the person id as JSON', async (route, call) => {
+] as const)('%s posts the person id and the kiosk zone as JSON', async (route, call) => {
   fetchMock.mockResolvedValue(json(200, STATUS));
   expect(await call('p-1')).toEqual(STATUS);
   expect(fetchMock).toHaveBeenCalledWith(`/edge/timeclock/${route}`, {
     method: 'POST', credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ person_id: 'p-1' }),
+    body: JSON.stringify({ person_id: 'p-1', tz: ZONE }),
   });
 });
 

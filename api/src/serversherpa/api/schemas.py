@@ -3836,6 +3836,9 @@ class KioskClockInIn(BaseModel):
     person_id: uuid.UUID
     site_id: uuid.UUID | None = None
     initiative_id: uuid.UUID | None = None
+    # The kiosk's own IANA zone: "today" falls back to it when the site
+    # has none (see `timeclock.site_zone`).
+    tz: str | None = Field(None, max_length=64)
 
 
 class KioskClockOutIn(BaseModel):
@@ -3844,6 +3847,7 @@ class KioskClockOutIn(BaseModel):
 
     serial: str = Field(min_length=1, max_length=120)
     person_id: uuid.UUID
+    tz: str | None = Field(None, max_length=64)   # as KioskClockInIn
 
 
 class KioskStationClockIn(BaseModel):
@@ -3854,6 +3858,7 @@ class KioskStationClockIn(BaseModel):
 
     serial: str = Field(min_length=1, max_length=120)
     person_id: uuid.UUID
+    tz: str | None = Field(None, max_length=64)   # as KioskClockInIn
 
 
 # ── Labels ──

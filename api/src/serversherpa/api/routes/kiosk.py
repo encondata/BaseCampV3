@@ -2409,6 +2409,7 @@ async def _close_shift(
 async def timeclock_status(
     person_id: uuid.UUID, db: DbSession,
     serial: str | None = Query(None),
+    tz: str | None = Query(None, max_length=64),
     actor: AuthContext = require_permission("kiosk", "view"),
 ) -> KioskTimeclockStatusOut:
     """Is this person on the clock right now, and since when? The kiosk
@@ -2420,18 +2421,19 @@ async def timeclock_status(
     have never punched out at all. While clocked in, `last_entry` is
     left null; the card has the open entry to show instead.
 
-    `serial` names the asking kiosk so "today" is its site's day; an
-    unknown serial (or none) reads the day in UTC rather than failing —
-    the hours line is a courtesy, not a reason to 404 a status poll."""
+    `serial` names the asking kiosk so "today" is its site's day; with no
+    site zone (an unknown serial, or none) it is the day in `tz`, the
+    kiosk's own zone, and failing that in UTC rather than an error — the
+    hours line is a courtesy, not a reason to 404 a status poll."""
     person = await _timeclock_person(db, person_id)
     device = (await db.scalar(select(Device).where(
         Device.serial == serial, Device.device_type == "kiosk"))
         if serial else None)
-    tz = await timeclock.site_zone(db, device.site_id if device else None)
+    zone = await timeclock.site_zone(db, device.site_id if device else None, tz)
     entry = await timeclock.open_entry_for(db, person.id)
     last_entry = (None if entry is not None
                   else await timeclock.last_closed_entry_for(db, person.id))
-    return await _status_out(db, person, entry, last_entry=last_entry, tz=tz)
+    return await _status_out(db, person, entry, last_entry=last_entry, tz=zone)
 
 
 @router.post("/timeclock/clock-in", response_model=KioskTimeclockStatusOut)
@@ -2463,7 +2465,7 @@ async def timeclock_clock_in(
                               via="session")
     await db.commit()
     return await _status_out(db, person, entry,
-                             tz=await timeclock.site_zone(db, device.site_id))
+                             tz=await timeclock.site_zone(db, device.site_id, body.tz))
 
 
 @router.post("/timeclock/clock-out", response_model=KioskTimeclockStatusOut)
@@ -2491,7 +2493,7 @@ async def timeclock_clock_out(
                                via="session")
     await db.commit()
     return await _status_out(db, person, None, last_entry=entry,
-                             tz=await timeclock.site_zone(db, device.site_id))
+                             tz=await timeclock.site_zone(db, device.site_id, body.tz))
 
 
 async def _timeclock_station(request: Request, db: AsyncSession, serial: str) -> Device:
@@ -2504,16 +2506,17 @@ async def _timeclock_station(request: Request, db: AsyncSession, serial: str) ->
 async def station_timeclock_status(
     person_id: uuid.UUID, request: Request, db: DbSession,
     serial: str = Query(..., min_length=1, max_length=120),
+    tz: str | None = Query(None, max_length=64),
 ) -> KioskTimeclockStatusOut:
     """Station-key twin of GET /kiosk/timeclock/{person_id}: the same reply,
-    with "today" in the station's site zone."""
+    with "today" in the station's site zone (else `tz`, else UTC)."""
     device = await _timeclock_station(request, db, serial)
     person = await _timeclock_person(db, person_id)
     entry = await timeclock.open_entry_for(db, person.id)
     last_entry = (None if entry is not None
                   else await timeclock.last_closed_entry_for(db, person.id))
     return await _status_out(db, person, entry, last_entry=last_entry,
-                             tz=await timeclock.site_zone(db, device.site_id))
+                             tz=await timeclock.site_zone(db, device.site_id, tz))
 
 
 @router.post("/station/timeclock/clock-in", response_model=KioskTimeclockStatusOut)
@@ -2533,7 +2536,7 @@ async def station_timeclock_clock_in(
                               site_id=device.site_id, via="station_key")
     await db.commit()
     return await _status_out(db, person, entry,
-                             tz=await timeclock.site_zone(db, device.site_id))
+                             tz=await timeclock.site_zone(db, device.site_id, body.tz))
 
 
 @router.post("/station/timeclock/clock-out", response_model=KioskTimeclockStatusOut)
@@ -2550,7 +2553,7 @@ async def station_timeclock_clock_out(
     entry = await _close_shift(db, device, person, actor_id=None, via="station_key")
     await db.commit()
     return await _status_out(db, person, None, last_entry=entry,
-                             tz=await timeclock.site_zone(db, device.site_id))
+                             tz=await timeclock.site_zone(db, device.site_id, body.tz))
 
 
 # ── printer maintenance (kiosk:view) ─────────────────────────────────

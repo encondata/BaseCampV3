@@ -6,13 +6,17 @@ open shift. People sync takes a Time Clock key with no move."""
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
-from serversherpa.db.models import AuditLog, Device, Initiative, Person, TimeEntry, WorkerProfile
+from serversherpa.db.models import (
+    AuditLog, Device, Initiative, Person, Site, TimeEntry, WorkerProfile,
+)
 from serversherpa.services import timeclock
 from tests.test_kiosk_station_key import SERIAL
 from tests.test_kiosk_station_scans import _auth, _station
+from tests.test_kiosk_timeclock_api import _just_past_midnight_zone, _shift_across_local_midnight
 from tests.test_kiosk_timeclock_station_key import _timeclock_station
 from tests.test_system_admin_api import _admin
 
@@ -230,3 +234,43 @@ async def test_station_sync_people_upload_key_needs_its_move(client, db, seeded_
     r = await client.get("/kiosk/station/sync/people", headers=_auth(key),
                          params={"serial": SERIAL, "initiative_id": str(uuid.uuid4())})
     assert r.status_code == 403 and r.json()["detail"] == {"code": "move_locked"}
+
+
+async def test_station_today_falls_back_to_the_kiosks_own_zone(client, db, seeded_user):
+    """A station whose site has no zone reads "today" in the zone the kiosk
+    sends as `tz` (status query, punch body); the site's zone wins when it
+    has one; an unknown zone name falls back to UTC."""
+    device, _, key = await _timeclock_station(db)
+    site = await db.get(Site, (await db.get(Device, device.id)).site_id)
+    assert site.timezone is None
+    zone = ZoneInfo(_just_past_midnight_zone())
+    pid = await _worker(db)
+    local, in_utc = await _shift_across_local_midnight(db, pid, zone)
+
+    def minutes(resp):
+        assert resp.status_code == 200, resp.text
+        return resp.json()["today_minutes"]
+
+    url = f"/kiosk/station/timeclock/{pid}"
+    got = minutes(await client.get(url, headers=_auth(key),
+                                   params={"serial": SERIAL, "tz": zone.key}))
+    assert local <= got <= local + 2, (got, local, in_utc)
+    got = minutes(await client.get(url, headers=_auth(key),
+                                   params={"serial": SERIAL, "tz": "Not/AZone"}))
+    assert in_utc <= got <= in_utc + 2
+    got = minutes(await client.get(url, headers=_auth(key), params={"serial": SERIAL}))
+    assert in_utc <= got <= in_utc + 2
+
+    got = minutes(await client.post("/kiosk/station/timeclock/clock-in", headers=_auth(key),
+                                    json={**_body(pid), "tz": zone.key}))
+    assert local <= got <= local + 2
+    got = minutes(await client.post("/kiosk/station/timeclock/clock-out", headers=_auth(key),
+                                    json={**_body(pid), "tz": zone.key}))
+    assert local <= got <= local + 2
+
+    # the site's own zone wins over the kiosk's
+    site.timezone = zone.key
+    await db.commit()
+    got = minutes(await client.get(url, headers=_auth(key),
+                                   params={"serial": SERIAL, "tz": "UTC"}))
+    assert local <= got <= local + 2

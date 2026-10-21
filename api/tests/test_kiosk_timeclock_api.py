@@ -472,6 +472,66 @@ async def test_today_reads_the_day_in_the_kiosks_site_zone(client, db, seeded_us
     assert_local(resp.json())
 
 
+async def _shift_across_local_midnight(db, person_id, zone: ZoneInfo) -> tuple[int, int]:
+    """A closed shift that started an hour before `zone`'s midnight and
+    ended a minute ago. -> (minutes today in `zone`, minutes today in UTC),
+    which differ by at least 30 (see `_just_past_midnight_zone`)."""
+    now = datetime.now(UTC)
+    local_midnight = datetime.combine(now.astimezone(zone).date(), time.min,
+                                      tzinfo=zone)
+    utc_midnight = datetime.combine(now.date(), time.min, tzinfo=UTC)
+    start = local_midnight - timedelta(hours=1)
+    end = now - timedelta(minutes=1)
+    db.add(TimeEntry(person_id=person_id, clock_in_at=start, clock_out_at=end,
+                     status="pending"))
+    await db.commit()
+    local = _minutes_since(start, end, local_midnight)
+    in_utc = _minutes_since(start, end, utc_midnight)
+    assert abs(local - in_utc) >= 30
+    return local, in_utc
+
+
+async def test_today_falls_back_to_the_kiosks_own_zone(client, db, seeded_user):
+    """A site with no zone reads "today" in the zone the kiosk sends as
+    `tz` (status query, punch body); a site with a zone keeps it; a zone
+    name this host does not know falls back to UTC rather than failing."""
+    hdrs = await login(client)
+    site, _initiative, _device = await _seed_context(db)
+    assert site.timezone is None
+    zone = ZoneInfo(_just_past_midnight_zone())
+    person = await _seed_worker(db)
+    local, in_utc = await _shift_across_local_midnight(db, person.id, zone)
+
+    def minutes(resp):
+        assert resp.status_code == 200, resp.text
+        return resp.json()["today_minutes"]
+
+    url = f"/kiosk/timeclock/{person.id}"
+    got = minutes(await client.get(url, params={"serial": SERIAL, "tz": zone.key},
+                                   headers=hdrs))
+    assert local <= got <= local + 2, (got, local, in_utc)
+    got = minutes(await client.get(url, params={"serial": SERIAL, "tz": "Not/AZone"},
+                                   headers=hdrs))
+    assert in_utc <= got <= in_utc + 2
+    # longer than any zone name: refused like any other oversized field
+    resp = await client.get(url, params={"serial": SERIAL, "tz": "x" * 65}, headers=hdrs)
+    assert resp.status_code == 422
+
+    got = minutes(await client.post("/kiosk/timeclock/clock-in", headers=hdrs,
+                                    json=_in(person, tz=zone.key)))
+    assert local <= got <= local + 2
+    got = minutes(await client.post("/kiosk/timeclock/clock-out", headers=hdrs,
+                                    json=_in(person, tz=zone.key)))
+    assert local <= got <= local + 2
+
+    # the site's own zone wins over the kiosk's
+    site.timezone = zone.key
+    await db.commit()
+    got = minutes(await client.get(url, params={"serial": SERIAL, "tz": "UTC"},
+                                   headers=hdrs))
+    assert local <= got <= local + 2
+
+
 async def test_sync_people_includes_badge_uid(client, db, seeded_user):
     hdrs = await login(client)
     person = await _seed_worker(db)

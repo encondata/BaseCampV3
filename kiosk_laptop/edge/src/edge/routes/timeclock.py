@@ -9,9 +9,11 @@ setup still waiting for its key is 409 `station_key_missing`. Everything else
 answers only an armed display (403 `not_timeclock_display`): the cached
 people list, and a person's status, clock in and clock out forwarded to
 the portal's `/kiosk/station/timeclock/*` under the station key with the
-laptop's serial. The portal's status and JSON body come back as they are,
-so the browser sees its `{"detail": {"code": ...}}`; no key is 409
-`station_not_ready`, an unreachable portal 503 `edge_offline`."""
+laptop's serial (plus the browser's own zone, `tz`, when it is a short
+string: the portal's "today" when the site has no zone). The portal's
+status and JSON body come back as they are, so the browser sees its
+`{"detail": {"code": ...}}`; no key is 409 `station_not_ready`, an
+unreachable portal 503 `edge_offline`."""
 
 import json
 import uuid
@@ -98,12 +100,33 @@ def _person(value) -> str:
         raise err(422, "bad_person") from None
 
 
-async def _body_person(request: Request) -> str:
+# Longer than any IANA zone name; the portal refuses anything past it.
+TZ_MAX_LEN = 64
+
+
+def _tz(value) -> str | None:
+    """The browser's zone if it is a short non-empty string, else None:
+    an odd value is dropped rather than refused — "today" just falls back."""
+    if isinstance(value, str) and 0 < len(value) <= TZ_MAX_LEN:
+        return value
+    return None
+
+
+async def _punch_body(request: Request) -> dict:
+    """The portal's punch body: the laptop's serial, the person, and `tz`
+    when the browser sent a usable one."""
     try:
         body = json.loads(await request.body())
     except ValueError:
         body = None
-    return _person(body.get("person_id") if isinstance(body, dict) else None)
+    if not isinstance(body, dict):
+        body = {}
+    out = {"serial": request.app.state.identity.serial,
+           "person_id": _person(body.get("person_id"))}
+    tz = _tz(body.get("tz"))
+    if tz is not None:
+        out["tz"] = tz
+    return out
 
 
 async def _forward(request: Request, method: str, path: str, **kw) -> Response:
@@ -120,23 +143,20 @@ async def _forward(request: Request, method: str, path: str, **kw) -> Response:
 
 
 @router.get("/status/{person_id}", dependencies=[Depends(require_display)])
-async def status(request: Request, person_id: str) -> Response:
+async def status(request: Request, person_id: str, tz: str | None = None) -> Response:
     person = _person(person_id)
-    return await _forward(request, "GET", STATUS_PATH.format(person_id=person),
-                          params={"serial": request.app.state.identity.serial})
+    params = {"serial": request.app.state.identity.serial}
+    zone = _tz(tz)
+    if zone is not None:
+        params["tz"] = zone
+    return await _forward(request, "GET", STATUS_PATH.format(person_id=person), params=params)
 
 
 @router.post("/clock-in", dependencies=[Depends(require_display)])
 async def clock_in(request: Request) -> Response:
-    person = await _body_person(request)
-    return await _forward(request, "POST", CLOCK_IN_PATH,
-                          json={"serial": request.app.state.identity.serial,
-                                "person_id": person})
+    return await _forward(request, "POST", CLOCK_IN_PATH, json=await _punch_body(request))
 
 
 @router.post("/clock-out", dependencies=[Depends(require_display)])
 async def clock_out(request: Request) -> Response:
-    person = await _body_person(request)
-    return await _forward(request, "POST", CLOCK_OUT_PATH,
-                          json={"serial": request.app.state.identity.serial,
-                                "person_id": person})
+    return await _forward(request, "POST", CLOCK_OUT_PATH, json=await _punch_body(request))
