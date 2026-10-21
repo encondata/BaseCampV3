@@ -33,6 +33,7 @@ export function pyRound(x: number): number {
 
 /** Python's `a // b`. */
 export function floorDiv(a: number, b: number): number {
+  if (b === 0) throw new RangeError('integer division or modulo by zero');
   return Math.floor(a / b);
 }
 
@@ -112,7 +113,9 @@ export function utf8Length(s: string): number {
 
 // --- str() and repr() of JSON values ----------------------------------------
 
-// str.isprintable() is false for these categories (ASCII space aside)
+// str.isprintable() is false for these categories (ASCII space aside).
+// The reference is CPython 3.13 (Unicode 15.1); V8's own Unicode tables
+// decide \p{...} here, so a character assigned after 15.1 may differ.
 const NOT_PRINTABLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]/u;
 
 const hex = (cp: number, width: number) => cp.toString(16).padStart(width, '0');
@@ -210,7 +213,12 @@ interface ParsedDecimal {
 
 const DECIMAL_RE = /^([+-])?(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/;
 const SPECIAL_RE = /^([+-])?(?:(inf|infinity)|(nan|snan)(\d*))$/i;
+// Unicode decimal digits, as CPython 3.13 (Unicode 15.1) reads them in Decimal()
 const ND = /\p{Nd}/u;
+// Past this the port refuses an exponent rather than write out a string of
+// a million zeros. Python reads such a value (or raises Overflow); no RU
+// or label value comes near it.
+const MAX_EXPONENT = 1_000_000;
 
 /** The value of a Unicode decimal digit. Decimal digits come in runs of
  *  ten, 0 to 9, so it is the distance from its run's start, mod 10. */
@@ -221,12 +229,13 @@ function digitValue(cp: number): number {
 }
 
 /** `Decimal(text)`'s reading of a string, or null where it raises
- *  InvalidOperation. Like CPython's C decimal: underscores anywhere are
- *  dropped, whitespace at the ends is stripped, and any Unicode decimal
- *  digit reads as its ASCII digit. */
+ *  InvalidOperation. Like CPython's C decimal: whitespace at the ends is
+ *  stripped, THEN underscores anywhere are dropped (so `' _14'` reads 14
+ *  but `'_ 14'` is refused), and any Unicode decimal digit reads as its
+ *  ASCII digit. Throws a RangeError for an exponent past MAX_EXPONENT. */
 function parseDecimal(text: string): ParsedDecimal | null {
   let ascii = '';
-  for (const ch of pyStrip(text.split('_').join(''))) {
+  for (const ch of pyStrip(text).split('_').join('')) {
     const cp = ch.codePointAt(0)!;
     if (cp > 0 && cp <= 127) ascii += ch;
     else if (ND.test(ch)) ascii += String(digitValue(cp));
@@ -238,7 +247,9 @@ function parseDecimal(text: string): ParsedDecimal | null {
     const intPart = whole ?? '';
     const fracPart = frac ?? onlyFrac ?? '';
     const exp = Number(expText ?? '0') - fracPart.length;
-    if (!Number.isSafeInteger(exp)) return null;
+    if (!(Math.abs(exp) <= MAX_EXPONENT)) {
+      throw new RangeError(`decimal exponent out of range: ${expText}`);
+    }
     return { negative: sign === '-', kind: 'finite', digits: intPart + fracPart, exp };
   }
   const s = SPECIAL_RE.exec(ascii);
@@ -285,8 +296,8 @@ function roundToPrecision(digits: string): [string, number] {
 
 /** fields.py `ru_text`'s number: `format(Decimal(text).normalize(), "f")`
  *  (28 significant digits, half to even, trailing zeros dropped), or null
- *  where ru_text prints the text as it is (not a finite decimal). The
- *  caller strips and blanks first, as ru_text does. */
+ *  where ru_text prints the text as it is (not a finite decimal). Use
+ *  `ruText` for a synced value. */
 export function decimalNormalize(text: string): string | null {
   const d = parseDecimal(text);
   if (d === null || d.kind !== 'finite') return null;
@@ -303,6 +314,16 @@ export function decimalNormalize(text: string): string | null {
   return fixedText(d.negative, digits, exp);
 }
 
+/** fields.py `ru_text`: an RU as the bare number it prints (`"14.0"` ->
+ *  `14`, `"3.50"` -> `3.5`). None or blank -> ''. Text that is not a finite
+ *  number prints as it is. */
+export function ruText(raw: PyValue | undefined): string {
+  if (raw === null || raw === undefined) return '';
+  const text = pyStrip(pyStr(raw));
+  if (!text) return '';
+  return decimalNormalize(text) ?? text;
+}
+
 const rstrip = (s: string, ch: string) => {
   let end = s.length;
   while (end > 0 && s[end - 1] === ch) end -= 1;
@@ -311,7 +332,8 @@ const rstrip = (s: string, ch: string) => {
 
 /** label_values.py `_format_ru` of the laptop edge's `_decimal(raw)`: an RU
  *  shaped like V2's `U14` / `U14.5`. No value, or text Decimal refuses,
- *  is ''. Throws where Python raises (Infinity, sNaN). */
+ *  is ''. Throws where Python raises (Infinity, sNaN), and for an exponent
+ *  past MAX_EXPONENT. */
 export function formatRu(text: string | null | undefined): string {
   if (text === null || text === undefined || text === '') return '';
   const d = parseDecimal(text);

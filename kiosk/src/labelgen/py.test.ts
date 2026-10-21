@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   cpLength, cpSlice, dateFromIsoformat, decimalNormalize, floorDiv, formatRu, moveDates,
-  pyRound, pyStr, pyStrip, pyText, rjust, utf8Encode, utf8Length,
+  pyRound, pyStr, pyStrip, pyText, rjust, ruText, utf8Encode, utf8Length,
 } from './py';
 import { parsePyJson } from './pyjson';
 
@@ -40,6 +40,10 @@ describe('floorDiv', () => {
     expect(floorDiv(3, 2)).toBe(1);
     expect(floorDiv(-4, 2)).toBe(-2);
     expect(floorDiv(7, -2)).toBe(-4);
+  });
+
+  it('refuses division by zero, like Python', () => {
+    expect(() => floorDiv(1, 0)).toThrow();
   });
 });
 
@@ -157,7 +161,7 @@ describe('decimalNormalize (format(Decimal(t).normalize(), "f"))', () => {
     ['1__0', '10'], ['_1', '1'], ['1_', '1'], ['+5', '5'], ['.5', '0.5'], ['5.', '5'],
     ['1._5', '1.5'], ['1e_5', '100000'], ['0e5', '0'], ['-0e-3', '-0'],
     ['1.0E+30', '1000000000000000000000000000000'], ['1.5E-3', '0.0015'],
-    ['\u00a014\u2003', '14'],
+    ['\u00a014\u2003', '14'], [' _14', '14'], ['_14_', '14'],
     // 28 significant digits, half to even
     ['1.23456789012345678901234567890123', '1.234567890123456789012345679'],
     ['99999999999999999999999999999', '100000000000000000000000000000'],
@@ -167,7 +171,11 @@ describe('decimalNormalize (format(Decimal(t).normalize(), "f"))', () => {
     expect(decimalNormalize(text)).toBe(expected);
   });
 
-  it.each(['x', '', '1,0', '1 0', '_', '.', 'e5', '1e', '+-1', 'NaN', 'Inf', '-infinity', 'sNaN'])(
+  it.each([
+    'x', '', '1,0', '1 0', '_', '.', 'e5', '1e', '+-1', 'NaN', 'Inf', '-infinity', 'sNaN',
+    // whitespace is stripped before underscores go, so these keep a space inside
+    '_ 14', '14 _', '1 _', '_\u00a014',
+  ])(
     '%j is not a finite decimal', (text) => {
       expect(decimalNormalize(text)).toBeNull();
     });
@@ -188,11 +196,39 @@ describe('formatRu (label_values._format_ru)', () => {
     expect(formatRu(null)).toBe('');
     expect(formatRu('')).toBe('');
     expect(formatRu('x')).toBe('');
+    expect(formatRu('_ 14')).toBe('');
+  });
+
+  it('refuses an absurd exponent instead of writing it out', () => {
+    expect(() => formatRu('1e1000001')).toThrow(RangeError);
+    expect(() => decimalNormalize('1e-1000001')).toThrow(RangeError);
+    expect(decimalNormalize('1e-5')).toBe('0.00001');
   });
 
   it('fails where Python fails (int(Infinity), comparing sNaN)', () => {
     expect(() => formatRu('Infinity')).toThrow();
     expect(() => formatRu('sNaN')).toThrow();
+  });
+});
+
+describe('ruText (fields.ru_text)', () => {
+  it('blanks no value, before str() could make it "None"', () => {
+    expect(ruText(null)).toBe('');
+    expect(ruText(undefined)).toBe('');
+    expect(ruText('   ')).toBe('');
+  });
+
+  it('prints a number bare, and anything else as it is', () => {
+    expect(ruText(parsePyJson('14.0'))).toBe('14');
+    expect(ruText(parsePyJson('14'))).toBe('14');
+    expect(ruText('14.50')).toBe('14.5');
+    expect(ruText(' 3.0 ')).toBe('3');
+    expect(ruText('abc')).toBe('abc');
+    expect(ruText(' abc ')).toBe('abc');
+    expect(ruText('_ 14')).toBe('_ 14');
+    expect(ruText('NaN')).toBe('NaN');
+    expect(ruText('-Infinity')).toBe('-Infinity');
+    expect(ruText(true)).toBe('True');
   });
 });
 

@@ -16,7 +16,7 @@ import { QR_FO_OFFSET_IN, QrTooLong, qrFoOffsetDots, qrModules } from './qr';
 import {
   LABEL_TAG_ASSIGNMENT_ORDER, LABEL_TAG_KEYS, LABEL_TAG_LABELS, resolveLabelTag,
 } from './tags';
-import { TOKEN_RE, applyPlaceholders, resolveTokens } from './tokens';
+import { TOKEN_PATTERN, TOKEN_RE, applyPlaceholders, resolveTokens } from './tokens';
 
 const FIXTURES = new URL('../../../api/src/serversherpa/labels/fixtures/', import.meta.url);
 const fixture = <T>(name: string): T => JSON.parse(readFileSync(new URL(name, FIXTURES), 'utf8')) as T;
@@ -39,6 +39,14 @@ describe('tokens', () => {
 
   it('matches the Python pattern', () => {
     expect(TOKEN_RE.source).toBe('\\{([a-z0-9_]+)\\}');
+    expect(TOKEN_RE.global).toBe(true);
+  });
+
+  it('has a stateless pattern for test and search', () => {
+    expect(TOKEN_PATTERN.global).toBe(false);
+    expect(TOKEN_PATTERN.test('x {a} y')).toBe(true);
+    expect(TOKEN_PATTERN.test('x {a} y')).toBe(true);
+    expect('x {a} y'.search(TOKEN_PATTERN)).toBe(2);
   });
 });
 
