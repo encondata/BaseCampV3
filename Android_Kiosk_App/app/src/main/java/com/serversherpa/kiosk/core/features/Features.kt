@@ -15,14 +15,14 @@ data class KioskFeature(
     val alwaysAvailable: Boolean = false,
 )
 
-/** Same order and copy as kiosk/src/lib/features.ts. */
+/** Same order and copy as kiosk/src/lib/features.ts, except Label Printing: asset labels only here. */
 val FEATURES: List<KioskFeature> = listOf(
     KioskFeature(FeatureId.SETUP, "setup", "Kiosk Setup", "Set up this kiosk for a move.", alwaysAvailable = true),
     KioskFeature(FeatureId.SCAN, "scan", "Scanning", "Scan assets, containers, and badges."),
     KioskFeature(FeatureId.ENROLL, "enroll", "RFID Enroll", "Scan an asset, then scan its RFID tag."),
     KioskFeature(FeatureId.CONTAINERS, "containers", "Containers", "Pack and unpack containers by scanning.", placeholder = true),
     KioskFeature(FeatureId.TRUCKS, "trucks", "Trucks", "Load and unload trucks by scanning.", placeholder = true),
-    KioskFeature(FeatureId.LABELS, "labels", "Label Printing", "Print asset and container labels.", placeholder = true),
+    KioskFeature(FeatureId.LABELS, "labels", "Label Printing", "Print asset labels."),
     KioskFeature(FeatureId.TIMECLOCK, "timeclock", "Timeclock", "Clock in and out of a move."),
     KioskFeature(FeatureId.SETTINGS, "settings", "Settings", "Appearance, sound, devices, and more.", alwaysAvailable = true),
 )

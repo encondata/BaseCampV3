@@ -11,6 +11,8 @@ object Routes {
     const val CONTAINERS = "containers"
     const val TRUCKS = "trucks"
     const val LABELS = "labels"
+    const val LABELS_PRINT = "labels/print"
+    const val LABELS_PRINTER = "labels/printer"
 
     fun settings(tab: String? = null): String = if (tab == null) "settings" else "settings?tab=$tab"
 }

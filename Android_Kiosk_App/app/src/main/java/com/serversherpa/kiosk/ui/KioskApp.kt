@@ -21,6 +21,9 @@ import com.serversherpa.kiosk.ui.guards.KioskGuard
 import com.serversherpa.kiosk.ui.guards.SetupGate
 import com.serversherpa.kiosk.ui.screens.enroll.EnrollScreen
 import com.serversherpa.kiosk.ui.screens.home.HomeScreen
+import com.serversherpa.kiosk.ui.screens.labels.LabelsHomeScreen
+import com.serversherpa.kiosk.ui.screens.labels.PrintLabelsScreen
+import com.serversherpa.kiosk.ui.screens.labels.PrinterSetupScreen
 import com.serversherpa.kiosk.ui.screens.login.LoginScreen
 import com.serversherpa.kiosk.ui.screens.placeholder.FeaturePlaceholderScreen
 import com.serversherpa.kiosk.ui.screens.scan.ScanScreen
@@ -51,7 +54,9 @@ fun KioskApp() {
                 gated(nav, Routes.TIMECLOCK, FeatureId.TIMECLOCK) { TimeclockScreen(nav) }
                 gated(nav, Routes.CONTAINERS, FeatureId.CONTAINERS) { FeaturePlaceholderScreen(feature(FeatureId.CONTAINERS), nav) }
                 gated(nav, Routes.TRUCKS, FeatureId.TRUCKS) { FeaturePlaceholderScreen(feature(FeatureId.TRUCKS), nav) }
-                gated(nav, Routes.LABELS, FeatureId.LABELS) { FeaturePlaceholderScreen(feature(FeatureId.LABELS), nav) }
+                gated(nav, Routes.LABELS, FeatureId.LABELS) { LabelsHomeScreen(nav) }
+                gated(nav, Routes.LABELS_PRINT, FeatureId.LABELS) { PrintLabelsScreen(nav) }
+                gated(nav, Routes.LABELS_PRINTER, FeatureId.LABELS) { PrinterSetupScreen(nav) }
             }
             ScanFlash(container.flash)
             SetupClearedRedirect(nav, container.heartbeat.setupCleared)

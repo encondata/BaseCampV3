@@ -88,4 +88,18 @@ class LabelGenArgsTest {
         assertThrows(LabelGenException::class.java) { parseRendered("not json") }
         assertThrows(LabelGenException::class.java) { parsePlan("[]") }
     }
+
+    /** The send-time helpers' argument names (index.ts `applyPrintSettings` / `withPrintMode`). */
+    @Test fun printHelperArgsAndTheirAnswer() {
+        val settings = Json.parseToJsonElement(LabelGenArgs.printSettings("^XA^XZ", offsetX = 12, offsetY = -3)).jsonObject
+        assertEquals("^XA^XZ", settings["zpl"]!!.jsonPrimitive.content)
+        assertEquals(-3, settings["verticalOffset"]!!.jsonPrimitive.int)
+        assertEquals(12, settings["horizontalOffset"]!!.jsonPrimitive.int)
+        val mode = Json.parseToJsonElement(LabelGenArgs.printMode("^XA^XZ", peel = true)).jsonObject
+        assertEquals("true", mode["peel"]!!.jsonPrimitive.content)
+        assertTrue(mode["peel"]!!.jsonPrimitive.isString.not())
+        assertEquals("^XA^MMP^XZ", parseZpl("""{"zpl":"^XA^MMP^XZ"}"""))
+        assertThrows(LabelGenException::class.java) { parseZpl("""{"error":"peel must be a boolean"}""") }
+        assertThrows(LabelGenException::class.java) { parseZpl("""{"zpl":null}""") }
+    }
 }

@@ -44,6 +44,14 @@ object LabelGenArgs {
             put("kind", kind.wire); put("dpi", dpi)
             put("assetIds", JsonArray(assetIds.map { JsonPrimitive(it) }))
         }.toString()
+
+    /** `applyPrintSettings` arguments: the saved offsets in dots (one copy, always). */
+    fun printSettings(zpl: String, offsetX: Int, offsetY: Int): String =
+        buildJsonObject { put("zpl", zpl); put("verticalOffset", offsetY); put("horizontalOffset", offsetX) }.toString()
+
+    /** `withPrintMode` arguments: peel-off (`^MMP`) or tear-off (`^MMT`). */
+    fun printMode(zpl: String, peel: Boolean): String =
+        buildJsonObject { put("zpl", zpl); put("peel", peel) }.toString()
 }
 
 /** One asset's job in a plan: its label is current when the stored fingerprint matches. */
@@ -100,3 +108,9 @@ fun parsePlan(json: String): LabelPlan = decoding { SurfaceJson.decodeFromJsonEl
 
 fun parseRendered(json: String): List<RenderedLabel> =
     decoding { SurfaceJson.decodeFromJsonElement(RenderedLabels.serializer(), answer(json)).results }
+
+/** The `{zpl}` answer of `applyPrintSettings`, `withPrintMode` and `alignmentTestZpl`. */
+fun parseZpl(json: String): String = decoding {
+    (answer(json)["zpl"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+        ?: throw LabelGenException("the label generator's answer has no zpl")
+}
