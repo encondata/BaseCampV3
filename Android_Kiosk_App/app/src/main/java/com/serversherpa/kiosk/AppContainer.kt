@@ -10,6 +10,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.serversherpa.kiosk.core.labels.LabelSettings
 import com.serversherpa.kiosk.data.api.AndroidSecretStore
 import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.data.api.OkHttpKioskApi
@@ -23,6 +24,10 @@ import com.serversherpa.kiosk.data.config.KioskConfig
 import com.serversherpa.kiosk.data.db.KioskDatabase
 import com.serversherpa.kiosk.data.heartbeat.Heartbeat
 import com.serversherpa.kiosk.data.identity.Identity
+import com.serversherpa.kiosk.data.labels.LabelBuilder
+import com.serversherpa.kiosk.data.labels.LabelEngine
+import com.serversherpa.kiosk.data.labels.LabelGenerator
+import com.serversherpa.kiosk.data.labels.LabelSettingsSource
 import com.serversherpa.kiosk.data.outbox.Outbox
 import com.serversherpa.kiosk.data.outbox.RoomOutboxStore
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
@@ -44,6 +49,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
@@ -77,6 +83,11 @@ class AppContainer(
     val api: KioskApi = OkHttpKioskApi(httpClient, config, session)
     val auth = KioskAuth(api, session, identity, scope)
     val sync = Sync(api, db, scope, fontsDir = File(app.filesDir, "label-fonts"))
+    val labelEngine: LabelEngine = LabelGenerator(app)
+    // No printer can be saved yet, so builds stop at "a printer is needed" until the label
+    // settings store takes this place.
+    private val labelSettings = object : LabelSettingsSource { override val settings = flowOf(LabelSettings()) }
+    val labelBuilder = LabelBuilder(db, labelEngine, labelSettings, scope)
     val outbox = Outbox(RoomOutboxStore(db.outbox()), api, identity, scope)
     val hasDataWedge: Boolean = DataWedge.isPresent(app)
     val hasCamera: Boolean = hasCamera(app)
@@ -103,6 +114,7 @@ class AppContainer(
         // Two launches: the footer's sync line must not wait on auth's network call.
         scope.launch { identity.get(); auth.restore() }
         scope.launch { sync.hydrate() }
+        labelBuilder.start(sync.status)
         scope.launch { session.sessionEnded.collect { cookieJar.clearRefreshCookie() } }
         SessionCoordinator(auth, heartbeat, foreground, scope).start()
         MoveSetupGuard(auth.state, prefs, scope).start()

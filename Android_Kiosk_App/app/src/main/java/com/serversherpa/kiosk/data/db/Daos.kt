@@ -1,13 +1,19 @@
 package com.serversherpa.kiosk.data.db
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 
+/** An asset's id with its raw /kiosk/sync/assets object (the label generator's input). */
+data class AssetPayload(val id: String, @ColumnInfo(name = "payload_json") val payloadJson: String)
+
 @Dao
 interface AssetDao {
     @Query("SELECT * FROM assets") suspend fun all(): List<AssetEntity>
+    /** Each asset's raw payload, in stored order (the order the server sent them). */
+    @Query("SELECT id, payload_json FROM assets ORDER BY rowid") suspend fun payloads(): List<AssetPayload>
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertAll(rows: List<AssetEntity>)
     @Query("DELETE FROM assets") suspend fun deleteAll()
     @Query("SELECT COUNT(*) FROM assets") suspend fun count(): Int
