@@ -2,7 +2,7 @@
  * The bundle Android runs (Android_Kiosk_App/app/src/main/assets/labelgen.js):
  * it must be a fresh build of labelgen/index.ts, and it must run in a bare
  * JavaScript engine, with only the ECMAScript built-ins (no DOM, Intl,
- * TextEncoder, Node or timers), through the JSON-string surface alone.
+ * TextEncoder, Node, timers or console), through the JSON-string surface alone.
  */
 
 import { readFileSync } from 'node:fs';
@@ -14,7 +14,18 @@ import { describe, expect, it } from 'vitest';
 
 const BUNDLE = new URL('../../../Android_Kiosk_App/app/src/main/assets/labelgen.js', import.meta.url);
 const CONFIG = fileURLToPath(new URL('../../vite.labelgen.config.ts', import.meta.url));
-const REFERENCE = JSON.parse(
+interface ReferenceCase {
+  name: string;
+  assetsJson: string;
+  templatesJson: string;
+  kind: string;
+  dpi: number;
+  ruling?: string;
+  plan: unknown;
+  expected: { asset_id: string; zpl: string | null; error: string | null }[];
+}
+
+const REFERENCE: { cases: ReferenceCase[] } = JSON.parse(
   readFileSync(new URL('./fixtures/reference.json', import.meta.url), 'utf8'));
 
 /** The globals a bare engine has: the ECMAScript built-ins. */
@@ -59,32 +70,53 @@ describe('the Android bundle', () => {
   it('uses nothing beyond the ECMAScript built-ins', () => {
     const code = readFileSync(BUNDLE, 'utf8');
     for (const banned of [/\bIntl\./, /\bTextEncoder\b/, /\bTextDecoder\b/, /\.localeCompare\(/,
-      /\.toLocale\w*\(/, /\brequire\(/, /\bprocess\./, /\bwindow\./, /\bdocument\./]) {
+      /\.toLocale\w*\(/, /\brequire\(/, /\bprocess\./, /\bwindow\./, /\bdocument\./,
+      // host globals, not ECMAScript: the sandbox has none of them
+      /\bsetTimeout\b/, /\bsetInterval\b/, /\bstructuredClone\b/, /\batob\b/, /\bbtoa\b/,
+      /\bqueueMicrotask\b/, /\bconsole\b/]) {
       expect(code, String(banned)).not.toMatch(banned);
     }
   });
 
-  it('renders a reference case in a bare engine through JSON strings', () => {
+  it('runs in a bare engine and answers errors as JSON', () => {
     const context = bareContext();
     expect(vm.runInContext('typeof Intl + typeof TextEncoder + typeof console', context))
       .toBe('undefinedundefinedundefined');
     vm.runInContext(readFileSync(BUNDLE, 'utf8'), context);
-
-    const c = REFERENCE.cases.find((x: { name: string }) => x.name === 'builtin VEGAS_DESTINATION top 300');
-    const args = JSON.stringify({
-      assetsJson: c.assetsJson, templatesJson: c.templatesJson, kind: c.kind, dpi: c.dpi,
-      assetIds: c.expected.map((e: { asset_id: string }) => e.asset_id),
-    });
-    context.args = args;
-    const out = JSON.parse(vm.runInContext('labelgen.renderLabels(args)', context));
-    expect(out.error).toBeUndefined();
-    expect(out.results.map((r: { assetId: string; zpl: string | null; outcome: string }) => ({
-      asset_id: r.assetId, zpl: r.zpl, error: r.outcome === 'ok' ? null : r.outcome,
-    }))).toEqual(c.expected);
-
-    const plan = JSON.parse(vm.runInContext(
-      `labelgen.buildPlan(${JSON.stringify(args)})`, context));
-    expect(plan.templateId).toBe(c.plan.template_id);
     expect(JSON.parse(vm.runInContext('labelgen.buildPlan("[")', context)).error).toBeTruthy();
+  });
+
+  /** Every reference case (reference.test.ts runs them through the source): the same plan and
+   *  the same labels through the committed bundle, in one bare engine, by JSON strings alone. */
+  it('prints every reference case in a bare engine through JSON strings', () => {
+    const context = bareContext();
+    vm.runInContext(readFileSync(BUNDLE, 'utf8'), context);
+    const run = (fn: string, args: object) => {
+      context.args = JSON.stringify(args);
+      const out = JSON.parse(vm.runInContext(`labelgen.${fn}(args)`, context));
+      expect(out.error, fn).toBeUndefined();
+      return out;
+    };
+    expect(REFERENCE.cases.length).toBeGreaterThan(50);
+    for (const c of REFERENCE.cases as ReferenceCase[]) {
+      const input = { assetsJson: c.assetsJson, templatesJson: c.templatesJson, kind: c.kind, dpi: c.dpi };
+      const plan = run('buildPlan', input);
+      expect({
+        template_id: plan.templateId, notes: plan.notes, available_dpis: plan.availableDpis,
+        has_asset_data: plan.hasAssetData, fonts: plan.fonts,
+      }, c.name).toEqual(c.plan);
+      const ids = plan.jobs.map((j: { assetId: string }) => j.assetId);
+      expect(ids, c.name).toEqual(c.expected.map((e) => e.asset_id));
+
+      const { results } = run('renderLabels', { ...input, assetIds: ids });
+      expect(results.map((r: { fingerprint: string }) => r.fingerprint), c.name)
+        .toEqual(plan.jobs.map((j: { fingerprint: string }) => j.fingerprint));
+      const want = c.ruling
+        ? c.expected.map((e) => ({ asset_id: e.asset_id, zpl: null, error: c.ruling ?? null }))
+        : c.expected;
+      expect(results.map((r: { assetId: string; zpl: string | null; outcome: string }) => ({
+        asset_id: r.assetId, zpl: r.zpl, error: r.outcome === 'ok' ? null : r.outcome,
+      })), c.name).toEqual(want);
+    }
   });
 });

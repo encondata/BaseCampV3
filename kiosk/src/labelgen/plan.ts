@@ -18,6 +18,16 @@
  * Every job carries a fingerprint of what its label depends on (the
  * edge's parts), hashed with cyrb53: device-local, so it need not equal
  * the laptop's sha256. Pure: no DOM, no Intl, no Node.
+ *
+ * Not Intl, but ICU all the same: the `\p{Nd}` property escapes (ALL_DIGITS
+ * here, ND and INT_RE in py.ts) are ECMAScript 2018 regex syntax that V8
+ * answers from its ICU data. They stay for parity with Python's `int()`
+ * and `str.isdigit()`, which read any decimal digit, not only 0-9 (real
+ * DPI keys and versions are ASCII, where both agree). Every V8 with
+ * property escapes carries that data (the WebView's sandbox does), and one
+ * without them can't even parse the bundle, so a missing ICU fails loudly
+ * at load (the version check), never as a wrong label. bundle.test.ts runs
+ * every reference case through the bundle in a bare engine.
  */
 
 import { fieldValues, designFieldKeys } from './fields';
@@ -181,6 +191,7 @@ function readTemplates(templatesJson: string): TemplateSet {
   return { choices, byId };
 }
 
+/** Python's `str.isdigit()` for a DPI key (ASCII in practice; see the ICU note up top). */
 const ALL_DIGITS = /^\p{Nd}+$/u;
 
 /** generate.py `available_dpis`: the DPIs at which `pickTemplate` finds a
