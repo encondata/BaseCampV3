@@ -1,5 +1,6 @@
 package com.serversherpa.kiosk.data.labels
 
+import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.serversherpa.kiosk.core.labels.LabelBuildNeed
 import com.serversherpa.kiosk.core.labels.LabelBuildPhase
@@ -146,7 +147,8 @@ class LabelBuilderTest {
     @Before fun setUp() { db = KioskDatabase.inMemory(ApplicationProvider.getApplicationContext()) }
     @After fun tearDown() { scope.cancel(); db.close() }
 
-    private fun builder(batch: Int = 2) = LabelBuilder(db, engine, source, scope, batchSize = batch)
+    private fun builder(batch: Int = 2, planChunk: Int = LabelBuilder.PLAN_CHUNK) =
+        LabelBuilder(db, engine, source, scope, batchSize = batch, planChunk = planChunk)
 
     private fun payload(id: String, extra: String = "") = """{"id":"$id","asset_id":"A-$id","raw_ft":{"RU":12.0}$extra}"""
 
@@ -221,6 +223,64 @@ class LabelBuilderTest {
             """{"initiative_id":"i1","assets":[${payload("a3")}],"label_context":$context}""",
             second["assetsJson"]!!.jsonPrimitive.content,
         )
+    }
+
+    /** A large move's plan never crosses in one call: each `buildPlan` carries one chunk of
+     *  assets, and the plan they make together is the one a single call makes. */
+    @Test fun thePlanGoesInChunksAndEqualsTheWholeMovesPlan() = runBlocking<Unit> {
+        val ids = listOf("a1", "a2", "a3", "a4", "a5")
+        seed(ids, payloads = mapOf("a4" to payload("a4", ""","outcome":"no_template_at_dpi"""")))
+        val whole = builder(batch = 2, planChunk = 100)
+        whole.buildNow("sync")
+        val wholeBody = engine.calls.single { it.first == "buildPlan" }.second["assetsJson"]!!.jsonPrimitive.content
+        val wholeStatus = whole.status.value
+        val wholeRows = stored()
+
+        db.generatedLabels().deleteAll()
+        engine.calls.clear()
+        val chunked = builder(batch = 2, planChunk = 2)
+        chunked.buildNow("sync")
+
+        val plans = engine.calls.filter { it.first == "buildPlan" }.map { it.second["assetsJson"]!!.jsonPrimitive.content }
+        val perCall = plans.map { KioskJson.parseToJsonElement(it).jsonObject }
+        assertEquals(listOf(listOf("a1", "a2"), listOf("a3", "a4"), listOf("a5")),
+            perCall.map { b -> b["assets"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content } })
+        assertTrue(perCall.all { it["label_context"] is JsonObject })
+        assertTrue(plans.all { it.length < wholeBody.length })
+        assertEquals(wholeStatus, chunked.status.value)
+        assertEquals(wholeRows, stored())
+    }
+
+    @Test fun anEmptyMoveStillPlansOnceAndPrunesEverything() = runBlocking<Unit> {
+        seed(emptyList())
+        db.generatedLabels().upsert(listOf(GeneratedLabelEntity("gone", "^XA^XZ", "ok", "old", "t1")))
+        val b = builder(planChunk = 2)
+        b.buildNow("sync")
+        assertEquals(1, engine.count("buildPlan"))
+        assertEquals(LabelBuildPhase.DONE, b.status.value.phase)
+        assertTrue(stored().isEmpty())
+    }
+
+    /** A sync lands between two reads only if they are separate: the move, its label context, its
+     *  payloads and the templates are read in one transaction. */
+    @Test fun theBuildReadsTheMoveAndTheTemplatesInOneTransaction() = runBlocking<Unit> {
+        db.close()
+        val sql = java.util.Collections.synchronizedList(ArrayList<String>())
+        db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), KioskDatabase::class.java)
+            .allowMainThreadQueries().setQueryCallback({ q, _ -> sql += q }, Runnable::run).build()
+        seed(listOf("a1", "a2"))
+        sql.clear()
+
+        builder().buildNow("sync")
+
+        val log = synchronized(sql) { sql.toList() }
+        val payloads = log.indexOfFirst { it.startsWith("SELECT id, payload_json FROM assets") }
+        val templates = log.indexOfFirst { it.startsWith("SELECT * FROM label_templates") }
+        assertTrue(payloads >= 0 && templates >= 0)
+        val begin = log.subList(0, minOf(payloads, templates)).indexOfLast { it.startsWith("BEGIN") }
+        assertTrue("the reads are not in a transaction", begin >= 0)
+        val between = log.subList(begin, maxOf(payloads, templates))
+        assertTrue("a transaction ended between the reads: $between", between.none { it == "END TRANSACTION" })
     }
 
     @Test fun anUnchangedSecondBuildRendersNothing() = runBlocking<Unit> {

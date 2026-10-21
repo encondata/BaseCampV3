@@ -72,6 +72,25 @@ class LabelGenArgsTest {
         assertFalse(none.hasAssetData)
     }
 
+    @Test fun aPlanInChunksIsTheWholePlan() {
+        val head = LabelPlan("t1", "vegas", listOf("n1"), listOf("ROBOTO.TTF"), emptyList(), hasAssetData = true)
+        val a = head.copy(jobs = listOf(LabelPlanJob("a1", "f1"), LabelPlanJob("a2", "f2")))
+        val b = head.copy(jobs = listOf(LabelPlanJob("a3", "f3")))
+        assertEquals(head.copy(jobs = a.jobs + b.jobs), combinePlans(listOf(a, b)))
+        assertEquals(a, combinePlans(listOf(a)))
+        // Without asset data every chunk says so; the jobs stay empty.
+        val none = head.copy(hasAssetData = false)
+        assertEquals(none, combinePlans(listOf(none, none)))
+    }
+
+    @Test fun chunksThatDisagreeOnTheTemplateAreAnError() {
+        val a = LabelPlan("t1", "vegas", hasAssetData = true, jobs = listOf(LabelPlanJob("a1", "f1")))
+        assertThrows(LabelGenException::class.java) { combinePlans(listOf(a, a.copy(templateId = "t2"))) }
+        assertThrows(LabelGenException::class.java) { combinePlans(listOf(a, a.copy(fonts = listOf("X.TTF")))) }
+        assertThrows(LabelGenException::class.java) { combinePlans(listOf(a, a.copy(hasAssetData = false))) }
+        assertThrows(IllegalArgumentException::class.java) { combinePlans(emptyList()) }
+    }
+
     @Test fun parsesRenderedLabelsWithTheirZplIntact() {
         val zpl = "^XA^FO10,10^FH^FDCaf_c3_a9 \\& \"x\"^FS^XZ"
         // The label as JSON.stringify writes it: quotes and backslashes escaped.

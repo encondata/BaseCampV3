@@ -10,14 +10,18 @@ import com.serversherpa.kiosk.core.labels.LabelKind
 import com.serversherpa.kiosk.core.labels.LabelPick
 import com.serversherpa.kiosk.core.labels.LabelPlan
 import com.serversherpa.kiosk.core.labels.LabelSettings
+import com.serversherpa.kiosk.core.labels.combinePlans
 import com.serversherpa.kiosk.core.labels.parsePlan
 import com.serversherpa.kiosk.core.labels.parseRendered
 import com.serversherpa.kiosk.core.labels.tallyOutcomes
 import com.serversherpa.kiosk.data.api.KioskJson
+import com.serversherpa.kiosk.data.db.AssetPayload
 import com.serversherpa.kiosk.data.db.GeneratedLabelEntity
 import com.serversherpa.kiosk.data.db.KioskDatabase
 import com.serversherpa.kiosk.data.db.LABEL_CONTEXT_META_KEY
+import com.serversherpa.kiosk.data.db.LabelTemplateEntity
 import com.serversherpa.kiosk.data.sync.Sync
+import com.serversherpa.kiosk.data.sync.SyncMeta
 import com.serversherpa.kiosk.data.sync.SyncPhase
 import com.serversherpa.kiosk.data.sync.SyncStatus
 import kotlinx.coroutines.CancellationException
@@ -53,10 +57,12 @@ interface LabelSettingsSource {
  * then drop the labels of assets no longer on the move. A label stays printable until its new
  * version is stored, and a failed build keeps everything stored so far.
  *
- * `buildPlan` reads the whole move once. Each `renderLabels` call gets an assets body holding
- * only its batch: a label depends on its own asset, the move's `label_context` and the
- * templates, never on another asset, and the generator re-reads the bodies on every call, so a
- * full body per batch would make a large move quadratic.
+ * Every generator call gets an assets body holding only some of the move's assets: a job and
+ * a label depend on their own asset, the move's `label_context` and the templates, never on
+ * another asset. `buildPlan` goes in chunks of [planChunk] assets (a whole large move in one
+ * call can be tens of MB of text, too much for a low-memory handheld), and their plans make
+ * one ([combinePlans]). Each `renderLabels` call carries only its batch: the generator re-reads
+ * the bodies on every call, so a full body per batch would make a large move quadratic.
  *
  * One build at a time: a new request cancels the build in progress (and any request still
  * waiting) before it starts. A build never writes into a move that changed or was cleared
@@ -68,6 +74,7 @@ class LabelBuilder(
     private val settingsSource: LabelSettingsSource,
     private val scope: CoroutineScope,
     private val batchSize: Int = BATCH_SIZE,
+    private val planChunk: Int = PLAN_CHUNK,
 ) {
     private val _status = MutableStateFlow(LabelBuildStatus())
     val status: StateFlow<LabelBuildStatus> = _status
@@ -143,8 +150,16 @@ class LabelBuilder(
         }
         val settings = settingsSource.settings.first()
         val printer = settings.printer
-        val meta = Sync.readMeta(db)
-        val labelContext = db.meta().get(LABEL_CONTEXT_META_KEY)?.value
+        // One snapshot of the synced move, so a sync can't land between the reads (the payloads
+        // of one sync with the templates of the next); the payloads only when they'll be used.
+        val synced = db.withTransaction {
+            val meta = Sync.readMeta(db)
+            val labelContext = db.meta().get(LABEL_CONTEXT_META_KEY)?.value
+            if (meta == null || labelContext == null || printer == null) Synced(meta, labelContext)
+            else Synced(meta, labelContext, db.assets().payloads(), db.labelTemplates().all())
+        }
+        val meta = synced.meta
+        val labelContext = synced.labelContext
         if (meta == null || labelContext == null) {
             // Never synced, or not since the version 2 upgrade: keep whatever is stored.
             _pick.value = printer?.let { LabelPick(settings.kind, it.dpi, synced = false) }
@@ -158,12 +173,16 @@ class LabelBuilder(
         val kind = settings.kind
         val dpi = printer.dpi
 
-        val payloads = db.assets().payloads()
-        val templates = db.labelTemplates().all()
+        val payloads = synced.payloads
+        val templates = synced.templates
         val templatesJson = LabelGenArgs.templatesBody(templates.map { it.json })
-        val fullBody = LabelGenArgs.assetsBody(meta.initiativeId, payloads.map { it.payloadJson }, labelContext)
         val plan = try {
-            parsePlan(engine.call("buildPlan", LabelGenArgs.plan(fullBody, templatesJson, kind, dpi)))
+            // An empty move still plans once: the pick comes from the templates.
+            combinePlans(payloads.chunked(planChunk.coerceAtLeast(1)).ifEmpty { listOf(emptyList()) }.map { chunk ->
+                currentCoroutineContext().ensureActive()
+                val body = LabelGenArgs.assetsBody(meta.initiativeId, chunk.map { it.payloadJson }, labelContext)
+                parsePlan(engine.call("buildPlan", LabelGenArgs.plan(body, templatesJson, kind, dpi)))
+            })
         } catch (e: CancellationException) {
             throw e
         } catch (e: LabelEngineUnsupportedException) {
@@ -238,6 +257,11 @@ class LabelBuilder(
 
     private class MoveChanged : Exception()
 
+    private class Synced(
+        val meta: SyncMeta?, val labelContext: String?,
+        val payloads: List<AssetPayload> = emptyList(), val templates: List<LabelTemplateEntity> = emptyList(),
+    )
+
     /** The pick with the picked template's name and size read off its synced JSON. */
     private fun pickOf(kind: LabelKind, dpi: Int, templateJson: String?, plan: LabelPlan): LabelPick {
         val t = templateJson?.let { runCatching { KioskJson.parseToJsonElement(it).jsonObject }.getOrNull() }
@@ -260,6 +284,10 @@ class LabelBuilder(
          * moves and a print waits little behind a batch.
          */
         const val BATCH_SIZE = 200
+
+        /** Assets per `buildPlan` call: a few MB of payload text at most (From-To columns
+         *  included) where a whole move can be tens of MB. */
+        const val PLAN_CHUNK = 500
 
         /** Under SQLite's 999 bound parameters on older Android. */
         private const val DELETE_CHUNK = 500

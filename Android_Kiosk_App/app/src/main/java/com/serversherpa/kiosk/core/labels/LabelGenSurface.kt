@@ -116,6 +116,21 @@ private inline fun <T> decoding(block: () -> T): T = try {
 
 fun parsePlan(json: String): LabelPlan = decoding { SurfaceJson.decodeFromJsonElement(LabelPlan.serializer(), answer(json)) }
 
+/**
+ * One plan from the plans of a move's assets in chunks, in order. The template pick, its notes
+ * and fonts, the DPIs and whether there is asset data depend on the templates and the label
+ * context alone, never on which assets a chunk holds, so every chunk must agree on them
+ * ([LabelGenException] if not); a job depends on its own asset, so the jobs follow one another.
+ */
+fun combinePlans(chunks: List<LabelPlan>): LabelPlan {
+    require(chunks.isNotEmpty()) { "no plan to combine" }
+    val head = chunks.first().copy(jobs = emptyList())
+    if (chunks.any { it.copy(jobs = emptyList()) != head }) {
+        throw LabelGenException("the label generator planned the move's chunks differently")
+    }
+    return head.copy(jobs = chunks.flatMap { it.jobs })
+}
+
 fun parseRendered(json: String): List<RenderedLabel> =
     decoding { SurfaceJson.decodeFromJsonElement(RenderedLabels.serializer(), answer(json)).results }
 
