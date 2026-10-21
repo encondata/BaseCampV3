@@ -258,6 +258,11 @@ what shipped, the rulings made on the way and what is still open.
   ported on purpose (see the porting traps in section 4).
 - Fingerprints are cyrb53 over canonical JSON, not Python's sha256. They are
   device-local, so they only need to be stable here.
+- Digit checks use `\p{Nd}` regex property escapes (Python's `int()` and
+  `isdigit()` read any decimal digit). That is ES2018 syntax, not `Intl`, but
+  V8 answers it from ICU data; a V8 without it can't parse the bundle, so the
+  failure is loud (the version check), never a wrong label. The header of
+  `plan.ts` says so.
 
 ### Reference labels
 
@@ -288,8 +293,10 @@ what shipped, the rulings made on the way and what is still open.
   Gradle build needs no Node.
 - `bundle.test.ts` fails when the committed file differs from a fresh build
   ("run npm --prefix kiosk run build:labelgen"), greps it for anything outside
-  the ES built-ins, and runs it in a bare `vm` context with every host global
-  deleted, comparing one reference case.
+  the ES built-ins and host globals (`setTimeout`, `setInterval`,
+  `structuredClone`, `atob`, `btoa`, `queueMicrotask`, `console`), and runs
+  every reference case through it in a bare `vm` context with every host
+  global deleted, by the JSON surface alone (plan, fingerprints and labels).
 - The IIFE is named `labelgenModule`, not `labelgen`, so it cannot overwrite
   `globalThis.labelgen`.
 
@@ -315,12 +322,33 @@ what shipped, the rulings made on the way and what is still open.
   move. A batch carries only its own payloads (verified equal on all 243
   reference labels), which keeps render time linear: about 2.9 s for 8,000
   assets on a Mac, versus 20 s with the full body per batch.
+  - The move meta, label context, payloads and templates are read in one
+    Room transaction, so a sync can't land between the reads.
+  - `buildPlan` goes in chunks of 500 assets (`PLAN_CHUNK`), never the whole
+    move in one call: an 8,000-asset move with From-To columns can be 10 to
+    20 MB of text, enough to run a low-memory handheld's isolate out of
+    memory on every try. The template pick, notes, fonts, DPIs and
+    `hasAssetData` depend only on the templates and the label context, so
+    `combinePlans` requires every chunk to agree on them (an error if not)
+    and concatenates the jobs in order. An empty move still plans once.
   - Bounded transfers: without `EVALUATE_WITHOUT_TRANSACTION_LIMIT`, arguments
     and results move in 64K-character pieces measured after escaping, never
     splitting a surrogate pair, and batches shrink to 50.
-  - Timeouts: 120 s plan, 60 s render, 5 s print helpers, 30 s connect. A
-    timeout closes the isolate and sandbox (closing is what stops the
-    script); a dead sandbox is replaced and the call retried once.
+  - Timeouts: 120 s plan (per chunk), 60 s render, 5 s print helpers, 30 s
+    connect. A timeout closes the isolate and sandbox (closing is what stops
+    the script); a dead sandbox is replaced and the call retried once.
+  - One sandbox per process: javascriptengine binds one sandbox at a time
+    and fails every other connect ("Binding to already bound service")
+    until it is closed. A connect given up on (cancelled, or past the 30 s
+    connect timeout) is left to finish rather than cancelled (cancelling the
+    future unbinds without freeing the library's flag), its sandbox is closed
+    as it arrives, and the next connect waits for that first
+    (`FutureConnector`). An "already bound" failure counts as a dead sandbox:
+    retried once, and every later call tries again.
+  - The isolate gets a 512 MB heap cap where the sandbox supports one
+    (`JS_FEATURE_ISOLATE_MAX_HEAP_SIZE`), so a runaway ends as a terminated
+    isolate rather than a crashed sandbox process. `maxBatch()` connects
+    first, so it never answers an unbounded batch before the first call.
   - Cancel safety: a new `rebuild()` cancels the running one at once; every
     write re-reads the move meta in the same transaction and aborts if the
     move changed or was cleared. A kind or DPI change rebuilds on its own; a
@@ -374,8 +402,13 @@ what shipped, the rulings made on the way and what is still open.
 - The printer serial comes from the read-only `getvar "device.unique_id"`,
   sent only after `~HI` named a Zebra, because `~HI` has no serial. Cost: one
   extra query per printer; the reply format is unconfirmed on the ZD421.
-- Every print scan is refused while a label build runs (laptop parity).
-  Cost: short waits after a sync.
+- Every print scan is refused while a label build runs (laptop parity),
+  "Labels are being prepared." during the plan step and "Labels are still
+  being made (n of m)." after. Cost: short waits after a sync.
+- Every print scan is also refused while a sync runs ("This kiosk is
+  syncing. Labels will be ready shortly."): the build that follows hasn't
+  started, so a stored label may be for the data the sync replaces. Cost:
+  no printing for the length of a sync.
 - The Labeled scan's time is the enqueue time (`EnqueueInput` has no scan
   time; a Retry records the retry time). Cost: `scanned_at` is off by the
   print or retry delay.
@@ -409,10 +442,9 @@ what shipped, the rulings made on the way and what is still open.
 - **Test gaps:** no Compose tests for the Print Labels, Labels home, Printer
   Setup or test-label screens (the view models and queue are tested). A
   kiosk test should pin that a label depends only on its own asset, the
-  context and the templates, since batches rely on it. The committed bundle
-  should be run over every reference case in the bare `vm`, and the
-  host-global ban list extended (`setTimeout`, `structuredClone`, `atob`,
-  `btoa`, `queueMicrotask`).
+  context and the templates, since batches and plan chunks rely on it. The
+  sandbox recovery and the heap cap are unit-tested over fakes only; the
+  real library's behavior needs the emulator check above.
 - **Deferred minors worth naming:**
   - A build ERROR leaves changed-but-unrendered rows printing their old ZPL
     (the laptop does too; the header shows the error).
@@ -423,11 +455,10 @@ what shipped, the rulings made on the way and what is still open.
     lists (an edge and portal parity gap).
   - A Room read failure before `buildPlan` still leaves the DPI check
     waiting its full 30 s; a stale failed pick can show briefly after a resync.
-  - A refusal during the plan step reads "(0 of 0)"; "Labels are being
-    prepared" would be clearer.
   - Printer Setup has no Cancel for a running scan (leaving cancels it).
-  - Memory: large asset bodies are held about 3 to 4 times over during sync
-    and double-escaped in the engine call; watch it on low-memory handhelds.
+  - Memory: large asset bodies are held about 3 to 4 times over during sync;
+    each engine call is now one plan chunk or one render batch, but the
+    payloads are still all in memory on the Kotlin side during a build.
   - `zebraSession` maps only `IOException`; runtime exceptions from a block
     escape raw on chosen-printer calls.
   - A plain coroutine cancellation does not stop a running script; it ends
