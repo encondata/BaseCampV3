@@ -25,3 +25,13 @@ data class LabelSettings(
     val offsetY: Int = 0,
     val peel: Boolean = false,
 )
+
+/** The label settings that live under the `ss.kiosk.labels` key: everything in [LabelSettings]
+ *  except the kind, which is saved with the Kiosk Setup selection. */
+@Serializable
+data class LabelOptions(
+    val printer: SavedPrinter? = null,
+    val offsetX: Int = 0,
+    val offsetY: Int = 0,
+    val peel: Boolean = false,
+)

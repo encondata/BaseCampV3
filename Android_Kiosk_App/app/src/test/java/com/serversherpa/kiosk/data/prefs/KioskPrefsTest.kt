@@ -1,6 +1,7 @@
 package com.serversherpa.kiosk.data.prefs
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.core.settings.CheckpointId
@@ -65,6 +66,21 @@ class KioskPrefsTest {
         assertEquals("http://10.0.2.2:8000", prefs.apiUrl.first())
         assertEquals("kiosk-android-x", prefs.serial.first()); assertEquals("Dock 4", prefs.name.first())
         prefs.setSetupSelection(null); assertNull(prefs.setupSelection.first())
+    }
+
+    /** A selection saved before the Top/Front step has no labelKind: it reads as "top". */
+    @Test fun aSelectionSavedBeforeTheLabelStepReadsAsTop() = runBlocking {
+        val raw = """{"initiativeId":"i","initiativeName":"Move","siteId":"s","siteName":"Site","siteRole":"source","scanStatus":"pre_stage","scanLabel":"Pre-stage"}"""
+        androidx.datastore.preferences.core.PreferenceDataStoreFactory.create(scope = scope) { File(tmp.root, "old.preferences_pb") }.let { store ->
+            store.edit { it[stringPreferencesKey("ss.kiosk.setup")] = raw }
+            assertEquals("top", KioskPrefs(store).setupSelection.first()?.labelKind)
+        }
+    }
+
+    @Test fun labelKindRoundTripsInTheSelection() = runBlocking {
+        val sel = KioskSetupSelection("i", "Move", "s", "Site", "source", "pre_stage", "Pre-stage", labelKind = "front")
+        prefs.setSetupSelection(sel)
+        assertEquals("front", prefs.setupSelection.first()?.labelKind)
     }
 
     /** Same stored shape as the web kiosk's setupClear.ts: all three fields, even at their defaults. */

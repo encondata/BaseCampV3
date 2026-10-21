@@ -10,7 +10,6 @@ import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
-import com.serversherpa.kiosk.core.labels.LabelSettings
 import com.serversherpa.kiosk.data.api.AndroidSecretStore
 import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.data.api.OkHttpKioskApi
@@ -27,7 +26,7 @@ import com.serversherpa.kiosk.data.identity.Identity
 import com.serversherpa.kiosk.data.labels.LabelBuilder
 import com.serversherpa.kiosk.data.labels.LabelEngine
 import com.serversherpa.kiosk.data.labels.LabelGenerator
-import com.serversherpa.kiosk.data.labels.LabelSettingsSource
+import com.serversherpa.kiosk.data.labels.LabelSettingsStore
 import com.serversherpa.kiosk.data.outbox.Outbox
 import com.serversherpa.kiosk.data.outbox.RoomOutboxStore
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
@@ -49,7 +48,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
@@ -84,9 +82,7 @@ class AppContainer(
     val auth = KioskAuth(api, session, identity, scope)
     val sync = Sync(api, db, scope, fontsDir = File(app.filesDir, "label-fonts"))
     val labelEngine: LabelEngine = LabelGenerator(app)
-    // No printer can be saved yet, so builds stop at "a printer is needed" until the label
-    // settings store takes this place.
-    private val labelSettings = object : LabelSettingsSource { override val settings = flowOf(LabelSettings()) }
+    val labelSettings = LabelSettingsStore(prefs)
     val labelBuilder = LabelBuilder(db, labelEngine, labelSettings, scope)
     val outbox = Outbox(RoomOutboxStore(db.outbox()), api, identity, scope)
     val hasDataWedge: Boolean = DataWedge.isPresent(app)

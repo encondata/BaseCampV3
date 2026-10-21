@@ -35,6 +35,8 @@ data class SetupUi(
     val loadError: Boolean = false,
     val step: Int = 1,
     val initiativeId: String = "", val siteId: String = "", val scanStatus: String = "",
+    /** The last step's choice, "top" or "front"; Top until picked. */
+    val labelKind: String = "top",
     val submitting: Boolean = false, val submitError: String? = null,
 )
 
@@ -53,7 +55,7 @@ fun formatMoveDates(i: SetupOptionInitiative): String? {
     }
 }
 
-/** kiosk/src/pages/KioskSetup.tsx: Move → Site → Scan type, then the summary. */
+/** kiosk/src/pages/KioskSetup.tsx: Move → Site → Scan type, then (here only) what labels print on, then the summary. */
 class KioskSetupViewModel(
     private val api: KioskApi, private val prefs: KioskPrefs, private val identity: Identity,
     private val sync: Sync, scopeOverride: CoroutineScope? = null,
@@ -91,7 +93,7 @@ class KioskSetupViewModel(
     }
 
     private fun restartWizard() {
-        _state.update { it.copy(wizardOpen = true, step = 1, submitError = null, initiativeId = "", siteId = "", scanStatus = "") }
+        _state.update { it.copy(wizardOpen = true, step = 1, submitError = null, initiativeId = "", siteId = "", scanStatus = "", labelKind = "top") }
         load()
     }
 
@@ -117,8 +119,8 @@ class KioskSetupViewModel(
     fun openWizard(preselect: Boolean) {
         val sel = selection.value
         _state.update {
-            if (preselect && sel != null) it.copy(wizardOpen = true, step = 1, submitError = null, initiativeId = sel.initiativeId, siteId = sel.siteId, scanStatus = sel.scanStatus)
-            else it.copy(wizardOpen = true, step = 1, submitError = null, initiativeId = "", siteId = "", scanStatus = "")
+            if (preselect && sel != null) it.copy(wizardOpen = true, step = 1, submitError = null, initiativeId = sel.initiativeId, siteId = sel.siteId, scanStatus = sel.scanStatus, labelKind = sel.labelKind)
+            else it.copy(wizardOpen = true, step = 1, submitError = null, initiativeId = "", siteId = "", scanStatus = "", labelKind = "top")
         }
         load()
     }
@@ -126,6 +128,7 @@ class KioskSetupViewModel(
     fun cancelWizard() = _state.update { it.copy(wizardOpen = false) }
     fun selectMove(id: String) = _state.update { it.copy(initiativeId = id, siteId = if (id != it.initiativeId) "" else it.siteId, step = 2) }
     fun selectSite(id: String) = _state.update { it.copy(siteId = id, step = 3) }
+    fun selectScanType(key: String) = _state.update { it.copy(scanStatus = key, step = 4) }
     fun back() = _state.update { it.copy(step = (it.step - 1).coerceAtLeast(1)) }
 
     fun siteChoices(): List<Pair<SetupOptionSite, String>> {
@@ -133,13 +136,15 @@ class KioskSetupViewModel(
         return listOfNotNull(init.source_site?.let { it to "source" }, init.destination_site?.let { it to "destination" })
     }
 
-    fun finish(scanKey: String) {
+    /** The last step: saves the setup with the chosen label kind. */
+    fun finish(labelKind: String) {
         val ui = _state.value
-        _state.update { it.copy(scanStatus = scanKey, submitting = true, submitError = null) }
+        val scanKey = ui.scanStatus
+        _state.update { it.copy(labelKind = labelKind, submitting = true, submitError = null) }
         scope.launch {
             try {
                 val result = api.submitSetup(KioskSetupIn(identity.get().serial, ui.initiativeId, ui.siteId, scanKey))
-                prefs.setSetupSelection(KioskSetupSelection(result.initiative_id, result.initiative_name, result.site_id, result.site_name, result.site_role, result.scan_status, result.scan_status_label))
+                prefs.setSetupSelection(KioskSetupSelection(result.initiative_id, result.initiative_name, result.site_id, result.site_name, result.site_role, result.scan_status, result.scan_status_label, labelKind))
                 prefs.setSetupState(SetupState.COMPLETE)
                 prefs.dismissSetupClearNotice()   // set up again: the "administrator cleared" banner goes
                 _state.update { it.copy(submitting = false, wizardOpen = false) }
