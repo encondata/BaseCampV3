@@ -2,6 +2,7 @@ package com.serversherpa.kiosk.data.labels
 
 import android.content.Context
 import android.util.Log
+import androidx.javascriptengine.IsolateStartupParameters
 import androidx.javascriptengine.IsolateTerminatedException
 import androidx.javascriptengine.JavaScriptIsolate
 import androidx.javascriptengine.JavaScriptSandbox
@@ -34,8 +35,9 @@ interface LabelEngine {
     /** False when this device can't run the generator at all. */
     fun isSupported(): Boolean = true
 
-    /** The most assets one `renderLabels` call should carry on this engine. */
-    fun maxBatch(): Int = Int.MAX_VALUE
+    /** The most assets one `renderLabels` call should carry on this engine (a generator connects
+     *  first to know). */
+    suspend fun maxBatch(): Int = Int.MAX_VALUE
 }
 
 /** This device can't run the label generator (its system WebView has no JavaScript sandbox). */
@@ -165,7 +167,7 @@ class LabelGenerator internal constructor(
     private val connectTimeoutMs: Long = CONNECT_TIMEOUT_MS,
 ) : LabelEngine {
     constructor(context: Context) : this(
-        SandboxConnector(context.applicationContext),
+        sandboxConnector(context.applicationContext),
         bundle = { withContext(Dispatchers.IO) { context.applicationContext.assets.open(BUNDLE).bufferedReader().use { it.readText() } } },
         supported = { JavaScriptSandbox.isSupported() },
     )
@@ -175,29 +177,35 @@ class LabelGenerator internal constructor(
 
     override fun isSupported(): Boolean = supported()
 
-    /** Smaller batches where every crossing goes in pieces (known once connected). */
-    override fun maxBatch(): Int = if (isolate?.unlimited == false) LIMITED_BATCH else Int.MAX_VALUE
+    /** Smaller batches where every crossing goes in pieces. Only the connected sandbox knows, so
+     *  this connects first (never an unbounded guess before the first call). */
+    override suspend fun maxBatch(): Int = withIsolate("maxBatch") { if (it.unlimited) Int.MAX_VALUE else LIMITED_BATCH }
 
     override suspend fun call(fn: String, argsJson: String): String {
         require(fn in LabelScripts.FUNCTIONS) { "not a label generator function: $fn" }
+        return withIsolate(fn) { iso ->
+            if (iso.unlimited) iso.evaluate(LabelScripts.direct(fn, argsJson))
+            else LabelScripts.bounded(fn, argsJson, PIECE_CHARS, iso::evaluate)
+        }
+    }
+
+    /** Runs [work] on the connected isolate, one at a time; a dead sandbox gets one more try. */
+    private suspend fun <T> withIsolate(fn: String, work: suspend (JsIsolate) -> T): T {
         if (!isSupported()) throw LabelEngineUnsupportedException()
         return mutex.withLock {
             try {
-                once(fn, argsJson)
+                once(fn, work)
             } catch (e: LabelEngineDeadException) {
                 Log.w(TAG, "label generator stopped during $fn; trying once more", e)
-                once(fn, argsJson)
+                once(fn, work)
             }
         }
     }
 
     /** One try; any failure but a plain cancellation shuts the sandbox down. */
-    private suspend fun once(fn: String, argsJson: String): String = try {
+    private suspend fun <T> once(fn: String, work: suspend (JsIsolate) -> T): T = try {
         val iso = isolate ?: withTimeout(connectTimeoutMs) { start() }.also { isolate = it }
-        withTimeout(timeoutMs(fn)) {
-            if (iso.unlimited) iso.evaluate(LabelScripts.direct(fn, argsJson))
-            else LabelScripts.bounded(fn, argsJson, PIECE_CHARS, iso::evaluate)
-        }
+        withTimeout(timeoutMs(fn)) { work(iso) }
     } catch (e: TimeoutCancellationException) {
         if (!currentCoroutineContext().isActive) throw e // the caller's own deadline, not ours
         Log.w(TAG, "label generator call $fn timed out; shutting the sandbox down")
@@ -246,6 +254,11 @@ class LabelGenerator internal constructor(
 
         const val CONNECT_TIMEOUT_MS = 30_000L
 
+        /** The isolate's heap cap, where the sandbox takes one: generous (a build plans and
+         *  renders in chunks, tens of MB at most), so a runaway ends as a terminated isolate,
+         *  tried once more, rather than taking the sandbox process down. */
+        const val MAX_HEAP_BYTES = 512L * 1024 * 1024
+
         /** Generous for the build (a plan of a large move on a slow handheld), short for the
          *  print helpers (milliseconds of work: a print never waits long on a stuck sandbox). */
         fun defaultTimeoutMs(fn: String): Long = when (fn) {
@@ -256,22 +269,74 @@ class LabelGenerator internal constructor(
     }
 }
 
-private class SandboxConnector(private val app: Context) : JsConnector {
+/**
+ * Connects through an asynchronous sandbox factory (on the device,
+ * `JavaScriptSandbox.createConnectedInstanceAsync`). The library binds ONE sandbox per process:
+ * until that sandbox is closed, every other connect fails ("Binding to already bound service").
+ *
+ * So a connect given up on (its caller cancelled, or past the connect deadline) is left to
+ * finish, never cancelled (cancelling the future unbinds without freeing the library's binding
+ * flag), and whatever sandbox it delivers is closed on arrival. The next connect waits for it
+ * first. An "already bound" failure counts as a dead sandbox: the call is tried once more, and
+ * every later call tries again.
+ *
+ * [closeSandbox] must be safe to call twice. [open] makes the isolate on a connected sandbox;
+ * when it throws, the sandbox is closed. Connects never overlap (the generator's lock).
+ */
+internal class FutureConnector<S : Any>(
+    private val connectAsync: () -> ListenableFuture<S>,
+    private val closeSandbox: (S) -> Unit,
+    private val open: (S) -> JsIsolate,
+) : JsConnector {
+    /** A connect nobody waits for any more, still binding. */
+    @Volatile private var abandoned: ListenableFuture<S>? = null
+
     override suspend fun connect(): JsIsolate {
+        abandoned?.let { pending ->
+            val late = try {
+                pending.awaitOrClose(closeSandbox)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null // it failed: nothing bound
+            }
+            late?.let(closeSandbox)
+            abandoned = null
+        }
         val sandbox = try {
-            JavaScriptSandbox.createConnectedInstanceAsync(app).await()
+            val future = connectAsync()
+            future.awaitOrClose(closeSandbox, onAbandon = { abandoned = future })
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: SandboxUnsupportedException) {
             throw LabelEngineUnsupportedException()
+        } catch (e: IllegalStateException) {
+            if (e.message?.contains("already bound") == true) throw LabelEngineDeadException(e)
+            throw e
         }
         return try {
-            val unlimited = sandbox.isFeatureSupported(JavaScriptSandbox.JS_FEATURE_EVALUATE_WITHOUT_TRANSACTION_LIMIT)
-            SandboxIsolate(sandbox, sandbox.createIsolate(), unlimited)
+            open(sandbox)
         } catch (e: Exception) {
-            sandbox.close()
+            closeSandbox(sandbox)
             throw e
         }
     }
 }
+
+/** The device's sandbox. Its isolate is made synchronously (`createIsolate`), so only the
+ *  connect can be left in flight. */
+private fun sandboxConnector(app: Context) = FutureConnector(
+    connectAsync = { JavaScriptSandbox.createConnectedInstanceAsync(app) },
+    closeSandbox = { runCatching { it.close() } },
+    open = { sandbox ->
+        val unlimited = sandbox.isFeatureSupported(JavaScriptSandbox.JS_FEATURE_EVALUATE_WITHOUT_TRANSACTION_LIMIT)
+        val params = IsolateStartupParameters()
+        if (sandbox.isFeatureSupported(JavaScriptSandbox.JS_FEATURE_ISOLATE_MAX_HEAP_SIZE)) {
+            params.maxHeapSizeBytes = LabelGenerator.MAX_HEAP_BYTES
+        }
+        SandboxIsolate(sandbox, sandbox.createIsolate(params), unlimited)
+    },
+)
 
 private class SandboxIsolate(
     private val sandbox: JavaScriptSandbox,
@@ -293,14 +358,27 @@ private class SandboxIsolate(
 }
 
 /** A ListenableFuture as a suspend call; the failure is the future's own cause. */
-private suspend fun <T> ListenableFuture<T>.await(): T = suspendCancellableCoroutine { cont ->
-    addListener({
-        try {
-            cont.resume(get())
-        } catch (e: ExecutionException) {
-            cont.resumeWithException(e.cause ?: e)
-        } catch (e: Exception) {
-            cont.resumeWithException(e)
-        }
-    }, Runnable::run)
-}
+private suspend fun <T> ListenableFuture<T>.await(): T = awaitOrClose(close = {})
+
+/**
+ * [await] for a future that delivers something to close. When the caller stops waiting (it was
+ * cancelled, or it was cancelled just as the value arrived), the future runs on and [close] gets
+ * what it delivers; [onAbandon] says so at once.
+ */
+internal suspend fun <T> ListenableFuture<T>.awaitOrClose(close: (T) -> Unit, onAbandon: () -> Unit = {}): T =
+    suspendCancellableCoroutine { cont ->
+        cont.invokeOnCancellation { onAbandon() }
+        addListener({
+            val value = try {
+                get()
+            } catch (e: ExecutionException) {
+                cont.resumeWithException(e.cause ?: e)
+                return@addListener
+            } catch (e: Exception) {
+                cont.resumeWithException(e)
+                return@addListener
+            }
+            // Called when the caller was already cancelled or is cancelled before it resumes.
+            cont.resume(value) { _ -> close(value) }
+        }, Runnable::run)
+    }

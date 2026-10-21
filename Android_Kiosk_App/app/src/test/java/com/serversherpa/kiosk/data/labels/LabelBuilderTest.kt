@@ -75,7 +75,7 @@ class FakeLabelEngine : LabelEngine {
         private set
 
     override fun isSupported(): Boolean = supported
-    override fun maxBatch(): Int = maxBatchValue
+    override suspend fun maxBatch(): Int = maxBatchValue
 
     override suspend fun call(fn: String, argsJson: String): String {
         if (unsupportedOnCall) throw LabelEngineUnsupportedException()
