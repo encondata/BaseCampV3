@@ -1,5 +1,7 @@
 package com.serversherpa.kiosk.core.labels
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -18,6 +20,9 @@ class PrintQueueTest {
         var label: (Asset) -> PrintStep = { PrintStep.Ready("^XA^FD${it.id}^FS^XZ") },
         var failSends: Int = 0,
         var failRecord: Boolean = false,
+        /** Runs inside each send, before it succeeds or fails. */
+        var onSend: suspend () -> Unit = {},
+        var sendError: () -> Exception = { java.io.IOException("connect timed out") },
     ) : PrintQueueDeps<Asset> {
         val prepared = ArrayList<String>()
         val sent = ArrayList<Pair<String, String>>()
@@ -29,7 +34,8 @@ class PrintQueueTest {
             return PrintStep.Ready("[${settings.offsetX},${settings.offsetY},${settings.peel}]$zpl")
         }
         override suspend fun send(host: String, zpl: String) {
-            if (failSends > 0) { failSends--; throw java.io.IOException("connect timed out") }
+            onSend()
+            if (failSends > 0) { failSends--; throw sendError() }
             sent += host to zpl
         }
         override suspend fun record(asset: Asset, scannedValue: String) {
@@ -149,7 +155,8 @@ class PrintQueueTest {
 
     @Test fun aRecordThatFailsKeepsThePrintAndWarns() = runTest {
         val deps = Deps(failRecord = true)
-        val q = queue(deps)
+        val logged = ArrayList<String>()
+        val q = PrintQueue(deps, now = { "t" }, log = { message, _ -> logged += message })
         val e = q.scan(Asset("a1"), "A-1")
         assertEquals(PrintState.PRINTED, e.state)
         assertFalse(e.recorded)
@@ -157,6 +164,31 @@ class PrintQueueTest {
         // A printed entry has nothing to retry.
         assertNull(q.retry(e.id))
         assertEquals(1, deps.sent.size)
+        assertEquals(listOf("couldn't record the Labeled scan"), logged)
+    }
+
+    @Test fun aLabelThatGoesOutAsTheScreenClosesStillRecordsOnce() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val atSend = CompletableDeferred<Unit>()
+        val deps = Deps(onSend = { atSend.complete(Unit); gate.await() })
+        val q = queue(deps)
+        val job = launch { q.scan(Asset("a1"), "A-1") }
+        atSend.await()
+        job.cancel()
+        assertTrue(deps.recorded.isEmpty())
+        gate.complete(Unit)
+        job.join()
+        assertEquals(1, deps.sent.size)
+        assertEquals(listOf(Asset("a1") to "A-1"), deps.recorded)
+        assertEquals(PrintState.PRINTED, q.entries.value[0].state)
+    }
+
+    @Test fun aSendThatTimesOutSaysTheLabelMayHavePrinted() = runTest {
+        val deps = Deps(failSends = 1, sendError = { LabelSendTimeout() })
+        val e = queue(deps).scan(Asset("a1"), "A-1")
+        assertEquals(PrintState.FAILED, e.state)
+        assertEquals("The printer didn't finish answering. It may have printed the label — check before you retry.", e.message)
+        assertTrue(deps.recorded.isEmpty())
     }
 
     @Test fun aPrepareFailureShowsItsMessage() = runTest {
@@ -189,12 +221,17 @@ class PrintQueueTest {
         assertEquals(PrintStep.Ready("^XA^XZ"), step)
     }
 
-    @Test fun whileRunningAStoredLabelOfTheSameTemplatePrintsButAnotherTemplatesWaits() {
+    /** Laptop parity: its edge refuses every label while its runner runs. */
+    @Test fun whileLabelsAreBeingMadeNoStoredLabelPrints() {
+        val waiting = PrintStep.Refused("Labels are still being made (1 of 4).")
         val running = LabelBuildStatus(LabelBuildPhase.RUNNING, done = 1, total = 4, templateId = "t2")
-        assertEquals(PrintStep.Ready("^XA^XZ"), labelFor(StoredLabel("^XA^XZ", OUTCOME_OK, "t2"), running))
+        assertEquals(waiting, labelFor(StoredLabel("^XA^XZ", OUTCOME_OK, "t2"), running))
+        assertEquals(waiting, labelFor(StoredLabel("^XA^XZ", OUTCOME_OK, "t1"), running))
+        assertEquals(waiting, labelFor(StoredLabel(null, NO_TEMPLATE_AT_DPI, "t2"), running))
+        // The plan step: no template picked yet.
         assertEquals(
-            PrintStep.Refused("Labels are still being made (1 of 4)."),
-            labelFor(StoredLabel("^XA^XZ", OUTCOME_OK, "t1"), running),
+            PrintStep.Refused("Labels are still being made (0 of 0)."),
+            labelFor(StoredLabel("^XA^XZ", OUTCOME_OK, "t2"), LabelBuildStatus(LabelBuildPhase.RUNNING)),
         )
     }
 

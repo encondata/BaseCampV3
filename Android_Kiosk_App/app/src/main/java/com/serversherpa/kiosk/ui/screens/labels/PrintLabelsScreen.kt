@@ -61,21 +61,22 @@ import com.serversherpa.kiosk.ui.theme.LocalKioskColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** How the header names each reason a label couldn't be made. */
-private val PROBLEM_NAMES = mapOf(
-    NO_TEMPLATE_AT_DPI to "no template at this DPI",
-    TEMPLATE_FAILED to "template couldn't be built",
-    TEMPLATE_UNSUPPORTED to "needs an app update",
+/** How the header describes the assets left without a label, by reason. */
+private val PROBLEM_PHRASES = mapOf(
+    NO_TEMPLATE_AT_DPI to "with no template at this DPI",
+    TEMPLATE_FAILED to "whose template couldn't be built",
+    TEMPLATE_UNSUPPORTED to "whose template needs an app update",
 )
 
-/** "12 labels ready · 3 without a label: no template at this DPI 2, template couldn't be built 1". */
+/** "12 labels ready · 2 with no template at this DPI, 1 whose template couldn't be built". */
 internal fun readySummary(build: LabelBuildStatus): String {
     val ready = "${build.ready} ${if (build.ready == 1) "label" else "labels"} ready"
-    val missing = build.problems.values.sum()
-    if (missing == 0) return ready
-    val why = build.problems.entries.joinToString(", ") { (code, n) -> "${PROBLEM_NAMES[code] ?: code} $n" }
-    return "$ready · $missing without a label: $why"
+    val problems = build.problems.filterValues { it > 0 }
+    if (problems.isEmpty()) return ready
+    return "$ready · " + problems.entries.joinToString(", ") { (code, n) -> "$n ${PROBLEM_PHRASES[code] ?: "with no label"}" }
 }
+
+internal const val BUILD_FAILED_TEXT = "Labels couldn't be made. Try syncing again."
 
 internal fun statusText(e: PrintEntry<*>): String = when (e.state) {
     PrintState.QUEUED -> "Waiting to print"
@@ -182,7 +183,8 @@ private fun LabelStatus(
             modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
         )
     }
-    if (build.phase == LabelBuildPhase.ERROR) KioskToast("Labels couldn't be made: ${build.error ?: "unknown error"}", error = true)
+    // LabelBuilder logs the cause.
+    if (build.phase == LabelBuildPhase.ERROR) KioskToast(BUILD_FAILED_TEXT, error = true)
     if (build.needs == null && build.phase != LabelBuildPhase.IDLE) {
         Text(readySummary(build), fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, color = c.textMute, modifier = Modifier.padding(vertical = 6.dp))
     }

@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.serversherpa.kiosk.core.labels.DEVICE_UNSUPPORTED_TEXT
 import com.serversherpa.kiosk.core.labels.LabelBuildStatus
 import com.serversherpa.kiosk.core.labels.LabelGenArgs
+import com.serversherpa.kiosk.core.labels.LabelSendTimeout
 import com.serversherpa.kiosk.core.labels.LabelSettings
 import com.serversherpa.kiosk.core.labels.PREPARE_FAILED_TEXT
 import com.serversherpa.kiosk.core.labels.PrintEntry
@@ -30,6 +31,7 @@ import com.serversherpa.kiosk.data.labels.LabelEngineUnsupportedException
 import com.serversherpa.kiosk.data.labels.LabelSettingsSource
 import com.serversherpa.kiosk.data.outbox.Outbox
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
+import com.serversherpa.kiosk.data.printer.PrinterTimeout
 import com.serversherpa.kiosk.data.sync.Sync
 import com.serversherpa.kiosk.data.sync.SyncPhase
 import com.serversherpa.kiosk.ui.flash.FlashController
@@ -104,7 +106,11 @@ class PrintLabelsViewModel(
             PrintStep.Refused(PREPARE_FAILED_TEXT)
         }
 
-        override suspend fun send(host: String, zpl: String) = sender.send(host, zpl)
+        override suspend fun send(host: String, zpl: String) = try {
+            sender.send(host, zpl)
+        } catch (e: PrinterTimeout) {
+            throw LabelSendTimeout(e)
+        }
 
         override suspend fun record(asset: AssetEntity, scannedValue: String) {
             val sel = setup ?: throw IllegalStateException("no setup selection")
@@ -113,7 +119,7 @@ class PrintLabelsViewModel(
                 siteId = sel.siteId, initiativeId = sel.initiativeId, scanStatus = LABELED,
             ))
         }
-    }, now = { Instant.now().toString() })
+    }, now = { Instant.now().toString() }, log = { message, e -> android.util.Log.w(TAG, message, e) })
 
     /** Newest first. */
     val entries: StateFlow<List<PrintEntry<AssetEntity>>> = queue.entries

@@ -22,6 +22,7 @@ import com.serversherpa.kiosk.data.labels.LabelEngineUnsupportedException
 import com.serversherpa.kiosk.data.labels.LabelSettingsSource
 import com.serversherpa.kiosk.data.outbox.MemoryOutboxStore
 import com.serversherpa.kiosk.data.outbox.Outbox
+import com.serversherpa.kiosk.data.printer.PrinterTimeout
 import com.serversherpa.kiosk.data.printer.PrinterUnreachable
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import com.serversherpa.kiosk.data.sync.Sync
@@ -82,7 +83,7 @@ class PrintLabelsViewModelTest {
     private class Harness(
         val vm: PrintLabelsViewModel, val db: KioskDatabase, val outbox: Outbox, val engine: PrintHelperEngine,
         val sent: MutableList<Pair<String, String>>, val status: MutableStateFlow<LabelBuildStatus>,
-        val sendFailures: IntArray,
+        val sendFailures: IntArray, val timeoutSends: BooleanArray,
     )
 
     private suspend fun TestScope.harness(name: String, settings: LabelSettings = LabelSettings(printer = printer, offsetX = 4, offsetY = -2, peel = true)): Harness {
@@ -102,15 +103,19 @@ class PrintLabelsViewModelTest {
         val engine = PrintHelperEngine()
         val sent = ArrayList<Pair<String, String>>()
         val sendFailures = intArrayOf(0)
+        val timeoutSends = booleanArrayOf(false)
         val status = MutableStateFlow(LabelBuildStatus(LabelBuildPhase.DONE, ready = 1, problems = mapOf("no_template_at_dpi" to 1), templateId = "t1"))
         val source = object : LabelSettingsSource { override val settings = MutableStateFlow(settings) }
         val vm = PrintLabelsViewModel(
             db, Sync(api, db, backgroundScope), outbox, prefs, source, status, engine,
-            sender = { host, zpl -> if (sendFailures[0] > 0) { sendFailures[0]--; throw PrinterUnreachable(host) }; sent += host to zpl },
+            sender = { host, zpl ->
+                if (sendFailures[0] > 0) { sendFailures[0]--; throw if (timeoutSends[0]) PrinterTimeout(host) else PrinterUnreachable(host) }
+                sent += host to zpl
+            },
             flash = FlashController(backgroundScope), sound = null, scopeOverride = backgroundScope,
         )
         settle()
-        return Harness(vm, db, outbox, engine, sent, status, sendFailures)
+        return Harness(vm, db, outbox, engine, sent, status, sendFailures, timeoutSends)
     }
 
     @Test fun aScannedAssetIdPrintsItsStoredLabelWithTheSendSettingsAndRecordsOneLabeledScan() = runTest {
@@ -167,6 +172,24 @@ class PrintLabelsViewModelTest {
         h.db.close()
     }
 
+    @Test fun aPrinterTimeoutSaysTheLabelMayHavePrinted() = runTest {
+        val h = harness("p9")
+        h.sendFailures[0] = 1; h.timeoutSends[0] = true
+        h.vm.onScan("A-1"); settle()
+        assertEquals("The printer didn't finish answering. It may have printed the label — check before you retry.", h.vm.entries.value[0].message)
+        assertTrue(h.outbox.snapshot.value.rows.isEmpty())
+        h.db.close()
+    }
+
+    @Test fun aScanWhileTheBuildRunsIsRefusedEvenWithAStoredLabel() = runTest {
+        val h = harness("p10")
+        h.status.value = LabelBuildStatus(LabelBuildPhase.RUNNING, done = 0, total = 0)
+        h.vm.onScan("A-1"); settle()
+        assertEquals("Labels are still being made (0 of 0).", h.vm.entries.value[0].message)
+        assertTrue(h.sent.isEmpty())
+        h.db.close()
+    }
+
     @Test fun aPrintHelperThatTimesOutOnceIsAskedAgain() = runTest {
         val h = harness("p5")
         h.engine.timeoutsLeft = 1
@@ -207,8 +230,12 @@ class PrintLabelsViewModelTest {
     @Test fun theHeaderCountsReadyLabelsAndWhyTheOthersHaveNone() {
         assertEquals("1 label ready", readySummary(LabelBuildStatus(LabelBuildPhase.DONE, ready = 1)))
         assertEquals(
-            "12 labels ready · 3 without a label: no template at this DPI 2, template couldn't be built 1",
+            "12 labels ready · 2 with no template at this DPI, 1 whose template couldn't be built",
             readySummary(LabelBuildStatus(LabelBuildPhase.DONE, ready = 12, problems = linkedMapOf("no_template_at_dpi" to 2, "template_failed" to 1))),
+        )
+        assertEquals(
+            "0 labels ready · 1 whose template needs an app update, 4 with no label",
+            readySummary(LabelBuildStatus(LabelBuildPhase.DONE, problems = linkedMapOf("template_unsupported" to 1, "something_new" to 4))),
         )
     }
 }

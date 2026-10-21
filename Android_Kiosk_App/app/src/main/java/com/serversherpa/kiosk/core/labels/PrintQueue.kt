@@ -20,6 +20,11 @@ const val RECORD_FAILED_TEXT = "Printed, but the scan wasn't recorded: this kios
 
 fun stillBeingMadeText(done: Int, total: Int) = "Labels are still being made ($done of $total)."
 fun printerUnreachableText(host: String) = "Can't reach the printer at $host."
+/** The printer took the connection but not the whole job in time: the label may be out. */
+const val PRINTER_TIMEOUT_TEXT = "The printer didn't finish answering. It may have printed the label — check before you retry."
+
+/** [PrintQueueDeps.send] throws this when the printer took the connection but not the whole job in time. */
+class LabelSendTimeout(cause: Throwable? = null) : Exception("the printer didn't take the whole label in time", cause)
 
 /** What a scan says for each outcome a label can store (kiosk/src/lib/printQueue.ts LABEL_REASONS). */
 private val LABEL_REASONS = mapOf(
@@ -41,17 +46,13 @@ sealed interface PrintStep {
 }
 
 /**
- * What a scan prints, from the asset's stored label and the label build. A stored label stays
- * printable while a build runs, unless the build picked another template (the kind or the
- * printer's DPI changed): that label is being replaced, so the scan waits like one with no
- * label yet.
+ * What a scan prints, from the asset's stored label and the label build. While a build runs no
+ * label prints, as on the laptop (its edge answers `labels_regenerating`): any stored label may
+ * be the one being replaced.
  */
 fun labelFor(stored: StoredLabel?, status: LabelBuildStatus): PrintStep {
     if (status.phase == LabelBuildPhase.UNSUPPORTED_DEVICE) return PrintStep.Refused(DEVICE_UNSUPPORTED_TEXT)
-    if (status.phase == LabelBuildPhase.RUNNING) {
-        val replaced = stored != null && status.templateId != null && stored.templateId != status.templateId
-        if (stored == null || replaced) return PrintStep.Refused(stillBeingMadeText(status.done, status.total))
-    }
+    if (status.phase == LabelBuildPhase.RUNNING) return PrintStep.Refused(stillBeingMadeText(status.done, status.total))
     if (stored == null) {
         return PrintStep.Refused(if (status.needs == LabelBuildNeed.SYNC) SYNC_NEEDED_TEXT else noLabelText(null))
     }
@@ -85,7 +86,8 @@ interface PrintQueueDeps<A> {
     suspend fun label(asset: A): PrintStep
     /** The label with the saved offsets and peel or tear mode applied. */
     suspend fun prepare(zpl: String, settings: LabelSettings): PrintStep
-    /** Sends [zpl] to the printer at [host]; throws when it can't. */
+    /** Sends [zpl] to the printer at [host]; throws when it can't ([LabelSendTimeout] when the job
+     *  may have gone out). */
     suspend fun send(host: String, zpl: String)
     /** Queues the Labeled scan; throws when it can't be saved. */
     suspend fun record(asset: A, scannedValue: String)
@@ -104,6 +106,8 @@ class PrintQueue<A>(
     private val deps: PrintQueueDeps<A>,
     private val now: () -> String,
     private val limit: Int = LIST_LIMIT,
+    /** Why a step failed, for the device log (the entry shows the person's message). */
+    private val log: (String, Throwable) -> Unit = { _, _ -> },
 ) {
     private val _entries = MutableStateFlow<List<PrintEntry<A>>>(emptyList())
     /** Newest first. */
@@ -190,29 +194,34 @@ class PrintQueue<A>(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            log("couldn't read the label or the settings", e)
             return fail(w, LABEL_READ_FAILED_TEXT)
         }
         w.sent = bytes
-        try {
-            deps.send(printer.host, bytes)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            return fail(w, printerUnreachableText(printer.host))
-        }
-        // A scan records once, on its first label that goes out; a Reprint never does.
-        var warning: String? = null
-        if (!w.entry.reprint && !w.recordTried) {
-            w.recordTried = true
+        // Once the label starts going out, the send, its record and the entry's outcome finish even
+        // if the screen closes: a cancelled send would close the socket mid-label, and a label that
+        // did print must get its scan. The send's own deadline bounds this.
+        return withContext(NonCancellable) {
             try {
-                // The label is out: its scan is saved even if the screen closes right now.
-                withContext(NonCancellable) { deps.record(asset, w.entry.scannedValue) }
-                w.recorded = true
+                deps.send(printer.host, bytes)
             } catch (e: Exception) {
-                warning = RECORD_FAILED_TEXT
+                log("couldn't send the label to ${printer.host}", e)
+                return@withContext fail(w, if (e is LabelSendTimeout) PRINTER_TIMEOUT_TEXT else printerUnreachableText(printer.host))
             }
+            // A scan records once, on its first label that goes out; a Reprint never does.
+            var warning: String? = null
+            if (!w.entry.reprint && !w.recordTried) {
+                w.recordTried = true
+                try {
+                    deps.record(asset, w.entry.scannedValue)
+                    w.recorded = true
+                } catch (e: Exception) {
+                    log("couldn't record the Labeled scan", e)
+                    warning = RECORD_FAILED_TEXT
+                }
+            }
+            update(w, PrintState.PRINTED, null, recordWarning = warning ?: w.entry.recordWarning)
         }
-        return update(w, PrintState.PRINTED, null, recordWarning = warning ?: w.entry.recordWarning)
     }
 
     companion object {
