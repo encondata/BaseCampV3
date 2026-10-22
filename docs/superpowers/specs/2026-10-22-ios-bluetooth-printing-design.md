@@ -190,7 +190,7 @@ Each with what it costs if wrong.
 - Backlog from section 3's non-goals: Android Bluetooth printing, sending the connection type to the portal, and more than one saved printer.
 
 ### Device pass
-Device pass: pending Jimmy's test on the iPad Pro 13 with the office ZD421. Results go here.
+Device pass 2026-10-22: Jimmy confirmed Bluetooth printing works on the iPad Pro 13 with the office ZD421 (production build from main cb43b577). The hardware questions listed above (advertising while connected, security modes 2 and 3, idle-drop time, power-cycle reconnect, the Cut-send test) are still open.
 
 - [ ] Choose the printer over Bluetooth in Printer Setup; the checks go green.
 - [ ] Both test labels print (alignment and sample).
