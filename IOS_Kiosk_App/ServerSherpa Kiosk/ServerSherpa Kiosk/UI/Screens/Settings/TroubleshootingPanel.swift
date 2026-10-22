@@ -83,7 +83,9 @@ private struct TroubleshootingBody: View {
                 Text("Answered in \(ms) ms").font(KioskType.bodySmall).foregroundStyle(palette.textMute).padding(.top, 2)
             }
         }
-        if let error = vm.detailsError {
+        if vm.reachProblem?.action == .details {
+            reachCard([.details])
+        } else if let error = vm.detailsError {
             Text(error).font(KioskType.bodySmall).foregroundStyle(ChipTone.red.text)
         }
         if !vm.deviceInfoLines.isEmpty {
@@ -113,6 +115,7 @@ private struct TroubleshootingBody: View {
             }
             .padding(.top, 8)
         }
+        reachCard([.ask, .command])
         if vm.showsCommandBox {
             SettingsRow(title: "Send a command", detail: "Admins and developers only: a command can change the printer's settings.") {
                 HStack(spacing: 8) {
@@ -166,6 +169,7 @@ private struct TroubleshootingBody: View {
             }
         }
         .padding(.top, 10)
+        reachCard([.speed])
         Text(SPEED_END_TEXT).font(KioskType.bodyMedium).foregroundStyle(ChipTone.amber.text).padding(.top, 8)
         if !vm.speedRows.isEmpty {
             SpeedTable(rows: vm.speedRows).padding(.top, 8)
@@ -184,7 +188,11 @@ private struct TroubleshootingBody: View {
             if vm.running == .cutSend { ProgressView().tint(palette.accent) }
         }
         .padding(.top, 8)
-        KioskToast(text: vm.cutSendMessage, error: vm.cutSendError)
+        if vm.reachProblem?.action == .cutSend {
+            reachCard([.cutSend])
+        } else {
+            KioskToast(text: vm.cutSendMessage, error: vm.cutSendError)
+        }
     }
 
     @ViewBuilder private var bluetoothScan: some View {
@@ -197,11 +205,12 @@ private struct TroubleshootingBody: View {
                 ProgressView().tint(palette.accent)
                 Text("Listening for devices…").font(KioskType.bodyMedium).foregroundStyle(palette.textMute)
             } else {
-                SecondaryButton(vm.found == nil ? "Scan" : "Scan again") { vm.scan() }
+                // Not during a speed test: a scan shares the radio and would lower its KB/s.
+                SecondaryButton(vm.found == nil ? "Scan" : "Scan again", enabled: vm.running != .speed) { vm.scan() }
             }
         }
         .padding(.top, 8)
-        KioskToast(text: vm.scanMessage, error: vm.scanMessage != NOTHING_HEARD_TEXT)
+        KioskToast(text: vm.scanMessage, error: vm.scanMessage.map { $0 != NOTHING_HEARD_TEXT && $0 != SCAN_CUT_SHORT_TEXT } ?? false)
         if vm.scanMessage == BLUETOOTH_DENIED_TEXT { OpenSettingsButton() }
         ForEach(vm.found ?? []) { device in
             VStack(alignment: .leading, spacing: 2) {
@@ -221,7 +230,7 @@ private struct TroubleshootingBody: View {
 
     @ViewBuilder private var report: some View {
         SectionTitle(title: "Report")
-        Text("Copy or share everything above as text: this device and app, the printer, every reply and speed result, and the last \(TroubleshootingModel.LOG_CAP.formatted()) log lines (\(vm.logLines.count) so far).")
+        Text("Copy or share everything above as text: this device and app, the printer, every reply and speed result, and the last \(TroubleshootingModel.LOG_CAP.formatted()) log lines (\(vm.logLines.count) so far) with the Bluetooth link's own events.")
             .font(KioskType.bodySmall).foregroundStyle(palette.textMute)
         HStack(spacing: 12) {
             SecondaryButton(copied ? "Copied" : "Copy") {
@@ -244,6 +253,24 @@ private struct TroubleshootingBody: View {
             .buttonStyle(.plain)
         }
         .padding(.top, 8)
+    }
+
+    /// What the last call met in one of `sections` and the crew fixes on the iPad, as on Print Labels:
+    /// its words, with Open Settings (Bluetooth not allowed) or Connect (a printer that forgot this
+    /// iPad; no Open Settings, which can't reach Settings › Bluetooth: Ruling 15).
+    @ViewBuilder private func reachCard(_ sections: Set<TroubleAction>) -> some View {
+        if let reach = vm.reachProblem, sections.contains(reach.action) {
+            KioskToast(text: reach.problem.text, error: true)
+            if reach.problem.offersSettings || reach.problem.offersConnect {
+                HStack(spacing: 8) {
+                    if reach.problem.offersSettings { OpenSettingsButton() }
+                    if reach.problem.offersConnect {
+                        SecondaryButton(vm.running == .details ? "Connecting…" : "Connect", enabled: canCall) { vm.connectAgain() }
+                    }
+                }
+                .padding(.bottom, 8)
+            }
+        }
     }
 
     /// The device is the saved Bluetooth printer (by the iPad's identifier, or its name, which is its serial).
@@ -283,7 +310,14 @@ private struct AskResultCard: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Text(result.label).font(KioskType.titleMedium).foregroundStyle(palette.text)
-                KioskChip(text: result.error == nil ? "Answered" : "Failed", tone: result.error == nil ? .green : .red, dot: false)
+                // A command that replies nothing (a setvar) went out: "Sent", not "Failed".
+                if result.error != nil {
+                    KioskChip(text: "Failed", tone: .red, dot: false)
+                } else if result.reply.isEmpty {
+                    KioskChip(text: "Sent", tone: .slate, dot: false)
+                } else {
+                    KioskChip(text: "Answered", tone: .green, dot: false)
+                }
                 Spacer(minLength: 0)
                 Text(result.at.formatted(date: .omitted, time: .standard)).font(KioskType.bodySmall).foregroundStyle(palette.textMute)
             }

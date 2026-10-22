@@ -654,6 +654,51 @@ struct ZebraBluetoothTests {
         #expect(client.central.cancels == [p.identifier])
     }
 
+    // MARK: The link's event log
+
+    /// D13: the link keeps a log of what happened to it for the Troubleshooting report: Bluetooth's
+    /// state, each connect's phases with their times, the chunk size, drops and why, reconnect
+    /// tries and pairing errors.
+    @Test func theLinkLogsWhatHappensToIt() async throws {
+        let (bluetooth, client, sleeper) = make(state: .unknown)
+        let p = FakePeripheral(serial: serial)
+        client.central.known = [p]
+        let connecting = Task { try await bluetooth.connect(peripheralId: p.identifier, serial: serial) }
+        try #require(await waitUntil { client.made == 1 })
+        client.central.report(.poweredOn)
+        _ = try await finish(connecting)
+        p.drop(cbError(7))
+        try #require(await waitUntil { !bluetooth.link.connected })
+        // Drops before ready, a reconnect, then the printer forgets this iPad.
+        p.dropsOnDiscover = [cbError(7), cbError(14)]
+        let again = Task { try await bluetooth.connect(peripheralId: p.identifier, serial: serial) }
+        try #require(await waitUntil { sleeper.pending(spacing) == 1 })
+        sleeper.fire(spacing)
+        await #expect(throws: BluetoothPairingLost.self) { try await finish(again) }
+        client.central.report(.poweredOff)
+        try #require(await waitUntil { bluetooth.availability == .poweredOff })
+
+        let log = bluetooth.events.map(\.text).joined(separator: "\n")
+        #expect(bluetooth.events.allSatisfy { $0.at == at })
+        for expected in ["Bluetooth is on", "Connect to D8J224508535", "by the iPad's identifier", "Ready in 0.00 s",
+                         "244 bytes per chunk (MTU 247)", "ZD421", "Link dropped", "CBErrorDomain 7", "Reconnect try 1 of 3",
+                         "CBErrorDomain 14", "forgot this iPad", "Bluetooth is off"] {
+            #expect(log.contains(expected), "\(expected) in:\n\(log)")
+        }
+    }
+
+    /// The log keeps the newest `EVENT_CAP` events.
+    @Test func theLinkLogIsCapped() async throws {
+        let (bluetooth, client, _) = make()
+        bluetooth.start()
+        let reports = ZebraBluetooth.EVENT_CAP + 21
+        for i in 0..<reports { client.central.report(i % 2 == 0 ? .poweredOff : .poweredOn) }
+        try #require(await waitUntil { bluetooth.events.count == ZebraBluetooth.EVENT_CAP })
+        for _ in 0..<10 { await Task.yield() }
+        #expect(bluetooth.events.count == ZebraBluetooth.EVENT_CAP)
+        #expect(bluetooth.events.last?.text == "Bluetooth is off")
+    }
+
     // MARK: Scanning
 
     @Test func scanListsNamedDevicesStrongestFirst() async throws {

@@ -8,6 +8,8 @@ import Foundation
 final class FakeBluetoothPrinting: BluetoothPrinting {
     var availability = BluetoothAvailability.ready
     private(set) var link = BluetoothLinkInfo()
+    /// The link's event log, as the test sets it.
+    var events: [BluetoothLinkEvent] = []
     /// Device Information by the iPad's identifier for each printer.
     var info: [UUID: BluetoothPrinterInfo] = [:]
     /// Thrown by connect() when set.

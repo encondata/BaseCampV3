@@ -105,6 +105,13 @@ struct TroubleLogLine: Equatable, Sendable {
 /// What the tab is doing with the printer (one thing at a time).
 enum TroubleAction: Sendable { case details, ask, command, speed, cutSend }
 
+/// A Bluetooth refusal the crew fixes on the iPad, as the last call met it: its words and buttons
+/// (`printerReachProblem`), shown in the section of the call (`action`) that met it.
+struct TroubleReachProblem: Equatable, Sendable {
+    var action: TroubleAction
+    var problem: PrinterReachProblem
+}
+
 /// The Cut-send test's labels went out (D16).
 let CUT_SEND_DONE_TEXT = "Sent half a sample label, then a full one with ~JX before it. "
     + "Only the full label should print, with no merged or extra label."
@@ -112,6 +119,10 @@ let CUT_SEND_DONE_TEXT = "Sent half a sample label, then a full one with ~JX bef
 let SPEED_END_TEXT = "Each label must print END at the bottom — a missing END means data was lost."
 let NO_TROUBLESHOOTING_PRINTER_TEXT = "No printer set up yet. Choose one in Label Printing › Printer Setup."
 let NOTHING_HEARD_TEXT = "No Bluetooth devices heard nearby."
+/// A scan a printer call cut short (a label going out shares the radio).
+let SCAN_CUT_SHORT_TEXT = "The scan stopped because the printer was in use. Scan again."
+/// A command box command (a setvar, say) that replied nothing, as it does by design.
+let COMMAND_SENT_TEXT = "Sent, no reply."
 
 /// "Device: iPad16,6 (ipad), iPadOS 18.5" and "App: version 1.0 (build 7)": the report's first lines.
 @MainActor func troubleshootingDeviceText() -> String {
@@ -147,14 +158,20 @@ func visibleBytes(_ text: String) -> String {
    came up.
  - Ask the printer: status, error report, DPI, peeler, serial and the font listing, each with its
    raw reply, its bytes and how long it took; and a free-text command box for admins and
-   developers only (a raw command can change printer settings).
+   developers only (a raw command can change printer settings; one that replies nothing, as a
+   setvar does, reads as sent).
+ - A Bluetooth refusal the crew fixes on the iPad (a printer that forgot this iPad, Bluetooth off or
+   not allowed) shows with its buttons (`reachProblem`: Connect, or Open Settings), as on Print
+   Labels, in the section whose call met it; the next call replaces it.
  - Speed test: speed-test labels (`speedTestLabel`) on the template's label size at the saved
    printer's DPI, with seconds and KB/s for each.
  - Cut-send test (developers, D16): half a sample label, a failure marked on the guard, then a full
    sample label through the normal path, so `~JX` goes first. Only the full label may print.
  - Bluetooth scan: every named device nearby with its signal, Zebras flagged ("why can't I find my
-   printer?"). It never saves a printer, and Bluetooth starts only when Scan is tapped.
- - Report: all of the above and the last `LOG_CAP` log lines, as text to copy or share.
+   printer?"). It never saves a printer, and Bluetooth starts only when Scan is tapped (never during
+   a speed test, whose KB/s it would lower). A scan a printer call cut short says so.
+ - Report: all of the above and the last `LOG_CAP` log lines, merged in time with the Bluetooth
+   link's own events (`ZebraBluetooth.events`), as text to copy or share.
 
  Every call to the printer goes through `LockedZebra` with the app's `PrinterLock` and
  `PrinterGuard`, so nothing here interleaves with Print Labels or Printer Setup, and a printer left
@@ -194,6 +211,9 @@ final class TroubleshootingModel {
     /// Under the scan: Bluetooth off or not allowed, or nothing heard.
     private(set) var scanMessage: String?
     private(set) var logLines: [TroubleLogLine] = []
+    /// The last call's Bluetooth refusal the crew fixes on the iPad, with its buttons; nil once a
+    /// call gets through or fails any other way.
+    private(set) var reachProblem: TroubleReachProblem?
 
     @ObservationIgnored private let settings: LabelSettingsStore
     @ObservationIgnored private let bluetooth: BluetoothPrinting
@@ -265,6 +285,8 @@ final class TroubleshootingModel {
             var lines = [DetailLine(label: "Type", value: "Bluetooth LE"),
                          DetailLine(label: "Serial", value: serial),
                          DetailLine(label: "iPad's identifier", value: peripheralId?.uuidString ?? "Not known yet")]
+            // What Bluetooth last reported (reading it starts nothing).
+            if let state = Self.bluetoothStateText(bluetooth.availability) { lines.append(DetailLine(label: "Bluetooth", value: state)) }
             if let link, link.connected {
                 lines.append(DetailLine(label: "Link", value: link.connectedAt.map { "Connected since \(clockText($0))" } ?? "Connected"))
             } else {
@@ -315,7 +337,13 @@ final class TroubleshootingModel {
     // MARK: Printer details and asking
 
     /// `~HI`, for Printer details. An answer also lifts a cut font's stop, as Printer Setup's check does.
-    @discardableResult func readDetails() -> Task<Void, Never>? {
+    @discardableResult func readDetails() -> Task<Void, Never>? { details(reachFrom: .details) }
+
+    /// Connect, beside a printer that forgot this iPad (once it is forgotten in Settings): reads the
+    /// printer's details, which connects first. Refused again, the card stays in its section.
+    @discardableResult func connectAgain() -> Task<Void, Never>? { details(reachFrom: reachProblem?.action ?? .details) }
+
+    private func details(reachFrom section: TroubleAction) -> Task<Void, Never>? {
         guard let started = begin(.details) else { return nil }
         detailsError = nil
         log("→ Printer details: \(ZebraCommands.hostIdentification)")
@@ -325,9 +353,11 @@ final class TroubleshootingModel {
                 hostId = id
                 hostIdMilliseconds = stopwatch.milliseconds
                 log("← ~HI in \(msText(hostIdMilliseconds)) ms: \(id.model), \(id.firmware), \(id.dotsPerMm) dots/mm, \(id.memory)")
+                noteReach(nil, from: section)
             } catch {
                 detailsError = troubleText(error, started.printer)
                 log("← ~HI failed: \(String(describing: error))")
+                noteReach(error, from: section)
             }
             running = nil
         }
@@ -364,10 +394,18 @@ final class TroubleshootingModel {
                 result.meaning = meaning(reply)
                 result.milliseconds = stopwatch.milliseconds
                 log("← \(label): \(result.bytes) B in \(msText(result.milliseconds)) ms")
+                noteReach(nil, from: action)
+            } catch is PrinterNoReply where action == .command {
+                // A setvar and most raw commands reply nothing by design: it went out.
+                result.meaning = COMMAND_SENT_TEXT
+                result.milliseconds = stopwatch.milliseconds
+                log("← \(label): sent, no reply after \(msText(result.milliseconds)) ms")
+                noteReach(nil, from: action)
             } catch {
                 result.error = troubleText(error, started.printer)
                 result.milliseconds = stopwatch.milliseconds
                 log("← \(label) failed after \(msText(result.milliseconds)) ms: \(String(describing: error))")
+                noteReach(error, from: action)
             }
             asks.append(result)
             running = nil
@@ -421,9 +459,11 @@ final class TroubleshootingModel {
                 let row = SpeedRow(id: id, run: run, targetKb: kb, bytes: bytes, seconds: stopwatch.seconds)
                 speedRows.append(row)
                 log("Run \(run): \(bytes) B in \(decimal(row.seconds)) s, \(decimal(row.kbPerSecond)) KB/s")
+                noteReach(nil, from: .speed)
             } catch {
                 speedRows.append(SpeedRow(id: id, run: run, targetKb: kb, bytes: bytes, error: troubleText(error, started.printer)))
                 log("Run \(run) failed: \(String(describing: error))")
+                noteReach(error, from: .speed)
                 return
             }
         }
@@ -449,10 +489,12 @@ final class TroubleshootingModel {
                 try await started.zebra.send(full)
                 log("Full label sent")
                 cutSendMessage = CUT_SEND_DONE_TEXT
+                noteReach(nil, from: .cutSend)
             } catch {
                 cutSendMessage = troubleText(error, started.printer)
                 cutSendError = true
                 log("Cut-send test failed: \(String(describing: error))")
+                noteReach(error, from: .cutSend)
             }
             running = nil
         }
@@ -460,11 +502,13 @@ final class TroubleshootingModel {
 
     // MARK: Bluetooth scan
 
-    /// Lists every named device nearby, strongest first, until the scan ends (30 s, Stop, Bluetooth
-    /// refused, or a printer call taking the radio). The first scan asks iOS for Bluetooth
-    /// permission. Nothing is saved.
+    /// Lists every named device nearby, strongest first, until the scan ends (30 s of a ready
+    /// Bluetooth, Stop, Bluetooth refused, or a printer call taking the radio, which it then says).
+    /// "Nothing heard" only after the full 30 s or Stop. The first scan asks iOS for Bluetooth
+    /// permission. Nothing is saved, and no scan starts during a speed test (it shares the radio
+    /// with the label's acknowledgments and would lower its KB/s).
     func scan() {
-        guard !scanning, !closed else { return }
+        guard !scanning, !closed, running != .speed else { return }
         scanRun += 1
         let run = scanRun
         scanning = true
@@ -480,8 +524,12 @@ final class TroubleshootingModel {
             let devices = found ?? []
             if let text = bluetoothUnavailableText(bluetooth.availability) {
                 scanMessage = text
-            } else if devices.isEmpty {
-                scanMessage = NOTHING_HEARD_TEXT
+            } else {
+                switch bluetooth.lastScanEnd {
+                case .interrupted?: scanMessage = SCAN_CUT_SHORT_TEXT
+                case .finished?, .stopped?: if devices.isEmpty { scanMessage = NOTHING_HEARD_TEXT }
+                case .closed?, .refused?, .replaced?, nil: break
+                }
             }
             log("Bluetooth scan ended: \(devices.count) named devices, \(devices.filter(\.isZebra).count) Zebra"
                 + (scanMessage.map { " (\($0))" } ?? ""))
@@ -500,7 +548,8 @@ final class TroubleshootingModel {
 
     /// Everything the tab found, as the text Copy and Share send: this device and app, the saved
     /// printer, its connection and details, every ask with its reply, the speed rows, the Cut-send
-    /// test, the Bluetooth scan, then the log. Shared as `printer-report-<yyyyMMdd-HHmmss>.txt`.
+    /// test, the Bluetooth scan, then the log: the tab's lines and the Bluetooth link's events
+    /// ("Bluetooth: …"), in time order. Shared as `printer-report-<yyyyMMdd-HHmmss>.txt`.
     func report(now: Date = Date()) -> (name: String, text: String) {
         let c = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: now)
         let name = String(format: "printer-report-%04d%02d%02d-%02d%02d%02d.txt",
@@ -580,8 +629,14 @@ final class TroubleshootingModel {
         }
 
         out.append("")
-        out.append("== Log (\(logLines.count) lines; the last \(Self.LOG_CAP) are kept) ==")
-        out.append(contentsOf: logLines.map { "\(clockText($0.at, millis: true))  \($0.text)" })
+        let events = bluetooth.events
+        out.append("== Log (\(logLines.count) lines; the last \(Self.LOG_CAP) are kept) and Bluetooth link events "
+                   + "(\(events.count); the last \(ZebraBluetooth.EVENT_CAP) are kept) ==")
+        let merged = (logLines + events.map { TroubleLogLine(at: $0.at, text: "Bluetooth: \($0.text)") })
+            .enumerated()
+            .sorted { ($0.element.at, $0.offset) < ($1.element.at, $1.offset) }
+            .map(\.element)
+        out.append(contentsOf: merged.map { "\(clockText($0.at, millis: true))  \($0.text)" })
         return (name, out.joined(separator: "\n") + "\n")
     }
 
@@ -612,9 +667,30 @@ final class TroubleshootingModel {
         return link
     }
 
+    /// Each call's outcome replaces the reach card: a Bluetooth refusal the crew fixes on the iPad
+    /// shows with its buttons in `section`; a call that got through, or failed another way, clears it.
+    private func noteReach(_ error: Error?, from section: TroubleAction) {
+        reachProblem = error.flatMap(bluetoothRefusal).flatMap(printerReachProblem(for:))
+            .map { TroubleReachProblem(action: section, problem: $0) }
+    }
+
+    /// "On", "Off", … for the Connection lines; nil while Bluetooth hasn't reported (it starts only
+    /// when used).
+    private static func bluetoothStateText(_ availability: BluetoothAvailability) -> String? {
+        switch availability {
+        case .unknown: nil
+        case .ready: "On"
+        case .poweredOff: "Off"
+        case .unauthorized: "Not allowed for ServerSherpa Kiosk"
+        case .unsupported: "Not supported on this device"
+        }
+    }
+
     /// What a failed call says: the app's words for what a crew can act on (unreachable, Local
     /// Network or Bluetooth refused, a printer that forgot this iPad, a cut font), else the error's.
+    /// A `~JX` clear that failed reads as its cause: the call itself never went out.
     private func troubleText(_ error: Error, _ printer: SavedPrinter) -> String {
+        if let clear = error as? PrinterClearFailed { return troubleText(clear.cause, printer) }
         if error is PrinterNoReply { return "No reply." }
         if error is PrinterNeedsRestart { return FONT_INSTALL_CUT_TEXT }
         if wasLocalNetworkDenied(error) { return LOCAL_NETWORK_PRINTER_DENIED_TEXT }

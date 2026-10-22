@@ -30,11 +30,14 @@ import Testing
 @MainActor private final class TroubleZebra: SetupZebra {
     var replies: [String: String] = [:]
     var line: TroubleLine?
+    /// While set, every call fails with it before anything reaches the printer.
+    var failure: Error?
     private(set) var events: [String] = []
 
     nonisolated init() {}
 
     private func reach(_ what: String) async throws {
+        if let failure { throw failure }
         events.append(what)
         try await line?.connect(what)
     }
@@ -250,6 +253,23 @@ final class TroubleshootingModelTests {
         #expect(admin.asks.last?.reply == "\"zpl\"")
     }
 
+    /// The command box is for setvar and other commands that reply nothing by design: no reply
+    /// reads as sent, not failed. The ask buttons, which always get a reply, keep "No reply.".
+    @Test func aCommandWithNoReplyReadsAsSent() async throws {
+        settings.setPrinter(network)
+        let admin = model(isAdmin: true)
+        admin.commandText = "! U1 setvar \"device.friendly_name\" \"Dock\""
+        await admin.sendCommand()?.value
+        let result = try #require(admin.asks.last)
+        #expect(zebra.events == ["?! U1 setvar \"device.friendly_name\" \"Dock\"\r\n"])
+        #expect(result.error == nil)
+        #expect(result.meaning == "Sent, no reply.")
+        #expect(result.reply.isEmpty)
+        #expect(result.milliseconds != nil)
+        await admin.ask(.peeler)?.value
+        #expect(admin.asks.last?.error == "No reply.")
+    }
+
     @Test func cutSendTestSendsJXBeforeTheFullLabel() async throws {
         settings.setPrinter(network)
         let admin = model(isAdmin: true)
@@ -295,6 +315,119 @@ final class TroubleshootingModelTests {
         #expect(zebra.events[2] == "^XA^FDASSET^FS^XZ")
         #expect(zebra.events[3].hasSuffix("^XZ"))
         #expect(line.maxOpen == 1)
+    }
+
+    // MARK: When the printer can't be reached
+
+    /// Bluetooth refusals the crew fixes on the iPad show with their buttons, as on Print Labels: a
+    /// printer that forgot this iPad gets the steps with Connect (no Open Settings, Ruling 15),
+    /// Bluetooth not allowed gets Open Settings, Bluetooth off neither. The card belongs to the
+    /// section whose call met it, and each call replaces it: one that gets through, or fails any
+    /// other way, clears it.
+    @Test func aRefusalShowsWithItsButtonsUntilTheNextCall() async throws {
+        settings.setPrinter(bluetoothPrinter)
+        zebra.replies[ZebraCommands.hostStatus] = HS_REPLY
+        let m = model(isAdmin: true, isDeveloper: true)
+        let forgot = pairingLostText(serial: ZD421_SERIAL)
+        zebra.failure = BluetoothPairingLost(host: ZD421_SERIAL)
+        await m.readDetails()?.value
+        #expect(m.reachProblem == TroubleReachProblem(action: .details, problem: PrinterReachProblem(text: forgot, offersSettings: false, offersConnect: true)))
+        #expect(m.detailsError == forgot)
+
+        zebra.failure = BluetoothUnavailable(host: ZD421_SERIAL, availability: .unauthorized)
+        await m.ask(.status)?.value
+        #expect(m.reachProblem == TroubleReachProblem(action: .ask, problem: PrinterReachProblem(text: BLUETOOTH_DENIED_TEXT, offersSettings: true, offersConnect: false)))
+        #expect(m.asks.last?.error == BLUETOOTH_DENIED_TEXT)
+
+        m.commandText = "~HS"
+        await m.sendCommand()?.value
+        #expect(m.reachProblem?.action == .command)
+
+        // Off, even when it stopped the `~JX` before a speed-test label: its words, no buttons.
+        await printerGuard.markSendFailed(for: bluetoothPrinter.connection)
+        zebra.failure = BluetoothUnavailable(host: ZD421_SERIAL, availability: .poweredOff)
+        await m.startSpeedTest()?.value
+        #expect(m.reachProblem == TroubleReachProblem(action: .speed, problem: PrinterReachProblem(text: BLUETOOTH_OFF_TEXT, offersSettings: false, offersConnect: false)))
+        #expect(m.speedRows.last?.error == BLUETOOTH_OFF_TEXT)
+
+        zebra.failure = BluetoothPairingLost(host: ZD421_SERIAL)
+        await m.runCutSendTest()?.value
+        #expect(m.reachProblem?.action == .cutSend)
+        #expect(m.reachProblem?.problem.offersConnect == true)
+
+        // The printer off (not something to fix on the iPad): the row says so, the card goes.
+        zebra.failure = PrinterUnreachable(host: ZD421_SERIAL)
+        await m.ask(.status)?.value
+        #expect(m.reachProblem == nil)
+
+        // Connect (Read details) once it's forgotten in Settings: through, and the card goes.
+        zebra.failure = BluetoothPairingLost(host: ZD421_SERIAL)
+        await m.ask(.status)?.value
+        #expect(m.reachProblem?.problem.offersConnect == true)
+        zebra.failure = nil
+        await m.readDetails()?.value
+        #expect(m.reachProblem == nil)
+        #expect(m.detailsError == nil)
+    }
+
+    /// Connect beside a card lower down (a speed run met the refusal) tries the printer again and,
+    /// if it is still refused, keeps the card where the crew is looking.
+    @Test func connectKeepsTheCardWhereItWas() async throws {
+        settings.setPrinter(bluetoothPrinter)
+        let m = model()
+        zebra.failure = BluetoothPairingLost(host: ZD421_SERIAL)
+        await m.startSpeedTest()?.value
+        #expect(m.reachProblem?.action == .speed)
+        await m.connectAgain()?.value
+        #expect(m.reachProblem?.action == .speed)
+        #expect(m.reachProblem?.problem.offersConnect == true)
+        zebra.failure = nil
+        await m.connectAgain()?.value
+        #expect(m.reachProblem == nil)
+        #expect(m.hostId != nil)
+    }
+
+    /// A clear that fails reads as the printer's own failure (the call itself never went out):
+    /// "Can't reach the printer …", never "Couldn't clear the printer at … before sending".
+    @Test func aFailedClearReadsAsTheUnreachableCopy() async throws {
+        settings.setPrinter(bluetoothPrinter)
+        let unreachable = "Can't reach the printer D8J224508535 over Bluetooth."
+        let m = model(isDeveloper: true)
+        await printerGuard.markSendFailed(for: bluetoothPrinter.connection)
+        zebra.failure = PrinterUnreachable(host: ZD421_SERIAL)
+        await m.startSpeedTest()?.value
+        #expect(m.speedRows.last?.error == unreachable)
+        await m.runCutSendTest()?.value
+        #expect(m.cutSendMessage == unreachable)
+        await m.ask(.status)?.value
+        #expect(m.asks.last?.error == unreachable)
+        await m.readDetails()?.value
+        #expect(m.detailsError == unreachable)
+        zebra.failure = PrinterTimeout(host: ZD421_SERIAL)
+        await m.startSpeedTest()?.value
+        #expect(m.speedRows.last?.error == "The printer didn't take it in time.")
+        #expect(await printerGuard.state(for: bluetoothPrinter.connection) == .needsClear)
+        #expect(zebra.events.isEmpty)
+    }
+
+    /// The Connection lines say whether Bluetooth itself is on, from what it last reported (nothing
+    /// starts Bluetooth to find out); a network printer has no such line.
+    @Test func connectionLinesSayWhetherBluetoothIsOn() {
+        settings.setPrinter(bluetoothPrinter)
+        let m = model()
+        let cases: [(BluetoothAvailability, String?)] = [
+            (.unknown, nil), (.ready, "On"), (.poweredOff, "Off"),
+            (.unauthorized, "Not allowed for ServerSherpa Kiosk"), (.unsupported, "Not supported on this device"),
+        ]
+        for (availability, value) in cases {
+            bluetooth.availability = availability
+            #expect(m.connectionLines.first { $0.label == "Bluetooth" }?.value == value, "\(availability)")
+        }
+        #expect(bluetooth.scans == 0)
+        #expect(bluetooth.connects.isEmpty)
+        settings.setPrinter(network)
+        bluetooth.availability = .poweredOff
+        #expect(!m.connectionLines.contains { $0.label == "Bluetooth" })
     }
 
     // MARK: Speed test
@@ -373,7 +506,69 @@ final class TroubleshootingModelTests {
         #expect(m.scanMessage == BLUETOOTH_OFF_TEXT)
     }
 
+    /// A scan can't start while a speed test runs: it shares the radio with the label's chunk
+    /// acknowledgments and would lower its KB/s.
+    @Test func noScanDuringASpeedTest() async throws {
+        settings.setPrinter(network)
+        let line = TroubleLine()
+        zebra.line = line
+        let m = model()
+        line.hold = "START"
+        let speed = try #require(m.startSpeedTest())
+        await eventually("label going out") { line.held }
+        m.scan()
+        #expect(!m.scanning)
+        #expect(bluetooth.scans == 0)
+        line.hold = nil
+        await speed.value
+        m.scan()
+        #expect(m.scanning)
+        m.stopScan()
+        await eventually("scan ended") { !m.scanning }
+    }
+
+    /// A scan cut short by a printer call (a label going out) says so instead of "nothing heard",
+    /// which only a full scan of a ready Bluetooth, or Stop, says; one ended by the app going to
+    /// the background says nothing.
+    @Test func aScanCutShortSaysThePrinterWasInUse() async throws {
+        settings.setPrinter(network)
+        let m = model()
+        m.scan()
+        bluetooth.endScanByItself()
+        await eventually("ended") { !m.scanning }
+        #expect(m.scanMessage == "The scan stopped because the printer was in use. Scan again.")
+        m.scan()
+        bluetooth.finishScan()
+        await eventually("ended") { !m.scanning }
+        #expect(m.scanMessage == NOTHING_HEARD_TEXT)
+        m.scan()
+        m.stopScan()
+        await eventually("ended") { !m.scanning }
+        #expect(m.scanMessage == NOTHING_HEARD_TEXT)
+        m.scan()
+        bluetooth.endScanByItself(.closed)
+        await eventually("ended") { !m.scanning }
+        #expect(m.scanMessage == nil)
+    }
+
     // MARK: Report
+
+    /// D13 "a log, like the test screen's": the report's log carries the Bluetooth link's own
+    /// events beside the tab's lines, in time order.
+    @Test func reportMergesTheLinksEventsIntoTheLog() throws {
+        settings.setPrinter(bluetoothPrinter)
+        let m = model()
+        let now = Date()
+        m.log("Tab line")
+        bluetooth.events = [BluetoothLinkEvent(at: now.addingTimeInterval(-60), text: "Connect to D8J224508535 started"),
+                            BluetoothLinkEvent(at: now.addingTimeInterval(60), text: "Link dropped: The link closed")]
+        let text = m.report(now: now).text
+        let connect = try #require(text.range(of: "  Bluetooth: Connect to D8J224508535 started\n"))
+        let tab = try #require(text.range(of: "  Tab line\n"))
+        let drop = try #require(text.range(of: "  Bluetooth: Link dropped: The link closed\n"))
+        #expect(connect.lowerBound < tab.lowerBound)
+        #expect(tab.lowerBound < drop.lowerBound)
+    }
 
     @Test func reportCarriesEverything() async throws {
         settings.setPrinter(bluetoothPrinter)

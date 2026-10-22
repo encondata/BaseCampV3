@@ -51,7 +51,26 @@ struct PrinterTestLabelsTests {
                 let y = try #require(Int(field[fo.upperBound...].split(separator: ",")[1].prefix { $0.isNumber }))
                 let height = try #require(Int(field[font.upperBound...].prefix { $0.isNumber }))
                 #expect(y > 0 && y + height <= size.h, "\(what): END at \(y)+\(height)")
+
+                // Nothing after the picture but the END box and caption: padding there would let a
+                // lost last chunk still print END.
+                #expect(!after.contains("^FX"), "\(what)")
+                #expect(zpl.hasSuffix("^FDEND^FS^XZ"), "\(what)")
             }
+        }
+    }
+
+    /// A label narrower than a byte of dots (a sub-dot template width, a printer that reported no
+    /// resolution) still makes a label instead of dividing by zero.
+    @Test func aTinyOrEmptyLabelSizeStillMakesALabel() throws {
+        for (w, h) in [(0, 0), (1, 1), (7, 3), (-5, 10)] {
+            let zpl = speedTestLabel(targetBytes: 10 * 1024, widthDots: w, heightDots: h, run: 1)
+            #expect(zpl.hasPrefix("^XA"), "\(w)x\(h)")
+            #expect(zpl.hasSuffix("^FDEND^FS^XZ"), "\(w)x\(h)")
+            let g = try graphic(zpl)
+            #expect(g.perRow == 1, "\(w)x\(h)")
+            #expect(g.hex.utf8.count == 2 * g.total, "\(w)x\(h)")
+            #expect(sampleTestLabel(widthDots: w, heightDots: h, dpi: 0).hasSuffix("^XZ"))
         }
     }
 

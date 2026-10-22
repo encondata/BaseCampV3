@@ -25,6 +25,13 @@ enum BluetoothScanEnd: Equatable, Sendable {
     case replaced
 }
 
+/// One thing that happened to the Bluetooth link (Bluetooth's state, a connect's phases, a drop, a
+/// retry), for the Troubleshooting report's log (D13).
+struct BluetoothLinkEvent: Equatable, Sendable {
+    var at: Date
+    var text: String
+}
+
 /// A named device a scan heard.
 struct FoundBluetoothPrinter: Equatable, Sendable, Identifiable {
     /// The iPad's identifier for the device (iOS never shows its address).
@@ -74,6 +81,8 @@ struct BluetoothLinkInfo: Equatable, Sendable {
     var link: BluetoothLinkInfo { get }
     /// Why the last scan ended (set before its stream finishes).
     var lastScanEnd: BluetoothScanEnd? { get }
+    /// What happened to the link, oldest first (capped).
+    var events: [BluetoothLinkEvent] { get }
     func scan() -> AsyncStream<[FoundBluetoothPrinter]>
     func stopScan()
     func connect(peripheralId: UUID?, serial: String?) async throws -> BluetoothPrinterInfo
@@ -126,6 +135,8 @@ struct BluetoothTarget: Equatable, Sendable {
    (D7). Queries first drain late bytes of an earlier reply (D6). Neither sends anything of its own.
  - `close()` (background, sign-out, a printer change) ends the scan and the link and fails whatever
    was waiting on them.
+ - `events` logs what happened to the link (Bluetooth's state, each connect's phases and times, the
+   chunk size, drops, retries, pairing errors) for the Troubleshooting report.
 
  Every continuation is resumed once: it is taken out of its property before it is resumed, all on
  the main actor. Every timer runs on the injected `sleep`, and dates come from `now`.
@@ -136,6 +147,11 @@ final class ZebraBluetooth {
     private(set) var link = BluetoothLinkInfo()
     /// Why the last screen's scan ended.
     @ObservationIgnored private(set) var lastScanEnd: BluetoothScanEnd?
+    /// What happened to the link, oldest first: Bluetooth's state, each connect's phases timed from
+    /// its start, the chunk size, drops and why, reconnect tries, pairing errors. The newest
+    /// `EVENT_CAP` are kept, for the Troubleshooting report.
+    @ObservationIgnored private(set) var events: [BluetoothLinkEvent] = []
+    nonisolated static let EVENT_CAP = 500
 
     @ObservationIgnored private let client: any BluetoothCentralClient
     @ObservationIgnored private let timeouts: ZebraBluetoothTimeouts
@@ -163,6 +179,8 @@ final class ZebraBluetooth {
     /// Device Information characteristics whose read failed.
     @ObservationIgnored private var unreadInfo: Set<String> = []
     @ObservationIgnored private var readyWaiter: CheckedContinuation<BluetoothPrinterInfo, Error>?
+    /// When the connect in progress started: the event log times its phases from it.
+    @ObservationIgnored private var connectStartedAt: Date?
     /// The connect deadline, or the wait before a retry.
     @ObservationIgnored private var attemptTimer: Task<Void, Never>?
 
@@ -203,6 +221,7 @@ final class ZebraBluetooth {
         let made = client.makeCentral { [weak self] event in self?.handle(event) }
         central = made
         availability = Self.availability(for: made.state)
+        note(Self.stateText(made.state))
     }
 
     /// Every named device nearby, strongest first, refreshed as the scan hears them. The stream
@@ -241,6 +260,7 @@ final class ZebraBluetooth {
     func close() {
         closes += 1
         endUiScan(.closed)
+        if phase != .idle { note("Link closed by the app (background, sign-out or another printer)") }
         let error = PrinterUnreachable(host: host)
         switch phase {
         case .idle: break
@@ -318,6 +338,8 @@ final class ZebraBluetooth {
             self.target = target
             host = target.serial ?? ""
             retriesUsed = 0
+            connectStartedAt = now()
+            note("Connect to \(target.serial ?? target.peripheralId?.uuidString ?? "a printer") started")
             phase = .waitingForBluetooth
             armDeadline()
             proceed()
@@ -338,12 +360,16 @@ final class ZebraBluetooth {
     /// serial.
     private func locate() {
         for id in [target.peripheralId, knownPeripheralId(forSerial: target.serial)].compactMap({ $0 }) {
-            if let found = central?.retrievePeripherals(withIdentifiers: [id]).first { return connectTo(found) }
+            if let found = central?.retrievePeripherals(withIdentifiers: [id]).first {
+                note("Found by the iPad's identifier \(id.uuidString)")
+                return connectTo(found)
+            }
         }
         guard let serial = target.serial, !serial.isEmpty else {
             failAttempt(BluetoothPrinterNotFound(host: host))
             return
         }
+        note("iOS doesn't know it by identifier: scanning for the name \(serial)")
         phase = .finding
         updateScanning()
     }
@@ -379,10 +405,12 @@ final class ZebraBluetooth {
         case .finding: error = BluetoothPrinterNotFound(host: host)
         case .connecting, .discovering, .reading, .subscribing: error = PrinterUnreachable(host: host)
         }
+        note("No link within \(Self.seconds(timeouts.connectReady)) s (still \(phase))")
         failAttempt(error)
     }
 
     private func didConnect(_ p: any BluetoothPeripheral) {
+        note("Connected after \(sinceConnect()) s: reading Device Information")
         phase = .discovering
         p.discoverServices([Self.parserService, Self.deviceInfoService])
     }
@@ -454,6 +482,9 @@ final class ZebraBluetooth {
         link.chunkBytes = p.maximumWriteLength
         link.connectedAt = at
         link.lastActivity = at
+        note("Ready in \(sinceConnect()) s: \(info.model ?? "model not read") · serial \(info.serial ?? "not read")"
+             + " · firmware \(info.firmware ?? "not read") · Link-OS \(info.linkOs ?? "not read")"
+             + " · \(p.maximumWriteLength) bytes per chunk (MTU \(p.maximumWriteLength + 3))")
         if let waiter = readyWaiter {
             readyWaiter = nil
             waiter.resume(returning: info)
@@ -467,6 +498,7 @@ final class ZebraBluetooth {
         attemptTimer = nil
         phase = .retrying // the link is gone: nothing to cancel
         link.lastDrop = BluetoothDrop(at: now(), reason: describeBluetoothError(error))
+        note("Dropped before ready: \(describeBluetoothError(error))")
         if isBluetoothPairingLost(error) { return failAttempt(BluetoothPairingLost(host: host)) }
         retry()
     }
@@ -478,6 +510,7 @@ final class ZebraBluetooth {
         attemptTimer?.cancel()
         attemptTimer = nil
         phase = .retrying // no connection: nothing to cancel
+        note("Connect failed: \(describeBluetoothError(error))")
         if isBluetoothPairingLost(error) { return failAttempt(BluetoothPairingLost(host: host)) }
         guard retriesUsed > 0 else { return failAttempt(PrinterUnreachable(host: host)) }
         retry()
@@ -487,6 +520,7 @@ final class ZebraBluetooth {
     private func retry() {
         retriesUsed += 1
         guard retriesUsed <= ZebraBluetoothSpec.reconnectTries else { return failAttempt(PrinterUnreachable(host: host)) }
+        note("Reconnect try \(retriesUsed) of \(ZebraBluetoothSpec.reconnectTries) in \(Self.seconds(timeouts.reconnectSpacing)) s")
         let mine = attempt
         attemptTimer = after(timeouts.reconnectSpacing) { [weak self] in
             guard let self, self.attempt == mine, self.phase == .retrying, let p = self.peripheral else { return }
@@ -497,6 +531,7 @@ final class ZebraBluetooth {
 
     /// The connect in progress failed: its connection (if any) is cancelled.
     private func failAttempt(_ error: Error) {
+        note("Connect to \(host.isEmpty ? "the printer" : host) failed after \(sinceConnect()) s: \(Self.eventText(error))")
         attemptTimer?.cancel()
         attemptTimer = nil
         if phase.hasConnection { cancelConnection() }
@@ -557,6 +592,7 @@ final class ZebraBluetooth {
             guard let self, self.runningSend == mine, self.phase == .ready, self.attempt == onLink else { return }
             self.expiredSend = mine
             self.link.lastDrop = BluetoothDrop(at: self.now(), reason: "A send ran past its time limit")
+            self.note("A send of \(total) bytes ran past its \(String(format: "%.0f", ZebraBluetoothSpec.sendBudget(bytes: total))) s limit: link closed")
             self.endLink(failing: PrinterTimeout(host: self.host))
         }
         defer {
@@ -754,6 +790,8 @@ final class ZebraBluetooth {
             switch phase {
             case .ready:
                 link.lastDrop = BluetoothDrop(at: now(), reason: describeBluetoothError(error))
+                note("Link dropped: \(describeBluetoothError(error))"
+                     + (isBluetoothPairingLost(error) ? " (the printer forgot this iPad)" : ""))
                 endLink(failing: isBluetoothPairingLost(error) ? BluetoothPairingLost(host: host) : PrinterUnreachable(host: host))
             case .discovering, .reading, .subscribing:
                 droppedBeforeReady(error)
@@ -782,6 +820,7 @@ final class ZebraBluetooth {
 
     private func stateChanged(_ state: BluetoothCentralState) {
         availability = Self.availability(for: state)
+        note(Self.stateText(state))
         if availability == .ready {
             proceed()
             updateScanning() // a scan asked for before Bluetooth was on starts now
@@ -802,6 +841,7 @@ final class ZebraBluetooth {
         case .waitingForBluetooth: proceed()
         case .ready:
             link.lastDrop = BluetoothDrop(at: now(), reason: "Bluetooth stopped (\(state))")
+            note("Link dropped: Bluetooth stopped")
             endLink(failing: error)
         case .finding, .connecting, .discovering, .reading, .subscribing, .retrying:
             failAttempt(error)
@@ -811,6 +851,46 @@ final class ZebraBluetooth {
     private func isLink(_ p: any BluetoothPeripheral) -> Bool { peripheral?.identifier == p.identifier }
 
     // MARK: Helpers
+
+    /// Adds an event to the link's log, keeping the newest `EVENT_CAP`.
+    private func note(_ text: String) {
+        events.append(BluetoothLinkEvent(at: now(), text: text))
+        if events.count > Self.EVENT_CAP { events.removeFirst(events.count - Self.EVENT_CAP) }
+    }
+
+    /// "1.15": seconds since the connect in progress started.
+    private func sinceConnect() -> String {
+        String(format: "%.2f", connectStartedAt.map { now().timeIntervalSince($0) } ?? 0)
+    }
+
+    /// "10", "0.3".
+    private static func seconds(_ value: TimeInterval) -> String {
+        value == value.rounded() ? String(Int(value)) : String(value)
+    }
+
+    private static func stateText(_ state: BluetoothCentralState) -> String {
+        switch state {
+        case .poweredOn: "Bluetooth is on"
+        case .poweredOff: "Bluetooth is off"
+        case .unauthorized: "Bluetooth isn't allowed for ServerSherpa Kiosk"
+        case .unsupported: "Bluetooth isn't supported on this device"
+        case .resetting: "Bluetooth is resetting"
+        case .unknown: "Bluetooth's state isn't known yet"
+        }
+    }
+
+    /// Why a connect failed, in a few words for the log.
+    private static func eventText(_ error: Error) -> String {
+        switch error {
+        case is BluetoothPairingLost: "the printer forgot this iPad (pairing lost)"
+        case let off as BluetoothUnavailable: bluetoothUnavailableText(off.availability) ?? "Bluetooth wasn't ready"
+        case let other as BluetoothSerialMismatch: "another printer answered (serial \(other.found ?? "not read"))"
+        case is BluetoothNotZebra: "not a Zebra printer"
+        case is BluetoothPrinterNotFound: "not heard nearby"
+        case is PrinterUnreachable: "no link"
+        default: String(describing: error)
+        }
+    }
 
     /// Runs `fire` on the main actor `seconds` from now, unless the returned task is cancelled first.
     private func after(_ seconds: TimeInterval, _ fire: @escaping @MainActor () -> Void) -> Task<Void, Never> {

@@ -18,8 +18,9 @@ private let SAMPLE_QR_MODULES = 29
 /// of `SAMPLE_QR_URL`, laid out to fit a `widthDots` × `heightDots` label at `dpi`. Plain ASCII,
 /// so half its characters are half its bytes (the Cut-send test sends half of one).
 func sampleTestLabel(widthDots: Int, heightDots: Int, dpi: Int, now: Date = Date()) -> String {
-    let w = widthDots
-    let h = heightDots
+    // At least a dot each way (a sub-dot template size still makes a label).
+    let w = max(1, widthDots)
+    let h = max(1, heightDots)
     let m = max(10, dpi / 12)
     let titleH = max(16, min(dpi / 5, h / 7))
     let dateH = max(14, min(dpi / 8, h / 10))
@@ -52,21 +53,23 @@ func sampleTestLabel(widthDots: Int, heightDots: Int, dpi: Int, now: Date = Date
 
 /**
  A speed-test label `targetBytes` long (as UTF-8) for a `widthDots` × `heightDots` label: a caption
- "Run N · 10 KB · START" at the top, an uncompressed ASCII-hex `^GFA` of diagonal stripes sized to
- make up the bytes, then "END" near the bottom of the label (and a comment that makes up the last
- few bytes the picture's whole rows can't).
+ "Run N · 10 KB · START" at the top, a comment that makes up the few bytes the picture's whole rows
+ can't, an uncompressed ASCII-hex `^GFA` of diagonal stripes sized to make up the bytes, then "END"
+ near the bottom of the label, the last thing before `^XZ`.
 
  How to read the result: `^GFA` is count-based. The printer takes exactly the byte count the header
  announces as picture data, then goes on parsing ZPL. If any chunk were lost on the way, the printer
  would swallow the bytes after the picture (the END caption, even the `^XZ`) as picture data; if
  chunks were reordered, the stripes would be torn and the tail would usually be swallowed too. So a
- label that prints END (with clean stripes) means every byte arrived, in order. The picture may run
- past the label's length; the printer still parses every byte and just clips the picture. A white
- box is drawn under END so it reads even over the stripes.
+ label that prints END (with clean stripes) means every byte arrived, in order: nothing but END's
+ box and caption follows the picture, so a lost last chunk can't hide behind padding. The picture
+ may run past the label's length; the printer still parses every byte and just clips the picture.
+ A white box is drawn under END so it reads even over the stripes. A size under a dot (a sub-dot
+ template width, a printer that reported no resolution) is taken as one dot, one byte a row.
  */
 func speedTestLabel(targetBytes: Int, widthDots: Int, heightDots: Int, run: Int) -> String {
-    let w = widthDots
-    let h = heightDots
+    let w = max(1, widthDots)
+    let h = max(1, heightDots)
     let m = max(10, min(w, h) / 24)
     let bytesPerRow = (w + 7) / 8
     let captionH = max(16, min(h / 8, w / 24))
@@ -75,9 +78,10 @@ func speedTestLabel(targetBytes: Int, widthDots: Int, heightDots: Int, run: Int)
     let endY = max(graphicY, h - endH - 10)
     let caption = "Run \(run) · \(testLabelKb(targetBytes)) KB · START"
 
-    func assemble(_ total: Int, hex: String) -> String {
+    func assemble(_ total: Int, hex: String, pad: String = "") -> String {
         "^XA^CI28^PW\(w)^LL\(h)"
             + "^FO\(m),\(m)^A0N,\(captionH),\(captionH)^FD\(caption)^FS"
+            + pad
             + "^FO0,\(graphicY)^GFA,\(total),\(total),\(bytesPerRow),\(hex)^FS"
             + "^FO0,\(endY - 10)^GB\(w),\(endH + 20),\(endH + 20),W^FS"
             + "^FO\(m),\(endY)^A0N,\(endH),\(endH)^FDEND^FS"
@@ -92,11 +96,12 @@ func speedTestLabel(targetBytes: Int, widthDots: Int, heightDots: Int, run: Int)
         let rows = max(1, (targetBytes - overhead) / 2 / bytesPerRow)
         total = rows * bytesPerRow
     }
-    let label = assemble(total, hex: testLabelStripes(rows: total / bytesPerRow, bytesPerRow: bytesPerRow))
-    // A comment (`^FX…^FS`, which prints nothing) makes up what's left of the target.
-    let left = targetBytes - label.utf8.count - close.utf8.count
+    let stripes = testLabelStripes(rows: total / bytesPerRow, bytesPerRow: bytesPerRow)
+    // A comment (`^FX…^FS`, which prints nothing) makes up what's left of the target, before the
+    // picture: END stays the last thing the printer parses.
+    let left = targetBytes - assemble(total, hex: stripes).utf8.count - close.utf8.count
     let pad = left >= 6 ? "^FX" + String(repeating: "-", count: left - 6) + "^FS" : ""
-    return label + pad + close
+    return assemble(total, hex: stripes, pad: pad) + close
 }
 
 /// Uncompressed ASCII hex (0-9, A-F only: ZPL reads G–Z and g–z as repeat counts) of 45° stripes
