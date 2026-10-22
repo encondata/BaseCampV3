@@ -51,7 +51,8 @@ fun KioskApp() {
                 }
                 gated(nav, Routes.SCAN, FeatureId.SCAN) { ScanScreen(nav) }
                 gated(nav, Routes.ENROLL, FeatureId.ENROLL) { EnrollScreen(nav) }
-                gated(nav, Routes.TIMECLOCK, FeatureId.TIMECLOCK) { TimeclockScreen(nav) }
+                // The time clock owns the whole screen (no kiosk top bar or footer), spec section 5.
+                gated(nav, Routes.TIMECLOCK, FeatureId.TIMECLOCK, shell = false) { TimeclockScreen(nav) }
                 gated(nav, Routes.CONTAINERS, FeatureId.CONTAINERS) { FeaturePlaceholderScreen(feature(FeatureId.CONTAINERS), nav) }
                 gated(nav, Routes.TRUCKS, FeatureId.TRUCKS) { FeaturePlaceholderScreen(feature(FeatureId.TRUCKS), nav) }
                 gated(nav, Routes.LABELS, FeatureId.LABELS) { LabelsHomeScreen(nav) }
@@ -80,7 +81,9 @@ internal fun SetupClearedRedirect(nav: NavHostController, cleared: Flow<String>)
     }
 }
 
-/** KioskGuard + SetupGate + KioskShell around a feature screen. */
-private fun androidx.navigation.NavGraphBuilder.gated(nav: NavHostController, route: String, id: FeatureId, content: @Composable () -> Unit) {
-    composable(route) { KioskGuard(nav) { SetupGate(feature(id), nav) { KioskShell(nav) { content() } } } }
+/** KioskGuard + SetupGate + KioskShell around a feature screen; [shell] false for a full-screen one. */
+private fun androidx.navigation.NavGraphBuilder.gated(
+    nav: NavHostController, route: String, id: FeatureId, shell: Boolean = true, content: @Composable () -> Unit,
+) {
+    composable(route) { KioskGuard(nav) { SetupGate(feature(id), nav) { if (shell) KioskShell(nav) { content() } else content() } } }
 }
