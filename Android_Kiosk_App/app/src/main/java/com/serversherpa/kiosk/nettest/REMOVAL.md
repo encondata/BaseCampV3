@@ -128,3 +128,10 @@ runs after the main merge used the commands above exactly as written.
   clean. It isn't removal: the same cold first run of `17a7ec0d` with nothing
   deleted failed `RfidPanelTest` the same way (839 tests, 1 failed). If a first
   run in a new worktree fails in a Compose test, rerun it.
+- **2026-10-22, after the final fix wave** (the Time Clock chip, pinned
+  counts), on `7339acc5`: 25 marked lines in nine files and both packages
+  deleted, `git grep` found nothing left, and 716 tests passed and
+  `assembleDebug` built on the first run. `TcShell.kt` and
+  `TimeclockScreen.kt` came back byte for byte as they are on main; the
+  other files differ from main only by the seams listed above and the kept
+  separator fix.
