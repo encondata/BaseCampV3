@@ -4,9 +4,13 @@ import SwiftUI
 struct DeveloperPanel: View {
     @Environment(KioskPrefs.self) private var prefs
     @Environment(Sync.self) private var sync
+    @Environment(\.container) private var container
+    @Environment(\.goHome) private var goHome
     @Environment(\.kioskPalette) private var palette
     @State private var clearError = false
     @State private var confirmClear = false
+    @State private var resetError = false
+    @State private var confirmReset = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -22,7 +26,11 @@ struct DeveloperPanel: View {
                 }
                 SettingsRow(title: "Local data", detail: SettingsModel.localDataLine(sync.status)) {
                     KioskToast(text: clearError ? "Couldn't clear local data." : nil, error: true)
-                    SecondaryButton("Clear local data") { confirmClear = true }
+                    KioskToast(text: resetError ? "Couldn't reset the app." : nil, error: true)
+                    HStack(spacing: 8) {
+                        SecondaryButton("Clear local data") { confirmClear = true }
+                        SecondaryButton("Reset app") { confirmReset = true }
+                    }
                 }
                 LocalDataInspector()
             }
@@ -36,6 +44,23 @@ struct DeveloperPanel: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This removes the assets, people, containers and trucks downloaded to this kiosk. Scans waiting to upload are kept. Sync again from Kiosk Setup to download them.")
+        }
+        .confirmationDialog("Reset app?", isPresented: $confirmReset, titleVisibility: .visible) {
+            Button("Reset app", role: .destructive) {
+                Task {
+                    do {
+                        try await container.resetApp()
+                        resetError = false
+                        // Home; the next feature tap goes to Kiosk Setup.
+                        goHome()
+                    } catch {
+                        resetError = true
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Clears the kiosk setup, the saved printer and label settings, and this kiosk's move data. Unsent scans, your sign-in and the server stay.")
         }
     }
 }

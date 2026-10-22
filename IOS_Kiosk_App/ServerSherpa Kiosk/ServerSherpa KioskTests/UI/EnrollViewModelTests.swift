@@ -10,7 +10,7 @@ struct EnrollViewModelTests {
     private let api = FakeKioskApi()
 
     init() throws {
-        store = KioskStore(modelContainer: try KioskSchema.container(inMemory: true))
+        store = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
     }
 
     private let rack = KioskAssetRow(id: "a1", assetId: "A-1", name: "Rack", rfid: nil, serialNumber: "SN1", makeModel: "Dell")

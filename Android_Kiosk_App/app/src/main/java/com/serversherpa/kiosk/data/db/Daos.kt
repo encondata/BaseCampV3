@@ -1,13 +1,19 @@
 package com.serversherpa.kiosk.data.db
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 
+/** An asset's id with its raw /kiosk/sync/assets object (the label generator's input). */
+data class AssetPayload(val id: String, @ColumnInfo(name = "payload_json") val payloadJson: String)
+
 @Dao
 interface AssetDao {
     @Query("SELECT * FROM assets") suspend fun all(): List<AssetEntity>
+    /** Each asset's raw payload, in stored order (the order the server sent them). */
+    @Query("SELECT id, payload_json FROM assets ORDER BY rowid") suspend fun payloads(): List<AssetPayload>
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertAll(rows: List<AssetEntity>)
     @Query("DELETE FROM assets") suspend fun deleteAll()
     @Query("SELECT COUNT(*) FROM assets") suspend fun count(): Int
@@ -50,4 +56,38 @@ interface OutboxDao {
     @Query("SELECT * FROM outbox") suspend fun all(): List<OutboxEntity>
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsert(rows: List<OutboxEntity>)
     @Query("DELETE FROM outbox WHERE client_scan_id IN (:ids)") suspend fun delete(ids: List<String>)
+}
+
+@Dao
+interface LabelTemplateDao {
+    /** In insertion order: the server's order, which template ties depend on. */
+    @Query("SELECT * FROM label_templates ORDER BY rowid") suspend fun all(): List<LabelTemplateEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertAll(rows: List<LabelTemplateEntity>)
+    @Query("DELETE FROM label_templates") suspend fun deleteAll()
+    @Query("SELECT COUNT(*) FROM label_templates") suspend fun count(): Int
+}
+
+@Dao
+interface LabelFontDao {
+    @Query("SELECT * FROM label_fonts") suspend fun all(): List<LabelFontEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertAll(rows: List<LabelFontEntity>)
+    @Query("DELETE FROM label_fonts") suspend fun deleteAll()
+    @Query("SELECT COUNT(*) FROM label_fonts") suspend fun count(): Int
+}
+
+/** A stored label without its ZPL: what a build compares against. */
+data class GeneratedLabelState(
+    @ColumnInfo(name = "asset_id") val assetId: String,
+    val outcome: String,
+    val fingerprint: String,
+)
+
+@Dao
+interface GeneratedLabelDao {
+    @Query("SELECT * FROM generated_labels") suspend fun all(): List<GeneratedLabelEntity>
+    @Query("SELECT asset_id, outcome, fingerprint FROM generated_labels") suspend fun states(): List<GeneratedLabelState>
+    @Query("SELECT * FROM generated_labels WHERE asset_id = :assetId") suspend fun get(assetId: String): GeneratedLabelEntity?
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsert(rows: List<GeneratedLabelEntity>)
+    @Query("DELETE FROM generated_labels WHERE asset_id IN (:assetIds)") suspend fun delete(assetIds: List<String>)
+    @Query("DELETE FROM generated_labels") suspend fun deleteAll()
 }

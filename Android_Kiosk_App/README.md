@@ -32,6 +32,21 @@ Debug builds default to `https://api.dev.serversherpa.com`; change it under Sett
 
 `core/` is Android-free Kotlin (matching, RFID, people search, outbox machine, settings) — the layer the iOS app will transliterate. `data/` is HTTP, session, Room, DataStore, sync, outbox. `input/` is the scan sources. `ui/` is Compose.
 
+## Label printing
+
+Labels are made on the device by the shared TypeScript generator in `../kiosk/src/labelgen/`, run in an isolated V8 sandbox (`androidx.javascriptengine`; the Labels screen says so when a device's WebView can't). Design and rulings: `../docs/superpowers/specs/2026-10-21-android-label-printing-design.md`, section "Implementation notes".
+
+- **The bundle is committed.** `app/src/main/assets/labelgen.js` is generated, but it is checked in so Gradle needs no Node. After changing anything in `kiosk/src/labelgen/`, rebuild it and commit the result: `npm --prefix kiosk run build:labelgen`. `bundle.test.ts` fails with that exact command when the file is stale.
+- **Reference labels** (`kiosk/src/labelgen/fixtures/reference.json`) are what the laptop's own code prints for fixed cases. The tests fail with "Regenerate ..." when the Python label code changes. From the repo root, with the api venv:
+
+  ```bash
+  api/.venv/bin/python kiosk/src/labelgen/fixtures/make_reference.py
+  ```
+
+  Regenerating should leave no diff unless the Python changed. If it did, fix the TypeScript until the reference tests pass again.
+- **Tests.** TypeScript: `npm --prefix kiosk test -- src/labelgen` (node environment, no jsdom). Android: the Gradle command under Build and test; `LabelBuilderTest`, `MigrationTest`, `SyncLabelsTest`, `PrintQueueTest` and `PrinterSetupViewModelTest` cover labels. `JavaScriptSandbox` can't run under Robolectric, so the generator is faked there; the real engine, printer scanning and printing need a device or emulator.
+- **Room schema.** Version 2 adds the label tables. Schemas are exported to `app/schemas/` and committed; export the new one before changing an entity.
+
 ## Icons and fonts
 
 `python3 tools/make_icons.py` regenerates the launcher icons from `../portal/public/images/serversherpa-logo.png`. Fonts are bundled (see `FONTS-LICENSE.md`).

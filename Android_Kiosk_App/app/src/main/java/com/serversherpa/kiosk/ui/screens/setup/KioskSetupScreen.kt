@@ -20,8 +20,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import com.serversherpa.kiosk.LocalAppContainer
-import com.serversherpa.kiosk.data.sync.Sync
-import com.serversherpa.kiosk.data.sync.SyncPhase
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.components.KioskChip
 import com.serversherpa.kiosk.ui.components.KioskToast
@@ -56,24 +54,14 @@ fun KioskSetupScreen(nav: NavHostController) {
         if (!wizardOpen && sel != null) {
             Text(buildString { append("This kiosk is set up for "); append(sel.initiativeName); append(" at "); append(sel.siteName); append(" ("); append(sel.siteRole); append(") · scan type "); append(sel.scanLabel) },
                 style = MaterialTheme.typography.bodyLarge)
-            Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                when (sync.phase) {
-                    SyncPhase.IDLE -> { Text("No move data on this kiosk yet."); MiniButton("Sync now", { vm.resync() }) }
-                    SyncPhase.RUNNING -> Text("Downloading move data…")
-                    SyncPhase.DONE -> {
-                        Text("Local data: ${sync.assets ?: 0} assets · ${sync.people ?: 0} people · ${sync.containers ?: 0} containers · ${sync.trucks ?: 0} trucks" + (sync.syncedAt?.let { " · synced ${Sync.formatSyncedAt(it)}" } ?: ""), modifier = Modifier.weight(1f))
-                        MiniButton("Sync again", { vm.resync() })
-                    }
-                    SyncPhase.ERROR -> { KioskToast("Couldn't download move data (${sync.error ?: "unknown_error"}).", error = true); MiniButton("Try again", { vm.resync() }) }
-                }
-            }
+            SyncSection(sync, onSync = { vm.resync() })
             Row(Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 MiniButton("Change setup", { vm.openWizard(true) })
                 SolidButton("Go to home", { nav.navigate(Routes.HOME) { popUpTo(Routes.HOME) { inclusive = true } } })
             }
             return@Column
         }
-        Text(when (ui.step) { 1 -> "STEP 1 OF 3 · MOVE"; 2 -> "STEP 2 OF 3 · SITE"; else -> "STEP 3 OF 3 · SCAN TYPE" }, fontFamily = FragmentMono, style = MaterialTheme.typography.labelSmall, color = c.textMute)
+        Text(when (ui.step) { 1 -> "STEP 1 OF 4 · MOVE"; 2 -> "STEP 2 OF 4 · SITE"; 3 -> "STEP 3 OF 4 · SCAN TYPE"; else -> "STEP 4 OF 4 · LABELS" }, fontFamily = FragmentMono, style = MaterialTheme.typography.labelSmall, color = c.textMute)
         if (ui.loadError) { KioskToast("Couldn't load setup options.", error = true); MiniButton("Retry", { vm.load() }); return@Column }
         val opts = ui.options
         if (opts == null) { Text("Loading moves…", color = c.textMute); return@Column }
@@ -100,15 +88,25 @@ fun KioskSetupScreen(nav: NavHostController) {
                 if (choices.isEmpty()) Text("This move has no sites yet. Ask a coordinator to add them.", color = c.textMute)
                 MiniButton("Back", { vm.back() })
             }
-            else -> {
+            3 -> {
                 Text("Which scan type?", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(vertical = 8.dp))
                 for (s in opts.scan_types) {
-                    val saving = ui.submitting && ui.scanStatus == s.key
-                    SetupCard(selected = s.key == ui.scanStatus, enabled = !ui.submitting, onClick = { vm.finish(s.key) }, modifier = Modifier.padding(bottom = 10.dp)) {
+                    SetupCard(selected = s.key == ui.scanStatus, onClick = { vm.selectScanType(s.key) }, modifier = Modifier.padding(bottom = 10.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             androidx.compose.foundation.layout.Box(Modifier.size(14.dp).background(parseCssColor(s.color), CircleShape))
-                            Text(if (saving) "Saving…" else s.label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                            Text(s.label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         }
+                    }
+                }
+                MiniButton("Back", { vm.back() })
+            }
+            else -> {
+                Text("What do labels print on?", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(vertical = 8.dp))
+                for ((kind, title, blurb) in LABEL_KIND_CHOICES) {
+                    val saving = ui.submitting && ui.labelKind == kind
+                    SetupCard(selected = kind == ui.labelKind, enabled = !ui.submitting, onClick = { vm.finish(kind) }, modifier = Modifier.padding(bottom = 10.dp)) {
+                        Text(if (saving) "Saving…" else title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text(blurb, style = MaterialTheme.typography.bodySmall, color = c.textMute)
                     }
                 }
                 ui.submitError?.let { KioskToast("Couldn't save the kiosk setup ($it). Try again.", error = true) }
@@ -117,6 +115,12 @@ fun KioskSetupScreen(nav: NavHostController) {
         }
     }
 }
+
+/** The last step's cards: the label kind, its title and its one-line description. */
+private val LABEL_KIND_CHOICES = listOf(
+    Triple("top", "Top", "Labels for the top of the device."),
+    Triple("front", "Front", "Labels for the front of the device."),
+)
 
 /** "#abc" / "#aabbcc" → Color; anything else → slate. */
 fun parseCssColor(css: String): Color {

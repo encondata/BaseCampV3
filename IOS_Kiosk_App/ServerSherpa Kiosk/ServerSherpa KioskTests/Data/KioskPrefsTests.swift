@@ -74,4 +74,42 @@ struct KioskPrefsTests {
         #expect(prefs.cameraPosition == .back)
         #expect(prefs.checkpoint(.enroll) == "pre_stage")
     }
+
+    /// A selection saved before the Top/Front step has no labelKind: it reads as "top".
+    @Test func aSelectionSavedBeforeTheLabelStepReadsAsTop() {
+        let defaults = freshDefaults()
+        defaults.set(#"{"initiativeId":"i","initiativeName":"Move","siteId":"s","siteName":"Site","siteRole":"source","scanStatus":"pre_stage","scanLabel":"Pre-stage"}"#,
+                     forKey: "ss.kiosk.setup")
+        #expect(KioskPrefs(defaults: defaults).setupSelection?.labelKind == "top")
+    }
+
+    @Test func labelKindRoundTripsInTheSelection() {
+        let defaults = freshDefaults()
+        let sel = KioskSetupSelection(initiativeId: "i", initiativeName: "Move", siteId: "s", siteName: "Site", siteRole: "source",
+                                      scanStatus: "pre_stage", scanLabel: "Pre-stage", labelKind: "front")
+        KioskPrefs(defaults: defaults).setupSelection = sel
+        #expect(KioskPrefs(defaults: defaults).setupSelection?.labelKind == "front")
+    }
+
+    /// The printer, offsets and peel live under `ss.kiosk.labels`; an update reads and writes together.
+    @Test func labelOptionsRoundTripUnderTheirKey() {
+        let defaults = freshDefaults()
+        let prefs = KioskPrefs(defaults: defaults)
+        #expect(prefs.labels == LabelOptions())
+        let printer = SavedPrinter(host: "10.0.0.7", model: "ZD421", serial: "D4J123456", dpi: 300)
+        prefs.updateLabels { $0.printer = printer }
+        prefs.updateLabels { $0.offsetX = -4; $0.peel = true }
+        let expected = LabelOptions(printer: printer, offsetX: -4, offsetY: 0, peel: true)
+        #expect(prefs.labels == expected)
+        #expect(KioskPrefs(defaults: defaults).labels == expected)
+        #expect(defaults.string(forKey: "ss.kiosk.labels")?.contains(#""offsetX":-4"#) == true)
+    }
+
+    @Test func unreadableLabelOptionsFallBackToDefaults() {
+        let defaults = freshDefaults()
+        defaults.set("{not json", forKey: "ss.kiosk.labels")
+        #expect(KioskPrefs(defaults: defaults).labels == LabelOptions())
+        defaults.set(#"{"peel":true}"#, forKey: "ss.kiosk.labels")
+        #expect(KioskPrefs(defaults: defaults).labels == LabelOptions(peel: true))
+    }
 }

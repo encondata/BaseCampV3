@@ -60,6 +60,8 @@ struct ModelsJSONTests {
         let text = String(decoding: try KioskJSON.encoder.encode(sel), as: UTF8.self)
         #expect(text.contains(#""initiativeId":"i""#) && text.contains(#""scanLabel":"l""#))
         #expect(try KioskJSON.decoder.decode(KioskSetupSelection.self, from: Data(text.utf8)) == sel)
+        #expect(sel.labelKind == "top")
+        #expect(text.contains(#""labelKind":"top""#))
     }
 
     @Test func syncDefaultsApplyOnDecode() throws {

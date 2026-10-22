@@ -61,5 +61,8 @@ struct HomeModelTests {
         #expect(Route.forFeature(.settings) == .settings(nil))
         #expect(Route.forFeature(.labels) == .labels)
         for id in FeatureId.allCases { #expect(Route.forFeature(id).featureId == id) }
+        // Print Labels and Printer Setup live under the Label Printing tile.
+        #expect(Route.labelsPrint.featureId == .labels)
+        #expect(Route.labelsPrinter.featureId == .labels)
     }
 }

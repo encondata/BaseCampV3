@@ -1,11 +1,15 @@
 package com.serversherpa.kiosk.ui.screens.settings
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -31,20 +35,24 @@ import com.serversherpa.kiosk.ui.components.KioskToast
 import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.components.Segmented
 import com.serversherpa.kiosk.ui.components.SettingsRow
+import com.serversherpa.kiosk.ui.theme.ChipTone
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private const val INSPECT_CAP = 200
 
+/** [goHome] runs after a successful Reset app. */
 @Composable
-fun DeveloperPanel() {
+fun DeveloperPanel(goHome: () -> Unit = {}) {
     val container = LocalAppContainer.current
     val scope = rememberCoroutineScope()
     val devMode by container.prefs.devMode.collectAsStateWithLifecycle(initialValue = false)
     val setupState by container.prefs.setupState.collectAsStateWithLifecycle(initialValue = SetupState.INCOMPLETE)
     val sync by container.sync.status.collectAsStateWithLifecycle()
     var clearError by remember { mutableStateOf(false) }
+    var resetError by remember { mutableStateOf(false) }
+    var confirmReset by remember { mutableStateOf(false) }
     var sweepInFlight by remember { mutableStateOf(false) }
     Column {
         SettingsRow("Developer mode", "Shows diagnostics and developer tools on this kiosk. Stored on this kiosk only.") {
@@ -56,8 +64,33 @@ fun DeveloperPanel() {
         }
         SettingsRow("Local data", if (sync.phase == SyncPhase.DONE) "${sync.assets ?: 0} assets · ${sync.people ?: 0} people · ${sync.containers ?: 0} containers · ${sync.trucks ?: 0} trucks" + (sync.syncedAt?.let { " · synced ${Sync.formatSyncedAt(it)}" } ?: "") else "Nothing downloaded yet.") {
             if (clearError) KioskToast("Couldn't clear local data.", error = true)
-            MiniButton("Clear local data", { scope.launch { try { container.sync.clearLocalData() } catch (e: Exception) { clearError = true } } })
+            if (resetError) KioskToast("Couldn't reset the app.", error = true)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                MiniButton("Clear local data", { scope.launch { try { container.sync.clearLocalData() } catch (e: Exception) { clearError = true } } })
+                MiniButton("Reset app", { confirmReset = true })
+            }
         }
+        if (confirmReset) AlertDialog(
+            onDismissRequest = { confirmReset = false },
+            title = { Text("Reset app?") },
+            text = { Text("Clears the kiosk setup, the saved printer and label settings, and this kiosk's move data. Unsent scans, your sign-in and the server stay.") },
+            confirmButton = {
+                TextButton({
+                    confirmReset = false
+                    scope.launch {
+                        try {
+                            container.resetApp()
+                            resetError = false
+                            // Home; the next feature tap goes through the setup gate to Kiosk Setup.
+                            goHome()
+                        } catch (e: Exception) {
+                            resetError = true
+                        }
+                    }
+                }) { Text("Reset app", color = ChipTone.RED.text) }
+            },
+            dismissButton = { TextButton({ confirmReset = false }) { Text("Cancel") } },
+        )
         val fakeReader = container.rfidReader as? FakeRfidReader
         if (fakeReader != null) {
             // A real device never has a FakeRfidReader (AppContainer only installs

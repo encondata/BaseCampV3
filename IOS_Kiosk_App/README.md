@@ -29,6 +29,12 @@ Debug builds default to `https://api.dev.serversherpa.com`; Release builds defau
 - **Camera:** the Camera button on Scanning, RFID Enroll, and Timeclock; Single closes on the first read, Multi reads each distinct code once until Done; flip between front and back cameras.
 - **No RFID reader hardware.** RFID Enroll takes a typed or camera-read tag only; there is no Zebra sled support on iOS.
 
+## Label printing
+
+Asset labels are made on the device by the shared TypeScript generator (`kiosk/src/labelgen/`), run in JavaScriptCore from `ServerSherpa Kiosk/Resources/labelgen.js`. `npm --prefix kiosk run build:labelgen` rebuilds both this copy and Android's, and `npm --prefix kiosk test -- src/labelgen` checks that both are fresh. Never edit the bundle by hand.
+
+Labels print as raw ZPL to a network Zebra on port 9100. Printer Setup finds printers on the iPad's Wi-Fi or Ethernet /24 (never over cellular), or takes a typed IP. iOS asks for Local Network access the first time (`NSLocalNetworkUsageDescription`). If it was denied, turn it on under Settings › ServerSherpa Kiosk › Local Network. Unit tests use a fake printer on 127.0.0.1 only. Design and rulings: `../docs/superpowers/specs/2026-10-21-android-label-printing-design.md` (iOS implementation notes).
+
 ## Kiosk lock-down
 
 iOS has no app pinning API for an ordinary app. Use Guided Access (Settings › Accessibility › Guided Access; triple-click the side button to start) or, on managed devices, MDM single-app mode. The app keeps the screen awake while signed in.

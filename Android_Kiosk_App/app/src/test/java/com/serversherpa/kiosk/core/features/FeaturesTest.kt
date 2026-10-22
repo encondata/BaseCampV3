@@ -16,8 +16,14 @@ class FeaturesTest {
         assertEquals(setOf(FeatureId.SETUP, FeatureId.SETTINGS), FEATURES.filter { it.alwaysAvailable }.map { it.id }.toSet())
     }
 
-    @Test fun placeholdersAreContainersTrucksLabels() {
-        assertEquals(setOf(FeatureId.CONTAINERS, FeatureId.TRUCKS, FeatureId.LABELS), FEATURES.filter { it.placeholder }.map { it.id }.toSet())
+    @Test fun placeholdersAreContainersAndTrucks() {
+        assertEquals(setOf(FeatureId.CONTAINERS, FeatureId.TRUCKS), FEATURES.filter { it.placeholder }.map { it.id }.toSet())
+    }
+
+    @Test fun labelPrintingIsAssetLabels() {
+        assertEquals("Print asset labels.", feature(FeatureId.LABELS).blurb)
+        assertEquals(FeatureId.LABELS, featureForRoute("labels/print")?.id)
+        assertEquals(FeatureId.LABELS, featureForRoute("labels/printer")?.id)
     }
 
     @Test fun availabilityFollowsSetupStateUnlessDevMode() {

@@ -21,6 +21,11 @@ open class FakeKioskApi : KioskApi {
     var people: () -> KioskPeopleSync = { KioskPeopleSync("now") }
     var containers: () -> KioskContainersSync = { KioskContainersSync("i1", "now") }
     var trucks: () -> KioskTrucksSync = { KioskTrucksSync("i1", "now") }
+    /** The raw /kiosk/sync/assets body; null encodes [assets]. */
+    var assetsRaw: (() -> String)? = null
+    var templatesRaw: () -> String = { """{"initiative_id":"i1","generated_at":"now","templates":[]}""" }
+    var fonts: () -> KioskLabelFonts = { KioskLabelFonts() }
+    var fontContent: (String) -> ByteArray = { throw ApiError(404, "font_not_found") }
     /** Suspending so a test can hold a POST open (stop/start mid-flight). */
     var postScansResult: suspend (KioskScanBatchIn) -> KioskScanBatchOut = { KioskScanBatchOut(accepted = it.scans.map { s -> s.client_scan_id }) }
     val scanBatches = ArrayList<KioskScanBatchIn>()
@@ -43,6 +48,13 @@ open class FakeKioskApi : KioskApi {
     override suspend fun syncPeople() = people().also { calls += "syncPeople" }
     override suspend fun syncContainers(initiativeId: String) = containers().also { calls += "syncContainers" }
     override suspend fun syncTrucks(initiativeId: String) = trucks().also { calls += "syncTrucks" }
+    override suspend fun assetsSyncRaw(initiativeId: String): String =
+        (assetsRaw?.invoke() ?: com.serversherpa.kiosk.data.api.KioskJson.encodeToString(KioskAssetsSync.serializer(), assets()))
+            .also { calls += "syncAssets" }
+    override suspend fun labelTemplatesRaw(initiativeId: String) = templatesRaw().also { calls += "labelTemplates" }
+    override suspend fun labelFonts(initiativeId: String) = fonts().also { calls += "labelFonts" }
+    /** Recorded before answering, so a refused download still shows as a call. */
+    override suspend fun labelFontContent(id: String, initiativeId: String): ByteArray { calls += "fontContent:$id"; return fontContent(id) }
     override suspend fun postScans(body: KioskScanBatchIn): KioskScanBatchOut { calls += "postScans"; scanBatches += body; return postScansResult(body) }
     override suspend fun postRfidEnroll(assetId: String, body: KioskRfidEnrollIn) = rfidResult(assetId, body).also { calls += "rfid" }
     override suspend fun timeclockStatus(personId: String) = statusResult(personId).also { calls += "timeclockStatus" }

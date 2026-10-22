@@ -10,7 +10,7 @@ struct ScanViewModelTests {
     private let api = FakeKioskApi()
 
     init() throws {
-        store = KioskStore(modelContainer: try KioskSchema.container(inMemory: true))
+        store = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
     }
 
     private func seed(_ assets: [KioskAssetRow]) async throws {

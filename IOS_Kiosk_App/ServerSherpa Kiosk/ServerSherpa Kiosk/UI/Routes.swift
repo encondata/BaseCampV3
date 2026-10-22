@@ -6,6 +6,8 @@ enum Route: Hashable {
     case setup
     case settings(SettingsTabId?)
     case scan, enroll, timeclock, containers, trucks, labels
+    /// Under the Label Printing tile: Print Labels and Printer Setup.
+    case labelsPrint, labelsPrinter
 
     static func forFeature(_ id: FeatureId) -> Route {
         switch id {
@@ -29,7 +31,7 @@ enum Route: Hashable {
         case .timeclock: .timeclock
         case .containers: .containers
         case .trucks: .trucks
-        case .labels: .labels
+        case .labels, .labelsPrint, .labelsPrinter: .labels
         }
     }
 }

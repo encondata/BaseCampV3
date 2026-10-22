@@ -37,6 +37,17 @@ protocol KioskApi: Sendable {
     func syncContainers(initiativeId: String) async throws -> KioskContainersSync
     func syncTrucks(initiativeId: String) async throws -> KioskTrucksSync
 
+    // MARK: labels
+
+    /// The /kiosk/sync/assets body as text, exactly as sent: label generation reads each
+    /// asset's raw JSON (its number literals as written), so it is never re-serialized.
+    func assetsSyncRaw(initiativeId: String) async throws -> String
+    /// The /kiosk/sync/label-templates body as text, exactly as sent.
+    func labelTemplatesRaw(initiativeId: String) async throws -> String
+    func labelFonts(initiativeId: String) async throws -> KioskLabelFonts
+    /// The font file's bytes. 404 font_not_found; 403 font_not_servable for a resident font.
+    func labelFontContent(id: String, initiativeId: String) async throws -> Data
+
     // MARK: scans, RFID, timeclock
 
     /// Idempotent on client_scan_id; throws on anything but 200 (the outbox's back-off signal).

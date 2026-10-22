@@ -44,10 +44,22 @@ android {
         unitTests.isIncludeAndroidResources = true
         unitTests.isReturnDefaultValues = true
     }
+    sourceSets {
+        // MigrationTestHelper loads exported schemas from the instrumentation context's assets,
+        // and under Robolectric that is the tested variant's merged assets (src/test assets are
+        // never merged). So the schemas ride in debug builds only (release stays clean), and
+        // testReleaseUnitTest does not see them: run the migration tests with testDebugUnitTest.
+        getByName("debug").assets.srcDir("$projectDir/schemas")
+    }
 
 }
 
-ksp { arg("room.generateKotlin", "true") }
+ksp {
+    arg("room.generateKotlin", "true")
+    // Exported schemas are committed: MigrationTestHelper reads them to
+    // build each old version for real (data/db/MigrationTest).
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
 
 dependencies {
     implementation(libs.androidx.core.ktx)
@@ -77,6 +89,8 @@ dependencies {
     implementation(libs.okhttp.logging)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
+    // The label generator (assets/labelgen.js) runs in an isolated V8 sandbox from the system WebView.
+    implementation(libs.androidx.javascriptengine)
     // The RFIDAPI3 .aar is wired in as a raw local artifact (see
     // RFIDAPI3Library/build.gradle), not a real Maven/AAR dependency.
     implementation(project(":RFIDAPI3Library"))

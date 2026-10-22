@@ -14,7 +14,7 @@ struct SyncTests {
         api.people = { KioskPeopleSync(generatedAt: "now") }
         api.containers = { KioskContainersSync(initiativeId: "i1", generatedAt: "now") }
         api.trucks = { KioskTrucksSync(initiativeId: "i1", generatedAt: "now") }
-        store = KioskStore(modelContainer: try KioskSchema.container(inMemory: true))
+        store = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
     }
 
     private func sync() -> Sync { Sync(api: api, store: store, clock: { 1_700_000_000_000 }) }
@@ -50,9 +50,10 @@ struct SyncTests {
         api.trucks = { KioskTrucksSync(initiativeId: "i1", generatedAt: "now", trucks: [KioskTruckRow(id: "t1", name: "T1")]) }
         let s = sync()
         await s.runNow(initiativeId: "i1", initiativeName: "Move A")
-        #expect(s.status == SyncStatus(phase: .done, assets: 1, people: 2, containers: 3, trucks: 1, syncedAt: "2023-11-14T22:13:20Z", error: nil))
+        let parts = zip(SyncPart.names, [1, 2, 3, 1, 0, 0]).map { SyncPart(name: $0, state: .done, count: $1) }
+        #expect(s.status == SyncStatus(phase: .done, assets: 1, people: 2, containers: 3, trucks: 1, syncedAt: "2023-11-14T22:13:20Z", error: nil, parts: parts))
         #expect(try await store.meta() == SyncMeta(initiativeId: "i1", initiativeName: "Move A", assets: 1, people: 2, containers: 3, trucks: 1, syncedAt: "2023-11-14T22:13:20Z"))
-        #expect(Set(api.calls) == ["syncAssets", "syncPeople", "syncContainers", "syncTrucks"])
+        #expect(Set(api.calls) == ["syncAssets", "syncPeople", "syncContainers", "syncTrucks", "labelTemplates", "labelFonts"])
     }
 
     @Test func failedFetchLeavesTablesAndReportsCode() async throws {
@@ -147,6 +148,29 @@ struct SyncTests {
         #expect(try await store.counts().assets == 0)
         #expect(try await store.meta() == nil)
         #expect(try await store.outboxAll().count == 1)
+    }
+
+    /// The label builder follows the sync off the main actor: the current status first, then
+    /// every change, in order (no phase is skipped), on each follower's own stream.
+    @Test(.timeLimit(.minutes(1)))
+    func statusUpdatesStartWithTheCurrentStatusAndFollowEveryPhase() async throws {
+        api.assets = assets([KioskAssetRow(id: "a1", assetId: "A-1", makeModel: "X")])
+        let s = sync()
+        let first = s.statusUpdates()
+        let second = s.statusUpdates()
+        await s.runNow(initiativeId: "i1", initiativeName: "Move A")
+        try await s.clearLocalData()
+        for stream in [first, second] {
+            var phases: [SyncPhase] = []
+            for await status in stream {
+                if phases.last != status.phase { phases.append(status.phase) }
+                if phases.count == 4 { break }
+            }
+            #expect(phases == [.idle, .running, .done, .idle])
+        }
+        // A follower that joins later starts from the status as it is now.
+        var late = s.statusUpdates().makeAsyncIterator()
+        #expect(await late.next() == SyncStatus())
     }
 
     @Test func hydrateWithoutMetaStaysIdle() async {

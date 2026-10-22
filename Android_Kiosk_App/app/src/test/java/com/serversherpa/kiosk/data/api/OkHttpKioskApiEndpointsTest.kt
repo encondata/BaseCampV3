@@ -53,6 +53,30 @@ class OkHttpKioskApiEndpointsTest {
         }
     }
 
+    @Test fun labelEndpointsReturnRawBodiesAndFontBytes() = runBlocking<Unit> {
+        ApiHarness(tmp.root).use { h ->
+            h.signIn()
+            val assets = """{"initiative_id":"i1","initiative_name":"M","generated_at":"x","assets":[{"id":"a","raw_ft":{"RU":12.0}}],"label_context":null}"""
+            h.server.enqueue(jsonResponse(200, assets))
+            assertEquals(assets, h.api.assetsSyncRaw("i 1"))
+            assertEquals("/kiosk/sync/assets?initiative_id=i%201", h.server.takeRequest().path)
+            val templates = """{"initiative_id":"i1","generated_at":"x","templates":[{"id":"t","version":2.0}]}"""
+            h.server.enqueue(jsonResponse(200, templates))
+            assertEquals(templates, h.api.labelTemplatesRaw("i1"))
+            assertEquals("/kiosk/sync/label-templates?initiative_id=i1", h.server.takeRequest().path)
+            h.server.enqueue(jsonResponse(200, """{"fonts":[{"id":"f1","name":"ROBOTO.TTF","size":3,"resident":false},{"id":"f2","name":"TT0003M_.TTF","size":9,"resident":true}],"missing":["X.TTF"]}"""))
+            val fonts = h.api.labelFonts("i1")
+            assertEquals(listOf("f1", "f2"), fonts.fonts.map { it.id }); assertEquals(true, fonts.fonts[1].resident); assertEquals(listOf("X.TTF"), fonts.missing)
+            assertEquals("/kiosk/labels/fonts?initiative_id=i1", h.server.takeRequest().path)
+            h.server.enqueue(okhttp3.mockwebserver.MockResponse().setResponseCode(200).setBody(okio.Buffer().write(byteArrayOf(0, 1, -1))))
+            assertTrue(byteArrayOf(0, 1, -1).contentEquals(h.api.labelFontContent("f1", "i1")))
+            assertEquals("/kiosk/labels/fonts/f1/content?initiative_id=i1", h.server.takeRequest().path)
+            h.server.enqueue(jsonResponse(403, """{"detail":{"code":"font_not_servable"}}"""))
+            try { h.api.labelFontContent("f2", "i1"); fail() } catch (e: ApiError) { assertEquals("font_not_servable", e.code) }
+            h.server.takeRequest()
+        }
+    }
+
     @Test fun scansRfidAndTimeclock() = runBlocking {
         ApiHarness(tmp.root).use { h ->
             h.signIn()

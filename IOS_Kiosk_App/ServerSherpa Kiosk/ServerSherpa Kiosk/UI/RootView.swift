@@ -29,6 +29,7 @@ struct RootView: View {
             }
             ScanFlash()
         }
+        .environment(\.goHome, GoHomeAction { [path = $path] in path.wrappedValue.removeAll() })
         .kioskTheme(accent: preferences?.accent ?? "amber",
                     scheme: KioskTheme.scheme(forTheme: preferences?.theme ?? "light"))
         .task { await container.launch() }
@@ -55,7 +56,29 @@ struct RootView: View {
         case .scan: ScanScreen()
         case .enroll: EnrollScreen()
         case .timeclock: TimeclockScreen()
+        case .labels: LabelsHomeScreen(path: $path)
+        case .labelsPrint: PrintLabelsScreen(path: $path)
+        case .labelsPrinter: PrinterSetupScreen(path: $path)
         default: FeaturePlaceholderScreen(feature: feature(route.featureId), path: $path)
         }
+    }
+}
+
+/// Back to Home: the navigation stack cleared (Settings › Developer › Reset app).
+struct GoHomeAction: Sendable {
+    let run: @MainActor @Sendable () -> Void
+
+    @MainActor func callAsFunction() { run() }
+}
+
+private struct GoHomeKey: EnvironmentKey {
+    // Outside RootView (a sheet's own stack, previews) there is nothing to clear.
+    static let defaultValue = GoHomeAction(run: {})
+}
+
+extension EnvironmentValues {
+    var goHome: GoHomeAction {
+        get { self[GoHomeKey.self] }
+        set { self[GoHomeKey.self] = newValue }
     }
 }

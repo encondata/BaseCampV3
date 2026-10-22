@@ -11,8 +11,15 @@ struct FeaturesTests {
         #expect(Set(FEATURES.filter(\.alwaysAvailable).map(\.id)) == [.setup, .settings])
     }
 
-    @Test func placeholdersAreContainersTrucksLabels() {
-        #expect(Set(FEATURES.filter(\.placeholder).map(\.id)) == [.containers, .trucks, .labels])
+    @Test func placeholdersAreContainersAndTrucks() {
+        #expect(Set(FEATURES.filter(\.placeholder).map(\.id)) == [.containers, .trucks])
+    }
+
+    /// Asset labels only on this kiosk (Android's Features.kt).
+    @Test func labelPrintingPrintsAssetLabels() {
+        #expect(feature(.labels).title == "Label Printing")
+        #expect(feature(.labels).blurb == "Print asset labels.")
+        #expect(!feature(.labels).placeholder)
     }
 
     @Test func availabilityFollowsSetupStateUnlessDevMode() {
