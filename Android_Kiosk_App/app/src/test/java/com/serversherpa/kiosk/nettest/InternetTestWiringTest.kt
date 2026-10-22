@@ -12,6 +12,8 @@ import com.serversherpa.kiosk.data.api.sessionResponse
 import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.data.fakeSession
 import com.serversherpa.kiosk.testContainer
+import com.serversherpa.kiosk.ui.screens.timeclock.screens.loadPhoto
+import java.util.Base64
 import java.util.Collections
 import java.util.concurrent.TimeUnit
 import java.util.logging.Level
@@ -23,8 +25,10 @@ import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
+import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -35,6 +39,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /**
  * Internet Test wired into the app (design 4.1, 4.2, 4.5): the real
@@ -72,6 +77,7 @@ class InternetTestWiringTest {
                     "/auth/refresh" -> refresh()
                     "/system/status" -> jsonResponse(200, """{"read_only":false}""")
                     "/kiosk/sign-out", "/auth/logout" -> MockResponse().setResponseCode(204)
+                    PHOTO -> MockResponse().setHeader("Content-Type", "image/png").setBody(Buffer().write(ONE_PIXEL_PNG))
                     else -> MockResponse().setResponseCode(404)
                 }
             }
@@ -155,6 +161,49 @@ class InternetTestWiringTest {
         assertTrue("stalled ${sleeps.sum()} ms", sleeps.sum() >= 15_000)
     }
 
+    /*
+     * The Time Clock photo download (ConfirmPerson's loadPhoto, given the app's
+     * client as TcAvatar gives it) is internet traffic too: direct while the
+     * switch is off, conditioned while it is on and someone is signed in.
+     */
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun photoDownloadGoesDirectWhileOff() {
+        val sleeps = Collections.synchronizedList(mutableListOf<Long>())
+        InternetTestRoutes.sleeper = Sleeper { sleeps += it }
+        startSignedIn()
+
+        // The router hands back the app's own client, and the download takes it as it is:
+        // the real photo arrives (decoded for real, native graphics) and nothing waited.
+        // (No timing check: the first native decode alone can take a second.)
+        assertSame(c.httpClient, InternetTestRoutes.portal(c.httpClient))
+        val photo = runBlocking { loadPhoto(c.httpClient, server.url(PHOTO).toString()) }
+
+        assertNotNull("the photo didn't load", photo)
+        assertEquals(1, photo!!.width)
+        assertTrue("$paths", PHOTO in paths)
+        assertEquals(emptyList<Long>(), sleeps)
+    }
+
+    @Test fun photoDownloadTakesTheConditionedRouteWhileSignedInAndOn() {
+        // A sleeper that only adds up the stalls, so 100% Loss runs out its timeouts at once.
+        val sleeps = Collections.synchronizedList(mutableListOf<Long>())
+        InternetTestRoutes.sleeper = Sleeper { sleeps += it }
+        serverLog.level = Level.SEVERE
+        switchOn(Preset.LOSS_100)
+        startSignedIn()
+        await("the Internet conditions") { InternetTestRoutes.internet == Preset.LOSS_100.profile }
+
+        val photo = runBlocking { loadPhoto(c.httpClient, server.url(PHOTO).toString()) }
+
+        // No photo (the initials stay), the request never reached the portal,
+        // and it stalled out the client's own 15 s connect timeout.
+        assertNull(photo)
+        assertTrue("$paths", PHOTO !in paths)
+        assertTrue("stalled ${sleeps.sum()} ms", sleeps.sum() >= 15_000)
+    }
+
     @Test fun restoreGoesDirectUnderTotalLoss() {
         switchOn(Preset.LOSS_100)
         val started = System.nanoTime()
@@ -216,5 +265,15 @@ class InternetTestWiringTest {
         Thread.sleep(300)   // room for any turn-off the reset might have set off
         assertTrue("Reset app turned Internet Test off", isOn())
         assertEquals(Preset.THREE_G.profile, InternetTestRoutes.internet)
+    }
+
+    private companion object {
+        /** Where the portal serves a person's photo (a presigned storage URL, in the app). */
+        const val PHOTO = "/photo.png"
+
+        /** A 1 x 1 PNG. */
+        val ONE_PIXEL_PNG: ByteArray = Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+        )
     }
 }

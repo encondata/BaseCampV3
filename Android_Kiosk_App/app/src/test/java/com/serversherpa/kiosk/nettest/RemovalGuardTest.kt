@@ -18,6 +18,11 @@ import org.junit.Test
  *   Internet Test ends in the marker, so "delete every marked line" finds all
  *   of it. (That the marked lines can be deleted whole is
  *   [MarkedLinesAreDeletableTest]'s job.)
+ * - [eachTouchPointHasItsMarkedLines]: each of those files has exactly the
+ *   number of marked lines [TOUCH_POINTS] gives it. Some marked lines name no
+ *   Internet Test symbol (`OkHttpKioskApi`'s `route` parameter and `.let(route)`,
+ *   `MoveSetupGuard`'s `onDropped`), so a marker lost in a reformat or a merge
+ *   would otherwise go unnoticed and leave dead plumbing behind after removal.
  * - [noTestOutsideThePackageRefersToIt]: deleting the test package must not
  *   break the build, so no other test may use Internet Test.
  *
@@ -30,17 +35,27 @@ class RemovalGuardTest {
             .map { it.relativeTo(MAIN).invariantSeparatorsPath }
             .toSortedSet()
 
-        assertEquals("files outside nettest/ that refer to Internet Test", TOUCH_POINTS.toSortedSet(), found)
+        assertEquals("files outside nettest/ that refer to Internet Test", TOUCH_POINTS.keys.toSortedSet(), found)
     }
 
     @Test fun everyMentionCarriesTheMarker() {
-        val problems = TOUCH_POINTS.flatMap { path ->
+        val problems = TOUCH_POINTS.keys.flatMap { path ->
             val file = File(MAIN, path)
             assertTrue("${file.path} not found (run from the app module)", file.isFile)
             RemovalScan.unmarkedMentions(path, file.readLines())
         }
 
         assertEquals("lines that refer to Internet Test without ${RemovalScan.MARKER}", emptyList<String>(), problems)
+    }
+
+    @Test fun eachTouchPointHasItsMarkedLines() {
+        val counts = TOUCH_POINTS.mapValues { (path, _) ->
+            val file = File(MAIN, path)
+            assertTrue("${file.path} not found (run from the app module)", file.isFile)
+            RemovalScan.markedLines(file.readLines())
+        }
+
+        assertEquals("marked lines per touch point (update TOUCH_POINTS and REMOVAL.md together)", TOUCH_POINTS, counts)
     }
 
     @Test fun noTestOutsideThePackageRefersToIt() {
@@ -88,16 +103,26 @@ class RemovalGuardTest {
     }
 
     @Test fun removalMdNamesEveryTouchPoint() {
-        // REMOVAL.md lists the touch points by path. Keep the two in step.
+        // REMOVAL.md lists the touch points by path, each with its marked-line
+        // count, and gives the totals in words. Keep the two in step.
         val removalMd = File(MAIN, "$APP/nettest/REMOVAL.md")
         assertTrue("${removalMd.path} not found (run from the app module)", removalMd.isFile)
         val text = removalMd.readText()
+        val rows = text.lines().filter { it.startsWith("| `") }
 
         assertEquals(
-            "touch points REMOVAL.md doesn't name",
+            "touch points REMOVAL.md's table doesn't list with their marked-line counts",
             emptyList<String>(),
-            TOUCH_POINTS.filterNot { it.removePrefix("$APP/") in text },
+            TOUCH_POINTS.filterNot { (path, count) -> rows.any { it.startsWith("| `${path.removePrefix("$APP/")}` | $count |") } }.keys.toList(),
         )
+        assertEquals("rows in REMOVAL.md's table", TOUCH_POINTS.size, rows.size)
+        // The prose wraps, so compare it with its line breaks as spaces.
+        val prose = text.replace(Regex("""\s+"""), " ")
+        val total = TOUCH_POINTS.values.sum()
+        val files = NUMBER_WORDS[TOUCH_POINTS.size]
+        for (phrase in listOf("There are $total of them in the $files files", "in exactly these $files files")) {
+            assertTrue("REMOVAL.md should say \"$phrase\"", phrase in prose)
+        }
     }
 
     private fun filesOutsideThePackage(root: File): List<File> {
@@ -116,16 +141,23 @@ class RemovalGuardTest {
         /** Text files that could refer to Internet Test (sources, manifest, resources, build files). */
         val TEXT_EXTENSIONS = setOf("kt", "java", "xml", "kts", "gradle", "pro", "json", "properties", "txt", "md")
 
-        /** The only files outside `nettest/` that may refer to it; REMOVAL.md names the same seven. */
-        val TOUCH_POINTS = listOf(
-            "$APP/AppContainer.kt",
-            "$APP/data/api/OkHttpKioskApi.kt",
-            "$APP/data/auth/MoveSetupGuard.kt",
-            "$APP/data/printer/NetworkZebra.kt",
-            "$APP/ui/screens/timeclock/screens/ConfirmPerson.kt",
-            "$APP/ui/screens/settings/DeveloperPanel.kt",
-            "$APP/ui/shell/KioskShell.kt",
+        /**
+         * The only files outside `nettest/` that may refer to it, each with its
+         * number of marked lines. REMOVAL.md's table names the same files with
+         * the same counts.
+         */
+        val TOUCH_POINTS = mapOf(
+            "$APP/AppContainer.kt" to 7,
+            "$APP/data/api/OkHttpKioskApi.kt" to 2,
+            "$APP/data/auth/MoveSetupGuard.kt" to 2,
+            "$APP/data/printer/NetworkZebra.kt" to 2,
+            "$APP/ui/screens/timeclock/screens/ConfirmPerson.kt" to 2,
+            "$APP/ui/screens/settings/DeveloperPanel.kt" to 2,
+            "$APP/ui/shell/KioskShell.kt" to 4,
         )
+
+        /** How REMOVAL.md spells a count of files. */
+        val NUMBER_WORDS = listOf("no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve")
     }
 }
 
@@ -140,6 +172,9 @@ internal object RemovalScan {
      * The marker alone counts too.
      */
     fun refers(text: String): Boolean = text.contains("nettest", ignoreCase = true) || MARKER in text
+
+    /** How many of [lines] carry the marker, anywhere on the line: the lines REMOVAL.md's `sed` deletes. */
+    fun markedLines(lines: List<String>): Int = lines.count { MARKER in it }
 
     /** The lines of [lines] that refer to Internet Test but don't end in the marker, as `file:line: text`. */
     fun unmarkedMentions(file: String, lines: List<String>): List<String> = lines.indices

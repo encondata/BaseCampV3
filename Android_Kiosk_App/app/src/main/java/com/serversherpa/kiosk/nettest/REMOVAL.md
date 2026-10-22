@@ -96,10 +96,17 @@ harm. No migration is needed.
 ## While the feature lives
 
 `RemovalGuardTest` fails if any file outside the packages refers to Internet
-Test and isn't in the table above (add it to the table on purpose), or if a
-line there refers to it without the marker. `MarkedLinesAreDeletableTest`
-fails if a marked line mixes original code with Internet Test code, which is
-what would make step 2 delete something it shouldn't.
+Test and isn't in the table above (add it to the table on purpose), if a
+line there refers to it without the marker, or if a file's number of marked
+lines differs from the count the test pins for it. The same test checks that
+the table's counts, the total in step 2 and the number of files match its
+own list, so this file can't go stale. A pinned count matters because some
+marked lines name nothing of Internet Test's (`OkHttpKioskApi`'s `route`
+parameter and `.let(route)`, `MoveSetupGuard`'s `onDropped`): a marker lost
+there would otherwise pass every other check and leave dead plumbing behind.
+`MarkedLinesAreDeletableTest` fails if a marked line mixes original code with
+Internet Test code, which is what would make step 2 delete something it
+shouldn't.
 
 ## Dry runs
 
