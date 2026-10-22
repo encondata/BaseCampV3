@@ -17,6 +17,30 @@ func rolodexSplit(sizeClass: UserInterfaceSizeClass?, width: CGFloat?) -> Bool {
     return width.map { $0 >= 700 } ?? true
 }
 
+/// Where the worker page's "‹ Rolodex" sits.
+enum RolodexBackPlacement: Equatable, Sendable {
+    /// Beside the list: no back.
+    case hidden
+    /// The narrow (stacked) page: on the row with Edit, above the photo.
+    case besideEdit
+    /// The wide page (an iPhone on its side, an iPad in Split View): on its own row above the header.
+    case aboveHeader
+}
+
+/// The pushed worker page (spec §4.4) always has its "‹ Rolodex", whatever its width: the
+/// shell's "‹ Home" drops the whole Rolodex and the hidden navigation bar has no swipe back.
+func rolodexBackPlacement(hasBack: Bool, wide: Bool) -> RolodexBackPlacement {
+    guard hasBack else { return .hidden }
+    return wide ? .aboveHeader : .besideEdit
+}
+
+/// A pushed worker page whose window has grown to the split layout pops: the list beside the page
+/// already shows that worker. Only once the width is measured (a first frame isn't a resize).
+func rolodexPopsWorkerRoute(_ path: [Route], sizeClass: UserInterfaceSizeClass?, width: CGFloat?) -> Bool {
+    guard let width, case .rolodexWorker = path.last else { return false }
+    return rolodexSplit(sizeClass: sizeClass, width: width)
+}
+
 // MARK: - The screen
 
 /// The Rolodex (Route.rolodex): an admin's A–Z list of every worker, with the selected worker's
@@ -47,8 +71,10 @@ struct RolodexView: View {
                 }
             } else {
                 RolodexListView(split: false) { id in
-                    Task { await model.select(id) }
-                    path.append(.rolodexWorker(id))
+                    // While an Edit form is open the tap shows that form (Cancel or Save first).
+                    let shown = model.workerToShow(tapped: id)
+                    Task { await model.select(shown) }
+                    path.append(.rolodexWorker(shown))
                 }
             }
         }
@@ -59,8 +85,9 @@ struct RolodexView: View {
         .onAppear {
             guard !opened else { return }
             opened = true
-            // Not a `.task`: pushing a worker page would cancel the load half way.
-            Task { await model.load() }
+            // The list, and the page of a worker still selected from an earlier visit (unless
+            // it's being edited). Not a `.task`: pushing a worker page would cancel it half way.
+            Task { await model.refresh() }
         }
         // "+ New". Its state is in the model; Cancel and a sign-out close it from there.
         .fullScreenCover(isPresented: Binding(get: { model.newWorker.active }, set: { if !$0 { model.newWorker.cancel() } }),
@@ -73,7 +100,8 @@ struct RolodexView: View {
     /// After a create (or a duplicate's Open) the worker's page shows: beside the list on a wide
     /// screen (already selected), pushed on a narrow one.
     private func showOpenedWorker() {
-        guard let id = model.newWorker.takeOpened() else { return }
+        guard let opened = model.newWorker.takeOpened() else { return }
+        let id = model.workerToShow(tapped: opened)
         if model.selectedId != id { Task { await model.select(id) } }
         if !rolodexSplit(sizeClass: sizeClass, width: width) { path.append(.rolodexWorker(id)) }
     }

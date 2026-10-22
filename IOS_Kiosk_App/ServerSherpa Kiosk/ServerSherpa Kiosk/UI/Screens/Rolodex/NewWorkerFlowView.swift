@@ -18,9 +18,13 @@ struct NewWorkerFlowView: View {
             switch flow.stage {
             case .details:
                 NewWorkerDetailsStep(flow: flow)
+            case .photo where flow.loadingPhoto:
+                // A slow pick (a big photo, or one still in iCloud) can be left: Cancel goes back
+                // to the photo step, as on the worker page.
+                PhotoLoadingView(backTitle: "Cancel") { flow.cancelPhotoLoad() }
             case .photo:
                 PhotoCaptureView(backTitle: "‹ Details", onBack: { flow.backToDetails() }, front: $flow.frontCamera,
-                                 busyText: flow.loadingPhoto ? "Loading photo…" : (flow.creating ? "Creating…" : nil),
+                                 busyText: flow.creating ? "Creating…" : nil,
                                  errorText: flow.errorText, onCapture: { data in Task { await flow.use(data) } },
                                  onLibrary: { flow.library = true }) {
                     Button { flow.continueWithoutPhoto() } label: {
@@ -84,7 +88,8 @@ private struct NewWorkerDetailsStep: View {
                             Capsule().fill(palette.accent).frame(height: 4)
                             Capsule().fill(palette.paperLine).frame(height: 4)
                         }
-                        Text("STEP 1 OF 2 · DETAILS").font(KioskType.labelSmall).tracking(1).foregroundStyle(palette.textMute)
+                        Text("Step 1 of 2 · Details").textCase(.uppercase)
+                            .font(KioskType.labelSmall).tracking(1).foregroundStyle(palette.textMute)
                     }
                     .accessibilityElement(children: .combine)
                     HStack(alignment: .top, spacing: 8) {
@@ -180,7 +185,8 @@ private struct RolodexDuplicateSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("NEW WORKER").font(KioskType.labelSmall).tracking(1).foregroundStyle(palette.textMute)
+                Text("New worker").textCase(.uppercase)
+                    .font(KioskType.labelSmall).tracking(1).foregroundStyle(palette.textMute)
                 Text("Possible duplicate").font(KioskType.headline).foregroundStyle(palette.text)
                     .accessibilityAddTraits(.isHeader)
             }

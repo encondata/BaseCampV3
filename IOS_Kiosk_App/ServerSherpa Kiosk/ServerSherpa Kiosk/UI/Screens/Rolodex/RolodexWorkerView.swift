@@ -3,11 +3,15 @@ import SwiftUI
 import UIKit
 
 /// A narrow screen's worker page (Route.rolodexWorker), pushed over the list. The shell's
-/// "‹ Home" clears the whole stack, so the page has its own "‹ Rolodex" back to the list.
+/// "‹ Home" clears the whole stack, so the page has its own "‹ Rolodex" back to the list. When
+/// the window grows to the split layout (an iPad leaving Split View) the route pops, since the
+/// split shows this worker beside the list; an Edit form in progress stays open there.
 struct RolodexWorkerScreen: View {
     let personId: String
     @Binding var path: [Route]
     @Environment(RolodexModel.self) private var model
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    @State private var width: CGFloat?
 
     var body: some View {
         RolodexWorkerView(onBack: {
@@ -17,10 +21,19 @@ struct RolodexWorkerScreen: View {
             if !path.isEmpty { path.removeLast() }
         })
         .rolodexAdminOnly(path: $path)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+            width = $0
+            popIfSplit()
+        }
+        .onChange(of: sizeClass) { _, _ in popIfSplit() }
         .onAppear {
             // The list's tap already opened this worker; a route reached another way opens it here.
             if model.selectedId != personId { Task { await model.select(personId) } }
         }
+    }
+
+    private func popIfSplit() {
+        if rolodexPopsWorkerRoute(path, sizeClass: sizeClass, width: width) { path.removeLast() }
     }
 }
 
@@ -64,16 +77,20 @@ struct RolodexWorkerView: View {
     // MARK: the page
 
     private func page(_ row: RolodexRow) -> some View {
-        ScrollView {
+        let back = rolodexBackPlacement(hasBack: onBack != nil, wide: wide)
+        return ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 if !wide {
                     HStack {
-                        if let onBack { LinkButton("‹ Rolodex", action: onBack).accessibilityIdentifier("rolodex-back") }
+                        if back == .besideEdit { backLink }
                         Spacer()
                         editButton
                     }
                     hero(row, size: 116).frame(maxWidth: .infinity).padding(.top, 4)
                 } else {
+                    if back == .aboveHeader {
+                        HStack { backLink; Spacer() }.padding(.bottom, 8)
+                    }
                     HStack(alignment: .center, spacing: 16) {
                         RolodexPhotoBadge(row: row, size: 84)
                         VStack(alignment: .leading, spacing: 4) { identity(row, alignment: .leading) }
@@ -118,6 +135,11 @@ struct RolodexWorkerView: View {
             if row.rfidEnrolled { RolodexStatusChip(key: "rfid", label: "RFID enrolled", color: "#0b6e93", dot: false) }
         }
         .padding(.top, 2)
+    }
+
+    /// "‹ Rolodex" on the pushed page (`onBack` is set only there).
+    @ViewBuilder private var backLink: some View {
+        if let onBack { LinkButton("‹ Rolodex", action: onBack).accessibilityIdentifier("rolodex-back") }
     }
 
     private var editButton: some View {
@@ -565,7 +587,8 @@ private struct RolodexPhotoRetry: View {
             if let why = photo.retryErrorText(for: personId) {
                 Text(why).font(KioskType.bodySmall).foregroundStyle(palette.textMute).fixedSize(horizontal: false, vertical: true)
             }
-            SecondaryButton(retrying ? "Uploading…" : "Try again", enabled: !retrying, borderColor: ChipTone.red.border) {
+            // Off while offline, like every change (spec §3.15).
+            SecondaryButton(retrying ? "Uploading…" : "Try again", enabled: photo.canRetry(personId), borderColor: ChipTone.red.border) {
                 Task { await photo.retry(personId) }
             }
             .fixedSize()

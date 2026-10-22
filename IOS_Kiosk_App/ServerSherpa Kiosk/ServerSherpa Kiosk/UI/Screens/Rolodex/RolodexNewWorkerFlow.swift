@@ -46,6 +46,8 @@ final class RolodexNewWorkerFlow {
     @ObservationIgnored private let photo: RolodexPhotoFlow
     /// Bumped by `reset()` (Cancel, a sign-out): work started before it is dropped.
     @ObservationIgnored private var generation = 0
+    /// Bumped when the photo step is left or a pick is cancelled: a late decode is dropped.
+    @ObservationIgnored private var visit = 0
     /// The worker to show once the cover is gone (created, or a match's Open).
     @ObservationIgnored private var opened: String?
     /// A create the server refused as a possible duplicate: Create anyway sends it again.
@@ -117,6 +119,7 @@ final class RolodexNewWorkerFlow {
     /// "Possible duplicate" sheet; none goes on to the photo (or back to the photo already taken).
     func next() async {
         guard active, stage == .details, !busy else { return }
+        refused = nil
         if let problem = RolodexLogic.validate(form) {
             errorText = problem
             return
@@ -193,10 +196,15 @@ final class RolodexNewWorkerFlow {
         stage = crop == nil ? .photo : .crop
     }
 
-    /// "‹ Details" from the photo steps; a photo already positioned is kept.
+    /// "‹ Details" from the photo steps; a photo already positioned is kept (a pick still loading
+    /// is dropped).
     func backToDetails() {
         guard !creating else { return }
+        visit += 1
+        refused = nil
+        skipAsked = false
         confirmNoPhoto = false
+        loadingPhoto = false
         errorText = nil
         stage = .details
     }
@@ -213,10 +221,11 @@ final class RolodexNewWorkerFlow {
         library = false
         errorText = nil
         loadingPhoto = true
-        let mine = generation
+        visit += 1
+        let mine = (generation, visit)
         let data = try? await loading()
         let made: RolodexCrop? = if let data { await RolodexCrop.make(from: data) } else { nil }
-        guard mine == generation else { return }
+        guard mine == (generation, visit) else { return }
         loadingPhoto = false
         guard let made else {
             errorText = RolodexPhotoFlow.unusableText
@@ -226,10 +235,22 @@ final class RolodexNewWorkerFlow {
         stage = .crop
     }
 
+    /// Cancel on "Loading photo…" (a big photo, or one still in iCloud, can take a while): back
+    /// to the photo step; the pick still loading is dropped.
+    func cancelPhotoLoad() {
+        guard loadingPhoto else { return }
+        visit += 1
+        loadingPhoto = false
+        errorText = nil
+    }
+
     /// Retake: back to the camera (or Choose photo).
     func retake() {
         guard !creating else { return }
+        visit += 1
+        refused = nil
         crop = nil
+        loadingPhoto = false
         errorText = nil
         stage = .photo
     }
@@ -271,17 +292,14 @@ final class RolodexNewWorkerFlow {
         await send(photo: jpeg, photoSkipped: false)
     }
 
-    /// Creates the worker from the form with `photo` (nil without one). One create at a time: a
-    /// second tap while one is under way sends nothing.
-    func create(photo: Data?, photoSkipped: Bool, allowDuplicate: Bool) async {
-        guard active, !busy else { return }
-        self.allowDuplicate = allowDuplicate
-        creating = true
-        await send(photo: photo, photoSkipped: photoSkipped)
-    }
+    /// Create refusals about a field on the details: the admin goes back there to fix it, with
+    /// the positioned photo kept (Next comes straight back to it).
+    static let detailsRefusals: Set<String> = ["email_in_use", "partner_archived", "partner_not_found", "unknown_level"]
 
-    /// The create, then the photo, then the worker's page. `creating` is already set. A failure
-    /// keeps the form and the photo; a possible duplicate runs the check again for the sheet.
+    /// The create, then the photo, then the worker's page. `creating` is already set; only
+    /// `createWithPhoto`, `createWithoutPhoto` (after its confirmation) and `createAnyway` (never
+    /// past an email match) get here. A failure keeps the form and the photo: a field the server
+    /// refused goes back to the details; a possible duplicate runs the check again for the sheet.
     private func send(photo jpeg: Data?, photoSkipped: Bool) async {
         errorText = nil
         let mine = generation
@@ -292,18 +310,32 @@ final class RolodexNewWorkerFlow {
         } catch {
             guard mine == generation else { return }
             creating = false
-            if (error as? ApiError)?.code == "possible_duplicate" {
-                // Someone like them was added since Next: show who, as Next does.
-                refused = (jpeg, photoSkipped)
-                if await checkDuplicates(), matches.isEmpty { errorText = RolodexModel.errorText(code: nil) }
+            let code = (error as? ApiError)?.code
+            if code == "possible_duplicate" {
+                // Someone like them was added since Next: show who, as Next does. Create anyway
+                // sends this create again only while the sheet the re-check opened is up.
+                let checked = await checkDuplicates()
+                guard mine == generation else { return }
+                if checked, !matches.isEmpty {
+                    refused = (jpeg, photoSkipped)
+                } else if checked {
+                    errorText = RolodexModel.errorText(code: nil)
+                }
                 return
             }
-            if !(error is CancellationError) { errorText = RolodexModel.errorText(for: error) }
+            if error is CancellationError { return }
+            errorText = RolodexModel.errorText(for: error)
+            if let code, Self.detailsRefusals.contains(code) {
+                visit += 1
+                stage = .details
+            }
             return
         }
         guard mine == generation, let host else { return }
         // The page, the list, the Time Clock's roster and the offline copy have them now.
         await host.open(created)
+        // A sign-out while the page opened starts no upload.
+        guard mine == generation else { return }
         if let jpeg {
             do {
                 try await photo.uploadPhoto(personId: created.personId, jpeg: jpeg)
@@ -321,6 +353,7 @@ final class RolodexNewWorkerFlow {
     /// Cancel, a sign-out, a session end or Reset app: closes the flow and forgets the form.
     func reset() {
         generation += 1
+        visit += 1
         active = false
         stage = .details
         form = RolodexEdit()

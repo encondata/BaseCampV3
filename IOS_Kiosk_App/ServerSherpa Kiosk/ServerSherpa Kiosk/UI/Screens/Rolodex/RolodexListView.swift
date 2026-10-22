@@ -177,6 +177,9 @@ struct RolodexListView: View {
                                                    stripPadding: model.sections.count > 1)
                                 }
                                 .buttonStyle(.plain)
+                                // Beside an open Edit form a stray tap can't throw away what was typed
+                                // (ruling S18); a phone's list (the form hidden) opens that form instead.
+                                .disabled(split && model.selectionLocked)
                                 .listRowInsets(EdgeInsets())
                                 .listRowBackground(palette.paper)
                                 .listRowSeparatorTint(palette.paperLine)

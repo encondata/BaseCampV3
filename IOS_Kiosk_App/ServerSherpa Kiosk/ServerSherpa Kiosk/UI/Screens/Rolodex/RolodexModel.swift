@@ -225,11 +225,19 @@ final class RolodexModel {
         if let id = selectedId, editing == nil, !offline, !detailLoading { await loadDetail(id) }
     }
 
-    /// Opens a worker's page (nil closes it). Leaving a worker drops an unsaved Edit form; while a
-    /// save is in flight the page stays put, so the save's result (or its error) has somewhere to show.
+    /// Opens a worker's page (nil closes it). The worker already open, tapped again, reloads their
+    /// page, which stays on screen meanwhile. While an Edit form is open (or its save is in
+    /// flight) the page stays put: the admin uses Cancel or Save first (ruling S18, as Android's
+    /// S12), and a save's result (or its error) has somewhere to show.
     func select(_ id: String?) async {
-        guard !saving else { return }
-        if let id, id == selectedId, detailLoading || detail?.personId == id { return }
+        guard !saving, editing == nil else { return }
+        if let id, id == selectedId {
+            if detailLoading { return }
+            if detail?.personId == id {
+                await loadDetail(id)
+                return
+            }
+        }
         if id == nil && selectedId == nil { return }
         selectedId = id
         detail = nil
@@ -269,10 +277,22 @@ final class RolodexModel {
         return rows.first { $0.personId == selectedId }
     }
 
-    /// Edit (and the camera badge) work: the page is here, the server allows it, and the kiosk is online.
+    /// Edit (and the camera badge) work: the page is here, the server allows it, and the kiosk is
+    /// online. Not while the page reloads: a form built from the old page would send its stale
+    /// values back as changes.
     var canEdit: Bool {
-        guard let detail, detail.personId == selectedId else { return false }
+        guard let detail, detail.personId == selectedId, !detailLoading else { return false }
         return detail.canEdit && !offline
+    }
+
+    /// An Edit form is open (or saving): the list beside it doesn't open another worker.
+    var selectionLocked: Bool { editing != nil || saving }
+
+    /// The worker a list tap shows: the tapped one, or while an Edit form is open the worker being
+    /// edited (a phone's list hides the form; the tap brings it back, for Cancel or Save).
+    func workerToShow(tapped id: String) -> String {
+        guard selectionLocked, let selectedId else { return id }
+        return selectedId
     }
 
     /// Why Edit is off for this worker, in the spec's words.
@@ -343,9 +363,10 @@ final class RolodexModel {
     }
 
     /// A worker the New worker flow just created: their page opens from the create's answer (no
-    /// fetch), and they join the list, the Time Clock's roster and the offline copy.
+    /// fetch), and they join the list, the Time Clock's roster and the offline copy. An Edit form
+    /// in progress keeps its page (they still join the list).
     func open(_ worker: RolodexDetail) async {
-        if !saving {
+        if !selectionLocked {
             selectedId = worker.personId
             detail = worker
             detailError = nil
@@ -398,7 +419,7 @@ final class RolodexModel {
     func clear() -> Task<Void, Never> {
         generation += 1
         detailToken += 1
-        forgetList()
+        forgetSession()
         query = ""
         filter = RolodexLogic.filterAll
         loading = false
@@ -415,6 +436,13 @@ final class RolodexModel {
         photoCache.removeAll()
         let store = self.store
         return Task { try? await store.clearRolodexCache() }
+    }
+
+    /// The list goes, and its error: the next admin starts clean. (A refused account's load
+    /// calls `forgetList()` alone, keeping the error it just set.)
+    private func forgetSession() {
+        forgetList()
+        listError = nil
     }
 
     private func forgetList() {
@@ -588,8 +616,9 @@ final class RolodexModel {
         photo.start(for: detail)
     }
 
-    /// "+ New" works with a list from the server (not the offline copy) for a signed-in admin.
-    var canStartNewWorker: Bool { loaded && !offline && owner() != nil }
+    /// "+ New" works with a list from the server (not the offline copy) for a signed-in admin,
+    /// and not while an Edit form is open (Cancel or Save first, ruling S18).
+    var canStartNewWorker: Bool { loaded && !offline && !selectionLocked && owner() != nil }
 
     /// Opens the New worker flow with an empty form.
     func startNewWorker() {
