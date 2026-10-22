@@ -11,6 +11,14 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 
 `local.properties` (ignored) must point `sdk.dir` at the Android SDK. Or open this folder in Android Studio.
 
+## Release build (Google Play)
+
+```bash
+./gradlew bundleRelease   # app/build/outputs/bundle/release/app-release.aab
+```
+
+The release is signed with the Play upload key, which lives outside the repo: `~/.gradle/gradle.properties` sets `serversherpaUploadStoreFile` (the `.jks` path), `serversherpaUploadStorePassword`, `serversherpaUploadKeyAlias` and `serversherpaUploadKeyPassword`. Without them the bundle builds unsigned and Play refuses it. Google holds the app signing key (Play App Signing), so a lost upload key is reset through Play Console, not lost for good. Bump `versionCode` in `app/build.gradle.kts` before every upload. The store listing text and graphics are in `play-store/`.
+
 ## Install
 
 ```bash

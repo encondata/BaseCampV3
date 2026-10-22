@@ -50,6 +50,7 @@ import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.components.kioskViewModel
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.TcArrowLeftIcon
 import com.serversherpa.kiosk.ui.theme.Geologica
+import com.serversherpa.kiosk.ui.theme.StatusBarIcons
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.map
 
@@ -68,6 +69,7 @@ fun LoginScreen(nav: NavHostController) {
     val identity by container.identity.identity.collectAsStateWithLifecycle(initialValue = KioskIdentity("", ""))
     val portalUrl by container.config.portalUrl.collectAsStateWithLifecycle(initialValue = "")
     LaunchedEffect(Unit) { vm.loadBanners() }
+    StatusBarIcons(darkIcons = true)
     val goHome = { nav.navigate(Routes.HOME) { popUpTo(0) } }
     var scanning by rememberSaveable { mutableStateOf(false) }
     // A Time Clock station (Login.tsx): the way back to its Welcome, which Home shows while

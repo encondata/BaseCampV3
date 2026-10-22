@@ -407,9 +407,8 @@ and RFID keys against the Time Clock routes.
 ### Migration 0105
 
 `devices.station_type` CHECK now allows `timeclock`. The migration is
-numbered **0105 and chained on 0103**, because 0104 belongs to the unmerged
-badge-templates branch. **Re-point `down_revision` when the two meet**, or
-there will be two heads.
+numbered 0105. It was built on 0103 while 0104 (badge templates) was
+unmerged, and was re-pointed to chain on 0104 at the merge (442dd02e).
 
 ### Edge routes
 
