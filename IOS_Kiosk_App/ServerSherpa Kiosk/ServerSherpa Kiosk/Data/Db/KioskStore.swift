@@ -175,6 +175,13 @@ actor KioskStore: ModelActor {
         return try modelContext.fetch(descriptor).map { GeneratedLabelState(assetId: $0.assetId, fingerprint: $0.fingerprint, outcome: $0.outcome) }
     }
 
+    /// One asset's stored label (Print Labels reads it per scan); nil when the asset has no row.
+    func storedLabel(assetId: String) throws -> StoredLabel? {
+        var descriptor = FetchDescriptor<GeneratedLabelRecord>(predicate: #Predicate { $0.assetId == assetId })
+        descriptor.fetchLimit = 1
+        return try modelContext.fetch(descriptor).first.map { StoredLabel(zpl: $0.zpl, outcome: $0.outcome, templateId: $0.templateId) }
+    }
+
     /// Insert-or-replace by asset id, in one save, only while the stored move is still
     /// `initiativeId`: the check and the write share this actor turn. False (nothing written)
     /// when the move changed or was cleared.

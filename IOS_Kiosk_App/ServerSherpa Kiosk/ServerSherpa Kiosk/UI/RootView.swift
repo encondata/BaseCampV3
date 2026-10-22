@@ -55,6 +55,9 @@ struct RootView: View {
         case .scan: ScanScreen()
         case .enroll: EnrollScreen()
         case .timeclock: TimeclockScreen()
+        case .labels: LabelsHomeScreen(path: $path)
+        case .labelsPrint: PrintLabelsScreen(path: $path)
+        case .labelsPrinter: PrinterSetupScreen(path: $path)
         default: FeaturePlaceholderScreen(feature: feature(route.featureId), path: $path)
         }
     }

@@ -49,6 +49,20 @@ struct KioskStoreTests {
         #expect(try await db.generatedLabelStates().map(\.assetId) == ["a1"])
     }
 
+    /// Print Labels reads one asset's stored label: its ZPL, outcome and template; nil without a row.
+    @Test func storedLabelReadsOneAssetsLabel() async throws {
+        let db = try store()
+        try await db.replaceRoster(assets: [KioskAssetRow(id: "a1"), KioskAssetRow(id: "a2")], people: [], containers: [], trucks: [],
+                                   meta: meta(assets: 2))
+        #expect(try await db.storeGeneratedLabels([
+            GeneratedLabelRow(assetId: "a1", zpl: "^XA^XZ", outcome: "ok", fingerprint: "f1", templateId: "t1"),
+            GeneratedLabelRow(assetId: "a2", zpl: nil, outcome: "no_template_at_dpi", fingerprint: "f2", templateId: nil),
+        ], ifMove: "i1"))
+        #expect(try await db.storedLabel(assetId: "a1") == StoredLabel(zpl: "^XA^XZ", outcome: "ok", templateId: "t1"))
+        #expect(try await db.storedLabel(assetId: "a2") == StoredLabel(zpl: nil, outcome: "no_template_at_dpi", templateId: nil))
+        #expect(try await db.storedLabel(assetId: "a3") == nil)
+    }
+
     /// Built directly on the main thread, too (every test and preview does).
     @MainActor @Test func aStoreBuiltOnTheMainThreadWorksOffIt() async throws {
         let db = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())

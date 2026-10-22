@@ -15,14 +15,14 @@ struct KioskFeature: Equatable, Identifiable, Sendable {
     var alwaysAvailable: Bool = false
 }
 
-/// Same order and copy as kiosk/src/lib/features.ts.
+/// Same order and copy as kiosk/src/lib/features.ts, except Label Printing: asset labels only here.
 let FEATURES: [KioskFeature] = [
     KioskFeature(id: .setup, route: "setup", title: "Kiosk Setup", blurb: "Set up this kiosk for a move.", alwaysAvailable: true),
     KioskFeature(id: .scan, route: "scan", title: "Scanning", blurb: "Scan assets, containers, and badges."),
     KioskFeature(id: .enroll, route: "enroll", title: "RFID Enroll", blurb: "Scan an asset, then scan its RFID tag."),
     KioskFeature(id: .containers, route: "containers", title: "Containers", blurb: "Pack and unpack containers by scanning.", placeholder: true),
     KioskFeature(id: .trucks, route: "trucks", title: "Trucks", blurb: "Load and unload trucks by scanning.", placeholder: true),
-    KioskFeature(id: .labels, route: "labels", title: "Label Printing", blurb: "Print asset and container labels.", placeholder: true),
+    KioskFeature(id: .labels, route: "labels", title: "Label Printing", blurb: "Print asset labels."),
     KioskFeature(id: .timeclock, route: "timeclock", title: "Timeclock", blurb: "Clock in and out of a move."),
     KioskFeature(id: .settings, route: "settings", title: "Settings", blurb: "Appearance, sound, devices, and more.", alwaysAvailable: true),
 ]
