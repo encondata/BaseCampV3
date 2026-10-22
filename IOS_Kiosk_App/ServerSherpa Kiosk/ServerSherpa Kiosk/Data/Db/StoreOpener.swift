@@ -75,7 +75,7 @@ enum KioskStoreOpener {
         } catch {
             return isCorruption(error) ? .corrupt : .unreadable
         }
-        for models in [KioskSchemaV2.models, KioskSchemaV1.models] {
+        for models in [KioskSchemaV3.models, KioskSchemaV2.models, KioskSchemaV1.models] {
             if let model = frozenModel(models), model.isConfiguration(withName: nil, compatibleWithStoreMetadata: metadata) {
                 return .known
             }
@@ -134,9 +134,9 @@ enum KioskStoreOpener {
     }
 
     /// Copies the outbox rows of the store at `url` (opened read-only through
-    /// Core Data, as V2 then V1) into `container`. Returns how many were copied.
+    /// Core Data, as V3, V2, then V1) into `container`. Returns how many were copied.
     static func salvageOutbox(from url: URL, into container: ModelContainer) -> Int {
-        for models in [KioskSchemaV2.models, KioskSchemaV1.models] {
+        for models in [KioskSchemaV3.models, KioskSchemaV2.models, KioskSchemaV1.models] {
             guard let model = frozenModel(models) else { continue }
             let coordinator = NSPersistentStoreCoordinator(managedObjectModel: model)
             do {

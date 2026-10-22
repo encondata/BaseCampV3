@@ -1,7 +1,7 @@
 import Foundation
 import SwiftData
 
-// The local tables (Android `data/db/Entities.kt`), schema version 2 (see
+// The local tables (Android `data/db/Entities.kt`), schema version 3 (see
 // `KioskSchemaVersions.swift`). Records never leave `KioskStore`: each maps to
 // and from its Core value type.
 
@@ -55,6 +55,12 @@ import SwiftData
     var rfidTag: String?
     var isWorker: Bool
     var hasAccount: Bool
+    /// V3: what a printed badge's QR code carries. Nil on rows synced before V3.
+    var badgeUid: String?
+    /// V3: shown on the time clock's confirm card. Nil on rows synced before V3.
+    var jobTitle: String?
+    /// V3: the "Employee ID". Nil on rows synced before V3.
+    var externalId: String?
 
     init(_ row: KioskPersonRow) {
         id = row.id
@@ -65,11 +71,15 @@ import SwiftData
         rfidTag = row.rfidTag
         isWorker = row.isWorker
         hasAccount = row.hasAccount
+        badgeUid = row.badgeUid
+        jobTitle = row.jobTitle
+        externalId = row.externalId
     }
 
     var row: KioskPersonRow {
         KioskPersonRow(id: id, displayName: displayName, firstName: firstName, lastName: lastName, preferredName: preferredName,
-                       rfidTag: rfidTag, isWorker: isWorker, hasAccount: hasAccount)
+                       rfidTag: rfidTag, badgeUid: badgeUid, jobTitle: jobTitle, externalId: externalId, isWorker: isWorker,
+                       hasAccount: hasAccount)
     }
 }
 
@@ -252,14 +262,14 @@ enum KioskSchema {
     /// An in-memory store at the current version: tests, previews, and the
     /// fallback when the on-disk store cannot be used (see `KioskStoreOpener`).
     static func inMemoryContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: KioskSchemaV2.self)
+        let schema = Schema(versionedSchema: KioskSchemaV3.self)
         return try ModelContainer(for: schema, migrationPlan: KioskMigrationPlan.self,
                                   configurations: ModelConfiguration(schema: schema, isStoredInMemoryOnly: true))
     }
 
     /// The store at `url`, migrated to the current version when older.
     static func container(url: URL) throws -> ModelContainer {
-        let schema = Schema(versionedSchema: KioskSchemaV2.self)
+        let schema = Schema(versionedSchema: KioskSchemaV3.self)
         return try ModelContainer(for: schema, migrationPlan: KioskMigrationPlan.self,
                                   configurations: ModelConfiguration(schema: schema, url: url))
     }

@@ -183,12 +183,15 @@ final class KioskSetupViewModel {
         saveError = nil
         do {
             let r = try await api.submitSetup(KioskSetupIn(serial: identity.current.serial, initiativeId: initiativeId, siteId: siteId, scanStatus: scanStatus))
-            prefs.setupSelection = KioskSetupSelection(initiativeId: r.initiativeId, initiativeName: r.initiativeName, siteId: r.siteId, siteName: r.siteName, siteRole: r.siteRole, scanStatus: r.scanStatus, scanLabel: r.scanStatusLabel,
-                                                      labelKind: kind.wire)
+            // A regular kiosk's setup answers every member; "" only guards a malformed reply.
+            let saved = KioskSetupSelection(initiativeId: r.initiativeId ?? "", initiativeName: r.initiativeName ?? "", siteId: r.siteId ?? "",
+                                            siteName: r.siteName ?? "", siteRole: r.siteRole ?? "", scanStatus: r.scanStatus ?? "",
+                                            scanLabel: r.scanStatusLabel ?? "", labelKind: kind.wire)
+            prefs.setupSelection = saved
             prefs.setupState = .complete
             saving = false
             step = .summary
-            sync.run(initiativeId: r.initiativeId, initiativeName: r.initiativeName)
+            sync.run(initiativeId: saved.initiativeId, initiativeName: saved.initiativeName)
         } catch {
             if !prefs.setupState.isComplete { prefs.setupState = .failed }
             saving = false

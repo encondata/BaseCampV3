@@ -9,6 +9,8 @@ protocol MatchPerson {
     var lastName: String { get }
     var preferredName: String? { get }
     var rfidTag: String? { get }
+    /// What a printed badge's QR code carries (a UUID); nil when unknown.
+    var badgeUid: String? { get }
     var isWorker: Bool { get }
     var hasAccount: Bool { get }
 }
@@ -24,6 +26,8 @@ private struct Entry<P: MatchPerson> {
 
 struct PeopleIndex<P: MatchPerson> {
     var byRfid: [String: P]
+    /// Badge UIDs, trimmed and lower-cased.
+    var byBadge: [String: P]
     /// Full id and the eight-character short id, both lower-cased.
     var byId: [String: P]
     fileprivate var entries: [Entry<P>]
@@ -73,26 +77,31 @@ private func entryFor<P: MatchPerson>(_ person: P) -> Entry<P> {
 
 func buildPeopleIndex<P: MatchPerson>(_ people: [P]) -> PeopleIndex<P> {
     var byRfid: [String: P] = [:]
+    var byBadge: [String: P] = [:]
     var byId: [String: P] = [:]
     var entries: [Entry<P>] = []
     entries.reserveCapacity(people.count)
     for person in people {
         if let k = peopleRfidKey(person.rfidTag), byRfid[k] == nil { byRfid[k] = person }
+        let badge = trimmed(person.badgeUid ?? "").lowercased()
+        if !badge.isEmpty, byBadge[badge] == nil { byBadge[badge] = person }
         let id = trimmed(person.id).lowercased()
         if !id.isEmpty, byId[id] == nil { byId[id] = person }
         let short = String(id.prefix(8))
         if short.count == 8, byId[short] == nil { byId[short] = person }
         entries.append(entryFor(person))
     }
-    return PeopleIndex(byRfid: byRfid, byId: byId, entries: entries, size: people.count)
+    return PeopleIndex(byRfid: byRfid, byBadge: byBadge, byId: byId, entries: entries, size: people.count)
 }
 
-/// The badge/id door: a value naming exactly one person, or nil.
+/// The badge/id door: a value naming exactly one person, or nil. Tried in
+/// order: RFID tag, badge UID, full id, then the eight-character short id.
 func matchPersonExact<P: MatchPerson>(_ index: PeopleIndex<P>, _ raw: String) -> P? {
     let t = trimmed(raw)
     if t.isEmpty { return nil }
     if let k = peopleRfidKey(t), let p = index.byRfid[k] { return p }
     let lower = t.lowercased()
+    if let p = index.byBadge[lower] { return p }
     guard let byId = index.byId[lower] else { return nil }
     // The eight-character short form only counts when it looks like hex.
     return (lower.count != 8 || isShortId(lower)) ? byId : nil

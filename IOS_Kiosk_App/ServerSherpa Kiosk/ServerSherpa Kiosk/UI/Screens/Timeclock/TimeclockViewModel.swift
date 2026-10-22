@@ -237,7 +237,7 @@ final class TimeclockViewModel {
         statusTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let next = try await api.timeclockStatus(personId: personId)
+                let next = try await api.timeclockStatus(personId: personId, serial: identity.current.serial, tz: timeZone.identifier)
                 guard mine == statusId, !Task.isCancelled else { return }
                 status = next
                 statusPhase = .ready
@@ -338,8 +338,9 @@ final class TimeclockViewModel {
             let serial = identity.current.serial
             let sel = prefs.setupSelection
             let next = clockingOut
-                ? try await api.clockOut(ClockOutIn(serial: serial, personId: person.id))
-                : try await api.clockIn(ClockInIn(serial: serial, personId: person.id, siteId: sel?.siteId, initiativeId: sel?.initiativeId))
+                ? try await api.clockOut(ClockOutIn(serial: serial, personId: person.id, tz: timeZone.identifier))
+                : try await api.clockIn(ClockInIn(serial: serial, personId: person.id, siteId: sel?.siteIdOrNil, initiativeId: sel?.moveId,
+                                                  tz: timeZone.identifier))
             flashGood()
             let name = next.person.displayName
             let minutes = next.lastEntry?.minutes

@@ -168,6 +168,17 @@ struct TimeclockViewModelTests {
         #expect(seen.value?.serial.isEmpty == false)
     }
 
+    @Test func statusAndPunchesSendTheKiosksZoneAndSerial() async throws {
+        let vm = try await build(zone: TimeZone(identifier: "America/Chicago")!)
+        let seen = BodyBox()
+        api.clockInResult = { seen.set($0); return KioskTimeclockStatus(person: KioskTimeclockPerson(id: "p1", displayName: "Tina T"), clockedIn: true) }
+        vm.onQueryChange("100348"); await vm.settle()
+        #expect(api.statusQueries.last?.tz == "America/Chicago")
+        #expect(api.statusQueries.last?.serial?.isEmpty == false)
+        vm.punch(); await vm.settle()
+        #expect(seen.value?.tz == "America/Chicago")
+    }
+
     @Test func clockOutToastCarriesTheMinutes() async throws {
         let vm = try await build()
         api.statusResult = { _ in KioskTimeclockStatus(person: KioskTimeclockPerson(id: "p1", displayName: "Jimmy H"), clockedIn: true,

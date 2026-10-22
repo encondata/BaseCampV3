@@ -12,6 +12,10 @@ final class AppContainer {
     let identity: Identity
     let sessionStore: SessionStore
     let api: KioskApi
+    /// A Time Clock station's calls under its station key (no session).
+    let stationApi: StationApi
+    /// The Time Clock station's key, in `secrets` (the Keychain in the app).
+    let stationKeys: StationKeyStore
     let auth: KioskAuth
     let heartbeat: Heartbeat
     let coordinator: SessionCoordinator
@@ -51,10 +55,11 @@ final class AppContainer {
         let identity = Identity(prefs: prefs, secrets: secrets)
         let cookies = RefreshCookie(secrets: secrets)
         let apiUrl: @Sendable () async -> String = { await MainActor.run { config.apiUrl } }
-        // One URLSession for both: it carries the cross-origin redirect guard.
+        // One URLSession for all three: it carries the cross-origin redirect guard.
         let session = URLSessionKioskApi.makeSession()
         let sessionStore = SessionStore(apiUrl: apiUrl, cookies: cookies, session: session)
         let api = URLSessionKioskApi(apiUrl: apiUrl, session: session, sessionStore: sessionStore, cookies: cookies)
+        let stationApi = URLSessionStationApi(apiUrl: apiUrl, session: session)
         let auth = KioskAuth(api: api, refresher: sessionStore, identity: identity, prefs: prefs)
         let heartbeat = Heartbeat(api: api, identity: identity, version: config.kioskVersion)
         let store = KioskStore(modelContainer: modelContainer)
@@ -65,6 +70,8 @@ final class AppContainer {
         self.identity = identity
         self.sessionStore = sessionStore
         self.api = api
+        self.stationApi = stationApi
+        self.stationKeys = StationKeyStore(secrets: secrets)
         self.auth = auth
         self.heartbeat = heartbeat
         self.coordinator = SessionCoordinator(refresher: sessionStore, auth: auth, heartbeat: heartbeat)
