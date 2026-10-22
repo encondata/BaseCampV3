@@ -1,8 +1,9 @@
 """Kiosk Rolodex: the worker list, the worker page and the pickers' options
 for admins on the native kiosk apps (GET /kiosk/rolodex/workers,
 /workers/{person_id}, /options), plus the writes: the duplicate check
-(POST /duplicates), New worker (POST /workers) and edits
-(PATCH /workers/{person_id}).
+(POST /duplicates), New worker (POST /workers), edits
+(PATCH /workers/{person_id}) and the photo (PUT /workers/{person_id}/photo,
+a raw JPEG body; storage is faked by the `store` fixture).
 
 Only a person session of rank 60+ with a global role gets in: staff,
 workers, move-password sessions and station keys are refused. The list is
@@ -11,13 +12,22 @@ Spec: docs/superpowers/specs/2026-10-22-kiosk-rolodex-design.md (§3, §4.1).
 """
 
 import hashlib
+import io
+import re
 import uuid
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
+import pytest
+from botocore.exceptions import EndpointConnectionError
+from PIL import Image
 from sqlalchemy import func, select, update
 
+from serversherpa.api.routes import kiosk_rolodex as rolodex_module
+from serversherpa.api.routes.attachments import MAX_IMAGE_BYTES
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
+    Attachment,
     AuditLog,
     AuthSession,
     Initiative,
@@ -1103,7 +1113,7 @@ async def test_write_routes_need_their_own_permission(client, db, seeded_user):
     assert (await client.get(f"{BASE}/workers/{paz}", headers=hdrs)).status_code == 200
 
 
-async def test_write_routes_refuse_staff_and_workers(client, db, seeded_user):
+async def test_write_routes_refuse_staff_and_workers(client, db, seeded_user, store):
     paz = await _worker(db, "Paz", "Plain")
     r = await client.post("/auth/login", json={
         "email": "alice@test.example.com", "password": PW, "client": "kiosk"})
@@ -1120,4 +1130,339 @@ async def test_write_routes_refuse_staff_and_workers(client, db, seeded_user):
             r = await client.request(method, path, headers=hdrs, json=body)
             assert r.status_code == 403, (who, path, r.text)
             assert _code(r) == "forbidden", (who, path, r.text)
+        r = await _put_photo(client, hdrs, paz, _jpeg())
+        assert r.status_code == 403, (who, r.text)
+        assert _code(r) == "forbidden", (who, r.text)
     assert await _people_count(db) == before
+    assert store.blobs == {}
+
+
+# ── photo ────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def store(monkeypatch):
+    """Fake storage for the Rolodex module: stored objects, deleted keys,
+    and presigned URLs that just echo the key."""
+    blobs: dict[str, tuple[bytes, str]] = {}
+    deleted: list[str] = []
+
+    async def fake_put(key, data, content_type):
+        blobs[key] = (data, content_type)
+
+    async def fake_delete(key):
+        deleted.append(key)
+        blobs.pop(key, None)
+
+    monkeypatch.setattr(rolodex_module, "put_object", fake_put)
+    monkeypatch.setattr(rolodex_module, "delete_object", fake_delete)
+    monkeypatch.setattr(rolodex_module, "presign_get",
+                        lambda key, **kw: f"https://files.test/{key}" if key else None)
+    return SimpleNamespace(blobs=blobs, deleted=deleted)
+
+
+def _jpeg(size=(512, 512), color=(200, 120, 60)) -> bytes:
+    """What the apps send: a 512×512 JPEG at quality 0.92."""
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, "JPEG", quality=92)
+    return buf.getvalue()
+
+
+def _photo_key(person_id) -> re.Pattern:
+    return re.compile(rf"^attachments/person/{person_id}/avatar/[0-9a-f]{{32}}\.jpg$")
+
+
+async def _put_photo(client, hdrs, person_id, data, **headers):
+    return await client.put(f"{BASE}/workers/{person_id}/photo", content=data,
+                            headers={**hdrs, "Content-Type": "image/jpeg", **headers})
+
+
+async def _avatar_rows(db, person_id):
+    """(live, retired) avatar attachment rows of a person."""
+    rows = (await db.scalars(
+        select(Attachment)
+        .where(Attachment.entity_type == "person", Attachment.entity_id == person_id,
+               Attachment.kind == "avatar")
+        .execution_options(populate_existing=True))).all()
+    return ([a for a in rows if a.deleted_at is None],
+            [a for a in rows if a.deleted_at is not None])
+
+
+async def _old_avatar(db, person_id, key="attachments/person/old/avatar/old.jpg"):
+    """Give a worker a portal-uploaded avatar: the key and its live row."""
+    await db.execute(update(Person).where(Person.id == person_id).values(avatar_key=key))
+    db.add(Attachment(entity_type="person", entity_id=person_id, kind="avatar",
+                      storage_key=key, filename="me.png", content_type="image/png",
+                      size_bytes=10))
+    await db.commit()
+    return key
+
+
+async def test_photo_replaces_avatar(client, db, seeded_user, store):
+    admin_id, hdrs = await _kiosk_admin(db, client)
+    await _bind_serial(db, admin_id, "KIOSK-7")
+    marcus = await _worker(db, "Marcus", "Reed")
+    old_key = await _old_avatar(db, marcus)
+    photo = _jpeg()
+
+    r = await _put_photo(client, hdrs, marcus, photo)
+    assert r.status_code == 200, r.text
+    key = (await _fresh(db, Person, marcus)).avatar_key
+    assert _photo_key(marcus).match(key), key
+    assert r.json() == {"photo_url": f"https://files.test/{key}",
+                        "photo_version": rolodex_module.photo_version(key)}
+    assert r.json()["photo_version"] == _version(key)
+    assert store.blobs == {key: (photo, "image/jpeg")}
+    # the replaced object stays until Developer › Database › Cleanup purges it
+    assert store.deleted == []
+
+    live, retired = await _avatar_rows(db, marcus)
+    assert [a.storage_key for a in retired] == [old_key]
+    assert len(live) == 1
+    new = live[0]
+    assert (new.storage_key, new.filename, new.content_type, new.size_bytes) == (
+        key, "kiosk-photo.jpg", "image/jpeg", len(photo))
+    assert (new.uploaded_by, new.visibility) == (admin_id, "everyone")
+
+    [row] = await _audits(db, "person", marcus, "attachment.add")
+    assert row.actor_person_id == admin_id
+    assert row.changes["via"] == "kiosk_rolodex"
+    assert row.changes["device"] == "KIOSK-7"
+    assert row.changes["filename"] == {"from": None, "to": "kiosk-photo.jpg"}
+
+    # the worker page and the list row show the new photo
+    d = (await client.get(f"{BASE}/workers/{marcus}", headers=hdrs)).json()
+    assert (d["has_photo"], d["photo_url"], d["photo_version"]) == (
+        True, f"https://files.test/{key}", _version(key))
+
+    # a retake stores a new key, so the version moves with it
+    r = await _put_photo(client, hdrs, marcus, _jpeg(color=(10, 20, 30)))
+    assert r.status_code == 200, r.text
+    second = (await _fresh(db, Person, marcus)).avatar_key
+    assert second != key and _photo_key(marcus).match(second)
+    assert r.json()["photo_version"] == _version(second) != _version(key)
+    live, retired = await _avatar_rows(db, marcus)
+    assert [a.storage_key for a in live] == [second]
+    assert {a.storage_key for a in retired} == {old_key, key}
+
+
+async def test_photo_rejects_non_jpeg(client, db, seeded_user, store):
+    _, hdrs = await _kiosk_admin(db, client)
+    paz = await _worker(db, "Paz", "Plain")
+    for fmt, mode in (("PNG", "RGBA"), ("GIF", "P"), ("WEBP", "RGB")):
+        buf = io.BytesIO()
+        Image.new(mode, (64, 64)).save(buf, fmt)
+        # the bytes decide, not the Content-Type the request claims
+        r = await _put_photo(client, hdrs, paz, buf.getvalue())
+        assert r.status_code == 422, (fmt, r.text)
+        assert _code(r) == "invalid_file_type", (fmt, r.text)
+    r = await _put_photo(client, hdrs, paz, b"just some text, not a picture")
+    assert r.status_code == 422 and _code(r) == "invalid_file_type", r.text
+    assert store.blobs == {}
+    assert (await _fresh(db, Person, paz)).avatar_key is None
+
+
+async def test_photo_rejects_empty_and_huge(client, db, seeded_user, store):
+    _, hdrs = await _kiosk_admin(db, client)
+    paz = await _worker(db, "Paz", "Plain")
+
+    r = await _put_photo(client, hdrs, paz, b"")
+    assert r.status_code == 422, r.text
+    assert _code(r) == "empty_file"
+
+    # a declared length over 5 MiB is refused before a byte is read
+    read = []
+
+    async def body():
+        read.append(True)
+        yield b"\xff\xd8\xff" + b"x" * 1024
+
+    r = await _put_photo(client, hdrs, paz, body(),
+                         **{"Content-Length": str(MAX_IMAGE_BYTES + 1)})
+    assert r.status_code == 413, r.text
+    assert _code(r) == "file_too_large"
+    assert read == []
+
+    # a body longer than it declared is cut off at the cap while streaming
+    huge = _jpeg() + b"\0" * MAX_IMAGE_BYTES
+    r = await _put_photo(client, hdrs, paz, huge, **{"Content-Length": "1000"})
+    assert r.status_code == 413, r.text
+    assert _code(r) == "file_too_large"
+    assert store.blobs == {}
+
+    # exactly 5 MiB is allowed (a JPEG ignores bytes after its end marker)
+    photo = _jpeg()
+    exact = photo + b"\0" * (MAX_IMAGE_BYTES - len(photo))
+    r = await _put_photo(client, hdrs, paz, exact)
+    assert r.status_code == 200, r.text
+    key = (await _fresh(db, Person, paz)).avatar_key
+    assert store.blobs[key] == (exact, "image/jpeg")
+
+
+async def test_photo_needs_content_length(client, db, seeded_user, store):
+    _, hdrs = await _kiosk_admin(db, client)
+    paz = await _worker(db, "Paz", "Plain")
+
+    async def chunked():                     # no Content-Length: chunked encoding
+        yield _jpeg()
+
+    r = await _put_photo(client, hdrs, paz, chunked())
+    assert r.status_code == 411, r.text
+    assert _code(r) == "length_required"
+
+    # latin-1 "²" passes isdigit() but isn't a length
+    r = await _put_photo(client, hdrs, paz, _jpeg(), **{"Content-Length": b"\xb2"})
+    assert r.status_code == 411, r.text
+    assert _code(r) == "length_required"
+    assert store.blobs == {}
+
+
+async def test_photo_unreadable(client, db, seeded_user, store, monkeypatch):
+    from serversherpa.labels import image_prep
+
+    _, hdrs = await _kiosk_admin(db, client)
+    paz = await _worker(db, "Paz", "Plain")
+
+    r = await _put_photo(client, hdrs, paz, b"\xff\xd8\xff" + b"garbage" * 64)
+    assert r.status_code == 422, r.text
+    assert _code(r) == "unreadable_image"
+
+    # past image_prep's pixel cap (read from its header, never decoded)
+    monkeypatch.setattr(image_prep, "MAX_PIXELS", 512 * 512 - 1)
+    r = await _put_photo(client, hdrs, paz, _jpeg())
+    assert r.status_code == 422, r.text
+    assert _code(r) == "image_too_large"
+    assert store.blobs == {}
+    assert (await _fresh(db, Person, paz)).avatar_key is None
+
+
+async def test_photo_rank_rule(client, db, seeded_user, store):
+    """Photos follow the edit rule (§3.17): a target with a portal login
+    ranked at or above yours is 403 `rank_too_low`, your own photo always
+    works, and an account-less worker is never ranked."""
+    me, hdrs = await _kiosk_admin(db, client, worker=True)
+    boss = await _worker(db, "Sue", "Boss", account=True, roles=("super_admin",))
+    peer = await _worker(db, "Pia", "Peer", account=True, roles=("admin",))
+    lead = await _worker(db, "Lou", "Lead", account=True, roles=("staff",))
+    ranked = await _worker(db, "Ray", "Ranked", roles=("super_admin",))
+
+    photo = _jpeg()
+    read = []
+
+    async def body():                        # a refused upload is never read
+        read.append(True)
+        yield photo
+
+    for target in (boss, peer):
+        r = await _put_photo(client, hdrs, target, body(),
+                             **{"Content-Length": str(len(photo))})
+        assert r.status_code == 403, r.text
+        assert _code(r) == "rank_too_low"
+        assert (await _fresh(db, Person, target)).avatar_key is None
+    assert store.blobs == {}
+    assert read == []
+
+    for target in (me, lead, ranked):
+        r = await _put_photo(client, hdrs, target, _jpeg())
+        assert r.status_code == 200, (target, r.text)
+        assert _photo_key(target).match((await _fresh(db, Person, target)).avatar_key)
+    assert len(store.blobs) == 3
+
+    # the camera badge reads the same answer from the worker page
+    for target, can in ((boss, False), (peer, False), (me, True), (lead, True),
+                        (ranked, True)):
+        d = (await client.get(f"{BASE}/workers/{target}", headers=hdrs)).json()
+        assert d["can_edit"] is can, (target, d)
+
+    # people the Rolodex doesn't show get no photo either
+    archived = await _worker(db, "Ari", "Archived", archived=True)
+    for pid in (archived, seeded_user.id, uuid.uuid4()):
+        r = await _put_photo(client, hdrs, pid, _jpeg())
+        assert r.status_code == 404, (pid, r.text)
+        assert _code(r) == "person_not_found"
+    assert len(store.blobs) == 3
+
+
+async def test_photo_deletes_new_object_when_db_fails(client, db, seeded_user, store,
+                                                      monkeypatch, caplog):
+    _, hdrs = await _kiosk_admin(db, client)
+    paz = await _worker(db, "Paz", "Plain")
+    old_key = await _old_avatar(db, paz)
+    real_replace = rolodex_module.replace_avatar
+
+    async def replace_then_fail_commit(session, **kwargs):
+        attachment = await real_replace(session, **kwargs)
+
+        async def commit():
+            raise RuntimeError("database went away")
+
+        session.commit = commit
+        return attachment
+
+    monkeypatch.setattr(rolodex_module, "replace_avatar", replace_then_fail_commit)
+    with pytest.raises(RuntimeError, match="database went away"):
+        await _put_photo(client, hdrs, paz, _jpeg())
+    [new_key] = store.deleted
+    assert _photo_key(paz).match(new_key)
+    assert store.blobs == {}
+    # nothing changed: the old avatar is still the photo, no new row or audit
+    assert (await _fresh(db, Person, paz)).avatar_key == old_key
+    live, retired = await _avatar_rows(db, paz)
+    assert ([a.storage_key for a in live], retired) == ([old_key], [])
+    assert await _audits(db, "person", paz, "attachment.add") == []
+
+    # the cleanup is best effort: the commit's error still surfaces, and the
+    # log names the storage error's class, never its endpoint
+    async def storage_down(key):
+        raise EndpointConnectionError(endpoint_url="http://storage.internal:9000")
+
+    monkeypatch.setattr(rolodex_module, "delete_object", storage_down)
+    with pytest.raises(RuntimeError, match="database went away"):
+        await _put_photo(client, hdrs, paz, _jpeg())
+    assert "EndpointConnectionError" in caplog.text
+    assert "storage.internal" not in caplog.text
+    assert (await _fresh(db, Person, paz)).avatar_key == old_key
+
+
+async def test_photo_frozen_in_read_only_mode(client, db, seeded_user, store):
+    _, hdrs = await _kiosk_admin(db, client)
+    paz = await _worker(db, "Paz", "Plain")
+    super_admin = await _admin(db, client)
+    r = await client.put("/system/admin", headers=super_admin, json={"read_only": True})
+    assert r.status_code == 200, r.text
+
+    r = await _put_photo(client, hdrs, paz, _jpeg())
+    assert r.status_code == 423, r.text
+    assert _code(r) == "read_only_mode"
+    assert store.blobs == {}
+    assert (await _fresh(db, Person, paz)).avatar_key is None
+
+
+async def test_photo_needs_attachments_add(client, db, seeded_user, store):
+    """The photo route checks attachments:add and workers:change, each on
+    its own (every rank-60 global role holds both, so deny them per
+    person)."""
+    admin_id, hdrs = await _kiosk_admin(db, client)
+    paz = await _worker(db, "Paz", "Plain")
+
+    db.add(PermissionOverride(person_id=admin_id, resource="attachments", action="add",
+                              allow=False))
+    await db.commit()
+    r = await _put_photo(client, hdrs, paz, _jpeg())
+    assert r.status_code == 403, r.text
+    assert _code(r) == "forbidden"
+
+    await db.execute(update(PermissionOverride).where(
+        PermissionOverride.person_id == admin_id).values(resource="workers",
+                                                          action="change"))
+    await db.commit()
+    r = await _put_photo(client, hdrs, paz, _jpeg())
+    assert r.status_code == 403, r.text
+    assert _code(r) == "forbidden"
+    assert store.blobs == {}
+
+    # with both granted again, the same admin's upload works
+    await db.execute(update(PermissionOverride).where(
+        PermissionOverride.person_id == admin_id).values(allow=True))
+    await db.commit()
+    r = await _put_photo(client, hdrs, paz, _jpeg())
+    assert r.status_code == 200, r.text

@@ -4055,6 +4055,15 @@ class KioskRolodexPatchIn(BaseModel):
     status_note: RolodexText = None
 
 
+class KioskRolodexPhotoOut(BaseModel):
+    """The worker's new photo, so the apps can update the worker page and
+    the list row without a reload: a presigned, short-lived URL and the
+    new `photo_version` (the apps' photo cache key)."""
+
+    photo_url: str
+    photo_version: str
+
+
 # ── Labels ──
 
 

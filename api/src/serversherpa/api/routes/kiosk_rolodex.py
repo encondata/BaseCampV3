@@ -1,8 +1,8 @@
 """Kiosk Rolodex: admins list, open, edit, photograph and create workers
 from the native kiosk apps (iOS and Android).
 
-Design: docs/superpowers/specs/2026-10-22-kiosk-rolodex-design.md (§3.2-3.4,
-§3.6-3.9, §3.14, §3.16, §4.1).
+Design: docs/superpowers/specs/2026-10-22-kiosk-rolodex-design.md (§3.2-3.9,
+§3.14, §3.16, §3.17, §4.1).
 
 Who gets in (`rolodex_actor`): a person session holding `kiosk:view`, rank
 60 or more (GATE_BYPASS_RANK) and a global role, otherwise 403 `forbidden`.
@@ -25,16 +25,24 @@ blacklist ⇄ login coupling are the portal's own. Every write audits with
 the generic actions plus `"via": "kiosk_rolodex"` and `"device"` (the
 kiosk serial bound to the session, None until a kiosk binds it).
 
+The photo (`PUT /workers/{id}/photo`) is a raw JPEG body, not multipart:
+the route declares no body parameter, so every gate runs before a byte of
+the upload is read, then it reads the body itself under the 5 MiB cap. It
+follows the edit rule (§3.17) and reuses the portal's avatar bookkeeping
+(`attachments.replace_avatar`).
+
 Kiosk sessions reach `/kiosk/*` already (deps.enforce_session_scope), and
 read-only mode (423) and a forced password change (403) apply to every
 route here without anything extra.
 """
 
+import asyncio
 import hashlib
+import logging
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,6 +51,7 @@ from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.access.resolver import can_touch_rank
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, DbSession, require_permission, require_rank
+from serversherpa.api.routes.attachments import MAX_IMAGE_BYTES, _sniff_image, replace_avatar
 from serversherpa.api.schemas import (
     KioskRolodexCompany,
     KioskRolodexCreateIn,
@@ -53,6 +62,7 @@ from serversherpa.api.schemas import (
     KioskRolodexMatchOut,
     KioskRolodexOptionsOut,
     KioskRolodexPatchIn,
+    KioskRolodexPhotoOut,
     KioskRolodexStatusOut,
     KioskRolodexWorkerDetailOut,
     KioskRolodexWorkerOut,
@@ -77,10 +87,11 @@ from serversherpa.db.ordering import natural
 from serversherpa.people.bulk_import import name_keys, normalize_phone
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
-from serversherpa.services.storage import presign_get
+from serversherpa.services.storage import delete_object, loggable, presign_get, put_object
 from serversherpa.status.labels import level_colors, level_fields, status_fields, status_labels
 
 router = APIRouter(prefix="/kiosk/rolodex", tags=["kiosk"])
+logger = logging.getLogger("serversherpa.api.routes.kiosk_rolodex")
 
 
 def _err(status: int, code: str, **extra) -> HTTPException:
@@ -567,3 +578,107 @@ async def update_rolodex_worker(
             raise _err(409, "email_in_use") from None
         raise
     return await worker_detail(db, actor, await require_rolodex_worker(db, actor, person_id))
+
+
+# ── photo ────────────────────────────────────────────────────────────
+
+# What the Attachment row calls every Rolodex photo (the apps send no name).
+PHOTO_FILENAME = "kiosk-photo.jpg"
+
+
+async def _read_photo(request: Request) -> bytes:
+    """The raw upload, at most MAX_IMAGE_BYTES (5 MiB). The declared length
+    is checked before anything is read: none (a chunked body) is 411
+    `length_required`, over the cap is 413 `file_too_large`. The body is
+    then streamed with a running total, so one longer than it declared is
+    cut off at the cap too (413). Empty is 422 `empty_file`."""
+    declared = request.headers.get("content-length")
+    if declared is None or not (declared.isascii() and declared.isdigit()):
+        raise _err(411, "length_required")
+    # the length check first: int() refuses strings of thousands of digits
+    if len(declared) > len(str(MAX_IMAGE_BYTES)) or int(declared) > MAX_IMAGE_BYTES:
+        raise _err(413, "file_too_large")
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > MAX_IMAGE_BYTES:
+            raise _err(413, "file_too_large")
+        chunks.append(chunk)
+    if total == 0:
+        raise _err(422, "empty_file")
+    return b"".join(chunks)
+
+
+async def _drop_new_photo(key: str) -> None:
+    """Delete a just-stored photo whose database write failed: nothing
+    points at it, so it would only be an orphan. Best effort; the
+    failure the caller re-raises is the one that matters."""
+    try:
+        await delete_object(key)
+    except Exception as exc:  # noqa: BLE001 - the write already failed
+        # the class and S3 code only: botocore's message carries the endpoint
+        logger.warning("rolodex photo %s left behind: %s", key, loggable(exc))
+
+
+@router.put("/workers/{person_id}/photo", response_model=KioskRolodexPhotoOut)
+async def put_rolodex_photo(
+    person_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    actor: AuthContext = Depends(rolodex_actor),
+    _perm: AuthContext = require_permission("workers", "change"),
+    _attach: AuthContext = require_permission("attachments", "add"),
+) -> KioskRolodexPhotoOut:
+    """Take or replace a worker's photo. The body is the raw JPEG the
+    apps made (512×512, quality 0.92), sent with `Content-Type:
+    image/jpeg` and a Content-Length; only the bytes are trusted.
+
+    Who: the edit rule (§3.17, the worker page's `can_edit`): 403
+    `rank_too_low` for a target with a portal login ranked at or above
+    yours, never for your own photo or an account-less worker; 404
+    `person_not_found` for anyone the Rolodex doesn't show. These run
+    before the body is read. Then 411 `length_required`, 413
+    `file_too_large` (over 5 MiB), 422 `empty_file`, `invalid_file_type`
+    (not a JPEG by its bytes), `unreadable_image` and `image_too_large`
+    (past 40 megapixels).
+
+    Stored at `attachments/person/{id}/avatar/<32 hex>.jpg`; the old
+    avatar rows are retired, `avatar_key` repointed, the new Attachment
+    row added and audited (`attachment.add` with `via` and `device`), as
+    the portal's avatar upload does. If the database write fails, the new
+    object is deleted and the error re-raised. Returns the new
+    `photo_url` and `photo_version`."""
+    from serversherpa.labels import image_prep  # Pillow, only when a photo arrives
+
+    person = await require_rolodex_worker(db, actor, person_id)
+    has_account = await db.get(UserAccount, person.id) is not None
+    edit_block, _status_block = await _block_reasons(db, actor, person, has_account)
+    if edit_block is not None:
+        raise _err(403, edit_block)
+
+    data = await _read_photo(request)
+    sniffed = _sniff_image(data)
+    if sniffed is None or sniffed[0] != "image/jpeg":
+        raise _err(422, "invalid_file_type")
+    try:
+        await asyncio.to_thread(image_prep.probe, data)
+    except image_prep.ImageTooLarge as exc:
+        raise _err(422, "image_too_large") from exc
+    except image_prep.UnreadableImage as exc:
+        raise _err(422, "unreadable_image") from exc
+
+    key = f"attachments/person/{person.id}/avatar/{uuid.uuid4().hex}.jpg"
+    await put_object(key, data, "image/jpeg")
+    try:
+        await replace_avatar(
+            db, entity_type="person", entity=person, key=key, filename=PHOTO_FILENAME,
+            content_type="image/jpeg", size=len(data), actor_id=actor.person.id,
+            now=datetime.now(UTC), audit_extra=_audit_extra(actor))
+        await db.commit()
+    except Exception:
+        # the key was never committed, so nothing else can reach the object
+        await db.rollback()
+        await _drop_new_photo(key)
+        raise
+    return KioskRolodexPhotoOut(photo_url=presign_get(key), photo_version=photo_version(key))
