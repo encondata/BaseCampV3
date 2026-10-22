@@ -39,6 +39,26 @@ data class RolodexRow(
 
 @Serializable data class RolodexList(val generated_at: String, val workers: List<RolodexRow> = emptyList())
 
+/**
+ * One of the worker page's "Previous jobs": an initiative the worker was added to. The labels and
+ * colors are the portal's vocabulary (an unmapped key reads as itself).
+ */
+@Serializable
+data class RolodexJob(
+    val initiative_id: String,
+    val initiative_name: String = "",
+    val type_label: String? = null,
+    val type_color: String? = null,
+    val status_label: String = "",
+    val status_color: String? = null,
+    /** Null when the worker had no work type on it. */
+    val work_type_label: String? = null,
+    /** Null when no site worked was recorded. */
+    val site_worked_name: String? = null,
+    /** When the worker was added to the initiative (ISO 8601 with an offset). */
+    val added_at: String? = null,
+)
+
 /** GET /kiosk/rolodex/workers/{person_id}, and the answer to a create or an edit: the row plus contact and edit rights. */
 @Serializable
 data class RolodexDetail(
@@ -62,7 +82,7 @@ data class RolodexDetail(
     val has_account: Boolean = false,
     val email: String? = null,
     val phone: String? = null,
-    /** Shown as "Employee ID"; read-only here. */
+    /** The Employee ID. Not shown in the Rolodex (Jimmy, 2026-10-22); it still goes to the Time Clock's roster. */
     val external_id: String? = null,
     val status_note: String? = null,
     /** False when the person has a portal login ranked at or above the admin's. Missing reads as false. */
@@ -73,6 +93,8 @@ data class RolodexDetail(
     val edit_block_reason: String? = null,
     /** `self`, `rank_too_low` or null. */
     val status_block_reason: String? = null,
+    /** The worker's previous jobs, newest first. An API from before them sends none: empty. */
+    val jobs: List<RolodexJob> = emptyList(),
 ) {
     /** This person as a list row (no email or phone), e.g. to replace the row after a save. */
     fun toRow(): RolodexRow = RolodexRow(
