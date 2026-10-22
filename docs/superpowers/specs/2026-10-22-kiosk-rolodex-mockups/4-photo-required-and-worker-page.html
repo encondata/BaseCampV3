@@ -1,0 +1,260 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Geologica:wght@300..800&family=Fragment+Mono&display=swap');
+.rx { --paper:#FBFCFD; --paper2:#F1F4F7; --line:#E4E8EE; --text:#1B2129; --mute:#667085; --ink:#0C1117; --ink2:#121925; --inkline:#243140; --snow:#E8EDF4; --amber:#FFA12E; --amber-soft:#FFC06B;
+  font-family:'Geologica',system-ui,sans-serif; color:var(--text); background:var(--paper2); padding:8px 22px 48px; border-radius:18px; }
+.rx * { box-sizing:border-box; }
+.rx .mono { font-family:'Fragment Mono',ui-monospace,monospace; }
+.rx .sec { margin:28px 0 8px; }
+.rx .sec h2 { font-size:22px; font-weight:650; margin:0 0 4px; }
+.rx .sec p.lead { color:var(--mute); margin:0 0 14px; font-size:14px; max-width:860px; line-height:1.45; }
+.rx .row { display:flex; gap:22px; flex-wrap:wrap; align-items:flex-start; }
+.rx .choice { border:2px solid transparent; border-radius:20px; padding:14px; background:#fff; box-shadow:0 1px 0 rgba(0,0,0,.04); cursor:pointer; }
+.rx .choice.selected { border-color:var(--amber); background:#FFF8EE; }
+.rx .choice h3 { margin:0 0 2px; font-size:17px; font-weight:650; }
+.rx .choice .why { margin:0 0 12px; color:var(--mute); font-size:13px; max-width:720px; line-height:1.4; }
+.rx .tag { display:inline-block; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--mute); margin:0 0 6px; }
+/* devices */
+.rx .phone { width:330px; height:690px; border-radius:38px; background:var(--ink); padding:10px; flex:none; }
+.rx .tablet { width:640px; height:430px; border-radius:26px; background:var(--ink); padding:10px; flex:none; }
+.rx .screen { width:100%; height:100%; border-radius:30px; overflow:hidden; background:var(--paper2); position:relative; display:flex; flex-direction:column; }
+.rx .tablet .screen { border-radius:18px; }
+.rx .cap { font-size:12px; color:var(--mute); margin:8px 4px 0; text-align:center; }
+/* shell */
+.rx .bar { background:var(--ink); color:var(--snow); height:46px; flex:none; display:flex; align-items:center; gap:10px; padding:0 14px; font-size:14px; }
+.rx .bar .back { color:var(--amber); font-weight:600; }
+.rx .bar .title { font-weight:650; }
+.rx .bar .sp { flex:1; }
+.rx .bar .me { width:26px; height:26px; border-radius:50%; background:linear-gradient(135deg,#334155,#64748B); color:#fff; font-size:11px; font-weight:700; display:grid; place-items:center; }
+.rx .foot { flex:none; height:24px; border-top:1px solid var(--line); background:var(--paper); font-size:10px; color:var(--mute); display:flex; align-items:center; padding:0 12px; gap:12px; }
+.rx .body { flex:1; overflow:hidden; padding:14px; position:relative; }
+.rx .eyebrow { font-family:'Fragment Mono',monospace; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--mute); }
+.rx .h1 { font-size:22px; font-weight:650; margin:2px 0 10px; }
+.rx .search { height:42px; border-radius:12px; background:var(--paper); border:1px solid var(--line); display:flex; align-items:center; gap:8px; padding:0 12px; color:var(--mute); font-size:14px; }
+.rx .search.focus { border:2px solid var(--amber); }
+.rx .chips { display:flex; gap:6px; margin:10px 0 12px; flex-wrap:wrap; }
+.rx .chip { font-size:11.5px; padding:3px 10px; border-radius:999px; border:1px solid var(--line); background:var(--paper); color:var(--text); white-space:nowrap; }
+.rx .chip.on { background:var(--ink); color:var(--snow); border-color:var(--ink); }
+.rx .st { font-size:10.5px; padding:2px 8px; border-radius:999px; font-weight:600; white-space:nowrap; }
+.rx .st.ok { background:rgba(61,220,132,.14); border:1px solid rgba(61,220,132,.35); color:#167a43; }
+.rx .st.sb { background:rgba(255,184,77,.16); border:1px solid rgba(255,184,77,.45); color:#9a5b00; }
+.rx .st.bl { background:rgba(255,93,108,.13); border:1px solid rgba(255,93,108,.4); color:#b4202f; }
+.rx .st.rf { background:rgba(77,208,255,.14); border:1px solid rgba(77,208,255,.4); color:#0b6e93; }
+/* avatars */
+.rx .av { border-radius:50%; position:relative; overflow:hidden; display:grid; place-items:center; color:#fff; font-weight:700; flex:none; }
+.rx .av.ini { background:linear-gradient(135deg,#334155,#64748B); }
+.rx .av svg { position:absolute; inset:0; width:100%; height:100%; }
+.rx .sq { border-radius:12px; }
+/* option A grid */
+.rx .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.rx .tablet .grid { grid-template-columns:repeat(5,1fr); }
+.rx .gcard { background:var(--paper); border:1px solid var(--line); border-radius:14px; padding:8px; }
+.rx .gcard .av { width:100%; aspect-ratio:1/1; height:auto; font-size:30px; }
+.rx .gcard .nm { font-weight:650; font-size:14px; margin:7px 2px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rx .gcard .jb { font-size:11.5px; color:var(--mute); margin:1px 2px 6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rx .fab { position:absolute; right:16px; bottom:16px; background:var(--amber); color:var(--ink); font-weight:700; font-size:14px; border-radius:999px; padding:12px 18px; box-shadow:0 6px 18px rgba(255,161,46,.45); }
+/* option B list */
+.rx .listcard { background:var(--paper); border:1px solid var(--line); border-radius:14px; overflow:hidden; }
+.rx .lsec { font-family:'Fragment Mono',monospace; font-size:11px; letter-spacing:.1em; color:var(--mute); padding:7px 14px; background:var(--paper2); border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+.rx .lsec:first-child { border-top:0; }
+.rx .lrow { display:flex; align-items:center; gap:12px; padding:9px 14px; border-bottom:1px solid var(--line); }
+.rx .lrow:last-child { border-bottom:0; }
+.rx .lrow .av { width:44px; height:44px; font-size:15px; }
+.rx .lrow .txt { flex:1; min-width:0; }
+.rx .lrow .nm { font-weight:650; font-size:15px; }
+.rx .lrow .jb { font-size:12px; color:var(--mute); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rx .lrow.sel { background:#FFF4E5; box-shadow:inset 3px 0 0 var(--amber); }
+.rx .azi { position:absolute; right:3px; top:150px; display:flex; flex-direction:column; gap:1px; font-family:'Fragment Mono',monospace; font-size:9px; color:var(--amber); font-weight:600; text-align:center; }
+.rx .btn { display:inline-flex; align-items:center; gap:6px; border-radius:10px; padding:9px 14px; font-weight:650; font-size:13.5px; border:1px solid var(--line); background:var(--paper); color:var(--text); }
+.rx .btn.pri { background:var(--amber); border-color:var(--amber); color:var(--ink); }
+.rx .btn.dark { background:var(--ink); border-color:var(--ink); color:var(--snow); }
+/* worker page */
+.rx .hero { display:flex; flex-direction:column; align-items:center; text-align:center; padding:4px 0 10px; }
+.rx .hero .av { width:116px; height:116px; font-size:38px; box-shadow:0 0 0 5px #fff, 0 6px 18px rgba(12,17,23,.18); }
+.rx .camdot { position:absolute; width:34px; height:34px; border-radius:50%; background:var(--amber); right:-2px; bottom:2px; display:grid; place-items:center; box-shadow:0 0 0 3px #fff; }
+.rx .hero .nm { font-size:21px; font-weight:650; margin-top:12px; }
+.rx .hero .jb { color:var(--mute); font-size:13px; margin:2px 0 8px; }
+.rx .card { background:var(--paper); border:1px solid var(--line); border-radius:14px; margin-top:10px; }
+.rx .card .hd { display:flex; align-items:center; padding:10px 14px 4px; }
+.rx .card .hd .eyebrow { flex:1; }
+.rx .card .hd a { color:#b46a00; font-weight:650; font-size:13px; }
+.rx .kv { display:flex; padding:7px 14px; font-size:13.5px; border-top:1px solid var(--line); }
+.rx .kv:first-of-type { border-top:0; }
+.rx .kv .k { color:var(--mute); width:110px; flex:none; }
+.rx .kv .v { font-weight:500; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.rx .fld { margin:0 14px 9px; }
+.rx .fld label { display:block; font-size:11.5px; color:var(--mute); margin-bottom:3px; }
+.rx .fld .in { height:38px; border-radius:10px; border:1px solid var(--line); background:#fff; padding:0 10px; display:flex; align-items:center; font-size:14px; }
+.rx .fld .in.focus { border:2px solid var(--amber); }
+.rx .fld .in.pick { justify-content:space-between; }
+.rx .two { display:flex; gap:8px; margin:0 14px; }
+.rx .two .fld { margin:0 0 9px; flex:1; }
+.rx .savebar { position:absolute; left:0; right:0; bottom:0; background:var(--paper); border-top:1px solid var(--line); padding:10px 14px; display:flex; gap:8px; justify-content:flex-end; }
+/* camera */
+.rx .cam { background:#05070a; flex:1; position:relative; overflow:hidden; }
+.rx .cam .viewfinder { position:absolute; inset:0; background: radial-gradient(ellipse at 50% 42%, #3b4656 0%, #1b222c 55%, #0b0f14 100%); }
+.rx .cam .guide { position:absolute; left:50%; top:40%; width:230px; height:230px; transform:translate(-50%,-50%); border-radius:50%; box-shadow:0 0 0 999px rgba(0,0,0,.55); border:2px dashed rgba(255,255,255,.8); }
+.rx .cam .face { position:absolute; left:50%; top:40%; width:200px; height:200px; transform:translate(-50%,-50%); }
+.rx .cam .hint { position:absolute; left:0; right:0; top:14px; text-align:center; color:#fff; font-size:13px; }
+.rx .cam .ctrls { position:absolute; left:0; right:0; bottom:22px; display:flex; align-items:center; justify-content:space-around; color:#fff; font-size:12px; }
+.rx .shutter { width:66px; height:66px; border-radius:50%; background:#fff; box-shadow:0 0 0 4px rgba(255,255,255,.35); }
+.rx .roundbtn { width:46px; height:46px; border-radius:50%; background:rgba(255,255,255,.14); display:grid; place-items:center; }
+.rx .crop { flex:1; background:#0b0f14; position:relative; }
+.rx .crop .slider { position:absolute; left:28px; right:28px; bottom:96px; height:4px; border-radius:2px; background:rgba(255,255,255,.25); }
+.rx .crop .slider::after { content:''; position:absolute; left:38%; top:-8px; width:20px; height:20px; border-radius:50%; background:var(--amber); }
+.rx .crop .slider::before { content:''; position:absolute; left:0; width:38%; height:4px; border-radius:2px; background:var(--amber); }
+.rx .crop .btns { position:absolute; left:14px; right:14px; bottom:22px; display:flex; gap:10px; }
+.rx .crop .btns .btn { flex:1; justify-content:center; padding:12px; }
+.rx .crop .btns .btn.ghost { background:transparent; color:#fff; border-color:rgba(255,255,255,.35); }
+.rx .steps { display:flex; gap:6px; margin:0 0 10px; }
+.rx .steps span { flex:1; height:4px; border-radius:2px; background:var(--line); }
+.rx .steps span.on { background:var(--amber); }
+.rx .photo-add { width:96px; height:96px; border-radius:50%; border:2px dashed #c9d1db; display:grid; place-items:center; text-align:center; color:var(--mute); font-size:11px; background:#fff; margin:0 auto; }
+.rx .sheet { position:absolute; left:0; right:0; bottom:0; background:var(--paper); border-radius:18px 18px 0 0; box-shadow:0 -10px 30px rgba(12,17,23,.25); padding:8px 14px 16px; }
+.rx .sheet .grab { width:40px; height:4px; border-radius:2px; background:#cfd6df; margin:0 auto 10px; }
+.rx .sheet .opt { display:flex; align-items:center; gap:12px; padding:12px 4px; border-top:1px solid var(--line); font-weight:600; font-size:15px; }
+.rx .sheet .opt:first-of-type { border-top:0; }
+.rx .dim { position:absolute; inset:0; background:rgba(12,17,23,.35); }
+.rx .note { background:#fff; border:1px solid var(--line); border-radius:12px; padding:10px 14px; font-size:13px; color:var(--mute); max-width:860px; line-height:1.5; }
+.rx .note b { color:var(--text); }
+</style>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="person" viewBox="0 0 100 100"><circle cx="50" cy="40" r="19" fill="rgba(255,255,255,.88)"/><path d="M14 104c2-25 17-36 36-36s34 11 36 36z" fill="rgba(255,255,255,.88)"/></symbol>
+    <symbol id="ic-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M20 20l-4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="ic-cam" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="ic-img" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="9" cy="10" r="2" fill="currentColor"/><path d="M4 18l5-5 4 4 3-3 4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="ic-flip" viewBox="0 0 24 24"><path d="M4 9a8 8 0 0 1 14-3l2 2M20 15a8 8 0 0 1-14 3l-2-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M20 4v4h-4M4 20v-4h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="ic-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
+
+<div class="rx">
+<div class="sec">
+  <span class="tag mono">Photo required</span>
+  <h2>No Skip: create without a photo only after a confirmation</h2>
+  <p class="lead">The photo step has no Skip button. A quiet <b>Continue without photo</b> link opens a confirmation, and the default choice goes back to the camera.</p>
+</div>
+<div class="row">
+  <div>
+    <div class="phone"><div class="screen">
+      <div class="bar"><span class="back">‹ Details</span><span class="sp"></span><span class="title">Photo</span><span class="sp"></span></div>
+      <div class="cam">
+        <div class="viewfinder"></div>
+        <svg class="face" style="opacity:.55"><use href="#person"/></svg>
+        <div class="guide"></div>
+        <div class="hint">Frame the worker's face in the circle</div>
+        <div class="ctrls" style="bottom:70px">
+          <div style="text-align:center"><div class="roundbtn"><svg width="22" height="22"><use href="#ic-img"/></svg></div><div style="margin-top:5px">Library</div></div>
+          <div class="shutter"></div>
+          <div style="text-align:center"><div class="roundbtn"><svg width="22" height="22"><use href="#ic-flip"/></svg></div><div style="margin-top:5px">Flip</div></div>
+        </div>
+        <div style="position:absolute;left:0;right:0;bottom:22px;text-align:center;color:#8A97AA;font-size:13px;text-decoration:underline">Continue without photo</div>
+      </div>
+    </div></div>
+    <div class="cap">The photo step: no Skip, just a quiet link</div>
+  </div>
+  <div>
+    <div class="phone"><div class="screen">
+      <div class="bar"><span class="back">‹ Details</span><span class="sp"></span><span class="title">Photo</span><span class="sp"></span></div>
+      <div class="cam">
+        <div class="viewfinder"></div>
+        <div class="dim" style="background:rgba(5,7,10,.6)"></div>
+        <div style="position:absolute;left:18px;right:18px;top:200px;background:#FBFCFD;border-radius:16px;overflow:hidden">
+          <div style="padding:16px 16px 12px">
+            <div class="eyebrow">New worker</div>
+            <div style="font-size:18px;font-weight:650;margin:3px 0 6px">Create Marcus Reed without a photo?</div>
+            <div style="font-size:13px;color:#667085;line-height:1.45">Every worker should have a photo. You can add one later from their page, and the Rolodex lists who is missing one.</div>
+          </div>
+          <div style="display:flex;gap:8px;padding:12px 16px;border-top:1px solid #E4E8EE;background:#F1F4F7">
+            <span class="btn" style="flex:1;justify-content:center">Take photo</span>
+            <span class="btn dark" style="flex:1;justify-content:center">Create without photo</span>
+          </div>
+        </div>
+      </div>
+    </div></div>
+    <div class="cap">The confirmation click</div>
+  </div>
+</div>
+
+<div class="sec">
+  <span class="tag mono">Next part</span>
+  <h2>The worker page</h2>
+  <p class="lead">Here is what I understood, so you can correct it. Lines marked <b>my guess</b> are mine, not yours.</p>
+</div>
+<div class="note" style="margin-bottom:16px">
+  <b>Opening it:</b> tap a row. On a tablet it fills the right side; on a phone it opens full screen.<br>
+  <b>Top:</b> the photo with a camera badge, name, job title and company, a status chip and an RFID enrolled chip.<br>
+  <b>New photo:</b> tap the photo for <b>Take new photo</b> (back camera) or <b>Choose photo</b>, then position it. <b>My guess:</b> since photos are required, there is no Remove photo.<br>
+  <b>Edit:</b> first and last name, preferred name, job title, phone, email, company, trade, level and status. Blacklist needs a note and can't be applied to yourself, the same as the portal.<br>
+  <b>Read-only (my guess):</b> employee ID and RFID tag. RFID stays with RFID Enroll.<br>
+  <b>Not shown (my guess):</b> home address, certifications and notes, which stay in the portal.<br>
+  <b>Limits (my guess):</b> if a worker also has a portal login ranked above yours, the server refuses the edit and the app says why.
+</div>
+<div class="row">
+  <div>
+    <div class="phone"><div class="screen">
+      <div class="bar"><span class="back">‹ Rolodex</span><span class="sp"></span><span class="btn dark" style="padding:5px 12px;border-color:#243140;color:#FFA12E">Edit</span></div>
+      <div class="body">
+        <div class="hero">
+          <div style="position:relative"><div class="av" style="background:linear-gradient(160deg,#c89b7b,#8a5a44)"><svg><use href="#person"/></svg></div><div class="camdot"><svg width="17" height="17" style="color:#0C1117"><use href="#ic-cam"/></svg></div></div>
+          <div class="nm">Ana Ortiz</div>
+          <div class="jb">Rigger · Summit Crew</div>
+          <div><span class="st ok">Active</span> <span class="st rf">RFID enrolled</span></div>
+        </div>
+        <div class="card"><div class="hd"><span class="eyebrow">Contact</span></div>
+          <div class="kv"><span class="k">Preferred name</span><span class="v">Ana</span></div>
+          <div class="kv"><span class="k">Phone</span><span class="v">(312) 555-0142</span></div>
+          <div class="kv"><span class="k">Email</span><span class="v">ana.ortiz@example.com</span></div>
+        </div>
+        <div class="card"><div class="hd"><span class="eyebrow">Work</span></div>
+          <div class="kv"><span class="k">Company</span><span class="v">Summit Crew</span></div>
+          <div class="kv"><span class="k">Trade · Level</span><span class="v">Rigging · L3</span></div>
+          <div class="kv"><span class="k">Employee ID</span><span class="v mono">SC-1042</span></div>
+        </div>
+      </div>
+    </div></div>
+    <div class="cap">Worker page</div>
+  </div>
+  <div>
+    <div class="phone"><div class="screen">
+      <div class="bar"><span class="back">‹ Rolodex</span><span class="sp"></span></div>
+      <div class="body">
+        <div class="hero" style="opacity:.55">
+          <div style="position:relative"><div class="av" style="background:linear-gradient(160deg,#c89b7b,#8a5a44)"><svg><use href="#person"/></svg></div><div class="camdot"><svg width="17" height="17" style="color:#0C1117"><use href="#ic-cam"/></svg></div></div>
+          <div class="nm">Ana Ortiz</div>
+          <div class="jb">Rigger · Summit Crew</div>
+        </div>
+        <div class="dim"></div>
+        <div class="sheet">
+          <div class="grab"></div>
+          <div class="eyebrow" style="margin:0 4px 4px">Photo for Ana Ortiz</div>
+          <div class="opt"><svg width="22" height="22" style="color:#FFA12E"><use href="#ic-cam"/></svg>Take new photo</div>
+          <div class="opt"><svg width="22" height="22" style="color:#FFA12E"><use href="#ic-img"/></svg>Choose photo</div>
+                    <div class="btn" style="width:100%;justify-content:center;margin-top:8px">Cancel</div>
+        </div>
+      </div>
+    </div></div>
+    <div class="cap">Tapping the photo</div>
+  </div>
+  <div>
+    <div class="phone"><div class="screen">
+      <div class="bar"><span class="back">Cancel</span><span class="sp"></span><span class="title">Edit worker</span><span class="sp"></span></div>
+      <div class="body" style="padding:12px 0 70px">
+        <div class="two"><div class="fld"><label>First name *</label><div class="in">Ana</div></div><div class="fld"><label>Last name *</label><div class="in">Ortiz</div></div></div>
+        <div class="fld"><label>Preferred name</label><div class="in">Ana</div></div>
+        <div class="fld"><label>Job title</label><div class="in focus">Rigger|</div></div>
+        <div class="fld"><label>Phone</label><div class="in">(312) 555-0142</div></div>
+        <div class="fld"><label>Email</label><div class="in">ana.ortiz@example.com</div></div>
+        <div class="fld"><label>Company</label><div class="in pick">Summit Crew <svg width="14" height="14" style="color:#667085"><use href="#ic-chev"/></svg></div></div>
+        <div class="two"><div class="fld"><label>Trade</label><div class="in">Rigging</div></div><div class="fld"><label>Level</label><div class="in pick">L3 <svg width="14" height="14" style="color:#667085"><use href="#ic-chev"/></svg></div></div></div>
+        <div class="fld"><label>Status</label><div style="display:flex;border:1px solid #E4E8EE;border-radius:10px;padding:3px;background:#fff;font-size:13px;font-weight:600"><span style="flex:1;text-align:center;padding:6px;border-radius:8px;background:#0C1117;color:#E8EDF4">Active</span><span style="flex:1;text-align:center;padding:6px">Standby</span><span style="flex:1;text-align:center;padding:6px">Blacklist</span></div></div>
+        <div class="savebar"><span class="btn">Cancel</span><span class="btn pri">Save changes</span></div>
+      </div>
+    </div></div>
+    <div class="cap">Editing</div>
+  </div>
+</div>
+
+
+</div>

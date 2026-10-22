@@ -1,0 +1,206 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Geologica:wght@300..800&family=Fragment+Mono&display=swap');
+.rx { --paper:#FBFCFD; --paper2:#F1F4F7; --line:#E4E8EE; --text:#1B2129; --mute:#667085; --ink:#0C1117; --ink2:#121925; --inkline:#243140; --snow:#E8EDF4; --amber:#FFA12E; --amber-soft:#FFC06B;
+  font-family:'Geologica',system-ui,sans-serif; color:var(--text); background:var(--paper2); padding:8px 22px 48px; border-radius:18px; }
+.rx * { box-sizing:border-box; }
+.rx .mono { font-family:'Fragment Mono',ui-monospace,monospace; }
+.rx .sec { margin:28px 0 8px; }
+.rx .sec h2 { font-size:22px; font-weight:650; margin:0 0 4px; }
+.rx .sec p.lead { color:var(--mute); margin:0 0 14px; font-size:14px; max-width:860px; line-height:1.45; }
+.rx .row { display:flex; gap:22px; flex-wrap:wrap; align-items:flex-start; }
+.rx .choice { border:2px solid transparent; border-radius:20px; padding:14px; background:#fff; box-shadow:0 1px 0 rgba(0,0,0,.04); cursor:pointer; }
+.rx .choice.selected { border-color:var(--amber); background:#FFF8EE; }
+.rx .choice h3 { margin:0 0 2px; font-size:17px; font-weight:650; }
+.rx .choice .why { margin:0 0 12px; color:var(--mute); font-size:13px; max-width:720px; line-height:1.4; }
+.rx .tag { display:inline-block; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--mute); margin:0 0 6px; }
+/* devices */
+.rx .phone { width:330px; height:690px; border-radius:38px; background:var(--ink); padding:10px; flex:none; }
+.rx .tablet { width:640px; height:430px; border-radius:26px; background:var(--ink); padding:10px; flex:none; }
+.rx .screen { width:100%; height:100%; border-radius:30px; overflow:hidden; background:var(--paper2); position:relative; display:flex; flex-direction:column; }
+.rx .tablet .screen { border-radius:18px; }
+.rx .cap { font-size:12px; color:var(--mute); margin:8px 4px 0; text-align:center; }
+/* shell */
+.rx .bar { background:var(--ink); color:var(--snow); height:46px; flex:none; display:flex; align-items:center; gap:10px; padding:0 14px; font-size:14px; }
+.rx .bar .back { color:var(--amber); font-weight:600; }
+.rx .bar .title { font-weight:650; }
+.rx .bar .sp { flex:1; }
+.rx .bar .me { width:26px; height:26px; border-radius:50%; background:linear-gradient(135deg,#334155,#64748B); color:#fff; font-size:11px; font-weight:700; display:grid; place-items:center; }
+.rx .foot { flex:none; height:24px; border-top:1px solid var(--line); background:var(--paper); font-size:10px; color:var(--mute); display:flex; align-items:center; padding:0 12px; gap:12px; }
+.rx .body { flex:1; overflow:hidden; padding:14px; position:relative; }
+.rx .eyebrow { font-family:'Fragment Mono',monospace; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--mute); }
+.rx .h1 { font-size:22px; font-weight:650; margin:2px 0 10px; }
+.rx .search { height:42px; border-radius:12px; background:var(--paper); border:1px solid var(--line); display:flex; align-items:center; gap:8px; padding:0 12px; color:var(--mute); font-size:14px; }
+.rx .search.focus { border:2px solid var(--amber); }
+.rx .chips { display:flex; gap:6px; margin:10px 0 12px; flex-wrap:wrap; }
+.rx .chip { font-size:11.5px; padding:3px 10px; border-radius:999px; border:1px solid var(--line); background:var(--paper); color:var(--text); white-space:nowrap; }
+.rx .chip.on { background:var(--ink); color:var(--snow); border-color:var(--ink); }
+.rx .st { font-size:10.5px; padding:2px 8px; border-radius:999px; font-weight:600; white-space:nowrap; }
+.rx .st.ok { background:rgba(61,220,132,.14); border:1px solid rgba(61,220,132,.35); color:#167a43; }
+.rx .st.sb { background:rgba(255,184,77,.16); border:1px solid rgba(255,184,77,.45); color:#9a5b00; }
+.rx .st.bl { background:rgba(255,93,108,.13); border:1px solid rgba(255,93,108,.4); color:#b4202f; }
+.rx .st.rf { background:rgba(77,208,255,.14); border:1px solid rgba(77,208,255,.4); color:#0b6e93; }
+/* avatars */
+.rx .av { border-radius:50%; position:relative; overflow:hidden; display:grid; place-items:center; color:#fff; font-weight:700; flex:none; }
+.rx .av.ini { background:linear-gradient(135deg,#334155,#64748B); }
+.rx .av svg { position:absolute; inset:0; width:100%; height:100%; }
+.rx .sq { border-radius:12px; }
+/* option A grid */
+.rx .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.rx .tablet .grid { grid-template-columns:repeat(5,1fr); }
+.rx .gcard { background:var(--paper); border:1px solid var(--line); border-radius:14px; padding:8px; }
+.rx .gcard .av { width:100%; aspect-ratio:1/1; height:auto; font-size:30px; }
+.rx .gcard .nm { font-weight:650; font-size:14px; margin:7px 2px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rx .gcard .jb { font-size:11.5px; color:var(--mute); margin:1px 2px 6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rx .fab { position:absolute; right:16px; bottom:16px; background:var(--amber); color:var(--ink); font-weight:700; font-size:14px; border-radius:999px; padding:12px 18px; box-shadow:0 6px 18px rgba(255,161,46,.45); }
+/* option B list */
+.rx .listcard { background:var(--paper); border:1px solid var(--line); border-radius:14px; overflow:hidden; }
+.rx .lsec { font-family:'Fragment Mono',monospace; font-size:11px; letter-spacing:.1em; color:var(--mute); padding:7px 14px; background:var(--paper2); border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+.rx .lsec:first-child { border-top:0; }
+.rx .lrow { display:flex; align-items:center; gap:12px; padding:9px 14px; border-bottom:1px solid var(--line); }
+.rx .lrow:last-child { border-bottom:0; }
+.rx .lrow .av { width:44px; height:44px; font-size:15px; }
+.rx .lrow .txt { flex:1; min-width:0; }
+.rx .lrow .nm { font-weight:650; font-size:15px; }
+.rx .lrow .jb { font-size:12px; color:var(--mute); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rx .lrow.sel { background:#FFF4E5; box-shadow:inset 3px 0 0 var(--amber); }
+.rx .azi { position:absolute; right:3px; top:150px; display:flex; flex-direction:column; gap:1px; font-family:'Fragment Mono',monospace; font-size:9px; color:var(--amber); font-weight:600; text-align:center; }
+.rx .btn { display:inline-flex; align-items:center; gap:6px; border-radius:10px; padding:9px 14px; font-weight:650; font-size:13.5px; border:1px solid var(--line); background:var(--paper); color:var(--text); }
+.rx .btn.pri { background:var(--amber); border-color:var(--amber); color:var(--ink); }
+.rx .btn.dark { background:var(--ink); border-color:var(--ink); color:var(--snow); }
+/* worker page */
+.rx .hero { display:flex; flex-direction:column; align-items:center; text-align:center; padding:4px 0 10px; }
+.rx .hero .av { width:116px; height:116px; font-size:38px; box-shadow:0 0 0 5px #fff, 0 6px 18px rgba(12,17,23,.18); }
+.rx .camdot { position:absolute; width:34px; height:34px; border-radius:50%; background:var(--amber); right:-2px; bottom:2px; display:grid; place-items:center; box-shadow:0 0 0 3px #fff; }
+.rx .hero .nm { font-size:21px; font-weight:650; margin-top:12px; }
+.rx .hero .jb { color:var(--mute); font-size:13px; margin:2px 0 8px; }
+.rx .card { background:var(--paper); border:1px solid var(--line); border-radius:14px; margin-top:10px; }
+.rx .card .hd { display:flex; align-items:center; padding:10px 14px 4px; }
+.rx .card .hd .eyebrow { flex:1; }
+.rx .card .hd a { color:#b46a00; font-weight:650; font-size:13px; }
+.rx .kv { display:flex; padding:7px 14px; font-size:13.5px; border-top:1px solid var(--line); }
+.rx .kv:first-of-type { border-top:0; }
+.rx .kv .k { color:var(--mute); width:110px; flex:none; }
+.rx .kv .v { font-weight:500; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.rx .fld { margin:0 14px 9px; }
+.rx .fld label { display:block; font-size:11.5px; color:var(--mute); margin-bottom:3px; }
+.rx .fld .in { height:38px; border-radius:10px; border:1px solid var(--line); background:#fff; padding:0 10px; display:flex; align-items:center; font-size:14px; }
+.rx .fld .in.focus { border:2px solid var(--amber); }
+.rx .fld .in.pick { justify-content:space-between; }
+.rx .two { display:flex; gap:8px; margin:0 14px; }
+.rx .two .fld { margin:0 0 9px; flex:1; }
+.rx .savebar { position:absolute; left:0; right:0; bottom:0; background:var(--paper); border-top:1px solid var(--line); padding:10px 14px; display:flex; gap:8px; justify-content:flex-end; }
+/* camera */
+.rx .cam { background:#05070a; flex:1; position:relative; overflow:hidden; }
+.rx .cam .viewfinder { position:absolute; inset:0; background: radial-gradient(ellipse at 50% 42%, #3b4656 0%, #1b222c 55%, #0b0f14 100%); }
+.rx .cam .guide { position:absolute; left:50%; top:40%; width:230px; height:230px; transform:translate(-50%,-50%); border-radius:50%; box-shadow:0 0 0 999px rgba(0,0,0,.55); border:2px dashed rgba(255,255,255,.8); }
+.rx .cam .face { position:absolute; left:50%; top:40%; width:200px; height:200px; transform:translate(-50%,-50%); }
+.rx .cam .hint { position:absolute; left:0; right:0; top:14px; text-align:center; color:#fff; font-size:13px; }
+.rx .cam .ctrls { position:absolute; left:0; right:0; bottom:22px; display:flex; align-items:center; justify-content:space-around; color:#fff; font-size:12px; }
+.rx .shutter { width:66px; height:66px; border-radius:50%; background:#fff; box-shadow:0 0 0 4px rgba(255,255,255,.35); }
+.rx .roundbtn { width:46px; height:46px; border-radius:50%; background:rgba(255,255,255,.14); display:grid; place-items:center; }
+.rx .crop { flex:1; background:#0b0f14; position:relative; }
+.rx .crop .slider { position:absolute; left:28px; right:28px; bottom:96px; height:4px; border-radius:2px; background:rgba(255,255,255,.25); }
+.rx .crop .slider::after { content:''; position:absolute; left:38%; top:-8px; width:20px; height:20px; border-radius:50%; background:var(--amber); }
+.rx .crop .slider::before { content:''; position:absolute; left:0; width:38%; height:4px; border-radius:2px; background:var(--amber); }
+.rx .crop .btns { position:absolute; left:14px; right:14px; bottom:22px; display:flex; gap:10px; }
+.rx .crop .btns .btn { flex:1; justify-content:center; padding:12px; }
+.rx .crop .btns .btn.ghost { background:transparent; color:#fff; border-color:rgba(255,255,255,.35); }
+.rx .steps { display:flex; gap:6px; margin:0 0 10px; }
+.rx .steps span { flex:1; height:4px; border-radius:2px; background:var(--line); }
+.rx .steps span.on { background:var(--amber); }
+.rx .photo-add { width:96px; height:96px; border-radius:50%; border:2px dashed #c9d1db; display:grid; place-items:center; text-align:center; color:var(--mute); font-size:11px; background:#fff; margin:0 auto; }
+.rx .sheet { position:absolute; left:0; right:0; bottom:0; background:var(--paper); border-radius:18px 18px 0 0; box-shadow:0 -10px 30px rgba(12,17,23,.25); padding:8px 14px 16px; }
+.rx .sheet .grab { width:40px; height:4px; border-radius:2px; background:#cfd6df; margin:0 auto 10px; }
+.rx .sheet .opt { display:flex; align-items:center; gap:12px; padding:12px 4px; border-top:1px solid var(--line); font-weight:600; font-size:15px; }
+.rx .sheet .opt:first-of-type { border-top:0; }
+.rx .dim { position:absolute; inset:0; background:rgba(12,17,23,.35); }
+.rx .note { background:#fff; border:1px solid var(--line); border-radius:12px; padding:10px 14px; font-size:13px; color:var(--mute); max-width:860px; line-height:1.5; }
+.rx .note b { color:var(--text); }
+</style>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="person" viewBox="0 0 100 100"><circle cx="50" cy="40" r="19" fill="rgba(255,255,255,.88)"/><path d="M14 104c2-25 17-36 36-36s34 11 36 36z" fill="rgba(255,255,255,.88)"/></symbol>
+    <symbol id="ic-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M20 20l-4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="ic-cam" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="ic-img" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="9" cy="10" r="2" fill="currentColor"/><path d="M4 18l5-5 4 4 3-3 4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="ic-flip" viewBox="0 0 24 24"><path d="M4 9a8 8 0 0 1 14-3l2 2M20 15a8 8 0 0 1-14 3l-2-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M20 4v4h-4M4 20v-4h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="ic-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
+
+<div class="rx">
+<div class="sec">
+  <span class="tag mono">Your pick</span>
+  <h2>The Rolodex list</h2>
+  <p class="lead">Here is what I understood, so you can correct it. Lines marked <b>my guess</b> are mine, not yours.</p>
+</div>
+<div class="note" style="margin-bottom:16px">
+  <b>Who sees it:</b> a Rolodex tile on Home for anyone signed in as admin or higher (admin, super admin, developer). Staff, workers and move-password sign-ins never see it.<br>
+  <b>Where:</b> the iOS and Android apps, on phones and tablets.<br>
+  <b>What it lists (my guess):</b> every worker you can see in the portal, not just the current move's crew. Archived workers stay hidden.<br>
+  <b>Order (my guess):</b> A–Z by first name, with letter sections and the jump strip. Each row shows the photo or gray initials, the name, job title and company, and a status chip.<br>
+  <b>Finding someone:</b> search by name, job title or company, plus All, Active, Standby and Blacklist filters.<br>
+  <b>Tablet:</b> the list on the left and the selected worker's page on the right. A phone opens the worker page full screen.<br>
+  <b>Connection (my guess):</b> the list loads live from the server. With no connection it shows the last list it loaded, read-only, and saving waits until you're back online.
+</div>
+<div class="row">
+<div class="choice selected">
+    <h3>Chosen: B · A–Z list</h3>
+    <p class="why">This works like the phone's Contacts app: alphabetical sections and an A–Z strip to jump with. It fits more people on screen and works well with many workers who have no photo yet. On a tablet the worker page opens beside the list.</p>
+    <div class="row">
+      <div>
+        <div class="phone"><div class="screen">
+          <div class="bar"><span class="back">‹ Home</span><span class="title">Rolodex</span><span class="sp"></span><span class="me">JH</span></div>
+          <div class="body" style="padding-right:18px">
+            <div style="display:flex;align-items:center"><div style="flex:1"><div class="eyebrow">Rolodex</div><div class="h1" style="margin-bottom:8px">112 workers</div></div><span class="btn pri">＋ New</span></div>
+            <div class="search"><svg width="16" height="16"><use href="#ic-search"/></svg>Search by name, job or company…</div>
+            <div class="chips"><span class="chip on">All</span><span class="chip">Active</span><span class="chip">Standby</span><span class="chip">Blacklist</span></div>
+            <div class="listcard">
+              <div class="lsec">A</div>
+              <div class="lrow"><div class="av" style="background:linear-gradient(160deg,#c89b7b,#8a5a44)"><svg><use href="#person"/></svg></div><div class="txt"><div class="nm">Ana Ortiz</div><div class="jb">Rigger · Summit Crew</div></div><span class="st ok">Active</span></div>
+              <div class="lsec">B</div>
+              <div class="lrow"><div class="av" style="background:linear-gradient(160deg,#7fa3c6,#3f6288)"><svg><use href="#person"/></svg></div><div class="txt"><div class="nm">Ben Carter</div><div class="jb">Lead tech · Peak Logistics</div></div><span class="st ok">Active</span></div>
+              <div class="lrow"><div class="av ini">BN</div><div class="txt"><div class="nm">Bo Nguyen</div><div class="jb">Mover · Summit Crew</div></div><span class="st ok">Active</span></div>
+              <div class="lsec">C</div>
+              <div class="lrow"><div class="av ini">CD</div><div class="txt"><div class="nm">Carla Diaz</div><div class="jb">Mover · Summit Crew</div></div><span class="st sb">Standby</span></div>
+              <div class="lrow"><div class="av" style="background:linear-gradient(160deg,#e0b07a,#a86c32)"><svg><use href="#person"/></svg></div><div class="txt"><div class="nm">Chris Wells</div><div class="jb">Supervisor · Peak Logistics</div></div><span class="st ok">Active</span></div>
+            </div>
+            <div class="azi"><span>A</span><span>B</span><span>C</span><span>D</span><span>E</span><span>F</span><span>G</span><span>H</span><span>I</span><span>J</span><span>K</span><span>L</span><span>M</span><span>N</span><span>O</span><span>P</span><span>R</span><span>S</span><span>T</span><span>W</span></div>
+          </div>
+          <div class="foot mono">Move · ORD1 Initech&nbsp;&nbsp; Site · Chicago</div>
+        </div></div>
+        <div class="cap">Phone</div>
+      </div>
+      <div>
+        <div class="tablet"><div class="screen">
+          <div class="bar"><span class="back">‹ Home</span><span class="title">Rolodex</span><span class="sp"></span><span class="mono" style="font-size:11px;color:#8A97AA">KIOSK · IPAD</span><span class="me">JH</span></div>
+          <div class="body" style="display:flex;gap:12px;padding:12px">
+            <div style="width:250px;flex:none">
+              <div style="display:flex;gap:8px;margin-bottom:8px"><div class="search" style="flex:1;height:38px;font-size:13px"><svg width="14" height="14"><use href="#ic-search"/></svg>Search…</div><span class="btn pri" style="padding:8px 11px">＋</span></div>
+              <div class="listcard">
+                <div class="lsec">A</div>
+                <div class="lrow sel"><div class="av" style="background:linear-gradient(160deg,#c89b7b,#8a5a44);width:36px;height:36px"><svg><use href="#person"/></svg></div><div class="txt"><div class="nm" style="font-size:14px">Ana Ortiz</div><div class="jb">Rigger</div></div></div>
+                <div class="lsec">B</div>
+                <div class="lrow"><div class="av" style="background:linear-gradient(160deg,#7fa3c6,#3f6288);width:36px;height:36px"><svg><use href="#person"/></svg></div><div class="txt"><div class="nm" style="font-size:14px">Ben Carter</div><div class="jb">Lead tech</div></div></div>
+                <div class="lrow"><div class="av ini" style="width:36px;height:36px;font-size:12px">BN</div><div class="txt"><div class="nm" style="font-size:14px">Bo Nguyen</div><div class="jb">Mover</div></div></div>
+                <div class="lsec">C</div>
+                <div class="lrow"><div class="av ini" style="width:36px;height:36px;font-size:12px">CD</div><div class="txt"><div class="nm" style="font-size:14px">Carla Diaz</div><div class="jb">Mover</div></div></div>
+              </div>
+            </div>
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;gap:14px;align-items:center">
+                <div style="position:relative"><div class="av" style="width:84px;height:84px;background:linear-gradient(160deg,#c89b7b,#8a5a44);box-shadow:0 0 0 4px #fff,0 4px 12px rgba(12,17,23,.18)"><svg><use href="#person"/></svg></div><div class="camdot" style="width:28px;height:28px"><svg width="15" height="15" style="color:#0C1117"><use href="#ic-cam"/></svg></div></div>
+                <div style="flex:1"><div style="font-size:19px;font-weight:650">Ana Ortiz</div><div style="color:#667085;font-size:12.5px;margin:2px 0 6px">Rigger · Summit Crew</div><span class="st ok">Active</span> <span class="st rf">RFID enrolled</span></div>
+                <span class="btn">Edit</span>
+              </div>
+              <div class="card"><div class="kv"><span class="k">Phone</span><span class="v">(312) 555-0142</span></div><div class="kv"><span class="k">Email</span><span class="v">ana.ortiz@example.com</span></div><div class="kv"><span class="k">Trade · Level</span><span class="v">Rigging · L3</span></div><div class="kv"><span class="k">Employee ID</span><span class="v mono">SC-1042</span></div></div>
+            </div>
+          </div>
+        </div></div>
+        <div class="cap">Tablet: list and worker page side by side</div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
