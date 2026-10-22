@@ -398,8 +398,12 @@ struct KioskSetupSelection: Codable, Equatable, Sendable {
     var siteRole: String
     var scanStatus: String
     var scanLabel: String
+    /// What labels print on, from the setup's last step: "top" or "front". A selection saved
+    /// before that step existed has none, and reads as "top".
+    var labelKind: String
 
-    init(initiativeId: String, initiativeName: String, siteId: String, siteName: String, siteRole: String, scanStatus: String, scanLabel: String) {
+    init(initiativeId: String, initiativeName: String, siteId: String, siteName: String, siteRole: String, scanStatus: String, scanLabel: String,
+         labelKind: String = "top") {
         self.initiativeId = initiativeId
         self.initiativeName = initiativeName
         self.siteId = siteId
@@ -407,6 +411,7 @@ struct KioskSetupSelection: Codable, Equatable, Sendable {
         self.siteRole = siteRole
         self.scanStatus = scanStatus
         self.scanLabel = scanLabel
+        self.labelKind = labelKind
     }
 
     init(from decoder: Decoder) throws {
@@ -418,5 +423,6 @@ struct KioskSetupSelection: Codable, Equatable, Sendable {
         siteRole = try c.decode(String.self, forKey: .siteRole)
         scanStatus = try c.decode(String.self, forKey: .scanStatus)
         scanLabel = try c.decode(String.self, forKey: .scanLabel)
+        labelKind = try c.decodeIfPresent(String.self, forKey: .labelKind) ?? "top"
     }
 }

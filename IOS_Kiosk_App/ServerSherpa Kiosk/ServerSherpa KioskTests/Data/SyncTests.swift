@@ -150,6 +150,28 @@ struct SyncTests {
         #expect(try await store.outboxAll().count == 1)
     }
 
+    /// The label builder follows the sync off the main actor: the current status first, then
+    /// every change, in order (no phase is skipped), on each follower's own stream.
+    @Test func statusUpdatesStartWithTheCurrentStatusAndFollowEveryPhase() async throws {
+        api.assets = assets([KioskAssetRow(id: "a1", assetId: "A-1", makeModel: "X")])
+        let s = sync()
+        let first = s.statusUpdates()
+        let second = s.statusUpdates()
+        await s.runNow(initiativeId: "i1", initiativeName: "Move A")
+        try await s.clearLocalData()
+        for stream in [first, second] {
+            var phases: [SyncPhase] = []
+            for await status in stream {
+                if phases.last != status.phase { phases.append(status.phase) }
+                if phases.count == 4 { break }
+            }
+            #expect(phases == [.idle, .running, .done, .idle])
+        }
+        // A follower that joins later starts from the status as it is now.
+        var late = s.statusUpdates().makeAsyncIterator()
+        #expect(await late.next() == SyncStatus())
+    }
+
     @Test func hydrateWithoutMetaStaysIdle() async {
         let s = sync()
         await s.hydrate()

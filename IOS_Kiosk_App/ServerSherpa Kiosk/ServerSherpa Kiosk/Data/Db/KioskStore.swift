@@ -8,6 +8,15 @@ let syncMetaKey = "sync"
 /// raw JSON text (Android `LABEL_CONTEXT_META_KEY`).
 let labelContextMetaKey = "label_context"
 
+/// One read of the synced move for a label build. `payloads` and `templates` are empty unless
+/// asked for, and when the move or its label context is missing.
+struct LabelBuildSnapshot: Sendable {
+    var meta: SyncMeta?
+    var labelContext: String?
+    var payloads: [(id: String, json: String)] = []
+    var templates: [LabelTemplateRow] = []
+}
+
 /// The only thing that touches the SwiftData container. Everything crossing
 /// the actor boundary is a Core value type, never a `@Model` object.
 @ModelActor actor KioskStore {
@@ -129,6 +138,79 @@ let labelContextMetaKey = "label_context"
             modelContext.rollback()
             throw error
         }
+    }
+
+    /// The move, its label context and, with `withRows` while both exist, the payloads and the
+    /// templates: one actor turn with no suspension, so a sync can't land between the reads (the
+    /// payloads of one sync with the templates of the next).
+    func labelBuildSnapshot(withRows: Bool) throws -> LabelBuildSnapshot {
+        let meta = try self.meta()
+        let context = try labelContext()
+        guard withRows, meta != nil, context != nil else { return LabelBuildSnapshot(meta: meta, labelContext: context) }
+        return LabelBuildSnapshot(meta: meta, labelContext: context, payloads: try assetPayloads(), templates: try labelTemplates())
+    }
+
+    /// Every stored label's fingerprint and outcome (not its ZPL).
+    func generatedLabelStates() throws -> [GeneratedLabelState] {
+        var descriptor = FetchDescriptor<GeneratedLabelRecord>()
+        descriptor.propertiesToFetch = [\.assetId, \.fingerprint, \.outcome]
+        return try modelContext.fetch(descriptor).map { GeneratedLabelState(assetId: $0.assetId, fingerprint: $0.fingerprint, outcome: $0.outcome) }
+    }
+
+    /// Insert-or-replace by asset id, in one save, only while the stored move is still
+    /// `initiativeId`: the check and the write share this actor turn. False (nothing written)
+    /// when the move changed or was cleared.
+    func storeGeneratedLabels(_ rows: [GeneratedLabelRow], ifMove initiativeId: String) throws -> Bool {
+        guard try meta()?.initiativeId == initiativeId else { return false }
+        do {
+            let ids = rows.map(\.assetId)
+            var existing: [String: GeneratedLabelRecord] = [:]
+            for chunk in Self.chunks(ids) {
+                for r in try modelContext.fetch(FetchDescriptor<GeneratedLabelRecord>(predicate: #Predicate { chunk.contains($0.assetId) })) {
+                    existing[r.assetId] = r
+                }
+            }
+            for row in rows {
+                if let r = existing[row.assetId] {
+                    r.zpl = row.zpl
+                    r.outcome = row.outcome
+                    r.fingerprint = row.fingerprint
+                    r.templateId = row.templateId
+                } else {
+                    let r = GeneratedLabelRecord(assetId: row.assetId, zpl: row.zpl, outcome: row.outcome, fingerprint: row.fingerprint,
+                                                 templateId: row.templateId)
+                    modelContext.insert(r)
+                    existing[row.assetId] = r
+                }
+            }
+            try modelContext.save()
+            return true
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
+    }
+
+    /// Deletes the labels of `assetIds` in one save, only while the stored move is still
+    /// `initiativeId` (checked even when there is nothing to delete). False (nothing deleted)
+    /// when the move changed or was cleared.
+    func deleteGeneratedLabels(_ assetIds: [String], ifMove initiativeId: String) throws -> Bool {
+        guard try meta()?.initiativeId == initiativeId else { return false }
+        do {
+            for chunk in Self.chunks(assetIds) {
+                try modelContext.delete(model: GeneratedLabelRecord.self, where: #Predicate { chunk.contains($0.assetId) })
+            }
+            try modelContext.save()
+            return true
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
+    }
+
+    /// Ids in groups small enough for one SQLite statement's bound parameters.
+    private static func chunks(_ ids: [String], size: Int = 500) -> [[String]] {
+        stride(from: 0, to: ids.count, by: size).map { Array(ids[$0..<min($0 + size, ids.count)]) }
     }
 
     func updateAssetRfid(id: String, rfid: String) throws {

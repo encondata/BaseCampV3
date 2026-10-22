@@ -369,3 +369,20 @@ struct LabelCounts: Equatable, Sendable {
     var templates: Int
     var fonts: Int
 }
+
+/// A label made on this device for one asset of the move: `zpl` when `outcome` is `ok`, else
+/// nil. `fingerprint` is the plan's: the label is current while the plan still says it.
+struct GeneratedLabelRow: Equatable, Sendable {
+    var assetId: String
+    var zpl: String?
+    var outcome: String
+    var fingerprint: String
+    var templateId: String?
+}
+
+/// A stored label without its ZPL: what a build compares with its plan.
+struct GeneratedLabelState: Equatable, Sendable {
+    var assetId: String
+    var fingerprint: String
+    var outcome: String
+}

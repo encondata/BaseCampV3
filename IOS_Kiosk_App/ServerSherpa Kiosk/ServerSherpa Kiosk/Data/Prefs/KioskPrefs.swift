@@ -22,6 +22,7 @@ final class KioskPrefs {
         static let portalUrl = "ss.kiosk.portalUrl"
         static let name = "ss.kiosk.name"
         static let cameraPosition = "ss.kiosk.cameraPosition"
+        static let labels = "ss.kiosk.labels"
     }
 
     var setupState: SetupState { didSet { defaults.set(setupState.rawValue, forKey: Key.setupState) } }
@@ -41,6 +42,15 @@ final class KioskPrefs {
     var portalUrl: String? { didSet { Self.store(portalUrl, Key.portalUrl, defaults) } }
     var kioskName: String? { didSet { Self.store(kioskName, Key.name, defaults) } }
     var cameraPosition: CameraPosition { didSet { defaults.set(cameraPosition.rawValue, forKey: Key.cameraPosition) } }
+    /// The saved printer, offsets and peel/tear choice; defaults when nothing (or nothing
+    /// readable) is saved. The label kind lives in `setupSelection`.
+    private(set) var labels: LabelOptions {
+        didSet {
+            if let data = try? KioskJSON.encoder.encode(labels), let s = String(data: data, encoding: .utf8) {
+                defaults.set(s, forKey: Key.labels)
+            }
+        }
+    }
     private var checkpoints: [String: String] {
         didSet { for (k, v) in checkpoints where oldValue[k] != v { defaults.set(v, forKey: k) } }
     }
@@ -58,6 +68,9 @@ final class KioskPrefs {
         portalUrl = defaults.string(forKey: Key.portalUrl)
         kioskName = defaults.string(forKey: Key.name)
         cameraPosition = defaults.string(forKey: Key.cameraPosition).flatMap(CameraPosition.init(rawValue:)) ?? .back
+        labels = defaults.string(forKey: Key.labels)
+            .flatMap { $0.data(using: .utf8) }
+            .flatMap { try? KioskJSON.decoder.decode(LabelOptions.self, from: $0) } ?? LabelOptions()
         var cps: [String: String] = [:]
         for id in CheckpointId.allCases {
             if let v = defaults.string(forKey: id.storageKey) { cps[id.storageKey] = v }
@@ -73,6 +86,13 @@ final class KioskPrefs {
 
     func setCheckpoint(_ id: CheckpointId, _ key: String) {
         checkpoints[id.storageKey] = key
+    }
+
+    /// Reads and writes in one step, so two setters never overwrite each other's field.
+    func updateLabels(_ change: (inout LabelOptions) -> Void) {
+        var next = labels
+        change(&next)
+        labels = next
     }
 
     private static func store(_ value: String?, _ key: String, _ defaults: UserDefaults) {

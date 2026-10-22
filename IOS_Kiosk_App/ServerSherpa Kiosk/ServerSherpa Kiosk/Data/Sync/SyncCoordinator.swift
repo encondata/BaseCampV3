@@ -54,7 +54,11 @@ struct SyncMeta: Codable, Equatable, Sendable {
 /// non-resident font downloaded to `fontsDir` (skipped when the file is already there at the
 /// listed size). Neither can fail the move sync. A nil `fontsDir` keeps font metadata only.
 @MainActor @Observable final class Sync {
-    private(set) var status = SyncStatus()
+    private(set) var status = SyncStatus() {
+        didSet {
+            if status != oldValue { for follower in statusFollowers.values { follower.yield(status) } }
+        }
+    }
     /// Bumped after every successful replace or clear; screens rebuild their index when it changes.
     private(set) var rosterVersion = 0
 
@@ -64,6 +68,7 @@ struct SyncMeta: Codable, Equatable, Sendable {
     @ObservationIgnored private let fontsDir: URL?
     @ObservationIgnored private var currentRun = 0
     @ObservationIgnored private var hydrated = false
+    @ObservationIgnored private var statusFollowers: [UUID: AsyncStream<SyncStatus>.Continuation] = [:]
 
     /// `Application Support/label-fonts`: one `<font id>.ttf` per downloaded font.
     nonisolated static var defaultFontsDir: URL { URL.applicationSupportDirectory.appendingPathComponent("label-fonts", isDirectory: true) }
@@ -73,6 +78,19 @@ struct SyncMeta: Codable, Equatable, Sendable {
         self.store = store
         self.clock = clock
         self.fontsDir = fontsDir
+    }
+
+    /// The current status, then every change in order, for a follower off the main actor (the
+    /// label builder). Each caller gets its own stream; it ends when its consumer stops.
+    func statusUpdates() -> AsyncStream<SyncStatus> {
+        let (stream, continuation) = AsyncStream.makeStream(of: SyncStatus.self)
+        let id = UUID()
+        statusFollowers[id] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { @MainActor in self?.statusFollowers[id] = nil }
+        }
+        continuation.yield(status)
+        return stream
     }
 
     /// Reads the persisted meta row once so a relaunch shows `done` with counts.

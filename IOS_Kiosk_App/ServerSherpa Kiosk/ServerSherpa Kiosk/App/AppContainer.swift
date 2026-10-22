@@ -18,6 +18,10 @@ final class AppContainer {
     let store: KioskStore
     let sync: Sync
     let outbox: Outbox
+    /// The label generator, started on its first call (the first label build).
+    let labelEngine: LabelEngine
+    let labelSettings: LabelSettingsStore
+    let labelBuilder: LabelBuilder
     let scanBus = ScanBus()
     let flash = FlashController()
     let sound: SoundPlayer
@@ -29,9 +33,11 @@ final class AppContainer {
     private var active = false
     private var launched = false
 
-    /// `fontsDir` holds downloaded label fonts; nil keeps font metadata only.
+    /// `fontsDir` holds downloaded label fonts; nil keeps font metadata only. `labelEngine` is
+    /// the real generator unless a test passes another (nothing starts it until a build runs,
+    /// and only `launch()` starts the builder).
     init(defaults: UserDefaults, secrets: SecretStore, modelContainer: ModelContainer, storeIsTemporary: Bool = false,
-         backgroundTask: BackgroundTasking, fontsDir: URL? = nil) {
+         backgroundTask: BackgroundTasking, fontsDir: URL? = nil, labelEngine: LabelEngine = JavaScriptLabelEngine()) {
         let prefs = KioskPrefs(defaults: defaults)
         let config = KioskConfig(prefs: prefs)
         let identity = Identity(prefs: prefs, secrets: secrets)
@@ -59,6 +65,10 @@ final class AppContainer {
         self.storeIsTemporary = storeIsTemporary
         self.sync = Sync(api: api, store: store, fontsDir: fontsDir)
         self.outbox = Outbox(store: store, api: api, serial: { identity.current.serial }, backgroundTask: backgroundTask)
+        let labelSettings = LabelSettingsStore(prefs: prefs)
+        self.labelEngine = labelEngine
+        self.labelSettings = labelSettings
+        self.labelBuilder = LabelBuilder(store: store, engine: labelEngine, settings: labelSettings)
         self.sound = SoundPlayer(prefs: prefs)
     }
 
@@ -92,17 +102,25 @@ final class AppContainer {
     }
 
     /// Once per launch: the session listener, then the cookie restore, the
-    /// roster hydrate and the outbox read side by side (the footer's sync line
-    /// must not wait on auth's network call).
+    /// roster hydrate (then the label builder following the sync) and the
+    /// outbox read side by side (the footer's sync line must not wait on
+    /// auth's network call).
     func launch() async {
         guard !launched else { return }
         launched = true
         coordinator.start()
         async let restored: Void = restoreSession()
-        async let hydrated: Void = sync.hydrate()
+        async let hydrated: Void = hydrateAndBuildLabels()
         async let loaded: Void = outbox.load()
         _ = await (restored, hydrated, loaded)
         authChanged()
+    }
+
+    /// The restored sync reads `done`, so the builder's first look at it builds (Android starts
+    /// the builder beside `sync.hydrate()`).
+    private func hydrateAndBuildLabels() async {
+        await sync.hydrate()
+        await labelBuilder.start(syncStatus: sync.statusUpdates())
     }
 
     private func restoreSession() async {
@@ -160,6 +178,7 @@ extension View {
             .environment(c.auth)
             .environment(c.heartbeat)
             .environment(c.sync)
+            .environment(c.labelBuilder.monitor)
             .environment(c.outbox)
             .environment(c.flash)
             .environment(c.toast)
