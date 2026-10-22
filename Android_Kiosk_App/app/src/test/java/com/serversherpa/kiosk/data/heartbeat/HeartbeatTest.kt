@@ -153,4 +153,16 @@ class HeartbeatTest {
         assertEquals(true, prefs.applySetupClear("x7"))              // a re-request is a new id
         assertEquals(true, prefs.setupClear.first()?.notice)
     }
+
+    /** A station key is issued only to whoever the portal records as signed in here: signInNow
+     *  sends a sign-in beat on its own, and once landed the next beat is plain again. */
+    @Test fun signInNowSendsOneSignInBeat() = runTest {
+        val api = FakeKioskApi()
+        val (hb, _) = harness(backgroundScope, api)
+        hb.signInNow()
+        assertEquals(1, api.heartbeats.size)
+        assertEquals(true, api.heartbeats[0].sign_in); assertEquals("password", api.heartbeats[0].login_method)
+        hb.now()
+        assertEquals(false, api.heartbeats[1].sign_in)
+    }
 }

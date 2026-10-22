@@ -44,7 +44,8 @@ fun KioskApp() {
         Box(androidx.compose.ui.Modifier.fillMaxSize()) {
             NavHost(nav, startDestination = Routes.HOME) {
                 composable(Routes.LOGIN) { LoginScreen(nav) }
-                composable(Routes.HOME) { KioskGuard(nav) { KioskShell(nav) { HomeScreen(nav) } } }
+                // A signed-out Time Clock station rests on Welcome here (KioskGuard).
+                composable(Routes.HOME) { KioskGuard(nav, stationHome = true) { KioskShell(nav) { HomeScreen(nav) } } }
                 composable(Routes.SETUP) { KioskGuard(nav) { KioskShell(nav) { KioskSetupScreen(nav) } } }
                 composable(Routes.SETTINGS, arguments = listOf(navArgument("tab") { type = NavType.StringType; nullable = true })) { entry ->
                     KioskShell(nav) { SettingsScreen(nav, entry.arguments?.getString("tab")) }

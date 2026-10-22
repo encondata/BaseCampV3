@@ -3,7 +3,9 @@ package com.serversherpa.kiosk
 import android.app.Application
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.test.core.app.ApplicationProvider
+import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.data.api.MemorySecretStore
+import com.serversherpa.kiosk.data.api.StationApi
 import com.serversherpa.kiosk.data.db.KioskDatabase
 import com.serversherpa.kiosk.input.rfid.FakeRfidReader
 import com.serversherpa.kiosk.input.rfid.RfidReader
@@ -16,8 +18,13 @@ import kotlinx.coroutines.runBlocking
 
 /** An AppContainer safe under Robolectric: memory secrets, in-memory Room, an API URL that fails fast.
  *  [rfidReader] defaults to a fresh [FakeRfidReader]; a test that needs a reader with different timing
- *  or failure behavior (e.g. a connect() that must stay in flight until released) can pass its own. */
-fun testContainer(rfidReader: RfidReader = FakeRfidReader()): AppContainer {
+ *  or failure behavior (e.g. a connect() that must stay in flight until released) can pass its own.
+ *  [api] and [stationApi] replace the real HTTP clients (the session, auth and heartbeat use [api]). */
+fun testContainer(
+    rfidReader: RfidReader = FakeRfidReader(),
+    api: KioskApi? = null,
+    stationApi: StationApi? = null,
+): AppContainer {
     val app = ApplicationProvider.getApplicationContext<Application>()
     val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     val file = File(app.cacheDir, "kiosk-test-${UUID.randomUUID()}.preferences_pb")
@@ -28,6 +35,8 @@ fun testContainer(rfidReader: RfidReader = FakeRfidReader()): AppContainer {
         db = KioskDatabase.inMemory(app),
         dataStore = store,
         rfidReaderOverride = rfidReader,
+        apiOverride = api,
+        stationApiOverride = stationApi,
     )
     runBlocking { c.prefs.setApiUrl("http://127.0.0.1:1") }
     return c

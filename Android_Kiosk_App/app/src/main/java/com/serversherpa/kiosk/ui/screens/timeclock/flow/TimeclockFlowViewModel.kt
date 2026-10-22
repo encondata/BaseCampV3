@@ -71,7 +71,7 @@ class SessionTcBackend(
     override suspend fun clockOut(personId: String) = api.clockOut(ClockOutIn(identity.get().serial, personId, zone()))
 }
 
-private fun PersonEntity.toRow() = KioskPersonRow(
+internal fun PersonEntity.toRow() = KioskPersonRow(
     id, displayName, firstName.orEmpty(), lastName.orEmpty(), preferredName, rfidTag, isWorker, hasAccount, badgeUid, jobTitle, externalId,
 )
 
@@ -135,7 +135,8 @@ class TimeclockFlowViewModel(
     private val flash: FlashController,
     private val sound: SoundPlayer?,
     appearance: Flow<Appearance>,
-    /** KIOSK: emits when a sync finishes, so the local people list is read again. */
+    /** Emits when the people list should be read again: KIOSK when a sync finishes, STATION
+     *  while paused (a retry) or when a missing key arrives. */
     peopleReloads: Flow<Unit> = emptyFlow(),
     scopeOverride: CoroutineScope? = null,
 ) : ViewModel() {
@@ -157,7 +158,7 @@ class TimeclockFlowViewModel(
     init {
         scope.launch { appearance.collect { look = it } }
         loadPeople()
-        if (mode == TcMode.KIOSK) scope.launch { peopleReloads.collect { loadPeople() } }
+        scope.launch { peopleReloads.collect { loadPeople() } }
     }
 
     // ---- the reducer ----
@@ -329,6 +330,9 @@ class TimeclockFlowViewModel(
     fun verifyContinue() { apply(TcEvent.VerifyContinue) }
     /** All Set's Done. */
     fun done() { leave() }
+
+    /** Back to the start from any step (a station that pauses or loses its key mid-flow). */
+    fun reset() { if (_state.value.step != startStep(mode)) leave() }
 
     fun back() {
         val ui = _state.value

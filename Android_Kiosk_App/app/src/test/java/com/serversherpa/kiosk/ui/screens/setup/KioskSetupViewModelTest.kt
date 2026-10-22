@@ -4,6 +4,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.test.core.app.ApplicationProvider
 import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.labels.LabelKind
+import com.serversherpa.kiosk.core.model.KioskSetupIn
 import com.serversherpa.kiosk.core.model.KioskSetupResult
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.core.model.SetupOptionInitiative
@@ -12,10 +13,12 @@ import com.serversherpa.kiosk.core.model.SetupOptionSite
 import com.serversherpa.kiosk.core.model.SetupOptions
 import com.serversherpa.kiosk.core.setup.SetupState
 import com.serversherpa.kiosk.data.FakeKioskApi
+import com.serversherpa.kiosk.data.api.MemorySecretStore
 import com.serversherpa.kiosk.data.db.KioskDatabase
 import com.serversherpa.kiosk.data.identity.Identity
 import com.serversherpa.kiosk.data.labels.LabelSettingsStore
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
+import com.serversherpa.kiosk.data.station.StationKeyStore
 import com.serversherpa.kiosk.data.sync.Sync
 import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -51,7 +54,8 @@ class KioskSetupViewModelTest {
         val sync = Sync(api, KioskDatabase.inMemory(ApplicationProvider.getApplicationContext()), backgroundScope)
         val vm = KioskSetupViewModel(api, prefs, Identity(prefs), sync, backgroundScope)
         vm.load(); repeat(5) { runCurrent() }
-        assertEquals(1, vm.state.value.step)
+        assertEquals(0, vm.state.value.step)                           // what is this kiosk?
+        vm.selectKind(SetupKind.REGULAR); assertEquals(1, vm.state.value.step)
         vm.selectMove("i1"); assertEquals(2, vm.state.value.step)
         assertEquals(listOf("Origin" to "source", "Dest" to "destination"), vm.siteChoices().map { it.first.name to it.second })
         vm.selectSite("s2"); assertEquals(3, vm.state.value.step)
@@ -132,7 +136,7 @@ class KioskSetupViewModelTest {
         assertEquals(false, "setupOptions" in api.calls)
         prefs.applySetupClear("c1"); repeat(5) { runCurrent() }
         assertEquals(true, vm.state.value.wizardOpen)
-        assertEquals(1, vm.state.value.step)
+        assertEquals(0, vm.state.value.step)
         assertEquals("", vm.state.value.initiativeId)
         assertEquals(options, vm.state.value.options)
         assertEquals(1, api.calls.count { it == "setupOptions" })
@@ -154,7 +158,7 @@ class KioskSetupViewModelTest {
         assertEquals(1, api.calls.count { it == "setupOptions" })
         prefs.applySetupClear("c3"); repeat(5) { runCurrent() }
         assertEquals(true, vm.state.value.wizardOpen)
-        assertEquals(1, vm.state.value.step)
+        assertEquals(0, vm.state.value.step)
         assertEquals("", vm.state.value.initiativeId); assertEquals("", vm.state.value.siteId)
         assertEquals(2, api.calls.count { it == "setupOptions" })
     }
@@ -201,5 +205,140 @@ class KioskSetupViewModelTest {
         assertEquals("Sep 20 – Sep 22", formatMoveDates(options.initiatives[0]))
         assertEquals("Starts Sep 20", formatMoveDates(options.initiatives[0].copy(scheduled_end = null)))
         assertNull(formatMoveDates(options.initiatives[0].copy(scheduled_start = null, scheduled_end = null)))
+    }
+
+    // ---- the Time Clock path ----
+
+    private val tcOptions = options.copy(sites = listOf(SetupOptionSite("s1", "Origin"), SetupOptionSite("s2", "Dest"), SetupOptionSite("s9", "Yard")))
+
+    private class Rig(val vm: KioskSetupViewModel, val api: FakeKioskApi, val prefs: KioskPrefs, val keys: StationKeyStore, val bodies: MutableList<KioskSetupIn>, val events: MutableList<String>)
+
+    private fun kotlinx.coroutines.test.TestScope.rig(name: String, preKey: String? = null): Rig {
+        val bodies = mutableListOf<KioskSetupIn>()
+        val events = mutableListOf<String>()
+        val api = FakeKioskApi().apply {
+            setupOptionsResult = { tcOptions }
+            submitSetupResult = { b ->
+                bodies += b
+                if (b.station_type == "timeclock") KioskSetupResult("d", b.initiative_id, b.initiative_id?.let { "Move A" }, b.site_id, b.site_id?.let { "Yard" }, if (b.site_id == null) "none" else "other")
+                else KioskSetupResult("d", b.initiative_id, "Move A", b.site_id, "Dest", "destination", b.scan_status, "Pre-stage")
+            }
+            issueStationKeyResult = { events += "issue"; "tc-key-1" }
+        }
+        val prefs = KioskPrefs(PreferenceDataStoreFactory.create(scope = backgroundScope) { File(tmp.root, "$name.preferences_pb") })
+        val keys = StationKeyStore(MemorySecretStore())
+        if (preKey != null) keys.put(preKey)
+        val sync = Sync(api, KioskDatabase.inMemory(ApplicationProvider.getApplicationContext()), backgroundScope)
+        val vm = KioskSetupViewModel(
+            api, prefs, Identity(prefs), sync, backgroundScope,
+            stationKeys = keys, signInBeat = { events += "beat" }, signOut = { events += "signOut" },
+            io = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler),
+        )
+        return Rig(vm, api, prefs, keys, bodies, events)
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.settle() = repeat(10) { runCurrent() }
+
+    @Test fun theTypeStepComesFirstAndBackReturnsToIt() = runTest {
+        val r = rig("t1")
+        r.vm.load(); settle()
+        assertEquals(0, r.vm.state.value.step)
+        assertNull(r.vm.state.value.kind)
+        r.vm.selectKind(SetupKind.TIMECLOCK)
+        assertEquals(1, r.vm.state.value.step)
+        r.vm.back()
+        assertEquals(0, r.vm.state.value.step)
+        assertEquals(SetupKind.TIMECLOCK, r.vm.state.value.kind)       // still marked
+        r.vm.back()
+        assertEquals(0, r.vm.state.value.step)
+    }
+
+    @Test fun aTimeClockWithNoMoveOffersEverySiteThenSavesIssuesTheKeyAndSignsOut() = runTest {
+        val r = rig("t2")
+        r.vm.load(); settle()
+        r.vm.selectKind(SetupKind.TIMECLOCK); r.vm.selectNoMove()
+        assertEquals(2, r.vm.state.value.step)
+        assertEquals(true, r.vm.state.value.noMove)
+        assertEquals(listOf("Origin", "Dest", "Yard"), r.vm.siteChoices().map { it.first.name })
+        assertEquals(listOf("", "", ""), r.vm.siteChoices().map { it.second })   // no source/destination roles
+        r.vm.selectSite("s9"); settle()
+        assertEquals(KioskSetupIn(r.bodies[0].serial, null, "s9", null, "timeclock"), r.bodies.single())
+        assertEquals("tc-key-1", r.keys.get())
+        val sel = r.prefs.setupSelection.first()!!
+        assertEquals("timeclock", sel.stationType)
+        assertNull(sel.initiativeId); assertEquals("s9", sel.siteId); assertNull(sel.scanStatus)
+        assertEquals(SetupState.COMPLETE, r.prefs.setupState.first())
+        assertEquals(listOf("issue", "signOut"), r.events)
+        assertEquals(false, r.vm.state.value.wizardOpen)
+        assertEquals(false, "syncAssets" in r.api.calls)                // a Time Clock downloads no move data
+    }
+
+    @Test fun aTimeClockMaySayNoSite() = runTest {
+        val r = rig("t3")
+        r.vm.load(); settle()
+        r.vm.selectKind(SetupKind.TIMECLOCK); r.vm.selectNoMove(); r.vm.selectNoSite(); settle()
+        assertEquals(null, r.bodies.single().site_id)
+        assertEquals(null, r.bodies.single().initiative_id)
+        assertEquals(null, r.bodies.single().scan_status)
+        assertEquals("timeclock", r.bodies.single().station_type)
+        assertEquals("tc-key-1", r.keys.get())
+        assertEquals(true, r.vm.state.value.noSite)
+    }
+
+    @Test fun aTimeClockWithAMoveOffersThatMovesSites() = runTest {
+        val r = rig("t4")
+        r.vm.load(); settle()
+        r.vm.selectKind(SetupKind.TIMECLOCK); r.vm.selectMove("i1")
+        assertEquals(false, r.vm.state.value.noMove)
+        assertEquals(listOf("Origin" to "source", "Dest" to "destination"), r.vm.siteChoices().map { it.first.name to it.second })
+        r.vm.selectSite("s2"); settle()
+        assertEquals("i1", r.bodies.single().initiative_id)
+        assertEquals("s2", r.bodies.single().site_id)
+        assertEquals(null, r.bodies.single().scan_status)
+        assertEquals("i1", r.prefs.setupSelection.first()?.initiativeId)
+        assertEquals("tc-key-1", r.keys.get())
+    }
+
+    @Test fun notSignedInHereSendsOneHeartbeatAndRetriesOnce() = runTest {
+        val r = rig("t5")
+        var tries = 0
+        r.api.issueStationKeyResult = { tries++; if (tries == 1) throw ApiError(403, "not_signed_in_here") else "tc-key-2" }
+        r.vm.load(); settle()
+        r.vm.selectKind(SetupKind.TIMECLOCK); r.vm.selectNoMove(); r.vm.selectSite("s1"); settle()
+        assertEquals(2, tries)
+        assertEquals(listOf("beat", "signOut"), r.events)
+        assertEquals("tc-key-2", r.keys.get())
+    }
+
+    @Test fun aSecondRefusalStopsAndStaysSignedIn() = runTest {
+        val r = rig("t6", preKey = "stale")
+        var tries = 0
+        r.api.issueStationKeyResult = { tries++; throw ApiError(403, "not_signed_in_here") }
+        r.vm.load(); settle()
+        r.vm.selectKind(SetupKind.TIMECLOCK); r.vm.selectNoMove(); r.vm.selectSite("s1"); settle()
+        assertEquals(2, tries)                                          // one retry, never a loop
+        assertEquals(listOf("beat"), r.events)                          // not signed out
+        assertEquals("not_signed_in_here", r.vm.state.value.keyError)
+        assertEquals(true, r.vm.state.value.wizardOpen)
+        assertEquals(false, r.vm.state.value.submitting)
+        assertNull(r.keys.get())                                        // the old key went with the old setup
+        // the portal holds the Time Clock setup now, and so does this kiosk
+        assertEquals("timeclock", r.prefs.setupSelection.first()?.stationType)
+    }
+
+    @Test fun rerunningSetupAsARegularKioskClearsTheKey() = runTest {
+        val r = rig("t7", preKey = "tc-old")
+        r.prefs.setSetupSelection(KioskSetupSelection(siteId = "s9", siteName = "Yard", siteRole = "other", stationType = "timeclock"))
+        r.prefs.setSetupState(SetupState.COMPLETE)
+        settle()
+        r.vm.openWizard(preselect = true); settle()
+        assertEquals(SetupKind.TIMECLOCK, r.vm.state.value.kind)       // the saved type is marked
+        assertEquals(true, r.vm.state.value.noMove)
+        r.vm.selectKind(SetupKind.REGULAR)
+        r.vm.selectMove("i1"); r.vm.selectSite("s2"); r.vm.selectScanType("pre_stage"); r.vm.finish("top"); settle()
+        assertNull(r.bodies.single().station_type)
+        assertNull(r.keys.get())
+        assertNull(r.prefs.setupSelection.first()?.stationType)
+        assertEquals(false, "signOut" in r.events)
     }
 }

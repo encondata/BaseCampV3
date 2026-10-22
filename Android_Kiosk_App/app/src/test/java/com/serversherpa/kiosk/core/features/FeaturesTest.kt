@@ -41,4 +41,12 @@ class FeaturesTest {
         assertNull(featureForRoute("home"))
         assertNull(featureForRoute(null))
     }
+
+    @Test fun aTimeClockStationHomeHasThreeTiles() {
+        assertEquals(listOf(FeatureId.TIMECLOCK_STATION, FeatureId.SETUP, FeatureId.SETTINGS), homeFeatures("timeclock").map { it.id })
+        assertEquals("Time Clock", homeFeatures("timeclock").first().title)
+        assertEquals("Start the time clock for workers.", homeFeatures("timeclock").first().blurb)
+        assertEquals(FEATURES, homeFeatures(null))
+        assertEquals(FEATURES, homeFeatures("label"))                  // no Label or RFID station on Android
+    }
 }

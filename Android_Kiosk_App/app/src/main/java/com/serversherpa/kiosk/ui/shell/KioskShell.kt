@@ -44,6 +44,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import com.serversherpa.kiosk.LocalAppContainer
+import com.serversherpa.kiosk.data.station.TIMECLOCK_STATION
 import com.serversherpa.kiosk.R
 import com.serversherpa.kiosk.core.devices.RegistrationState
 import com.serversherpa.kiosk.core.features.featureForRoute
@@ -173,7 +174,9 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
             confirmButton = {
                 TextButton(onClick = {
                     confirmSignOut = false
-                    scope.launch { container.logout(); nav.navigate(Routes.LOGIN) { popUpTo(0) } }
+                    // A Time Clock station signs out onto its Welcome (on Home), anything else onto sign-in.
+                    val to = if (setup?.stationType == TIMECLOCK_STATION) Routes.HOME else Routes.LOGIN
+                    scope.launch { container.logout(); nav.navigate(to) { popUpTo(0) } }
                 }) { Text("Sign out") }
             },
             dismissButton = { TextButton(onClick = { confirmSignOut = false }) { Text("Cancel") } },

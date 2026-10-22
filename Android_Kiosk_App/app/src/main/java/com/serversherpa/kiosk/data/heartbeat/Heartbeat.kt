@@ -67,6 +67,13 @@ class Heartbeat(
     /** Beat right now (after a rename). Resolves after the attempt. */
     suspend fun now() = beat()
 
+    /** A sign-in beat right now, so the portal records who is signed in here (a station key is
+     *  issued only to that person). A sign-in still pending keeps its own method. */
+    suspend fun signInNow(method: LoginMethod = LoginMethod.PASSWORD) {
+        if (pendingSignIn == null) pendingSignIn = method
+        beat()
+    }
+
     private suspend fun beat() {
         val (serial, name) = identity.get()
         val asSignIn = pendingSignIn

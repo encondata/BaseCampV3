@@ -1,5 +1,6 @@
 package com.serversherpa.kiosk.ui.screens.labels
 
+import com.serversherpa.kiosk.core.model.headerLine
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -148,7 +149,7 @@ fun PrintLabelsScreen(nav: NavHostController) {
     if (camera) CameraScanSheet(onScan = { container.scanBus.publish(it) }, onDismiss = { camera = false })
 
     Column {
-        PageHeader("Kiosk · Label Printing", "Print Labels", setup?.let { "${it.initiativeName} · ${it.siteName}" } ?: "Finish Kiosk Setup first.")
+        PageHeader("Kiosk · Label Printing", "Print Labels", setup?.headerLine() ?: "Finish Kiosk Setup first.")
         LabelStatus(
             build, settings, syncing = syncStatus.phase == SyncPhase.RUNNING,
             onSync = { vm.syncNow() }, onPrinterSetup = { nav.navigate(Routes.LABELS_PRINTER) },

@@ -118,3 +118,8 @@ data class KioskSetupSelection(
     /** null for a regular kiosk; "timeclock" for a Time Clock station. */
     val stationType: String? = null,
 )
+
+/** A page header's "Move A · Dock 4" (with " · Pre-stage" when [withScan] and set). A Time
+ *  Clock station's empty picks read "No move" and "No site", never "null". */
+fun KioskSetupSelection.headerLine(withScan: Boolean = false): String =
+    listOfNotNull(initiativeName ?: "No move", siteName ?: "No site", scanLabel?.takeIf { withScan }).joinToString(" · ")
