@@ -720,11 +720,13 @@ class TroubleshootingModelTest {
         zebra.replies = mapOf(
             "! U1 getvar \"wlan.wpa.psk\"\r\n" to "\"$password\"",
             "! U1 getvar \"wlan.private_key_password\"\r\n" to "\"$key\"",
+            "! U1 getvar \"bluetooth.bluetooth_pin\"\r\n" to "\"$key\"",
         )
         for (command in listOf(
             "! U1 setvar \"wlan.wpa.psk\" \"$password\"",
             "! U1 getvar \"wlan.wpa.psk\"",
             "! U1 getvar \"wlan.private_key_password\"",
+            "! U1 getvar \"bluetooth.bluetooth_pin\"",
             "password=$password&token=$token",
         )) {
             m.setCommandText(command)
@@ -789,6 +791,122 @@ class TroubleshootingModelTest {
         assertEquals("password=[redacted]&token=[redacted]", redactSecrets("password=hunter2&token=abc.def"))
         // A setting whose name says nothing secret is left alone.
         assertEquals("! U1 setvar \"print.tone\" \"10\"", redactSecrets("! U1 setvar \"print.tone\" \"10\""))
+    }
+
+    /** The redaction patterns stay linear on long runs a pasted label or a 64 KB one-line reply can
+     *  hold (each was seconds to minutes before they were anchored and bounded). */
+    @Test fun redactionStaysFastOnLongRuns() {
+        fun run(unit: String, n: Int) = buildString { while (length < n) append(unit) }.take(n)
+        val inputs = listOf(
+            "a hex run" to run("0123456789ABCDEF", 100_000),
+            "a repeated secret word" to run("password", 100_000),
+            "\"password \" over and over" to run("password ", 100_000),
+            "a repeated short secret word" to run("pin_", 100_000),
+            "a repeated token start" to run("eyJ-", 100_000),
+            "secret names with separators" to run("wlan.wpa.psk=", 100_000),
+        )
+        redactSecrets(run("password ", 1_000)) // warm up
+        for ((what, text) in inputs) {
+            val start = System.nanoTime()
+            redactSecrets(text)
+            val ms = (System.nanoTime() - start) / 1_000_000
+            assertTrue("$what took $ms ms", ms < 1_000)
+        }
+    }
+
+    /** A pasted label in the command box (it goes out as a send) and a 64 KB one-line reply still
+     *  make a report quickly. */
+    @Test fun aReportWithAPastedLabelAndAHugeReplyIsQuick() = runBlocking<Unit> {
+        val hex = buildString { while (length < 100_000) append("0123456789ABCDEF") }
+        zebra.replies = mapOf("! U1 getvar \"device.dump\"\r\n" to "\"" + hex.take(65_000) + "\"")
+        val m = model(isAdmin = { true })
+        m.setCommandText("^XA^FO0,0^GFA,50000,50000,100,$hex^FS^XZ")
+        m.sendCommand()!!.join()
+        m.setCommandText("! U1 getvar \"device.dump\"")
+        m.sendCommand()!!.join()
+        val start = System.nanoTime()
+        val text = m.report().text
+        val ms = (System.nanoTime() - start) / 1_000_000
+        assertTrue("the report took $ms ms", ms < 1_000)
+        assertTrue(text.contains(hex.take(1_000)))
+    }
+
+    /** Copy and Share build the report on another thread than the caller's (Main on the device). */
+    @Test fun theShareableReportIsBuiltOffTheCallersThread() = runBlocking<Unit> {
+        var builtOn: Thread? = null
+        val m = TroubleshootingModel(
+            FixedSettings(network), bluetooth, { zebra }, lock, guard, isAdmin = { false }, isDeveloper = { false },
+            device = { builtOn = Thread.currentThread(); DEVICE_TEXT }, scopeOverride = scope, zone = ZoneOffset.UTC,
+        )
+        eventually("settings read") { m.state.value.settings != null }
+        val caller = Thread.currentThread()
+        val report = m.shareableReport()
+        assertTrue(report.text.startsWith("ServerSherpa Kiosk · Printer troubleshooting report"))
+        assertNotNull(builtOn)
+        assertTrue("built on the caller's thread", builtOn !== caller)
+    }
+
+    /** A label or format typed in the command box (it starts with ^XA) goes out as a send: a cut
+     *  font refuses it, and one cut off part-way marks the printer for a `~JX`. Anything else is
+     *  still a query. */
+    @Test fun aFormatInTheCommandBoxGoesOutAsASend() = runBlocking<Unit> {
+        val m = model(isAdmin = { true })
+        val label = "  ^xa^FO10,10^A0N,30,30^FDHello^FS^XZ"
+        m.setCommandText(label)
+        m.sendCommand()!!.join()
+        assertEquals(listOf("$label\r\n"), zebra.events.toList())
+        assertEquals(FORMAT_SENT_TEXT, m.state.value.asks.last().meaning)
+        assertNull(m.state.value.asks.last().error)
+
+        // Cut off part-way: the printer is marked, and the next call clears first.
+        zebra.failNext = com.serversherpa.kiosk.data.printer.PrinterUnreachable(TroubleZebra.HOST)
+        m.sendCommand()!!.join()
+        assertEquals("Can't reach the printer at 10.0.0.5.", m.state.value.asks.last().error)
+        assertEquals(PrinterGuard.State.NEEDS_CLEAR, guard.state(network.connection))
+        zebra.replies = mapOf("~HS\r\n" to HS_REPLY)
+        m.setCommandText("~HS")
+        m.sendCommand()!!.join()
+        assertEquals(listOf("~JX", "?~HS\r\n"), zebra.events.toList().takeLast(2))
+
+        // A cut font refuses the format before anything goes out; a query still goes.
+        guard.markFontCut(network.connection)
+        m.setCommandText(label)
+        val before = zebra.events.size
+        m.sendCommand()!!.join()
+        assertEquals(FONT_INSTALL_CUT_TEXT, m.state.value.asks.last().error)
+        assertEquals(before, zebra.events.size)
+        m.setCommandText("~HS")
+        m.sendCommand()!!.join()
+        assertEquals("?~HS\r\n", zebra.events.last())
+    }
+
+    /** Leaving the tab stops a speed test after the label going out, and says so. */
+    @Test fun leavingTheTabMidSpeedTestSaysItIsStopping() = runBlocking<Unit> {
+        val line = TroubleLine()
+        zebra.line = line
+        val m = model()
+        m.setSpeedRuns(3)
+        line.hold = "Run 1 "
+        val run = m.startSpeedTest()!!
+        eventually("run 1 on the printer") { line.held }
+        m.close()
+        assertTrue(m.state.value.speedStopping)
+        m.open()
+        assertTrue(m.state.value.speedStopping)
+        line.hold = null
+        run.join()
+        assertEquals(1, m.state.value.speedRows.size)
+        assertFalse(m.state.value.speedStopping)
+    }
+
+    /** `pin` and `pwd` are secret only as a whole part of a name (`bluetooth.bluetooth_pin`), never
+     *  inside an ordinary word (`spinning`, `mapping`, `ping`). */
+    @Test fun pinAndPwdAreSecretOnlyAsAWholePartOfAName() {
+        assertEquals("! U1 setvar \"bluetooth.bluetooth_pin\" \"[redacted]\"", redactSecrets("! U1 setvar \"bluetooth.bluetooth_pin\" \"1234\""))
+        assertEquals("pwd=[redacted] pin: [redacted]", redactSecrets("pwd=hunter2 pin: 0000"))
+        for (plain in listOf("spinning: yes", "mapping=on", "ping: 12 ms", "\"print.spin_count\" \"3\"", "pinned: 2", "dpi: 300")) {
+            assertEquals(plain, redactSecrets(plain))
+        }
     }
 
     @Test fun logKeepsTheLast5000LinesAndTheSharedReportFits() {

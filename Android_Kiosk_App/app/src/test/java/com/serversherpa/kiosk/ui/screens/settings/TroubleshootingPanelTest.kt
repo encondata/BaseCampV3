@@ -59,7 +59,6 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -95,11 +94,11 @@ class TroubleshootingPanelTest {
 
     @After fun tearDown() = scope.cancel()
 
-    private fun model(printer: SavedPrinter? = bluetoothPrinter) = TroubleshootingModel(
+    private fun model(printer: SavedPrinter? = bluetoothPrinter, device: () -> String = { DEVICE_TEXT }) = TroubleshootingModel(
         settings = FixedSettings(printer), bluetooth = bluetooth, zebraFor = { zebra },
         printerLock = PrinterLock(), printerGuard = PrinterGuard(),
         isAdmin = { roles.first }, isDeveloper = { roles.second },
-        pick = MutableStateFlow(null), device = { DEVICE_TEXT }, scopeOverride = scope, zone = ZoneOffset.UTC,
+        pick = MutableStateFlow(null), device = device, scopeOverride = scope, zone = ZoneOffset.UTC,
     )
 
     /** The tab as Settings lays it out, inside the shell's scrolling 16 dp gutters. */
@@ -297,9 +296,12 @@ class TroubleshootingPanelTest {
         compose.onNodeWithText("Run cut-send test").performScrollTo().assertIsDisplayed()
 
         compose.onNodeWithText("Share").performScrollTo().performClick()
-        compose.waitForIdle()
-        val chooser = Shadows.shadowOf(app).nextStartedActivity
-        assertNotNull(chooser)
+        var started: Intent? = null
+        compose.waitUntil(5_000) {
+            started = started ?: Shadows.shadowOf(app).nextStartedActivity
+            started != null
+        }
+        val chooser = started!!
         assertEquals(Intent.ACTION_CHOOSER, chooser.action)
         @Suppress("DEPRECATION")
         val send = chooser.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)!!
@@ -312,11 +314,40 @@ class TroubleshootingPanelTest {
         for (secret in listOf(token, key, "tina@example.com")) assertFalse("shared $secret", shared.contains(secret))
 
         compose.onNodeWithText("Copy").performScrollTo().performClick()
-        compose.waitForIdle()
-        val clip = (app.getSystemService(android.content.ClipboardManager::class.java)).primaryClip!!.getItemAt(0).text.toString()
+        val clipboard = app.getSystemService(android.content.ClipboardManager::class.java)
+        compose.waitUntil(5_000) { clipboard.primaryClip != null }
+        val clip = clipboard.primaryClip!!.getItemAt(0).text.toString()
         assertTrue(clip.startsWith("ServerSherpa Kiosk · Printer troubleshooting report"))
         for (secret in listOf(token, key, "tina@example.com")) assertFalse("copied $secret", clip.contains(secret))
         compose.onNodeWithText(REPORT_COPIED_TEXT).performScrollTo().assertIsDisplayed()
+    }
+
+    /** Copy and Share build the report off the main thread (a long one would freeze the app), then
+     *  hand it over. */
+    @Test fun theReportIsBuiltOffTheMainThread() {
+        var builtOnMain: Boolean? = null
+        val vm = model(device = { builtOnMain = android.os.Looper.getMainLooper().isCurrentThread; DEVICE_TEXT })
+        show(vm)
+        compose.onNodeWithText("Copy").performScrollTo().performClick()
+        val clipboard = app.getSystemService(android.content.ClipboardManager::class.java)
+        compose.waitUntil(5_000) { clipboard.primaryClip != null }
+        assertEquals(false, builtOnMain)
+        assertTrue(clipboard.primaryClip!!.getItemAt(0).text.startsWith("ServerSherpa Kiosk · Printer troubleshooting report"))
+        compose.onNodeWithText(REPORT_COPIED_TEXT).performScrollTo().assertIsDisplayed()
+    }
+
+    /** `~HS`'s third string is the printer's front-panel password: hidden on screen too. */
+    @Test fun theStatusReplyHidesThePanelPassword() {
+        val vm = model()
+        zebra.replies = mapOf(ZebraCommands.HOST_STATUS to HS_REPLY)
+        show(vm)
+        compose.onNodeWithText("Status").performScrollTo().performClick()
+        compose.waitUntil(5_000) { vm.state.value.asks.isNotEmpty() && !vm.state.value.busy }
+        compose.waitForIdle()
+        compose.onNodeWithText("␂****,0␃", substring = true, useUnmergedTree = true).performScrollTo().assertIsDisplayed()
+        compose.onAllNodesWithText("␂0000,0␃", substring = true, useUnmergedTree = true).assertCountEquals(0)
+        // The first two strings still show as the printer sent them.
+        compose.onNodeWithText("␂030,0,0,0612", substring = true, useUnmergedTree = true).assertExists()
     }
 
     /** Settings lists the tab between Devices and RFID, and opens it. */

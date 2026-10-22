@@ -57,12 +57,15 @@ import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** A label and its value: the connection and printer details, on the tab and in the report. */
 data class DetailLine(val label: String, val value: String)
@@ -162,6 +165,8 @@ const val SCAN_CUT_SHORT_TEXT = "The scan stopped because the printer was in use
 const val SCAN_ENDED_EARLY_TEXT = "The scan stopped early. Scan again."
 /** A command box command (a setvar, say) that replied nothing, as it does by design. */
 const val COMMAND_SENT_TEXT = "Sent, no reply."
+/** A label or format typed in the command box (it starts with `^XA`) went out as a send. */
+const val FORMAT_SENT_TEXT = "Sent as a label or format; no reply is read."
 /** The Bluetooth printer answered at another address than the saved one (look-alikes exist, so it
  *  is never saved here). */
 const val FOUND_ELSEWHERE_TEXT = "This printer answered at another Bluetooth address than the saved one, which wasn't " +
@@ -290,6 +295,8 @@ class TroubleshootingModel(
     private val clock: () -> Long = System::currentTimeMillis,
     /** The times shown and reported are this zone's. */
     private val zone: ZoneId = ZoneId.systemDefault(),
+    /** Where Copy and Share build the report (off the main thread). */
+    private val reportDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) : ViewModel() {
     private val scope = scopeOverride ?: viewModelScope
     private val _state = MutableStateFlow(TroubleshootingUi(availability = bluetooth.availability.value))
@@ -341,6 +348,7 @@ class TroubleshootingModel(
     fun close() {
         closed = true
         stopRequested = true
+        _state.update { if (it.running == TroubleAction.SPEED) it.copy(speedStopping = true) else it }
         endScan()
     }
 
@@ -457,7 +465,9 @@ class TroubleshootingModel(
     fun setCommandText(text: String) = _state.update { it.copy(commandText = text) }
 
     /** The command box (admins and developers, checked now): the text as typed with straight
-     *  quotes and CR LF at the end. Its reply has no known end, so it is read until the printer goes
+     *  quotes and CR LF at the end. A label or format (it starts with `^XA`) goes out as a send, as
+     *  a label does: a cut font refuses it, and one cut off part-way marks the printer for a `~JX`.
+     *  Anything else is a query whose reply has no known end, so it is read until the printer goes
      *  quiet. */
     fun sendCommand(): Job? {
         if (!showsCommandBox) return null
@@ -465,7 +475,37 @@ class TroubleshootingModel(
             .replace('“', '"').replace('”', '"').replace('‘', '\'').replace('’', '\'')
         if (typed.isBlank()) return null
         val command = if (typed.endsWith("\n")) typed else "$typed\r\n"
+        if (typed.trimStart().startsWith("^XA", ignoreCase = true)) return sendFormat(command)
         return runQuery("Command", command, { false }, TroubleAction.COMMAND) { null }
+    }
+
+    /** [command] (a label or format from the command box) as a send, under the lock and the guard. */
+    private fun sendFormat(command: String): Job? {
+        val started = begin(TroubleAction.COMMAND) ?: return null
+        val id = nextId.incrementAndGet()
+        val at = clock()
+        log("→ Command (sent as a format): ${visibleCommand(command)}")
+        return scope.launch {
+            var result: AskResult? = null
+            try {
+                result = try {
+                    started.zebra.send(command)
+                    AskResult(id, "Command", command, at, meaning = FORMAT_SENT_TEXT, milliseconds = stopwatch.milliseconds).also {
+                        log("← Command: sent in ${msText(it.milliseconds)} ms")
+                        noteReach(null, TroubleAction.COMMAND)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    AskResult(id, "Command", command, at, error = troubleText(e, started.printer), milliseconds = stopwatch.milliseconds).also {
+                        log("← Command failed after ${msText(it.milliseconds)} ms: ${describe(e)}")
+                        noteReach(e, TroubleAction.COMMAND)
+                    }
+                }
+            } finally {
+                _state.update { s -> s.copy(asks = result?.let { s.asks + it } ?: s.asks, running = null) }
+            }
+        }
     }
 
     private fun runQuery(
@@ -806,6 +846,10 @@ class TroubleshootingModel(
         return TroubleshootingReport(name, fit(out.map(::redactSecrets), logs.map { redactSecrets("${clockText(it.atMs, millis = true)}  ${it.text}") }, maxChars))
     }
 
+    /** The report for Copy and Share, at most [SHARE_MAX_CHARS], built on [reportDispatcher]: a
+     *  long one (5,000 log lines, a pasted label) takes a moment, and never on the main thread. */
+    suspend fun shareableReport(): TroubleshootingReport = withContext(reportDispatcher) { report(maxChars = SHARE_MAX_CHARS) }
+
     /** [head] and as many of the newest [logs] as fit in [maxChars]; one line says how many were left out. */
     private fun fit(head: List<String>, logs: List<String>, maxChars: Int): String {
         val top = head.joinToString("\n", postfix = "\n")
@@ -985,17 +1029,25 @@ fun visibleCommand(command: String): String = visibleBytes(command).replace("\n"
 
 // --- Keeping secrets out of the shared report ---
 
-/** Names that say a setting or value is a secret. */
+/** Words that make a name a secret's wherever they are in it (`wlan.private_key_password`). */
 private const val SECRET_WORDS =
     "password|passwd|passphrase|psk|token|secret|cookie|authorization|api[_-]?key|station[_-]?key|" +
         "private[_-]?key|session[_-]?(?:id|key)|community|wep[_.-]?key"
+/** Short words that make a name a secret's only as a whole part of it (`bluetooth.bluetooth_pin`,
+ *  `pwd`), never inside another word (`spinning`, `mapping`, `ping`). */
+private const val SECRET_PARTS = "(?<![A-Za-z0-9])(?:pin|pwd)(?![A-Za-z0-9])"
+private const val SECRET_WORD = "(?:$SECRET_WORDS|$SECRET_PARTS)"
 
+// Every pattern here stays linear on long runs (a pasted ^GFA label, a 64 KB one-line reply): a
+// match may only start where a name or token starts (the lookbehinds), and a name is at most 64
+// characters either side of its secret word. Unanchored and unbounded, they backtracked for
+// seconds to hours on such runs.
 private val BEARER = Regex("""(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+""")
-private val JWT = Regex("""\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}""")
-/** A name that says it is a secret, and what comes between it and its value: `=` or `:` (after a
+private val JWT = Regex("""(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,}+\.[A-Za-z0-9_-]{5,}+\.[A-Za-z0-9_-]{5,}+""")
+/** A name that says it is a secret's, and what comes between it and its value: `=` or `:` (after a
  *  JSON key's closing quote), or SGD's `" "`. The value's own opening quote isn't part of it. */
 private const val SECRET_NAME_AND_SEPARATOR =
-    """([A-Za-z0-9_.\-]*(?:$SECRET_WORDS)[A-Za-z0-9_.\-]*(?:"?\s*[:=]\s*|"\s+))"""
+    """((?<![A-Za-z0-9_.\-])[A-Za-z0-9_.\-]{0,64}?$SECRET_WORD[A-Za-z0-9_.\-]{0,64}(?:"?\s*[:=]\s*|"\s+))"""
 /** A quoted secret (`name: "a b c"`, `'a b c'`, JSON's `"name": "a b c"`, SGD's `"name" "a b c"`):
  *  everything up to the matching closing quote goes, spaces and all; a backslash escapes a quote,
  *  and one that never closes runs to the end of the line. */
@@ -1005,7 +1057,7 @@ private val SECRET_QUOTED = Regex(
 /** An unquoted secret (`name=value`, `name: value`): up to a space or a delimiter. */
 private val SECRET_BARE = Regex("""(?i)$SECRET_NAME_AND_SEPARATOR([^\s"';,&␍␊␂␃<>]+)""")
 private val GETVAR = Regex("""(?i)getvar\s+"([^"]*)"""")
-private val SECRET_NAME = Regex("(?i)$SECRET_WORDS")
+private val SECRET_NAME = Regex("(?i)$SECRET_WORD")
 /** `~HS`'s third string: the printer's front-panel password (4 digits), then a flag. */
 private val PANEL_PASSWORD = Regex("""\u0002\d{4},(\d)\u0003""")
 
@@ -1030,15 +1082,15 @@ internal fun redactSecrets(text: String): String {
 private fun asksForASecret(command: String): Boolean =
     GETVAR.findAll(command).any { SECRET_NAME.containsMatchIn(it.groupValues[1]) }
 
-/** A `~HS` reply with the printer's front-panel password masked. */
-private fun withoutPanelPassword(command: String, reply: String): String =
+/** A `~HS` reply with the printer's front-panel password masked (on the tab and in the report). */
+internal fun withoutPanelPassword(command: String, reply: String): String =
     if (command.trim() != ZebraCommands.HOST_STATUS) reply
     else reply.replace(PANEL_PASSWORD) { "\u0002****,${it.groupValues[1]}\u0003" }
 
 private fun msText(ms: Long?): String = ms?.toString() ?: "?"
 
 /** "3.90", or "-" when there's no value. */
-private fun decimal(value: Double?): String = value?.let { String.format(Locale.US, "%.2f", it) } ?: "-"
+internal fun decimal(value: Double?): String = value?.let { String.format(Locale.US, "%.2f", it) } ?: "-"
 
 private fun yesNo(flag: Boolean) = if (flag) "yes" else "no"
 

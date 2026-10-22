@@ -33,6 +33,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,7 +76,8 @@ import com.serversherpa.kiosk.ui.screens.labels.printerSummary
 import com.serversherpa.kiosk.ui.theme.ChipTone
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
-import java.util.Locale
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Settings › Troubleshooting (D13), for anyone signed in: the saved printer's connection and
@@ -303,7 +305,7 @@ private fun SpeedSection(vm: TroubleshootingModel, ui: TroubleshootingUi, onPrin
         SpeedTable(ui.speedRows)
         ui.speedAverage?.let {
             Text(
-                "Average ${String.format(Locale.US, "%.2f", it)} KB/s", style = MaterialTheme.typography.titleMedium, color = c.textDark,
+                "Average ${decimal(it)} KB/s", style = MaterialTheme.typography.titleMedium, color = c.textDark,
                 modifier = Modifier.padding(top = 6.dp),
             )
         }
@@ -366,7 +368,29 @@ private fun ScanSection(vm: TroubleshootingModel, ui: TroubleshootingUi, onScan:
 private fun ReportSection(vm: TroubleshootingModel, ui: TroubleshootingUi) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
     var copied by remember { mutableStateOf(false) }
+    var building by remember { mutableStateOf(false) }
+    var slow by remember { mutableStateOf(false) }
+    // The report is built off the main thread (a long one takes a moment), then handed over here.
+    // Nothing new shows unless it takes long enough to notice.
+    fun withReport(use: (TroubleshootingReport) -> Unit) {
+        if (building) return
+        building = true
+        scope.launch {
+            val notice = launch {
+                delay(REPORT_NOTICE_AFTER_MS)
+                slow = true
+            }
+            try {
+                use(vm.shareableReport())
+            } finally {
+                notice.cancel()
+                slow = false
+                building = false
+            }
+        }
+    }
     Section("Report")
     Text(
         "Copy or share everything above as text: this device and app, the printer, every reply and speed result, " +
@@ -375,14 +399,17 @@ private fun ReportSection(vm: TroubleshootingModel, ui: TroubleshootingUi) {
     )
     FlowRow(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         MiniButton("Copy", {
-            clipboard.setText(AnnotatedString(vm.report(maxChars = SHARE_MAX_CHARS).text))
-            copied = true
+            withReport {
+                clipboard.setText(AnnotatedString(it.text))
+                copied = true
+            }
         })
         MiniButton("Share", {
             copied = false
-            shareReport(context, vm.report(maxChars = SHARE_MAX_CHARS))
+            withReport { shareReport(context, it) }
         })
     }
+    if (slow) Text("Preparing the report…", style = MaterialTheme.typography.bodyMedium, color = LocalKioskColors.current.textMute)
     if (copied) KioskToast(REPORT_COPIED_TEXT)
 }
 
@@ -431,7 +458,8 @@ private fun AskResultCard(vm: TroubleshootingModel, result: AskResult) {
         Text("${result.bytes} B in ${result.milliseconds ?: "?"} ms", style = MaterialTheme.typography.bodySmall, color = c.textMute)
         result.meaning?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.textDark) }
         result.error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = ChipTone.RED.text) }
-        if (result.reply.isNotEmpty()) ReplyBox(visibleBytes(result.reply))
+        // ~HS's third string is the printer's front-panel password: hidden here as in the report.
+        if (result.reply.isNotEmpty()) ReplyBox(visibleBytes(withoutPanelPassword(result.command, result.reply)))
     }
 }
 
@@ -461,7 +489,7 @@ private fun SpeedTable(rows: List<SpeedRow>) {
         }
         for (row in rows) {
             val cells = listOf("${row.run}", "${row.targetKb}", "${row.bytes}") +
-                if (row.error == null) listOf(decimalText(row.seconds), decimalText(row.kbPerSecond)) else emptyList()
+                if (row.error == null) listOf(decimal(row.seconds), decimal(row.kbPerSecond)) else emptyList()
             Row(Modifier.padding(top = 6.dp)) {
                 cells.forEachIndexed { i, cell ->
                     Text(cell, fontFamily = FragmentMono, fontSize = 12.sp, color = c.textDark, modifier = Modifier.width(widths[i]))
@@ -494,6 +522,9 @@ private fun Working(on: Boolean) {
     LinearProgressIndicator(color = c.accent, trackColor = c.paperLine, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp))
 }
 
+/** How long building the report may take before "Preparing the report…" shows. */
+private const val REPORT_NOTICE_AFTER_MS = 400L
+
 /** Hands the report to Android's share sheet as plain text. */
 private fun shareReport(context: Context, report: TroubleshootingReport) {
     val send = Intent(Intent.ACTION_SEND).apply {
@@ -503,5 +534,3 @@ private fun shareReport(context: Context, report: TroubleshootingReport) {
     }
     context.startActivity(Intent.createChooser(send, "Share the printer report"))
 }
-
-private fun decimalText(value: Double?): String = value?.let { String.format(Locale.US, "%.2f", it) } ?: "-"
