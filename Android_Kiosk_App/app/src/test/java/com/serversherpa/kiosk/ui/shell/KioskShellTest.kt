@@ -2,14 +2,17 @@ package com.serversherpa.kiosk.ui.shell
 
 import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.navigation.compose.rememberNavController
 import com.serversherpa.kiosk.LocalAppContainer
+import com.serversherpa.kiosk.NativeFontsSettled
 import com.serversherpa.kiosk.core.model.KioskMove
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.data.auth.AuthState
@@ -21,14 +24,18 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.RuleChain
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w360dp-h640dp")
 class KioskShellTest {
-    @get:Rule val compose = createComposeRule()
+    private val compose = createComposeRule()
+
+    @get:Rule val rules: RuleChain = RuleChain.outerRule(NativeFontsSettled()).around(compose)
 
     @Test fun barAndFooterShowContextSignedOut() {
         val c = testContainer()
@@ -90,4 +97,38 @@ class KioskShellTest {
         }
         compose.onNodeWithText("Dallas Move", substring = true).assertIsDisplayed()
     }
+
+    /**
+     * A long kiosk name ellipsizes; it never stretches the top bar. The " · "
+     * before the person's name, squeezed to nothing, used to wrap onto three
+     * lines and make the bar about 22 dp taller (Sign out stretching with it).
+     * Measured on the 320 dp MC2200 with real fonts (native graphics), since
+     * only a real text layout wraps.
+     */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w320dp-h533dp-hdpi")
+    fun aLongKioskNameNeverStretchesTheBar() {
+        val c = testContainer()
+        runBlocking { assertTrue(c.identity.setName("Kiosk 8CE2")) }
+        c.auth.completePair(fakeSession())
+        compose.setContent {
+            CompositionLocalProvider(LocalAppContainer provides c) {
+                KioskTheme { KioskShell(rememberNavController()) { Text("page body") } }
+            }
+        }
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Kiosk 8CE2").fetchSemanticsNodes().isNotEmpty() }
+        val barBottom = compose.onNodeWithText("page body").fetchSemanticsNode().boundsInRoot.top
+
+        val long = "Ashburn DC2 Receiving Dock"
+        runBlocking { assertTrue(c.identity.setName(long)) }
+        compose.waitUntil(5_000) { compose.onAllNodesWithText(long).fetchSemanticsNodes().isNotEmpty() }
+
+        // The name was squeezed (it ellipsizes), yet the bar is exactly as tall.
+        val layouts = mutableListOf<TextLayoutResult>()
+        compose.onNodeWithText(long).fetchSemanticsNode().config[SemanticsActions.GetTextLayoutResult].action?.invoke(layouts)
+        assertTrue(layouts.single().isLineEllipsized(0))
+        assertEquals(barBottom, compose.onNodeWithText("page body").fetchSemanticsNode().boundsInRoot.top)
+    }
 }
+

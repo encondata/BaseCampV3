@@ -23,6 +23,7 @@ class MoveSetupGuard(
     private val scope: CoroutineScope,
     /** After a dropped setup: a Time Clock station's key goes with it. */
     private val onSetupDropped: suspend () -> Unit = {},
+    private val onDropped: suspend () -> Unit = {}, // INTERNET-TEST
 ) {
     fun start() {
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -31,6 +32,7 @@ class MoveSetupGuard(
                 if (saved != null && saved.initiativeId != locked) {
                     prefs.clearSetup()
                     onSetupDropped()
+                    onDropped() // INTERNET-TEST
                 }
             }
         }

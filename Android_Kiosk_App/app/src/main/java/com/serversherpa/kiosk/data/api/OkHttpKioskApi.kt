@@ -122,6 +122,7 @@ class OkHttpKioskApi(
     private val client: OkHttpClient,
     private val config: KioskConfig,
     private val session: SessionStore,
+    private val route: (OkHttpClient) -> OkHttpClient = { it }, // INTERNET-TEST
 ) : KioskApi {
     private val jsonType = "application/json; charset=utf-8".toMediaType()
 
@@ -132,7 +133,9 @@ class OkHttpKioskApi(
 
     private val emptyBody: RequestBody = ByteArray(0).toRequestBody(null)
 
-    private suspend fun execute(request: Request): Response = executeCall(client, request)
+    private suspend fun execute(request: Request): Response = executeCall(client
+        .let(route) // INTERNET-TEST
+        , request)
 
     private suspend fun apiUrl(path: String): String = config.apiUrlNow() + path
 

@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.model.KioskTimeclockPerson
+import com.serversherpa.kiosk.nettest.InternetTestRoutes // INTERNET-TEST
 import com.serversherpa.kiosk.ui.screens.timeclock.flow.initialsOf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -49,7 +50,9 @@ import okhttp3.Request
  *  the old Timeclock screen did; null when it fails, so the initials stay. */
 internal suspend fun loadPhoto(client: OkHttpClient, url: String): ImageBitmap? = withContext(Dispatchers.IO) {
     try {
-        client.newCall(Request.Builder().url(url).build()).execute().use { r ->
+        client
+            .let(InternetTestRoutes::portal) // INTERNET-TEST
+            .newCall(Request.Builder().url(url).build()).execute().use { r ->
             if (!r.isSuccessful) return@use null
             r.body?.bytes()?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
         }
