@@ -22,6 +22,9 @@ final class AppContainer {
     let labelEngine: LabelEngine
     let labelSettings: LabelSettingsStore
     let labelBuilder: LabelBuilder
+    /// The kiosk's one Print Labels queue and its list, for the app's lifetime: every Print Labels
+    /// screen sends through it, so labels go out in scan order whichever screen scanned them.
+    let printJobs: LabelPrintJobs
     let scanBus = ScanBus()
     let flash = FlashController()
     let sound: SoundPlayer
@@ -63,12 +66,21 @@ final class AppContainer {
         self.coordinator = SessionCoordinator(refresher: sessionStore, auth: auth, heartbeat: heartbeat)
         self.store = store
         self.storeIsTemporary = storeIsTemporary
-        self.sync = Sync(api: api, store: store, fontsDir: fontsDir)
-        self.outbox = Outbox(store: store, api: api, serial: { identity.current.serial }, backgroundTask: backgroundTask)
+        let sync = Sync(api: api, store: store, fontsDir: fontsDir)
+        let outbox = Outbox(store: store, api: api, serial: { identity.current.serial }, backgroundTask: backgroundTask)
         let labelSettings = LabelSettingsStore(prefs: prefs)
+        let labelBuilder = LabelBuilder(store: store, engine: labelEngine, settings: labelSettings)
+        self.sync = sync
+        self.outbox = outbox
         self.labelEngine = labelEngine
         self.labelSettings = labelSettings
-        self.labelBuilder = LabelBuilder(store: store, engine: labelEngine, settings: labelSettings)
+        self.labelBuilder = labelBuilder
+        // Nothing here starts the engine or touches the network: the engine starts on its first
+        // call, and a printer is reached only when a scanned label is sent.
+        self.printJobs = LabelPrintJobs(store: store, sync: sync, outbox: outbox, settings: labelSettings,
+                                        build: labelBuilder.monitor, engine: labelEngine,
+                                        // Straight to the printer: no status checks before or after.
+                                        sender: { host, zpl in try await NetworkZebra(host: host).send(zpl) })
         self.sound = SoundPlayer(prefs: prefs)
     }
 

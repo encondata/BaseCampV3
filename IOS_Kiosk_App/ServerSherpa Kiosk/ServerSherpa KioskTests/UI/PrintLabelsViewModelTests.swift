@@ -39,12 +39,15 @@ import SwiftUI
 /// timeout with `timeouts`), and holds a send while `hold` is set.
 @MainActor private final class FakePrinter {
     private(set) var sent: [(host: String, zpl: String)] = []
+    /// Every send's ZPL in the order the sends began (held or not).
+    private(set) var started: [String] = []
     var failures = 0
     var timeouts = false
     var hold = false
     private(set) var atHold = false
 
     func send(_ host: String, _ zpl: String) async throws {
+        started.append(zpl)
         while hold {
             atHold = true
             try await Task.sleep(for: .milliseconds(2))
@@ -85,25 +88,32 @@ struct PrintLabelsViewModelTests {
     private let flash = FlashController()
     private let outbox: Outbox
     private let settings: LabelSettingsStore
+    /// The container's one queue: every view model of a test shares it.
+    private let jobs: LabelPrintJobs
 
     init() throws {
         store = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
         outbox = Outbox(store: MemoryOutboxStore(), api: api, serial: { "kiosk-ios-test" }, backgroundTask: NoBackgroundTasking())
         settings = LabelSettingsStore(prefs: prefs)
+        let device = self.device
+        jobs = LabelPrintJobs(store: store, sync: sync, outbox: outbox, settings: settings, build: build, engine: engine,
+                              sender: { host, zpl in try await device.send(host, zpl) })
     }
 
-    /// Two assets: A-1 with a stored label, A-2 with none at this DPI; the move's setup; the
+    /// Three assets: A-1 and A-3 with stored labels, A-2 with none at this DPI; the move's setup; the
     /// printer with offsets (4, -2) and peel unless `withPrinter` is false.
     private func harness(withPrinter: Bool = true) async throws -> PrintLabelsViewModel {
         let assets = [
             KioskAssetRow(id: "a1", assetId: "A-1", name: "Rack 1", rfid: "000000000000000000100348", serialNumber: "SN1", makeModel: "Dell"),
             KioskAssetRow(id: "a2", assetId: "A-2", name: "Rack 2", serialNumber: "SN2", makeModel: "HP"),
+            KioskAssetRow(id: "a3", assetId: "A-3", name: "Rack 3", serialNumber: "SN3", makeModel: "Dell"),
         ]
         try await store.replaceRoster(assets: assets, people: [], containers: [], trucks: [],
-                                      meta: SyncMeta(initiativeId: "i1", initiativeName: "Move", assets: 2, people: 0, containers: 0, trucks: 0, syncedAt: "now"))
+                                      meta: SyncMeta(initiativeId: "i1", initiativeName: "Move", assets: 3, people: 0, containers: 0, trucks: 0, syncedAt: "now"))
         _ = try await store.storeGeneratedLabels([
             GeneratedLabelRow(assetId: "a1", zpl: "^XA^FDA-1^FS^XZ", outcome: OUTCOME_OK, fingerprint: "f1", templateId: "t1"),
             GeneratedLabelRow(assetId: "a2", zpl: nil, outcome: NO_TEMPLATE_AT_DPI, fingerprint: "f2", templateId: nil),
+            GeneratedLabelRow(assetId: "a3", zpl: "^XA^FDA-3^FS^XZ", outcome: OUTCOME_OK, fingerprint: "f3", templateId: "t1"),
         ], ifMove: "i1")
         prefs.setupSelection = KioskSetupSelection(initiativeId: "i1", initiativeName: "Move", siteId: "s1", siteName: "Site",
                                                    siteRole: "source", scanStatus: "pre_stage", scanLabel: "Pre-stage")
@@ -118,10 +128,7 @@ struct PrintLabelsViewModelTests {
     }
 
     private func makeVM() -> PrintLabelsViewModel {
-        let device = self.device
-        return PrintLabelsViewModel(store: store, sync: sync, outbox: outbox, prefs: prefs, settings: settings, build: build,
-                                    engine: engine, sender: { host, zpl in try await device.send(host, zpl) },
-                                    flash: flash, sound: nil)
+        PrintLabelsViewModel(jobs: jobs, store: store, sync: sync, prefs: prefs, settings: settings, build: build, flash: flash, sound: nil)
     }
 
     /// Runs a scan to its end and waits for the list to show it.
@@ -303,18 +310,90 @@ struct PrintLabelsViewModelTests {
     }
 
     /// Leaving the screen releases the view model; a label already scanned still goes out and
-    /// gets its Labeled scan.
+    /// gets its Labeled scan, and a screen opened again shows it on the kiosk's one list.
     @Test func aScanOutlivesItsViewModel() async throws {
         var vm: PrintLabelsViewModel? = try await harness()
         device.hold = true
+        device.failures = 1
         vm?.onScan("A-1")
         #expect(await waitUntil { device.atHold })
         weak var gone = vm
         vm = nil
         #expect(gone == nil)
         device.hold = false
-        #expect(await waitUntil { device.sent.count == 1 && outbox.snapshot.rows.count == 1 })
+        #expect(await waitUntil { jobs.entries.first?.state == .failed })
+
+        // Back on the screen: the earlier job is listed and can be retried.
+        let again = makeVM()
+        await again.loadRoster()
+        let failed = try #require(again.entries.first)
+        #expect(failed.scannedValue == "A-1")
+        await again.retry(failed.id).value
+        #expect(await waitUntil { again.entries.first?.state == .printed })
+        #expect(device.sent.count == 1)
+        #expect(rows.count == 1)
         #expect(rows[0].scanStatus == "labeled")
+    }
+
+    /// Two screens, one queue: a screen closed with jobs still waiting and a new one opened
+    /// can't interleave labels. A and B scanned on the first go out before E on the second.
+    @Test func twoScreensSendInOneScanOrder() async throws {
+        let first = try await harness()
+        device.hold = true
+        first.onScan("A-1")
+        first.onScan("A-3")
+        #expect(await waitUntil { device.atHold && first.entries.count == 2 })
+
+        let second = makeVM()
+        await second.loadRoster()
+        second.onScan("SN1")
+        #expect(await waitUntil { second.entries.contains { $0.scannedValue == "SN1" } })
+        // Room for a wrongly parallel queue to start E's send while A is held.
+        try await Task.sleep(for: .milliseconds(100))
+        device.hold = false
+        #expect(await waitUntil { device.sent.count == 3 })
+        #expect(device.started == ["LT-2LS4|^XA^FDA-1^FS^XZ|MMP", "LT-2LS4|^XA^FDA-3^FS^XZ|MMP", "LT-2LS4|^XA^FDA-1^FS^XZ|MMP"])
+        #expect(rows.count == 3)
+    }
+
+    /// A job records under the move it was scanned for, even when Kiosk Setup changes before
+    /// its label goes out.
+    @Test func aJobRecordsUnderTheMoveItWasScannedFor() async throws {
+        let vm = try await harness()
+        device.hold = true
+        vm.onScan("A-1")
+        #expect(await waitUntil { device.atHold })
+        prefs.setupSelection = KioskSetupSelection(initiativeId: "i2", initiativeName: "Other", siteId: "s2", siteName: "Elsewhere",
+                                                   siteRole: "destination", scanStatus: "received", scanLabel: "Received")
+        device.hold = false
+        #expect(await waitUntil { rows.count == 1 })
+        #expect(rows[0].siteId == "s1")
+        #expect(rows[0].initiativeId == "i1")
+    }
+
+    @Test func aRosterWithoutASetupSelectionSaysSoAndPrintsNothing() async throws {
+        let vm = try await harness()
+        prefs.setupSelection = nil
+        #expect(vm.rosterSize == 3)
+        #expect(vm.onScan("A-1") == nil)
+        #expect(vm.error == "No move data on this kiosk. Sync from Kiosk Setup.")
+        #expect(vm.entries.isEmpty)
+        #expect(device.started.isEmpty)
+    }
+
+    /// The real Sync maps onto Print Labels' sync: syncing while a run is in progress.
+    @Test func aRealSyncIsSyncingWhileItRuns() async throws {
+        let (gate, open) = AsyncStream.makeStream(of: Void.self)
+        api.assets = {
+            for await _ in gate {}
+            throw ApiError(status: 500, code: "test_done", detail: [:])
+        }
+        let real = Sync(api: api, store: store)
+        #expect(!real.isSyncing)
+        real.run(initiativeId: "i1", initiativeName: "Move")
+        #expect(await waitUntil { real.isSyncing })
+        open.finish()
+        #expect(await waitUntil { !real.isSyncing })
     }
 
     @Test func syncNowRunsTheMovesSync() async throws {

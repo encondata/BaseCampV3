@@ -1,36 +1,6 @@
 import Foundation
 import Observation
 import SwiftUI
-import os
-
-/// Sends ZPL to the network printer at a host (`NetworkZebra.send` on the device).
-typealias LabelSender = @Sendable (_ host: String, _ zpl: String) async throws -> Void
-
-/// What Print Labels reads from the kiosk's store: the roster to match scans against, and one
-/// asset's stored label per scan. `KioskStore` is the real one.
-protocol PrintLabelsStore: Sendable {
-    func assets() async throws -> [KioskAssetRow]
-    func storedLabel(assetId: String) async throws -> StoredLabel?
-}
-
-extension KioskStore: PrintLabelsStore {}
-
-/// The label build's status as Print Labels reads it (`LabelBuildMonitor` on the device).
-@MainActor protocol LabelBuildStatusSource: AnyObject, Sendable {
-    var status: LabelBuildStatus { get }
-}
-
-extension LabelBuildMonitor: LabelBuildStatusSource {}
-
-/// The sync as Print Labels uses it: whether one runs (no label prints then), and "Sync now".
-@MainActor protocol PrintLabelsSync: AnyObject, Sendable {
-    var isSyncing: Bool { get }
-    func run(initiativeId: String, initiativeName: String)
-}
-
-extension Sync: PrintLabelsSync {
-    var isSyncing: Bool { status.phase == .running }
-}
 
 /// How the header describes the assets left without a label, by reason.
 private let PROBLEM_PHRASES: [String: String] = [
@@ -69,12 +39,6 @@ func printStatusTone(_ s: PrintState) -> ChipTone {
     }
 }
 
-/// "ZD421 at 10.0.0.5 · 203 dpi" ("Zebra" when the printer didn't name its model).
-func printerSummary(_ p: SavedPrinter) -> String {
-    let model = p.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Zebra" : p.model
-    return "\(model) at \(p.host) · \(p.dpi) dpi"
-}
-
 /// "A12 · RU 22", or a dash when the move has neither (the laptop's placement()). `side` is
 /// `source` or `destination`.
 func labelPlacement(_ label: [String: String], _ side: String) -> String {
@@ -102,39 +66,37 @@ func printEntryLine(_ asset: KioskAssetRow?) -> String {
 /// The current card's title: the asset's name, else its asset ID.
 func printEntryTitle(_ asset: KioskAssetRow) -> String { nonBlankText(asset.name) ?? asset.assetId }
 
-/// The outbox couldn't save a printed label's Labeled scan.
-private struct LabeledScanNotSaved: Error {}
-
 /// Print Labels (the laptop's Printing Station, kiosk/src/pages/PrintingStation.tsx; Android's
 /// PrintLabelsViewModel): a scan matched by asset ID or serial prints the asset's stored label on
-/// the saved network printer and records one Labeled scan through the outbox. The decisions live
-/// in `PrintQueue`.
+/// the saved network printer and records one Labeled scan through the outbox.
 ///
-/// The view model owns every print it starts: the screen's scan collection only hands scans in
-/// (`follow`), and each print runs in its own task that holds the queue, never the screen's.
-/// When the screen goes off screen (Printer Setup on top, or Back) nothing is cancelled: labels
-/// already scanned still go out and get their Labeled scans, even after the view model is gone.
+/// The jobs run on the container's one `LabelPrintJobs` queue, never on one of this view model's
+/// own: every Print Labels screen sends in one scan order, and the list (`entries`) is the
+/// queue's, so a re-opened screen shows earlier jobs and can retry them. The screen's scan
+/// collection only hands scans in (`follow`); each job runs in a task of its own that nothing
+/// cancels, holding the queue and only a weak reference to this view model (for the flash and
+/// sound). Leaving the screen (Printer Setup on top, or Back) cancels nothing: labels already
+/// scanned still go out and get their Labeled scans, even after this view model is gone.
 /// (Android's view model scope cancels the jobs still waiting when the screen is popped; a
-/// cancelled waiter here would stay "Waiting to print" for good, so iOS lets them finish.)
+/// cancelled waiter would stay "Waiting to print" for good, so iOS lets them finish.) Building
+/// one is cheap: no queue and no task of its own.
 @MainActor @Observable
 final class PrintLabelsViewModel {
     enum LoadStatus: Equatable { case loading, ready, error }
-
-    /// The scan status a printed label records.
-    static let LABELED = "labeled"
 
     private(set) var loadStatus = LoadStatus.loading
     private(set) var rosterSize = 0
     /// Why a scan couldn't be taken at all (no move data yet).
     private(set) var error: String?
-    /// Newest first.
-    private(set) var entries: [PrintEntry<KioskAssetRow>] = []
 
+    /// Newest first: every job on the kiosk's print queue.
+    var entries: [PrintEntry<PrintTarget>] { jobs.entries }
     /// The label build, for the header.
     var build: LabelBuildStatus { buildSource.status }
     var settings: LabelSettings { settingsSource.current() }
     var syncing: Bool { sync.isSyncing }
 
+    @ObservationIgnored private let jobs: LabelPrintJobs
     @ObservationIgnored private let store: PrintLabelsStore
     @ObservationIgnored private let sync: PrintLabelsSync
     @ObservationIgnored private let prefs: KioskPrefs
@@ -142,14 +104,11 @@ final class PrintLabelsViewModel {
     @ObservationIgnored private let buildSource: LabelBuildStatusSource
     @ObservationIgnored private let flash: FlashController
     @ObservationIgnored private let sound: SoundPlayer?
-    @ObservationIgnored private let queue: PrintQueue<KioskAssetRow>
     @ObservationIgnored private var index: ScanIndex<KioskAssetRow>?
 
-    nonisolated static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "ServerSherpa Kiosk", category: "labels")
-
-    init(store: PrintLabelsStore, sync: PrintLabelsSync, outbox: Outbox, prefs: KioskPrefs, settings: LabelSettingsSource,
-         build: LabelBuildStatusSource, engine: LabelEngine, sender: @escaping LabelSender,
-         flash: FlashController, sound: SoundPlayer?) {
+    init(jobs: LabelPrintJobs, store: PrintLabelsStore, sync: PrintLabelsSync, prefs: KioskPrefs, settings: LabelSettingsSource,
+         build: LabelBuildStatusSource, flash: FlashController, sound: SoundPlayer?) {
+        self.jobs = jobs
         self.store = store
         self.sync = sync
         self.prefs = prefs
@@ -157,41 +116,6 @@ final class PrintLabelsViewModel {
         self.buildSource = build
         self.flash = flash
         self.sound = sound
-        let log: @Sendable (String, Error) -> Void = { message, error in
-            // An error can quote the label or the printer's address: private in the log.
-            PrintLabelsViewModel.log.warning("print labels: \(message, privacy: .public): \(String(describing: error), privacy: .private)")
-        }
-        queue = PrintQueue(deps: PrintQueueDeps(
-            settings: { await MainActor.run { settings.current() } },
-            label: { asset in
-                let stored = try await store.storedLabel(assetId: asset.id)
-                let (status, syncing) = await MainActor.run { (build.status, sync.isSyncing) }
-                return labelFor(stored, status, syncing: syncing)
-            },
-            prepare: { zpl, settings in
-                try await prepareForPrinter(zpl: zpl, settings: settings, call: { try await engine.call($0, $1) },
-                                            isTimeout: LabelEngineError.isTimeout, isUnsupported: LabelEngineError.isUnsupported, log: log)
-            },
-            send: { host, zpl in
-                do {
-                    try await sender(host, zpl)
-                } catch let e as PrinterTimeout {
-                    throw LabelSendTimeout(cause: e)
-                }
-            },
-            record: { asset, scannedValue in
-                guard let sel = await MainActor.run(body: { prefs.setupSelection }) else { throw LabeledScanNotSaved() }
-                let row = await outbox.enqueue(EnqueueInput(
-                    scannedValue: scannedValue, scanType: "barcode", asset: asset.outboxAsset,
-                    siteId: sel.siteId, initiativeId: sel.initiativeId, scanStatus: PrintLabelsViewModel.LABELED))
-                if row == nil { throw LabeledScanNotSaved() }
-            },
-            log: log
-        ), now: { isoMillis(nowMs()) })
-        let changes = queue.changes
-        Task { [weak self] in
-            for await list in changes { self?.entries = list }
-        }
     }
 
     /// Rebuilds the match index from the local roster; the screen calls it again whenever
@@ -216,32 +140,35 @@ final class PrintLabelsViewModel {
         for await event in events { onScan(event.value) }
     }
 
-    /// Starts printing a scan; nil when it was not taken (blank, or no move data yet). The
-    /// returned task ends once the scan has printed or failed (tests await it).
+    /// Starts printing a scan; nil when it was not taken (blank, or no move data yet). The job
+    /// takes the move from Kiosk Setup now. The returned task ends once the scan has printed or
+    /// failed (tests await it).
     @discardableResult
     func onScan(_ raw: String) -> Task<Void, Never>? {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if value.isEmpty { return nil }
         // A hardware scan can arrive before the roster or the setup is ready (the typed input is
         // disabled then). Say so instead of dropping it silently.
-        guard let index, prefs.setupSelection != nil, rosterSize > 0 else {
+        guard let index, let sel = prefs.setupSelection, rosterSize > 0 else {
             feedback(good: false)
             error = ScanViewModel.NO_MOVE_DATA
             return nil
         }
         error = nil
         // Asset ID or serial only, as the laptop's Printing Station: a tag is not a label request.
-        let asset = matchAssetOrSerial(index, value)?.asset
-        return run { queue in try await queue.scan(asset, scannedValue: value) }
+        let target = matchAssetOrSerial(index, value).map {
+            PrintTarget(asset: $0.asset, siteId: sel.siteId, initiativeId: sel.initiativeId)
+        }
+        return run { jobs in try await jobs.scan(target, scannedValue: value) }
     }
 
     /// Prints the entry's asset again (never records).
     @discardableResult
-    func reprint(_ entryId: String) -> Task<Void, Never> { run { queue in try await queue.reprint(entryId) } }
+    func reprint(_ entryId: String) -> Task<Void, Never> { run { jobs in try await jobs.reprint(entryId) } }
 
     /// Runs a failed entry again.
     @discardableResult
-    func retry(_ entryId: String) -> Task<Void, Never> { run { queue in try await queue.retry(entryId) } }
+    func retry(_ entryId: String) -> Task<Void, Never> { run { jobs in try await jobs.retry(entryId) } }
 
     /// Runs the move's sync again (labels need a sync since the version 2 upgrade).
     func syncNow() {
@@ -249,12 +176,12 @@ final class PrintLabelsViewModel {
         sync.run(initiativeId: sel.initiativeId, initiativeName: sel.initiativeName)
     }
 
-    /// A queue job in a task of its own: it holds the queue, not the view model, and nothing
-    /// cancels it, so a job outlives the screen and the view model that started it.
-    private func run(_ job: @escaping @Sendable (PrintQueue<KioskAssetRow>) async throws -> PrintEntry<KioskAssetRow>?) -> Task<Void, Never> {
-        let queue = self.queue
+    /// A job in a task of its own: it holds the queue, not this view model, and nothing cancels
+    /// it, so a job outlives the screen and the view model that started it.
+    private func run(_ job: @escaping @MainActor (LabelPrintJobs) async throws -> PrintEntry<PrintTarget>?) -> Task<Void, Never> {
+        let jobs = self.jobs
         return Task { [weak self] in
-            guard let entry = try? await job(queue) else { return }
+            guard let entry = try? await job(jobs) else { return }
             self?.feedback(good: entry.state == .printed)
         }
     }

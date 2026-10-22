@@ -1,5 +1,11 @@
 import SwiftUI
 
+/// "ZD421 at 10.0.0.5 · 203 dpi" ("Zebra" when the printer didn't name its model).
+func printerSummary(_ p: SavedPrinter) -> String {
+    let model = p.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Zebra" : p.model
+    return "\(model) at \(p.host) · \(p.dpi) dpi"
+}
+
 /// The Label Printing tile (Android's LabelsHomeScreen): Print Labels and Printer Setup.
 struct LabelsHomeScreen: View {
     @Binding var path: [Route]

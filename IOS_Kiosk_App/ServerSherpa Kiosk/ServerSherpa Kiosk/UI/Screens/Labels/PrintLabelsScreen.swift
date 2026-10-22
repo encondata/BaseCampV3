@@ -22,10 +22,8 @@ private struct PrintLabelsBody: View {
         self.container = container
         _path = path
         _vm = State(initialValue: PrintLabelsViewModel(
-            store: container.store, sync: container.sync, outbox: container.outbox, prefs: container.prefs,
-            settings: container.labelSettings, build: container.labelBuilder.monitor, engine: container.labelEngine,
-            // Straight to the printer: no status checks before or after.
-            sender: { host, zpl in try await NetworkZebra(host: host).send(zpl) },
+            jobs: container.printJobs, store: container.store, sync: container.sync, prefs: container.prefs,
+            settings: container.labelSettings, build: container.labelBuilder.monitor,
             flash: container.flash, sound: container.sound))
     }
 
@@ -117,7 +115,18 @@ private struct LabelStatusHeader: View {
                 if build.phase == .running {
                     Text("Making labels: \(build.done) of \(build.total)")
                         .font(KioskType.labelMedium).foregroundStyle(palette.textMute).padding(.top, 4)
-                    ProgressView(value: Double(build.progress)).tint(palette.accent).padding(.vertical, 6)
+                    // Android's LinearProgressIndicator: accent on a paperLine track.
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(palette.paperLine)
+                            Capsule().fill(palette.accent).frame(width: geo.size.width * CGFloat(min(max(build.progress, 0), 1)))
+                        }
+                    }
+                    .frame(height: 4)
+                    .padding(.vertical, 6)
+                    .accessibilityElement()
+                    .accessibilityLabel("Making labels")
+                    .accessibilityValue("\(build.done) of \(build.total)")
                 }
                 // LabelBuilder logs the cause.
                 if build.phase == .error { KioskToast(text: BUILD_FAILED_TEXT, error: true) }
@@ -131,7 +140,7 @@ private struct LabelStatusHeader: View {
 
 /// The latest scan, big: the asset, what happened, and Reprint or Retry.
 private struct CurrentPrintCard: View {
-    let entry: PrintEntry<KioskAssetRow>
+    let entry: PrintEntry<PrintTarget>
     let onReprint: () -> Void
     let onRetry: () -> Void
     @Environment(\.kioskPalette) private var palette
@@ -139,7 +148,7 @@ private struct CurrentPrintCard: View {
     var body: some View {
         let tone = printStatusTone(entry.state)
         VStack(alignment: .leading, spacing: 4) {
-            if let a = entry.asset {
+            if let a = entry.asset?.asset {
                 Text(printEntryTitle(a)).font(KioskType.titleLarge).foregroundStyle(palette.text)
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
                     fact("Asset ID", nonBlankText(a.assetId) ?? "—", mono: true)
@@ -179,7 +188,7 @@ private struct CurrentPrintCard: View {
 
 /// One scan on the list, newest first.
 private struct PrintEntryRow: View {
-    let entry: PrintEntry<KioskAssetRow>
+    let entry: PrintEntry<PrintTarget>
     let showRetry: Bool
     let onRetry: () -> Void
     @Environment(\.kioskPalette) private var palette
@@ -188,11 +197,11 @@ private struct PrintEntryRow: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Text(scanTime(entry.scannedAt)).font(KioskType.labelMedium).foregroundStyle(palette.textMute)
-                Text(entry.asset?.assetId ?? entry.scannedValue).font(KioskType.labelMedium).foregroundStyle(palette.text)
+                Text(entry.asset?.asset.assetId ?? entry.scannedValue).font(KioskType.labelMedium).foregroundStyle(palette.text)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 KioskChip(text: printStatusText(entry), tone: printStatusTone(entry.state), dot: false)
             }
-            Text(printEntryLine(entry.asset)).font(KioskType.bodySmall)
+            Text(printEntryLine(entry.asset?.asset)).font(KioskType.bodySmall)
                 .foregroundStyle(entry.asset == nil ? ChipTone.red.text : palette.text)
             if entry.state == .failed, let message = entry.message {
                 Text(message).font(KioskType.labelSmall).foregroundStyle(ChipTone.red.text)
