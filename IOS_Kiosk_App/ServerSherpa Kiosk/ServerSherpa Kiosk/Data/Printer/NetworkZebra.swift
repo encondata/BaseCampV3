@@ -25,50 +25,11 @@ struct ZebraTimeouts: Equatable, Sendable {
     var send: TimeInterval = ZebraNetwork.send
 }
 
-/// A network printer that couldn't be used; `host` is the address asked.
-protocol PrinterError: LocalizedError, Sendable {
-    var host: String { get }
-}
-
-/// Nothing accepted a connection on the port in time (a connection that sits in `.waiting` past
-/// the connect budget included), the connection failed, or it failed while the command was being
-/// written. `localNetworkDenied` is set when it waited with iOS's Local Network policy denial.
-struct PrinterUnreachable: PrinterError {
-    var host: String
-    var localNetworkDenied = false
-    var errorDescription: String? { "No printer answered at \(host)" }
-}
-
-/// The connection didn't take the whole job within its time (the edge's `printer_timeout`).
-struct PrinterTimeout: PrinterError {
-    var host: String
-    var errorDescription: String? { "The printer at \(host) didn't take the job in time" }
-}
-
-/// The printer took the query but said nothing before the read gave up.
-struct PrinterNoReply: PrinterError {
-    var host: String
-    var errorDescription: String? { "The printer at \(host) didn't reply" }
-}
-
-/// The printer replied, but not with the answer the query asks for.
-struct PrinterBadReply: PrinterError {
-    var host: String
-    var what: String
-    var errorDescription: String? { "The printer at \(host) sent an unreadable \(what) reply" }
-}
-
-/// `installFont` refused the font before anything was sent (Android's `require` failures).
-struct FontInstallRefused: LocalizedError, Sendable {
-    var message: String
-    var errorDescription: String? { message }
-}
-
 /**
  A Zebra on the LAN, spoken to over its raw port: one connection per command, as the laptop edge
  does. Queries read the reply until it is whole (the printer keeps the connection open), the idle
- wait, the total wait or 64 KB; sends write and close. Replies are read as Latin-1, ZPL is sent as
- UTF-8 (labels carry `^CI28`), and a font's bytes go raw after its ASCII header.
+ wait, the total wait or 64 KB; writes write and close. What is asked and sent is
+ `ZebraTransport`'s (identify, status, fonts, sends, font installs).
 
  Nothing is sent on its own: each call sends exactly its command. `parameters` is copied for each
  connection (tests pass ones that can't be satisfied). By default a host inside one of the device's
@@ -76,7 +37,7 @@ struct FontInstallRefused: LocalizedError, Sendable {
  the LAN network's socket factory; any other host uses plain TCP (`zebraParameters(forHost:lan:)`). Every call but the font guard can throw
  `CancellationError` when its task is cancelled; the connection is closed on every exit.
  */
-struct NetworkZebra: Sendable {
+struct NetworkZebra: ZebraTransport {
     let host: String
     let port: UInt16
     let timeouts: ZebraTimeouts
@@ -89,69 +50,9 @@ struct NetworkZebra: Sendable {
         self.parameters = parameters ?? zebraParameters(forHost: host, lan: LocalNetworks.lanAddresses())
     }
 
-    /// `~HI`: model, firmware, resolution.
-    func identify() async throws -> HostId {
-        guard let id = parseNetworkHostIdentification(try await query(ZebraCommands.hostIdentification, complete: frames(1))) else {
-            throw PrinterBadReply(host: host, what: "identification")
-        }
-        return id
-    }
+    var address: String { host }
 
-    /// `~HS`: paper, head, pause and the rest (three frames).
-    func status() async throws -> HostStatus {
-        guard let status = parseHostStatus(try await query(ZebraCommands.hostStatus, complete: frames(3))) else {
-            throw PrinterBadReply(host: host, what: "status")
-        }
-        return status
-    }
-
-    /// Whether a peeler is fitted; nil when the printer doesn't say (an unknown variable, no or an
-    /// unreadable answer, or no printer at all). Throws only `CancellationError`.
-    func peelerPresent() async throws -> Bool? {
-        switch try await getvar(ZebraCommands.peelerPresent)?.lowercased() {
-        case "present": return true
-        case "not present": return false
-        default: return nil
-        }
-    }
-
-    /// The printer's serial number; nil when it doesn't say. Throws only `CancellationError`.
-    func serial() async throws -> String? {
-        try await getvar(ZebraCommands.serialNumber)
-    }
-
-    /// The object names on E: (fonts and anything else stored there), upper-cased.
-    func fonts() async throws -> [String] {
-        let reply = try await query(ZebraCommands.fontDirectory, complete: frames(1))
-        guard isDirectoryListing(reply) else { throw PrinterBadReply(host: host, what: "font listing") }
-        return parseDirectory(reply)
-    }
-
-    /// Sends a job as is: no status checks before or after.
-    func send(_ zpl: String) async throws {
-        try await write([Data(zpl.utf8)])
-    }
-
-    /// Installs a TrueType font on E: as `name` (upper-cased): `~DYE:NAME,B,T,<len>,,` then the
-    /// bytes. A resident font is never installed, and a name that isn't a plain `NAME.TTF` is
-    /// refused (`FontInstallRefused`) before anything is sent.
-    func installFont(name: String, bytes: Data) async throws {
-        let upper = name.uppercased()
-        guard isPrinterFontName(upper) else { throw FontInstallRefused(message: "Not a printer font name: \(name)") }
-        guard !isResidentFont(upper) else { throw FontInstallRefused(message: "\(upper) is built into the printer and is never installed") }
-        guard !bytes.isEmpty else { throw FontInstallRefused(message: "\(upper) has no bytes") }
-        try await write([Data(ZebraCommands.downloadFontHeader(name: upper, totalBytes: bytes.count).utf8), bytes])
-    }
-
-    private func getvar(_ command: String) async throws -> String? {
-        do {
-            return parseGetvar(try await query(command, complete: quoted))
-        } catch is PrinterError {
-            return nil
-        }
-    }
-
-    private func query(_ command: String, complete: @escaping (Data) -> Bool) async throws -> String {
+    func query(_ command: String, complete: @escaping @Sendable (Data) -> Bool) async throws -> String {
         let timeouts = timeouts
         let reply = try await zebraSession(
             host: host, port: port, parameters: parameters,
@@ -164,27 +65,24 @@ struct NetworkZebra: Sendable {
         return String(data: reply, encoding: .isoLatin1) ?? "" // Latin-1 decodes any bytes
     }
 
-    private func write(_ parts: [Data]) async throws {
+    /// One connection for the whole job: each part as Network.framework takes it, then a FIN.
+    /// `progress` hears 0 once the connection is open, then each part.
+    func write(_ parts: [Data], progress: (@Sendable (_ sent: Int, _ total: Int) -> Void)?) async throws {
+        let total = parts.reduce(0) { $0 + $1.count }
         try await zebraSession(host: host, port: port, parameters: parameters, connect: timeouts.connect, deadline: timeouts.send) { link in
-            for part in parts { try await link.write(part) }
+            var sent = 0
+            progress?(sent, total)
+            for part in parts {
+                try await link.write(part)
+                sent += part.count
+                progress?(sent, total)
+            }
             try await link.finishWriting()
         }
     }
 
     private static let writeSlack: TimeInterval = 1
-
-    private func frames(_ n: Int) -> (Data) -> Bool { { replyHasFrames($0, n) } }
-    private var quoted: (Data) -> Bool { { replyHasQuotedValue($0) } }
 }
-
-// When each reply is whole (the edge's REPLY_COMPLETE): ~HS is three STX..ETX frames, ~HI and the
-// E: listing one, a getvar one quoted value. Shared by NetworkZebra and the scan.
-
-/// At least `n` ETX-closed frames.
-func replyHasFrames(_ reply: Data, _ n: Int) -> Bool { reply.count(of: 0x03) >= n }
-
-/// A whole quoted getvar value (two double quotes).
-func replyHasQuotedValue(_ reply: Data) -> Bool { reply.count(of: UInt8(ascii: "\"")) >= 2 }
 
 /// TCP that never leaves over cellular: Wi-Fi, Ethernet (USB-C adapters included) and the rest
 /// stay admitted. A printer on the LAN must not be reached over a carrier's 10.x or CGNAT.
@@ -199,19 +97,6 @@ func lanParameters() -> NWParameters {
 /// network's factory, else the default one).
 func zebraParameters(forHost host: String, lan: [LanAddress]) -> NWParameters {
     lan.contains { sameSubnet($0.address, host, prefixLength: $0.prefixLength) } ? lanParameters() : .tcp
-}
-
-/// `[A-Z0-9_\-]{1,64}\.TTF`, ASCII only.
-private func isPrinterFontName(_ name: String) -> Bool {
-    let scalars = Array(name.unicodeScalars)
-    guard (5...68).contains(scalars.count), scalars.suffix(4) == Array(".TTF".unicodeScalars) else { return false }
-    return scalars.dropLast(4).allSatisfy { s in
-        ("A"..."Z").contains(s) || ("0"..."9").contains(s) || s == "_" || s == "-"
-    }
-}
-
-extension Data {
-    fileprivate func count(of byte: UInt8) -> Int { reduce(0) { $0 + ($1 == byte ? 1 : 0) } }
 }
 
 // MARK: one connection

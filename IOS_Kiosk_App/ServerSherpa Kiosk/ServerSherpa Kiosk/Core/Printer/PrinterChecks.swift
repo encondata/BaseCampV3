@@ -20,6 +20,29 @@ func missingFonts(needed: [String], onPrinter: [String]) -> [String] {
     return needed.filter { !present.contains($0.uppercased()) }
 }
 
+/// The `needed` fonts that are on the printer but whose size isn't the library's: a download that
+/// was cut short leaves a smaller file under the right name. Upper-case names, in `needed`'s
+/// order. A resident font (by name or the library's flag) is the printer's own, a font the
+/// library doesn't have (or has at size 0, unknown) has nothing to compare with, and a font that
+/// isn't there is `missingFonts`' to report.
+func damagedFonts(needed: [String], library: [KioskLabelFont], onPrinter: [DirectoryEntry]) -> [String] {
+    var printerSizes: [String: Int] = [:]
+    for entry in onPrinter { printerSizes[entry.name.uppercased()] = entry.size }
+    var librarySizes: [String: Int] = [:]
+    var flaggedResident = Set<String>()
+    for font in library {
+        let name = font.name.uppercased()
+        if librarySizes[name] == nil { librarySizes[name] = font.size }
+        if font.resident { flaggedResident.insert(name) }
+    }
+    return needed.map { $0.uppercased() }.filter { name in
+        guard let onPrinterSize = printerSizes[name], let librarySize = librarySizes[name], librarySize > 0,
+              !isResidentFont(name, residentFlag: flaggedResident.contains(name))
+        else { return false }
+        return onPrinterSize != librarySize
+    }
+}
+
 /// What to do about the fonts missing from the printer: install the library's (never a resident
 /// one), say a built-in one is missing, and name the rest as not in the library.
 struct FontFix: Equatable, Sendable {

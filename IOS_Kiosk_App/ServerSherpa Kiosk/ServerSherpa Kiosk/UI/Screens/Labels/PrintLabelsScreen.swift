@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// Print Labels (Android's PrintLabelsScreen, the laptop's Printing Station): scan an asset ID or
-/// serial and its stored label goes straight to the saved network Zebra, with one Labeled scan.
+/// serial and its stored label goes straight to the saved Zebra (network or Bluetooth), with one
+/// Labeled scan.
 struct PrintLabelsScreen: View {
     @Binding var path: [Route]
     @Environment(\.container) private var container
@@ -19,6 +20,7 @@ private struct PrintLabelsBody: View {
     /// Printer Setup was opened for this visit because no printer was saved.
     @State private var openedPrinterSetup = false
     @Environment(\.kioskPalette) private var palette
+    @Environment(\.scenePhase) private var scenePhase
 
     init(container: AppContainer, path: Binding<[Route]>) {
         self.container = container
@@ -26,7 +28,7 @@ private struct PrintLabelsBody: View {
         _vm = State(initialValue: PrintLabelsViewModel(
             jobs: container.printJobs, store: container.store, sync: container.sync, prefs: container.prefs,
             settings: container.labelSettings, build: container.labelBuilder.monitor,
-            flash: container.flash, sound: container.sound))
+            bluetooth: container.bluetooth, flash: container.flash, sound: container.sound))
     }
 
     private var setup: KioskSetupSelection? { container.prefs.setupSelection }
@@ -40,6 +42,19 @@ private struct PrintLabelsBody: View {
                            subtitle: setup.map { "\($0.initiativeName) · \($0.siteName)" } ?? "Finish Kiosk Setup first.")
                 LabelStatusHeader(build: vm.build, settings: vm.settings, syncing: vm.syncing,
                                   onSync: { vm.syncNow() }, onPrinterSetup: { path.append(.labelsPrinter) })
+                if let problem = vm.printerProblem {
+                    // The saved Bluetooth printer can't be reached until this is fixed on the iPad.
+                    KioskToast(text: problem.text, error: true)
+                    if problem.offersSettings || problem.offersConnect {
+                        HStack(spacing: 8) {
+                            if problem.offersSettings { OpenSettingsButton() }
+                            if problem.offersConnect {
+                                SecondaryButton(vm.connecting ? "Connecting…" : "Connect", enabled: !vm.connecting) { vm.connectPrinter() }
+                            }
+                        }
+                        .padding(.bottom, 8)
+                    }
+                }
                 if vm.loadStatus == .error { KioskToast(text: "Couldn't read this kiosk's local data.", error: true) }
                 if empty {
                     Text(ScanViewModel.NO_MOVE_DATA).font(KioskType.bodyMedium).foregroundStyle(palette.textMute).padding(.bottom, 8)
@@ -85,6 +100,11 @@ private struct PrintLabelsBody: View {
                 openedPrinterSetup = true
                 path.append(.labelsPrinter)
             }
+            // A saved Bluetooth printer: its link comes up in the background (nothing waits for it).
+            vm.connectPrinter()
+        }
+        .onChange(of: scenePhase) { was, now in
+            if now == .active && was != .active { vm.cameBackToTheApp() }
         }
         .task { await vm.follow(container.scanBus.events()) }
         .task(id: container.sync.rosterVersion) { await vm.loadRoster() }
