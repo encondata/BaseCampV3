@@ -154,7 +154,9 @@ final class KioskSetupViewModel {
         saveError = nil
         do {
             let r = try await api.submitSetup(KioskSetupIn(serial: identity.current.serial, initiativeId: initiativeId, siteId: siteId, scanStatus: key))
-            prefs.setupSelection = KioskSetupSelection(initiativeId: r.initiativeId, initiativeName: r.initiativeName, siteId: r.siteId, siteName: r.siteName, siteRole: r.siteRole, scanStatus: r.scanStatus, scanLabel: r.scanStatusLabel)
+            prefs.setupSelection = KioskSetupSelection(initiativeId: r.initiativeId, initiativeName: r.initiativeName, siteId: r.siteId, siteName: r.siteName, siteRole: r.siteRole, scanStatus: r.scanStatus, scanLabel: r.scanStatusLabel,
+                                                      // Until Setup has its Top/Front step, a new selection keeps the kind.
+                                                      labelKind: prefs.setupSelection?.labelKind ?? "top")
             prefs.setupState = .complete
             saving = false
             step = .summary

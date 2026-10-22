@@ -63,14 +63,16 @@ struct LabelSettingsStoreTests {
         #expect(store.current().kind == .top)
     }
 
-    @Test func theFirstValueIsTheStoredOneNotTheDefaults() async {
+    @Test(.timeLimit(.minutes(1)))
+    func theFirstValueIsTheStoredOneNotTheDefaults() async {
         prefs.setupSelection = selection("front"); store.setPrinter(printer)
         // A fresh store over the same defaults: the first value already carries everything.
         var updates = LabelSettingsStore(prefs: KioskPrefs(defaults: defaults)).updates().makeAsyncIterator()
         #expect(await updates.next() == LabelSettings(kind: .front, printer: printer))
     }
 
-    @Test func unrelatedWritesDoNotRepeatTheSettings() async throws {
+    @Test(.timeLimit(.minutes(1)))
+    func unrelatedWritesDoNotRepeatTheSettings() async throws {
         let seen = Collected()
         let stream = store.updates()
         let job = Task { @MainActor in for await s in stream { seen.values.append(s) } }
@@ -88,7 +90,8 @@ struct LabelSettingsStoreTests {
         #expect(seen.values == [LabelSettings(), LabelSettings(peel: true), LabelSettings()])
     }
 
-    @Test func eachChangeArrivesInOrder() async {
+    @Test(.timeLimit(.minutes(1)))
+    func eachChangeArrivesInOrder() async {
         var updates = store.updates().makeAsyncIterator()
         #expect(await updates.next() == LabelSettings())
         prefs.setupSelection = selection("front")

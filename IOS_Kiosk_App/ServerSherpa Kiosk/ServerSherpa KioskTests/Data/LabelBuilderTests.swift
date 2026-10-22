@@ -188,9 +188,10 @@ final class LabelBuilderTests {
     }
 
     /// A sync lands between two reads only if they are separate: the move, its label context, its
-    /// payloads and the templates are one store read. Syncs of two moves race the reads; every
-    /// read must see one move whole (Android checks the SQL log for one transaction).
-    @Test func theBuildReadsTheMoveAndTheTemplatesInOneRead() async throws {
+    /// payloads and the templates are one store read. Syncs of two moves race the builds; every
+    /// plan must see one move whole (Android checks the SQL log for one transaction).
+    @Test(.timeLimit(.minutes(1)))
+    func theBuildReadsTheMoveAndTheTemplatesInOneRead() async throws {
         let moves = [("i1", ["a1", "a2"], "tA"), ("i2", ["b1", "b2", "b3"], "tB")]
         func write(_ i: Int) async throws {
             let (initiative, ids, template) = moves[i % 2]
@@ -201,20 +202,26 @@ final class LabelBuilderTests {
                                           templates: [LabelTemplateRow(id: template, json: #"{"id":"\#(template)"}"#)])
         }
         try await write(0)
-        let reader = self.store
+        let b = builder()
         try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask { for i in 1...40 { try await write(i) } }
-            group.addTask {
-                for _ in 1...40 {
-                    let s = try await reader.labelBuildSnapshot(withRows: true)
-                    let meta = try #require(s.meta)
-                    let expected = meta.initiativeId == "i1" ? moves[0] : moves[1]
-                    #expect(s.payloads.map(\.id) == expected.1)
-                    #expect(s.templates.map(\.id) == [expected.2])
-                    #expect(s.labelContext == #"{"move":"\#(meta.initiativeId)"}"#)
-                }
-            }
+            group.addTask { for i in 1...200 { try await write(i) } }
+            group.addTask { for _ in 1...60 { await b.buildNow("sync") } }
             try await group.waitForAll()
+        }
+
+        let plans = engine.calls.filter { $0.fn == "buildPlan" }
+        #expect(plans.count > 10)
+        for plan in plans {
+            let body = FakeLabelEngine.object(plan.string("assetsJson"))
+            let initiative = body["initiative_id"] as? String ?? ""
+            let expected = initiative == "i1" ? moves[0] : moves[1]
+            let assets = (body["assets"] as? [[String: Any]] ?? []).map { $0["id"] as? String ?? "" }
+            let templates = (FakeLabelEngine.object(plan.string("templatesJson"))["templates"] as? [[String: Any]] ?? [])
+                .map { $0["id"] as? String ?? "" }
+            let context = (body["label_context"] as? [String: Any])?["move"] as? String
+            #expect(assets == expected.1, "move \(initiative) planned with assets \(assets)")
+            #expect(templates == [expected.2], "move \(initiative) planned with templates \(templates)")
+            #expect(context == initiative, "move \(initiative) planned with the context of \(context ?? "none")")
         }
     }
 
@@ -338,6 +345,20 @@ final class LabelBuilderTests {
         #expect(engine.count("renderLabels") == 0)
         // Printer Setup's checks stop waiting for this kind and DPI's pick.
         #expect(b.monitor.pick == LabelPick(kind: .top, dpi: 203, synced: true, failed: true))
+    }
+
+    /// A Foundation or SwiftData error reads as its localized description, never `Error Domain=...`.
+    @Test func anNSErrorReadsAsItsLocalizedDescription() async throws {
+        try await seed(["a1"])
+        let error = NSError(domain: NSCocoaErrorDomain, code: NSFileWriteOutOfSpaceError)
+        engine.renderError = error
+        let b = builder()
+        await b.buildNow("sync")
+        #expect(b.monitor.status.phase == .error)
+        #expect(b.monitor.status.error == error.localizedDescription)
+        #expect(b.monitor.status.error?.contains("Error Domain") == false)
+        // A Swift error keeps its own text.
+        #expect(LabelBuilder.message(LabelGenException("bad printer DPI: 0")) == "bad printer DPI: 0")
     }
 
     @Test func aRenderErrorAnswerIsAnError() async throws {

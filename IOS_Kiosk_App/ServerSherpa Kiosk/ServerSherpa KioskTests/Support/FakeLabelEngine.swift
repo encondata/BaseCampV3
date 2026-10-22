@@ -26,6 +26,8 @@ struct FakeEngineDied: Error, CustomStringConvertible {
     /// Replaces buildPlan's answer.
     var planAnswer: (() -> String)?
     var renderAnswer: (() -> String)?
+    /// Thrown from every renderLabels call when set.
+    var renderError: Error?
     /// Rewrites each renderLabels answer's result objects (missing or odd results).
     var mutateResults: (([[String: Any]]) -> [[String: Any]])?
     var onRender: () async -> Void = {}
@@ -84,6 +86,7 @@ struct FakeEngineDied: Error, CustomStringConvertible {
                 gatePassed += 1
             }
             if renders == failRender { throw FakeEngineDied() }
+            if let renderError { throw renderError }
             if let renderAnswer { return renderAnswer() }
             let ids = args["assetIds"] as? [String] ?? []
             var byId: [String: [String: Any]] = [:]

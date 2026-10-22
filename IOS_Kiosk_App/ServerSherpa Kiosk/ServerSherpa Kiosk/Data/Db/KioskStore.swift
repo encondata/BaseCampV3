@@ -19,7 +19,24 @@ struct LabelBuildSnapshot: Sendable {
 
 /// The only thing that touches the SwiftData container. Everything crossing
 /// the actor boundary is a Core value type, never a `@Model` object.
-@ModelActor actor KioskStore {
+///
+/// Not `@ModelActor`: its default executor ran this actor's work on the main thread when the
+/// store was built on the main actor (as `AppContainer` builds it), so a large label build or
+/// sync would freeze the UI. `KioskStoreExecutor` runs it on the store's own serial queue.
+actor KioskStore: ModelActor {
+    nonisolated let modelContainer: ModelContainer
+    nonisolated let modelExecutor: any ModelExecutor
+    private nonisolated let executor: KioskStoreExecutor
+
+    nonisolated var unownedExecutor: UnownedSerialExecutor { executor.asUnownedSerialExecutor() }
+
+    init(modelContainer: ModelContainer) {
+        let executor = KioskStoreExecutor(modelContext: ModelContext(modelContainer))
+        self.modelContainer = modelContainer
+        self.executor = executor
+        self.modelExecutor = executor
+    }
+
     /// Deletes the four move tables and the meta row and inserts the new
     /// rows, then saves once: one save is one SQLite transaction, so a crash
     /// leaves either the old roster or the new one.
@@ -253,4 +270,23 @@ struct LabelBuildSnapshot: Sendable {
     private func deleteMetaRow(_ key: String) throws {
         try modelContext.delete(model: MetaRecord.self, where: #Predicate { $0.key == key })
     }
+}
+
+/// The store's executor: its jobs run one at a time on a serial queue of their own, never the
+/// main thread. The context is used only from those jobs.
+final class KioskStoreExecutor: SerialModelExecutor, @unchecked Sendable {
+    let modelContext: ModelContext
+    private let queue = DispatchQueue(label: "serversherpa.kiosk.store", qos: .userInitiated)
+
+    init(modelContext: ModelContext) {
+        self.modelContext = modelContext
+    }
+
+    func enqueue(_ job: consuming ExecutorJob) {
+        let job = UnownedJob(job)
+        let executor = asUnownedSerialExecutor()
+        queue.async { job.runSynchronously(on: executor) }
+    }
+
+    func asUnownedSerialExecutor() -> UnownedSerialExecutor { UnownedSerialExecutor(ordinary: self) }
 }

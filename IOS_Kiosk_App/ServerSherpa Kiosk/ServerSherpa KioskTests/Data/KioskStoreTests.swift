@@ -3,6 +3,11 @@ import Foundation
 import SwiftData
 @testable import ServerSherpa_Kiosk
 
+extension KioskStore {
+    /// Test-only: whether this store's work runs on the main thread.
+    func workRunsOnMainThread() -> Bool { Thread.isMainThread }
+}
+
 struct KioskStoreTests {
     private func store() throws -> KioskStore { KioskStore(modelContainer: try KioskSchema.inMemoryContainer()) }
 
@@ -23,6 +28,29 @@ struct KioskStoreTests {
         #expect(try await db.assets()[0].rfid == "000000000000000000999999")
         #expect(try await db.counts().assets == 1)
         try await db.clearLocalData()
+        #expect(try await db.counts().assets == 0)
+    }
+
+    /// AppContainer builds the store on the main actor; its work (a large label build's reads and
+    /// writes, a sync's replace) must still run off the main thread, or the kiosk UI freezes.
+    @MainActor @Test func theContainersStoreWorksOffTheMainThread() async throws {
+        #expect(Thread.isMainThread)
+        let c = AppContainer(defaults: freshDefaults(), secrets: MemorySecretStore(), modelContainer: try KioskSchema.inMemoryContainer(),
+                             backgroundTask: NoBackgroundTasking(), labelEngine: FakeLabelEngine())
+        let db = c.store
+        #expect(await db.workRunsOnMainThread() == false)
+        try await db.replaceRoster(assets: [KioskAssetRow(id: "a1")], people: [], containers: [], trucks: [], meta: meta(assets: 1))
+        #expect(try await db.storeGeneratedLabels([GeneratedLabelRow(assetId: "a1", zpl: nil, outcome: "ok", fingerprint: "f", templateId: nil)],
+                                                  ifMove: "i1"))
+        #expect(await db.workRunsOnMainThread() == false)
+        #expect(try await db.generatedLabelStates().map(\.assetId) == ["a1"])
+    }
+
+    /// Built directly on the main thread, too (every test and preview does).
+    @MainActor @Test func aStoreBuiltOnTheMainThreadWorksOffIt() async throws {
+        #expect(Thread.isMainThread)
+        let db = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
+        #expect(await db.workRunsOnMainThread() == false)
         #expect(try await db.counts().assets == 0)
     }
 

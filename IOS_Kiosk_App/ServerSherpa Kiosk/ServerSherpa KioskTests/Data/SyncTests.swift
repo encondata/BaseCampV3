@@ -152,7 +152,8 @@ struct SyncTests {
 
     /// The label builder follows the sync off the main actor: the current status first, then
     /// every change, in order (no phase is skipped), on each follower's own stream.
-    @Test func statusUpdatesStartWithTheCurrentStatusAndFollowEveryPhase() async throws {
+    @Test(.timeLimit(.minutes(1)))
+    func statusUpdatesStartWithTheCurrentStatusAndFollowEveryPhase() async throws {
         api.assets = assets([KioskAssetRow(id: "a1", assetId: "A-1", makeModel: "X")])
         let s = sync()
         let first = s.statusUpdates()

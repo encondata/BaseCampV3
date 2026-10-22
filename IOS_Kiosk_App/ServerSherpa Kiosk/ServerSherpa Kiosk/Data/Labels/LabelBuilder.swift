@@ -102,8 +102,9 @@ actor LabelBuilder {
     /// stop following); a second call replaces the first.
     @discardableResult
     func start(syncStatus: AsyncStream<SyncStatus>) async -> Task<Void, Never> {
-        following?.cancel()
+        // Subscribed first: no suspension between cancelling the old follower and replacing it.
         let updates = await settings.updates()
+        following?.cancel()
         let task = Task {
             await withTaskGroup(of: Void.self) { group in
                 group.addTask {
@@ -253,6 +254,7 @@ actor LabelBuilder {
 
         // Tallied in the plan's order, so the problem codes come in a stable first-seen order.
         func progress(_ done: Int) -> LabelBuildStatus {
+            // Only the planned ids count, on purpose: a stored label of an asset off the move isn't ready.
             let tally = tallyOutcomes(order.compactMap { outcomes[$0] })
             var s = planned
             s.done = done
@@ -296,6 +298,7 @@ actor LabelBuilder {
         }
 
         let gone = stored.keys.filter { jobs[$0] == nil }
+        try Task.checkCancellation()
         guard try await store.deleteGeneratedLabels(gone, ifMove: meta.initiativeId) else { throw MoveChanged() }
         var finished = progress(done)
         finished.phase = .done
@@ -350,8 +353,10 @@ actor LabelBuilder {
                          widthIn: number("width_in"), heightIn: number("height_in"))
     }
 
-    /// The error's own text (Android's `message`), else its type's name.
-    private static func message(_ error: Error) -> String {
+    /// The error's own text (Android's `message`), else its type's name. An `NSError` (SwiftData,
+    /// Foundation) gives its localized description, not the verbose `Error Domain=...` text.
+    static func message(_ error: Error) -> String {
+        if type(of: error) is NSError.Type { return (error as NSError).localizedDescription }
         if let described = error as? CustomStringConvertible { return described.description }
         return String(describing: type(of: error))
     }

@@ -54,6 +54,24 @@ struct KioskSetupViewModelTests {
         #expect(api.calls.contains("syncAssets"))
     }
 
+    /// Until Setup has its Top/Front step, saving a new selection keeps the saved label kind
+    /// (a fresh kiosk starts at Top).
+    @Test func savingANewSelectionKeepsTheLabelKind() async {
+        api.submitSetupResult = { KioskSetupResult(deviceId: "d", initiativeId: $0.initiativeId, initiativeName: "Move A", siteId: $0.siteId, siteName: "Dest", siteRole: "destination", scanStatus: $0.scanStatus, scanStatusLabel: "Pre-stage") }
+        prefs.setupSelection = KioskSetupSelection(initiativeId: "i", initiativeName: "Move A", siteId: "s", siteName: "Dock 4", siteRole: "source",
+                                                   scanStatus: "pre_stage", scanLabel: "Pre-stage", labelKind: "front")
+        let vm = makeVM()
+        await vm.load()
+        vm.pickMove("i1"); vm.pickSite("s2")
+        await vm.pickScanType("pre_stage")
+        #expect(prefs.setupSelection?.siteName == "Dest")
+        #expect(prefs.setupSelection?.labelKind == "front")
+
+        prefs.setupSelection = nil
+        await vm.pickScanType("pre_stage")
+        #expect(prefs.setupSelection?.labelKind == "top")
+    }
+
     @Test func failureMarksFailedOnlyWhenNotAlreadyComplete() async {
         api.submitSetupResult = { _ in throw ApiError(status: 422, code: "bad_site") }
         let vm = makeVM()
