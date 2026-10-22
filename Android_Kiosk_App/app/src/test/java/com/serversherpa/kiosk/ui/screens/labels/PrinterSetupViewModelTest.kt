@@ -246,10 +246,11 @@ class PrinterSetupViewModelTest {
 
     @After fun tearDown() { scope.cancel(); db.close() }
 
-    private fun vm(pickWaitMs: Long = 5_000) = PrinterSetupViewModel(
+    /** [screen]: the view model's own scope, for a test that closes the screen (cancels it). */
+    private fun vm(pickWaitMs: Long = 5_000, screen: CoroutineScope = scope) = PrinterSetupViewModel(
         store, builder.pick, builder.status, engine, db, fontsDir,
         scanner = { scanResult }, zebraFor = { p -> zebra(p.host.orEmpty()) }, printerLock = lock, printerGuard = guard,
-        scopeOverride = scope, pickWaitMs = pickWaitMs,
+        scopeOverride = screen, pickWaitMs = pickWaitMs,
     )
 
     /** Waits (real time: Room, DataStore and the builder run on their own threads) for [cond]. */
@@ -696,6 +697,50 @@ class PrinterSetupViewModelTest {
         vm.printTest(TestLabel.ALIGNMENT)
         eventually("sent") { !vm.state.value.testing && z.sent.size == 1 }
         assertFalse(vm.state.value.testError)
+    }
+
+    /** Leaving Printer Setup mid-install (the back gesture cancels the screen's scope) never cuts
+     *  the font going out: it finishes, every byte of it, the printer is left clean, and the next
+     *  font never starts (D8). */
+    @Test fun closingTheScreenFinishesTheFontGoingOutAndStartsNoOther() = runBlocking<Unit> {
+        libraryFonts("ROBOTO.TTF" to byteArrayOf(1, 2, 3), "LATO.TTF" to byteArrayOf(4, 5))
+        val z = zebra(savedHost)
+        z.installSteps = listOf(0.5, 1.0)
+        z.installHoldAt = 0.5
+        val screen = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val vm = vm(screen = screen)
+        vm.checked { vm.checkAgain() }
+        assertEquals(2, vm.state.value.fontFix!!.installable.size)
+        vm.installFonts()
+        eventually("first font half sent") { z.atInstallHold == 0.5 }
+        screen.cancel()
+        delay(50)
+        z.installHoldAt = null
+        eventually("first font finished") { z.installed.size == 1 }
+        // Long enough for a next font (and the settle before a re-check) to have started.
+        delay(PrinterSetupViewModel.FONT_SETTLE_MS + 300)
+        assertEquals(listOf("ROBOTO.TTF"), z.installed.map { it.first })
+        assertArrayEquals(byteArrayOf(1, 2, 3), z.installed[0].second)
+        assertEquals(1, z.calls.count { it == "installFont" })
+        assertEquals(PrinterGuard.State.CLEAN, guard.state(saved.connection))
+    }
+
+    /** A test label already going out finishes too when the screen closes: the printer gets all
+     *  of it, and is left clean (no `~JX` owed). */
+    @Test fun closingTheScreenFinishesATestLabelGoingOut() = withLine { line ->
+        eventually("pick") { builder.pick.value?.dpi == 203 }
+        val screen = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val vm = vm(screen = screen)
+        line.hold = "ALIGN"
+        vm.printTest(TestLabel.ALIGNMENT)
+        eventually("test label on the printer") { line.held }
+        screen.cancel()
+        delay(50)
+        line.hold = null
+        val z = zebra(savedHost)
+        eventually("test label finished") { z.sent.size == 1 }
+        assertTrue(z.sent[0].contains("ALIGN"))
+        assertEquals(PrinterGuard.State.CLEAN, guard.state(saved.connection))
     }
 
     @Test fun theInstallEtaReadsInSecondsThenMinutes() {

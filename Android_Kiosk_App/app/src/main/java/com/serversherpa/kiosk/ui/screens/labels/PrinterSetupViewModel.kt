@@ -63,6 +63,7 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -435,7 +436,8 @@ class PrinterSetupViewModel(
     /** Sends each missing or damaged font the library has (its synced file), then checks again
      *  after the printer has had [FONT_SETTLE_MS] to file them. The first failure stops the
      *  installs; one that cut a font off says to restart the printer and checks nothing (the
-     *  printer is waiting for the rest of the font). */
+     *  printer is waiting for the rest of the font). Leaving the screen stops it like Cancel: the
+     *  font going out finishes ([LockedZebra] never cuts one) and the next never starts. */
     fun installFonts() {
         val fix = _state.value.fontFix ?: return
         if (_state.value.busy || fix.installable.isEmpty()) return
@@ -454,7 +456,7 @@ class PrinterSetupViewModel(
             val files = db.labelFonts().all().associateBy { it.name.uppercase() }
             try {
                 for (font in fix.installable) {
-                    if (installCancelled) {
+                    if (installCancelled || !isActive) {
                         stopped = true
                         break
                     }
@@ -476,6 +478,8 @@ class PrinterSetupViewModel(
             } finally {
                 fontsDone()
             }
+            // The screen closed: nothing more is sent or checked.
+            if (!isActive) return@launch
             if (cut) {
                 _state.update { it.copy(installing = false, fontMessage = FONT_INSTALL_CUT_TEXT, fontError = true) }
                 return@launch

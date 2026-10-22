@@ -216,7 +216,8 @@ class PrintQueue<A>(
         w.sent = bytes
         // Once the label starts going out, the send, its record and the entry's outcome finish even
         // if the screen closes: a cancelled send would close the socket mid-label, and a label that
-        // did print must get its scan. The send's own deadline bounds this.
+        // did print must get its scan. This includes the wait for the printer lock, bounded only by
+        // the lock holder's own time limit, then the send's own deadline.
         return withContext(NonCancellable) {
             try {
                 deps.send(printer, bytes)

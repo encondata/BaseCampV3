@@ -6,8 +6,10 @@ import com.serversherpa.kiosk.core.printer.DirectoryEntry
 import com.serversherpa.kiosk.core.printer.HostId
 import com.serversherpa.kiosk.core.printer.HostStatus
 import com.serversherpa.kiosk.core.printer.ZebraCommands
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * One connection to the saved printer at a time, app-wide (the container owns the one lock).
@@ -73,6 +75,10 @@ class TransportSetupZebra(val transport: ZebraTransport) : SetupZebra {
  * printer at a time) and [guard]'s rules for that printer: a pending `~JX` before any call, and no
  * send or font install while a font is cut. An answered [identify] lifts that stop unless
  * [liftsStop] is off (Printer Setup's probe of a printer being chosen, before it is saved).
+ *
+ * A send or font install whose caller is cancelled (its screen closed) while it waits for the lock
+ * never starts; once it holds the lock it finishes, its `~JX` included, bounded by the transport's
+ * own deadline: cut off, the printer would hold half a label, or wait for the rest of a font (D8).
  */
 class LockedZebra(
     private val inner: SetupZebra,
@@ -94,11 +100,13 @@ class LockedZebra(
     override suspend fun fontEntries(): List<DirectoryEntry> = ask { inner.fontEntries() }
 
     override suspend fun send(zpl: String) = lock.withLock {
-        guard.sending(connection, ::clear) { inner.send(zpl) }
+        withContext(NonCancellable) { guard.sending(connection, ::clear) { inner.send(zpl) } }
     }
 
     override suspend fun installFont(name: String, bytes: ByteArray, progress: WriteProgress?) = lock.withLock {
-        guard.installing(connection, ::clear, progress) { tracked -> inner.installFont(name, bytes, tracked) }
+        withContext(NonCancellable) {
+            guard.installing(connection, ::clear, progress) { tracked -> inner.installFont(name, bytes, tracked) }
+        }
     }
 
     private suspend fun <T> ask(query: suspend () -> T): T = lock.withLock { guard.asking(connection, ::clear, query) }
