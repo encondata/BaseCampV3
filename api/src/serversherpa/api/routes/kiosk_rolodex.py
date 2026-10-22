@@ -327,10 +327,18 @@ async def _check_new_partner(db: AsyncSession, partner_id: uuid.UUID) -> None:
 
 def _squashed_sql(expr):
     """SQL's take on `bulk_import._squash` (which builds `name_keys`):
-    whitespace runs collapsed, trimmed, lowercased. Postgres lower(), not
-    casefold, so it only narrows the candidates; the exact rule runs in
-    Python."""
+    whitespace runs collapsed, trimmed, lowercased. Exactly `_squash` for
+    printable ASCII; beyond it Postgres lower() isn't casefold (ß stays ß,
+    İ becomes i, final ς stays ς), see `_NOT_PLAIN_ASCII`."""
     return func.lower(func.btrim(func.regexp_replace(expr, r"\s+", " ", "g")))
+
+
+# Any character outside printable ASCII (space through tilde). Names made
+# only of printable ASCII squash identically in SQL and Python, so the IN
+# check finds every name match among them; a name with anything else may
+# casefold differently from Postgres lower(), so it is always a candidate
+# and the Python rule decides.
+_NOT_PLAIN_ASCII = r"[^ -~]"
 
 
 async def find_duplicates(
@@ -345,20 +353,24 @@ async def find_duplicates(
     bulk import's `name_keys`), whose email matches in any case, or whose
     phone matches once normalized (`normalize_phone`: digits only, a US
     leading 1 dropped, under 7 digits is no key). `matched_on` names every
-    way each person matched. Sorted by last name, then first name."""
+    way each person matched. Sorted by last name, then first name.
+
+    SQL only narrows the candidates, and always to a superset of what the
+    Python rules match; the Python rules are the answer."""
     keys = name_keys(first_name, last_name, preferred_name or "")
     email_key = (email or "").strip()
     phone_key = normalize_phone(phone or "")
 
-    # SQL narrows the candidates; the exact rules run in Python below.
-    # Whole "given last" strings, so "Mary Ann" + "Smith" finds "Mary" +
-    # "Ann Smith" (a null preferred name concatenates to null: no match).
     conds = []
     if keys:
+        # Whole "given last" strings, so "Mary Ann" + "Smith" finds "Mary" +
+        # "Ann Smith" (a null preferred name concatenates to null: no match).
         wanted = sorted(keys)
         conds.append(or_(
             _squashed_sql(Person.first_name + " " + Person.last_name).in_(wanted),
-            _squashed_sql(Person.preferred_name + " " + Person.last_name).in_(wanted)))
+            _squashed_sql(Person.preferred_name + " " + Person.last_name).in_(wanted),
+            func.concat(Person.first_name, Person.last_name, Person.preferred_name)
+            .regexp_match(_NOT_PLAIN_ASCII)))
     if email_key:
         conds.append(Person.email == email_key)            # CITEXT: any case
     if phone_key:
@@ -368,6 +380,29 @@ async def find_duplicates(
     if not conds:
         return []
 
+    # Pass 1: just the matching columns of the candidates, judged in Python.
+    candidates = (await db.execute(
+        select(Person.id, Person.first_name, Person.last_name, Person.preferred_name,
+               Person.email, Person.phone)
+        .where(Person.archived_at.is_(None),
+               Person.source != KIOSK_MOVE_SOURCE,     # a move's hidden kiosk identity
+               or_(*conds))
+    )).all()
+    matched_on: dict[uuid.UUID, list[str]] = {}
+    for pid, first, last, preferred, p_email, p_phone in candidates:
+        on = []
+        if keys & name_keys(first, last, preferred or ""):
+            on.append("name")
+        if email_key and (p_email or "").casefold() == email_key.casefold():
+            on.append("email")
+        if phone_key and normalize_phone(p_phone or "") == phone_key:
+            on.append("phone")
+        if on:
+            matched_on[pid] = on
+    if not matched_on:
+        return []
+
+    # Pass 2: the match cards, for the matches only.
     is_worker = exists().where(
         PersonRole.person_id == Person.id, PersonRole.role == "worker",
         PersonRole.revoked_at.is_(None)).label("is_worker")
@@ -376,24 +411,11 @@ async def find_duplicates(
         .outerjoin(UserAccount, UserAccount.person_id == Person.id)
         .outerjoin(WorkerProfile, WorkerProfile.person_id == Person.id)
         .outerjoin(Partner, Partner.id == WorkerProfile.partner_id)
-        .where(Person.archived_at.is_(None),
-               Person.source != KIOSK_MOVE_SOURCE,     # a move's hidden kiosk identity
-               or_(*conds))
+        .where(Person.id.in_(list(matched_on)))
         .order_by(natural(Person.last_name), natural(Person.first_name), Person.id)
     )).all()
-
-    matches: list[KioskRolodexMatchOut] = []
-    for person, worker, account_id, company in rows:
-        matched_on = []
-        if keys & name_keys(person.first_name, person.last_name, person.preferred_name or ""):
-            matched_on.append("name")
-        if email_key and (person.email or "").casefold() == email_key.casefold():
-            matched_on.append("email")
-        if phone_key and normalize_phone(person.phone or "") == phone_key:
-            matched_on.append("phone")
-        if not matched_on:        # the SQL prefilter is lower(), not casefold
-            continue
-        matches.append(KioskRolodexMatchOut(
+    return [
+        KioskRolodexMatchOut(
             person_id=person.id,
             display_name=person.display_name,
             job_title=person.job_title,
@@ -402,9 +424,10 @@ async def find_duplicates(
             has_account=account_id is not None,
             photo_url=presign_get(person.avatar_key),
             photo_version=photo_version(person.avatar_key),
-            matched_on=matched_on,
-        ))
-    return matches
+            matched_on=matched_on[person.id],
+        )
+        for person, worker, account_id, company in rows
+    ]
 
 
 @router.post("/duplicates", response_model=KioskRolodexDuplicatesOut)

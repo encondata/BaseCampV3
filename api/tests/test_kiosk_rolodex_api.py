@@ -592,6 +592,38 @@ async def test_duplicates_match_names_split_differently(client, db, seeded_user)
         assert r.json()["matches"] == [], body
 
 
+async def test_duplicates_survive_casefold_only_letters(client, db, seeded_user):
+    """name_keys casefolds (ß → ss, final ς → σ, İ → i̇) but Postgres only
+    lowercases, so the SQL prefilter must never drop a person the Python
+    rule would match: the same spelling, or one that casefolds alike."""
+    _, hdrs = await _kiosk_admin(db, client)
+    weiss = await _person(db, "Ana", "Weiß", role="staff")
+    strauss = await _worker(db, "Lena", "STRAUSS")
+    nikos = await _worker(db, "Νίκος", "Παπαδόπουλος")
+    ibrahim = await _person(db, "İbrahim", "Yılmaz", role="staff")
+
+    for body, expected in (
+            ({"first_name": "Ana", "last_name": "Weiß"}, weiss),
+            ({"first_name": "ana", "last_name": "WEISS"}, weiss),
+            ({"first_name": "Lena", "last_name": "Strauß"}, strauss),
+            ({"first_name": "Νίκος", "last_name": "Παπαδόπουλος"}, nikos),
+            ({"first_name": "ΝΊΚΟΣ", "last_name": "ΠΑΠΑΔΌΠΟΥΛΟΣ"}, nikos),
+            ({"first_name": "İbrahim", "last_name": "Yılmaz"}, ibrahim)):
+        r = await client.post(f"{BASE}/duplicates", headers=hdrs, json=body)
+        assert r.status_code == 200, r.text
+        assert [(m["person_id"], m["matched_on"]) for m in r.json()["matches"]] == [
+            (str(expected), ["name"])], body
+
+    # so New worker stops before creating a second Ana Weiß
+    r = await client.post(f"{BASE}/workers", headers=hdrs,
+                          json={"first_name": "Ana", "last_name": "Weiß"})
+    assert r.status_code == 409 and _code(r) == "possible_duplicate", r.text
+    # ...and an accented name that isn't a match stays out
+    r = await client.post(f"{BASE}/duplicates", headers=hdrs,
+                          json={"first_name": "Ana", "last_name": "Weißmann"})
+    assert r.json()["matches"] == []
+
+
 async def test_duplicates_body_is_checked(client, db, seeded_user):
     _, hdrs = await _kiosk_admin(db, client)
     for body in ({"first_name": "  ", "last_name": "Ortiz"},
@@ -894,11 +926,17 @@ async def test_edit_keeps_a_profileless_worker_on_the_time_clock(client, db, see
         assert synced[str(pid)]["is_worker"] is True
         assert synced[str(pid)]["has_account"] is False
 
-    # a refused save leaves no profile behind
+    # a refused save leaves no profile behind, whether it's refused before
+    # the profile is flushed or after (unknown_level is checked once the
+    # new row exists)
     ray = await _worker(db, "Ray", "Bare", profile=False)
-    r = await client.patch(f"{BASE}/workers/{ray}", headers=hdrs, json={"first_name": None})
-    assert r.status_code == 422, r.text
-    assert await _fresh(db, WorkerProfile, ray) is None
+    for body, code in (({"first_name": None}, "first_name_required"),
+                       ({"level": "L9"}, "unknown_level"),
+                       ({"job_title": "Rigger", "level": "L9"}, "unknown_level")):
+        r = await client.patch(f"{BASE}/workers/{ray}", headers=hdrs, json=body)
+        assert r.status_code == 422 and _code(r) == code, (body, r.text)
+        assert await _fresh(db, WorkerProfile, ray) is None, body
+    assert (await _fresh(db, Person, ray)).job_title is None
 
 
 async def test_patch_clears_with_null(client, db, seeded_user):
