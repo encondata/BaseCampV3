@@ -301,7 +301,9 @@ async def refresh(
     except AuthError as exc:
         error = _auth_http_error(exc)
         if client is None and cookie == REFRESH_COOKIE:
-            _clear_refresh_cookie(response)  # as before the split
+            # unchanged from before the split — and, as before, a no-op: headers
+            # set on `response` are dropped when the route raises
+            _clear_refresh_cookie(response)
         elif exc.code != "wrong_client" and (cookie == PORTAL_REFRESH_COOKIE
                                              or legacy or client == "kiosk"):
             # the failed cookie is the caller's own: clear it on the error

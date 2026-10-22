@@ -41,6 +41,13 @@ kiosk sign-in 16:26 UTC, portal refreshed into it at 16:28).
   - `client=kiosk`: read `ss_refresh`.
   - No parameter (Android, iOS, the edge, and portal bundles from before the
     change): read `ss_refresh` and behave exactly as today.
+  - Ruling (2026-10-22, commit 1379d208): with no parameter and **no**
+    `ss_refresh`, refresh and logout fall back to `ss_portal_refresh` (portal
+    sessions only; the rotated token stays in `ss_portal_refresh`), so a portal
+    tab still running a pre-change bundle keeps working until it reloads. With
+    `ss_refresh` present the no-parameter path is exactly today's. Known cost:
+    an old web-kiosk bundle holding only `ss_portal_refresh` can adopt the
+    portal session until it reloads (as before the split).
 - **Client guard.** When `client` is given and the stored session's client
   differs, refresh answers 401 `wrong_client` and touches nothing — no
   rotation, no revocation, no reuse-detection family kill, no cookie cleared
