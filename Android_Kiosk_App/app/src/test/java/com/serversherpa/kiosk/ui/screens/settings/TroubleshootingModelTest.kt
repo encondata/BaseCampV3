@@ -804,6 +804,13 @@ class TroubleshootingModelTest {
             "a repeated short secret word" to run("pin_", 100_000),
             "a repeated token start" to run("eyJ-", 100_000),
             "secret names with separators" to run("wlan.wpa.psk=", 100_000),
+            "URL starts" to run("a://b:c", 100_000),
+            "an object that never closes" to "psk:" + run("{\"a\":", 100_000),
+            "nested arrays" to "\"tokens\":" + run("[", 100_000),
+            "escaped tabs after a separator" to "password:" + run("<09>", 100_000),
+            "chained secrets" to run("password=token=", 100_000),
+            "chained quoted secrets" to run("psk:'a' ", 100_000),
+            "Authorization headers" to run("Authorization: Basic ", 100_000),
         )
         redactSecrets(run("password ", 1_000)) // warm up
         for ((what, text) in inputs) {
@@ -1004,6 +1011,115 @@ class TroubleshootingModelTest {
             assertEquals("$format\r\n", zebra.events.last())
             assertEquals(FORMAT_SENT_TEXT, m.state.value.asks.last().meaning)
         }
+    }
+
+    /** A masked unquoted value never swallows the next secret's name and leaves its value showing:
+     *  quoted values are masked first, across the line, then unquoted ones (as the regex did). */
+    @Test fun aSecretAfterAnotherSecretsSeparatorIsStillMasked() {
+        val cases = mapOf(
+            "Cookie: session_id=\"hunter2 abc\"" to "Cookie: [redacted]\"[redacted]\"",
+            "Cookie: session_id = \"hunter2 abc\"" to "Cookie: [redacted] = \"[redacted]\"",
+            "password=token=\"hunter2 abc\"" to "password=[redacted]\"[redacted]\"",
+            "Authorization: token=\"hunter2\"" to "Authorization: [redacted]\"[redacted]\"",
+            "password=wlan.wpa.psk\" \"hunter2 x\"" to "password=[redacted]\" \"[redacted]\"",
+            "    password: psk = 'hunter2 abc'␍␊" to "    password: [redacted] = '[redacted]'␍␊",
+        )
+        for ((line, masked) in cases) assertEquals(line, masked, redactSecrets(line))
+    }
+
+    /** What the differential fuzz against the old regex found (each leaked `ZZ` before its fix): a
+     *  masked value that ends in a separator takes the next value, an object's mask takes what is
+     *  glued to its close, an object's mask never hides the next secret's name, and a URL's
+     *  password goes last so it can't hide a secret's name. */
+    @Test fun whatTheFuzzFoundStaysMasked() {
+        for (line in listOf(
+            "PinPin=__session_idx= ZZ&x",
+            "pin\"2pin:api_key\":ZZ,",
+            "pin:{}ZZZZ",
+            "2token={passwordapi_key}xZZuser{",
+            "x.Pinpassword:{}.Cookie=\"ZZ",
+            "Bearer spin.://;Pin~HSpIn:pinCookie=psk@ZZ{␍␊",
+            "pin:<09> [;Cookie: ZZ://]Z",
+        )) {
+            assertFalse("$line -> ${redactSecrets(line)}", redactSecrets(line).contains("ZZ"))
+        }
+    }
+
+    /** `pin` and `pwd` in any mix of cases are secrets' names too; ordinary words still aren't. */
+    @Test fun mixedCasePinAndPwdAreSecretNames() {
+        for (name in listOf("pIn", "PiN", "pWd", "PwD", "x.pIn", "PiN2")) assertEquals("$name=[redacted]", redactSecrets("$name=1234"))
+        for (plain in listOf("spinning: yes", "mapping=on", "ping: 12", "pinned: 2", "dpi: 300", "Shipping: 3", "SpInNiNg: 1")) {
+            assertEquals(plain, redactSecrets(plain))
+        }
+    }
+
+    /** A control byte shown as `<XX>` (a tab is `<09>`) counts as the space it was around a
+     *  separator, and never ends or hides a value. */
+    @Test fun aControlByteShownAsAnEscapeIsNoWayAround() {
+        val cases = mapOf(
+            "password:<09>hunter2␍␊" to "password:<09>[redacted]␍␊",
+            "! U1 setvar \"wlan.wpa.psk\"<09>\"hunter2 x\"␍␊" to "! U1 setvar \"wlan.wpa.psk\"<09>\"[redacted]\"␍␊",
+            "    {\"password\":<09>\"hunter2\"}␍␊" to "    {\"password\":<09>\"[redacted]\"}␍␊",
+            "    password=hun<01>ter2␍␊" to "    password=[redacted]␍␊",
+            "password=<01>hunter2" to "password=[redacted]",
+            "password<09>=<0C>hunter2" to "password<09>=<0C>[redacted]",
+        )
+        for ((line, masked) in cases) assertEquals(line, masked, redactSecrets(line))
+        // Through the report: a tab typed in the command box.
+        runBlocking {
+            val m = model(isAdmin = { true })
+            m.setCommandText("password:\thunter2")
+            m.sendCommand()!!.join()
+            assertFalse(m.report().text.contains("hunter2"))
+        }
+    }
+
+    /** A secret's value that is an object or an array (Zebra's allconfig JSON) goes whole, up to its
+     *  matching close (braces inside strings don't count; one that never closes runs to the end). */
+    @Test fun aSecretsObjectOrArrayValueIsHiddenWhole() {
+        val cases = mapOf(
+            "{\"wlan.wpa.psk\":{\"value\":\"hunter2\",\"type\":\"string\"},\"ip.addr\":{\"value\":\"10.0.0.5\"}}" to
+                "{\"wlan.wpa.psk\":{[redacted]},\"ip.addr\":{\"value\":\"10.0.0.5\"}}",
+            "{\"psk\": {\"v\":\"a}b{c hunter2\", \"w\": [1, {\"x\": \"}\"}]}, \"n\": 1}" to "{\"psk\": {[redacted]}, \"n\": 1}",
+            "{\"tokens\":[\"hunter2\",\"x\"],\"a\":1}" to "{\"tokens\":[[redacted]],\"a\":1}",
+            "\"wlan.wpa.psk\":{\"value\":\"hunter2 a" to "\"wlan.wpa.psk\":{[redacted]}",
+            "password: ['hun]ter2', \"x\"" to "password: [[redacted]]",
+        )
+        for ((line, masked) in cases) assertEquals(line, masked, redactSecrets(line))
+    }
+
+    /** A URL's password (`https://admin:hunter2@host`) and a Basic credential are masked; the URL's
+     *  user and host stay. */
+    @Test fun urlPasswordsAndBasicCredentialsAreMasked() {
+        assertEquals("https://admin:[redacted]@10.0.0.1/", redactSecrets("https://admin:hunter2@10.0.0.1/"))
+        assertEquals("get ftp://u:[redacted]@h:21/x and http://h/a@b", redactSecrets("get ftp://u:p@ss@h:21/x and http://h/a@b"))
+        assertEquals("https://10.0.0.1:8443/status", redactSecrets("https://10.0.0.1:8443/status"))
+        assertEquals("Authorization: [redacted] [redacted]", redactSecrets("Authorization: Basic aHVudGVyMg=="))
+        assertEquals("Proxy-Authorization: [redacted] [redacted]", redactSecrets("Proxy-Authorization: Basic aHVudGVyMg=="))
+        assertEquals("Authorization: [redacted] [redacted]", redactSecrets("Authorization: Bearer abc.def"))
+    }
+
+    /** A compound command with `~HS` in it still hides the front-panel password. */
+    @Test fun aCompoundStatusCommandHidesThePanelPassword() {
+        for (command in listOf("~HS~HI", "~HS\r\n~HS", "~HS ~HS", "^XA~HS^XZ", "~hi~hs")) {
+            val shown = withoutPanelPassword(command, HS_REPLY)
+            assertFalse(command, shown.contains("\u00020000,0\u0003"))
+            assertTrue(command, shown.contains("\u0002****,0\u0003"))
+        }
+    }
+
+    /** A `~H` host command inside a format (`^XA~HS^XZ`) stays a query, as a `^H` one does. */
+    @Test fun aFormatWithATildeHostCommandStaysAQuery() = runBlocking<Unit> {
+        assertFalse(sendsAsFormat("^XA~HS^XZ"))
+        assertFalse(sendsAsFormat("^xa~hi^xz"))
+        assertTrue(sendsAsFormat("^XA^FDA~B^FS^XZ"))
+        zebra.replies = mapOf("^XA~HS^XZ\r\n" to HS_REPLY)
+        val m = model(isAdmin = { true })
+        m.setCommandText("^XA~HS^XZ")
+        m.sendCommand()!!.join()
+        assertEquals("?^XA~HS^XZ\r\n", zebra.events.last())
+        assertEquals(HS_REPLY, m.state.value.asks.last().reply)
+        assertTrue(m.report().text.contains("␂****,0␃"))
     }
 
     @Test fun logKeepsTheLast5000LinesAndTheSharedReportFits() {

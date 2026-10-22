@@ -944,15 +944,18 @@ class TroubleshootingModel(
 }
 
 /** [typed] (the command box's text) is a label or format to send: it starts with `^XA` and holds no
- *  `^H` host command (`^HH`, `^HW`, `^HZ`…), whose answer would be lost on the send path. */
-internal fun sendsAsFormat(typed: String): Boolean {
-    if (!typed.trimStart().startsWith("^XA", ignoreCase = true)) return false
-    var i = typed.indexOf("^H", ignoreCase = true)
+ *  host command (`^HH`, `^HW`, `^HZ`, `~HS`, `~HI`…), whose answer would be lost on the send path. */
+internal fun sendsAsFormat(typed: String): Boolean =
+    typed.trimStart().startsWith("^XA", ignoreCase = true) && !hasHostCommand(typed, "^H") && !hasHostCommand(typed, "~H")
+
+/** [typed] holds [prefix] (`^H` or `~H`) followed by a letter: a host command. */
+private fun hasHostCommand(typed: String, prefix: String): Boolean {
+    var i = typed.indexOf(prefix, ignoreCase = true)
     while (i >= 0) {
-        if (i + 2 < typed.length && typed[i + 2].isLetter()) return false
-        i = typed.indexOf("^H", i + 2, ignoreCase = true)
+        if (i + 2 < typed.length && typed[i + 2].isLetter()) return true
+        i = typed.indexOf(prefix, i + 2, ignoreCase = true)
     }
-    return true
+    return false
 }
 
 /** A call the tab started: the printer, and the way to it under the lock and the guard. */
@@ -1087,16 +1090,34 @@ internal fun redactSecrets(text: String, mask: (String) -> String = ::maskSecret
 }
 
 /**
- * [text] with bearer tokens, JSON web tokens, and the value of any `name=value`, `name: value`,
- * `"name": "value"` or `"name" "value"` whose name says it is a secret ([isSecretName]) masked. A
- * quoted value goes whole, spaces and all, up to its matching closing quote (a backslash escapes
- * the next character; one that never closes runs to the end of the line); an unquoted one up to a
- * space or a delimiter, so `password: a b c` loses only its first word. One pass over the line:
- * each maximal run of name characters is a name, whatever its length.
+ * [text] with secrets masked, in linear passes over the line:
+ * 1. bearer tokens and JSON web tokens;
+ * 2. structured values of names that say they are secrets ([isSecretName]): a quoted one whole,
+ *    spaces and all, up to its matching closing quote (a backslash escapes the next character; one
+ *    that never closes runs to the end of the line), and an object or array up to its matching
+ *    close (braces inside strings don't count);
+ * 3. then their unquoted values, up to a space or a delimiter (so `password: a b c` loses only its
+ *    first word), and anything glued to a masked object's close. After `Authorization`'s scheme
+ *    (`Basic`, `Bearer`), the credential goes too, and a masked value that ends in a separator or
+ *    where one starts takes the next value with it;
+ * 4. a URL's password (`https://admin:[redacted]@host`), last, so it can't hide a secret's name from
+ *    passes 2 and 3.
+ *
+ * Quoted values go first, across the whole line, so an unquoted value masked in pass 3 can't swallow
+ * the next secret's name and leave its quoted value showing (`Cookie: session_id="…"`). A name is
+ * each maximal run of name characters, whatever its length. Separators are `=` or `:` (after a JSON
+ * key's closing quote, with spaces either side) or SGD's `" "`; a control byte shown as `<XX>`
+ * counts as the space it is when it's a tab or other space, and as part of a value otherwise.
  */
 private fun maskSecrets(text: String): String {
     if (text.isEmpty()) return text
-    val line = text.replace(BEARER, "Bearer [redacted]").replace(JWT, "[redacted]")
+    val tokens = text.replace(BEARER, "Bearer [redacted]").replace(JWT, "[redacted]")
+    return maskUrlPasswords(maskValues(maskValues(tokens, structured = true), structured = false))
+}
+
+/** One pass over [line]: the structured (quoted, object, array) values of secrets' names when
+ *  [structured], else their unquoted values. */
+private fun maskValues(line: String, structured: Boolean): String {
     val n = line.length
     val out = StringBuilder(n)
     var i = 0
@@ -1109,54 +1130,194 @@ private fun maskSecrets(text: String): String {
         val nameStart = i
         while (i < n && isNameChar(line[i])) i++
         out.append(line, nameStart, i)
-        if (!isSecretName(line.substring(nameStart, i))) continue
-        // The separator: `=` or `:` (after a JSON key's closing quote, spaces either side), or SGD's `" "`.
+        val name = line.substring(nameStart, i)
+        if (!isSecretName(name)) continue
         val nameEnd = i
-        val keyQuote = nameEnd < n && line[nameEnd] == '"'
-        var j = if (keyQuote) nameEnd + 1 else nameEnd
-        val afterQuote = j
-        while (j < n && isSpace(line[j])) j++
-        val valueStart = when {
-            j < n && (line[j] == ':' || line[j] == '=') -> {
-                j++
-                while (j < n && isSpace(line[j])) j++
-                j
+        val valueStart = separatorEnd(line, nameEnd)
+        if (valueStart < 0 || valueStart >= n) continue
+        val first = line[valueStart]
+        if (structured) {
+            val end = structuredEnd(line, valueStart)
+            if (end < 0) continue
+            out.append(line, nameEnd, valueStart).append(masked(first))
+            i = end
+        } else {
+            // Quoted values went in the first pass; an object or array (masked then) also takes
+            // anything glued to its close (`{[redacted]}x`), as an unquoted value would.
+            if (first == '"' || first == '\'') continue
+            val end = bareEnd(line, valueStart)
+            if (end < 0) continue
+            out.append(line, nameEnd, valueStart).append(masked(first))
+            i = end
+            // After `Authorization: Basic` (or `Bearer`), the credential is the next word.
+            if (name.contains("authorization", ignoreCase = true)) {
+                val next = skipSpaces(line, end)
+                val credentialEnd = if (next > end && next < n) bareEnd(line, next) else -1
+                if (credentialEnd > 0) {
+                    out.append(line, end, next).append("[redacted]")
+                    i = credentialEnd
+                }
             }
-            keyQuote && j > afterQuote -> j
-            else -> continue
+            // A masked value that ends in a separator or where one starts held the next name
+            // (`pin=key= c`, `pin:api_key":c`): that name's value goes too, whatever the name was.
+            while (true) {
+                val next = if (line[i - 1] == ':' || line[i - 1] == '=') skipSpaces(line, i) else separatorEnd(line, i)
+                if (next < 0 || next >= n) break
+                val nextEnd = maxOf(structuredEnd(line, next), bareEnd(line, next))
+                if (nextEnd < 0) break
+                out.append(line, i, next).append(masked(line[next]))
+                i = nextEnd
+            }
         }
-        val valueEnd = valueEnd(line, valueStart)
-        if (valueEnd < 0) continue
-        out.append(line, nameEnd, valueStart)
-        val quote = line[valueStart]
-        if (quote == '"' || quote == '\'') out.append(quote).append("[redacted]").append(quote) else out.append("[redacted]")
-        i = valueEnd
     }
     return out.toString()
 }
 
-/** Where the value starting at [start] ends (exclusive): a quoted one just after its matching
- *  closing quote (a backslash escapes the next character), or at the end of the line when it never
- *  closes; an unquoted one at a space or a delimiter. -1 when there is none. */
-private fun valueEnd(line: String, start: Int): Int {
+/** Just after the quoted, object or array value starting at [start]; -1 when it is none of those. */
+private fun structuredEnd(line: String, start: Int): Int = when (line[start]) {
+    '"', '\'' -> quotedEnd(line, start)
+    '{', '[' -> bracketEnd(line, start)
+    else -> -1
+}
+
+/** What replaces a value that starts with [first]: `"[redacted]"`, `{[redacted]}`, `[[redacted]]`,
+ *  or `[redacted]`. */
+private fun masked(first: Char): String = when (first) {
+    '"', '\'' -> "$first[redacted]$first"
+    '{' -> "{[redacted]}"
+    '[' -> "[[redacted]]"
+    else -> "[redacted]"
+}
+
+/** Where the separator after a name ending at [nameEnd] ends (where the value starts): `=` or `:`,
+ *  maybe after a JSON key's closing quote, with spaces either side; or SGD's `"` and spaces. -1 when
+ *  there is none. */
+private fun separatorEnd(line: String, nameEnd: Int): Int {
     val n = line.length
-    if (start >= n) return -1
+    val keyQuote = nameEnd < n && line[nameEnd] == '"'
+    var j = if (keyQuote) nameEnd + 1 else nameEnd
+    val afterQuote = j
+    j = skipSpaces(line, j)
+    return when {
+        j < n && (line[j] == ':' || line[j] == '=') -> skipSpaces(line, j + 1)
+        keyQuote && j > afterQuote -> j
+        else -> -1
+    }
+}
+
+private fun skipSpaces(line: String, from: Int): Int {
+    var j = from
+    while (j < line.length) {
+        val step = spaceAt(line, j)
+        if (step == 0) break
+        j += step
+    }
+    return j
+}
+
+/** How many characters of space start at [i]: 1 for a space, tab or line break; 4 for one shown as
+ *  `<09>`…`<0D>`; else 0. */
+private fun spaceAt(line: String, i: Int): Int {
+    val c = line[i]
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\u000B' || c == '\u000C') return 1
+    return if (escapeAt(line, i) in 0x09..0x0D) 4 else 0
+}
+
+/** The control byte shown as `<XX>` at [i] (two hex digits), or -1. */
+private fun escapeAt(line: String, i: Int): Int {
+    if (i + 3 >= line.length || line[i] != '<' || line[i + 3] != '>') return -1
+    val hi = Character.digit(line[i + 1], 16)
+    val lo = Character.digit(line[i + 2], 16)
+    return if (hi < 0 || lo < 0) -1 else hi * 16 + lo
+}
+
+/** Just after the quoted value starting at [start] (its matching closing quote; a backslash escapes
+ *  the next character), or at the end of the line when it never closes. */
+private fun quotedEnd(line: String, start: Int): Int {
+    val n = line.length
     val quote = line[start]
-    if (quote == '"' || quote == '\'') {
-        var i = start + 1
-        while (i < n) {
-            when (line[i]) {
-                '\n' -> return i
-                '\\' -> if (i + 1 < n && line[i + 1] != '\n') i += 2 else return i + 1
-                quote -> return i + 1
-                else -> i++
+    var i = start + 1
+    while (i < n) {
+        when (line[i]) {
+            '\n' -> return i
+            '\\' -> if (i + 1 < n && line[i + 1] != '\n') i += 2 else return i + 1
+            quote -> return i + 1
+            else -> i++
+        }
+    }
+    return n
+}
+
+/** Just after the object or array starting at [start] (its matching close; strings, double or
+ *  single quoted, are skipped whole), or at the end of the line when it never closes. */
+private fun bracketEnd(line: String, start: Int): Int {
+    val n = line.length
+    val open = line[start]
+    val close = if (open == '{') '}' else ']'
+    var depth = 0
+    var i = start
+    while (i < n) {
+        val c = line[i]
+        when {
+            c == '\n' -> return i
+            c == '"' || c == '\'' -> {
+                i = quotedEnd(line, i)
+                continue
+            }
+            c == open -> depth++
+            c == close -> {
+                depth--
+                if (depth == 0) return i + 1
             }
         }
-        return n
+        i++
     }
+    return n
+}
+
+/** Just after the unquoted value starting at [start]: at a space (`<09>` and the like included) or
+ *  a delimiter; any other control byte shown as `<XX>` is part of it. -1 when there is none. */
+private fun bareEnd(line: String, start: Int): Int {
+    val n = line.length
     var i = start
-    while (i < n && !isSpace(line[i]) && line[i] !in BARE_VALUE_ENDS) i++
+    while (i < n) {
+        if (spaceAt(line, i) > 0) break
+        if (escapeAt(line, i) >= 0) {
+            i += 4
+            continue
+        }
+        if (line[i] in BARE_VALUE_ENDS) break
+        i++
+    }
     return if (i > start) i else -1
+}
+
+/** A URL's password masked: `scheme://user:password@host` keeps the user and host. Each URL's
+ *  authority is read once, so it stays linear. */
+private fun maskUrlPasswords(line: String): String {
+    var at = line.indexOf("://")
+    if (at < 0) return line
+    val out = StringBuilder(line.length)
+    var copied = 0
+    while (at >= 0) {
+        val start = at + 3
+        var end = start
+        var lastAt = -1
+        var firstColon = -1
+        while (end < line.length) {
+            val c = line[end]
+            if (c == '/' || c == '?' || c == '#' || c == '"' || c == '\'' || c == '<' || c == '>' || spaceAt(line, end) > 0) break
+            if (c == '@') lastAt = end
+            if (c == ':' && firstColon < 0) firstColon = end
+            end++
+        }
+        if (lastAt > 0 && firstColon in start until lastAt - 1) {
+            out.append(line, copied, firstColon + 1).append("[redacted]")
+            copied = lastAt
+        }
+        at = line.indexOf("://", maxOf(end, start))
+    }
+    return out.append(line, copied, line.length).toString()
 }
 
 /** An unquoted value ends at a space or one of these. */
@@ -1166,13 +1327,15 @@ private const val BARE_VALUE_ENDS = "\"';,&␍␊␂␃<>"
 private fun isNameChar(c: Char): Boolean =
     c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9' || c == '_' || c == '.' || c == '-'
 
-private fun isSpace(c: Char): Boolean = c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\u000B' || c == '\u000C'
-
 /** [name] says it is a secret's: it holds a secret word ([SECRET_WORDS]) anywhere, or a short one
- *  ([SECRET_PARTS]) as a whole word part ([wordParts]). */
+ *  ([SECRET_PARTS]) as a whole word part ([wordParts]), in its own cases or lowercased (which splits
+ *  only at non-alphanumerics and letter-digit steps). */
 internal fun isSecretName(name: String): Boolean {
     val lower = name.lowercase(Locale.ROOT)
-    return SECRET_WORDS.any { lower.contains(it) } || wordParts(name).any { it.lowercase(Locale.ROOT) in SECRET_PARTS }
+    return SECRET_WORDS.any { lower.contains(it) } ||
+        wordParts(name).any { it.lowercase(Locale.ROOT) in SECRET_PARTS } ||
+        // Any mix of cases (`pIn`, `PiN`): the lowercased name split only where case can't matter.
+        wordParts(lower).any { it in SECRET_PARTS }
 }
 
 /** [name]'s word parts: split at anything that isn't a letter or digit, at a lowercase-to-uppercase
@@ -1212,9 +1375,10 @@ private fun Char.isAsciiLetterOrDigit(): Boolean = this in 'a'..'z' || this in '
 private fun asksForASecret(command: String): Boolean =
     GETVAR.findAll(command).any { isSecretName(it.groupValues[1]) }
 
-/** A `~HS` reply with the printer's front-panel password masked (on the tab and in the report). */
+/** A reply to a command with `~HS` in it (alone, compound or in a format) with the printer's
+ *  front-panel password masked (on the tab and in the report). */
 internal fun withoutPanelPassword(command: String, reply: String): String =
-    if (!command.trim().equals(ZebraCommands.HOST_STATUS, ignoreCase = true)) reply
+    if (!command.contains(ZebraCommands.HOST_STATUS, ignoreCase = true)) reply
     else reply.replace(PANEL_PASSWORD) { "\u0002****,${it.groupValues[1]}\u0003" }
 
 private fun msText(ms: Long?): String = ms?.toString() ?: "?"
