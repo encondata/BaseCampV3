@@ -39,6 +39,8 @@ import com.serversherpa.kiosk.input.rfid.RfidController
 import com.serversherpa.kiosk.input.rfid.RfidPermissions
 import com.serversherpa.kiosk.input.rfid.RfidReader
 import com.serversherpa.kiosk.input.rfid.ZebraRfidReader
+import com.serversherpa.kiosk.nettest.InternetTest // INTERNET-TEST
+import com.serversherpa.kiosk.nettest.InternetTestRoutes // INTERNET-TEST
 import com.serversherpa.kiosk.ui.flash.FlashController
 import com.serversherpa.kiosk.ui.sound.SoundPlayer
 import java.io.File
@@ -72,13 +74,14 @@ class AppContainer(
     }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val prefs = KioskPrefs(dataStore)
+    val internetTest = InternetTest(dataStore, scope) // INTERNET-TEST
     val config = KioskConfig(prefs, BuildConfig.DEFAULT_API_URL, BuildConfig.DEFAULT_PORTAL_URL, BuildConfig.KIOSK_VERSION)
     val identity = Identity(prefs)
     val cookieJar = RefreshCookieJar(secretStore)
     val httpClient: OkHttpClient = OkHttpClient.Builder().cookieJar(cookieJar)
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
     val session = SessionStore(httpClient, config, scope)
-    val api: KioskApi = OkHttpKioskApi(httpClient, config, session)
+    val api: KioskApi = OkHttpKioskApi(httpClient, config, session, route = InternetTestRoutes::portal) // INTERNET-TEST
     val auth = KioskAuth(api, session, identity, scope)
     val sync = Sync(api, db, scope, fontsDir = File(app.filesDir, "label-fonts"))
     val labelEngine: LabelEngine = LabelGenerator(app)
@@ -107,13 +110,14 @@ class AppContainer(
     val rfid = RfidController(rfidReader, prefs.rfid, scope)
 
     fun start() {
+        internetTest.start(auth.state, prefs.devMode, heartbeat.setupCleared) // INTERNET-TEST
         // Two launches: the footer's sync line must not wait on auth's network call.
         scope.launch { identity.get(); auth.restore() }
         scope.launch { sync.hydrate() }
         labelBuilder.start(sync.status)
         scope.launch { session.sessionEnded.collect { cookieJar.clearRefreshCookie() } }
         SessionCoordinator(auth, heartbeat, foreground, scope).start()
-        MoveSetupGuard(auth.state, prefs, scope).start()
+        MoveSetupGuard(auth.state, prefs, scope, onDropped = internetTest::onSetupDropped).start() // INTERNET-TEST
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 foreground.value = true
@@ -162,6 +166,7 @@ class AppContainer(
     }
 
     suspend fun logout() {
+        internetTest.beforeSignOut() // INTERNET-TEST
         auth.logout()
         cookieJar.clearRefreshCookie()
     }

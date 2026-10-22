@@ -34,6 +34,7 @@ import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.scan.displayRfid
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.input.datawedge.DataWedge
+import com.serversherpa.kiosk.nettest.InternetTestRoutes // INTERNET-TEST
 import com.serversherpa.kiosk.ui.components.KioskChip
 import com.serversherpa.kiosk.ui.components.CameraFieldButton
 import com.serversherpa.kiosk.ui.components.KioskToast
@@ -133,7 +134,7 @@ private fun Avatar(url: String?, name: String, container: AppContainer) {
         if (url == null) return@LaunchedEffect
         bitmap = withContext(Dispatchers.IO) {
             try {
-                container.httpClient.newCall(Request.Builder().url(url).build()).execute().use { r ->
+                InternetTestRoutes.portal(container.httpClient).newCall(Request.Builder().url(url).build()).execute().use { r -> // INTERNET-TEST
                     r.body?.bytes()?.let { android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
                 }
             } catch (e: CancellationException) { throw e

@@ -21,6 +21,7 @@ class MoveSetupGuard(
     private val auth: StateFlow<AuthState>,
     private val prefs: KioskPrefs,
     private val scope: CoroutineScope,
+    private val onDropped: suspend () -> Unit = {}, // INTERNET-TEST
 ) {
     fun start() {
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -28,6 +29,7 @@ class MoveSetupGuard(
                 val saved = prefs.setupSelection.first()
                 if (saved != null && saved.initiativeId != locked) {
                     prefs.clearSetup()
+                    onDropped() // INTERNET-TEST
                 }
             }
         }
