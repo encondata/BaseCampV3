@@ -8,7 +8,15 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.data.fakeSession
 import java.io.File
+import java.net.InetAddress
+import java.net.Socket
+import java.util.Collections
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import javax.net.SocketFactory
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -36,7 +44,8 @@ import org.junit.rules.TemporaryFolder
  * controller both run on the test's virtual time, and the controller's clock
  * reads that same time (plus [clockOffset], for a device clock that starts
  * somewhere else), so the two-hour timer is driven by advancing the scheduler.
- * Nothing here sleeps for real.
+ * Nothing here sleeps for real. The controller closes connections on a single
+ * "evict" thread of the test's own, which [drain] waits out.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class InternetTestControllerTest {
@@ -51,6 +60,36 @@ class InternetTestControllerTest {
             return inner.updateData(transform)
         }
     }
+
+    /**
+     * Plain sockets that note the thread each is closed on. A close on a
+     * [guarded] thread throws, as Android's network guard does on the main
+     * thread (OkHttp's closeQuietly rethrows it).
+     */
+    private class WatchedSockets(private val guarded: (Thread) -> Boolean) : SocketFactory() {
+        val closedOn: MutableList<Thread> = Collections.synchronizedList(mutableListOf())
+
+        override fun createSocket(): Socket = object : Socket() {
+            override fun close() {
+                super.close()
+                val thread = Thread.currentThread()
+                closedOn += thread
+                if (guarded(thread)) throw IllegalStateException("network I/O on ${thread.name}")
+            }
+        }
+
+        override fun createSocket(host: String, port: Int): Socket = unconnectedOnly()
+        override fun createSocket(host: String, port: Int, localHost: InetAddress, localPort: Int): Socket = unconnectedOnly()
+        override fun createSocket(host: InetAddress, port: Int): Socket = unconnectedOnly()
+        override fun createSocket(address: InetAddress, port: Int, localAddress: InetAddress, localPort: Int): Socket = unconnectedOnly()
+        private fun unconnectedOnly(): Nothing = throw UnsupportedOperationException("OkHttp opens unconnected sockets")
+    }
+
+    /** The one thread the evict context runs on. */
+    @Volatile private var evictWorker: Thread? = null
+    private val evictThread = Executors.newSingleThreadExecutor { Thread(it, "evict").also { t -> evictWorker = t } }
+    private val evictContext = evictThread.asCoroutineDispatcher()
+    private var server: MockWebServer? = null
 
     private val key = stringPreferencesKey("ss.kiosk.netTest")
     private val signedIn: AuthState = AuthState.Authed(fakeSession())
@@ -69,7 +108,26 @@ class InternetTestControllerTest {
     )
 
     @After fun tearDown() {
+        evictThread.shutdown()
+        evictThread.awaitTermination(5, TimeUnit.SECONDS)
         InternetTestRoutes.resetForTests()
+        server?.shutdown()
+    }
+
+    /** Waits until everything handed to the evict thread so far has run. */
+    private fun drain() {
+        evictThread.submit {}.get(5, TimeUnit.SECONDS)
+    }
+
+    /** One call through the client the router hands out now for [base], leaving its connection pooled. */
+    private fun call(base: OkHttpClient): OkHttpClient {
+        val server = server ?: MockWebServer().apply { start() }.also { server = it }
+        server.enqueue(MockResponse().setBody("ok"))
+        val client = InternetTestRoutes.portal(base)
+        client.newCall(Request.Builder().url(server.url("/")).build()).execute().use {
+            assertEquals("ok", it.body!!.string())
+        }
+        return client
     }
 
     private fun TestScope.newStore(): WatchedStore =
@@ -78,6 +136,7 @@ class InternetTestControllerTest {
     /** A controller started on the test's flows, with everything it launched run once. */
     private fun TestScope.started(store: DataStore<Preferences>): InternetTest =
         InternetTest(store, backgroundScope, clock = { testScheduler.currentTime + clockOffset }).also {
+            it.evictContext = evictContext
             it.start(auth, devMode, setupCleared)
             runCurrent()
         }
@@ -452,30 +511,87 @@ class InternetTestControllerTest {
 
     @Test fun changingTheInternetPresetEvictsPooledConnections() = runTest {
         InternetTestRoutes.sleeper = Sleeper { }
-        val server = MockWebServer()
-        server.start()
-        try {
-            server.enqueue(MockResponse().setBody("ok"))
-            val base = OkHttpClient()
-            val test = started(newStore())
-            test.setEnabled(true)
-            test.choosePreset(Dial.INTERNET, Preset.WIFI)
-            runCurrent()
+        val caller = Thread.currentThread()
+        val sockets = WatchedSockets(guarded = { it === caller })
+        val base = OkHttpClient.Builder().socketFactory(sockets).build()
+        val test = started(newStore())
+        test.setEnabled(true)
+        test.choosePreset(Dial.INTERNET, Preset.WIFI)
+        runCurrent()
+        drain()
 
-            val conditioned = InternetTestRoutes.portal(base)
-            assertNotSame(base, conditioned)
-            conditioned.newCall(Request.Builder().url(server.url("/")).build()).execute().use {
-                assertEquals("ok", it.body!!.string())
-            }
-            assertEquals(1, conditioned.connectionPool.connectionCount())
+        val conditioned = call(base)
+        assertNotSame(base, conditioned)
+        assertEquals(1, conditioned.connectionPool.connectionCount())
 
-            test.choosePreset(Dial.INTERNET, Preset.LTE)
-            runCurrent()
+        test.choosePreset(Dial.INTERNET, Preset.LTE)
+        runCurrent()
+        drain()
 
-            assertEquals(Preset.LTE.profile, InternetTestRoutes.internet)
-            assertEquals("the Wi-Fi connection isn't reused under LTE", 0, conditioned.connectionPool.connectionCount())
-        } finally {
-            server.shutdown()
-        }
+        assertEquals(Preset.LTE.profile, InternetTestRoutes.internet)
+        assertEquals("the Wi-Fi connection isn't reused under LTE", 0, conditioned.connectionPool.connectionCount())
+        assertEquals(listOf(evictWorker), sockets.closedOn.toList())
+    }
+
+    @Test fun turnOffClosesConnectionsOffTheCallersThread() = closesOffTheCallersThread { turnOff() }
+
+    @Test fun beforeSignOutClosesConnectionsOffTheCallersThread() = closesOffTheCallersThread { beforeSignOut() }
+
+    @Test fun switchingOffClosesConnectionsOffTheCallersThread() = closesOffTheCallersThread { setEnabled(false) }
+
+    /**
+     * Pools a conditioned connection, turns the switch off with [off], and checks
+     * the connection was closed, on the evict thread. A close on the caller's
+     * thread throws here, as it does on Android's main thread.
+     */
+    private fun closesOffTheCallersThread(off: suspend InternetTest.() -> Unit) = runTest {
+        InternetTestRoutes.sleeper = Sleeper { }
+        val caller = Thread.currentThread()
+        val sockets = WatchedSockets(guarded = { it === caller })
+        val base = OkHttpClient.Builder().socketFactory(sockets).build()
+        val store = newStore()
+        val test = started(store)
+        test.setEnabled(true)
+        test.choosePreset(Dial.INTERNET, Preset.WIFI)
+        runCurrent()
+        drain()
+        val conditioned = call(base)
+        assertEquals(1, conditioned.connectionPool.connectionCount())
+
+        test.off()
+        assertNull("direct at once", InternetTestRoutes.internet)
+        drain()
+
+        assertEquals("the conditioned connection was closed", 0, conditioned.connectionPool.connectionCount())
+        assertEquals("closed on the evict thread, not the caller's", listOf(evictWorker), sockets.closedOn.toList())
+        assertFalse(store.saved().enabled)
+    }
+
+    @Test fun aFailingCloseStillTurnsOff() = runTest {
+        InternetTestRoutes.sleeper = Sleeper { }
+        val sockets = WatchedSockets(guarded = { true })
+        val base = OkHttpClient.Builder().socketFactory(sockets).build()
+        val store = newStore()
+        val test = started(store)
+        test.onWithPresets()
+        runCurrent()
+        drain()
+        call(base)
+
+        test.turnOff()
+        drain()
+        runCurrent()
+
+        // The close ran and threw. Had the failure escaped, runTest would fail
+        // this test, since it reports anything uncaught in backgroundScope.
+        assertEquals(1, sockets.closedOn.size)
+        assertFalse(store.saved().enabled)
+        assertFalse(test.settings.value.enabled)
+        assertNull(InternetTestRoutes.internet)
+        assertNull(InternetTestRoutes.local)
+    }
+
+    @Test fun closesConnectionsOnIoByDefault() = runTest {
+        assertEquals(Dispatchers.IO, InternetTest(newStore(), backgroundScope).evictContext)
     }
 }

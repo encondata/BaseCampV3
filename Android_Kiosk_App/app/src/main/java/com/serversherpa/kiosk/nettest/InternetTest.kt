@@ -5,8 +5,10 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.serversherpa.kiosk.data.auth.AuthState
+import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,6 +41,14 @@ class InternetTest(
 
     /** The saved settings, for the Developer section. The defaults (switch off) until the store is read. */
     val settings: StateFlow<InternetTestSettings> = _settings.asStateFlow()
+
+    /**
+     * Where the conditioned client's idle connections are closed: never on the
+     * caller's thread. Closing a TLS socket counts as network I/O, which Android
+     * refuses on the main thread (and sign-out and the Developer switch call in
+     * from there). Tests may swap in their own.
+     */
+    internal var evictContext: CoroutineContext = Dispatchers.IO
 
     init {
         scope.launch {
@@ -77,13 +87,14 @@ class InternetTest(
     /**
      * Turns the switch off and keeps it off. Both links go direct at once, before
      * the write, so whatever follows (a sign-out's own portal calls) is never
-     * conditioned, and the conditioned client's idle connections are closed.
-     * Turning off while already off writes nothing.
+     * conditioned. The conditioned client's idle connections are closed on
+     * [evictContext], never on the caller's thread, and the write never waits
+     * on that or depends on it. Turning off while already off writes nothing.
      */
     suspend fun turnOff() {
         InternetTestRoutes.internet = null
         InternetTestRoutes.local = null
-        InternetTestRoutes.evictPortal()
+        evictPortalOffThread()
         update { if (it.enabled || it.armedAtMs != null) it.copy(enabled = false, armedAtMs = null) else it }
     }
 
@@ -159,7 +170,16 @@ class InternetTest(
         val internetChanged = InternetTestRoutes.internet != internet
         InternetTestRoutes.internet = internet
         InternetTestRoutes.local = local
-        if (internetChanged) InternetTestRoutes.evictPortal()
+        if (internetChanged) evictPortalOffThread()
+    }
+
+    /**
+     * Closes the conditioned client's idle connections on [evictContext]. A
+     * failure only leaves idle connections open, so it never reaches the scope
+     * (where it would crash the app).
+     */
+    private fun evictPortalOffThread() {
+        scope.launch(evictContext) { runCatching { InternetTestRoutes.evictPortal() } }
     }
 
     /** Applies [change] to the saved settings in one write, and writes nothing when it changes nothing. */
