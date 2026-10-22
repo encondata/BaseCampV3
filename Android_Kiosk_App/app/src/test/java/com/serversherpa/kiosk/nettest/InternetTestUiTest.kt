@@ -238,6 +238,20 @@ class InternetTestUiTest {
         drop.assertTextEquals("2.5")
         compose.waitUntil(5_000) { settings().internet.custom.downDropPct == 2.5 }
 
+        // A comma-decimal keyboard (de, fr, es, pt-BR...) offers "," as its point:
+        // it lands as ".", still one point at most.
+        drop.performTextReplacement("0,5")
+        drop.assertTextEquals("0.5")
+        compose.waitUntil(5_000) { settings().internet.custom.downDropPct == 0.5 }
+        drop.performTextClearance()
+        for (key in "2,5,") drop.performTextInput(key.toString())
+        drop.assertTextEquals("2.5")
+        compose.waitUntil(5_000) { settings().internet.custom.downDropPct == 2.5 }
+        drop.performTextReplacement("1,5.2")
+        drop.assertTextEquals("1.52")
+        drop.performTextReplacement("1.5,2")
+        drop.assertTextEquals("1.52")
+
         // Speed and Delay take digits only.
         val speed = compose.onNodeWithTag("net-test-internet-up-speed")
         speed.performTextReplacement("1a2.3")
@@ -247,6 +261,10 @@ class InternetTestUiTest {
         delay.performTextReplacement("4-5.0")
         delay.assertTextEquals("450")
         compose.waitUntil(5_000) { settings().internet.custom.upDelayMs == 450 }
+        // Whole numbers only there: a comma is dropped like any other non-digit.
+        delay.performTextReplacement("4,5")
+        delay.assertTextEquals("45")
+        compose.waitUntil(5_000) { settings().internet.custom.upDelayMs == 45 }
 
         // A blank speed means no limit, and a blank delay means none.
         speed.performTextClearance()

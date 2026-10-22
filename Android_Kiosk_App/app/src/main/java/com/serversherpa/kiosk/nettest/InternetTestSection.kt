@@ -259,14 +259,18 @@ private fun profileOf(texts: List<String>, dnsDelayMs: Int): LinkProfile {
 /** Only the ASCII digits of [text]. */
 internal fun digitsOnly(text: String): String = text.filter { it in '0'..'9' }
 
-/** The ASCII digits of [text] and its first decimal point; every other character is dropped. */
+/**
+ * The ASCII digits of [text] and its first decimal point; every other character
+ * is dropped. A comma counts as the point, written as `.`: the Decimal keyboard
+ * of a comma-decimal locale (de, fr, es, pt-BR...) offers only `,`.
+ */
 internal fun decimalOnly(text: String): String {
     var point = false
     return buildString {
         for (ch in text) {
             when {
                 ch in '0'..'9' -> append(ch)
-                ch == '.' && !point -> { point = true; append(ch) }
+                (ch == '.' || ch == ',') && !point -> { point = true; append('.') }
             }
         }
     }
