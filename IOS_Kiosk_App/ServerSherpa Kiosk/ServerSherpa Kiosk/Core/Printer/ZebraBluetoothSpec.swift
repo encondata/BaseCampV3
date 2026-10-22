@@ -65,6 +65,12 @@ let BLUETOOTH_SCAN_HINT_TEXT =
 /// A font download was cut short; the printer is still waiting for the rest of it.
 let FONT_INSTALL_CUT_TEXT = "The font install was cut off. Turn the printer off and on, then tap Check again."
 
+/// A font install to the printer was cut off, so nothing more is sent to it until it answers a
+/// check (over any transport): the send was refused before anything went out.
+struct PrinterNeedsRestart: LocalizedError, Sendable {
+    var errorDescription: String? { FONT_INSTALL_CUT_TEXT }
+}
+
 /// The printer removed its pairing with this iPad (CBError 14) or the pairing timed out (15).
 func pairingLostText(serial: String) -> String {
     "The printer forgot this iPad. Open Settings › Bluetooth, tap ⓘ next to \(serial), "

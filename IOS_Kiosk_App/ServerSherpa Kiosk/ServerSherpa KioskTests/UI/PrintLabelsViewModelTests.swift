@@ -105,7 +105,7 @@ struct PrintLabelsViewModelTests {
         // The container's wiring, minus its reset hooks: here only `isLive` stands between a
         // sign-out or a Setup change and a Labeled scan.
         jobs = LabelPrintJobs(store: store, sync: sync, outbox: outbox, settings: settings, build: build, engine: engine,
-                              sender: { host, zpl in try await device.send(host, zpl) },
+                              sender: { printer, zpl in try await device.send(printer.host ?? "", zpl) },
                               isLive: printJobIsLive(auth: auth, prefs: prefs))
     }
 

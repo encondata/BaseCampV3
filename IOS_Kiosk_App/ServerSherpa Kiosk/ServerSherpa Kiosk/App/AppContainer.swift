@@ -34,6 +34,9 @@ final class AppContainer {
     /// One connection to the saved printer at a time, app-wide: Print Labels' sends and every
     /// Printer Setup call (identify, checks, font installs, test labels) go through it.
     let printerLock: PrinterLock
+    /// The saved printer's state after a failed send or a cut font install (the `~JX` clear, the
+    /// stop), applied under `printerLock` by the same callers. Starts clean for each printer.
+    let printerGuard: PrinterGuard
     /// The synced label font files (nil keeps font metadata only).
     let fontsDir: URL?
     let scanBus = ScanBus()
@@ -85,6 +88,8 @@ final class AppContainer {
         self.fontsDir = fontsDir
         let printerLock = PrinterLock()
         self.printerLock = printerLock
+        let printerGuard = PrinterGuard()
+        self.printerGuard = printerGuard
         let sync = Sync(api: api, store: store, fontsDir: fontsDir)
         let outbox = Outbox(store: store, api: api, serial: { identity.current.serial }, backgroundTask: backgroundTask)
         let labelSettings = LabelSettingsStore(prefs: prefs)
@@ -100,7 +105,9 @@ final class AppContainer {
                                         build: labelBuilder.monitor, engine: labelEngine,
                                         // Straight to the printer (no status checks before or after),
                                         // one connection at a time with Printer Setup's calls.
-                                        sender: lockedSender(printerLock) { host, zpl in try await NetworkZebra(host: host).send(zpl) },
+                                        sender: lockedSender(printerLock, printerGuard) { printer, zpl in
+                                            try await AppContainer.zebra(for: printer).send(zpl)
+                                        },
                                         isLive: printJobIsLive(auth: auth, prefs: prefs))
         self.sound = SoundPlayer(prefs: prefs)
 
@@ -112,6 +119,29 @@ final class AppContainer {
         }
         auth.onSessionEnded = { Task { await printJobs.reset() } }
         Self.resetPrintJobsOnMoveChange(prefs: prefs, jobs: printJobs)
+        Self.resetPrinterGuardOnPrinterChange(settings: labelSettings, printerGuard: printerGuard)
+    }
+
+    /// The saved printer as Print Labels and Printer Setup reach it: the network printer at its
+    /// host. A Bluetooth printer gets its own transport with the Bluetooth link (none can be saved
+    /// before that).
+    nonisolated static func zebra(for printer: SavedPrinter) -> SetupZebra {
+        NetworkZebra(host: printer.host ?? "")
+    }
+
+    /// A clear or a cut font belongs to the printer it happened to: saving another connection (or
+    /// none) starts the guard clean, whoever saves it (`LabelSettingsStore` is the one writer). The
+    /// same printer saved again with what a check found (model, serial, DPI) keeps it. Follows the
+    /// saved printer's connection (Observation), skipping the value it starts with.
+    private static func resetPrinterGuardOnPrinterChange(settings: LabelSettingsStore, printerGuard: PrinterGuard) {
+        let connections = observationStream { settings.current().printer?.connection }
+        Task {
+            var first = true
+            for await _ in connections {
+                if first { first = false; continue }
+                await printerGuard.reset()
+            }
+        }
     }
 
     /// The saved setup selection's move or site changing (Kiosk Setup saving another one, a

@@ -2,8 +2,9 @@ import Foundation
 import Observation
 import os
 
-/// Sends ZPL to the network printer at a host (`NetworkZebra.send` on the device).
-typealias LabelSender = @Sendable (_ host: String, _ zpl: String) async throws -> Void
+/// Sends ZPL to the saved printer, the way its connection reaches it (a `ZebraTransport`'s
+/// `send` on the device).
+typealias LabelSender = @Sendable (_ printer: SavedPrinter, _ zpl: String) async throws -> Void
 
 /// What Print Labels reads from the kiosk's store: the roster to match scans against, and one
 /// asset's stored label per scan. `KioskStore` is the real one.
@@ -114,9 +115,9 @@ final class LabelPrintJobs {
                 try await prepareForPrinter(zpl: zpl, settings: settings, call: { try await engine.call($0, $1) },
                                             isTimeout: LabelEngineError.isTimeout, isUnsupported: LabelEngineError.isUnsupported, log: log)
             },
-            send: { host, zpl in
+            send: { printer, zpl in
                 do {
-                    try await sender(host, zpl)
+                    try await sender(printer, zpl)
                 } catch let e as PrinterTimeout {
                     throw LabelSendTimeout(cause: e)
                 } catch let e as PrinterUnreachable where e.localNetworkDenied {

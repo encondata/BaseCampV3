@@ -104,9 +104,18 @@ import Foundation
     private(set) var inStatus = false
     /// Thrown by send() when set.
     var sendError: Error?
+    /// Thrown by installFont() when set, once the font started going out.
+    var installError: Error?
+    /// The fractions of each font installFont() reports as sent, in order.
+    var installSteps: [Double] = [1]
+    /// While equal to one of `installSteps`, installFont() waits right after reporting it.
+    var installHoldAt: Double?
+    /// The step installFont() is waiting at.
+    private(set) var atInstallHold: Double?
     /// When it doesn't answer, it's iOS's Local Network denial.
     var deniedLocalNetwork = false
-    private(set) var onE: [String] = []
+    /// The E: drive: each object's name and size.
+    var onE: [DirectoryEntry] = []
     private(set) var sent: [String] = []
     private(set) var installed: [(name: String, bytes: Data)] = []
     /// Every call, in order.
@@ -128,9 +137,12 @@ import Foundation
     nonisolated func serial() async throws -> String? { try await serialNow() }
     nonisolated func status() async throws -> HostStatus { try await statusNow() }
     nonisolated func peelerPresent() async throws -> Bool? { await peelerNow() }
-    nonisolated func fonts() async throws -> [String] { try await fontsNow() }
+    nonisolated func fonts() async throws -> [String] { try await fontsNow().map(\.name) }
+    nonisolated func fontEntries() async throws -> [DirectoryEntry] { try await fontsNow() }
     nonisolated func send(_ zpl: String) async throws { try await sendNow(zpl) }
-    nonisolated func installFont(name: String, bytes: Data) async throws { try await installNow(name, bytes) }
+    nonisolated func installFont(name: String, bytes: Data, progress: (@Sendable (_ sent: Int, _ total: Int) -> Void)?) async throws {
+        try await installNow(name, bytes, progress)
+    }
 
     private func identifyNow() async throws -> HostId {
         try await use("identify")
@@ -157,7 +169,7 @@ import Foundation
         return answers ? peeler : nil
     }
 
-    private func fontsNow() async throws -> [String] {
+    private func fontsNow() async throws -> [DirectoryEntry] {
         try await use("fonts")
         return onE
     }
@@ -168,10 +180,20 @@ import Foundation
         sent.append(zpl)
     }
 
-    private func installNow(_ name: String, _ bytes: Data) async throws {
+    private func installNow(_ name: String, _ bytes: Data, _ progress: (@Sendable (Int, Int) -> Void)?) async throws {
         try await use("installFont", name)
+        if let installError { throw installError }
+        for step in installSteps {
+            progress?(Int(Double(bytes.count) * step), bytes.count)
+            while let hold = installHoldAt, hold == step {
+                atInstallHold = step
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            atInstallHold = nil
+        }
         installed.append((name, bytes))
-        onE.append(name.uppercased())
+        onE.removeAll { $0.name == name.uppercased() }
+        onE.append(DirectoryEntry(name: name.uppercased(), size: bytes.count))
     }
 }
 
@@ -232,6 +254,7 @@ final class PrinterSetupViewModelTests {
     private let builder: LabelBuilder
     private let fontsDir: URL
     private let lock = PrinterLock()
+    private let printerGuard = PrinterGuard()
     private let scanner = FakeScanner()
     private let sleeps = Sleeps()
     private let fakes = Zebras()
@@ -280,8 +303,9 @@ final class PrinterSetupViewModelTests {
         return PrinterSetupViewModel(
             settings: settings, build: builder.monitor, engine: engine, store: store, fontsDir: fontsDir,
             scanner: { try await scanner.scan() },
-            zebraAt: { host in fakes.at(host) },
+            zebraFor: { printer in fakes.at(printer.host ?? "") },
             printerLock: lock,
+            printerGuard: printerGuard,
             sleep: { try await sleeper.sleep($0) },
             pickWait: pickWait)
     }
@@ -422,6 +446,172 @@ final class PrinterSetupViewModelTests {
         #expect(vm.ui.fontMessage == "Couldn't install ROBOTO.TTF.")
         #expect(vm.ui.fontError)
         #expect(zebra(savedHost).installed.isEmpty)
+    }
+
+    /// The plan needs `fonts`, and the synced library has each with its file (its size is the
+    /// file's).
+    private func libraryFonts(_ fonts: [(name: String, bytes: [UInt8])]) async throws {
+        engine.planFonts = fonts.map(\.name)
+        var rows: [LabelFontRow] = []
+        for (i, font) in fonts.enumerated() {
+            let file = font.name.lowercased()
+            try Data(font.bytes).write(to: fontsDir.appendingPathComponent(file))
+            rows.append(LabelFontRow(id: "f\(i + 1)", name: font.name, size: font.bytes.count, resident: false, fileName: file))
+        }
+        try await store.replaceLabelFonts(rows)
+        await builder.rebuild(reason: "fonts changed")
+        let count = fonts.count
+        await eventually("plan with fonts") { builder.monitor.pick?.fonts.count == count }
+    }
+
+    /// A font on the printer at another size than the library's (a download cut short) is
+    /// damaged: the row names it beside the missing ones, and Install sends it again.
+    @Test func damagedFontOffersReinstall() async throws {
+        try await start()
+        try await libraryFonts([("ROBOTO.TTF", [1, 2, 3]), ("LATO.TTF", [4, 5])])
+        let z = zebra(savedHost)
+        z.onE = [DirectoryEntry(name: "ROBOTO.TTF", size: 1)]
+        let vm = vm()
+        await checked(vm) { vm.checkAgain() }
+        let fonts = try #require(row(vm, .fonts))
+        #expect(fonts.state == .fail)
+        #expect(fonts.detail == "Missing: LATO.TTF. Damaged: ROBOTO.TTF (reinstall).")
+        #expect(vm.ui.fontFix?.installable.map(\.name) == ["ROBOTO.TTF", "LATO.TTF"])
+
+        z.onE = [DirectoryEntry(name: "ROBOTO.TTF", size: 1), DirectoryEntry(name: "LATO.TTF", size: 2)]
+        await checked(vm) { vm.checkAgain() }
+        #expect(row(vm, .fonts)?.state == .fail)
+        #expect(row(vm, .fonts)?.detail == "Damaged: ROBOTO.TTF (reinstall).")
+        #expect(vm.ui.fontFix?.installable.map(\.name) == ["ROBOTO.TTF"])
+
+        await checked(vm) { vm.installFonts() }
+        #expect(z.installed.map(\.name) == ["ROBOTO.TTF"])
+        #expect(z.installed.first?.bytes == Data([1, 2, 3]))
+        #expect(vm.ui.fontMessage == "Fonts installed.")
+        #expect(row(vm, .fonts)?.state == .ok)
+        #expect(vm.ui.fontFix == nil)
+    }
+
+    /// A font download announces its size, so Cancel never cuts one: the font going out finishes
+    /// and the next one never starts (D8).
+    @Test func cancelInstallFinishesTheCurrentFont() async throws {
+        try await start()
+        try await libraryFonts([("ROBOTO.TTF", [1, 2, 3]), ("LATO.TTF", [4, 5])])
+        let z = zebra(savedHost)
+        z.installSteps = [0.5, 1]
+        z.installHoldAt = 0.5
+        let vm = vm()
+        await checked(vm) { vm.checkAgain() }
+        #expect(vm.ui.fontFix?.installable.count == 2)
+        let checksBefore = vm.ui.checkRuns
+        vm.installFonts()
+        await eventually("first font half sent") { z.atInstallHold == 0.5 }
+        vm.cancelInstall()
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(vm.ui.installing)
+        #expect(z.installed.isEmpty)
+        z.installHoldAt = nil
+        await eventually("stopped and re-checked") { !vm.ui.installing && vm.ui.checkRuns > checksBefore && !vm.ui.checking }
+        #expect(z.installed.map(\.name) == ["ROBOTO.TTF"])
+        #expect(z.installed.first?.bytes == Data([1, 2, 3]))
+        #expect(z.calls.filter { $0 == "installFont" }.count == 1)
+        #expect(vm.ui.fontMessage == nil)
+        #expect(!vm.ui.fontError)
+        #expect(row(vm, .fonts)?.detail == "Missing: LATO.TTF.")
+    }
+
+    @Test func installReportsProgress() async throws {
+        try await start()
+        try await libraryFonts([("ROBOTO.TTF", [1, 2, 3, 4])])
+        let z = zebra(savedHost)
+        z.installSteps = [0.5, 1]
+        z.installHoldAt = 0.5
+        let vm = vm()
+        await checked(vm) { vm.checkAgain() }
+        #expect(vm.ui.installProgress == nil)
+        #expect(vm.ui.installEta == nil)
+        vm.installFonts()
+        await eventually("half sent") { z.atInstallHold == 0.5 && vm.ui.installProgress == 0.5 }
+        #expect(vm.ui.installEta == "about 1 s left")
+        z.installHoldAt = 1
+        await eventually("all sent") { z.atInstallHold == 1 && vm.ui.installProgress == 1 }
+        #expect(vm.ui.installEta == nil)
+        z.installHoldAt = nil
+        await eventually("installed") { !vm.ui.installing }
+        #expect(vm.ui.installProgress == nil)
+        #expect(vm.ui.installEta == nil)
+        #expect(vm.ui.fontMessage == "Fonts installed.")
+    }
+
+    /// A font install cut off part-way leaves the printer waiting for the rest of the font: the
+    /// screen says to restart it, nothing more is sent (no re-check, test labels refused), and a
+    /// check the printer answers lets sends through again (D8).
+    @Test func aCutFontInstallSaysToRestartThePrinterUntilACheckSucceeds() async throws {
+        try await start()
+        try await libraryFonts([("ROBOTO.TTF", [1, 2, 3])])
+        let z = zebra(savedHost)
+        let vm = vm()
+        await checked(vm) { vm.checkAgain() }
+        z.installError = PrinterTimeout(host: savedHost)
+        vm.installFonts()
+        await eventually("install failed") { !vm.ui.installing && vm.ui.fontMessage != nil }
+        #expect(vm.ui.fontMessage == FONT_INSTALL_CUT_TEXT)
+        #expect(vm.ui.fontError)
+        #expect(await printerGuard.state == .fontCut)
+        let callsAfterCut = z.calls
+        #expect(callsAfterCut.last == "installFont")
+
+        vm.printTest(.alignment)
+        await eventually("refused") { !vm.ui.testing && vm.ui.testMessage != nil }
+        #expect(vm.ui.testMessage == FONT_INSTALL_CUT_TEXT)
+        #expect(vm.ui.testError)
+        #expect(z.sent.isEmpty)
+        #expect(z.calls == callsAfterCut)
+
+        // Not restarted yet: it doesn't answer, and the check says why.
+        z.answers = false
+        await checked(vm) { vm.checkAgain() }
+        #expect(row(vm, .answers)?.state == .fail)
+        #expect(row(vm, .answers)?.detail == FONT_INSTALL_CUT_TEXT)
+
+        // Restarted: it answers, and sends go out again.
+        z.answers = true
+        z.installError = nil
+        await checked(vm) { vm.checkAgain() }
+        #expect(row(vm, .answers)?.state == .ok)
+        #expect(await printerGuard.state == .clean)
+        vm.printTest(.alignment)
+        await eventually("sent") { !vm.ui.testing && z.sent.count == 1 }
+        #expect(!vm.ui.testError)
+    }
+
+    /// Choosing a printer asks it under the lock but not under the saved printer's guard: its
+    /// answer doesn't lift a stop the saved printer is under (the new one is saved a moment later).
+    @Test func choosingAPrinterDoesNotLiftTheSavedPrintersStop() async throws {
+        try await start()
+        await printerGuard.markFontCut()
+        let z = zebra("10.0.0.10")
+        let line = FakeLine()
+        z.line = line
+        line.hold = "serial"
+        let vm = vm()
+        vm.setIpText("10.0.0.10")
+        vm.useIp()
+        await eventually("asked its serial") { line.held }
+        #expect(z.calls == ["identify", "serial"])
+        #expect(await printerGuard.state == .fontCut)
+        line.hold = nil
+        await eventually("saved") { self.current.printer?.host == "10.0.0.10" }
+    }
+
+    @Test func theInstallEtaReadsInSecondsThenMinutes() {
+        #expect(installEtaText(remainingBytes: 156_000, bytesPerSecond: 3_900) == "about 40 s left")
+        #expect(installEtaText(remainingBytes: 1, bytesPerSecond: 3_900) == "about 1 s left")
+        #expect(installEtaText(remainingBytes: 230_000, bytesPerSecond: 3_900) == "about 59 s left")
+        #expect(installEtaText(remainingBytes: 234_000, bytesPerSecond: 3_900) == "about 1 min left")
+        #expect(installEtaText(remainingBytes: 1_048_576, bytesPerSecond: 3_900) == "about 4 min left")
+        #expect(installEtaText(remainingBytes: 0, bytesPerSecond: 3_900) == nil)
+        #expect(installEtaText(remainingBytes: 10, bytesPerSecond: 0) == nil)
     }
 
     @Test func peelIsDisabledWhenThePrinterHasNoPeelerAndEnabledWhenItDoesNotSay() async throws {
@@ -593,12 +783,12 @@ final class PrinterSetupViewModelTests {
         let line = FakeLine()
         zebra(savedHost).line = line
         let settings = self.settings
-        // The container's wiring of the queue's send (AppContainer: lockedSender(printerLock) { NetworkZebra }).
+        // The container's wiring of the queue's send (AppContainer: lockedSender(printerLock, printerGuard) { NetworkZebra }).
         let jobs = LabelPrintJobs(deps: PrintQueueDeps<PrintTarget>(
             settings: { await MainActor.run { settings.current() } },
             label: { _ in .ready("ASSET") },
             prepare: { zpl, _ in .ready(zpl) },
-            send: lockedSender(lock) { host, zpl in try await line.connect("\(host) \(zpl)") },
+            send: lockedSender(lock, printerGuard) { printer, zpl in try await line.connect("\(printer.host ?? "") \(zpl)") },
             record: { _, _ in }))
         let target = PrintTarget(asset: KioskAssetRow(id: "a1", assetId: "A-1"), siteId: "s1", initiativeId: "i1")
         let vm = vm()
@@ -643,7 +833,7 @@ final class PrinterSetupViewModelTests {
             settings: { [settings] in await MainActor.run { settings.current() } },
             label: { _ in .ready("ASSET") },
             prepare: { zpl, _ in .ready(zpl) },
-            send: lockedSender(lock) { host, zpl in try await line.connect("\(host) \(zpl)") },
+            send: lockedSender(lock, printerGuard) { printer, zpl in try await line.connect("\(printer.host ?? "") \(zpl)") },
             record: { _, _ in }))
         let vm = vm()
         line.hold = "status"

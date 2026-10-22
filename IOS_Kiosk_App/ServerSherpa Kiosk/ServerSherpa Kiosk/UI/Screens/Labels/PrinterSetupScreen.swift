@@ -44,8 +44,8 @@ private struct PrinterSetupBody: View {
             settings: container.labelSettings, build: container.labelBuilder.monitor, engine: container.labelEngine,
             store: container.store, fontsDir: container.fontsDir,
             scanner: { try await ZebraScanner().scan() },
-            zebraAt: { host in NetworkZebra(host: host) },
-            printerLock: container.printerLock))
+            zebraFor: { printer in AppContainer.zebra(for: printer) },
+            printerLock: container.printerLock, printerGuard: container.printerGuard))
     }
 
     var body: some View {

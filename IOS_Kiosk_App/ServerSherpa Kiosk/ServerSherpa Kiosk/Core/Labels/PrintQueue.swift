@@ -149,10 +149,10 @@ struct PrintQueueDeps<A: Sendable>: Sendable {
     var label: @Sendable (A) async throws -> PrintStep
     /// The label with the saved offsets and peel or tear mode applied (see `prepareForPrinter`).
     var prepare: @Sendable (_ zpl: String, _ settings: LabelSettings) async throws -> PrintStep
-    /// Sends the ZPL to the printer at the host; throws when it can't (`LabelSendLocalNetworkDenied`
-    /// when iOS kept it off the local network, `LabelSendTimeout` when the
-    /// job may have gone out).
-    var send: @Sendable (_ host: String, _ zpl: String) async throws -> Void
+    /// Sends the ZPL to the saved printer; throws when it can't (`LabelSendLocalNetworkDenied`
+    /// when iOS kept it off the local network, `LabelSendTimeout` when the job may have gone out,
+    /// `PrinterNeedsRestart` while a cut font install keeps sends from the printer).
+    var send: @Sendable (_ printer: SavedPrinter, _ zpl: String) async throws -> Void
     /// Queues the Labeled scan; throws when it can't be saved.
     var record: @Sendable (_ asset: A, _ scannedValue: String) async throws -> Void
     /// Why a step failed, for the device log (the entry shows the person's message).
@@ -342,13 +342,19 @@ actor PrintQueue<A: Sendable> {
 
     private func finish(_ w: Work, asset: A, printer: SavedPrinter, bytes: String) async -> PrintEntry<A> {
         do {
-            try await deps.send(printer.host ?? "", bytes)
+            try await deps.send(printer, bytes)
         } catch {
-            deps.log("couldn't send the label to \(printer.host ?? printer.serial)", error)
+            let to = switch printer.connection {
+            case .network(let host): "the printer at \(host)"
+            case .bluetooth(let serial, _): "the Bluetooth printer \(serial)"
+            }
+            deps.log("couldn't send the label to \(to)", error)
             let message = if error is LabelSendTimeout {
                 PRINTER_TIMEOUT_TEXT
             } else if error is LabelSendLocalNetworkDenied {
                 LOCAL_NETWORK_PRINTER_DENIED_TEXT
+            } else if error is PrinterNeedsRestart {
+                FONT_INSTALL_CUT_TEXT
             } else {
                 printerUnreachableText(printer)
             }

@@ -91,6 +91,9 @@ struct PrinterSetupUi: Equatable {
     var checkRuns = 0
     var fontFix: FontFix? = nil
     var installing = false
+    /// While a font is going out: how much of it has (0…1), and about how long it has left.
+    var installProgress: Double? = nil
+    var installEta: String? = nil
     var fontMessage: String? = nil
     var fontError = false
     /// What the peeler check found: true, false, or nil (unknown or not checked).
@@ -130,6 +133,15 @@ func noZebraAnswerText(_ connection: PrinterConnection) -> String {
 }
 func fontInstallFailedText(_ name: String) -> String { "Couldn't install \(name)." }
 
+/// "about 40 s left", "about 4 min left": the time `remainingBytes` take at `bytesPerSecond`;
+/// nil when nothing is left (or no rate is known).
+func installEtaText(remainingBytes: Int, bytesPerSecond: Double) -> String? {
+    guard remainingBytes > 0, bytesPerSecond > 0 else { return nil }
+    let seconds = (Double(remainingBytes) / bytesPerSecond).rounded(.up)
+    if seconds < 60 { return "about \(Int(seconds)) s left" }
+    return "about \(Int((seconds / 60).rounded())) min left"
+}
+
 /// The connection waited with iOS's Local Network denial (`NetworkZebra` marks it).
 func wasLocalNetworkDenied(_ error: Error) -> Bool { (error as? PrinterUnreachable)?.localNetworkDenied == true }
 
@@ -139,7 +151,7 @@ private struct FontFileMissing: Error {}
 /**
  Printer Setup (Android's PrinterSetupViewModel, the laptop's PrinterStep in
  kiosk/src/components/setup/PrinterStep.tsx): pick a network Zebra (a scan or a typed IP), check
- it, install missing fonts, print test labels, and set the offsets and peel/tear. Choosing a
+ it, install missing or damaged fonts, print test labels, and set the offsets and peel/tear. Choosing a
  printer saves it; the label builder rebuilds by itself when its DPI changes, and offsets and peel
  never rebuild (they apply at send time).
 
@@ -149,8 +161,9 @@ private struct FontFileMissing: Error {}
  the build a DPI change starts (an unsynced kiosk, a failed build and an unsupported device answer
  at once).
 
- Every call to a printer goes through the container's `PrinterLock`, shared with Print Labels'
- queue: one connection to the printer at a time, app-wide.
+ Every call to a printer goes through the container's `PrinterLock` and `PrinterGuard`, shared
+ with Print Labels' queue: one connection to the printer at a time, app-wide, a `~JX` before the
+ next send after a failed one, and no sends after a cut font install until a check gets an answer.
 
  iOS only: the first scan can run while the system's "Allow Local Network" prompt is on screen and
  come back denied, so a denied scan runs once more when the app is back in front (scene phase
@@ -170,6 +183,10 @@ final class PrinterSetupViewModel {
     /// A denied scan runs again after this long if the app hasn't come back to the front first.
     nonisolated static let RESCAN_FALLBACK: Duration = .seconds(2)
     nonisolated static let OFFSET_LIMIT = 9_999
+    /// What a font install's time left is reckoned at until it has run for `ETA_MEASURE_AFTER`:
+    /// the Bluetooth speed measured on a ZD421 (3.9 KB/s).
+    nonisolated static let INSTALL_BYTES_PER_SECOND: Double = 3_900
+    nonisolated static let ETA_MEASURE_AFTER: Duration = .seconds(1)
 
     nonisolated static let TEMPLATES_UNKNOWN_TEXT = "Couldn't read the move's label templates. Check again in a moment."
     nonisolated static let SYNC_TO_CHECK_TEXT = "Sync this kiosk to check its label templates."
@@ -191,7 +208,11 @@ final class PrinterSetupViewModel {
     @ObservationIgnored private let store: KioskStore
     @ObservationIgnored private let fontsDir: URL?
     @ObservationIgnored private let scanner: @Sendable () async throws -> ZebraScanResult
-    @ObservationIgnored private let printerAt: @MainActor (String) -> SetupZebra
+    @ObservationIgnored private let printerAt: @MainActor (SavedPrinter) -> SetupZebra
+    /// A printer being chosen, before it is saved: under the lock, with a guard of its own (its
+    /// answer says nothing about what the saved printer is left holding).
+    @ObservationIgnored private let unsavedPrinterAt: @MainActor (SavedPrinter) -> SetupZebra
+    @ObservationIgnored private let printerGuard: PrinterGuard
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private let pickWait: Duration
     @ObservationIgnored private var scanTask: Task<Void, Never>?
@@ -200,18 +221,25 @@ final class PrinterSetupViewModel {
     /// Bumped by each check run: only the latest one writes the rows.
     @ObservationIgnored private var checkRun = 0
     @ObservationIgnored private var offsetsTask: Task<Void, Never>?
+    /// Cancel was tapped during a font install: checked between fonts only.
+    @ObservationIgnored private var installCancelled = false
+    /// The font going out (its number and when it started): only its progress is shown.
+    @ObservationIgnored private var fontGoingOut: (id: Int, started: ContinuousClock.Instant)?
+    @ObservationIgnored private var fontsStarted = 0
     @ObservationIgnored private var rescanWait: CheckedContinuation<Void, Never>?
     @ObservationIgnored private var rescanTimer: Task<Void, Never>?
     /// The scene phase is `.active` (the screen reports every phase, the first included).
     @ObservationIgnored private var sceneActive = true
     @ObservationIgnored private var closed = false
 
-    /// `zebraAt` is the printer at a host (`NetworkZebra` on the device); every call to it is made
-    /// under `printerLock`. `fontsDir` holds the synced font files (`Sync.defaultFontsDir`).
+    /// `zebraFor` is a printer the way its connection reaches it (`AppContainer.zebra(for:)` on
+    /// the device); every call to it is made under `printerLock` and `printerGuard`. `fontsDir`
+    /// holds the synced font files (`Sync.defaultFontsDir`).
     init(settings: LabelSettingsStore, build: LabelBuildMonitor, engine: LabelEngine, store: KioskStore, fontsDir: URL?,
          scanner: @escaping @Sendable () async throws -> ZebraScanResult,
-         zebraAt: @escaping @MainActor (String) -> SetupZebra,
+         zebraFor: @escaping @MainActor (SavedPrinter) -> SetupZebra,
          printerLock: PrinterLock,
+         printerGuard: PrinterGuard,
          sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
          pickWait: Duration = PrinterSetupViewModel.PICK_WAIT) {
         self.settingsStore = settings
@@ -220,7 +248,9 @@ final class PrinterSetupViewModel {
         self.store = store
         self.fontsDir = fontsDir
         self.scanner = scanner
-        self.printerAt = { host in LockedZebra(inner: zebraAt(host), lock: printerLock) }
+        self.printerAt = { printer in LockedZebra(inner: zebraFor(printer), lock: printerLock, guard: printerGuard) }
+        self.unsavedPrinterAt = { printer in LockedZebra(inner: zebraFor(printer), lock: printerLock, guard: PrinterGuard()) }
+        self.printerGuard = printerGuard
         self.sleep = sleep
         self.pickWait = pickWait
         // The saved offsets fill the fields.
@@ -382,7 +412,8 @@ final class PrinterSetupViewModel {
             if let found, let dpi = found.dpi {
                 saved = SavedPrinter(host: host, model: found.model ?? Self.DEFAULT_MODEL, serial: found.serial ?? "", dpi: dpi)
             } else {
-                let zebra = printerAt(host)
+                // Addresses the printer for its `~HI`; what is saved is built from the answers.
+                let zebra = unsavedPrinterAt(SavedPrinter(host: host, model: Self.DEFAULT_MODEL, serial: "", dpi: 0))
                 let id = try await zebra.identify()
                 let serial: String?
                 if let known = found?.serial { serial = known } else { serial = try await quietly { try await zebra.serial() } ?? nil }
@@ -452,13 +483,19 @@ final class PrinterSetupViewModel {
     }
 
     private func checks(_ saved: SavedPrinter, run: Int) async throws {
-        let zebra = printerAt(saved.host ?? "")
+        let zebra = printerAt(saved)
         try put(CheckRow(key: .answers, state: .running), run)
         let id: HostId
         switch try await attempt({ try await zebra.identify() }) {
         case .success(let answer): id = answer
         case .failure(let error):
-            let detail = wasLocalNetworkDenied(error) ? LOCAL_NETWORK_PRINTER_DENIED_TEXT : noZebraAnswerText(saved.connection)
+            var detail = noZebraAnswerText(saved.connection)
+            if wasLocalNetworkDenied(error) {
+                detail = LOCAL_NETWORK_PRINTER_DENIED_TEXT
+            } else if await printerGuard.state == .fontCut {
+                // Still waiting for the rest of a font: it needs the restart.
+                detail = FONT_INSTALL_CUT_TEXT
+            }
             try put(CheckRow(key: .answers, state: .fail, detail: detail), run)
             return
         }
@@ -557,29 +594,42 @@ final class PrinterSetupViewModel {
         var needed: [String] = []
         for name in pick.fonts.map({ $0.uppercased() }) where !needed.contains(name) { needed.append(name) }
         if needed.isEmpty { return CheckRow(key: .fonts, state: .ok, detail: "No printer fonts needed.") }
-        guard let onPrinter = try await quietly({ try await zebra.fonts() }) else {
+        guard let onPrinter = try await quietly({ try await zebra.fontEntries() }) else {
             return CheckRow(key: .fonts, state: .fail, detail: "Couldn't read the fonts on the printer.")
         }
-        let missing = missingFonts(needed: needed, onPrinter: onPrinter)
-        if missing.isEmpty { return CheckRow(key: .fonts, state: .ok) }
         let library = ((try? await store.labelFonts()) ?? []).map { KioskLabelFont(id: $0.id, name: $0.name, size: $0.size, resident: $0.resident) }
         try live(run)
-        let fix = fontFixFor(missing: missing, library: library)
+        let missing = missingFonts(needed: needed, onPrinter: onPrinter.map(\.name))
+        // A download cut short leaves a smaller file under the right name: sending it again
+        // overwrites it.
+        let damaged = damagedFonts(needed: needed, library: library, onPrinter: onPrinter)
+        if missing.isEmpty && damaged.isEmpty { return CheckRow(key: .fonts, state: .ok) }
+        let fix = fontFixFor(missing: missing + damaged, library: library)
         ui.fontFix = fix
         let others = missing.filter { !fix.builtIn.contains($0) }
         let detail = [others.isEmpty ? nil : "Missing: \(others.joined(separator: ", ")).",
+                      damaged.isEmpty ? nil : "Damaged: \(damaged.joined(separator: ", ")) (reinstall).",
                       fix.builtIn.isEmpty ? nil : builtInFontText(fix.builtIn)].compactMap { $0 }.joined(separator: " ")
         return CheckRow(key: .fonts, state: .fail, detail: detail)
     }
 
-    /// Sends each missing font the library has (its synced file), then checks again after the
-    /// printer has had `FONT_SETTLE` to file them. The first failure stops the installs.
+    /// Sends each missing or damaged font the library has (its synced file), then checks again
+    /// after the printer has had `FONT_SETTLE` to file them. The first failure stops the installs;
+    /// one that cut a font off says to restart the printer and checks nothing (the printer is
+    /// waiting for the rest of the font).
     func installFonts() {
         guard let fix = ui.fontFix, !ui.busy, !fix.installable.isEmpty else { return }
         ui.installing = true
         ui.fontMessage = nil
         ui.fontError = false
+        installCancelled = false
         Task { await self.runInstall(fix) }
+    }
+
+    /// Stops a font install after the font going out: a download announces its size, so cutting
+    /// one would leave the printer taking whatever comes next as font data (D8).
+    func cancelInstall() {
+        if ui.installing { installCancelled = true }
     }
 
     private func runInstall(_ fix: FontFix) async {
@@ -587,31 +637,90 @@ final class PrinterSetupViewModel {
             ui.installing = false
             return
         }
-        let zebra = printerAt(printer.host ?? "")
+        let zebra = printerAt(printer)
         var failed: String?
+        var cut = false
+        var stopped = false
         var files: [String: LabelFontRow] = [:]
         for row in (try? await store.labelFonts()) ?? [] { files[row.name.uppercased()] = row }
         for font in fix.installable {
+            if installCancelled {
+                stopped = true
+                break
+            }
             let name = font.name.uppercased()
             do {
                 guard let fontsDir, let fileName = files[name]?.fileName else { throw FontFileMissing() }
                 let bytes = try await Self.readFont(fontsDir.appendingPathComponent(fileName))
-                try await zebra.installFont(name: name, bytes: bytes)
+                try await zebra.installFont(name: name, bytes: bytes, progress: fontStarted())
+                fontFinished()
             } catch is CancellationError {
+                fontsDone()
                 ui.installing = false
                 return
             } catch {
                 Self.log.warning("font install failed: \(name, privacy: .public): \(String(describing: error), privacy: .private)")
                 failed = name
+                cut = await printerGuard.state == .fontCut
                 break
             }
         }
+        fontsDone()
+        if cut {
+            ui.installing = false
+            ui.fontMessage = FONT_INSTALL_CUT_TEXT
+            ui.fontError = true
+            return
+        }
         try? await sleep(Self.FONT_SETTLE)
         ui.installing = false
-        ui.fontMessage = failed.map(fontInstallFailedText) ?? FONTS_INSTALLED_TEXT
+        if let failed {
+            ui.fontMessage = fontInstallFailedText(failed)
+        } else {
+            // Stopped before the rest: the check shows what is still missing.
+            ui.fontMessage = stopped ? nil : FONTS_INSTALLED_TEXT
+        }
         ui.fontError = failed != nil
         // Fonts sent before a failure still turn green; the message stays.
         startChecks(printer, keepFontMessage: true)
+    }
+
+    /// A font starts going out: its progress from 0, and the callback its install reports through
+    /// (from any thread; each report hops here, and one that arrives after the font is done or
+    /// behind a newer one is dropped).
+    private func fontStarted() -> @Sendable (_ sent: Int, _ total: Int) -> Void {
+        fontsStarted += 1
+        let id = fontsStarted
+        fontGoingOut = (id, ContinuousClock.now)
+        ui.installProgress = 0
+        ui.installEta = nil
+        // Held only while the font goes out (the install's own task holds the view model as long).
+        return { sent, total in
+            Task { @MainActor in self.fontProgressed(id, sent: sent, total: total) }
+        }
+    }
+
+    private func fontProgressed(_ id: Int, sent: Int, total: Int) {
+        guard let going = fontGoingOut, going.id == id, total > 0 else { return }
+        let fraction = min(max(Double(sent) / Double(total), 0), 1)
+        guard fraction >= ui.installProgress ?? 0 else { return }
+        ui.installProgress = fraction
+        let elapsed = ContinuousClock.now - going.started
+        let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+        let rate = sent > 0 && elapsed >= Self.ETA_MEASURE_AFTER ? Double(sent) / seconds : Self.INSTALL_BYTES_PER_SECOND
+        ui.installEta = installEtaText(remainingBytes: total - sent, bytesPerSecond: rate)
+    }
+
+    /// The font's install returned: all of it went out.
+    private func fontFinished() {
+        ui.installProgress = 1
+        ui.installEta = nil
+    }
+
+    private func fontsDone() {
+        fontGoingOut = nil
+        ui.installProgress = nil
+        ui.installEta = nil
     }
 
     @concurrent nonisolated private static func readFont(_ url: URL) async throws -> Data {
@@ -712,7 +821,7 @@ final class PrinterSetupViewModel {
             }
             if let zpl {
                 let shifted = try parseZpl(try await helper("applyPrintSettings", LabelGenArgs.printSettings(zpl: zpl, offsetX: offsets.x, offsetY: offsets.y)))
-                try await printerAt(printer.host ?? "").send(try parseZpl(try await helper("withPrintMode", LabelGenArgs.printMode(zpl: shifted, peel: s.peel))))
+                try await printerAt(printer).send(try parseZpl(try await helper("withPrintMode", LabelGenArgs.printMode(zpl: shifted, peel: s.peel))))
                 (message, isError) = (text, false)
             } else {
                 (message, isError) = (text, true)
@@ -722,6 +831,8 @@ final class PrinterSetupViewModel {
             return
         } catch where LabelEngineError.isUnsupported(error) {
             (message, isError) = (DEVICE_UNSUPPORTED_TEXT, true)
+        } catch is PrinterNeedsRestart {
+            (message, isError) = (FONT_INSTALL_CUT_TEXT, true)
         } catch where wasLocalNetworkDenied(error) {
             (message, isError) = (LOCAL_NETWORK_PRINTER_DENIED_TEXT, true)
         } catch is PrinterTimeout {
