@@ -253,7 +253,7 @@ internal fun WorkerPhotoScreens(vm: RolodexViewModel, hasCamera: Boolean) {
     val photos = vm.photos
     val ui by photos.state.collectAsStateWithLifecycle()
     val context = LocalContext.current.applicationContext
-    val pick = rememberPhotoPicker { uri -> photos.use { decodeForCrop(context, uri) } }
+    val pick = rememberPhotoPicker(onUnavailable = photos::libraryUnavailable) { uri -> photos.use { decodeForCrop(context, uri) } }
     val target = ui.target ?: return
 
     if (ui.sheet) {
@@ -263,6 +263,8 @@ internal fun WorkerPhotoScreens(vm: RolodexViewModel, hasCamera: Boolean) {
                     "Photo for ${target.name}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = c.textDark,
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp).semantics { heading() },
                 )
+                // "This device can't open the photo library." after Choose photo found no picker.
+                ui.error?.let { Box(Modifier.padding(horizontal = 18.dp)) { KioskToast(it, error = true) } }
                 if (hasCamera) SheetOption(CameraIcon, "Take new photo", "photo-take", photos::takePhoto)
                 SheetOption(PictureIcon, "Choose photo", "photo-library") { photos.closeSheet(); pick() }
                 Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.End) {

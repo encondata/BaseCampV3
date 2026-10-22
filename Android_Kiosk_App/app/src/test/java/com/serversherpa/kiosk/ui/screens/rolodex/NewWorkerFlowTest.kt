@@ -487,6 +487,30 @@ class NewWorkerFlowTest {
         assertNotNull(vm.photos.failureText("p-reed"))
     }
 
+    /** Task 7 minor 3: Try again after a sign-out sends nothing (as Use photo), and the waiting photo goes with the session. */
+    @Test fun tryAgainSendsNothingAfterSignOut() = runTest {
+        val api = api().apply { rolodexPhotoResult = { _, _ -> throw ApiError(0, "network") } }
+        val vm = started(api)
+        atCrop(vm)
+        vm.newWorker.createWithPhoto(); settle { flowState == null }
+        assertNotNull(vm.photos.failureText("p-reed"))
+        admin = false
+        vm.retryPhoto("p-reed"); settle()
+        assertEquals(1, api.rolodexPhotos.size)
+        assertNull(vm.photos.failureText("p-reed"))
+    }
+
+    /** Task 7 minor 4: a device that can't open the photo library says so on the photo step. */
+    @Test fun aLibraryThatCantOpenSaysSo() = runTest {
+        val vm = started(api())
+        atPhoto(vm)
+        vm.newWorker.libraryUnavailable()
+        assertEquals("This device can't open the photo library.", flowState?.error)
+        assertEquals(NewWorkerStage.PHOTO, flowState?.stage)
+        vm.newWorker.usePhoto { picture() }; settle { flowState?.loadingPhoto == false }
+        assertNull(flowState?.error)
+    }
+
     /** A worker added since Next is caught by the create: the check runs again and Create anyway re-sends it. */
     @Test fun aPossibleDuplicateOnCreateRerunsTheCheckAndShowsTheSheet() = runTest {
         var matches = emptyList<RolodexMatch>()

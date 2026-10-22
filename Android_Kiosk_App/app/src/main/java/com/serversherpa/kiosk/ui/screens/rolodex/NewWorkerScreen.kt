@@ -75,7 +75,7 @@ internal fun newLevelChoices(options: RolodexOptions): List<Pair<String?, String
 internal fun NewWorkerScreen(vm: RolodexViewModel, flow: NewWorkerUi, options: RolodexOptions, hasCamera: Boolean, modifier: Modifier = Modifier) {
     val nw = vm.newWorker
     val context = LocalContext.current.applicationContext
-    val pick = rememberPhotoPicker { uri -> nw.usePhoto { decodeForCrop(context, uri) } }
+    val pick = rememberPhotoPicker(onUnavailable = nw::libraryUnavailable) { uri -> nw.usePhoto { decodeForCrop(context, uri) } }
 
     NewWorkerDetails(nw, flow, options, modifier)
 

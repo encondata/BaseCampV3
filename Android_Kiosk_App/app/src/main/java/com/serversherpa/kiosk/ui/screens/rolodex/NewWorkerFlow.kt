@@ -317,6 +317,13 @@ class NewWorkerFlow internal constructor(
         return true
     }
 
+    /** No photo picker could open on this device: the photo step says so. */
+    fun libraryUnavailable() {
+        val s = _state.value ?: return
+        if (s.stage != NewWorkerStage.PHOTO || s.busy) return
+        _state.value = s.copy(error = LIBRARY_UNAVAILABLE)
+    }
+
     /** The capture failed (the camera says why): the step is free again. */
     fun captureFailed() = change { it.copy(capturing = false) }
 

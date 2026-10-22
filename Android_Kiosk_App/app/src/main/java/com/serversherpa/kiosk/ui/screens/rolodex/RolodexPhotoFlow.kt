@@ -37,6 +37,9 @@ class PhotoFailure(
     fun copy(retryError: String? = this.retryError, retrying: Boolean = this.retrying) = PhotoFailure(name, jpeg, retryError, retrying)
 }
 
+/** When no photo picker can open on the device (Task 7 minor 4). */
+internal const val LIBRARY_UNAVAILABLE = "This device can't open the photo library."
+
 /** "Marcus Reed was saved, but the photo didn't upload." */
 fun photoFailureText(name: String): String = "$name was saved, but the photo didn't upload."
 
@@ -94,6 +97,16 @@ class RolodexPhotoFlow internal constructor(
 
     /** Choose photo from the sheet: the sheet closes while the screen opens the photo picker, whose pick comes to [use]. */
     fun closeSheet() = _state.update { it.copy(sheet = false) }
+
+    /**
+     * No photo picker could open on this device: said where the admin asked, the sheet again
+     * (Choose photo) or the camera (Library), instead of nothing happening.
+     */
+    fun libraryUnavailable() {
+        val s = _state.value
+        if (s.target == null || s.uploading || (s.stage != PhotoStage.NONE && s.stage != PhotoStage.CAMERA)) return
+        _state.update { it.copy(sheet = it.stage == PhotoStage.NONE, error = LIBRARY_UNAVAILABLE) }
+    }
 
     /**
      * A capture or a pick ([load] decodes it, off the main thread): "Position your photo". One that
@@ -211,10 +224,15 @@ class RolodexPhotoFlow internal constructor(
     /** "Marcus Reed was saved, but the photo didn't upload." while that photo is waiting. */
     fun failureText(personId: String): String? = _state.value.failures[personId]?.let { photoFailureText(it.name) }
 
-    /** Try again: the same photo, one try at a time per worker (the view model checks the connection). */
+    /**
+     * Try again: the same photo, one try at a time per worker (the view model checks the
+     * connection). Signed out since, nothing is sent (as Use photo) and the waiting photos go with
+     * the session.
+     */
     internal fun retry(personId: String) {
         val failure = _state.value.failures[personId] ?: return
         if (failure.retrying) return
+        if (!signedIn()) { setFailures { emptyMap() }; return }
         setFailure(personId) { it.copy(retrying = true, retryError = null) }
         scope.launch {
             try {

@@ -188,14 +188,15 @@ fun DrawScope.drawCircleDim(diameter: Float, center: Offset, color: Color) {
 /**
  * The photo picker (images only; no storage permission). Returns the call that opens it; a pick
  * comes to [onPick], a cancel to nothing. On a device without the system picker it falls back to
- * the document picker.
+ * the document picker; when nothing can open, [onUnavailable] says so.
  */
 @Composable
-fun rememberPhotoPicker(onPick: (Uri) -> Unit): () -> Unit {
+fun rememberPhotoPicker(onUnavailable: () -> Unit, onPick: (Uri) -> Unit): () -> Unit {
     val latest by rememberUpdatedState(onPick)
+    val unavailable by rememberUpdatedState(onUnavailable)
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) latest(uri) }
     return remember(launcher) {
-        { try { launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } catch (_: ActivityNotFoundException) {} }
+        { try { launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } catch (_: ActivityNotFoundException) { unavailable() } }
     }
 }
 

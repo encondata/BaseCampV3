@@ -628,6 +628,28 @@ class RolodexViewModelTest {
         assertEquals(PhotoStage.CROP, vm.photos.state.value.stage)
     }
 
+    /** Task 7 minor 4: Choose photo on a device that can't open the photo library says so instead of doing nothing. */
+    @Test fun aLibraryThatCantOpenSaysSoOnTheWorkerPage() = runTest {
+        val vm = build(onlineApi())
+        vm.select("p-abbott"); settle { !vm.state.value.detailLoading }
+        vm.startPhoto()
+        vm.photos.closeSheet()                                  // Choose photo on the sheet...
+        vm.photos.libraryUnavailable()                          // ...and the picker can't open
+        assertTrue(vm.photos.state.value.sheet)                 // the sheet is back, saying why
+        assertEquals("This device can't open the photo library.", vm.photos.state.value.error)
+        assertEquals(PhotoTarget("p-abbott", "Ann Abbott"), vm.photos.state.value.target)
+        vm.photos.takePhoto()                                   // the camera instead
+        assertNull(vm.photos.state.value.error)
+        vm.photos.libraryUnavailable()                          // the camera's Library
+        assertEquals(PhotoStage.CAMERA, vm.photos.state.value.stage)
+        assertFalse(vm.photos.state.value.sheet)
+        assertEquals("This device can't open the photo library.", vm.photos.state.value.error)
+        vm.photos.close()
+        vm.photos.libraryUnavailable()                          // nothing open: nothing to say
+        assertNull(vm.photos.state.value.error)
+        assertFalse(vm.photos.state.value.sheet)
+    }
+
     @Test fun aPickThatIsntAPictureGoesBackToThePhotoStepAndSaysSo() = runTest {
         val vm = build(onlineApi())
         vm.select("p-abbott"); settle { !vm.state.value.detailLoading }
