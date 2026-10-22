@@ -43,6 +43,12 @@ object ZebraBluetoothSpec {
     const val RECONNECT_SPACING_MS = 3_000L
     /** A scan for printers. */
     const val SCAN_MS = 30_000L
+    /** Connecting by the saved Bluetooth address gets this long (of [CONNECT_READY_MS]) to answer
+     *  before the rest of the budget scans for the printer's serial instead (D3). */
+    const val ADDRESS_TRY_MS = 5_000L
+    /** Each Device Information read is waited for this long (the spike's fallback); a value that
+     *  comes later is still kept, and the link never waits on it alone. */
+    const val DEVICE_INFO_READ_MS = 5_000L
 
     /** How long a send of [bytes] may take: 15 s plus 1 s per 2 KB (twice the measured time). */
     fun sendBudgetMs(bytes: Int): Long = 15_000 + bytes * 1_000L / 2_048
