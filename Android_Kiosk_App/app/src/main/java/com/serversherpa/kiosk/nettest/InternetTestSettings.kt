@@ -10,10 +10,12 @@ const val TEST_LIFETIME_MS = 7_200_000L
 /**
  * True when a test armed at [armedAtMs] should no longer be running at [nowMs].
  * Never armed counts as expired, and so does a clock moved backward past the
- * moment of arming, since the elapsed time can't be trusted.
+ * moment of arming, since the elapsed time can't be trusted. So does a
+ * switch-on time below zero, which only a corrupt or hand-edited value can
+ * hold; ruling it out first also keeps `nowMs - armedAtMs` from overflowing.
  */
 fun isExpired(armedAtMs: Long?, nowMs: Long): Boolean =
-    armedAtMs == null || nowMs < armedAtMs || nowMs - armedAtMs >= TEST_LIFETIME_MS
+    armedAtMs == null || armedAtMs < 0 || nowMs < armedAtMs || nowMs - armedAtMs >= TEST_LIFETIME_MS
 
 /** The wall-clock moment a test armed at [armedAtMs] turns itself off. */
 fun turnsOffAtMs(armedAtMs: Long): Long = armedAtMs + TEST_LIFETIME_MS

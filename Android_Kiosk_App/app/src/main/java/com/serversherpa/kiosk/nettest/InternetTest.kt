@@ -109,8 +109,11 @@ class InternetTest(
      *
      * - Routing: the active profiles are installed only while the switch is on,
      *   not expired, and [auth] is [AuthState.Authed]; otherwise both links go direct.
-     * - [auth] turning [AuthState.Anon] (a session ending, or a start-up restore
-     *   that finds nobody) turns the switch off. [AuthState.Loading] doesn't.
+     * - While [auth] is [AuthState.Anon] (a session ended, or a start-up restore
+     *   found nobody) the switch is kept off: it turns off when auth becomes
+     *   Anon, and again whenever it is found on while auth is still Anon (a
+     *   switch-on written after the sign-out), so it never waits, saved, for
+     *   the next person to sign in. [AuthState.Loading] leaves it alone.
      * - [devMode] turning false turns it off.
      * - Each [setupCleared] emission (a portal Clear Setup) turns it off.
      * - Two hours after switch-on it turns off, and a switch found past its two
@@ -118,14 +121,16 @@ class InternetTest(
      */
     fun start(auth: StateFlow<AuthState>, devMode: Flow<Boolean>, setupCleared: Flow<String>) {
         scope.launch {
-            combine(stored, auth) { s, a -> if (a is AuthState.Authed) s else null }.collect { s ->
-                if (s != null && s.enabled && !isExpired(s.armedAtMs, clock())) {
+            combine(stored, auth) { s, a -> s to a }.collect { (s, a) ->
+                if (a is AuthState.Authed && s != null && s.enabled && !isExpired(s.armedAtMs, clock())) {
                     install(s.activeProfile(Dial.INTERNET), s.activeProfile(Dial.LOCAL))
                 } else {
                     install(internet = null, local = null)
+                    if (a is AuthState.Anon && s != null && s.enabled) turnOff()
                 }
             }
         }
+        // Covers auth turning Anon before the store has loaded, too.
         scope.launch {
             auth.collect { if (it is AuthState.Anon) turnOff() }
         }
@@ -157,7 +162,11 @@ class InternetTest(
         while (true) {
             val now = clock()
             if (armedAtMs == null || isExpired(armedAtMs, now)) return turnOff()
-            delay(minOf(turnsOffAtMs(armedAtMs) - now, RECHECK_MS))
+            // Never a wait of zero or less: delay() returns at once for those
+            // without suspending, which would spin this loop.
+            val wait = turnsOffAtMs(armedAtMs) - now
+            if (wait <= 0) return turnOff()
+            delay(minOf(wait, RECHECK_MS))
         }
     }
 

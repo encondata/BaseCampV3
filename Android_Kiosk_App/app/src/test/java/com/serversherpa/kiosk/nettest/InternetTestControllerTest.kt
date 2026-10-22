@@ -217,6 +217,38 @@ class InternetTestControllerTest {
         assertNull(InternetTestRoutes.internet)
     }
 
+    /**
+     * "Only while someone is signed in" is a level, not an edge: a switch-on
+     * that lands after the session ended (a tap handled in the last frame
+     * before the sign-in page replaces the Developer tab) is turned off again
+     * at once, so it can't wait, saved, for the next person to sign in.
+     */
+    @Test fun aSwitchOnWhileSignedOutDoesNotSurvive() = runTest {
+        val store = newStore()
+        val test = started(store)
+        test.onWithPresets()
+        runCurrent()
+        assertNotNull(InternetTestRoutes.internet)
+        auth.value = AuthState.Anon
+        runCurrent()
+        assertFalse(store.saved().enabled)
+
+        test.setEnabled(true)
+        runCurrent()
+
+        assertFalse(test.settings.value.enabled)
+        assertFalse("persisted off", store.saved().enabled)
+        assertNull(store.saved().armedAtMs)
+        assertNull(InternetTestRoutes.internet)
+        assertNull(InternetTestRoutes.local)
+
+        // The next sign-in finds it off.
+        auth.value = signedIn
+        runCurrent()
+        assertFalse(store.saved().enabled)
+        assertNull(InternetTestRoutes.internet)
+    }
+
     @Test fun signOutTurnsOff() = runTest {
         val store = newStore()
         val test = started(store)
@@ -388,6 +420,30 @@ class InternetTestControllerTest {
         clockOffset = 9_000
         val store = newStore()
         store.save(savedOn.copy(armedAtMs = 10_000))
+        val test = started(store)
+
+        assertFalse(store.saved().enabled)
+        assertFalse(test.settings.value.enabled)
+        assertNull(InternetTestRoutes.internet)
+        assertNull(InternetTestRoutes.local)
+    }
+
+    /*
+     * A switch-on time below zero can only be a corrupt or hand-edited value
+     * (the controller writes the wall clock). It counts as expired, so the
+     * switch comes back off. Near Long.MIN_VALUE the elapsed-time arithmetic
+     * overflows, which once read as "not expired" and left the timer spinning
+     * on a delay that never suspends; the timeout keeps a regression from
+     * hanging the suite.
+     */
+
+    @Test(timeout = 10_000) fun aSwitchOnTimeAtLongMinValueStartsOff() = runTest { negativeSwitchOnTimeStartsOff(Long.MIN_VALUE) }
+
+    @Test(timeout = 10_000) fun aSwitchOnTimeOfMinusOneStartsOff() = runTest { negativeSwitchOnTimeStartsOff(-1) }
+
+    private suspend fun TestScope.negativeSwitchOnTimeStartsOff(armedAtMs: Long) {
+        val store = newStore()
+        store.save(savedOn.copy(armedAtMs = armedAtMs))
         val test = started(store)
 
         assertFalse(store.saved().enabled)

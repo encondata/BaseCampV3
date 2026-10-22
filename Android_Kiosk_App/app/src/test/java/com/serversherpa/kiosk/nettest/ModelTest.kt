@@ -157,6 +157,12 @@ class ModelTest {
         assertTrue(isExpired(10_000, 9_999))
         // Armed and checked in the same instant is still live.
         assertFalse(isExpired(10_000, 10_000))
+        // A switch-on time below zero is corrupt, and counts as expired, even
+        // where the elapsed time would overflow.
+        assertTrue(isExpired(-1, 0))
+        assertTrue(isExpired(-1, 5))
+        assertTrue(isExpired(Long.MIN_VALUE, 5))
+        assertTrue(isExpired(Long.MIN_VALUE, 1_760_000_000_000L))
         assertEquals(7_200_000L, TEST_LIFETIME_MS)
         assertEquals(1_000L + 7_200_000L, turnsOffAtMs(1_000))
     }
