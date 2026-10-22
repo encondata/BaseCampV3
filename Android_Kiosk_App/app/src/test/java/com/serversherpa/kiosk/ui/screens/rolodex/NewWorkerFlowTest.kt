@@ -563,11 +563,12 @@ class NewWorkerFlowTest {
         assertEquals(1, api.rolodexPhotos.size)
     }
 
+    /** A failure that isn't about a field stays on Position your photo, form and photo kept (Create worker tries again). */
     @Test fun aFailedCreateKeepsTheFormAndThePhoto() = runTest {
         val cases = listOf(
             ApiError(423, "read_only_mode") to "The system is in read-only mode, so changes can't be saved right now.",
-            ApiError(409, "email_in_use") to "Another person already uses that email.",
             ApiError(0, "network") to "No connection. Try again when you're back online.",
+            ApiError(500, "unknown_error") to "Something went wrong. Try again.",
         )
         for ((failure, copy) in cases) {
             val api = api().apply { rolodexCreateResult = { throw failure } }
@@ -582,6 +583,79 @@ class NewWorkerFlowTest {
             assertTrue(failure.code, api.rolodexPhotos.isEmpty())
             assertNull(failure.code, vm.state.value.selectedId)
         }
+    }
+
+    /**
+     * M7 (iOS parity): a create refused over a field on the details (here the email) goes back to
+     * the details with the error and the positioned photo kept; once the field is fixed, Next comes
+     * straight back to the photo and Create sends the same photo, with no retake.
+     */
+    @Test fun aCreateRefusedOverTheEmailGoesBackToTheDetailsWithThePhotoKept() = runTest {
+        var refuse = true
+        val api = api().apply { rolodexCreateResult = { if (refuse) throw ApiError(409, "email_in_use") else created } }
+        val vm = started(api)
+        atCrop(vm)
+        val crop = flowState!!.crop!!
+        val photo = crop.jpeg()
+        vm.newWorker.createWithPhoto(); settle { flowState?.creating == false }
+        assertEquals(NewWorkerStage.DETAILS, flowState?.stage)
+        assertEquals("Another person already uses that email.", flowState?.error)
+        assertTrue(crop === flowState?.crop)
+        assertEquals(marcus, flowState?.form)
+        assertTrue(api.rolodexPhotos.isEmpty())
+        assertNull(vm.state.value.selectedId)
+
+        vm.newWorker.update(marcus.copy(email = "marcus.reed@example.com"))
+        refuse = false
+        vm.newWorker.next(); settle { flowState?.checking == false }
+        assertEquals(NewWorkerStage.CROP, flowState?.stage)
+        assertTrue(crop === flowState?.crop)
+        assertNull(flowState?.error)
+        vm.newWorker.createWithPhoto(); settle { flowState == null }
+        assertEquals(2, api.rolodexCreates.size)
+        assertEquals("marcus.reed@example.com", api.rolodexCreates.last().email)
+        assertArrayEquals(photo, api.rolodexPhotos.single().second)
+        assertEquals("p-reed", vm.state.value.selectedId)
+    }
+
+    /** The other field refusals (company, level) go back to the details too; Retake is still there on the photo. */
+    @Test fun otherFieldRefusalsGoBackToTheDetailsToo() = runTest {
+        for (code in listOf("partner_archived", "partner_not_found", "unknown_level")) {
+            val api = api().apply { rolodexCreateResult = { throw ApiError(422, code) } }
+            val vm = started(api)
+            atCrop(vm)
+            val crop = flowState!!.crop
+            vm.newWorker.createWithPhoto(); settle { flowState?.creating == false }
+            assertEquals(code, NewWorkerStage.DETAILS, flowState?.stage)
+            assertEquals(code, "Something went wrong. Try again.", flowState?.error)
+            assertTrue(code, crop === flowState?.crop)
+            vm.newWorker.next(); settle { flowState?.checking == false }
+            assertEquals(code, NewWorkerStage.CROP, flowState?.stage)
+            vm.newWorker.retake()
+            assertEquals(code, NewWorkerStage.PHOTO, flowState?.stage)
+            assertNull(code, flowState?.crop)
+        }
+    }
+
+    /** Without a photo, a field refusal goes back to the details too; the next try asks again before skipping. */
+    @Test fun aSkippedPhotoCreateRefusedOverAFieldGoesBackToTheDetails() = runTest {
+        var refuse = true
+        val api = api().apply { rolodexCreateResult = { if (refuse) throw ApiError(409, "email_in_use") else created } }
+        val vm = started(api)
+        atPhoto(vm)
+        vm.newWorker.continueWithoutPhoto()
+        vm.newWorker.createWithoutPhoto(); settle { flowState?.creating == false }
+        assertEquals(NewWorkerStage.DETAILS, flowState?.stage)
+        assertEquals("Another person already uses that email.", flowState?.error)
+        vm.newWorker.update(marcus.copy(email = ""))
+        refuse = false
+        atPhoto(vm)
+        vm.newWorker.createWithoutPhoto(); settle()
+        assertEquals(1, api.rolodexCreates.size)                // not asked again yet
+        vm.newWorker.continueWithoutPhoto()
+        vm.newWorker.createWithoutPhoto(); settle { flowState == null }
+        assertEquals(2, api.rolodexCreates.size)
+        assertNull(api.rolodexCreates.last().email)
     }
 
     /** A sign-out while the create is out: the late answer is dropped and no upload starts. */

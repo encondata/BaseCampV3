@@ -21,6 +21,12 @@ import kotlinx.coroutines.withContext
 /** "+ New": the details (Step 1 of 2), the photo step, then "Position your photo". */
 enum class NewWorkerStage { DETAILS, PHOTO, CROP }
 
+/**
+ * Create refusals about a field on the details (M7, as iOS): the admin goes back there to fix it,
+ * with the positioned photo kept (Next comes straight back to it).
+ */
+internal val DETAILS_REFUSALS = setOf("email_in_use", "partner_archived", "partner_not_found", "unknown_level")
+
 /** The confirmation's message (mockup 4-photo-required). */
 const val NO_PHOTO_MESSAGE = "Every worker should have a photo. You can add one later from their page, and the Rolodex lists who is missing one."
 
@@ -392,7 +398,8 @@ class NewWorkerFlow internal constructor(
 
     /**
      * The create, then the worker's page, then the photo. `creating` is already set. A failure
-     * keeps the form and the photo; a possible duplicate runs the check again for the sheet.
+     * keeps the form and the photo: a field the server refused ([DETAILS_REFUSALS]) goes back to
+     * the details with the error; a possible duplicate runs the check again for the sheet.
      */
     private suspend fun send(photo: ByteArray?, photoSkipped: Boolean, allowDuplicate: Boolean): Unit = withContext(NonCancellable) {
         val s = _state.value ?: return@withContext
@@ -410,6 +417,10 @@ class NewWorkerFlow internal constructor(
                 refused = Refused(photo, photoSkipped)
                 change { it.copy(creating = false) }
                 runCheck(advance = false, afterRefusal = true)
+            } else if (code in DETAILS_REFUSALS) {
+                visit++
+                skipAsked = false
+                change { it.copy(creating = false, error = rolodexErrorText(code), stage = NewWorkerStage.DETAILS, confirmNoPhoto = false, loadingPhoto = false, capturing = false) }
             } else {
                 change { it.copy(creating = false, error = rolodexErrorText(code)) }
             }
