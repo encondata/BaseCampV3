@@ -203,6 +203,17 @@ struct RolodexModelTests {
         #expect(try await store.rolodexCache() == nil)
     }
 
+    /// Final review M6: a sign-out forgets the list's error too, so the next admin to open the
+    /// Rolodex doesn't see the last one's refusal while their own list loads.
+    @Test func clearForgetsTheListError() async throws {
+        api.rolodexWorkersResult = { throw ApiError(status: 403, code: "forbidden") }
+        let m = model()
+        await m.load()
+        #expect(m.listError == "Your account can't use the Rolodex.")
+        await m.clear().value
+        #expect(m.listError == nil)
+    }
+
     // MARK: search and filters
 
     @Test func searchNarrowsTheListAndTheCountsFollowIt() async throws {
@@ -250,6 +261,75 @@ struct RolodexModelTests {
         await first.value
         #expect(m.selectedId == BO.personId)
         #expect(m.detail?.personId == BO.personId)
+    }
+
+    /// Final review M4: the same worker tapped again (or the Rolodex opened again, which
+    /// refreshes) reloads their page; the page already here shows meanwhile, and Edit waits for
+    /// the fresh one (a form built from the old page would send its stale values back).
+    @Test func tappingTheSameWorkerAgainReloadsTheirPage() async throws {
+        let m = await anaOpen()
+        let hold = HoldGate()
+        api.rolodexGate = { name in if name == "rolodexWorker" { await hold.wait() } }
+        api.rolodexWorkerResult = { _ in
+            anaDetail(canChangeStatus: false, statusBlock: "rank_too_low") {
+                $0.phone = "(312) 555-0100"; $0.status = "blacklist"; $0.statusLabel = "Blacklist"
+            }
+        }
+        let again = Task { await m.select(ANA.personId) }
+        #expect(await waitUntil { m.detailLoading })
+        #expect(m.detail == anaDetail() && m.shownRow?.status == "active")
+        #expect(!m.canEdit)
+        m.startEdit()
+        #expect(m.editing == nil)
+        await hold.open()
+        await again.value
+        #expect(m.detail?.phone == "(312) 555-0100" && m.shownRow?.status == "blacklist")
+        #expect(m.rows.first { $0.personId == ANA.personId }?.status == "blacklist")
+        #expect(m.statusBlockText == "This person has a portal login ranked above yours.")
+        #expect(m.canEdit)
+    }
+
+    @Test func comingBackToTheRolodexReloadsTheOpenWorker() async throws {
+        let m = await anaOpen()
+        api.rolodexWorkerResult = { _ in anaDetail { $0.phone = "(312) 555-0100" } }
+        await m.refresh()   // what the Rolodex runs each time it opens
+        #expect(m.detail?.phone == "(312) 555-0100")
+    }
+
+    /// Ruling S18 (final review M5, M9): while an Edit form is open, another row, "+ New", a
+    /// created worker or closing the page leave the form alone; the admin uses Cancel or Save first.
+    @Test func anOpenEditFormKeepsTheWorkerUntilCancelOrSave() async throws {
+        let m = await anaOpen()
+        #expect(m.canStartNewWorker && !m.selectionLocked)
+        m.startEdit()
+        m.editing?.phone = "(312) 555-0100"
+        m.editing?.email = "ana@new.example"
+        let typed = m.editing
+        let fetches = api.calls.filter { $0 == "rolodexWorker" }.count
+        #expect(m.selectionLocked)
+
+        await m.select(BO.personId)
+        await m.select(nil)
+        await m.select(ANA.personId)   // her own row again: no reload under the form
+        #expect(m.selectedId == ANA.personId && m.editing == typed)
+        #expect(api.calls.filter { $0 == "rolodexWorker" }.count == fetches)
+
+        #expect(!m.canStartNewWorker)
+        m.startNewWorker()
+        #expect(!m.newWorker.active)
+
+        // a phone's tap on another row shows the form being edited
+        #expect(m.workerToShow(tapped: BO.personId) == ANA.personId)
+
+        // a worker the New worker flow hands over joins the list without replacing the form
+        await m.open(RolodexDetail(row: BO, canEdit: true))
+        #expect(m.selectedId == ANA.personId && m.editing == typed)
+
+        m.cancelEdit()
+        #expect(!m.selectionLocked && m.canStartNewWorker)
+        #expect(m.workerToShow(tapped: BO.personId) == BO.personId)
+        await m.select(BO.personId)
+        #expect(m.selectedId == BO.personId)
     }
 
     @Test func canEditFalseBlocksStartEdit() async throws {
@@ -398,7 +478,10 @@ struct RolodexModelTests {
         #expect(await saving.value == false)
         #expect(m.errorText == "The system is in read-only mode, so changes can't be saved right now.")
         #expect(m.editing == typed)
-        // once the save is over, leaving works again
+        // the form is still open (ruling S18): the page stays until Cancel, then leaving works
+        await m.select(BO.personId)
+        #expect(m.selectedId == ANA.personId && m.editing == typed)
+        m.cancelEdit()
         await m.select(BO.personId)
         #expect(m.selectedId == BO.personId)
     }
@@ -534,6 +617,28 @@ struct RolodexScreenRulesTests {
         // before the first measurement a regular width starts split
         #expect(rolodexSplit(sizeClass: .regular, width: nil))
         #expect(!rolodexSplit(sizeClass: .compact, width: nil))
+    }
+
+    /// Final review (Confirmed): the pushed worker page has its "‹ Rolodex" in the narrow and the
+    /// wide layout (an iPhone on its side, an iPad in Split View); beside the list it has none.
+    @Test func thePushedWorkerPageAlwaysHasItsBack() {
+        #expect(rolodexBackPlacement(hasBack: true, wide: false) == .besideEdit)
+        #expect(rolodexBackPlacement(hasBack: true, wide: true) == .aboveHeader)
+        #expect(rolodexBackPlacement(hasBack: false, wide: true) == .hidden)
+        #expect(rolodexBackPlacement(hasBack: false, wide: false) == .hidden)
+    }
+
+    /// A pushed worker page whose window grows to the split layout pops: the list beside the page
+    /// already shows the worker.
+    @Test func aPushedWorkerPagePopsOnceTheWindowSplits() {
+        let pushed: [Route] = [.rolodex, .rolodexWorker("p1")]
+        #expect(rolodexPopsWorkerRoute(pushed, sizeClass: .regular, width: 1180))
+        #expect(rolodexPopsWorkerRoute(pushed, sizeClass: .regular, width: 700))
+        #expect(!rolodexPopsWorkerRoute(pushed, sizeClass: .regular, width: 699))
+        #expect(!rolodexPopsWorkerRoute(pushed, sizeClass: .compact, width: 900))   // an iPhone on its side
+        #expect(!rolodexPopsWorkerRoute(pushed, sizeClass: .regular, width: nil))   // not measured yet
+        #expect(!rolodexPopsWorkerRoute([.rolodex], sizeClass: .regular, width: 1180))
+        #expect(!rolodexPopsWorkerRoute([], sizeClass: .regular, width: 1180))
     }
 
     @Test func theJumpStripMapsADragToALetter() {

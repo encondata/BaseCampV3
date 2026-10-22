@@ -55,6 +55,8 @@ struct FeaturesTests {
         let rolodex = feature(.rolodex)
         #expect(rolodex == ROLODEX_FEATURE)
         #expect(rolodex.title == "Rolodex" && rolodex.route == "rolodex")
+        // the same sentence as the Android tile (ruling S16)
+        #expect(rolodex.blurb == "Look up workers, edit their details, and take photos.")
         #expect(rolodex.alwaysAvailable && !rolodex.placeholder)
         #expect(featureAvailable(rolodex, setupState: .incomplete))
         #expect(featureForRoute("rolodex")?.id == .rolodex)
