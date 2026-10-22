@@ -36,7 +36,7 @@ val TIMECLOCK_STATION_FEATURE = KioskFeature(FeatureId.TIMECLOCK_STATION, "timec
 
 /** The Rolodex (admins look up, edit and photograph workers; native apps only, so not in
  *  [FEATURES], whose order is the web kiosk's). It needs no move or setup step. */
-val ROLODEX_FEATURE = KioskFeature(FeatureId.ROLODEX, "rolodex", "Rolodex", "Find, edit, and photograph workers.", alwaysAvailable = true)
+val ROLODEX_FEATURE = KioskFeature(FeatureId.ROLODEX, "rolodex", "Rolodex", "Look up workers, edit their details, and take photos.", alwaysAvailable = true)
 
 /** What Home shows (kiosk/src/lib/features.ts STATION_TILES; Jimmy owns these lists): a Time
  *  Clock station only Time Clock, Kiosk Setup and Settings; any other kiosk every feature, plus
