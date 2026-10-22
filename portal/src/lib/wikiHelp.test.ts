@@ -23,7 +23,12 @@ describe('wikiHelp', () => {
     expect(found).toEqual({ found: true, url: 'https://wiki.test/n/n1', title: 'Time Guide' });
   });
 
-  it('reads a 404 as "no guide yet"', async () => {
+  it('reads a 204 No Content as "no guide yet" (the API\u2019s answer)', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    expect(await lookupHelp(fetcher, 'portal:/dashboards/move')).toEqual({ found: false });
+  });
+
+  it('still reads a 404 as "no guide yet" (an older API)', async () => {
     const fetcher = vi.fn().mockResolvedValue(json(404, { detail: { code: 'not_found' } }));
     expect(await lookupHelp(fetcher, 'portal:/assets')).toEqual({ found: false });
   });

@@ -50,6 +50,8 @@ import com.serversherpa.kiosk.core.devices.RegistrationState
 import com.serversherpa.kiosk.core.features.featureForRoute
 import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.data.identity.KioskIdentity
+import com.serversherpa.kiosk.nettest.NetTestChip // INTERNET-TEST
+import com.serversherpa.kiosk.nettest.netTestFootValue // INTERNET-TEST
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.theme.ChipTone
@@ -115,13 +117,14 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
                 // The kiosk's own name, then who is on it. The person gives way first,
                 // so the kiosk's name is never the thing that gets clipped.
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    NetTestChip(onClick = { nav.navigate(Routes.settings("developer")) }) // INTERNET-TEST
                     Text(
                         identity.name, fontFamily = FragmentMono, color = c.snow,
                         style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.clickable { nav.navigate(Routes.settings("this-kiosk")) },
                     )
                     authed?.let {
-                        Text(" · ", color = c.textMute, style = MaterialTheme.typography.labelMedium)
+                        Text(" · ", color = c.textMute, style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
                         Text(
                             it.person.display_name, color = c.textMute, style = MaterialTheme.typography.bodySmall,
                             maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -156,6 +159,7 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
             setup?.let { s -> s.initiativeName?.let { FootItem("Move", it) }; s.siteName?.let { FootItem("Site", it) }; s.scanLabel?.let { FootItem("Scan", it) } }
                 ?: authed?.kioskMove?.let { FootItem("Move", it.name) }
             if (devMode) FootItem("Dev mode", "On", valueColor = c.accent)
+            netTestFootValue()?.let { FootItem("Net test", it, valueColor = c.accent) } // INTERNET-TEST
         }
     }
 

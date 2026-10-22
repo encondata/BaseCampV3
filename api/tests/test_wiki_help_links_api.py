@@ -1,6 +1,6 @@
 """Help links (Phase 3, spec §8): context normalization and matching
 (`serversherpa.wiki.help`), `GET /wiki/help?context=` (longest stored
-prefix, 404 unless the caller can view the guide), and the wiki-admin
+prefix; 204 No Content when there is none the caller can view), and the wiki-admin
 CRUD at `/wiki/help-links` (validation, 409 `context_taken`, audit)."""
 import uuid
 
@@ -125,11 +125,11 @@ async def test_help_longest_prefix_wins_at_segment_boundaries(client, db):
     assert await title("portal:/bulk/time/review") == "Time Guide"
     assert await title("portal:/bulk/sites") == "Bulk Guide"
     assert await title("portal:/bulk") == "Bulk Guide"
-    assert await title("portal:/bulkx") == 404
-    assert await title("portal:/bulk-time") == 404
-    assert await title("portal:/") == 404
+    assert await title("portal:/bulkx") == 204
+    assert await title("portal:/bulk-time") == 204
+    assert await title("portal:/") == 204
     # the kiosk is its own namespace
-    assert await title("kiosk:/bulk/time") == 404
+    assert await title("kiosk:/bulk/time") == 204
 
 
 async def test_help_root_link_covers_the_whole_app(client, db):
@@ -139,7 +139,7 @@ async def test_help_root_link_covers_the_whole_app(client, db):
     await _link(client, admin, "portal:/", page["id"])
     assert (await _help(client, s["viewer"], "portal:/assets")).json()["title"] == "Portal Guide"
     assert (await _help(client, s["viewer"], "portal:/")).json()["title"] == "Portal Guide"
-    assert (await _help(client, s["viewer"], "kiosk:/assets")).status_code == 404
+    assert (await _help(client, s["viewer"], "kiosk:/assets")).status_code == 204
 
 
 async def test_help_normalizes_the_requested_context(client, db):
@@ -156,11 +156,11 @@ async def test_help_normalizes_the_requested_context(client, db):
         assert resp.json()["context"] == "portal:/sites/:id"
     # a path with characters no stored context has still falls back to its prefixes
     assert (await _help(client, s["viewer"], "portal:/sites/:id/a.b")).status_code == 200
-    assert (await _help(client, s["viewer"], "portal:/sites")).status_code == 404
-    assert (await _help(client, s["viewer"], "sites")).status_code == 404
+    assert (await _help(client, s["viewer"], "portal:/sites")).status_code == 204
+    assert (await _help(client, s["viewer"], "sites")).status_code == 204
 
 
-async def test_help_is_404_when_the_caller_cannot_view_the_guide(client, db):
+async def test_help_is_204_when_the_caller_cannot_view_the_guide(client, db):
     s = await _setup(client, db)
     admin = await _admin(client, db)
     page = await _page(client, s, db, "Internal Guide")
@@ -171,8 +171,9 @@ async def test_help_is_404_when_the_caller_cannot_view_the_guide(client, db):
     await db.flush()
     outsider, _ = await login_as(client, db, roles=("client_viewer",), client_id=acme.id)
     resp = await _help(client, outsider, "portal:/assets")
-    assert resp.status_code == 404
-    assert resp.json()["detail"]["code"] == "not_found"
+    # the same empty answer as "no guide at all" — a hidden guide's existence never leaks
+    assert resp.status_code == 204
+    assert resp.content == b""
     # everyone who can see it gets it
     assert (await _help(client, s["viewer"], "portal:/assets")).status_code == 200
 
@@ -208,22 +209,22 @@ async def test_help_hides_a_never_published_page_from_view_only(client, db):
     draft = await _page(client, s, db, "Draft Guide", publish=False)
     await _link(client, admin, "portal:/assets", draft["id"])
 
-    assert (await _help(client, s["viewer"], "portal:/assets")).status_code == 404
+    assert (await _help(client, s["viewer"], "portal:/assets")).status_code == 204
     # an editor can see the draft
     assert (await _help(client, s["editor"], "portal:/assets")).status_code == 200
     await publish_via_db(db, draft["id"])
     assert (await _help(client, s["viewer"], "portal:/assets")).status_code == 200
 
 
-async def test_help_is_404_for_a_trashed_guide(client, db):
+async def test_help_is_204_for_a_trashed_guide(client, db):
     s = await _setup(client, db)
     admin = await _admin(client, db)
     page = await _page(client, s, db)
     await _link(client, admin, "portal:/assets", page["id"])
     resp = await client.delete(f"/wiki/nodes/{page['id']}", headers=s["owner"])
     assert resp.status_code == 200, resp.text
-    assert (await _help(client, s["viewer"], "portal:/assets")).status_code == 404
-    assert (await _help(client, admin, "portal:/assets")).status_code == 404
+    assert (await _help(client, s["viewer"], "portal:/assets")).status_code == 204
+    assert (await _help(client, admin, "portal:/assets")).status_code == 204
 
 
 async def test_help_refuses_a_kiosk_scoped_session(client, db):
@@ -427,7 +428,7 @@ async def test_delete_removes_the_link(client, db):
     assert (await client.delete(f"/wiki/help-links/{link['id']}",
                                 headers=admin)).status_code == 204
     assert await db.get(WikiHelpLink, uuid.UUID(link["id"])) is None
-    assert (await _help(client, s["viewer"], "portal:/assets")).status_code == 404
+    assert (await _help(client, s["viewer"], "portal:/assets")).status_code == 204
     assert (await client.delete(f"/wiki/help-links/{link['id']}",
                                 headers=admin)).status_code == 404
     audits = (await db.scalars(select(AuditLog).where(

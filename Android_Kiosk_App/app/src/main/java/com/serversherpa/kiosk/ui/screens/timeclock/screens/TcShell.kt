@@ -59,6 +59,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import com.serversherpa.kiosk.R
+import com.serversherpa.kiosk.nettest.NetTestChip // INTERNET-TEST
 import com.serversherpa.kiosk.ui.screens.timeclock.flow.formatClock
 import com.serversherpa.kiosk.ui.screens.timeclock.flow.formatHeaderDate
 import com.serversherpa.kiosk.ui.theme.FragmentMono
@@ -165,6 +166,7 @@ private fun TcHeader(onSettings: (() -> Unit)?) {
             }
         }
         Column(horizontalAlignment = Alignment.End) {
+            NetTestChip(onLightPaper = true) // INTERNET-TEST
             Text(formatHeaderDate(now), style = tcText(s.sp(11f, 1.6f, 17f), color = TcColors.Slate, align = TextAlign.End))
             Text(formatClock(now.toString()), style = tcText(s.sp(20f, 3.6f, 40f), FontWeight.Bold, align = TextAlign.End))
         }

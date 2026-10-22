@@ -32,6 +32,7 @@ import com.serversherpa.kiosk.data.db.PersonEntity
 import com.serversherpa.kiosk.data.sync.Sync
 import com.serversherpa.kiosk.data.sync.SyncPhase
 import com.serversherpa.kiosk.input.rfid.FakeRfidReader
+import com.serversherpa.kiosk.nettest.InternetTestSection // INTERNET-TEST
 import com.serversherpa.kiosk.ui.components.KioskToast
 import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.components.Segmented
@@ -60,6 +61,7 @@ fun DeveloperPanel(goHome: () -> Unit = {}) {
             Switch(checked = devMode, onCheckedChange = { on -> scope.launch { container.prefs.setDevMode(on) } })
         }
         if (!devMode) return@Column
+        InternetTestSection() // INTERNET-TEST
         SettingsRow("Kiosk setup state", "Testing aid until real setup logic sets this. Stored on this kiosk only.") {
             Segmented(SetupState.entries.map { it.wire to it.label }, setupState.wire) { w -> scope.launch { container.prefs.setSetupState(SetupState.fromWire(w)) } }
         }
