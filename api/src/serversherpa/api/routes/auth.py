@@ -4,9 +4,9 @@ ordinary API requests."""
 
 import logging
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Cookie, HTTPException, Request, Response
+from fastapi import APIRouter, Cookie, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.deps import (
@@ -43,8 +43,17 @@ logger = logging.getLogger("serversherpa.api.auth")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-REFRESH_COOKIE = "ss_refresh"
+# One refresh cookie per app, so a portal and a web kiosk signed in in the
+# same browser never adopt each other's session. Kiosk sessions keep the
+# original name: the Android/iOS apps and the laptop edge read it by name.
+REFRESH_COOKIE = "ss_refresh"                 # kiosk sessions (and every no-`client` caller)
+PORTAL_REFRESH_COOKIE = "ss_portal_refresh"   # portal sessions (the portal and the wiki)
 TRUST_COOKIE = "ss_trust"
+
+# `?client=` on /auth/refresh and /auth/logout: which app is asking.
+# Omitted = the original behavior on ss_refresh (native apps, the edge,
+# portal bundles from before the split).
+ClientParam = Annotated[Literal["portal", "kiosk"] | None, Query()]
 
 # AuthError code -> HTTP status. Everything else is a plain 401.
 _STATUS = {"account_locked": 423, "kiosk_not_allowed": 403,
@@ -52,10 +61,15 @@ _STATUS = {"account_locked": 423, "kiosk_not_allowed": 403,
            "totp_seed_unreadable": 409}
 
 
-def _set_refresh_cookie(response: Response, result: AuthResult) -> None:
+def refresh_cookie_name(client: str) -> str:
+    """The refresh cookie a session minted for `client` lives in."""
+    return PORTAL_REFRESH_COOKIE if client == "portal" else REFRESH_COOKIE
+
+
+def _set_refresh_cookie(response: Response, result: AuthResult, name: str) -> None:
     settings = get_settings()
     response.set_cookie(
-        REFRESH_COOKIE,
+        name,
         result.refresh_token,
         expires=result.session_expires_at,
         httponly=True,
@@ -66,10 +80,18 @@ def _set_refresh_cookie(response: Response, result: AuthResult) -> None:
     )
 
 
-def _clear_refresh_cookie(response: Response) -> None:
+def _clear_refresh_cookie(response: Response, name: str = REFRESH_COOKIE) -> None:
     settings = get_settings()
     response.delete_cookie(
-        REFRESH_COOKIE, domain=settings.cookie_domain or None, path="/auth")
+        name, domain=settings.cookie_domain or None, path="/auth")
+
+
+def _cleared_cookie_headers(name: str) -> dict[str, str]:
+    """A Set-Cookie header deleting refresh cookie `name`, for an error
+    response (an HTTPException carries its own headers)."""
+    scratch = Response()
+    _clear_refresh_cookie(scratch, name)
+    return {"set-cookie": scratch.headers["set-cookie"]}
 
 
 def _set_trust_cookie(response: Response, token: str) -> None:
@@ -120,8 +142,11 @@ async def _kiosk_move_for(db: AsyncSession, result: AuthResult) -> KioskMoveOut 
 
 
 def session_response(result: AuthResult, response: Response, totp: TotpStatusOut,
-                     policy: PasswordPolicy, kiosk_move: KioskMoveOut | None = None) -> SessionOut:
-    _set_refresh_cookie(response, result)
+                     policy: PasswordPolicy, kiosk_move: KioskMoveOut | None = None,
+                     *, cookie_name: str | None = None) -> SessionOut:
+    """`cookie_name` defaults to the issued session's own cookie; a
+    no-`client` refresh pins it to ss_refresh (the original behavior)."""
+    _set_refresh_cookie(response, result, cookie_name or refresh_cookie_name(result.client))
     reason = change_reason(policy, result.account, datetime.now(UTC))
     return SessionOut(
         access_token=result.access_token,
@@ -246,30 +271,89 @@ async def login(
 @router.post("/refresh", response_model=SessionOut)
 async def refresh(
     request: Request, response: Response, db: DbSession,
+    client: ClientParam = None,
     ss_refresh: Annotated[str | None, Cookie()] = None,
+    ss_portal_refresh: Annotated[str | None, Cookie()] = None,
 ) -> SessionOut:
-    if not ss_refresh:
+    """No `client`: ss_refresh, exactly as before the split; only when
+    there is no ss_refresh, ss_portal_refresh (a portal bundle from before
+    the split, signed in after it) — that session stays in
+    ss_portal_refresh. `client=kiosk`:
+    ss_refresh, kiosk sessions only. `client=portal`: ss_portal_refresh, or
+    a portal session still filed under ss_refresh (signed in before the
+    split), which moves to ss_portal_refresh. A session of the other app
+    answers 401 wrong_client and is left alone, cookie included."""
+    token, cookie, legacy, expect = ss_refresh, REFRESH_COOKIE, False, client
+    if client is None and not ss_refresh and ss_portal_refresh:
+        token, cookie, expect = ss_portal_refresh, PORTAL_REFRESH_COOKIE, "portal"
+    elif client == "portal" and ss_portal_refresh:
+        token, cookie = ss_portal_refresh, PORTAL_REFRESH_COOKIE
+    elif client == "portal" and ss_refresh:
+        legacy = await auth_service.session_client(db, ss_refresh) == "portal"
+    if not token:
         raise HTTPException(status_code=401, detail={"code": "missing_refresh"})
     try:
         result = await auth_service.refresh(
-            db, refresh_token=ss_refresh,
+            db, refresh_token=token,
             ip=client_ip(request), user_agent=request.headers.get("user-agent"),
+            expect_client=expect,
         )
     except AuthError as exc:
-        _clear_refresh_cookie(response)
-        raise _auth_http_error(exc) from None
-    return session_response(result, response, await totp_status_out(db, result.account),
-                            await load_policy(db), await _kiosk_move_for(db, result))
+        error = _auth_http_error(exc)
+        if client is None and cookie == REFRESH_COOKIE:
+            # unchanged from before the split — and, as before, a no-op: headers
+            # set on `response` are dropped when the route raises
+            _clear_refresh_cookie(response)
+        elif exc.code != "wrong_client" and (cookie == PORTAL_REFRESH_COOKIE
+                                             or legacy or client == "kiosk"):
+            # the failed cookie is the caller's own: clear it on the error
+            # response itself (headers set on `response` don't survive a
+            # raised HTTPException). A wrong_client token, or an unknown
+            # token under ss_refresh on a portal refresh, may be the other
+            # app's — never cleared.
+            error.headers = _cleared_cookie_headers(cookie)
+        raise error from None
+    out = session_response(
+        result, response, await totp_status_out(db, result.account), await load_policy(db),
+        await _kiosk_move_for(db, result),
+        cookie_name=cookie if client is None else refresh_cookie_name(result.client))
+    if legacy:
+        _clear_refresh_cookie(response, REFRESH_COOKIE)   # moved to ss_portal_refresh
+    return out
 
 
 @router.post("/logout", status_code=204)
 async def logout(
     response: Response, db: DbSession,
+    client: ClientParam = None,
     ss_refresh: Annotated[str | None, Cookie()] = None,
+    ss_portal_refresh: Annotated[str | None, Cookie()] = None,
 ) -> None:
+    """No `client`: end ss_refresh's session, exactly as before the split;
+    only when there is no ss_refresh, the portal session in
+    ss_portal_refresh. With `client`, only that app's sessions are revoked
+    and only its own cookies cleared; a session of the other app is left
+    alone."""
+    if client is None:
+        if ss_refresh:
+            await auth_service.logout(db, refresh_token=ss_refresh)
+        elif ss_portal_refresh:
+            await auth_service.logout(
+                db, refresh_token=ss_portal_refresh, expect_client="portal")
+            _clear_refresh_cookie(response, PORTAL_REFRESH_COOKIE)
+        _clear_refresh_cookie(response)
+        return
+    if client == "portal":
+        if ss_portal_refresh:
+            await auth_service.logout(
+                db, refresh_token=ss_portal_refresh, expect_client="portal")
+        _clear_refresh_cookie(response, PORTAL_REFRESH_COOKIE)
+    # ss_refresh: the kiosk's cookie, or a portal session from before the split
+    owner = None
     if ss_refresh:
-        await auth_service.logout(db, refresh_token=ss_refresh)
-    _clear_refresh_cookie(response)
+        owner = await auth_service.logout(db, refresh_token=ss_refresh, expect_client=client)
+    if owner == client or (client == "kiosk" and owner is None):
+        _clear_refresh_cookie(response, REFRESH_COOKIE)
 
 
 @router.get("/me", response_model=MeOut)

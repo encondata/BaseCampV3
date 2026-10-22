@@ -66,6 +66,25 @@ protocol KioskApi: Sendable {
     /// kiosk, shown once. 403 `not_signed_in_here` until a heartbeat registered the session.
     func issueStationKey(serial: String) async throws -> String
 
+    // MARK: Rolodex (admins, rank 60+; 403 forbidden / move_locked otherwise)
+
+    /// `GET /kiosk/rolodex/workers`: every worker, without email or phone.
+    func rolodexWorkers() async throws -> RolodexList
+    /// `GET /kiosk/rolodex/workers/{id}`. 404 person_not_found.
+    func rolodexWorker(id: String) async throws -> RolodexDetail
+    func rolodexOptions() async throws -> RolodexOptions
+    /// `POST /kiosk/rolodex/duplicates`: the people the new worker may already be.
+    func rolodexDuplicates(_ body: RolodexDuplicatesIn) async throws -> [RolodexMatch]
+    /// 409 possible_duplicate (unless `allowDuplicate`) / email_in_use; 422 unknown_level,
+    /// partner_not_found, partner_archived; 423 read_only_mode.
+    func rolodexCreate(_ body: RolodexCreateIn) async throws -> RolodexDetail
+    /// Sends only the patch's fields (null clears). 403 rank_too_low / cannot_target_self,
+    /// 409 email_in_use, 422 blacklist_requires_note / unknown_*.
+    func rolodexUpdate(id: String, patch: RolodexPatch) async throws -> RolodexDetail
+    /// `PUT /kiosk/rolodex/workers/{id}/photo` with the JPEG as the raw body.
+    /// 413 file_too_large; 422 empty_file / invalid_file_type / unreadable_image / image_too_large.
+    func rolodexPhoto(id: String, jpeg: Data) async throws -> RolodexPhotoOut
+
     /// Unauthenticated GET of an absolute (presigned) URL, e.g. an avatar.
     func fetchImage(url: String) async throws -> Data
 }

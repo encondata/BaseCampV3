@@ -287,7 +287,7 @@ let refreshInFlight: Promise<SessionData | null> | null = null;
 export function refreshSession(): Promise<SessionData | null> {
   refreshInFlight ??= (async () => {
     try {
-      const resp = await fetch(`${apiUrl()}/auth/refresh`, {
+      const resp = await fetch(`${apiUrl()}/auth/refresh?client=portal`, {
         method: 'POST',
         credentials: 'include', // sends the httpOnly refresh cookie
       });
@@ -344,8 +344,23 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
     if (!refreshed || resp.status === 401) {
       notifySessionEnded();
     }
+  } else if (resp.status === 403 && (await isKioskSession403(resp))) {
+    // A kiosk-scoped session reached a portal call (e.g. a stale shared
+    // cookie): it can never work here, so sign in again instead of looping.
+    notifySessionEnded();
   }
   return resp;
+}
+
+/** True for the API's `kiosk_session` refusal. Reads a clone, so the caller
+ *  can still read the body. */
+async function isKioskSession403(resp: Response): Promise<boolean> {
+  try {
+    const body = await resp.clone().json();
+    return body?.detail?.code === 'kiosk_session';
+  } catch {
+    return false;
+  }
 }
 
 // ── auth endpoints ──────────────────────────────────────────────────
@@ -832,7 +847,7 @@ export async function listUsers(): Promise<UserSummary[]> {
 
 export async function logoutRequest(): Promise<void> {
   try {
-    await fetch(`${apiUrl()}/auth/logout`, { method: 'POST', credentials: 'include' });
+    await fetch(`${apiUrl()}/auth/logout?client=portal`, { method: 'POST', credentials: 'include' });
   } finally {
     clearLocalSession();
   }

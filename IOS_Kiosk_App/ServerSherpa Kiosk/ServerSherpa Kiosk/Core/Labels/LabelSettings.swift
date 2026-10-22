@@ -12,12 +12,152 @@ enum LabelKind: String, CaseIterable, Sendable {
     }
 }
 
-/// The network Zebra labels print to; its `dpi` picks the template.
+/// How the iPad reaches its printer: a network host (TCP port 9100), or Bluetooth LE by the
+/// printer's serial (its Bluetooth name) plus this iPad's own identifier for it, which iOS hands
+/// out once the printer has been found (nil until then).
+enum PrinterConnection: Hashable, Sendable {
+    case network(host: String)
+    case bluetooth(serial: String, peripheralId: UUID?)
+}
+
+/// Which printer a connection reaches, whatever the way: the network host, or the Bluetooth serial
+/// (in any case). The iPad's identifier for a Bluetooth printer only finds it, and iOS can give it
+/// another one, so it isn't part of it (Ruling 7).
+enum PrinterIdentity: Hashable, Sendable {
+    case network(host: String)
+    case bluetooth(serial: String)
+}
+
+extension PrinterConnection {
+    var identity: PrinterIdentity {
+        switch self {
+        case .network(let host): .network(host: host)
+        case .bluetooth(let serial, _): .bluetooth(serial: serial.uppercased())
+        }
+    }
+}
+
+/// Saved as `{"type":"network","host":…}` or `{"type":"bluetooth","serial":…}` (`PrinterStopsStore`).
+extension PrinterIdentity: Codable {
+    private enum CodingKeys: String, CodingKey { case type, host, serial }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try c.decode(String.self, forKey: .type)
+        switch type {
+        case "network": self = .network(host: try c.decode(String.self, forKey: .host))
+        case "bluetooth": self = .bluetooth(serial: try c.decode(String.self, forKey: .serial).uppercased())
+        default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown printer identity \(type)")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .network(let host):
+            try c.encode("network", forKey: .type)
+            try c.encode(host, forKey: .host)
+        case .bluetooth(let serial):
+            try c.encode("bluetooth", forKey: .type)
+            try c.encode(serial, forKey: .serial)
+        }
+    }
+
+    /// A stable order for saving ("bluetooth:…" before "network:…").
+    var sortKey: String {
+        switch self {
+        case .network(let host): "network:\(host)"
+        case .bluetooth(let serial): "bluetooth:\(serial)"
+        }
+    }
+}
+
+extension PrinterConnection: Codable {
+    private enum CodingKeys: String, CodingKey { case type, host, serial, peripheralId }
+    private enum Kind: String { case network, bluetooth }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try c.decode(String.self, forKey: .type)
+        switch Kind(rawValue: type) {
+        case .network:
+            self = .network(host: try c.decode(String.self, forKey: .host))
+        case .bluetooth:
+            self = .bluetooth(serial: try c.decode(String.self, forKey: .serial),
+                              peripheralId: try c.decodeIfPresent(UUID.self, forKey: .peripheralId))
+        case nil:
+            throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown printer connection \(type)")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .network(let host):
+            try c.encode(Kind.network.rawValue, forKey: .type)
+            try c.encode(host, forKey: .host)
+        case .bluetooth(let serial, let peripheralId):
+            try c.encode(Kind.bluetooth.rawValue, forKey: .type)
+            try c.encode(serial, forKey: .serial)
+            try c.encodeIfPresent(peripheralId, forKey: .peripheralId)
+        }
+    }
+}
+
+/// The Zebra labels print to; its `dpi` picks the template.
+///
+/// Saved as JSON with `connection` and, for a build from before Bluetooth, the old `host` beside it
+/// (the network host, or `""` for a Bluetooth printer). A printer saved before Bluetooth has only
+/// `host`, and reads back as a network printer.
 struct SavedPrinter: Codable, Equatable, Sendable {
-    var host: String
+    var connection: PrinterConnection
     var model: String
     var serial: String
     var dpi: Int
+
+    /// A network printer at `host`.
+    init(host: String, model: String, serial: String, dpi: Int) {
+        self.init(connection: .network(host: host), model: model, serial: serial, dpi: dpi)
+    }
+
+    init(connection: PrinterConnection, model: String, serial: String, dpi: Int) {
+        self.connection = connection
+        self.model = model
+        self.serial = serial
+        self.dpi = dpi
+    }
+
+    /// The network host; nil for a Bluetooth printer.
+    var host: String? {
+        if case .network(let host) = connection { host } else { nil }
+    }
+
+    var isBluetooth: Bool {
+        if case .bluetooth = connection { true } else { false }
+    }
+
+    private enum CodingKeys: String, CodingKey { case connection, host, model, serial, dpi }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if c.contains(.connection) {
+            connection = try c.decode(PrinterConnection.self, forKey: .connection)
+        } else {
+            connection = .network(host: try c.decode(String.self, forKey: .host))
+        }
+        model = try c.decode(String.self, forKey: .model)
+        serial = try c.decode(String.self, forKey: .serial)
+        dpi = try c.decode(Int.self, forKey: .dpi)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(connection, forKey: .connection)
+        try c.encode(host ?? "", forKey: .host)
+        try c.encode(model, forKey: .model)
+        try c.encode(serial, forKey: .serial)
+        try c.encode(dpi, forKey: .dpi)
+    }
 }
 
 /// The label settings: `kind` picks the template (with the printer's DPI); offsets (dots) and

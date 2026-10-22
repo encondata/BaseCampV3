@@ -336,7 +336,7 @@ async def test_expired_password_forces_a_change_at_sign_in(client, db, seeded_us
     hdrs = {"Authorization": f"Bearer {body['access_token']}"}
     me = (await client.get("/auth/me", headers=hdrs)).json()
     assert me["must_change_password"] is True and me["must_change_reason"] == "expired"
-    refreshed = await client.post("/auth/refresh")
+    refreshed = await client.post("/auth/refresh?client=portal")
     assert refreshed.status_code == 200, refreshed.text
     assert refreshed.json()["must_change_reason"] == "expired"
     # changing the password clears it
@@ -447,7 +447,7 @@ async def test_expired_session_is_refused_by_the_api(client, db, seeded_user):
         assert blocked.status_code == 403, (path, blocked.text)
         assert blocked.json()["detail"] == {"code": "password_change_required"}
     # a refreshed token inherits the sign-in time, so it is refused too
-    refreshed = await client.post("/auth/refresh")
+    refreshed = await client.post("/auth/refresh?client=portal")
     assert refreshed.status_code == 200, refreshed.text
     hdrs = _bearer(refreshed.json())
     assert (await client.get("/auth/me/activity", headers=hdrs)).status_code == 403

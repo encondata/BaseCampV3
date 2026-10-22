@@ -40,6 +40,39 @@ struct AppContainerTests {
         #expect(c.prefs.labels.peel)
     }
 
+    /// The Rolodex's offline list (names, job titles, companies) leaves the kiosk with the
+    /// admin: a sign-out, a session that ends underneath the kiosk (or while the app was closed),
+    /// and Reset app delete it and forget the list on screen.
+    @Test func theRolodexListGoesOnSignOutSessionEndAndReset() async throws {
+        let defaults = freshDefaults()
+        KioskPrefs(defaults: defaults).apiUrl = "http://127.0.0.1:9"   // nothing listens
+        let c = AppContainer(defaults: defaults, secrets: MemorySecretStore(),
+                             modelContainer: try KioskSchema.inMemoryContainer(), backgroundTask: NoBackgroundTasking(),
+                             labelEngine: FakeLabelEngine())
+        func cacheGone() async -> Bool { await waitUntilAsync { ((try? await c.store.rolodexCache()) ?? nil) == nil } }
+
+        try await c.store.storeRolodexCache(#"{"workers":[]}"#)
+        c.auth.onLogout?()
+        #expect(await cacheGone())
+
+        try await c.store.storeRolodexCache(#"{"workers":[]}"#)
+        c.auth.endSession()
+        #expect(await cacheGone())
+
+        // a session that ended while the app was closed (the launch restore finds none)
+        try await c.store.storeRolodexCache(#"{"workers":[]}"#)
+        await c.auth.restore()
+        #expect(c.auth.state == .anon)
+        #expect(await cacheGone())
+
+        try await c.store.storeRolodexCache(#"{"workers":[]}"#)
+        await c.rolodex.select("p1")
+        #expect(c.rolodex.selectedId == "p1")
+        try await c.resetApp()
+        #expect(try await c.store.rolodexCache() == nil)
+        #expect(c.rolodex.selectedId == nil)
+    }
+
     /// One no-match entry on the print jobs' list (no printer, no network, no engine); waits
     /// until the list shows it and returns its value.
     @discardableResult
@@ -104,6 +137,122 @@ struct AppContainerTests {
         c.prefs.setupSelection = renamed
         try await Task.sleep(for: .milliseconds(100))
         #expect(c.printJobs.entries.map(\.scannedValue) == [v])
+    }
+
+    // MARK: Bluetooth printers
+
+    private let serial = "D8J224508535"
+
+    /// A container on a fake Bluetooth central (no radio), with the office ZD421 known to iOS and
+    /// `saved` saved before it starts (saving one later is a change the container acts on).
+    private func bluetoothContainer(saved: (FakePeripheral) -> SavedPrinter) throws -> (AppContainer, FakeBluetoothClient, FakePeripheral) {
+        let defaults = freshDefaults()
+        KioskPrefs(defaults: defaults).apiUrl = "http://127.0.0.1:9"   // nothing listens
+        let client = FakeBluetoothClient()
+        let p = FakePeripheral(serial: serial)
+        client.central.known.append(p)
+        LabelSettingsStore(prefs: KioskPrefs(defaults: defaults)).setPrinter(saved(p))
+        let c = AppContainer(defaults: defaults, secrets: MemorySecretStore(),
+                             modelContainer: try KioskSchema.inMemoryContainer(), backgroundTask: NoBackgroundTasking(),
+                             labelEngine: FakeLabelEngine(), bluetoothClient: client)
+        return (c, client, p)
+    }
+
+    private func bluetoothPrinter(_ id: UUID?) -> SavedPrinter {
+        SavedPrinter(connection: .bluetooth(serial: serial, peripheralId: id), model: "ZD421", serial: serial, dpi: 300)
+    }
+
+    /// Connects the container's link to `p` (bounded: a regression fails instead of hanging).
+    private func linkUp(_ c: AppContainer, _ p: FakePeripheral) async throws {
+        let bluetooth = c.bluetooth
+        let serial = self.serial
+        let task = Task { try await bluetooth.connect(peripheralId: p.identifier, serial: serial) }
+        try #require(await waitUntil { bluetooth.link.connected }, "the link never came up")
+        _ = try await task.value
+    }
+
+    /// The one factory the Print Labels sender and Printer Setup use: a network printer is the
+    /// `NetworkZebra` at its host, and a Bluetooth printer goes over the container's one link,
+    /// with its serial and identifier. Making either one starts no Bluetooth (no permission prompt).
+    @Test func containerPicksTransportByConnection() throws {
+        let client = FakeBluetoothClient()
+        let bluetooth = ZebraBluetooth(client: client)
+        let network = try #require(zebraTransport(for: SavedPrinter(host: "10.0.0.5", model: "ZD421", serial: "S1", dpi: 203),
+                                                  bluetooth: bluetooth) as? NetworkZebra)
+        #expect(network.host == "10.0.0.5")
+        #expect(network.port == ZebraNetwork.port)
+        let id = UUID()
+        let overBluetooth = try #require(zebraTransport(for: bluetoothPrinter(id), bluetooth: bluetooth) as? BluetoothZebra)
+        #expect(overBluetooth.serial == serial)
+        #expect(overBluetooth.peripheralId == id)
+        #expect(overBluetooth.bluetooth === bluetooth)
+        #expect(client.made == 0)
+    }
+
+    /// D4: the link closes when the app goes to the background, on sign-out, when the session
+    /// ends, and when another printer is saved; nothing reconnects by itself.
+    @Test func theBluetoothLinkClosesOnBackgroundSignOutSessionEndAndAnotherPrinter() async throws {
+        let (c, client, p) = try bluetoothContainer { self.bluetoothPrinter($0.identifier) }
+        // Nothing used Bluetooth yet: going to the background starts nothing (no permission prompt).
+        c.onBackground()
+        c.onActive()
+        #expect(client.made == 0)
+        try await linkUp(c, p)
+        c.onBackground()
+        #expect(!c.bluetooth.link.connected)
+        #expect(client.central.cancels == [p.identifier])
+
+        try await linkUp(c, p)
+        c.auth.onLogout?()
+        #expect(!c.bluetooth.link.connected)
+
+        try await linkUp(c, p)
+        c.auth.endSession()
+        #expect(!c.bluetooth.link.connected)
+
+        try await linkUp(c, p)
+        c.labelSettings.setPrinter(SavedPrinter(host: "10.0.0.5", model: "ZD421", serial: "S1", dpi: 203))
+        #expect(await waitUntil { !c.bluetooth.link.connected })
+        #expect(client.central.cancels == Array(repeating: p.identifier, count: 4))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(client.central.connects.count == 4)
+    }
+
+    /// Saving the printer the link is already up to (Printer Setup connected it to choose it)
+    /// keeps that link: only a link to a printer no longer saved closes.
+    @Test func savingThePrinterTheLinkIsUpToKeepsTheLink() async throws {
+        let (c, client, p) = try bluetoothContainer { _ in SavedPrinter(host: "10.0.0.5", model: "ZD421", serial: "S1", dpi: 203) }
+        try await linkUp(c, p)
+        c.labelSettings.setPrinter(bluetoothPrinter(p.identifier))
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(c.bluetooth.link.connected)
+        #expect(client.central.cancels.isEmpty)
+    }
+
+    /// iOS forgot the saved identifier, so the link found the printer by its serial: the saved
+    /// printer takes the new identifier (the next connect goes straight to it), and as the same
+    /// printer it keeps its link and its marks (Ruling 7).
+    @Test func aPrinterFoundBySerialIsSavedAgainWithItsNewIdentifier() async throws {
+        let stale = bluetoothPrinter(UUID())
+        let (c, client, p) = try bluetoothContainer { _ in stale }
+        client.central.known = []
+        await c.printerGuard.markSendFailed(for: stale.connection)
+        let zebra = c.zebra(for: stale)
+        let send = Task { try await zebra.send("^XA^XZ") }
+        try #require(await waitUntil { client.central.scanning }, "never scanned for the serial")
+        client.central.advertise(p, rssi: -50)
+        try await send.value
+        #expect(p.written == Data("^XA^XZ".utf8))
+        let adopted = bluetoothPrinter(p.identifier)
+        #expect(await waitUntil { c.labelSettings.current().printer == adopted })
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(c.bluetooth.link.connected)
+        #expect(client.central.cancels.isEmpty)
+        #expect(await c.printerGuard.state(for: adopted.connection) == .needsClear)
+
+        // Saved again with the old identifier (a check that read the printer first): taken back.
+        c.labelSettings.setPrinter(stale)
+        #expect(await waitUntil { c.labelSettings.current().printer == adopted })
     }
 
     /// Settings › Developer › Reset app: a fresh setup, nothing about the move or the printer

@@ -35,6 +35,11 @@ val FEATURE_ICONS: Map<FeatureId, ImageVector> = mapOf(
     // The Time Clock station's tile shows the same clock face (as on the web).
     FeatureId.TIMECLOCK_STATION to icon("timeclock-station", strokes = listOf(circle(20f, 20f, 15f), "M20 11v9l7 4")),
     FeatureId.SETTINGS to icon("settings", strokes = listOf("M6 12h20M31 12h3", circle(26f, 12f, 3.5f), "M6 28h9M20 28h14", circle(15f, 28f, 3.5f))),
+    // A contact card on its rings: a person on the left, two lines of details on the right.
+    FeatureId.ROLODEX to icon("rolodex", strokes = listOf(
+        "M7 11h26a2 2 0 0 1 2 2v18a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V13a2 2 0 0 1 2-2z", "M14 6v5M26 6v5",
+        circle(14f, 19.5f, 3.5f), "M8.5 29a5.5 5.5 0 0 1 11 0", "M23 19h7M23 25h5",
+    )),
 )
 
 @Composable

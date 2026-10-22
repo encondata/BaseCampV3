@@ -28,6 +28,21 @@ struct KioskAuthTests {
         #expect(h.auth.state == .anon)
     }
 
+    /// A session that ended while the app was closed runs `onRestoreFailed` (the Rolodex clears
+    /// its offline copy); a live one doesn't.
+    @Test func aFailedRestoreRunsItsHook() async {
+        let h = Harness()
+        var runs = 0
+        h.auth.onRestoreFailed = { runs += 1 }
+        h.refresher.refreshResult = { fakeSession() }
+        await h.auth.restore()
+        #expect(runs == 0)
+        h.refresher.refreshResult = { nil }
+        await h.auth.restore()
+        #expect(runs == 1)
+        #expect(h.auth.state == .anon)
+    }
+
     @Test func loginMarksPendingPasswordSignIn() async throws {
         let h = Harness()
         h.api.loginResult = { fakeSession(roles: ["developer"], maxRank: 100) }

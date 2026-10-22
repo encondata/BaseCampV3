@@ -137,6 +137,31 @@ struct ZebraRepliesTests {
         #expect(parseDirectory("- DIR E:*.*\r\n* e:roboto_r.ttf  12\r\n") == ["ROBOTO_R.TTF"])
     }
 
+    // The real ZD421 listing over Bluetooth (2026-10-22): sizes and flags beside the names.
+    private let btHw = "\u{02}\r\n- DIR E:*.* \r\n* E:85620388.TTF   1036584          \r\n* E:IN001.DMP      1032          \r\n" +
+        "* E:TT0003M_.TTF    169188       K  \r\n\r\n-  63311872 bytes free E: ONBOARD FLASH \r\n\u{03}"
+
+    @Test func directoryEntriesFromTheZD421Listing() {
+        #expect(parseDirectoryEntries(btHw) == [
+            DirectoryEntry(name: "85620388.TTF", size: 1036584),
+            DirectoryEntry(name: "IN001.DMP", size: 1032),
+            DirectoryEntry(name: "TT0003M_.TTF", size: 169188),
+        ])
+        #expect(parseDirectory(btHw) == ["85620388.TTF", "IN001.DMP", "TT0003M_.TTF"])
+    }
+
+    @Test func directoryEntriesFollowTheSameRulesAsTheNames() {
+        // the last listing counts; a repeated name keeps its last row's size and place
+        let twice = "\u{02}- DIR E:*.*\r\n*E:85620388.TTF  1035\r\n*E:IN001.DMP  900\r\n-2000 bytes free E:\u{03}" +
+            "\u{02}- DIR E:*.*\r\n*E:85620388.TTF  1036\r\n*E:NEW.TTF  901\r\n-1999 bytes free E:\u{03}"
+        #expect(parseDirectoryEntries(twice) == [DirectoryEntry(name: "85620388.TTF", size: 1036), DirectoryEntry(name: "NEW.TTF", size: 901)])
+        let dup = "\u{02}- DIR E:*.*\r\n*E:A.TTF  1\r\n*E:B.TTF  1\r\n*E:A.TTF  2\r\n-5 bytes free E:\u{03}"
+        #expect(parseDirectoryEntries(dup) == [DirectoryEntry(name: "B.TTF", size: 1), DirectoryEntry(name: "A.TTF", size: 2)])
+        #expect(parseDirectoryEntries("- DIR E:*.*\r\n* e:roboto_r.ttf  12\r\n") == [DirectoryEntry(name: "ROBOTO_R.TTF", size: 12)])
+        #expect(parseDirectoryEntries("") == [])
+        #expect(parseDirectoryEntries("\u{02}- DIR E:*.*\r\n-2000000 bytes free E:\u{03}") == [])
+    }
+
     // MARK: a real ZT220's ^HH is neither a status nor a listing
     // (Like the portal's parser, ~HI parsing doesn't reject it: its counters' commas split it into
     // four "fields". NetworkZebra asks each query on its own connection, so no other reply reaches it.)
@@ -215,6 +240,44 @@ struct ZebraRepliesTests {
             fontFixFor(missing: ["TT0003M_.TTF"], library: [])
                 == FontFix(installable: [], builtIn: ["TT0003M_.TTF"], notInLibrary: [])
         )
+    }
+
+    @Test func damagedFontIsTheOneWithTheWrongSize() {
+        let library = [
+            KioskLabelFont(id: "f-r", name: "ROBOTO.TTF", size: 124336),
+            KioskLabelFont(id: "f-s", name: "TT0003M_.TTF", size: 169188, resident: true),
+        ]
+        let needed = ["ROBOTO.TTF", "TT0003M_.TTF"]
+        // ROBOTO is half there; TT0003M_ is resident, so its size isn't the library's business
+        let cut = [DirectoryEntry(name: "ROBOTO.TTF", size: 60000), DirectoryEntry(name: "TT0003M_.TTF", size: 160676)]
+        #expect(damagedFonts(needed: needed, library: library, onPrinter: cut) == ["ROBOTO.TTF"])
+        let whole = [DirectoryEntry(name: "ROBOTO.TTF", size: 124336), DirectoryEntry(name: "TT0003M_.TTF", size: 160676)]
+        #expect(damagedFonts(needed: needed, library: library, onPrinter: whole) == [])
+        // a library size of 0 means the size isn't known
+        let unsized = [KioskLabelFont(id: "f-r", name: "ROBOTO.TTF", size: 0)]
+        #expect(damagedFonts(needed: needed, library: unsized, onPrinter: cut) == [])
+    }
+
+    @Test func damagedFontsNeedTheFontToBeThereAndTheLibraryToKnowIt() {
+        let library = [
+            KioskLabelFont(id: "a", name: "B.TTF", size: 100),
+            KioskLabelFont(id: "b", name: "A.TTF", size: 100),
+            KioskLabelFont(id: "c", name: "R.TTF", size: 100, resident: true),
+            // an older library row not yet flagged: the name still marks it resident
+            KioskLabelFont(id: "d", name: "TT0003M_.TTF", size: 169188),
+        ]
+        let onPrinter = [
+            DirectoryEntry(name: "A.TTF", size: 1), DirectoryEntry(name: "B.TTF", size: 2),
+            DirectoryEntry(name: "R.TTF", size: 3), DirectoryEntry(name: "TT0003M_.TTF", size: 4),
+            DirectoryEntry(name: "SWISS2.TTF", size: 5),
+        ]
+        // In `needed`'s order, upper-cased. Not damaged: a font that isn't on the printer (C.TTF,
+        // the missing-font check's), one the library doesn't have (SWISS2.TTF, X.TTF), and a
+        // resident one by flag (R.TTF) or by name (TT0003M_.TTF).
+        let needed = ["b.ttf", "A.TTF", "C.TTF", "X.TTF", "R.TTF", "TT0003M_.TTF", "SWISS2.TTF"]
+        #expect(damagedFonts(needed: needed, library: library, onPrinter: onPrinter) == ["B.TTF", "A.TTF"])
+        #expect(damagedFonts(needed: [], library: library, onPrinter: onPrinter) == [])
+        #expect(damagedFonts(needed: ["A.TTF"], library: library, onPrinter: []) == [])
     }
 
     // The rest of PrinterChecks has no Android unit test; these pin its copy.

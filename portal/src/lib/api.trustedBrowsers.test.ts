@@ -19,7 +19,7 @@ const SESSION = {
 /** apiFetch refreshes the session first (no token yet), so answer that call
  *  with a valid session and give every other call the status under test. */
 function mockFetch(status: number, body: unknown = { detail: { code: 'trusted_browser_not_found' } }) {
-  const fn = vi.fn(async (url: string, _init?: RequestInit) => (String(url).endsWith('/auth/refresh')
+  const fn = vi.fn(async (url: string, _init?: RequestInit) => (String(url).includes('/auth/refresh')
     ? new Response(JSON.stringify(SESSION), { status: 200, headers: { 'Content-Type': 'application/json' } })
     : new Response(status === 204 ? null : JSON.stringify(body),
       { status, headers: { 'Content-Type': 'application/json' } })));

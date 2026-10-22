@@ -48,6 +48,7 @@ struct SettingsScreen: View {
         case .appearance: AppearancePanel()
         case .sound: SoundPanel()
         case .devices: DevicesPanel()
+        case .troubleshooting: TroubleshootingPanel()
         case .admin: AdminPanel()
         case .developer: DeveloperPanel()
         }

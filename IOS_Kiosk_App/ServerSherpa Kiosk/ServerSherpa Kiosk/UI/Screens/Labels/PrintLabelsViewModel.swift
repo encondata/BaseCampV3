@@ -73,9 +73,29 @@ func printEntryLine(_ asset: KioskAssetRow?) -> String {
 /// The current card's title: the asset's name, else its asset ID.
 func printEntryTitle(_ asset: KioskAssetRow) -> String { nonBlankText(asset.name) ?? asset.assetId }
 
+/// Why the saved Bluetooth printer can't be reached, for a reason the crew fixes on the iPad, and
+/// the buttons that fix it: Open Settings (Bluetooth not allowed) and Connect (a printer that
+/// forgot this iPad, once it is forgotten in Settings).
+struct PrinterReachProblem: Equatable, Sendable {
+    var text: String
+    var offersSettings: Bool
+    var offersConnect: Bool
+}
+
+/// What to show for a refusal (`bluetoothRefusal`): its words, Open Settings for Bluetooth not
+/// allowed, and Connect for a printer that forgot this iPad. That one gets no Open Settings: iOS
+/// opens only this app's page, not Settings › Bluetooth, so its steps say where to go (Ruling 15).
+/// Nil when the refusal has no words.
+func printerReachProblem(for refusal: PrinterError) -> PrinterReachProblem? {
+    guard let text = refusal.errorDescription else { return nil }
+    let forgotten = refusal is BluetoothPairingLost
+    let denied = (refusal as? BluetoothUnavailable)?.availability == .unauthorized
+    return PrinterReachProblem(text: text, offersSettings: denied, offersConnect: forgotten)
+}
+
 /// Print Labels (the laptop's Printing Station, kiosk/src/pages/PrintingStation.tsx; Android's
 /// PrintLabelsViewModel): a scan matched by asset ID or serial prints the asset's stored label on
-/// the saved network printer and records one Labeled scan through the outbox.
+/// the saved printer (network or Bluetooth) and records one Labeled scan through the outbox.
 ///
 /// The jobs run on the container's one `LabelPrintJobs` queue, never on one of this view model's
 /// own: every Print Labels screen sends in one scan order, and the list (`entries`) is the
@@ -89,6 +109,11 @@ func printEntryTitle(_ asset: KioskAssetRow) -> String { nonBlankText(asset.name
 /// or a change of move resets the jobs (`LabelPrintJobs.reset()`), and Retry and Reprint refuse an
 /// entry scanned for another move than the kiosk's current one. Building
 /// one is cheap: no queue and no task of its own.
+///
+/// A saved Bluetooth printer is connected in the background when the screen opens (D4), so the
+/// first label needn't wait for the link (`connectPrinter`). Nothing waits for that connect and
+/// labels go out exactly as before; it only says, on the screen, what the crew must fix on the iPad
+/// first (Bluetooth off or not allowed, a printer that forgot this iPad: D10, D11).
 @MainActor @Observable
 final class PrintLabelsViewModel {
     enum LoadStatus: Equatable { case loading, ready, error }
@@ -107,6 +132,15 @@ final class PrintLabelsViewModel {
     var build: LabelBuildStatus { buildSource.status }
     var settings: LabelSettings { settingsSource.current() }
     var syncing: Bool { sync.isSyncing }
+    /// The background connect to the saved Bluetooth printer is running.
+    var connecting: Bool { connectTask != nil }
+    /// What stops the saved Bluetooth printer that the crew fixes on the iPad; nil once the link is
+    /// up to it (whoever brought it up), or for any other printer.
+    var printerProblem: PrinterReachProblem? {
+        guard let reachProblem, case .bluetooth(let serial, _)? = settings.printer?.connection else { return nil }
+        if let bluetooth, bluetooth.link.connected, bluetooth.link.info?.serial?.uppercased() == serial.uppercased() { return nil }
+        return reachProblem
+    }
 
     @ObservationIgnored private let jobs: LabelPrintJobs
     @ObservationIgnored private let store: PrintLabelsStore
@@ -114,18 +148,23 @@ final class PrintLabelsViewModel {
     @ObservationIgnored private let prefs: KioskPrefs
     @ObservationIgnored private let settingsSource: LabelSettingsSource
     @ObservationIgnored private let buildSource: LabelBuildStatusSource
+    @ObservationIgnored private let bluetooth: BluetoothPrinting?
+    private var reachProblem: PrinterReachProblem?
+    private var connectTask: Task<Void, Never>?
     @ObservationIgnored private let flash: FlashController
     @ObservationIgnored private let sound: SoundPlayer?
     @ObservationIgnored private var index: ScanIndex<KioskAssetRow>?
 
+    /// `bluetooth` is the container's link (nil: no Bluetooth printer is ever connected ahead).
     init(jobs: LabelPrintJobs, store: PrintLabelsStore, sync: PrintLabelsSync, prefs: KioskPrefs, settings: LabelSettingsSource,
-         build: LabelBuildStatusSource, flash: FlashController, sound: SoundPlayer?) {
+         build: LabelBuildStatusSource, bluetooth: BluetoothPrinting?, flash: FlashController, sound: SoundPlayer?) {
         self.jobs = jobs
         self.store = store
         self.sync = sync
         self.prefs = prefs
         self.settingsSource = settings
         self.buildSource = build
+        self.bluetooth = bluetooth
         self.flash = flash
         self.sound = sound
     }
@@ -199,6 +238,36 @@ final class PrintLabelsViewModel {
         feedback(good: false)
         error = Self.OTHER_MOVE_TEXT
         return true
+    }
+
+    /// The screen opened (and Connect): connects to the saved Bluetooth printer in the background.
+    /// Nothing waits for it (a label scanned meanwhile goes out as always, taking its turn on the
+    /// link); there is no poll and no retry. A refusal the crew fixes on the iPad shows as
+    /// `printerProblem`; any other failure (the printer off or out of range) shows nothing here,
+    /// since a label's own message says it. A network printer starts nothing. Returns the connect
+    /// (one at a time), or nil when there is none (tests await it).
+    @discardableResult
+    func connectPrinter() -> Task<Void, Never>? {
+        if let connectTask { return connectTask }
+        guard let bluetooth, case .bluetooth(let serial, let peripheralId)? = settings.printer?.connection else { return nil }
+        let task = Task { [weak self] in
+            var problem: PrinterReachProblem?
+            do {
+                _ = try await bluetooth.connect(peripheralId: peripheralId, serial: serial)
+            } catch {
+                problem = bluetoothRefusal(error).flatMap(printerReachProblem(for:))
+            }
+            self?.reachProblem = problem
+            self?.connectTask = nil
+        }
+        connectTask = task
+        return task
+    }
+
+    /// Back in the app (from Settings or Control Center) with a reach problem showing: connects
+    /// again. Nothing else starts here.
+    func cameBackToTheApp() {
+        if printerProblem != nil { connectPrinter() }
     }
 
     /// Runs the move's sync again (labels need a sync since the version 2 upgrade).

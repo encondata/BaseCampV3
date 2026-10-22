@@ -145,7 +145,7 @@ async def test_forced_change_allows_auth_lifecycle_and_self_password_change(
     assert (await client.get("/auth/me", headers=headers)).status_code == 200
 
     # refresh still works (cookie-based, no bearer token involved)
-    refresh_resp = await client.post("/auth/refresh")
+    refresh_resp = await client.post("/auth/refresh?client=portal")
     assert refresh_resp.status_code == 200
 
     # self password-change still reachable and clears the flag
@@ -154,7 +154,7 @@ async def test_forced_change_allows_auth_lifecycle_and_self_password_change(
     assert resp.status_code == 204
 
     # logout still works
-    assert (await client.post("/auth/logout")).status_code == 204
+    assert (await client.post("/auth/logout?client=portal")).status_code == 204
 
     # after the change, a fresh login shows the flag cleared and normal
     # routes are reachable again

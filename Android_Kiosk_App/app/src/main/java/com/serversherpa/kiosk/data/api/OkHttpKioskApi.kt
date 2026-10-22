@@ -28,6 +28,14 @@ import com.serversherpa.kiosk.core.model.PairPoll
 import com.serversherpa.kiosk.core.model.PairPollIn
 import com.serversherpa.kiosk.core.model.PairPollOut
 import com.serversherpa.kiosk.core.model.PairStatus
+import com.serversherpa.kiosk.core.model.RolodexCreateIn
+import com.serversherpa.kiosk.core.model.RolodexDetail
+import com.serversherpa.kiosk.core.model.RolodexDuplicatesIn
+import com.serversherpa.kiosk.core.model.RolodexDuplicatesOut
+import com.serversherpa.kiosk.core.model.RolodexList
+import com.serversherpa.kiosk.core.model.RolodexMatch
+import com.serversherpa.kiosk.core.model.RolodexOptions
+import com.serversherpa.kiosk.core.model.RolodexPhotoOut
 import com.serversherpa.kiosk.core.model.SessionData
 import com.serversherpa.kiosk.core.model.SetupOptions
 import com.serversherpa.kiosk.core.model.SystemStatus
@@ -125,6 +133,7 @@ class OkHttpKioskApi(
     private val route: (OkHttpClient) -> OkHttpClient = { it }, // INTERNET-TEST
 ) : KioskApi {
     private val jsonType = "application/json; charset=utf-8".toMediaType()
+    private val jpegType = "image/jpeg".toMediaType()
 
     // ── plumbing ────────────────────────────────────────────────────
 
@@ -283,4 +292,29 @@ class OkHttpKioskApi(
 
     override suspend fun issueStationKey(serial: String): String =
         parse(authed { url(apiUrl("/kiosk/station-key")).post(jsonBody(KioskStationKeyIn.serializer(), KioskStationKeyIn(serial))) }, KioskStationKeyOut.serializer()).key
+
+    // ── rolodex ─────────────────────────────────────────────────────
+
+    override suspend fun rolodexWorkers(): RolodexList =
+        parse(authed { url(apiUrl("/kiosk/rolodex/workers")).get() }, RolodexList.serializer())
+
+    override suspend fun rolodexWorker(personId: String): RolodexDetail =
+        parse(authed { url(apiUrl("/kiosk/rolodex/workers/${q(personId)}")).get() }, RolodexDetail.serializer())
+
+    override suspend fun rolodexOptions(): RolodexOptions =
+        parse(authed { url(apiUrl("/kiosk/rolodex/options")).get() }, RolodexOptions.serializer())
+
+    override suspend fun rolodexDuplicates(body: RolodexDuplicatesIn): List<RolodexMatch> =
+        parse(authed { url(apiUrl("/kiosk/rolodex/duplicates")).post(jsonBody(RolodexDuplicatesIn.serializer(), body)) }, RolodexDuplicatesOut.serializer()).matches
+
+    override suspend fun rolodexCreate(body: RolodexCreateIn): RolodexDetail =
+        parse(authed { url(apiUrl("/kiosk/rolodex/workers")).post(jsonBody(RolodexCreateIn.serializer(), body)) }, RolodexDetail.serializer())
+
+    /** The patch is sent as built: JsonObject keeps its JsonNull entries (explicitNulls only drops class properties). */
+    override suspend fun rolodexUpdate(personId: String, patch: JsonObject): RolodexDetail =
+        parse(authed { url(apiUrl("/kiosk/rolodex/workers/${q(personId)}")).patch(jsonBody(JsonObject.serializer(), patch)) }, RolodexDetail.serializer())
+
+    /** A raw image/jpeg body with its Content-Length; built from the bytes, so the 401 retry can send it again. */
+    override suspend fun rolodexPhoto(personId: String, jpeg: ByteArray): RolodexPhotoOut =
+        parse(authed { url(apiUrl("/kiosk/rolodex/workers/${q(personId)}/photo")).put(jpeg.toRequestBody(jpegType)) }, RolodexPhotoOut.serializer())
 }

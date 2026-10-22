@@ -20,6 +20,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.access.hosts import authorize_host_view
 from serversherpa.access.visibility import can_set_visibility, visible_levels
@@ -157,6 +158,62 @@ async def _get_live_attachment(
     return att
 
 
+def _add_attachment(
+    db: AsyncSession, *, entity_type: str, entity_id: uuid.UUID, kind: str,
+    key: str, filename: str, content_type: str, size: int,
+    actor_id: uuid.UUID, visibility: str, audit_extra: dict | None = None,
+) -> Attachment:
+    """Add the attachment row and its `attachment.add` audit (`audit_extra`
+    keys merged into `changes`). No commit."""
+    attachment = Attachment(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        kind=kind,
+        storage_key=key,
+        filename=filename,
+        content_type=content_type,
+        size_bytes=size,
+        uploaded_by=actor_id,
+        visibility=visibility,
+    )
+    db.add(attachment)
+
+    audit(db, actor_id=actor_id, entity_type=entity_type,
+          entity_id=str(entity_id), action="attachment.add",
+          changes={"filename": {"from": None, "to": attachment.filename},
+                   **(audit_extra or {})})
+    return attachment
+
+
+async def replace_avatar(
+    db: AsyncSession, *, entity_type: str, entity, key: str, filename: str,
+    content_type: str, size: int, actor_id: uuid.UUID, now: datetime,
+    audit_extra: dict | None = None,
+) -> Attachment:
+    """Make the already-stored object at `key` the record's one current
+    avatar (a person's photo, a client's or partner's logo): retire the
+    previous avatar rows, repoint the record's key field, add the new row
+    and audit `attachment.add`. The caller authorizes, stores the object and
+    commits; no commit here. Retired objects stay in storage until the
+    Developer › Database › Cleanup purge."""
+    # single current avatar/logo: retire previous rows BEFORE inserting
+    # the new one (the update autoflushes — ordering matters), repoint
+    await db.execute(
+        update(Attachment)
+        .where(Attachment.entity_type == entity_type,
+               Attachment.entity_id == entity.id,
+               Attachment.kind == "avatar",
+               Attachment.deleted_at.is_(None))
+        .values(deleted_at=now)
+    )
+    setattr(entity, AVATAR_KEY_FIELD[entity_type], key)
+    entity.updated_at = now
+    return _add_attachment(
+        db, entity_type=entity_type, entity_id=entity.id, kind="avatar",
+        key=key, filename=filename, content_type=content_type, size=size,
+        actor_id=actor_id, visibility="everyone", audit_extra=audit_extra)
+
+
 def _out(att: Attachment) -> AttachmentOut:
     out = AttachmentOut.model_validate(att)
     out.url = presign_get(att.storage_key)
@@ -212,39 +269,20 @@ async def upload_attachment(
     await put_object(key, data, content_type)
 
     now = datetime.now(UTC)
+    filename = file.filename or f"upload{ext}"
 
     if kind == "avatar":
-        # single current avatar/logo: retire previous rows BEFORE inserting
-        # the new one (the update autoflushes — ordering matters), repoint
-        await db.execute(
-            update(Attachment)
-            .where(Attachment.entity_type == entity_type,
-                   Attachment.entity_id == entity_id,
-                   Attachment.kind == "avatar",
-                   Attachment.deleted_at.is_(None))
-            .values(deleted_at=now)
-        )
         entity = await db.get(ENTITY_MODEL[entity_type], entity_id)
         assert entity is not None  # _authorize checked
-        setattr(entity, AVATAR_KEY_FIELD[entity_type], key)
-        entity.updated_at = now
-
-    attachment = Attachment(
-        entity_type=entity_type,
-        entity_id=entity_id,
-        kind=kind,
-        storage_key=key,
-        filename=file.filename or f"upload{ext}",
-        content_type=content_type,
-        size_bytes=len(data),
-        uploaded_by=user.person.id,
-        visibility=visibility,
-    )
-    db.add(attachment)
-
-    audit(db, actor_id=user.person.id, entity_type=entity_type,
-          entity_id=str(entity_id), action="attachment.add",
-          changes={"filename": {"from": None, "to": attachment.filename}})
+        attachment = await replace_avatar(
+            db, entity_type=entity_type, entity=entity, key=key,
+            filename=filename, content_type=content_type, size=len(data),
+            actor_id=user.person.id, now=now)
+    else:
+        attachment = _add_attachment(
+            db, entity_type=entity_type, entity_id=entity_id, kind=kind,
+            key=key, filename=filename, content_type=content_type,
+            size=len(data), actor_id=user.person.id, visibility=visibility)
 
     await db.commit()
     return _out(attachment)

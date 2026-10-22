@@ -41,6 +41,7 @@ class AuthResult:
     roles: list[str]
     access: AccessInfo
     session_id: uuid.UUID | None = None
+    client: str = "portal"              # the issued session's app ("portal" | "kiosk")
 
 
 @dataclass
@@ -207,6 +208,7 @@ async def start_session(
         roles=access.role_names,
         access=access,
         session_id=session_id,
+        client=client,
     )
 
 
@@ -223,7 +225,12 @@ async def revoke_family(
 async def refresh(
     db: AsyncSession, *, refresh_token: str,
     ip: str | None = None, user_agent: str | None = None,
+    expect_client: str | None = None,
 ) -> AuthResult:
+    """Rotate a refresh token. With `expect_client`, a session minted for
+    another app is refused with `wrong_client` before anything else is
+    looked at — no rotation, no revocation, no reuse-detection family
+    kill: the token belongs to the other app, which must keep it."""
     settings = get_settings()
     now = datetime.now(UTC)
 
@@ -235,6 +242,9 @@ async def refresh(
     )
     if session is None:
         raise AuthError("invalid_session")
+
+    if expect_client is not None and session.client != expect_client:
+        raise AuthError("wrong_client")
 
     if session.revoked_at is not None:
         raise AuthError("invalid_session")
@@ -295,18 +305,37 @@ async def refresh(
         roles=access.role_names,
         access=access,
         session_id=new_id,
+        client=session.client,
     )
 
 
-async def logout(db: AsyncSession, *, refresh_token: str) -> None:
+async def session_client(db: AsyncSession, refresh_token: str) -> str | None:
+    """The app ("portal" | "kiosk") a refresh token's session was minted
+    for, whatever its state (live, rotated, revoked, expired); None for an
+    unknown token. Reads only."""
+    return await db.scalar(
+        select(AuthSession.client)
+        .where(AuthSession.token_hash == hash_refresh_token(refresh_token))
+    )
+
+
+async def logout(
+    db: AsyncSession, *, refresh_token: str, expect_client: str | None = None,
+) -> str | None:
     """Revoke the whole login (family). Unknown tokens are a silent no-op —
-    logout must never fail."""
+    logout must never fail. With `expect_client`, a session minted for
+    another app is left alone (nothing revoked). Returns the session's
+    client, or None for an unknown token."""
     session = await db.scalar(
         select(AuthSession)
         .where(AuthSession.token_hash == hash_refresh_token(refresh_token))
     )
-    if session is not None:
-        await revoke_family(db, session.family_id, reason="logout")
-        audit(db, actor_id=session.person_id, entity_type="auth",
-              entity_id=str(session.person_id), action="logout")
-        await db.commit()
+    if session is None:
+        return None
+    if expect_client is not None and session.client != expect_client:
+        return session.client
+    await revoke_family(db, session.family_id, reason="logout")
+    audit(db, actor_id=session.person_id, entity_type="auth",
+          entity_id=str(session.person_id), action="logout")
+    await db.commit()
+    return session.client

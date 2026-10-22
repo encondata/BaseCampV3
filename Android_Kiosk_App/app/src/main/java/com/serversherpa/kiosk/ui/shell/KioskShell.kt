@@ -62,10 +62,14 @@ import kotlinx.coroutines.launch
 
 private val REG_TONE = mapOf(RegistrationState.OK to ChipTone.GREEN, RegistrationState.SOON to ChipTone.AMBER, RegistrationState.EXPIRED to ChipTone.RED, RegistrationState.NONE to ChipTone.SLATE)
 
-/** kiosk/src/layout/KioskShell.tsx: dark top bar, the page, one-line mono footer. */
+/**
+ * kiosk/src/layout/KioskShell.tsx: dark top bar, the page, one-line mono footer. The page scrolls
+ * as one column; a page with its own lazy list passes [scroll] false and gets the fixed height
+ * instead (a LazyColumn can't sit inside a verticalScroll).
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
+fun KioskShell(nav: NavHostController, scroll: Boolean = true, content: @Composable () -> Unit) {
     val container = LocalAppContainer.current
     val c = LocalKioskColors.current
     val auth by container.auth.state.collectAsStateWithLifecycle()
@@ -148,7 +152,8 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
             }
         }
         // ── page ──
-        Box(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) { content() }
+        val page = Modifier.weight(1f).fillMaxWidth()
+        Box((if (scroll) page.verticalScroll(rememberScrollState()) else page).padding(16.dp)) { content() }
         // ── footer ──
         FlowRow(Modifier.fillMaxWidth().background(c.paper).navigationBarsPadding().padding(horizontal = 14.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             // What move this kiosk is set to, and nothing else. Mode, version and the

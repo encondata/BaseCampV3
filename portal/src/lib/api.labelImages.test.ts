@@ -23,7 +23,7 @@ const image: LabelImage = { id: 'img-1', name: 'Cumulus', width: 600, height: 20
 
 /** Every request answers `resp`, but the session refresh. */
 function answer(resp: () => Response) {
-  const fetchMock = vi.fn(async (url: string | Request, _init?: RequestInit) => (String(url).endsWith('/auth/refresh')
+  const fetchMock = vi.fn(async (url: string | Request, _init?: RequestInit) => (String(url).includes('/auth/refresh')
     ? new Response(null, { status: 401 }) : resp()));
   vi.stubGlobal('fetch', fetchMock);
   return fetchMock;

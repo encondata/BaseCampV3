@@ -15,7 +15,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 it('getPairInfo GETs /kiosk/pair/{code}; approve and deny POST their actions', async () => {
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-    if (String(url).endsWith('/auth/refresh')) return json(SESSION);
+    if (String(url).includes('/auth/refresh')) return json(SESSION);
     if (init?.method === 'POST') return new Response(null, { status: 204 });
     return json({ code: 'ABCD2345', kiosk_name: 'Dock 3', serial: 's',
                   status: 'pending', expires_at: '2030-01-01T00:00:00Z' });
@@ -36,6 +36,6 @@ it('getPairInfo GETs /kiosk/pair/{code}; approve and deny POST their actions', a
 
 it('surfaces the API error code', async () => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) =>
-    String(url).endsWith('/auth/refresh') ? json(SESSION) : json({ detail: { code: 'pair_not_found' } }, 404)));
+    String(url).includes('/auth/refresh') ? json(SESSION) : json({ detail: { code: 'pair_not_found' } }, 404)));
   await expect(getPairInfo('NOPE0000')).rejects.toMatchObject({ code: 'pair_not_found', status: 404 });
 });

@@ -1,7 +1,7 @@
 import Foundation
 
 enum SettingsTabId: String, Sendable {
-    case appearance, sound, devices
+    case appearance, sound, devices, troubleshooting
     case thisKiosk = "this-kiosk"
     case admin, developer
 }
@@ -21,6 +21,7 @@ let SETTINGS_TABS: [SettingsTab] = [
     SettingsTab(id: .appearance, label: "Appearance", blurb: "Theme, accent, and text size for this kiosk."),
     SettingsTab(id: .sound, label: "Sound", blurb: "Scan and alert sounds."),
     SettingsTab(id: .devices, label: "Devices", blurb: "Cameras and keyboards this kiosk can scan with."),
+    SettingsTab(id: .troubleshooting, label: "Troubleshooting", blurb: "Printer connection, tests and a report to share."),
     SettingsTab(id: .thisKiosk, label: "This Kiosk", blurb: "This kiosk's name, identity, and connection.", anon: true),
     SettingsTab(id: .admin, label: "Admin", blurb: "Kiosk administration.", requires: .admin),
     SettingsTab(id: .developer, label: "Developer", blurb: "Diagnostics and developer tools.", requires: .developer),

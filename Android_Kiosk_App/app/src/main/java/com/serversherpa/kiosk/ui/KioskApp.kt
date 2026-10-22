@@ -17,6 +17,7 @@ import com.serversherpa.kiosk.core.features.FeatureId
 import com.serversherpa.kiosk.core.features.feature
 import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.ui.flash.ScanFlash
+import com.serversherpa.kiosk.ui.guards.AdminGate
 import com.serversherpa.kiosk.ui.guards.KioskGuard
 import com.serversherpa.kiosk.ui.guards.SetupGate
 import com.serversherpa.kiosk.ui.guards.StationIdleReturn
@@ -27,6 +28,7 @@ import com.serversherpa.kiosk.ui.screens.labels.PrintLabelsScreen
 import com.serversherpa.kiosk.ui.screens.labels.PrinterSetupScreen
 import com.serversherpa.kiosk.ui.screens.login.LoginScreen
 import com.serversherpa.kiosk.ui.screens.placeholder.FeaturePlaceholderScreen
+import com.serversherpa.kiosk.ui.screens.rolodex.RolodexScreen
 import com.serversherpa.kiosk.ui.screens.scan.ScanScreen
 import com.serversherpa.kiosk.ui.screens.settings.SettingsScreen
 import com.serversherpa.kiosk.ui.screens.setup.KioskSetupScreen
@@ -61,6 +63,9 @@ fun KioskApp() {
                 gated(nav, Routes.LABELS, FeatureId.LABELS) { LabelsHomeScreen(nav) }
                 gated(nav, Routes.LABELS_PRINT, FeatureId.LABELS) { PrintLabelsScreen(nav) }
                 gated(nav, Routes.LABELS_PRINTER, FeatureId.LABELS) { PrinterSetupScreen(nav) }
+                // Admins only, and no setup step: AdminGate instead of SetupGate. The list is a
+                // LazyColumn, so the shell's page doesn't scroll.
+                composable(Routes.ROLODEX) { KioskGuard(nav) { AdminGate(nav) { KioskShell(nav, scroll = false) { RolodexScreen(nav) } } } }
             }
             ScanFlash(container.flash)
             SetupClearedRedirect(nav, container.heartbeat.setupCleared)

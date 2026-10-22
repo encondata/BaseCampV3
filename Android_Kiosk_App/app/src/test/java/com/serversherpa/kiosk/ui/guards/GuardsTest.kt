@@ -118,4 +118,52 @@ class GuardsTest {
         assertEquals(Routes.HOME, nav.previousBackStackEntry?.destination?.route)   // Scan popped: Back goes Home
         compose.onNodeWithText("scanning").assertDoesNotExist()
     }
+
+    // ── AdminGate (the Rolodex route) ──
+
+    private fun adminGateOn(c: com.serversherpa.kiosk.AppContainer): () -> NavHostController {
+        lateinit var nav: NavHostController
+        compose.setContent {
+            CompositionLocalProvider(LocalAppContainer provides c) {
+                KioskTheme {
+                    nav = rememberNavController()
+                    NavHost(nav, startDestination = Routes.HOME) {
+                        composable(Routes.HOME) { Text("home page") }
+                        composable(Routes.ROLODEX) { AdminGate(nav) { Text("rolodex page") } }
+                    }
+                }
+            }
+        }
+        compose.runOnIdle { nav.navigate(Routes.ROLODEX) }
+        return { nav }
+    }
+
+    @Test fun adminGateShowsAnAdminTheContent() {
+        val c = testContainer()
+        c.auth.completePair(fakeSession(roles = listOf("admin"), maxRank = 60))
+        val nav = adminGateOn(c)
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("rolodex page").fetchSemanticsNodes().isNotEmpty() }
+        assertEquals(Routes.ROLODEX, nav().currentDestination?.route)
+    }
+
+    @Test fun adminGateSendsStaffHome() {
+        val c = testContainer()
+        c.auth.completePair(fakeSession(roles = listOf("staff"), maxRank = 40))
+        val nav = adminGateOn(c)
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("home page").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitForIdle()
+        assertEquals(Routes.HOME, nav().currentDestination?.route)
+        assertEquals(null, nav().previousBackStackEntry)                       // the Rolodex is popped: Back leaves the app's Home
+        compose.onNodeWithText("rolodex page").assertDoesNotExist()
+    }
+
+    @Test fun adminGateSendsAMovePasswordSessionHome() {
+        val c = testContainer()
+        c.auth.completePair(fakeSession(maxRank = 10, kioskMove = com.serversherpa.kiosk.core.model.KioskMove("i1", "Move")))
+        val nav = adminGateOn(c)
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("home page").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitForIdle()
+        assertEquals(Routes.HOME, nav().currentDestination?.route)
+        compose.onNodeWithText("rolodex page").assertDoesNotExist()
+    }
 }

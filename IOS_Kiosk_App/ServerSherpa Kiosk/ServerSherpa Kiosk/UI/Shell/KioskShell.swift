@@ -49,6 +49,9 @@ func personLabel(_ session: SessionData) -> String {
 /// shell's top bar and footer step aside while it is on top.
 func shellHidesChrome(path: [Route]) -> Bool { path.last == .timeclock }
 
+/// The top bar's section title for the screen on top (the Rolodex's worker page reads "Rolodex").
+func shellTitle(_ route: Route?) -> String? { route.map { feature($0.featureId).title } }
+
 /// The shell's "‹ Home" control shows only on a pushed screen.
 func showsBackButton(pathCount: Int) -> Bool { pathCount > 0 }
 
@@ -173,8 +176,8 @@ struct KioskShell<Content: View>: View {
                 .overlay(Capsule().stroke(palette.inkLine, lineWidth: 1))
                 .lineLimit(1)
                 .fixedSize() }
-            if showTitle, let route = path.last {
-                Text(feature(route.featureId).title)
+            if showTitle, let title = shellTitle(path.last) {
+                Text(title)
                     .font(KioskType.sans(15, .medium))
                     .foregroundStyle(palette.snow)
                     .lineLimit(1)
