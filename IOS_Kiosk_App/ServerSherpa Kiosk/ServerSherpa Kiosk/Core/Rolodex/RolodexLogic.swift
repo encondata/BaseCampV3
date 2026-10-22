@@ -64,9 +64,14 @@ enum RolodexLogic {
 
     /// By folded last name, then folded first name, then person id.
     static func sortRows(_ rows: [RolodexRow]) -> [RolodexRow] {
-        rows.map { (key: (fold($0.lastName), fold($0.firstName), $0.personId), row: $0) }
+        rows.map { (key: sortKey($0), row: $0) }
             .sorted { $0.key < $1.key }
             .map(\.row)
+    }
+
+    /// `sortRows`' key: folded last name, folded first name, person id.
+    static func sortKey(_ row: RolodexRow) -> (String, String, String) {
+        (fold(row.lastName), fold(row.firstName), row.personId)
     }
 
     /// The folded last name's first letter when it is `a`–`z` (uppercased), else `#`.
@@ -92,14 +97,27 @@ enum RolodexLogic {
     /// "smith-jones" finds it) and also split on hyphens (`smith`, `jones`). An empty
     /// query matches everyone.
     static func matches(_ row: RolodexRow, query: String) -> Bool {
-        let terms = query.split(whereSeparator: \.isWhitespace).map { fold(String($0)) }.filter { !$0.isEmpty }
-        if terms.isEmpty { return true }
-        let words = [row.firstName, row.lastName, row.preferredName, row.jobTitle, row.company?.name]
+        matches(words: searchWords(row), terms: searchTerms(query))
+    }
+
+    /// The folded words `matches` looks through for `row`. A list folds them once per row and
+    /// keeps them, rather than once per row per keystroke.
+    static func searchWords(_ row: RolodexRow) -> [String] {
+        [row.firstName, row.lastName, row.preferredName, row.jobTitle, row.company?.name]
             .compactMap { $0 }
             .flatMap { $0.split(whereSeparator: \.isWhitespace) }
             .flatMap { word in [fold(String(word))] + word.split(separator: "-").map { fold(String($0)) } }
             .filter { !$0.isEmpty }
-        return terms.allSatisfy { term in words.contains { $0.hasPrefix(term) } }
+    }
+
+    /// The query's folded terms; none matches everyone.
+    static func searchTerms(_ query: String) -> [String] {
+        query.split(whereSeparator: \.isWhitespace).map { fold(String($0)) }.filter { !$0.isEmpty }
+    }
+
+    /// Every term prefixes one of `words` (`searchWords`).
+    static func matches(words: [String], terms: [String]) -> Bool {
+        terms.allSatisfy { term in words.contains { $0.hasPrefix(term) } }
     }
 
     /// `all`, a status key, or `no_photo`.

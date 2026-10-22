@@ -8,6 +8,10 @@ enum Route: Hashable {
     case scan, enroll, timeclock, containers, trucks, labels
     /// Under the Label Printing tile: Print Labels and Printer Setup.
     case labelsPrint, labelsPrinter
+    /// The Rolodex (admins): the list, with the worker page beside it on a wide screen.
+    case rolodex
+    /// A narrow screen's worker page, pushed over the list (its own "‹ Rolodex" goes back).
+    case rolodexWorker(String)
 
     static func forFeature(_ id: FeatureId) -> Route {
         switch id {
@@ -19,6 +23,7 @@ enum Route: Hashable {
         case .labels: .labels
         case .timeclock: .timeclock
         case .settings: .settings(nil)
+        case .rolodex: .rolodex
         }
     }
 
@@ -32,6 +37,7 @@ enum Route: Hashable {
         case .containers: .containers
         case .trucks: .trucks
         case .labels, .labelsPrint, .labelsPrinter: .labels
+        case .rolodex, .rolodexWorker: .rolodex
         }
     }
 }

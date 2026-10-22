@@ -23,6 +23,11 @@ enum FeatureIcons {
     private static let labels = icon(strokes: ["M6 6h15l13 13-15 15L6 21V6z"], fills: [svgCircle(14, 14, 2.5)])
     private static let timeclock = icon(strokes: [svgCircle(20, 20, 15), "M20 11v9l7 4"])
     private static let settings = icon(strokes: ["M6 12h20M31 12h3", svgCircle(26, 12, 3.5), "M6 28h9M20 28h14", svgCircle(15, 28, 3.5)])
+    /// A card file: a contact card on its two rings, a person and two lines of details.
+    private static let rolodex = icon(strokes: [
+        "M7 12h26a2 2 0 0 1 2 2v18a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V14a2 2 0 0 1 2-2z", "M13 8v8M27 8v8",
+        svgCircle(15, 21, 3.5), "M9.5 30a5.5 5.5 0 0 1 11 0", "M24 20h6M24 25h6",
+    ])
 
     static func icon(_ id: FeatureId) -> VectorIcon {
         switch id {
@@ -34,6 +39,7 @@ enum FeatureIcons {
         case .labels: labels
         case .timeclock: timeclock
         case .settings: settings
+        case .rolodex: rolodex
         }
     }
 }
