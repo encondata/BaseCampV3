@@ -47,17 +47,29 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 
 /** The presigned photo fetched with the app's OkHttp client (the kiosk has no image library), as
- *  the old Timeclock screen did; null when it fails, so the initials stay. */
-internal suspend fun loadPhoto(client: OkHttpClient, url: String): ImageBitmap? = withContext(Dispatchers.IO) {
+ *  the old Timeclock screen did; null when it fails, so the initials stay. A [maxSide] above 0
+ *  decodes a large photo at a power-of-two fraction no smaller than it (a list of avatars must
+ *  never decode a 12 MP portal upload at full size). The Rolodex calls this too. */
+internal suspend fun loadPhoto(client: OkHttpClient, url: String, maxSide: Int = 0): ImageBitmap? = withContext(Dispatchers.IO) {
     try {
         client
             .let(InternetTestRoutes::portal) // INTERNET-TEST
             .newCall(Request.Builder().url(url).build()).execute().use { r ->
             if (!r.isSuccessful) return@use null
-            r.body?.bytes()?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
+            r.body?.bytes()?.let { decodePhoto(it, maxSide)?.asImageBitmap() }
         }
     } catch (e: CancellationException) { throw e
     } catch (e: Exception) { null }
+}
+
+/** [bytes] decoded whole, or with the largest power-of-two sample size that keeps both sides at least [maxSide]. */
+internal fun decodePhoto(bytes: ByteArray, maxSide: Int): android.graphics.Bitmap? {
+    if (maxSide <= 0) return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    var sample = 1
+    while (bounds.outWidth / (sample * 2) >= maxSide && bounds.outHeight / (sample * 2) >= maxSide) sample *= 2
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
 }
 
 /** The person's photo in a white-ringed circle, or their initials until it lands or if it fails. */

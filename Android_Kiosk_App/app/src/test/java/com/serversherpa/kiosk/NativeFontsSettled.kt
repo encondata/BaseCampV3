@@ -20,12 +20,13 @@ import org.robolectric.annotation.GraphicsMode
  *
  * Use it outside the compose rule, so it runs before the test's activity
  * starts: `RuleChain.outerRule(NativeFontsSettled()).around(compose)`. It only
- * acts on tests annotated `@GraphicsMode(NATIVE)`.
+ * acts on tests annotated `@GraphicsMode(NATIVE)`, on the method or on the class.
  */
 class NativeFontsSettled : TestRule {
     override fun apply(base: Statement, description: Description): Statement = object : Statement() {
         override fun evaluate() {
-            if (description.getAnnotation(GraphicsMode::class.java)?.value == GraphicsMode.Mode.NATIVE) awaitFontsCopied()
+            val mode = description.getAnnotation(GraphicsMode::class.java) ?: description.testClass?.getAnnotation(GraphicsMode::class.java)
+            if (mode?.value == GraphicsMode.Mode.NATIVE) awaitFontsCopied()
             base.evaluate()
         }
     }

@@ -23,6 +23,7 @@ interface AssetDao {
 @Dao
 interface PersonDao {
     @Query("SELECT * FROM people") suspend fun all(): List<PersonEntity>
+    @Query("SELECT * FROM people WHERE id = :id") suspend fun get(id: String): PersonEntity?
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insertAll(rows: List<PersonEntity>)
     @Query("DELETE FROM people") suspend fun deleteAll()
     @Query("SELECT COUNT(*) FROM people") suspend fun count(): Int
