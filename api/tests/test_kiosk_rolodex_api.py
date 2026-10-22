@@ -496,18 +496,21 @@ async def test_duplicates_by_name_email_phone(client, db, seeded_user):
     ana = await _person(db, "Ana", "Ortiz", email="ana.ortiz@example.com",
                         phone="(312) 555-0142", role="staff", account=True,
                         job_title="Coordinator")
-    # an archived twin and a move's hidden identity never match
+    # an archived twin and a move's hidden identity never match, and
+    # sharing only the last name isn't a name match
     await _person(db, "Ana", "Ortiz", email="ana.old@example.com", archived=True)
     await _person(db, "Ana", "Ortiz", source=KIOSK_MOVE_SOURCE)
+    bob = await _person(db, "Bob", "Ortiz", preferred_name="Bobby", role="staff")
 
     async def check(body):
         r = await client.post(f"{BASE}/duplicates", headers=hdrs, json=body)
         assert r.status_code == 200, r.text
         return r.json()["matches"]
 
-    # name: case- and whitespace-insensitive
+    # name: case- and whitespace-insensitive; Bob Ortiz isn't Ana Ortiz
     matches = await check({"first_name": "ana", "last_name": " ORTIZ "})
     assert len(matches) == 1
+    assert str(bob) not in {x["person_id"] for x in matches}
     m = matches[0]
     assert set(m) == MATCH_FIELDS
     assert m == {
@@ -564,6 +567,29 @@ async def test_duplicates_match_preferred_names_and_workers(client, db, seeded_u
     r = await client.post(f"{BASE}/duplicates", headers=hdrs, json={
         "first_name": "Bob", "preferred_name": "Beto", "last_name": "Díaz"})
     assert [x["person_id"] for x in r.json()["matches"]] == [str(beto)]
+
+
+async def test_duplicates_match_names_split_differently(client, db, seeded_user):
+    """name_keys compares the whole "given last" string, so a two-word
+    given name or surname matches however the form split it."""
+    _, hdrs = await _kiosk_admin(db, client)
+    mary = await _worker(db, "Mary Ann", "Smith")
+    jo = await _person(db, "Joanne", "de la  Cruz", preferred_name="Jo Ann", role="staff")
+
+    for body, expected in (
+            ({"first_name": "Mary", "last_name": "Ann Smith"}, mary),
+            ({"first_name": "mary  ann", "last_name": "SMITH"}, mary),
+            ({"first_name": "Jo", "last_name": "Ann de la Cruz"}, jo),
+            ({"first_name": "Joanne", "last_name": "De La Cruz"}, jo)):
+        r = await client.post(f"{BASE}/duplicates", headers=hdrs, json=body)
+        assert r.status_code == 200, r.text
+        assert [(m["person_id"], m["matched_on"]) for m in r.json()["matches"]] == [
+            (str(expected), ["name"])], body
+
+    for body in ({"first_name": "Mary", "last_name": "Smith"},
+                 {"first_name": "Ann", "last_name": "Smith"}):
+        r = await client.post(f"{BASE}/duplicates", headers=hdrs, json=body)
+        assert r.json()["matches"] == [], body
 
 
 async def test_duplicates_body_is_checked(client, db, seeded_user):
@@ -752,6 +778,17 @@ async def test_email_race_maps_to_email_in_use(client, db, seeded_user, monkeypa
     assert (person.email, person.job_title) == ("paz@example.com", None)
     assert (await _fresh(db, WorkerProfile, paz)).trade is None
 
+    # a worker with no profile row: the clash surfaces in get_or_create_profile,
+    # with or without profile fields in the body, and no profile is left behind
+    nia = await _worker(db, "Nia", "Bare", email="nia@example.com", profile=False)
+    for body in ({"email": "ana.ortiz@example.com", "job_title": "Rigger"},
+                 {"email": "ana.ortiz@example.com", "trade": "Rigging"}):
+        r = await client.patch(f"{BASE}/workers/{nia}", headers=hdrs, json=body)
+        assert r.status_code == 409 and _code(r) == "email_in_use", (body, r.text)
+        person = await _fresh(db, Person, nia)
+        assert (person.email, person.job_title) == ("nia@example.com", None)
+        assert await _fresh(db, WorkerProfile, nia) is None
+
 
 async def test_only_the_email_index_reads_as_email_in_use():
     from sqlalchemy.exc import IntegrityError
@@ -827,6 +864,41 @@ async def test_patch_person_and_profile_in_one_transaction(client, db, seeded_us
     assert r.status_code == 200, r.text
     assert (await _fresh(db, Person, paz)).job_title == "Rigger"
     assert (await _fresh(db, WorkerProfile, paz)).level == "L3"
+
+
+async def test_edit_keeps_a_profileless_worker_on_the_time_clock(client, db, seeded_user):
+    """/kiosk/sync/people reads a worker profile as "is a worker", and the
+    apps put a saved worker into the Time Clock's roster, so every save
+    makes sure the profile row exists, even one that only changes a name."""
+    _, hdrs = await _kiosk_admin(db, client)
+    nia = await _worker(db, "Nia", "Bare", profile=False)
+    noe = await _worker(db, "Noe", "Bare", profile=False)
+    r = await client.get("/kiosk/sync/people", headers=hdrs)
+    assert str(nia) not in {p["id"] for p in r.json()["people"]}
+
+    r = await client.patch(f"{BASE}/workers/{nia}", headers=hdrs,
+                           json={"job_title": "Rigger"})
+    assert r.status_code == 200, r.text
+    assert (r.json()["job_title"], r.json()["status"]) == ("Rigger", "active")
+    r = await client.patch(f"{BASE}/workers/{noe}", headers=hdrs, json={})
+    assert r.status_code == 200, r.text
+
+    for pid in (nia, noe):
+        profile = await _fresh(db, WorkerProfile, pid)
+        assert profile is not None
+        assert (profile.status, profile.trade, profile.level, profile.partner_id) == (
+            "active", None, None, None)
+    r = await client.get("/kiosk/sync/people", headers=hdrs)
+    synced = {p["id"]: p for p in r.json()["people"]}
+    for pid in (nia, noe):
+        assert synced[str(pid)]["is_worker"] is True
+        assert synced[str(pid)]["has_account"] is False
+
+    # a refused save leaves no profile behind
+    ray = await _worker(db, "Ray", "Bare", profile=False)
+    r = await client.patch(f"{BASE}/workers/{ray}", headers=hdrs, json={"first_name": None})
+    assert r.status_code == 422, r.text
+    assert await _fresh(db, WorkerProfile, ray) is None
 
 
 async def test_patch_clears_with_null(client, db, seeded_user):

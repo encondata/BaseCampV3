@@ -60,6 +60,7 @@ from serversherpa.api.schemas import (
 from serversherpa.api.worker_edits import (
     apply_person_update,
     apply_profile_update,
+    get_or_create_profile,
     target_rank,
     visible_workers_query,
 )
@@ -324,8 +325,12 @@ async def _check_new_partner(db: AsyncSession, partner_id: uuid.UUID) -> None:
         raise _err(422, "partner_archived")
 
 
-def _squashed_lower(text: str) -> str:
-    return " ".join(text.split()).lower()
+def _squashed_sql(expr):
+    """SQL's take on `bulk_import._squash` (which builds `name_keys`):
+    whitespace runs collapsed, trimmed, lowercased. Postgres lower(), not
+    casefold, so it only narrows the candidates; the exact rule runs in
+    Python."""
+    return func.lower(func.btrim(func.regexp_replace(expr, r"\s+", " ", "g")))
 
 
 async def find_duplicates(
@@ -346,10 +351,14 @@ async def find_duplicates(
     phone_key = normalize_phone(phone or "")
 
     # SQL narrows the candidates; the exact rules run in Python below.
+    # Whole "given last" strings, so "Mary Ann" + "Smith" finds "Mary" +
+    # "Ann Smith" (a null preferred name concatenates to null: no match).
     conds = []
     if keys:
-        conds.append(func.lower(func.btrim(func.regexp_replace(
-            Person.last_name, r"\s+", " ", "g"))) == _squashed_lower(last_name))
+        wanted = sorted(keys)
+        conds.append(or_(
+            _squashed_sql(Person.first_name + " " + Person.last_name).in_(wanted),
+            _squashed_sql(Person.preferred_name + " " + Person.last_name).in_(wanted)))
     if email_key:
         conds.append(Person.email == email_key)            # CITEXT: any case
     if phone_key:
@@ -382,7 +391,7 @@ async def find_duplicates(
             matched_on.append("email")
         if phone_key and normalize_phone(person.phone or "") == phone_key:
             matched_on.append("phone")
-        if not matched_on:        # same last name, different given names
+        if not matched_on:        # the SQL prefilter is lower(), not casefold
             continue
         matches.append(KioskRolodexMatchOut(
             person_id=person.id,
@@ -491,11 +500,12 @@ async def update_rolodex_worker(
     `blacklist_requires_note`, `unknown_level`, `partner_not_found`,
     `unknown_status`; blacklisting an account holder disables the login
     and ends their sessions), all in ONE transaction: if either part is
-    refused, neither lands. Two Rolodex extras: your own status is
-    `cannot_target_self` (not the profile guard's `rank_too_low`), and a
-    new link to an archived company is 422 `partner_archived`. 409
-    `email_in_use` for an email someone else has. Returns the worker
-    page."""
+    refused, neither lands. Rolodex extras: your own status is
+    `cannot_target_self` (not the profile guard's `rank_too_low`), a new
+    link to an archived company is 422 `partner_archived`, and every save
+    creates a missing worker profile (Active), so the worker stays on the
+    Time Clock's roster. 409 `email_in_use` for an email someone else has.
+    Returns the worker page."""
     person = await require_rolodex_worker(db, actor, person_id)
     data = body.model_dump(exclude_unset=True)
     person_data = {k: v for k, v in data.items() if k in PERSON_FIELDS}
@@ -516,12 +526,17 @@ async def update_rolodex_worker(
 
     extra = _audit_extra(actor)
     try:
-        # The person change is only flushed by the profile helper's first
+        # The person change is only flushed by the profile step's first
         # query, so a racing email clash raises inside it, not at commit.
         if person_data:
             await apply_person_update(db, actor, person, person_data, audit_extra=extra)
         if profile_data:
             await apply_profile_update(db, actor, person.id, profile_data, audit_extra=extra)
+        else:
+            # /kiosk/sync/people reads the profile row as "is a worker", and
+            # the apps put a saved worker into the Time Clock's roster, so a
+            # save always leaves one (the portal's Add person makes none).
+            await get_or_create_profile(db, person.id, actor.person.id)
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
