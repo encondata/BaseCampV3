@@ -115,4 +115,17 @@ class StationTcBackendTest {
         apiBase = BASE
         assertNull(r.keys.get(ORIGIN))                                     // dropped, not just hidden
     }
+
+    /** A punch that started under the old key answers 401 after a new key was issued (a re-setup
+     *  while it ran): the new key is kept. */
+    @Test fun aLatePunch401UnderAnOldKeyKeepsTheNewKey() = runTest {
+        lateinit var keys: StationKeyStore
+        val r = rig(key = "old") {
+            clockInResult = { keys.put("new", ORIGIN); throw ApiError(401, "station_key_invalid") }
+        }
+        keys = r.keys
+        try { r.backend.clockIn("p1"); fail("expected ApiError") } catch (e: ApiError) { assertEquals(401, e.status) }
+        assertEquals(listOf("old"), r.api.keys)
+        assertEquals("new", r.keys.get(ORIGIN))
+    }
 }

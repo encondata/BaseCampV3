@@ -57,10 +57,11 @@ class StationStatus(
     /** A station call went through: the station is running. */
     fun ok() { _paused.value = false }
 
-    /** A station call failed: drop the key or pause, as the error says. */
-    suspend fun failed(e: ApiError) {
+    /** A station call made under [key] failed: drop the key or pause, as the error says. Only
+     *  [key] itself is dropped, so a late answer under an old key leaves a newly issued one. */
+    suspend fun failed(e: ApiError, key: String) {
         when {
-            e.status == 401 || (e.status == 403 && e.code == "wrong_station_type") -> withContext(io) { keys.clear() }
+            e.status == 401 || (e.status == 403 && e.code == "wrong_station_type") -> withContext(io) { keys.clearIf(key) }
             e.status == 403 && e.code == "kiosk_not_registered" -> _paused.value = true
         }
     }

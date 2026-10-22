@@ -45,6 +45,7 @@ fun StationIdleReturn(nav: NavHostController, restartKey: Any? = null, content: 
         .collectAsStateWithLifecycle(initialValue = false)
     val active = station && auth == AuthState.Anon
     var touched by remember { mutableIntStateOf(0) }
+    val bump: () -> Unit = remember { { touched++ } }
     LaunchedEffect(active, touched, restartKey) {
         if (active) { delay(TIMECLOCK_RETURN_MS); nav.navigate(Routes.HOME) { popUpTo(0) } }
     }
@@ -57,5 +58,5 @@ fun StationIdleReturn(nav: NavHostController, restartKey: Any? = null, content: 
                 }
             }
         },
-    ) { CompositionLocalProvider(LocalStationActivity provides { touched++ }) { content() } }
+    ) { CompositionLocalProvider(LocalStationActivity provides bump) { content() } }
 }

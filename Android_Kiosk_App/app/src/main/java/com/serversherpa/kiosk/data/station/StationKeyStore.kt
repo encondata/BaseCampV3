@@ -21,6 +21,7 @@ class StationKeyStore(private val secrets: SecretStore) {
     val present: StateFlow<Boolean?> = _present
 
     /** The key when it was issued by [origin]; a key issued elsewhere is cleared and null returned. */
+    @Synchronized
     fun get(origin: String): String? {
         val key = secrets.get(ACCOUNT)?.takeIf { it.isNotBlank() }
         if (key != null && secrets.get(ORIGIN_ACCOUNT) != origin) { clear(); return null }
@@ -31,6 +32,7 @@ class StationKeyStore(private val secrets: SecretStore) {
     /** Clears first, then writes the key, then its origin, so an app killed between any two
      *  writes leaves no key, or the new key unbound (cleared on its next read), never an old
      *  key bound to the new origin or the new key to the old one. */
+    @Synchronized
     fun put(key: String, origin: String) {
         secrets.remove(ACCOUNT)
         secrets.remove(ORIGIN_ACCOUNT)
@@ -39,6 +41,16 @@ class StationKeyStore(private val secrets: SecretStore) {
         _present.value = true
     }
 
+    /** Clears the key only while it is still [key]: a late answer under an old key (a punch
+     *  that ran on after a new key was issued) must not wipe the new one. True when cleared. */
+    @Synchronized
+    fun clearIf(key: String): Boolean {
+        if (secrets.get(ACCOUNT) != key) return false
+        clear()
+        return true
+    }
+
+    @Synchronized
     fun clear() {
         secrets.remove(ACCOUNT)
         secrets.remove(ORIGIN_ACCOUNT)
@@ -46,6 +58,7 @@ class StationKeyStore(private val secrets: SecretStore) {
     }
 
     /** A new API URL was saved: a key issued by any other origin is cleared now. */
+    @Synchronized
     fun keepOnlyFor(origin: String) {
         if (secrets.get(ACCOUNT) != null && secrets.get(ORIGIN_ACCOUNT) != origin) clear()
     }

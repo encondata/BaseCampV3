@@ -35,7 +35,7 @@ class StationTcBackend(
         return try {
             block(creds, serial).also { status.ok() }
         } catch (e: ApiError) {
-            status.failed(e)
+            status.failed(e, creds.key)
             throw e
         }
     }

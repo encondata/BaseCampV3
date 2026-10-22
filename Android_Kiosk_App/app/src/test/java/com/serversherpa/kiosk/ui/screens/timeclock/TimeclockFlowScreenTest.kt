@@ -1,6 +1,25 @@
 package com.serversherpa.kiosk.ui.screens.timeclock
 
 import android.content.res.Configuration
+import android.os.Looper
+import android.view.View
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.core.graphics.Insets
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import com.serversherpa.kiosk.ui.screens.timeclock.screens.NameFit
+import com.serversherpa.kiosk.ui.screens.timeclock.screens.nameFit
+import java.time.Duration
+import kotlin.math.roundToInt
+import org.junit.Assert.assertTrue
+import org.robolectric.Shadows.shadowOf
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -50,6 +69,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
+@OptIn(ExperimentalTestApi::class)
 @RunWith(RobolectricTestRunner::class)
 /** A tablet-sized window, so every step fits without scrolling. */
 @Config(sdk = [34], qualifiers = "w800dp-h1280dp")
@@ -110,21 +130,95 @@ class TimeclockFlowScreenTest {
         compose.onNodeWithText("Confirm Clock Out").assertIsDisplayed()
     }
 
-    private class Rig(val c: com.serversherpa.kiosk.AppContainer, val vm: TimeclockFlowViewModel)
+    private class Rig(val c: com.serversherpa.kiosk.AppContainer, val vm: TimeclockFlowViewModel, val view: () -> View)
 
     /** The flow in KIOSK mode (it opens on Enter Your Name) over [backend]. */
     private fun rig(backend: FakeTcBackend = FakeTcBackend(), mode: TcMode = TcMode.KIOSK): Rig {
         val c = testContainer()
         val owner = object : ViewModelStoreOwner { override val viewModelStore = ViewModelStore() }
         lateinit var vm: TimeclockFlowViewModel
+        lateinit var view: View
         compose.setContent {
+            view = LocalView.current
             CompositionLocalProvider(LocalAppContainer provides c, LocalViewModelStoreOwner provides owner) {
                 vm = kioskViewModel { TimeclockFlowViewModel(mode, backend, c.flash, null, flowOf(DEFAULT_APPEARANCE)) }
                 TimeclockFlowScreen(vm)
             }
         }
         compose.waitForIdle()
-        return Rig(c, vm)
+        return Rig(c, vm) { view }
+    }
+
+    /** Simulates the system keyboard: an IME inset of [dp] at the bottom, delivered to the
+     *  compose view the way the platform does (Compose's WindowInsets listen there). */
+    private fun Rig.showIme(dp: Int) {
+        compose.runOnIdle {
+            val v = view()
+            val px = (dp * v.resources.displayMetrics.density).roundToInt()
+            val insets = WindowInsetsCompat.Builder()
+                .setInsets(WindowInsetsCompat.Type.ime(), Insets.of(0, 0, 0, px))
+                .setVisible(WindowInsetsCompat.Type.ime(), true)
+                .build()
+            ViewCompat.dispatchApplyWindowInsets(v, insets)
+        }
+        compose.waitForIdle()
+    }
+
+    private val sams = listOf("Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India", "Juliet")
+        .mapIndexed { i, last -> KioskPersonRow("s$i", "Sam $last", "Sam", last) }
+
+    /** The result rows lying wholly between [top] and [bottom] (dp in the root). */
+    private fun rowsFullyWithin(top: Dp, bottom: Dp): Int =
+        compose.onAllNodesWithText("Sam ", substring = true).fetchSemanticsNodes().count { n ->
+            val b = n.boundsInRoot
+            with(compose.density) { b.top.toDp() >= top && b.bottom.toDp() <= bottom }
+        }
+
+    private fun checkCompactName(imeDp: Int, minRows: Int) {
+        val r = rig(FakeTcBackend().apply { peopleResult = { sams } })
+        box.performTextInput("Sa")
+        r.showIme(imeDp)
+        val screen = compose.onRoot().getBoundsInRoot()
+        val keyboardTop = screen.bottom - imeDp.dp
+        val boxAt = compose.onNodeWithTag("tc-search-box", useUnmergedTree = true).getBoundsInRoot()
+        assertTrue("the box is fully above the keyboard: $boxAt, keyboard at $keyboardTop", boxAt.top >= screen.top && boxAt.bottom <= keyboardTop)
+        compose.onNodeWithTag("tc-back").assertDoesNotExist()                     // nothing floats over the results
+        val listAt = compose.onNodeWithTag("tc-results").getBoundsInRoot()
+        val rows = rowsFullyWithin(listAt.top, keyboardTop)
+        assertTrue("at least $minRows whole result rows above the keyboard, saw $rows", rows >= minRows)
+    }
+
+    /** A 360×640 dp handheld (TC2x/TC5x class) in portrait with the keyboard up. */
+    @Config(qualifiers = "w360dp-h640dp")
+    @Test fun aShortPortraitScreenKeepsTheBoxAndTwoResultsAboveTheKeyboard() = checkCompactName(imeDp = 280, minRows = 2)
+
+    /** A phone in landscape (640×360 dp) with the keyboard up: the box stays above it. */
+    @Config(qualifiers = "w640dp-h360dp-land")
+    @Test fun aPhoneInLandscapeKeepsTheBoxAboveTheKeyboard() = checkCompactName(imeDp = 200, minRows = 2)
+
+    @Test fun theNameLayoutDecision() {
+        assertEquals(NameFit.ROOMY, nameFit(640f, 0f))                             // no keyboard
+        assertEquals(NameFit(header = true, lead = true, compact = false, back = false), nameFit(1280f, 400f))
+        assertEquals(NameFit(header = false, lead = false, compact = true, back = false), nameFit(640f, 280f))
+        assertEquals(NameFit(header = false, lead = false, compact = true, back = false), nameFit(360f, 200f))
+        assertEquals(NameFit(header = true, lead = false, compact = true, back = false), nameFit(900f, 400f))
+    }
+
+    /** Leaving Enter Your Name hands focus back to the flow root, so a hardware key or reader on
+     *  Is this you? still reaches it and restarts the idle countdown. */
+    @Test fun leavingNameRefocusesTheFlowRootSoKeysStillCountAsActivity() {
+        val r = rig()
+        box.performTextInput("B-UID-1")
+        compose.onNodeWithText("Is this you?").assertIsDisplayed()
+        compose.mainClock.advanceTimeBy(100)
+        compose.onNodeWithTag("tc-flow").assertIsFocused()
+        val looper = shadowOf(Looper.getMainLooper())
+        looper.idleFor(Duration.ofSeconds(15))
+        compose.onNodeWithTag("tc-flow").performKeyInput { pressKey(Key.Spacebar) }
+        looper.idleFor(Duration.ofSeconds(15))
+        assertEquals(TcStep.CONFIRM, r.vm.state.value.step)                    // 30 s in, but a key at 15 s
+        looper.idleFor(Duration.ofSeconds(6))
+        assertEquals(TcStep.NAME, r.vm.state.value.step)
     }
 
     private val box get() = compose.onNodeWithTag("tc-search-text")

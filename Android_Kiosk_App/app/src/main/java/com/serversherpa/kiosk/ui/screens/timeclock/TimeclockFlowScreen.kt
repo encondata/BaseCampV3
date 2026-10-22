@@ -16,7 +16,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -43,6 +44,8 @@ import com.serversherpa.kiosk.ui.screens.timeclock.screens.ChooseAction
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.ClockOutSummary
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.ConfirmPerson
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.EnterName
+import com.serversherpa.kiosk.ui.screens.timeclock.screens.NameFit
+import com.serversherpa.kiosk.ui.screens.timeclock.screens.rememberNameFit
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.PrintingBadge
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.TcBackButton
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.TcColors
@@ -87,23 +90,26 @@ fun TimeclockFlowScreen(
 
     BackHandler(enabled = ui.hasBack) { vm.back() }
 
-    // A reader that types like a keyboard: on Welcome its keystrokes land on the focused root.
+    // Off Enter Your Name the flow root holds focus: on Welcome a reader's keystrokes land there,
+    // and on every other step a hardware key still reaches onPreviewKeyEvent (idle activity).
     val focus = remember { FocusRequester() }
-    LaunchedEffect(welcomeKeys, ui.looking, camera) { if (welcomeKeys && !ui.looking && !camera) { delay(50); runCatching { focus.requestFocus() } } }
-
     // Enter Your Name: the search box takes focus and the system keyboard comes up when the step
-    // opens (and again after the camera sheet closes); leaving the step hides it.
+    // opens, and again once the camera sheet has closed and the main window has focus back (a
+    // show() while the dialog still holds the window is lost); leaving the step hides it.
     val nameFocus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
-    val focusManager = LocalFocusManager.current
-    LaunchedEffect(step, camera) {
+    val windowFocused = LocalWindowInfo.current.isWindowFocused
+    LaunchedEffect(step, camera, windowFocused, ui.looking) {
+        if (camera) return@LaunchedEffect
         if (step == TcStep.NAME) {
-            if (!camera) { delay(50); runCatching { nameFocus.requestFocus() }; keyboard?.show() }
+            if (!windowFocused) return@LaunchedEffect
+            delay(50); runCatching { nameFocus.requestFocus() }; keyboard?.show()
         } else {
             keyboard?.hide()
-            focusManager.clearFocus()
+            delay(50); runCatching { focus.requestFocus() }
         }
     }
+    val fit = if (step == TcStep.NAME) rememberNameFit() else NameFit.ROOMY
 
     TcShell(
         modifier = Modifier
@@ -130,10 +136,13 @@ fun TimeclockFlowScreen(
                 }
             }
             .focusRequester(focus)
-            .focusable(),
+            .focusable()
+            .testTag("tc-flow"),
         onSettings = if (onSettings != null && step == TcStep.WELCOME) onSettings else null,
-        back = if (ui.hasBack) ({ TcBackButton(enabled = !ui.busy) { vm.back() } }) else null,
+        back = if (ui.hasBack && fit.back) ({ TcBackButton(enabled = !ui.busy) { vm.back() } }) else null,
         fixed = step == TcStep.NAME,
+        header = fit.header,
+        compactTop = fit.compact,
     ) {
         val status = ui.flow.status
         when (step) {
@@ -145,7 +154,7 @@ fun TimeclockFlowScreen(
             TcStep.NAME -> EnterName(
                 query = ui.query, onQueryChange = vm::onType, onSearch = vm::onSearch,
                 results = ui.results, noMatches = ui.noMatches, message = ui.shownMessage,
-                disabled = ui.looking, onPick = vm::pick, focusRequester = nameFocus,
+                disabled = ui.looking, onPick = vm::pick, focusRequester = nameFocus, fit = fit,
                 trailing = if (container.hasCamera) ({
                     IconButton(onClick = { camera = true }, enabled = !ui.looking) {
                         Icon(CameraIcon, contentDescription = "Scan with the camera", tint = TcColors.Amber, modifier = Modifier.size(28.dp))

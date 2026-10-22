@@ -212,6 +212,10 @@ internal fun TcShell(
     /** The step lays itself out in the space between the header and the keyboard (Enter Your
      *  Name): no page scroll, and only a small margin above the keyboard. */
     fixed: Boolean = false,
+    /** False drops the logo and clock (Enter Your Name on a short screen with the keyboard up). */
+    header: Boolean = true,
+    /** A small top margin (with [header] off). */
+    compactTop: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val s = tcSizesFor()
@@ -221,13 +225,13 @@ internal fun TcShell(
             TcTopo(Modifier.fillMaxSize())
             TcFooter(s)
             Column(Modifier.fillMaxSize().safeDrawingPadding()) {
-                TcHeader(onSettings)
+                if (header) TcHeader(onSettings)
                 Column(
                     Modifier.weight(1f).fillMaxWidth()
                         .then(if (fixed) Modifier else Modifier.verticalScroll(rememberScrollState()))
                         .padding(
                             start = 16.dp, end = 16.dp,
-                            top = if (s.landscape) s.dp(8f, 4f, 64f) else s.dp(16f, 5f, 96f),
+                            top = if (compactTop) 8.dp else if (s.landscape) s.dp(8f, 4f, 64f) else s.dp(16f, 5f, 96f),
                             bottom = if (fixed) 8.dp else s.footHeight * (if (s.landscape) .45f else .55f),
                         ),
                     horizontalAlignment = Alignment.CenterHorizontally,
