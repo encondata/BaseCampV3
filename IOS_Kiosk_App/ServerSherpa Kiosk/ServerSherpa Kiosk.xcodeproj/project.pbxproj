@@ -415,7 +415,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "ServerSherpa Kiosk/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "ServerSherpa Kiosk";
-				INFOPLIST_KEY_NSCameraUsageDescription = "The camera reads barcodes and QR codes when you tap the camera button.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "The camera scans barcodes and takes worker photos.";
 				INFOPLIST_KEY_UIRequiresFullScreen = NO;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -451,7 +451,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "ServerSherpa Kiosk/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "ServerSherpa Kiosk";
-				INFOPLIST_KEY_NSCameraUsageDescription = "The camera reads barcodes and QR codes when you tap the camera button.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "The camera scans barcodes and takes worker photos.";
 				INFOPLIST_KEY_UIRequiresFullScreen = NO;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

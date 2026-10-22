@@ -40,6 +40,39 @@ struct AppContainerTests {
         #expect(c.prefs.labels.peel)
     }
 
+    /// The Rolodex's offline list (names, job titles, companies) leaves the kiosk with the
+    /// admin: a sign-out, a session that ends underneath the kiosk (or while the app was closed),
+    /// and Reset app delete it and forget the list on screen.
+    @Test func theRolodexListGoesOnSignOutSessionEndAndReset() async throws {
+        let defaults = freshDefaults()
+        KioskPrefs(defaults: defaults).apiUrl = "http://127.0.0.1:9"   // nothing listens
+        let c = AppContainer(defaults: defaults, secrets: MemorySecretStore(),
+                             modelContainer: try KioskSchema.inMemoryContainer(), backgroundTask: NoBackgroundTasking(),
+                             labelEngine: FakeLabelEngine())
+        func cacheGone() async -> Bool { await waitUntilAsync { ((try? await c.store.rolodexCache()) ?? nil) == nil } }
+
+        try await c.store.storeRolodexCache(#"{"workers":[]}"#)
+        c.auth.onLogout?()
+        #expect(await cacheGone())
+
+        try await c.store.storeRolodexCache(#"{"workers":[]}"#)
+        c.auth.endSession()
+        #expect(await cacheGone())
+
+        // a session that ended while the app was closed (the launch restore finds none)
+        try await c.store.storeRolodexCache(#"{"workers":[]}"#)
+        await c.auth.restore()
+        #expect(c.auth.state == .anon)
+        #expect(await cacheGone())
+
+        try await c.store.storeRolodexCache(#"{"workers":[]}"#)
+        await c.rolodex.select("p1")
+        #expect(c.rolodex.selectedId == "p1")
+        try await c.resetApp()
+        #expect(try await c.store.rolodexCache() == nil)
+        #expect(c.rolodex.selectedId == nil)
+    }
+
     /// One no-match entry on the print jobs' list (no printer, no network, no engine); waits
     /// until the list shows it and returns its value.
     @discardableResult

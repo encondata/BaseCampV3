@@ -80,7 +80,12 @@ final class URLSessionKioskApi: KioskApi {
     }
 
     static func request<T: Encodable>(_ url: URL, post body: T) throws -> URLRequest {
-        var r = request(url, "POST")
+        try request(url, "POST", json: body)
+    }
+
+    /// `body` as JSON under any method (PATCH, PUT).
+    static func request<T: Encodable>(_ url: URL, _ method: String, json body: T) throws -> URLRequest {
+        var r = request(url, method)
         r.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         do {
             r.httpBody = try KioskJSON.encoder.encode(body)
@@ -327,6 +332,44 @@ final class URLSessionKioskApi: KioskApi {
     func issueStationKey(serial: String) async throws -> String {
         let out: StationKeyOut = try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/station-key"), post: StationKeyIn(serial: serial)) })
         return out.key
+    }
+
+    // MARK: Rolodex
+
+    func rolodexWorkers() async throws -> RolodexList {
+        try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/rolodex/workers")) })
+    }
+
+    func rolodexWorker(id: String) async throws -> RolodexDetail {
+        try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/rolodex/workers/\(Self.q(id))")) })
+    }
+
+    func rolodexOptions() async throws -> RolodexOptions {
+        try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/rolodex/options")) })
+    }
+
+    func rolodexDuplicates(_ body: RolodexDuplicatesIn) async throws -> [RolodexMatch] {
+        let out: RolodexDuplicatesOut = try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/rolodex/duplicates"), post: body) })
+        return out.matches
+    }
+
+    func rolodexCreate(_ body: RolodexCreateIn) async throws -> RolodexDetail {
+        try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/rolodex/workers"), post: body) })
+    }
+
+    func rolodexUpdate(id: String, patch: RolodexPatch) async throws -> RolodexDetail {
+        try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/rolodex/workers/\(Self.q(id))"), "PATCH", json: patch) })
+    }
+
+    /// The body is in-memory `Data`, so URLSession sends a Content-Length (the server
+    /// answers 411 without one), and a 401 retry sends the same bytes again.
+    func rolodexPhoto(id: String, jpeg: Data) async throws -> RolodexPhotoOut {
+        try Self.parse(await authed {
+            var r = Self.request(try Self.url("\($0)/kiosk/rolodex/workers/\(Self.q(id))/photo"), "PUT")
+            r.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+            r.httpBody = jpeg
+            return r
+        })
     }
 
     // MARK: images

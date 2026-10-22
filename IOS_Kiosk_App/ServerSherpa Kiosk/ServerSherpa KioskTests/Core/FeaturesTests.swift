@@ -38,6 +38,29 @@ struct FeaturesTests {
         #expect(featureForRoute(nil) == nil)
     }
 
+    /// The Rolodex (native apps only): a full kiosk Home shows it to admins, before Settings;
+    /// never a station Home, never a non-admin. It needs no move, so it's always available.
+    @Test func rolodexIsOnTheFullHomeForAdminsOnly() {
+        #expect(homeFeatures(stationType: nil, isAdmin: true).map(\.id)
+                == [.setup, .scan, .enroll, .containers, .trucks, .labels, .timeclock, .rolodex, .settings])
+        #expect(!homeFeatures(stationType: nil, isAdmin: false).map(\.id).contains(.rolodex))
+        #expect(!homeFeatures(stationType: nil).map(\.id).contains(.rolodex))
+        #expect(homeFeatures(stationType: "timeclock", isAdmin: true).map(\.title) == ["Time Clock", "Kiosk Setup", "Settings"])
+        #expect(!homeFeatures(stationType: "label", isAdmin: true).map(\.id).contains(.rolodex))
+        // the web kiosk's list stays as it is
+        #expect(!FEATURES.map(\.id).contains(.rolodex))
+    }
+
+    @Test func rolodexFeatureResolves() {
+        let rolodex = feature(.rolodex)
+        #expect(rolodex == ROLODEX_FEATURE)
+        #expect(rolodex.title == "Rolodex" && rolodex.route == "rolodex")
+        #expect(rolodex.alwaysAvailable && !rolodex.placeholder)
+        #expect(featureAvailable(rolodex, setupState: .incomplete))
+        #expect(featureForRoute("rolodex")?.id == .rolodex)
+        #expect(routeAllowed(.rolodexWorker("p1"), setupState: .failed, devMode: false))
+    }
+
     @Test func setupStateWire() {
         #expect(SetupState.fromWire("complete") == .complete)
         #expect(SetupState.fromWire("failed") == .failed)
