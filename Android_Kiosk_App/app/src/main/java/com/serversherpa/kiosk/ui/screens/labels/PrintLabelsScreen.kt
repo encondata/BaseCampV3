@@ -16,6 +16,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,6 +28,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import com.serversherpa.kiosk.LocalAppContainer
@@ -138,8 +142,14 @@ fun PrintLabelsScreen(nav: NavHostController) {
     val disabled = ui.loadStatus != LoadStatus.READY || empty || setup == null
 
     LaunchedEffect(Unit) { container.scanBus.events.collect { vm.onScan(it.value) } }
-    // A saved Bluetooth printer's link comes up in the background; nothing waits for it.
-    LaunchedEffect(Unit) { vm.warmUpPrinter() }
+    // The screen showing, and back from the background (which closed the link): a saved Bluetooth
+    // printer's link comes up in the background; nothing waits for it.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) vm.warmUpPrinter() }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     // Once the stored settings are read (null until then).
     LaunchedEffect(settings == null) {
         val read = settings ?: return@LaunchedEffect
