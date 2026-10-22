@@ -72,7 +72,8 @@ protocol LabelSettingsSource: Sendable {
     func next() {
         guard !finished else { return }
         let value = withObservationTracking { read() } onChange: { [weak self] in
-            Task { @MainActor in self?.next() }
+            guard let self else { return }
+            Task { @MainActor in self.next() }
         }
         if value != last {
             last = value

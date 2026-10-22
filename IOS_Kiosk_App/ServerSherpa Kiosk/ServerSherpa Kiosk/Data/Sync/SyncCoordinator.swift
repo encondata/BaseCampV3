@@ -87,7 +87,8 @@ struct SyncMeta: Codable, Equatable, Sendable {
         let id = UUID()
         statusFollowers[id] = continuation
         continuation.onTermination = { [weak self] _ in
-            Task { @MainActor in self?.statusFollowers[id] = nil }
+            guard let self else { return }
+            Task { @MainActor in self.statusFollowers[id] = nil }
         }
         continuation.yield(status)
         return stream

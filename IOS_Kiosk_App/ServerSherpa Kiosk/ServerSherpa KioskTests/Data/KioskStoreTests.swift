@@ -6,6 +6,10 @@ import SwiftData
 extension KioskStore {
     /// Test-only: whether this store's work runs on the main thread.
     func workRunsOnMainThread() -> Bool { Thread.isMainThread }
+
+    /// Test-only: whether the context autosaves (a context made on the main thread is a UI
+    /// context: autosave on, driven from the main run loop).
+    func contextAutosaves() -> Bool { modelContext.autosaveEnabled }
 }
 
 struct KioskStoreTests {
@@ -34,7 +38,6 @@ struct KioskStoreTests {
     /// AppContainer builds the store on the main actor; its work (a large label build's reads and
     /// writes, a sync's replace) must still run off the main thread, or the kiosk UI freezes.
     @MainActor @Test func theContainersStoreWorksOffTheMainThread() async throws {
-        #expect(Thread.isMainThread)
         let c = AppContainer(defaults: freshDefaults(), secrets: MemorySecretStore(), modelContainer: try KioskSchema.inMemoryContainer(),
                              backgroundTask: NoBackgroundTasking(), labelEngine: FakeLabelEngine())
         let db = c.store
@@ -48,10 +51,23 @@ struct KioskStoreTests {
 
     /// Built directly on the main thread, too (every test and preview does).
     @MainActor @Test func aStoreBuiltOnTheMainThreadWorksOffIt() async throws {
-        #expect(Thread.isMainThread)
         let db = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
         #expect(await db.workRunsOnMainThread() == false)
         #expect(try await db.counts().assets == 0)
+    }
+
+    /// The context is made on the store's queue, never on the main thread that builds the store:
+    /// a main-thread context is a UI context whose autosave runs from the main run loop and could
+    /// race the store's first write. Checked before any other call touches the context.
+    @MainActor @Test func theContainersStoreContextIsNotAUIContext() async throws {
+        let c = AppContainer(defaults: freshDefaults(), secrets: MemorySecretStore(), modelContainer: try KioskSchema.inMemoryContainer(),
+                             backgroundTask: NoBackgroundTasking(), labelEngine: FakeLabelEngine())
+        #expect(await c.store.contextAutosaves() == false)
+    }
+
+    @MainActor @Test func aStoreBuiltOnTheMainThreadHasNoUIContext() async throws {
+        let db = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
+        #expect(await db.contextAutosaves() == false)
     }
 
     @Test func corruptLabelJsonReadsAsEmpty() {

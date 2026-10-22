@@ -353,11 +353,12 @@ actor LabelBuilder {
                          widthIn: number("width_in"), heightIn: number("height_in"))
     }
 
-    /// The error's own text (Android's `message`), else its type's name. An `NSError` (SwiftData,
-    /// Foundation) gives its localized description, not the verbose `Error Domain=...` text.
+    /// The error's own text (Android's `message`). An `NSError` (SwiftData, Foundation) gives its
+    /// localized description, not the verbose `Error Domain=...` text; a `LocalizedError` its
+    /// description; anything else its own `description` (a type's name when it has none).
     static func message(_ error: Error) -> String {
         if type(of: error) is NSError.Type { return (error as NSError).localizedDescription }
-        if let described = error as? CustomStringConvertible { return described.description }
-        return String(describing: type(of: error))
+        if let localized = (error as? LocalizedError)?.errorDescription { return localized }
+        return String(describing: error)
     }
 }

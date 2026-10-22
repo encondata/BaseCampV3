@@ -20,9 +20,10 @@ struct LabelBuildSnapshot: Sendable {
 /// The only thing that touches the SwiftData container. Everything crossing
 /// the actor boundary is a Core value type, never a `@Model` object.
 ///
-/// Not `@ModelActor`: its default executor ran this actor's work on the main thread when the
-/// store was built on the main actor (as `AppContainer` builds it), so a large label build or
-/// sync would freeze the UI. `KioskStoreExecutor` runs it on the store's own serial queue.
+/// Not `@ModelActor`: SwiftData's default executor runs each job on the thread of whoever calls
+/// the store, so calls from the main actor (the UI, `Sync`, the outbox) ran their store work on
+/// the main thread, and a large label build or sync would freeze the UI. `KioskStoreExecutor`
+/// runs every job on the store's own serial queue, and makes the context there.
 actor KioskStore: ModelActor {
     nonisolated let modelContainer: ModelContainer
     nonisolated let modelExecutor: any ModelExecutor
@@ -31,7 +32,7 @@ actor KioskStore: ModelActor {
     nonisolated var unownedExecutor: UnownedSerialExecutor { executor.asUnownedSerialExecutor() }
 
     init(modelContainer: ModelContainer) {
-        let executor = KioskStoreExecutor(modelContext: ModelContext(modelContainer))
+        let executor = KioskStoreExecutor(modelContainer: modelContainer)
         self.modelContainer = modelContainer
         self.executor = executor
         self.modelExecutor = executor
@@ -273,13 +274,26 @@ actor KioskStore: ModelActor {
 }
 
 /// The store's executor: its jobs run one at a time on a serial queue of their own, never the
-/// main thread. The context is used only from those jobs.
+/// main thread. The context is made on that queue on first use and only ever touched there: a
+/// context made on the main thread is a UI context (autosave from the main run loop) that could
+/// race the store's first write. (`queue.sync` in `init` would not do: GCD runs a sync block on
+/// the calling thread.)
 final class KioskStoreExecutor: SerialModelExecutor, @unchecked Sendable {
-    let modelContext: ModelContext
+    private let modelContainer: ModelContainer
     private let queue = DispatchQueue(label: "serversherpa.kiosk.store", qos: .userInitiated)
+    /// Only read or written on `queue`.
+    private var context: ModelContext?
 
-    init(modelContext: ModelContext) {
-        self.modelContext = modelContext
+    init(modelContainer: ModelContainer) {
+        self.modelContainer = modelContainer
+    }
+
+    var modelContext: ModelContext {
+        dispatchPrecondition(condition: .onQueue(queue))
+        if let context { return context }
+        let made = ModelContext(modelContainer)
+        context = made
+        return made
     }
 
     func enqueue(_ job: consuming ExecutorJob) {
