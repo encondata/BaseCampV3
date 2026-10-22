@@ -143,10 +143,11 @@ def test_v2_rejects_unknown_piece_and_bad_rules():
 
 def test_schema_defaults_to_1():
     assert parse_design({"size": {"w": 1, "h": 1}, "elements": []}).schema == 1
-    for bad in (3, 0, "2", True):
+    # 3 is the builder's with images (test_label_dither.py test_schema_rules)
+    for bad in (4, 0, "2", "3", True):
         with pytest.raises(DesignError) as exc:
             parse_design({"schema": bad, "size": {"w": 1, "h": 1}, "elements": []})
-        assert "schema" in str(exc.value)
+        assert "schema must be 1, 2 or 3" in str(exc.value)
 
 
 def test_counts_and_lines_are_bounded():

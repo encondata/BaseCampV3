@@ -44,6 +44,18 @@ export function isContainerLabelType(labelType: string): boolean {
   return CONTAINER_LABEL_TYPES.has(labelType);
 }
 
+/** Which label types describe a person (an ID badge), built in by migration
+ *  0104. A badge's builder fields are the Person group only, it has no
+ *  From-To columns, and Generate Labels and Print Labels never offer it: it
+ *  prints from the label builder (the API refuses one in a run). The
+ *  server's copy is `PERSON_LABEL_TYPES` in
+ *  `api/src/serversherpa/labels/fields.py`. */
+const PERSON_LABEL_TYPES: ReadonlySet<string> = new Set(['id_badge']);
+
+export function isPersonLabelType(labelType: string): boolean {
+  return PERSON_LABEL_TYPES.has(labelType);
+}
+
 export interface SizeMeta { width_in: number; height_in: number; has_tab: boolean }
 
 export function sizeMeta(v: LabelVocab): SizeMeta {

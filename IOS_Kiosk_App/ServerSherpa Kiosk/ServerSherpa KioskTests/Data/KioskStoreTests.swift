@@ -3,8 +3,17 @@ import Foundation
 import SwiftData
 @testable import ServerSherpa_Kiosk
 
+extension KioskStore {
+    /// Test-only: whether this store's work runs on the main thread.
+    func workRunsOnMainThread() -> Bool { Thread.isMainThread }
+
+    /// Test-only: whether the context autosaves (a context made on the main thread is a UI
+    /// context: autosave on, driven from the main run loop).
+    func contextAutosaves() -> Bool { modelContext.autosaveEnabled }
+}
+
 struct KioskStoreTests {
-    private func store() throws -> KioskStore { KioskStore(modelContainer: try KioskSchema.container(inMemory: true)) }
+    private func store() throws -> KioskStore { KioskStore(modelContainer: try KioskSchema.inMemoryContainer()) }
 
     private func meta(_ name: String = "Move A", assets: Int = 0) -> SyncMeta {
         SyncMeta(initiativeId: "i1", initiativeName: name, assets: assets, people: 0, containers: 0, trucks: 0, syncedAt: "2023-11-14T22:13:20Z")
@@ -24,6 +33,55 @@ struct KioskStoreTests {
         #expect(try await db.counts().assets == 1)
         try await db.clearLocalData()
         #expect(try await db.counts().assets == 0)
+    }
+
+    /// AppContainer builds the store on the main actor; its work (a large label build's reads and
+    /// writes, a sync's replace) must still run off the main thread, or the kiosk UI freezes.
+    @MainActor @Test func theContainersStoreWorksOffTheMainThread() async throws {
+        let c = AppContainer(defaults: freshDefaults(), secrets: MemorySecretStore(), modelContainer: try KioskSchema.inMemoryContainer(),
+                             backgroundTask: NoBackgroundTasking(), labelEngine: FakeLabelEngine())
+        let db = c.store
+        #expect(await db.workRunsOnMainThread() == false)
+        try await db.replaceRoster(assets: [KioskAssetRow(id: "a1")], people: [], containers: [], trucks: [], meta: meta(assets: 1))
+        #expect(try await db.storeGeneratedLabels([GeneratedLabelRow(assetId: "a1", zpl: nil, outcome: "ok", fingerprint: "f", templateId: nil)],
+                                                  ifMove: "i1"))
+        #expect(await db.workRunsOnMainThread() == false)
+        #expect(try await db.generatedLabelStates().map(\.assetId) == ["a1"])
+    }
+
+    /// Print Labels reads one asset's stored label: its ZPL, outcome and template; nil without a row.
+    @Test func storedLabelReadsOneAssetsLabel() async throws {
+        let db = try store()
+        try await db.replaceRoster(assets: [KioskAssetRow(id: "a1"), KioskAssetRow(id: "a2")], people: [], containers: [], trucks: [],
+                                   meta: meta(assets: 2))
+        #expect(try await db.storeGeneratedLabels([
+            GeneratedLabelRow(assetId: "a1", zpl: "^XA^XZ", outcome: "ok", fingerprint: "f1", templateId: "t1"),
+            GeneratedLabelRow(assetId: "a2", zpl: nil, outcome: "no_template_at_dpi", fingerprint: "f2", templateId: nil),
+        ], ifMove: "i1"))
+        #expect(try await db.storedLabel(assetId: "a1") == StoredLabel(zpl: "^XA^XZ", outcome: "ok", templateId: "t1"))
+        #expect(try await db.storedLabel(assetId: "a2") == StoredLabel(zpl: nil, outcome: "no_template_at_dpi", templateId: nil))
+        #expect(try await db.storedLabel(assetId: "a3") == nil)
+    }
+
+    /// Built directly on the main thread, too (every test and preview does).
+    @MainActor @Test func aStoreBuiltOnTheMainThreadWorksOffIt() async throws {
+        let db = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
+        #expect(await db.workRunsOnMainThread() == false)
+        #expect(try await db.counts().assets == 0)
+    }
+
+    /// The context is made on the store's queue, never on the main thread that builds the store:
+    /// a main-thread context is a UI context whose autosave runs from the main run loop and could
+    /// race the store's first write. Checked before any other call touches the context.
+    @MainActor @Test func theContainersStoreContextIsNotAUIContext() async throws {
+        let c = AppContainer(defaults: freshDefaults(), secrets: MemorySecretStore(), modelContainer: try KioskSchema.inMemoryContainer(),
+                             backgroundTask: NoBackgroundTasking(), labelEngine: FakeLabelEngine())
+        #expect(await c.store.contextAutosaves() == false)
+    }
+
+    @MainActor @Test func aStoreBuiltOnTheMainThreadHasNoUIContext() async throws {
+        let db = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
+        #expect(await db.contextAutosaves() == false)
     }
 
     @Test func corruptLabelJsonReadsAsEmpty() {
@@ -55,7 +113,7 @@ struct KioskStoreTests {
     }
 
     @Test func corruptMetaReadsAsNil() async throws {
-        let container = try KioskSchema.container(inMemory: true)
+        let container = try KioskSchema.inMemoryContainer()
         let context = ModelContext(container)
         context.insert(MetaRecord(key: "sync", value: "{broken"))
         try context.save()

@@ -18,7 +18,8 @@ import { faceFile, type FontWeight } from '../../../labels/builder/fonts';
 import { withBarcodeWidths } from '../../../labels/builder/geometry';
 import { cssFamilyOf, textBoxFor, textWidthIn, type FontMetrics, type LoadedFont } from '../../../labels/builder/metrics';
 import {
-  parseDesign, replaceElements, updateElement, type BarcodeElement, type DesignV2, type ElementV2, type TextElement,
+  parseDesign, replaceElements, serializeDesign, updateElement, type BarcodeElement, type DesignV2, type ElementV2,
+  type TextElement,
 } from '../../../labels/builder/model';
 import { toDots } from '../../../labels/builder/units';
 import { FIELDS } from './builderTestKit';
@@ -680,6 +681,40 @@ describe('tools', () => {
     const box = textBoxFor(METRICS, 12);
     expect(text.h).toBeCloseTo(box.h, 9);
     expect(text.type === 'text' && text.baselineIn).toBeCloseTo(box.baselineIn, 9);
+  });
+
+  it('the Image tool is only on templates that take images (ID badges in ZPL)', () => {
+    const { change } = setup();
+    const tools = screen.getByRole('group', { name: 'Tools' });
+    expect(within(tools).queryByRole('button', { name: 'Image' })).toBeNull();
+    fireEvent.keyDown(document.body, { key: 'i', code: 'KeyI' });
+    expect(within(tools).getByRole('button', { name: 'Select' }).getAttribute('aria-pressed')).toBe('true');
+    expect(change).not.toHaveBeenCalled();
+    cleanup();
+    setup({ props: { imageTool: true } });
+    expect(within(screen.getByRole('group', { name: 'Tools' })).getByRole('button', { name: 'Image' })).toBeTruthy();
+  });
+
+  it('I places a photo (cover, dithered) and the design saves as schema 3; deleting the last image, schema 2', () => {
+    const { svg, last, select } = setup({ design: { schema: 2, size: { w: 3.375, h: 2.125 }, splits: {}, elements: [] },
+      props: { imageTool: true } });
+    fireEvent.keyDown(document.body, { key: 'i', code: 'KeyI' });
+    const tools = screen.getByRole('group', { name: 'Tools' });
+    expect(within(tools).getByRole('button', { name: 'Image' }).getAttribute('aria-pressed')).toBe('true');
+    click(svg, 0.21, 0.32);
+    const photo = last().elements[0];
+    expect(photo).toMatchObject({
+      type: 'image', source: 'photo', fit: 'cover', mode: 'dither', w: 0.8, h: 1, rotation: 0, hideWhenEmpty: true,
+    });
+    expect(photo.x).toBeCloseTo(0.2, 9);
+    expect(photo.y).toBeCloseTo(0.3, 9);
+    expect(select).toHaveBeenLastCalledWith([photo.id]);
+    expect(serializeDesign(last()).schema).toBe(3);
+    // with no sample person: a dashed placeholder named Photo
+    expect(within(svg as unknown as HTMLElement).getByText('Photo')).toBeTruthy();
+    fireEvent.keyDown(document.body, { key: 'Backspace', code: 'Backspace' });
+    expect(last().elements).toHaveLength(0);
+    expect(serializeDesign(last()).schema).toBe(2);
   });
 
   it('read-only allows selecting but no edits', () => {

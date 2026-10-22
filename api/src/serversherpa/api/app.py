@@ -92,6 +92,9 @@ def create_app() -> FastAPI:
         # X-Totp-Challenge carries the 2FA challenge token between the password
         # step and the code step (no session exists yet, so no Authorization).
         allow_headers=["Authorization", "Content-Type", "X-Totp-Challenge"],
+        # the label builder reads a badge image raster's size from these
+        # (POST /labels/images/raster)
+        expose_headers=["X-Raster-Width", "X-Raster-Height"],
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 

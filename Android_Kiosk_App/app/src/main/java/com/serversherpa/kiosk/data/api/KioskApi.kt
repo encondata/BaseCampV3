@@ -6,6 +6,7 @@ import com.serversherpa.kiosk.core.model.HeartbeatIn
 import com.serversherpa.kiosk.core.model.HeartbeatResult
 import com.serversherpa.kiosk.core.model.KioskAssetsSync
 import com.serversherpa.kiosk.core.model.KioskContainersSync
+import com.serversherpa.kiosk.core.model.KioskLabelFonts
 import com.serversherpa.kiosk.core.model.KioskPeopleSync
 import com.serversherpa.kiosk.core.model.KioskRfidEnroll
 import com.serversherpa.kiosk.core.model.KioskRfidEnrollIn
@@ -45,6 +46,17 @@ interface KioskApi {
     suspend fun syncPeople(): KioskPeopleSync
     suspend fun syncContainers(initiativeId: String): KioskContainersSync
     suspend fun syncTrucks(initiativeId: String): KioskTrucksSync
+
+    // ── labels ──────────────────────────────────────────────────────
+
+    /** GET /kiosk/sync/assets, the body exactly as received: the label generator needs every
+     *  payload key and number literal (`12.0` stays `12.0`). [syncAssets] decodes the same body. */
+    suspend fun assetsSyncRaw(initiativeId: String): String
+    /** GET /kiosk/sync/label-templates, the body exactly as received. */
+    suspend fun labelTemplatesRaw(initiativeId: String): String
+    suspend fun labelFonts(initiativeId: String): KioskLabelFonts
+    /** The font file's bytes. 404 font_not_found; 403 font_not_servable for the resident font. */
+    suspend fun labelFontContent(id: String, initiativeId: String): ByteArray
 
     // ── scans, RFID, timeclock ──────────────────────────────────────
 

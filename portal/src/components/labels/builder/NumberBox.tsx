@@ -1,7 +1,8 @@
 /**
  * The builder's number box (spec §4.5): a number, or arithmetic such as
  * `120-4` or `2*(3+4)`, where a leading `+ - * /` works on the current
- * value (`+5` adds five, `*2` doubles). ↑ and ↓ step by `step` (⇧ by ten
+ * value (`+5` adds five, `*2` doubles; with `signed`, for a setting that
+ * runs below zero, `-20` is minus twenty). ↑ and ↓ step by `step` (⇧ by ten
  * steps); Enter or leaving the box commits, Escape drops the edit, and
  * anything that isn't arithmetic puts the value back. A committed value is
  * kept inside `min` and `max` and rounded when `integer`.
@@ -35,12 +36,13 @@ function tokenize(text: string): Token[] | null {
 }
 
 /** `text` as a number: arithmetic with + - * / and parentheses, a leading
- *  operator applied to `current`. Null for anything else, or a result that
- *  isn't a finite number. */
-export function evalNumber(text: string, current: number | null): number | null {
+ *  operator applied to `current` (`signed`: a leading minus is a negative
+ *  number instead). Null for anything else, or a result that isn't a
+ *  finite number. */
+export function evalNumber(text: string, current: number | null, signed = false): number | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
-  const relative = current !== null && /^[-+*/]/.test(trimmed);
+  const relative = current !== null && (signed ? /^[+*/]/ : /^[-+*/]/).test(trimmed);
   const tokens = tokenize(relative ? `${current}${trimmed}` : trimmed);
   if (!tokens || !tokens.length) return null;
   let i = 0;
@@ -106,6 +108,9 @@ export interface NumberBoxProps {
   className?: string;
   /** Decimals shown (default 2). */
   decimals?: number;
+  /** A setting that runs below zero: a leading minus is a negative number,
+   *  not a subtraction. */
+  signed?: boolean;
 }
 
 function show(value: number | null, decimals: number): string {
@@ -116,7 +121,7 @@ function show(value: number | null, decimals: number): string {
 
 export default function NumberBox({
   value, onCommit, onCommitEach, mixed = false, ariaLabel, id, step = 1, min, max, integer = false,
-  allowEmpty = false, disabled = false, placeholder, className, decimals = 2,
+  allowEmpty = false, disabled = false, placeholder, className, decimals = 2, signed = false,
 }: NumberBoxProps) {
   const [draft, setDraft] = useState<string | null>(null);
 
@@ -141,9 +146,9 @@ export default function NumberBox({
         if (allowEmpty && !mixed) onCommitEach(() => null);
         return;
       }
-      if (evalNumber(text, value ?? 0) === null) return;
+      if (evalNumber(text, value ?? 0, signed) === null) return;
       onCommitEach((current) => {
-        const v = evalNumber(text, current);
+        const v = evalNumber(text, current, signed);
         return v === null ? current : settle(v);
       });
       return;
@@ -152,7 +157,7 @@ export default function NumberBox({
       if (allowEmpty) send(null);
       return;
     }
-    const v = evalNumber(text, value);
+    const v = evalNumber(text, value, signed);
     if (v !== null) send(settle(v));
   };
 
@@ -167,7 +172,7 @@ export default function NumberBox({
       e.preventDefault();
       const by = step * (e.shiftKey ? 10 : 1) * (e.key === 'ArrowUp' ? 1 : -1);
       const typed = draft;
-      const from = (current: number | null) => (typed !== null ? evalNumber(typed, current) : null) ?? current ?? 0;
+      const from = (current: number | null) => (typed !== null ? evalNumber(typed, current, signed) : null) ?? current ?? 0;
       setDraft(null);
       if (onCommitEach) onCommitEach((current) => settle(from(current) + by));
       else send(settle(from(value) + by));

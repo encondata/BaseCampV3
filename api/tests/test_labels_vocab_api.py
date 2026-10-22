@@ -119,9 +119,9 @@ async def test_designer_adds_a_custom_type(client, db, seeded_user):
     devtools-only, and below rank 80 nothing."""
     sa = await _make(db, client, "super_admin", "sa-type@test.example.com")
     resp = await client.post("/labels/vocab", headers=sa, json={
-        "kind": "type", "key": "id_badge", "label": "ID badge"})
+        "kind": "type", "key": "shelf", "label": "Shelf"})
     assert resp.status_code == 201, resp.text
-    assert (resp.json()["is_active"], resp.json()["label"]) == (True, "ID badge")
+    assert (resp.json()["is_active"], resp.json()["label"]) == (True, "Shelf")
     resp = await client.post("/labels/vocab", headers=sa, json={
         "kind": "type", "key": "visitor_badge", "label": "Visitor badge", "is_active": False})
     assert resp.status_code == 201, resp.text
@@ -135,7 +135,7 @@ async def test_designer_adds_a_custom_type(client, db, seeded_user):
     assert resp.status_code == 403
     admin = await _make(db, client, "admin", "adm-type@test.example.com")
     resp = await client.post("/labels/vocab", headers=admin, json={
-        "kind": "type", "key": "shelf", "label": "Shelf"})
+        "kind": "type", "key": "bin_tag", "label": "Bin tag"})
     assert resp.status_code == 403
     assert resp.json()["detail"] == {"code": "forbidden", "min_rank": 80}
 
@@ -146,29 +146,29 @@ async def test_a_designer_can_change_a_pending_custom_type(client, db, seeded_us
     devtools-only, which may change any."""
     sa = await _make(db, client, "super_admin", "sa-type2@test.example.com")
     resp = await client.post("/labels/vocab", headers=sa, json={
-        "kind": "type", "key": "id_badge", "label": "ID badge", "is_active": False})
+        "kind": "type", "key": "shelf", "label": "Shelf", "is_active": False})
     assert resp.status_code == 201, resp.text
-    resp = await client.patch("/labels/vocab/type/id_badge", headers=sa,
-                              json={"label": "Visitor badge", "is_active": False})
+    resp = await client.patch("/labels/vocab/type/shelf", headers=sa,
+                              json={"label": "Shelf edge", "is_active": False})
     assert resp.status_code == 200, resp.text
-    assert (resp.json()["label"], resp.json()["is_active"]) == ("Visitor badge", False)
+    assert (resp.json()["label"], resp.json()["is_active"]) == ("Shelf edge", False)
     # a listed type is not pending
     resp = await client.patch("/labels/vocab/type/top", headers=sa, json={"label": "x"})
     assert resp.status_code == 403, resp.text
     # a template on it: no longer pending
-    db.add(LabelTemplate(name="Badge", label_type="id_badge", size_key="4x2", dpi_key="203",
+    db.add(LabelTemplate(name="Shelf", label_type="shelf", size_key="4x2", dpi_key="203",
                          language_key="zpl", kind="code", code="^XA^XZ"))
     await db.commit()
-    resp = await client.patch("/labels/vocab/type/id_badge", headers=sa, json={"label": "y"})
+    resp = await client.patch("/labels/vocab/type/shelf", headers=sa, json={"label": "y"})
     assert resp.status_code == 403, resp.text
     # below rank 80, nothing
     resp = await client.post("/labels/vocab", headers=sa, json={
-        "kind": "type", "key": "shelf", "label": "Shelf", "is_active": False})
+        "kind": "type", "key": "bin_tag", "label": "Bin tag", "is_active": False})
     assert resp.status_code == 201, resp.text
     admin = await _make(db, client, "admin", "adm-type2@test.example.com")
-    resp = await client.patch("/labels/vocab/type/shelf", headers=admin, json={"label": "x"})
+    resp = await client.patch("/labels/vocab/type/bin_tag", headers=admin, json={"label": "x"})
     assert resp.status_code == 403, resp.text
     # devtools changes any type
     dev = await _make(db, client, "developer", "dev-type@test.example.com")
-    resp = await client.patch("/labels/vocab/type/id_badge", headers=dev, json={"label": "Badge"})
+    resp = await client.patch("/labels/vocab/type/shelf", headers=dev, json={"label": "Shelf"})
     assert resp.status_code == 200, resp.text

@@ -16,7 +16,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import vegas from '../../../api/src/serversherpa/labels/fixtures/vegas_v2.json';
-import { FAKE_METRICS, FIELDS, SAMPLES } from '../components/labels/builder/builderTestKit';
+import { FAKE_METRICS, FIELDS, PERSON_FIELDS, SAMPLES } from '../components/labels/builder/builderTestKit';
 import type { LabelFont, LabelTemplate, LabelTemplateTreeNode, LabelVocab } from '../lib/api';
 
 const auth = vi.hoisted(() => ({ maxRank: 80 }));
@@ -43,6 +43,8 @@ const api = vi.hoisted(() => ({
   updateLabelTemplate: vi.fn(), updateLabelTemplateFromParent: vi.fn(), compileLabel: vi.fn(),
   previewZplRequest: vi.fn(), createLabelTemplate: vi.fn(), createLabelVocab: vi.fn(),
   listLabelTemplateVersions: vi.fn(), getLabelTemplateVersion: vi.fn(), restoreLabelTemplateVersion: vi.fn(),
+  labelImageRaster: vi.fn(), listLabelImages: vi.fn(), uploadLabelImage: vi.fn(),
+  searchSamplePeople: vi.fn(), loadSamplePerson: vi.fn(),
 }));
 vi.mock('../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../lib/api')>()), ...api,
@@ -56,6 +58,7 @@ vi.setConfig({ testTimeout: 20000 });
 
 const { default: LabelBuilder } = await import('./LabelBuilder');
 const { default: ProtectedRoute } = await import('../components/ProtectedRoute');
+const { clearRasterCache } = await import('../components/labels/builder/imageRaster');
 
 const vocabRow = (kind: string, key: string, label: string, meta: Record<string, unknown> = {}, sort = 0): LabelVocab => ({
   kind, key, label, description: '', meta, sort_order: sort, is_active: true, usage_count: null,
@@ -63,7 +66,9 @@ const vocabRow = (kind: string, key: string, label: string, meta: Record<string,
 
 const VOCAB: LabelVocab[] = [
   vocabRow('type', 'top', 'Top Label'),
+  vocabRow('type', 'id_badge', 'ID Badge'),
   vocabRow('size', '4x2', '4" x 2"', { width_in: 4, height_in: 2, has_tab: false }),
+  vocabRow('size', 'id-badge', 'ID Badge', { width_in: 3.375, height_in: 2.125, has_tab: false }),
   vocabRow('dpi', '203', '203 DPI', { dots: 203 }, 1),
   vocabRow('dpi', '300', '300 DPI', { dots: 300 }, 2),
   vocabRow('dpi', '600', '600 DPI', { dots: 600 }, 3),
@@ -147,6 +152,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  clearRasterCache();
   auth.maxRank = 80;
   printer.connected = true;
   api.getLabelTemplate.mockImplementation(async (id: string) => (id === 'p1' ? PARENT : child(id.slice(1))));
@@ -156,6 +162,8 @@ beforeEach(() => {
   api.listLabelFields.mockResolvedValue(FIELDS);
   api.getLabelFontMetrics.mockResolvedValue(FAKE_METRICS);
   api.compileLabel.mockResolvedValue({ code: '^XA^FD10482^FS^XZ' });
+  api.labelImageRaster.mockResolvedValue(null);
+  api.listLabelImages.mockResolvedValue([]);
   api.updateLabelTemplate.mockImplementation(async (id: string, body: Record<string, unknown>) => (
     { ...PARENT, ...body, id, version: 8, out_of_date: [] }));
   printer.send.mockResolvedValue(undefined);
@@ -165,6 +173,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.restoreAllMocks();
 });
 
 describe('a parent template', () => {
@@ -471,6 +480,325 @@ describe('a DPI child', () => {
   });
 });
 
+describe('an ID badge', () => {
+  const PERSON = '0b7f3c52-6a2e-4c41-9d1e-3f2a9b8c7d10';
+  const BADGE_SAMPLES = { person_name: 'Ada Lovelace', 'person:id': PERSON };
+  const BADGE_DESIGN = {
+    schema: 3, size: { w: 3.375, h: 2.125 }, splits: {}, elements: [
+      { id: 'image-1', type: 'image', source: 'photo', fit: 'cover', mode: 'dither', x: 0.1, y: 0.1, w: 0.8, h: 1,
+        rotation: 0, hideWhenEmpty: true },
+      { id: 'field-1', type: 'field', field: 'person_name', display: 'text', x: 1.1, y: 0.1, w: 1.5, h: 0.2,
+        rotation: 0, font: { family: 'swiss721-cond-bold', weight: 'regular' }, sizePt: 12, baselineIn: 0.15 },
+    ],
+  };
+  const BADGE: LabelTemplate = {
+    ...PARENT, id: 'b1', name: 'Crew badge', label_type: 'id_badge', size_key: 'id-badge', schema_version: 3,
+    design: BADGE_DESIGN as Record<string, unknown>, samples: BADGE_SAMPLES, dpis: ['300'],
+  };
+
+  async function openBadge(over: Partial<LabelTemplate> = {}) {
+    api.getLabelTemplate.mockResolvedValue({ ...BADGE, ...over });
+    api.listLabelTemplateTree.mockResolvedValue([{ ...BADGE, ...over, family: 'Crew badge', children: [] }]);
+    renderAt('/labels/templates/b1/edit');
+    await builderReady();
+  }
+
+  it('opens a schema 3 design with the Image tool, and asks for the sample person’s photo', async () => {
+    await openBadge();
+    const tools = screen.getByRole('group', { name: 'Tools' });
+    expect(within(tools).getByRole('button', { name: 'Image' })).toBeTruthy();
+    expect(screen.getByRole('group', { name: 'Template' }).textContent).toContain('ID Badge · ID Badge');
+    await waitFor(() => expect(api.labelImageRaster).toHaveBeenCalledWith({
+      source: 'photo', person_id: PERSON, w_in: 0.8, h_in: 1, dpi: 300, fit: 'cover', rotation: 0,
+    }));
+    // the person has no photo: the placeholder
+    const canvas = screen.getByRole('application', { name: 'Label canvas' });
+    expect(within(canvas).getByText('Photo')).toBeTruthy();
+    expect(within(screen.getByRole('group', { name: 'Template' })).queryByText('Unsaved')).toBeNull();
+  });
+
+  it('the Image tool is not on a top label', async () => {
+    await openParent();
+    expect(within(screen.getByRole('group', { name: 'Tools' })).queryByRole('button', { name: 'Image' })).toBeNull();
+  });
+
+  it('a Test print the compile refuses for a picture says why in a sentence, not its code', async () => {
+    const { ApiError } = await import('../lib/api');
+    api.compileLabel.mockRejectedValue(new ApiError(422, 'person_not_found'));
+    await openBadge();
+    ctrl('p');
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('The sample person is no longer on file. Load another or clear the sample person.');
+    expect(printer.send).not.toHaveBeenCalled();
+  });
+
+  it('⌘P sends the samples with the sample person and the design as schema 3', async () => {
+    await openBadge();
+    ctrl('p');
+    await waitFor(() => expect(printer.send).toHaveBeenCalled());
+    expect(api.compileLabel).toHaveBeenCalledWith(expect.objectContaining({
+      samples: BADGE_SAMPLES, label_type: 'id_badge', size_key: 'id-badge',
+      design: expect.objectContaining({ schema: 3 }),
+    }));
+    // Test print prints the real pictures: no placeholder mode
+    expect(api.compileLabel.mock.calls[0][0]).not.toHaveProperty('image_mode');
+  });
+
+  it('the printer preview asks for image placeholders: pictures never go to the preview service', async () => {
+    api.previewZplRequest.mockResolvedValue(new Blob(['png']));
+    URL.createObjectURL = vi.fn(() => 'blob:preview');
+    URL.revokeObjectURL = vi.fn();
+    await openBadge();
+    const preview = screen.getByRole('region', { name: 'Printer preview' });
+    fireEvent.click(within(preview).getByRole('button', { name: 'Render' }));
+    await waitFor(() => expect(api.compileLabel).toHaveBeenCalledTimes(1));
+    expect(api.compileLabel).toHaveBeenCalledWith(expect.objectContaining({
+      image_mode: 'placeholder', samples: BADGE_SAMPLES, label_type: 'id_badge',
+    }));
+    expect(await within(preview).findByText(
+      'Pictures show as placeholders in the preview; the canvas and Test print use the real pictures.')).toBeTruthy();
+  });
+
+  it('saves schema 3 with an image and schema 2 once the last one goes', async () => {
+    await openBadge();
+    edit();
+    ctrl('s');
+    await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledTimes(1));
+    expect(api.updateLabelTemplate.mock.calls[0][1].design.schema).toBe(3);
+    expect(api.updateLabelTemplate.mock.calls[0][1].samples).toEqual(BADGE_SAMPLES);
+    // select the photo alone and delete it
+    const canvas = screen.getByRole('application', { name: 'Label canvas' });
+    fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
+    fireEvent.keyDown(document.body, { key: 'Tab', code: 'Tab' });
+    fireEvent.keyDown(document.body, { key: 'Backspace', code: 'Backspace' });
+    await waitFor(() => expect(within(canvas).queryByText('Photo')).toBeNull());
+    ctrl('s');
+    await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledTimes(2));
+    const sent = api.updateLabelTemplate.mock.calls[1][1].design;
+    expect(sent.schema).toBe(2);
+    expect(sent.elements.map((e: { type: string }) => e.type)).toEqual(['field']);
+  });
+
+  describe('Load from person…', () => {
+    const CREW = '1c8e4d63-7b3f-4d52-8e2f-4a3b0c9d8e21';
+    const blanks = () => Object.fromEntries(PERSON_FIELDS.groups[0].fields.map((f) => [f.key, '']));
+    const person = (person_id: string, name: string) => ({
+      person_id, name, person_type: 'Worker', company: 'Rivera Electric', has_photo: true, has_logo: true,
+    });
+    const ADA_VALUES = { ...blanks(), person_name: 'Ada Lovelace', job_title: 'Engineer', company: 'Cumulus' };
+    const CREW_VALUES = { ...blanks(), person_name: 'Crew 2', company: 'Rivera Electric', badge_short: '1c8e4d63' };
+
+    beforeEach(() => {
+      api.listLabelFields.mockResolvedValue(PERSON_FIELDS);
+      api.searchSamplePeople.mockResolvedValue([person(PERSON, 'Ada Lovelace'), person(CREW, 'Crew 2')]);
+      api.loadSamplePerson.mockImplementation(async (id: string) => ({
+        person_id: id, has_photo: true, has_logo: true, values: id === CREW ? CREW_VALUES : ADA_VALUES,
+      }));
+      // a save answers with the badge, still a badge
+      api.updateLabelTemplate.mockImplementation(async (id: string, body: Record<string, unknown>) => (
+        { ...BADGE, ...body, id, version: 8, out_of_date: [] }));
+    });
+
+    async function loadPerson(name: string) {
+      fireEvent.click(await screen.findByRole('button', { name: 'Load from person…' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Load samples from a person' });
+      expect(within(dialog).getByText('Crew badge · Load from person')).toBeTruthy();
+      fireEvent.click(await within(dialog).findByRole('radio', { name: new RegExp(`^${name},`) }));
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Load samples' }));
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Load samples from a person' })).toBeNull());
+    }
+
+    async function savedSamples() {
+      const before = api.updateLabelTemplate.mock.calls.length;
+      ctrl('s');
+      await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledTimes(before + 1));
+      return api.updateLabelTemplate.mock.calls[before][1].samples as Record<string, string>;
+    }
+
+    it('fills every person sample; the next person leaves none of the last one’s values', async () => {
+      await openBadge({ samples: {} });
+      await loadPerson('Ada Lovelace');
+      expect(screen.getByRole('status').textContent).toContain('Loaded Ada Lovelace as the sample person.');
+      expect(await savedSamples()).toEqual({ ...ADA_VALUES, 'person:id': PERSON });
+      await loadPerson('Crew 2');
+      const samples = await savedSamples();
+      expect(samples).toEqual({ ...CREW_VALUES, 'person:id': CREW });
+      // Ada's job title is gone: Crew 2 has none, so it is blank, not hers
+      expect(samples.job_title).toBe('');
+      expect(api.loadSamplePerson.mock.calls).toEqual([[PERSON], [CREW]]);
+    });
+
+    it('the photo is asked for the new person, and asked again when the same person is loaded again', async () => {
+      // the picture is kept (jsdom paints nothing: a null 2D context)
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+      api.labelImageRaster.mockResolvedValue({ width: 240, height: 300, gray: new Uint8Array(240 * 300) });
+      const forPerson = (id: string) => api.labelImageRaster.mock.calls.filter(([b]) => b.person_id === id).length;
+      await openBadge();
+      await waitFor(() => expect(forPerson(PERSON)).toBe(1));
+      await loadPerson('Crew 2');
+      await waitFor(() => expect(forPerson(CREW)).toBe(1));
+      await loadPerson('Ada Lovelace');
+      await waitFor(() => expect(forPerson(PERSON)).toBe(2));
+      // and again: what was kept for her is dropped, so a new photo shows
+      await loadPerson('Ada Lovelace');
+      await waitFor(() => expect(forPerson(PERSON)).toBe(3));
+    });
+
+    it('opening the badge again asks for its pictures again (someone may have replaced them)', async () => {
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+      api.labelImageRaster.mockResolvedValue({ width: 240, height: 300, gray: new Uint8Array(240 * 300) });
+      api.listLabelImages.mockResolvedValue([]);
+      const logo = { id: 'image-9', type: 'image', source: 'static', imageId: 'img-1', fit: 'contain',
+        mode: 'threshold', x: 2, y: 0.1, w: 1, h: 0.5, rotation: 0, hideWhenEmpty: true };
+      const design = { ...BADGE_DESIGN, elements: [logo, ...BADGE_DESIGN.elements] } as Record<string, unknown>;
+      const asked = (source: string) => api.labelImageRaster.mock.calls.filter(([b]) => b.source === source).length;
+      await openBadge({ design });
+      await waitFor(() => expect([asked('photo'), asked('static')]).toEqual([1, 1]));
+      cleanup();
+      await openBadge({ design });
+      await waitFor(() => expect([asked('photo'), asked('static')]).toEqual([2, 2]));
+    });
+
+    it('Clear sample person takes every person sample and person:id away, and the photo is a placeholder', async () => {
+      await openBadge({ samples: { ...ADA_VALUES, 'person:id': PERSON } });
+      await waitFor(() => expect(api.labelImageRaster).toHaveBeenCalledTimes(1));
+      expect(screen.getByText('Sample person: Ada Lovelace')).toBeTruthy();
+      const clear = screen.getByRole('button', { name: 'Clear sample person' }) as HTMLButtonElement;
+      await waitFor(() => expect(clear.disabled).toBe(false));
+      fireEvent.click(clear);
+      expect(screen.queryByRole('button', { name: 'Clear sample person' })).toBeNull();
+      expect(await savedSamples()).toEqual({});
+      const canvas = screen.getByRole('application', { name: 'Label canvas' });
+      expect(within(canvas).getByText('Photo')).toBeTruthy();
+      expect(api.labelImageRaster).toHaveBeenCalledTimes(1);
+    });
+
+    it('with no field list, Clear sample person takes the person keys the server gives for them', async () => {
+      api.listLabelFields.mockRejectedValue(new Error('down'));
+      await openBadge({ samples: { ...ADA_VALUES, 'person:id': PERSON, asset_id: 'kept' } });
+      const clear = screen.getByRole('button', { name: 'Clear sample person' }) as HTMLButtonElement;
+      await waitFor(() => expect(clear.disabled).toBe(false));
+      fireEvent.click(clear);
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Clear sample person' })).toBeNull());
+      expect(api.loadSamplePerson).toHaveBeenCalledWith(PERSON);
+      // every person key and person:id gone; another sample stays
+      expect(await savedSamples()).toEqual({ asset_id: 'kept' });
+    });
+
+    it('with no field list and the person gone, Clear says it couldn’t and changes nothing', async () => {
+      const { ApiError } = await import('../lib/api');
+      api.listLabelFields.mockRejectedValue(new Error('down'));
+      api.loadSamplePerson.mockRejectedValue(new ApiError(404, 'person_not_found'));
+      await openBadge({ samples: { ...ADA_VALUES, 'person:id': PERSON } });
+      const clear = screen.getByRole('button', { name: 'Clear sample person' }) as HTMLButtonElement;
+      await waitFor(() => expect(clear.disabled).toBe(false));
+      fireEvent.click(clear);
+      expect((await screen.findByRole('alert')).textContent).toContain(
+        'Couldn’t clear the sample person: couldn’t load the field list. Reload the page and try again.');
+      expect(screen.getByRole('button', { name: 'Clear sample person' })).toBeTruthy();
+    });
+
+    it('the image library’s Delete… confirm keeps the canvas keys off while it is open', async () => {
+      api.listLabelImages.mockResolvedValue([
+        { id: 'img-1', name: 'Cumulus', width: 600, height: 200, mime: 'image/png', created_at: '' }]);
+      const logo = { id: 'image-9', type: 'image', source: 'static', imageId: 'img-1', fit: 'contain',
+        mode: 'threshold', x: 2, y: 0.1, w: 1, h: 0.5, rotation: 0, hideWhenEmpty: true };
+      await openBadge({ design: { ...BADGE_DESIGN, elements: [logo, ...BADGE_DESIGN.elements] } as Record<string, unknown> });
+      // select the logo (the first element)
+      fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
+      fireEvent.keyDown(document.body, { key: 'Tab', code: 'Tab' });
+      const props = screen.getByRole('complementary', { name: 'Properties' });
+      fireEvent.click(await within(props).findByRole('button', { name: 'Delete…' }));
+      const confirm = screen.getByRole('dialog', { name: 'Delete library image' });
+      // Backspace under the dialog deletes nothing on the canvas
+      fireEvent.keyDown(confirm, { key: 'Backspace', code: 'Backspace' });
+      fireEvent.keyDown(document.body, { key: 'Delete', code: 'Delete' });
+      expect(within(screen.getByRole('group', { name: 'Template' })).queryByText('Unsaved')).toBeNull();
+      // Escape closes the dialog only: the logo stays selected
+      fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
+      expect(screen.queryByRole('dialog', { name: 'Delete library image' })).toBeNull();
+      expect(within(props).getByRole('heading').textContent).toBe('Image');
+      // and the keys are back
+      fireEvent.keyDown(document.body, { key: 'Backspace', code: 'Backspace' });
+      await waitFor(() => expect(within(screen.getByRole('group', { name: 'Template' })).queryByText('Unsaved'))
+        .not.toBeNull());
+    });
+
+    it('a top label offers Load from asset…, not Load from person…', async () => {
+      api.listLabelFields.mockResolvedValue(FIELDS);
+      await openParent();
+      expect(await screen.findByRole('button', { name: 'Load from asset…' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Load from person…' })).toBeNull();
+    });
+  });
+
+  describe('a library upload that finishes after the user kept working', () => {
+    const LOGO = { id: 'image-9', type: 'image', source: 'static', fit: 'contain', mode: 'threshold',
+      x: 2, y: 0.1, w: 1, h: 0.5, rotation: 0, hideWhenEmpty: true };
+    const MADE = { id: 'img-new', name: 'Cumulus', width: 600, height: 200, mime: 'image/png', created_at: '' };
+    const DOT = 1 / 300;
+
+    /** Everything selected (the logo last, so its properties show) and an
+     *  upload of a picture for it under way. */
+    async function uploading() {
+      let finish!: (made: typeof MADE) => void;
+      api.uploadLabelImage.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+      await openBadge({ design: { ...BADGE_DESIGN, elements: [...BADGE_DESIGN.elements, LOGO] } as Record<string, unknown> });
+      ctrl('a');
+      const props = screen.getByRole('complementary', { name: 'Properties' });
+      fireEvent.change(await within(props).findByLabelText('Image file'),
+        { target: { files: [new File(['png'], 'Cumulus.png', { type: 'image/png' })] } });
+      await waitFor(() => expect(api.uploadLabelImage).toHaveBeenCalled());
+      const picked = () => (within(props).getByRole('combobox', { name: 'Static image' }) as HTMLInputElement).value;
+      return { finish: async () => { await act(async () => { finish(MADE); }); }, picked };
+    }
+
+    async function savedDesign() {
+      ctrl('s');
+      await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalled());
+      const sent = api.updateLabelTemplate.mock.calls.at(-1)![1].design as { elements: Record<string, unknown>[] };
+      return Object.fromEntries(sent.elements.map((e) => [e.id, e]));
+    }
+
+    it('keeps a nudge made meanwhile, and picks the picture for the logo', async () => {
+      const { finish, picked } = await uploading();
+      fireEvent.keyDown(document.body, { key: 'ArrowRight', code: 'ArrowRight' });
+      fireEvent.keyUp(document.body, { key: 'ArrowRight', code: 'ArrowRight' });
+      await finish();
+      await waitFor(() => expect(picked()).toBe('Cumulus'));
+      const els = await savedDesign();
+      expect(els['field-1'].x).toBeCloseTo(1.1 + DOT);
+      expect(els['image-9'].x).toBeCloseTo(2 + DOT);
+      expect(els['image-9'].imageId).toBe('img-new');
+    });
+
+    it('one landing mid-gesture waits for its end, and is its own undo step', async () => {
+      const { finish, picked } = await uploading();
+      // an arrow held down: one gesture until it is let go
+      fireEvent.keyDown(document.body, { key: 'ArrowRight', code: 'ArrowRight' });
+      await finish();
+      expect(picked()).toBe('');
+      fireEvent.keyUp(document.body, { key: 'ArrowRight', code: 'ArrowRight' });
+      await waitFor(() => expect(picked()).toBe('Cumulus'));
+      // undo takes the pick back, not the nudge
+      ctrl('z');
+      await waitFor(() => expect(picked()).toBe(''));
+      const els = await savedDesign();
+      expect(els['image-9'].x).toBeCloseTo(2 + DOT);
+      expect(els['image-9'].imageId).toBeUndefined();
+    });
+  });
+
+  it('refuses to save an image on a template that isn’t an ID badge in ZPL', async () => {
+    await openBadge({ label_type: 'top' });
+    edit();
+    ctrl('s');
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('Not saved: Images print on ID Badge templates in ZPL only.');
+    expect(api.updateLabelTemplate).not.toHaveBeenCalled();
+  });
+});
+
 describe('arriving from the templates list', () => {
   /** The route as the list's Test print… opens it, under StrictMode (its
    *  effects run twice on mount, so "once" is tested for real). */
@@ -531,6 +859,20 @@ describe('the routes', () => {
     });
     await waitFor(() => expect(api.createLabelTemplate).toHaveBeenCalled());
     await waitFor(() => expect(api.getLabelTemplate).toHaveBeenCalledWith('p9'));
+  });
+
+  it('tells a design from before the builder apart from a builder design it can’t read', async () => {
+    api.getLabelTemplate.mockResolvedValue({ ...PARENT, design: { size: { w: 4, h: 2 }, elements: [] } });
+    renderAt('/labels/templates/p1/edit');
+    expect(await screen.findByText(/made before the label builder/)).toBeTruthy();
+    cleanup();
+    // schema 3 is a builder design (one with images): a fault in it is damage
+    api.getLabelTemplate.mockResolvedValue({
+      ...PARENT, design: { schema: 3, size: { w: 4, h: 2 }, elements: [{ id: 'x', type: 'hologram' }] },
+    });
+    renderAt('/labels/templates/p1/edit');
+    expect(await screen.findByText('This template’s design can’t be read.')).toBeTruthy();
+    expect(screen.queryByText(/made before the label builder/)).toBeNull();
   });
 
   it('send a code template to its code editor', async () => {

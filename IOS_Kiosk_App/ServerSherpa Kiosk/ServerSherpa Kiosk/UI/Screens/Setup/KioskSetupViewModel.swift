@@ -41,10 +41,18 @@ func parseCssHex(_ css: String) -> UInt32 {
 
 // MARK: - View model
 
-/// kiosk/src/pages/KioskSetup.tsx: Move → Site → Scan type, then the summary.
+/// kiosk/src/pages/KioskSetup.tsx: Move → Site → Scan type, then (here and on Android only)
+/// what labels print on, then the summary.
 @MainActor @Observable
 final class KioskSetupViewModel {
-    enum Step { case move, site, scanType, summary }
+    enum Step { case move, site, scanType, labels, summary }
+
+    /// The last step's cards: the label kind, its title and its one-line description.
+    static let labelKindChoices: [(kind: LabelKind, title: String, blurb: String)] = [
+        (.top, "Top", "Labels for the top of the device."),
+        (.front, "Front", "Labels for the front of the device."),
+    ]
+    static let labelsHeading = "What do labels print on?"
 
     private(set) var step: Step
     private(set) var options: SetupOptions?
@@ -55,6 +63,8 @@ final class KioskSetupViewModel {
     private(set) var initiativeId = ""
     private(set) var siteId = ""
     private(set) var scanStatus = ""
+    /// The last step's choice; Top until picked, the saved kind when changing a setup.
+    private(set) var labelKind: LabelKind = .top
 
     @ObservationIgnored private let api: KioskApi
     @ObservationIgnored private let identity: Identity
@@ -76,14 +86,21 @@ final class KioskSetupViewModel {
     /// Whether "Cancel" on step 1 returns to a summary.
     var canCancel: Bool { selection != nil && prefs.setupState.isComplete }
 
-    /// Step number for the "Step N of 3" line; nil on the summary.
+    /// Step number for the "Step N of 4" line; nil on the summary.
     var stepNumber: Int? {
         switch step {
         case .move: 1
         case .site: 2
         case .scanType: 3
+        case .labels: 4
         case .summary: nil
         }
+    }
+
+    /// "STEP 3 OF 4 · SCAN TYPE"; nil on the summary.
+    var stepHeader: String? {
+        guard let n = stepNumber else { return nil }
+        return "STEP \(n) OF 4 · \(["MOVE", "SITE", "SCAN TYPE", "LABELS"][n - 1])"
     }
 
     var siteChoices: [(site: SetupOptionSite, role: String)] {
@@ -128,8 +145,15 @@ final class KioskSetupViewModel {
         step = .scanType
     }
 
+    /// Picking a scan type only advances: the setup is saved on the last step.
+    func pickScanType(_ key: String) {
+        scanStatus = key
+        step = .labels
+    }
+
     func back() {
         switch step {
+        case .labels: step = .scanType
         case .scanType: step = .site
         case .site: step = .move
         case .move, .summary: break
@@ -138,8 +162,12 @@ final class KioskSetupViewModel {
 
     /// "Change setup": reopen the wizard at step 1 with the saved choices preselected.
     func changeSetup() {
-        if let sel = selection { initiativeId = sel.initiativeId; siteId = sel.siteId; scanStatus = sel.scanStatus }
-        else { initiativeId = ""; siteId = ""; scanStatus = "" }
+        if let sel = selection {
+            initiativeId = sel.initiativeId; siteId = sel.siteId; scanStatus = sel.scanStatus
+            labelKind = LabelKind.fromWire(sel.labelKind)
+        } else {
+            initiativeId = ""; siteId = ""; scanStatus = ""; labelKind = .top
+        }
         saveError = nil
         step = .move
         Task { await load() }
@@ -148,13 +176,15 @@ final class KioskSetupViewModel {
     /// "Cancel" on step 1 of a change: back to the summary.
     func cancelChange() { if canCancel { step = .summary } }
 
-    func pickScanType(_ key: String) async {
-        scanStatus = key
+    /// The last step: saves the setup with the chosen label kind, then syncs the move.
+    func finish(_ kind: LabelKind) async {
+        labelKind = kind
         saving = true
         saveError = nil
         do {
-            let r = try await api.submitSetup(KioskSetupIn(serial: identity.current.serial, initiativeId: initiativeId, siteId: siteId, scanStatus: key))
-            prefs.setupSelection = KioskSetupSelection(initiativeId: r.initiativeId, initiativeName: r.initiativeName, siteId: r.siteId, siteName: r.siteName, siteRole: r.siteRole, scanStatus: r.scanStatus, scanLabel: r.scanStatusLabel)
+            let r = try await api.submitSetup(KioskSetupIn(serial: identity.current.serial, initiativeId: initiativeId, siteId: siteId, scanStatus: scanStatus))
+            prefs.setupSelection = KioskSetupSelection(initiativeId: r.initiativeId, initiativeName: r.initiativeName, siteId: r.siteId, siteName: r.siteName, siteRole: r.siteRole, scanStatus: r.scanStatus, scanLabel: r.scanStatusLabel,
+                                                      labelKind: kind.wire)
             prefs.setupState = .complete
             saving = false
             step = .summary

@@ -366,7 +366,7 @@ struct OutboxTests {
     }
 
     @Test func kioskStoreIsAnOutboxStore() async throws {
-        let store: OutboxStore = KioskStore(modelContainer: try KioskSchema.container(inMemory: true))
+        let store: OutboxStore = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
         let row = OutboxMachine.newRow(input(), clientScanId: "x1", seq: 1, nowMs: 0)
         try await store.upsert([row])
         #expect(try await store.all() == [row])

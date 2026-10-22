@@ -26,6 +26,7 @@ dependencies = [
     "weasyprint>=62",
     "pdf417gen>=0.7",
     "fonttools>=4.50",       # label font metrics (labels/font_metrics.py)
+    "pillow>=11.3",            # ID badge images (labels/image_prep.py, imported lazily; never on the laptop edge)
 ]
 
 [project.optional-dependencies]

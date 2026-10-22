@@ -7,6 +7,7 @@ import com.serversherpa.kiosk.core.model.HeartbeatIn
 import com.serversherpa.kiosk.core.model.HeartbeatResult
 import com.serversherpa.kiosk.core.model.KioskAssetsSync
 import com.serversherpa.kiosk.core.model.KioskContainersSync
+import com.serversherpa.kiosk.core.model.KioskLabelFonts
 import com.serversherpa.kiosk.core.model.KioskPeopleSync
 import com.serversherpa.kiosk.core.model.KioskRfidEnroll
 import com.serversherpa.kiosk.core.model.KioskRfidEnrollIn
@@ -80,9 +81,13 @@ class OkHttpKioskApi(
         return ApiError(resp.code, code, detail)
     }
 
-    private fun <T> parse(resp: Response, strategy: DeserializationStrategy<T>): T = resp.use {
+    private fun <T> parse(resp: Response, strategy: DeserializationStrategy<T>): T =
+        KioskJson.decodeFromString(strategy, text(resp))
+
+    /** The 2xx body as text, untouched. Consumes the response. */
+    private fun text(resp: Response): String = resp.use {
         if (!it.isSuccessful) throw errorFrom(it)
-        KioskJson.decodeFromString(strategy, it.body!!.string())
+        it.body!!.string()
     }
 
     /** Unauthenticated call. `configure` runs on a fresh builder each time. */
@@ -165,7 +170,7 @@ class OkHttpKioskApi(
         parse(authed { url(apiUrl("/kiosk/setup")).post(jsonBody(KioskSetupIn.serializer(), body)) }, KioskSetupResult.serializer())
 
     override suspend fun syncAssets(initiativeId: String): KioskAssetsSync =
-        parse(authed { url(apiUrl("/kiosk/sync/assets?initiative_id=${q(initiativeId)}")).get() }, KioskAssetsSync.serializer())
+        KioskJson.decodeFromString(KioskAssetsSync.serializer(), assetsSyncRaw(initiativeId))
 
     override suspend fun syncPeople(): KioskPeopleSync =
         parse(authed { url(apiUrl("/kiosk/sync/people")).get() }, KioskPeopleSync.serializer())
@@ -175,6 +180,27 @@ class OkHttpKioskApi(
 
     override suspend fun syncTrucks(initiativeId: String): KioskTrucksSync =
         parse(authed { url(apiUrl("/kiosk/sync/trucks?initiative_id=${q(initiativeId)}")).get() }, KioskTrucksSync.serializer())
+
+    // ── labels ──────────────────────────────────────────────────────
+
+    override suspend fun assetsSyncRaw(initiativeId: String): String =
+        text(authed { url(apiUrl("/kiosk/sync/assets?initiative_id=${q(initiativeId)}")).get() })
+
+    override suspend fun labelTemplatesRaw(initiativeId: String): String =
+        text(authed { url(apiUrl("/kiosk/sync/label-templates?initiative_id=${q(initiativeId)}")).get() })
+
+    override suspend fun labelFonts(initiativeId: String): KioskLabelFonts =
+        parse(authed { url(apiUrl("/kiosk/labels/fonts?initiative_id=${q(initiativeId)}")).get() }, KioskLabelFonts.serializer())
+
+    override suspend fun labelFontContent(id: String, initiativeId: String): ByteArray {
+        val resp = authed { url(apiUrl("/kiosk/labels/fonts/${q(id)}/content?initiative_id=${q(initiativeId)}")).get() }
+        return resp.use {
+            if (!it.isSuccessful) throw errorFrom(it)
+            withContext(Dispatchers.IO) {
+                try { it.body!!.bytes() } catch (e: IOException) { throw ApiError(0, "network") }
+            }
+        }
+    }
 
     // ── scans, RFID, timeclock ──────────────────────────────────────
 

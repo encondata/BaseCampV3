@@ -307,3 +307,82 @@ struct KioskTrucksSync: Codable, Equatable, Sendable {
         trucks = try c.decodeIfPresent([KioskTruckRow].self, forKey: .trucks) ?? []
     }
 }
+
+/// GET /kiosk/labels/fonts: a library font the move's label templates use. `size` is in bytes;
+/// a `resident` font is built into the printer and is never downloaded or installed.
+struct KioskLabelFont: Codable, Equatable, Sendable {
+    var id: String
+    var name: String
+    var size: Int
+    var resident: Bool
+
+    init(id: String, name: String, size: Int, resident: Bool = false) {
+        self.id = id
+        self.name = name
+        self.size = size
+        self.resident = resident
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        size = try c.decode(Int.self, forKey: .size)
+        resident = try c.decodeIfPresent(Bool.self, forKey: .resident) ?? false
+    }
+}
+
+/// `missing`: font names the templates reference that the library lacks.
+struct KioskLabelFonts: Codable, Equatable, Sendable {
+    var fonts: [KioskLabelFont]
+    var missing: [String]
+
+    init(fonts: [KioskLabelFont] = [], missing: [String] = []) {
+        self.fonts = fonts
+        self.missing = missing
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        fonts = try c.decodeIfPresent([KioskLabelFont].self, forKey: .fonts) ?? []
+        missing = try c.decodeIfPresent([String].self, forKey: .missing) ?? []
+    }
+}
+
+/// A stored label template: its id and the JSON object text the server sent.
+struct LabelTemplateRow: Equatable, Sendable {
+    var id: String
+    var json: String
+}
+
+/// A stored label font. `fileName` names the downloaded file in the fonts folder;
+/// nil for a resident font (or when no folder is kept).
+struct LabelFontRow: Equatable, Sendable {
+    var id: String
+    var name: String
+    var size: Int
+    var resident: Bool
+    var fileName: String?
+}
+
+struct LabelCounts: Equatable, Sendable {
+    var templates: Int
+    var fonts: Int
+}
+
+/// A label made on this device for one asset of the move: `zpl` when `outcome` is `ok`, else
+/// nil. `fingerprint` is the plan's: the label is current while the plan still says it.
+struct GeneratedLabelRow: Equatable, Sendable {
+    var assetId: String
+    var zpl: String?
+    var outcome: String
+    var fingerprint: String
+    var templateId: String?
+}
+
+/// A stored label without its ZPL: what a build compares with its plan.
+struct GeneratedLabelState: Equatable, Sendable {
+    var assetId: String
+    var fingerprint: String
+    var outcome: String
+}

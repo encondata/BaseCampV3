@@ -2,7 +2,8 @@ import { expect, it } from 'vitest';
 
 import type { LabelPlaceholder, LabelTemplate, LabelTemplateChild, LabelTemplateTreeNode, LabelVocab } from './api';
 import {
-  childStateChips, dpiDots, isContainerLabelType, isTreeParent, keptChildName, metaSummary, missingDpis, placeholdersFor,
+  childStateChips, dpiDots, isContainerLabelType, isPersonLabelType, isTreeParent, keptChildName, metaSummary,
+  missingDpis, placeholdersFor,
   replaceCandidates, siteNames, sitesCellText, sizeMeta, templateDpiText, templateSearchText, vocabLabel,
   vocabOfKind,
 } from './labels';
@@ -93,6 +94,15 @@ it('isContainerLabelType knows the container-shaped types and treats everything 
   expect(isContainerLabelType('front')).toBe(false);
   expect(isContainerLabelType('custom')).toBe(false);
   expect(isContainerLabelType('')).toBe(false);
+});
+
+it('isPersonLabelType knows the ID badge, built in (migration 0104), and nothing else', () => {
+  expect(isPersonLabelType('id_badge')).toBe(true);
+  for (const t of ['top', 'front', 'rail', 'container', 'container_info', 'shelf', 'id-badge', '']) {
+    expect(isPersonLabelType(t)).toBe(false);
+  }
+  // a badge is not a container label either
+  expect(isContainerLabelType('id_badge')).toBe(false);
 });
 
 // ── the templates list tree ──

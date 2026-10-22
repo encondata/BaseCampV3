@@ -23,6 +23,10 @@ import com.serversherpa.kiosk.data.config.KioskConfig
 import com.serversherpa.kiosk.data.db.KioskDatabase
 import com.serversherpa.kiosk.data.heartbeat.Heartbeat
 import com.serversherpa.kiosk.data.identity.Identity
+import com.serversherpa.kiosk.data.labels.LabelBuilder
+import com.serversherpa.kiosk.data.labels.LabelEngine
+import com.serversherpa.kiosk.data.labels.LabelGenerator
+import com.serversherpa.kiosk.data.labels.LabelSettingsStore
 import com.serversherpa.kiosk.data.outbox.Outbox
 import com.serversherpa.kiosk.data.outbox.RoomOutboxStore
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
@@ -37,6 +41,7 @@ import com.serversherpa.kiosk.input.rfid.RfidReader
 import com.serversherpa.kiosk.input.rfid.ZebraRfidReader
 import com.serversherpa.kiosk.ui.flash.FlashController
 import com.serversherpa.kiosk.ui.sound.SoundPlayer
+import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -75,7 +80,10 @@ class AppContainer(
     val session = SessionStore(httpClient, config, scope)
     val api: KioskApi = OkHttpKioskApi(httpClient, config, session)
     val auth = KioskAuth(api, session, identity, scope)
-    val sync = Sync(api, db, scope)
+    val sync = Sync(api, db, scope, fontsDir = File(app.filesDir, "label-fonts"))
+    val labelEngine: LabelEngine = LabelGenerator(app)
+    val labelSettings = LabelSettingsStore(prefs)
+    val labelBuilder = LabelBuilder(db, labelEngine, labelSettings, scope)
     val outbox = Outbox(RoomOutboxStore(db.outbox()), api, identity, scope)
     val hasDataWedge: Boolean = DataWedge.isPresent(app)
     val hasCamera: Boolean = hasCamera(app)
@@ -102,6 +110,7 @@ class AppContainer(
         // Two launches: the footer's sync line must not wait on auth's network call.
         scope.launch { identity.get(); auth.restore() }
         scope.launch { sync.hydrate() }
+        labelBuilder.start(sync.status)
         scope.launch { session.sessionEnded.collect { cookieJar.clearRefreshCookie() } }
         SessionCoordinator(auth, heartbeat, foreground, scope).start()
         MoveSetupGuard(auth.state, prefs, scope).start()
@@ -131,6 +140,25 @@ class AppContainer(
         })
         DataWedge.configure(app)
         rfid.start()
+    }
+
+    /**
+     * Settings › Developer › Reset app: a fresh setup on a kiosk that stays signed in. Clears the
+     * synced move data (with the generated labels, templates and font files: Sync.clearLocalData),
+     * the Kiosk Setup selection and setup state, and the label settings (printer, offsets, peel).
+     * Keeps the outbox (unsent scans), the sign-in, the API and portal URLs, the kiosk's identity
+     * and name, and the appearance, sound, RFID, camera, checkpoint and developer-mode
+     * preferences. The label builder ends stopped, waiting for a sync. The Print Labels list
+     * lives in its screen's ViewModel, which the caller's trip Home clears. Throws when the local
+     * data couldn't be cleared; the setup is then left as it was. [clearLocalData] is a test seam.
+     */
+    suspend fun resetApp(clearLocalData: suspend () -> Unit = { sync.clearLocalData() }) {
+        clearLocalData()
+        prefs.clearSetup()
+        labelSettings.reset()
+        // No build left over. A settings change may still start one, which finds no synced move
+        // and ends at once waiting for a sync, as the stop does.
+        labelBuilder.stop()
     }
 
     suspend fun logout() {

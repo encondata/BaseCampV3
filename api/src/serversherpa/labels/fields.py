@@ -12,10 +12,17 @@ row's type. The laptop edge calls it on the sync JSON; the portal calls it
 on labels/generate/payloads.py's dicts, which have exactly that shape, so
 both print the same text.
 
+The ID Badge type (`id_badge`, PERSON_LABEL_TYPES) describes a person: its
+only group is Person, it has no From-To row, and `person_values(payload)`
+gives its text from a person payload the API builds (spec
+docs/superpowers/specs/2026-10-20-badge-templates-design.md §4.2). A badge
+never reaches a kiosk or a generation run.
+
 Pure: stdlib and serversherpa.labels' own pure modules only (no
 sqlalchemy, no serversherpa.db or .api), because the edge imports it
 straight from api/src."""
 
+import re
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Literal, TypedDict
@@ -41,6 +48,9 @@ class FieldGroup(TypedDict):
 ASSET_LABEL_TYPES = ["top", "front", "rail"]
 CONTAINER_LABEL_TYPES = ["container", "container_info"]
 ALL_LABEL_TYPES = [*ASSET_LABEL_TYPES, *CONTAINER_LABEL_TYPES]
+# Label types that describe a person (an ID badge). Built in (migration
+# 0104); the portal's copy is `isPersonLabelType` in portal/src/lib/labels.ts.
+PERSON_LABEL_TYPES = ["id_badge"]
 
 FT_PREFIX = "ft:"
 
@@ -125,6 +135,25 @@ MOCK_VALUES: dict[str, str] = {
     "container_rfid_tag": "000000000000000000200000",
     "container_type": "D-container",
     "container_status": "Available",
+    # Person (an ID badge): a plausible worker
+    "person_name": "Jordan Rivera",
+    "first_name": "Jordan",
+    "last_name": "Rivera",
+    "preferred_name": "Jordan",
+    "person_type": "Worker",
+    "company": "Rivera Electric",
+    "parent_company": "Rivera Holdings",
+    "job_title": "Lead Electrician",
+    "roles": "Admin, Staff",
+    "trade": "Electrician",
+    "level": "L3 Technician",
+    "worker_status": "Active",
+    "employee_id": "E-10482",
+    "email": "jordan.rivera@example.com",
+    "phone": "(555) 010-4821",
+    "person_rfid_tag": "100418",
+    "badge_id": "3f2a9c1e-7b4d-4e21-9a0c-5d6e7f809a1b",
+    "badge_short": "3f2a9c1e",
 }
 
 _CATALOG: tuple = (
@@ -179,6 +208,27 @@ _CATALOG: tuple = (
         ("container_type", "Container type", "text"),
         ("container_status", "Container status", "text"),
     )),
+    ("person", "Person", PERSON_LABEL_TYPES, (
+        ("person_name", "Name", "text"),
+        ("first_name", "First name", "text"),
+        ("last_name", "Last name", "text"),
+        ("preferred_name", "Preferred name", "text"),
+        ("person_type", "Person type", "text"),
+        ("company", "Company", "text"),
+        ("parent_company", "Parent company", "text"),
+        ("job_title", "Job title", "text"),
+        ("roles", "Roles", "text"),
+        ("trade", "Trade", "text"),
+        ("level", "Level", "text"),
+        ("worker_status", "Worker status", "text"),
+        ("employee_id", "Employee ID", "text"),
+        ("email", "Email", "text"),
+        ("phone", "Phone", "text"),
+        # keyed apart from the asset's `rfid_tag`
+        ("person_rfid_tag", "RFID tag", "text"),
+        ("badge_id", "Badge ID", "text"),
+        ("badge_short", "Badge ID (short)", "text"),
+    )),
 )
 
 FIELD_GROUPS: list[FieldGroup] = [
@@ -189,15 +239,31 @@ FIELD_GROUPS: list[FieldGroup] = [
 ]
 
 
+_PERSON_GROUPS = {g["key"] for g in FIELD_GROUPS
+                  if set(g["label_types"]) <= set(PERSON_LABEL_TYPES)}
+
+
 def groups_for(label_type: str | None) -> list[FieldGroup]:
-    """The groups a template of `label_type` offers, in catalog order; every
-    group when None, and for a type outside the five known ones (a custom
-    type from New template › Custom…, an ID badge), so it can place any
-    field. It still prints as an asset label (labels.generate's
-    `entity_for_type`): a container field prints blank there."""
-    if label_type is None or label_type not in ALL_LABEL_TYPES:
+    """The groups a template of `label_type` offers, in catalog order. Every
+    group when None. An ID badge (PERSON_LABEL_TYPES) gets the Person group
+    only. A type outside the known ones (a custom type from New template ›
+    Custom…) gets every group but Person, so it can place any asset, move,
+    site or container field; it still prints as an asset label
+    (labels.generate's `entity_for_type`): a container field prints blank
+    there. People fields only make sense on an ID badge."""
+    if label_type is None:
         return list(FIELD_GROUPS)
+    if label_type not in ALL_LABEL_TYPES and label_type not in PERSON_LABEL_TYPES:
+        return [g for g in FIELD_GROUPS if g["key"] not in _PERSON_GROUPS]
     return [g for g in FIELD_GROUPS if label_type in g["label_types"]]
+
+
+def allows_from_to(label_type: str | None) -> bool:
+    """Whether a template of `label_type` can place From-To columns
+    (`ft:<header>`): not a container label, which has no From-To row, and
+    not an ID badge, which describes a person. The portal's twin is
+    `allowsFromTo` (components/labels/builder/fieldCatalog.ts)."""
+    return label_type not in CONTAINER_LABEL_TYPES and label_type not in PERSON_LABEL_TYPES
 
 
 def catalog_keys(label_type: str | None) -> list[str]:
@@ -207,12 +273,14 @@ def catalog_keys(label_type: str | None) -> list[str]:
 
 _ASSET_KEYS = catalog_keys("top")
 _CONTAINER_KEYS = catalog_keys("container")
+PERSON_KEYS = catalog_keys(PERSON_LABEL_TYPES[0])
 
 
 def design_field_keys(design: dict | None) -> set[str]:
-    """Every field key a schema 2 design's elements place (catalog keys and
-    `ft:<header>` keys alike), read straight off the JSON. Anything else
-    (a schema 1 design, no design) places none."""
+    """Every field key a schema 2 or 3 design's elements place (catalog keys
+    and `ft:<header>` keys alike), read straight off the JSON. An image
+    element places none (its picture is its `source`, never a field), and
+    anything else (a schema 1 design, no design) places none either."""
     if not isinstance(design, dict):
         return set()
     schema = design.get("schema", 1)
@@ -220,17 +288,19 @@ def design_field_keys(design: dict | None) -> set[str]:
         return set()
     elements = design.get("elements")
     return {el["field"] for el in (elements if isinstance(elements, list) else [])
-            if isinstance(el, dict) and isinstance(el.get("field"), str) and el["field"]}
+            if isinstance(el, dict) and el.get("type") != "image"
+            and isinstance(el.get("field"), str) and el["field"]}
 
 
 def mock_field_values(label_type: str | None, field_keys: set[str] | None = None) -> dict[str, str]:
     """The portal's mock values for a schema 2 test label, shaped like
-    `field_values`: MOCK_VALUES for every catalog key of the type (every key
-    for a custom type, as `groups_for`), and each `ft:<header>` key in
-    `field_keys` printing its header (a From-To column has no catalog
-    sample; a container label has no From-To row, so none)."""
+    `field_values`: MOCK_VALUES for every catalog key of the type (as
+    `groups_for`: every key but a person's for a custom type, the person
+    keys alone for an ID badge), and each `ft:<header>` key in `field_keys`
+    printing its header (a From-To column has no catalog sample; a container
+    label or an ID badge has no From-To row, so none)."""
     out = {key: MOCK_VALUES[key] for key in catalog_keys(label_type)}
-    if label_type in CONTAINER_LABEL_TYPES:
+    if not allows_from_to(label_type):
         return out
     for key in sorted(field_keys or ()):
         if key.startswith(FT_PREFIX):
@@ -364,3 +434,93 @@ def field_values(payload: dict, context: dict) -> dict[str, str]:
         return out
     computed.update(_container_values(payload))
     return {key: computed[key] for key in _CONTAINER_KEYS}
+
+
+# ── people (ID badges) ───────────────────────────────────────────────
+
+_DIGITS = re.compile(r"(\d+)")
+
+
+def _natural(text: str) -> list[int | str]:
+    """The natural sort key (serversherpa.db.ordering.natural_key, which
+    this module can't import: it pulls in sqlalchemy)."""
+    return [int(t) if i % 2 else t.casefold() for i, t in enumerate(_DIGITS.split(text))]
+
+
+def _rfid_text(tag) -> str:
+    """A person's RFID tag as it reads: the stored zero-padded EPC without
+    its leading zeros, upper-cased (the portal's displayRfid, upper-cased);
+    one digit survives an all-zero tag. Blank -> ''."""
+    text = _text(tag).strip().upper()
+    return (text.lstrip("0") or "0") if text else ""
+
+
+def _level_text(level) -> str:
+    """A worker level as it reads: its key and title, "L3 Technician"."""
+    if not isinstance(level, dict):
+        return ""
+    return " ".join(t for t in (_text(level.get("key")).strip(),
+                                _text(level.get("title")).strip()) if t)
+
+
+def person_values(payload: dict) -> dict[str, str]:
+    """{key: text} for every person key (PERSON_KEYS), from a person payload
+    the API builds (spec 2026-10-20-badge-templates-design.md §4.2, §4.4).
+    Missing data is ''; Split, Strip and the other per-element rules are
+    not applied here. The payload:
+
+    - `person`: the `people` row's fields as a dict — `id` (a UUID or its
+      text), `first_name`, `last_name`, `preferred_name`, `job_title`,
+      `external_id` (the employee ID), `email` (the person's, not the login
+      email), `phone`, `rfid_tag` (the stored zero-padded EPC).
+    - `person_type`: "Staff" (any active global-anchored role), "Worker"
+      (an active worker role or a worker profile) or "" (anyone else).
+    - `company`: staff, the company name from System settings › Branding;
+      a worker, their partner's name; else None.
+    - `parent_company`: a worker, the name of the top-most non-archived
+      ancestor of their partner; else None.
+    - `roles`: the labels of a staff member's active global roles, in any
+      order (printed once each, naturally sorted, comma-separated); [] for
+      anyone else.
+    - `trade`: the worker profile's trade, or None.
+    - `level`: the worker profile's level as `{"key": "L3", "title":
+      "Technician"}`, or None.
+    - `worker_status_label`: the worker status's label (`worker_status`, its
+      key, is the fallback when the label is missing), or None.
+
+    `badge_id` is `str(person.id)`, the full id the time clocks and the
+    server scan matcher accept (a QR code); `badge_short` its first 8
+    characters, the short form the time clocks accept (Code 128 or a
+    printed line)."""
+    person = payload.get("person")
+    if not isinstance(person, dict):
+        person = {}
+    first = _text(person.get("first_name"))
+    last = _text(person.get("last_name"))
+    # a whitespace-only preferred name is none at all
+    preferred = _text(person.get("preferred_name")).strip()
+    # people.display_name: preferred or first, then last
+    name = " ".join(t for t in (preferred or first.strip(), last.strip()) if t)
+    roles = payload.get("roles")
+    labels = [r.strip() for r in (roles if isinstance(roles, list) else []) if isinstance(r, str)]
+    badge_id = _text(person.get("id"))
+    return {
+        "person_name": name,
+        "first_name": first,
+        "last_name": last,
+        "preferred_name": preferred,
+        "person_type": _text(payload.get("person_type")),
+        "company": _text(payload.get("company")),
+        "parent_company": _text(payload.get("parent_company")),
+        "job_title": _text(person.get("job_title")),
+        "roles": ", ".join(sorted(dict.fromkeys(r for r in labels if r), key=_natural)),
+        "trade": _text(payload.get("trade")),
+        "level": _level_text(payload.get("level")),
+        "worker_status": _status(payload, "worker_status"),
+        "employee_id": _text(person.get("external_id")),
+        "email": _text(person.get("email")),
+        "phone": _text(person.get("phone")),
+        "person_rfid_tag": _rfid_text(person.get("rfid_tag")),
+        "badge_id": badge_id,
+        "badge_short": badge_id[:8],
+    }

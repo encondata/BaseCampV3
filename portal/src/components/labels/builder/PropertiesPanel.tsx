@@ -16,17 +16,28 @@
  * field is refit whenever its font, size, weight, inverted or expected
  * length changes, keeping it as wide as it reserves. Display type Split
  * turns a placement into one placement per piece of its sample.
+ *
+ * An image (ID badges in ZPL only, `imagesAllowed`; spec
+ * 2026-10-20-badge-templates §4.3): its Source (the sample person's photo
+ * or logo, or a static picture from the label image library, with
+ * Upload…), Fit, Look (a photo's dither or a logo's threshold),
+ * Brightness, Contrast, the logo look's Threshold and Invert. Switching
+ * the source takes that source's fit and look (builderEdits
+ * imageSourcePatch). Anywhere else an image says it doesn't print there.
  */
 
+import { useRef } from 'react';
 import type { ReactNode } from 'react';
 
 import {
   barcodeModuleDots, barcodeWidthIn, footprint, isBarcode, resize, withBarcodeWidths, type ResizeContext,
 } from '../../../labels/builder/geometry';
+import type { DitherMode } from '../../../labels/builder/dither';
+import { imageName, samplePersonId } from '../../../labels/builder/image';
 import {
-  MAX_COUNT, MAX_LINES, elementValue, invertPadOf, renamePiece, replaceElements, type Align, type DesignV2,
-  type ElementPatch, type ElementV2, type FieldElement, type Rotation, type StripWhere, type Symbology,
-  type TextElement, type Trim,
+  MAX_COUNT, MAX_LINES, elementValue, imageFit, imageParams, invertPadOf, renamePiece, replaceElements,
+  type Align, type DesignV2, type ElementPatch, type ElementV2, type FieldElement, type ImageElement,
+  type ImageFit, type ImageSource, type Rotation, type StripWhere, type Symbology, type TextElement, type Trim,
 } from '../../../labels/builder/model';
 import { QR_FO_OFFSET_IN, qrTooHigh } from '../../../labels/builder/qr';
 import { toDots } from '../../../labels/builder/units';
@@ -37,12 +48,14 @@ import '../../../styles/settings.css';   /* .switch */
 import ComboBox from '../../ComboBox';
 import { Switch } from '../../Switch';
 import {
-  canSplit, fontOf, isTypeset, patchElements, setDisplay, type DisplayChoice, type Patch,
+  canSplit, fontOf, imageSourcePatch, isTypeset, patchElements, setDisplay, type DisplayChoice, type Patch,
 } from './builderEdits';
 import type { MetricsFor } from './Canvas';
 import { Segmented, TextBox, type SegmentedOption } from './controls';
 import { catalogGroups, fieldLabel, pieceNames, sampleOf } from './fieldCatalog';
 import FontSelect from './FontSelect';
+import ImageLibraryPicker from './ImageLibraryPicker';
+import { useRasterProblem } from './imageRaster';
 import NumberBox, { type NumberApply } from './NumberBox';
 
 export interface PropertiesPanelProps {
@@ -55,11 +68,21 @@ export interface PropertiesPanelProps {
   dpi: number;
   metricsFor: MetricsFor;
   onChange: (design: DesignV2) => void;
+  /** An edit that lands later than the render it started in (a library
+   *  upload's pick), worked out from the page's design as it is then. The
+   *  page drops it while read-only. Without it the panel works it out from
+   *  the latest design it was given and sends it through `onChange`. */
+  onUpdate?: (edit: (present: DesignV2) => DesignV2) => void;
   /** The selection after Split replaced a placement with its pieces. */
   onSelect: (ids: string[]) => void;
   /** The template's label type (for a barcode's or QR code's field list). */
   labelType?: string;
+  /** The template takes images: an ID badge in ZPL. */
+  imagesAllowed?: boolean;
   readOnly?: boolean;
+  /** A dialog of the panel's own opened (true) or closed (false): the
+   *  image library's Delete…; the page turns the canvas keys off meanwhile. */
+  onDialog?: (open: boolean) => void;
 }
 
 const DISPLAYS: SegmentedOption<DisplayChoice>[] = [
@@ -77,10 +100,24 @@ const STRIP_WHERES: SegmentedOption<StripWhere>[] = [
 const SYMBOLOGIES: SegmentedOption<Symbology>[] = [{ value: 'code128', label: 'Code 128' }, { value: 'code39', label: 'Code 39' }];
 const ROTATIONS: SegmentedOption<Rotation>[] = [0, 90, 180, 270].map((r) => ({ value: r as Rotation, label: `${r}°` }));
 const SOURCES: SegmentedOption<'field' | 'data'>[] = [{ value: 'field', label: 'Field' }, { value: 'data', label: 'Static data' }];
+const IMAGE_SOURCES: SegmentedOption<ImageSource>[] = [
+  { value: 'photo', label: 'Photo', title: 'The sample person’s photo' },
+  { value: 'logo', label: 'Logo', title: 'The sample person’s logo: the company’s for staff, the partner’s for a worker' },
+  { value: 'static', label: 'Static image', title: 'A picture from the label image library, the same on every badge' },
+];
+const FITS: SegmentedOption<ImageFit>[] = [
+  { value: 'cover', label: 'Fill', title: 'Fill the box, cropping what spills over' },
+  { value: 'contain', label: 'Fit', title: 'Fit the whole picture inside the box, white around it' },
+];
+const LOOKS: SegmentedOption<DitherMode>[] = [
+  { value: 'dither', label: 'Photo', title: 'Dots spread to show shades of gray' },
+  { value: 'threshold', label: 'Logo', title: 'Each dot black or white at the threshold: crisp edges' },
+];
 
 const STATIC_DATA = '12345678';
 
 const isFieldEl = (e: ElementV2) => e.type === 'field';
+const isImage = (e: ElementV2): e is ImageElement => e.type === 'image';
 const invertedText = (e: ElementV2) => isTypeset(e) && !!e.inverted;
 
 function Prop({ label, children, note, warning }: {
@@ -112,6 +149,7 @@ function kindName(el: ElementV2): string {
     case 'barcode': return 'Barcode';
     case 'qr': return 'QR code';
     case 'line': return 'Line';
+    case 'image': return imageName(el);
     default: return 'Box';
   }
 }
@@ -125,20 +163,46 @@ function barcodeHint(el: ElementV2, value: string, dpi: number): string {
 }
 
 export default function PropertiesPanel({
-  design: given, selection, samples, fields, dpi, metricsFor, onChange: emit, onSelect, labelType, readOnly = false,
+  design: given, selection, samples, fields, dpi, metricsFor, onChange: emit, onUpdate, onSelect, labelType,
+  imagesAllowed = false, readOnly = false, onDialog,
 }: PropertiesPanelProps) {
   // every barcode as wide as it prints, here and in every edit sent up
   const design = withBarcodeWidths(given, samples, dpi);
   const onChange = (next: DesignV2) => emit(withBarcodeWidths(next, samples, dpi));
+  // what an edit that lands later works from: this render's, read when it lands
+  const latest = useRef({ design, onChange, readOnly });
+  latest.current = { design, onChange, readOnly };
+  const update = (edit: (present: DesignV2) => DesignV2) => {
+    if (onUpdate) {
+      onUpdate(edit);
+      return;
+    }
+    const now = latest.current;
+    if (now.readOnly) return;
+    const next = edit(now.design);
+    if (next !== now.design) now.onChange(next);
+  };
   const byId = new Map(design.elements.map((e) => [e.id, e]));
   const picked = selection.map((id) => byId.get(id)).filter((e): e is ElementV2 => !!e);
   const el = picked[picked.length - 1];
   const ids = picked.map((e) => e.id);
+  // why the canvas can't draw the selected picture, said here too (the
+  // canvas's own note is a tooltip only)
+  const rasterProblem = useRasterProblem(el && isImage(el) ? el : null, dpi, samplePersonId(samples));
 
   const apply = (p: Patch) => {
     if (readOnly) return;
     const next = patchElements(design, ids, p, metricsFor);
     if (next !== design) onChange(next);
+  };
+
+  /** A library picture for the static images among `forIds` (the
+   *  selection when the pick began: an upload lands later), patched into
+   *  the design as it is then, so nothing done meanwhile is undone. */
+  const pickImage = (imageId: string, forIds: readonly string[]) => {
+    if (readOnly) return;
+    update((d) => patchElements(d, forIds,
+      (e) => (isImage(e) && e.source === 'static' ? { imageId } : null), metricsFor));
   };
 
   /** True when the selection doesn't share `of`'s value. */
@@ -240,6 +304,10 @@ export default function PropertiesPanel({
   const turned = el.rotation === 90 || el.rotation === 270;
   const lengthBox = barcodeOptions ? (turned ? 'h' : 'w') : null;
   const symbology = 'symbology' in el ? el.symbology ?? 'code128' : 'code128';
+  const image = isImage(el) ? el : null;
+  const look = image ? imageParams(image) : null;
+  const hides = isField || el.type === 'barcode' || el.type === 'qr' || el.type === 'image';
+  const noPerson = !!image && image.source !== 'static' && !samplePersonId(samples);
 
   return (
     <aside className="lbp lbp-props" aria-label="Properties">
@@ -384,6 +452,61 @@ export default function PropertiesPanel({
           </Prop>
         )}
 
+        {image && look && !imagesAllowed && (
+          <Prop label="Image" warning="Images print on ID Badge templates in ZPL only. Remove this one.">
+            <span className="lbp-static">{imageName(image)}</span>
+          </Prop>
+        )}
+        {image && look && imagesAllowed && (
+          <>
+            <Prop label="Source"
+              note={noPerson ? 'No sample person: the canvas shows where the picture goes until one is loaded.' : undefined}
+              warning={rasterProblem ?? undefined}>
+              <Segmented label="Source" options={IMAGE_SOURCES} value={image.source} disabled={readOnly}
+                mixed={mixed((e) => (isImage(e) ? e.source : null), isImage)}
+                onChange={(source) => apply((e) => imageSourcePatch(e, source))} />
+            </Prop>
+            {image.source === 'static' && (
+              <Prop label="Static image">
+                <ImageLibraryPicker value={image.imageId ?? null} disabled={readOnly} onDialog={onDialog}
+                  target={ids} onPick={pickImage} />
+              </Prop>
+            )}
+            <Prop label="Fit · Look">
+              <Segmented label="Fit" options={FITS} value={imageFit(image)} disabled={readOnly}
+                mixed={mixed((e) => (isImage(e) ? imageFit(e) : null), isImage)}
+                onChange={(fit) => apply({ fit })} />
+              <Segmented label="Look" options={LOOKS} value={look.mode} disabled={readOnly}
+                mixed={mixed((e) => (isImage(e) ? imageParams(e).mode : null), isImage)}
+                onChange={(mode) => apply({ mode })} />
+            </Prop>
+            <Prop label="Brightness · Contrast">
+              <NumberBox ariaLabel="Brightness" className="lbp-num is-small" integer signed min={-100} max={100}
+                disabled={readOnly}
+                {...numberOf(isImage, (e) => (isImage(e) ? imageParams(e).brightness : null),
+                  (_, v) => ({ brightness: v ?? 0 }))} />
+              <NumberBox ariaLabel="Contrast (%)" className="lbp-num is-small" integer min={0} max={300}
+                disabled={readOnly}
+                {...numberOf(isImage, (e) => (isImage(e) ? imageParams(e).contrast : null),
+                  (_, v) => ({ contrast: v ?? 100 }))} />
+              <span className="lbp-unit">%</span>
+            </Prop>
+            <Prop label={look.mode === 'threshold' ? 'Threshold · Invert' : 'Invert'}
+              note={look.mode === 'threshold' ? 'Darker than the threshold prints black (1–254).' : undefined}>
+              {look.mode === 'threshold' && (
+                <NumberBox ariaLabel="Threshold" className="lbp-num is-small" integer min={1} max={254}
+                  disabled={readOnly}
+                  {...numberOf((e) => isImage(e) && imageParams(e).mode === 'threshold',
+                    (e) => (isImage(e) ? imageParams(e).threshold : null), (_, v) => ({ threshold: v ?? 128 }))} />
+              )}
+              <label className="lbp-switch">
+                <Switch label="Invert" checked={look.invert} disabled={readOnly} onChange={(invert) => apply({ invert })} />
+                <span>Invert</span>
+              </label>
+            </Prop>
+          </>
+        )}
+
         {barcodeOptions && (
           <Prop label="Barcode">
             <Segmented label="Symbology" options={SYMBOLOGIES} value={symbology} disabled={readOnly}
@@ -432,13 +555,15 @@ export default function PropertiesPanel({
           <NumberBox ariaLabel="H" className="lbp-num is-small" integer min={1}
             disabled={readOnly || !!el.locked || lengthBox === 'h'} {...sizeOf('h')} />
         </Prop>
-        <Prop label={isField || el.type === 'barcode' || el.type === 'qr' ? 'Rotation · Hide when empty · Lock' : 'Rotation · Lock'}>
+        <Prop label={hides ? 'Rotation · Hide when empty · Lock' : 'Rotation · Lock'}
+          note={image && image.hideWhenEmpty === false ? 'With no picture, an outlined box prints.' : undefined}>
           <Segmented label="Rotation" options={ROTATIONS} value={el.rotation} disabled={readOnly}
             mixed={mixed((e) => e.rotation)} onChange={(rotation) => apply({ rotation })} />
-          {(isField || el.type === 'barcode' || el.type === 'qr') && (
+          {hides && (
             <label className="lbp-switch">
-              <Switch label="Hide when empty" checked={'hideWhenEmpty' in el && !!el.hideWhenEmpty} disabled={readOnly}
-                onChange={(hideWhenEmpty) => apply({ hideWhenEmpty })} />
+              <Switch label="Hide when empty"
+                checked={image ? image.hideWhenEmpty !== false : 'hideWhenEmpty' in el && !!el.hideWhenEmpty}
+                disabled={readOnly} onChange={(hideWhenEmpty) => apply({ hideWhenEmpty })} />
               <span>Hide when empty</span>
             </label>
           )}

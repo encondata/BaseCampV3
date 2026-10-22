@@ -90,4 +90,7 @@ data class KioskSetupSelection(
     val siteRole: String,
     val scanStatus: String,
     val scanLabel: String,
+    /** What labels print on, from the setup's last step: "top" or "front". A selection saved
+     *  before that step existed has none, and reads as "top". */
+    val labelKind: String = "top",
 )

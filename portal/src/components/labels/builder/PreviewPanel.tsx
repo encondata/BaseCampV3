@@ -7,14 +7,19 @@
  * It renders when asked: Labelary is an outside service. Labelary draws a
  * QR code about 0.2 in higher than a Zebra prints it (the compiler sets ^FO
  * for the printer, qr.ts QR_FO_OFFSET_IN), so a render of a design with
- * one says the canvas is the one to trust there.
+ * one says the canvas is the one to trust there. Pictures never go to
+ * Labelary: the compile draws a placeholder for each image element
+ * (zplPreview.ts, `image_mode: "placeholder"`), and a render of a design
+ * with images says the canvas and Test print use the real pictures. A
+ * label whose ZPL is too long to render says so instead.
  */
 
 import { useEffect, useState } from 'react';
 
 import type { DesignV2 } from '../../../labels/builder/model';
-import { fontIdsFor, previewRequest } from '../../../labels/builder/zplPreview';
+import { fontIdsFor, previewRequest, previewTooLarge } from '../../../labels/builder/zplPreview';
 import { ApiError, compileLabel, previewZplRequest, type LabelFont } from '../../../lib/api';
+import { compileImageErrorText } from './imageRaster';
 import '../../../styles/directory.css';
 import '../../../styles/labelBuilder.css';
 
@@ -31,15 +36,20 @@ export interface PreviewPanelProps {
   disabled?: boolean;
 }
 
+const TOO_LARGE = 'Too large to preview at this DPI.';
+
+/** The preview route refused the ZPL for its length (a request check). */
+function refusedForLength(err: ApiError): boolean {
+  return err.status === 422 && Array.isArray(err.detail)
+    && err.detail.some((d) => Array.isArray((d as { loc?: unknown })?.loc) && (d as { loc: unknown[] }).loc.includes('zpl'));
+}
+
 function errorText(err: unknown): string {
   if (err instanceof ApiError) {
+    if (refusedForLength(err)) return TOO_LARGE;
     if (err.code === 'labelary_unavailable') return 'The preview service is not answering. Try again in a moment.';
-    if (err.code === 'bad_design') {
-      const problems = (err.detail as { problems?: string[] } | undefined)?.problems;
-      return problems?.length ? `The design can't print yet: ${problems[0]}` : "The design can't print yet.";
-    }
   }
-  return "Couldn't render the preview.";
+  return compileImageErrorText(err) ?? "Couldn't render the preview.";
 }
 
 export default function PreviewPanel({
@@ -59,6 +69,10 @@ export default function PreviewPanel({
     try {
       const req = previewRequest(design, dpi, samples, fontIdsFor(design, library ?? []), sizeKey, labelType);
       const { code } = await compileLabel(req.compile);
+      if (previewTooLarge(code)) {
+        setError(TOO_LARGE);
+        return;
+      }
       const blob = await previewZplRequest(req.preview(code));
       setUrl(URL.createObjectURL(blob));
       setShown({ design, dpi, samples });
@@ -72,6 +86,7 @@ export default function PreviewPanel({
   const stale = shown !== null && (shown.design !== design || shown.dpi !== dpi || shown.samples !== samples);
   const rendersQr = shown !== null
     && shown.design.elements.some((e) => e.type === 'qr' || (e.type === 'field' && e.display === 'qr'));
+  const rendersImages = shown !== null && shown.design.elements.some((e) => e.type === 'image');
 
   return (
     <section className="lbp lbb-preview" aria-label="Printer preview">
@@ -83,6 +98,11 @@ export default function PreviewPanel({
         {url && <img className="lbb-preview-img" alt="The label as the printer renders it" src={url} />}
         {url && rendersQr && (
           <p className="lbp-hint">The preview shows QR codes about 0.2 in higher than the printer; the canvas is right.</p>
+        )}
+        {url && rendersImages && (
+          <p className="lbp-hint">
+            Pictures show as placeholders in the preview; the canvas and Test print use the real pictures.
+          </p>
         )}
         {stale && <p className="lbp-hint">Changed since this render.</p>}
         {!url && !error && (

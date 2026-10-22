@@ -143,6 +143,9 @@ READ_ONLY_EXEMPT_PATHS = frozenset({
     # a read made through POST (a batch of asset ids): a freeze mustn't
     # blank every image on every wiki page
     "/wiki/assets/urls",
+    # the same for the label builder: an image element's gray raster, read
+    # through POST (a box to fit the picture to) and never stored
+    "/labels/images/raster",
     # renders one mock-data test label and stores nothing: a Label Station's
     # setup must still be able to print a test label during a freeze
     "/kiosk/labels/test-render",
@@ -207,15 +210,16 @@ async def enforce_read_only_config(db: AsyncSession, request: Request) -> None:
 # Profile. This subtraction only bites a signed-in session that owes a
 # change (password_change_owed); the enroll/verify challenge path is
 # unaffected either way because a challenge holder has no session at all —
-# totp_actor never calls enforce_forced_password_change for it. Nor is
-# `/wiki/assets/urls`: read-only exempts that read-through-POST so a freeze
-# doesn't blank every wiki image, which is not part of signing in either.
+# totp_actor never calls enforce_forced_password_change for it. Nor are
+# `/wiki/assets/urls` and `/labels/images/raster`: read-only exempts those
+# reads-through-POST so a freeze doesn't blank every wiki image or badge
+# picture, which is not part of signing in either.
 FORCED_CHANGE_EXEMPT_PATHS = (
     (READ_ONLY_EXEMPT_PATHS - {
         "/system/admin", "/kiosk/printer-events",
         "/auth/totp/verify", "/auth/totp/enroll/start",
         "/auth/totp/enroll/confirm", "/auth/totp/backup-codes/regenerate",
-        "/wiki/assets/urls",
+        "/wiki/assets/urls", "/labels/images/raster",
     })
     | {"/auth/me", "/auth/me/sessions"}
 )

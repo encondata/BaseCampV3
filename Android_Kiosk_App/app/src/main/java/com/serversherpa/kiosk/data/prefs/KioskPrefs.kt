@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.serversherpa.kiosk.core.labels.LabelOptions
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.parseRfidSettings
@@ -40,6 +41,7 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
         val appearance = stringPreferencesKey("ss.kiosk.appearance")
         val sound = stringPreferencesKey("ss.kiosk.sound")
         val rfid = stringPreferencesKey("ss.kiosk.rfid")
+        val labels = stringPreferencesKey("ss.kiosk.labels")
         val devMode = booleanPreferencesKey("ss.kiosk.devMode")
         val apiUrl = stringPreferencesKey("ss.kiosk.apiUrl")
         val portalUrl = stringPreferencesKey("ss.kiosk.portalUrl")
@@ -122,6 +124,17 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
 
     val rfid: Flow<RfidSettings> = store.data.map { parseRfidSettings(it[Keys.rfid]) }
     suspend fun setRfid(s: RfidSettings) { store.edit { it[Keys.rfid] = s.toJson() } }
+
+    private fun decodeLabels(raw: String?): LabelOptions =
+        raw?.let { try { json.decodeFromString<LabelOptions>(it) } catch (e: Exception) { null } } ?: LabelOptions()
+
+    /** The saved printer, offsets and peel/tear choice; defaults when nothing (or nothing readable) is saved. */
+    val labels: Flow<LabelOptions> = store.data.map { decodeLabels(it[Keys.labels]) }
+
+    /** Reads and writes in one edit, so two setters never overwrite each other's field. */
+    suspend fun updateLabels(change: (LabelOptions) -> LabelOptions) {
+        store.edit { it[Keys.labels] = json.encodeToString(LabelOptions.serializer(), change(decodeLabels(it[Keys.labels]))) }
+    }
 
     fun checkpoint(id: CheckpointId): Flow<String> = store.data.map { it[stringPreferencesKey(id.storageKey)]?.takeIf { v -> v.isNotBlank() } ?: id.fallback }
     suspend fun setCheckpoint(id: CheckpointId, key: String) { store.edit { it[stringPreferencesKey(id.storageKey)] = key } }

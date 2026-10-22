@@ -5,7 +5,6 @@ query text or a client address."""
 import time
 from datetime import UTC, datetime
 
-from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
@@ -172,10 +171,8 @@ async def vacuum_table(name: str) -> dict:
 
 ROOT_FOLDER = "(root)"      # objects whose key has no "/"
 
-# What a storage listing can raise: botocore's own errors (ClientError and
-# EndpointConnectionError are both BotoCoreError/ClientError subclasses), the
-# socket/TLS failures under them, and a client that couldn't be built at all.
-STORAGE_ERRORS = (ClientError, BotoCoreError, OSError, storage.StorageConfigError)
+# What a storage listing can raise (services/storage.py keeps the list).
+STORAGE_ERRORS = storage.STORAGE_ERRORS
 
 
 async def storage_usage() -> dict:

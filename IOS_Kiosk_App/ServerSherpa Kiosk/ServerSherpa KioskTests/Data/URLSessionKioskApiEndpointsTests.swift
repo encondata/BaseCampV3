@@ -135,4 +135,56 @@ struct URLSessionKioskApiEndpointsTests {
         }
         hold.release()
     }
+
+    @Test func labelEndpointsKeepTheBodyTextAndTheFontBytes() async throws {
+        let h = try await signedIn()
+        // The raw text exactly as sent: number literals and non-ASCII survive.
+        let assets = #"{"initiative_id":"i 1","initiative_name":"M","generated_at":"x","assets":[{"id":"a","raw_ft":{"RU":12.0,"T":1e-05}}],"label_context":{"n":"é😀"}}"#
+        h.server.enqueue(.json(200, assets))
+        #expect(try await h.api.assetsSyncRaw(initiativeId: "i 1") == assets)
+        let assetsReq = try #require(h.server.takeRequest())
+        #expect(assetsReq.method == "GET"); #expect(assetsReq.path == "/kiosk/sync/assets?initiative_id=i%201")
+        #expect(assetsReq.header("Authorization") == "Bearer tok1")
+
+        let templates = #"{"initiative_id":"i1","generated_at":"x","templates":[{"id":"t1","design":{"schema":2.0}}]}"#
+        h.server.enqueue(.json(200, templates))
+        #expect(try await h.api.labelTemplatesRaw(initiativeId: "i1") == templates)
+        #expect(h.server.takeRequest()?.path == "/kiosk/sync/label-templates?initiative_id=i1")
+
+        h.server.enqueue(.json(200, #"{"fonts":[{"id":"f1","name":"ROBOTO.TTF","size":4},{"id":"f2","name":"TT0003M_.TTF","size":9,"resident":true}],"missing":["X.TTF"]}"#))
+        let fonts = try await h.api.labelFonts(initiativeId: "i1")
+        #expect(fonts == KioskLabelFonts(fonts: [KioskLabelFont(id: "f1", name: "ROBOTO.TTF", size: 4),
+                                                 KioskLabelFont(id: "f2", name: "TT0003M_.TTF", size: 9, resident: true)], missing: ["X.TTF"]))
+        #expect(h.server.takeRequest()?.path == "/kiosk/labels/fonts?initiative_id=i1")
+        h.server.enqueue(.json(200, "{}"))
+        #expect(try await h.api.labelFonts(initiativeId: "i1") == KioskLabelFonts())
+        _ = h.server.takeRequest()
+
+        let bytes = Data([0x00, 0x01, 0xFF, 0x7B])
+        h.server.enqueue(StubResponse(status: 200, headers: ["Content-Type": "font/ttf"], body: bytes))
+        #expect(try await h.api.labelFontContent(id: "f 1", initiativeId: "i1") == bytes)
+        let fontReq = try #require(h.server.takeRequest())
+        #expect(fontReq.method == "GET"); #expect(fontReq.path == "/kiosk/labels/fonts/f%201/content?initiative_id=i1")
+        #expect(fontReq.header("Authorization") == "Bearer tok1")
+    }
+
+    @Test func labelEndpointErrorsKeepTheirCode() async throws {
+        let h = try await signedIn()
+        h.server.enqueue(.json(403, #"{"detail":{"code":"font_not_servable"}}"#))
+        await #expect(throws: ApiError(status: 403, code: "font_not_servable", detail: ["code": "font_not_servable"])) {
+            try await h.api.labelFontContent(id: "f2", initiativeId: "i1")
+        }
+        h.server.enqueue(.json(404, #"{"detail":"font_not_found"}"#))
+        await #expect(throws: ApiError(status: 404, code: "font_not_found")) { try await h.api.labelFontContent(id: "f9", initiativeId: "i1") }
+        h.server.enqueue(.json(403, #"{"detail":{"code":"initiative_forbidden"}}"#))
+        await #expect(throws: ApiError(status: 403, code: "initiative_forbidden", detail: ["code": "initiative_forbidden"])) {
+            try await h.api.assetsSyncRaw(initiativeId: "i1")
+        }
+        h.server.enqueue(.json(500, "oops"))
+        await #expect(throws: ApiError(status: 500, code: "unknown_error")) { try await h.api.labelTemplatesRaw(initiativeId: "i1") }
+        h.server.enqueue(.json(200, "not json"))
+        await #expect(throws: ApiError(status: 200, code: "unknown_error")) { try await h.api.labelFonts(initiativeId: "i1") }
+        h.server.enqueue(.fail())
+        await #expect(throws: ApiError.network()) { try await h.api.labelFontContent(id: "f1", initiativeId: "i1") }
+    }
 }

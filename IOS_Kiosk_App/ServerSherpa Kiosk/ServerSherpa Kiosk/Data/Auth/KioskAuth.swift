@@ -27,8 +27,12 @@ final class KioskAuth {
     /// so the API can auto-register the kiosk and record how the person signed in.
     @ObservationIgnored private var pendingSignIn: LoginMethod?
 
-    /// Runs first in `logout()`; the container points it at `heartbeat.stop()`.
+    /// Runs first in `logout()`; the container points it at `heartbeat.stop()` and the print
+    /// jobs' reset.
     @ObservationIgnored var onLogout: (@MainActor () -> Void)?
+    /// Runs in `endSession()`, a session that ended without `logout()` (it expired or was
+    /// revoked); the container points it at the print jobs' reset.
+    @ObservationIgnored var onSessionEnded: (@MainActor () -> Void)?
 
     init(api: KioskApi, refresher: SessionRefresher, identity: Identity, prefs: KioskPrefs) {
         self.api = api
@@ -79,7 +83,10 @@ final class KioskAuth {
     }
 
     /// The session died underneath us (SessionCoordinator).
-    func endSession() { state = .anon }
+    func endSession() {
+        onSessionEnded?()
+        state = .anon
+    }
 
     func can(_ resource: String, _ action: String) -> Bool {
         guard case .authed(let s) = state else { return computeCan(nil, resource, action) }

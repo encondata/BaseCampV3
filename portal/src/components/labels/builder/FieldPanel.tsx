@@ -14,14 +14,21 @@
  * selection. A field can also be dragged out (FIELD_DRAG_TYPE, for the
  * canvas to take). The page wires `/` to `focusSearch()` (a ref,
  * FieldPanelHandle), which opens the picker, and shows LoadFromAssetModal
- * when Load from asset… is pressed.
+ * when Load from asset… is pressed. An ID badge offers Load from person…
+ * instead (LoadFromPersonModal), and, while it has a sample person (the
+ * samples' `person:id`), names them and offers Clear sample person — once
+ * the fields are here, since they say which samples are the person's (its
+ * tooltip says it is waiting; if they fail to load, the page asks the
+ * server for the person's keys instead).
  */
 
 import { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent } from 'react';
 
+import { samplePersonId } from '../../../labels/builder/image';
 import { removeElements, type DesignV2 } from '../../../labels/builder/model';
 import type { LabelFields } from '../../../lib/api';
+import { isPersonLabelType } from '../../../lib/labels';
 import '../../../styles/directory.css';
 import '../../../styles/labelBuilder.css';
 import { placeField } from './builderEdits';
@@ -52,11 +59,17 @@ export interface FieldPanelProps {
   labelType?: string;
   /** Shows Load from asset… (the page opens LoadFromAssetModal). */
   onLoadFromAsset?: () => void;
+  /** Shows Load from person… on an ID badge (the page opens
+   *  LoadFromPersonModal). */
+  onLoadFromPerson?: () => void;
+  /** Shows Clear sample person while an ID badge has one. */
+  onClearPerson?: () => void;
   /** Why the fields could not load. */
   loadError?: string | null;
   readOnly?: boolean;
   /** A DPI child: the samples shown are its parent template's, so they and
-   *  Load from asset… are read-only here (fields can still be placed). */
+   *  Load from asset… (or from person…) are read-only here (fields can
+   *  still be placed). */
   samplesFromParent?: boolean;
 }
 
@@ -110,7 +123,7 @@ function SampleValue({ label, value, onCommit, readOnly, fromParent = false }: {
 
 const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldPanel({
   fields, design, samples, onSamples, onChange, onSelect, selection = [], onRemoved, metricsFor, labelType,
-  onLoadFromAsset, loadError = null, readOnly = false, samplesFromParent = false,
+  onLoadFromAsset, onLoadFromPerson, onClearPerson, loadError = null, readOnly = false, samplesFromParent = false,
 }, ref) {
   const [query, setQuery] = useState('');
   const [picking, setPicking] = useState(false);
@@ -248,6 +261,19 @@ const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldP
     </button>
   ));
 
+  const assetLoad = !!onLoadFromAsset && allowsFromTo(labelType);
+  const personLoad = !!onLoadFromPerson && !!labelType && isPersonLabelType(labelType);
+  const personId = samplePersonId(samples);
+  // the fields say which samples are the person's: Clear waits for them
+  // (when they fail to load, the page asks the server for the person's keys)
+  const fieldsLoading = !fields && !loadError;
+  const personName = sampleOf(samples, 'person_name');
+  let footHint = 'Fills every sample from a real roster row.';
+  if (samplesFromParent) footHint = 'Samples belong to the parent template.';
+  else if (personLoad && personId !== null) {
+    footHint = personName ? `Sample person: ${personName}` : 'A sample person is loaded.';
+  } else if (personLoad) footHint = 'Fills every sample, the photo and the logo from a real person.';
+
   return (
     <aside className="lbp lbp-fields-panel" aria-label="Fields" ref={asideRef}>
       <div className="lbp-title">
@@ -334,15 +360,25 @@ const FieldPanel = forwardRef<FieldPanelHandle, FieldPanelProps>(function FieldP
           </div>
         ))}
       </div>
-      {(samplesFromParent || (onLoadFromAsset && allowsFromTo(labelType))) && (
+      {(samplesFromParent || assetLoad || personLoad) && (
         <div className="lbp-foot">
-          {onLoadFromAsset && allowsFromTo(labelType) && (
+          {assetLoad && (
             <button type="button" className="mini-btn" disabled={readOnly || samplesFromParent}
               onClick={onLoadFromAsset}>Load from asset…</button>
           )}
-          <span className="lbp-hint">
-            {samplesFromParent ? 'Samples belong to the parent template.' : 'Fills every sample from a real roster row.'}
-          </span>
+          {personLoad && (
+            <div className="lbp-foot-actions">
+              <button type="button" className="mini-btn" disabled={readOnly || samplesFromParent}
+                onClick={onLoadFromPerson}>Load from person…</button>
+              {personId !== null && onClearPerson && (
+                <button type="button" className="mini-btn"
+                  disabled={readOnly || samplesFromParent || fieldsLoading}
+                  title={fieldsLoading ? 'Waiting for the field list…' : undefined}
+                  onClick={onClearPerson}>Clear sample person</button>
+              )}
+            </div>
+          )}
+          <span className="lbp-hint">{footHint}</span>
         </div>
       )}
     </aside>
