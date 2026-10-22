@@ -179,6 +179,51 @@ class RolodexViewModelTest {
         assertEquals("No connection. Try again when you're back online.", ui.listError)
     }
 
+    /** Ruling S15: a server failing (5xx) reads as offline, as on iOS: the cached list, read-only, with the banner. */
+    @Test fun aLoadThatFailsWithAServerErrorShowsTheCachedListReadOnly() = runTest {
+        val db = newDb()
+        build(onlineApi(), db, now = T1)
+        for (status in listOf(500, 502, 503)) {
+            val vm = build(onlineApi().apply { rolodexWorkersResult = { throw ApiError(status, "http_error") } }, db, now = T2)
+            val ui = vm.state.value
+            assertTrue("$status", ui.offline)
+            assertEquals("$status", T1, ui.cachedAt)
+            assertEquals("$status", listOf("Abbott", "Núñez", "O'Brien"), ui.rows.map { it.last_name })
+            assertNull("$status", ui.listError)
+            assertFalse("$status", ui.canStartNewWorker)
+            vm.select("p-abbott"); settle { !vm.state.value.detailLoading }
+            vm.startEdit()
+            assertNull("$status", vm.state.value.editing)
+        }
+        // A refresh that meets an outage keeps the list on screen, read-only.
+        val api = onlineApi()
+        val vm = build(api, db, now = T1)
+        api.rolodexWorkersResult = { throw ApiError(502, "http_error") }
+        vm.refresh(); settle { !vm.state.value.loading }
+        assertTrue(vm.state.value.offline)
+        assertEquals(3, vm.state.value.rows.size)
+        assertNull(vm.state.value.listError)
+    }
+
+    @Test fun aServerErrorWithoutACacheSaysThereIsNoConnection() = runTest {
+        val vm = build(onlineApi().apply { rolodexWorkersResult = { throw ApiError(503, "http_error") } })
+        val ui = vm.state.value
+        assertTrue(ui.offline)
+        assertTrue(ui.rows.isEmpty())
+        assertEquals("No connection. Try again when you're back online.", ui.listError)
+        assertFalse(ui.canStartNewWorker)
+    }
+
+    /** A 4xx other than 403 is not an outage: the list stays as it was, online, and says what went wrong. */
+    @Test fun aClientErrorIsNotOffline() = runTest {
+        val api = onlineApi()
+        val vm = build(api)
+        api.rolodexWorkersResult = { throw ApiError(422, "unknown_error") }
+        vm.refresh(); settle { !vm.state.value.loading }
+        assertFalse(vm.state.value.offline)
+        assertEquals("Something went wrong. Try again.", vm.state.value.listError)
+    }
+
     @Test fun aRefusedLoadDropsTheListAndTheCache() = runTest {
         val db = newDb()
         build(onlineApi(), db)

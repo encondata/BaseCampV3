@@ -81,7 +81,7 @@ data class RolodexUi(
     val saving: Boolean = false,
     /** The list is being read from the server. */
     val loading: Boolean = false,
-    /** The last list read failed for want of a connection: the list is the cached one, read-only. */
+    /** The last list read failed for want of a connection or with a server error (5xx): the list is the cached one, read-only. */
     val offline: Boolean = false,
     /** When the list on screen came from the server. */
     val cachedAt: Instant? = null,
@@ -232,8 +232,9 @@ class RolodexViewModel(
         } catch (e: Exception) {
             val err = e as? ApiError
             when {
-                // No connection: the last list, read-only, with its time in the banner.
-                err?.isNetwork == true -> {
+                // No connection, or the server failing (5xx, Ruling S15, as on iOS): the last
+                // list, read-only, with its time in the banner.
+                err?.isNetwork == true || (err?.status ?: 0) >= 500 -> {
                     if (index.isEmpty()) readCache()?.let { showCache(it) }
                     _state.update {
                         it.copy(loading = false, offline = true, listError = if (index.isEmpty()) rolodexErrorText("network") else null)
