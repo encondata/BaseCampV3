@@ -57,6 +57,16 @@ struct HomeModelTests {
         #expect(abs(box.minY - 15.5) < 0.05 && abs(box.maxY - 24.5) < 0.05)
     }
 
+    /// An admin's Home has the Rolodex tile (before Settings), usable before Kiosk Setup.
+    @Test func adminsSeeTheRolodexTile() {
+        let tiles = homeTiles(setupState: .incomplete, devMode: false, isAdmin: true)
+        #expect(tiles.map(\.feature.id) == [.setup, .scan, .enroll, .containers, .trucks, .labels, .timeclock, .rolodex, .settings])
+        let rolodex = tiles.first { $0.feature.id == .rolodex }
+        #expect(rolodex?.available == true && rolodex?.lockedReason == nil)
+        #expect(homeTiles(setupState: .complete, devMode: false, isAdmin: false).map(\.feature.id) == FEATURES.map(\.id))
+        #expect(homeTiles(setupState: .complete, devMode: false, stationType: "timeclock", isAdmin: true).count == 3)
+    }
+
     @Test func routesMapFromFeatures() {
         #expect(Route.forFeature(.settings) == .settings(nil))
         #expect(Route.forFeature(.labels) == .labels)
@@ -64,5 +74,8 @@ struct HomeModelTests {
         // Print Labels and Printer Setup live under the Label Printing tile.
         #expect(Route.labelsPrint.featureId == .labels)
         #expect(Route.labelsPrinter.featureId == .labels)
+        // a phone's worker page lives under the Rolodex
+        #expect(Route.forFeature(.rolodex) == .rolodex)
+        #expect(Route.rolodexWorker("p1").featureId == .rolodex)
     }
 }

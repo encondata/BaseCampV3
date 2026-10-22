@@ -9,8 +9,9 @@ struct HomeTile: Equatable {
     let lockedReason: String?
 }
 
-func homeTiles(setupState: SetupState, devMode: Bool, stationType: String? = nil) -> [HomeTile] {
-    homeFeatures(stationType: stationType).map { f in
+/// `isAdmin` (rank 60+) adds the Rolodex tile on a full kiosk Home.
+func homeTiles(setupState: SetupState, devMode: Bool, stationType: String? = nil, isAdmin: Bool = false) -> [HomeTile] {
+    homeFeatures(stationType: stationType, isAdmin: isAdmin).map { f in
         let available = featureAvailable(f, setupState: setupState, devMode: devMode)
         let reason = available ? nil : (setupState == .failed ? "Kiosk setup failed — open Kiosk Setup." : "Finish Kiosk Setup first.")
         return HomeTile(feature: f, available: available, lockedReason: reason)
@@ -50,9 +51,15 @@ struct HomeContent: View {
     @State private var width: CGFloat = 0
     @State private var leaving = false
 
+    private var isAdmin: Bool {
+        if case .authed(let s) = auth.state { return s.isAdmin }
+        return false
+    }
+
     var body: some View {
         let banner = homeBanner(setupState: prefs.setupState, devMode: prefs.devMode)
-        let tiles = homeTiles(setupState: prefs.setupState, devMode: prefs.devMode, stationType: prefs.setupSelection?.stationType)
+        let tiles = homeTiles(setupState: prefs.setupState, devMode: prefs.devMode, stationType: prefs.setupSelection?.stationType,
+                              isAdmin: isAdmin)
         let perRow = homeColumns(width: width)
         let rows = stride(from: 0, to: tiles.count, by: perRow).map { Array(tiles[$0..<min($0 + perRow, tiles.count)]) }
         VStack(alignment: .leading, spacing: 0) {

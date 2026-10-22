@@ -1,7 +1,7 @@
 import Foundation
 
 enum FeatureId: String, CaseIterable, Sendable {
-    case setup, scan, enroll, containers, trucks, labels, timeclock, settings
+    case setup, scan, enroll, containers, trucks, labels, timeclock, settings, rolodex
 }
 
 /// One launcher tile / route. `placeholder` features open the generic
@@ -33,15 +33,29 @@ let FEATURES: [KioskFeature] = [
 let TIMECLOCK_STATION_FEATURE = KioskFeature(id: .timeclock, route: "timeclock/station", title: "Time Clock",
                                              blurb: "Start the time clock for workers.")
 
+/// The Rolodex: every worker's photo, contact details and status, for admins (rank 60+). Native
+/// apps only, so not in FEATURES (the web kiosk has none): only a full kiosk Home shows it, and
+/// only to an admin. It needs no move, so it is always available.
+let ROLODEX_FEATURE = KioskFeature(id: .rolodex, route: "rolodex", title: "Rolodex",
+                                   blurb: "Look up workers, edit their details, and take photos.", alwaysAvailable: true)
+
+/// Every feature a route can open (`feature(_:)` finds the Rolodex too).
+private let ALL_FEATURES = FEATURES + [ROLODEX_FEATURE]
+
 /// What Home shows (web `homeFeatures`): a Time Clock station only Time Clock, Kiosk Setup and
 /// Settings (web `STATION_TILES.timeclock`; Jimmy owns these lists); any other kiosk every feature.
-func homeFeatures(stationType: String?) -> [KioskFeature] {
-    guard stationType == "timeclock" else { return FEATURES }
-    return [TIMECLOCK_STATION_FEATURE, feature(.setup), feature(.settings)]
+/// An admin's full kiosk Home (no station type) adds the Rolodex before Settings; a station Home
+/// never shows it.
+func homeFeatures(stationType: String?, isAdmin: Bool = false) -> [KioskFeature] {
+    if stationType == "timeclock" { return [TIMECLOCK_STATION_FEATURE, feature(.setup), feature(.settings)] }
+    guard isAdmin, stationType?.isEmpty ?? true else { return FEATURES }
+    var features = FEATURES
+    features.insert(ROLODEX_FEATURE, at: features.firstIndex { $0.id == .settings } ?? features.endIndex)
+    return features
 }
 
 func feature(_ id: FeatureId) -> KioskFeature {
-    FEATURES.first { $0.id == id }!
+    ALL_FEATURES.first { $0.id == id }!
 }
 
 /// The feature whose route the nav destination is (route may carry `?tab=`).
@@ -49,7 +63,7 @@ func featureForRoute(_ route: String?) -> KioskFeature? {
     guard let route else { return nil }
     let base = route.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first
         .map { $0.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? "" } ?? ""
-    return FEATURES.first { $0.route == base }
+    return ALL_FEATURES.first { $0.route == base }
 }
 
 /// Always for alwaysAvailable features or in dev mode; otherwise only once setup is complete.

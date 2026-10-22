@@ -34,6 +34,10 @@ final class AppContainer {
     /// One connection to the saved printer at a time, app-wide: Print Labels' sends and every
     /// Printer Setup call (identify, checks, font installs, test labels) go through it.
     let printerLock: PrinterLock
+    /// The Rolodex's list and worker page, for the app's lifetime: a phone's pushed worker page
+    /// shares it with the list. Signing out (or a session end, or Reset app) clears it and its
+    /// offline copy.
+    let rolodex: RolodexModel
     /// Each printer's state after a failed send or a cut font install (the `~JX` clear, the stop),
     /// keyed to the printer and applied under `printerLock` by the same callers. The stops are kept
     /// across launches (`KioskPrefs.printerStops`).
@@ -120,19 +124,29 @@ final class AppContainer {
                                         },
                                         isLive: printJobIsLive(auth: auth, prefs: prefs))
         self.sound = SoundPlayer(prefs: prefs)
+        let rolodex = RolodexModel(api: api, store: store, owner: {
+            guard case .authed(let s) = auth.state, s.isAdmin else { return nil }
+            return RolodexModel.Owner(personId: s.person.id, apiUrl: config.apiUrl)
+        })
+        self.rolodex = rolodex
 
         // Print Labels' list and its waiting jobs belong to one session on one move, and the
         // Bluetooth link to the session (a send in flight fails, and its printer gets a `~JX`).
+        // The Rolodex's list (and its offline copy) belongs to the admin who loaded it.
         let printJobs = self.printJobs
         auth.onLogout = {
             heartbeat.stop()
             bluetooth.close()
             Task { await printJobs.reset() }
+            rolodex.clear()
         }
         auth.onSessionEnded = {
             bluetooth.close()
             Task { await printJobs.reset() }
+            rolodex.clear()
         }
+        // A session that ended while the app was closed takes the Rolodex's offline copy with it.
+        auth.onRestoreFailed = { rolodex.clear() }
         Self.resetPrintJobsOnMoveChange(prefs: prefs, jobs: printJobs)
         Self.followSavedPrinter(settings: labelSettings, bluetooth: bluetooth)
     }
@@ -190,11 +204,13 @@ final class AppContainer {
     /// settings (printer, offsets, peel). Keeps the outbox (unsent scans), the sign-in, the API
     /// and portal URLs, the kiosk's identity and name, and appearance, sound, camera, checkpoint
     /// and developer-mode preferences. The label builder ends stopped, waiting for a sync. A Time
-    /// Clock station's key goes too: the kiosk is no longer set up as one.
+    /// Clock station's key goes too: the kiosk is no longer set up as one. The Rolodex forgets its
+    /// list and deletes its offline copy.
     /// Throws when the local data couldn't be cleared; the setup is then left as it was.
     func resetApp() async throws {
         // Nothing waiting prints for the setup being cleared.
         await printJobs.reset()
+        await rolodex.clear().value
         try await sync.clearLocalData()
         prefs.setupSelection = nil
         prefs.setupState = .incomplete
@@ -337,5 +353,6 @@ extension View {
             .environment(c.outbox)
             .environment(c.flash)
             .environment(c.toast)
+            .environment(c.rolodex)
     }
 }

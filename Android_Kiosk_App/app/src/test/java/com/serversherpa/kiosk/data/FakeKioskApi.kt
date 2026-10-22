@@ -63,6 +63,29 @@ open class FakeKioskApi : KioskApi {
     override suspend fun clockOut(body: ClockOutIn) = clockOutResult(body).also { calls += "clockOut" }
     var issueStationKeyResult: (String) -> String = { "station-key-1" }
     override suspend fun issueStationKey(serial: String) = issueStationKeyResult(serial).also { calls += "issueStationKey" }
+
+    // ── rolodex ─────────────────────────────────────────────────────
+    // Suspending, so a test can hold a call open (a double tap while saving). Each call is
+    // recorded in `calls` (and its body below) before it answers, so a refused one still shows.
+    var rolodexWorkersResult: suspend () -> RolodexList = { RolodexList("now") }
+    var rolodexWorkerResult: suspend (String) -> RolodexDetail = { throw ApiError(404, "person_not_found") }
+    var rolodexOptionsResult: suspend () -> RolodexOptions = { RolodexOptions() }
+    var rolodexDuplicatesResult: suspend (RolodexDuplicatesIn) -> List<RolodexMatch> = { emptyList() }
+    val rolodexDuplicateBodies = ArrayList<RolodexDuplicatesIn>()
+    var rolodexCreateResult: suspend (RolodexCreateIn) -> RolodexDetail = { throw ApiError(500, "unknown_error") }
+    val rolodexCreates = ArrayList<RolodexCreateIn>()
+    var rolodexUpdateResult: suspend (String, kotlinx.serialization.json.JsonObject) -> RolodexDetail = { _, _ -> throw ApiError(500, "unknown_error") }
+    val rolodexUpdates = ArrayList<Pair<String, kotlinx.serialization.json.JsonObject>>()
+    var rolodexPhotoResult: suspend (String, ByteArray) -> RolodexPhotoOut = { _, _ -> throw ApiError(500, "unknown_error") }
+    val rolodexPhotos = ArrayList<Pair<String, ByteArray>>()
+
+    override suspend fun rolodexWorkers(): RolodexList { calls += "rolodexWorkers"; return rolodexWorkersResult() }
+    override suspend fun rolodexWorker(personId: String): RolodexDetail { calls += "rolodexWorker:$personId"; return rolodexWorkerResult(personId) }
+    override suspend fun rolodexOptions(): RolodexOptions { calls += "rolodexOptions"; return rolodexOptionsResult() }
+    override suspend fun rolodexDuplicates(body: RolodexDuplicatesIn): List<RolodexMatch> { calls += "rolodexDuplicates"; rolodexDuplicateBodies += body; return rolodexDuplicatesResult(body) }
+    override suspend fun rolodexCreate(body: RolodexCreateIn): RolodexDetail { calls += "rolodexCreate"; rolodexCreates += body; return rolodexCreateResult(body) }
+    override suspend fun rolodexUpdate(personId: String, patch: kotlinx.serialization.json.JsonObject): RolodexDetail { calls += "rolodexUpdate:$personId"; rolodexUpdates += personId to patch; return rolodexUpdateResult(personId, patch) }
+    override suspend fun rolodexPhoto(personId: String, jpeg: ByteArray): RolodexPhotoOut { calls += "rolodexPhoto:$personId"; rolodexPhotos += personId to jpeg; return rolodexPhotoResult(personId, jpeg) }
 }
 
 fun fakeSession(roles: List<String> = listOf("worker"), maxRank: Int = 20, mustChange: Boolean = false, kioskMove: KioskMove? = null) = SessionData(

@@ -8,6 +8,10 @@ let syncMetaKey = "sync"
 /// raw JSON text (Android `LABEL_CONTEXT_META_KEY`).
 let labelContextMetaKey = "label_context"
 
+/// The meta row holding the Rolodex's last list (`RolodexCache` JSON: rows only, never email or
+/// phone). It goes with a sign-out, a session end, Reset app and Clear local data.
+let rolodexMetaKey = "rolodex"
+
 /// One read of the synced move for a label build. `payloads` and `templates` are empty unless
 /// asked for, and when the move or its label context is missing.
 struct LabelBuildSnapshot: Sendable {
@@ -94,6 +98,59 @@ actor KioskStore: ModelActor {
         }
     }
 
+    /// A Rolodex create or edit: the person's names, job title and Employee ID in the roster (the
+    /// Time Clock's offline people), as a worker. An existing row keeps its RFID tag and badge (the
+    /// Rolodex never carries them); a missing one is added. The next sync replaces the table anyway.
+    func upsertRosterPerson(_ row: KioskPersonRow) throws {
+        let id = row.id
+        do {
+            if let r = try modelContext.fetch(FetchDescriptor<PersonRecord>(predicate: #Predicate { $0.id == id })).first {
+                r.displayName = row.displayName
+                r.firstName = row.firstName
+                r.lastName = row.lastName
+                r.preferredName = row.preferredName
+                r.jobTitle = row.jobTitle
+                r.externalId = row.externalId
+                r.isWorker = row.isWorker
+                r.hasAccount = row.hasAccount
+            } else {
+                modelContext.insert(PersonRecord(row))
+            }
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
+    }
+
+    /// The Rolodex's last list as stored (JSON text); nil when there is none.
+    func rolodexCache() throws -> String? {
+        let key = rolodexMetaKey
+        return try modelContext.fetch(FetchDescriptor<MetaRecord>(predicate: #Predicate { $0.key == key })).first?.value
+    }
+
+    /// Replaces the Rolodex's stored list.
+    func storeRolodexCache(_ json: String) throws {
+        do {
+            try deleteMetaRow(rolodexMetaKey)
+            modelContext.insert(MetaRecord(key: rolodexMetaKey, value: json))
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
+    }
+
+    func clearRolodexCache() throws {
+        do {
+            try deleteMetaRow(rolodexMetaKey)
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
+    }
+
     /// In the server's order.
     func assets() throws -> [KioskAssetRow] {
         try modelContext.fetch(FetchDescriptor<AssetRecord>(sortBy: [SortDescriptor(\.position)])).map(\.row)
@@ -157,7 +214,8 @@ actor KioskStore: ModelActor {
         }
     }
 
-    /// "Clear local data": the move tables, label data and the meta rows — never the outbox.
+    /// "Clear local data": the move tables, label data and the meta rows (the Rolodex's list too) —
+    /// never the outbox.
     func clearLocalData() throws {
         do {
             try deleteMoveTables()
@@ -165,6 +223,7 @@ actor KioskStore: ModelActor {
             try modelContext.delete(model: LabelFontRecord.self)
             try modelContext.delete(model: GeneratedLabelRecord.self)
             try deleteMetaRow(labelContextMetaKey)
+            try deleteMetaRow(rolodexMetaKey)
             try modelContext.save()
         } catch {
             modelContext.rollback()

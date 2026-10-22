@@ -2,7 +2,7 @@ package com.serversherpa.kiosk.core.features
 
 import com.serversherpa.kiosk.core.setup.SetupState
 
-enum class FeatureId { SETUP, SCAN, ENROLL, CONTAINERS, TRUCKS, LABELS, TIMECLOCK, SETTINGS, TIMECLOCK_STATION }
+enum class FeatureId { SETUP, SCAN, ENROLL, CONTAINERS, TRUCKS, LABELS, TIMECLOCK, SETTINGS, TIMECLOCK_STATION, ROLODEX }
 
 /** One launcher tile / route. `placeholder` features open the generic
  *  "not available yet" page; `alwaysAvailable` ones ignore setup state. */
@@ -34,11 +34,18 @@ fun feature(id: FeatureId): KioskFeature = FEATURES.first { it.id == id }
  *  its own: Home runs it. */
 val TIMECLOCK_STATION_FEATURE = KioskFeature(FeatureId.TIMECLOCK_STATION, "timeclock-station", "Time Clock", "Start the time clock for workers.")
 
+/** The Rolodex (admins look up, edit and photograph workers; native apps only, so not in
+ *  [FEATURES], whose order is the web kiosk's). It needs no move or setup step. */
+val ROLODEX_FEATURE = KioskFeature(FeatureId.ROLODEX, "rolodex", "Rolodex", "Look up workers, edit their details, and take photos.", alwaysAvailable = true)
+
 /** What Home shows (kiosk/src/lib/features.ts STATION_TILES; Jimmy owns these lists): a Time
- *  Clock station only Time Clock, Kiosk Setup and Settings; any other kiosk every feature. */
-fun homeFeatures(stationType: String?): List<KioskFeature> =
-    if (stationType == "timeclock") listOf(TIMECLOCK_STATION_FEATURE, feature(FeatureId.SETUP), feature(FeatureId.SETTINGS))
-    else FEATURES
+ *  Clock station only Time Clock, Kiosk Setup and Settings; any other kiosk every feature, plus
+ *  the Rolodex before Settings when [isAdmin] (rank 60+). Station Homes never get the Rolodex. */
+fun homeFeatures(stationType: String?, isAdmin: Boolean = false): List<KioskFeature> = when {
+    stationType == "timeclock" -> listOf(TIMECLOCK_STATION_FEATURE, feature(FeatureId.SETUP), feature(FeatureId.SETTINGS))
+    isAdmin -> FEATURES.flatMap { if (it.id == FeatureId.SETTINGS) listOf(ROLODEX_FEATURE, it) else listOf(it) }
+    else -> FEATURES
+}
 
 /** The feature whose route the nav destination is (route may carry `?tab=`). */
 fun featureForRoute(route: String?): KioskFeature? {

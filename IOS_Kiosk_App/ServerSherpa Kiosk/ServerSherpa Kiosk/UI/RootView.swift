@@ -59,6 +59,8 @@ struct RootView: View {
         case .labels: LabelsHomeScreen(path: $path)
         case .labelsPrint: PrintLabelsScreen(path: $path)
         case .labelsPrinter: PrinterSetupScreen(path: $path)
+        case .rolodex: RolodexView(path: $path)
+        case .rolodexWorker(let id): RolodexWorkerScreen(personId: id, path: $path)
         default: FeaturePlaceholderScreen(feature: feature(route.featureId), path: $path)
         }
     }
