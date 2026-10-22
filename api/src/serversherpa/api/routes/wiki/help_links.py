@@ -114,15 +114,19 @@ async def _link_out(ctx: WikiContext, link_id: uuid.UUID) -> HelpLinkOut:
     return (await _links_out(ctx, [row]))[0]
 
 
-@router.get("/help", response_model=HelpOut)
-async def get_help(ctx: WikiContext, context: HelpContextIn) -> HelpOut:
+@router.get("/help", response_model=HelpOut,
+            responses={204: {"description": "No guide the caller can view"}})
+async def get_help(ctx: WikiContext, context: HelpContextIn) -> HelpOut | Response:
     """The nearest guide the caller can view: the stored contexts the
     requested one falls under, longest first, skipping any whose guide
     they can't view (trashed, not theirs to see, or a never-published page
-    for view-only). 404 when none qualifies."""
+    for view-only). 204 No Content when none qualifies — "no guide" is the
+    normal answer for most screens, and the ? button asks on every page, so
+    it must not be an error status (browsers log every 4xx in red). A guide
+    the caller can't view gets the same empty answer, so it never leaks."""
     candidates = context_prefixes(normalize_context(context))
     if not candidates:
-        raise not_found()
+        return Response(status_code=204)
     # at most one row per prefix, so this is never more than a handful
     rows = (await ctx.db.execute(
         select(WikiHelpLink, WikiNode)
@@ -135,7 +139,7 @@ async def get_help(ctx: WikiContext, context: HelpContextIn) -> HelpOut:
         if node.id in viewable:
             return HelpOut(node_id=node.id, title=node.title, url=guide_url(node.id),
                            context=link.context)
-    raise not_found()
+    return Response(status_code=204)
 
 
 @router.get("/help-links", response_model=list[HelpLinkOut])
