@@ -133,10 +133,11 @@ struct NetworkZebraTests {
         let p = try await FakePrinter.start([("~HI", hi)])
         defer { p.close() }
         let started = Date()
-        // the reply is whole at its ETX: no waiting out the (2 s) idle time on an open connection
-        let id = try await NetworkZebra(host: "127.0.0.1", port: p.port).identify()
+        // the reply is whole at its ETX: no waiting out the idle time on an open connection (5 s
+        // here, so the 3 s margin holds under load and still tells the two apart)
+        let id = try await NetworkZebra(host: "127.0.0.1", port: p.port, timeouts: ZebraTimeouts(connect: 3, idle: 5, total: 10, send: 30)).identify()
         #expect(id == HostId(model: "ZD421-300dpi", firmware: "V93.21.38Z", dotsPerMm: 12, memory: "8176KB", dpi: 300))
-        #expect(elapsed(since: started) < 1)
+        #expect(elapsed(since: started) < 3)
         #expect(await p.received().map(ascii) == ["~HI"])
     }
 
@@ -333,26 +334,37 @@ struct NetworkZebraTests {
 
     /// Android's probes block threads, so its scan runs on its own threads. iOS probes never block
     /// (NWConnection is callback based); this checks a full window of waiting probes leaves the
-    /// cooperative pool free for other work.
+    /// cooperative pool free for other work. The probes hold until released, so any work queued
+    /// behind them could never finish inside the 2 s window (200 times the work's own 10 ms).
     @Test func aScanLeavesOtherWorkFree() async throws {
         let started = Counter()
+        let gate = Gate()
         let scanner = ZebraScanner(
             subnets: { [ScanSubnet(hosts: (1...128).map { "10.0.0.\($0)" })] },
             probe: { _, _ in
                 started.bump()
-                try await Task.sleep(nanoseconds: 1_000_000_000)
+                await gate.wait()
                 return .unanswered
             }
         )
         let scan = Task { try await scanner.scan() }
+        defer { gate.release() }
         let until = Date().addingTimeInterval(5)
         while started.value < 64, Date() < until { try await Task.sleep(nanoseconds: 5_000_000) }
         #expect(started.value == 64)
-        let t0 = Date()
-        await withTaskGroup(of: Void.self) { group in
-            for _ in 0..<64 { group.addTask { try? await Task.sleep(nanoseconds: 10_000_000) } }
+        let finished = Counter()
+        let work = Task {
+            await withTaskGroup(of: Void.self) { group in
+                for _ in 0..<64 { group.addTask { try? await Task.sleep(nanoseconds: 10_000_000) } }
+            }
+            finished.bump()
         }
-        #expect(elapsed(since: t0) < 0.8)
+        let window = Date().addingTimeInterval(2)
+        while finished.value == 0, Date() < window { try await Task.sleep(nanoseconds: 5_000_000) }
+        #expect(finished.value == 1) // done while all 64 probes still hold
+        #expect(started.value == 64)
+        gate.release()
+        await work.value
         _ = try await scan.value
     }
 
@@ -369,17 +381,27 @@ struct NetworkZebraTests {
         let probed = Counter()
         let open = Counter()
         let peak = Counter()
+        let gate = Gate()
         let scanner = ZebraScanner(
             subnets: { [ScanSubnet(hosts: (1...254).map { "10.0.0.\($0)" })] },
             probe: { _, _ in
                 peak.raise(to: open.bump())
-                try await Task.sleep(nanoseconds: 50_000_000)
+                await gate.wait()
                 open.drop()
                 probed.bump()
                 return .unanswered
             }
         )
-        #expect(try await scanner.scan().printers == [])
+        let scan = Task { try await scanner.scan() }
+        defer { gate.release() }
+        // the first probes hold until released: a full window is in flight, and no more start
+        let until = Date().addingTimeInterval(5)
+        while open.value < 64, Date() < until { try await Task.sleep(nanoseconds: 5_000_000) }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(open.value == 64)
+        #expect(probed.value == 0)
+        gate.release()
+        #expect(try await scan.value.printers == [])
         #expect(probed.value == 254)
         #expect(peak.value == 64)
     }
@@ -469,6 +491,33 @@ struct NetworkZebraTests {
         #expect(empty.printers == [])
     }
 
+    @Test func theScanNeverLeavesOverCellular() {
+        // Android binds every probe to the Wi-Fi/Ethernet network; iOS prohibits cellular instead,
+        // so USB-C Ethernet stays admitted (no required Wi-Fi)
+        let parameters = ZebraScanner().parameters
+        #expect(parameters.prohibitedInterfaceTypes == [.cellular])
+        #expect(parameters.requiredInterfaceType == NWParameters.tcp.requiredInterfaceType)
+        // a fresh copy each time: the shared .tcp is left alone
+        #expect(lanParameters() !== lanParameters())
+        #expect(NWParameters.tcp.prohibitedInterfaceTypes ?? [] == [])
+    }
+
+    @Test func aPrinterOnTheLanIsNeverReachedOverCellular() {
+        let lan = [LanAddress(address: "192.168.1.37", prefixLength: 24), LanAddress(address: "10.20.30.40", prefixLength: 16)]
+        for host in ["192.168.1.50", "192.168.1.1", "10.20.99.1"] {
+            #expect(zebraParameters(forHost: host, lan: lan).prohibitedInterfaceTypes == [.cellular], "\(host)")
+        }
+        // anything else keeps plain TCP, as Android falls back to the default socket factory
+        for host in ["192.168.2.5", "10.21.0.1", "8.8.8.8", "printer.local", "127.0.0.1"] {
+            #expect(zebraParameters(forHost: host, lan: lan).prohibitedInterfaceTypes ?? [] == [], "\(host)")
+        }
+        #expect(zebraParameters(forHost: "192.168.1.50", lan: []).prohibitedInterfaceTypes ?? [] == [])
+        #expect(NetworkZebra(host: "127.0.0.1").parameters.prohibitedInterfaceTypes ?? [] == [])
+        #expect(sameSubnet("172.16.5.130", "172.16.5.134", prefixLength: 29))
+        #expect(!sameSubnet("172.16.5.130", "172.16.5.137", prefixLength: 29))
+        #expect(!sameSubnet("172.16.5.130", "not an ip", prefixLength: 24))
+    }
+
     @Test func aPolicyDenialIsLocalNetworkOffOrItsPathReason() {
         #expect(isLocalNetworkDenial(error: .posix(.ENETDOWN), unsatisfiedReason: nil))
         #expect(isLocalNetworkDenial(error: .dns(-65570), unsatisfiedReason: nil)) // kDNSServiceErr_PolicyDenied
@@ -521,6 +570,33 @@ struct NetworkZebraTests {
             #expect(subnet.hosts.count <= 254)
             #expect(subnet.hosts.allSatisfy { $0.hasPrefix("10.") || $0.hasPrefix("192.168.") || $0.hasPrefix("172.") })
         }
+    }
+}
+
+/// Holds probes until released; once released, every wait passes at once.
+private final class Gate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var open = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let go = lock.withLock {
+                if open { return true }
+                waiters.append(continuation)
+                return false
+            }
+            if go { continuation.resume() }
+        }
+    }
+
+    func release() {
+        let waiting = lock.withLock {
+            open = true
+            defer { waiters = [] }
+            return waiters
+        }
+        waiting.forEach { $0.resume() }
     }
 }
 

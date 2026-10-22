@@ -71,7 +71,9 @@ struct FontInstallRefused: LocalizedError, Sendable {
  UTF-8 (labels carry `^CI28`), and a font's bytes go raw after its ASCII header.
 
  Nothing is sent on its own: each call sends exactly its command. `parameters` is copied for each
- connection (tests pass ones that can't be satisfied). Every call but the font guard can throw
+ connection (tests pass ones that can't be satisfied). By default a host inside one of the device's
+ Wi-Fi or Ethernet subnets is never reached over cellular, as Android binds such a connection to
+ the LAN network's socket factory; any other host uses plain TCP (`zebraParameters(forHost:lan:)`). Every call but the font guard can throw
  `CancellationError` when its task is cancelled; the connection is closed on every exit.
  */
 struct NetworkZebra: Sendable {
@@ -80,11 +82,11 @@ struct NetworkZebra: Sendable {
     let timeouts: ZebraTimeouts
     let parameters: NWParameters
 
-    init(host: String, port: UInt16 = ZebraNetwork.port, timeouts: ZebraTimeouts = ZebraTimeouts(), parameters: NWParameters = .tcp) {
+    init(host: String, port: UInt16 = ZebraNetwork.port, timeouts: ZebraTimeouts = ZebraTimeouts(), parameters: NWParameters? = nil) {
         self.host = host
         self.port = port
         self.timeouts = timeouts
-        self.parameters = parameters
+        self.parameters = parameters ?? zebraParameters(forHost: host, lan: LocalNetworks.lanAddresses())
     }
 
     /// `~HI`: model, firmware, resolution.
@@ -171,10 +173,32 @@ struct NetworkZebra: Sendable {
 
     private static let writeSlack: TimeInterval = 1
 
-    // When each reply is whole (the edge's REPLY_COMPLETE): ~HS is three STX..ETX frames, ~HI and
-    // the E: listing one, a getvar one quoted value.
-    private func frames(_ n: Int) -> (Data) -> Bool { { reply in reply.count(of: 0x03) >= n } }
-    private var quoted: (Data) -> Bool { { reply in reply.count(of: UInt8(ascii: "\"")) >= 2 } }
+    private func frames(_ n: Int) -> (Data) -> Bool { { replyHasFrames($0, n) } }
+    private var quoted: (Data) -> Bool { { replyHasQuotedValue($0) } }
+}
+
+// When each reply is whole (the edge's REPLY_COMPLETE): ~HS is three STX..ETX frames, ~HI and the
+// E: listing one, a getvar one quoted value. Shared by NetworkZebra and the scan.
+
+/// At least `n` ETX-closed frames.
+func replyHasFrames(_ reply: Data, _ n: Int) -> Bool { reply.count(of: 0x03) >= n }
+
+/// A whole quoted getvar value (two double quotes).
+func replyHasQuotedValue(_ reply: Data) -> Bool { reply.count(of: UInt8(ascii: "\"")) >= 2 }
+
+/// TCP that never leaves over cellular: Wi-Fi, Ethernet (USB-C adapters included) and the rest
+/// stay admitted. A printer on the LAN must not be reached over a carrier's 10.x or CGNAT.
+func lanParameters() -> NWParameters {
+    let parameters = NWParameters.tcp.copy()
+    parameters.prohibitedInterfaceTypes = [.cellular]
+    return parameters
+}
+
+/// The parameters for a printer at `host`: `lanParameters()` when it lies inside one of the
+/// device's Wi-Fi or Ethernet subnets (`lan`), else plain TCP. Android's socketFactoryFor (the LAN
+/// network's factory, else the default one).
+func zebraParameters(forHost host: String, lan: [LanAddress]) -> NWParameters {
+    lan.contains { sameSubnet($0.address, host, prefixLength: $0.prefixLength) } ? lanParameters() : .tcp
 }
 
 /// `[A-Z0-9_\-]{1,64}\.TTF`, ASCII only.
@@ -313,6 +337,8 @@ final class ZebraLink: @unchecked Sendable {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 once.install(continuation)
                 queue.async { [self] in
+                    // cancelled (or closed) before it started: never start the connection
+                    guard !once.isResolved else { return }
                     guard !closed else {
                         once.resume(.failure(PrinterUnreachable(host: host)))
                         return
@@ -494,6 +520,9 @@ final class ZebraOnce<Value>: @unchecked Sendable {
     private var continuation: CheckedContinuation<Value, Error>?
     private var early: Result<Value, Error>?
     private var done = false
+
+    /// Whether the call has its answer already.
+    var isResolved: Bool { lock.withLock { done } }
 
     func install(_ continuation: CheckedContinuation<Value, Error>) {
         let ready: Result<Value, Error>? = lock.withLock {

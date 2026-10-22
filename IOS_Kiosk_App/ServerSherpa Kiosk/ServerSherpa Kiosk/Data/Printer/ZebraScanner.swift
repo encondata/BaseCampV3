@@ -64,7 +64,8 @@ final class ZebraScanner: Sendable {
     private let identify: TimeInterval
     private let budget: TimeInterval
     private let concurrency: Int
-    private let parameters: NWParameters
+    /// Copied for each probe; `lanParameters()` (never cellular) by default.
+    let parameters: NWParameters
     private let injectedProbe: Probe?
 
     /// The defaults scan the device's own Wi-Fi and Ethernet networks (`LocalNetworks.subnets`).
@@ -75,7 +76,7 @@ final class ZebraScanner: Sendable {
         identify: TimeInterval = ZebraNetwork.identify,
         budget: TimeInterval = ZebraNetwork.scanBudget,
         concurrency: Int = ZebraNetwork.scanConcurrency,
-        parameters: NWParameters = .tcp,
+        parameters: NWParameters = lanParameters(),
         probe: Probe? = nil
     ) {
         self.subnets = subnets
@@ -148,13 +149,12 @@ final class ZebraScanner: Sendable {
                 host: host, port: port, parameters: parameters,
                 connect: probeConnect, deadline: 2 * identify + 0.5
             ) { link in
-                let id = try await ask(link, ZebraCommands.hostIdentification, identify: identify) { $0.contains(0x03) }
+                let id = try await ask(link, ZebraCommands.hostIdentification, identify: identify) { replyHasFrames($0, 1) }
                     .flatMap(parseNetworkHostIdentification)
                 var serial: String?
                 if id != nil {
-                    serial = try await ask(link, ZebraCommands.serialNumber, identify: identify) { reply in
-                        reply.reduce(0) { $0 + ($1 == UInt8(ascii: "\"") ? 1 : 0) } >= 2
-                    }.flatMap(parseGetvar)
+                    serial = try await ask(link, ZebraCommands.serialNumber, identify: identify, complete: replyHasQuotedValue)
+                        .flatMap(parseGetvar)
                 }
                 return FoundPrinter(host: host, model: id?.model, serial: serial, dpi: id?.dpi)
             })
@@ -201,17 +201,33 @@ private final class ScanTally: @unchecked Sendable {
     }
 }
 
+/// One of the device's own IPv4 addresses on a Wi-Fi or Ethernet interface, with its prefix.
+struct LanAddress: Equatable, Sendable {
+    var address: String
+    var prefixLength: Int
+}
+
 /// The device's Wi-Fi and Ethernet networks, from `getifaddrs` (no permission needed). Only
 /// `en*` interfaces count: VPN tunnels (`utun*`, `ipsec*`), cellular (`pdp_ip*`), loopback and
 /// AWDL are never scanned.
 enum LocalNetworks {
     /// Each LAN interface's IPv4 scan targets (`scanTargets`).
     static func subnets() -> [ScanSubnet] {
+        var out: [ScanSubnet] = []
+        var seen = Set<[String]>()
+        for lan in lanAddresses() {
+            let hosts = scanTargets(address: lan.address, prefixLength: lan.prefixLength)
+            if !hosts.isEmpty, seen.insert(hosts).inserted { out.append(ScanSubnet(hosts: hosts)) }
+        }
+        return out
+    }
+
+    /// The device's private (RFC 1918) IPv4 addresses on up, running `en*` interfaces.
+    static func lanAddresses() -> [LanAddress] {
         var list: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&list) == 0, let first = list else { return [] }
         defer { freeifaddrs(list) }
-        var out: [ScanSubnet] = []
-        var seen = Set<[String]>()
+        var out: [LanAddress] = []
         for entry in sequence(first: first, next: { $0.pointee.ifa_next }) {
             let ifa = entry.pointee
             let flags = Int32(ifa.ifa_flags)
@@ -221,8 +237,8 @@ enum LocalNetworks {
                   let netmask = ifa.ifa_netmask
             else { continue }
             let ip = ipv4(address)
-            let hosts = scanTargets(address: formatIpv4(ip), prefixLength: prefixLength(netmask: ipv4(netmask)))
-            if !hosts.isEmpty, seen.insert(hosts).inserted { out.append(ScanSubnet(hosts: hosts)) }
+            guard isPrivateIpv4(ip) else { continue }
+            out.append(LanAddress(address: formatIpv4(ip), prefixLength: prefixLength(netmask: ipv4(netmask))))
         }
         return out
     }
@@ -231,6 +247,13 @@ enum LocalNetworks {
     private static func ipv4(_ address: UnsafeMutablePointer<sockaddr>) -> UInt32 {
         address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
     }
+}
+
+/// Whether `a` and `b` share their first `prefixLength` bits (clamped to 1...32). Android's sameSubnet.
+func sameSubnet(_ a: String, _ b: String, prefixLength: Int) -> Bool {
+    guard let x = parseIpv4(a), let y = parseIpv4(b) else { return false }
+    let mask = UInt32.max << UInt32(32 - min(max(prefixLength, 1), 32))
+    return x & mask == y & mask
 }
 
 /// Wi-Fi or Ethernet: `en` and a number.

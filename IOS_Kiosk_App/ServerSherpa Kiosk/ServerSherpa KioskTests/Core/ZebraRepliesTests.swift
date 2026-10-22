@@ -68,6 +68,10 @@ struct ZebraRepliesTests {
         #expect(parseHostIdentification("\u{02}M,F,+8,8MB\u{03}")?.dotsPerMm == 8)
         #expect(parseHostIdentification("\u{02}M,F,x8,8MB\u{03}") == nil)
         #expect(parseHostIdentification("\u{02}M,F,99999999999999999999,8MB\u{03}")?.dotsPerMm == Int(Int32.max))
+        // ... and so does its DPI, as Kotlin's Double.toInt() clamps
+        #expect(parseHostIdentification("\u{02}M,F,99999999999999999999,8MB\u{03}")?.dpi == Int(Int32.max))
+        #expect(parseHostIdentification("\u{02}M,F,-99999999999999999999,8MB\u{03}")?.dpi == Int(Int32.min))
+        #expect(dpiFromDotsPerMm(100_000_000) == Int(Int32.max))
         #expect(parseHostIdentification("\u{02},F,8,8MB\u{03}") == nil) // no model
     }
 
@@ -156,6 +160,10 @@ struct ZebraRepliesTests {
         #expect(parseGetvar(" \"peel off\" ") == "peel off")
         #expect(parseGetvar("\"peel off\"\r\n") == "peel off")
         #expect(parseGetvar("\"\"") == nil)
+        // Kotlin's trim(): Char.isWhitespace, so U+001C..U+001F and no-break spaces go, U+0085 stays
+        #expect(parseGetvar("\u{1C}\u{1F}\"x\"\u{A0}\u{2007}") == "x")
+        #expect(parseGetvar("\u{85}\"x\"") == "\u{85}\"x\"")
+        #expect(parseGetvar("\u{85}") == "\u{85}")
     }
 
     @Test func theCommandsAreByteForByteTheKiosks() {

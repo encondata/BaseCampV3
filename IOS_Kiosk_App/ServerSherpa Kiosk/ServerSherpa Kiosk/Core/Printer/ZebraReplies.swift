@@ -51,19 +51,40 @@ private let STX = "\u{02}"
 private let ETX = "\u{03}"
 private let NOMINAL_DPI: [Int: Int] = [6: 150, 8: 203, 12: 300, 24: 600]
 
-/// The DPI a dots-per-mm resolution is sold as; anything else is converted and rounded.
+/// The DPI a dots-per-mm resolution is sold as; anything else is converted and rounded. Out of
+/// Int32 range it clamps, as Kotlin's `Double.toInt()` does.
 func dpiFromDotsPerMm(_ dotsPerMm: Int) -> Int {
-    NOMINAL_DPI[dotsPerMm] ?? Int((Double(dotsPerMm) * 25.4 + 0.5).rounded(.down))
+    if let nominal = NOMINAL_DPI[dotsPerMm] { return nominal }
+    let dpi = (Double(dotsPerMm) * 25.4 + 0.5).rounded(.down)
+    return Int(min(max(dpi, Double(Int32.min)), Double(Int32.max)))
 }
 
 private func strip(_ text: String) -> String {
     text.replacingOccurrences(of: STX, with: "").replacingOccurrences(of: ETX, with: "")
 }
 
-/// Kotlin's `String.trim()`: whitespace off both ends (Unicode scalars, so `\r\n` goes too).
+/// Kotlin's `String.trim()`: `Char.isWhitespace` characters off both ends, by scalar (so `\r\n`
+/// goes too).
 private func trimmed(_ text: some StringProtocol) -> String {
-    String(text).trimmingCharacters(in: .whitespacesAndNewlines)
+    let string = String(text)
+    let scalars = string.unicodeScalars
+    guard let start = scalars.firstIndex(where: { !kotlinWhitespace.contains($0) }),
+          let end = scalars.lastIndex(where: { !kotlinWhitespace.contains($0) })
+    else { return "" }
+    return String(scalars[start...end])
 }
+
+/// Kotlin's `Char.isWhitespace` (Java's `isWhitespace || isSpaceChar`), spelled out: U+0009–U+000D,
+/// U+001C–U+001F, the space separators (no-break spaces included) and U+2028/U+2029. Not U+0085.
+private let kotlinWhitespace: Set<Unicode.Scalar> = {
+    var set = Set<Unicode.Scalar>()
+    let ranges: [ClosedRange<UInt32>] = [
+        0x09...0x0D, 0x1C...0x1F, 0x20...0x20, 0xA0...0xA0, 0x1680...0x1680, 0x2000...0x200A,
+        0x2028...0x2029, 0x202F...0x202F, 0x205F...0x205F, 0x3000...0x3000,
+    ]
+    for range in ranges { for value in range { set.insert(Unicode.Scalar(value)!) } }
+    return set
+}()
 
 /// JavaScript's `parseInt(v, 10)`: leading whitespace, an optional sign, then the leading ASCII
 /// digits; nil when there are none. A value past Int32 clamps to it, as Android's does.
