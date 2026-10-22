@@ -36,9 +36,20 @@ fun fold(s: String?): String {
     return bare.lowercase().replace(NOT_LETTER_DIGIT_OR_SPACE, "").replace(SPACES, " ").trim()
 }
 
-/** By folded last name, then folded first name, then person id. */
+/** What [sortRows] orders by: folded last name, then folded first name, then person id. */
+data class RolodexSortKey(val last: String, val first: String, val id: String) : Comparable<RolodexSortKey> {
+    override fun compareTo(other: RolodexSortKey): Int = compareValuesBy(this, other, { it.last }, { it.first }, { it.id })
+}
+
+/** A row's [RolodexSortKey]. A list that keeps it per row can re-sort without folding the names again. */
+fun sortKey(row: RolodexRow): RolodexSortKey = RolodexSortKey(fold(row.last_name), fold(row.first_name), row.person_id)
+
+/**
+ * By folded last name, then folded first name, then person id. Each row's names are folded once
+ * (decorate, sort, undecorate), not on every comparison.
+ */
 fun sortRows(rows: List<RolodexRow>): List<RolodexRow> =
-    rows.sortedWith(compareBy<RolodexRow>({ fold(it.last_name) }, { fold(it.first_name) }, { it.person_id }))
+    rows.map { sortKey(it) to it }.sortedBy { it.first }.map { it.second }
 
 /** The folded last name's first character uppercased when it is a–z, else [OTHER_SECTION]: `de la Cruz` → D, `3M Crew` → #. */
 fun sectionLetter(lastName: String): String {
@@ -47,16 +58,25 @@ fun sectionLetter(lastName: String): String {
 }
 
 /** Sorted rows grouped by [sectionLetter]: A–Z in order, then [OTHER_SECTION] last. Empty letters are left out. */
-fun sections(rows: List<RolodexRow>): List<Pair<String, List<RolodexRow>>> {
-    val groups = sortRows(rows).groupBy { sectionLetter(it.last_name) }
+fun sections(rows: List<RolodexRow>): List<Pair<String, List<RolodexRow>>> =
+    groupSections(sortRows(rows)) { sectionLetter(it.last_name) }
+
+/**
+ * Already-sorted items grouped by a letter worked out beforehand (the screen keeps each row's
+ * [sectionLetter]), in the order of [sections]: A–Z, then [OTHER_SECTION] last. Each group keeps
+ * the items' order.
+ */
+fun <T> groupSections(sorted: List<T>, letterOf: (T) -> String): List<Pair<String, List<T>>> {
+    val groups = sorted.groupBy(letterOf)
     return groups.keys.sortedWith(compareBy<String>({ it == OTHER_SECTION }, { it })).map { it to groups.getValue(it) }
 }
 
 /**
  * The searchable words of a row's first, last and preferred name, job title and company, folded:
  * each whitespace word whole, plus its hyphen parts ("Smith-Jones" → smithjones, smith, jones).
+ * A list screen works these out once per row and keeps them, so typing never folds the list again.
  */
-private fun haystack(row: RolodexRow): List<String> =
+fun searchWords(row: RolodexRow): List<String> =
     listOf(row.first_name, row.last_name, row.preferred_name, row.job_title, row.company?.name)
         .flatMap { (it ?: "").split(SPACES) }
         .flatMap { word -> listOf(word) + word.split(HYPHENS) }
@@ -64,24 +84,33 @@ private fun haystack(row: RolodexRow): List<String> =
         .filter { it.isNotEmpty() }
         .distinct()
 
+/** The query's whitespace-separated terms, folded; terms that fold to nothing are dropped. */
+fun queryTerms(query: String): List<String> = query.split(SPACES).map(::fold).filter { it.isNotEmpty() }
+
+/** Every term is a prefix of at least one of [words]; no terms match everyone. */
+fun matchesTerms(words: List<String>, terms: List<String>): Boolean =
+    terms.all { term -> words.any { it.startsWith(term) } }
+
 /**
  * Every whitespace-separated query term (folded; terms that fold to nothing are dropped) must be a
- * prefix of at least one [haystack] word, so "smith-jones", "smith" and "jones" all find Smith-Jones.
+ * prefix of at least one [searchWords] word, so "smith-jones", "smith" and "jones" all find Smith-Jones.
  * An empty query matches everyone.
  */
 fun matches(row: RolodexRow, query: String): Boolean {
-    val terms = query.split(SPACES).map(::fold).filter { it.isNotEmpty() }
-    if (terms.isEmpty()) return true
-    val words = haystack(row)
-    return terms.all { term -> words.any { it.startsWith(term) } }
+    val terms = queryTerms(query)
+    return terms.isEmpty() || matchesTerms(searchWords(row), terms)
 }
 
-/** [FILTER_ALL], [FILTER_NO_PHOTO] (`has_photo == false`), or a status key. */
-fun applyFilter(rows: List<RolodexRow>, filter: String): List<RolodexRow> = when (filter) {
-    FILTER_ALL -> rows
-    FILTER_NO_PHOTO -> rows.filter { !it.has_photo }
-    else -> rows.filter { it.status == filter }
+/** Whether [row] shows under [filter]: [FILTER_ALL], [FILTER_NO_PHOTO] (`has_photo == false`), or a status key. */
+fun passesFilter(row: RolodexRow, filter: String): Boolean = when (filter) {
+    FILTER_ALL -> true
+    FILTER_NO_PHOTO -> !row.has_photo
+    else -> row.status == filter
 }
+
+/** The rows that pass [filter] ([passesFilter]). */
+fun applyFilter(rows: List<RolodexRow>, filter: String): List<RolodexRow> =
+    if (filter == FILTER_ALL) rows else rows.filter { passesFilter(it, filter) }
 
 /**
  * The chip counts, in chip order: all, one per status key, no_photo. Pass the search-filtered
@@ -148,9 +177,23 @@ fun buildPatch(original: RolodexDetail, edited: RolodexEdit): JsonObject = build
     field("status_note", original.status_note, edited.statusNote)
 }
 
-/** The first problem with the form, in the spec's words, or null when it can be saved. */
+/**
+ * name@domain.tld: no whitespace, exactly one @, something before it, and a domain of dot-separated
+ * labels with at least one dot and no empty label. The server's own check is stricter; this one
+ * only keeps its codeless 422 (shown as "Something went wrong.") off the form.
+ */
+private val EMAIL = Regex("^[^\\s@]+@[^\\s@.]+(\\.[^\\s@.]+)+$")
+
+/** Whether a typed email (trimmed, as it is sent) looks like name@domain.tld. */
+fun looksLikeEmail(email: String): Boolean = EMAIL.matches(email.trim())
+
+/**
+ * The first problem with the form, in the spec's words, or null when it can be saved. In form
+ * order: the names, then the email (blank is fine: it clears it), then the Blacklist note.
+ */
 fun validate(edit: RolodexEdit): String? = when {
     edit.firstName.isBlank() || edit.lastName.isBlank() -> "First and last name are required."
+    edit.email.isNotBlank() && !looksLikeEmail(edit.email) -> "Enter a valid email address."
     edit.status.trim() == BLACKLIST_STATUS && edit.statusNote.isBlank() -> "Add a note to blacklist someone."
     else -> null
 }

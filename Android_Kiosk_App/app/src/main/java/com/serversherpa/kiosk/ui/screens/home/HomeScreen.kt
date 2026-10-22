@@ -27,6 +27,7 @@ import com.serversherpa.kiosk.core.features.FeatureId
 import com.serversherpa.kiosk.core.features.homeFeatures
 import com.serversherpa.kiosk.core.features.featureAvailable
 import com.serversherpa.kiosk.core.setup.SetupState
+import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.ui.components.KioskToast
 import com.serversherpa.kiosk.ui.components.PageHeader
 import com.serversherpa.kiosk.ui.components.SetupCard
@@ -39,7 +40,8 @@ import kotlinx.coroutines.launch
 /**
  * kiosk/src/pages/Home.tsx: the launcher, two tiles per row. At a Time Clock station only Time
  * Clock, Kiosk Setup and Settings show; Time Clock (the web's Start Time Clock) gets the station
- * key if it is missing and signs the person out, which leaves the station on Welcome.
+ * key if it is missing and signs the person out, which leaves the station on Welcome. An admin
+ * (rank 60+) also gets the Rolodex on any other kiosk's Home.
  */
 @Composable
 fun HomeScreen(nav: NavHostController) {
@@ -48,6 +50,8 @@ fun HomeScreen(nav: NavHostController) {
     val setupState by container.prefs.setupState.collectAsStateWithLifecycle(initialValue = SetupState.INCOMPLETE)
     val devMode by container.prefs.devMode.collectAsStateWithLifecycle(initialValue = false)
     val stationType by remember(container) { container.prefs.setupSelection.map { it?.stationType } }.collectAsStateWithLifecycle(initialValue = null)
+    val auth by container.auth.state.collectAsStateWithLifecycle()
+    val isAdmin = (auth as? AuthState.Authed)?.isAdmin == true
     val complete = setupState == SetupState.COMPLETE
     val failed = setupState == SetupState.FAILED
     val scope = rememberCoroutineScope()
@@ -72,7 +76,7 @@ fun HomeScreen(nav: NavHostController) {
         if (!complete && devMode) KioskToast("Developer mode: all features are available while kiosk setup is ${setupState.wire}.")
         if (!complete && !devMode) KioskToast(if (failed) "Kiosk setup failed. Open Kiosk Setup to try again." else "Kiosk setup is incomplete. Only Kiosk Setup and Settings are available.", error = failed)
         startError?.let { KioskToast(it, error = true) }
-        homeFeatures(stationType).chunked(2).forEach { pair ->
+        homeFeatures(stationType, isAdmin).chunked(2).forEach { pair ->
             // IntrinsicSize.Min + fillMaxHeight: both tiles in a row take the height of the
             // taller one, so a tile without the "Finish Kiosk Setup first." line (Kiosk Setup,
             // Settings) is not visibly shorter than the locked tile beside it.

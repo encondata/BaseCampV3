@@ -24,6 +24,7 @@ import com.serversherpa.kiosk.data.auth.MoveSetupGuard
 import com.serversherpa.kiosk.data.auth.SessionCoordinator
 import com.serversherpa.kiosk.data.config.KioskConfig
 import com.serversherpa.kiosk.data.db.KioskDatabase
+import com.serversherpa.kiosk.data.db.ROLODEX_META_KEY
 import com.serversherpa.kiosk.data.heartbeat.Heartbeat
 import com.serversherpa.kiosk.data.identity.Identity
 import com.serversherpa.kiosk.data.labels.LabelBuilder
@@ -51,6 +52,7 @@ import com.serversherpa.kiosk.ui.flash.FlashController
 import com.serversherpa.kiosk.ui.sound.SoundPlayer
 import java.io.File
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -132,7 +134,7 @@ class AppContainer(
         scope.launch { identity.get(); auth.restore() }
         scope.launch { sync.hydrate() }
         labelBuilder.start(sync.status)
-        scope.launch { session.sessionEnded.collect { cookieJar.clearRefreshCookie() } }
+        scope.launch { session.sessionEnded.collect { cookieJar.clearRefreshCookie(); clearRolodexCache() } }
         // Clear Setup revokes a Time Clock station's key on the portal; drop it here too.
         scope.launch(Dispatchers.IO) { heartbeat.setupCleared.collect { stationKeys.clear() } }
         SessionCoordinator(auth, heartbeat, foreground, scope).start()
@@ -171,7 +173,8 @@ class AppContainer(
     /**
      * Settings › Developer › Reset app: a fresh setup on a kiosk that stays signed in. Clears the
      * synced move data (with the generated labels, templates and font files: Sync.clearLocalData),
-     * the Kiosk Setup selection and setup state, and the label settings (printer, offsets, peel).
+     * the Kiosk Setup selection and setup state, the label settings (printer, offsets, peel) and the
+     * Rolodex's offline list.
      * Drops a Time Clock station's key with the setup. Keeps the outbox (unsent scans), the sign-in, the API and portal URLs, the kiosk's identity
      * and name, and the appearance, sound, RFID, camera, checkpoint and developer-mode
      * preferences. The label builder ends stopped, waiting for a sync. The Print Labels list
@@ -180,6 +183,7 @@ class AppContainer(
      */
     suspend fun resetApp(clearLocalData: suspend () -> Unit = { sync.clearLocalData() }) {
         clearLocalData()
+        db.meta().delete(ROLODEX_META_KEY)
         prefs.clearSetup()
         withContext(Dispatchers.IO) { stationKeys.clear() }
         labelSettings.reset()
@@ -192,6 +196,13 @@ class AppContainer(
         internetTest.beforeSignOut() // INTERNET-TEST
         auth.logout()
         cookieJar.clearRefreshCookie()
+        clearRolodexCache()
+    }
+
+    /** The Rolodex's offline list holds names an admin loaded: it goes with the session (sign-out,
+     *  session end) and with Reset app. Best effort: a failed delete never blocks a sign-out. */
+    private suspend fun clearRolodexCache() {
+        try { db.meta().delete(ROLODEX_META_KEY) } catch (e: CancellationException) { throw e } catch (_: Exception) {}
     }
 
     /** Issues this kiosk's station key under the signed-in session and stores it bound to the

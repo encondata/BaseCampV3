@@ -10,6 +10,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 const val MOVE_META_KEY = "sync"
 /** The move's `label_context` object from /kiosk/sync/assets, raw JSON text (`null` when absent). */
 const val LABEL_CONTEXT_META_KEY = "label_context"
+/** The Rolodex's last loaded list, for offline reading: rows and options only, never email or phone.
+ *  Cleared on sign-out, session end and Reset app (AppContainer). */
+const val ROLODEX_META_KEY = "rolodex"
 
 /** Version 2: assets keep their raw payload; label templates, fonts and generated labels. */
 val MIGRATION_1_2 = object : Migration(1, 2) {

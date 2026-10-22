@@ -49,4 +49,31 @@ class FeaturesTest {
         assertEquals(FEATURES, homeFeatures(null))
         assertEquals(FEATURES, homeFeatures("label"))                  // no Label or RFID station on Android
     }
+
+    // ── Rolodex: admins only, on the full Home only (spec §3.1) ──
+
+    @Test fun anAdminsFullHomeHasTheRolodexBeforeSettings() {
+        val ids = homeFeatures(null, isAdmin = true).map { it.id }
+        assertTrue(FeatureId.ROLODEX in ids)
+        assertEquals(ids.indexOf(FeatureId.SETTINGS) - 1, ids.indexOf(FeatureId.ROLODEX))
+        assertEquals(FEATURES.size + 1, ids.size)
+        assertEquals("rolodex", ROLODEX_FEATURE.route)
+        assertEquals("Rolodex", ROLODEX_FEATURE.title)
+        // No move or setup step: the tile is usable on a kiosk that isn't set up.
+        assertTrue(featureAvailable(ROLODEX_FEATURE, SetupState.INCOMPLETE))
+    }
+
+    @Test fun aNonAdminNeverSeesTheRolodex() {
+        assertFalse(FeatureId.ROLODEX in homeFeatures(null, isAdmin = false).map { it.id })
+        assertEquals(FEATURES, homeFeatures(null, isAdmin = false))
+    }
+
+    @Test fun aTimeClockStationHomeNeverHasTheRolodex() {
+        assertEquals(listOf(FeatureId.TIMECLOCK_STATION, FeatureId.SETUP, FeatureId.SETTINGS), homeFeatures("timeclock", isAdmin = true).map { it.id })
+    }
+
+    /** The parity lists stay as they were: the Rolodex is a tile outside FEATURES. */
+    @Test fun theRolodexStaysOutOfFeatures() {
+        assertFalse(FEATURES.any { it.id == FeatureId.ROLODEX })
+    }
 }

@@ -212,4 +212,31 @@ class RolodexTest {
         assertNull(validate(ok.copy(status = "blacklist", statusNote = "No-show")))
         assertNull(validate(ok.copy(status = "standby")))
     }
+
+    /** The server's 422 for a malformed email carries no code, so the form catches it first. */
+    @Test fun validateRefusesAnEmailThatIsntNameAtDomain() {
+        val ok = RolodexEdit.from(detail)
+        val bad = "Enter a valid email address."
+        assertNull(validate(ok.copy(email = "ana@example.com")))
+        assertNull(validate(ok.copy(email = " ana@example.com ")))          // sent trimmed
+        assertNull(validate(ok.copy(email = "")))                           // blank clears it
+        assertNull(validate(ok.copy(email = "  ")))
+        assertEquals(bad, validate(ok.copy(email = "ana@example")))
+        assertEquals(bad, validate(ok.copy(email = "ana example@x.com")))
+        assertEquals(bad, validate(ok.copy(email = "@x.com")))
+        assertEquals(bad, validate(ok.copy(email = "ana@@x.com")))
+        assertEquals(bad, validate(ok.copy(email = "ana@x@y.com")))
+        assertEquals(bad, validate(ok.copy(email = "ana@.com")))
+        assertEquals(bad, validate(ok.copy(email = "ana@x.")))
+        assertEquals(bad, validate(ok.copy(email = "ana@")))
+    }
+
+    /** Names first, then the email, then the blacklist note. */
+    @Test fun validateReportsTheFirstProblemInFormOrder() {
+        val ok = RolodexEdit.from(detail)
+        val all = ok.copy(firstName = "", email = "nope", status = "blacklist", statusNote = "")
+        assertEquals("First and last name are required.", validate(all))
+        assertEquals("Enter a valid email address.", validate(all.copy(firstName = "Ana")))
+        assertEquals("Add a note to blacklist someone.", validate(all.copy(firstName = "Ana", email = "ana@example.com")))
+    }
 }
