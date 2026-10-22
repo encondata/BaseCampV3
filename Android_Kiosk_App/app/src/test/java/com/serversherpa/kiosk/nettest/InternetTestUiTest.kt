@@ -13,6 +13,7 @@ import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.assertTouchHeightIsEqualTo
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
@@ -28,6 +29,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
@@ -63,6 +65,7 @@ import org.junit.runner.Description
 import org.junit.runner.RunWith
 import org.junit.runners.model.Statement
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
@@ -278,56 +281,128 @@ class InternetTestUiTest {
         assertEquals(0, count("Net test", substring = true, ignoreCase = true))
     }
 
+    @Test fun chipHiddenWhileSignedOut() {
+        runBlocking { c.internetTest.setEnabled(true) }
+        show { KioskShell(rememberNavController()) { Text("page body") } }
+
+        // The switch has loaded (the footer says so), yet with nobody signed in there is no chip.
+        awaitText("NET TEST")
+        assertEquals(0, count("Net test"))
+    }
+
     private fun layoutOf(text: String): TextLayoutResult {
         val layouts = mutableListOf<TextLayoutResult>()
         compose.onNodeWithText(text).fetchSemanticsNode().config[SemanticsActions.GetTextLayoutResult].action?.invoke(layouts)
         return layouts.single()
     }
 
-    /** The brand as laid out is whole: not ellipsized and not overflowing its box. */
-    private fun brandWhole(): Boolean = layoutOf("ServerSherpa").let { !it.isLineEllipsized(0) && !it.hasVisualOverflow }
-
     /**
-     * The chip's label as laid out is whole: not ellipsized, no line wrapped
-     * out of sight, and the line inside its box. (Its width-overflow flag isn't
-     * used: Compose lays a short label in a Row out at the Row's full width, so
-     * the flag reads true for whole text, the kiosk name and Sign out included.)
+     * [text] as laid out shows in full: every character on its one visible
+     * line, nothing ellipsized or wrapped out of sight, and the line inside its
+     * box. (The width-overflow flag isn't used. Compose can lay a short text in
+     * a Row out at the Row's full width, so the flag reads true for whole text;
+     * the kiosk name and Sign out show it too.)
      */
-    private fun chipLabelWhole(): Boolean =
-        layoutOf("Net test").let { !it.isLineEllipsized(0) && !it.didOverflowHeight && it.getLineRight(0) <= it.size.width }
+    private fun whole(text: String): Boolean = layoutOf(text).let {
+        !it.isLineEllipsized(0) && !it.didOverflowHeight && it.getLineEnd(0, visibleEnd = true) == text.length && it.getLineRight(0) <= it.size.width
+    }
 
-    /**
-     * The main handheld, the 320 dp MC2200: the chip never cuts the brand off.
-     * Laid out with real fonts (native graphics), since only a real text
-     * layout shows an ellipsis; a node that is merely displayed proves nothing.
-     */
-    @Test
-    @GraphicsMode(GraphicsMode.Mode.NATIVE)
-    @Config(qualifiers = "w320dp-h533dp-hdpi")
-    fun chipLeavesTheBrandWholeOnA320dpHandheld() {
+    /** The brand is whole, and by the stricter test as well: no visual overflow at all. */
+    private fun brandWhole(): Boolean = whole("ServerSherpa") && !layoutOf("ServerSherpa").hasVisualOverflow
+
+    private lateinit var nav: NavHostController
+
+    /** The signed-in shell, on Home, for a kiosk named [kioskName], with the Settings route to land on. */
+    private fun showSignedInShell(kioskName: String) {
+        runBlocking { assertTrue(c.identity.setName(kioskName)) }
         c.auth.completePair(fakeSession())
-        show { KioskShell(rememberNavController()) { Text("page body") } }
-        compose.waitForIdle()
+        show {
+            nav = rememberNavController()
+            NavHost(nav, startDestination = Routes.HOME) {
+                composable(Routes.HOME) { KioskShell(nav) { Text("page body") } }
+                composable(Routes.SETTINGS, arguments = listOf(navArgument("tab") { type = NavType.StringType; nullable = true })) { entry ->
+                    Text("settings page: ${entry.arguments?.getString("tab")}")
+                }
+            }
+        }
+        awaitText(kioskName)
+    }
+
+    private fun pageTop(): Float = compose.onNodeWithText("page body").fetchSemanticsNode().boundsInRoot.top
+
+    /**
+     * With the switch off: no chip and the brand whole (and the kiosk name too
+     * when [nameFitsWhileOff]). Then switched on: the chip shows its full label,
+     * the brand is still whole, and Sign out stays.
+     */
+    private fun assertChipFits(kioskName: String, nameFitsWhileOff: Boolean) {
+        assertEquals(0, count("Net test"))
         assertTrue("the brand is cut off with the switch off", brandWhole())
-        val pageTop = compose.onNodeWithText("page body").fetchSemanticsNode().boundsInRoot.top
+        if (nameFitsWhileOff) assertTrue("the kiosk name is cut off with the switch off", whole(kioskName))
 
         runBlocking { c.internetTest.setEnabled(true) }
         awaitText("Net test")
 
+        assertTrue("the chip's label is cut off", whole("Net test"))
         assertTrue("the brand is cut off with the chip on", brandWhole())
-        assertTrue("the chip's own label is cut off", chipLabelWhole())
-        compose.onNodeWithText("ServerSherpa").assertIsDisplayed()
-        compose.onNodeWithText("Sign out").assertIsDisplayed()
         compose.onNodeWithText("Net test").assertIsDisplayed().assertHasClickAction()
-        // A small pill, but a full-size tap target, and the bar is no taller for it.
+        compose.onNodeWithText("Sign out").assertIsDisplayed()
+    }
+
+    /*
+     * The main handheld, the 320 dp MC2200, laid out with real fonts (native
+     * graphics): only a real text layout shows an ellipsis, and a node that is
+     * merely displayed proves nothing.
+     */
+
+    /** A kiosk name in the default format: chip and brand both whole, and a real tap on the pill opens Developer settings. */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w320dp-h533dp-hdpi")
+    fun chipFitsOnA320dpHandheld() {
+        showSignedInShell("Kiosk 8CE2")
+        val barOnly = pageTop()
+
+        assertChipFits("Kiosk 8CE2", nameFitsWhileOff = true)
+
+        // The pill adds no height to the bar. (Only checked here: when the chip
+        // and a longer name, or larger text, squeeze the bar's " · " separator,
+        // that original Text wraps and the bar grows. A kiosk name that is long
+        // enough does that with the switch off too.)
+        assertEquals(barOnly, pageTop())
+        // A small pill, but a full-height tap target within the bar.
         compose.onNodeWithText("Net test").assertTouchHeightIsEqualTo(48.dp)
-        assertEquals(pageTop, compose.onNodeWithText("page body").fetchSemanticsNode().boundsInRoot.top)
+        compose.onNodeWithText("Net test").performTouchInput { click(center) }
+        awaitText("settings page: developer")
+        assertEquals(Routes.SETTINGS, nav.currentDestination?.route)
+        assertEquals("developer", nav.currentBackStackEntry?.arguments?.getString("tab"))
+    }
+
+    /** Kiosk names run to 80 characters. The chip comes first, so a long name ellipsizes, never the chip. */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w320dp-h533dp-hdpi")
+    fun chipKeepsItsLabelBesideALongKioskName() {
+        showSignedInShell("Ashburn DC2 Receiving Dock")
+
+        assertChipFits("Ashburn DC2 Receiving Dock", nameFitsWhileOff = false)
+    }
+
+    /** Larger system text (font scale 1.15) with a default-format name: chip and brand both still whole. */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w320dp-h533dp-hdpi")
+    fun chipFitsAtFontScale115() {
+        RuntimeEnvironment.setFontScale(1.15f)
+        showSignedInShell("Kiosk 8CE2")
+        assertEquals(1.15f, compose.density.fontScale)
+
+        assertChipFits("Kiosk 8CE2", nameFitsWhileOff = true)
     }
 
     @Test fun chipOpensDeveloperSettings() {
         c.auth.completePair(fakeSession())
         runBlocking { c.internetTest.setEnabled(true) }
-        lateinit var nav: NavHostController
         show {
             nav = rememberNavController()
             NavHost(nav, startDestination = Routes.HOME) {

@@ -112,6 +112,7 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
                 // The kiosk's own name, then who is on it. The person gives way first,
                 // so the kiosk's name is never the thing that gets clipped.
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    NetTestChip(onClick = { nav.navigate(Routes.settings("developer")) }) // INTERNET-TEST
                     Text(
                         identity.name, fontFamily = FragmentMono, color = c.snow,
                         style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -124,7 +125,6 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
                             maxLines = 1, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false),
                         )
-                        NetTestChip(onClick = { nav.navigate(Routes.settings("developer")) }) // INTERNET-TEST
                     }
                 }
             }
