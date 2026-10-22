@@ -42,6 +42,7 @@ import {
   type FlowAction, type FlowMode, type FlowState,
 } from './flow';
 import { IconArrowLeft } from './icons';
+import { readKeyboardShown, writeKeyboardShown } from './keyboardPref';
 import OnScreenKeyboard from './OnScreenKeyboard';
 import AllSet from './screens/AllSet';
 import BadgeQuestion from './screens/BadgeQuestion';
@@ -116,6 +117,15 @@ export default function TimeclockFlow({
   const [looking, setLooking] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  // The on-screen keyboard is off until this kiosk turns it on (a laptop
+  // has a physical keyboard); the choice is remembered per kiosk.
+  const [keyboardShown, setKeyboardShown] = useState(readKeyboardShown);
+  const toggleKeyboard = () => {
+    const next = !keyboardShown;
+    setKeyboardShown(next);
+    writeKeyboardShown(next);
+    inputRef.current?.focus();
+  };
 
   const { step } = state;
   const atStart = step === START_STEP(mode);
@@ -442,7 +452,9 @@ export default function TimeclockFlow({
               onKeyDown={onKeyDown}
             />
           )}
-          keyboard={(
+          keyboardShown={keyboardShown}
+          onToggleKeyboard={toggleKeyboard}
+          keyboard={keyboardShown ? (
             <OnScreenKeyboard
               value={value}
               disabled={looking}
@@ -450,7 +462,7 @@ export default function TimeclockFlow({
               onBackspace={() => onValue(value.slice(0, -1))}
               onSearch={submit}
             />
-          )}
+          ) : null}
         />
       );
       break;

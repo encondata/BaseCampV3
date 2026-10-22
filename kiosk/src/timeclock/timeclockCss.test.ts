@@ -48,3 +48,12 @@ it('keyboard keys never shrink below a 56 px touch target', () => {
     expect(Number(floor), value).toBeGreaterThanOrEqual(56);
   }
 });
+
+it('the keyboard toggle is at least a 44 px target and the hidden-keyboard results scroll in a fixed region', () => {
+  const toggle = /\.tcx-kb-toggle\s*\{([^}]*)\}/.exec(rules)![1];
+  expect(Number(/(?:^|[;\s])width:\s*(\d+)px/.exec(toggle)![1])).toBeGreaterThanOrEqual(44);
+  expect(Number(/(?:^|[;\s])height:\s*(\d+)px/.exec(toggle)![1])).toBeGreaterThanOrEqual(44);
+  const region = /\.tcx-name-body\.is-bare \.tcx-results\s*\{([^}]*)\}/.exec(rules)![1];
+  expect(region).toMatch(/\bheight:/);
+  expect(region).toMatch(/overflow-y:\s*auto/);
+});
