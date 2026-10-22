@@ -43,6 +43,8 @@ import SwiftUI
     private(set) var started: [String] = []
     var failures = 0
     var timeouts = false
+    /// The failures are iOS's Local Network denial.
+    var denied = false
     var hold = false
     private(set) var atHold = false
 
@@ -55,6 +57,7 @@ import SwiftUI
         if failures > 0 {
             failures -= 1
             if timeouts { throw PrinterTimeout(host: host) }
+            if denied { throw PrinterUnreachable(host: host, localNetworkDenied: true) }
             throw PrinterUnreachable(host: host)
         }
         sent.append((host, zpl))
@@ -206,6 +209,16 @@ struct PrintLabelsViewModelTests {
         device.timeouts = true
         await scan(vm, "A-1")
         #expect(vm.entries[0].message == "The printer didn't finish answering. It may have printed the label — check before you retry.")
+        #expect(rows.isEmpty)
+    }
+
+    @Test func aSendKeptOffTheLocalNetworkSaysToAllowIt() async throws {
+        let vm = try await harness()
+        device.failures = 1
+        device.denied = true
+        await scan(vm, "A-1")
+        #expect(vm.entries[0].state == .failed)
+        #expect(vm.entries[0].message == LOCAL_NETWORK_DENIED_TEXT)
         #expect(rows.isEmpty)
     }
 

@@ -119,6 +119,8 @@ final class LabelPrintJobs {
                     try await sender(host, zpl)
                 } catch let e as PrinterTimeout {
                     throw LabelSendTimeout(cause: e)
+                } catch let e as PrinterUnreachable where e.localNetworkDenied {
+                    throw LabelSendLocalNetworkDenied(cause: e)
                 }
             },
             record: { target, scannedValue in

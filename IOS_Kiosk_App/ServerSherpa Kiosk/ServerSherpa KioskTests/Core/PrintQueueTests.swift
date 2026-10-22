@@ -436,6 +436,16 @@ struct PrintQueueTests {
         #expect(fake.recorded.isEmpty)
     }
 
+    @Test func aSendKeptOffTheLocalNetworkSaysToAllowIt() async throws {
+        let fake = Fake()
+        fake.failSends = 1
+        fake.sendError = { LabelSendLocalNetworkDenied() }
+        let e = try await queue(fake).scan(Asset("a1"), scannedValue: "A-1")
+        #expect(e.state == .failed)
+        #expect(e.message == LOCAL_NETWORK_DENIED_TEXT)
+        #expect(fake.recorded.isEmpty)
+    }
+
     @Test func aPrepareFailureShowsItsMessage() async throws {
         let fake = Fake()
         fake.prepare = { _, _ in .refused(DEVICE_UNSUPPORTED_TEXT) }

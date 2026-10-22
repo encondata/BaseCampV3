@@ -77,8 +77,6 @@ struct PrinterSetupUi: Equatable {
     /// Nil until a scan finishes.
     var found: [FoundPrinter]? = nil
     var scanMessage: String? = nil
-    /// The last scan found iOS keeping the kiosk off the local network (twice: see `scan()`).
-    var localNetworkDenied = false
     var ipText = ""
     /// The host being identified and saved.
     var choosing: String? = nil
@@ -103,7 +101,13 @@ struct PrinterSetupUi: Equatable {
     var peelAllowed: Bool { peeler != false }
     var busy: Bool { choosing != nil || installing || testing }
     /// The scan message reads as an error (red).
-    var scanError: Bool { scanMessage == SCAN_FAILED_TEXT || localNetworkDenied }
+    var scanError: Bool { scanMessage == SCAN_FAILED_TEXT || scanMessage == LOCAL_NETWORK_DENIED_TEXT }
+    /// iOS kept the kiosk off the local network: the scan (twice, see `scan()`), choosing a
+    /// printer, its Answers check or a test label says so, and the screen offers Settings.
+    var localNetworkDenied: Bool {
+        scanMessage == LOCAL_NETWORK_DENIED_TEXT || chooseError == LOCAL_NETWORK_DENIED_TEXT
+            || testMessage == LOCAL_NETWORK_DENIED_TEXT || checks.contains { $0.detail == LOCAL_NETWORK_DENIED_TEXT }
+    }
 }
 
 let NO_PRINTERS_FOUND_TEXT = "No Zebra printers found on this network."
@@ -113,6 +117,9 @@ let NO_PEELER_TEXT = "This printer has no peeler."
 let FONTS_INSTALLED_TEXT = "Fonts installed."
 func noZebraAnswerText(_ host: String) -> String { "No Zebra printer answered at \(host)." }
 func fontInstallFailedText(_ name: String) -> String { "Couldn't install \(name)." }
+
+/// The connection waited with iOS's Local Network denial (`NetworkZebra` marks it).
+func wasLocalNetworkDenied(_ error: Error) -> Bool { (error as? PrinterUnreachable)?.localNetworkDenied == true }
 
 /// No synced file for a font the library lists.
 private struct FontFileMissing: Error {}
@@ -134,8 +141,11 @@ private struct FontFileMissing: Error {}
  queue: one connection to the printer at a time, app-wide.
 
  iOS only: the first scan can run while the system's "Allow Local Network" prompt is on screen and
- come back denied, so a denied scan is run once more when the app comes back to the front
- (`sceneBecameActive`) or after 2 s, whichever is first; only a second denial says so.
+ come back denied, so a denied scan runs once more when the app is back in front (scene phase
+ `.active`, told through `scenePhaseChanged`): when it comes back, or 2 s after the denial if it
+ is in front then. A timer that ends while the prompt is still up (the scene isn't active) waits
+ for `.active` instead. Only a second denial says so; and with that message showing, coming back
+ to the app (from Settings, Local Network turned on) scans once more.
  */
 @MainActor @Observable
 final class PrinterSetupViewModel {
@@ -180,6 +190,8 @@ final class PrinterSetupViewModel {
     @ObservationIgnored private var offsetsTask: Task<Void, Never>?
     @ObservationIgnored private var rescanWait: CheckedContinuation<Void, Never>?
     @ObservationIgnored private var rescanTimer: Task<Void, Never>?
+    /// The scene phase is `.active` (the screen reports every phase, the first included).
+    @ObservationIgnored private var sceneActive = true
     @ObservationIgnored private var closed = false
 
     /// `zebraAt` is the printer at a host (`NetworkZebra` on the device); every call to it is made
@@ -221,19 +233,21 @@ final class PrinterSetupViewModel {
 
     // MARK: Choosing a printer
 
-    func scan() {
+    func scan() { startScan(retryDenied: true) }
+
+    /// `retryDenied`: a denial is scanned once more after the prompt (see the type's notes).
+    private func startScan(retryDenied: Bool) {
         guard !ui.scanning, !closed else { return }
         ui.scanning = true
         ui.scanMessage = nil
-        ui.localNetworkDenied = false
-        scanTask = Task { await self.runScan() }
+        scanTask = Task { await self.runScan(retryDenied: retryDenied) }
     }
 
-    private func runScan() async {
+    private func runScan(retryDenied: Bool) async {
         var result: ZebraScanResult?
         do {
             result = try await scanner()
-            if result?.localNetworkDenied == true {
+            if retryDenied && result?.localNetworkDenied == true {
                 // Maybe answered under the system's Local Network prompt: once more, after it.
                 await waitToRescan()
                 try Task.checkCancellation()
@@ -249,7 +263,6 @@ final class PrinterSetupViewModel {
         let denied = result?.localNetworkDenied == true
         ui.scanning = false
         ui.found = result?.printers ?? []
-        ui.localNetworkDenied = denied
         ui.scanMessage = if let result {
             denied ? result.message : (result.printers.isEmpty ? NO_PRINTERS_FOUND_TEXT : nil)
         } else {
@@ -257,7 +270,7 @@ final class PrinterSetupViewModel {
         }
     }
 
-    /// Until the app comes back to the front or `RESCAN_FALLBACK` passes, whichever is first.
+    /// Until the app comes back to the front, or `RESCAN_FALLBACK` passes with it in front.
     private func waitToRescan() async {
         let sleep = self.sleep
         await withTaskCancellationHandler {
@@ -265,12 +278,19 @@ final class PrinterSetupViewModel {
                 rescanWait = c
                 rescanTimer = Task { [weak self] in
                     do { try await sleep(Self.RESCAN_FALLBACK) } catch { return }
-                    self?.wakeRescan()
+                    self?.fallbackEnded()
                 }
             }
         } onCancel: {
             Task { @MainActor [weak self] in self?.wakeRescan() }
         }
+    }
+
+    /// The 2 s passed: rescan now if the app is in front; under the prompt, the wait goes on
+    /// until `.active` (`scenePhaseChanged`).
+    private func fallbackEnded() {
+        rescanTimer = nil
+        if sceneActive { wakeRescan() }
     }
 
     private func wakeRescan() {
@@ -280,9 +300,19 @@ final class PrinterSetupViewModel {
         rescanWait = nil
     }
 
-    /// The app came back to the front (scenePhase `.active`): a denied scan waiting to run again
-    /// runs now. Nothing else starts here.
-    func sceneBecameActive() { wakeRescan() }
+    /// Every scene phase, the first included (`active` is `.active`). Coming back to the front
+    /// runs a denied scan's waiting rescan, or, with the denied message showing, scans once more
+    /// (back from Settings). Nothing else starts here.
+    func scenePhaseChanged(active: Bool) {
+        let cameBack = active && !sceneActive
+        sceneActive = active
+        guard cameBack else { return }
+        if rescanWait != nil {
+            wakeRescan()
+        } else if ui.scanMessage == LOCAL_NETWORK_DENIED_TEXT && !ui.scanning {
+            startScan(retryDenied: false)
+        }
+    }
 
     func setIpText(_ text: String) {
         ui.ipText = text
@@ -333,7 +363,7 @@ final class PrinterSetupViewModel {
             return
         } catch {
             ui.choosing = nil
-            ui.chooseError = noZebraAnswerText(host)
+            ui.chooseError = wasLocalNetworkDenied(error) ? LOCAL_NETWORK_DENIED_TEXT : noZebraAnswerText(host)
             return
         }
         settingsStore.setPrinter(saved)
@@ -393,8 +423,12 @@ final class PrinterSetupViewModel {
     private func checks(_ saved: SavedPrinter, run: Int) async throws {
         let zebra = printerAt(saved.host)
         try put(CheckRow(key: .answers, state: .running), run)
-        guard let id = try await quietly({ try await zebra.identify() }) else {
-            try put(CheckRow(key: .answers, state: .fail, detail: noZebraAnswerText(saved.host)), run)
+        let id: HostId
+        switch try await attempt({ try await zebra.identify() }) {
+        case .success(let answer): id = answer
+        case .failure(let error):
+            let detail = wasLocalNetworkDenied(error) ? LOCAL_NETWORK_DENIED_TEXT : noZebraAnswerText(saved.host)
+            try put(CheckRow(key: .answers, state: .fail, detail: detail), run)
             return
         }
         try put(CheckRow(key: .answers, state: .ok, detail: "\(id.model) · \(id.dpi) DPI"), run)
@@ -657,6 +691,8 @@ final class PrinterSetupViewModel {
             return
         } catch where LabelEngineError.isUnsupported(error) {
             (message, isError) = (DEVICE_UNSUPPORTED_TEXT, true)
+        } catch where wasLocalNetworkDenied(error) {
+            (message, isError) = (LOCAL_NETWORK_DENIED_TEXT, true)
         } catch is PrinterTimeout {
             (message, isError) = (Self.TEST_TIMEOUT_TEXT, true)
         } catch is PrinterError {
@@ -681,12 +717,18 @@ final class PrinterSetupViewModel {
 
     /// `op`'s answer, or nil when it fails any way but a cancellation (which is rethrown).
     private func quietly<T>(_ op: () async throws -> T) async throws -> T? {
+        if case .success(let answer) = try await attempt(op) { return answer }
+        return nil
+    }
+
+    /// `op`'s answer or its error; a cancellation is rethrown.
+    private func attempt<T>(_ op: () async throws -> T) async throws -> Result<T, Error> {
         do {
-            return try await op()
+            return .success(try await op())
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            return nil
+            return .failure(error)
         }
     }
 

@@ -32,6 +32,13 @@ struct LabelSendTimeout: Error, CustomStringConvertible {
     var description: String { "the printer didn't take the whole label in time" }
 }
 
+/// `PrintQueueDeps.send` throws this when iOS kept the kiosk off the local network (Local Network
+/// access is off for the app): the label never went out.
+struct LabelSendLocalNetworkDenied: Error, CustomStringConvertible {
+    var cause: Error? = nil
+    var description: String { "Local Network access is off for this app" }
+}
+
 /// What a scan says for each outcome a label can store (kiosk/src/lib/printQueue.ts LABEL_REASONS).
 private let LABEL_REASONS: [String: String] = [
     NO_TEMPLATE_AT_DPI: "No label for this asset: this move has no active label template at this printer's DPI. "
@@ -136,7 +143,8 @@ struct PrintQueueDeps<A: Sendable>: Sendable {
     var label: @Sendable (A) async throws -> PrintStep
     /// The label with the saved offsets and peel or tear mode applied (see `prepareForPrinter`).
     var prepare: @Sendable (_ zpl: String, _ settings: LabelSettings) async throws -> PrintStep
-    /// Sends the ZPL to the printer at the host; throws when it can't (`LabelSendTimeout` when the
+    /// Sends the ZPL to the printer at the host; throws when it can't (`LabelSendLocalNetworkDenied`
+    /// when iOS kept it off the local network, `LabelSendTimeout` when the
     /// job may have gone out).
     var send: @Sendable (_ host: String, _ zpl: String) async throws -> Void
     /// Queues the Labeled scan; throws when it can't be saved.
@@ -331,7 +339,14 @@ actor PrintQueue<A: Sendable> {
             try await deps.send(printer.host, bytes)
         } catch {
             deps.log("couldn't send the label to \(printer.host)", error)
-            return fail(w, error is LabelSendTimeout ? PRINTER_TIMEOUT_TEXT : printerUnreachableText(printer.host))
+            let message = if error is LabelSendTimeout {
+                PRINTER_TIMEOUT_TEXT
+            } else if error is LabelSendLocalNetworkDenied {
+                LOCAL_NETWORK_DENIED_TEXT
+            } else {
+                printerUnreachableText(printer.host)
+            }
+            return fail(w, message)
         }
         // A scan records once, on its first label that goes out; a Reprint never does. A label
         // that went out after a reset records nothing: the scan belongs to the session before.
@@ -346,6 +361,6 @@ actor PrintQueue<A: Sendable> {
                 warning = RECORD_FAILED_TEXT
             }
         }
-        return update(w, .printed, nil, recordWarning: warning ?? w.entry.recordWarning)
+        return update(w, .printed, nil, recordWarning: .some(warning ?? w.entry.recordWarning))
     }
 }

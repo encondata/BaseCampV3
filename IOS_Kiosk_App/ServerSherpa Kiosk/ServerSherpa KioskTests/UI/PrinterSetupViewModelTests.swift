@@ -104,6 +104,8 @@ import Foundation
     private(set) var inStatus = false
     /// Thrown by send() when set.
     var sendError: Error?
+    /// When it doesn't answer, it's iOS's Local Network denial.
+    var deniedLocalNetwork = false
     private(set) var onE: [String] = []
     private(set) var sent: [String] = []
     private(set) var installed: [(name: String, bytes: Data)] = []
@@ -118,7 +120,7 @@ import Foundation
 
     private func use(_ what: String, _ detail: String = "") async throws {
         calls.append(what)
-        if !answers { throw PrinterUnreachable(host: host) }
+        if !answers { throw PrinterUnreachable(host: host, localNetworkDenied: deniedLocalNetwork) }
         try await line?.connect("\(host) \(what)\(detail.isEmpty ? "" : " ")\(detail)")
     }
 
@@ -284,7 +286,7 @@ final class PrinterSetupViewModelTests {
     }
 
     /// Waits (real time: the store and the builder run on their own) for `cond`.
-    private func eventually(_ what: String, _ cond: () -> Bool) async {
+    private func eventually(_ what: String, _ cond: @MainActor @Sendable () -> Bool) async {
         let ok = await waitUntil(timeout: .seconds(8), cond)
         #expect(ok, "never: \(what)")
     }
@@ -709,7 +711,9 @@ final class PrinterSetupViewModelTests {
         #expect(scanner.count == 1)
         #expect(vm.ui.scanning)
         #expect(vm.ui.scanMessage == nil)
-        vm.sceneBecameActive()
+        // The Local Network prompt (inactive), then Allow (active).
+        vm.scenePhaseChanged(active: false)
+        vm.scenePhaseChanged(active: true)
         await eventually("rescanned") { !vm.ui.scanning }
         #expect(scanner.count == 2)
         #expect(vm.ui.found == found)
@@ -734,16 +738,119 @@ final class PrinterSetupViewModelTests {
         #expect(vm.ui.scanMessage == LOCAL_NETWORK_DENIED_TEXT)
         #expect(vm.ui.localNetworkDenied)
         #expect(vm.ui.scanError)
-        // Coming back now rescans nothing: one rescan per scan.
-        vm.sceneBecameActive()
+        // Staying in front starts nothing more.
+        vm.scenePhaseChanged(active: true)
         try await Task.sleep(for: .milliseconds(30))
         #expect(scanner.count == 2)
         #expect(gated.asked == [.seconds(2)])
     }
 
+    /// Ruling: with the denied message showing, coming back to the app (from Settings, Local
+    /// Network turned on) scans once more, and that scan has no rescan of its own.
+    @Test func comingBackWithTheDeniedMessageShowingScansOnceMore() async throws {
+        let gated = Sleeps(gated: true)
+        scanner.results = [ZebraScanResult(printers: [], localNetworkDenied: true)]
+        let vm = vm(sleeps: gated)
+        vm.scenePhaseChanged(active: true) // the first phase
+        vm.scan()
+        #expect(await gated.gate!.tick())
+        await eventually("denied twice") { !vm.ui.scanning && vm.ui.scanMessage == LOCAL_NETWORK_DENIED_TEXT }
+        #expect(scanner.count == 2)
+
+        vm.scenePhaseChanged(active: false) // off to Settings
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(scanner.count == 2)
+        vm.scenePhaseChanged(active: true)  // back
+        await eventually("scanned once more") { scanner.count == 3 && !vm.ui.scanning }
+        #expect(vm.ui.scanMessage == LOCAL_NETWORK_DENIED_TEXT) // still off: says so at once
+        #expect(gated.asked == [.seconds(2)])
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(scanner.count == 3)
+
+        // Allowed this time: the printers show.
+        let found = [FoundPrinter(host: "10.0.0.7", model: "ZT230", serial: "SER9", dpi: 300)]
+        scanner.results = [ZebraScanResult(printers: found, localNetworkDenied: false)]
+        vm.scenePhaseChanged(active: false)
+        vm.scenePhaseChanged(active: true)
+        await eventually("found") { vm.ui.found == found && !vm.ui.scanning }
+        #expect(vm.ui.scanMessage == nil)
+        #expect(!vm.ui.localNetworkDenied)
+    }
+
+    /// The fallback ending under the system prompt (scene not active) doesn't use up the one
+    /// rescan: it waits for the app to be in front.
+    @Test func aFallbackThatEndsUnderThePromptWaitsForTheAppToBeInFront() async throws {
+        let gated = Sleeps(gated: true)
+        let found = [FoundPrinter(host: "10.0.0.7", model: "ZT230", serial: "SER9", dpi: 300)]
+        scanner.results = [ZebraScanResult(printers: [], localNetworkDenied: true), ZebraScanResult(printers: found, localNetworkDenied: false)]
+        let vm = vm(sleeps: gated)
+        vm.scenePhaseChanged(active: true) // the first phase
+        vm.scan()
+        vm.scenePhaseChanged(active: false) // the Local Network prompt
+        #expect(await gated.gate!.tick())
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(scanner.count == 1)
+        #expect(vm.ui.scanning)
+        #expect(vm.ui.scanMessage == nil)
+        vm.scenePhaseChanged(active: true) // Allow tapped
+        await eventually("rescanned") { !vm.ui.scanning }
+        #expect(scanner.count == 2)
+        #expect(vm.ui.found == found)
+        #expect(vm.ui.scanMessage == nil)
+    }
+
+    // MARK: Local Network denial outside the scan
+
+    @Test func choosingAPrinterKeptOffTheLocalNetworkSaysToAllowIt() async throws {
+        try await start()
+        let z = zebra("10.0.0.9")
+        z.answers = false
+        z.deniedLocalNetwork = true
+        let vm = vm()
+        vm.setIpText("10.0.0.9")
+        vm.useIp()
+        await eventually("refused") { vm.ui.chooseError != nil && vm.ui.choosing == nil }
+        #expect(vm.ui.chooseError == LOCAL_NETWORK_DENIED_TEXT)
+        #expect(vm.ui.localNetworkDenied)
+        #expect(current.printer == saved)
+    }
+
+    @Test func theAnswersCheckKeptOffTheLocalNetworkSaysToAllowIt() async throws {
+        try await start()
+        let z = zebra(saved.host)
+        z.answers = false
+        z.deniedLocalNetwork = true
+        let vm = vm()
+        await checked(vm) { vm.checkAgain() }
+        #expect(row(vm, .answers)?.state == .fail)
+        #expect(row(vm, .answers)?.detail == LOCAL_NETWORK_DENIED_TEXT)
+        #expect(vm.ui.localNetworkDenied)
+        // Allowed, checked again: the message and the Settings offer go.
+        z.answers = true
+        await checked(vm) { vm.checkAgain() }
+        #expect(row(vm, .answers)?.state == .ok)
+        #expect(!vm.ui.localNetworkDenied)
+    }
+
+    @Test func aTestLabelKeptOffTheLocalNetworkSaysToAllowIt() async throws {
+        try await start()
+        await awaitPick203()
+        let z = zebra(saved.host)
+        z.answers = false
+        z.deniedLocalNetwork = true
+        let vm = vm()
+        vm.printTest(.alignment)
+        await eventually("refused") { !vm.ui.testing && vm.ui.testMessage != nil }
+        #expect(vm.ui.testMessage == LOCAL_NETWORK_DENIED_TEXT)
+        #expect(vm.ui.testError)
+        #expect(vm.ui.localNetworkDenied)
+    }
+
     @Test func comingBackWithNoDeniedScanStartsNothingAndAFailedScanSaysSo() async throws {
         let vm = vm()
-        vm.sceneBecameActive()
+        vm.scenePhaseChanged(active: true)
+        vm.scenePhaseChanged(active: false)
+        vm.scenePhaseChanged(active: true)
         try await Task.sleep(for: .milliseconds(30))
         #expect(scanner.count == 0)
         scanner.error = ScanBroke()

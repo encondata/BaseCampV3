@@ -77,6 +77,8 @@ private struct PrinterSetupBody: View {
                 if mode == .scan { scanResults(ui, printer) }
                 if mode == .ip { ipEntry(ui) }
                 KioskToast(text: ui.chooseError, error: true)
+                // The scan, choosing a printer, its Answers check or a test label met iOS's Local Network denial.
+                if ui.localNetworkDenied && !ui.scanning { OpenSettingsButton().padding(.bottom, 8) }
 
                 if let printer {
                     SectionTitle(title: "Checks")
@@ -109,9 +111,10 @@ private struct PrinterSetupBody: View {
             TestLabelSheet(vm: vm, onDismiss: { testOpen = false })
                 .environment(\.kioskPalette, palette)
         }
-        // Only `.active` matters: a denied scan waiting under the Local Network prompt runs again.
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { vm.sceneBecameActive() }
+        // Every phase, the first included: a denied scan's rescan waits until the Local Network
+        // prompt is gone (the scene is `.active` again).
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            vm.scenePhaseChanged(active: phase == .active)
         }
         .onAppear { vm.open() }
         .onDisappear { vm.close() }
@@ -126,12 +129,6 @@ private struct PrinterSetupBody: View {
             .padding(.vertical, 6)
         }
         KioskToast(text: ui.scanMessage, error: ui.scanError)
-        if ui.localNetworkDenied && !ui.scanning {
-            SecondaryButton("Open Settings") {
-                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
-            }
-            .padding(.bottom, 8)
-        }
         ForEach(ui.found ?? [], id: \.host) { p in
             SetupCard(selected: printer?.host == p.host, enabled: !ui.busy && !ui.scanning, action: { vm.choose(p) }) {
                 Text(p.host).font(KioskType.mono(16)).fontWeight(.semibold).foregroundStyle(palette.text)
@@ -161,7 +158,7 @@ private struct PrinterSetupBody: View {
             .padding(.top, 4)
             .accessibilityLabel("Printer IP")
         SecondaryButton(ui.choosing != nil ? "Connecting…" : "Use this printer",
-                        enabled: !ui.busy && !ui.ipText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) { vm.useIp() }
+                        enabled: !ui.busy && !kotlinTrimmed(ui.ipText).isEmpty) { vm.useIp() }
             .padding(.top, 8)
     }
 
@@ -204,6 +201,15 @@ private struct PrinterSetupBody: View {
         SecondaryButton(ui.checking ? "Checking…" : (ui.checkRuns == 0 ? "Check printer" : "Check again"),
                         enabled: !ui.busy && !ui.checking) { vm.checkAgain() }
             .padding(.top, 8)
+    }
+}
+
+/// Opens this app's page in Settings (Local Network access).
+struct OpenSettingsButton: View {
+    var body: some View {
+        SecondaryButton("Open Settings") {
+            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+        }
     }
 }
 
