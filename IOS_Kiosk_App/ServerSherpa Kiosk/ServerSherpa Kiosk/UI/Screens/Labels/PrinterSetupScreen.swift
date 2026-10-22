@@ -312,8 +312,8 @@ struct OpenSettingsButton: View {
     }
 }
 
-/// A section's small caps title.
-private struct SectionTitle: View {
+/// A section's small caps title (Printer Setup, Settings › Troubleshooting).
+struct SectionTitle: View {
     let title: String
     @Environment(\.kioskPalette) private var palette
 

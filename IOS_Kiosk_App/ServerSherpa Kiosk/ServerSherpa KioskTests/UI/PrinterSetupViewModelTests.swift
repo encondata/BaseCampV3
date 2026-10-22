@@ -153,6 +153,10 @@ import Foundation
     nonisolated func installFont(name: String, bytes: Data, progress: (@Sendable (_ sent: Int, _ total: Int) -> Void)?) async throws {
         try await installNow(name, bytes, progress)
     }
+    /// Printer Setup never sends a raw query (Troubleshooting does).
+    nonisolated func query(_ command: String, complete: @escaping @Sendable (Data) -> Bool) async throws -> String {
+        throw PrinterNoReply(host: host)
+    }
 
     private func identifyNow() async throws -> HostId {
         try await use("identify")

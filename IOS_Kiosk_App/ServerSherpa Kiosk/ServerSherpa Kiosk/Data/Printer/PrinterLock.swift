@@ -41,8 +41,8 @@ func lockedSender(_ lock: PrinterLock, _ printerGuard: PrinterGuard, _ send: @es
     }
 }
 
-/// One Zebra, as Printer Setup talks to it (Android's `SetupZebra`): a `ZebraTransport` on the
-/// device (`NetworkZebra`).
+/// One Zebra, as Printer Setup and Settings › Troubleshooting talk to it (Android's `SetupZebra`):
+/// a `ZebraTransport` on the device (`NetworkZebra`, `BluetoothZebra`).
 protocol SetupZebra: Sendable {
     func identify() async throws -> HostId
     func serial() async throws -> String?
@@ -52,6 +52,10 @@ protocol SetupZebra: Sendable {
     func fontEntries() async throws -> [DirectoryEntry]
     func send(_ zpl: String) async throws
     func installFont(name: String, bytes: Data, progress: (@Sendable (_ sent: Int, _ total: Int) -> Void)?) async throws
+    /// Sends `command` and returns the reply as the printer sent it (Latin-1), read until
+    /// `complete` says it is whole or the transport's quiet and total limits: Troubleshooting's ask
+    /// buttons and command box, which show the raw reply.
+    func query(_ command: String, complete: @escaping @Sendable (Data) -> Bool) async throws -> String
 }
 
 extension SetupZebra {
@@ -88,9 +92,23 @@ struct LockedZebra: SetupZebra {
     func fonts() async throws -> [String] { try await ask { try await inner.fonts() } }
     func fontEntries() async throws -> [DirectoryEntry] { try await ask { try await inner.fontEntries() } }
 
+    func query(_ command: String, complete: @escaping @Sendable (Data) -> Bool) async throws -> String {
+        try await ask { try await inner.query(command, complete: complete) }
+    }
+
     func send(_ zpl: String) async throws {
         try await lock.withLock {
             try await self.guard.sending(for: connection, clear: clear) { try await inner.send(zpl) }
+        }
+    }
+
+    /// Troubleshooting's Cut-send test (D16): sends `zpl` (the first half of a label) as `send`
+    /// does, then marks the printer as if that send had been cut off, both in one turn of the lock,
+    /// so a label queued behind it can't reach the printer before the mark and merge into the half.
+    func sendCut(_ zpl: String) async throws {
+        try await lock.withLock {
+            try await self.guard.sending(for: connection, clear: clear) { try await inner.send(zpl) }
+            await self.guard.markSendFailed(for: connection)
         }
     }
 

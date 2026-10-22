@@ -92,6 +92,11 @@ private final class RecordingZebra: SetupZebra, @unchecked Sendable {
         return []
     }
 
+    func query(_ command: String, complete: @escaping @Sendable (Data) -> Bool) async throws -> String {
+        try ask("query")
+        return ""
+    }
+
     func send(_ zpl: String) async throws {
         switch write(zpl) {
         case .refused: throw PrinterUnreachable(host: "10.0.0.5")
@@ -165,7 +170,7 @@ struct PrinterGuardTests {
     }
 
     /// Every query through `LockedZebra` honors a pending clear: identify, serial, status,
-    /// peeler, fonts and the font listing.
+    /// peeler, fonts, the font listing and Troubleshooting's raw query.
     @Test func everyQueryClearsFirst() async throws {
         let queries: [(String, @Sendable (LockedZebra) async throws -> Void)] = [
             ("identify", { _ = try await $0.identify() }),
@@ -174,6 +179,7 @@ struct PrinterGuardTests {
             ("peeler", { _ = try await $0.peelerPresent() }),
             ("fonts", { _ = try await $0.fonts() }),
             ("fontEntries", { _ = try await $0.fontEntries() }),
+            ("query", { _ = try await $0.query("~HQES", complete: { _ in true }) }),
         ]
         for (name, query) in queries {
             let zebra = RecordingZebra()
@@ -184,6 +190,20 @@ struct PrinterGuardTests {
             try await query(setup)
             #expect(zebra.events == ["~JX", "?\(name)", "?\(name)"], "\(name)")
         }
+    }
+
+    /// Troubleshooting's Cut-send test: the half label goes out and the printer is marked for a
+    /// clear in the same turn, so the next send (the full label) goes after `~JX`.
+    @Test func sendCutMarksThePrinterForAClear() async throws {
+        let zebra = RecordingZebra()
+        let printerGuard = PrinterGuard()
+        let setup = setup(zebra, printerGuard)
+        try await setup.sendCut("^XA^FO10")
+        #expect(zebra.written == ["^XA^FO10"])
+        #expect(await printerGuard.state(for: a) == .needsClear)
+        try await setup.send("^XA^FO10,10^FDFULL^FS^XZ")
+        #expect(zebra.written == ["^XA^FO10", "~JX", "^XA^FO10,10^FDFULL^FS^XZ"])
+        #expect(await printerGuard.state(for: a) == .clean)
     }
 
     /// Printer Setup's sends and font installs clear the same way.
