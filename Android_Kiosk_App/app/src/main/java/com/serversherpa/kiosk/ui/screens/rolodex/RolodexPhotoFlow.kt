@@ -37,6 +37,9 @@ class PhotoFailure(
     fun copy(retryError: String? = this.retryError, retrying: Boolean = this.retrying) = PhotoFailure(name, jpeg, retryError, retrying)
 }
 
+/** When no photo picker can open on the device (Task 7 minor 4). */
+internal const val LIBRARY_UNAVAILABLE = "This device can't open the photo library."
+
 /** "Marcus Reed was saved, but the photo didn't upload." */
 fun photoFailureText(name: String): String = "$name was saved, but the photo didn't upload."
 
@@ -48,6 +51,10 @@ data class RolodexPhotoUi(
     val crop: PhotoCrop? = null,
     /** Use photo: the JPEG is on its way. */
     val uploading: Boolean = false,
+    /** The shutter was pressed and the capture hasn't landed yet: the camera's other actions wait. */
+    val capturing: Boolean = false,
+    /** Flip: the front camera. Kept across Retake; every new photo starts on the back camera. */
+    val front: Boolean = false,
     /** What went wrong with the picture or its upload, in the spec's words. */
     val error: String? = null,
     /** New workers whose photo didn't upload after the create, by person id. */
@@ -92,6 +99,16 @@ class RolodexPhotoFlow internal constructor(
     fun closeSheet() = _state.update { it.copy(sheet = false) }
 
     /**
+     * No photo picker could open on this device: said where the admin asked, the sheet again
+     * (Choose photo) or the camera (Library), instead of nothing happening.
+     */
+    fun libraryUnavailable() {
+        val s = _state.value
+        if (s.target == null || s.uploading || (s.stage != PhotoStage.NONE && s.stage != PhotoStage.CAMERA)) return
+        _state.update { it.copy(sheet = it.stage == PhotoStage.NONE, error = LIBRARY_UNAVAILABLE) }
+    }
+
+    /**
      * A capture or a pick ([load] decodes it, off the main thread): "Position your photo". One that
      * isn't a picture goes to the photo step and says so.
      */
@@ -99,7 +116,7 @@ class RolodexPhotoFlow internal constructor(
         val s = _state.value
         if (s.target == null || s.uploading || s.stage == PhotoStage.LOADING) return
         val mine = ++visit
-        _state.update { it.copy(sheet = false, error = null, stage = PhotoStage.LOADING) }
+        _state.update { it.copy(sheet = false, error = null, stage = PhotoStage.LOADING, capturing = false) }
         scope.launch {
             val crop = decodeCrop(load)
             if (mine != visit || _state.value.target == null) return@launch
@@ -110,11 +127,29 @@ class RolodexPhotoFlow internal constructor(
         }
     }
 
-    /** Retake: back to the photo step. */
+    /** Retake: back to the photo step (on the camera Flip last chose). */
     fun retake() {
         if (_state.value.uploading) return
         visit++
-        _state.update { it.copy(crop = null, error = null, stage = PhotoStage.CAMERA) }
+        _state.update { it.copy(crop = null, error = null, stage = PhotoStage.CAMERA, capturing = false) }
+    }
+
+    /** The shutter: a capture may start (true) on the camera when none is on its way. [use] or [captureFailed] follows. */
+    fun captureStarted(): Boolean {
+        val s = _state.value
+        if (s.target == null || s.uploading || s.stage != PhotoStage.CAMERA || s.capturing) return false
+        _state.update { it.copy(capturing = true, error = null) }
+        return true
+    }
+
+    /** The capture failed (the camera says why): the shutter is free again. */
+    fun captureFailed() = _state.update { it.copy(capturing = false) }
+
+    /** Flip: the other camera, kept across Retake. Not while a capture is on its way. */
+    fun flip() {
+        val s = _state.value
+        if (s.stage != PhotoStage.CAMERA || s.capturing) return
+        _state.update { it.copy(front = !it.front) }
     }
 
     /** Cancel (the sheet, the camera, or Back): nothing changes. Not while the photo uploads. */
@@ -125,7 +160,7 @@ class RolodexPhotoFlow internal constructor(
 
     private fun closeScreens() {
         visit++
-        _state.update { it.copy(target = null, sheet = false, stage = PhotoStage.NONE, crop = null, error = null) }
+        _state.update { it.copy(target = null, sheet = false, stage = PhotoStage.NONE, crop = null, error = null, capturing = false, front = false) }
     }
 
     /**
@@ -189,10 +224,15 @@ class RolodexPhotoFlow internal constructor(
     /** "Marcus Reed was saved, but the photo didn't upload." while that photo is waiting. */
     fun failureText(personId: String): String? = _state.value.failures[personId]?.let { photoFailureText(it.name) }
 
-    /** Try again: the same photo, one try at a time per worker (the view model checks the connection). */
+    /**
+     * Try again: the same photo, one try at a time per worker (the view model checks the
+     * connection). Signed out since, nothing is sent (as Use photo) and the waiting photos go with
+     * the session.
+     */
     internal fun retry(personId: String) {
         val failure = _state.value.failures[personId] ?: return
         if (failure.retrying) return
+        if (!signedIn()) { setFailures { emptyMap() }; return }
         setFailure(personId) { it.copy(retrying = true, retryError = null) }
         scope.launch {
             try {

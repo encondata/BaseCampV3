@@ -75,7 +75,7 @@ internal fun newLevelChoices(options: RolodexOptions): List<Pair<String?, String
 internal fun NewWorkerScreen(vm: RolodexViewModel, flow: NewWorkerUi, options: RolodexOptions, hasCamera: Boolean, modifier: Modifier = Modifier) {
     val nw = vm.newWorker
     val context = LocalContext.current.applicationContext
-    val pick = rememberPhotoPicker { uri -> nw.usePhoto { decodeForCrop(context, uri) } }
+    val pick = rememberPhotoPicker(onUnavailable = nw::libraryUnavailable) { uri -> nw.usePhoto { decodeForCrop(context, uri) } }
 
     NewWorkerDetails(nw, flow, options, modifier)
 
@@ -90,8 +90,11 @@ internal fun NewWorkerScreen(vm: RolodexViewModel, flow: NewWorkerUi, options: R
             } else {
                 PhotoCaptureSheet(
                     backLabel = "‹ Details", onBack = nw::backToDetails, hasCamera = hasCamera, busyText = flow.busyText,
-                    errorText = flow.error, onCapture = { bytes -> nw.usePhoto { decodeForCrop(bytes) } }, onLibrary = pick, insets = insets,
+                    errorText = flow.error, capturing = flow.capturing, onCaptureStart = nw::captureStarted,
+                    onCapture = { bytes -> nw.usePhoto { decodeForCrop(bytes) } }, onCaptureFailed = nw::captureFailed,
+                    front = flow.front, onFlip = nw::flip, onLibrary = pick, insets = insets,
                 ) {
+                    // Off while anything is under way, a capture on its way included (M3).
                     Text(
                         "Continue without photo", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium,
                         color = Color.White.copy(alpha = 0.75f), textDecoration = TextDecoration.Underline,

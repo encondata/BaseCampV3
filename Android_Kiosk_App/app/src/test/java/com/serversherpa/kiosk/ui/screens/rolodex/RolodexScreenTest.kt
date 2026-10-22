@@ -35,10 +35,12 @@ import com.serversherpa.kiosk.ui.shell.KioskShell
 import com.serversherpa.kiosk.ui.theme.KioskTheme
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -248,6 +250,49 @@ class RolodexScreenTest {
         compose.onNodeWithText("Take new photo").assertDoesNotExist()
         compose.onNodeWithText("Cancel").performClick()
         compose.waitUntil(10_000) { compose.onAllNodesWithText("Photo for Ann Abbott").fetchSemanticsNodes().isEmpty() }
+    }
+
+    /** Task 7 minor 4: when no photo picker can open (ActivityNotFoundException), the sheet says so instead of nothing happening. */
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun choosePhotoSaysSoWhenTheLibraryCantOpen() {
+        show(api())
+        shadowOf(compose.activity.application).checkActivities(true)          // an intent nothing handles throws
+        compose.onNodeWithTag("rolodex-row-p-abbott").performClick()
+        waitForText("ann@example.com")
+        compose.onNodeWithTag("worker-photo").performClick()
+        waitForText("Photo for Ann Abbott")
+        compose.onNodeWithTag("photo-library").performClick()
+        waitForText("This device can't open the photo library.")
+        compose.onNodeWithText("Photo for Ann Abbott").assertExists()
+    }
+
+    /** M3: while a capture is on its way, "Continue without photo" is off; a failed capture turns it back on. */
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun aCaptureOnItsWayTurnsContinueWithoutPhotoOff() {
+        val c = admin(api())
+        val vm = RolodexViewModel(c.api, c.db, c.rolodexCache)
+        compose.setContent {
+            CompositionLocalProvider(LocalAppContainer provides c) { KioskTheme { RolodexContent(vm, onNewWorker = vm::startNewWorker, onChangePhoto = null) } }
+        }
+        waitFor("rolodex-row-p-abbott")
+        compose.onNodeWithTag("rolodex-new").performClick()
+        waitFor("new-first")
+        compose.onNodeWithTag("new-first").performTextInput("Marcus")
+        compose.onNodeWithTag("new-last").performTextInput("Reed")
+        compose.onNodeWithTag("new-worker-next").performClick()
+        waitFor("new-worker-skip-photo")
+        compose.onNodeWithTag("new-worker-skip-photo").assertIsEnabled()
+
+        compose.runOnUiThread { assertTrue(vm.newWorker.captureStarted()) }
+        compose.waitForIdle()
+        compose.onNodeWithTag("new-worker-skip-photo").assertIsNotEnabled().performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Create Marcus Reed without a photo?").assertDoesNotExist()
+
+        compose.runOnUiThread { vm.newWorker.captureFailed() }
+        compose.waitForIdle()
+        compose.onNodeWithTag("new-worker-skip-photo").assertIsEnabled().performClick()
+        waitForText("Create Marcus Reed without a photo?")
     }
 
     /** The New worker details are typed into the form and Next runs the duplicate check. */

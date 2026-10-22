@@ -59,6 +59,8 @@ class FeaturesTest {
         assertEquals(FEATURES.size + 1, ids.size)
         assertEquals("rolodex", ROLODEX_FEATURE.route)
         assertEquals("Rolodex", ROLODEX_FEATURE.title)
+        // Ruling S16: the same words as the iOS tile.
+        assertEquals("Look up workers, edit their details, and take photos.", ROLODEX_FEATURE.blurb)
         // No move or setup step: the tile is usable on a kiosk that isn't set up.
         assertTrue(featureAvailable(ROLODEX_FEATURE, SetupState.INCOMPLETE))
     }

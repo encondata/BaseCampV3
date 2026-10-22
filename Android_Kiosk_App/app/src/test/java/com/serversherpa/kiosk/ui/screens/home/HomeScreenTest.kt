@@ -52,6 +52,7 @@ class HomeScreenTest {
         compose.setContent { CompositionLocalProvider(LocalAppContainer provides c) { KioskTheme { HomeScreen(rememberNavController()) } } }
         compose.onNodeWithTag("tile-ROLODEX").assertExists().assertIsEnabled()   // below the fold on a small window
         compose.onNodeWithText("Rolodex").assertExists()
+        compose.onNodeWithText("Look up workers, edit their details, and take photos.").assertExists()
         assertEquals(6, compose.onAllNodesWithText("Finish Kiosk Setup first.").fetchSemanticsNodes().size)   // the Rolodex isn't locked
     }
 

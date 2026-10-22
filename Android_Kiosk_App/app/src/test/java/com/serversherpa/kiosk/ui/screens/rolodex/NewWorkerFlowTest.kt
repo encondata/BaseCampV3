@@ -291,6 +291,96 @@ class NewWorkerFlowTest {
         assertEquals("That photo couldn't be used. Take or choose another one.", flowState?.error)
     }
 
+    // ── the camera (M3, Task 7 minor 2) ──
+
+    /** M3: a capture on its way holds "Continue without photo": a create can't skip the photo being taken. */
+    @Test fun aCaptureInFlightBlocksContinueWithoutPhoto() = runTest {
+        val api = api()
+        val vm = started(api)
+        atPhoto(vm)
+        assertTrue(vm.newWorker.captureStarted())
+        assertTrue(flowState!!.capturing)
+        assertTrue(flowState!!.busy)
+        assertFalse(vm.newWorker.captureStarted())             // one capture at a time
+        vm.newWorker.flip()                                     // no switching cameras mid-shot
+        assertFalse(flowState!!.front)
+        vm.newWorker.continueWithoutPhoto()
+        assertFalse(flowState!!.confirmNoPhoto)
+        vm.newWorker.createWithoutPhoto(); settle()
+        vm.newWorker.create(null, photoSkipped = true, allowDuplicate = false); settle()
+        assertTrue(api.rolodexCreates.isEmpty())
+
+        // The capture lands: Position your photo, with no confirmation over it.
+        vm.newWorker.usePhoto { picture() }; settle { flowState?.loadingPhoto == false }
+        assertEquals(NewWorkerStage.CROP, flowState?.stage)
+        assertFalse(flowState!!.capturing)
+        assertFalse(flowState!!.confirmNoPhoto)
+    }
+
+    @Test fun aFailedCaptureFreesTheStep() = runTest {
+        val vm = started(api())
+        atPhoto(vm)
+        vm.newWorker.captureStarted()
+        vm.newWorker.captureFailed()
+        assertFalse(flowState!!.capturing)
+        assertFalse(flowState!!.busy)
+        vm.newWorker.continueWithoutPhoto()
+        assertTrue(flowState!!.confirmNoPhoto)
+    }
+
+    /** While a capture or a pick is decoded, "Continue without photo" waits too. */
+    @Test fun aDecodeInFlightBlocksContinueWithoutPhoto() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val vm = started(api())
+        atPhoto(vm)
+        vm.newWorker.usePhoto { gate.await(); picture() }
+        assertTrue(flowState!!.loadingPhoto)
+        vm.newWorker.continueWithoutPhoto()
+        assertFalse(flowState!!.confirmNoPhoto)
+        gate.complete(Unit); settle { flowState?.loadingPhoto == false }
+        assertEquals(NewWorkerStage.CROP, flowState?.stage)
+        assertFalse(flowState!!.confirmNoPhoto)
+    }
+
+    /** Belt and braces: a photo that lands under the confirmation closes it, and no create may then skip it. */
+    @Test fun aPhotoThatLandsUnderTheConfirmationClosesIt() = runTest {
+        val api = api()
+        val vm = started(api)
+        atPhoto(vm)
+        vm.newWorker.continueWithoutPhoto()
+        assertTrue(flowState!!.confirmNoPhoto)
+        vm.newWorker.usePhoto { picture() }; settle { flowState?.loadingPhoto == false }
+        assertEquals(NewWorkerStage.CROP, flowState?.stage)
+        assertFalse(flowState!!.confirmNoPhoto)
+        vm.newWorker.createWithoutPhoto(); settle()
+        vm.newWorker.create(null, photoSkipped = true, allowDuplicate = false); settle()
+        assertTrue(api.rolodexCreates.isEmpty())
+    }
+
+    /** Task 7 minor 2: Flip holds across Retake and Back within the flow; a new flow starts on the back camera. */
+    @Test fun flipSurvivesRetakeUntilTheFlowEnds() = runTest {
+        val vm = started(api())
+        atPhoto(vm)
+        assertFalse(flowState!!.front)
+        vm.newWorker.flip()
+        assertTrue(flowState!!.front)
+        vm.newWorker.usePhoto { picture() }; settle { flowState?.loadingPhoto == false }
+        assertEquals(NewWorkerStage.CROP, flowState?.stage)
+        vm.newWorker.retake()
+        assertEquals(NewWorkerStage.PHOTO, flowState?.stage)
+        assertTrue(flowState!!.front)
+        vm.newWorker.backToDetails()
+        vm.newWorker.next(); settle { flowState?.checking == false }
+        assertEquals(NewWorkerStage.PHOTO, flowState?.stage)
+        assertTrue(flowState!!.front)
+        vm.newWorker.flip()
+        assertFalse(flowState!!.front)
+        vm.newWorker.flip()
+        vm.newWorker.cancel()
+        vm.startNewWorker()
+        assertFalse(flowState!!.front)
+    }
+
     @Test fun retakeAndBackKeepTheDetailsAndThePhoto() = runTest {
         val vm = started(api())
         atCrop(vm)
@@ -397,6 +487,30 @@ class NewWorkerFlowTest {
         assertNotNull(vm.photos.failureText("p-reed"))
     }
 
+    /** Task 7 minor 3: Try again after a sign-out sends nothing (as Use photo), and the waiting photo goes with the session. */
+    @Test fun tryAgainSendsNothingAfterSignOut() = runTest {
+        val api = api().apply { rolodexPhotoResult = { _, _ -> throw ApiError(0, "network") } }
+        val vm = started(api)
+        atCrop(vm)
+        vm.newWorker.createWithPhoto(); settle { flowState == null }
+        assertNotNull(vm.photos.failureText("p-reed"))
+        admin = false
+        vm.retryPhoto("p-reed"); settle()
+        assertEquals(1, api.rolodexPhotos.size)
+        assertNull(vm.photos.failureText("p-reed"))
+    }
+
+    /** Task 7 minor 4: a device that can't open the photo library says so on the photo step. */
+    @Test fun aLibraryThatCantOpenSaysSo() = runTest {
+        val vm = started(api())
+        atPhoto(vm)
+        vm.newWorker.libraryUnavailable()
+        assertEquals("This device can't open the photo library.", flowState?.error)
+        assertEquals(NewWorkerStage.PHOTO, flowState?.stage)
+        vm.newWorker.usePhoto { picture() }; settle { flowState?.loadingPhoto == false }
+        assertNull(flowState?.error)
+    }
+
     /** A worker added since Next is caught by the create: the check runs again and Create anyway re-sends it. */
     @Test fun aPossibleDuplicateOnCreateRerunsTheCheckAndShowsTheSheet() = runTest {
         var matches = emptyList<RolodexMatch>()
@@ -449,11 +563,12 @@ class NewWorkerFlowTest {
         assertEquals(1, api.rolodexPhotos.size)
     }
 
+    /** A failure that isn't about a field stays on Position your photo, form and photo kept (Create worker tries again). */
     @Test fun aFailedCreateKeepsTheFormAndThePhoto() = runTest {
         val cases = listOf(
             ApiError(423, "read_only_mode") to "The system is in read-only mode, so changes can't be saved right now.",
-            ApiError(409, "email_in_use") to "Another person already uses that email.",
             ApiError(0, "network") to "No connection. Try again when you're back online.",
+            ApiError(500, "unknown_error") to "Something went wrong. Try again.",
         )
         for ((failure, copy) in cases) {
             val api = api().apply { rolodexCreateResult = { throw failure } }
@@ -468,6 +583,79 @@ class NewWorkerFlowTest {
             assertTrue(failure.code, api.rolodexPhotos.isEmpty())
             assertNull(failure.code, vm.state.value.selectedId)
         }
+    }
+
+    /**
+     * M7 (iOS parity): a create refused over a field on the details (here the email) goes back to
+     * the details with the error and the positioned photo kept; once the field is fixed, Next comes
+     * straight back to the photo and Create sends the same photo, with no retake.
+     */
+    @Test fun aCreateRefusedOverTheEmailGoesBackToTheDetailsWithThePhotoKept() = runTest {
+        var refuse = true
+        val api = api().apply { rolodexCreateResult = { if (refuse) throw ApiError(409, "email_in_use") else created } }
+        val vm = started(api)
+        atCrop(vm)
+        val crop = flowState!!.crop!!
+        val photo = crop.jpeg()
+        vm.newWorker.createWithPhoto(); settle { flowState?.creating == false }
+        assertEquals(NewWorkerStage.DETAILS, flowState?.stage)
+        assertEquals("Another person already uses that email.", flowState?.error)
+        assertTrue(crop === flowState?.crop)
+        assertEquals(marcus, flowState?.form)
+        assertTrue(api.rolodexPhotos.isEmpty())
+        assertNull(vm.state.value.selectedId)
+
+        vm.newWorker.update(marcus.copy(email = "marcus.reed@example.com"))
+        refuse = false
+        vm.newWorker.next(); settle { flowState?.checking == false }
+        assertEquals(NewWorkerStage.CROP, flowState?.stage)
+        assertTrue(crop === flowState?.crop)
+        assertNull(flowState?.error)
+        vm.newWorker.createWithPhoto(); settle { flowState == null }
+        assertEquals(2, api.rolodexCreates.size)
+        assertEquals("marcus.reed@example.com", api.rolodexCreates.last().email)
+        assertArrayEquals(photo, api.rolodexPhotos.single().second)
+        assertEquals("p-reed", vm.state.value.selectedId)
+    }
+
+    /** The other field refusals (company, level) go back to the details too; Retake is still there on the photo. */
+    @Test fun otherFieldRefusalsGoBackToTheDetailsToo() = runTest {
+        for (code in listOf("partner_archived", "partner_not_found", "unknown_level")) {
+            val api = api().apply { rolodexCreateResult = { throw ApiError(422, code) } }
+            val vm = started(api)
+            atCrop(vm)
+            val crop = flowState!!.crop
+            vm.newWorker.createWithPhoto(); settle { flowState?.creating == false }
+            assertEquals(code, NewWorkerStage.DETAILS, flowState?.stage)
+            assertEquals(code, "Something went wrong. Try again.", flowState?.error)
+            assertTrue(code, crop === flowState?.crop)
+            vm.newWorker.next(); settle { flowState?.checking == false }
+            assertEquals(code, NewWorkerStage.CROP, flowState?.stage)
+            vm.newWorker.retake()
+            assertEquals(code, NewWorkerStage.PHOTO, flowState?.stage)
+            assertNull(code, flowState?.crop)
+        }
+    }
+
+    /** Without a photo, a field refusal goes back to the details too; the next try asks again before skipping. */
+    @Test fun aSkippedPhotoCreateRefusedOverAFieldGoesBackToTheDetails() = runTest {
+        var refuse = true
+        val api = api().apply { rolodexCreateResult = { if (refuse) throw ApiError(409, "email_in_use") else created } }
+        val vm = started(api)
+        atPhoto(vm)
+        vm.newWorker.continueWithoutPhoto()
+        vm.newWorker.createWithoutPhoto(); settle { flowState?.creating == false }
+        assertEquals(NewWorkerStage.DETAILS, flowState?.stage)
+        assertEquals("Another person already uses that email.", flowState?.error)
+        vm.newWorker.update(marcus.copy(email = ""))
+        refuse = false
+        atPhoto(vm)
+        vm.newWorker.createWithoutPhoto(); settle()
+        assertEquals(1, api.rolodexCreates.size)                // not asked again yet
+        vm.newWorker.continueWithoutPhoto()
+        vm.newWorker.createWithoutPhoto(); settle { flowState == null }
+        assertEquals(2, api.rolodexCreates.size)
+        assertNull(api.rolodexCreates.last().email)
     }
 
     /** A sign-out while the create is out: the late answer is dropped and no upload starts. */

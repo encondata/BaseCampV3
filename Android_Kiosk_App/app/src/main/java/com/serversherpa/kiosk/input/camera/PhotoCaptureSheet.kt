@@ -188,14 +188,15 @@ fun DrawScope.drawCircleDim(diameter: Float, center: Offset, color: Color) {
 /**
  * The photo picker (images only; no storage permission). Returns the call that opens it; a pick
  * comes to [onPick], a cancel to nothing. On a device without the system picker it falls back to
- * the document picker.
+ * the document picker; when nothing can open, [onUnavailable] says so.
  */
 @Composable
-fun rememberPhotoPicker(onPick: (Uri) -> Unit): () -> Unit {
+fun rememberPhotoPicker(onUnavailable: () -> Unit, onPick: (Uri) -> Unit): () -> Unit {
     val latest by rememberUpdatedState(onPick)
+    val unavailable by rememberUpdatedState(onUnavailable)
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) latest(uri) }
     return remember(launcher) {
-        { try { launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } catch (_: ActivityNotFoundException) {} }
+        { try { launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } catch (_: ActivityNotFoundException) { unavailable() } }
     }
 }
 
@@ -204,9 +205,13 @@ fun rememberPhotoPicker(onPick: (Uri) -> Unit): () -> Unit {
  * dashed circle guide, "Frame the worker's face in the circle", the shutter, Flip and Library.
  * A device without a camera ([hasCamera] false, e.g. the MC2200) offers Choose photo only. A
  * denied camera says so and offers Choose photo. A capture arrives as JPEG bytes (EXIF orientation
- * set; the decoder applies it). [busyText] ("Loading photo…", "Creating…") stands in for the
- * controls while a picture is decoded or the worker created. [footer] holds the New worker
- * flow's "Continue without photo".
+ * set from how the device is held at the shutter; the decoder applies it). [busyText] ("Loading
+ * photo…", "Creating…") stands in for the controls while a picture is decoded or the worker
+ * created. [footer] holds the New worker flow's "Continue without photo".
+ *
+ * The flow holds the camera's state, so it outlives this screen (Retake shows it again): whether a
+ * capture is on its way ([capturing]; the shutter asks [onCaptureStart], then [onCapture] or
+ * [onCaptureFailed] follows) and Flip's choice ([front], [onFlip]).
  */
 @Composable
 fun PhotoCaptureSheet(
@@ -215,7 +220,12 @@ fun PhotoCaptureSheet(
     hasCamera: Boolean,
     busyText: String?,
     errorText: String?,
+    capturing: Boolean,
+    onCaptureStart: () -> Boolean,
     onCapture: (ByteArray) -> Unit,
+    onCaptureFailed: () -> Unit,
+    front: Boolean,
+    onFlip: () -> Unit,
     onLibrary: () -> Unit,
     insets: PaddingValues,
     footer: @Composable ColumnScope.() -> Unit = {},
@@ -225,9 +235,7 @@ fun PhotoCaptureSheet(
     val density = LocalDensity.current
     var granted by remember { mutableStateOf(hasCamera && ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
     var denied by remember { mutableStateOf(false) }
-    var capturing by remember { mutableStateOf(false) }
     var failure by remember { mutableStateOf<String?>(null) }
-    var front by remember { mutableStateOf(false) }
     var canFlip by remember { mutableStateOf(false) }
     var bindError by remember { mutableStateOf(false) }
     var provider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
@@ -288,17 +296,22 @@ fun PhotoCaptureSheet(
     }
 
     fun shoot() {
-        if (busy || !live) return
-        capturing = true
+        if (busy || !live || !onCaptureStart()) return
         failure = null
+        // The picture's EXIF orientation follows how the device is held now (a 180° turn since the
+        // camera was built included), not how it was held when the use case was made.
+        previewView.display?.let { capture.targetRotation = it.rotation }
         val out = ByteArrayOutputStream()
-        capture.takePicture(
-            ImageCapture.OutputFileOptions.Builder(out).build(), ContextCompat.getMainExecutor(context),
-            object : ImageCapture.OnImageSavedCallback {
-                override fun onImageSaved(results: ImageCapture.OutputFileResults) { capturing = false; onCapture(out.toByteArray()) }
-                override fun onError(e: ImageCaptureException) { capturing = false; failure = "Something went wrong. Try again." }
-            },
-        )
+        val failed = { failure = "Something went wrong. Try again."; onCaptureFailed() }
+        try {
+            capture.takePicture(
+                ImageCapture.OutputFileOptions.Builder(out).build(), ContextCompat.getMainExecutor(context),
+                object : ImageCapture.OnImageSavedCallback {
+                    override fun onImageSaved(results: ImageCapture.OutputFileResults) = onCapture(out.toByteArray())
+                    override fun onError(e: ImageCaptureException) = failed()
+                },
+            )
+        } catch (e: Exception) { failed() }
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -341,7 +354,7 @@ fun PhotoCaptureSheet(
                         Spacer(Modifier.weight(1f))
                         Shutter(capturing, enabled = !busy, onClick = ::shoot)
                         Spacer(Modifier.weight(1f))
-                        if (canFlip) RoundButton("Flip", FlipIcon, "Flip camera", enabled = !busy) { front = !front }
+                        if (canFlip) RoundButton("Flip", FlipIcon, "Flip camera", enabled = !busy, onClick = onFlip)
                         else Spacer(Modifier.width(64.dp))
                     }
                     else -> ChooseButton(onLibrary)
