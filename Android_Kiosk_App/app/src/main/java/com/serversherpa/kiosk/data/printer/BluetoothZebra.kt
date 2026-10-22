@@ -48,10 +48,15 @@ class BluetoothUnavailable(host: String, val availability: BluetoothAvailability
 class BluetoothPrinterNotFound(host: String) :
     PrinterException(host, "No Bluetooth printer named $host was found nearby.")
 
-/** The device isn't a Zebra: its manufacturer isn't "Zebra Technologies", or it lacks the Zebra
- *  parser service. */
+/** The device found for the printer isn't a Zebra: its manufacturer isn't "Zebra Technologies", or
+ *  it lacks the Zebra parser service. The printer itself may be fine (another device answered at
+ *  its address, or under its name). */
 class BluetoothNotZebra(host: String) :
-    PrinterException(host, "${host.ifEmpty { "This device" }} isn't a Zebra printer.")
+    PrinterException(
+        host,
+        if (host.isEmpty()) "The Bluetooth device found isn't a Zebra printer."
+        else "The Bluetooth device found for $host isn't a Zebra printer.",
+    )
 
 /** The device that answered reports another serial ([found]) than the one expected ([host]): it isn't used. */
 class BluetoothSerialMismatch(host: String, val found: String?) :

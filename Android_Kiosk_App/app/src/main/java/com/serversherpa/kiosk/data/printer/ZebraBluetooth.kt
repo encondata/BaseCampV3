@@ -57,8 +57,11 @@ data class BluetoothPrinterInfo(
  *  of time), and why. */
 data class BluetoothDrop(val atMs: Long, val reason: String)
 
-/** The one link, for the connection details. [info], [chunkBytes] and [mtu] stay from the last
- *  link once it is down. Times are the clock's (wall-clock milliseconds on the device). */
+/** The one link, for the connection details. [info], [chunkBytes], [mtu] and [savedAddress] stay
+ *  from the last link once it is down. Times are the clock's (wall-clock milliseconds on the
+ *  device). [savedAddress] is the address the printer was asked for at (the saved one) when the
+ *  link came up at another one ([BluetoothPrinterInfo.address]: found by its serial, or at the
+ *  address an earlier link used); null when they match or none was given. It is never saved. */
 data class BluetoothLinkInfo(
     val connected: Boolean = false,
     val info: BluetoothPrinterInfo? = null,
@@ -67,6 +70,7 @@ data class BluetoothLinkInfo(
     val connectedAtMs: Long? = null,
     val lastActivityMs: Long? = null,
     val lastDrop: BluetoothDrop? = null,
+    val savedAddress: String? = null,
 )
 
 /** What Printer Setup and Troubleshooting use of [ZebraBluetooth] (so their tests can fake it). */
@@ -93,9 +97,10 @@ interface BluetoothPrinting {
  * link to a printer, which stays up while the app is in use (D4). The sequencing is the iOS spike's
  * (branch ble-spike), which printed to and queried a real ZD421, on Android's GATT.
  *
- * - **Connecting** tries the printer's address first (by default the one the last link to its serial
- *   used, else the saved one). If nothing answers there within `ADDRESS_TRY_MS`, the rest of
- *   `CONNECT_READY_MS` scans for the name equal to its serial (D3). The link is Ready once:
+ * - **Connecting** tries the saved address first (D3), then, when it differs, the address the last
+ *   link to this serial used this run (never saved). The addresses share `ADDRESS_TRY_MS`; if
+ *   neither comes up, the rest of `CONNECT_READY_MS` scans for the name equal to the serial. A
+ *   link up at another address than the saved one says so in `link.savedAddress`. Ready once:
  *   1. services are discovered (a device without Zebra's parser service is [BluetoothNotZebra]);
  *   2. Device Information is read, one value at a time, each waited for `DEVICE_INFO_READ_MS`;
  *   3. the MTU is requested (`REQUESTED_MTU`; 20-byte chunks when it fails);
@@ -130,6 +135,8 @@ class ZebraBluetooth(
     private val client: BluetoothLeClient,
     scope: CoroutineScope,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Why something went wrong inside the link, for the device log. */
+    private val log: (String, Throwable) -> Unit = { message, e -> android.util.Log.w(TAG, message, e) },
 ) : BluetoothPrinting {
     private val confined: CoroutineDispatcher =
         ((scope.coroutineContext[ContinuationInterceptor] as? CoroutineDispatcher) ?: Dispatchers.Default).limitedParallelism(1)
@@ -180,8 +187,9 @@ class ZebraBluetooth(
             for (event in events) {
                 try {
                     handle(event)
-                } catch (_: RuntimeException) {
+                } catch (e: RuntimeException) {
                     // One bad event must not stop the link hearing the rest (its calls are bounded anyway).
+                    log("a Bluetooth event couldn't be handled: $event", e)
                 }
             }
         }
@@ -207,11 +215,12 @@ class ZebraBluetooth(
     }
 
     /** The transport for a saved Bluetooth printer (its serial, and the address it was saved with).
-     *  Callers pick the transport by `printer.connection`; for a network printer this gives one that
-     *  looks for a Bluetooth printer named its serial, which never reaches the network printer. */
-    fun transport(printer: SavedPrinter): BluetoothZebra = when (val c = printer.connection) {
-        is PrinterConnection.Bluetooth -> BluetoothZebra(this, c.serial, c.address)
-        is PrinterConnection.Network -> BluetoothZebra(this, printer.serial, null)
+     *  Callers pick the transport by `printer.connection`: a network printer is refused
+     *  (IllegalArgumentException), so it can never be looked for over Bluetooth. */
+    fun transport(printer: SavedPrinter): BluetoothZebra {
+        val connection = printer.connection
+        require(connection is PrinterConnection.Bluetooth) { "${printer.serial} is a network printer; use NetworkZebra" }
+        return BluetoothZebra(this, connection.serial, connection.address)
     }
 
     /** Ends the scan and the link (the app went to the background, signed out, or the saved printer
@@ -327,14 +336,18 @@ class ZebraBluetooth(
 
     private suspend fun establish(target: BluetoothTarget): BluetoothPrinterInfo {
         host = target.serial ?: target.address.orEmpty()
-        var address = knownAddress(target.serial) ?: target.address
+        // The saved address first (D3), then the one the last link to this serial used, if it differs.
+        val known = knownAddress(target.serial)?.takeUnless { it.equals(target.address, ignoreCase = true) }
+        val addresses = listOfNotNull(target.address, known)
+        var retryAt: String? = null
         var retriesUsed = 0
-        var isRetry = false
         while (true) {
             stage = Stage.WAITING
+            val isRetry = retryAt != null
             val outcome = withTimeoutOrNull(ZebraBluetoothSpec.CONNECT_READY_MS) {
                 try {
-                    Outcome.Ready(oneTry(target, address, isRetry))
+                    val again = retryAt
+                    Outcome.Ready(if (again == null) firstTry(target, addresses) else reconnect(target, again))
                 } catch (e: NeverConnected) {
                     Outcome.NeverUp(e)
                 } catch (e: DroppedBeforeReady) {
@@ -351,30 +364,39 @@ class ZebraBluetooth(
                 is Outcome.Dropped -> {
                     recordDrop(outcome.error.reason)
                     if (outcome.error.pairingLost) throw BluetoothPairingLost(host)
-                    address = outcome.error.address
+                    retryAt = outcome.error.address
                 }
             }
             retriesUsed++
             if (retriesUsed > ZebraBluetoothSpec.RECONNECT_TRIES) throw PrinterUnreachable(host)
             stage = Stage.RETRYING
             delay(ZebraBluetoothSpec.RECONNECT_SPACING_MS)
-            isRetry = true
         }
     }
 
-    /** One try, within its deadline: the address (falling back to a scan for the serial on a first
-     *  try), or the scan alone when no address is known. */
-    private suspend fun oneTry(target: BluetoothTarget, address: String?, isRetry: Boolean): BluetoothPrinterInfo {
-        awaitBluetooth(needsScan = address == null)
-        if (address == null) return connectAndSetUp(findBySerial(target, addressKnown = false), target, null)
-        val canFallBack = !isRetry && !target.serial.isNullOrEmpty() && availabilityState.value == BluetoothAvailability.READY
-        if (!canFallBack) return connectAndSetUp(address, target, null)
-        try {
-            return connectAndSetUp(address, target, ZebraBluetoothSpec.ADDRESS_TRY_MS)
-        } catch (e: NeverConnected) {
-            if (e.pairingLost) throw e
+    /** A first try, within its deadline: each of [addresses] in order (they share `ADDRESS_TRY_MS`
+     *  while a scan or another address follows), then a scan for the serial; the scan alone when
+     *  no address is known. */
+    private suspend fun firstTry(target: BluetoothTarget, addresses: List<String>): BluetoothPrinterInfo {
+        awaitBluetooth(needsScan = addresses.isEmpty())
+        if (addresses.isEmpty()) return connectAndSetUp(findBySerial(target, addressKnown = false), target, null)
+        val canScan = !target.serial.isNullOrEmpty() && availabilityState.value == BluetoothAvailability.READY
+        val share = ZebraBluetoothSpec.ADDRESS_TRY_MS / addresses.size
+        for ((i, address) in addresses.withIndex()) {
+            if (i == addresses.lastIndex && !canScan) return connectAndSetUp(address, target, null)
+            try {
+                return connectAndSetUp(address, target, share)
+            } catch (e: NeverConnected) {
+                if (e.pairingLost) throw e
+            }
         }
         return connectAndSetUp(findBySerial(target, addressKnown = true), target, null)
+    }
+
+    /** A retry after a drop before Ready: the address that connected, with no scan. */
+    private suspend fun reconnect(target: BluetoothTarget, address: String): BluetoothPrinterInfo {
+        awaitBluetooth(needsScan = false)
+        return connectAndSetUp(address, target, null)
     }
 
     /** Waits for a state Bluetooth can be used in (Location matters only to a scan). */
@@ -483,6 +505,7 @@ class ZebraBluetooth(
             it.copy(
                 connected = true, info = info, mtu = link.mtu, chunkBytes = ZebraBluetoothSpec.chunkBytes(link.mtu),
                 connectedAtMs = at, lastActivityMs = at,
+                savedAddress = target.address?.takeUnless { saved -> saved.equals(link.address, ignoreCase = true) },
             )
         }
         return info
@@ -494,9 +517,20 @@ class ZebraBluetooth(
         val pending = link.queue.submit(GattQueue.Op.Read(ZebraBluetoothSpec.DEVICE_INFO_UUID, characteristic))
         pending.result.invokeOnCompletion { error ->
             val read = pending.answer as? GattEvent.CharacteristicRead
-            if (error == null && read != null && read.status == GattStatus.SUCCESS) {
-                decodeInfo(read.value)?.let { link.deviceInfo[characteristic] = it }
-                link.unread -= characteristic
+            when {
+                error != null || read == null -> Unit
+                read.status == GattStatus.SUCCESS -> {
+                    decodeInfo(read.value)?.let { link.deviceInfo[characteristic] = it }
+                    link.unread -= characteristic
+                }
+                // Even after its fallback: the printer wants a pairing this device lost, so the
+                // setup ends with it as it would on time (no retry, the GATT closed).
+                read.status in GattStatus.PAIRING_LOST -> if (link.ready) {
+                    recordDrop(describeDisconnect(read.status))
+                    endLink(BluetoothPairingLost(host))
+                } else {
+                    link.queue.fail(BluetoothPairingLost(host))
+                }
             }
         }
         val read = try {
@@ -907,8 +941,12 @@ class ZebraBluetooth(
     private enum class Stage { WAITING, FINDING, FINDING_KNOWN, CONNECTING, SETTING_UP, RETRYING }
 
     private sealed interface Event {
-        class Client(val event: BluetoothLeEvent) : Event
-        class Gatt(val linkId: Int, val event: GattEvent) : Event
+        class Client(val event: BluetoothLeEvent) : Event {
+            override fun toString() = event.toString()
+        }
+        class Gatt(val linkId: Int, val event: GattEvent) : Event {
+            override fun toString() = "link $linkId: $event"
+        }
     }
 
     /** One GATT connection and what its setup learned. */
@@ -969,6 +1007,7 @@ class ZebraBluetooth(
     }
 
     private companion object {
+        const val TAG = "ZebraBluetooth"
         val PARSER = gattUuid(ZebraBluetoothSpec.SERVICE_UUID)
         val TO_PRINTER = gattUuid(ZebraBluetoothSpec.TO_PRINTER_UUID)
         val FROM_PRINTER = gattUuid(ZebraBluetoothSpec.FROM_PRINTER_UUID)

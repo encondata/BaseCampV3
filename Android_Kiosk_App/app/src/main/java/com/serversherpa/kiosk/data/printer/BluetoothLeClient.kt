@@ -251,7 +251,6 @@ class GattQueue(private val link: GattLink) {
     private fun issueNext() {
         while (outstanding == null && waiting.isNotEmpty()) {
             val pending = waiting.removeFirst()
-            if (pending.result.isCompleted) continue // its caller gave up before it went out
             val taken = try {
                 pending.op.issue(link)
             } catch (_: RuntimeException) {

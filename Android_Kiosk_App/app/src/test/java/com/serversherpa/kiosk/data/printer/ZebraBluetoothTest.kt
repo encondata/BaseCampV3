@@ -48,9 +48,12 @@ class ZebraBluetoothTest {
         "\u0002000,0,0,0,0,1,6,0,00000000,1,000\u0003\r\n\u00020000,0\u0003\r\n"
     private val hi = "\u0002ZD421-300dpi,V93.21.38Z,12,8176KB\u0003\r\n"
 
-    private fun TestScope.make(state: BluetoothAvailability = READY): Pair<ZebraBluetooth, FakeBluetoothLe> {
+    private fun TestScope.make(
+        state: BluetoothAvailability = READY,
+        log: (String, Throwable) -> Unit = { _, _ -> },
+    ): Pair<ZebraBluetooth, FakeBluetoothLe> {
         val fake = FakeBluetoothLe(state) { testScheduler.currentTime }
-        val bluetooth = ZebraBluetooth(fake, backgroundScope) { testScheduler.currentTime }
+        val bluetooth = ZebraBluetooth(fake, backgroundScope, clock = { testScheduler.currentTime }, log = log)
         return bluetooth to fake
     }
 
@@ -233,6 +236,41 @@ class ZebraBluetoothTest {
         assertEquals(1, gatt.writes.size)
     }
 
+    @Test fun writeAckWithPairingLostEndsTheLink() = runTest {
+        val (bluetooth, fake) = make()
+        val gatt = ready(bluetooth, fake)
+        fake.printers.getValue(addr).autoAck = false
+        val send = start { bluetooth.transport(printer()).write(listOf(ByteArray(600))) }
+        runCurrent()
+        gatt.ack(15) // insufficient encryption
+        runCurrent()
+        assertEquals(pairingLostText(SERIAL), send.await().failure<BluetoothPairingLost>().message)
+        assertEquals("no chunk after the refusal", 1, gatt.writes.size)
+        assertFalse(bluetooth.link.value.connected)
+        assertEquals(currentTime, bluetooth.link.value.lastDrop?.atMs)
+        assertTrue(gatt.closed)
+    }
+
+    @Test fun writeAckWithAnotherBadStatusFailsTheWrite() = runTest {
+        val (bluetooth, fake) = make()
+        val gatt = ready(bluetooth, fake)
+        fake.printers.getValue(addr).autoAck = false
+        val zebra = bluetooth.transport(printer())
+        val send = start { zebra.write(listOf(ByteArray(600))) }
+        runCurrent()
+        gatt.ack(3) // write not permitted
+        runCurrent()
+        assertEquals(SERIAL, send.await().failure<PrinterUnreachable>().host)
+        assertEquals("no chunk after the refusal", 1, gatt.writes.size)
+        // Only that write failed: the link stays up for the next one (the guard's ~JX, say).
+        assertTrue(bluetooth.link.value.connected)
+        assertFalse(gatt.closed)
+        fake.printers.getValue(addr).autoAck = true
+        zebra.write(listOf("~JX".toByteArray()))
+        assertEquals(1, fake.connects.size)
+        assertEquals("~JX", String(gatt.writes.last()))
+    }
+
     @Test fun dropDuringAWriteFailsItAtOnce() = runTest {
         val (bluetooth, fake) = make()
         val gatt = ready(bluetooth, fake)
@@ -404,12 +442,7 @@ class ZebraBluetoothTest {
         assertTrue(send.await().isSuccess)
         assertEquals("^XA^XZ", String(fake.links.last().written()))
         assertEquals(addr2, bluetooth.link.value.info?.address)
-
-        // Once the link drops, the address that answered last is tried first.
-        fake.links.last().drop(8)
-        runCurrent()
-        bluetooth.transport(printer(addr)).write(listOf("^XA^XZ".toByteArray()))
-        assertEquals(listOf(addr, addr2, addr2), fake.connects)
+        assertEquals("found elsewhere: the saved address is kept for the details", addr, bluetooth.link.value.savedAddress)
 
         // A saved address that fails at once goes straight to the scan.
         val (quick, quickFake) = make()
@@ -440,6 +473,79 @@ class ZebraBluetoothTest {
         assertEquals(SERIAL, info.serial)
         assertEquals("Zebra Technologies", info.manufacturer)
         assertEquals("ZD421", info.model)
+    }
+
+    @Test fun savedAddressIsTriedFirst() = runTest {
+        // The printer answers only at B; it is saved at A, so it is found by its serial.
+        val (bluetooth, fake) = make()
+        fake.printer(addr2)
+        val first = start { bluetooth.transport(printer(addr)).write(listOf("^XA^XZ".toByteArray())) }
+        advanceTimeBy(ZebraBluetoothSpec.ADDRESS_TRY_MS)
+        runCurrent()
+        assertTrue(fake.scanning)
+        fake.advertise(addr2, SERIAL, -60)
+        runCurrent()
+        assertTrue(first.await().isSuccess)
+        assertEquals(listOf(addr, addr2), fake.connects)
+        assertEquals(addr2, bluetooth.link.value.info?.address)
+        assertEquals(addr, bluetooth.link.value.savedAddress)
+
+        // The link drops. The next use tries the saved A first, then B (known this run, never
+        // saved), with no scan: they share the address time.
+        fake.links.last().drop(8)
+        runCurrent()
+        val scans = fake.scanStarts
+        val from = currentTime
+        val again = start { bluetooth.transport(printer(addr)).write(listOf("^XA^XZ".toByteArray())) }
+        runCurrent()
+        assertEquals("the first attempt targets the saved address", addr, fake.connects[2])
+        advanceTimeBy(ZebraBluetoothSpec.ADDRESS_TRY_MS / 2)
+        runCurrent()
+        assertTrue(again.await().isSuccess)
+        assertEquals(listOf(addr, addr2, addr, addr2), fake.connects)
+        assertEquals(ZebraBluetoothSpec.ADDRESS_TRY_MS / 2, currentTime - from)
+        assertEquals(scans, fake.scanStarts)
+        assertEquals(addr, bluetooth.link.value.savedAddress)
+
+        // The printer answers at A again: the link is there, and the mismatch is gone.
+        fake.links.last().drop(8)
+        runCurrent()
+        fake.printer(addr)
+        bluetooth.transport(printer(addr)).write(listOf("^XA^XZ".toByteArray()))
+        assertEquals(addr, fake.connects.last())
+        assertEquals(5, fake.connects.size)
+        assertEquals(addr, bluetooth.link.value.info?.address)
+        assertNull(bluetooth.link.value.savedAddress)
+    }
+
+    @Test fun aDeviceFoundByNameMustStillBeTheZebra() = runTest {
+        suspend fun spoofed(setUp: FakeBluetoothLe.() -> Unit, refusal: Class<out PrinterException>) {
+            val (bluetooth, fake) = make()
+            fake.setUp()
+            val send = start { bluetooth.transport(printer(null)).write(listOf("^XA^XZ".toByteArray())) }
+            runCurrent()
+            assertTrue(fake.scanning)
+            fake.advertise(addr2, SERIAL, -50) // it advertises the serial as its name
+            runCurrent()
+            val error = send.await().exceptionOrNull()
+            assertTrue("expected ${refusal.simpleName}, got $error", refusal.isInstance(error))
+            val gatt = fake.links.single()
+            assertFalse("indications never turned on", "cccd" in gatt.ops)
+            assertTrue("nothing written", gatt.writes.isEmpty())
+            assertTrue(gatt.closed)
+            assertNull(bluetooth.link.value.info)
+
+            // It never becomes the address the serial is tried at: the next use scans again.
+            val next = start { bluetooth.connect(null, SERIAL) }
+            runCurrent()
+            assertTrue(fake.scanning)
+            assertEquals(1, fake.connects.size)
+            advanceTimeBy(ZebraBluetoothSpec.CONNECT_READY_MS)
+            runCurrent()
+            next.await().failure<BluetoothPrinterNotFound>()
+        }
+        spoofed({ printer(addr2, manufacturer = "Acme Labels") }, BluetoothNotZebra::class.java)
+        spoofed({ printer(addr2, serial = "D8J999999999") }, BluetoothSerialMismatch::class.java)
     }
 
     @Test fun serialMismatchIsRefused() = runTest {
@@ -544,6 +650,25 @@ class ZebraBluetoothTest {
         advanceTimeBy(60_000)
         runCurrent()
         assertEquals(1, fake.connects.size)
+    }
+
+    @Test fun aLateDeviceInformationAnswerCanStillSayPairingLost() = runTest {
+        val (bluetooth, fake) = make()
+        fake.printer(addr).silentReads += ZebraBluetoothSpec.FIRMWARE_UUID
+        val connect = start { bluetooth.connect(addr, SERIAL) }
+        runCurrent()
+        val gatt = fake.links.single()
+        advanceTimeBy(ZebraBluetoothSpec.DEVICE_INFO_READ_MS + 1_000) // past its fallback
+        runCurrent()
+        assertFalse(connect.isCompleted)
+        gatt.answer(5) // insufficient authentication, late
+        runCurrent()
+        assertEquals(pairingLostText(SERIAL), connect.await().failure<BluetoothPairingLost>().message)
+        assertFalse("cccd" in gatt.ops)
+        assertTrue(gatt.closed)
+        advanceTimeBy(60_000)
+        runCurrent()
+        assertEquals("no retry", 1, fake.connects.size)
     }
 
     @Test fun dropBeforeReadyRetriesThreeTimes() = runTest {
@@ -777,6 +902,72 @@ class ZebraBluetoothTest {
         assertEquals(LOCATION_OFF, bluetoothAvailability(true, true, true, false, true, false))
         assertEquals(READY, bluetoothAvailability(true, true, true, false, false, false))
         assertEquals(READY, bluetoothAvailability(true, true, true, false, true, true))
+    }
+
+    @Test fun locationTurningOffEndsASearchBySerial() = runTest {
+        val (bluetooth, fake) = make()
+        fake.printer(addr2)
+        val search = start { bluetooth.connect(null, SERIAL) }
+        runCurrent()
+        assertTrue(fake.scanning)
+        fake.report(LOCATION_OFF)
+        runCurrent()
+        assertEquals(LOCATION_OFF, search.await().failure<BluetoothUnavailable>().availability)
+        assertFalse(fake.scanning)
+        assertTrue(fake.connects.isEmpty())
+    }
+
+    @Test fun waitsWhileBluetoothIsUnknownUntilItIsReady() = runTest {
+        val (bluetooth, fake) = make(UNKNOWN) // turning on
+        fake.printer(addr)
+        val connect = start { bluetooth.connect(addr, SERIAL) }
+        runCurrent()
+        advanceTimeBy(2_000)
+        runCurrent()
+        assertFalse(connect.isCompleted)
+        assertTrue("nothing is tried while Bluetooth is turning on", fake.connects.isEmpty())
+        fake.report(READY)
+        runCurrent()
+        assertEquals(addr, connect.await().getOrThrow().address)
+        assertEquals(listOf(addr), fake.connects)
+        assertEquals(READY, bluetooth.availability.value)
+    }
+
+    @Test fun transportIsForBluetoothPrintersOnly() = runTest {
+        val (bluetooth, _) = make()
+        val network = SavedPrinter("10.0.0.5", "ZD421", SERIAL, 203)
+        assertTrue(runCatching { bluetooth.transport(network) }.exceptionOrNull() is IllegalArgumentException)
+        assertEquals(SERIAL, bluetooth.transport(printer()).address)
+        assertEquals(
+            "The Bluetooth device found for D8J224508535 isn't a Zebra printer.",
+            BluetoothNotZebra(SERIAL).message,
+        )
+    }
+
+    @Test fun aFailedEventIsLoggedAndTheLinkCarriesOn() = runTest {
+        val logged = mutableListOf<Pair<String, Throwable>>()
+        val (bluetooth, fake) = make(log = { message, e -> logged += message to e })
+        val gatt = ready(bluetooth, fake)
+        val zebra = bluetooth.transport(printer())
+        // A reply check that throws while an indication is handled.
+        val broken = start { zebra.query(ZebraCommands.HOST_IDENTIFICATION) { throw IllegalStateException("bad check") } }
+        runCurrent()
+        gatt.indicate(hi)
+        runCurrent()
+        assertEquals(1, logged.size)
+        assertEquals("bad check", logged.single().second.message)
+        advanceTimeBy(ZebraBluetoothSpec.QUERY_IDLE_MS)
+        runCurrent()
+        assertEquals("the query still ends on quiet", hi, broken.await().getOrThrow())
+
+        // The next event and the next call are handled as usual.
+        advanceTimeBy(1_000)
+        val next = start { zebra.query(ZebraCommands.HOST_IDENTIFICATION, frames(1)) }
+        runCurrent()
+        gatt.indicate(hi)
+        runCurrent()
+        assertEquals(hi, next.await().getOrThrow())
+        assertEquals(1, logged.size)
     }
 
     // --- Scanning ---
