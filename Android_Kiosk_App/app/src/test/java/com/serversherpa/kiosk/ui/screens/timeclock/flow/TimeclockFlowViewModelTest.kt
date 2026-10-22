@@ -243,6 +243,20 @@ class TimeclockFlowViewModelTest {
         assertNull(r.ui.flow.status)
     }
 
+    /** The system keyboard sends no key events the screen could see: typing itself is activity. */
+    @Test fun idleResetsOnTyping() = runTest {
+        val r = rig(mode = TcMode.STATION)
+        r.vm.enterName(); runCurrent()
+        advanceTimeBy(IDLE_MS - 1_000); runCurrent()
+        r.vm.onType("S")
+        advanceTimeBy(IDLE_MS - 1_000); runCurrent()
+        r.vm.onType("Sa")
+        advanceTimeBy(IDLE_MS - 1_000); runCurrent()
+        assertEquals(TcStep.NAME, r.step)
+        advanceTimeBy(1_001); runCurrent()
+        assertEquals(TcStep.WELCOME, r.step)
+    }
+
     @Test fun idleOnAStationReturnsToWelcome() = runTest {
         val r = rig(mode = TcMode.STATION)
         r.vm.enterName(); runCurrent()

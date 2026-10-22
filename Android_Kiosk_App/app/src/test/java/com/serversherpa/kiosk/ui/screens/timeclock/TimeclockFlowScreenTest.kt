@@ -13,10 +13,17 @@ import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
-import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.getBoundsInRoot
+import androidx.compose.ui.test.performImeAction
+import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
+import com.serversherpa.kiosk.core.model.KioskPersonRow
+import com.serversherpa.kiosk.input.ScanEvent
+import com.serversherpa.kiosk.input.ScanSource
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
@@ -103,53 +110,124 @@ class TimeclockFlowScreenTest {
         compose.onNodeWithText("Confirm Clock Out").assertIsDisplayed()
     }
 
-    @Test fun theKeyboardCapitalizesAtTheStartAndAfterASpaceAndHasANumbersLayer() {
+    private class Rig(val c: com.serversherpa.kiosk.AppContainer, val vm: TimeclockFlowViewModel)
+
+    /** The flow in KIOSK mode (it opens on Enter Your Name) over [backend]. */
+    private fun rig(backend: FakeTcBackend = FakeTcBackend(), mode: TcMode = TcMode.KIOSK): Rig {
         val c = testContainer()
         val owner = object : ViewModelStoreOwner { override val viewModelStore = ViewModelStore() }
         lateinit var vm: TimeclockFlowViewModel
         compose.setContent {
             CompositionLocalProvider(LocalAppContainer provides c, LocalViewModelStoreOwner provides owner) {
-                vm = kioskViewModel { TimeclockFlowViewModel(TcMode.KIOSK, FakeTcBackend(), c.flash, null, flowOf(DEFAULT_APPEARANCE)) }
+                vm = kioskViewModel { TimeclockFlowViewModel(mode, backend, c.flash, null, flowOf(DEFAULT_APPEARANCE)) }
                 TimeclockFlowScreen(vm)
             }
         }
-        for (k in listOf("J", "I", "M")) compose.onNodeWithText(k).performClick()
-        compose.onNodeWithText("Space").performClick()
-        compose.onNodeWithText("H").performClick()
-        compose.onNodeWithContentDescription("Shift").performClick()
-        compose.onNodeWithText("E").performClick()
-        compose.onNodeWithText("N").performClick()
         compose.waitForIdle()
-        assertEquals("Jim HEn", vm.state.value.query)
-        compose.onNodeWithContentDescription("Backspace").performClick()
-        compose.onNodeWithText("123").performClick()
-        compose.onNodeWithText("7").performClick()
-        compose.onNodeWithText("-").performClick()
-        compose.onNodeWithText("ABC").performClick()
-        compose.waitForIdle()
-        assertEquals("Jim HE7-", vm.state.value.query)
-        compose.onNodeWithTag("tc-search-text").assertTextEquals("Jim HE7-")
+        return Rig(c, vm)
     }
 
-    /** A phone in portrait: the keyboard still types and a result can be picked. (Robolectric does
-     *  not measure text, so widths can't be checked here.) */
+    private val box get() = compose.onNodeWithTag("tc-search-text")
+    private fun resultCount() = compose.onNodeWithTag("tc-results").fetchSemanticsNode().children.size
+
+    @Test fun theNameBoxIsATextFieldForTheSystemKeyboardAndHasFocus() {
+        rig()
+        compose.mainClock.advanceTimeBy(100)           // the step's focus request waits a frame or two
+        box.assertIsFocused()
+        box.performTextInput("Hen")
+        box.assertTextEquals("Hen")
+    }
+
+    @Test fun typingFiltersTheResults() {
+        val r = rig()
+        box.performTextInput("t")
+        compose.onNodeWithText("Tina Timeclock").assertIsDisplayed()
+        compose.onNodeWithText("Jimmy Henderson").assertDoesNotExist()
+        box.performTextReplacement("hen")
+        compose.onNodeWithText("Jimmy Henderson").assertIsDisplayed()
+        compose.onNodeWithText("Tina Timeclock").assertDoesNotExist()
+        assertEquals(listOf("p1"), r.vm.state.value.results.map { it.id })
+        box.performTextReplacement("nobody")
+        compose.onNodeWithText("No one matches that name yet. Keep typing or check the spelling.").assertIsDisplayed()
+    }
+
+    @Test fun theImeSearchActionWithASingleHitAutoPicks() {
+        val r = rig()
+        box.performTextInput("hen jim")
+        assertEquals(TcStep.NAME, r.vm.state.value.step)
+        box.performImeAction()
+        compose.onNodeWithText("Is this you?").assertIsDisplayed()
+        assertEquals("p1", r.vm.state.value.flow.status?.person?.id)
+    }
+
+    @Test fun theImeSearchActionWithNoHitSaysSo() {
+        rig()
+        box.performTextInput("nobody")
+        box.performImeAction()
+        compose.onNodeWithText("No one matches that name.").assertIsDisplayed()
+    }
+
+    @Test fun aScanIntoTheBoxSelectsAtOnce() {
+        val r = rig()
+        // a reader typing into the box (HID wedge, DataWedge keystrokes): a badge UUID
+        box.performTextInput("B-UID-1")
+        compose.onNodeWithText("Is this you?").assertIsDisplayed()
+        assertEquals("p1", r.vm.state.value.flow.status?.person?.id)
+    }
+
+    @Test fun anAmbiguousTagInTheBoxWaitsForTheRest() {
+        val r = rig()
+        box.performTextInput("1003")                    // Tina's tag, and the start of Jimmy's
+        assertEquals(TcStep.NAME, r.vm.state.value.step)
+        box.performTextInput("48")
+        compose.onNodeWithText("Is this you?").assertIsDisplayed()
+        assertEquals("p1", r.vm.state.value.flow.status?.person?.id)
+    }
+
+    @Test fun aScannerOnTheBusStillSelectsOnTheNameStep() {
+        val r = rig()
+        box.performTextInput("Ji")                      // half-typed, keyboard up
+        r.c.scanBus.publish(ScanEvent("B-UID-1", ScanSource.DATAWEDGE))
+        compose.waitForIdle()
+        compose.onNodeWithText("Is this you?").assertIsDisplayed()
+        assertEquals("p1", r.vm.state.value.flow.status?.person?.id)
+    }
+
+    @Test fun resultsChangingDoesNotMoveTheBox() {
+        val crew = listOf("Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India", "Juliet")
+            .mapIndexed { i, last -> KioskPersonRow("s$i", "Sam $last", "Sam", last) }
+        rig(FakeTcBackend().apply { peopleResult = { crew } })
+        box.performTextInput("Sa")
+        assertEquals(8, resultCount())
+        val boxAt = compose.onNodeWithTag("tc-search-box", useUnmergedTree = true).getBoundsInRoot()
+        val listAt = compose.onNodeWithTag("tc-results").getBoundsInRoot()
+        box.performTextReplacement("Sam Alp")
+        assertEquals(1, resultCount())
+        assertEquals(boxAt, compose.onNodeWithTag("tc-search-box", useUnmergedTree = true).getBoundsInRoot())
+        assertEquals(listAt, compose.onNodeWithTag("tc-results").getBoundsInRoot())
+        box.performTextReplacement("Sa")
+        assertEquals(8, resultCount())
+        assertEquals(boxAt, compose.onNodeWithTag("tc-search-box", useUnmergedTree = true).getBoundsInRoot())
+    }
+
+    /** A phone in portrait: typing filters and a result can be picked. (Robolectric does not
+     *  measure text, so widths can't be checked here.) */
     @Config(qualifiers = "w360dp-h740dp")
     @Test fun aPhoneSizedScreenStillTypes() {
-        val c = testContainer()
-        val owner = object : ViewModelStoreOwner { override val viewModelStore = ViewModelStore() }
-        lateinit var vm: TimeclockFlowViewModel
-        compose.setContent {
-            CompositionLocalProvider(LocalAppContainer provides c, LocalViewModelStoreOwner provides owner) {
-                vm = kioskViewModel { TimeclockFlowViewModel(TcMode.KIOSK, FakeTcBackend(), c.flash, null, flowOf(DEFAULT_APPEARANCE)) }
-                TimeclockFlowScreen(vm)
-            }
-        }
-        for (k in listOf("T", "I", "N", "A")) compose.onNodeWithText(k).performClick()
-        compose.waitForIdle()
-        assertEquals("Tina", vm.state.value.query)
-        compose.onNodeWithTag("tc-search-text").assertTextEquals("Tina")
+        val r = rig()
+        box.performTextInput("Tina")
+        assertEquals("Tina", r.vm.state.value.query)
         compose.onNodeWithText("Tina Timeclock").performClick()
         compose.onNodeWithText("Is this you?").assertIsDisplayed()
+    }
+
+    @Config(qualifiers = "w1280dp-h800dp-land")
+    @Test fun landscapePutsTheResultsBesideTheBox() {
+        rig()
+        box.performTextInput("t")
+        val boxAt = compose.onNodeWithTag("tc-search-box", useUnmergedTree = true).getBoundsInRoot()
+        val listAt = compose.onNodeWithTag("tc-results").getBoundsInRoot()
+        org.junit.Assert.assertTrue("results right of the box: $boxAt vs $listAt", listAt.left >= boxAt.right)
     }
 
     /** A rotation recreates the screen; the step, the person and the typed text live in the view
@@ -182,7 +260,7 @@ class TimeclockFlowScreenTest {
         }
         fun rotate() { shown = false; compose.waitForIdle(); landscape = !landscape; shown = true; compose.waitForIdle() }
 
-        for (k in listOf("H", "E", "N")) compose.onNodeWithText(k).performClick()
+        compose.onNodeWithTag("tc-search-text").performTextInput("Hen")
         compose.onNodeWithTag("tc-search-text").assertTextEquals("Hen")
         rotate()
         compose.onNodeWithText("Enter Your Name").assertIsDisplayed()

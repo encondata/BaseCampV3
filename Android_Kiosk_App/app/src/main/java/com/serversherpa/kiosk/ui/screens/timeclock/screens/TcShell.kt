@@ -9,6 +9,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -200,14 +203,19 @@ internal fun TcBackButton(enabled: Boolean, onClick: () -> Unit) {
  * "TRACK | MONITOR | VERIFY | COMPLETE" along the bottom, and Back pinned bottom-left. No kiosk
  * top bar or footer: the flow owns the whole screen (spec section 5). Always light.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun TcShell(
     modifier: Modifier = Modifier,
     back: (@Composable () -> Unit)? = null,
     onSettings: (() -> Unit)? = null,
+    /** The step lays itself out in the space between the header and the keyboard (Enter Your
+     *  Name): no page scroll, and only a small margin above the keyboard. */
+    fixed: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val s = tcSizesFor()
+    val imeVisible = WindowInsets.isImeVisible
     CompositionLocalProvider(LocalTcSizes provides s) {
         Box(modifier.fillMaxSize().background(TcColors.Paper)) {
             TcTopo(Modifier.fillMaxSize())
@@ -215,11 +223,12 @@ internal fun TcShell(
             Column(Modifier.fillMaxSize().safeDrawingPadding()) {
                 TcHeader(onSettings)
                 Column(
-                    Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
+                    Modifier.weight(1f).fillMaxWidth()
+                        .then(if (fixed) Modifier else Modifier.verticalScroll(rememberScrollState()))
                         .padding(
                             start = 16.dp, end = 16.dp,
                             top = if (s.landscape) s.dp(8f, 4f, 64f) else s.dp(16f, 5f, 96f),
-                            bottom = s.footHeight * (if (s.landscape) .45f else .55f),
+                            bottom = if (fixed) 8.dp else s.footHeight * (if (s.landscape) .45f else .55f),
                         ),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) { content() }
@@ -227,7 +236,7 @@ internal fun TcShell(
             if (back != null) {
                 Box(
                     Modifier.align(Alignment.BottomStart).safeDrawingPadding()
-                        .padding(start = s.pad, bottom = s.pad + s.dp(28f, 4f, 44f)),
+                        .padding(start = s.pad, bottom = tcBackBottom(s, imeVisible)),
                 ) { back() }
             }
         }

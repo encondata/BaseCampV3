@@ -241,10 +241,11 @@ class TimeclockFlowViewModel(
 
     // ---- finding a person ----
 
-    /** Every keystroke (on-screen or hardware). A value that names exactly one person selects them
+    /** Every change to the box (the system keyboard, a hardware keyboard or a reader). A value that names exactly one person selects them
      *  at once, unless it is also the start of a longer tag ("1003" vs "100348"), when Enter (or
      *  the rest of the scan) decides. */
     fun onType(next: String) {
+        onActivity()                                 // system-keyboard typing sends no key events
         val ui = _state.value
         if (ui.looking || !typing(ui)) return
         if (ui.message != null) showMessage(null)

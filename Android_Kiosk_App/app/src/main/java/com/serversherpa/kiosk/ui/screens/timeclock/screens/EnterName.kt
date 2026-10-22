@@ -6,15 +6,23 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -23,93 +31,150 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.serversherpa.kiosk.data.db.PersonEntity
 
 /**
- * Enter Your Name: the search box (which a hardware reader or keyboard types into as well), up to
- * eight matching people to tap, and the on-screen keyboard. In landscape the results sit beside
- * the keyboard.
+ * Enter Your Name with the system keyboard (Jimmy, on a Pixel: the in-app keyboard jumped as the
+ * results came and went). The title, the lead and the search box stay fixed at the top; the
+ * results fill the space between the box and the keyboard (`weight(1f)`, scrolling), so their
+ * count never moves the box or the keyboard. In landscape the results sit beside the box.
+ *
+ * The box is a real text field: the IME types into it, and so does a reader that types like a
+ * keyboard (a HID wedge or DataWedge keystrokes). Every change goes to [onQueryChange], which
+ * selects a person the moment the value names exactly one. The IME's Search action, and Enter on
+ * a hardware keyboard, is [onSearch]. Compose asks the IME for IME_FLAG_NO_FULLSCREEN on every
+ * text field, so landscape never shows the full-screen extract editor.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun EnterName(
     query: String,
+    onQueryChange: (String) -> Unit,
+    onSearch: () -> Unit,
     results: List<PersonEntity>,
     /** The box has text but nobody matches it. */
     noMatches: Boolean,
     message: String?,
     disabled: Boolean,
     onPick: (PersonEntity) -> Unit,
-    keyboard: @Composable (Modifier) -> Unit,
+    focusRequester: FocusRequester,
     /** Sits inside the box on the right (the camera lens, when the device has one). */
     trailing: (@Composable () -> Unit)? = null,
 ) {
     val s = LocalTcSizes.current
-    Column(
-        Modifier.widthIn(max = if (s.landscape) 1280.dp else 900.dp).fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(s.dp(12f, 2.4f, 30f)),
-    ) {
-        TcTitle("Enter Your Name")
-        TcLead("Type your name below to find your account.")
-        SearchBox(query, trailing, Modifier.then(if (s.landscape) Modifier else Modifier.widthIn(max = 760.dp)).fillMaxWidth())
-        if (message != null) TcErrorText(message)
-        val list: @Composable (Modifier) -> Unit = { m ->
-            Column(m, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                for (person in results) ResultRow(person, !disabled) { onPick(person) }
-                if (noMatches) {
-                    Text(
-                        "No one matches that name yet. Keep typing or check the spelling.",
-                        style = tcText(s.sp(15f, 2.2f, 20f), color = TcColors.Slate),
-                    )
-                }
+    // The last rows can scroll clear of the Back button floating bottom-left.
+    val listBottom = 56.dp + tcBackBottom(s, WindowInsets.isImeVisible) + 8.dp
+    val gap = if (s.landscape) s.dp(8f, 1.6f, 20f) else s.dp(10f, 2f, 24f)
+    val top: @Composable (Modifier) -> Unit = { m ->
+        Column(m, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(gap)) {
+            TcTitle("Enter Your Name")
+            TcLead("Type your name below to find your account.")
+            SearchField(query, onQueryChange, onSearch, focusRequester, trailing, Modifier.fillMaxWidth())
+            if (message != null) TcErrorText(message)
+        }
+    }
+    val list: @Composable (Modifier) -> Unit = { m ->
+        LazyColumn(
+            m.testTag("tc-results"),
+            contentPadding = PaddingValues(bottom = listBottom),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(results, key = { it.id }) { person -> ResultRow(person, !disabled) { onPick(person) } }
+            if (noMatches) item {
+                Text(
+                    "No one matches that name yet. Keep typing or check the spelling.",
+                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    style = tcText(s.sp(15f, 2.2f, 20f), color = TcColors.Slate),
+                )
             }
         }
-        if (s.landscape) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                list(Modifier.weight(1f).widthIn(min = 240.dp))
-                keyboard(Modifier.weight(1.7f))
-            }
-        } else {
-            Column(Modifier.widthIn(max = 760.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                list(Modifier.fillMaxWidth())
-                keyboard(Modifier.fillMaxWidth())
-            }
+    }
+    if (s.landscape) {
+        Row(Modifier.widthIn(max = 1280.dp).fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+            top(Modifier.weight(1f))
+            list(Modifier.weight(1f).fillMaxSize())
+        }
+    } else {
+        Column(Modifier.widthIn(max = 760.dp).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(gap)) {
+            top(Modifier.fillMaxWidth())
+            list(Modifier.weight(1f).fillMaxWidth())
         }
     }
 }
 
+/** The bottom offset of the floating Back button: just above the keyboard while it is up. */
+internal fun tcBackBottom(s: TcSizes, imeVisible: Boolean): Dp = if (imeVisible) 8.dp else s.pad + s.dp(28f, 4f, 44f)
+
 @Composable
-private fun SearchBox(query: String, trailing: (@Composable () -> Unit)?, modifier: Modifier) {
+private fun SearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onSearch: () -> Unit,
+    focusRequester: FocusRequester,
+    trailing: (@Composable () -> Unit)?,
+    modifier: Modifier,
+) {
     val s = LocalTcSizes.current
     val shape = RoundedCornerShape(16.dp)
-    Row(
-        modifier.heightIn(min = 68.dp)
-            .shadow(4.dp, shape, ambientColor = TcColors.Ink.copy(alpha = .06f), spotColor = TcColors.Ink.copy(alpha = .06f))
-            .clip(shape).background(Color.White).border(1.dp, TcColors.Amber, shape)
-            .padding(horizontal = 20.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Icon(TcSearchIcon, contentDescription = null, tint = TcColors.Ink, modifier = Modifier.size(26.dp))
-        val fs = s.sp(20f, 3f, 30f)
-        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                query.ifEmpty { "Start typing your name…" }, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false).testTag("tc-search-text"),
-                style = tcText(fs, color = if (query.isEmpty()) TcColors.Placeholder else TcColors.Ink, align = TextAlign.Start),
-            )
-            if (query.isNotEmpty()) Box(Modifier.padding(start = 2.dp).width(2.dp).height(with(LocalDensity.current) { fs.toDp() }).background(TcColors.Amber))
-        }
-        trailing?.invoke()
-    }
+    val fs = s.sp(20f, 3f, 30f)
+    BasicTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        singleLine = true,
+        textStyle = tcText(fs, align = TextAlign.Start),
+        cursorBrush = SolidColor(TcColors.Amber),
+        keyboardOptions = KeyboardOptions(
+            capitalization = KeyboardCapitalization.Words, autoCorrectEnabled = false,
+            keyboardType = KeyboardType.Text, imeAction = ImeAction.Search,
+        ),
+        keyboardActions = KeyboardActions(onSearch = { onSearch() }),
+        modifier = modifier
+            .focusRequester(focusRequester)
+            // Enter from a hardware keyboard or reader: the same as the IME's Search.
+            .onPreviewKeyEvent { e ->
+                if (e.key == Key.Enter || e.key == Key.NumPadEnter) { if (e.type == KeyEventType.KeyDown) onSearch(); true } else false
+            }
+            .semantics { contentDescription = "Your name" }
+            .testTag("tc-search-text"),
+        decorationBox = { field ->
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 68.dp)
+                    .shadow(4.dp, shape, ambientColor = TcColors.Ink.copy(alpha = .06f), spotColor = TcColors.Ink.copy(alpha = .06f))
+                    .clip(shape).background(Color.White).border(1.dp, TcColors.Amber, shape)
+                    .padding(start = 20.dp, end = if (trailing != null) 8.dp else 20.dp)
+                    .testTag("tc-search-box"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Icon(TcSearchIcon, contentDescription = null, tint = TcColors.Ink, modifier = Modifier.size(26.dp))
+                Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                    if (query.isEmpty()) Text("Start typing your name…", maxLines = 1, style = tcText(fs, color = TcColors.Placeholder, align = TextAlign.Start))
+                    field()
+                }
+                trailing?.invoke()
+            }
+        },
+    )
 }
 
 @Composable

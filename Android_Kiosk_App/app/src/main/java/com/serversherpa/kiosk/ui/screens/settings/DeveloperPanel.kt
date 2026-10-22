@@ -1,5 +1,6 @@
 package com.serversherpa.kiosk.ui.screens.settings
 
+import com.serversherpa.kiosk.ui.guards.LocalStationActivity
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -133,6 +134,7 @@ private fun LocalDataInspector() {
     val container = LocalAppContainer.current
     val sync by container.sync.status.collectAsStateWithLifecycle()
     var filter by remember { mutableStateOf("") }
+    val activity = LocalStationActivity.current
     var assets by remember { mutableStateOf<List<AssetEntity>>(emptyList()) }
     var people by remember { mutableStateOf<List<PersonEntity>>(emptyList()) }
     LaunchedEffect(sync.phase, sync.syncedAt) { assets = container.db.assets().all(); people = container.db.people().all() }
@@ -140,7 +142,7 @@ private fun LocalDataInspector() {
     val shownAssets = assets.filter { q.isEmpty() || listOfNotNull(it.assetId, it.name, it.serialNumber, it.rfid).any { v -> v.lowercase().contains(q) } }.take(INSPECT_CAP)
     val shownPeople = people.filter { q.isEmpty() || listOfNotNull(it.displayName, it.rfidTag).any { v -> v.lowercase().contains(q) } }.take(INSPECT_CAP)
     Column(Modifier.padding(top = 12.dp)) {
-        OutlinedTextField(filter, { filter = it }, label = { Text("Filter local data") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(filter, { filter = it; activity() }, label = { Text("Filter local data") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         Text("Assets (${shownAssets.size} of ${assets.size})", fontFamily = FragmentMono, modifier = Modifier.padding(top = 12.dp))
         for (a in shownAssets) Text("${a.assetId} · ${a.name ?: "—"} · ${a.serialNumber ?: "—"} · ${displayRfid(a.rfid)}", fontFamily = FragmentMono, modifier = Modifier.padding(vertical = 2.dp))
         Text("People (${shownPeople.size} of ${people.size})", fontFamily = FragmentMono, modifier = Modifier.padding(top = 12.dp))

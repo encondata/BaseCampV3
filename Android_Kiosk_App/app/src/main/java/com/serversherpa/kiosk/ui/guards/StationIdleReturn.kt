@@ -3,11 +3,13 @@ package com.serversherpa.kiosk.ui.guards
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.changedToDown
@@ -24,11 +26,15 @@ import kotlinx.coroutines.flow.map
 /** On a Time Clock station an untouched signed-out page goes back to the time clock after this long. */
 const val TIMECLOCK_RETURN_MS = 60_000L
 
+/** Restarts [StationIdleReturn]'s count: text fields on those pages call it on every change,
+ *  since typing on the system keyboard sends no touch the page could see. A no-op elsewhere. */
+val LocalStationActivity = staticCompositionLocalOf<() -> Unit> { {} }
+
 /**
  * The pages a signed-out Time Clock station can reach from Welcome's gear (sign-in, and Settings
  * from sign-in's gear) go back to Welcome after [TIMECLOCK_RETURN_MS] with no touch, so a
  * worker who wandered in can't strand the station there (Login.tsx's idle return). Any touch,
- * or a change of [restartKey] (typed text), starts the count again. Signed in, or on any other
+ * a change of [restartKey] (typed text), or a call to [LocalStationActivity] starts the count again. Signed in, or on any other
  * kiosk, it does nothing.
  */
 @Composable
@@ -51,5 +57,5 @@ fun StationIdleReturn(nav: NavHostController, restartKey: Any? = null, content: 
                 }
             }
         },
-    ) { content() }
+    ) { CompositionLocalProvider(LocalStationActivity provides { touched++ }) { content() } }
 }

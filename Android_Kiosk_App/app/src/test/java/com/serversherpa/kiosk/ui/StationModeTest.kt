@@ -243,6 +243,25 @@ class StationModeTest {
         compose.onNodeWithTag("api-url").assertDoesNotExist()
     }
 
+    /** Soft-keyboard typing sends no touch: the fields count their own changes as activity. */
+    @Test fun typingInSettingsSignedOutKeepsItOpen() {
+        station()
+        waitForText("Welcome!")
+        compose.onAllNodesWithContentDescription("Settings").onFirst().performClick()
+        waitForText("Back to the time clock")
+        compose.onNodeWithContentDescription("Kiosk settings").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag("api-url").fetchSemanticsNodes().isNotEmpty() }
+        compose.mainClock.advanceTimeBy(40_000)
+        compose.onNodeWithTag("api-url").performTextReplacement("http://127.0.0.1:")
+        compose.mainClock.advanceTimeBy(40_000)
+        compose.onNodeWithTag("kiosk-name").performTextReplacement("Dock 4 clock")
+        compose.mainClock.advanceTimeBy(40_000)
+        compose.onNodeWithTag("api-url").assertIsDisplayed()               // 120 s in, still typing
+        compose.mainClock.advanceTimeBy(21_000)
+        waitForText("Welcome!")
+        compose.onNodeWithTag("api-url").assertDoesNotExist()
+    }
+
     @Test fun signInSignedOutReturnsToWelcomeAfterIdle() {
         station()
         waitForText("Welcome!")
