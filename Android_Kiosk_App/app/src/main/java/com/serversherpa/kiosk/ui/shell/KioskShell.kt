@@ -124,11 +124,11 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
                             maxLines = 1, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false),
                         )
+                        NetTestChip(onClick = { nav.navigate(Routes.settings("developer")) }) // INTERNET-TEST
                     }
                 }
             }
             if (authed != null) {
-                NetTestChip(onClick = { nav.navigate(Routes.settings("developer")) }) // INTERNET-TEST
                 // The way out doubles as the status light: its outline is the kiosk's
                 // registration state (green registered, amber expiring, red expired,
                 // slate unregistered), so the bar needs no separate chip for it.

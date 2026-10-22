@@ -7,10 +7,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.assertTouchHeightIsEqualTo
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
@@ -26,6 +28,8 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -40,19 +44,27 @@ import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.screens.settings.DeveloperPanel
 import com.serversherpa.kiosk.ui.shell.KioskShell
 import com.serversherpa.kiosk.ui.theme.KioskTheme
+import java.nio.file.FileSystems
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.RuleChain
+import org.junit.rules.TestRule
+import org.junit.runner.Description
 import org.junit.runner.RunWith
+import org.junit.runners.model.Statement
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /**
  * What the developer sees (design 4.1 and 4.3): the Internet Test section in
@@ -63,7 +75,9 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w360dp-h800dp")
 class InternetTestUiTest {
-    @get:Rule val compose = createComposeRule()
+    private val compose = createComposeRule()
+
+    @get:Rule val rules: RuleChain = RuleChain.outerRule(NativeFontsSettled()).around(compose)
 
     private lateinit var c: AppContainer
 
@@ -257,14 +271,57 @@ class InternetTestUiTest {
         compose.onNodeWithText("Net test").assertIsDisplayed().assertHasClickAction()
         compose.onNodeWithText("NET TEST").assertIsDisplayed()
         compose.onNodeWithText("3G · Custom").assertIsDisplayed()
-        // The chip fits beside the brand and Sign out on a 360 dp screen.
-        compose.onNodeWithText("ServerSherpa").assertIsDisplayed()
-        compose.onNodeWithText("Sign out").assertIsDisplayed()
 
         runBlocking { c.internetTest.setEnabled(false) }
 
         compose.waitUntil(5_000) { count("3G · Custom") == 0 }
         assertEquals(0, count("Net test", substring = true, ignoreCase = true))
+    }
+
+    private fun layoutOf(text: String): TextLayoutResult {
+        val layouts = mutableListOf<TextLayoutResult>()
+        compose.onNodeWithText(text).fetchSemanticsNode().config[SemanticsActions.GetTextLayoutResult].action?.invoke(layouts)
+        return layouts.single()
+    }
+
+    /** The brand as laid out is whole: not ellipsized and not overflowing its box. */
+    private fun brandWhole(): Boolean = layoutOf("ServerSherpa").let { !it.isLineEllipsized(0) && !it.hasVisualOverflow }
+
+    /**
+     * The chip's label as laid out is whole: not ellipsized, no line wrapped
+     * out of sight, and the line inside its box. (Its width-overflow flag isn't
+     * used: Compose lays a short label in a Row out at the Row's full width, so
+     * the flag reads true for whole text, the kiosk name and Sign out included.)
+     */
+    private fun chipLabelWhole(): Boolean =
+        layoutOf("Net test").let { !it.isLineEllipsized(0) && !it.didOverflowHeight && it.getLineRight(0) <= it.size.width }
+
+    /**
+     * The main handheld, the 320 dp MC2200: the chip never cuts the brand off.
+     * Laid out with real fonts (native graphics), since only a real text
+     * layout shows an ellipsis; a node that is merely displayed proves nothing.
+     */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w320dp-h533dp-hdpi")
+    fun chipLeavesTheBrandWholeOnA320dpHandheld() {
+        c.auth.completePair(fakeSession())
+        show { KioskShell(rememberNavController()) { Text("page body") } }
+        compose.waitForIdle()
+        assertTrue("the brand is cut off with the switch off", brandWhole())
+        val pageTop = compose.onNodeWithText("page body").fetchSemanticsNode().boundsInRoot.top
+
+        runBlocking { c.internetTest.setEnabled(true) }
+        awaitText("Net test")
+
+        assertTrue("the brand is cut off with the chip on", brandWhole())
+        assertTrue("the chip's own label is cut off", chipLabelWhole())
+        compose.onNodeWithText("ServerSherpa").assertIsDisplayed()
+        compose.onNodeWithText("Sign out").assertIsDisplayed()
+        compose.onNodeWithText("Net test").assertIsDisplayed().assertHasClickAction()
+        // A small pill, but a full-size tap target, and the bar is no taller for it.
+        compose.onNodeWithText("Net test").assertTouchHeightIsEqualTo(48.dp)
+        assertEquals(pageTop, compose.onNodeWithText("page body").fetchSemanticsNode().boundsInRoot.top)
     }
 
     @Test fun chipOpensDeveloperSettings() {
@@ -288,5 +345,30 @@ class InternetTestUiTest {
         compose.waitForIdle()
         assertEquals(Routes.SETTINGS, nav.currentDestination?.route)
         assertEquals("developer", nav.currentBackStackEntry?.arguments?.getString("tab"))
+    }
+}
+
+/**
+ * Before a native-graphics test, waits out another Robolectric sandbox that is
+ * still unpacking the native runtime's fonts (about 160 MB). Robolectric 4.14
+ * holds the fonts jar open as a zip file system while it copies them, and a
+ * sandbox that starts loading meanwhile fails with
+ * FileSystemAlreadyExistsException. The legacy-graphics tests start that copy
+ * on a background thread (Room's first query), so a native-graphics test right
+ * after them would collide with it. The file system is open exactly while a
+ * copy is in progress.
+ */
+private class NativeFontsSettled : TestRule {
+    override fun apply(base: Statement, description: Description): Statement = object : Statement() {
+        override fun evaluate() {
+            if (description.getAnnotation(GraphicsMode::class.java)?.value == GraphicsMode.Mode.NATIVE) awaitFontsCopied()
+            base.evaluate()
+        }
+    }
+
+    private fun awaitFontsCopied() {
+        val fonts = javaClass.classLoader?.getResource("fonts/")?.toURI()?.takeIf { it.scheme == "jar" } ?: return
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60)
+        while (runCatching { FileSystems.getFileSystem(fonts) }.isSuccess && System.nanoTime() < deadline) Thread.sleep(20)
     }
 }
