@@ -21,7 +21,13 @@ func stillBeingMadeText(done: Int, total: Int) -> String {
     total == 0 ? PREPARING_TEXT : "Labels are still being made (\(done) of \(total))."
 }
 
-func printerUnreachableText(_ host: String) -> String { "Can't reach the printer at \(host)." }
+/// "Can't reach the printer at 10.0.0.5." / "Can't reach the printer D8J224508535 over Bluetooth."
+func printerUnreachableText(_ p: SavedPrinter) -> String {
+    switch p.connection {
+    case .network(let host): "Can't reach the printer at \(host)."
+    case .bluetooth(let serial, _): "Can't reach the printer \(serial) over Bluetooth."
+    }
+}
 
 /// The printer took the connection but not the whole job in time: the label may be out.
 let PRINTER_TIMEOUT_TEXT = "The printer didn't finish answering. It may have printed the label — check before you retry."
@@ -336,15 +342,15 @@ actor PrintQueue<A: Sendable> {
 
     private func finish(_ w: Work, asset: A, printer: SavedPrinter, bytes: String) async -> PrintEntry<A> {
         do {
-            try await deps.send(printer.host, bytes)
+            try await deps.send(printer.host ?? "", bytes)
         } catch {
-            deps.log("couldn't send the label to \(printer.host)", error)
+            deps.log("couldn't send the label to \(printer.host ?? printer.serial)", error)
             let message = if error is LabelSendTimeout {
                 PRINTER_TIMEOUT_TEXT
             } else if error is LabelSendLocalNetworkDenied {
                 LOCAL_NETWORK_PRINTER_DENIED_TEXT
             } else {
-                printerUnreachableText(printer.host)
+                printerUnreachableText(printer)
             }
             return fail(w, message)
         }

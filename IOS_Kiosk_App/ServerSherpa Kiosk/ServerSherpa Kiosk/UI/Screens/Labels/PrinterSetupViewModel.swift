@@ -121,7 +121,13 @@ let SCAN_FAILED_TEXT = "Couldn't scan the network."
 let INVALID_IP_TEXT = "That isn't a valid IP address."
 let NO_PEELER_TEXT = "This printer has no peeler."
 let FONTS_INSTALLED_TEXT = "Fonts installed."
-func noZebraAnswerText(_ host: String) -> String { "No Zebra printer answered at \(host)." }
+/// "No Zebra printer answered at 10.0.0.5." / "No Zebra printer answered over Bluetooth as D8J224508535."
+func noZebraAnswerText(_ connection: PrinterConnection) -> String {
+    switch connection {
+    case .network(let host): "No Zebra printer answered at \(host)."
+    case .bluetooth(let serial, _): "No Zebra printer answered over Bluetooth as \(serial)."
+    }
+}
 func fontInstallFailedText(_ name: String) -> String { "Couldn't install \(name)." }
 
 /// The connection waited with iOS's Local Network denial (`NetworkZebra` marks it).
@@ -388,7 +394,7 @@ final class PrinterSetupViewModel {
             return
         } catch {
             ui.choosing = nil
-            ui.chooseError = wasLocalNetworkDenied(error) ? LOCAL_NETWORK_PRINTER_DENIED_TEXT : noZebraAnswerText(host)
+            ui.chooseError = wasLocalNetworkDenied(error) ? LOCAL_NETWORK_PRINTER_DENIED_TEXT : noZebraAnswerText(.network(host: host))
             return
         }
         settingsStore.setPrinter(saved)
@@ -446,13 +452,13 @@ final class PrinterSetupViewModel {
     }
 
     private func checks(_ saved: SavedPrinter, run: Int) async throws {
-        let zebra = printerAt(saved.host)
+        let zebra = printerAt(saved.host ?? "")
         try put(CheckRow(key: .answers, state: .running), run)
         let id: HostId
         switch try await attempt({ try await zebra.identify() }) {
         case .success(let answer): id = answer
         case .failure(let error):
-            let detail = wasLocalNetworkDenied(error) ? LOCAL_NETWORK_PRINTER_DENIED_TEXT : noZebraAnswerText(saved.host)
+            let detail = wasLocalNetworkDenied(error) ? LOCAL_NETWORK_PRINTER_DENIED_TEXT : noZebraAnswerText(saved.connection)
             try put(CheckRow(key: .answers, state: .fail, detail: detail), run)
             return
         }
@@ -463,7 +469,7 @@ final class PrinterSetupViewModel {
             // Another printer took this address: its DPI picks the template (the builder rebuilds).
             let serial = try await quietly { try await zebra.serial() } ?? nil
             try live(run)
-            printer = SavedPrinter(host: saved.host, model: model, serial: serial ?? "", dpi: id.dpi)
+            printer = SavedPrinter(connection: saved.connection, model: model, serial: serial ?? "", dpi: id.dpi)
             settingsStore.setPrinter(printer)
         }
 
@@ -581,7 +587,7 @@ final class PrinterSetupViewModel {
             ui.installing = false
             return
         }
-        let zebra = printerAt(printer.host)
+        let zebra = printerAt(printer.host ?? "")
         var failed: String?
         var files: [String: LabelFontRow] = [:]
         for row in (try? await store.labelFonts()) ?? [] { files[row.name.uppercased()] = row }
@@ -706,7 +712,7 @@ final class PrinterSetupViewModel {
             }
             if let zpl {
                 let shifted = try parseZpl(try await helper("applyPrintSettings", LabelGenArgs.printSettings(zpl: zpl, offsetX: offsets.x, offsetY: offsets.y)))
-                try await printerAt(printer.host).send(try parseZpl(try await helper("withPrintMode", LabelGenArgs.printMode(zpl: shifted, peel: s.peel))))
+                try await printerAt(printer.host ?? "").send(try parseZpl(try await helper("withPrintMode", LabelGenArgs.printMode(zpl: shifted, peel: s.peel))))
                 (message, isError) = (text, false)
             } else {
                 (message, isError) = (text, true)
@@ -721,7 +727,7 @@ final class PrinterSetupViewModel {
         } catch is PrinterTimeout {
             (message, isError) = (Self.TEST_TIMEOUT_TEXT, true)
         } catch is PrinterError {
-            (message, isError) = (printerUnreachableText(printer.host), true)
+            (message, isError) = (printerUnreachableText(printer), true)
         } catch {
             Self.log.warning("test label failed: \(String(describing: error), privacy: .private)")
             (message, isError) = (Self.TEST_FAILED_TEXT, true)

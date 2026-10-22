@@ -224,6 +224,7 @@ private final class Sleeps: @unchecked Sendable {
 @MainActor
 final class PrinterSetupViewModelTests {
     private let saved = SavedPrinter(host: "10.0.0.5", model: "ZD421", serial: "S1", dpi: 203)
+    private var savedHost: String { saved.host ?? "" }
     private let engine = SetupEngine()
     private let store: KioskStore
     private let prefs = KioskPrefs(defaults: freshDefaults())
@@ -394,7 +395,7 @@ final class PrinterSetupViewModelTests {
         #expect(vm.ui.fontFix?.installable.count == 2)
 
         await checked(vm) { vm.installFonts() }
-        let z = zebra(saved.host)
+        let z = zebra(savedHost)
         #expect(z.installed.map { $0.name.uppercased() } == ["ROBOTO.TTF", "LATO.TTF"])
         #expect(z.installed.first?.bytes == Data([1, 2, 3]))
         #expect(z.installed.last?.bytes == Data([4, 5]))
@@ -420,13 +421,13 @@ final class PrinterSetupViewModelTests {
         await eventually("install finished") { vm.ui.fontMessage != nil && !vm.ui.installing }
         #expect(vm.ui.fontMessage == "Couldn't install ROBOTO.TTF.")
         #expect(vm.ui.fontError)
-        #expect(zebra(saved.host).installed.isEmpty)
+        #expect(zebra(savedHost).installed.isEmpty)
     }
 
     @Test func peelIsDisabledWhenThePrinterHasNoPeelerAndEnabledWhenItDoesNotSay() async throws {
         try await start()
         settings.setPeel(true)
-        let z = zebra(saved.host)
+        let z = zebra(savedHost)
         z.peeler = false
         let vm = vm()
         await checked(vm) { vm.checkAgain() }
@@ -489,8 +490,8 @@ final class PrinterSetupViewModelTests {
         await eventually("unsupported") { builder.monitor.status.phase == .unsupportedDevice }
         // The pick at this DPI is still the old one: point the printer at another DPI so only the
         // unsupported phase can end the wait.
-        settings.setPrinter(SavedPrinter(host: saved.host, model: "ZD421", serial: "S1", dpi: 300))
-        zebra(saved.host).dpi = 300
+        settings.setPrinter(SavedPrinter(host: savedHost, model: "ZD421", serial: "S1", dpi: 300))
+        zebra(savedHost).dpi = 300
         let vm = vm(pickWait: .seconds(60))
         let started = ContinuousClock.now
         await checked(vm) { vm.checkAgain() }
@@ -501,7 +502,7 @@ final class PrinterSetupViewModelTests {
     @Test func aTestLabelWaitsForTheCheckThatIsTalkingToThePrinter() async throws {
         try await start()
         await awaitPick203()
-        let z = zebra(saved.host)
+        let z = zebra(savedHost)
         z.statusHold = true
         let vm = vm()
         vm.checkAgain()
@@ -516,15 +517,15 @@ final class PrinterSetupViewModelTests {
 
     @Test func checkAgainSavesTheModelSerialAndDpiOfAnotherPrinterAtTheSameAddress() async throws {
         try await start()
-        let z = zebra(saved.host)
+        let z = zebra(savedHost)
         z.model = "ZT230"; z.dpi = 300; z.serialNo = "NEW1"
         let vm = vm()
         await checked(vm) { vm.checkAgain() }
-        #expect(current.printer == SavedPrinter(host: saved.host, model: "ZT230", serial: "NEW1", dpi: 300))
+        #expect(current.printer == SavedPrinter(host: savedHost, model: "ZT230", serial: "NEW1", dpi: 300))
 
         z.model = "ZT410"; z.serialNo = nil
         await checked(vm) { vm.checkAgain() }
-        #expect(current.printer == SavedPrinter(host: saved.host, model: "ZT410", serial: "", dpi: 300))
+        #expect(current.printer == SavedPrinter(host: savedHost, model: "ZT410", serial: "", dpi: 300))
     }
 
     @Test func testLabelsAreSentWithTheCurrentOffsetsAndPrintMode() async throws {
@@ -537,7 +538,7 @@ final class PrinterSetupViewModelTests {
 
         vm.printTest(.alignment)
         await eventually("alignment sent") { vm.ui.testMessage != nil && !vm.ui.testing }
-        let z = zebra(saved.host)
+        let z = zebra(savedHost)
         #expect(z.sent == ["LT-3LS12|ALIGN 812x406 4x2 203|MMT"])
         #expect(vm.ui.testMessage == "Alignment label (4x2) sent to the printer.")
         #expect(!vm.ui.testError)
@@ -562,7 +563,7 @@ final class PrinterSetupViewModelTests {
         try await start()
         let vm = vm()
         await awaitPick203()
-        zebra(saved.host).answers = false
+        zebra(savedHost).answers = false
         vm.printTest(.alignment)
         await eventually("failed") { vm.ui.testMessage != nil && !vm.ui.testing }
         #expect(vm.ui.testMessage == "Can't reach the printer at 10.0.0.5.")
@@ -590,7 +591,7 @@ final class PrinterSetupViewModelTests {
         try await start()
         await awaitPick203()
         let line = FakeLine()
-        zebra(saved.host).line = line
+        zebra(savedHost).line = line
         let settings = self.settings
         // The container's wiring of the queue's send (AppContainer: lockedSender(printerLock) { NetworkZebra }).
         let jobs = LabelPrintJobs(deps: PrintQueueDeps<PrintTarget>(
@@ -636,7 +637,7 @@ final class PrinterSetupViewModelTests {
         try await start()
         await awaitPick203()
         let line = FakeLine()
-        let z = zebra(saved.host)
+        let z = zebra(savedHost)
         z.line = line
         let jobs = LabelPrintJobs(deps: PrintQueueDeps<PrintTarget>(
             settings: { [settings] in await MainActor.run { settings.current() } },
@@ -665,19 +666,19 @@ final class PrinterSetupViewModelTests {
         await awaitPick203()
         let vm = vm()
         try await Task.sleep(for: .milliseconds(60))
-        #expect(zebras.isEmpty || zebra(saved.host).calls.isEmpty)
+        #expect(zebras.isEmpty || zebra(savedHost).calls.isEmpty)
         // Offsets and peel change settings only.
         vm.setOffsetX("5")
         vm.setPeel(true)
         await eventually("saved") { self.current.offsetX == 5 && self.current.peel }
-        #expect(zebras.isEmpty || zebra(saved.host).calls.isEmpty)
+        #expect(zebras.isEmpty || zebra(savedHost).calls.isEmpty)
         #expect(vm.ui.checkRuns == 0)
         #expect(vm.ui.checks.isEmpty)
     }
 
     @Test func aSavedPrinterThatDoesNotAnswerStopsTheChecksThere() async throws {
         try await start()
-        let z = zebra(saved.host)
+        let z = zebra(savedHost)
         z.answers = false
         let vm = vm()
         await checked(vm) { vm.checkAgain() }
@@ -690,7 +691,7 @@ final class PrinterSetupViewModelTests {
     @Test func statusProblemsFailTheReadyRow() async throws {
         try await start()
         await awaitPick203()
-        zebra(saved.host).paperOut = true
+        zebra(savedHost).paperOut = true
         let vm = vm()
         await checked(vm) { vm.checkAgain() }
         #expect(row(vm, .status)?.state == .fail)
@@ -817,7 +818,7 @@ final class PrinterSetupViewModelTests {
 
     @Test func theAnswersCheckKeptOffTheLocalNetworkSaysToAllowIt() async throws {
         try await start()
-        let z = zebra(saved.host)
+        let z = zebra(savedHost)
         z.answers = false
         z.deniedLocalNetwork = true
         let vm = vm()
@@ -835,7 +836,7 @@ final class PrinterSetupViewModelTests {
     @Test func aTestLabelKeptOffTheLocalNetworkSaysToAllowIt() async throws {
         try await start()
         await awaitPick203()
-        let z = zebra(saved.host)
+        let z = zebra(savedHost)
         z.answers = false
         z.deniedLocalNetwork = true
         let vm = vm()
@@ -968,7 +969,7 @@ final class PrinterSetupViewModelTests {
         let vm = vm()
         vm.printTest(.alignment)
         await eventually("sent") { !vm.ui.testing && vm.ui.testMessage != nil }
-        #expect(zebra(saved.host).sent == ["LT0LS0|ALIGN 812x406 4x2 203|MMT"])
+        #expect(zebra(savedHost).sent == ["LT0LS0|ALIGN 812x406 4x2 203|MMT"])
         #expect(engine.count("alignmentTestZpl") == 2)
         #expect(engine.count("withPrintMode") == 2)
 
@@ -976,7 +977,7 @@ final class PrinterSetupViewModelTests {
         vm.printTest(.alignment)
         await eventually("failed") { !vm.ui.testing && vm.ui.testError }
         #expect(vm.ui.testMessage == "Couldn't make the test label. Try again.")
-        #expect(zebra(saved.host).sent.count == 1)
+        #expect(zebra(savedHost).sent.count == 1)
     }
 
     @Test func anUnsupportedDeviceOrAPrinterTimeoutSaysSo() async throws {
@@ -990,7 +991,7 @@ final class PrinterSetupViewModelTests {
         #expect(vm.ui.testError)
 
         engine.unsupported = false
-        zebra(saved.host).sendError = PrinterTimeout(host: saved.host)
+        zebra(savedHost).sendError = PrinterTimeout(host: savedHost)
         vm.printTest(.alignment)
         await eventually("timed out") { !vm.ui.testing && vm.ui.testMessage == "The printer didn't take the test label in time." }
         #expect(vm.ui.testError)
@@ -1005,7 +1006,7 @@ final class PrinterSetupViewModelTests {
         await eventually("refused") { !vm.ui.testing && vm.ui.testMessage != nil }
         #expect(vm.ui.testMessage == "This move has no template at this printer's DPI.")
         #expect(vm.ui.testError)
-        #expect(zebra(saved.host).sent.isEmpty)
+        #expect(zebra(savedHost).sent.isEmpty)
         #expect(engine.count("applyPrintSettings") == 0)
 
         #expect(PrinterSetupViewModel.sampleRefusedText(TEMPLATE_FAILED) == "The label template couldn't be built.")
