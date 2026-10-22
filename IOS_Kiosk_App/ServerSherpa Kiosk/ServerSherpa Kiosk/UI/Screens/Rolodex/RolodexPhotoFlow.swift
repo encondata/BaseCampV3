@@ -205,12 +205,14 @@ final class RolodexPhotoFlow {
 
     /// Use photo: the 512×512 JPEG goes up as the worker's photo; the page and the list show it.
     /// One upload at a time (a second tap does nothing); a failure keeps the crop and says why.
+    /// A sign-out while the JPEG renders starts no upload.
     func usePhoto() async {
         guard let target, let crop, !uploading else { return }
         uploading = true
         errorText = nil
         let mine = generation
         let jpeg = await crop.jpeg()
+        guard mine == generation else { return }
         do {
             try await uploadPhoto(personId: target.personId, jpeg: jpeg)
             guard mine == generation else { return }
@@ -266,9 +268,15 @@ final class RolodexPhotoFlow {
 
     func isRetrying(_ personId: String) -> Bool { retrying.contains(personId) }
 
-    /// Try again: the same photo, once at a time per worker.
+    /// Try again works: the photo is waiting, not already going up, and the kiosk is online (spec
+    /// §3.15: photo actions need a connection).
+    func canRetry(_ personId: String) -> Bool {
+        failures[personId] != nil && !retrying.contains(personId) && host?.offline != true
+    }
+
+    /// Try again: the same photo, once at a time per worker; nothing while offline.
     func retry(_ personId: String) async {
-        guard let failure = failures[personId], !retrying.contains(personId) else { return }
+        guard canRetry(personId), let failure = failures[personId] else { return }
         retrying.insert(personId)
         failures[personId]?.retryError = nil
         let mine = generation

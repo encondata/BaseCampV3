@@ -587,7 +587,8 @@ private struct RolodexPhotoRetry: View {
             if let why = photo.retryErrorText(for: personId) {
                 Text(why).font(KioskType.bodySmall).foregroundStyle(palette.textMute).fixedSize(horizontal: false, vertical: true)
             }
-            SecondaryButton(retrying ? "Uploading…" : "Try again", enabled: !retrying, borderColor: ChipTone.red.border) {
+            // Off while offline, like every change (spec §3.15).
+            SecondaryButton(retrying ? "Uploading…" : "Try again", enabled: photo.canRetry(personId), borderColor: ChipTone.red.border) {
                 Task { await photo.retry(personId) }
             }
             .fixedSize()

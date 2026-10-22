@@ -336,6 +336,29 @@ struct NewWorkerFlowTests {
         #expect(api.rolodexPhotos.isEmpty && m.selectedId == nil)
     }
 
+    /// Spec §3.15: Try again on a photo that didn't upload needs a connection, like every change.
+    @Test func tryAgainIsOffWhileOffline() async throws {
+        let m = await loaded()
+        let f = await onCropStep(m)
+        api.rolodexPhotoResult = { _, _ in throw ApiError.network() }
+        await f.createWithPhoto()
+        #expect(m.photo.canRetry("p-marcus"))
+
+        api.rolodexWorkersResult = { throw ApiError.network() }
+        await m.refresh()
+        #expect(m.offline && !m.photo.canRetry("p-marcus"))
+        api.rolodexPhotoResult = { id, _ in RolodexPhotoOut(photoUrl: "https://s3.test/\(id)-2.jpg", photoVersion: "nv1") }
+        await m.photo.retry("p-marcus")
+        #expect(api.rolodexPhotos.count == 1 && m.photo.failureText(for: "p-marcus") != nil)
+
+        // back online it goes
+        api.rolodexWorkersResult = { RolodexList(generatedAt: "now", workers: [NW_ANA]) }
+        await m.refresh()
+        #expect(!m.offline && m.photo.canRetry("p-marcus"))
+        await m.photo.retry("p-marcus")
+        #expect(api.rolodexPhotos.count == 2 && m.photo.failureText(for: "p-marcus") == nil)
+    }
+
     @Test func signingOutClosesTheFlowAndDropsALateCreate() async throws {
         let m = await loaded()
         let f = await onCropStep(m)
@@ -479,5 +502,21 @@ struct RolodexPhotoFlowTests {
         #expect(m.photo.crop == nil)
         #expect(m.photo.errorText == "That photo couldn't be used. Take or choose another one.")
         #expect(api.rolodexPhotos.isEmpty)
+    }
+
+    /// Task 10 minor 1: a sign-out while Use photo renders the JPEG starts no upload.
+    @Test func aSignOutDuringTheRenderStartsNoUpload() async throws {
+        let m = await anaOpen()
+        m.startPhoto()
+        m.photo.takePhoto()
+        await m.photo.use(photoTestJpeg())
+        let using = Task { await m.photo.usePhoto() }
+        // The main actor runs Use photo up to the render (off the main actor), then comes back here.
+        await Task.yield()
+        #expect(m.photo.uploading)
+        await m.clear().value
+        await using.value
+        #expect(api.rolodexPhotos.isEmpty)
+        #expect(!m.photo.uploading && m.photo.stage == .none)
     }
 }
