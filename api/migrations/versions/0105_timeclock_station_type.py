@@ -9,7 +9,7 @@ two-value check.
 Design: docs/superpowers/specs/2026-10-20-kiosk-timeclock-station-design.md
 
 Revision ID: 0105
-Revises: 0103
+Revises: 0104
 Create Date: 2026-10-20
 """
 from collections.abc import Sequence
@@ -17,9 +17,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "0105"
-# 0104 is taken by the unmerged badge-templates branch; re-point this at
-# main's head when merging.
-down_revision: str | None = "0103"
+down_revision: str | None = "0104"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
