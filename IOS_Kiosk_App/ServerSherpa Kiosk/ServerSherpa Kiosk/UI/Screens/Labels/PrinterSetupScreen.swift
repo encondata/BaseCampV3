@@ -233,7 +233,7 @@ private struct PrinterSetupBody: View {
     @ViewBuilder private func installProgress(_ ui: PrinterSetupUi) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Text(ui.installStopping ? "Stopping after this font…" : "Installing fonts…")
+                Text(ui.installStatus)
                     .font(KioskType.labelMedium).foregroundStyle(palette.textMute)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if let eta = ui.installEta {
@@ -249,7 +249,7 @@ private struct PrinterSetupBody: View {
             }
             .frame(height: 4)
             .accessibilityElement()
-            .accessibilityLabel("Installing fonts")
+            .accessibilityLabel(ui.installStatus)
             .accessibilityValue("\(Int(((ui.installProgress ?? 0) * 100).rounded())) percent\(ui.installEta.map { ", \($0)" } ?? "")")
             HStack(spacing: 12) {
                 SecondaryButton(ui.installStopping ? "Stopping…" : "Cancel", enabled: !ui.installStopping) { vm.cancelInstall() }

@@ -46,6 +46,12 @@ struct ZebraBluetoothTests {
 
     private func frames(_ n: Int) -> @Sendable (Data) -> Bool { { replyHasFrames($0, n) } }
 
+    /// The app's transport for `printer` (`zebraTransport`, its one factory), as the Bluetooth
+    /// transport it is for a Bluetooth printer.
+    private func transport(_ printer: SavedPrinter, _ bluetooth: ZebraBluetooth) throws -> BluetoothZebra {
+        try #require(zebraTransport(for: printer, bluetooth: bluetooth) as? BluetoothZebra)
+    }
+
     /// Awaits `task` for at most 3 s, so a regression fails the test instead of hanging the suite.
     private func finish<T: Sendable>(_ task: Task<T, Error>) async throws -> T {
         let outcome = Outcome<T>()
@@ -71,7 +77,7 @@ struct ZebraBluetoothTests {
         p.autoAck = false
         let progress = SentLog()
         let bytes = Data((0..<1000).map { UInt8($0 % 251) })
-        let zebra = bluetooth.transport(for: printer(p))
+        let zebra = try transport(printer(p), bluetooth)
         let send = Task { try await zebra.write([bytes.prefix(600), bytes.suffix(400)], progress: progress.record) }
 
         for n in 1...5 {
@@ -97,7 +103,7 @@ struct ZebraBluetoothTests {
         let offPrinter = FakePeripheral(serial: serial)
         offClient.central.known = [offPrinter]
         await #expect(throws: BluetoothUnavailable.self) {
-            try await within { try await off.transport(for: printer(offPrinter)).write([Data(count: 10)], progress: refused.record) }
+            try await within { try await transport(printer(offPrinter), off).write([Data(count: 10)], progress: refused.record) }
         }
         #expect(refused.sent.isEmpty)
 
@@ -106,7 +112,7 @@ struct ZebraBluetoothTests {
         let p = FakePeripheral(serial: serial)
         p.connectBehavior = .silent
         client.central.known = [p]
-        let zebra = bluetooth.transport(for: printer(p))
+        let zebra = try transport(printer(p), bluetooth)
         let unanswered = SentLog()
         let failing = Task { try await zebra.write([Data(count: 10)], progress: unanswered.record) }
         try #require(await waitUntil { sleeper.pending(connectReady) == 1 })
@@ -132,7 +138,7 @@ struct ZebraBluetoothTests {
         let (bluetooth, client, sleeper) = make()
         let p = try await connected(bluetooth, client)
         p.autoAck = false
-        let zebra = bluetooth.transport(for: printer(p))
+        let zebra = try transport(printer(p), bluetooth)
         let budget = Duration.seconds(ZebraBluetoothSpec.sendBudget(bytes: 1000))
 
         // The acknowledgment never comes.
@@ -163,7 +169,7 @@ struct ZebraBluetoothTests {
         let (bluetooth, client, _) = make()
         let p = try await connected(bluetooth, client)
         p.autoAck = false
-        let send = Task { try await bluetooth.transport(for: printer(p)).write([Data(count: 600)], progress: nil) }
+        let send = Task { try await transport(printer(p), bluetooth).write([Data(count: 600)], progress: nil) }
         try #require(await waitUntil { p.writes.count == 1 })
         p.ack(error: NSError(domain: CBATTErrorDomain, code: 3)) // writeNotPermitted
         do {
@@ -179,7 +185,7 @@ struct ZebraBluetoothTests {
         let (bluetooth, client, _) = make()
         let p = try await connected(bluetooth, client)
         p.autoAck = false
-        let zebra = bluetooth.transport(for: printer(p))
+        let zebra = try transport(printer(p), bluetooth)
         let inFlight = Task { try await zebra.write([Data(count: 10)], progress: nil) }
         try #require(await waitUntil { p.writes.count == 1 })
         let queuedSend = Task { try await zebra.send("^XA^FDB^FS^XZ") }
@@ -212,7 +218,7 @@ struct ZebraBluetoothTests {
         let (bluetooth, client, _) = make()
         let p = try await connected(bluetooth, client)
         p.autoAck = false
-        let zebra = bluetooth.transport(for: printer(p))
+        let zebra = try transport(printer(p), bluetooth)
         let send = Task { try await zebra.write([Data(count: 1000)], progress: nil) }
         try #require(await waitUntil { p.writes.count == 1 })
 
@@ -231,7 +237,7 @@ struct ZebraBluetoothTests {
     @Test func queryWaitsForCompleteReply() async throws {
         let (bluetooth, client, sleeper) = make()
         let p = try await connected(bluetooth, client)
-        let zebra = bluetooth.transport(for: printer(p))
+        let zebra = try transport(printer(p), bluetooth)
         let ask = Task { try await zebra.query(ZebraCommands.hostStatus, complete: frames(3)) }
         try #require(await waitUntil { p.writes.count == 1 && sleeper.pending(idle) == 1 })
         #expect(p.written == Data("~HS".utf8))
@@ -252,7 +258,7 @@ struct ZebraBluetoothTests {
     @Test func queryDrainsLateBytes() async throws {
         let (bluetooth, client, sleeper) = make()
         let p = try await connected(bluetooth, client)
-        let zebra = bluetooth.transport(for: printer(p))
+        let zebra = try transport(printer(p), bluetooth)
         p.indicate("\u{02}LATE\u{03}") // the end of an earlier reply
         try #require(await waitUntil { sleeper.pending(quiet) == 1 })
 
@@ -284,7 +290,7 @@ struct ZebraBluetoothTests {
     @Test func queryEndsOnIdleAndTotal() async throws {
         let (bluetooth, client, sleeper) = make()
         let p = try await connected(bluetooth, client)
-        let zebra = bluetooth.transport(for: printer(p))
+        let zebra = try transport(printer(p), bluetooth)
 
         // No ETX: the reply ends queryIdle after its last byte.
         let partial = Task { try await zebra.query(ZebraCommands.hostIdentification, complete: frames(1)) }
@@ -310,7 +316,7 @@ struct ZebraBluetoothTests {
     @Test func silentPrinterIsNoReply() async throws {
         let (bluetooth, client, sleeper) = make()
         let p = try await connected(bluetooth, client)
-        let zebra = bluetooth.transport(for: printer(p))
+        let zebra = try transport(printer(p), bluetooth)
         let ask = Task { try await zebra.query(ZebraCommands.hostStatus, complete: frames(3)) }
         try #require(await waitUntil { sleeper.pending(idle) == 1 })
         sleeper.fire(idle)
@@ -325,7 +331,7 @@ struct ZebraBluetoothTests {
     @Test func dropDuringQueryFailsIt() async throws {
         let (bluetooth, client, sleeper) = make()
         let p = try await connected(bluetooth, client)
-        let zebra = bluetooth.transport(for: printer(p))
+        let zebra = try transport(printer(p), bluetooth)
 
         // Waiting for the reply.
         let waiting = Task { try await zebra.query(ZebraCommands.hostStatus, complete: frames(3)) }
@@ -386,7 +392,7 @@ struct ZebraBluetoothTests {
         // The saved printer still carries the identifier iOS forgot: the link found by its serial
         // serves it, with no reconnect per label.
         let stale = SavedPrinter(connection: .bluetooth(serial: serial, peripheralId: UUID()), model: "ZD421", serial: serial, dpi: 300)
-        try await within { try await bluetooth.transport(for: stale).send("^XA^XZ") }
+        try await within { try await transport(stale, bluetooth).send("^XA^XZ") }
         #expect(client.central.connects.count == 2)
         #expect(zd421.written == Data("^XA^XZ".utf8))
     }
@@ -407,7 +413,7 @@ struct ZebraBluetoothTests {
 
         // The print path refuses it the same way, before a byte is written.
         let saved = SavedPrinter(connection: .bluetooth(serial: serial, peripheralId: other.identifier), model: "ZD421", serial: serial, dpi: 300)
-        await #expect(throws: BluetoothSerialMismatch.self) { try await within { try await bluetooth.transport(for: saved).send("^XA^XZ") } }
+        await #expect(throws: BluetoothSerialMismatch.self) { try await within { try await transport(saved, bluetooth).send("^XA^XZ") } }
         #expect(other.writes.isEmpty)
     }
 
@@ -444,7 +450,7 @@ struct ZebraBluetoothTests {
         p.connectBehavior = .silent // off, or out of range
         client.central.known = [p]
         let saved = printer(p)
-        let zebra = bluetooth.transport(for: saved)
+        let zebra = try transport(saved, bluetooth)
 
         let send = Task { try await zebra.send("^XA^FDA^FS^XZ") }
         try #require(await waitUntil { client.central.connects.count == 1 && sleeper.pending(connectReady) == 1 })
@@ -488,7 +494,7 @@ struct ZebraBluetoothTests {
         let (bluetooth, client, sleeper) = make()
         let p = try await connected(bluetooth, client)
         p.autoAck = false
-        let send = Task { try await bluetooth.transport(for: printer(p)).write([Data(count: 600)], progress: nil) }
+        let send = Task { try await transport(printer(p), bluetooth).write([Data(count: 600)], progress: nil) }
         try #require(await waitUntil { p.writes.count == 1 })
         p.drop(cbError(14))
         await #expect(throws: BluetoothPairingLost.self) { try await finish(send) }
@@ -586,7 +592,7 @@ struct ZebraBluetoothTests {
         #expect(client.central.connects.count == 1)
         #expect(sleeper.started(spacing) == 0)
 
-        try await within { try await bluetooth.transport(for: printer(p)).send("^XA^XZ") }
+        try await within { try await transport(printer(p), bluetooth).send("^XA^XZ") }
         #expect(client.central.connects.count == 2)
         #expect(p.written == Data("^XA^XZ".utf8))
         #expect(bluetooth.link.connected)
@@ -607,7 +613,7 @@ struct ZebraBluetoothTests {
                 #expect(error.availability == expected)
                 #expect(error.host == serial)
             }
-            await #expect(throws: BluetoothUnavailable.self) { try await within { try await bluetooth.transport(for: printer(p)).send("^XA^XZ") } }
+            await #expect(throws: BluetoothUnavailable.self) { try await within { try await transport(printer(p), bluetooth).send("^XA^XZ") } }
             #expect(bluetooth.availability == expected)
             #expect(client.central.retrieved.isEmpty)
             #expect(client.central.connects.isEmpty)

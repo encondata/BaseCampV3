@@ -49,14 +49,16 @@ struct BluetoothLinkInfo: Equatable, Sendable {
     var lastDrop: BluetoothDrop?
 }
 
-/// The Bluetooth side as the screens use it (Printer Setup, Troubleshooting): Bluetooth's state,
-/// the link, the scan, and connecting to a printer picked from it. `ZebraBluetooth` on the device.
+/// The Bluetooth side as the screens use it (Printer Setup, Print Labels, Troubleshooting):
+/// Bluetooth's state, the link, the scan, connecting to a printer, and letting it go.
+/// `ZebraBluetooth` on the device.
 @MainActor protocol BluetoothPrinting: AnyObject {
     var availability: BluetoothAvailability { get }
     var link: BluetoothLinkInfo { get }
     func scan() -> AsyncStream<[FoundBluetoothPrinter]>
     func stopScan()
     func connect(peripheralId: UUID?, serial: String?) async throws -> BluetoothPrinterInfo
+    func close()
 }
 
 /// How long the Bluetooth link waits; the defaults are `ZebraBluetoothSpec`'s (a send's budget is
@@ -210,20 +212,6 @@ final class ZebraBluetooth {
     func connect(peripheralId: UUID?, serial: String?) async throws -> BluetoothPrinterInfo {
         try Task.checkCancellation()
         return try await withTurn(host: serial) { try await ensureReady(BluetoothTarget(peripheralId: peripheralId, serial: serial)) }
-    }
-
-    /// The transport for a saved Bluetooth printer (its serial and the iPad's identifier for it).
-    /// Callers pick the transport by `printer.connection`; a network printer is a programming error
-    /// (it asserts in debug builds, and a release build gets a transport that looks for a Bluetooth
-    /// printer named its serial, which never reaches the network printer).
-    func transport(for printer: SavedPrinter) -> BluetoothZebra {
-        switch printer.connection {
-        case .bluetooth(let serial, let peripheralId):
-            return BluetoothZebra(bluetooth: self, serial: serial, peripheralId: peripheralId)
-        case .network:
-            assertionFailure("transport(for:) is for Bluetooth printers; a network printer uses NetworkZebra")
-            return BluetoothZebra(bluetooth: self, serial: printer.serial, peripheralId: nil)
-        }
     }
 
     /// Ends the scan and the link (the app went to the background, signed out, or the saved
