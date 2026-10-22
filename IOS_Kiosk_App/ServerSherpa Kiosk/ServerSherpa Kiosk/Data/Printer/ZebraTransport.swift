@@ -20,6 +20,17 @@ protocol ZebraTransport: Sendable {
     func write(_ parts: [Data], progress: (@Sendable (_ sent: Int, _ total: Int) -> Void)?) async throws
 }
 
+/// How Print Labels and Printer Setup reach `printer`, by its connection: a network printer is the
+/// `NetworkZebra` at its host (one TCP connection per command, as before Bluetooth); a Bluetooth
+/// printer goes over `bluetooth`, the app's one link (which starts Bluetooth only once a call is
+/// made). The container's sender and `zebra(for:)` both use it.
+func zebraTransport(for printer: SavedPrinter, bluetooth: ZebraBluetooth) -> SetupZebra {
+    switch printer.connection {
+    case .network(let host): NetworkZebra(host: host)
+    case .bluetooth(let serial, let peripheralId): BluetoothZebra(bluetooth: bluetooth, serial: serial, peripheralId: peripheralId)
+    }
+}
+
 /// The commands and their replies, the same over every transport. Replies are read as Latin-1,
 /// ZPL is sent as UTF-8 (labels carry `^CI28`), and a font's bytes go raw after its ASCII header.
 extension ZebraTransport {

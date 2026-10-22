@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// Print Labels (Android's PrintLabelsScreen, the laptop's Printing Station): scan an asset ID or
-/// serial and its stored label goes straight to the saved network Zebra, with one Labeled scan.
+/// serial and its stored label goes straight to the saved Zebra (network or Bluetooth), with one
+/// Labeled scan.
 struct PrintLabelsScreen: View {
     @Binding var path: [Route]
     @Environment(\.container) private var container

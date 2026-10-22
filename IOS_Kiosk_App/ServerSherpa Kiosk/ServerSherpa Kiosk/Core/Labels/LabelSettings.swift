@@ -20,6 +20,23 @@ enum PrinterConnection: Hashable, Sendable {
     case bluetooth(serial: String, peripheralId: UUID?)
 }
 
+/// Which printer a connection reaches, whatever the way: the network host, or the Bluetooth serial
+/// (in any case). The iPad's identifier for a Bluetooth printer only finds it, and iOS can give it
+/// another one, so it isn't part of it (Ruling 7).
+enum PrinterIdentity: Hashable, Sendable {
+    case network(host: String)
+    case bluetooth(serial: String)
+}
+
+extension PrinterConnection {
+    var identity: PrinterIdentity {
+        switch self {
+        case .network(let host): .network(host: host)
+        case .bluetooth(let serial, _): .bluetooth(serial: serial.uppercased())
+        }
+    }
+}
+
 extension PrinterConnection: Codable {
     private enum CodingKeys: String, CodingKey { case type, host, serial, peripheralId }
     private enum Kind: String { case network, bluetooth }

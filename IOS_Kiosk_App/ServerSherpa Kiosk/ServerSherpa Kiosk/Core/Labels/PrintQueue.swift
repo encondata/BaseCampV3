@@ -45,6 +45,14 @@ struct LabelSendLocalNetworkDenied: Error, CustomStringConvertible {
     var description: String { "Local Network access is off for this app" }
 }
 
+/// `PrintQueueDeps.send` throws this when the label didn't go out for a reason the crew fixes on
+/// the iPad (Bluetooth off or not allowed, a printer that forgot this iPad): `message` says what to do.
+struct LabelSendRefused: Error, CustomStringConvertible {
+    var message: String
+    var cause: Error? = nil
+    var description: String { message }
+}
+
 /// What a scan says for each outcome a label can store (kiosk/src/lib/printQueue.ts LABEL_REASONS).
 private let LABEL_REASONS: [String: String] = [
     NO_TEMPLATE_AT_DPI: "No label for this asset: this move has no active label template at this printer's DPI. "
@@ -151,7 +159,8 @@ struct PrintQueueDeps<A: Sendable>: Sendable {
     var prepare: @Sendable (_ zpl: String, _ settings: LabelSettings) async throws -> PrintStep
     /// Sends the ZPL to the saved printer; throws when it can't (`LabelSendLocalNetworkDenied`
     /// when iOS kept it off the local network, `LabelSendTimeout` when the job may have gone out,
-    /// `PrinterNeedsRestart` while a cut font install keeps sends from the printer). Anything else,
+    /// `PrinterNeedsRestart` while a cut font install keeps sends from the printer,
+    /// `LabelSendRefused` when the crew must fix something on the iPad first). Anything else,
     /// a failed clear before the label included, means the label never went out: unreachable.
     var send: @Sendable (_ printer: SavedPrinter, _ zpl: String) async throws -> Void
     /// Queues the Labeled scan; throws when it can't be saved.
@@ -356,6 +365,8 @@ actor PrintQueue<A: Sendable> {
                 LOCAL_NETWORK_PRINTER_DENIED_TEXT
             } else if error is PrinterNeedsRestart {
                 FONT_INSTALL_CUT_TEXT
+            } else if let refused = error as? LabelSendRefused {
+                refused.message
             } else {
                 printerUnreachableText(printer)
             }

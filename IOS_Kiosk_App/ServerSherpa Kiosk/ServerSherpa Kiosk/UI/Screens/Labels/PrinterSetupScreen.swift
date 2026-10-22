@@ -1,8 +1,8 @@
 import SwiftUI
 import UIKit
 
-/// Printer Setup (Android's PrinterSetupScreen): find a network Zebra, check it, fonts, test
-/// labels, offsets and peel/tear.
+/// Printer Setup (Android's PrinterSetupScreen): find a Zebra (network or Bluetooth), check it,
+/// fonts, test labels, offsets and peel/tear.
 struct PrinterSetupScreen: View {
     @Binding var path: [Route]
     @Environment(\.container) private var container
@@ -34,6 +34,8 @@ private struct PrinterSetupBody: View {
     @Binding var path: [Route]
     @State private var vm: PrinterSetupViewModel
     @State private var testOpen = false
+    /// The Bluetooth list's "Other devices" row is open.
+    @State private var othersOpen = false
     @Environment(\.kioskPalette) private var palette
     @Environment(\.scenePhase) private var scenePhase
 
@@ -44,7 +46,8 @@ private struct PrinterSetupBody: View {
             settings: container.labelSettings, build: container.labelBuilder.monitor, engine: container.labelEngine,
             store: container.store, fontsDir: container.fontsDir,
             scanner: { try await ZebraScanner().scan() },
-            zebraFor: { printer in AppContainer.zebra(for: printer) },
+            bluetooth: container.bluetooth,
+            zebraFor: { printer in container.zebra(for: printer) },
             printerLock: container.printerLock, printerGuard: container.printerGuard))
     }
 
@@ -66,17 +69,28 @@ private struct PrinterSetupBody: View {
                     PrinterCardText(title: "Enter IP", description: "Type the printer's IP address.")
                 }
                 .padding(.bottom, 10)
-                SetupCard(selected: false, enabled: false, action: {}) {
-                    PrinterCardText(title: "Bluetooth — coming soon", description: "Bluetooth printers aren't supported yet.")
+                SetupCard(selected: ui.findMode == .bluetooth, enabled: !ui.busy, action: { vm.scanBluetooth() }) {
+                    PrinterCardText(title: "Bluetooth", description: "Find a Zebra printer nearby over Bluetooth.")
                 }
                 .padding(.bottom, 10)
 
                 if ui.findMode == .scan { scanResults(ui, printer) }
                 if ui.findMode == .ip { ipEntry(ui) }
+                if ui.findMode == .bluetooth { bluetoothResults(ui, printer) }
                 KioskToast(text: ui.chooseError, error: true)
-                // The scan, choosing a printer or its Answers check met iOS's Local Network denial
-                // (the test label sheet offers its own).
-                if ui.localNetworkDenied && !ui.scanning { OpenSettingsButton().padding(.bottom, 8) }
+                if let steps = ui.pairingLost {
+                    // The printer forgot this iPad: forget it in Settings too, then Connect.
+                    KioskToast(text: steps, error: true)
+                    HStack(spacing: 8) {
+                        OpenSettingsButton()
+                        SecondaryButton("Connect", enabled: !ui.busy && !ui.checking) { vm.connectAgain() }
+                    }
+                    .padding(.bottom, 8)
+                } else if (ui.localNetworkDenied && !ui.scanning) || ui.offersBluetoothSettings {
+                    // The scan, choosing a printer or its Answers check met iOS's Local Network or
+                    // Bluetooth denial (the test label sheet offers its own).
+                    OpenSettingsButton().padding(.bottom, 8)
+                }
 
                 if let printer {
                     SectionTitle(title: "Checks")
@@ -140,6 +154,60 @@ private struct PrinterSetupBody: View {
         }
     }
 
+    @ViewBuilder private func bluetoothResults(_ ui: PrinterSetupUi, _ printer: SavedPrinter?) -> some View {
+        if ui.bluetoothScanning {
+            HStack(spacing: 8) {
+                ProgressView().tint(palette.accent)
+                Text("Looking for printers nearby…").font(KioskType.bodyMedium).foregroundStyle(palette.textMute)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                SecondaryButton("Stop") { vm.stopBluetoothScan() }
+            }
+            .padding(.vertical, 6)
+        }
+        KioskToast(text: ui.bluetoothMessage, error: ui.bluetoothError)
+        ForEach(ui.bluetoothZebras) { p in bluetoothRow(p, ui, printer) }
+        let others = ui.bluetoothOthers
+        if !others.isEmpty {
+            Button { othersOpen.toggle() } label: {
+                HStack(spacing: 8) {
+                    Text("Other devices (\(others.count))").font(KioskType.labelLarge).foregroundStyle(palette.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: othersOpen ? "chevron.up" : "chevron.down").foregroundStyle(palette.textMute)
+                }
+                .frame(minHeight: 48)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(othersOpen ? "Shown" : "Hidden")
+            if othersOpen {
+                ForEach(others) { p in bluetoothRow(p, ui, printer) }
+            }
+        }
+        Text(BLUETOOTH_SCAN_HINT_TEXT).font(KioskType.bodySmall).foregroundStyle(palette.textMute).padding(.vertical, 6)
+        if !ui.bluetoothScanning && ui.bluetoothFound != nil {
+            SecondaryButton("Scan again", enabled: !ui.busy) { vm.scanBluetooth() }
+        }
+    }
+
+    /// A device the Bluetooth scan heard: its name (a Zebra's is its serial), signal, and Connect.
+    private func bluetoothRow(_ p: FoundBluetoothPrinter, _ ui: PrinterSetupUi, _ printer: SavedPrinter?) -> some View {
+        SetupCard(selected: isSaved(p, printer), enabled: !ui.busy, action: { vm.chooseBluetooth(p) }) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(p.name).font(KioskType.mono(16)).fontWeight(.semibold).foregroundStyle(palette.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(ui.choosing == p.id.uuidString ? "Connecting…" : "Connect").font(KioskType.labelLarge).foregroundStyle(palette.accent)
+            }
+            Text(bluetoothSignalText(rssi: p.rssi)).font(KioskType.bodySmall).foregroundStyle(palette.textMute).padding(.top, 4)
+        }
+        .padding(.bottom, 8)
+    }
+
+    /// The device is the saved Bluetooth printer (by the iPad's identifier, or its name, which is its serial).
+    private func isSaved(_ p: FoundBluetoothPrinter, _ printer: SavedPrinter?) -> Bool {
+        guard case .bluetooth(let serial, let id)? = printer?.connection else { return false }
+        return id == p.id || serial.uppercased() == p.name.uppercased()
+    }
+
     @ViewBuilder private func ipEntry(_ ui: PrinterSetupUi) -> some View {
         Text("Printer IP").font(KioskType.bodySmall).foregroundStyle(palette.textMute)
         TextField("192.168.1.50", text: Binding(get: { vm.ui.ipText }, set: { vm.setIpText($0) }))
@@ -158,6 +226,39 @@ private struct PrinterSetupBody: View {
         SecondaryButton(ui.choosing != nil ? "Connecting…" : "Use this printer",
                         enabled: !ui.busy && !kotlinTrimmed(ui.ipText).isEmpty) { vm.useIp() }
             .padding(.top, 8)
+    }
+
+    /// A font install going out: the font's progress, about how long it has left, and Cancel (which lets
+    /// the font being sent finish: a font cut off part-way leaves the printer waiting for the rest).
+    @ViewBuilder private func installProgress(_ ui: PrinterSetupUi) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(ui.installStopping ? "Stopping after this font…" : "Installing fonts…")
+                    .font(KioskType.labelMedium).foregroundStyle(palette.textMute)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if let eta = ui.installEta {
+                    Text(eta).font(KioskType.labelMedium).foregroundStyle(palette.textMute)
+                }
+            }
+            // Print Labels' build bar: accent on a paperLine track.
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(palette.paperLine)
+                    Capsule().fill(palette.accent).frame(width: geo.size.width * CGFloat(min(max(ui.installProgress ?? 0, 0), 1)))
+                }
+            }
+            .frame(height: 4)
+            .accessibilityElement()
+            .accessibilityLabel("Installing fonts")
+            .accessibilityValue("\(Int(((ui.installProgress ?? 0) * 100).rounded())) percent\(ui.installEta.map { ", \($0)" } ?? "")")
+            HStack(spacing: 12) {
+                SecondaryButton(ui.installStopping ? "Stopping…" : "Cancel", enabled: !ui.installStopping) { vm.cancelInstall() }
+                Text("Cancel lets the font being sent finish, then stops.")
+                    .font(KioskType.bodySmall).foregroundStyle(palette.textMute)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.top, 8)
     }
 
     @ViewBuilder private func checks(_ ui: PrinterSetupUi) -> some View {
@@ -182,14 +283,14 @@ private struct PrinterSetupBody: View {
             .padding(.vertical, 8)
             Rectangle().fill(palette.paperLine).frame(height: 1)
         }
+        if ui.installing {
+            installProgress(ui)
+        } else if let fix = ui.fontFix, ui.checks.contains(where: { $0.key == .fonts && $0.state == .fail }), !fix.installable.isEmpty {
+            SecondaryButton(fontInstallButtonText(installable: fix.installable, damaged: ui.damagedFonts),
+                            enabled: !ui.busy && !ui.checking) { vm.installFonts() }
+                .padding(.top, 8)
+        }
         if let fix = ui.fontFix {
-            let failed = ui.checks.contains { $0.key == .fonts && $0.state == .fail }
-            if failed && !fix.installable.isEmpty {
-                let n = fix.installable.count
-                SecondaryButton(ui.installing ? "Installing fonts…" : "Install \(n) missing font\(n == 1 ? "" : "s")",
-                                enabled: !ui.busy && !ui.checking) { vm.installFonts() }
-                    .padding(.top, 8)
-            }
             ForEach(fix.notInLibrary, id: \.self) { name in
                 Text("\(name) isn't in the font library. Upload it in the portal's font library, then sync this kiosk.")
                     .font(KioskType.bodySmall).foregroundStyle(ChipTone.red.text).padding(.top, 4)

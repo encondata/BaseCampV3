@@ -35,8 +35,12 @@ final class AppContainer {
     /// Printer Setup call (identify, checks, font installs, test labels) go through it.
     let printerLock: PrinterLock
     /// Each printer's state after a failed send or a cut font install (the `~JX` clear, the stop),
-    /// keyed to its connection and applied under `printerLock` by the same callers.
+    /// keyed to the printer and applied under `printerLock` by the same callers.
     let printerGuard: PrinterGuard
+    /// The app's one Bluetooth LE link to a Zebra (D4). Bluetooth itself starts (and iOS asks for
+    /// permission) only once a Bluetooth printer is picked or used. The link closes when the app
+    /// goes to the background, on sign-out or a session that ends, and when another printer is saved.
+    let bluetooth: ZebraBluetooth
     /// The synced label font files (nil keeps font metadata only).
     let fontsDir: URL?
     let scanBus = ScanBus()
@@ -52,9 +56,11 @@ final class AppContainer {
 
     /// `fontsDir` holds downloaded label fonts; nil keeps font metadata only. `labelEngine` is
     /// the real generator unless a test passes another (nothing starts it until a build runs,
-    /// and only `launch()` starts the builder).
+    /// and only `launch()` starts the builder). `bluetoothClient` is CoreBluetooth unless a test
+    /// passes a fake (nothing makes its central until a Bluetooth printer is used).
     init(defaults: UserDefaults, secrets: SecretStore, modelContainer: ModelContainer, storeIsTemporary: Bool = false,
-         backgroundTask: BackgroundTasking, fontsDir: URL? = nil, labelEngine: LabelEngine = JavaScriptLabelEngine()) {
+         backgroundTask: BackgroundTasking, fontsDir: URL? = nil, labelEngine: LabelEngine = JavaScriptLabelEngine(),
+         bluetoothClient: (any BluetoothCentralClient)? = nil) {
         let prefs = KioskPrefs(defaults: defaults)
         let config = KioskConfig(prefs: prefs)
         let identity = Identity(prefs: prefs, secrets: secrets)
@@ -90,6 +96,8 @@ final class AppContainer {
         self.printerLock = printerLock
         let printerGuard = PrinterGuard()
         self.printerGuard = printerGuard
+        let bluetooth = ZebraBluetooth(client: bluetoothClient ?? CoreBluetoothClient())
+        self.bluetooth = bluetooth
         let sync = Sync(api: api, store: store, fontsDir: fontsDir)
         let outbox = Outbox(store: store, api: api, serial: { identity.current.serial }, backgroundTask: backgroundTask)
         let labelSettings = LabelSettingsStore(prefs: prefs)
@@ -106,41 +114,56 @@ final class AppContainer {
                                         // Straight to the printer (no status checks before or after),
                                         // one connection at a time with Printer Setup's calls.
                                         sender: lockedSender(printerLock, printerGuard) { printer, zpl in
-                                            try await AppContainer.zebra(for: printer).send(zpl)
+                                            try await zebraTransport(for: printer, bluetooth: bluetooth).send(zpl)
                                         },
                                         isLive: printJobIsLive(auth: auth, prefs: prefs))
         self.sound = SoundPlayer(prefs: prefs)
 
-        // Print Labels' list and its waiting jobs belong to one session on one move.
+        // Print Labels' list and its waiting jobs belong to one session on one move, and the
+        // Bluetooth link to the session (a send in flight fails, and its printer gets a `~JX`).
         let printJobs = self.printJobs
         auth.onLogout = {
             heartbeat.stop()
+            bluetooth.close()
             Task { await printJobs.reset() }
         }
-        auth.onSessionEnded = { Task { await printJobs.reset() } }
+        auth.onSessionEnded = {
+            bluetooth.close()
+            Task { await printJobs.reset() }
+        }
         Self.resetPrintJobsOnMoveChange(prefs: prefs, jobs: printJobs)
-        Self.resetPrinterGuardOnPrinterChange(settings: labelSettings, printerGuard: printerGuard)
+        Self.followSavedPrinter(settings: labelSettings, printerGuard: printerGuard, bluetooth: bluetooth)
     }
 
-    /// The saved printer as Print Labels and Printer Setup reach it: the network printer at its
-    /// host. A Bluetooth printer gets its own transport with the Bluetooth link (none can be saved
-    /// before that).
-    nonisolated static func zebra(for printer: SavedPrinter) -> SetupZebra {
-        NetworkZebra(host: printer.host ?? "")
-    }
+    /// The saved printer as Print Labels and Printer Setup reach it (`zebraTransport`).
+    func zebra(for printer: SavedPrinter) -> SetupZebra { zebraTransport(for: printer, bluetooth: bluetooth) }
 
-    /// Housekeeping: the guard's marks are keyed to their printer already, and saving another
-    /// connection (or none) drops them all, whoever saves it (`LabelSettingsStore` is the one
-    /// writer). The same printer saved again with what a check found (model, serial, DPI) keeps
-    /// its own. Follows the saved printer's connection (Observation), skipping the value it starts
-    /// with.
-    private static func resetPrinterGuardOnPrinterChange(settings: LabelSettingsStore, printerGuard: PrinterGuard) {
-        let connections = observationStream { settings.current().printer?.connection }
+    /// Follows the saved printer (Observation; `LabelSettingsStore` is the one writer, whoever
+    /// saves it), skipping the value it starts with:
+    /// - Another printer saved (another network host or Bluetooth serial), or none: the guard's
+    ///   marks all go (housekeeping: they are keyed to their printer already), and a Bluetooth link
+    ///   to a printer no longer saved closes. A link already up to the printer just saved (Printer
+    ///   Setup connected it to choose it) stays. The same printer saved again with what a check
+    ///   found, or under a new iPad identifier, changes neither (Ruling 7).
+    /// - The link up to the saved Bluetooth printer under another identifier than the saved one
+    ///   (iOS forgot it, so the link found the printer by its serial): the printer is saved again
+    ///   with that identifier, so the next connect goes straight to it.
+    private static func followSavedPrinter(settings: LabelSettingsStore, printerGuard: PrinterGuard, bluetooth: ZebraBluetooth) {
+        let identities = observationStream { settings.current().printer?.connection.identity }
         Task {
             var first = true
-            for await _ in connections {
+            for await identity in identities {
                 if first { first = false; continue }
+                let linked = bluetooth.link.info?.serial.map { PrinterConnection.bluetooth(serial: $0, peripheralId: nil).identity }
+                if identity == nil || linked != identity { bluetooth.close() }
                 await printerGuard.reset()
+            }
+        }
+        let links = observationStream { SavedPrinterLink(printer: settings.current().printer,
+                                                         link: bluetooth.link.connected ? bluetooth.link.info : nil) }
+        Task {
+            for await now in links {
+                if let adopted = adoptingLinkedIdentifier(now.printer, linked: now.link) { settings.setPrinter(adopted) }
             }
         }
     }
@@ -245,8 +268,11 @@ final class AppContainer {
         refreshRunState()
     }
 
+    /// The Bluetooth link closes (no Bluetooth in the background): a send in flight fails, and its
+    /// printer gets a `~JX` before the next one.
     func onBackground() {
         active = false
+        bluetooth.close()
         refreshRunState()
     }
 
@@ -269,6 +295,12 @@ final class AppContainer {
         let station = auth.state == .anon && prefs.setupSelection?.isTimeclockStation == true
         UIApplication.shared.isIdleTimerDisabled = active && (authed || station)
     }
+}
+
+/// The saved printer and the Bluetooth printer the link is up to (nil while it's down).
+private struct SavedPrinterLink: Equatable, Sendable {
+    var printer: SavedPrinter?
+    var link: BluetoothPrinterInfo?
 }
 
 /// The part of the setup selection a print job belongs to.

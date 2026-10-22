@@ -37,14 +37,28 @@ extension BluetoothZebra: SetupZebra {}
 struct BluetoothUnavailable: PrinterError {
     var host: String
     var availability: BluetoothAvailability
-    var errorDescription: String? {
-        switch availability {
-        case .poweredOff: BLUETOOTH_OFF_TEXT
-        case .unauthorized: BLUETOOTH_DENIED_TEXT
-        case .unsupported: "This device doesn't support Bluetooth LE."
-        case .unknown, .ready: "Bluetooth isn't ready yet. Try again in a moment."
-        }
+    var errorDescription: String? { bluetoothUnavailableText(availability) ?? "Bluetooth isn't ready yet. Try again in a moment." }
+}
+
+/// What to tell the crew when Bluetooth can't be used: it's off, not allowed for the kiosk, or the
+/// device has none. Nil while it can be (or its state isn't known yet).
+func bluetoothUnavailableText(_ availability: BluetoothAvailability) -> String? {
+    switch availability {
+    case .poweredOff: BLUETOOTH_OFF_TEXT
+    case .unauthorized: BLUETOOTH_DENIED_TEXT
+    case .unsupported: "This device doesn't support Bluetooth LE."
+    case .unknown, .ready: nil
     }
+}
+
+/// A Bluetooth failure the crew fixes on the iPad, not at the printer: Bluetooth off, not allowed
+/// or missing (`BluetoothUnavailable`), or a printer that forgot this iPad (`BluetoothPairingLost`),
+/// also when it stopped the `~JX` clear before a call. Its `errorDescription` says what to do. Nil
+/// for any other failure (Bluetooth not ready in time included: that reads as unreachable).
+func bluetoothRefusal(_ error: Error) -> PrinterError? {
+    if let clear = error as? PrinterClearFailed { return bluetoothRefusal(clear.cause) }
+    if let off = error as? BluetoothUnavailable, bluetoothUnavailableText(off.availability) != nil { return off }
+    return error as? BluetoothPairingLost
 }
 
 /// iOS doesn't know the printer by its identifier, and no device named its serial was heard

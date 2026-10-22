@@ -49,6 +49,16 @@ struct BluetoothLinkInfo: Equatable, Sendable {
     var lastDrop: BluetoothDrop?
 }
 
+/// The Bluetooth side as the screens use it (Printer Setup, Troubleshooting): Bluetooth's state,
+/// the link, the scan, and connecting to a printer picked from it. `ZebraBluetooth` on the device.
+@MainActor protocol BluetoothPrinting: AnyObject {
+    var availability: BluetoothAvailability { get }
+    var link: BluetoothLinkInfo { get }
+    func scan() -> AsyncStream<[FoundBluetoothPrinter]>
+    func stopScan()
+    func connect(peripheralId: UUID?, serial: String?) async throws -> BluetoothPrinterInfo
+}
+
 /// How long the Bluetooth link waits; the defaults are `ZebraBluetoothSpec`'s (a send's budget is
 /// `ZebraBluetoothSpec.sendBudget(bytes:)`).
 struct ZebraBluetoothTimeouts: Equatable, Sendable {
@@ -837,6 +847,18 @@ final class ZebraBluetooth {
     private static func sorted(_ seen: [UUID: FoundBluetoothPrinter]) -> [FoundBluetoothPrinter] {
         seen.values.sorted { $0.rssi != $1.rssi ? $0.rssi > $1.rssi : $0.name < $1.name }
     }
+}
+
+extension ZebraBluetooth: BluetoothPrinting {}
+
+/// `printer` with the identifier the link found it under, when the link is up to it (its serial)
+/// under another identifier than the saved one: iOS forgot the saved one, so the link found the
+/// printer by its serial, and the next connect can go straight to it. Nil when nothing changes.
+func adoptingLinkedIdentifier(_ printer: SavedPrinter?, linked info: BluetoothPrinterInfo?) -> SavedPrinter? {
+    guard var printer, case .bluetooth(let serial, let saved) = printer.connection, let info, let linked = info.serial,
+          linked.uppercased() == serial.uppercased(), info.peripheralId != saved else { return nil }
+    printer.connection = .bluetooth(serial: serial, peripheralId: info.peripheralId)
+    return printer
 }
 
 private enum Phase: Equatable {

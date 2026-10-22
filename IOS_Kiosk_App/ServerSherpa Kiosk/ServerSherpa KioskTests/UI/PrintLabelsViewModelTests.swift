@@ -45,6 +45,8 @@ import SwiftUI
     var timeouts = false
     /// The failures are iOS's Local Network denial.
     var denied = false
+    /// The failures throw this instead, when set.
+    var error: Error?
     var hold = false
     private(set) var atHold = false
 
@@ -56,6 +58,7 @@ import SwiftUI
         }
         if failures > 0 {
             failures -= 1
+            if let error { throw error }
             if timeouts { throw PrinterTimeout(host: host) }
             if denied { throw PrinterUnreachable(host: host, localNetworkDenied: true) }
             throw PrinterUnreachable(host: host)
@@ -201,6 +204,40 @@ struct PrintLabelsViewModelTests {
         #expect(await waitUntil { vm.entries[0].state == .printed })
         #expect(rows.count == 1)
         #expect(engine.calls.count == 2) // the retry resent the same bytes
+    }
+
+    /// D12: a Bluetooth printer that can't be reached is named by its serial. Bluetooth off or not
+    /// allowed (D11), and a printer that forgot this iPad (D10), say what to do instead, also when
+    /// they stopped the `~JX` before the label. None records a scan, and Retry prints once it's fixed.
+    @Test func printLabelsBluetoothUnreachableCopy() async throws {
+        let vm = try await harness()
+        settings.setPrinter(SavedPrinter(connection: .bluetooth(serial: "D8J224508535", peripheralId: UUID()), model: "ZD421",
+                                         serial: "D8J224508535", dpi: 203))
+        device.failures = 1
+        await scan(vm, "A-1")
+        #expect(vm.entries[0].message == "Can't reach the printer D8J224508535 over Bluetooth.")
+
+        let refusals: [(Error, String)] = [
+            (BluetoothUnavailable(host: "D8J224508535", availability: .poweredOff), BLUETOOTH_OFF_TEXT),
+            (BluetoothUnavailable(host: "D8J224508535", availability: .unauthorized), BLUETOOTH_DENIED_TEXT),
+            (BluetoothPairingLost(host: "D8J224508535"), pairingLostText(serial: "D8J224508535")),
+            (PrinterClearFailed(host: "D8J224508535", cause: BluetoothUnavailable(host: "D8J224508535", availability: .poweredOff)),
+             BLUETOOTH_OFF_TEXT),
+            // Not on yet (no answer from Bluetooth in time): just unreachable.
+            (BluetoothUnavailable(host: "D8J224508535", availability: .unknown), "Can't reach the printer D8J224508535 over Bluetooth."),
+        ]
+        for (error, message) in refusals {
+            device.failures = 1
+            device.error = error
+            await scan(vm, "A-1")
+            #expect(vm.entries[0].state == .failed)
+            #expect(vm.entries[0].message == message, "\(error)")
+        }
+        #expect(rows.isEmpty)
+        device.error = nil
+        await vm.retry(vm.entries[0].id)?.value
+        #expect(await waitUntil { vm.entries[0].state == .printed })
+        #expect(rows.count == 1)
     }
 
     @Test func aPrinterTimeoutSaysTheLabelMayHavePrinted() async throws {

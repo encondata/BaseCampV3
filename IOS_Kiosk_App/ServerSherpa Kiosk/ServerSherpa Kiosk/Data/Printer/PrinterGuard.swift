@@ -4,9 +4,10 @@ import Foundation
  What a printer may be left holding after a write went wrong, and what the next call to it does
  about it. The container owns one, shared like `PrinterLock` by Print Labels (`lockedSender`) and
  Printer Setup (`LockedZebra`), and every rule runs inside the lock, so nothing reaches the printer
- between a check and its write. Each mark belongs to the printer (connection) it happened on, so a
+ between a check and its write. Each mark belongs to the printer it happened on (its identity: the
+ network host or the Bluetooth serial, never the iPad's identifier for it, which can change), so a
  late failure of a printer no longer saved never applies to the one that is. It lives in memory;
- the container also drops every mark when the saved printer's connection changes.
+ the container also drops every mark when another printer is saved.
 
  - `needsClear`: a send failed part-way, so the printer may hold the start of a label the next one
    would merge into (D16). The next call to it (a send, a font install, or a Printer Setup query)
@@ -23,17 +24,17 @@ import Foundation
 actor PrinterGuard {
     enum State: Equatable, Sendable { case clean, needsClear, fontCut }
 
-    private var marks: [PrinterConnection: State] = [:]
+    private var marks: [PrinterIdentity: State] = [:]
 
-    func state(for connection: PrinterConnection) -> State { marks[connection] ?? .clean }
+    func state(for connection: PrinterConnection) -> State { marks[connection.identity] ?? .clean }
 
     /// A send failed part-way: the next call clears first. A cut font stays the stronger state.
     func markSendFailed(for connection: PrinterConnection) {
-        if state(for: connection) == .clean { marks[connection] = .needsClear }
+        if state(for: connection) == .clean { marks[connection.identity] = .needsClear }
     }
 
     /// A font install was cut off: nothing more is sent until the printer answers a check.
-    func markFontCut(for connection: PrinterConnection) { marks[connection] = .fontCut }
+    func markFontCut(for connection: PrinterConnection) { marks[connection.identity] = .fontCut }
 
     /// Every mark goes (another saved printer, or a fresh start).
     func reset() { marks = [:] }
@@ -41,7 +42,7 @@ actor PrinterGuard {
     /// `~HI` was answered: a printer waiting for the rest of a font couldn't have, so the stop
     /// lifts. A pending clear stays (answering says nothing about a half label).
     func printerAnswered(_ connection: PrinterConnection) {
-        if marks[connection] == .fontCut { marks[connection] = nil }
+        if marks[connection.identity] == .fontCut { marks[connection.identity] = nil }
     }
 
     /// A query (call it holding the printer lock): `clear` (which sends `~JX`) first when the
@@ -109,7 +110,7 @@ actor PrinterGuard {
     }
 
     private func cleared(_ connection: PrinterConnection) {
-        if marks[connection] == .needsClear { marks[connection] = nil }
+        if marks[connection.identity] == .needsClear { marks[connection.identity] = nil }
     }
 }
 

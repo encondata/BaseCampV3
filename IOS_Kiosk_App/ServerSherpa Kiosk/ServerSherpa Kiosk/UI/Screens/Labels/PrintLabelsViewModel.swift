@@ -75,7 +75,7 @@ func printEntryTitle(_ asset: KioskAssetRow) -> String { nonBlankText(asset.name
 
 /// Print Labels (the laptop's Printing Station, kiosk/src/pages/PrintingStation.tsx; Android's
 /// PrintLabelsViewModel): a scan matched by asset ID or serial prints the asset's stored label on
-/// the saved network printer and records one Labeled scan through the outbox.
+/// the saved printer (network or Bluetooth) and records one Labeled scan through the outbox.
 ///
 /// The jobs run on the container's one `LabelPrintJobs` queue, never on one of this view model's
 /// own: every Print Labels screen sends in one scan order, and the list (`entries`) is the

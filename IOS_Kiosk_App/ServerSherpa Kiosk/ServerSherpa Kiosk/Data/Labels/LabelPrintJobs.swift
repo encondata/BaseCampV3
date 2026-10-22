@@ -123,6 +123,12 @@ final class LabelPrintJobs {
                 } catch where wasLocalNetworkDenied(error) {
                     // The clear before the label included: either way nothing went out.
                     throw LabelSendLocalNetworkDenied(cause: error)
+                } catch {
+                    // Bluetooth off or not allowed, or a printer that forgot this iPad: what to do.
+                    if let refusal = bluetoothRefusal(error), let message = refusal.errorDescription {
+                        throw LabelSendRefused(message: message, cause: error)
+                    }
+                    throw error
                 }
             },
             record: { target, scannedValue in

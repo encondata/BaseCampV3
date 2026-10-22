@@ -311,8 +311,36 @@ struct PrinterGuardTests {
         #expect(await printerGuard.state(for: a) == .fontCut)
     }
 
+    /// Ruling 7: a mark belongs to the printer (its network host, or its Bluetooth serial in any
+    /// case), not to the iPad's identifier for it, which iOS can change: the same Bluetooth printer
+    /// reached under a new identifier still gets its `~JX`.
+    @Test func marksFollowThePrinterNotTheIPadsIdentifierForIt() async throws {
+        let zebra = RecordingZebra()
+        let printerGuard = PrinterGuard()
+        let send = sender(zebra, printerGuard)
+        let first = PrinterConnection.bluetooth(serial: "D8J224508535", peripheralId: UUID())
+        let again = SavedPrinter(connection: .bluetooth(serial: "d8j224508535", peripheralId: UUID()), model: "ZD421", serial: "D8J224508535", dpi: 300)
+        #expect(first.identity == again.connection.identity)
+        #expect(first.identity == PrinterConnection.bluetooth(serial: "D8J224508535", peripheralId: nil).identity)
+        #expect(first.identity != PrinterConnection.bluetooth(serial: "D8J224508536", peripheralId: nil).identity)
+        // A host and a serial that read the same are still two printers.
+        #expect(PrinterConnection.network(host: "D8J224508535").identity != first.identity)
+
+        await printerGuard.markSendFailed(for: first)
+        #expect(await printerGuard.state(for: again.connection) == .needsClear)
+        try await send(again, "LABEL")
+        #expect(zebra.written == ["~JX", "LABEL"])
+        #expect(await printerGuard.state(for: first) == .clean)
+
+        await printerGuard.markFontCut(for: again.connection)
+        await #expect(throws: PrinterNeedsRestart.self) { try await send(SavedPrinter(connection: first, model: "ZD421", serial: "", dpi: 300), "LABEL") }
+        await printerGuard.printerAnswered(PrinterConnection.bluetooth(serial: "D8J224508535", peripheralId: nil))
+        #expect(await printerGuard.state(for: first) == .clean)
+    }
+
     /// The container's guard starts over for each saved printer: another connection (or none)
-    /// drops every mark; the same printer saved again with what a check found keeps its own.
+    /// drops every mark; the same printer saved again with what a check found keeps its own, and
+    /// so does a Bluetooth printer saved again under a new iPad identifier (Ruling 7).
     @MainActor @Test func guardResetsWhenThePrinterChanges() async throws {
         let defaults = freshDefaults()
         LabelSettingsStore(prefs: KioskPrefs(defaults: defaults)).setPrinter(printer)
@@ -336,7 +364,13 @@ struct PrinterGuardTests {
         let otherConnection = other.connection
         #expect(await waitUntilAsync { await printerGuard.state(for: otherConnection) == .clean })
 
+        // The same Bluetooth printer under a new iPad identifier is the same printer.
         await printerGuard.markSendFailed(for: bluetooth)
+        c.labelSettings.setPrinter(SavedPrinter(connection: .bluetooth(serial: "D8J224508535", peripheralId: UUID()), model: "ZD421",
+                                                serial: "D8J224508535", dpi: 300))
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await printerGuard.state(for: bluetooth) == .needsClear)
+
         c.labelSettings.setPrinter(nil)
         #expect(await waitUntilAsync { await printerGuard.state(for: bluetooth) == .clean })
     }

@@ -115,6 +115,12 @@ import Foundation
     private(set) var atInstallHold: Double?
     /// When it doesn't answer, it's iOS's Local Network denial.
     var deniedLocalNetwork = false
+    /// Thrown by every call that reaches the printer when set (a Bluetooth refusal, say).
+    var failure: Error?
+    /// While set, installFont() waits before its bytes start going out (before its first
+    /// progress report), as an install waiting for the printer lock or its `~JX` does.
+    var installStartHold = false
+    private(set) var atInstallStart = false
     /// The E: drive: each object's name and size.
     var onE: [DirectoryEntry] = []
     private(set) var sent: [String] = []
@@ -130,6 +136,7 @@ import Foundation
 
     private func use(_ what: String, _ detail: String = "") async throws {
         calls.append(what)
+        if let failure { throw failure }
         if !answers { throw PrinterUnreachable(host: host, localNetworkDenied: deniedLocalNetwork) }
         try await line?.connect("\(host) \(what)\(detail.isEmpty ? "" : " ")\(detail)")
     }
@@ -183,6 +190,11 @@ import Foundation
 
     private func installNow(_ name: String, _ bytes: Data, _ progress: (@Sendable (Int, Int) -> Void)?) async throws {
         try await use("installFont", name)
+        while installStartHold {
+            atInstallStart = true
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        atInstallStart = false
         progress?(0, bytes.count) // the download started
         if let installError { throw installError }
         for step in installSteps {
@@ -213,6 +225,90 @@ import Foundation
 }
 
 private struct ScanBroke: Error {}
+
+/// Bluetooth as Printer Setup sees it: its state, a scan the test feeds (`hear`), and a connect
+/// that answers with the printer's Device Information (`info`, by identifier) or throws.
+@MainActor private final class FakeBluetooth: BluetoothPrinting {
+    var availability = BluetoothAvailability.ready
+    private(set) var link = BluetoothLinkInfo()
+    /// Device Information by the iPad's identifier for each printer.
+    var info: [UUID: BluetoothPrinterInfo] = [:]
+    /// Thrown by connect() when set.
+    var connectError: Error?
+    private(set) var scans = 0
+    private(set) var connects: [BluetoothTarget] = []
+    private var feed: AsyncStream<[FoundBluetoothPrinter]>.Continuation?
+    private var feedId = 0
+
+    /// A scan is running (the screen listens to it).
+    var scanning: Bool { feed != nil }
+
+    func scan() -> AsyncStream<[FoundBluetoothPrinter]> {
+        scans += 1
+        endScan()
+        let id = scans
+        let (stream, continuation) = AsyncStream.makeStream(of: [FoundBluetoothPrinter].self)
+        // The screen stopped listening (it left, or picked another way to find a printer).
+        continuation.onTermination = { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in self.abandoned(id) }
+        }
+        // Bluetooth off, not allowed or missing: the scan ends at once (`ZebraBluetooth`'s rule).
+        if [.poweredOff, .unauthorized, .unsupported].contains(availability) {
+            continuation.finish()
+        } else {
+            feed = continuation
+            feedId = id
+        }
+        return stream
+    }
+
+    /// What the scan heard so far, strongest first.
+    func hear(_ list: [FoundBluetoothPrinter]) { feed?.yield(list) }
+
+    func stopScan() { endScan() }
+
+    func connect(peripheralId: UUID?, serial: String?) async throws -> BluetoothPrinterInfo {
+        connects.append(BluetoothTarget(peripheralId: peripheralId, serial: serial))
+        endScan()
+        if let connectError { throw connectError }
+        guard let id = peripheralId, let found = info[id] else { throw PrinterUnreachable(host: serial ?? "") }
+        link = BluetoothLinkInfo(connected: true, info: found, chunkBytes: 244)
+        return found
+    }
+
+    private func endScan() {
+        feed?.finish()
+        feed = nil
+    }
+
+    private func abandoned(_ id: Int) {
+        if feedId == id { feed = nil }
+    }
+}
+
+/// The office ZD421-300dpi as a Bluetooth scan hears it (its name is its serial) and as its
+/// Device Information describes it.
+private let ZD421_SERIAL = "D8J224508535"
+
+private func zd421Found(_ id: UUID = UUID(), rssi: Int = -52) -> FoundBluetoothPrinter {
+    FoundBluetoothPrinter(id: id, name: ZD421_SERIAL, rssi: rssi, advertisesZebra: false)
+}
+
+private func zd421Info(_ id: UUID) -> BluetoothPrinterInfo {
+    BluetoothPrinterInfo(peripheralId: id, manufacturer: "Zebra Technologies", model: "ZD421", serial: ZD421_SERIAL,
+                         firmware: "V93.21.38Z", linkOs: "7.3")
+}
+
+/// A clock the test moves by hand (the install's time-left estimate reads it).
+private final class InstallClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = ContinuousClock.now
+
+    var now: ContinuousClock.Instant { lock.withLock { current } }
+
+    func advance(_ d: Duration) { lock.withLock { current += d } }
+}
 
 /// The fake Zebras by host, made on first use. The view models hold it, not the test: a view
 /// model's task can outlive its test.
@@ -249,6 +345,9 @@ private final class Sleeps: @unchecked Sendable {
 final class PrinterSetupViewModelTests {
     private let saved = SavedPrinter(host: "10.0.0.5", model: "ZD421", serial: "S1", dpi: 203)
     private var savedHost: String { saved.host ?? "" }
+    /// The office ZD421 saved as a Bluetooth printer (at 203 DPI, so the move's template fits).
+    private let bluetoothSaved = SavedPrinter(connection: .bluetooth(serial: ZD421_SERIAL, peripheralId: UUID()), model: "ZD421",
+                                              serial: ZD421_SERIAL, dpi: 203)
     private let engine = SetupEngine()
     private let store: KioskStore
     private let prefs = KioskPrefs(defaults: freshDefaults())
@@ -260,6 +359,8 @@ final class PrinterSetupViewModelTests {
     private let scanner = FakeScanner()
     private let sleeps = Sleeps()
     private let fakes = Zebras()
+    private let bluetooth = FakeBluetooth()
+    private let clock = InstallClock()
     nonisolated(unsafe) private var following: Task<Void, Never>?
     nonisolated(unsafe) private var feed: AsyncStream<SyncStatus>.Continuation?
 
@@ -294,7 +395,8 @@ final class PrinterSetupViewModelTests {
         following = await builder.start(syncStatus: sync)
     }
 
-    private func zebra(_ host: String) -> FakeZebra { fakes.at(host) }
+    /// The fake Zebra at a network host, or by a Bluetooth printer's serial.
+    private func zebra(_ address: String) -> FakeZebra { fakes.at(address) }
 
     private var zebras: [String: FakeZebra] { fakes.all }
 
@@ -302,13 +404,21 @@ final class PrinterSetupViewModelTests {
         let sleeper = sleeps ?? self.sleeps
         let scanner = self.scanner
         let fakes = self.fakes
+        let clock = self.clock
         return PrinterSetupViewModel(
             settings: settings, build: builder.monitor, engine: engine, store: store, fontsDir: fontsDir,
             scanner: { try await scanner.scan() },
-            zebraFor: { printer in fakes.at(printer.host ?? "") },
+            bluetooth: bluetooth,
+            zebraFor: { printer in
+                switch printer.connection {
+                case .network(let host): fakes.at(host)
+                case .bluetooth(let serial, _): fakes.at(serial)
+                }
+            },
             printerLock: lock,
             printerGuard: printerGuard,
             sleep: { try await sleeper.sleep($0) },
+            now: { clock.now },
             pickWait: pickWait)
     }
 
@@ -479,6 +589,7 @@ final class PrinterSetupViewModelTests {
         #expect(fonts.state == .fail)
         #expect(fonts.detail == "Missing: LATO.TTF. Damaged: ROBOTO.TTF (reinstall).")
         #expect(vm.ui.fontFix?.installable.map(\.name) == ["ROBOTO.TTF", "LATO.TTF"])
+        #expect(vm.ui.damagedFonts == ["ROBOTO.TTF"])
 
         z.onE = [DirectoryEntry(name: "ROBOTO.TTF", size: 1), DirectoryEntry(name: "LATO.TTF", size: 2)]
         await checked(vm) { vm.checkAgain() }
@@ -508,12 +619,16 @@ final class PrinterSetupViewModelTests {
         let checksBefore = vm.ui.checkRuns
         vm.installFonts()
         await eventually("first font half sent") { z.atInstallHold == 0.5 }
+        #expect(!vm.ui.installStopping)
         vm.cancelInstall()
+        // The screen says it stops after the font going out.
+        #expect(vm.ui.installStopping)
         try await Task.sleep(for: .milliseconds(20))
         #expect(vm.ui.installing)
         #expect(z.installed.isEmpty)
         z.installHoldAt = nil
         await eventually("stopped and re-checked") { !vm.ui.installing && vm.ui.checkRuns > checksBefore && !vm.ui.checking }
+        #expect(!vm.ui.installStopping)
         #expect(z.installed.map(\.name) == ["ROBOTO.TTF"])
         #expect(z.installed.first?.bytes == Data([1, 2, 3]))
         #expect(z.calls.filter { $0 == "installFont" }.count == 1)
@@ -522,6 +637,8 @@ final class PrinterSetupViewModelTests {
         #expect(row(vm, .fonts)?.detail == "Missing: LATO.TTF.")
     }
 
+    /// A network install shows its progress, and no time left before its speed is measured (the
+    /// 3.9 KB/s guess is Bluetooth's; a network font is usually done well within a second).
     @Test func installReportsProgress() async throws {
         try await start()
         try await libraryFonts([("ROBOTO.TTF", [1, 2, 3, 4])])
@@ -534,7 +651,7 @@ final class PrinterSetupViewModelTests {
         #expect(vm.ui.installEta == nil)
         vm.installFonts()
         await eventually("half sent") { z.atInstallHold == 0.5 && vm.ui.installProgress == 0.5 }
-        #expect(vm.ui.installEta == "about 1 s left")
+        #expect(vm.ui.installEta == nil)
         z.installHoldAt = 1
         await eventually("all sent") { z.atInstallHold == 1 && vm.ui.installProgress == 1 }
         #expect(vm.ui.installEta == nil)
@@ -543,6 +660,69 @@ final class PrinterSetupViewModelTests {
         #expect(vm.ui.installProgress == nil)
         #expect(vm.ui.installEta == nil)
         #expect(vm.ui.fontMessage == "Fonts installed.")
+    }
+
+    /// The time left is reckoned from when the font's bytes start moving (not from the wait for
+    /// the printer lock or a `~JX` before it), at the speed measured since then once the font has
+    /// gone out for 1 s. Before that a Bluetooth install guesses 3.9 KB/s and a network one says
+    /// nothing.
+    @Test(arguments: [false, true]) func theInstallEtaStartsWhenTheBytesMove(overBluetooth: Bool) async throws {
+        try await start()
+        try await libraryFonts([("ROBOTO.TTF", [1, 2, 3, 4, 5, 6, 7, 8])])
+        if overBluetooth { settings.setPrinter(bluetoothSaved) }
+        let z = zebra(overBluetooth ? ZD421_SERIAL : savedHost)
+        z.installSteps = [0.25, 0.5, 1]
+        let vm = vm()
+        await checked(vm) { vm.checkAgain() }
+        #expect(vm.ui.fontFix?.installable.count == 1)
+        z.installStartHold = true
+        z.installHoldAt = 0.25
+        vm.installFonts()
+        await eventually("waiting to start") { z.atInstallStart }
+        clock.advance(.seconds(30)) // the lock and the clear: not install time
+        z.installStartHold = false
+        await eventually("a quarter sent") { z.atInstallHold == 0.25 && vm.ui.installProgress == 0.25 }
+        #expect(vm.ui.installEta == (overBluetooth ? "about 1 s left" : nil))
+        clock.advance(.seconds(3))
+        z.installHoldAt = 0.5
+        await eventually("half sent") { z.atInstallHold == 0.5 && vm.ui.installProgress == 0.5 }
+        // 4 bytes in the 3 s since they started moving: the 4 left take 3 s.
+        #expect(vm.ui.installEta == "about 3 s left")
+        z.installHoldAt = nil
+        await eventually("installed") { !vm.ui.installing }
+        #expect(vm.ui.installEta == nil)
+        #expect(vm.ui.fontMessage == "Fonts installed.")
+    }
+
+    /// A transport that answers a cancellation after the font's bytes started still cut the font:
+    /// the screen says to restart the printer, as for any cut install.
+    @Test func aFontInstallCanceledAfterItsBytesStartedSaysItWasCut() async throws {
+        try await start()
+        try await libraryFonts([("ROBOTO.TTF", [1, 2, 3])])
+        let z = zebra(savedHost)
+        let vm = vm()
+        await checked(vm) { vm.checkAgain() }
+        let checksBefore = vm.ui.checkRuns
+        z.installError = CancellationError()
+        vm.installFonts()
+        await eventually("install ended") { !vm.ui.installing }
+        #expect(vm.ui.fontMessage == FONT_INSTALL_CUT_TEXT)
+        #expect(vm.ui.fontError)
+        #expect(await printerGuard.state(for: saved.connection) == .fontCut)
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(vm.ui.checkRuns == checksBefore)
+    }
+
+    @Test func theFontButtonSaysInstallForMissingFontsAndReinstallForDamagedOnes() {
+        let fonts = [KioskLabelFont(id: "f1", name: "Roboto.ttf", size: 3, resident: false),
+                     KioskLabelFont(id: "f2", name: "LATO.TTF", size: 2, resident: false),
+                     KioskLabelFont(id: "f3", name: "ARIAL.TTF", size: 5, resident: false)]
+        #expect(fontInstallButtonText(installable: fonts, damaged: []) == "Install 3 missing fonts")
+        #expect(fontInstallButtonText(installable: [fonts[1]], damaged: []) == "Install 1 missing font")
+        #expect(fontInstallButtonText(installable: [fonts[0]], damaged: ["ROBOTO.TTF"]) == "Reinstall 1 damaged font")
+        #expect(fontInstallButtonText(installable: [fonts[0], fonts[1]], damaged: ["ROBOTO.TTF", "LATO.TTF"]) == "Reinstall 2 damaged fonts")
+        #expect(fontInstallButtonText(installable: fonts, damaged: ["ROBOTO.TTF", "LATO.TTF"])
+            == "Install 1 missing font, reinstall 2 damaged fonts")
     }
 
     /// A font install cut off part-way leaves the printer waiting for the rest of the font: the
@@ -1272,6 +1452,290 @@ final class PrinterSetupViewModelTests {
         #expect(PrinterSetupViewModel.sampleRefusedText(nil) == "No sample label for this printer.")
         #expect(PrinterSetupViewModel.sampleRefusedText("") == "No sample label for this printer.")
         #expect(PrinterSetupViewModel.sampleRefusedText("Vegas Top is at 203 DPI only.") == "Vegas Top is at 203 DPI only.")
+    }
+
+    // MARK: Bluetooth
+
+    /// D9: picking a Zebra from the Bluetooth list connects by the iPad's identifier for it, asks
+    /// `~HI` for its model and DPI, saves it by its serial, and checks it.
+    @Test func bluetoothChooseSavesAndChecks() async throws {
+        try await start()
+        let id = UUID()
+        bluetooth.info[id] = zd421Info(id)
+        let z = zebra(ZD421_SERIAL)
+        z.dpi = 300
+        let vm = vm()
+        vm.scanBluetooth()
+        #expect(vm.ui.findMode == .bluetooth)
+        #expect(vm.ui.bluetoothScanning)
+        let found = zd421Found(id)
+        bluetooth.hear([found])
+        await eventually("listed") { vm.ui.bluetoothFound == [found] }
+
+        await checked(vm) { vm.chooseBluetooth(found) }
+        #expect(current.printer == SavedPrinter(connection: .bluetooth(serial: ZD421_SERIAL, peripheralId: id), model: "ZD421",
+                                                serial: ZD421_SERIAL, dpi: 300))
+        // By the identifier the scan heard; the serial is the one Device Information gives.
+        #expect(bluetooth.connects == [BluetoothTarget(peripheralId: id, serial: nil)])
+        // The `~HI` that named it, then the checks' own.
+        #expect(Array(z.calls.prefix(2)) == ["identify", "identify"])
+        #expect(row(vm, .answers)?.state == .ok)
+        #expect(row(vm, .answers)?.detail == "ZD421 · 300 DPI")
+        #expect(vm.ui.checks.map(\.key) == CheckKey.allCases)
+        // Choosing ended the scan and kept the list.
+        #expect(!vm.ui.bluetoothScanning)
+        #expect(!bluetooth.scanning)
+        #expect(vm.ui.bluetoothFound == [found])
+        #expect(vm.ui.chooseError == nil)
+    }
+
+    /// The list: Zebras first (named like a Zebra serial, or advertising Zebra), other named
+    /// devices apart. Stop ends the scan and keeps the list; a scan that heard no Zebra says so.
+    /// Another way to find a printer, or leaving the screen, stops the scan and says nothing.
+    @Test func aBluetoothScanListsZebrasFirstAndStops() async throws {
+        let vm = vm()
+        vm.scanBluetooth()
+        let zd421 = zd421Found(rssi: -70)
+        let renamed = FoundBluetoothPrinter(id: UUID(), name: "Dock printer", rssi: -60, advertisesZebra: true)
+        let headphones = FoundBluetoothPrinter(id: UUID(), name: "Headphones", rssi: -40, advertisesZebra: false)
+        bluetooth.hear([headphones, renamed, zd421])
+        await eventually("heard") { vm.ui.bluetoothFound?.count == 3 }
+        #expect(vm.ui.bluetoothZebras == [renamed, zd421])
+        #expect(vm.ui.bluetoothOthers == [headphones])
+        vm.stopBluetoothScan()
+        await eventually("stopped") { !vm.ui.bluetoothScanning }
+        #expect(!bluetooth.scanning)
+        #expect(vm.ui.bluetoothFound?.count == 3)
+        #expect(vm.ui.bluetoothMessage == nil)
+
+        vm.scanBluetooth()
+        #expect(vm.ui.bluetoothFound == [])
+        bluetooth.hear([headphones])
+        await eventually("heard") { vm.ui.bluetoothFound == [headphones] }
+        vm.stopBluetoothScan()
+        await eventually("stopped") { !vm.ui.bluetoothScanning }
+        #expect(vm.ui.bluetoothMessage == "No Zebra printers found nearby.")
+        #expect(!vm.ui.bluetoothError)
+
+        vm.scanBluetooth()
+        #expect(bluetooth.scanning)
+        vm.scan()
+        await eventually("stopped by Scan network") { !bluetooth.scanning && !vm.ui.bluetoothScanning }
+        #expect(vm.ui.findMode == .scan)
+        await eventually("network scanned") { !vm.ui.scanning }
+        vm.scanBluetooth()
+        #expect(vm.ui.scanMessage == nil)
+        vm.enterIp()
+        await eventually("stopped by Enter IP") { !bluetooth.scanning && !vm.ui.bluetoothScanning }
+        vm.scanBluetooth()
+        vm.close()
+        await eventually("stopped by leaving") { !bluetooth.scanning && !vm.ui.bluetoothScanning }
+        #expect(vm.ui.bluetoothMessage == nil)
+        #expect(bluetooth.scans == 5)
+    }
+
+    /// Signal strength in words, with the number.
+    @Test func bluetoothSignalReadsStrongFairOrWeak() {
+        #expect(bluetoothSignalText(rssi: -40) == "Strong signal (-40 dBm)")
+        #expect(bluetoothSignalText(rssi: -65) == "Strong signal (-65 dBm)")
+        #expect(bluetoothSignalText(rssi: -66) == "Fair signal (-66 dBm)")
+        #expect(bluetoothSignalText(rssi: -80) == "Fair signal (-80 dBm)")
+        #expect(bluetoothSignalText(rssi: -81) == "Weak signal (-81 dBm)")
+        #expect(bluetoothSignalText(rssi: -127) == "Signal unknown")
+        #expect(bluetoothSignalText(rssi: 127) == "Signal unknown")
+    }
+
+    /// D11: Bluetooth switched off says so plainly (no Settings button: it goes back on in
+    /// Control Center); back in the app, it scans again. Switched off while choosing: the same.
+    @Test func bluetoothOffSaysSo() async throws {
+        bluetooth.availability = .poweredOff
+        let vm = vm()
+        vm.scenePhaseChanged(active: true) // the first phase
+        vm.scanBluetooth()
+        await eventually("refused") { !vm.ui.bluetoothScanning && vm.ui.bluetoothMessage != nil }
+        #expect(vm.ui.bluetoothMessage == BLUETOOTH_OFF_TEXT)
+        #expect(vm.ui.bluetoothUnavailable == .poweredOff)
+        #expect(vm.ui.bluetoothError)
+        #expect(!vm.ui.offersBluetoothSettings)
+
+        // Turned on in Control Center (the app went inactive), back in front: it scans again.
+        bluetooth.availability = .ready
+        vm.scenePhaseChanged(active: false)
+        vm.scenePhaseChanged(active: true)
+        await eventually("scanning again") { vm.ui.bluetoothScanning }
+        #expect(vm.ui.bluetoothMessage == nil)
+        #expect(vm.ui.bluetoothUnavailable == nil)
+        #expect(bluetooth.scans == 2)
+
+        bluetooth.connectError = BluetoothUnavailable(host: ZD421_SERIAL, availability: .poweredOff)
+        let found = zd421Found()
+        bluetooth.hear([found])
+        await eventually("listed") { vm.ui.bluetoothFound == [found] }
+        vm.chooseBluetooth(found)
+        await eventually("refused") { vm.ui.choosing == nil && vm.ui.bluetoothMessage != nil }
+        #expect(vm.ui.bluetoothMessage == BLUETOOTH_OFF_TEXT)
+        #expect(vm.ui.bluetoothUnavailable == .poweredOff)
+        #expect(vm.ui.chooseError == nil)
+        #expect(current.printer == nil)
+        // Back in front with nothing refused: nothing more is scanned.
+        bluetooth.connectError = nil
+        vm.stopBluetoothScan()
+        vm.scenePhaseChanged(active: false)
+        vm.scenePhaseChanged(active: true)
+        await eventually("scanning again") { vm.ui.bluetoothScanning }
+        vm.stopBluetoothScan()
+        await eventually("stopped") { !vm.ui.bluetoothScanning }
+        vm.scenePhaseChanged(active: false)
+        vm.scenePhaseChanged(active: true)
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(bluetooth.scans == 3)
+    }
+
+    /// D11: Bluetooth not allowed for the kiosk says so, with Open Settings, from the scan and from
+    /// the saved Bluetooth printer's check (which says Bluetooth is off the same way, without it).
+    @Test func bluetoothDeniedSaysSo() async throws {
+        try await start()
+        bluetooth.availability = .unauthorized
+        let vm = vm()
+        vm.scanBluetooth()
+        await eventually("refused") { !vm.ui.bluetoothScanning && vm.ui.bluetoothMessage != nil }
+        #expect(vm.ui.bluetoothMessage == BLUETOOTH_DENIED_TEXT)
+        #expect(vm.ui.bluetoothUnavailable == .unauthorized)
+        #expect(vm.ui.bluetoothError)
+        #expect(vm.ui.offersBluetoothSettings)
+        // Enter IP instead: the Bluetooth message, and its Settings offer, go.
+        vm.enterIp()
+        #expect(vm.ui.bluetoothMessage == nil)
+        #expect(!vm.ui.offersBluetoothSettings)
+
+        settings.setPrinter(bluetoothSaved)
+        let z = zebra(ZD421_SERIAL)
+        z.failure = BluetoothUnavailable(host: ZD421_SERIAL, availability: .unauthorized)
+        let check = self.vm()
+        await checked(check) { check.checkAgain() }
+        #expect(check.ui.checks.map(\.key) == [.answers])
+        #expect(row(check, .answers)?.state == .fail)
+        #expect(row(check, .answers)?.detail == BLUETOOTH_DENIED_TEXT)
+        #expect(check.ui.bluetoothUnavailable == .unauthorized)
+        #expect(check.ui.offersBluetoothSettings)
+        z.failure = BluetoothUnavailable(host: ZD421_SERIAL, availability: .poweredOff)
+        await checked(check) { check.checkAgain() }
+        #expect(row(check, .answers)?.detail == BLUETOOTH_OFF_TEXT)
+        #expect(!check.ui.offersBluetoothSettings)
+        z.failure = nil
+        await checked(check) { check.checkAgain() }
+        #expect(row(check, .answers)?.state == .ok)
+        #expect(check.ui.bluetoothUnavailable == nil)
+    }
+
+    /// D10: a printer that forgot this iPad shows the steps, with Open Settings and Connect. Connect,
+    /// once it is forgotten in Settings, tries the same printer again; for the saved printer's
+    /// check, it checks again.
+    @Test func pairingLostShowsRecovery() async throws {
+        try await start()
+        let id = UUID()
+        bluetooth.info[id] = zd421Info(id)
+        bluetooth.connectError = BluetoothPairingLost(host: ZD421_SERIAL)
+        let vm = vm()
+        vm.scanBluetooth()
+        let found = zd421Found(id)
+        bluetooth.hear([found])
+        await eventually("listed") { vm.ui.bluetoothFound == [found] }
+        vm.chooseBluetooth(found)
+        await eventually("refused") { vm.ui.choosing == nil && vm.ui.pairingLost != nil }
+        #expect(vm.ui.pairingLost == pairingLostText(serial: "D8J224508535"))
+        #expect(vm.ui.offersBluetoothSettings)
+        #expect(vm.ui.chooseError == nil)
+        #expect(current.printer == saved)
+
+        bluetooth.connectError = nil
+        await checked(vm) { vm.connectAgain() }
+        #expect(vm.ui.pairingLost == nil)
+        #expect(!vm.ui.offersBluetoothSettings)
+        #expect(current.printer?.connection == .bluetooth(serial: ZD421_SERIAL, peripheralId: id))
+        #expect(bluetooth.connects.count == 2)
+        #expect(row(vm, .answers)?.state == .ok)
+
+        let z = zebra(ZD421_SERIAL)
+        z.failure = BluetoothPairingLost(host: ZD421_SERIAL)
+        await checked(vm) { vm.checkAgain() }
+        #expect(row(vm, .answers)?.detail == "No Zebra printer answered over Bluetooth as D8J224508535.")
+        #expect(vm.ui.pairingLost == pairingLostText(serial: ZD421_SERIAL))
+        z.failure = nil
+        await checked(vm) { vm.connectAgain() }
+        #expect(row(vm, .answers)?.state == .ok)
+        #expect(vm.ui.pairingLost == nil)
+        #expect(bluetooth.connects.count == 2)
+    }
+
+    /// A device that isn't a Zebra, or a printer that doesn't answer, isn't saved, and the screen
+    /// says which.
+    @Test func aBluetoothDeviceThatIsNotAZebraOrDoesNotAnswerIsNotSaved() async throws {
+        try await start()
+        let vm = vm()
+        vm.scanBluetooth()
+        let headphones = FoundBluetoothPrinter(id: UUID(), name: "Headphones", rssi: -40, advertisesZebra: false)
+        let zd421 = zd421Found()
+        bluetooth.hear([headphones, zd421])
+        await eventually("listed") { vm.ui.bluetoothFound?.count == 2 }
+        bluetooth.connectError = BluetoothNotZebra(host: "Headphones")
+        vm.chooseBluetooth(headphones)
+        #expect(vm.ui.choosing != nil)
+        await eventually("refused") { vm.ui.choosing == nil }
+        #expect(vm.ui.chooseError == "Headphones isn't a Zebra printer.")
+
+        bluetooth.connectError = nil // no Device Information for it: it never answers
+        vm.chooseBluetooth(zd421)
+        #expect(vm.ui.chooseError == nil)
+        await eventually("no answer") { vm.ui.choosing == nil }
+        #expect(vm.ui.chooseError == "No Zebra printer answered over Bluetooth as D8J224508535.")
+        #expect(current.printer == saved)
+
+        // Connected, but `~HI` gets no answer: not saved either.
+        bluetooth.info[zd421.id] = zd421Info(zd421.id)
+        zebra(ZD421_SERIAL).answers = false
+        vm.chooseBluetooth(zd421)
+        await eventually("no answer") { vm.ui.choosing == nil }
+        #expect(vm.ui.chooseError == "No Zebra printer answered over Bluetooth as D8J224508535.")
+        #expect(zebra(ZD421_SERIAL).calls == ["identify"])
+        #expect(current.printer == saved)
+    }
+
+    /// Test labels over Bluetooth: an unreachable printer is named by its serial; Bluetooth not
+    /// allowed (even when it stops the `~JX` before the label) and a printer that forgot this iPad
+    /// say what to do, and the sheet offers Settings.
+    @Test func aBluetoothTestLabelSaysWhyItDidNotGo() async throws {
+        try await start()
+        await awaitPick203()
+        settings.setPrinter(bluetoothSaved)
+        let z = zebra(ZD421_SERIAL)
+        z.failure = PrinterUnreachable(host: ZD421_SERIAL)
+        let vm = vm()
+        vm.printTest(.alignment)
+        await eventually("failed") { !vm.ui.testing && vm.ui.testMessage != nil }
+        #expect(vm.ui.testMessage == "Can't reach the printer D8J224508535 over Bluetooth.")
+        #expect(vm.ui.testError)
+        #expect(!vm.ui.testBluetoothSettings)
+
+        z.failure = BluetoothUnavailable(host: ZD421_SERIAL, availability: .unauthorized)
+        vm.printTest(.alignment)
+        await eventually("refused") { !vm.ui.testing && vm.ui.testMessage == BLUETOOTH_DENIED_TEXT }
+        #expect(vm.ui.testBluetoothSettings)
+        #expect(!vm.ui.testLocalNetworkDenied)
+
+        // Forgotten: the steps in the sheet, and on the screen (with Connect) once it closes.
+        z.failure = BluetoothPairingLost(host: ZD421_SERIAL)
+        vm.printTest(.alignment)
+        await eventually("refused") { !vm.ui.testing && vm.ui.testMessage == pairingLostText(serial: ZD421_SERIAL) }
+        #expect(vm.ui.testBluetoothSettings)
+        #expect(vm.ui.pairingLost == pairingLostText(serial: ZD421_SERIAL))
+
+        z.failure = nil
+        vm.printTest(.alignment)
+        await eventually("sent") { !vm.ui.testing && z.sent.count == 2 }
+        #expect(z.sent == ["~JX", "LT0LS0|ALIGN 812x406 4x2 203|MMT"])
+        #expect(!vm.ui.testError)
+        #expect(!vm.ui.testBluetoothSettings)
     }
 
     // MARK: Copy
