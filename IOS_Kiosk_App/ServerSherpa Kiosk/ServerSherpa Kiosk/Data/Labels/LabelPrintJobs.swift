@@ -49,6 +49,11 @@ private struct LabeledScanNotSaved: Error {}
 /// interleave its labels with the old ones (with a peeler, that would label the wrong asset).
 /// `entries` is the queue's list for every screen, so a re-opened screen shows earlier jobs and
 /// can retry them. The decisions live in `PrintQueue`.
+///
+/// The list belongs to one session on one move: `reset()` runs on every sign-out (and a session
+/// that ends underneath the kiosk) and on every change of the saved move or site, so the next
+/// person never sees, retries or reprints the last one's jobs, and jobs still waiting never
+/// print or record for them (see `PrintQueue.reset()`).
 @MainActor @Observable
 final class LabelPrintJobs {
     /// The scan status a printed label records.
@@ -60,6 +65,9 @@ final class LabelPrintJobs {
     private(set) var entries: [PrintEntry<PrintTarget>] = []
 
     @ObservationIgnored private let queue: PrintQueue<PrintTarget>
+    /// Bumped by `reset()`: a job started before one answers `CancellationError`, so its screen
+    /// gives no good-scan feedback for a label that belongs to the session before.
+    @ObservationIgnored private(set) var generation = 0
 
     init(deps: PrintQueueDeps<PrintTarget>, now: @escaping @Sendable () -> String = { isoMillis(nowMs()) }) {
         queue = PrintQueue(deps: deps, now: now)
@@ -107,12 +115,31 @@ final class LabelPrintJobs {
         ))
     }
 
-    /// See `PrintQueue.scan`; `target` is nil when the scan matched nothing.
-    func scan(_ target: PrintTarget?, scannedValue: String) async throws -> PrintEntry<PrintTarget> {
-        try await queue.scan(target, scannedValue: scannedValue)
+    /// Starts over for a new session or move: waiting jobs are dropped unsent, the list empties,
+    /// and a label already going out finishes on the printer without recording its scan.
+    func reset() async {
+        generation += 1
+        entries = []
+        await queue.reset()
     }
 
-    func reprint(_ entryId: String) async throws -> PrintEntry<PrintTarget>? { try await queue.reprint(entryId) }
+    /// See `PrintQueue.scan`; `target` is nil when the scan matched nothing.
+    func scan(_ target: PrintTarget?, scannedValue: String) async throws -> PrintEntry<PrintTarget> {
+        try await sameGeneration { try await self.queue.scan(target, scannedValue: scannedValue) }
+    }
 
-    func retry(_ entryId: String) async throws -> PrintEntry<PrintTarget>? { try await queue.retry(entryId) }
+    func reprint(_ entryId: String) async throws -> PrintEntry<PrintTarget>? {
+        try await sameGeneration { try await self.queue.reprint(entryId) }
+    }
+
+    func retry(_ entryId: String) async throws -> PrintEntry<PrintTarget>? {
+        try await sameGeneration { try await self.queue.retry(entryId) }
+    }
+
+    private func sameGeneration<T>(_ job: () async throws -> T) async throws -> T {
+        let started = generation
+        let result = try await job()
+        if generation != started { throw CancellationError() }
+        return result
+    }
 }

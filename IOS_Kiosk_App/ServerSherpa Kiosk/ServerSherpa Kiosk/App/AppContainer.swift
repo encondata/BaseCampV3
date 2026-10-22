@@ -52,7 +52,6 @@ final class AppContainer {
         let api = URLSessionKioskApi(apiUrl: apiUrl, session: session, sessionStore: sessionStore, cookies: cookies)
         let auth = KioskAuth(api: api, refresher: sessionStore, identity: identity, prefs: prefs)
         let heartbeat = Heartbeat(api: api, identity: identity, version: config.kioskVersion)
-        auth.onLogout = { heartbeat.stop() }
         let store = KioskStore(modelContainer: modelContainer)
 
         self.prefs = prefs
@@ -82,6 +81,30 @@ final class AppContainer {
                                         // Straight to the printer: no status checks before or after.
                                         sender: { host, zpl in try await NetworkZebra(host: host).send(zpl) })
         self.sound = SoundPlayer(prefs: prefs)
+
+        // Print Labels' list and its waiting jobs belong to one session on one move.
+        let printJobs = self.printJobs
+        auth.onLogout = {
+            heartbeat.stop()
+            Task { await printJobs.reset() }
+        }
+        auth.onSessionEnded = { Task { await printJobs.reset() } }
+        Self.resetPrintJobsOnMoveChange(prefs: prefs, jobs: printJobs)
+    }
+
+    /// The saved setup selection's move or site changing (Kiosk Setup saving another one, a
+    /// move session dropping it, a clear) resets the print jobs. `KioskPrefs.setupSelection` is
+    /// the one place every writer goes through; this follows it (Observation), skipping the value
+    /// it starts with.
+    private static func resetPrintJobsOnMoveChange(prefs: KioskPrefs, jobs: LabelPrintJobs) {
+        let moves = observationStream { prefs.setupSelection.map { PrintJobsMove(initiativeId: $0.initiativeId, siteId: $0.siteId) } }
+        Task {
+            var first = true
+            for await _ in moves {
+                if first { first = false; continue }
+                await jobs.reset()
+            }
+        }
     }
 
     /// Keychain, UserDefaults.standard and the on-disk store (see `openStore`).
@@ -166,6 +189,12 @@ final class AppContainer {
         if active && authed { outbox.start() } else { outbox.stop() }
         UIApplication.shared.isIdleTimerDisabled = active && authed
     }
+}
+
+/// The part of the setup selection a print job belongs to.
+private struct PrintJobsMove: Equatable, Sendable {
+    var initiativeId: String
+    var siteId: String
 }
 
 private struct AppContainerKey: EnvironmentKey {

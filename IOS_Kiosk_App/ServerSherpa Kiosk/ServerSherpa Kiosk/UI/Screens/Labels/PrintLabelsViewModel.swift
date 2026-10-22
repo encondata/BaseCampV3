@@ -78,11 +78,16 @@ func printEntryTitle(_ asset: KioskAssetRow) -> String { nonBlankText(asset.name
 /// sound). Leaving the screen (Printer Setup on top, or Back) cancels nothing: labels already
 /// scanned still go out and get their Labeled scans, even after this view model is gone.
 /// (Android's view model scope cancels the jobs still waiting when the screen is popped; a
-/// cancelled waiter would stay "Waiting to print" for good, so iOS lets them finish.) Building
+/// cancelled waiter would stay "Waiting to print" for good, so iOS lets them finish.) A sign-out
+/// or a change of move resets the jobs (`LabelPrintJobs.reset()`), and Retry and Reprint refuse an
+/// entry scanned for another move than the kiosk's current one. Building
 /// one is cheap: no queue and no task of its own.
 @MainActor @Observable
 final class PrintLabelsViewModel {
     enum LoadStatus: Equatable { case loading, ready, error }
+
+    /// Retry or Reprint on an entry scanned for another move (iOS copy; Android has no such case).
+    static let OTHER_MOVE_TEXT = "This label is from another move."
 
     private(set) var loadStatus = LoadStatus.loading
     private(set) var rosterSize = 0
@@ -162,13 +167,32 @@ final class PrintLabelsViewModel {
         return run { jobs in try await jobs.scan(target, scannedValue: value) }
     }
 
-    /// Prints the entry's asset again (never records).
+    /// Prints the entry's asset again (never records); nil when refused (see `fromAnotherMove`).
     @discardableResult
-    func reprint(_ entryId: String) -> Task<Void, Never> { run { jobs in try await jobs.reprint(entryId) } }
+    func reprint(_ entryId: String) -> Task<Void, Never>? {
+        if fromAnotherMove(entryId) { return nil }
+        return run { jobs in try await jobs.reprint(entryId) }
+    }
 
-    /// Runs a failed entry again.
+    /// Runs a failed entry again; nil when refused (see `fromAnotherMove`).
     @discardableResult
-    func retry(_ entryId: String) -> Task<Void, Never> { run { jobs in try await jobs.retry(entryId) } }
+    func retry(_ entryId: String) -> Task<Void, Never>? {
+        if fromAnotherMove(entryId) { return nil }
+        return run { jobs in try await jobs.retry(entryId) }
+    }
+
+    /// Belt and braces beside the jobs' reset on a move change: an entry scanned for a move other
+    /// than the kiosk's current one is never printed again here. Says so when it is.
+    private func fromAnotherMove(_ entryId: String) -> Bool {
+        guard let target = entries.first(where: { $0.id == entryId })?.asset,
+              target.initiativeId != prefs.setupSelection?.initiativeId else {
+            if error == Self.OTHER_MOVE_TEXT { error = nil }
+            return false
+        }
+        feedback(good: false)
+        error = Self.OTHER_MOVE_TEXT
+        return true
+    }
 
     /// Runs the move's sync again (labels need a sync since the version 2 upgrade).
     func syncNow() {

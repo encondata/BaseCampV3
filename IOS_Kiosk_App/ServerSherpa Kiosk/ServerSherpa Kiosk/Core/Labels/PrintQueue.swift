@@ -154,8 +154,12 @@ struct PrintQueueDeps<A: Sendable>: Sendable {
 /// with a warning.
 ///
 /// `scan`, `reprint` and `retry` throw only `CancellationError`, when the caller is cancelled
-/// before its label starts going out. Once it does, the send, its record and the entry's outcome
-/// finish even if the caller is cancelled.
+/// before its label starts going out, or `reset()` dropped the job first. Once it does, the
+/// send, its record and the entry's outcome finish even if the caller is cancelled.
+///
+/// `reset()` (a sign-out, or another move) starts over: jobs not yet sending are dropped without
+/// sending, the list empties, and a label already going out finishes on the printer but neither
+/// records its scan nor comes back to the list. Nothing from before can be retried or reprinted.
 actor PrintQueue<A: Sendable> {
     /// Entries the list keeps (newest); older ones drop off.
     static var LIST_LIMIT: Int { 200 }
@@ -164,10 +168,15 @@ actor PrintQueue<A: Sendable> {
     /// twice), and whether that worked.
     private final class Work {
         var entry: PrintEntry<A>
+        /// The queue's generation when the entry was made (see `reset()`).
+        let generation: Int
         var sent: String?
         var recordTried = false
         var recorded = false
-        init(_ entry: PrintEntry<A>) { self.entry = entry }
+        init(_ entry: PrintEntry<A>, generation: Int) {
+            self.entry = entry
+            self.generation = generation
+        }
     }
 
     private let deps: PrintQueueDeps<A>
@@ -177,6 +186,8 @@ actor PrintQueue<A: Sendable> {
     /// Entry ids, oldest first.
     private var order: [String] = []
     private var nextId = 0
+    /// Bumped by `reset()`; a job from an earlier generation never sends, records or lists.
+    private var generation = 0
     /// One job at a time, in the order they asked.
     private var busy = false
     private var waiting: [CheckedContinuation<Void, Never>] = []
@@ -217,6 +228,17 @@ actor PrintQueue<A: Sendable> {
         return try await inTurn { try await self.execute(w) }
     }
 
+    /// Starts over (see the type's notes). Jobs waiting their turn stay in line but drop out
+    /// without sending when it comes; ids keep counting, so no old id names a new entry.
+    func reset() {
+        generation += 1
+        work.removeAll()
+        order.removeAll()
+        publish()
+    }
+
+    private func current(_ w: Work) -> Bool { w.generation == generation }
+
     private func inTurn<T>(_ job: () async throws -> T) async throws -> T {
         if busy {
             await withCheckedContinuation { waiting.append($0) }
@@ -232,7 +254,7 @@ actor PrintQueue<A: Sendable> {
     private func add(_ asset: A?, _ scannedValue: String, reprint: Bool, _ state: PrintState, _ message: String?) -> Work {
         nextId += 1
         let w = Work(PrintEntry(id: "p-\(nextId)", asset: asset, scannedValue: scannedValue, scannedAt: now(),
-                                reprint: reprint, state: state, message: message))
+                                reprint: reprint, state: state, message: message), generation: generation)
         work[w.entry.id] = w
         order.append(w.entry.id)
         // Oldest out first.
@@ -262,6 +284,8 @@ actor PrintQueue<A: Sendable> {
         // A caller cancelled while it waited its turn stops here, its entry still queued (Android's
         // Mutex.withLock throws the same way).
         try Task.checkCancellation()
+        // Dropped by a reset while it waited.
+        guard current(w) else { throw CancellationError() }
         guard let asset = w.entry.asset else { return fail(w, NO_MATCH_TEXT) }
         update(w, .sending, nil)
         let printer: SavedPrinter
@@ -284,6 +308,8 @@ actor PrintQueue<A: Sendable> {
                 }
             }
             try Task.checkCancellation()
+            // Dropped by a reset while it read its label: it never starts going out.
+            guard current(w) else { throw CancellationError() }
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -307,9 +333,10 @@ actor PrintQueue<A: Sendable> {
             deps.log("couldn't send the label to \(printer.host)", error)
             return fail(w, error is LabelSendTimeout ? PRINTER_TIMEOUT_TEXT : printerUnreachableText(printer.host))
         }
-        // A scan records once, on its first label that goes out; a Reprint never does.
+        // A scan records once, on its first label that goes out; a Reprint never does. A label
+        // that went out after a reset records nothing: the scan belongs to the session before.
         var warning: String?
-        if !w.entry.reprint && !w.recordTried {
+        if !w.entry.reprint && !w.recordTried && current(w) {
             w.recordTried = true
             do {
                 try await deps.record(asset, w.entry.scannedValue)

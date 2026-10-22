@@ -367,6 +367,65 @@ struct PrintQueueTests {
         #expect(fake.sent.map(\.1) == ["[4,-2,true]^XA^FDa1^FS^XZ", "[4,-2,true]^XA^FDa2^FS^XZ"])
     }
 
+    /// A sign-out or another move: the waiting job never sends, the label going out finishes on
+    /// the printer but records nothing and leaves no entry, and nothing old can be retried.
+    @Test func aResetDropsWaitingJobsAndTheListAndTheSendingJobNeverRecords() async throws {
+        let gate = Gate()
+        let atSend = Gate()
+        let fake = Fake()
+        fake.onSend = {
+            await atSend.open()
+            await gate.wait()
+        }
+        let q = queue(fake)
+        let first = Task { try await q.scan(Asset("a1"), scannedValue: "A-1") }
+        await atSend.wait()
+        let second = Task { try await q.scan(Asset("a2"), scannedValue: "A-2") }
+        while await q.entries.count < 2 { await Task.yield() }
+        let oldIds = await q.entries.map(\.id)
+
+        await q.reset()
+        #expect(await q.entries.isEmpty)
+        await gate.open()
+        _ = try await first.value
+        await #expect(throws: CancellationError.self) { try await second.value }
+        #expect(fake.sent.map(\.1) == ["[4,-2,true]^XA^FDa1^FS^XZ"])
+        #expect(fake.recorded.isEmpty)
+        #expect(fake.labelCalls == 1)
+        #expect(await q.entries.isEmpty)
+        for id in oldIds {
+            #expect(try await q.retry(id) == nil)
+            #expect(try await q.reprint(id) == nil)
+        }
+
+        // The next session prints and records as usual, with ids no old entry had.
+        let next = try await q.scan(Asset("a3"), scannedValue: "A-3")
+        #expect(next.state == .printed)
+        #expect(!oldIds.contains(next.id))
+        #expect(fake.recordedPairs() == [["a3", "A-3"]])
+        #expect(await q.entries.map(\.id) == [next.id])
+    }
+
+    /// A job still reading its label when the reset comes never starts going out.
+    @Test func aResetWhileAJobReadsItsLabelStopsItBeforeTheSend() async throws {
+        let gate = Gate()
+        let atLabel = Gate()
+        let fake = Fake()
+        fake.onLabel = {
+            await atLabel.open()
+            await gate.wait()
+        }
+        let q = queue(fake)
+        let job = Task { try await q.scan(Asset("a1"), scannedValue: "A-1") }
+        await atLabel.wait()
+        await q.reset()
+        await gate.open()
+        await #expect(throws: CancellationError.self) { try await job.value }
+        #expect(fake.sent.isEmpty)
+        #expect(fake.recorded.isEmpty)
+        #expect(await q.entries.isEmpty)
+    }
+
     @Test func aSendThatTimesOutSaysTheLabelMayHavePrinted() async throws {
         let fake = Fake()
         fake.failSends = 1

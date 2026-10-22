@@ -154,7 +154,7 @@ struct PrintLabelsViewModelTests {
         #expect(flash.state?.color == Color(hsl: prefs.appearance.goodScan))
 
         // Reprint: one more label, no more scans.
-        await vm.reprint(vm.entries[0].id).value
+        await vm.reprint(vm.entries[0].id)?.value
         #expect(device.sent.count == 2)
         #expect(rows.count == 1)
         #expect(await waitUntil { vm.entries.count == 2 && vm.entries[0].reprint && vm.entries[0].state == .printed })
@@ -187,7 +187,7 @@ struct PrintLabelsViewModelTests {
         let failed = vm.entries[0]
         #expect(failed.message == "Can't reach the printer at 10.0.0.5.")
         #expect(rows.isEmpty)
-        await vm.retry(failed.id).value
+        await vm.retry(failed.id)?.value
         #expect(await waitUntil { vm.entries[0].state == .printed })
         #expect(rows.count == 1)
         #expect(engine.calls.count == 2) // the retry resent the same bytes
@@ -328,11 +328,91 @@ struct PrintLabelsViewModelTests {
         await again.loadRoster()
         let failed = try #require(again.entries.first)
         #expect(failed.scannedValue == "A-1")
-        await again.retry(failed.id).value
+        await again.retry(failed.id)?.value
         #expect(await waitUntil { again.entries.first?.state == .printed })
         #expect(device.sent.count == 1)
         #expect(rows.count == 1)
         #expect(rows[0].scanStatus == "labeled")
+    }
+
+    /// The plain case: the view model is released while its label is going out; the send
+    /// succeeds and records its Labeled scan.
+    @Test func aLabelSentAfterItsViewModelIsGoneStillRecords() async throws {
+        var vm: PrintLabelsViewModel? = try await harness()
+        device.hold = true
+        vm?.onScan("A-1")
+        #expect(await waitUntil { device.atHold })
+        weak var gone = vm
+        vm = nil
+        #expect(gone == nil)
+        device.hold = false
+        #expect(await waitUntil { device.sent.count == 1 && rows.count == 1 })
+        #expect(device.sent.count == 1)
+        #expect(rows.count == 1)
+        #expect(rows[0].scanStatus == "labeled")
+        #expect(await waitUntil { jobs.entries.first?.state == .printed })
+    }
+
+    /// A sign-out (the jobs' reset): the waiting jobs never send, the list empties, the label
+    /// already going out finishes on the printer but records nothing. The next session prints and
+    /// records as usual.
+    @Test func aSignOutDropsWaitingJobsAndTheSendingOneRecordsNothing() async throws {
+        let vm = try await harness()
+        device.hold = true
+        vm.onScan("A-1")
+        vm.onScan("A-3")
+        vm.onScan("SN1")
+        #expect(await waitUntil { device.atHold && vm.entries.count == 3 })
+        let old = vm.entries.map(\.id)
+
+        await jobs.reset()
+        #expect(vm.entries.isEmpty)
+        device.hold = false
+        #expect(await waitUntil { device.sent.count == 1 })
+        // Room for a dropped job to wrongly send or list itself.
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(device.started == ["LT-2LS4|^XA^FDA-1^FS^XZ|MMP"])
+        #expect(rows.isEmpty)
+        #expect(vm.entries.isEmpty)
+        for id in old {
+            await vm.retry(id)?.value
+            await vm.reprint(id)?.value
+        }
+        #expect(device.started.count == 1)
+
+        // Signed in again: a scan prints and records normally.
+        await scan(vm, "A-1")
+        #expect(vm.entries.map(\.state) == [.printed])
+        #expect(device.sent.count == 2)
+        #expect(rows.count == 1)
+        #expect(rows[0].scanStatus == "labeled")
+    }
+
+    /// Belt and braces beside the reset: an entry scanned for another move is never printed
+    /// again from here.
+    @Test func retryAndReprintOfAnotherMovesEntryAreRefused() async throws {
+        let vm = try await harness()
+        await scan(vm, "A-1")
+        let printed = try #require(vm.entries.first)
+        device.failures = 1
+        await scan(vm, "A-3")
+        let failed = try #require(vm.entries.first)
+        #expect(failed.state == .failed)
+
+        prefs.setupSelection = KioskSetupSelection(initiativeId: "i2", initiativeName: "Other", siteId: "s2", siteName: "Elsewhere",
+                                                   siteRole: "destination", scanStatus: "received", scanLabel: "Received")
+        #expect(vm.retry(failed.id) == nil)
+        #expect(vm.error == "This label is from another move.")
+        #expect(vm.reprint(printed.id) == nil)
+        #expect(vm.error == "This label is from another move.")
+        #expect(device.started.count == 2)
+        #expect(flash.state?.color == Color(hsl: prefs.appearance.notFoundScan))
+
+        // Back on the entry's move, Retry works again and the message goes.
+        prefs.setupSelection = testSelection(initiativeId: "i1")
+        await vm.retry(failed.id)?.value
+        #expect(vm.error == nil)
+        #expect(await waitUntil { vm.entries.first?.state == .printed })
     }
 
     /// Two screens, one queue: a screen closed with jobs still waiting and a new one opened
@@ -351,7 +431,8 @@ struct PrintLabelsViewModelTests {
         // Room for a wrongly parallel queue to start E's send while A is held.
         try await Task.sleep(for: .milliseconds(100))
         device.hold = false
-        #expect(await waitUntil { device.sent.count == 3 })
+        // A job records after its send: wait for the third Labeled row, not just the third send.
+        #expect(await waitUntil { device.sent.count == 3 && rows.count == 3 })
         #expect(device.started == ["LT-2LS4|^XA^FDA-1^FS^XZ|MMP", "LT-2LS4|^XA^FDA-3^FS^XZ|MMP", "LT-2LS4|^XA^FDA-1^FS^XZ|MMP"])
         #expect(rows.count == 3)
     }
