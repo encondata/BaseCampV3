@@ -844,6 +844,10 @@ async def kiosk_setup(
         device.rfid_paired_at = None
         # a Label or Time Clock Station keeps its station key unless the
         # type or move changed (revoked above)
+    elif device.station_type == station_keys.TIMECLOCK:
+        # set up again as a regular kiosk: no longer a Time Clock Station
+        # (its key was revoked above as a type change)
+        _stamp("station_type", None)
 
     device.current_initiative_id = new_initiative_id
     device.site_id = site.id if site is not None else None
