@@ -14,7 +14,6 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.access.resolver import can_touch_rank
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank, rows_from_request
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
@@ -31,14 +30,13 @@ from serversherpa.api.schemas import (
     WorkerLevelUpdateIn,
     WorkerProfileIn,
 )
+from serversherpa.api.worker_edits import apply_person_update, apply_profile_update
 from serversherpa.db.models import (
-    AuthSession,
     Initiative,
     InitiativePerson,
     Partner,
     Person,
     PersonRole,
-    Role,
     Site,
     StatusValue,
     UserAccount,
@@ -355,77 +353,16 @@ async def update_worker_person(
     `PATCH /users/{person_id}/profile` (users.py::admin_update_profile),
     this does NOT require the target to hold a UserAccount and does NOT
     forbid self-targeting — both of which make that endpoint unusable for
-    imported, account-less workers and confusing for self-edits."""
+    imported, account-less workers and confusing for self-edits. The checks
+    and the audit live in worker_edits.apply_person_update."""
     person = await _require_worker(db, person_id)
     await _check_worker_scope(db, actor, person_id)
-
-    # rank guard only applies to targets who can actually log in and hold
-    # elevated roles; account-less workers and self-edits skip it entirely
-    # (mirrors upsert_profile's blacklist rank check, minus the self-target
-    # exclusion — self-edits are allowed here).
-    account = await db.get(UserAccount, person_id)
-    if account is not None and person_id != actor.person.id:
-        target_rank = (await db.scalar(
-            select(func.max(Role.rank))
-            .join(PersonRole, PersonRole.role == Role.name)
-            .where(PersonRole.person_id == person_id,
-                   PersonRole.revoked_at.is_(None)))) or 0
-        if not can_touch_rank(actor.access.max_rank, target_rank):
-            raise _err(403, "rank_too_low")
-
-    data = body.model_dump(exclude_unset=True)
-    for required in ("first_name", "last_name", "country"):
-        if required in data and data[required] is None:
-            raise _err(422, f"{required}_required")
-    fields = list(data.keys())
-    before = snapshot(person, fields)
-    for field, value in data.items():
-        setattr(person, field, value)
-    person.updated_at = datetime.now(UTC)
-    changes = diff(before, snapshot(person, fields))
-    if changes:
-        audit(db, actor_id=actor.person.id, entity_type="person",
-              entity_id=str(person_id), action="update",
-              changes=changes)
+    await apply_person_update(db, actor, person, body.model_dump(exclude_unset=True))
     try:
         await db.commit()
     except IntegrityError:
         await db.rollback()
         raise _err(409, "email_in_use") from None
-
-
-# worker_profiles.status is Mapped[str] (NOT NULL, server_default 'active').
-# trade/level/partner_id/status_note are all genuinely nullable — clearing
-# them is a real edit, so they must NOT be listed here.
-NON_NULLABLE_PROFILE_FIELDS = ("status",)
-
-
-async def _get_or_create_profile(
-    db: DbSession, person_id: uuid.UUID, actor_id: uuid.UUID,
-) -> WorkerProfile:
-    """Get the existing profile, or create one and flush it immediately
-    inside a savepoint. worker_profiles' PK is person_id — under
-    concurrent PUTs for the same worker, both requests can miss the
-    initial get() and both insert. Flushing inside the guard (rather than
-    letting the insert ride along to the final commit) catches the
-    conflict here, before the mutate/audit/session-revocation flow below
-    ever runs against what would otherwise be a doomed pending row. On
-    IntegrityError the pending row is expunged automatically, so
-    re-select the concurrent winner and return that instead."""
-    profile = await db.get(WorkerProfile, person_id)
-    if profile is not None:
-        return profile
-    try:
-        async with db.begin_nested():
-            profile = WorkerProfile(person_id=person_id, created_by=actor_id)
-            db.add(profile)
-            await db.flush()
-        return profile
-    except IntegrityError:
-        profile = await db.get(WorkerProfile, person_id)
-        if profile is None:       # violation wasn't ours — re-raise
-            raise
-        return profile
 
 
 @router.put("/{person_id}/profile", status_code=204)
@@ -437,95 +374,7 @@ async def upsert_profile(
 ) -> None:
     await _require_worker(db, person_id)
     await _check_worker_scope(db, actor, person_id)
-    data = body.model_dump(exclude_unset=True)
-    # status is the only NOT NULL column among the mutable fields
-    # (db/models.py:251), but the schema types it `str | None` and
-    # exclude_unset INCLUDES an explicitly sent null — so `{"status": null}`
-    # would setattr None and surface as an unhandled IntegrityError. Mirrors
-    # sites' NON_NULLABLE_SITE_FIELDS, which likewise includes "status".
-    # `is None`, not falsy: the empty string is a distinct (if unknown) key
-    # and belongs to the unknown_status check below, not here.
-    for field in NON_NULLABLE_PROFILE_FIELDS:
-        if field in data and data[field] is None:
-            raise _err(422, f"{field}_required")
-
-    profile = await _get_or_create_profile(db, person_id, actor.person.id)
-
-    fields = ["partner_id", "trade", "level", "status", "status_note"]
-    before = snapshot(profile, fields)
-
-    old_status = profile.status or "active"
-    new_status = data.get("status", old_status)
-
-    if new_status != old_status:
-        # entering OR leaving blacklist toggles login access, so both
-        # directions need the same rank/self guard — a worker who also
-        # holds an elevated role must not be un-blacklisted (silently
-        # re-enabling that account) by someone who couldn't have
-        # blacklisted them in the first place.
-        target_rank = (await db.scalar(
-            select(func.max(Role.rank))
-            .join(PersonRole, PersonRole.role == Role.name)
-            .where(PersonRole.person_id == person_id,
-                   PersonRole.revoked_at.is_(None)))) or 0
-        if not can_touch_rank(actor.access.max_rank, target_rank):
-            raise _err(403, "rank_too_low")
-        if person_id == actor.person.id:
-            raise _err(403, "cannot_target_self")
-
-    if new_status == "blacklist":
-        note = data.get("status_note", profile.status_note)
-        if not note:
-            raise _err(422, "blacklist_requires_note")
-
-    if "level" in data and data["level"] is not None:
-        if await db.get(WorkerLevel, data["level"]) is None:
-            raise _err(422, "unknown_level")
-    if "partner_id" in data and data["partner_id"] is not None:
-        if await db.get(Partner, data["partner_id"]) is None:
-            raise _err(422, "partner_not_found")
-    if "status" in data and data["status"] is not None:
-        # status is vocabulary, not free text — validate against status_values
-        # the same way sites' _check_lookups does. No is_active filter: the
-        # portal rebuilds the whole profile payload (including status) on
-        # every edit, so filtering out retired statuses here would make any
-        # record on a retired status uneditable. Sites don't filter it either.
-        if await db.scalar(
-            select(StatusValue).where(
-                StatusValue.record_type == "worker", StatusValue.key == data["status"])
-        ) is None:
-            raise _err(422, "unknown_status")
-
-    for field, value in data.items():
-        setattr(profile, field, value)
-    if profile.status != "blacklist":
-        profile.status_note = data.get("status_note", profile.status_note)
-    now = datetime.now(UTC)
-    profile.updated_at = now
-
-    # blacklist ⇄ login access coupling
-    account = await db.get(UserAccount, person_id)
-    if account is not None:
-        if new_status == "blacklist" and old_status != "blacklist":
-            account.disabled_at = now
-            account.updated_at = now
-            await db.execute(
-                update(AuthSession)
-                .where(AuthSession.person_id == person_id,
-                       AuthSession.revoked_at.is_(None))
-                .values(revoked_at=now, revoke_reason="account_disabled")
-            )
-        elif old_status == "blacklist" and new_status != "blacklist":
-            account.disabled_at = None
-            account.failed_login_count = 0
-            account.locked_until = None
-            account.updated_at = now
-
-    changes = diff(before, snapshot(profile, fields))
-    if changes:
-        audit(db, actor_id=actor.person.id, entity_type="worker",
-              entity_id=str(person_id), action="profile.update",
-              changes=changes)
+    await apply_profile_update(db, actor, person_id, body.model_dump(exclude_unset=True))
     await db.commit()
 
 

@@ -1068,7 +1068,7 @@ class WorkerProfileIn(BaseModel):
     partner_id: uuid.UUID | None = None
     # Not a Literal: statuses are vocabulary rows in status_values
     # (record_type='worker'), created via /status-values by a developer.
-    # Runtime-validated in routes/workers.py's upsert_profile against
+    # Runtime-validated in api/worker_edits.py's apply_profile_update against
     # StatusValue, mirroring how sites validate `status` in _check_lookups.
     status: str | None = None
     status_note: str | None = None
