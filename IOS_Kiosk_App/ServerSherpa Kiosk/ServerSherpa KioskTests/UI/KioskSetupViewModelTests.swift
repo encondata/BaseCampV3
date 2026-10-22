@@ -30,7 +30,7 @@ struct KioskSetupViewModelTests {
     private func makeVM() -> KioskSetupViewModel {
         KioskSetupViewModel(api: api, identity: identity, prefs: prefs, sync: sync, auth: auth,
                             heartbeat: Heartbeat(api: api, identity: identity, version: "1", rawInfo: { [:] }),
-                            station: TimeclockStation(keys: StationKeyStore(secrets: MemorySecretStore()), serial: { "SER" }))
+                            station: TimeclockStation(keys: StationKeyStore(secrets: MemorySecretStore()), serial: { "SER" }, apiUrl: { TEST_API_URL }))
     }
 
     private func saved(_ state: SetupState = .complete) {

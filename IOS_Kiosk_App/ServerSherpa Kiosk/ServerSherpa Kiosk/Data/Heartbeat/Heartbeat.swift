@@ -58,14 +58,15 @@ final class Heartbeat {
 
     /// A sign-in beat right now: the portal records this person as signed in here again (Kiosk
     /// Setup's station key needs that, 403 `not_signed_in_here` otherwise). Resolves after the attempt.
+    /// A failed attempt leaves nothing pending, so a later beat never records a second sign-in.
     func signInNow(_ method: LoginMethod) async {
-        pendingSignIn = method
-        await beat()
+        await beat(signIn: method)
     }
 
-    private func beat() async {
+    /// `signIn`: a one-off sign-in beat (`signInNow`); otherwise any pending sign-in rides along.
+    private func beat(signIn: LoginMethod? = nil) async {
         let me = identity.current
-        let asSignIn = pendingSignIn
+        let asSignIn = signIn ?? pendingSignIn
         let body = HeartbeatIn(serial: me.serial, name: me.name, mode: "ios", version: version, rawInfo: rawInfo(), signIn: asSignIn != nil, loginMethod: asSignIn?.rawValue)
         do {
             let result = try await api.heartbeat(body)

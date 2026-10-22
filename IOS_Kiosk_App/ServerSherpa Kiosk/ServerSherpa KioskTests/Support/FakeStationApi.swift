@@ -49,8 +49,22 @@ final class FakeStationApi: StationApi, @unchecked Sendable {
     }
 }
 
+/// The API URL test stations are bound to.
+let TEST_API_URL = "https://api.test"
+
 /// A Time Clock station selection with no move and no site.
 func timeclockSelection(initiativeId: String? = nil, siteId: String? = nil) -> KioskSetupSelection {
     .timeclock(initiativeId: initiativeId, initiativeName: initiativeId == nil ? nil : "Move A",
                siteId: siteId, siteName: siteId == nil ? nil : "Dock 4", siteRole: initiativeId == nil ? nil : "source")
+}
+
+/// A value a test changes while code under test reads it.
+final class MutableBox<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: T
+    init(_ value: T) { _value = value }
+    var value: T {
+        get { lock.withLock { _value } }
+        set { lock.withLock { _value = newValue } }
+    }
 }

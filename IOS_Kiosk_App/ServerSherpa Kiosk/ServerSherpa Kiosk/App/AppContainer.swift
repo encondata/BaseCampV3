@@ -62,7 +62,9 @@ final class AppContainer {
         let sessionStore = SessionStore(apiUrl: apiUrl, cookies: cookies, session: session)
         let api = URLSessionKioskApi(apiUrl: apiUrl, session: session, sessionStore: sessionStore, cookies: cookies)
         let stationApi = URLSessionStationApi(apiUrl: apiUrl, session: session)
-        let auth = KioskAuth(api: api, refresher: sessionStore, identity: identity, prefs: prefs)
+        let stationKeys = StationKeyStore(secrets: secrets)
+        let station = TimeclockStation(keys: stationKeys, serial: { identity.current.serial }, apiUrl: { config.apiUrl })
+        let auth = KioskAuth(api: api, refresher: sessionStore, identity: identity, prefs: prefs, station: station)
         let heartbeat = Heartbeat(api: api, identity: identity, version: config.kioskVersion)
         let store = KioskStore(modelContainer: modelContainer)
 
@@ -73,9 +75,8 @@ final class AppContainer {
         self.sessionStore = sessionStore
         self.api = api
         self.stationApi = stationApi
-        let stationKeys = StationKeyStore(secrets: secrets)
         self.stationKeys = stationKeys
-        self.station = TimeclockStation(keys: stationKeys, serial: { identity.current.serial })
+        self.station = station
         self.auth = auth
         self.heartbeat = heartbeat
         self.coordinator = SessionCoordinator(refresher: sessionStore, auth: auth, heartbeat: heartbeat)

@@ -41,6 +41,23 @@ struct StationKeyStoreTests {
         #expect(StationKeyStore(secrets: secrets).get() == nil)
     }
 
+    @Test func theKeysOriginIsStoredBesideItAndClearedWithIt() {
+        let secrets = MemorySecretStore()
+        let keys = StationKeyStore(secrets: secrets)
+        keys.put("k3y", origin: "https://api.test:443")
+        #expect(keys.origin() == "https://api.test:443")
+        keys.clear()
+        #expect(keys.origin() == nil)
+        #expect(secrets.get("station_key_origin") == nil)
+    }
+
+    @Test func apiOriginsSpellOutTheDefaultPort() {
+        #expect(apiOrigin("https://API.example.com/") == "https://api.example.com:443")
+        #expect(apiOrigin("http://localhost:8000") == "http://localhost:8000")
+        #expect(apiOrigin("http://x.example") == "http://x.example:80")
+        #expect(apiOrigin("ftp://x") == nil)
+    }
+
     @MainActor @Test func theAppContainerKeepsTheKeyInItsSecretStore() throws {
         let secrets = MemorySecretStore()
         let container = AppContainer(defaults: freshDefaults(), secrets: secrets, modelContainer: try KioskSchema.inMemoryContainer(),

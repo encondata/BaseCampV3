@@ -24,8 +24,12 @@ enum SettingsModel {
     /// A new API origin while a session exists signs the kiosk out first: the
     /// session is cleared (the live token never goes to the new host) and auth
     /// returns to the login screen. The old host's refresh cookie stays keyed to it.
-    @MainActor static func saveUrls(api: String, portal: String, config: KioskConfig, session: SessionRefresher, auth: KioskAuth) async -> String? {
+    /// A new API origin also drops a Time Clock station's key, signed in or not (the key is
+    /// never sent to another host).
+    @MainActor static func saveUrls(api: String, portal: String, config: KioskConfig, session: SessionRefresher, auth: KioskAuth,
+                                    station: TimeclockStation) async -> String? {
         guard let newApi = KioskConfig.normalizeUrl(api), KioskConfig.normalizeUrl(portal) != nil else { return urlError }
+        station.apiUrlChanging(to: newApi)
         if auth.state != .anon, !RedirectGuard.sameOrigin(URL(string: config.apiUrl), URL(string: newApi)) {
             await session.clear()
             auth.endSession()

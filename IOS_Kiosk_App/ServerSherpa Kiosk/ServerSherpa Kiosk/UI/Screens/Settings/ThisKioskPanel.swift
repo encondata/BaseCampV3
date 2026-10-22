@@ -71,7 +71,8 @@ struct ThisKioskPanel: View {
                 SecondaryButton("Save URLs") {
                     Task {
                         if let error = await SettingsModel.saveUrls(api: api, portal: portal, config: config,
-                                                                    session: container.sessionStore, auth: auth) {
+                                                                    session: container.sessionStore, auth: auth,
+                                                                    station: container.station) {
                             urlError = error
                         } else {
                             urlError = nil

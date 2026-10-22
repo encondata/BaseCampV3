@@ -11,6 +11,8 @@ struct StationModeTests {
     private let api = FakeStationApi()
     private let sleeper = ManualSleeper()
     private let flash = FlashController(sleep: { _ in try? await Task.sleep(for: .seconds(600)) })
+    /// The kiosk's API URL as the station sees it (Settings › This Kiosk can change it).
+    private let apiUrl = MutableBox(TEST_API_URL)
 
     init() {
         api.peopleResult = { [TC_JIMMY, TC_TINA] }
@@ -18,7 +20,9 @@ struct StationModeTests {
 
     private func makeStation() -> TimeclockStation {
         let sleeper = self.sleeper
-        return TimeclockStation(keys: StationKeyStore(secrets: secrets), serial: { "SER-1" }, sleep: { try await sleeper.sleep($0) })
+        let apiUrl = self.apiUrl
+        return TimeclockStation(keys: StationKeyStore(secrets: secrets), serial: { "SER-1" }, apiUrl: { apiUrl.value },
+                                sleep: { try await sleeper.sleep($0) })
     }
 
     private func makeStore() throws -> KioskStore { KioskStore(modelContainer: try KioskSchema.inMemoryContainer()) }
@@ -150,6 +154,28 @@ struct StationModeTests {
         #expect(sleeper.pending(TimeclockStation.loginReturn) == 0)
     }
 
+    /// Login's gear opens Settings › This Kiosk signed out. On a Time Clock station that sheet
+    /// can't strand it: activity there restarts the same quiet minute, and when the minute runs
+    /// out the request ends, the sheet closes and the guard is back on Welcome.
+    @Test func settingsFromLoginReturnsToWelcomeAfterAQuietMinute() async throws {
+        let station = makeStation()
+        let sel = timeclockSelection()
+        station.requestLogin()
+        #expect(loginSettingsSheetShown(true, selection: sel, loginRequested: station.loginRequested))
+        await waitUntil { sleeper.pending(TimeclockStation.loginReturn) == 1 }
+        station.noteLoginActivity()                           // a touch in Settings
+        await waitUntil { sleeper.started(TimeclockStation.loginReturn) == 2 && sleeper.pending(TimeclockStation.loginReturn) == 1 }
+        #expect(station.loginRequested)
+        sleeper.fire(TimeclockStation.loginReturn)            // then a quiet minute
+        await waitUntil { !station.loginRequested }
+        #expect(!loginSettingsSheetShown(true, selection: sel, loginRequested: station.loginRequested))
+        #expect(guardScreen(for: .anon, stationResting: stationRests(selection: sel, loginRequested: station.loginRequested)) == .stationResting)
+        // a regular kiosk's sheet is unaffected
+        #expect(loginSettingsSheetShown(true, selection: testSelection(initiativeId: "i1"), loginRequested: false))
+        #expect(loginSettingsSheetShown(true, selection: nil, loginRequested: false))
+        #expect(!loginSettingsSheetShown(false, selection: nil, loginRequested: false))
+    }
+
     @Test func signingInThroughTheContainerClearsTheGearRequest() async throws {
         let defaults = freshDefaults()
         KioskPrefs(defaults: defaults).apiUrl = "http://127.0.0.1:9"
@@ -244,6 +270,74 @@ struct StationModeTests {
         try await c.resetApp()
         #expect(!c.station.hasKey)
         #expect(c.stationKeys.get() == nil)
+    }
+
+    // MARK: the key is bound to the API origin that issued it
+
+    @Test func aChangedApiUrlSendsNothingAndWaitsForAKey() async throws {
+        let station = makeStation()
+        station.storeKey("k3y")
+        #expect(StationKeyStore(secrets: secrets).origin() == "https://api.test:443")
+        apiUrl.value = "https://evil.example"                 // changed underneath the station
+        let model = await rig(station, store: try makeStore())
+        #expect(api.calls.isEmpty)                            // the key never left
+        #expect(!station.hasKey)
+        #expect(StationKeyStore(secrets: secrets).get() == nil)
+        #expect(model.paused); #expect(model.keyMissing)      // "waiting for its station key"
+        let backend = StationTcBackend(api: api, store: try makeStore(), station: station)
+        await #expect(throws: StationTcBackend.notReady) { try await backend.clockIn(personId: "p1") }
+        #expect(api.calls.isEmpty)
+        model.stop()
+    }
+
+    @Test func aKeyWithNoOriginIsNeverSent() async throws {
+        StationKeyStore(secrets: secrets).put("legacy")
+        let station = makeStation()
+        #expect(!station.hasKey)
+        let backend = StationTcBackend(api: api, store: try makeStore(), station: station)
+        await #expect(throws: StationTcBackend.notReady) { try await backend.status(personId: "p1") }
+        #expect(api.calls.isEmpty)
+    }
+
+    @Test func savingADifferentApiUrlWhileSignedOutClearsTheKey() async throws {
+        let defaults = freshDefaults()
+        let c = try container(defaults)
+        _ = c.config.setApiUrl("https://api.example.com")
+        c.prefs.setupSelection = timeclockSelection()
+        c.station.storeKey("k3y")
+        c.auth.endSession()
+        #expect(await SettingsModel.saveUrls(api: "https://evil.example", portal: c.config.portalUrl, config: c.config,
+                                             session: FakeRefresher(), auth: c.auth, station: c.station) == nil)
+        #expect(!c.station.hasKey)
+        #expect(c.stationKeys.get() == nil)
+        #expect(c.stationKeys.origin() == nil)
+    }
+
+    @Test func savingTheSameApiOriginKeepsTheKey() async throws {
+        let c = try container(freshDefaults())
+        _ = c.config.setApiUrl("https://api.example.com")
+        c.station.storeKey("k3y")
+        c.auth.endSession()
+        #expect(await SettingsModel.saveUrls(api: "https://API.example.com:443/", portal: "https://portal.example.com", config: c.config,
+                                             session: FakeRefresher(), auth: c.auth, station: c.station) == nil)
+        #expect(c.station.hasKey)
+        #expect(c.station.credentials()?.key == "k3y")
+    }
+
+    @Test func aMoveSessionThatDropsTheStationsSetupDropsItsKey() async throws {
+        let prefs = KioskPrefs(defaults: freshDefaults())
+        let kioskApi = FakeKioskApi()
+        kioskApi.moveLoginResult = { _ in fakeSession(kioskMove: KioskMove(initiativeId: "i9", name: "Other move")) }
+        let station = makeStation()
+        let auth = KioskAuth(api: kioskApi, refresher: FakeRefresher(), identity: Identity(prefs: prefs, secrets: MemorySecretStore()),
+                             prefs: prefs, station: station)
+        prefs.setupSelection = timeclockSelection()
+        prefs.setupState = .complete
+        station.storeKey("k3y")
+        try await auth.moveLogin(password: "pw")
+        #expect(prefs.setupSelection == nil)
+        #expect(!station.hasKey)
+        #expect(StationKeyStore(secrets: secrets).get() == nil)
     }
 
     @Test func theFooterLeavesOutAnEmptyScanType() {

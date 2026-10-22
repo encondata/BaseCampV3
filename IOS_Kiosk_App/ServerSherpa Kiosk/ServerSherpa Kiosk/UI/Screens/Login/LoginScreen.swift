@@ -80,7 +80,20 @@ private struct LoginScreenBody: View {
             // a Time Clock station's sign-in page goes back to Welcome after a quiet minute
             .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in container.station.noteLoginActivity() })
             .onChange(of: "\(vm.email)\u{0}\(vm.password)") { container.station.noteLoginActivity() }
-            .sheet(isPresented: $kioskSheet) { SettingsScreen(initialTab: .thisKiosk, onDone: { kioskSheet = false }) }
+            .sheet(isPresented: settingsSheet) {
+                SettingsScreen(initialTab: .thisKiosk, onDone: { kioskSheet = false })
+                    // on a Time Clock station, Settings counts as activity on the sign-in page: its
+                    // quiet minute still returns the station to Welcome, closing the sheet
+                    .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in container.station.noteLoginActivity() })
+            }
+            .onChange(of: container.station.loginRequested) { _, requested in if !requested { kioskSheet = false } }
+    }
+
+    /// The Settings sheet, closed on a Time Clock station once its sign-in request ends.
+    private var settingsSheet: Binding<Bool> {
+        Binding(get: { loginSettingsSheetShown(kioskSheet, selection: container.prefs.setupSelection,
+                                               loginRequested: container.station.loginRequested) },
+                set: { kioskSheet = $0 })
     }
 
     private func form(_ metrics: LoginMetrics) -> some View {

@@ -20,6 +20,8 @@ final class KioskAuth {
     @ObservationIgnored private let refresher: SessionRefresher
     @ObservationIgnored private let identity: Identity
     @ObservationIgnored private let prefs: KioskPrefs
+    /// A Time Clock station's key goes with a setup a move session drops.
+    @ObservationIgnored private let station: TimeclockStation?
 
     private(set) var state: AuthState = .loading
 
@@ -37,11 +39,12 @@ final class KioskAuth {
     /// revoked); the container points it at the print jobs' reset.
     @ObservationIgnored var onSessionEnded: (@MainActor () -> Void)?
 
-    init(api: KioskApi, refresher: SessionRefresher, identity: Identity, prefs: KioskPrefs) {
+    init(api: KioskApi, refresher: SessionRefresher, identity: Identity, prefs: KioskPrefs, station: TimeclockStation? = nil) {
         self.api = api
         self.refresher = refresher
         self.identity = identity
         self.prefs = prefs
+        self.station = station
     }
 
     /// Cookie restore on launch.
@@ -106,11 +109,13 @@ final class KioskAuth {
     }
 
     /// Enters `.authed`. A move session for a different initiative than the
-    /// saved setup drops that selection (KioskAuthContext's rule).
+    /// saved setup drops that selection (KioskAuthContext's rule), and a Time Clock station's key
+    /// with it.
     private func apply(_ session: SessionData) {
         if let move = session.kioskMove, let saved = prefs.setupSelection, saved.initiativeId != move.initiativeId {
             prefs.setupSelection = nil
             prefs.setupState = .incomplete
+            station?.clearKey()
         }
         state = .authed(session)
     }

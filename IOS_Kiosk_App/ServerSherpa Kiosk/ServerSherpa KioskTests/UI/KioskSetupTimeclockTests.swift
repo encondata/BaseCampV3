@@ -30,7 +30,7 @@ struct KioskSetupTimeclockTests {
         auth = KioskAuth(api: api, refresher: FakeRefresher(), identity: identity, prefs: prefs)
         heartbeat = Heartbeat(api: api, identity: identity, version: "1", rawInfo: { [:] })
         let identity = self.identity
-        station = TimeclockStation(keys: StationKeyStore(secrets: secrets), serial: { identity.current.serial })
+        station = TimeclockStation(keys: StationKeyStore(secrets: secrets), serial: { identity.current.serial }, apiUrl: { TEST_API_URL })
         let options = Self.options
         api.setupOptionsResult = { options }
         api.loginResult = { fakeSession() }
@@ -204,8 +204,9 @@ struct KioskSetupTimeclockTests {
     }
 
     @Test func aRegularResetupDropsTheKey() async {
-        StationKeyStore(secrets: secrets).put("old")
-        let station = TimeclockStation(keys: StationKeyStore(secrets: secrets), serial: { "SER" })
+        StationKeyStore(secrets: secrets).put("old", origin: apiOrigin(TEST_API_URL))
+        let station = TimeclockStation(keys: StationKeyStore(secrets: secrets), serial: { "SER" }, apiUrl: { TEST_API_URL })
+        #expect(station.hasKey)
         prefs.setupSelection = timeclockSelection()
         prefs.setupState = .complete
         let vm = KioskSetupViewModel(api: api, identity: identity, prefs: prefs, sync: sync, auth: auth, heartbeat: heartbeat, station: station)
