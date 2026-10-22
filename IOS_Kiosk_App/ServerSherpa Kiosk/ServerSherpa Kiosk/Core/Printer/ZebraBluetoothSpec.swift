@@ -72,7 +72,9 @@ struct PrinterNeedsRestart: LocalizedError, Sendable {
 }
 
 /// The printer removed its pairing with this iPad (CBError 14) or the pairing timed out (15).
+/// iOS can't open Settings › Bluetooth from an app, so the steps say where to go and the card
+/// offers Connect only (Ruling 15).
 func pairingLostText(serial: String) -> String {
-    "The printer forgot this iPad. Open Settings › Bluetooth, tap ⓘ next to \(serial), "
+    "The printer forgot this iPad. In the iPad's Settings app, open Bluetooth, tap ⓘ next to \(serial), "
         + "choose Forget This Device, then come back and tap Connect."
 }

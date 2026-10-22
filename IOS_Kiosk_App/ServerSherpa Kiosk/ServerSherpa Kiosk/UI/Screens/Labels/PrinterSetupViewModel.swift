@@ -94,7 +94,8 @@ struct PrinterSetupUi: Equatable {
     /// Bluetooth couldn't be used (off, not allowed, missing), as the last scan, choice or check
     /// found; nil when it could.
     var bluetoothUnavailable: BluetoothAvailability? = nil
-    /// The printer forgot this iPad: the steps to fix it (the screen adds Open Settings and Connect).
+    /// The printer forgot this iPad: the steps to fix it (the screen adds Connect; no Open
+    /// Settings, which can't reach Settings › Bluetooth: Ruling 15).
     var pairingLost: String? = nil
     var checks: [CheckRow] = []
     var checking = false
@@ -120,10 +121,9 @@ struct PrinterSetupUi: Equatable {
     var testing = false
     var testMessage: String? = nil
     var testError = false
-    /// The test label's message is Bluetooth not allowed, or a printer that forgot this iPad: the
-    /// sheet offers Settings.
+    /// The test label's message is Bluetooth not allowed: the sheet offers Settings.
     var testBluetoothSettings = false
-    /// The test label's message is a printer that forgot this iPad: the sheet offers Connect too.
+    /// The test label's message is a printer that forgot this iPad: the sheet offers Connect.
     var testPairingLost = false
 
     /// Peel-off can be chosen unless the printer said it has no peeler.
@@ -151,10 +151,10 @@ struct PrinterSetupUi: Equatable {
     var bluetoothOthers: [FoundBluetoothPrinter] { (bluetoothFound ?? []).filter { !$0.isZebra } }
     /// The Bluetooth message reads as an error (red).
     var bluetoothError: Bool { bluetoothMessage != nil && bluetoothMessage != NO_BLUETOOTH_PRINTERS_TEXT }
-    /// Bluetooth isn't allowed for the kiosk (the scan, choosing a printer, its Answers check), or a
-    /// printer forgot this iPad: the main screen offers Settings.
+    /// Bluetooth isn't allowed for the kiosk (the scan, choosing a printer, its Answers check): the
+    /// main screen offers Settings. (A printer that forgot this iPad gets Connect instead.)
     var offersBluetoothSettings: Bool {
-        bluetoothMessage == BLUETOOTH_DENIED_TEXT || checks.contains { $0.detail == BLUETOOTH_DENIED_TEXT } || pairingLost != nil
+        bluetoothMessage == BLUETOOTH_DENIED_TEXT || checks.contains { $0.detail == BLUETOOTH_DENIED_TEXT }
     }
 }
 
@@ -226,8 +226,9 @@ private struct NoBluetoothSerial: Error {}
  Bluetooth (D9–D11): the first Bluetooth scan asks iOS for permission. Picking a printer from the
  list connects to it by the iPad's identifier for it, asks `~HI` for its model and DPI, saves it by
  its serial (Device Information's, else its Bluetooth name) and checks it. Bluetooth off or not
- allowed says so; a printer that forgot this iPad gets the Forget This Device steps, and Connect
- tries again once that's done.
+ allowed says so (Open Settings for not allowed); a printer that forgot this iPad gets the Forget
+ This Device steps, and Connect tries again once that's done (no Open Settings: iOS opens only this
+ app's page, not Settings › Bluetooth, Ruling 15).
 
  The checks inform and never block, and run only when the operator saves a printer or taps
  Check printer / Check again: nothing is checked on appear, polled, or checked on the print path.
@@ -663,7 +664,8 @@ final class PrinterSetupViewModel {
         ui.damagedFonts = []
         ui.fontMessage = nil
         ui.peeler = nil
-        ui.testMessage = nil
+        // The test label sheet's message goes with what it offered (Settings, Connect).
+        clearTestMessage()
         ui.bluetoothMessage = nil
         ui.bluetoothUnavailable = nil
         clearPairingLost()
@@ -1150,7 +1152,7 @@ final class PrinterSetupViewModel {
             // main screen keeps the forgotten printer's steps, with Connect, once the sheet closes).
             let refusal = bluetoothRefusal(error)
             (message, isError) = (noteBluetoothRefusal(error, retry: .check) ?? printerUnreachableText(printer), true)
-            settingsOffered = refusal is BluetoothPairingLost || (refusal as? BluetoothUnavailable)?.availability == .unauthorized
+            settingsOffered = (refusal as? BluetoothUnavailable)?.availability == .unauthorized
             forgotten = refusal is BluetoothPairingLost
         } catch is PrinterTimeout {
             (message, isError) = (Self.TEST_TIMEOUT_TEXT, true)

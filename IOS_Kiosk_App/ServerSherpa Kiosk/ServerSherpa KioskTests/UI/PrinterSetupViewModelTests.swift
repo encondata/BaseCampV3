@@ -1620,9 +1620,9 @@ final class PrinterSetupViewModelTests {
         #expect(check.ui.bluetoothUnavailable == nil)
     }
 
-    /// D10: a printer that forgot this iPad shows the steps, with Open Settings and Connect. Connect,
-    /// once it is forgotten in Settings, tries the same printer again; for the saved printer's
-    /// check, it checks again.
+    /// D10: a printer that forgot this iPad shows the steps, with Connect (no Open Settings: iOS
+    /// can't open Settings › Bluetooth from an app, Ruling 15). Connect, once it is forgotten in
+    /// Settings, tries the same printer again; for the saved printer's check, it checks again.
     @Test func pairingLostShowsRecovery() async throws {
         try await start()
         let id = UUID()
@@ -1636,7 +1636,7 @@ final class PrinterSetupViewModelTests {
         vm.chooseBluetooth(found)
         await eventually("refused") { vm.ui.choosing == nil && vm.ui.pairingLost != nil }
         #expect(vm.ui.pairingLost == pairingLostText(serial: "D8J224508535"))
-        #expect(vm.ui.offersBluetoothSettings)
+        #expect(!vm.ui.offersBluetoothSettings)
         #expect(vm.ui.chooseError == nil)
         #expect(current.printer == saved)
 
@@ -1759,7 +1759,7 @@ final class PrinterSetupViewModelTests {
 
     /// Test labels over Bluetooth: an unreachable printer is named by its serial; Bluetooth not
     /// allowed (even when it stops the `~JX` before the label) and a printer that forgot this iPad
-    /// say what to do, and the sheet offers Settings.
+    /// say what to do: the sheet offers Settings for the first, Connect (no Settings) for the second.
     @Test func aBluetoothTestLabelSaysWhyItDidNotGo() async throws {
         try await start()
         await awaitPick203()
@@ -1783,7 +1783,7 @@ final class PrinterSetupViewModelTests {
         z.failure = BluetoothPairingLost(host: ZD421_SERIAL)
         vm.printTest(.alignment)
         await eventually("refused") { !vm.ui.testing && vm.ui.testMessage == pairingLostText(serial: ZD421_SERIAL) }
-        #expect(vm.ui.testBluetoothSettings)
+        #expect(!vm.ui.testBluetoothSettings)
         #expect(vm.ui.testPairingLost)
         #expect(vm.ui.pairingLost == pairingLostText(serial: ZD421_SERIAL))
         // The sheet's Connect while it's still forgotten: the steps stay.
@@ -1803,6 +1803,40 @@ final class PrinterSetupViewModelTests {
         #expect(z.sent == ["~JX", "LT0LS0|ALIGN 812x406 4x2 203|MMT"])
         #expect(!vm.ui.testError)
         #expect(!vm.ui.testBluetoothSettings)
+    }
+
+    /// A new choice clears the test label sheet's last message with everything it offered: a
+    /// pairing-lost label's Connect (whose retry the choice drops) and Settings don't linger under
+    /// no message when that choice fails.
+    @Test func aNewChoiceClearsTheTestSheetsOffers() async throws {
+        try await start()
+        await awaitPick203()
+        settings.setPrinter(bluetoothSaved)
+        let z = zebra(ZD421_SERIAL)
+        z.failure = BluetoothPairingLost(host: ZD421_SERIAL)
+        let vm = vm()
+        vm.printTest(.alignment)
+        await eventually("refused") { !vm.ui.testing && vm.ui.testPairingLost }
+
+        vm.scanBluetooth()
+        let found = zd421Found()
+        bluetooth.hear([found])
+        await eventually("listed") { vm.ui.bluetoothFound == [found] }
+        bluetooth.connectError = PrinterUnreachable(host: ZD421_SERIAL)
+        vm.chooseBluetooth(found)
+        await eventually("not chosen") { vm.ui.choosing == nil && vm.ui.chooseError != nil }
+        #expect(vm.ui.testMessage == nil)
+        #expect(!vm.ui.testPairingLost)
+        #expect(!vm.ui.testBluetoothSettings)
+        #expect(!vm.ui.testError)
+
+        // The same after Bluetooth not allowed on the sheet.
+        z.failure = BluetoothUnavailable(host: ZD421_SERIAL, availability: .unauthorized)
+        vm.printTest(.alignment)
+        await eventually("refused") { !vm.ui.testing && vm.ui.testBluetoothSettings }
+        vm.choose(FoundPrinter(host: "10.0.0.9", model: "ZD421", serial: "S9", dpi: 203))
+        #expect(!vm.ui.testBluetoothSettings)
+        #expect(vm.ui.testMessage == nil)
     }
 
     // MARK: Copy

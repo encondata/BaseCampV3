@@ -51,7 +51,8 @@ struct ZebraBluetoothSpecTests {
         #expect(BLUETOOTH_DENIED_TEXT == "Allow Bluetooth for ServerSherpa Kiosk in Settings to reach the printer.")
         #expect(BLUETOOTH_SCAN_HINT_TEXT == "Don't see the printer? Hold FEED on the printer for 5 seconds (the middle light blinks), then scan again. A Zebra's Bluetooth name is its serial number, like D8J224508535.")
         #expect(FONT_INSTALL_CUT_TEXT == "The font install was cut off. Turn the printer off and on, then tap Check again.")
-        #expect(pairingLostText(serial: "D8J224508535") == "The printer forgot this iPad. Open Settings › Bluetooth, tap ⓘ next to D8J224508535, choose Forget This Device, then come back and tap Connect.")
+        // Ruling 15: iOS can't open Settings › Bluetooth from an app, so the steps say where to go.
+        #expect(pairingLostText(serial: "D8J224508535") == "The printer forgot this iPad. In the iPad's Settings app, open Bluetooth, tap ⓘ next to D8J224508535, choose Forget This Device, then come back and tap Connect.")
     }
 
     @Test func theClearCommandIsCancelPartialFormat() {

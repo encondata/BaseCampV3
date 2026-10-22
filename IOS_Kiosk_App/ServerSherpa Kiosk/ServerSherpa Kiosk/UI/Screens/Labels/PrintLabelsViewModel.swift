@@ -74,12 +74,23 @@ func printEntryLine(_ asset: KioskAssetRow?) -> String {
 func printEntryTitle(_ asset: KioskAssetRow) -> String { nonBlankText(asset.name) ?? asset.assetId }
 
 /// Why the saved Bluetooth printer can't be reached, for a reason the crew fixes on the iPad, and
-/// the buttons that fix it: Open Settings (Bluetooth not allowed, or a printer that forgot this
-/// iPad) and Connect (once it is forgotten in Settings).
+/// the buttons that fix it: Open Settings (Bluetooth not allowed) and Connect (a printer that
+/// forgot this iPad, once it is forgotten in Settings).
 struct PrinterReachProblem: Equatable, Sendable {
     var text: String
     var offersSettings: Bool
     var offersConnect: Bool
+}
+
+/// What to show for a refusal (`bluetoothRefusal`): its words, Open Settings for Bluetooth not
+/// allowed, and Connect for a printer that forgot this iPad. That one gets no Open Settings: iOS
+/// opens only this app's page, not Settings › Bluetooth, so its steps say where to go (Ruling 15).
+/// Nil when the refusal has no words.
+func printerReachProblem(for refusal: PrinterError) -> PrinterReachProblem? {
+    guard let text = refusal.errorDescription else { return nil }
+    let forgotten = refusal is BluetoothPairingLost
+    let denied = (refusal as? BluetoothUnavailable)?.availability == .unauthorized
+    return PrinterReachProblem(text: text, offersSettings: denied, offersConnect: forgotten)
 }
 
 /// Print Labels (the laptop's Printing Station, kiosk/src/pages/PrintingStation.tsx; Android's
@@ -244,7 +255,7 @@ final class PrintLabelsViewModel {
             do {
                 _ = try await bluetooth.connect(peripheralId: peripheralId, serial: serial)
             } catch {
-                problem = bluetoothRefusal(error).flatMap(Self.problem(for:))
+                problem = bluetoothRefusal(error).flatMap(printerReachProblem(for:))
             }
             self?.reachProblem = problem
             self?.connectTask = nil
@@ -257,13 +268,6 @@ final class PrintLabelsViewModel {
     /// again. Nothing else starts here.
     func cameBackToTheApp() {
         if printerProblem != nil { connectPrinter() }
-    }
-
-    private static func problem(for refusal: PrinterError) -> PrinterReachProblem? {
-        guard let text = refusal.errorDescription else { return nil }
-        let forgotten = refusal is BluetoothPairingLost
-        let denied = (refusal as? BluetoothUnavailable)?.availability == .unauthorized
-        return PrinterReachProblem(text: text, offersSettings: forgotten || denied, offersConnect: forgotten)
     }
 
     /// Runs the move's sync again (labels need a sync since the version 2 upgrade).

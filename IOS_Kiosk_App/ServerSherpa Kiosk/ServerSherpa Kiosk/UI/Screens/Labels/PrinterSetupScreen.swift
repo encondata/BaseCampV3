@@ -79,13 +79,11 @@ private struct PrinterSetupBody: View {
                 if ui.findMode == .bluetooth { bluetoothResults(ui, printer) }
                 KioskToast(text: ui.chooseError, error: true)
                 if let steps = ui.pairingLost {
-                    // The printer forgot this iPad: forget it in Settings too, then Connect.
+                    // The printer forgot this iPad: forget it in Settings too, then Connect. No Open
+                    // Settings: it can't reach Settings › Bluetooth (Ruling 15).
                     KioskToast(text: steps, error: true)
-                    HStack(spacing: 8) {
-                        OpenSettingsButton()
-                        SecondaryButton("Connect", enabled: !ui.busy && !ui.checking) { vm.connectAgain() }
-                    }
-                    .padding(.bottom, 8)
+                    SecondaryButton("Connect", enabled: !ui.busy && !ui.checking) { vm.connectAgain() }
+                        .padding(.bottom, 8)
                 } else if (ui.localNetworkDenied && !ui.scanning) || ui.offersBluetoothSettings {
                     // The scan, choosing a printer or its Answers check met iOS's Local Network or
                     // Bluetooth denial (the test label sheet offers its own).
@@ -303,7 +301,8 @@ private struct PrinterSetupBody: View {
     }
 }
 
-/// Opens this app's page in Settings (Local Network access).
+/// Opens this app's page in Settings (its Local Network and Bluetooth switches). iOS has no way
+/// to open Settings › Bluetooth itself, so a printer that forgot this iPad never gets this button.
 struct OpenSettingsButton: View {
     var body: some View {
         SecondaryButton("Open Settings") {

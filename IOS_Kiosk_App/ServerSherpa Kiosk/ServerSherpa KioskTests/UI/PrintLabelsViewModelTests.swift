@@ -280,9 +280,10 @@ struct PrintLabelsViewModelTests {
     }
 
     /// What stops the link and the crew fixes on the iPad shows on the screen: Bluetooth off; not
-    /// allowed (Open Settings); a printer that forgot this iPad (Open Settings and Connect, which
-    /// connects again). Any other failure (the printer off or out of range) says nothing here: a
-    /// label's own message does.
+    /// allowed (Open Settings); a printer that forgot this iPad (the steps and Connect, which
+    /// connects again: no Open Settings, as iOS can't open Settings › Bluetooth from an app,
+    /// Ruling 15). Any other failure (the printer off or out of range) says nothing here: a label's
+    /// own message does.
     @Test func aBluetoothPrinterThatCantBeReachedFromTheIPadSaysWhatToDo() async throws {
         let vm = try await harness()
         settings.setPrinter(zd421)
@@ -293,7 +294,7 @@ struct PrintLabelsViewModelTests {
             (BluetoothUnavailable(host: "D8J224508535", availability: .unauthorized),
              PrinterReachProblem(text: BLUETOOTH_DENIED_TEXT, offersSettings: true, offersConnect: false)),
             (BluetoothPairingLost(host: "D8J224508535"),
-             PrinterReachProblem(text: pairingLostText(serial: "D8J224508535"), offersSettings: true, offersConnect: true)),
+             PrinterReachProblem(text: pairingLostText(serial: "D8J224508535"), offersSettings: false, offersConnect: true)),
         ]
         for (error, problem) in cases {
             bluetooth.connectError = error
