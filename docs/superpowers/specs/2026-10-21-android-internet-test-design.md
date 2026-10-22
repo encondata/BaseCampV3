@@ -71,6 +71,7 @@ Success means a developer can set those conditions in a few taps, watch how sign
   - Custom remembers its last values per dial.
 - Settings persist on the kiosk in DataStore as one JSON value: the switch, then for each dial its preset and its custom values. The switch state survives an app restart while the same person is still signed in.
 - **Conditions apply only while someone is signed in.** The start-up session restore (`KioskAuth.restore()` → `SessionStore.doRefresh()`), sign-in and pairing always take the direct route, like sign-in itself (Jimmy: no need to throttle sign-in). A restart on 100% Loss therefore still restores the session instead of dropping the developer to the sign-in screen. *(My call.)*
+- **The Time Clock station's own calls stay direct too.** `OkHttpStationApi` makes its calls with the station key while nobody is signed in, so under this rule it keeps using `AppContainer.httpClient` as it is and needs no hook. The one routed Time Clock call is the photo download (§4.5), which is conditioned only while the switch is on, so only when someone is signed in. *(My call.)*
 
 ### 4.2 Turning off
 
@@ -120,8 +121,8 @@ Random drops come from a seedable source, so tests are repeatable.
 
 Jimmy: "if the 'Internet Test' toggle is on then we filter through the connection object. if the toggle is off then we bypass and keep the existing routes."
 
-- **Internet, switch off:** the three users of the existing `AppContainer.httpClient` keep using that same object, with no interceptor added: `OkHttpKioskApi`, `SessionStore.doRefresh()`, and the Time Clock avatar download (`TimeclockScreen.kt:136`, a presigned storage URL).
-- **Internet, switch on:** the API calls and the avatar download use a conditioned client (the avatar is internet traffic too, so a poor-internet test shows avatars loading slowly, as crews would see them; *my call*). The restore and refresh call stays direct (§4.1). The conditioned client is derived from the original with `newBuilder()`, with the same cookie jar and timeouts, but its own connection pool, so conditioned connections never mix with normal ones.
+- **Internet, switch off:** the three users of the existing `AppContainer.httpClient` keep using that same object, with no interceptor added: `OkHttpKioskApi`, `SessionStore.doRefresh()`, and the Time Clock photo download (`loadPhoto` in `ConfirmPerson.kt`, a presigned storage URL; it lived in `TimeclockScreen.kt` until the Time Clock station was merged from main).
+- **Internet, switch on:** the API calls and the avatar download use a conditioned client (the photo is internet traffic too, so a poor-internet test shows avatars loading slowly, as crews would see them; *my call*). The restore and refresh call stays direct (§4.1). The conditioned client is derived from the original with `newBuilder()`, with the same cookie jar and timeouts, but its own connection pool, so conditioned connections never mix with normal ones.
   - The conditioning runs inside the network call on the IO thread. That includes pacing the whole response body, which is then handed back already read.
   - Several screens parse response bodies on the caller's (main) thread (`OkHttpKioskApi.kt:83-86`), so the conditioned path must never trickle body bytes on the caller's thread.
 - **Local network, switch off:** printer sessions and scan probes use exactly the socket factories they use today: the Wi-Fi or Ethernet network's `socketFactory`, or the default.
@@ -185,7 +186,7 @@ Jimmy: "once we prove this app out we will remove the testing code and I want to
 - **One package.** Everything lives in one package of its own, `com.serversherpa.kiosk.nettest`. That covers presets, pacing, the interceptor, the socket factory wrapper, settings, the Developer section, and the chip and footer item. Its Android-free math may live in a matching `core/nettest/` subpackage if `CorePurityTest` needs that. *(My call.)*
 - **Few named touch points outside the package.** Each carries the comment marker `// INTERNET-TEST`, so `grep -rn "INTERNET-TEST"` finds them all:
   1. `AppContainer`: build the Internet Test controller and the route provider.
-  2. `OkHttpKioskApi` and `TimeclockScreen` (the avatar download): take their client from the route provider. `SessionStore` stays on the original client and needs no change.
+  2. `OkHttpKioskApi` and `ConfirmPerson` (`loadPhoto`, the avatar download): take their client from the route provider. `SessionStore` stays on the original client and needs no change, and so does `OkHttpStationApi` (§4.1).
   3. `NetworkZebra` / `ZebraScanner` (or where the printer screens build them): take the factory through the controller.
   4. `DeveloperPanel`: one call to the Internet Test section.
   5. `KioskShell`: the chip and the footer item.
@@ -193,6 +194,10 @@ Jimmy: "once we prove this app out we will remove the testing code and I want to
   7. The setup-clear paths: one call where the portal's Clear Setup is applied and one where `MoveSetupGuard` drops the setup.
   8. `KioskPrefs`, if the setting lives there rather than in the package.
 - **Removal steps.** A `REMOVAL.md` inside the package lists them: delete the package, delete the marked lines, run the suite. The guard test in §7 keeps the list of touch points honest while the code lives.
+- **Removal shape (as built).** Each added fragment sits alone on its own marked line, so "delete every marked line" is the whole removal and nothing is restored by hand. That is why `OkHttpKioskApi` and `MoveSetupGuard` take their hooks as constructor parameters with defaults (`route = { it }`, `onDropped = {}`), and why the `.let(...)` steps in `execute()`, `zebraSession()` and `loadPhoto()` each have a line to themselves. A test checks the shape of every marked line, so a line that mixes original code with Internet Test code fails.
+- **Touch points (as built).** Seven files outside the package, 21 marked lines in all: `AppContainer.kt`, `data/api/OkHttpKioskApi.kt`, `data/auth/MoveSetupGuard.kt`, `data/printer/NetworkZebra.kt`, `ui/screens/timeclock/screens/ConfirmPerson.kt`, `ui/screens/settings/DeveloperPanel.kt` and `ui/shell/KioskShell.kt`. Every sign-out already goes through `AppContainer.logout()`, so the sign-out hook is one line. `KioskPrefs` needed no change.
+- **Two kept items.** Two fixes made along the way are not Internet Test and stay after removal, unmarked: the top bar's separator `" · "` in `KioskShell` never wraps (`maxLines = 1, softWrap = false`, with its 320 dp `KioskShellTest`), and the shared test rule `NativeFontsSettled.kt`.
+- **Dry run.** Deleting both packages and every marked line from this branch was tried in a throwaway worktree: the unit tests and `assembleDebug` pass. `REMOVAL.md` records the runs.
 - **Leftover setting.** After removal, the saved DataStore value is simply never read again, which is harmless. *(My call: no migration is needed.)*
 - **What the bypass guarantees.** Because "off" means the original objects, removal can't change how the app behaves for crews.
 
@@ -228,6 +233,8 @@ Jimmy: "once we prove this app out we will remove the testing code and I want to
 | Conditions only while signed in; restore, sign-in and pairing go direct | Claude |
 | Switch turns off at the start of sign-out, before its portal calls | Claude |
 | The Time Clock avatar download is conditioned too | Claude |
+| The Time Clock station's own calls (`OkHttpStationApi`, signed out) stay direct under the signed-in rule | Claude |
+| Removal is "delete every marked line", with each added fragment alone on its marked line and a test on that shape | Claude |
 | Reset app leaves Internet Test alone | Claude |
 | The two-hour clock starts at switch-on, survives restarts, isn't extended by changes, and counts a backward clock as expired | Claude |
 | The section shows the time it will turn off | Claude |
