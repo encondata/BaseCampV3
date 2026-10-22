@@ -18,9 +18,17 @@ import com.serversherpa.kiosk.core.model.KioskTimeclockStatus
 import com.serversherpa.kiosk.core.model.KioskTrucksSync
 import com.serversherpa.kiosk.core.model.PairCreated
 import com.serversherpa.kiosk.core.model.PairPoll
+import com.serversherpa.kiosk.core.model.RolodexCreateIn
+import com.serversherpa.kiosk.core.model.RolodexDetail
+import com.serversherpa.kiosk.core.model.RolodexDuplicatesIn
+import com.serversherpa.kiosk.core.model.RolodexList
+import com.serversherpa.kiosk.core.model.RolodexMatch
+import com.serversherpa.kiosk.core.model.RolodexOptions
+import com.serversherpa.kiosk.core.model.RolodexPhotoOut
 import com.serversherpa.kiosk.core.model.SessionData
 import com.serversherpa.kiosk.core.model.SetupOptions
 import com.serversherpa.kiosk.core.model.SystemStatus
+import kotlinx.serialization.json.JsonObject
 
 /** Every endpoint the kiosk calls — kiosk/src/lib/api.ts, function for function.
  *  Implementations throw ApiError on any non-2xx or transport failure
@@ -76,4 +84,25 @@ interface KioskApi {
      *  [com.serversherpa.kiosk.data.station.StationKeyStore]; never log it. 409 not_rfid_station /
      *  kiosk_not_registered / setup_clear_pending, 403 not_signed_in_here, 404 device_not_found. */
     suspend fun issueStationKey(serial: String): String
+
+    // ── rolodex (admins, rank 60+; errors as {"detail":{"code":…}}) ──
+
+    /** GET /kiosk/rolodex/workers. Rows carry no email or phone. 403 forbidden / move_locked. */
+    suspend fun rolodexWorkers(): RolodexList
+    /** GET /kiosk/rolodex/workers/{person_id}. 404 person_not_found. */
+    suspend fun rolodexWorker(personId: String): RolodexDetail
+    /** GET /kiosk/rolodex/options: levels, statuses and partners for the pickers and filter chips. */
+    suspend fun rolodexOptions(): RolodexOptions
+    /** POST /kiosk/rolodex/duplicates: the people a new worker may duplicate (the `matches` list). */
+    suspend fun rolodexDuplicates(body: RolodexDuplicatesIn): List<RolodexMatch>
+    /** POST /kiosk/rolodex/workers → 201. 409 possible_duplicate (unless allow_duplicate) / email_in_use,
+     *  422 unknown_level / partner_not_found / partner_archived, 423 read_only_mode. */
+    suspend fun rolodexCreate(body: RolodexCreateIn): RolodexDetail
+    /** PATCH /kiosk/rolodex/workers/{person_id} with only the changed fields; an explicit `null` clears one
+     *  (build it with core.people.buildPatch). 403 rank_too_low / cannot_target_self, 409 email_in_use,
+     *  422 blacklist_requires_note / unknown_level / partner_not_found / partner_archived / unknown_status, 423. */
+    suspend fun rolodexUpdate(personId: String, patch: JsonObject): RolodexDetail
+    /** PUT /kiosk/rolodex/workers/{person_id}/photo with the raw JPEG as the body (`Content-Type: image/jpeg`).
+     *  413 file_too_large, 422 empty_file / invalid_file_type / unreadable_image / image_too_large, 403 rank_too_low. */
+    suspend fun rolodexPhoto(personId: String, jpeg: ByteArray): RolodexPhotoOut
 }
