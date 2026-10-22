@@ -10,6 +10,8 @@ import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.serversherpa.kiosk.core.labels.PrinterConnection
+import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.data.api.AndroidSecretStore
 import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.data.api.OkHttpKioskApi
@@ -33,6 +35,15 @@ import com.serversherpa.kiosk.data.labels.LabelSettingsStore
 import com.serversherpa.kiosk.data.outbox.Outbox
 import com.serversherpa.kiosk.data.outbox.RoomOutboxStore
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
+import com.serversherpa.kiosk.data.printer.LabelSender
+import com.serversherpa.kiosk.data.printer.LocalNetworks
+import com.serversherpa.kiosk.data.printer.NetworkZebra
+import com.serversherpa.kiosk.data.printer.PrinterGuard
+import com.serversherpa.kiosk.data.printer.PrinterLock
+import com.serversherpa.kiosk.data.printer.UnreachableZebra
+import com.serversherpa.kiosk.data.printer.ZebraTransport
+import com.serversherpa.kiosk.data.printer.lockedSender
+import com.serversherpa.kiosk.data.printer.send
 import com.serversherpa.kiosk.data.station.StationKeyStore
 import com.serversherpa.kiosk.data.station.StationStatus
 import com.serversherpa.kiosk.data.station.issueAndStore
@@ -102,7 +113,19 @@ class AppContainer(
     val auth = KioskAuth(api, session, identity, scope)
     val sync = Sync(api, db, scope, fontsDir = File(app.filesDir, "label-fonts"))
     val labelEngine: LabelEngine = LabelGenerator(app)
-    val labelSettings = LabelSettingsStore(prefs)
+    /** One connection to the saved printer at a time, app-wide: Print Labels' sends and every
+     *  Printer Setup call (identify, checks, font installs, test labels) go through it. */
+    val printerLock = PrinterLock()
+    /** Each printer's state after a failed send or a cut font install (the `~JX` clear, the stop),
+     *  keyed to its connection and applied under [printerLock] by the same callers. Saving another
+     *  connection (or none) drops every mark, whoever saves it ([labelSettings] is the one writer). */
+    val printerGuard = PrinterGuard()
+    val labelSettings = LabelSettingsStore(prefs, onConnectionChange = { printerGuard.reset() })
+    /** Print Labels' sender: straight to the printer (no status checks before or after), one
+     *  connection at a time with Printer Setup's calls, under the guard's rules. */
+    val labelSender: LabelSender = lockedSender(printerLock, printerGuard) { printer, zpl ->
+        withContext(Dispatchers.IO) { zebraFor(printer).send(zpl) }
+    }
     val labelBuilder = LabelBuilder(db, labelEngine, labelSettings, scope)
     val outbox = Outbox(RoomOutboxStore(db.outbox()), api, identity, scope)
     val hasDataWedge: Boolean = DataWedge.isPresent(app)
@@ -186,6 +209,14 @@ class AppContainer(
         // No build left over. A settings change may still start one, which finds no synced move
         // and ends at once waiting for a sync, as the stop does.
         labelBuilder.stop()
+    }
+
+    /** The saved printer the way its connection reaches it: the network printer at its host, over
+     *  the Wi-Fi or Ethernet network's own sockets. A Bluetooth printer is never reached over TCP:
+     *  until its Bluetooth transport is wired in, every call to it is unreachable. */
+    fun zebraFor(printer: SavedPrinter): ZebraTransport = when (val c = printer.connection) {
+        is PrinterConnection.Network -> NetworkZebra(c.host, socketFactory = LocalNetworks.socketFactoryFor(app, c.host))
+        is PrinterConnection.Bluetooth -> UnreachableZebra(c.serial)
     }
 
     suspend fun logout() {

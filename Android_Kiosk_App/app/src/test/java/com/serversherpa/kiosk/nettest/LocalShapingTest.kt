@@ -8,6 +8,8 @@ import com.serversherpa.kiosk.data.printer.PrinterUnreachable
 import com.serversherpa.kiosk.data.printer.ScanSubnet
 import com.serversherpa.kiosk.data.printer.ZebraScanner
 import com.serversherpa.kiosk.data.printer.ZebraTimeouts
+import com.serversherpa.kiosk.data.printer.identify
+import com.serversherpa.kiosk.data.printer.send
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InterruptedIOException

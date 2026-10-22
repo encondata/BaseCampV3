@@ -9,6 +9,7 @@ import com.serversherpa.kiosk.core.labels.OUTCOME_OK
 import com.serversherpa.kiosk.core.labels.PrintState
 import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.model.KioskAssetRow
+import com.serversherpa.kiosk.core.printer.FONT_INSTALL_CUT_TEXT
 import com.serversherpa.kiosk.data.api.KioskJson
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.data.FakeKioskApi
@@ -22,8 +23,12 @@ import com.serversherpa.kiosk.data.labels.LabelEngineUnsupportedException
 import com.serversherpa.kiosk.data.labels.LabelSettingsSource
 import com.serversherpa.kiosk.data.outbox.MemoryOutboxStore
 import com.serversherpa.kiosk.data.outbox.Outbox
+import com.serversherpa.kiosk.data.printer.LabelSender
+import com.serversherpa.kiosk.data.printer.PrinterGuard
+import com.serversherpa.kiosk.data.printer.PrinterLock
 import com.serversherpa.kiosk.data.printer.PrinterTimeout
 import com.serversherpa.kiosk.data.printer.PrinterUnreachable
+import com.serversherpa.kiosk.data.printer.lockedSender
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.core.model.KioskPeopleSync
@@ -89,12 +94,16 @@ class PrintLabelsViewModelTest {
         val vm: PrintLabelsViewModel, val db: KioskDatabase, val outbox: Outbox, val engine: PrintHelperEngine,
         val sent: MutableList<Pair<String, String>>, val status: MutableStateFlow<LabelBuildStatus>,
         val sendFailures: IntArray, val timeoutSends: BooleanArray, val sync: Sync,
+        /** Every send the printer was asked for, in order, whether or not it went out. */
+        val started: MutableList<String>,
     )
 
-    /** [syncGate]: when set, a sync waits for it (holding the RUNNING phase). */
+    /** [syncGate]: when set, a sync waits for it (holding the RUNNING phase). [guard]: when set, the
+     *  sender is the container's ([lockedSender] under a lock and [guard]) over the fake printer. */
     private suspend fun TestScope.harness(
         name: String, settings: LabelSettings = LabelSettings(printer = printer, offsetX = 4, offsetY = -2, peel = true),
         syncGate: CompletableDeferred<Unit>? = null,
+        guard: PrinterGuard? = null,
     ): Harness {
         val db = KioskDatabase.inMemory(ApplicationProvider.getApplicationContext())
         db.assets().insertAll(listOf(
@@ -111,6 +120,7 @@ class PrintLabelsViewModelTest {
         val outbox = Outbox(MemoryOutboxStore(), api, Identity(prefs), backgroundScope, clock = { testScheduler.currentTime })
         val engine = PrintHelperEngine()
         val sent = ArrayList<Pair<String, String>>()
+        val started = ArrayList<String>()
         val sendFailures = intArrayOf(0)
         val timeoutSends = booleanArrayOf(false)
         val status = MutableStateFlow(LabelBuildStatus(LabelBuildPhase.DONE, ready = 1, problems = mapOf("no_template_at_dpi" to 1), templateId = "t1"))
@@ -119,16 +129,19 @@ class PrintLabelsViewModelTest {
             override suspend fun syncPeople(): KioskPeopleSync { syncGate.await(); return api.syncPeople() }
         }
         val sync = Sync(syncApi, db, backgroundScope)
+        val device = LabelSender { p, zpl ->
+            val host = p.host.orEmpty()
+            started += zpl
+            if (sendFailures[0] > 0) { sendFailures[0]--; throw if (timeoutSends[0]) PrinterTimeout(host) else PrinterUnreachable(host) }
+            sent += host to zpl
+        }
         val vm = PrintLabelsViewModel(
             db, sync, outbox, prefs, source, status, engine,
-            sender = { host, zpl ->
-                if (sendFailures[0] > 0) { sendFailures[0]--; throw if (timeoutSends[0]) PrinterTimeout(host) else PrinterUnreachable(host) }
-                sent += host to zpl
-            },
+            sender = if (guard == null) device else lockedSender(PrinterLock(), guard, device),
             flash = FlashController(backgroundScope), sound = null, scopeOverride = backgroundScope,
         )
         settle()
-        return Harness(vm, db, outbox, engine, sent, status, sendFailures, timeoutSends, sync)
+        return Harness(vm, db, outbox, engine, sent, status, sendFailures, timeoutSends, sync, started)
     }
 
     @Test fun aScannedAssetIdPrintsItsStoredLabelWithTheSendSettingsAndRecordsOneLabeledScan() = runTest {
@@ -191,6 +204,48 @@ class PrintLabelsViewModelTest {
         h.vm.onScan("A-1"); settle()
         assertEquals("The printer didn't finish answering. It may have printed the label — check before you retry.", h.vm.entries.value[0].message)
         assertTrue(h.outbox.snapshot.value.rows.isEmpty())
+        h.db.close()
+    }
+
+    /** The container's sender: after a failed send the next label first clears the printer. A clear
+     *  that fails never sent the label, so it can't have printed: a timeout reads as unreachable
+     *  (not "it may have printed"). */
+    @Test fun aClearThatFailsSaysThePrinterCantBeReached() = runTest {
+        val guard = PrinterGuard()
+        val h = harness("p12", guard = guard)
+        guard.markSendFailed(printer.connection)
+        h.sendFailures[0] = 1; h.timeoutSends[0] = true
+        h.vm.onScan("A-1"); settle()
+        assertEquals(PrintState.FAILED, h.vm.entries.value[0].state)
+        assertEquals("Can't reach the printer at 10.0.0.5.", h.vm.entries.value[0].message)
+        assertEquals(listOf("~JX"), h.started)
+        assertTrue(h.sent.isEmpty())
+        assertTrue(h.outbox.snapshot.value.rows.isEmpty())
+
+        h.timeoutSends[0] = false
+        h.vm.retry(h.vm.entries.value[0].id); settle()
+        assertEquals(PrintState.PRINTED, h.vm.entries.value[0].state)
+        assertEquals(listOf("10.0.0.5" to "~JX", "10.0.0.5" to "LT-2LS4|^XA^FDA-1^FS^XZ|MMP"), h.sent)
+        assertEquals(1, h.outbox.snapshot.value.rows.size)
+        h.db.close()
+    }
+
+    /** A cut font install keeps labels from the printer, saying to restart it, until a check gets
+     *  an answer; nothing is sent or recorded meanwhile. */
+    @Test fun aCutFontStopsLabelsAndSaysToRestartThePrinter() = runTest {
+        val guard = PrinterGuard()
+        val h = harness("p13", guard = guard)
+        guard.markFontCut(printer.connection)
+        h.vm.onScan("A-1"); settle()
+        assertEquals(PrintState.FAILED, h.vm.entries.value[0].state)
+        assertEquals(FONT_INSTALL_CUT_TEXT, h.vm.entries.value[0].message)
+        assertTrue(h.started.isEmpty())
+        assertTrue(h.outbox.snapshot.value.rows.isEmpty())
+
+        guard.printerAnswered(printer.connection)
+        h.vm.retry(h.vm.entries.value[0].id); settle()
+        assertEquals(PrintState.PRINTED, h.vm.entries.value[0].state)
+        assertEquals(listOf("LT-2LS4|^XA^FDA-1^FS^XZ|MMP"), h.started)
         h.db.close()
     }
 

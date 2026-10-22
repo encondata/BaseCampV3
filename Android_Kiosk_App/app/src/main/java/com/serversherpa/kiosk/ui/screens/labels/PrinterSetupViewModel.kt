@@ -19,10 +19,11 @@ import com.serversherpa.kiosk.core.labels.parseSample
 import com.serversherpa.kiosk.core.labels.parseZpl
 import com.serversherpa.kiosk.core.labels.printerUnreachableText
 import com.serversherpa.kiosk.core.model.KioskLabelFont
+import com.serversherpa.kiosk.core.printer.FONT_INSTALL_CUT_TEXT
 import com.serversherpa.kiosk.core.printer.FontFix
-import com.serversherpa.kiosk.core.printer.HostId
-import com.serversherpa.kiosk.core.printer.HostStatus
+import com.serversherpa.kiosk.core.printer.PrinterNeedsRestart
 import com.serversherpa.kiosk.core.printer.builtInFontText
+import com.serversherpa.kiosk.core.printer.damagedFonts
 import com.serversherpa.kiosk.core.printer.fontFixFor
 import com.serversherpa.kiosk.core.printer.isIpv4
 import com.serversherpa.kiosk.core.printer.missingFonts
@@ -35,13 +36,20 @@ import com.serversherpa.kiosk.data.labels.LabelEngineTimeoutException
 import com.serversherpa.kiosk.data.labels.LabelEngineUnsupportedException
 import com.serversherpa.kiosk.data.labels.LabelSettingsStore
 import com.serversherpa.kiosk.data.printer.FoundPrinter
-import com.serversherpa.kiosk.data.printer.NetworkZebra
+import com.serversherpa.kiosk.data.printer.LockedZebra
 import com.serversherpa.kiosk.data.printer.PrinterException
+import com.serversherpa.kiosk.data.printer.PrinterGuard
+import com.serversherpa.kiosk.data.printer.PrinterLock
 import com.serversherpa.kiosk.data.printer.PrinterTimeout
+import com.serversherpa.kiosk.data.printer.SetupZebra
+import com.serversherpa.kiosk.data.printer.WriteProgress
 import com.serversherpa.kiosk.data.sync.Sync
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.ceil
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -56,43 +64,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-
-/** One Zebra, as Printer Setup talks to it: [NetworkZebra] on the device. */
-interface SetupZebra {
-    suspend fun identify(): HostId
-    suspend fun serial(): String?
-    suspend fun status(): HostStatus
-    suspend fun peelerPresent(): Boolean?
-    suspend fun fonts(): List<String>
-    suspend fun send(zpl: String)
-    suspend fun installFont(name: String, bytes: ByteArray)
-}
-
-/** [NetworkZebra] as a [SetupZebra]. */
-class NetworkSetupZebra(private val zebra: NetworkZebra) : SetupZebra {
-    override suspend fun identify() = zebra.identify()
-    override suspend fun serial() = zebra.serial()
-    override suspend fun status() = zebra.status()
-    override suspend fun peelerPresent() = zebra.peelerPresent()
-    override suspend fun fonts() = zebra.fonts()
-    override suspend fun send(zpl: String) = zebra.send(zpl)
-    override suspend fun installFont(name: String, bytes: ByteArray) = zebra.installFont(name, bytes)
-}
-
-/** [inner] with every call made under [lock]: one connection to the printer at a time. */
-private class LockedZebra(private val inner: SetupZebra, private val lock: Mutex) : SetupZebra {
-    override suspend fun identify() = lock.withLock { inner.identify() }
-    override suspend fun serial() = lock.withLock { inner.serial() }
-    override suspend fun status() = lock.withLock { inner.status() }
-    override suspend fun peelerPresent() = lock.withLock { inner.peelerPresent() }
-    override suspend fun fonts() = lock.withLock { inner.fonts() }
-    override suspend fun send(zpl: String) = lock.withLock { inner.send(zpl) }
-    override suspend fun installFont(name: String, bytes: ByteArray) = lock.withLock { inner.installFont(name, bytes) }
-}
 
 /** The Peeler check's detail: what the printer said, and how labels print (PrinterStep's words). */
 fun peelerDetail(present: Boolean?, peel: Boolean): String {
@@ -153,6 +126,9 @@ data class PrinterSetupUi(
     val checkRuns: Int = 0,
     val fontFix: FontFix? = null,
     val installing: Boolean = false,
+    /** While a font is going out: how much of it has (0..1), and about how long it has left. */
+    val installProgress: Float? = null,
+    val installEta: String? = null,
     val fontMessage: String? = null,
     val fontError: Boolean = false,
     /** What the peeler check found: true, false, or null (unknown or not checked). */
@@ -180,14 +156,29 @@ fun noZebraAnswerText(c: PrinterConnection): String = when (c) {
 }
 fun fontInstallFailedText(name: String) = "Couldn't install $name."
 
+/** "about 40 s left", "about 4 min left": the time [remainingBytes] take at [bytesPerSecond]; null
+ *  when nothing is left (or no rate is known). */
+fun installEtaText(remainingBytes: Long, bytesPerSecond: Double): String? {
+    if (remainingBytes <= 0 || bytesPerSecond <= 0) return null
+    val seconds = ceil(remainingBytes / bytesPerSecond)
+    if (seconds < 60) return "about ${seconds.toLong()} s left"
+    return "about ${(seconds / 60).roundToLong()} min left"
+}
+
 /**
  * Printer Setup (the laptop's PrinterStep, kiosk/src/components/setup/PrinterStep.tsx): pick a
- * network Zebra (a scan or a typed IP), check it, install missing fonts, print test labels, and
- * set the offsets and peel/tear. Choosing a printer saves it; the label builder rebuilds by itself
- * when its DPI changes, and offsets and peel never rebuild (they apply at send time).
+ * network Zebra (a scan or a typed IP), check it, install missing or damaged fonts, print test
+ * labels, and set the offsets and peel/tear. Choosing a printer saves it; the label builder
+ * rebuilds by itself when its DPI changes, and offsets and peel never rebuild (they apply at send
+ * time).
  *
  * The checks inform and never block. The DPI and font checks read the builder's own template pick
  * for the saved printer ([pick]), waiting for the build a DPI change starts.
+ *
+ * Every call to a printer goes through the container's [PrinterLock] and [PrinterGuard], shared
+ * with Print Labels' queue: one connection to the printer at a time, app-wide, a `~JX` before the
+ * next call after a failed send, and no sends after a cut font install until a check gets an
+ * answer. [zebraFor] is a printer the way its connection reaches it (the container's on the device).
  */
 class PrinterSetupViewModel(
     private val store: LabelSettingsStore,
@@ -197,7 +188,9 @@ class PrinterSetupViewModel(
     private val db: KioskDatabase,
     private val fontsDir: File,
     private val scanner: suspend () -> List<FoundPrinter>,
-    zebraAt: (host: String) -> SetupZebra,
+    zebraFor: (printer: SavedPrinter) -> SetupZebra,
+    printerLock: PrinterLock,
+    private val printerGuard: PrinterGuard,
     scopeOverride: CoroutineScope? = null,
     /** Finishes an offsets save that is still waiting when the screen closes. */
     private val saveScope: CoroutineScope? = null,
@@ -210,10 +203,21 @@ class PrinterSetupViewModel(
     val settings: StateFlow<LabelSettings?> = store.settings.stateIn(scope, SharingStarted.Eagerly, null)
     val currentPick: StateFlow<LabelPick?> = pick
 
-    /** Every printer call (checks, font installs, test labels) takes this lock, so a test label
-     *  never opens a second connection while a check is talking to the printer. */
-    private val printerLock = Mutex()
-    private val printerAt: (String) -> SetupZebra = { host -> LockedZebra(zebraAt(host), printerLock) }
+    /** The saved printer: every call (checks, font installs, test labels) under the app-wide lock
+     *  and guard, so a test label never opens a second connection while a check or a label is
+     *  talking to the printer. */
+    private val printerAt: (SavedPrinter) -> SetupZebra = { p -> LockedZebra(zebraFor(p), p.connection, printerLock, printerGuard) }
+    /** A printer being chosen, before it is saved: under the lock and the guard (a pending clear
+     *  still goes first), but its answer never lifts a cut font's stop (the check after saving does). */
+    private val unsavedPrinterAt: (SavedPrinter) -> SetupZebra = { p ->
+        LockedZebra(zebraFor(p), p.connection, printerLock, printerGuard, liftsStop = false)
+    }
+    /** Cancel was tapped during a font install: checked between fonts only. */
+    @Volatile private var installCancelled = false
+    /** The font going out (its number and when it started): only its progress is shown. */
+    private class FontGoingOut(val id: Int, val startedNs: Long)
+    private val fontGoingOut = AtomicReference<FontGoingOut?>(null)
+    private var fontsStarted = 0
     private var checksJob: Job? = null
     private var offsetsJob: Job? = null
     @Volatile private var pendingOffsets: Pair<Int, Int>? = null
@@ -281,7 +285,8 @@ class PrinterSetupViewModel(
                 if (dpi != null) {
                     SavedPrinter(host, found.model ?: DEFAULT_MODEL, found.serial.orEmpty(), dpi)
                 } else {
-                    val zebra = printerAt(host)
+                    // Addresses the printer for its `~HI`; what is saved is built from the answers.
+                    val zebra = unsavedPrinterAt(SavedPrinter(host, DEFAULT_MODEL, "", 0))
                     val id = zebra.identify()
                     SavedPrinter(host, id.model.ifBlank { DEFAULT_MODEL }, (found?.serial ?: quietly { zebra.serial() }).orEmpty(), id.dpi)
                 }
@@ -320,11 +325,13 @@ class PrinterSetupViewModel(
                 fontMessage = if (keepFontMessage) it.fontMessage else null, fontError = keepFontMessage && it.fontError)
         }
         try {
-            val zebra = printerAt(saved.host.orEmpty())
+            val zebra = printerAt(saved)
             put(CheckRow(CheckKey.ANSWERS, CheckState.RUNNING))
             val id = quietly { zebra.identify() }
             if (id == null) {
-                put(CheckRow(CheckKey.ANSWERS, CheckState.FAIL, noZebraAnswerText(saved.connection)))
+                // Still waiting for the rest of a font: it needs the restart.
+                val cut = printerGuard.state(saved.connection) == PrinterGuard.State.FONT_CUT
+                put(CheckRow(CheckKey.ANSWERS, CheckState.FAIL, if (cut) FONT_INSTALL_CUT_TEXT else noZebraAnswerText(saved.connection)))
                 return
             }
             put(CheckRow(CheckKey.ANSWERS, CheckState.OK, "${id.model} · ${id.dpi} DPI"))
@@ -406,26 +413,33 @@ class PrinterSetupViewModel(
         if (pick == null || !pick.synced || pick.failed) return CheckRow(CheckKey.FONTS, CheckState.WARN, FONTS_UNCHECKED_TEXT)
         val needed = pick.fonts.map { it.uppercase() }.distinct()
         if (needed.isEmpty()) return CheckRow(CheckKey.FONTS, CheckState.OK, "No printer fonts needed.")
-        val onPrinter = quietly { zebra.fonts() }
+        val onPrinter = quietly { zebra.fontEntries() }
             ?: return CheckRow(CheckKey.FONTS, CheckState.FAIL, "Couldn't read the fonts on the printer.")
-        val missing = missingFonts(needed, onPrinter)
-        if (missing.isEmpty()) return CheckRow(CheckKey.FONTS, CheckState.OK)
         val library = db.labelFonts().all().map { KioskLabelFont(it.id, it.name, it.size, it.resident) }
-        val fix = fontFixFor(missing, library)
+        val missing = missingFonts(needed, onPrinter.map { it.name })
+        // A download cut short leaves a smaller file under the right name: sending it again
+        // overwrites it.
+        val damaged = damagedFonts(needed, library, onPrinter)
+        if (missing.isEmpty() && damaged.isEmpty()) return CheckRow(CheckKey.FONTS, CheckState.OK)
+        val fix = fontFixFor(missing + damaged, library)
         _state.update { it.copy(fontFix = fix) }
         val others = missing.filter { it !in fix.builtIn }
         val detail = listOfNotNull(
             others.takeIf { it.isNotEmpty() }?.let { "Missing: ${it.joinToString(", ")}." },
+            damaged.takeIf { it.isNotEmpty() }?.let { "Damaged: ${it.joinToString(", ")} (reinstall)." },
             fix.builtIn.takeIf { it.isNotEmpty() }?.let(::builtInFontText),
         ).joinToString(" ")
         return CheckRow(CheckKey.FONTS, CheckState.FAIL, detail)
     }
 
-    /** Sends each missing font the library has (its synced file), then checks again after the
-     *  printer has had [FONT_SETTLE_MS] to file them. The first failure stops the installs. */
+    /** Sends each missing or damaged font the library has (its synced file), then checks again
+     *  after the printer has had [FONT_SETTLE_MS] to file them. The first failure stops the
+     *  installs; one that cut a font off says to restart the printer and checks nothing (the
+     *  printer is waiting for the rest of the font). */
     fun installFonts() {
         val fix = _state.value.fontFix ?: return
         if (_state.value.busy || fix.installable.isEmpty()) return
+        installCancelled = false
         _state.update { it.copy(installing = true, fontMessage = null, fontError = false) }
         scope.launch {
             val printer = store.settings.first().printer
@@ -433,30 +447,86 @@ class PrinterSetupViewModel(
                 _state.update { it.copy(installing = false) }
                 return@launch
             }
-            val zebra = printerAt(printer.host.orEmpty())
+            val zebra = printerAt(printer)
             var failed: String? = null
+            var cut = false
+            var stopped = false
             val files = db.labelFonts().all().associateBy { it.name.uppercase() }
-            for (font in fix.installable) {
-                val name = font.name.uppercase()
-                try {
-                    val file = files[name]?.fileName?.let { File(fontsDir, it) } ?: throw IOException("no file for $name")
-                    val bytes = withContext(Dispatchers.IO) { file.readBytes() }
-                    zebra.installFont(name, bytes)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    android.util.Log.w(TAG, "font install failed: $name", e)
-                    failed = name
-                    break
+            try {
+                for (font in fix.installable) {
+                    if (installCancelled) {
+                        stopped = true
+                        break
+                    }
+                    val name = font.name.uppercase()
+                    try {
+                        val file = files[name]?.fileName?.let { File(fontsDir, it) } ?: throw IOException("no file for $name")
+                        val bytes = withContext(Dispatchers.IO) { file.readBytes() }
+                        zebra.installFont(name, bytes, fontStarted())
+                        fontFinished()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        android.util.Log.w(TAG, "font install failed: $name", e)
+                        failed = name
+                        cut = printerGuard.state(printer.connection) == PrinterGuard.State.FONT_CUT
+                        break
+                    }
                 }
+            } finally {
+                fontsDone()
+            }
+            if (cut) {
+                _state.update { it.copy(installing = false, fontMessage = FONT_INSTALL_CUT_TEXT, fontError = true) }
+                return@launch
             }
             delay(FONT_SETTLE_MS)
             _state.update {
-                it.copy(installing = false, fontMessage = failed?.let(::fontInstallFailedText) ?: FONTS_INSTALLED_TEXT, fontError = failed != null)
+                it.copy(
+                    installing = false,
+                    // Stopped before the rest: the check shows what is still missing.
+                    fontMessage = failed?.let(::fontInstallFailedText) ?: if (stopped) null else FONTS_INSTALLED_TEXT,
+                    fontError = failed != null,
+                )
             }
             // Fonts sent before a failure still turn green; the message stays.
             startChecks(printer, keepFontMessage = true)
         }
+    }
+
+    /** Stops a font install after the font going out: a download announces its size, so cutting
+     *  one would leave the printer taking whatever comes next as font data (D8). */
+    fun cancelInstall() {
+        if (_state.value.installing) installCancelled = true
+    }
+
+    /** A font starts going out: its progress from 0, and the callback its install reports through
+     *  (from any thread; a report for a font that is done, or behind a newer one, is dropped). */
+    private fun fontStarted(): WriteProgress {
+        val id = ++fontsStarted
+        fontGoingOut.set(FontGoingOut(id, System.nanoTime()))
+        _state.update { it.copy(installProgress = 0f, installEta = null) }
+        return { sent, total -> fontProgressed(id, sent, total) }
+    }
+
+    private fun fontProgressed(id: Int, sent: Long, total: Long) {
+        val going = fontGoingOut.get()
+        if (going == null || going.id != id || total <= 0) return
+        val fraction = (sent.toDouble() / total).coerceIn(0.0, 1.0).toFloat()
+        val seconds = (System.nanoTime() - going.startedNs) / 1e9
+        val rate = if (sent > 0 && seconds * 1_000 >= ETA_MEASURE_AFTER_MS) sent / seconds else INSTALL_BYTES_PER_SECOND
+        val eta = installEtaText(total - sent, rate)
+        _state.update { s ->
+            if (fontGoingOut.get()?.id != id || fraction < (s.installProgress ?: 0f)) s else s.copy(installProgress = fraction, installEta = eta)
+        }
+    }
+
+    /** The font's install returned: all of it went out. */
+    private fun fontFinished() = _state.update { it.copy(installProgress = 1f, installEta = null) }
+
+    private fun fontsDone() {
+        fontGoingOut.set(null)
+        _state.update { it.copy(installProgress = null, installEta = null) }
     }
 
     // --- offsets and peel -------------------------------------------------------------------
@@ -546,13 +616,15 @@ class PrinterSetupViewModel(
                     label.second to true
                 } else {
                     val shifted = parseZpl(helper("applyPrintSettings", LabelGenArgs.printSettings(zpl, offsets.first, offsets.second)))
-                    printerAt(printer.host.orEmpty()).send(parseZpl(helper("withPrintMode", LabelGenArgs.printMode(shifted, s.peel))))
+                    printerAt(printer).send(parseZpl(helper("withPrintMode", LabelGenArgs.printMode(shifted, s.peel))))
                     label.second to false
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: LabelEngineUnsupportedException) {
                 DEVICE_UNSUPPORTED_TEXT to true
+            } catch (e: PrinterNeedsRestart) {
+                FONT_INSTALL_CUT_TEXT to true
             } catch (e: PrinterTimeout) {
                 TEST_TIMEOUT_TEXT to true
             } catch (e: PrinterException) {
@@ -592,6 +664,10 @@ class PrinterSetupViewModel(
         private const val DEFAULT_MODEL = "Zebra"
         /** How long a printer gets to file a downloaded font before the re-check (PrinterStep's). */
         const val FONT_SETTLE_MS = 500L
+        /** What a font install's time left is reckoned at until it has run for
+         *  [ETA_MEASURE_AFTER_MS]: the Bluetooth speed measured on a ZD421 (3.9 KB/s). */
+        const val INSTALL_BYTES_PER_SECOND = 3_900.0
+        const val ETA_MEASURE_AFTER_MS = 1_000L
         const val OFFSET_SAVE_DELAY_MS = 500L
         /** How long the DPI check waits for the build a DPI change starts to pick a template. */
         const val PICK_WAIT_MS = 30_000L

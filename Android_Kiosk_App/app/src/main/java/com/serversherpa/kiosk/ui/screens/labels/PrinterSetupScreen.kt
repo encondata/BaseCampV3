@@ -30,8 +30,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.data.printer.FoundPrinter
-import com.serversherpa.kiosk.data.printer.LocalNetworks
-import com.serversherpa.kiosk.data.printer.NetworkZebra
+import com.serversherpa.kiosk.data.printer.TransportSetupZebra
 import com.serversherpa.kiosk.data.printer.ZebraScanner
 import com.serversherpa.kiosk.ui.components.KioskChip
 import com.serversherpa.kiosk.ui.components.KioskToast
@@ -77,7 +76,8 @@ fun PrinterSetupScreen(nav: NavHostController) {
             container.labelSettings, container.labelBuilder.pick, container.labelBuilder.status, container.labelEngine,
             container.db, File(app.filesDir, "label-fonts"),
             scanner = { ZebraScanner(app).scan() },
-            zebraAt = { host -> NetworkSetupZebra(NetworkZebra(host, socketFactory = LocalNetworks.socketFactoryFor(app, host))) },
+            zebraFor = { printer -> TransportSetupZebra(container.zebraFor(printer)) },
+            printerLock = container.printerLock, printerGuard = container.printerGuard,
             saveScope = container.scope,
         )
     }

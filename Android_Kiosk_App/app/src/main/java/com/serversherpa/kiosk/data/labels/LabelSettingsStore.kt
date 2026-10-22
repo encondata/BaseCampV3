@@ -14,8 +14,15 @@ import kotlinx.coroutines.flow.distinctUntilChanged
  * selection, and the printer, offsets and peel/tear choice from the `ss.kiosk.labels` key.
  * Both come from the same DataStore, so the first value is the stored one, never the
  * defaults followed by the stored one (which would start a label build for nothing).
+ *
+ * It is the one writer of the saved printer: [onConnectionChange] runs once a save has replaced
+ * the printer's connection with another (or none), before the save returns. The same printer
+ * saved again with what a check found (model, serial, DPI) keeps its connection and calls nothing.
  */
-class LabelSettingsStore(private val prefs: KioskPrefs) : LabelSettingsSource {
+class LabelSettingsStore(
+    private val prefs: KioskPrefs,
+    private val onConnectionChange: suspend () -> Unit = {},
+) : LabelSettingsSource {
     override val settings: Flow<LabelSettings> =
         combine(prefs.setupSelection, prefs.labels) { selection, options ->
             LabelSettings(
@@ -27,10 +34,19 @@ class LabelSettingsStore(private val prefs: KioskPrefs) : LabelSettingsSource {
             )
         }.distinctUntilChanged()
 
-    suspend fun setPrinter(printer: SavedPrinter?) = prefs.updateLabels { it.copy(printer = printer) }
+    suspend fun setPrinter(printer: SavedPrinter?) = updateLabels { it.copy(printer = printer) }
     suspend fun setOffsets(x: Int, y: Int) = prefs.updateLabels { it.copy(offsetX = x, offsetY = y) }
     suspend fun setPeel(peel: Boolean) = prefs.updateLabels { it.copy(peel = peel) }
 
     /** "Reset app": no printer, offsets 0, tear-off. The kind goes with the setup selection. */
-    suspend fun reset() = prefs.updateLabels { LabelOptions() }
+    suspend fun reset() = updateLabels { LabelOptions() }
+
+    /** [change] as saved, then [onConnectionChange] when it changed the printer's connection. */
+    private suspend fun updateLabels(change: (LabelOptions) -> LabelOptions) {
+        var changed = false
+        prefs.updateLabels { old ->
+            change(old).also { changed = it.printer?.connection != old.printer?.connection }
+        }
+        if (changed) onConnectionChange()
+    }
 }

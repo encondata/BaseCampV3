@@ -3,8 +3,15 @@ package com.serversherpa.kiosk.ui.screens.labels
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.test.core.app.ApplicationProvider
 import com.serversherpa.kiosk.core.labels.LabelKind
+import com.serversherpa.kiosk.core.labels.LabelSettings
+import com.serversherpa.kiosk.core.labels.PrintQueue
+import com.serversherpa.kiosk.core.labels.PrintQueueDeps
+import com.serversherpa.kiosk.core.labels.PrintState
+import com.serversherpa.kiosk.core.labels.PrintStep
 import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
+import com.serversherpa.kiosk.core.printer.DirectoryEntry
+import com.serversherpa.kiosk.core.printer.FONT_INSTALL_CUT_TEXT
 import com.serversherpa.kiosk.core.printer.HostId
 import com.serversherpa.kiosk.core.printer.HostStatus
 import com.serversherpa.kiosk.data.api.KioskJson
@@ -19,16 +26,24 @@ import com.serversherpa.kiosk.data.labels.LabelEngine
 import com.serversherpa.kiosk.data.labels.LabelSettingsStore
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import com.serversherpa.kiosk.data.printer.FoundPrinter
+import com.serversherpa.kiosk.data.printer.PrinterGuard
+import com.serversherpa.kiosk.data.printer.PrinterLock
+import com.serversherpa.kiosk.data.printer.PrinterTimeout
 import com.serversherpa.kiosk.data.printer.PrinterUnreachable
+import com.serversherpa.kiosk.data.printer.SetupZebra
+import com.serversherpa.kiosk.data.printer.WriteProgress
+import com.serversherpa.kiosk.data.printer.lockedSender
 import com.serversherpa.kiosk.data.sync.SyncMeta
 import com.serversherpa.kiosk.data.sync.SyncPhase
 import com.serversherpa.kiosk.data.sync.SyncStatus
 import java.io.File
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -98,6 +113,29 @@ private class SetupEngine : LabelEngine {
     }
 }
 
+/** The printer's one port: every connection to it, in the order they began, and how many were open
+ *  at once. A connection whose text contains [hold] stays open while [hold] is set. */
+private class FakeLine {
+    val started: MutableList<String> = Collections.synchronizedList(ArrayList())
+    private val open = AtomicInteger(0)
+    val maxOpen = AtomicInteger(0)
+    @Volatile var hold: String? = null
+    @Volatile var held = false
+
+    suspend fun connect(what: String) {
+        started += what
+        maxOpen.accumulateAndGet(open.incrementAndGet(), ::maxOf)
+        try {
+            while (hold?.let { what.contains(it) } == true) {
+                held = true
+                delay(2)
+            }
+        } finally {
+            open.decrementAndGet()
+        }
+    }
+}
+
 /** A Zebra at one host: what it says, and what it was sent. */
 private class FakeZebra(val host: String) : SetupZebra {
     @Volatile var answers = true
@@ -109,22 +147,66 @@ private class FakeZebra(val host: String) : SetupZebra {
     /** When set, status() waits for it (after completing [inStatus]). */
     @Volatile var statusGate: CompletableDeferred<Unit>? = null
     val inStatus = CompletableDeferred<Unit>()
-    val onE: MutableList<String> = Collections.synchronizedList(ArrayList())
+    /** Thrown by send() when set. */
+    @Volatile var sendError: Exception? = null
+    /** Thrown by installFont() when set, once the font started going out (after its first progress
+     *  report). A printer that doesn't answer fails before anything goes out. */
+    @Volatile var installError: Exception? = null
+    /** The fractions of each font installFont() reports as sent, in order. */
+    @Volatile var installSteps: List<Double> = listOf(1.0)
+    /** While equal to one of [installSteps], installFont() waits right after reporting it. */
+    @Volatile var installHoldAt: Double? = null
+    /** The step installFont() is waiting at. */
+    @Volatile var atInstallHold: Double? = null
+    @Volatile var line: FakeLine? = null
+    /** The E: drive: each object's name and size. */
+    val onE: MutableList<DirectoryEntry> = Collections.synchronizedList(ArrayList())
     val sent: MutableList<String> = Collections.synchronizedList(ArrayList())
     val installed: MutableList<Pair<String, ByteArray>> = Collections.synchronizedList(ArrayList())
+    /** Every call, in order. */
+    val calls: MutableList<String> = Collections.synchronizedList(ArrayList())
 
-    private fun check() { if (!answers) throw PrinterUnreachable(host) }
-    override suspend fun identify(): HostId { check(); return HostId(model, "V1", if (dpi == 300) 12 else 8, "8192", dpi) }
-    override suspend fun serial(): String? { check(); return serialNo }
+    private suspend fun use(what: String, detail: String = "") {
+        calls += what
+        if (!answers) throw PrinterUnreachable(host)
+        line?.connect("$host $what" + if (detail.isEmpty()) "" else " $detail")
+    }
+
+    override suspend fun identify(): HostId { use("identify"); return HostId(model, "V1", if (dpi == 300) 12 else 8, "8192", dpi) }
+    override suspend fun serial(): String? { use("serial"); return serialNo }
     override suspend fun status(): HostStatus {
-        check()
+        use("status")
         statusGate?.let { inStatus.complete(Unit); it.await() }
         return HostStatus(paperOut, false, 0, 0, false, false, false, false, false, false, false, false, "0", false, 0)
     }
-    override suspend fun peelerPresent(): Boolean? = if (answers) peeler else null
-    override suspend fun fonts(): List<String> { check(); return synchronized(onE) { onE.toList() } }
-    override suspend fun send(zpl: String) { check(); sent += zpl }
-    override suspend fun installFont(name: String, bytes: ByteArray) { check(); installed += name to bytes; onE += name.uppercase() }
+    /** Like the transport's: null, never an error, when nothing answers. */
+    override suspend fun peelerPresent(): Boolean? { calls += "peeler"; return if (answers) peeler else null }
+    override suspend fun fonts(): List<String> = fontEntries().map { it.name }
+    override suspend fun fontEntries(): List<DirectoryEntry> { use("fonts"); return synchronized(onE) { onE.toList() } }
+    override suspend fun send(zpl: String) {
+        use("send", zpl)
+        sendError?.let { throw it }
+        sent += zpl
+    }
+    override suspend fun installFont(name: String, bytes: ByteArray, progress: WriteProgress?) {
+        use("installFont", name)
+        val total = bytes.size.toLong()
+        progress?.invoke(0, total) // the download started
+        installError?.let { throw it }
+        for (step in installSteps) {
+            progress?.invoke((total * step).toLong(), total)
+            while (installHoldAt == step) {
+                atInstallHold = step
+                delay(2)
+            }
+            atInstallHold = null
+        }
+        installed += name to bytes
+        synchronized(onE) {
+            onE.removeAll { it.name == name.uppercase() }
+            onE += DirectoryEntry(name.uppercase(), bytes.size)
+        }
+    }
 }
 
 @RunWith(RobolectricTestRunner::class)
@@ -139,6 +221,8 @@ class PrinterSetupViewModelTest {
     private lateinit var store: LabelSettingsStore
     private lateinit var builder: LabelBuilder
     private lateinit var fontsDir: File
+    private val lock = PrinterLock()
+    private val guard = PrinterGuard()
 
     private val savedHost = "10.0.0.5"
     private val saved = SavedPrinter(savedHost, "ZD421", "S1", 203)
@@ -164,7 +248,8 @@ class PrinterSetupViewModelTest {
 
     private fun vm(pickWaitMs: Long = 5_000) = PrinterSetupViewModel(
         store, builder.pick, builder.status, engine, db, fontsDir,
-        scanner = { scanResult }, zebraAt = ::zebra, scopeOverride = scope, pickWaitMs = pickWaitMs,
+        scanner = { scanResult }, zebraFor = { p -> zebra(p.host.orEmpty()) }, printerLock = lock, printerGuard = guard,
+        scopeOverride = scope, pickWaitMs = pickWaitMs,
     )
 
     /** Waits (real time: Room, DataStore and the builder run on their own threads) for [cond]. */
@@ -399,6 +484,309 @@ class PrinterSetupViewModelTest {
         eventually("failed") { vm.state.value.testMessage != null && !vm.state.value.testing }
         assertEquals("Can't reach the printer at 10.0.0.5.", vm.state.value.testMessage)
         assertTrue(vm.state.value.testError)
+    }
+
+    /** The plan needs [fonts], and the synced library has each with its file (its size is the file's). */
+    private suspend fun libraryFonts(vararg fonts: Pair<String, ByteArray>) {
+        engine.planFonts = fonts.map { it.first }
+        db.labelFonts().insertAll(fonts.mapIndexed { i, (name, bytes) ->
+            val file = name.lowercase()
+            File(fontsDir, file).writeBytes(bytes)
+            LabelFontEntity("f${i + 1}", name, bytes.size, false, file)
+        })
+        builder.rebuild("fonts changed")
+        eventually("plan with fonts") { builder.pick.value?.fonts?.size == fonts.size }
+    }
+
+    /** A font on the printer at another size than the library's (a download cut short) is
+     *  damaged: the row names it beside the missing ones, and Install sends it again. */
+    @Test fun damagedFontOffersReinstall() = runBlocking<Unit> {
+        libraryFonts("ROBOTO.TTF" to byteArrayOf(1, 2, 3), "LATO.TTF" to byteArrayOf(4, 5))
+        val z = zebra(savedHost)
+        z.onE += DirectoryEntry("ROBOTO.TTF", 1)
+        val vm = vm()
+        vm.checked { vm.checkAgain() }
+        val fonts = vm.row(CheckKey.FONTS)!!
+        assertEquals(CheckState.FAIL, fonts.state)
+        assertEquals("Missing: LATO.TTF. Damaged: ROBOTO.TTF (reinstall).", fonts.detail)
+        assertEquals(listOf("ROBOTO.TTF", "LATO.TTF"), vm.state.value.fontFix!!.installable.map { it.name })
+
+        z.onE += DirectoryEntry("LATO.TTF", 2)
+        vm.checked { vm.checkAgain() }
+        assertEquals(CheckState.FAIL, vm.row(CheckKey.FONTS)!!.state)
+        assertEquals("Damaged: ROBOTO.TTF (reinstall).", vm.row(CheckKey.FONTS)!!.detail)
+        assertEquals(listOf("ROBOTO.TTF"), vm.state.value.fontFix!!.installable.map { it.name })
+
+        vm.checked { vm.installFonts() }
+        assertEquals(listOf("ROBOTO.TTF"), z.installed.map { it.first })
+        assertArrayEquals(byteArrayOf(1, 2, 3), z.installed[0].second)
+        assertEquals("Fonts installed.", vm.state.value.fontMessage)
+        assertEquals(CheckState.OK, vm.row(CheckKey.FONTS)!!.state)
+        assertNull(vm.state.value.fontFix)
+    }
+
+    /** A font download announces its size, so Cancel never cuts one: the font going out finishes
+     *  and the next one never starts (D8). */
+    @Test fun cancelInstallFinishesTheCurrentFont() = runBlocking<Unit> {
+        libraryFonts("ROBOTO.TTF" to byteArrayOf(1, 2, 3), "LATO.TTF" to byteArrayOf(4, 5))
+        val z = zebra(savedHost)
+        z.installSteps = listOf(0.5, 1.0)
+        z.installHoldAt = 0.5
+        val vm = vm()
+        vm.checked { vm.checkAgain() }
+        assertEquals(2, vm.state.value.fontFix!!.installable.size)
+        val checksBefore = vm.state.value.checkRuns
+        vm.installFonts()
+        eventually("first font half sent") { z.atInstallHold == 0.5 }
+        vm.cancelInstall()
+        delay(50)
+        assertTrue(vm.state.value.installing)
+        assertTrue(z.installed.isEmpty())
+        z.installHoldAt = null
+        eventually("stopped and re-checked") {
+            !vm.state.value.installing && vm.state.value.checkRuns > checksBefore && !vm.state.value.checking
+        }
+        assertEquals(listOf("ROBOTO.TTF"), z.installed.map { it.first })
+        assertArrayEquals(byteArrayOf(1, 2, 3), z.installed[0].second)
+        assertEquals(1, z.calls.count { it == "installFont" })
+        assertNull(vm.state.value.fontMessage)
+        assertFalse(vm.state.value.fontError)
+        assertEquals("Missing: LATO.TTF.", vm.row(CheckKey.FONTS)!!.detail)
+    }
+
+    @Test fun installReportsProgress() = runBlocking<Unit> {
+        libraryFonts("ROBOTO.TTF" to byteArrayOf(1, 2, 3, 4))
+        val z = zebra(savedHost)
+        z.installSteps = listOf(0.5, 1.0)
+        z.installHoldAt = 0.5
+        val vm = vm()
+        vm.checked { vm.checkAgain() }
+        assertNull(vm.state.value.installProgress)
+        assertNull(vm.state.value.installEta)
+        vm.installFonts()
+        eventually("half sent") { z.atInstallHold == 0.5 && vm.state.value.installProgress == 0.5f }
+        assertEquals("about 1 s left", vm.state.value.installEta)
+        z.installHoldAt = 1.0
+        eventually("all sent") { z.atInstallHold == 1.0 && vm.state.value.installProgress == 1f }
+        assertNull(vm.state.value.installEta)
+        z.installHoldAt = null
+        eventually("installed") { !vm.state.value.installing }
+        assertNull(vm.state.value.installProgress)
+        assertNull(vm.state.value.installEta)
+        assertEquals("Fonts installed.", vm.state.value.fontMessage)
+    }
+
+    /** A font install cut off part-way leaves the printer waiting for the rest of the font: the
+     *  screen says to restart it, nothing more is sent (no re-check, test labels refused), and a
+     *  check the printer answers lets sends through again (D8). */
+    @Test fun aCutFontInstallSaysToRestartThePrinterUntilACheckSucceeds() = runBlocking<Unit> {
+        libraryFonts("ROBOTO.TTF" to byteArrayOf(1, 2, 3))
+        val z = zebra(savedHost)
+        val vm = vm()
+        vm.checked { vm.checkAgain() }
+        z.installError = PrinterTimeout(savedHost)
+        vm.installFonts()
+        eventually("install failed") { !vm.state.value.installing && vm.state.value.fontMessage != null }
+        assertEquals(FONT_INSTALL_CUT_TEXT, vm.state.value.fontMessage)
+        assertTrue(vm.state.value.fontError)
+        assertEquals(PrinterGuard.State.FONT_CUT, guard.state(saved.connection))
+        val callsAfterCut = z.calls.toList()
+        assertEquals("installFont", callsAfterCut.last())
+
+        vm.printTest(TestLabel.ALIGNMENT)
+        eventually("refused") { !vm.state.value.testing && vm.state.value.testMessage != null }
+        assertEquals(FONT_INSTALL_CUT_TEXT, vm.state.value.testMessage)
+        assertTrue(vm.state.value.testError)
+        assertTrue(z.sent.isEmpty())
+        assertEquals(callsAfterCut, z.calls.toList())
+
+        // Not restarted yet: it doesn't answer, and the check says why.
+        z.answers = false
+        vm.checked { vm.checkAgain() }
+        assertEquals(CheckState.FAIL, vm.row(CheckKey.ANSWERS)!!.state)
+        assertEquals(FONT_INSTALL_CUT_TEXT, vm.row(CheckKey.ANSWERS)!!.detail)
+
+        // Restarted: it answers, and sends go out again.
+        z.answers = true
+        z.installError = null
+        vm.checked { vm.checkAgain() }
+        assertEquals(CheckState.OK, vm.row(CheckKey.ANSWERS)!!.state)
+        assertEquals(PrinterGuard.State.CLEAN, guard.state(saved.connection))
+        vm.printTest(TestLabel.ALIGNMENT)
+        eventually("sent") { !vm.state.value.testing && z.sent.size == 1 }
+        assertFalse(vm.state.value.testError)
+    }
+
+    /** A printer being chosen is asked under the lock and the shared guard, but its answer never
+     *  lifts a cut font's stop: not another printer's, and not the saved printer's own when it is
+     *  chosen again. The check after saving it does. */
+    @Test fun choosingAPrinterDoesNotLiftTheSavedPrintersStop() = runBlocking<Unit> {
+        val savedConnection = saved.connection
+        guard.markFontCut(savedConnection)
+        val z = zebra("10.0.0.10")
+        val line = FakeLine()
+        z.line = line
+        line.hold = "serial"
+        val vm = vm()
+        vm.setIpText("10.0.0.10")
+        vm.useIp()
+        eventually("asked its serial") { line.held }
+        assertEquals(listOf("identify", "serial"), z.calls.toList())
+        assertEquals(PrinterGuard.State.FONT_CUT, guard.state(savedConnection))
+        line.hold = null
+        eventually("saved") { store.settings.first().printer?.host == "10.0.0.10" }
+
+        val z5 = zebra(savedHost)
+        val line5 = FakeLine()
+        z5.line = line5
+        line5.hold = "serial"
+        vm.setIpText(savedHost)
+        vm.useIp()
+        eventually("asked the first printer's serial") { line5.held }
+        assertEquals(listOf("identify", "serial"), z5.calls.toList())
+        assertEquals(PrinterGuard.State.FONT_CUT, guard.state(savedConnection))
+        line5.hold = null
+        eventually("saved again and checked") { z5.calls.count { it == "identify" } == 2 }
+        eventually("the stop lifted") { guard.state(savedConnection) == PrinterGuard.State.CLEAN }
+    }
+
+    /** The saved printer chosen again while it needs a clear: `~JX` goes before the probe's `~HI`. */
+    @Test fun reChoosingTheSavedPrinterClearsBeforeItsFirstQuery() = runBlocking<Unit> {
+        guard.markSendFailed(saved.connection)
+        val z = zebra(savedHost)
+        val vm = vm()
+        vm.setIpText(savedHost)
+        vm.useIp()
+        eventually("saved again") { store.settings.first().printer?.serial == "S-10.0.0.5" }
+        assertEquals(listOf("send", "identify"), z.calls.take(2))
+        assertEquals(listOf("~JX"), z.sent.toList())
+        assertEquals(PrinterGuard.State.CLEAN, guard.state(saved.connection))
+    }
+
+    /** A failed test label leaves the printer needing a clear: the next check sends `~JX` first
+     *  (D16), and only once. */
+    @Test fun aFailedTestLabelClearsBeforeTheNextCheck() = runBlocking<Unit> {
+        eventually("pick") { builder.pick.value?.dpi == 203 }
+        val z = zebra(savedHost)
+        z.sendError = PrinterUnreachable(savedHost)
+        val vm = vm()
+        vm.printTest(TestLabel.ALIGNMENT)
+        eventually("failed") { !vm.state.value.testing && vm.state.value.testError }
+        z.sendError = null
+        vm.checked { vm.checkAgain() }
+        assertEquals(listOf("send", "send", "identify"), z.calls.take(3))
+        assertEquals(listOf("~JX"), z.sent.toList())
+        assertEquals(CheckState.OK, vm.row(CheckKey.ANSWERS)!!.state)
+    }
+
+    /** A font install the printer never took (nothing answered, so no byte went out) cuts nothing:
+     *  it says which font, checks again, and labels still go out. */
+    @Test fun aFontInstallThatNeverStartedSaysWhichAndKeepsSending() = runBlocking<Unit> {
+        libraryFonts("ROBOTO.TTF" to byteArrayOf(1, 2, 3))
+        val z = zebra(savedHost)
+        val vm = vm()
+        vm.checked { vm.checkAgain() }
+        z.answers = false
+        vm.checked { vm.installFonts() }
+        assertEquals("Couldn't install ROBOTO.TTF.", vm.state.value.fontMessage)
+        assertTrue(vm.state.value.fontError)
+        assertEquals("No Zebra printer answered at 10.0.0.5.", vm.row(CheckKey.ANSWERS)!!.detail)
+        assertEquals(PrinterGuard.State.CLEAN, guard.state(saved.connection))
+        z.answers = true
+        vm.printTest(TestLabel.ALIGNMENT)
+        eventually("sent") { !vm.state.value.testing && z.sent.size == 1 }
+        assertFalse(vm.state.value.testError)
+    }
+
+    @Test fun theInstallEtaReadsInSecondsThenMinutes() {
+        assertEquals("about 40 s left", installEtaText(156_000, 3_900.0))
+        assertEquals("about 1 s left", installEtaText(1, 3_900.0))
+        assertEquals("about 59 s left", installEtaText(230_000, 3_900.0))
+        assertEquals("about 1 min left", installEtaText(234_000, 3_900.0))
+        assertEquals("about 4 min left", installEtaText(1_048_576, 3_900.0))
+        assertNull(installEtaText(0, 3_900.0))
+        assertNull(installEtaText(10, 0.0))
+    }
+
+    // --- one printer connection at a time, app-wide ---------------------------------------------
+
+    /** Print Labels' queue as the container wires it: each label through [lockedSender] under the
+     *  shared lock and guard, onto [line]. */
+    private fun printQueue(line: FakeLine): PrintQueue<String> {
+        val send = lockedSender(lock, guard) { p, zpl -> line.connect("${p.host.orEmpty()} $zpl") }
+        return PrintQueue(object : PrintQueueDeps<String> {
+            override suspend fun settings(): LabelSettings = store.settings.first()
+            override suspend fun label(asset: String): PrintStep = PrintStep.Ready("ASSET")
+            override suspend fun prepare(zpl: String, settings: LabelSettings): PrintStep = PrintStep.Ready(zpl)
+            override suspend fun send(printer: SavedPrinter, zpl: String) = send.send(printer, zpl)
+            override suspend fun record(asset: String, scannedValue: String) = Unit
+        }, now = { "2026-10-22T00:00:00Z" })
+    }
+
+    /** Runs [test] on a fresh line to the saved printer; a failing check lets go of any held
+     *  connection, so a label going out (it can't be cancelled) still ends and the test fails
+     *  instead of hanging. */
+    private fun withLine(test: suspend CoroutineScope.(FakeLine) -> Unit) = runBlocking<Unit> {
+        val line = FakeLine()
+        zebra(savedHost).line = line
+        try {
+            test(line)
+        } finally {
+            line.hold = null
+        }
+    }
+
+    /** The container's lock is shared by Printer Setup and the Print Labels queue's send: a test
+     *  label never opens a connection while a queued asset label is going out, nor the other way. */
+    @Test fun setupAndPrintLabelsShareOneLock() = withLine { line ->
+        eventually("pick") { builder.pick.value?.dpi == 203 }
+        val queue = printQueue(line)
+        val vm = vm()
+
+        // An asset label going out holds the printer: the test label waits its turn.
+        line.hold = "ASSET"
+        val first = async(Dispatchers.Default) { queue.scan("a1", "A-1") }
+        eventually("asset label on the printer") { line.held }
+        vm.printTest(TestLabel.ALIGNMENT)
+        delay(100)
+        assertEquals(listOf("10.0.0.5 ASSET"), line.started.toList())
+        assertTrue(vm.state.value.testing)
+        line.hold = null
+        assertEquals(PrintState.PRINTED, first.await().state)
+        eventually("test label sent") { !vm.state.value.testing }
+        assertEquals(2, line.started.size)
+        assertTrue(line.started.last().contains("ALIGN"))
+
+        // And the other way: a test label going out holds the queued asset label.
+        line.held = false
+        line.hold = "ALIGN"
+        vm.printTest(TestLabel.ALIGNMENT)
+        eventually("test label on the printer") { line.held }
+        val second = async(Dispatchers.Default) { queue.scan("a1", "A-1") }
+        delay(100)
+        assertEquals(3, line.started.size)
+        line.hold = null
+        assertEquals(PrintState.PRINTED, second.await().state)
+        assertEquals("10.0.0.5 ASSET", line.started.last())
+        eventually("test label done") { !vm.state.value.testing }
+        assertEquals(1, line.maxOpen.get())
+    }
+
+    /** Checks hold the same lock: a queued asset label waits for the query in progress. */
+    @Test fun aQueuedAssetLabelWaitsForACheckQuery() = withLine { line ->
+        eventually("pick") { builder.pick.value?.dpi == 203 }
+        val queue = printQueue(line)
+        val vm = vm()
+        line.hold = "status"
+        vm.checkAgain()
+        eventually("status query open") { line.held }
+        val job = async(Dispatchers.Default) { queue.scan("a1", "A-1") }
+        delay(100)
+        assertFalse(line.started.contains("10.0.0.5 ASSET"))
+        line.hold = null
+        assertEquals(PrintState.PRINTED, job.await().state)
+        eventually("checks finished") { !vm.state.value.checking }
+        assertEquals(1, line.maxOpen.get())
     }
 
     @Test fun theFrontKindDefaultsTheAlignmentLabelTo2x1WithoutATemplateSize() {

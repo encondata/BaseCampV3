@@ -13,6 +13,7 @@ import com.serversherpa.kiosk.core.labels.PrintQueue
 import com.serversherpa.kiosk.core.labels.PrintQueueDeps
 import com.serversherpa.kiosk.core.labels.PrintState
 import com.serversherpa.kiosk.core.labels.PrintStep
+import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.labels.StoredLabel
 import com.serversherpa.kiosk.core.labels.labelFor
 import com.serversherpa.kiosk.core.labels.parseZpl
@@ -31,6 +32,7 @@ import com.serversherpa.kiosk.data.labels.LabelEngineUnsupportedException
 import com.serversherpa.kiosk.data.labels.LabelSettingsSource
 import com.serversherpa.kiosk.data.outbox.Outbox
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
+import com.serversherpa.kiosk.data.printer.LabelSender
 import com.serversherpa.kiosk.data.printer.PrinterTimeout
 import com.serversherpa.kiosk.data.sync.Sync
 import com.serversherpa.kiosk.data.sync.SyncPhase
@@ -50,19 +52,16 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-/** Sends ZPL to the network printer at a host (NetworkZebra on the device). */
-fun interface LabelSender {
-    suspend fun send(host: String, zpl: String)
-}
-
 data class PrintLabelsUi(
     val loadStatus: LoadStatus = LoadStatus.LOADING, val rosterSize: Int = 0, val value: String = "", val error: String? = null,
 )
 
 /**
  * Print Labels (the laptop's Printing Station, kiosk/src/pages/PrintingStation.tsx): a scan
- * matched by asset ID or serial prints the asset's stored label on the saved network printer
- * and records one Labeled scan through the outbox. The decisions live in [PrintQueue].
+ * matched by asset ID or serial prints the asset's stored label on the saved printer and records
+ * one Labeled scan through the outbox. The decisions live in [PrintQueue]. [sender] is the
+ * container's: each label under the app-wide printer lock and guard (a `~JX` first after a failed
+ * send, nothing while a font install is cut).
  */
 class PrintLabelsViewModel(
     private val db: KioskDatabase,
@@ -109,8 +108,8 @@ class PrintLabelsViewModel(
             PrintStep.Refused(PREPARE_FAILED_TEXT)
         }
 
-        override suspend fun send(host: String, zpl: String) = try {
-            sender.send(host, zpl)
+        override suspend fun send(printer: SavedPrinter, zpl: String) = try {
+            sender.send(printer, zpl)
         } catch (e: PrinterTimeout) {
             throw LabelSendTimeout(e)
         }

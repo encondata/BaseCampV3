@@ -42,8 +42,6 @@ import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.labels.TEMPLATE_FAILED
 import com.serversherpa.kiosk.core.labels.TEMPLATE_UNSUPPORTED
 import com.serversherpa.kiosk.data.db.AssetEntity
-import com.serversherpa.kiosk.data.printer.LocalNetworks
-import com.serversherpa.kiosk.data.printer.NetworkZebra
 import com.serversherpa.kiosk.data.sync.SyncPhase
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.input.datawedge.DataWedge
@@ -61,8 +59,6 @@ import com.serversherpa.kiosk.ui.screens.scan.scanTime
 import com.serversherpa.kiosk.ui.theme.ChipTone
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 /** How the header describes the assets left without a label, by reason. */
 private val PROBLEM_PHRASES = mapOf(
@@ -113,13 +109,10 @@ fun PrintLabelsScreen(nav: NavHostController) {
     val c = LocalKioskColors.current
     val context = LocalContext.current
     val vm = kioskViewModel {
-        val app = context.applicationContext
         PrintLabelsViewModel(
             container.db, container.sync, container.outbox, container.prefs, container.labelSettings,
             container.labelBuilder.status, container.labelEngine,
-            sender = { host, zpl ->
-                withContext(Dispatchers.IO) { NetworkZebra(host, socketFactory = LocalNetworks.socketFactoryFor(app, host)).send(zpl) }
-            },
+            sender = container.labelSender,
             flash = container.flash, sound = container.sound,
         )
     }

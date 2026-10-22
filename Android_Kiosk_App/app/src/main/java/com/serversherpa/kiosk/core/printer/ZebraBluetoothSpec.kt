@@ -76,6 +76,10 @@ const val BLUETOOTH_SCAN_HINT_TEXT =
 /** A font download was cut short; the printer is still waiting for the rest of it. */
 const val FONT_INSTALL_CUT_TEXT = "The font install was cut off. Turn the printer off and on, then tap Check again."
 
+/** A font install to the printer was cut off, so nothing more is sent to it until it answers a
+ *  check (over any transport): the send was refused before anything went out. */
+class PrinterNeedsRestart : Exception(FONT_INSTALL_CUT_TEXT)
+
 /** The printer removed its pairing with this handheld (GATT status 5, 8, 15 or 137, or a lost bond). */
 fun pairingLostText(serial: String): String =
     "The printer forgot this device. Open Android Settings › Connected devices, forget $serial, " +
