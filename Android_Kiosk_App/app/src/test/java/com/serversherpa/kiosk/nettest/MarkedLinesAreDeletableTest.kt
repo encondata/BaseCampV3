@@ -49,7 +49,6 @@ class MarkedLinesAreDeletableTest {
             "    val internetTest = InternetTest(dataStore, scope) $MARK",
             "    fun go() {",
             "        internetTest.beforeSignOut() $MARK",
-            "        InternetTestRoutes.resetForTests() $MARK",
             "        InternetTestSection() $MARK",
             "        NetTestChip(onClick = { nav.navigate(Routes.SETTINGS) }) $MARK",
             "        netTestFootValue()?.let { FootItem(it) } $MARK",
@@ -82,6 +81,8 @@ class MarkedLinesAreDeletableTest {
         assertRejected("        netTestFootValue()?.let { $MARK")
         // Two statements on one line.
         assertRejected("        internetTest.beforeSignOut(); auth.logout() $MARK")
+        // A call chain that starts with the routes object: deleting the line drops the original call too.
+        assertRejected("        InternetTestRoutes.portal(client).newCall(req).enqueue(cb) $MARK")
         // The original call reshaped around the hook, as the first build had it.
         assertRejected("        try { route(client).newCall(request).execute() } catch (e: IOException) { throw ApiError(0, \"network\") } $MARK")
         assertRejected("        factory.createSocket() $MARK")
@@ -108,7 +109,11 @@ class MarkedLinesAreDeletableTest {
  *
  * 1. an import of a `com.serversherpa.kiosk.nettest.` symbol;
  * 2. a whole statement that starts with one of Internet Test's own names
- *    ([SYMBOLS]), or `val internetTest = ...` (the container's property);
+ *    ([LEADING]), or `val internetTest = ...` (the container's property).
+ *    `InternetTestRoutes` is not one of them: it hands back a client or a
+ *    socket factory, so a statement that starts with it is a chain
+ *    (`InternetTestRoutes.portal(client).newCall(req).enqueue(cb)`) whose
+ *    original calls would go with the line;
  * 3. a named argument on its own line, `name = <expr>,`, whose expression
  *    names Internet Test;
  * 4. a constructor parameter with a default, `private val name: <type> = <default>,`,
@@ -127,6 +132,14 @@ internal object DeletableShapes {
 
     /** Internet Test's own names that a marked statement or expression may use. */
     val SYMBOLS = setOf("internetTest", "InternetTest", "InternetTestRoutes", "InternetTestSection", "NetTestChip", "netTestFootValue")
+
+    /**
+     * The names a whole marked statement may start with. Not `InternetTestRoutes`:
+     * it is allowed inside a `.let(...)` step or a named argument (shapes 3 and
+     * 5), where the rest of the expression is original code, never at the head
+     * of a statement.
+     */
+    val LEADING = SYMBOLS - "InternetTestRoutes"
 
     private val IMPORT = Regex("""import com\.serversherpa\.kiosk\.nettest\.\w+(\.\w+)*""")
     private val PROPERTY = Regex("""val internetTest = (.+)""")
@@ -157,7 +170,7 @@ internal object DeletableShapes {
         PARAMETER.matchEntire(code)?.let { return onePiece(it.groupValues[2]) && onePiece(it.groupValues[3]) }
         CHAIN_STEP.matchEntire(code)?.let { return onePiece(it.groupValues[1]) && names(it.groupValues[1], SYMBOLS + added) }
         BARE_CALL.matchEntire(code)?.let { if (it.groupValues[1] in added) return true }
-        return WORD.find(code)?.value in SYMBOLS && code.first().isLetter() && isStatementEnd(code)
+        return WORD.find(code)?.value in LEADING && code.first().isLetter() && isStatementEnd(code)
     }
 
     private fun names(expr: String, names: Set<String>): Boolean = WORD.findAll(expr).any { it.value in names }
