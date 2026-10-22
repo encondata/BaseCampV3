@@ -81,7 +81,9 @@ class AppContainer(
     val httpClient: OkHttpClient = OkHttpClient.Builder().cookieJar(cookieJar)
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
     val session = SessionStore(httpClient, config, scope)
-    val api: KioskApi = OkHttpKioskApi(httpClient, config, session, route = InternetTestRoutes::portal) // INTERNET-TEST
+    val api: KioskApi = OkHttpKioskApi(httpClient, config, session,
+        route = InternetTestRoutes::portal, // INTERNET-TEST
+    )
     val auth = KioskAuth(api, session, identity, scope)
     val sync = Sync(api, db, scope, fontsDir = File(app.filesDir, "label-fonts"))
     val labelEngine: LabelEngine = LabelGenerator(app)
@@ -117,7 +119,9 @@ class AppContainer(
         labelBuilder.start(sync.status)
         scope.launch { session.sessionEnded.collect { cookieJar.clearRefreshCookie() } }
         SessionCoordinator(auth, heartbeat, foreground, scope).start()
-        MoveSetupGuard(auth.state, prefs, scope, onDropped = internetTest::onSetupDropped).start() // INTERNET-TEST
+        MoveSetupGuard(auth.state, prefs, scope,
+            onDropped = internetTest::onSetupDropped, // INTERNET-TEST
+        ).start()
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 foreground.value = true

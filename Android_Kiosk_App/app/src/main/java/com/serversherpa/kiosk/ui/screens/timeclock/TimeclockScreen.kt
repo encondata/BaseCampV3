@@ -134,7 +134,9 @@ private fun Avatar(url: String?, name: String, container: AppContainer) {
         if (url == null) return@LaunchedEffect
         bitmap = withContext(Dispatchers.IO) {
             try {
-                InternetTestRoutes.portal(container.httpClient).newCall(Request.Builder().url(url).build()).execute().use { r -> // INTERNET-TEST
+                container.httpClient
+                    .let(InternetTestRoutes::portal) // INTERNET-TEST
+                    .newCall(Request.Builder().url(url).build()).execute().use { r ->
                     r.body?.bytes()?.let { android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
                 }
             } catch (e: CancellationException) { throw e

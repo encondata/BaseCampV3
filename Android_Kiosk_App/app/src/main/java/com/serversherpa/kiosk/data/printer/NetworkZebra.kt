@@ -174,9 +174,10 @@ internal suspend fun <T> zebraSession(
     dispatcher: CoroutineDispatcher = Dispatchers.IO,
     block: (Socket) -> T,
 ): T = withContext(dispatcher) {
-    val factory = InternetTestRoutes.local(socketFactory) // INTERNET-TEST
     val socket = try {
-        factory.createSocket() // INTERNET-TEST
+        socketFactory
+            .let(InternetTestRoutes::local) // INTERNET-TEST
+            .createSocket()
     } catch (e: IOException) {
         throw PrinterUnreachable(host, e)
     }

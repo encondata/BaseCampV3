@@ -62,7 +62,11 @@ class OkHttpKioskApi(
     private val emptyBody: RequestBody = ByteArray(0).toRequestBody(null)
 
     private suspend fun execute(request: Request): Response = withContext(Dispatchers.IO) {
-        try { route(client).newCall(request).execute() } catch (e: IOException) { throw ApiError(0, "network") } // INTERNET-TEST
+        try {
+            client
+                .let(route) // INTERNET-TEST
+                .newCall(request).execute()
+        } catch (e: IOException) { throw ApiError(0, "network") }
     }
 
     private suspend fun apiUrl(path: String): String = config.apiUrlNow() + path
