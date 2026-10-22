@@ -14,6 +14,9 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- Printer Setup asks for approximate with precise location (Android 12+ ignores a request for
+         precise alone); Bluetooth printer scans need precise. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
     <!-- Zebra label printers over Bluetooth LE (the same permissions; asked for when Bluetooth is
          first picked in Printer Setup). Optional: a device without it prints over the network. -->

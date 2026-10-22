@@ -87,6 +87,10 @@ internal fun opensPrinterSetupFirst(printer: SavedPrinter?, phase: LabelBuildPha
 
 internal const val BUILD_FAILED_TEXT = "Labels couldn't be made. Try syncing again."
 
+/** A failed label's button: "Retry", or "Connect" when the printer forgot this device (its steps
+ *  end "…then come back and tap Connect."). Both connect again and resend the same label. */
+internal fun retryText(message: String?): String = if (bluetoothFixFor(message) == BluetoothFix.FORGET) "Connect" else "Retry"
+
 internal fun statusText(e: PrintEntry<*>): String = when (e.state) {
     PrintState.QUEUED -> "Waiting to print"
     PrintState.SENDING -> "Printing"
@@ -116,6 +120,7 @@ fun PrintLabelsScreen(nav: NavHostController) {
             container.labelBuilder.status, container.labelEngine,
             sender = container.labelSender,
             flash = container.flash, sound = container.sound,
+            bluetooth = container.zebraBluetooth,
         )
     }
     val ui by vm.state.collectAsStateWithLifecycle()
@@ -132,6 +137,8 @@ fun PrintLabelsScreen(nav: NavHostController) {
     val disabled = ui.loadStatus != LoadStatus.READY || empty || setup == null
 
     LaunchedEffect(Unit) { container.scanBus.events.collect { vm.onScan(it.value) } }
+    // A saved Bluetooth printer's link comes up in the background; nothing waits for it.
+    LaunchedEffect(Unit) { vm.warmUpPrinter() }
     // Once the stored settings are read (null until then).
     LaunchedEffect(settings == null) {
         val read = settings ?: return@LaunchedEffect
@@ -212,7 +219,7 @@ private fun LabelStatus(
  *  allow it, or forget the printer in Bluetooth settings). */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun CurrentCard(e: PrintEntry<AssetEntity>, onReprint: () -> Unit, onRetry: () -> Unit) {
+internal fun CurrentCard(e: PrintEntry<AssetEntity>, onReprint: () -> Unit, onRetry: () -> Unit) {
     val c = LocalKioskColors.current
     val t = tone(e.state)
     Column(
@@ -238,7 +245,7 @@ private fun CurrentCard(e: PrintEntry<AssetEntity>, onReprint: () -> Unit, onRet
         if (e.state == PrintState.PRINTED && a != null) MiniButton("Reprint", onReprint)
         if (e.state == PrintState.FAILED && a != null) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                MiniButton("Retry", onRetry)
+                MiniButton(retryText(e.message), onRetry)
                 bluetoothFixFor(e.message)?.let { BluetoothFixButton(it) }
             }
         }
@@ -270,7 +277,7 @@ private fun PrintRow(e: PrintEntry<AssetEntity>, showRetry: Boolean, onRetry: ()
         )
         if (e.state == PrintState.FAILED) e.message?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = ChipTone.RED.text) }
         e.recordWarning?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = ChipTone.AMBER.text) }
-        if (showRetry && e.state == PrintState.FAILED && a != null) MiniButton("Retry", onRetry, modifier = Modifier.padding(top = 4.dp))
+        if (showRetry && e.state == PrintState.FAILED && a != null) MiniButton(retryText(e.message), onRetry, modifier = Modifier.padding(top = 4.dp))
     }
     HorizontalDivider(color = c.paperLine)
 }

@@ -67,6 +67,7 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -127,10 +128,14 @@ class AppContainer(
     val printerGuard = PrinterGuard()
     /** The app's one Bluetooth LE link to a Zebra (D4): it connects on first need and stays up while
      *  the app is in use, and closes when the app goes to the background, on sign-out, when the
-     *  session ends, and when another printer is saved. Its own scope runs on Default, never Main:
-     *  its progress callbacks (a font install's) run there. Nothing scans, and nothing asks for a
-     *  permission, until Bluetooth is picked in Printer Setup or a Bluetooth printer is used. */
-    val zebraBluetooth = ZebraBluetooth(bluetoothOverride ?: AndroidBluetoothLe(app), CoroutineScope(SupervisorJob() + Dispatchers.Default))
+     *  session ends, and when another printer is saved. Its own scope, a child of [scope] (cancelling
+     *  that stops the link's event loop), runs on Default, never Main: its progress callbacks (a font
+     *  install's) run there. Nothing scans, and nothing asks for a permission, until Bluetooth is
+     *  picked in Printer Setup or a Bluetooth printer is used. */
+    val zebraBluetooth = ZebraBluetooth(
+        bluetoothOverride ?: AndroidBluetoothLe(app),
+        CoroutineScope(SupervisorJob(scope.coroutineContext[Job]) + Dispatchers.Default),
+    )
     val labelSettings = LabelSettingsStore(prefs, onConnectionChange = {
         printerGuard.reset()
         // A link up to the printer just saved stays (Printer Setup brought it up to choose it);

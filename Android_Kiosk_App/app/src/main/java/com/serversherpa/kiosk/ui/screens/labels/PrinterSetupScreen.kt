@@ -94,13 +94,13 @@ fun PrinterSetupScreen(nav: NavHostController) {
     val printer = settings?.printer
     val mode = ui.findMode
 
-    // Bluetooth's permissions are asked for the first time Bluetooth is picked, never before.
+    // Bluetooth's permissions are asked for the first time Bluetooth is picked, never before: all
+    // of them at once (precise location with approximate), the granted ones passing silently.
     val permissionPrompt = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         vm.scanBluetooth(permitted = BluetoothPermissions.granted(context))
     }
     fun pickBluetooth() {
-        val missing = BluetoothPermissions.missing(context)
-        if (missing.isEmpty()) vm.scanBluetooth() else permissionPrompt.launch(missing.toTypedArray())
+        vm.pickBluetooth(BluetoothPermissions.missing(context)) { permissionPrompt.launch(BluetoothPermissions.REQUIRED.toTypedArray()) }
     }
     // Back from Settings (a permission allowed, Bluetooth or Location turned on): Android sends
     // nothing for a permission, so Bluetooth is read again.
@@ -134,7 +134,7 @@ fun PrinterSetupScreen(nav: NavHostController) {
         SetupCard(mode == FindMode.IP, onClick = { vm.enterIp() }, enabled = !ui.busy, modifier = Modifier.padding(bottom = 10.dp)) {
             CardText("Enter IP", "Type the printer's IP address.")
         }
-        BluetoothCard(selected = mode == FindMode.BLUETOOTH, enabled = !ui.busy, onClick = { pickBluetooth() })
+        BluetoothCard(selected = mode == FindMode.BLUETOOTH, enabled = ui.bluetoothScanAllowed, onClick = { pickBluetooth() })
 
         if (mode == FindMode.SCAN) {
             if (ui.scanning) {
@@ -238,7 +238,7 @@ internal fun CardText(title: String, description: String) {
 }
 
 @Composable
-private fun Checks(ui: PrinterSetupUi) {
+internal fun Checks(ui: PrinterSetupUi) {
     val c = LocalKioskColors.current
     if (ui.checks.isEmpty()) {
         Text("Not checked yet.", style = MaterialTheme.typography.bodySmall, color = c.textMute)

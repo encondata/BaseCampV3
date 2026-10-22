@@ -71,7 +71,8 @@ const val BLUETOOTH_OFF_TEXT = "Turn on Bluetooth to reach the printer."
 /** Android keeps the kiosk off Bluetooth (the nearby-devices permission is denied). */
 const val BLUETOOTH_DENIED_TEXT = "Allow Bluetooth for ServerSherpa Kiosk in Settings to reach the printer."
 
-/** Android 11 and older find Bluetooth devices only while Location is on. */
+/** Android finds Bluetooth devices for this app only while Location is on (its BLUETOOTH_SCAN
+ *  permission doesn't disavow location). */
 const val LOCATION_OFF_TEXT = "Turn on Location to find Bluetooth printers on this device."
 
 /** Under the scan results, for a printer that doesn't show up. */

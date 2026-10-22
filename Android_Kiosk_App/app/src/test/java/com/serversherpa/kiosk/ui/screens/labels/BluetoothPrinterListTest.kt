@@ -14,27 +14,54 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.dp
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.test.core.app.ApplicationProvider
 import com.serversherpa.kiosk.NativeFontsSettled
+import com.serversherpa.kiosk.core.labels.LabelBuildStatus
+import com.serversherpa.kiosk.core.labels.LabelPick
+import com.serversherpa.kiosk.core.labels.PrintEntry
+import com.serversherpa.kiosk.core.labels.PrintState
 import com.serversherpa.kiosk.core.labels.PrinterConnection
 import com.serversherpa.kiosk.core.labels.SavedPrinter
+import com.serversherpa.kiosk.core.model.KioskAssetRow
 import com.serversherpa.kiosk.core.printer.BLUETOOTH_DENIED_TEXT
 import com.serversherpa.kiosk.core.printer.BLUETOOTH_OFF_TEXT
 import com.serversherpa.kiosk.core.printer.BLUETOOTH_SCAN_HINT_TEXT
 import com.serversherpa.kiosk.core.printer.LOCATION_OFF_TEXT
 import com.serversherpa.kiosk.core.printer.pairingLostText
+import com.serversherpa.kiosk.data.db.AssetEntity
+import com.serversherpa.kiosk.data.db.KioskDatabase
+import com.serversherpa.kiosk.data.db.toEntity
+import com.serversherpa.kiosk.data.labels.LabelEngine
+import com.serversherpa.kiosk.data.labels.LabelSettingsStore
+import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import com.serversherpa.kiosk.data.printer.BluetoothAvailability
+import com.serversherpa.kiosk.data.printer.FakeBluetoothPrinting
 import com.serversherpa.kiosk.data.printer.FoundBluetoothPrinter
+import com.serversherpa.kiosk.data.printer.PrinterGuard
+import com.serversherpa.kiosk.data.printer.PrinterLock
 import com.serversherpa.kiosk.data.printer.bluetoothUnavailableText
 import com.serversherpa.kiosk.ui.theme.KioskTheme
+import java.io.File
+import java.util.UUID
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -46,10 +73,11 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * The Bluetooth card and list on the 320 dp MC2200 (real fonts, native graphics, on each test so
- * [NativeFontsSettled] sees it: only a real text layout can show a clipped line): Zebras first with their signal and Connect, other devices folded away, the
- * scan hint and Stop; and each Bluetooth refusal with its message and a button that opens the
- * right Android screen.
+ * The Bluetooth card and list on the 320 dp MC2200 (real fonts and native graphics, set on each
+ * test so [NativeFontsSettled] sees it: only a real text layout can show a clipped line): Zebras
+ * first with their signal and Connect, other devices folded away, the scan hint and Stop; and each
+ * Bluetooth refusal with its message and a button that opens the right Android screen, on Printer
+ * Setup's list, its checks and test labels, and Print Labels' card.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w320dp-h533dp-hdpi")
@@ -71,7 +99,7 @@ class BluetoothPrinterListTest {
     private fun show(saved: SavedPrinter? = null) = compose.setContent {
         KioskTheme {
             Column(Modifier.padding(horizontal = 16.dp)) {
-                BluetoothCard(selected = ui.findMode == FindMode.BLUETOOTH, enabled = !ui.busy, onClick = {})
+                BluetoothCard(selected = ui.findMode == FindMode.BLUETOOTH, enabled = ui.bluetoothScanAllowed, onClick = {})
                 BluetoothResults(ui, saved, onChoose = { chosen += it }, onStop = { stops++ }, onScanAgain = {})
                 ui.pairingLost?.let { PairingLostNotice(it, onConnect = { connects++ }) }
             }
@@ -184,6 +212,96 @@ class BluetoothPrinterListTest {
         ui = ui.copy(installStopping = true)
         assertWhole("Stopping after ROBOTO-CONDENSED.TTF…")
         assertWhole("Stopping…")
+    }
+
+    /** Print Labels' latest scan, failed over Bluetooth: Retry beside the button that fixes it, or
+     *  Connect when the printer forgot this device (its steps say to tap Connect), whole on the
+     *  handheld. */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun printLabelsRetryAndFixButtonsFitA320dpHandheld() {
+        val asset: AssetEntity = KioskAssetRow("a1", "A-1", "Rack 1", serial_number = "SN1", make_model = "Dell").toEntity()
+        var entry by mutableStateOf(PrintEntry("e1", asset, "A-1", "2026-10-22T13:00:00Z", reprint = false, PrintState.FAILED, BLUETOOTH_OFF_TEXT))
+        var retries = 0
+        compose.setContent {
+            KioskTheme { Column(Modifier.padding(horizontal = 16.dp)) { CurrentCard(entry, onReprint = {}, onRetry = { retries++ }) } }
+        }
+        assertWhole(BLUETOOTH_OFF_TEXT)
+        assertWhole("Retry")
+        assertWhole("Turn on Bluetooth")
+        compose.onNodeWithText("Retry").performClick()
+        assertEquals(1, retries)
+
+        entry = entry.copy(message = pairingLostText("D8J224508535"))
+        assertWhole(pairingLostText("D8J224508535"))
+        assertWhole("Connect")
+        assertWhole("Bluetooth settings")
+        compose.onAllNodesWithText("Retry").assertCountEquals(0)
+        compose.onNodeWithText("Connect").performClick()
+        assertEquals(2, retries)
+
+        // Any other failure keeps Retry alone.
+        entry = entry.copy(message = "Can't reach the printer D8J224508535 over Bluetooth.")
+        assertWhole("Retry")
+        for (button in listOf("Turn on Bluetooth", "Open Settings", "Location settings", "Bluetooth settings", "Connect")) {
+            compose.onAllNodesWithText(button).assertCountEquals(0)
+        }
+    }
+
+    /** A check that met Bluetooth off says so on its Answers row, with Turn on Bluetooth under it. */
+    @Test fun aChecksRowRefusalHasItsButton() {
+        ui = PrinterSetupUi(checks = listOf(CheckRow(CheckKey.ANSWERS, CheckState.FAIL, BLUETOOTH_OFF_TEXT)))
+        compose.setContent { KioskTheme { Column(Modifier.padding(horizontal = 16.dp)) { Checks(ui) } } }
+        compose.onNodeWithText(BLUETOOTH_OFF_TEXT).assertIsDisplayed()
+        compose.onNodeWithText("Turn on Bluetooth").assertIsDisplayed().assertHasClickAction()
+        ui = ui.copy(checks = listOf(CheckRow(CheckKey.ANSWERS, CheckState.FAIL, "No Zebra printer answered over Bluetooth as D8J224508535.")))
+        compose.onAllNodesWithText("Turn on Bluetooth").assertCountEquals(0)
+    }
+
+    /** A test label refused because Bluetooth isn't allowed: the sheet shows Open Settings. */
+    @Test fun theTestLabelSheetShowsTheFixButton() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val db = KioskDatabase.inMemory(app)
+        try {
+            val prefs = KioskPrefs(PreferenceDataStoreFactory.create(scope = scope) { File(app.cacheDir, "sheet-${UUID.randomUUID()}.preferences_pb") })
+            val vm = PrinterSetupViewModel(
+                LabelSettingsStore(prefs), MutableStateFlow<LabelPick?>(null), MutableStateFlow(LabelBuildStatus()),
+                object : LabelEngine { override suspend fun call(fn: String, argsJson: String): String = error("not used") },
+                db, app.cacheDir, scanner = { emptyList() }, bluetooth = FakeBluetoothPrinting(),
+                zebraFor = { error("not used") }, printerLock = PrinterLock(), printerGuard = PrinterGuard(), scopeOverride = scope,
+            )
+            ui = PrinterSetupUi(testMessage = BLUETOOTH_DENIED_TEXT, testError = true)
+            compose.setContent { KioskTheme { TestLabelSheet(vm, ui, AlignmentSize(4.0, 2.0, 203), "Vegas Top", onDismiss = {}) } }
+            // The sheet scrolls on the handheld: bring each into view first.
+            compose.onNodeWithText(BLUETOOTH_DENIED_TEXT).performScrollTo().assertIsDisplayed()
+            compose.onNodeWithText("Open Settings").performScrollTo().assertIsDisplayed().assertHasClickAction()
+            ui = ui.copy(testMessage = "Alignment label (4x2) sent to the printer.", testError = false)
+            compose.onAllNodesWithText("Open Settings").assertCountEquals(0)
+        } finally {
+            scope.cancel()
+            db.close()
+        }
+    }
+
+    /** The saved printer is highlighted by the address it was saved with: a look-alike advertising
+     *  its serial elsewhere isn't. Only a printer saved with no address is matched by its name. */
+    @Test fun theSavedPrinterIsMatchedByItsAddress() {
+        val saved = SavedPrinter(PrinterConnection.Bluetooth("D8J224508535", zebra.address), "ZD421", "D8J224508535", 203)
+        assertTrue(isSavedPrinter(zebra, saved))
+        assertFalse(isSavedPrinter(zebra.copy(address = "66:55:44:33:22:11"), saved))
+        assertTrue(isSavedPrinter(renamed.copy(address = zebra.address.lowercase()), saved))
+        val noAddress = saved.copy(connection = PrinterConnection.Bluetooth("D8J224508535", null))
+        assertTrue(isSavedPrinter(zebra.copy(address = "66:55:44:33:22:11"), noAddress))
+        assertFalse(isSavedPrinter(renamed, noAddress))
+        assertFalse(isSavedPrinter(zebra, SavedPrinter("10.0.0.5", "ZD421", "S1", 203)))
+    }
+
+    /** While a check asks the printer, the Bluetooth card is off (its scan would be ended by it). */
+    @Test fun theBluetoothCardIsOffWhileChecksRun() {
+        ui = PrinterSetupUi(checking = true)
+        show()
+        compose.onNode(hasClickAction() and hasText("Bluetooth")).assertIsNotEnabled()
     }
 
     /** A printer that forgot this device: the steps, Bluetooth settings (where it's forgotten) and

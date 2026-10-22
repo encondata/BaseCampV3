@@ -866,7 +866,7 @@ class ZebraBluetoothTest {
         assertEquals(BLUETOOTH_DENIED_TEXT, BluetoothUnavailable(SERIAL, UNAUTHORIZED).message)
         assertEquals(LOCATION_OFF_TEXT, BluetoothUnavailable(SERIAL, LOCATION_OFF).message)
 
-        // Location off (API 30): finding a printer needs a scan, and a scan needs Location...
+        // Location off (any API level): finding a printer needs a scan, and a scan needs Location...
         val (bluetooth, fake) = make(LOCATION_OFF)
         fake.printer(addr)
         assertEquals(LOCATION_OFF, runCatching { bluetooth.connect(null, SERIAL) }.failure<BluetoothUnavailable>().availability)
@@ -894,14 +894,14 @@ class ZebraBluetoothTest {
         runCurrent()
         assertEquals(UNAUTHORIZED, bluetooth.availability.value)
 
-        // The adapter's own reading: no LE radio, then permission, then the switch, then Location.
-        assertEquals(UNSUPPORTED, bluetoothAvailability(false, false, false, false, true, false))
-        assertEquals(UNAUTHORIZED, bluetoothAvailability(true, false, false, false, true, false))
-        assertEquals(UNKNOWN, bluetoothAvailability(true, true, false, true, true, true))
-        assertEquals(POWERED_OFF, bluetoothAvailability(true, true, false, false, true, false))
-        assertEquals(LOCATION_OFF, bluetoothAvailability(true, true, true, false, true, false))
-        assertEquals(READY, bluetoothAvailability(true, true, true, false, false, false))
-        assertEquals(READY, bluetoothAvailability(true, true, true, false, true, true))
+        // The adapter's own reading: no LE radio, then permission, then the switch, then Location
+        // (at every API level: the manifest's BLUETOOTH_SCAN doesn't disavow location).
+        assertEquals(UNSUPPORTED, bluetoothAvailability(false, false, false, false, false))
+        assertEquals(UNAUTHORIZED, bluetoothAvailability(true, false, false, false, false))
+        assertEquals(UNKNOWN, bluetoothAvailability(true, true, false, true, true))
+        assertEquals(POWERED_OFF, bluetoothAvailability(true, true, false, false, false))
+        assertEquals(LOCATION_OFF, bluetoothAvailability(true, true, true, false, false))
+        assertEquals(READY, bluetoothAvailability(true, true, true, false, true))
     }
 
     @Test fun locationTurningOffEndsASearchBySerial() = runTest {

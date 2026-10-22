@@ -39,8 +39,8 @@ class BluetoothZebra internal constructor(
 
 // --- Errors (beside PrinterUnreachable, PrinterTimeout and PrinterNoReply, with host = the serial) ---
 
-/** Bluetooth is off, not allowed for the kiosk, missing, or (API 30, when a printer must be found
- *  by scanning) Location is off. */
+/** Bluetooth is off, not allowed for the kiosk, missing, or (when a printer must be found by
+ *  scanning) Location is off. */
 class BluetoothUnavailable(host: String, val availability: BluetoothAvailability) :
     PrinterException(host, unavailableText(availability))
 
@@ -69,9 +69,9 @@ class BluetoothPairingLost(host: String) : PrinterException(host, pairingLostTex
 private fun unavailableText(availability: BluetoothAvailability): String =
     bluetoothUnavailableText(availability) ?: "Bluetooth isn't ready yet. Try again in a moment."
 
-/** What to tell the crew when Bluetooth can't be used: it's off, not allowed for the kiosk, (API 30,
- *  for a scan) Location is off, or the device has no Bluetooth LE. Null while it can be used, or
- *  while its state isn't known yet. */
+/** What to tell the crew when Bluetooth can't be used: it's off, not allowed for the kiosk, (for a
+ *  scan) Location is off, or the device has no Bluetooth LE. Null while it can be used, or while its
+ *  state isn't known yet. */
 fun bluetoothUnavailableText(availability: BluetoothAvailability): String? = when (availability) {
     BluetoothAvailability.POWERED_OFF -> BLUETOOTH_OFF_TEXT
     BluetoothAvailability.UNAUTHORIZED -> BLUETOOTH_DENIED_TEXT
@@ -81,7 +81,7 @@ fun bluetoothUnavailableText(availability: BluetoothAvailability): String? = whe
 }
 
 /** A Bluetooth failure the crew fixes on the device, not at the printer: Bluetooth off, not allowed,
- *  missing or (a scan on API 30) Location off ([BluetoothUnavailable]), or a printer that forgot
+ *  missing or (for a scan) Location off ([BluetoothUnavailable]), or a printer that forgot
  *  this device ([BluetoothPairingLost]), also when it stopped the `~JX` clear before a call
  *  ([PrinterClearFailed]). Null for any other failure (Bluetooth not ready in time reads as
  *  unreachable). */

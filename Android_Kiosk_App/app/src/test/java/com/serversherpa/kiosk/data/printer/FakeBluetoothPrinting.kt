@@ -1,6 +1,7 @@
 package com.serversherpa.kiosk.data.printer
 
 import java.util.Collections
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,6 +20,8 @@ class FakeBluetoothPrinting(state: BluetoothAvailability = BluetoothAvailability
     /** Every connect, as (address, serial). */
     val connects: MutableList<Pair<String?, String?>> = Collections.synchronizedList(ArrayList())
     @Volatile var connectError: Exception? = null
+    /** When set, a connect waits for it (the printer taking its time to answer). */
+    @Volatile var connectGate: CompletableDeferred<Unit>? = null
     /** What a connect to an address answers (the office ZD421 unless the test says otherwise). */
     @Volatile var answer: (address: String?) -> BluetoothPrinterInfo = { address ->
         BluetoothPrinterInfo(address.orEmpty(), "Zebra Technologies", "ZD421", FakeBluetoothLe.SERIAL, "V93.21.38Z", "7.3")
@@ -58,6 +61,7 @@ class FakeBluetoothPrinting(state: BluetoothAvailability = BluetoothAvailability
 
     override suspend fun connect(address: String?, serial: String?): BluetoothPrinterInfo {
         connects += address to serial
+        connectGate?.await()
         connectError?.let { throw it }
         val info = answer(address)
         link.value = BluetoothLinkInfo(connected = true, info = info)

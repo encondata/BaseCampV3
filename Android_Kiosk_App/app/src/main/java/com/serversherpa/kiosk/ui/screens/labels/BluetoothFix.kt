@@ -28,7 +28,7 @@ enum class BluetoothFix(val button: String) {
     TURN_ON("Turn on Bluetooth"),
     /** Not allowed: this app's page in Settings, where its permissions are allowed. */
     ALLOW("Open Settings"),
-    /** Location is off (API 30 scans need it). */
+    /** Location is off (scans need it on). */
     LOCATION("Location settings"),
     /** The printer forgot this device: Bluetooth's settings, where it's forgotten too. */
     FORGET("Bluetooth settings"),

@@ -30,6 +30,7 @@ import com.serversherpa.kiosk.data.outbox.Outbox
 import com.serversherpa.kiosk.data.printer.BluetoothAvailability
 import com.serversherpa.kiosk.data.printer.BluetoothPairingLost
 import com.serversherpa.kiosk.data.printer.BluetoothUnavailable
+import com.serversherpa.kiosk.data.printer.FakeBluetoothPrinting
 import com.serversherpa.kiosk.data.printer.LabelSender
 import com.serversherpa.kiosk.data.printer.PrinterGuard
 import com.serversherpa.kiosk.data.printer.PrinterLock
@@ -113,6 +114,7 @@ class PrintLabelsViewModelTest {
         name: String, settings: LabelSettings = LabelSettings(printer = printer, offsetX = 4, offsetY = -2, peel = true),
         syncGate: CompletableDeferred<Unit>? = null,
         guard: PrinterGuard? = null,
+        bluetooth: FakeBluetoothPrinting? = null,
     ): Harness {
         val db = KioskDatabase.inMemory(ApplicationProvider.getApplicationContext())
         db.assets().insertAll(listOf(
@@ -150,6 +152,7 @@ class PrintLabelsViewModelTest {
             db, sync, outbox, prefs, source, status, engine,
             sender = if (guard == null) device else lockedSender(PrinterLock(), guard, device),
             flash = FlashController(backgroundScope), sound = null, scopeOverride = backgroundScope,
+            bluetooth = bluetooth,
         )
         settle()
         return Harness(vm, db, outbox, engine, sent, status, sendFailures, timeoutSends, sync, started, failWith)
@@ -295,6 +298,44 @@ class PrintLabelsViewModelTest {
         assertEquals(listOf("~JX", "LT0LS0|^XA^FDA-1^FS^XZ|MMT"), h.sent.map { it.second })
         assertEquals(1, h.outbox.snapshot.value.rows.size)
         h.db.close()
+    }
+
+    /** Opening Print Labels warms up a saved Bluetooth printer's link (D4) in the background:
+     *  nothing waits for it (a label scanned meanwhile goes out), there is one at a time, and a
+     *  connect that fails says nothing (the label's own failure does). A network printer starts
+     *  nothing. */
+    @Test fun printLabelsWarmsUpTheBluetoothLinkWhenItOpens() = runTest {
+        val serial = "D8J224508535"
+        val address = "AC:3F:A4:00:00:01"
+        val bluetooth = SavedPrinter(PrinterConnection.Bluetooth(serial, address), "ZD421", serial, 300)
+        val link = FakeBluetoothPrinting()
+        val gate = CompletableDeferred<Unit>()
+        link.connectGate = gate
+        val h = harness("p15", LabelSettings(printer = bluetooth), bluetooth = link)
+        h.vm.warmUpPrinter(); settle()
+        assertEquals(listOf<Pair<String?, String?>>(address to serial), link.connects.toList())
+        h.vm.warmUpPrinter(); settle()
+        assertEquals(1, link.connects.size)
+        // The connect is still going: a scanned label goes out all the same.
+        h.vm.onScan("A-1"); settle()
+        assertEquals(PrintState.PRINTED, h.vm.entries.value[0].state)
+        assertEquals(1, h.sent.size)
+        gate.complete(Unit); settle()
+
+        // A connect that fails says nothing of its own.
+        link.connectGate = null
+        link.connectError = BluetoothUnavailable(serial, BluetoothAvailability.POWERED_OFF)
+        h.vm.warmUpPrinter(); settle()
+        assertEquals(2, link.connects.size)
+        assertEquals(null, h.vm.state.value.error)
+        assertEquals(1, h.vm.entries.value.size)
+        h.db.close()
+
+        val network = FakeBluetoothPrinting()
+        val n = harness("p16", bluetooth = network)
+        n.vm.warmUpPrinter(); settle()
+        assertTrue(network.connects.isEmpty())
+        n.db.close()
     }
 
     @Test fun aScanWhileTheBuildRunsIsRefusedEvenWithAStoredLabel() = runTest {

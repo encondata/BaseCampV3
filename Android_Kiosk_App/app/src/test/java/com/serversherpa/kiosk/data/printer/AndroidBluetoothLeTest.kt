@@ -1,8 +1,13 @@
 package com.serversherpa.kiosk.data.printer
 
+import android.Manifest
+import android.app.Application
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.le.ScanRecord
 import android.bluetooth.le.ScanResult
+import android.content.pm.PackageManager
+import android.location.LocationManager
+import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -52,5 +57,21 @@ class AndroidBluetoothLeTest {
         // Another 16-bit service (Battery, 180F) isn't Zebra.
         val battery = byteArrayOf(0x03, 0x03, 0x0F, 0x18)
         assertFalse(advertisedFrom(result(flags + battery)).advertisesZebra)
+    }
+
+    /** Location off stops scans at every API level (here API 34): the manifest's BLUETOOTH_SCAN
+     *  doesn't disavow location, so Android drops scan results while it's off. */
+    @Test fun locationOffStopsScansOnApi31AndUp() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        shadowOf(app).grantPermissions(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        shadowOf(app.packageManager).setSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE, true)
+        @Suppress("DEPRECATION")
+        shadowOf(BluetoothAdapter.getDefaultAdapter()).setState(BluetoothAdapter.STATE_ON)
+        val location = shadowOf(app.getSystemService(LocationManager::class.java))
+        location.setLocationEnabled(false)
+        val client = AndroidBluetoothLe(app)
+        assertEquals(BluetoothAvailability.LOCATION_OFF, client.availability())
+        location.setLocationEnabled(true)
+        assertEquals(BluetoothAvailability.READY, client.availability())
     }
 }

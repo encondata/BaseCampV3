@@ -77,14 +77,14 @@ fun BluetoothResults(
         if (othersOpen) for (p in others) BluetoothRow(p, ui, saved, onChoose)
     }
     Text(BLUETOOTH_SCAN_HINT_TEXT, style = MaterialTheme.typography.bodySmall, color = c.textMute, modifier = Modifier.padding(vertical = 6.dp))
-    if (!ui.bluetoothScanning && ui.bluetoothFound != null) MiniButton("Scan again", onScanAgain, enabled = !ui.busy)
+    if (!ui.bluetoothScanning && ui.bluetoothFound != null) MiniButton("Scan again", onScanAgain, enabled = ui.bluetoothScanAllowed)
 }
 
 /** A device the scan heard: its name (a Zebra's is its serial), its signal, and Connect. */
 @Composable
 private fun BluetoothRow(p: FoundBluetoothPrinter, ui: PrinterSetupUi, saved: SavedPrinter?, onChoose: (FoundBluetoothPrinter) -> Unit) {
     val c = LocalKioskColors.current
-    SetupCard(isSaved(p, saved), onClick = { onChoose(p) }, enabled = !ui.busy, modifier = Modifier.padding(bottom = 8.dp)) {
+    SetupCard(isSavedPrinter(p, saved), onClick = { onChoose(p) }, enabled = !ui.busy, modifier = Modifier.padding(bottom = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
                 p.name, fontFamily = FragmentMono, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
@@ -96,9 +96,11 @@ private fun BluetoothRow(p: FoundBluetoothPrinter, ui: PrinterSetupUi, saved: Sa
     }
 }
 
-/** The device is the saved Bluetooth printer (by the address it was saved with, or its name, which
- *  is its serial). */
-private fun isSaved(p: FoundBluetoothPrinter, saved: SavedPrinter?): Boolean {
+/** The device is the saved Bluetooth printer: by the address it was saved with, or, only when none
+ *  was saved, by its name (a Zebra's is its serial). A look-alike advertising the saved serial at
+ *  another address isn't it. */
+internal fun isSavedPrinter(p: FoundBluetoothPrinter, saved: SavedPrinter?): Boolean {
     val c = saved?.connection as? PrinterConnection.Bluetooth ?: return false
-    return c.address.equals(p.address, ignoreCase = true) || c.serial.equals(p.name, ignoreCase = true)
+    val address = c.address ?: return c.serial.equals(p.name, ignoreCase = true)
+    return address.equals(p.address, ignoreCase = true)
 }

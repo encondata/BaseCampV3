@@ -44,8 +44,8 @@ fun sameUuid(a: String, b: String): Boolean = gattUuid(a) == gattUuid(b)
 
 /** The adapter: availability, the scan, and new GATT connections. */
 interface BluetoothLeClient {
-    /** What Bluetooth allows right now, from the adapter, the granted permissions and (API 30)
-     *  Location. Reading it never prompts. */
+    /** What Bluetooth allows right now, from the adapter, the granted permissions and Location.
+     *  Reading it never prompts. */
     fun availability(): BluetoothAvailability
 
     /** From now on every adapter event goes to [onEvent], on any thread. Called once. */
@@ -268,20 +268,21 @@ class GattQueue(private val link: GattLink) {
 
 /** Availability from what can be read without prompting: no LE radio, then a missing permission
  *  (asked first: on API 31+ even the switch-on request needs it), then the adapter's state, then
- *  (API 30, [needsLocation]) Location being off. */
+ *  Location being off. Location matters at every API level: the manifest's BLUETOOTH_SCAN (shared
+ *  with the RFD40's SDK) doesn't say `neverForLocation`, so Android drops scan results while
+ *  Location is off. It stops only scans; a printer with a known address connects without it. */
 internal fun bluetoothAvailability(
     hasLe: Boolean,
     permitted: Boolean,
     adapterOn: Boolean,
     adapterTurning: Boolean,
-    needsLocation: Boolean,
     locationOn: Boolean,
 ): BluetoothAvailability = when {
     !hasLe -> BluetoothAvailability.UNSUPPORTED
     !permitted -> BluetoothAvailability.UNAUTHORIZED
     adapterTurning -> BluetoothAvailability.UNKNOWN
     !adapterOn -> BluetoothAvailability.POWERED_OFF
-    needsLocation && !locationOn -> BluetoothAvailability.LOCATION_OFF
+    !locationOn -> BluetoothAvailability.LOCATION_OFF
     else -> BluetoothAvailability.READY
 }
 
@@ -330,7 +331,6 @@ class AndroidBluetoothLe(context: Context) : BluetoothLeClient {
             },
             adapterOn = state == BluetoothAdapter.STATE_ON,
             adapterTurning = state == BluetoothAdapter.STATE_TURNING_ON || state == BluetoothAdapter.STATE_TURNING_OFF,
-            needsLocation = Build.VERSION.SDK_INT < Build.VERSION_CODES.S,
             locationOn = location != null && LocationManagerCompat.isLocationEnabled(location),
         )
     }

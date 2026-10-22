@@ -14,6 +14,7 @@ import com.serversherpa.kiosk.core.labels.PrintQueue
 import com.serversherpa.kiosk.core.labels.PrintQueueDeps
 import com.serversherpa.kiosk.core.labels.PrintState
 import com.serversherpa.kiosk.core.labels.PrintStep
+import com.serversherpa.kiosk.core.labels.PrinterConnection
 import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.labels.StoredLabel
 import com.serversherpa.kiosk.core.labels.labelFor
@@ -33,6 +34,7 @@ import com.serversherpa.kiosk.data.labels.LabelEngineUnsupportedException
 import com.serversherpa.kiosk.data.labels.LabelSettingsSource
 import com.serversherpa.kiosk.data.outbox.Outbox
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
+import com.serversherpa.kiosk.data.printer.BluetoothPrinting
 import com.serversherpa.kiosk.data.printer.LabelSender
 import com.serversherpa.kiosk.data.printer.PrinterException
 import com.serversherpa.kiosk.data.printer.PrinterTimeout
@@ -47,6 +49,7 @@ import com.serversherpa.kiosk.ui.sound.SoundPlayer
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -66,7 +69,8 @@ data class PrintLabelsUi(
  * container's: each label under the app-wide printer lock and guard (a `~JX` first after a failed
  * send, nothing while a font install is cut), to a network or a Bluetooth printer. A Bluetooth
  * failure the crew fixes on the device (Bluetooth off or not allowed, a printer that forgot it)
- * says what to do; the screen puts the button that does it beside Retry.
+ * says what to do; the screen puts the button that does it beside Retry. A saved Bluetooth
+ * printer's link is warmed up when the screen opens ([warmUpPrinter]), through [bluetooth].
  */
 class PrintLabelsViewModel(
     private val db: KioskDatabase,
@@ -80,6 +84,8 @@ class PrintLabelsViewModel(
     private val flash: FlashController,
     private val sound: SoundPlayer?,
     scopeOverride: CoroutineScope? = null,
+    /** The container's Bluetooth link (null: nothing is warmed up). */
+    private val bluetooth: BluetoothPrinting? = null,
 ) : ViewModel() {
     private val scope = scopeOverride ?: viewModelScope
     private val _state = MutableStateFlow(PrintLabelsUi())
@@ -89,6 +95,7 @@ class PrintLabelsViewModel(
     @Volatile private var index: ScanIndex<AssetEntity>? = null
     @Volatile private var setup: KioskSetupSelection? = null
     @Volatile private var appearance = DEFAULT_APPEARANCE
+    @Volatile private var warmUp: Job? = null
 
     private val queue = PrintQueue(object : PrintQueueDeps<AssetEntity> {
         override suspend fun settings(): LabelSettings = labelSettings.settings.first()
@@ -190,6 +197,28 @@ class PrintLabelsViewModel(
     fun reprint(entryId: String) { scope.launch { queue.reprint(entryId)?.let { settled(it) } } }
 
     fun retry(entryId: String) { scope.launch { queue.retry(entryId)?.let { settled(it) } } }
+
+    /**
+     * The screen opened: a saved Bluetooth printer's link comes up in the background (D4: connect
+     * on first need), so the first label needn't wait for it. A warm-up only: nothing waits for it
+     * (a label scanned meanwhile goes out as always, taking its turn on the link after the
+     * connect), it takes no printer lock, and it says nothing (a label's own failure says what is
+     * wrong). One at a time; a network printer, or none, starts nothing.
+     */
+    fun warmUpPrinter() {
+        val link = bluetooth ?: return
+        if (warmUp?.isActive == true) return
+        warmUp = scope.launch {
+            val printer = labelSettings.settings.first().printer?.connection as? PrinterConnection.Bluetooth ?: return@launch
+            try {
+                link.connect(printer.address, printer.serial)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.i(TAG, "the Bluetooth printer's warm-up didn't connect", e)
+            }
+        }
+    }
 
     /** Runs the move's sync again (labels need a sync since the version 2 upgrade). */
     fun syncNow() { setup?.let { s -> s.initiativeId?.let { sync.run(it, s.initiativeName ?: "") } } }

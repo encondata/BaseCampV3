@@ -11,10 +11,13 @@ import com.serversherpa.kiosk.data.printer.WriteProgress
 import com.serversherpa.kiosk.data.printer.ZebraBluetooth
 import com.serversherpa.kiosk.data.printer.ZebraTransport
 import com.serversherpa.kiosk.data.printer.transportFor
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -79,6 +82,14 @@ class AppContainerPrinterTest {
         }
     }
 
+    /** Cancels the container's scope and waits for everything in it (the Bluetooth link's event
+     *  loop included) before the database closes: nothing started by [AppContainer.start] may still
+     *  be opening it. */
+    private suspend fun AppContainer.shutDown() {
+        withTimeout(10_000) { scope.coroutineContext[Job]!!.cancelAndJoin() }
+        db.close()
+    }
+
     /** The link up to the office ZD421. */
     private suspend fun AppContainer.linkUp(fake: FakeBluetoothLe): FakeGatt {
         zebraBluetooth.connect(address, serial)
@@ -115,9 +126,22 @@ class AppContainerPrinterTest {
             c.session.notifySessionEnded()
             eventually("closed when the session ended") { gatt.closed && !c.zebraBluetooth.link.value.connected }
         } finally {
-            c.scope.cancel()
-            c.db.close()
+            c.shutDown()
         }
+    }
+
+    /** The link's scope is the container's child: cancelling the container's scope stops it (a call
+     *  after that is cancelled, and never reaches the adapter). */
+    @Test fun linkStopsWithTheContainersScope() = runBlocking<Unit> {
+        val fake = FakeBluetoothLe()
+        fake.printer(address)
+        val c = testContainer(bluetooth = fake)
+        c.linkUp(fake)
+        val connects = fake.connects.size
+        c.shutDown()
+        val after = runCatching { c.zebraBluetooth.connect("AC:3F:A4:00:00:09", "XXJ224508599") }
+        assertTrue("$after", after.exceptionOrNull() is CancellationException)
+        assertEquals(connects, fake.connects.size)
     }
 
     /** Saving the printer the link is already up to (Printer Setup brought it up to choose it)
@@ -147,8 +171,7 @@ class AppContainerPrinterTest {
             c.resetApp(clearLocalData = {})
             eventually("closed when no printer is saved") { gatt.closed }
         } finally {
-            c.scope.cancel()
-            c.db.close()
+            c.shutDown()
         }
     }
 }

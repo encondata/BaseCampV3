@@ -33,8 +33,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 // --- What the screens see ---
 
-/** Whether the device can use Bluetooth LE right now. [LOCATION_OFF] (API 30 only) stops scans;
- *  a printer whose address is known is still reached without one. */
+/** Whether the device can use Bluetooth LE right now. [LOCATION_OFF] stops scans (Android drops
+ *  their results while Location is off); a printer whose address is known is still reached without one. */
 enum class BluetoothAvailability { UNKNOWN, READY, POWERED_OFF, UNAUTHORIZED, LOCATION_OFF, UNSUPPORTED }
 
 /** A named device a scan heard ([name] from its scan record). */

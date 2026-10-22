@@ -579,6 +579,7 @@ class PrinterSetupViewModelTest {
         assertEquals("Missing: LATO.TTF.", vm.row(CheckKey.FONTS)!!.detail)
     }
 
+    /** Progress as the bytes go out; no time left until a speed is measured (too few bytes here). */
     @Test fun installReportsProgress() = runBlocking<Unit> {
         libraryFonts("ROBOTO.TTF" to byteArrayOf(1, 2, 3, 4))
         val z = zebra(savedHost)
@@ -590,7 +591,7 @@ class PrinterSetupViewModelTest {
         assertNull(vm.state.value.installEta)
         vm.installFonts()
         eventually("half sent") { z.atInstallHold == 0.5 && vm.state.value.installProgress == 0.5f }
-        assertEquals("about 1 s left", vm.state.value.installEta)
+        assertNull(vm.state.value.installEta)
         z.installHoldAt = 1.0
         eventually("all sent") { z.atInstallHold == 1.0 && vm.state.value.installProgress == 1f }
         assertNull(vm.state.value.installEta)
@@ -984,8 +985,9 @@ class PrinterSetupViewModelTest {
         assertTrue(vm.state.value.testError)
     }
 
-    /** API 30 finds Bluetooth devices only with Location on: the scan says so (with Location
-     *  settings), and runs again by itself once Location is on. */
+    /** Android finds Bluetooth devices for this app only with Location on (its BLUETOOTH_SCAN
+     *  doesn't disavow location), at every API level: the scan says so (with Location settings),
+     *  and runs again by itself once Location is on. */
     @Test fun locationOffSaysSo() = runBlocking<Unit> {
         bt.availability.value = BluetoothAvailability.LOCATION_OFF
         val vm = vm()
@@ -1034,9 +1036,116 @@ class PrinterSetupViewModelTest {
         assertEquals(CheckState.OK, vm.row(CheckKey.ANSWERS)!!.state)
     }
 
+    /** A device whose Device Information gives no serial is refused (iOS's words): it couldn't be
+     *  found, or confirmed, again by it. Nothing is asked of it or saved, and the link lets it go. */
+    @Test fun aDeviceThatReportsNoSerialIsRefused() = runBlocking<Unit> {
+        assertEquals("This printer didn't report a serial number, so it can't be saved over Bluetooth.", NO_BLUETOOTH_SERIAL_TEXT)
+        val vm = vm()
+        for (serial in listOf(null, "  ")) {
+            bt.answer = { address -> BluetoothPrinterInfo(address.orEmpty(), "Zebra Technologies", "ZD421", serial, "V93.21.38Z", "7.3") }
+            val closes = bt.closes
+            vm.chooseBluetooth(found(name = "Dock 4 Zebra", zebra = true))
+            eventually("refused") { vm.state.value.chooseError != null && vm.state.value.choosing == null }
+            assertEquals(NO_BLUETOOTH_SERIAL_TEXT, vm.state.value.chooseError)
+            assertEquals(saved, store.settings.first().printer)
+            assertEquals(closes + 1, bt.closes)
+        }
+        assertTrue(synchronized(zebras) { zebras.values.all { it.calls.isEmpty() } })
+    }
+
+    /** Bluetooth's permissions are asked for when it is picked, and a refused prompt stays refused:
+     *  on API 31+ the link reads READY once the nearby-devices permissions are allowed even with
+     *  Location refused, but nothing scans (Android would hide what it hears) until the permissions
+     *  are allowed. A device without Bluetooth LE is never asked. */
+    @Test fun aRefusedPromptStaysRefusedWhenTheLinkReadsReady() = runBlocking<Unit> {
+        bt.availability.value = BluetoothAvailability.UNAUTHORIZED
+        val vm = vm()
+        var asked = 0
+        vm.pickBluetooth(listOf("android.permission.ACCESS_FINE_LOCATION")) { asked++ }
+        assertEquals(1, asked)
+        assertEquals(FindMode.BLUETOOTH, vm.state.value.findMode)
+        assertEquals(0, bt.scans)
+        // The prompt's answer: Nearby devices allowed, Location refused.
+        vm.scanBluetooth(permitted = false)
+        assertEquals(BLUETOOTH_DENIED_TEXT, vm.state.value.bluetoothMessage)
+        // Back in front: Bluetooth is read again, and the link (Location aside) reads READY.
+        vm.appResumed(permitted = false)
+        bt.availability.value = BluetoothAvailability.READY
+        delay(300)
+        assertEquals(0, bt.scans)
+        assertEquals(BLUETOOTH_DENIED_TEXT, vm.state.value.bluetoothMessage)
+        assertEquals(BluetoothFix.ALLOW, bluetoothFixFor(vm.state.value.bluetoothMessage))
+        // Allowed in Settings, then back: it scans.
+        vm.appResumed(permitted = true)
+        eventually("scanning") { bt.scans == 1 && vm.state.value.bluetoothScanning }
+        assertNull(vm.state.value.bluetoothMessage)
+
+        vm.stopBluetoothScan()
+        eventually("stopped") { !vm.state.value.bluetoothScanning }
+        bt.availability.value = BluetoothAvailability.UNSUPPORTED
+        vm.pickBluetooth(listOf("android.permission.BLUETOOTH_SCAN")) { asked++ }
+        assertEquals(1, asked)
+        eventually("no Bluetooth LE") { vm.state.value.bluetoothMessage == "This device doesn't support Bluetooth LE." }
+        assertNull(bluetoothFixFor(vm.state.value.bluetoothMessage))
+    }
+
+    /** Bluetooth off under a check: the Answers row says so (with its button); once it is on again
+     *  the checks run again, so the row no longer says to turn it on, and no scan starts for it. */
+    @Test fun aCheckRefusalChecksAgainOnceBluetoothIsOn() = runBlocking<Unit> {
+        eventually("pick") { builder.pick.value?.dpi == 203 }
+        store.setPrinter(btPrinter)
+        val vm = vm()
+        vm.scanBluetooth()
+        eventually("scanning") { vm.state.value.bluetoothScanning }
+        vm.stopBluetoothScan()
+        eventually("stopped") { !vm.state.value.bluetoothScanning }
+        val scans = bt.scans
+        bt.availability.value = BluetoothAvailability.POWERED_OFF
+        zebra(btSerial).failWith = BluetoothUnavailable(btSerial, BluetoothAvailability.POWERED_OFF)
+        vm.checked { vm.checkAgain() }
+        assertEquals(BLUETOOTH_OFF_TEXT, vm.row(CheckKey.ANSWERS)!!.detail)
+        assertEquals(BluetoothFix.TURN_ON, bluetoothFixFor(vm.row(CheckKey.ANSWERS)!!.detail))
+
+        zebra(btSerial).failWith = null
+        val runs = vm.state.value.checkRuns
+        bt.availability.value = BluetoothAvailability.READY
+        eventually("checked again") { vm.state.value.checkRuns > runs && !vm.state.value.checking }
+        assertEquals(CheckState.OK, vm.row(CheckKey.ANSWERS)!!.state)
+        assertNull(vm.state.value.bluetoothUnavailable)
+        delay(200)
+        assertEquals(scans, bt.scans)
+    }
+
+    /** While a check is asking the printer, Bluetooth can't be picked: the check's query would end
+     *  its scan without a word. A scan running when the checks start stops, keeping its list. */
+    @Test fun noBluetoothScanWhileACheckAsksThePrinter() = runBlocking<Unit> {
+        eventually("pick") { builder.pick.value?.dpi == 203 }
+        val z = zebra(savedHost)
+        val gate = CompletableDeferred<Unit>()
+        z.statusGate = gate
+        val vm = vm()
+        vm.scanBluetooth()
+        eventually("scanning") { vm.state.value.bluetoothScanning }
+        bt.hear(found())
+        eventually("listed") { vm.state.value.bluetoothFound == listOf(found()) }
+        vm.checkAgain()
+        withTimeout(8_000) { z.inStatus.await() }
+        assertFalse(vm.state.value.bluetoothScanning)
+        assertEquals(listOf(found()), vm.state.value.bluetoothFound)
+        assertFalse(vm.state.value.bluetoothScanAllowed)
+        val scans = bt.scans
+        vm.pickBluetooth(emptyList()) {}
+        vm.scanBluetooth()
+        delay(200)
+        assertEquals(scans, bt.scans)
+        gate.complete(Unit)
+        eventually("checked") { !vm.state.value.checking }
+        assertTrue(vm.state.value.bluetoothScanAllowed)
+    }
+
     /** The time left is reckoned from the font's first progress report (waiting for the printer
-     *  isn't install time), at the measured Bluetooth speed (3.9 KB/s) until a meaningful amount
-     *  has gone out, then at the speed this install measured. */
+     *  isn't install time), and shown only once a meaningful amount has gone out and been timed:
+     *  no guess before that, network or Bluetooth. */
     @Test fun installEtaStartsAtTheFirstReportAndWaitsForEnoughBytes() = runBlocking<Unit> {
         libraryFonts("ROBOTO.TTF" to ByteArray(400_000))
         val z = zebra(savedHost)
@@ -1049,13 +1158,12 @@ class PrinterSetupViewModelTest {
         delay(50)
         vm.installFonts()
         eventually("8 KB sent") { z.atInstallHold == 0.02 && vm.state.value.installProgress == 0.02f }
-        // 392 KB at 3.9 KB/s.
-        assertEquals("about 2 min left", vm.state.value.installEta)
+        assertNull(vm.state.value.installEta)
         delay(1_200)
         z.installHoldAt = 0.03
         eventually("12 KB sent") { z.atInstallHold == 0.03 && vm.state.value.installProgress == 0.03f }
-        // Over a second on, but only 4 KB measured: still 3.9 KB/s (388 KB left).
-        assertEquals("about 2 min left", vm.state.value.installEta)
+        // Over a second on, but only 12 KB measured: still nothing shown.
+        assertNull(vm.state.value.installEta)
         z.installHoldAt = 0.05
         eventually("20 KB sent") { z.atInstallHold == 0.05 && vm.state.value.installProgress == 0.05f }
         // 20 KB in about 1.2 s since the first report: about 25 s for the 380 KB left. Timed from

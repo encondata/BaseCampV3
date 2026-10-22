@@ -9,16 +9,21 @@ import org.junit.Test
 
 /** What Bluetooth printing asks Android for, by API level, and the manifest it relies on. */
 class BluetoothPermissionsTest {
-    /** API 30 (the MC2200): fine location, which Bluetooth scans need there (with Location on). */
+    /** API 30 (the MC2200): precise location, which Bluetooth scans need, asked with approximate. */
     @Test fun api30AsksForLocation() {
-        assertEquals(listOf(Manifest.permission.ACCESS_FINE_LOCATION), BluetoothPermissions.requiredFor(30))
+        assertEquals(
+            listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
+            BluetoothPermissions.requiredFor(30),
+        )
     }
 
-    /** API 31+: the nearby-devices pair, and fine location too, since the manifest's
-     *  BLUETOOTH_SCAN doesn't disavow location (below). */
+    /** API 31+: the nearby-devices pair, and precise location too, since the manifest's
+     *  BLUETOOTH_SCAN doesn't disavow location (below), asked with approximate (Android 12+
+     *  ignores a request for precise alone). */
     @Test fun api31AndUpAskForNearbyDevicesAndLocation() {
         val expected = listOf(
-            Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION,
         )
         assertEquals(expected, BluetoothPermissions.requiredFor(31))
         assertEquals(expected, BluetoothPermissions.requiredFor(36))
@@ -34,6 +39,10 @@ class BluetoothPermissionsTest {
             ?: throw AssertionError("the manifest declares no BLUETOOTH_SCAN")
         assertFalse(scan.contains("neverForLocation"))
         assertTrue(BluetoothPermissions.requiredFor(31).contains(Manifest.permission.ACCESS_FINE_LOCATION))
+        // Every permission asked for is declared (approximate location included).
+        for (permission in BluetoothPermissions.requiredFor(36)) {
+            assertTrue(permission, manifest.contains("""<uses-permission android:name="$permission" />"""))
+        }
         assertTrue(
             Regex("""<uses-feature\s+android:name="android\.hardware\.bluetooth_le"\s+android:required="false"\s*/>""")
                 .containsMatchIn(manifest),
