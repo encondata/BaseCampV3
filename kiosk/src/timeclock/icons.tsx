@@ -43,6 +43,18 @@ export function IconKeyboard(props: IconProps) {
   );
 }
 
+/** The Enter Your Name keyboard toggle: a small keyboard in the current
+ *  text color, so it reads on both the light and the pressed (ink) button. */
+export function IconKeyboardToggle(props: IconProps) {
+  return (
+    <Svg viewBox="0 0 24 24" {...props}>
+      <rect x="2.5" y="6" width="19" height="12" rx="2.4" stroke="currentColor" strokeWidth="2" />
+      <path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M6.5 13.5h.01M17.5 13.5h.01M9.5 14h5"
+        stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </Svg>
+  );
+}
+
 export function IconChevron(props: IconProps) {
   return (
     <Svg viewBox="0 0 24 24" {...props}>

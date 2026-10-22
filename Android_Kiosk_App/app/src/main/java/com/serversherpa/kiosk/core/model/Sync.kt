@@ -32,6 +32,11 @@ data class KioskPersonRow(
     val rfid_tag: String? = null,
     val is_worker: Boolean = false,
     val has_account: Boolean = false,
+    /** What a printed badge's QR code carries. */
+    val badge_uid: String? = null,
+    val job_title: String? = null,
+    /** Shown as "Employee ID". */
+    val external_id: String? = null,
 )
 
 @Serializable data class KioskPeopleSync(val generated_at: String, val people: List<KioskPersonRow> = emptyList())

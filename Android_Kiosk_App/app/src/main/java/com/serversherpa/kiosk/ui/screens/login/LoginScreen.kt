@@ -20,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -39,11 +40,15 @@ import androidx.navigation.NavHostController
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.model.SessionData
 import com.serversherpa.kiosk.data.identity.KioskIdentity
+import com.serversherpa.kiosk.data.station.TIMECLOCK_STATION
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.ui.Routes
+import com.serversherpa.kiosk.ui.guards.StationIdleReturn
 import com.serversherpa.kiosk.ui.components.kioskViewModel
+import com.serversherpa.kiosk.ui.screens.timeclock.screens.TcArrowLeftIcon
 import com.serversherpa.kiosk.ui.theme.Geologica
 import com.serversherpa.kiosk.ui.theme.StatusBarIcons
+import kotlinx.coroutines.flow.map
 
 /**
  * The sign-in screen, in the light mockup style of the portal's login page
@@ -63,9 +68,15 @@ fun LoginScreen(nav: NavHostController) {
     StatusBarIcons(darkIcons = true)
     val goHome = { nav.navigate(Routes.HOME) { popUpTo(0) } }
     var scanning by rememberSaveable { mutableStateOf(false) }
+    // A Time Clock station (Login.tsx): the way back to its Welcome, which Home shows while
+    // nobody is signed in, also taken on its own after a quiet minute (StationIdleReturn) so a
+    // worker who tapped the gear by mistake can't strand the station here.
+    val station by remember(container) { container.prefs.setupSelection.map { it?.stationType == TIMECLOCK_STATION } }
+        .collectAsStateWithLifecycle(initialValue = false)
 
-    LoginContent(
+    StationIdleReturn(nav, restartKey = listOf(ui.email, ui.password, ui.movePassword, ui.view)) { LoginContent(
         ui = ui,
+        backToTimeclock = if (station) goHome else null,
         kioskName = identity.name,
         actions = LoginActions(
             setEmail = vm::setEmail, setPassword = vm::setPassword, togglePassword = vm::togglePassword,
@@ -76,7 +87,7 @@ fun LoginScreen(nav: NavHostController) {
         ),
         canScan = container.hasCamera,
         pairPanel = { PairPanel(pairVm, portalUrl) { session: SessionData -> container.auth.completePair(session); goHome() } },
-    )
+    ) }
     // The kiosk's own camera, QR only: the first code read is the move password and is submitted at once.
     // Only over the Move password view: `scanning` is saved across process death but the view isn't, and a
     // scan's error lands in moveError, which no other view shows.
@@ -118,7 +129,12 @@ internal fun loginArtHeight(maxWidth: Dp, maxHeight: Dp): Dp = min(maxWidth / MO
 internal fun loginArtWidth(maxWidth: Dp, artHeight: Dp): Dp = min(maxWidth, artHeight * MOUNTAINS_ASPECT)
 
 @Composable
-internal fun LoginContent(ui: LoginUi, kioskName: String, actions: LoginActions, canScan: Boolean = false, pairPanel: @Composable () -> Unit) {
+internal fun LoginContent(
+    ui: LoginUi, kioskName: String, actions: LoginActions, canScan: Boolean = false,
+    /** Set on a Time Clock station: the "Back to the time clock" button. */
+    backToTimeclock: (() -> Unit)? = null,
+    pairPanel: @Composable () -> Unit,
+) {
     BoxWithConstraints(Modifier.fillMaxSize().background(LoginPalette.Canvas)) {
         // Anchored at the bottom right; on a phone it spans the screen and crops to the peaks.
         val artHeight = loginArtHeight(maxWidth, maxHeight)
@@ -137,6 +153,10 @@ internal fun LoginContent(ui: LoginUi, kioskName: String, actions: LoginActions,
                     error = true, modifier = Modifier.padding(top = 16.dp),
                 )
                 ui.status.banner?.let { LoginNotice(it, modifier = Modifier.padding(top = 8.dp)) }
+                if (backToTimeclock != null) LoginSecondaryButton(
+                    "Back to the time clock", TcArrowLeftIcon, backToTimeclock,
+                    Modifier.padding(top = 16.dp).testTag("login-back-to-timeclock"),
+                )
 
                 Text(
                     "Sign in", color = LoginPalette.Ink, fontFamily = Geologica, fontWeight = FontWeight.ExtraBold,

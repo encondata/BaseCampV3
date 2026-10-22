@@ -19,6 +19,7 @@ import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.ui.flash.ScanFlash
 import com.serversherpa.kiosk.ui.guards.KioskGuard
 import com.serversherpa.kiosk.ui.guards.SetupGate
+import com.serversherpa.kiosk.ui.guards.StationIdleReturn
 import com.serversherpa.kiosk.ui.screens.enroll.EnrollScreen
 import com.serversherpa.kiosk.ui.screens.home.HomeScreen
 import com.serversherpa.kiosk.ui.screens.labels.LabelsHomeScreen
@@ -44,14 +45,17 @@ fun KioskApp() {
         Box(androidx.compose.ui.Modifier.fillMaxSize()) {
             NavHost(nav, startDestination = Routes.HOME) {
                 composable(Routes.LOGIN) { LoginScreen(nav) }
-                composable(Routes.HOME) { KioskGuard(nav) { KioskShell(nav) { HomeScreen(nav) } } }
+                // A signed-out Time Clock station rests on Welcome here (KioskGuard).
+                composable(Routes.HOME) { KioskGuard(nav, stationHome = true) { KioskShell(nav) { HomeScreen(nav) } } }
                 composable(Routes.SETUP) { KioskGuard(nav) { KioskShell(nav) { KioskSetupScreen(nav) } } }
+                // Reachable signed out (sign-in's gear): a Time Clock station returns to Welcome when idle.
                 composable(Routes.SETTINGS, arguments = listOf(navArgument("tab") { type = NavType.StringType; nullable = true })) { entry ->
-                    KioskShell(nav) { SettingsScreen(nav, entry.arguments?.getString("tab")) }
+                    StationIdleReturn(nav) { KioskShell(nav) { SettingsScreen(nav, entry.arguments?.getString("tab")) } }
                 }
                 gated(nav, Routes.SCAN, FeatureId.SCAN) { ScanScreen(nav) }
                 gated(nav, Routes.ENROLL, FeatureId.ENROLL) { EnrollScreen(nav) }
-                gated(nav, Routes.TIMECLOCK, FeatureId.TIMECLOCK) { TimeclockScreen(nav) }
+                // The time clock owns the whole screen (no kiosk top bar or footer), spec section 5.
+                gated(nav, Routes.TIMECLOCK, FeatureId.TIMECLOCK, shell = false) { TimeclockScreen(nav) }
                 gated(nav, Routes.CONTAINERS, FeatureId.CONTAINERS) { FeaturePlaceholderScreen(feature(FeatureId.CONTAINERS), nav) }
                 gated(nav, Routes.TRUCKS, FeatureId.TRUCKS) { FeaturePlaceholderScreen(feature(FeatureId.TRUCKS), nav) }
                 gated(nav, Routes.LABELS, FeatureId.LABELS) { LabelsHomeScreen(nav) }
@@ -80,7 +84,9 @@ internal fun SetupClearedRedirect(nav: NavHostController, cleared: Flow<String>)
     }
 }
 
-/** KioskGuard + SetupGate + KioskShell around a feature screen. */
-private fun androidx.navigation.NavGraphBuilder.gated(nav: NavHostController, route: String, id: FeatureId, content: @Composable () -> Unit) {
-    composable(route) { KioskGuard(nav) { SetupGate(feature(id), nav) { KioskShell(nav) { content() } } } }
+/** KioskGuard + SetupGate + KioskShell around a feature screen; [shell] false for a full-screen one. */
+private fun androidx.navigation.NavGraphBuilder.gated(
+    nav: NavHostController, route: String, id: FeatureId, shell: Boolean = true, content: @Composable () -> Unit,
+) {
+    composable(route) { KioskGuard(nav) { SetupGate(feature(id), nav) { if (shell) KioskShell(nav) { content() } else content() } } }
 }

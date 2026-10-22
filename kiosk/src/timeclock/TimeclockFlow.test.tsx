@@ -329,6 +329,7 @@ describe('Welcome (station)', () => {
 
 describe('Enter Your Name', () => {
   it('on-screen keys T, I, N find the person; a result row confirms them', async () => {
+    localStorage.setItem('ss.kiosk.tcKeyboard', 'shown');
     renderFlow();
     await peopleLoaded();
     await user.click(screen.getByRole('button', { name: /Enter Your Name/ }));
@@ -345,6 +346,116 @@ describe('Enter Your Name', () => {
     expect(await heading('Is this you?')).toBeTruthy();
     expect(backend.status).toHaveBeenCalledWith('p-tina');
     expect(screen.queryByText(/Employee ID/)).toBeNull();
+  });
+
+  describe('keyboard toggle', () => {
+    const KEY = 'ss.kiosk.tcKeyboard';
+    const kb = () => screen.queryByRole('group', { name: 'On-screen keyboard' });
+    const showBtn = () => screen.getByRole('button', { name: 'Show on-screen keyboard' });
+    const hideBtn = () => screen.getByRole('button', { name: 'Hide on-screen keyboard' });
+    async function toName() {
+      renderFlow();
+      await peopleLoaded();
+      await user.click(screen.getByRole('button', { name: /Enter Your Name/ }));
+      await heading('Enter Your Name');
+      await waitFor(() => expect(document.activeElement).toBe(searchBox()));
+    }
+
+    it('is hidden by default, the box has focus, and the toggle is not pressed', async () => {
+      await toName();
+      expect(kb()).toBeNull();
+      expect(showBtn().getAttribute('aria-pressed')).toBe('false');
+    });
+
+    it('the toggle shows and hides the keyboard, keeps focus in the box, and is remembered', async () => {
+      await toName();
+      await user.click(showBtn());
+      expect(kb()).toBeTruthy();
+      expect(hideBtn().getAttribute('aria-pressed')).toBe('true');
+      expect(document.activeElement).toBe(searchBox());
+      expect(localStorage.getItem(KEY)).toBe('shown');
+      await user.click(hideBtn());
+      expect(kb()).toBeNull();
+      expect(document.activeElement).toBe(searchBox());
+      expect(localStorage.getItem(KEY)).toBe('hidden');
+    });
+
+    it('the system touch keyboard is allowed while ours is hidden, and off while it is shown', async () => {
+      await toName();
+      expect(searchBox().getAttribute('inputmode')).toBe('text');
+      await user.click(showBtn());
+      expect(searchBox().getAttribute('inputmode')).toBe('none');
+      await user.click(hideBtn());
+      expect(searchBox().getAttribute('inputmode')).toBe('text');
+    });
+
+    it('Welcome\'s hidden scan input stays inputMode none', async () => {
+      renderFlow();
+      await peopleLoaded();
+      expect(scanInput().getAttribute('inputmode')).toBe('none');
+    });
+
+    it('restores a stored "shown" choice on a fresh mount', async () => {
+      localStorage.setItem(KEY, 'shown');
+      await toName();
+      expect(kb()).toBeTruthy();
+      expect(hideBtn()).toBeTruthy();
+    });
+
+    it('typing plus Enter with one match picks that person, keyboard hidden or shown', async () => {
+      await toName();
+      await user.type(searchBox(), 'tina{Enter}');
+      await waitFor(() => expect(backend.status).toHaveBeenCalledWith('p-tina'));
+      expect(await heading('Is this you?')).toBeTruthy();
+      cleanup();
+      backend.status.mockClear();
+      localStorage.setItem(KEY, 'shown');
+      await toName();
+      await user.type(searchBox(), 'nguyen{Enter}');
+      await waitFor(() => expect(backend.status).toHaveBeenCalledWith('p-tina'));
+    });
+
+    it('Enter with no match shows the not-found message', async () => {
+      await toName();
+      await user.type(searchBox(), 'zzzz{Enter}');
+      expect(await screen.findByText('No one matches that name.')).toBeTruthy();
+    });
+
+    it('a scanned value still selects at once with the keyboard hidden and shown', async () => {
+      await toName();
+      await user.type(searchBox(), BADGE);
+      await waitFor(() => expect(backend.status).toHaveBeenCalledWith('p-alex'));
+      cleanup();
+      backend.status.mockClear();
+      localStorage.setItem(KEY, 'shown');
+      await toName();
+      await user.type(searchBox(), BADGE);
+      await waitFor(() => expect(backend.status).toHaveBeenCalledWith('p-alex'));
+    });
+
+    it('physical typing counts as activity for the idle timer', async () => {
+      await toName();
+      await act(async () => { vi.advanceTimersByTime(IDLE_MS - 1_000); });
+      await user.type(searchBox(), 'a');
+      await act(async () => { vi.advanceTimersByTime(IDLE_MS - 1_000); });
+      expect(screen.getByRole('heading', { name: 'Enter Your Name' })).toBeTruthy();
+      await act(async () => { vi.advanceTimersByTime(2_000); });
+      expect(await heading('Welcome!')).toBeTruthy();
+    });
+
+    it('a localStorage that throws still renders, hidden', async () => {
+      const get = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+      const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+      try {
+        await toName();
+        expect(kb()).toBeNull();
+        await user.click(showBtn());
+        expect(kb()).toBeTruthy();
+      } finally {
+        get.mockRestore();
+        set.mockRestore();
+      }
+    });
   });
 
   it('a physical keyboard types into the box too, and a scan there selects at once', async () => {

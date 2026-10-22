@@ -35,6 +35,14 @@ Asset labels are made on the device by the shared TypeScript generator (`kiosk/s
 
 Labels print as raw ZPL to a network Zebra on port 9100. Printer Setup finds printers on the iPad's Wi-Fi or Ethernet /24 (never over cellular), or takes a typed IP. iOS asks for Local Network access the first time (`NSLocalNetworkUsageDescription`). If it was denied, turn it on under Settings › ServerSherpa Kiosk › Local Network. Unit tests use a fake printer on 127.0.0.1 only. Design and rulings: `../docs/superpowers/specs/2026-10-21-android-label-printing-design.md` (iOS implementation notes).
 
+## Time Clock station
+
+Kiosk Setup › **Time Clock** makes this device a dedicated time clock. It signs out to a Welcome screen, and crews clock in and out there by name or with the QR code from the portal's /me page.
+- The station key is kept in the Keychain and bound to the API origin. Changing the API URL drops it, and you run Kiosk Setup again.
+- The gear on Welcome opens sign-in.
+- Signed in, Home shows Time Clock, Kiosk Setup and Settings.
+- Design and rulings: `../docs/superpowers/specs/2026-10-20-kiosk-timeclock-station-design.md` (Implementation notes, phases 2 and 3).
+
 ## Kiosk lock-down
 
 iOS has no app pinning API for an ordinary app. Use Guided Access (Settings › Accessibility › Guided Access; triple-click the side button to start) or, on managed devices, MDM single-app mode. The app keeps the screen awake while signed in.

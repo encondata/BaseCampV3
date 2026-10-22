@@ -57,9 +57,12 @@ open class FakeKioskApi : KioskApi {
     override suspend fun labelFontContent(id: String, initiativeId: String): ByteArray { calls += "fontContent:$id"; return fontContent(id) }
     override suspend fun postScans(body: KioskScanBatchIn): KioskScanBatchOut { calls += "postScans"; scanBatches += body; return postScansResult(body) }
     override suspend fun postRfidEnroll(assetId: String, body: KioskRfidEnrollIn) = rfidResult(assetId, body).also { calls += "rfid" }
-    override suspend fun timeclockStatus(personId: String) = statusResult(personId).also { calls += "timeclockStatus" }
+    val statusZones = ArrayList<String?>()
+    override suspend fun timeclockStatus(personId: String, tz: String?): KioskTimeclockStatus { statusZones += tz; return statusResult(personId).also { calls += "timeclockStatus" } }
     override suspend fun clockIn(body: ClockInIn) = clockInResult(body).also { calls += "clockIn" }
     override suspend fun clockOut(body: ClockOutIn) = clockOutResult(body).also { calls += "clockOut" }
+    var issueStationKeyResult: (String) -> String = { "station-key-1" }
+    override suspend fun issueStationKey(serial: String) = issueStationKeyResult(serial).also { calls += "issueStationKey" }
 }
 
 fun fakeSession(roles: List<String> = listOf("worker"), maxRank: Int = 20, mustChange: Boolean = false, kioskMove: KioskMove? = null) = SessionData(

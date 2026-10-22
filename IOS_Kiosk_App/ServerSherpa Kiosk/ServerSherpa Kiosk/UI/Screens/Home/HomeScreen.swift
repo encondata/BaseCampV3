@@ -9,8 +9,8 @@ struct HomeTile: Equatable {
     let lockedReason: String?
 }
 
-func homeTiles(setupState: SetupState, devMode: Bool) -> [HomeTile] {
-    FEATURES.map { f in
+func homeTiles(setupState: SetupState, devMode: Bool, stationType: String? = nil) -> [HomeTile] {
+    homeFeatures(stationType: stationType).map { f in
         let available = featureAvailable(f, setupState: setupState, devMode: devMode)
         let reason = available ? nil : (setupState == .failed ? "Kiosk setup failed — open Kiosk Setup." : "Finish Kiosk Setup first.")
         return HomeTile(feature: f, available: available, lockedReason: reason)
@@ -45,12 +45,14 @@ struct HomeScreen: View {
 struct HomeContent: View {
     @Binding var path: [Route]
     @Environment(KioskPrefs.self) private var prefs
+    @Environment(KioskAuth.self) private var auth
     @Environment(\.kioskPalette) private var palette
     @State private var width: CGFloat = 0
+    @State private var leaving = false
 
     var body: some View {
         let banner = homeBanner(setupState: prefs.setupState, devMode: prefs.devMode)
-        let tiles = homeTiles(setupState: prefs.setupState, devMode: prefs.devMode)
+        let tiles = homeTiles(setupState: prefs.setupState, devMode: prefs.devMode, stationType: prefs.setupSelection?.stationType)
         let perRow = homeColumns(width: width)
         let rows = stride(from: 0, to: tiles.count, by: perRow).map { Array(tiles[$0..<min($0 + perRow, tiles.count)]) }
         VStack(alignment: .leading, spacing: 0) {
@@ -73,7 +75,7 @@ struct HomeContent: View {
     }
 
     private func tileView(_ tile: HomeTile) -> some View {
-        SetupCard(selected: false, enabled: tile.available, action: { path.append(Route.forFeature(tile.feature.id)) }) {
+        SetupCard(selected: false, enabled: tile.available && !leaving, action: { open(tile.feature) }) {
             FeatureIcon(id: tile.feature.id, tint: palette.accent)
             Text(tile.feature.title).font(KioskType.titleLarge).foregroundStyle(palette.text)
                 .fixedSize(horizontal: false, vertical: true).padding(.top, 8)
@@ -84,6 +86,16 @@ struct HomeContent: View {
                     .fixedSize(horizontal: false, vertical: true).padding(.top, 6)
             }
         }
-        .accessibilityIdentifier("tile-\(tile.feature.id.rawValue)")
+        .accessibilityIdentifier(tile.feature == TIMECLOCK_STATION_FEATURE ? "tile-timeclock-station" : "tile-\(tile.feature.id.rawValue)")
+    }
+
+    /// A station's Time Clock tile signs out: the guard then rests the station on its Welcome.
+    private func open(_ feature: KioskFeature) {
+        if feature == TIMECLOCK_STATION_FEATURE {
+            leaving = true
+            Task { await auth.logout() }
+        } else {
+            path.append(Route.forFeature(feature.id))
+        }
     }
 }

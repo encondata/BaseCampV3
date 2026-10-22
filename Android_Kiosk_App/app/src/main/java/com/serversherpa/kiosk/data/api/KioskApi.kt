@@ -64,7 +64,16 @@ interface KioskApi {
     suspend fun postScans(body: KioskScanBatchIn): KioskScanBatchOut
     /** 409 rfid_in_use (detail asset_name), 422 bad_rfid/rfid_too_long, 404, 423, network. */
     suspend fun postRfidEnroll(assetId: String, body: KioskRfidEnrollIn): KioskRfidEnroll
-    suspend fun timeclockStatus(personId: String): KioskTimeclockStatus
+    /** `tz`: the device's IANA zone, so "today" has a zone when the kiosk's site has none. */
+    suspend fun timeclockStatus(personId: String, tz: String? = null): KioskTimeclockStatus
     suspend fun clockIn(body: ClockInIn): KioskTimeclockStatus
     suspend fun clockOut(body: ClockOutIn): KioskTimeclockStatus
+
+    // ── station key ─────────────────────────────────────────────────
+
+    /** POST /kiosk/station-key under the signed-in session: issues (or replaces) this Time Clock,
+     *  RFID or Label station's key and returns it — the only time it is ever shown. Store it in
+     *  [com.serversherpa.kiosk.data.station.StationKeyStore]; never log it. 409 not_rfid_station /
+     *  kiosk_not_registered / setup_clear_pending, 403 not_signed_in_here, 404 device_not_found. */
+    suspend fun issueStationKey(serial: String): String
 }

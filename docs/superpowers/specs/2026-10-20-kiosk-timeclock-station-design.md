@@ -518,4 +518,90 @@ page, shown only when the person has a `badge_uid`.
   punches by name and by badge UUID, both orientations, `/timeclock` as a
   regular kiosk, and the portal QR. The controller does this after the notes
   land.
-- Re-point migration 0105 at merge (see above).
+
+## Implementation notes (phases 2 and 3: Android and iOS)
+
+These notes were written after the build (branch `timeclock-native`, plan
+`docs/superpowers/plans/2026-10-21-timeclock-android-ios.md`). Each app now
+has the guided flow, which replaces its old Timeclock screen, and a Time Clock
+station mode.
+
+### API
+
+- A `timeclock` key may live on a `laptop`, `android`, `zebra` or `ios`
+  kiosk. RFID and Label stations stay laptop-only. The shared rule is
+  `station_keys.station_sub_type_ok`. `zebra` is included because the
+  Android app on a Zebra handheld reports that sub_type.
+- Setting a kiosk up again as a regular kiosk (no `station_type`) clears a
+  `timeclock` station type, and the type change revokes the key.
+
+### Both apps
+
+- Kiosk Setup starts with **What is this kiosk?** The two choices are
+  **Regular kiosk** ("Scan, enroll and print with a signed-in crew.") and
+  **Time Clock** ("Crews clock in and out here; it stays ready on its own.").
+  The Time Clock path is Move (or **No move**), then Site (or **No site**),
+  then finish.
+- Finishing issues the station key. If the server answers
+  `not_signed_in_here`, the app sends one sign-in heartbeat and retries
+  once. It stores the key, signs the person out, and lands on Welcome.
+- The key lives only in the secure store (EncryptedSharedPreferences on
+  Android, the Keychain on iOS). It is **bound to the API origin it was
+  issued for**:
+  - A key whose stored origin differs from the configured API URL is
+    dropped and never sent.
+  - Saving a different API URL in Settings drops it, whether or not anyone
+    is signed in.
+  - Station calls are built from the base URL that was checked.
+  - Why: a review found that a signed-out worker could reach Settings from
+    Login's gear and point the kiosk at another host.
+- When nobody is signed in at a station, the guard shows Welcome instead of
+  Login. The gear opens Login, which offers **Back to the time clock**.
+  Login, and Settings opened from it, return to Welcome after 60 s idle.
+- Signed in at a station, Home shows only Time Clock, Kiosk Setup and
+  Settings. The Time Clock tile signs the person out to Welcome.
+- The station syncs **people only**, through the station route. It does
+  this when Welcome starts and each time the flow returns to it.
+- Key errors:
+  - 401 `station_key_invalid` and 403 `wrong_station_type` drop the key and
+    show the waiting copy.
+  - 403 `kiosk_not_registered` keeps the key, shows the paused copy, and
+    retries every 60 s.
+- These drop the key: a regular re-setup, Reset app, Clear Setup (Android),
+  and a move-password sign-in that drops a station's setup.
+- **Try again** after a failed punch re-reads the status before punching
+  again, so a punch that was in fact recorded is never sent twice. The web
+  re-sends instead.
+- A camera button sits in the Enter Your Name box on devices with a camera,
+  so a phone with no built-in scanner can still read a badge QR.
+
+### Android
+
+- **Enter Your Name uses the system keyboard** (Jimmy, after testing on his
+  Pixel). The in-app keyboard made the screen jump as results changed.
+  - The box takes focus and opens the keyboard.
+  - The keyboard's Search key runs the old Search logic.
+  - Results scroll in a fixed area between the box and the keyboard.
+  - Landscape never uses the full-screen keyboard.
+- HTTP calls are cancellable (`enqueue` plus `call.cancel()`), so the 10 s
+  read timeout really fires. The shared client allows 16 requests per host.
+  Punches run `NonCancellable`, with no timeout.
+
+### iOS
+
+- Keeps the in-app on-screen keyboard for now.
+- SwiftData schema V3 adds the people fields. V2 is frozen with its golden
+  test.
+
+### Web and laptop
+
+- **Enter Your Name assumes a physical keyboard** (Jimmy). The on-screen
+  keyboard is hidden behind a keyboard icon in the search box. The kiosk
+  remembers the choice in `ss.kiosk.tcKeyboard`.
+
+### Owed
+
+- A hardware check on a Zebra handheld (DataWedge scans on Welcome and
+  Name).
+- A VoiceOver and TalkBack pass.
+- Checking the laptop's results-area heights live.

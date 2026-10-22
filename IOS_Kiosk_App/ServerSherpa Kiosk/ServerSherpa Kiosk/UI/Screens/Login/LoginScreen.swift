@@ -77,12 +77,35 @@ private struct LoginScreenBody: View {
                 if new == .pair { Task { await pair.begin() } } else if old == .pair { pair.stop() }
             }
             .onDisappear { pair.stop() }
-            .sheet(isPresented: $kioskSheet) { SettingsScreen(initialTab: .thisKiosk, onDone: { kioskSheet = false }) }
+            // a Time Clock station's sign-in page goes back to Welcome after a quiet minute
+            .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in container.station.noteLoginActivity() })
+            .onChange(of: "\(vm.email)\u{0}\(vm.password)") { container.station.noteLoginActivity() }
+            .sheet(isPresented: settingsSheet) {
+                SettingsScreen(initialTab: .thisKiosk, onDone: { kioskSheet = false })
+                    // on a Time Clock station, Settings counts as activity on the sign-in page: its
+                    // quiet minute still returns the station to Welcome, closing the sheet
+                    .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in container.station.noteLoginActivity() })
+            }
+            .onChange(of: container.station.loginRequested) { _, requested in if !requested { kioskSheet = false } }
+    }
+
+    /// The Settings sheet, closed on a Time Clock station once its sign-in request ends.
+    private var settingsSheet: Binding<Bool> {
+        Binding(get: { loginSettingsSheetShown(kioskSheet, selection: container.prefs.setupSelection,
+                                               loginRequested: container.station.loginRequested) },
+                set: { kioskSheet = $0 })
     }
 
     private func form(_ metrics: LoginMetrics) -> some View {
-        LoginForm(vm: vm, f: metrics.f, pair: pair)
+        LoginForm(vm: vm, f: metrics.f, pair: pair, onBackToTimeclock: backToTimeclock)
         .frame(width: metrics.formWidth)
+    }
+
+    /// On a Time Clock station (reached through Welcome's gear): the way back to its Welcome.
+    private var backToTimeclock: (() -> Void)? {
+        guard loginOffersBackToTimeclock(selection: container.prefs.setupSelection) else { return nil }
+        let station = container.station
+        return { station.backToTimeclock() }
     }
 
     /// The form column on the right (≥ 900 pt); the scene is drawn behind it.

@@ -41,11 +41,11 @@ struct StoreMigrationTests {
         ])
         #expect(KioskSchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
         #expect(KioskSchemaV2.versionIdentifier == Schema.Version(2, 0, 0))
+        #expect(KioskSchemaV3.versionIdentifier == Schema.Version(3, 0, 0))
     }
 
-    /// V2's hashes. They may change only until V2 first ships. After that,
-    /// V2's models must be frozen into nested classes (as V1's are) before any
-    /// V3 changes the top-level models, and these hashes never change again.
+    /// V2's hashes, captured while V2 was the current version. V2's models are
+    /// now frozen nested copies (as V1's are), so these never change again.
     @Test func v2MatchesTheCurrentModels() throws {
         #expect(try hashes(KioskSchemaV2.models) == [
             "AssetRecord": "fQPXcFmSak5wb8ueyeBQXH8WchqGLrsHYvemHcL3f+Y=",
@@ -56,6 +56,23 @@ struct StoreMigrationTests {
             "MetaRecord": "/UsUMHs8eOmw2h9ICHj44owKFCHIXCyREfIUyZs+UB4=",
             "OutboxRecord": "LROWuRXnVT8xKmpj7+FimZDHwkXZWcCls0WiL4Az55Q=",
             "PersonRecord": "o81WD8FTA0vSjoC8WW5EEbkPnBxlVXEa7AgcLUNxy58=",
+            "TruckRecord": "xLvsfmI3+YrAuHc1P+zEeNpKSfFEEiMahUiLhWPYmBI=",
+        ])
+    }
+
+    /// V3's hashes. They may change only until V3 first ships. After that,
+    /// V3's models must be frozen into nested classes (as V1's and V2's are)
+    /// before any V4 changes the top-level models, and these never change again.
+    @Test func v3MatchesTheCurrentModels() throws {
+        #expect(try hashes(KioskSchemaV3.models) == [
+            "AssetRecord": "fQPXcFmSak5wb8ueyeBQXH8WchqGLrsHYvemHcL3f+Y=",
+            "ContainerRecord": "xiV4SI2FytLhhQH6ZURpHBRwAzqC2PgaAA720FvmiYA=",
+            "GeneratedLabelRecord": "egCgr0FGUJOcr4veGo1Vfeq3x4RZ9OPZgFQ8UegKD4g=",
+            "LabelFontRecord": "ge1ILpgy/XJqzTU14LZUEFLD3ZF1UISrWhdEwiPEYBs=",
+            "LabelTemplateRecord": "UslMw+yEjcSV88BaUmgxPwj4u5j0NP/5T6CbSktt3/U=",
+            "MetaRecord": "/UsUMHs8eOmw2h9ICHj44owKFCHIXCyREfIUyZs+UB4=",
+            "OutboxRecord": "LROWuRXnVT8xKmpj7+FimZDHwkXZWcCls0WiL4Az55Q=",
+            "PersonRecord": "gZ68huHk2JqKVr2KdwPhLEIWYFxt75fHJ9nkbTNBV8A=",
             "TruckRecord": "xLvsfmI3+YrAuHc1P+zEeNpKSfFEEiMahUiLhWPYmBI=",
         ])
     }
@@ -92,8 +109,39 @@ struct StoreMigrationTests {
         for store in coordinator.persistentStores { try coordinator.remove(store) }
     }
 
-    /// A V2 store with two queued scans and one asset, written by the app's own code.
-    private func seedV2(at url: URL) async throws {
+    /// A V2 store as the shipped V2 build wrote it (through its frozen models):
+    /// the two queued scans, one asset with its payload, a person, a label template.
+    private func seedV2(at url: URL) throws {
+        let model = try #require(KioskStoreOpener.frozenModel(KioskSchemaV2.models))
+        let coordinator = NSPersistentStoreCoordinator(managedObjectModel: model)
+        _ = try coordinator.addPersistentStore(type: .sqlite, at: url, options: [NSPersistentHistoryTrackingKey: true])
+        let context = NSManagedObjectContext(.privateQueue)
+        context.persistentStoreCoordinator = coordinator
+        let asset = encodeJson(OutboxAsset(id: "a2", assetId: "A-2", name: "Rack 2", rfid: nil, serialNumber: "SN2", makeModel: "Dell R740"))
+        try context.performAndWait {
+            func insert(_ entity: String, _ values: [String: Any]) {
+                NSManagedObject(entity: model.entitiesByName[entity]!, insertInto: context).setValuesForKeys(values)
+            }
+            insert("AssetRecord", ["id": "a1", "assetId": "A-1", "makeModel": "Dell R740", "labelJson": "{}",
+                                   "payloadJson": "{\"id\":\"a1\"}", "position": 3])
+            for i in 1...2 {
+                var row: [String: Any] = ["clientScanId": "c\(i)", "seq": Int64(i), "scannedValue": "A-\(i)", "scanType": "barcode",
+                                          "scannedAt": "2026-10-21T10:00:0\(i)Z", "matched": true, "status": i == 1 ? "queued" : "retrying",
+                                          "attempts": i - 1, "siteId": "s1", "initiativeId": "i1", "scanStatus": "pre_stage"]
+                if i == 2, let asset { row["asset"] = asset }
+                insert("OutboxRecord", row)
+            }
+            insert("PersonRecord", ["id": "p1", "displayName": "Pat Doe", "firstName": "Pat", "lastName": "Doe", "rfidTag": "1003",
+                                    "isWorker": true, "hasAccount": false])
+            insert("LabelTemplateRecord", ["id": "tpl1", "position": 0, "json": "{}"])
+            insert("MetaRecord", ["key": "sync", "value": "{\"initiativeId\":\"i1\"}"])
+            try context.save()
+        }
+        for store in coordinator.persistentStores { try coordinator.remove(store) }
+    }
+
+    /// A current-version store with two queued scans and one asset, written by the app's own code.
+    private func seedCurrent(at url: URL) async throws {
         let store = KioskStore(modelContainer: try KioskSchema.container(url: url))
         try await store.outboxUpsert(outboxRows())
         try await store.replaceRoster(assets: [KioskAssetRow(id: "a1", assetId: "A-1")], people: [], containers: [], trucks: [],
@@ -111,9 +159,9 @@ struct StoreMigrationTests {
         }
     }
 
-    /// A store a newer build wrote: V2 plus an attribute this build does not know.
+    /// A store a newer build wrote: V3 plus an attribute this build does not know.
     private func seedNewerVersion(at url: URL) throws {
-        let model = try #require(KioskStoreOpener.frozenModel(KioskSchemaV2.models)?.copy() as? NSManagedObjectModel)
+        let model = try #require(KioskStoreOpener.frozenModel(KioskSchemaV3.models)?.copy() as? NSManagedObjectModel)
         let extra = NSAttributeDescription()
         extra.name = "fromTheFuture"
         extra.type = .string
@@ -142,7 +190,7 @@ struct StoreMigrationTests {
 
     private func inMemory() -> ModelContainer { try! KioskSchema.inMemoryContainer() }
 
-    @Test func v1StoreOpensAtV2WithEveryRow() async throws {
+    @Test func v1StoreOpensAtTheCurrentVersionWithEveryRow() async throws {
         let dir = try tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         try seedV1(at: storeUrl(dir))
@@ -176,7 +224,12 @@ struct StoreMigrationTests {
         records[0].position = 7
         try context.save()
 
-        // A second open of the migrated store is a plain V2 open.
+        // The people columns V3 added read as nil.
+        let people = try context.fetch(FetchDescriptor<PersonRecord>())
+        #expect(people.map(\.id) == ["p1"])
+        #expect(people[0].badgeUid == nil && people[0].jobTitle == nil && people[0].externalId == nil)
+
+        // A second open of the migrated store is a plain current-version open.
         let reopened = ModelContext(try KioskSchema.container(url: storeUrl(dir)))
         let again = try reopened.fetch(FetchDescriptor<AssetRecord>(sortBy: [SortDescriptor(\.id)]))
         #expect(again[0].payloadJson == "{\"id\":\"a1\",\"n\":1.50}")
@@ -189,7 +242,7 @@ struct StoreMigrationTests {
     /// `Fixtures/PrechangeKioskStore.sqlite` was written by SwiftData in the
     /// build before versioning (6d1a7ce0): 3 assets, 1 unmatched scan, the sync
     /// meta row. Checkpointed to a single file.
-    @Test func aStoreFromThePrechangeBuildOpensAtV2() async throws {
+    @Test func aStoreFromThePrechangeBuildOpensAtTheCurrentVersion() async throws {
         let dir = try tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let fixture = try #require(Bundle(for: FixtureBundle.self).url(forResource: "PrechangeKioskStore", withExtension: "sqlite"))
@@ -206,11 +259,50 @@ struct StoreMigrationTests {
         #expect(try context.fetch(FetchDescriptor<MetaRecord>()).map(\.value) == ["{\"initiativeId\":\"i1\"}"])
     }
 
-    @Test func inMemoryContainerIsV2() throws {
+    /// V2 → V3 keeps every row and adds the person's badge, job title and
+    /// Employee ID as nil until the next people sync fills them.
+    @Test func v2StoreOpensAtV3WithEveryRow() async throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try seedV2(at: storeUrl(dir))
+        #expect(KioskStoreOpener.classify(storeAt: storeUrl(dir)) == .known)
+
+        let container = try KioskSchema.container(url: storeUrl(dir))
+        let store = KioskStore(modelContainer: container)
+        #expect(try await store.outboxAll().sorted { $0.seq < $1.seq } == outboxRows())
+        #expect(try await store.assets().map(\.id) == ["a1"])
+        let people = try await store.people()
+        #expect(people == [KioskPersonRow(id: "p1", displayName: "Pat Doe", firstName: "Pat", lastName: "Doe", rfidTag: "1003",
+                                          isWorker: true, hasAccount: false)])
+
+        let context = ModelContext(container)
+        let asset = try #require(try context.fetch(FetchDescriptor<AssetRecord>()).first)
+        #expect(asset.payloadJson == "{\"id\":\"a1\"}" && asset.position == 3)
+        #expect(try context.fetchCount(FetchDescriptor<LabelTemplateRecord>()) == 1)
+        #expect(try context.fetch(FetchDescriptor<MetaRecord>()).map(\.value) == ["{\"initiativeId\":\"i1\"}"])
+
+        // A people sync writes the new columns, and they survive a reopen.
+        try await store.replaceRoster(assets: [KioskAssetRow(id: "a1", assetId: "A-1")],
+                                      people: [KioskPersonRow(id: "p1", displayName: "Pat Doe", firstName: "Pat", lastName: "Doe", rfidTag: "1003",
+                                                              badgeUid: "ab12cd34-2222-4333-8444-555555555555", jobTitle: "Lead",
+                                                              externalId: "E-7", isWorker: true)],
+                                      containers: [], trucks: [],
+                                      meta: SyncMeta(initiativeId: "i1", initiativeName: "Move", assets: 1, people: 1, containers: 0,
+                                                     trucks: 0, syncedAt: "2026-10-21T10:00:00Z"))
+        let reopened = KioskStore(modelContainer: try KioskSchema.container(url: storeUrl(dir)))
+        let again = try await reopened.people()
+        #expect(again.first?.badgeUid == "ab12cd34-2222-4333-8444-555555555555")
+        #expect(again.first?.jobTitle == "Lead" && again.first?.externalId == "E-7")
+        #expect(try await reopened.outboxAll().count == 2)
+    }
+
+    @Test func inMemoryContainerIsV3() throws {
         let context = ModelContext(try KioskSchema.inMemoryContainer())
         context.insert(LabelTemplateRecord(id: "tpl1", position: 0, json: "{}"))
+        context.insert(PersonRecord(KioskPersonRow(id: "p1", displayName: "Bea", badgeUid: "b1")))
         try context.save()
         #expect(try context.fetchCount(FetchDescriptor<LabelTemplateRecord>()) == 1)
+        #expect(try context.fetch(FetchDescriptor<PersonRecord>()).first?.badgeUid == "b1")
     }
 
     @Test func classifyReadsTheFileWithoutOpeningIt() async throws {
@@ -224,8 +316,11 @@ struct StoreMigrationTests {
         try seedV1(at: v1)
         #expect(KioskStoreOpener.classify(storeAt: v1) == .known)
         let v2 = dir.appending(path: "v2.store")
-        try await seedV2(at: v2)
+        try seedV2(at: v2)
         #expect(KioskStoreOpener.classify(storeAt: v2) == .known)
+        let current = dir.appending(path: "current.store")
+        try await seedCurrent(at: current)
+        #expect(KioskStoreOpener.classify(storeAt: current) == .known)
         let newer = dir.appending(path: "newer.store")
         try seedNewerVersion(at: newer)
         #expect(KioskStoreOpener.classify(storeAt: newer) == .unknownVersion)
@@ -273,7 +368,7 @@ struct StoreMigrationTests {
     @Test func aHealthyStoreThatWillNotOpenIsLeftInPlace() async throws {
         let dir = try tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
-        try await seedV2(at: storeUrl(dir))
+        try await seedCurrent(at: storeUrl(dir))
         let before = try names(dir)
 
         let opener = FailOnce()
@@ -304,11 +399,15 @@ struct StoreMigrationTests {
     }
 
     /// A corrupt file cannot be read for salvage, so these force the move on a
-    /// readable store to prove the salvage reads V1 and V2 stores alike.
-    @Test(arguments: [1, 2]) func aMovedStoreHasItsOutboxSalvaged(version: Int) async throws {
+    /// readable store to prove the salvage reads V1, V2 and V3 stores alike.
+    @Test(arguments: [1, 2, 3]) func aMovedStoreHasItsOutboxSalvaged(version: Int) async throws {
         let dir = try tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
-        if version == 1 { try seedV1(at: storeUrl(dir)) } else { try await seedV2(at: storeUrl(dir)) }
+        switch version {
+        case 1: try seedV1(at: storeUrl(dir))
+        case 2: try seedV2(at: storeUrl(dir))
+        default: try await seedCurrent(at: storeUrl(dir))
+        }
 
         let opened = KioskStoreOpener.open(directory: dir, now: Date(), protectedDataAvailable: { true }, open: FailOnce().open,
                                            classify: { _ in .corrupt }, inMemory: inMemory)

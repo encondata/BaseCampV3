@@ -54,9 +54,17 @@ protocol KioskApi: Sendable {
     func postScans(_ body: KioskScanBatchIn) async throws -> KioskScanBatchOut
     /// 409 rfid_in_use (detail asset_name), 422 bad_rfid/rfid_too_long, 404, 423, network.
     func postRfidEnroll(assetId: String, _ body: KioskRfidEnrollIn) async throws -> KioskRfidEnroll
-    func timeclockStatus(personId: String) async throws -> KioskTimeclockStatus
+    /// `serial` names the kiosk so "today" is its site's day; `tz` (the kiosk's own IANA
+    /// zone) is the day when the site has none. Either is left out of the query when nil.
+    func timeclockStatus(personId: String, serial: String?, tz: String?) async throws -> KioskTimeclockStatus
     func clockIn(_ body: ClockInIn) async throws -> KioskTimeclockStatus
     func clockOut(_ body: ClockOutIn) async throws -> KioskTimeclockStatus
+
+    // MARK: Time Clock station
+
+    /// `POST /kiosk/station-key` under the signed-in session: a new station key for this
+    /// kiosk, shown once. 403 `not_signed_in_here` until a heartbeat registered the session.
+    func issueStationKey(serial: String) async throws -> String
 
     /// Unauthenticated GET of an absolute (presigned) URL, e.g. an avatar.
     func fetchImage(url: String) async throws -> Data

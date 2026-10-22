@@ -63,21 +63,23 @@ final class URLSessionKioskApi: KioskApi {
     }
 
     // MARK: plumbing
+    // The static helpers are shared with `URLSessionStationApi`, which builds, runs and
+    // parses its requests the same way but never through `authed`.
 
-    private typealias Response = (data: Data, http: HTTPURLResponse)
+    typealias Response = (data: Data, http: HTTPURLResponse)
 
-    private static func url(_ string: String) throws -> URL {
+    static func url(_ string: String) throws -> URL {
         guard let url = URL(string: string) else { throw ApiError.network() }
         return url
     }
 
-    private static func request(_ url: URL, _ method: String = "GET") -> URLRequest {
+    static func request(_ url: URL, _ method: String = "GET") -> URLRequest {
         var r = URLRequest(url: url)
         r.httpMethod = method
         return r
     }
 
-    private static func request<T: Encodable>(_ url: URL, post body: T) throws -> URLRequest {
+    static func request<T: Encodable>(_ url: URL, post body: T) throws -> URLRequest {
         var r = request(url, "POST")
         r.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         do {
@@ -89,13 +91,18 @@ final class URLSessionKioskApi: KioskApi {
     }
 
     /// Percent-encodes a path segment or query value (URLEncoder with `+` as `%20`).
-    private static func q(_ value: String) -> String {
+    static func q(_ value: String) -> String {
         var allowed = CharacterSet.alphanumerics
         allowed.insert(charactersIn: "-._~")
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
     private func execute(_ request: URLRequest) async throws -> Response {
+        try await Self.execute(request, on: session)
+    }
+
+    /// Runs `request` on `session`: a transport failure is `ApiError.network()`, a canceled call `CancellationError`.
+    static func execute(_ request: URLRequest, on session: URLSession) async throws -> Response {
         do {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else { throw ApiError.network() }
@@ -113,7 +120,7 @@ final class URLSessionKioskApi: KioskApi {
 
     /// Non-2xx → `ApiError` from the body; else the decoded body. A 2xx body
     /// that does not decode reads as `unknown_error` with its status.
-    private static func parse<T: Decodable>(_ response: Response, as type: T.Type = T.self) throws -> T {
+    static func parse<T: Decodable>(_ response: Response, as type: T.Type = T.self) throws -> T {
         guard (200..<300).contains(response.http.statusCode) else {
             throw ApiError.from(status: response.http.statusCode, body: response.data)
         }
@@ -301,8 +308,10 @@ final class URLSessionKioskApi: KioskApi {
         try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/assets/\(Self.q(assetId))/rfid"), post: body) })
     }
 
-    func timeclockStatus(personId: String) async throws -> KioskTimeclockStatus {
-        try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/timeclock/\(Self.q(personId))")) })
+    func timeclockStatus(personId: String, serial: String?, tz: String?) async throws -> KioskTimeclockStatus {
+        let query = [serial.map { "serial=\(Self.q($0))" }, tz.map { "tz=\(Self.q($0))" }].compactMap { $0 }.joined(separator: "&")
+        let suffix = query.isEmpty ? "" : "?\(query)"
+        return try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/timeclock/\(Self.q(personId))\(suffix)")) })
     }
 
     func clockIn(_ body: ClockInIn) async throws -> KioskTimeclockStatus {
@@ -311,6 +320,13 @@ final class URLSessionKioskApi: KioskApi {
 
     func clockOut(_ body: ClockOutIn) async throws -> KioskTimeclockStatus {
         try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/timeclock/clock-out"), post: body) })
+    }
+
+    // MARK: Time Clock station
+
+    func issueStationKey(serial: String) async throws -> String {
+        let out: StationKeyOut = try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/station-key"), post: StationKeyIn(serial: serial)) })
+        return out.key
     }
 
     // MARK: images

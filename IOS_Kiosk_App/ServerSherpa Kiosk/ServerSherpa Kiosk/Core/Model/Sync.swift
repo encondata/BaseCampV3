@@ -89,6 +89,11 @@ struct KioskPersonRow: Codable, Equatable, Sendable {
     var lastName: String
     var preferredName: String?
     var rfidTag: String?
+    /// What a printed badge's QR code carries.
+    var badgeUid: String?
+    var jobTitle: String?
+    /// Shown as "Employee ID".
+    var externalId: String?
     var isWorker: Bool
     var hasAccount: Bool
 
@@ -99,17 +104,24 @@ struct KioskPersonRow: Codable, Equatable, Sendable {
         case lastName = "last_name"
         case preferredName = "preferred_name"
         case rfidTag = "rfid_tag"
+        case badgeUid = "badge_uid"
+        case jobTitle = "job_title"
+        case externalId = "external_id"
         case isWorker = "is_worker"
         case hasAccount = "has_account"
     }
 
-    init(id: String, displayName: String, firstName: String = "", lastName: String = "", preferredName: String? = nil, rfidTag: String? = nil, isWorker: Bool = false, hasAccount: Bool = false) {
+    init(id: String, displayName: String, firstName: String = "", lastName: String = "", preferredName: String? = nil, rfidTag: String? = nil,
+         badgeUid: String? = nil, jobTitle: String? = nil, externalId: String? = nil, isWorker: Bool = false, hasAccount: Bool = false) {
         self.id = id
         self.displayName = displayName
         self.firstName = firstName
         self.lastName = lastName
         self.preferredName = preferredName
         self.rfidTag = rfidTag
+        self.badgeUid = badgeUid
+        self.jobTitle = jobTitle
+        self.externalId = externalId
         self.isWorker = isWorker
         self.hasAccount = hasAccount
     }
@@ -122,6 +134,9 @@ struct KioskPersonRow: Codable, Equatable, Sendable {
         lastName = try c.decodeIfPresent(String.self, forKey: .lastName) ?? ""
         preferredName = try c.decodeIfPresent(String.self, forKey: .preferredName)
         rfidTag = try c.decodeIfPresent(String.self, forKey: .rfidTag)
+        badgeUid = try c.decodeIfPresent(String.self, forKey: .badgeUid)
+        jobTitle = try c.decodeIfPresent(String.self, forKey: .jobTitle)
+        externalId = try c.decodeIfPresent(String.self, forKey: .externalId)
         isWorker = try c.decodeIfPresent(Bool.self, forKey: .isWorker) ?? false
         hasAccount = try c.decodeIfPresent(Bool.self, forKey: .hasAccount) ?? false
     }

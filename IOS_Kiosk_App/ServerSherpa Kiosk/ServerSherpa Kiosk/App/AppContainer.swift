@@ -12,6 +12,12 @@ final class AppContainer {
     let identity: Identity
     let sessionStore: SessionStore
     let api: KioskApi
+    /// A Time Clock station's calls under its station key (no session).
+    let stationApi: StationApi
+    /// The Time Clock station's key, in `secrets` (the Keychain in the app).
+    let stationKeys: StationKeyStore
+    /// The Time Clock station's state: its key, a paused registration, Welcome's gear.
+    let station: TimeclockStation
     let auth: KioskAuth
     let heartbeat: Heartbeat
     let coordinator: SessionCoordinator
@@ -51,11 +57,14 @@ final class AppContainer {
         let identity = Identity(prefs: prefs, secrets: secrets)
         let cookies = RefreshCookie(secrets: secrets)
         let apiUrl: @Sendable () async -> String = { await MainActor.run { config.apiUrl } }
-        // One URLSession for both: it carries the cross-origin redirect guard.
+        // One URLSession for all three: it carries the cross-origin redirect guard.
         let session = URLSessionKioskApi.makeSession()
         let sessionStore = SessionStore(apiUrl: apiUrl, cookies: cookies, session: session)
         let api = URLSessionKioskApi(apiUrl: apiUrl, session: session, sessionStore: sessionStore, cookies: cookies)
-        let auth = KioskAuth(api: api, refresher: sessionStore, identity: identity, prefs: prefs)
+        let stationApi = URLSessionStationApi(session: session)
+        let stationKeys = StationKeyStore(secrets: secrets)
+        let station = TimeclockStation(keys: stationKeys, serial: { identity.current.serial }, apiUrl: { config.apiUrl })
+        let auth = KioskAuth(api: api, refresher: sessionStore, identity: identity, prefs: prefs, station: station)
         let heartbeat = Heartbeat(api: api, identity: identity, version: config.kioskVersion)
         let store = KioskStore(modelContainer: modelContainer)
 
@@ -65,6 +74,9 @@ final class AppContainer {
         self.identity = identity
         self.sessionStore = sessionStore
         self.api = api
+        self.stationApi = stationApi
+        self.stationKeys = stationKeys
+        self.station = station
         self.auth = auth
         self.heartbeat = heartbeat
         self.coordinator = SessionCoordinator(refresher: sessionStore, auth: auth, heartbeat: heartbeat)
@@ -122,7 +134,8 @@ final class AppContainer {
     /// files: `Sync.clearLocalData`), the Kiosk Setup selection and setup state, and the label
     /// settings (printer, offsets, peel). Keeps the outbox (unsent scans), the sign-in, the API
     /// and portal URLs, the kiosk's identity and name, and appearance, sound, camera, checkpoint
-    /// and developer-mode preferences. The label builder ends stopped, waiting for a sync.
+    /// and developer-mode preferences. The label builder ends stopped, waiting for a sync. A Time
+    /// Clock station's key goes too: the kiosk is no longer set up as one.
     /// Throws when the local data couldn't be cleared; the setup is then left as it was.
     func resetApp() async throws {
         // Nothing waiting prints for the setup being cleared.
@@ -130,6 +143,7 @@ final class AppContainer {
         try await sync.clearLocalData()
         prefs.setupSelection = nil
         prefs.setupState = .incomplete
+        station.clearKey()
         labelSettings.reset()
         // No build left over. A settings change may still start one, which finds no synced
         // move and ends at once waiting for a sync, as the stop does.
@@ -205,18 +219,24 @@ final class AppContainer {
         refreshRunState()
     }
 
-    /// Call on every auth-state change.
-    func authChanged() { refreshRunState() }
+    /// Call on every auth-state change. A sign-in also ends a Time Clock station's gear request,
+    /// so the next sign-out rests on Welcome again.
+    func authChanged() {
+        if case .authed = auth.state { station.signedIn() }
+        refreshRunState()
+    }
 
     /// Heartbeat while active and signed in (not must-change-password); the
-    /// outbox flushes and the screen stays awake only while active and signed in
-    /// (a signed-out kiosk has no token to send scans with).
+    /// outbox flushes only while active and signed in (a signed-out kiosk has no
+    /// token to send scans with). The screen stays awake while active and signed
+    /// in, and on a signed-out Time Clock station, which waits for its crews.
     private func refreshRunState() {
         coordinator.evaluate(foreground: active)
         var authed = false
         if case .authed = auth.state { authed = true }
         if active && authed { outbox.start() } else { outbox.stop() }
-        UIApplication.shared.isIdleTimerDisabled = active && authed
+        let station = auth.state == .anon && prefs.setupSelection?.isTimeclockStation == true
+        UIApplication.shared.isIdleTimerDisabled = active && (authed || station)
     }
 }
 
@@ -246,6 +266,7 @@ extension View {
             .environment(c.config)
             .environment(c.identity)
             .environment(c.auth)
+            .environment(c.station)
             .environment(c.heartbeat)
             .environment(c.sync)
             .environment(c.labelBuilder.monitor)

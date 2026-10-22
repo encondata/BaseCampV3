@@ -67,4 +67,25 @@ class MoveSetupGuardTest {
         repeat(5) { runCurrent() }
         assertEquals(setupA, prefs.setupSelection.first())
     }
+
+    /** A no-move Time Clock station's setup is dropped for a move session, and its key with it. */
+    @Test fun aDroppedSetupDropsTheStationKeyToo() = runTest {
+        val prefs = prefsWith(KioskSetupSelection(siteId = "s9", siteName = "Yard", siteRole = "other", stationType = "timeclock"))
+        val auth = MutableStateFlow<AuthState>(AuthState.Anon)
+        var dropped = 0
+        MoveSetupGuard(auth, prefs, backgroundScope, onSetupDropped = { dropped++ }).start()
+        auth.value = AuthState.Authed(fakeSession(kioskMove = KioskMove("mB", "Move B")))
+        repeat(5) { runCurrent() }
+        assertNull(prefs.setupSelection.first())
+        assertEquals(1, dropped)
+    }
+
+    @Test fun aKeptSetupKeepsTheStationKey() = runTest {
+        val prefs = prefsWith(setupA)
+        var dropped = 0
+        val auth = MutableStateFlow<AuthState>(AuthState.Authed(fakeSession(kioskMove = KioskMove("mA", "Move A"))))
+        MoveSetupGuard(auth, prefs, backgroundScope, onSetupDropped = { dropped++ }).start()
+        repeat(5) { runCurrent() }
+        assertEquals(0, dropped)
+    }
 }

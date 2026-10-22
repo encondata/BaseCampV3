@@ -43,11 +43,20 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     var clockInResult: @Sendable (ClockInIn) throws -> KioskTimeclockStatus = { _ in throw unset }
     var clockOutResult: @Sendable (ClockOutIn) throws -> KioskTimeclockStatus = { _ in throw unset }
     var imageResult: @Sendable (String) throws -> Data = { _ in throw unset }
+    var stationKeyResult: @Sendable (String) async throws -> String = { _ in throw unset }
 
     var calls: [String] { lock.lock(); defer { lock.unlock() }; return _calls }
     var heartbeats: [HeartbeatIn] { lock.lock(); defer { lock.unlock() }; return _heartbeats }
     /// Every body `postScans` was called with, in order.
     var scanBatches: [KioskScanBatchIn] { lock.lock(); defer { lock.unlock() }; return _scanBatches }
+
+    /// Every body `submitSetup` was called with, in order.
+    var submitSetupBodies: [KioskSetupIn] { lock.lock(); defer { lock.unlock() }; return _submitSetupBodies }
+    private var _submitSetupBodies: [KioskSetupIn] = []
+
+    /// The `serial` and `tz` each status read was sent with, in order.
+    var statusQueries: [(serial: String?, tz: String?)] { lock.lock(); defer { lock.unlock() }; return _statusQueries }
+    private var _statusQueries: [(serial: String?, tz: String?)] = []
 
     /// The status reads and image fetches that have returned (answered or thrown), in order.
     var finished: [String] { lock.lock(); defer { lock.unlock() }; return _finished }
@@ -75,7 +84,10 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     }
     func signOut(serial: String, credentials: SignOutCredentials) async { record("signOut"); await signOutGate?() }
     func setupOptions() async throws -> SetupOptions { record("setupOptions"); return try setupOptionsResult() }
-    func submitSetup(_ body: KioskSetupIn) async throws -> KioskSetupResult { record("submitSetup"); return try submitSetupResult(body) }
+    func submitSetup(_ body: KioskSetupIn) async throws -> KioskSetupResult {
+        lock.lock(); _submitSetupBodies.append(body); lock.unlock()
+        record("submitSetup"); return try submitSetupResult(body)
+    }
     func syncAssets(initiativeId: String) async throws -> KioskAssetsSync { record("syncAssets"); return try await assets() }
     func syncPeople() async throws -> KioskPeopleSync { record("syncPeople"); return try await people() }
     func syncContainers(initiativeId: String) async throws -> KioskContainersSync { record("syncContainers"); return try await containers() }
@@ -93,13 +105,15 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
         return try await postScansResult(body)
     }
     func postRfidEnroll(assetId: String, _ body: KioskRfidEnrollIn) async throws -> KioskRfidEnroll { record("rfid"); await rfidGate?(); return try rfidResult(assetId, body) }
-    func timeclockStatus(personId: String) async throws -> KioskTimeclockStatus {
+    func timeclockStatus(personId: String, serial: String?, tz: String?) async throws -> KioskTimeclockStatus {
+        lock.lock(); _statusQueries.append((serial, tz)); lock.unlock()
         record("timeclockStatus"); await statusGate?(personId)
         defer { finish("timeclockStatus:\(personId)") }
         return try statusResult(personId)
     }
     func clockIn(_ body: ClockInIn) async throws -> KioskTimeclockStatus { record("clockIn"); await clockInGate?(); return try clockInResult(body) }
     func clockOut(_ body: ClockOutIn) async throws -> KioskTimeclockStatus { record("clockOut"); return try clockOutResult(body) }
+    func issueStationKey(serial: String) async throws -> String { record("issueStationKey"); return try await stationKeyResult(serial) }
     func fetchImage(url: String) async throws -> Data {
         record("image"); await imageGate?(url)
         defer { finish("image:\(url)") }

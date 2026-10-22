@@ -273,62 +273,77 @@ struct SetupOptionScanType: Codable, Equatable, Sendable {
 struct SetupOptions: Codable, Equatable, Sendable {
     var initiatives: [SetupOptionInitiative]
     var scanTypes: [SetupOptionScanType]
+    /// Every active site, for a Time Clock station's no-move Site step.
+    var sites: [SetupOptionSite]
 
     enum CodingKeys: String, CodingKey {
         case initiatives
         case scanTypes = "scan_types"
+        case sites
     }
 
-    init(initiatives: [SetupOptionInitiative] = [], scanTypes: [SetupOptionScanType] = []) {
+    init(initiatives: [SetupOptionInitiative] = [], scanTypes: [SetupOptionScanType] = [], sites: [SetupOptionSite] = []) {
         self.initiatives = initiatives
         self.scanTypes = scanTypes
+        self.sites = sites
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         initiatives = try c.decodeIfPresent([SetupOptionInitiative].self, forKey: .initiatives) ?? []
         scanTypes = try c.decodeIfPresent([SetupOptionScanType].self, forKey: .scanTypes) ?? []
+        sites = try c.decodeIfPresent([SetupOptionSite].self, forKey: .sites) ?? []
     }
 }
 
+/// A regular kiosk always sends the move, site and scan type; a Time Clock station
+/// (`stationType` "timeclock") sends no scan type and may leave out the move and the
+/// site. Nil members are left out of the body.
 struct KioskSetupIn: Codable, Equatable, Sendable {
     var serial: String
-    var initiativeId: String
-    var siteId: String
-    var scanStatus: String
+    var initiativeId: String?
+    var siteId: String?
+    var scanStatus: String?
+    var stationType: String?
 
     enum CodingKeys: String, CodingKey {
         case serial
         case initiativeId = "initiative_id"
         case siteId = "site_id"
         case scanStatus = "scan_status"
+        case stationType = "station_type"
     }
 
-    init(serial: String, initiativeId: String, siteId: String, scanStatus: String) {
+    init(serial: String, initiativeId: String?, siteId: String?, scanStatus: String?, stationType: String? = nil) {
         self.serial = serial
         self.initiativeId = initiativeId
         self.siteId = siteId
         self.scanStatus = scanStatus
+        self.stationType = stationType
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         serial = try c.decode(String.self, forKey: .serial)
-        initiativeId = try c.decode(String.self, forKey: .initiativeId)
-        siteId = try c.decode(String.self, forKey: .siteId)
-        scanStatus = try c.decode(String.self, forKey: .scanStatus)
+        initiativeId = try c.decodeIfPresent(String.self, forKey: .initiativeId)
+        siteId = try c.decodeIfPresent(String.self, forKey: .siteId)
+        scanStatus = try c.decodeIfPresent(String.self, forKey: .scanStatus)
+        stationType = try c.decodeIfPresent(String.self, forKey: .stationType)
     }
 }
 
+/// api `KioskSetupOut`: every member but the device may be null (a Time Clock
+/// station with no move, no site or no scan type); a regular kiosk gets them all.
+/// `siteRole` is "source", "destination", or "other" (a station's site with no move).
 struct KioskSetupResult: Codable, Equatable, Sendable {
     var deviceId: String
-    var initiativeId: String
-    var initiativeName: String
-    var siteId: String
-    var siteName: String
-    var siteRole: String
-    var scanStatus: String
-    var scanStatusLabel: String
+    var initiativeId: String?
+    var initiativeName: String?
+    var siteId: String?
+    var siteName: String?
+    var siteRole: String?
+    var scanStatus: String?
+    var scanStatusLabel: String?
 
     enum CodingKeys: String, CodingKey {
         case deviceId = "device_id"
@@ -341,7 +356,8 @@ struct KioskSetupResult: Codable, Equatable, Sendable {
         case scanStatusLabel = "scan_status_label"
     }
 
-    init(deviceId: String, initiativeId: String, initiativeName: String, siteId: String, siteName: String, siteRole: String, scanStatus: String, scanStatusLabel: String) {
+    init(deviceId: String, initiativeId: String?, initiativeName: String?, siteId: String?, siteName: String?, siteRole: String?, scanStatus: String?,
+         scanStatusLabel: String?) {
         self.deviceId = deviceId
         self.initiativeId = initiativeId
         self.initiativeName = initiativeName
@@ -355,13 +371,13 @@ struct KioskSetupResult: Codable, Equatable, Sendable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         deviceId = try c.decode(String.self, forKey: .deviceId)
-        initiativeId = try c.decode(String.self, forKey: .initiativeId)
-        initiativeName = try c.decode(String.self, forKey: .initiativeName)
-        siteId = try c.decode(String.self, forKey: .siteId)
-        siteName = try c.decode(String.self, forKey: .siteName)
-        siteRole = try c.decode(String.self, forKey: .siteRole)
-        scanStatus = try c.decode(String.self, forKey: .scanStatus)
-        scanStatusLabel = try c.decode(String.self, forKey: .scanStatusLabel)
+        initiativeId = try c.decodeIfPresent(String.self, forKey: .initiativeId)
+        initiativeName = try c.decodeIfPresent(String.self, forKey: .initiativeName)
+        siteId = try c.decodeIfPresent(String.self, forKey: .siteId)
+        siteName = try c.decodeIfPresent(String.self, forKey: .siteName)
+        siteRole = try c.decodeIfPresent(String.self, forKey: .siteRole)
+        scanStatus = try c.decodeIfPresent(String.self, forKey: .scanStatus)
+        scanStatusLabel = try c.decodeIfPresent(String.self, forKey: .scanStatusLabel)
     }
 }
 
@@ -389,21 +405,28 @@ struct PairCookie: Equatable, Sendable {
 }
 
 /// What Kiosk Setup saved on this kiosk. Keys are camelCase: this is the web's
-/// local-storage shape.
+/// local-storage shape (kiosk/src/lib/kioskSetup.ts), so a Time Clock station with
+/// no move or no site keeps "" ids, "No move" / "No site" names and the site role
+/// "other" (a site without a move) or "none" (no site), and an empty scan type.
+/// Read the ids through `moveId` / `siteIdOrNil` to send them.
 struct KioskSetupSelection: Codable, Equatable, Sendable {
     var initiativeId: String
     var initiativeName: String
     var siteId: String
     var siteName: String
+    /// "source" or "destination" on a move; a Time Clock station may also have "other" or "none".
     var siteRole: String
     var scanStatus: String
     var scanLabel: String
     /// What labels print on, from the setup's last step: "top" or "front". A selection saved
     /// before that step existed has none, and reads as "top".
     var labelKind: String
+    /// "timeclock" on a Time Clock station; nil on a regular kiosk (and in every
+    /// selection saved before station types existed).
+    var stationType: String?
 
     init(initiativeId: String, initiativeName: String, siteId: String, siteName: String, siteRole: String, scanStatus: String, scanLabel: String,
-         labelKind: String = "top") {
+         labelKind: String = "top", stationType: String? = nil) {
         self.initiativeId = initiativeId
         self.initiativeName = initiativeName
         self.siteId = siteId
@@ -412,7 +435,30 @@ struct KioskSetupSelection: Codable, Equatable, Sendable {
         self.scanStatus = scanStatus
         self.scanLabel = scanLabel
         self.labelKind = labelKind
+        self.stationType = stationType
     }
+
+    /// A Time Clock station's selection from what its setup answered (web `timeclockSelection`):
+    /// a move's site keeps its role; a site without a move is "other"; no site is "none".
+    static func timeclock(initiativeId: String?, initiativeName: String?, siteId: String?, siteName: String?, siteRole: String?) -> KioskSetupSelection {
+        let move = initiativeId.flatMap { $0.isEmpty ? nil : $0 }
+        let site = siteId.flatMap { $0.isEmpty ? nil : $0 }
+        var role = "none"
+        if site != nil {
+            role = move != nil && (siteRole == "source" || siteRole == "destination") ? siteRole! : "other"
+        }
+        return KioskSetupSelection(initiativeId: move ?? "", initiativeName: move != nil ? (initiativeName ?? "") : "No move",
+                                   siteId: site ?? "", siteName: site != nil ? (siteName ?? "") : "No site", siteRole: role,
+                                   scanStatus: "", scanLabel: "", stationType: KioskSetupSelection.timeclockStation)
+    }
+
+    static let timeclockStation = "timeclock"
+
+    var isTimeclockStation: Bool { stationType == Self.timeclockStation }
+    /// The move's id, nil for "No move".
+    var moveId: String? { initiativeId.isEmpty ? nil : initiativeId }
+    /// The site's id, nil for "No site".
+    var siteIdOrNil: String? { siteId.isEmpty ? nil : siteId }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -424,5 +470,6 @@ struct KioskSetupSelection: Codable, Equatable, Sendable {
         scanStatus = try c.decode(String.self, forKey: .scanStatus)
         scanLabel = try c.decode(String.self, forKey: .scanLabel)
         labelKind = try c.decodeIfPresent(String.self, forKey: .labelKind) ?? "top"
+        stationType = try c.decodeIfPresent(String.self, forKey: .stationType)
     }
 }

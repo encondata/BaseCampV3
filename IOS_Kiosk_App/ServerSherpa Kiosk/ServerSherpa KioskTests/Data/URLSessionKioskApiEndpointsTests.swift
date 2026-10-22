@@ -69,7 +69,7 @@ struct URLSessionKioskApiEndpointsTests {
         #expect(rfidReq.bodyString.contains(#""rfid_tag":"000000000000000000100348""#))
 
         h.server.enqueue(.json(200, #"{"person":{"id":"p","display_name":"T"},"clocked_in":false,"entry":null,"last_entry":null}"#))
-        #expect(try await h.api.timeclockStatus(personId: "p").clockedIn == false)
+        #expect(try await h.api.timeclockStatus(personId: "p", serial: nil, tz: nil).clockedIn == false)
         let statusReq = try #require(h.server.takeRequest())
         #expect(statusReq.method == "GET"); #expect(statusReq.path == "/kiosk/timeclock/p")
         h.server.enqueue(.json(200, #"{"person":{"id":"p","display_name":"T"},"clocked_in":true,"entry":{"id":"e","started_at":"2026-09-15T09:00:00Z"}}"#))

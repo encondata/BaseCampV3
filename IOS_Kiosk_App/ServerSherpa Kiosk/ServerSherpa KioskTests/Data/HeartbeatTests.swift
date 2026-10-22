@@ -49,6 +49,28 @@ struct HeartbeatTests {
         hb.stop()
     }
 
+    /// Kiosk Setup's station-key retry: one sign-in beat now. A failed one leaves nothing
+    /// pending, so the next beat does not record a second sign-in.
+    @Test func signInNowRecordsOnceEvenWhenItFails() async {
+        let api = FakeKioskApi(); let gate = TickGate()
+        let failing = LockedFlag(true)
+        api.heartbeatResult = { body in
+            if failing.value { throw ApiError.network() }
+            return HeartbeatResult(deviceId: "d", name: body.name, registration: "ok")
+        }
+        let hb = harness(api, gate: gate)
+        await hb.signInNow(.password)
+        #expect(api.heartbeats.count == 1)
+        #expect(api.heartbeats[0].signIn == true); #expect(api.heartbeats[0].loginMethod == "password")
+        failing.value = false
+        await hb.now()
+        #expect(api.heartbeats[1].signIn == false)
+        await hb.signInNow(.link)
+        await hb.now()
+        #expect(api.heartbeats[2].signIn == true); #expect(api.heartbeats[2].loginMethod == "link")
+        #expect(api.heartbeats[3].signIn == false)
+    }
+
     @Test func unknownRegistrationWireValueReadsAsNone() async {
         let api = FakeKioskApi(); let gate = TickGate()
         api.heartbeatResult = { HeartbeatResult(deviceId: "d", name: $0.name, registration: "weird") }

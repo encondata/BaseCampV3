@@ -2,12 +2,15 @@ package com.serversherpa.kiosk.data.api
 
 import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.model.ClockInIn
+import com.serversherpa.kiosk.core.model.ClockOutIn
 import com.serversherpa.kiosk.core.model.KioskRfidEnrollIn
 import com.serversherpa.kiosk.core.model.KioskScanBatchIn
 import com.serversherpa.kiosk.core.model.KioskScanIn
 import com.serversherpa.kiosk.core.model.KioskSetupIn
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Rule
@@ -98,6 +101,52 @@ class OkHttpKioskApiEndpointsTest {
             val st = h.api.clockIn(ClockInIn("serial", "p", "s1", "i1"))
             assertEquals(true, st.clocked_in)
             val req = h.server.takeRequest(); assertEquals("/kiosk/timeclock/clock-in", req.path); assertTrue(req.body.readUtf8().contains("\"site_id\":\"s1\""))
+        }
+    }
+
+    /** A Time Clock station's setup: no move, no scan type; the reply's move fields are null. */
+    @Test fun timeclockStationSetupAndSites() = runBlocking {
+        ApiHarness(tmp.root).use { h ->
+            h.signIn()
+            h.server.enqueue(jsonResponse(200, """{"initiatives":[],"scan_types":[],"sites":[{"id":"s1","name":"Dallas"}]}"""))
+            assertEquals("Dallas", h.api.setupOptions().sites.single().name)
+            h.server.takeRequest()
+            h.server.enqueue(jsonResponse(200, """{"device_id":"d","initiative_id":null,"initiative_name":null,"site_id":"s1","site_name":"Dallas",
+              "site_role":"other","scan_status":null,"scan_status_label":null}"""))
+            val res = h.api.submitSetup(KioskSetupIn("serial", site_id = "s1", station_type = "timeclock"))
+            assertNull(res.initiative_id); assertNull(res.scan_status); assertEquals("other", res.site_role)
+            val body = h.server.takeRequest().body.readUtf8()
+            assertEquals("""{"serial":"serial","site_id":"s1","station_type":"timeclock"}""", body)
+        }
+    }
+
+    @Test fun sessionTimeclockSendsTheDeviceZone() = runBlocking {
+        ApiHarness(tmp.root).use { h ->
+            h.signIn()
+            h.server.enqueue(jsonResponse(200, """{"person":{"id":"p","display_name":"T"},"clocked_in":false,"today_minutes":30,"today_entries":[]}"""))
+            assertEquals(30, h.api.timeclockStatus("p", "America/Chicago").today_minutes)
+            assertEquals("/kiosk/timeclock/p?tz=America%2FChicago", h.server.takeRequest().path)
+            h.server.enqueue(jsonResponse(200, """{"person":{"id":"p","display_name":"T"},"clocked_in":true}"""))
+            h.api.clockIn(ClockInIn("serial", "p", tz = "America/Chicago"))
+            assertTrue(h.server.takeRequest().body.readUtf8().contains("\"tz\":\"America/Chicago\""))
+            h.server.enqueue(jsonResponse(200, """{"person":{"id":"p","display_name":"T"},"clocked_in":false}"""))
+            assertFalse(h.api.clockOut(ClockOutIn("serial", "p", "America/Chicago")).clocked_in)
+            assertEquals("""{"serial":"serial","person_id":"p","tz":"America/Chicago"}""", h.server.takeRequest().body.readUtf8())
+        }
+    }
+
+    @Test fun issueStationKeyIsASessionCall() = runBlocking<Unit> {
+        ApiHarness(tmp.root).use { h ->
+            h.signIn()
+            h.server.enqueue(jsonResponse(200, """{"key":"k3y"}"""))
+            assertEquals("k3y", h.api.issueStationKey("serial"))
+            val req = h.server.takeRequest()
+            assertEquals("POST", req.method); assertEquals("/kiosk/station-key", req.path)
+            assertEquals("Bearer tok1", req.getHeader("Authorization"))
+            assertEquals("""{"serial":"serial"}""", req.body.readUtf8())
+            h.server.enqueue(jsonResponse(409, """{"detail":{"code":"kiosk_not_registered"}}"""))
+            try { h.api.issueStationKey("serial"); fail() } catch (e: ApiError) { assertEquals("kiosk_not_registered", e.code) }
+            h.server.takeRequest()
         }
     }
 }
