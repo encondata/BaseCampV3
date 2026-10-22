@@ -6,7 +6,8 @@ are kiosk:view, act on ANOTHER person, and write (so read-only mode
 blocks the two POSTs)."""
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
@@ -138,7 +139,7 @@ async def test_clock_in_creates_an_open_entry_and_audits(client, db, seeded_user
     assert row.actor_person_id == seeded_user.id
     assert row.changes == {"person_id": str(person.id), "site_id": str(site.id),
                            "initiative_id": str(initiative.id),
-                           "device_id": str(device.id)}
+                           "device_id": str(device.id), "via": "session"}
 
 
 async def test_clock_in_ignores_an_at_in_the_body(client, db, seeded_user):
@@ -292,6 +293,7 @@ async def test_clock_out_closes_the_entry_and_audits(client, db, seeded_user):
     assert row.actor_person_id == seeded_user.id
     assert row.changes["status"] == {"from": "open", "to": "pending"}
     assert row.changes["device_id"] == str(device.id)
+    assert row.changes["via"] == "session"
 
 
 async def test_clock_out_twice_is_409(client, db, seeded_user):
@@ -349,6 +351,201 @@ async def test_status_last_entry_is_the_most_recently_closed_one(client, db, see
     body = (await client.get(f"/kiosk/timeclock/{person.id}", headers=hdrs)).json()
     assert body["last_entry"]["id"] == str(newer.id)
     assert body["last_entry"]["minutes"] == 120
+
+
+# ── today's hours + the "Is this you?" fields ─────────────────────────
+
+def _midday_zone() -> str:
+    """A fixed-offset zone where it is roughly noon right now, so a
+    90-minute shift seeded relative to now never straddles local
+    midnight, whatever hour the suite runs. Etc/GMT names invert the
+    sign: Etc/GMT-5 is UTC+5."""
+    offset = 12 - datetime.now(UTC).hour      # -11 .. +12
+    return f"Etc/GMT{-offset:+d}"
+
+
+async def test_status_includes_today_and_person_fields(client, db, seeded_user):
+    hdrs = await login(client)
+    site, initiative, device = await _seed_context(db)
+    site.timezone = _midday_zone()
+    await db.commit()
+    person = await _seed_worker(db)
+    person.job_title = "Rack Technician"
+    person.external_id = "EMP-0042"
+    await db.commit()
+    await _seed_open_entry(
+        db, person=person, site=site, initiative=initiative, device=device,
+        started_ago=timedelta(hours=1, minutes=30), created_by=seeded_user.id)
+
+    resp = await client.get(f"/kiosk/timeclock/{person.id}",
+                            params={"serial": SERIAL}, headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["person"]["job_title"] == "Rack Technician"
+    assert body["person"]["external_id"] == "EMP-0042"
+    assert 90 <= body["today_minutes"] <= 92
+    assert len(body["today_entries"]) == 1
+    assert body["today_entries"][0]["clock_out_at"] is None
+    assert body["today_entries"][0]["minutes"] == body["today_minutes"]
+    # existing fields are untouched
+    assert body["clocked_in"] is True
+    assert body["entry"]["site_id"] == str(site.id)
+
+    # an unknown serial is not a 404 — the day is just read in UTC
+    resp = await client.get(f"/kiosk/timeclock/{person.id}",
+                            params={"serial": "no-such-kiosk"}, headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert "today_minutes" in resp.json()
+
+    # clock-out answers with the closed span counted for today
+    resp = await client.post("/kiosk/timeclock/clock-out", headers=hdrs,
+                             json=_in(person))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert 90 <= body["today_minutes"] <= 92
+    assert body["today_entries"][0]["clock_out_at"] is not None
+
+
+def _just_past_midnight_zone() -> str:
+    """A fixed-offset zone (never UTC) whose local midnight is more
+    recent than UTC's: local hour 0 — or local hour 1 when it is already
+    hour 0 in UTC, the one case where hour 0 would BE UTC. A shift that
+    started an hour before that local midnight is clipped there, but not
+    at UTC's, so a route that read "today" in UTC gives a different
+    total. Etc/GMT names invert the sign: Etc/GMT-5 is UTC+5."""
+    hour = datetime.now(UTC).hour
+    local_hour = 1 if hour == 0 else 0
+    offset = (local_hour - hour + 12) % 24 - 12       # -12 .. +11, never 0
+    return f"Etc/GMT{-offset:+d}"
+
+
+def _minutes_since(start: datetime, end: datetime, day_start: datetime) -> int:
+    span = (end - max(start, day_start)).total_seconds() // 60
+    return max(0, int(span))
+
+
+async def test_today_reads_the_day_in_the_kiosks_site_zone(client, db, seeded_user):
+    """`serial` (GET) and the body's device (clock-in / clock-out) pick
+    the site zone that decides where today starts. The zone is chosen
+    so its midnight clips the seeded shift differently than UTC's would,
+    so this fails if any of the three routes ignores the kiosk's site."""
+    hdrs = await login(client)
+    site, _initiative, _device = await _seed_context(db)
+    zone = ZoneInfo(_just_past_midnight_zone())
+    site.timezone = zone.key
+    await db.commit()
+    person = await _seed_worker(db)
+
+    now = datetime.now(UTC)
+    local_midnight = datetime.combine(now.astimezone(zone).date(), time.min,
+                                      tzinfo=zone)
+    utc_midnight = datetime.combine(now.date(), time.min, tzinfo=UTC)
+    start = local_midnight - timedelta(hours=1)
+    end = now - timedelta(minutes=1)
+    db.add(TimeEntry(person_id=person.id, clock_in_at=start, clock_out_at=end,
+                     status="pending"))
+    await db.commit()
+    local = _minutes_since(start, end, local_midnight)
+    in_utc = _minutes_since(start, end, utc_midnight)
+    assert abs(local - in_utc) >= 30         # the zone choice really discriminates
+
+    def assert_local(body):
+        assert local <= body["today_minutes"] <= local + 2, (body, local, in_utc)
+
+    resp = await client.get(f"/kiosk/timeclock/{person.id}",
+                            params={"serial": SERIAL}, headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert_local(resp.json())
+
+    # without a serial the day is read in UTC
+    body = (await client.get(f"/kiosk/timeclock/{person.id}", headers=hdrs)).json()
+    assert in_utc <= body["today_minutes"] <= in_utc + 2
+
+    resp = await client.post("/kiosk/timeclock/clock-in", headers=hdrs,
+                             json=_in(person))
+    assert resp.status_code == 200, resp.text
+    assert_local(resp.json())
+
+    resp = await client.post("/kiosk/timeclock/clock-out", headers=hdrs,
+                             json=_in(person))
+    assert resp.status_code == 200, resp.text
+    assert_local(resp.json())
+
+
+async def _shift_across_local_midnight(db, person_id, zone: ZoneInfo) -> tuple[int, int]:
+    """A closed shift that started an hour before `zone`'s midnight and
+    ended a minute ago. -> (minutes today in `zone`, minutes today in UTC),
+    which differ by at least 30 (see `_just_past_midnight_zone`)."""
+    now = datetime.now(UTC)
+    local_midnight = datetime.combine(now.astimezone(zone).date(), time.min,
+                                      tzinfo=zone)
+    utc_midnight = datetime.combine(now.date(), time.min, tzinfo=UTC)
+    start = local_midnight - timedelta(hours=1)
+    end = now - timedelta(minutes=1)
+    db.add(TimeEntry(person_id=person_id, clock_in_at=start, clock_out_at=end,
+                     status="pending"))
+    await db.commit()
+    local = _minutes_since(start, end, local_midnight)
+    in_utc = _minutes_since(start, end, utc_midnight)
+    assert abs(local - in_utc) >= 30
+    return local, in_utc
+
+
+async def test_today_falls_back_to_the_kiosks_own_zone(client, db, seeded_user):
+    """A site with no zone reads "today" in the zone the kiosk sends as
+    `tz` (status query, punch body); a site with a zone keeps it; a zone
+    name this host does not know falls back to UTC rather than failing."""
+    hdrs = await login(client)
+    site, _initiative, _device = await _seed_context(db)
+    assert site.timezone is None
+    zone = ZoneInfo(_just_past_midnight_zone())
+    person = await _seed_worker(db)
+    local, in_utc = await _shift_across_local_midnight(db, person.id, zone)
+
+    def minutes(resp):
+        assert resp.status_code == 200, resp.text
+        return resp.json()["today_minutes"]
+
+    url = f"/kiosk/timeclock/{person.id}"
+    got = minutes(await client.get(url, params={"serial": SERIAL, "tz": zone.key},
+                                   headers=hdrs))
+    assert local <= got <= local + 2, (got, local, in_utc)
+    got = minutes(await client.get(url, params={"serial": SERIAL, "tz": "Not/AZone"},
+                                   headers=hdrs))
+    assert in_utc <= got <= in_utc + 2
+    # longer than any zone name: refused like any other oversized field
+    resp = await client.get(url, params={"serial": SERIAL, "tz": "x" * 65}, headers=hdrs)
+    assert resp.status_code == 422
+
+    got = minutes(await client.post("/kiosk/timeclock/clock-in", headers=hdrs,
+                                    json=_in(person, tz=zone.key)))
+    assert local <= got <= local + 2
+    got = minutes(await client.post("/kiosk/timeclock/clock-out", headers=hdrs,
+                                    json=_in(person, tz=zone.key)))
+    assert local <= got <= local + 2
+
+    # the site's own zone wins over the kiosk's
+    site.timezone = zone.key
+    await db.commit()
+    got = minutes(await client.get(url, params={"serial": SERIAL, "tz": "UTC"},
+                                   headers=hdrs))
+    assert local <= got <= local + 2
+
+
+async def test_sync_people_includes_badge_uid(client, db, seeded_user):
+    hdrs = await login(client)
+    person = await _seed_worker(db)
+    person.job_title = "Rack Technician"
+    person.external_id = "EMP-0042"
+    await db.commit()
+    await db.refresh(person)
+
+    resp = await client.get("/kiosk/sync/people", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    row = next(p for p in resp.json()["people"] if p["id"] == str(person.id))
+    assert row["badge_uid"] == str(person.badge_uid)
+    assert row["job_title"] == "Rack Technician"
+    assert row["external_id"] == "EMP-0042"
 
 
 # ── create_open_entry's IntegrityError classification ─────────────────

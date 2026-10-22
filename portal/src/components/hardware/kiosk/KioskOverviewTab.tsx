@@ -2,12 +2,10 @@
 
 import type { DeviceDetail } from '../../../lib/api';
 import {
-  loginMethodLabel, registrationLabel, stationTypeLabel, subTypeLabel, tokenExpiryState,
+  loginMethodLabel, registrationLabel, stationLabel, stationTypeLabel, subTypeLabel, tokenExpiryState,
 } from '../../../lib/devices';
 import { fullDateTime } from '../../../lib/format';
 import { agoText, kioskOnline, syncLine } from '../../../lib/kioskConfig';
-
-const STATION_LABELS: Record<string, string> = { rfid: 'RFID Station', label: 'Label Station' };
 
 function When({ iso }: { iso: string | null }) {
   if (!iso) return <span>Never</span>;
@@ -37,7 +35,7 @@ export default function KioskOverviewTab({ detail: d }: { detail: DeviceDetail }
             <dt>Status</dt><dd>{statusChip(d)}</dd>
             <dt>Type</dt><dd>{stationTypeLabel(d)}</dd>
             <dt>Platform</dt><dd>{subTypeLabel(d.sub_type)}</dd>
-            <dt>Station type</dt><dd>{d.station_type ? STATION_LABELS[d.station_type] ?? d.station_type : '—'}</dd>
+            <dt>Station type</dt><dd>{stationLabel(d.station_type)}</dd>
             <dt>Version</dt><dd className="mono">{d.version ?? '—'}</dd>
             <dt>Registration</dt>
             <dd>

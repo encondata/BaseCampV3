@@ -40,6 +40,14 @@ it('fetchTimeclockStatus gets the person route and returns the status', async ()
   expect(status.person.avatar_url).toBe('https://s3.test/avatar.png?sig=1');
 });
 
+it('fetchTimeclockStatus names the kiosk and its zone in the query', async () => {
+  const fetchMock = vi.fn(async () => json(STATUS));
+  vi.stubGlobal('fetch', fetchMock);
+  await api.fetchTimeclockStatus('p-1', 'kiosk-web-1', 'America/Chicago');
+  const [url] = fetchMock.mock.calls.at(-1) as unknown as Call;
+  expect(url).toBe('http://api.test/kiosk/timeclock/p-1?serial=kiosk-web-1&tz=America%2FChicago');
+});
+
 it('fetchTimeclockStatus surfaces person_not_found', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => json({ detail: { code: 'person_not_found' } }, 404)));
   await expect(api.fetchTimeclockStatus('p-gone'))
@@ -99,4 +107,20 @@ it('a network failure on a punch is ApiError network', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('offline'); }));
   await expect(api.postClockIn({ serial: 'k', person_id: 'p-1' }))
     .rejects.toMatchObject({ code: 'network', status: 0 });
+});
+
+it('fetchTimeclockStatus passes the kiosk serial as a query parameter', async () => {
+  const fetchMock = vi.fn(async () => json(STATUS));
+  vi.stubGlobal('fetch', fetchMock);
+  await api.fetchTimeclockStatus('p', 'SER');
+  const [url] = fetchMock.mock.calls.at(-1) as unknown as Call;
+  expect(url).toBe('http://api.test/kiosk/timeclock/p?serial=SER');
+});
+
+it('fetchTimeclockStatus url-encodes the serial', async () => {
+  const fetchMock = vi.fn(async () => json(STATUS));
+  vi.stubGlobal('fetch', fetchMock);
+  await api.fetchTimeclockStatus('p', 'a b&c');
+  const [url] = fetchMock.mock.calls.at(-1) as unknown as Call;
+  expect(url).toBe('http://api.test/kiosk/timeclock/p?serial=a%20b%26c');
 });

@@ -1,0 +1,246 @@
+/* ============================================================
+   timeclock.css — the guided time clock (station Welcome at `/`, and
+   the kiosk's /timeclock). Full screen and always light, whatever the
+   person's theme: `.tcx` carries its own tokens from the portal's light
+   sign-in page (login-light.css: ink #0F172A, amber #FF6A00, paper
+   #FFF9F2). Portrait follows the mockup; `orientation: landscape` is
+   layout A (spec §5). Every selector sits under `.tcx`. No route line.
+   ============================================================ */
+
+.tcx {
+  --tcx-ink: #0F172A; --tcx-amber: #FF6A00; --tcx-amber-2: #FF8A3D; --tcx-paper: #FFF9F2;
+  --tcx-slate: #64748B; --tcx-muted: #4A5D7E; --tcx-line: #DDE3EA; --tcx-field: #F8FAFC;
+  --tcx-green: #16A34A; --tcx-red: #E5372B; --tcx-blue: #1677F2;
+  --tcx-foot-h: 30vh;
+  --tcx-pad: clamp(16px, 3vmin, 40px);
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  color-scheme: light;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--tcx-paper);
+  color: var(--tcx-ink);
+  font-family: 'Geologica', -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.tcx *, .tcx *::before, .tcx *::after { box-sizing: border-box; }
+.tcx button { font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.tcx button:disabled { cursor: not-allowed; }
+.tcx button:focus-visible { outline: 3px solid var(--tcx-amber); outline-offset: 3px; }
+
+/* ---------- background ---------- */
+.tcx .tcx-topo { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
+  fill: none; stroke: var(--tcx-amber); stroke-width: 1; opacity: .12 }
+.tcx .tcx-topo path { vector-effect: non-scaling-stroke }
+.tcx .tcx-foot { position: absolute; left: 0; right: 0; bottom: 0; height: var(--tcx-foot-h); z-index: 1;
+  pointer-events: none; user-select: none }
+.tcx .tcx-mountains { display: block; width: 100%; height: 100%; object-fit: cover; object-position: center 72%;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 42%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 42%) }
+.tcx .tcx-motto { position: absolute; left: 0; right: 0; bottom: clamp(8px, 1.6vh, 20px); margin: 0; text-align: center;
+  font-family: 'Fragment Mono', monospace; font-size: clamp(10px, 1.5vmin, 15px); letter-spacing: .24em;
+  color: #334155; text-shadow: 0 0 6px rgba(255, 255, 255, .9); white-space: pre }
+
+/* ---------- header ---------- */
+.tcx .tcx-head { position: relative; z-index: 3; flex: none; display: flex; align-items: center;
+  justify-content: space-between; gap: 16px; padding: var(--tcx-pad) var(--tcx-pad) 0 }
+.tcx .tcx-brand { display: flex; align-items: center; gap: clamp(10px, 1.8vmin, 20px); min-width: 0 }
+.tcx .tcx-logo { width: clamp(44px, 7.5vmin, 92px); height: auto; flex: none; border-radius: 50% }
+.tcx .tcx-wordmark { font-size: clamp(22px, 3.8vmin, 44px); font-weight: 800; letter-spacing: -.01em; line-height: 1 }
+.tcx .tcx-wordmark em { font-style: normal; color: var(--tcx-amber) }
+.tcx .tcx-tagline { margin-top: .5em; font-family: 'Fragment Mono', monospace; font-size: clamp(8.5px, 1.25vmin, 13px);
+  letter-spacing: .22em; color: var(--tcx-slate); white-space: nowrap }
+.tcx .tcx-head-end { display: flex; align-items: center; gap: 12px; flex: none }
+.tcx .tcx-clock { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.15 }
+.tcx .tcx-date { font-size: clamp(11px, 1.6vmin, 17px); color: var(--tcx-slate) }
+.tcx .tcx-time { font-size: clamp(20px, 3.6vmin, 40px); font-weight: 700 }
+.tcx .tcx-gear { width: 56px; height: 56px; display: grid; place-items: center; padding: 0; border-radius: 50%;
+  border: 1px solid transparent; background: transparent; color: var(--tcx-slate) }
+.tcx .tcx-gear:hover { background: rgba(255, 255, 255, .7); border-color: var(--tcx-line) }
+.tcx .tcx-gear svg { width: 26px; height: 26px }
+
+/* ---------- the page ---------- */
+.tcx .tcx-main { position: relative; z-index: 2; flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; align-items: center;
+  padding: clamp(16px, 5vh, 96px) 16px calc(var(--tcx-foot-h) * .55) }
+.tcx .tcx-screen { width: 100%; max-width: 820px; display: flex; flex-direction: column; align-items: center;
+  text-align: center; gap: clamp(12px, 2.4vmin, 30px) }
+.tcx .tcx-screen p { margin: 0 }
+.tcx .tcx-hero { margin: 0; font-size: clamp(44px, 10vmin, 112px); font-weight: 800; letter-spacing: -.02em; line-height: 1.02 }
+.tcx .tcx-title { margin: 0; font-size: clamp(30px, 6vmin, 64px); font-weight: 800; letter-spacing: -.015em; line-height: 1.08 }
+.tcx .tcx-lead { font-size: clamp(18px, 3.6vmin, 38px); color: var(--tcx-muted); line-height: 1.3 }
+.tcx .tcx-hint { font-size: clamp(15px, 2.2vmin, 20px); color: var(--tcx-slate) }
+.tcx .tcx-notice { max-width: 720px; padding: 14px 18px; border-left: 4px solid var(--tcx-amber); border-radius: 10px;
+  background: #FFF1E3; font-size: clamp(16px, 2.4vmin, 22px); line-height: 1.4; text-align: left }
+.tcx .tcx-error-text { font-size: clamp(17px, 2.6vmin, 24px); font-weight: 600; color: #B42318 }
+.tcx .tcx-punch-error { width: 100%; max-width: 720px; display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 14px 18px; border-left: 4px solid var(--tcx-red); border-radius: 10px; background: #FEF2F2;
+  text-align: left }
+.tcx .tcx-punch-error p { font-size: clamp(16px, 2.4vmin, 22px); color: #991B1B; line-height: 1.35 }
+
+/* ---------- buttons ---------- */
+.tcx .tcx-btn { min-height: 64px; padding: 0 28px; display: inline-flex; align-items: center; justify-content: center;
+  gap: 12px; border: 1px solid transparent; border-radius: 14px; font-size: clamp(19px, 3vmin, 30px); font-weight: 700 }
+.tcx .tcx-btn.is-primary { color: #fff; background: linear-gradient(#FF7A1A, var(--tcx-amber));
+  box-shadow: 0 6px 16px rgba(255, 106, 0, .3) }
+.tcx .tcx-btn.is-ghost { color: var(--tcx-ink); background: #EEF1F5; border-color: var(--tcx-line) }
+.tcx .tcx-btn.is-blue { color: #fff; background: linear-gradient(#2A86F7, var(--tcx-blue));
+  box-shadow: 0 6px 16px rgba(22, 119, 242, .28) }
+.tcx .tcx-btn.is-small { min-height: 56px; padding: 0 22px; font-size: clamp(16px, 2.2vmin, 20px); flex: none }
+.tcx .tcx-btn:disabled { opacity: .55; box-shadow: none }
+.tcx .tcx-btn-icon { width: 1.1em; height: 1.1em; flex: none }
+.tcx .tcx-buttons { width: 100%; max-width: 680px; display: grid; gap: 14px }
+.tcx .tcx-back-slot { position: absolute; z-index: 4; left: var(--tcx-pad); bottom: calc(var(--tcx-pad) + clamp(28px, 4vh, 44px)) }
+.tcx .tcx-back { min-height: 56px; padding: 0 24px; display: inline-flex; align-items: center; gap: 10px;
+  border: 1px solid var(--tcx-line); border-radius: 14px; background: #fff; color: var(--tcx-ink);
+  font-size: clamp(17px, 2.4vmin, 24px); font-weight: 600; box-shadow: 0 6px 16px rgba(15, 23, 42, .12) }
+.tcx .tcx-back:disabled { opacity: .55 }
+
+/* ---------- Welcome ---------- */
+.tcx .tcx-cards { width: 100%; max-width: 760px; display: grid; gap: clamp(14px, 2.4vmin, 28px); margin-top: clamp(8px, 3vmin, 40px) }
+.tcx .tcx-card { width: 100%; min-height: clamp(96px, 15vmin, 190px); display: flex; align-items: center;
+  gap: clamp(16px, 3vmin, 36px); padding: clamp(16px, 2.6vmin, 32px) clamp(18px, 3.4vmin, 40px);
+  border: 1px solid var(--tcx-line); border-radius: 20px; background: rgba(255, 255, 255, .92);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, .07); text-align: left }
+.tcx .tcx-card:not(:disabled):active { transform: translateY(1px); box-shadow: 0 2px 8px rgba(15, 23, 42, .1) }
+.tcx .tcx-card:disabled { opacity: .5 }
+.tcx .tcx-card-icon { width: clamp(52px, 9vmin, 104px); height: auto; flex: none }
+.tcx .tcx-card-text { display: flex; flex-direction: column; gap: 6px; min-width: 0 }
+.tcx .tcx-card-title { font-size: clamp(22px, 4vmin, 44px); font-weight: 700; line-height: 1.1 }
+.tcx .tcx-card-sub { font-size: clamp(14px, 2.2vmin, 24px); color: var(--tcx-muted) }
+.tcx .tcx-card-chev { width: 28px; height: 28px; margin-left: auto; flex: none; color: var(--tcx-slate) }
+/* the reader's input: focused, never seen */
+.tcx .tcx-scan-input { position: absolute; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0;
+  pointer-events: none; caret-color: transparent }
+
+/* ---------- Enter Your Name ---------- */
+.tcx .tcx-name { max-width: 900px }
+.tcx .tcx-search { width: 100%; max-width: 760px; min-height: 68px; display: flex; align-items: center; gap: 14px;
+  padding: 0 20px; border: 1px solid var(--tcx-line); border-radius: 16px; background: #fff;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, .06) }
+.tcx .tcx-search:focus-within { border-color: var(--tcx-amber); box-shadow: 0 0 0 3px rgba(255, 106, 0, .18) }
+.tcx .tcx-search-icon { width: 26px; height: 26px; flex: none; color: var(--tcx-ink) }
+.tcx .tcx-search-input { flex: 1; min-width: 0; min-height: 64px; border: 0; outline: 0; background: transparent;
+  color: var(--tcx-ink); font: inherit; font-size: clamp(20px, 3vmin, 30px) }
+.tcx .tcx-search-input::placeholder { color: #94A3B8 }
+.tcx .tcx-name-body { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 16px }
+.tcx .tcx-results { display: grid; gap: 8px }
+.tcx .tcx-result { min-height: 60px; display: flex; align-items: center; gap: 14px; padding: 8px 18px;
+  border: 1px solid var(--tcx-line); border-radius: 14px; background: rgba(255, 255, 255, .95); text-align: left }
+.tcx .tcx-result:not(:disabled):active { border-color: var(--tcx-amber) }
+.tcx .tcx-result-name { font-size: clamp(18px, 2.8vmin, 26px); font-weight: 600 }
+.tcx .tcx-result-sub { font-size: clamp(13px, 1.9vmin, 18px); color: var(--tcx-slate) }
+.tcx .tcx-result-chev { width: 22px; height: 22px; margin-left: auto; flex: none; color: var(--tcx-slate) }
+.tcx .tcx-kb { display: grid; gap: 10px; padding: clamp(10px, 1.8vmin, 18px); border-radius: 20px;
+  background: rgba(226, 232, 240, .7); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .8) }
+.tcx .tcx-kb-row { display: flex; justify-content: center; gap: clamp(5px, 1vmin, 10px) }
+.tcx .tcx-key { flex: 1 1 0; min-width: 0; max-width: 84px; min-height: clamp(56px, 8vmin, 84px); padding: 0;
+  display: grid; place-items: center; border: 0; border-radius: 12px; background: #fff; color: var(--tcx-ink);
+  font-size: clamp(20px, 3.4vmin, 32px); font-weight: 600; box-shadow: 0 2px 0 #CBD5E1; user-select: none;
+  touch-action: manipulation }
+.tcx .tcx-key:not(:disabled):active { background: #F1F5F9; box-shadow: none; transform: translateY(2px) }
+.tcx .tcx-key:disabled { opacity: .5 }
+.tcx .tcx-key svg { width: 1.1em; height: 1.1em }
+.tcx .tcx-key.is-mod { flex-grow: 1.4; max-width: 120px; background: #E2E8F0 }
+.tcx .tcx-key.is-mod[aria-pressed='true'] { background: var(--tcx-ink); color: #fff }
+.tcx .tcx-key.is-wide { flex-grow: 1.6; max-width: 150px; font-size: clamp(17px, 2.6vmin, 26px) }
+.tcx .tcx-key.is-space { flex-grow: 5; max-width: none; font-size: clamp(17px, 2.6vmin, 26px) }
+.tcx .tcx-key.is-search { flex-grow: 2; max-width: 200px; background: var(--tcx-amber); color: #fff;
+  font-size: clamp(17px, 2.6vmin, 26px); box-shadow: 0 2px 0 #C2410C }
+
+/* ---------- Is this you? ---------- */
+.tcx .tcx-avatar { width: clamp(150px, 32vmin, 380px); height: clamp(150px, 32vmin, 380px); flex: none; border-radius: 50%;
+  object-fit: cover; border: 6px solid #fff; box-shadow: 0 10px 30px rgba(15, 23, 42, .18) }
+.tcx .tcx-initials { display: grid; place-items: center; background: linear-gradient(135deg, #334155, #64748B);
+  color: #fff; font-size: clamp(52px, 11vmin, 128px); font-weight: 700; letter-spacing: .02em }
+.tcx .tcx-confirm-body { width: 100%; display: flex; flex-direction: column; align-items: center; gap: clamp(6px, 1.2vmin, 14px) }
+.tcx .tcx-ask { margin: 0; font-size: clamp(26px, 5vmin, 54px); font-weight: 700 }
+.tcx .tcx-person-name { font-size: clamp(38px, 8.4vmin, 92px); font-weight: 800; letter-spacing: -.02em; line-height: 1.05 }
+.tcx .tcx-person-meta { font-size: clamp(17px, 3vmin, 32px); color: var(--tcx-muted) }
+.tcx .tcx-confirm .tcx-buttons { margin-top: clamp(10px, 2.4vmin, 28px) }
+
+/* ---------- What would you like to do? ---------- */
+.tcx .tcx-tiles { width: 100%; max-width: 820px; display: grid; grid-template-columns: 1fr 1fr; gap: clamp(14px, 2.6vmin, 30px) }
+.tcx .tcx-tile { min-height: clamp(200px, 30vmin, 400px); display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: clamp(6px, 1.4vmin, 14px); padding: 20px 14px; border: 2px solid; border-radius: 22px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, .06) }
+.tcx .tcx-tile.is-in { color: #15803D; border-color: #86D3A3; background: linear-gradient(#F3FCF6, #E4F7EB) }
+.tcx .tcx-tile.is-out { color: #DC2626; border-color: #F5A9A3; background: linear-gradient(#FFF6F5, #FFE9E7) }
+.tcx .tcx-tile:not(:disabled):active { transform: translateY(1px) }
+.tcx .tcx-tile:disabled { opacity: .32; filter: grayscale(.7); box-shadow: none }
+.tcx .tcx-tile-icon { width: clamp(64px, 13vmin, 150px); height: auto }
+.tcx .tcx-tile-title { font-size: clamp(24px, 5vmin, 52px); font-weight: 700 }
+.tcx .tcx-tile-sub { font-size: clamp(14px, 2.4vmin, 24px); font-weight: 500 }
+
+/* ---------- Clock Out ---------- */
+.tcx .tcx-clockout-total { display: flex; flex-direction: column; align-items: center; gap: 4px }
+.tcx .tcx-title-icon { display: inline-flex; align-items: center; gap: .35em; margin-bottom: clamp(8px, 2vmin, 24px) }
+.tcx .tcx-heading-icon { width: 1.15em; height: 1.15em; color: var(--tcx-amber) }
+.tcx .tcx-big { font-size: clamp(64px, 15vmin, 168px); font-weight: 800; letter-spacing: -.03em; line-height: 1 }
+.tcx .tcx-clockout-side { width: 100%; max-width: 680px; display: grid; gap: 16px }
+.tcx .tcx-punches { width: 100%; border-collapse: collapse; border-radius: 16px; overflow: hidden;
+  background: rgba(241, 245, 249, .92); font-size: clamp(16px, 2.6vmin, 26px) }
+.tcx .tcx-punches th, .tcx .tcx-punches td { padding: clamp(8px, 1.4vmin, 14px) clamp(14px, 2.4vmin, 28px); text-align: left }
+.tcx .tcx-punches th { display: flex; align-items: center; gap: 14px; font-weight: 500; color: var(--tcx-muted) }
+.tcx .tcx-punches td { text-align: right; font-weight: 600; white-space: nowrap }
+.tcx .tcx-punches .is-total th, .tcx .tcx-punches .is-total td { border-top: 1px solid #CBD5E1; color: var(--tcx-ink); font-weight: 700 }
+.tcx .tcx-row-icon { width: 1.1em; height: 1.1em; flex: none; color: var(--tcx-ink) }
+
+/* ---------- badge, printing, verify, done ---------- */
+.tcx .tcx-badge .tcx-buttons { margin-top: clamp(10px, 3vmin, 40px) }
+.tcx .tcx-art { width: clamp(140px, 30vmin, 320px); height: auto }
+.tcx .tcx-spinner { width: 48px; height: 48px; border-radius: 50%; border: 5px solid #DBEAFE;
+  border-top-color: var(--tcx-blue); animation: tcx-spin 900ms linear infinite }
+.tcx .tcx-check { width: clamp(120px, 24vmin, 260px); height: auto; filter: drop-shadow(0 10px 22px rgba(22, 163, 74, .3)) }
+.tcx .tcx-hero.is-done { font-size: clamp(36px, 8vmin, 92px) }
+.tcx .tcx-farewell strong { display: block; margin-top: .2em; font-size: 1.9em; font-weight: 800; color: var(--tcx-ink) }
+.tcx .tcx-done .tcx-btn, .tcx .tcx-verify .tcx-btn { width: 100%; max-width: 680px; margin-top: clamp(8px, 2vmin, 24px) }
+@keyframes tcx-spin { to { transform: rotate(360deg) } }
+@media (prefers-reduced-motion: reduce) {
+  .tcx .tcx-spinner { animation-duration: 3s }
+}
+
+/* ---------- landscape: layout A ----------
+   The portrait screen widened: greeting on top, the Welcome cards side by
+   side, photo left of the words, the total left of the punches, the tiles
+   in one row, the name results beside the keyboard. */
+@media (orientation: landscape) {
+  .tcx { --tcx-foot-h: 36vh; --tcx-pad: clamp(14px, 2.4vh, 32px) }
+  .tcx .tcx-main { padding-top: clamp(8px, 4vh, 64px); padding-bottom: calc(var(--tcx-foot-h) * .45) }
+  .tcx .tcx-screen { gap: clamp(10px, 2.2vh, 26px) }
+  .tcx .tcx-hero { font-size: clamp(40px, 9vh, 96px) }
+  .tcx .tcx-title { font-size: clamp(28px, 6vh, 60px) }
+  .tcx .tcx-lead { font-size: clamp(16px, 3.2vh, 32px) }
+
+  .tcx .tcx-welcome { max-width: 1100px }
+  .tcx .tcx-cards { max-width: 1000px; grid-template-columns: 1fr 1fr }
+  .tcx .tcx-card { min-height: clamp(90px, 16vh, 170px) }
+
+  .tcx .tcx-name { max-width: 1280px }
+  .tcx .tcx-search { max-width: none }
+  .tcx .tcx-name-body { max-width: none; display: grid; grid-template-columns: minmax(240px, 1fr) minmax(0, 1.7fr);
+    align-items: start }
+  .tcx .tcx-key { min-height: clamp(56px, 8vh, 80px) }
+
+  .tcx .tcx-confirm { max-width: 1100px; flex-direction: row; justify-content: center; text-align: left;
+    gap: clamp(24px, 5vw, 72px) }
+  .tcx .tcx-avatar { width: clamp(140px, 34vh, 360px); height: clamp(140px, 34vh, 360px) }
+  .tcx .tcx-confirm-body { align-items: flex-start; flex: 1 1 auto; max-width: 640px }
+  .tcx .tcx-person-name { font-size: clamp(34px, 8vh, 84px) }
+  .tcx .tcx-confirm .tcx-buttons { grid-template-columns: 1fr 1fr }
+
+  .tcx .tcx-tiles { max-width: 1000px }
+  .tcx .tcx-tile { min-height: clamp(170px, 32vh, 360px) }
+
+  .tcx .tcx-clockout { max-width: 1100px; flex-direction: row; align-items: center; justify-content: center;
+    gap: clamp(24px, 5vw, 72px) }
+  .tcx .tcx-clockout-total { flex: 1 1 0; align-items: flex-start; text-align: left }
+  .tcx .tcx-clockout-side { flex: 1 1 0 }
+  .tcx .tcx-big { font-size: clamp(56px, 14vh, 150px) }
+
+  .tcx .tcx-badge .tcx-buttons { grid-template-columns: 1fr 1fr; max-width: 900px }
+  .tcx .tcx-art { width: clamp(120px, 26vh, 280px) }
+  .tcx .tcx-check { width: clamp(100px, 20vh, 220px) }
+}

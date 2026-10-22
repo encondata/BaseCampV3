@@ -5009,7 +5009,7 @@ export interface DeviceItem {
   current_initiative_id: string | null; current_initiative_name: string | null;
   session_person_id: string | null; session_person_name: string | null;
   session_login_method: string | null; session_started_at: string | null;
-  station_type?: 'label' | 'rfid' | null;
+  station_type?: 'label' | 'rfid' | 'timeclock' | null;
   rfid_reader?: DeviceRfidReader | null;
   /** Clear Setup pending since (null = nothing pending) and who asked. */
   setup_clear_requested_at: string | null; setup_clear_requested_by_name: string | null;
@@ -5176,7 +5176,7 @@ export interface DeviceSetup {
   initiative_id: string | null; initiative_name: string | null;
   site_id: string | null; site_name: string | null;
   site_role: 'source' | 'destination' | null;
-  station_type: 'label' | 'rfid' | null;
+  station_type: 'label' | 'rfid' | 'timeclock' | null;
   scan_status: string | null; scan_status_label: string | null;
 }
 

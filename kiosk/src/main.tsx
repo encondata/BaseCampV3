@@ -17,6 +17,8 @@ import '@portal/styles/profile.css';
 import '@portal/styles/reports.css';
 import '@portal/styles/printers.css';
 import './styles/kiosk.css';
+// The time clock flow: full screen, always light, scoped under .tcx.
+import './styles/timeclock.css';
 
 // Settings edits count as local changes from the first render on, so a
 // change made before the heartbeat starts is still reported to the portal.

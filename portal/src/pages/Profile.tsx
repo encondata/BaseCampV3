@@ -11,6 +11,7 @@ import { useAuth } from '../auth/AuthContext';
 import ActivityHistory from '../components/ActivityHistory';
 import AvatarUpload from '../components/AvatarUpload';
 import ChangePasswordForm from '../components/ChangePasswordForm';
+import { BadgeQr } from '../components/people/BadgeQr';
 import RegenerateCodesModal from '../components/totp/RegenerateCodesModal';
 import TotpEnrollModal from '../components/totp/TotpEnrollModal';
 import {
@@ -277,6 +278,18 @@ export default function Profile() {
         </div>
 
         <div>
+          <div className="panel">
+            <div className="panel-head">
+              <h3>My QR code</h3>
+            </div>
+            <div className="panel-body">
+              <p className="page-hint" style={{ marginTop: 0 }}>
+                Show this at the kiosk to clock in and out.
+              </p>
+              <BadgeQr badgeUid={profile.badge_uid} size={240} />
+            </div>
+          </div>
+
           <div className="panel">
             <div className="panel-head">
               <h3>Security</h3>

@@ -86,6 +86,15 @@ def with_station(body: bytes, store) -> tuple[bytes, str | None]:
     return json.dumps(data).encode(), station if isinstance(station, str) else None
 
 
+def _station_name(station: str | None) -> str:
+    """The setup event's station text."""
+    if station == "rfid":
+        return "RFID Station"
+    if station == "timeclock":
+        return "Time Clock Station"
+    return "Label Station"
+
+
 @router.post("/setup")
 async def setup(request: Request, session: EdgeSession = Depends(require_session)) -> Response:
     """Kiosk Setup needs the cloud. On success the laptop is now set up for
@@ -94,9 +103,13 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
     kept for every browser (GET /edge/setup), and a Label Station drops the
     reader pairing — the reader row (password index, token) stays, so
     pairing it again later reuses them. Any new setup drops the station
-    key (it covered the previous setup); an RFID or Label Station then asks
-    the portal for a new one for this move, and a failed issue is retried by
-    the background loop."""
+    key (it covered the previous setup); an RFID, Label or Time Clock
+    Station then asks the portal for a new one for this setup, and a failed issue is retried by
+    the background loop. A Time Clock Station may have no move (its sync
+    target is then empty, and no "Move loaded" event is recorded) and,
+    like a Label Station, drops the reader pairing; it uploads no scans,
+    so every pending one is rejected `station_changed`. Every setup
+    revokes the Time Clock's armed screens (they go with the key)."""
     st = request.app.state
     body, station = with_station(await request.body(), st.store)
     body = rewrite_body("/kiosk/setup", body, st.identity)
@@ -110,7 +123,7 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
         raise err(403, "cloud_sign_in_required")  # not 401: the edge session is still good
     if resp.status_code == 200:
         result = resp.json()
-        if station == "label":
+        if station in ("label", "timeclock"):
             previous = pairing.current_row(st.store)
             if previous is not None:  # best effort: the reader stops sending here
                 async with st.pair_lock:
@@ -119,21 +132,26 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
             # A Label Station's key uploads Labeled scans only: RFID scans
             # left pending could never upload, so say why instead of leaving
             # them pending forever. Labeled scans (scan_type 'barcode') stay.
+            # A Time Clock Station's key uploads no scans at all.
+            only_rfid = "AND scan_type IS NOT 'barcode'" if station == "label" else ""
             st.store.run("UPDATE pending_rfid_scans SET upload_state = 'rejected', "
                          "reject_code = 'station_changed', waiting_for_internet = 0, "
                          "next_attempt_at = NULL WHERE upload_state = 'pending' "
-                         "AND scan_type IS NOT 'barcode'")
-        station_key.clear(st.store)  # a key covers one setup; a station gets a new one
+                         f"{only_rfid}")
+        # a key covers one setup; a station gets a new one. Dropping it also
+        # revokes the Time Clock's armed screens: Start Time Clock arms again
+        station_key.clear(st.store)
         if isinstance(result, dict):
             laptop_setup.save(st.store, result, station)
-            events.record(st.store, "move_loaded", "Move loaded",
-                          str(result.get("initiative_name") or ""))
+            if result.get("initiative_id") is not None:
+                events.record(st.store, "move_loaded", "Move loaded",
+                              str(result.get("initiative_name") or ""))
             events.record(st.store, "scan_type_selected", "Scan type selected",
-                          f"{result.get('scan_status_label') or ''} · "
-                          f"{'RFID Station' if station == 'rfid' else 'Label Station'}")
+                          f"{result.get('scan_status_label') or ''} · {_station_name(station)}")
             if station in station_key.STATION_TYPES:
                 await station_key.issue(st, session.person_id)
-        st.syncer.set_target(str(result["initiative_id"]), session.person_id)
+        move = result["initiative_id"]
+        st.syncer.set_target(str(move) if move is not None else None, session.person_id)
         # no label run here: a Label Station's settings stay unconfirmed
         # until setup step 5 saves them (PUT /edge/label-station runs it)
         await st.syncer.run()

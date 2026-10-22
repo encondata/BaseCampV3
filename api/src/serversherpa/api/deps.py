@@ -438,11 +438,20 @@ async def totp_actor(
 TotpChallengeOrUser = Annotated[TotpActor, Depends(totp_actor)]
 
 
-async def station_device(request: Request, db: AsyncSession, serial: str) -> Device:
+async def station_device(
+    request: Request, db: AsyncSession, serial: str, *,
+    types: tuple[str, ...] = station_keys.UPLOAD_STATION_TYPES,
+) -> Device:
     """The kiosk Device `serial` when the request carries its station key
-    (`Authorization: Station <key>`) and the kiosk is still an RFID or Label
-    Station laptop. A bad, missing or revoked key, or a kiosk that is no
-    longer a station laptop, is one 401 `station_key_invalid`. The key is never logged.
+    (`Authorization: Station <key>`) and the kiosk is still a station laptop
+    (RFID, Label or Time Clock). A bad, missing or revoked key, or a kiosk
+    that is no longer a station laptop, is one 401 `station_key_invalid`.
+    The key is never logged.
+
+    `types` scopes the route: a valid key on a registered kiosk whose
+    station type is not in it is a 403 `wrong_station_type`, and the key is
+    kept (the default, RFID and Label, is the scan-upload routes; a Time
+    Clock key is refused there).
 
     A matching key on a kiosk whose registration has lapsed (or was never
     made) is a 403 `kiosk_not_registered`, and the key is kept: renewing on
@@ -469,4 +478,6 @@ async def station_device(request: Request, db: AsyncSession, serial: str) -> Dev
         raise exc
     if registration_state(device.token_expires_at, datetime.now(UTC)) not in ("ok", "soon"):
         raise HTTPException(status_code=403, detail={"code": "kiosk_not_registered"})
+    if device.station_type not in types:
+        raise HTTPException(status_code=403, detail={"code": "wrong_station_type"})
     return device

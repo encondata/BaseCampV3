@@ -1,14 +1,15 @@
 /** Setup & move tab: the Kiosk Setup choices. Move, site and station type
  *  stay on the kiosk (read-only here); a super admin can change the scan
- *  type, limited to the options the API offers for this move and station. */
+ *  type, limited to the options the API offers for this move and station.
+ *  A Time Clock station scans no assets, so it gets no scan type picker. */
 
 import { useEffect, useState, type CSSProperties } from 'react';
 
 import ComboBox from '../../ComboBox';
 import { ApiError, setDeviceScanType, type DeviceDetail } from '../../../lib/api';
+import { stationLabel } from '../../../lib/devices';
 
 const ROLE_LABELS: Record<string, string> = { source: 'Source', destination: 'Destination' };
-const STATION_LABELS: Record<string, string> = { rfid: 'RFID Station', label: 'Label Station' };
 
 const SCAN_ERRORS: Record<string, string> = {
   no_move: 'This kiosk has no move, so it has no scan type to change.',
@@ -62,7 +63,7 @@ export default function KioskSetupTab({ detail: d, canEdit, onSaved }: {
               )}
             </dd>
             <dt>Station type</dt>
-            <dd>{setup.station_type ? STATION_LABELS[setup.station_type] ?? setup.station_type : '—'}</dd>
+            <dd>{stationLabel(setup.station_type)}</dd>
           </dl>
           <p className="set-note" style={{ padding: 0, marginTop: 12 }}>
             The move, site and station type are chosen in Kiosk Setup on the kiosk itself.
@@ -83,7 +84,7 @@ export default function KioskSetupTab({ detail: d, canEdit, onSaved }: {
               ) : '—'}
             </dd>
           </dl>
-          {canEdit && (
+          {canEdit && setup.station_type !== 'timeclock' && (
             setup.initiative_id && options.length > 0 ? (
               <div style={{ marginTop: 14 }}>
                 <div className="kd-scan-pick">

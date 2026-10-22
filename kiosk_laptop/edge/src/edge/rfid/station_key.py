@@ -1,6 +1,6 @@
 """The station key (rfid scan processing spec §3): a portal-issued secret
-that lets an unattended station (RFID or Label) sync its move and upload
-scans with nobody signed in.
+that lets an unattended station (RFID, Label or Time Clock) sync its move
+and upload scans, or punch the time clock, with nobody signed in.
 
 Issued by `POST /kiosk/station-key` as the person who just saved an RFID or
 Label Kiosk Setup (or, when that failed, retried by the background loop at
@@ -9,8 +9,10 @@ and the setup is still a station). Stored only encrypted with edge.key;
 cleared on every new setup (it covered the previous one), a Clear Setup
 from the portal, and Wipe.
 
-`is_station_setup` (either station type) gates the key, sync and upload
-paths; `is_rfid_setup` stays RFID-only for the reader-specific code.
+`is_station_setup` (any station type) gates the key, sync and upload
+paths; `is_rfid_setup` stays RFID-only for the reader-specific code, and
+`is_timeclock_setup` marks the Time Clock Station (a key with or without a
+move, a people-only sync, the /edge/timeclock routes).
 
 A 403 `kiosk_not_registered` on any station route (the laptop's kiosk
 registration lapsed) keeps the key: renewing on the portal's Kiosk Devices
@@ -28,7 +30,7 @@ import logging
 import httpx
 from cryptography.fernet import InvalidToken
 
-from edge import laptop_setup
+from edge import laptop_setup, timeclock
 from edge.crypto import Keys, decrypt, encrypt
 from edge.db import Store, now_iso
 from edge.rfid import events
@@ -47,6 +49,9 @@ RESUMED_TITLE = "Uploads resumed"
 
 
 def store_key(store: Store, keys: Keys, raw: str) -> None:
+    """Store (or replace) the key. Screens armed under a previous key are
+    revoked: a display cookie is good for one key."""
+    timeclock.clear_displays(store)
     store.run("INSERT INTO station_key (id, key_enc, stored_at) VALUES (1, ?, ?) "
               "ON CONFLICT (id) DO UPDATE SET key_enc = excluded.key_enc, "
               "stored_at = excluded.stored_at", (encrypt(keys, raw), now_iso()))
@@ -70,8 +75,15 @@ def has_key(store: Store) -> bool:
 
 
 def clear(store: Store) -> None:
+    """Drop the key, and with it the Time Clock's armed screens."""
     store.run("DELETE FROM station_key")
+    _dropped(store)
+
+
+def _dropped(store: Store) -> None:
+    """After the key is gone: no pause flag, no armed screens."""
     _clear_pause(store)
+    timeclock.clear_displays(store)
 
 
 def _clear_pause(store: Store) -> None:
@@ -86,7 +98,8 @@ def apply_clear_setup(store: Store) -> None:
     or RFID upload reply on an unattended laptop): drop the laptop's shared setup, or the
     shell would load it straight back (GET /edge/setup), and the station key
     (the portal revoked it when Clear Setup was requested). The reader
-    pairing stays: Kiosk Setup reuses it."""
+    pairing stays: Kiosk Setup reuses it. A Time Clock station's armed
+    screens go with the key."""
     laptop_setup.clear(store)
     clear(store)
 
@@ -118,7 +131,7 @@ def _resume(store: Store) -> None:
         events.record(store, EVENT_KIND, RESUMED_TITLE)
 
 
-STATION_TYPES = ("rfid", "label")
+STATION_TYPES = ("rfid", "label", "timeclock")
 
 
 def is_rfid_setup(store: Store) -> bool:
@@ -127,8 +140,14 @@ def is_rfid_setup(store: Store) -> bool:
     return station is not None and station[0] == "rfid"
 
 
+def is_timeclock_setup(store: Store) -> bool:
+    """A Time Clock Station setup (its move may be empty)."""
+    station = _station(store)
+    return station is not None and station[0] == "timeclock"
+
+
 def is_station_setup(store: Store) -> bool:
-    """An RFID or Label Station setup: one that holds a station key."""
+    """An RFID, Label or Time Clock Station setup: one that holds a station key."""
     return _station(store) is not None
 
 
@@ -138,7 +157,8 @@ def station_type(store: Store) -> str | None:
 
 
 def _station(store: Store) -> tuple[str, str] | None:
-    """(station type, move) of the laptop's station setup; None for any other."""
+    """(station type, move) of the laptop's station setup; None for any other.
+    A Time Clock Station with no move reads as the move "None"."""
     setup = laptop_setup.load(store)
     if isinstance(setup, dict) and setup.get("station_type") in STATION_TYPES:
         return setup["station_type"], str(setup.get("initiative_id"))
@@ -256,7 +276,7 @@ async def request_as_station(upstream: Upstream, method: str, path: str,
         if not dropped:  # a newer key (a new setup) arrived meanwhile: this refusal is stale
             log.info("stale station refusal (%s): newer key kept", path.split("?", 1)[0])
             return resp
-        _clear_pause(upstream.store)
+        _dropped(upstream.store)
         log.warning("station key refused (%s): dropped", path.split("?", 1)[0])
         if _clear_setup_id(resp) is not None:
             apply_clear_setup(upstream.store)

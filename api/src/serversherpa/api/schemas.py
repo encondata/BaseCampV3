@@ -3173,6 +3173,8 @@ class SetupOptionScanType(BaseModel):
 class SetupOptionsOut(BaseModel):
     initiatives: list[SetupOptionInitiative]
     scan_types: list[SetupOptionScanType]
+    # every active site, for a Time Clock station's no-move Site step
+    sites: list[SetupOptionSite]
 
 
 class KioskReaderIn(BaseModel):
@@ -3190,24 +3192,32 @@ class KioskStationKeyOut(BaseModel):
     key: str
 
 
+# a laptop kiosk's station type (devices.station_type; migration 0105)
+StationType = Literal["label", "rfid", "timeclock"]
+
+
 class KioskSetupIn(BaseModel):
+    """The move, site and scan type are required (422 bad_initiative /
+    bad_site / bad_scan_status) except on a Time Clock station, which takes
+    no scan type and an optional move and site."""
     serial: str = Field(min_length=1, max_length=120)
-    initiative_id: uuid.UUID
-    site_id: uuid.UUID
-    scan_status: str = Field(min_length=1)
-    station_type: Literal["label", "rfid"] | None = None
+    initiative_id: uuid.UUID | None = None
+    site_id: uuid.UUID | None = None
+    scan_status: str | None = Field(default=None, min_length=1)
+    station_type: StationType | None = None
     reader: KioskReaderIn | None = None
 
 
 class KioskSetupOut(BaseModel):
     device_id: uuid.UUID
-    initiative_id: uuid.UUID
-    initiative_name: str
-    site_id: uuid.UUID
-    site_name: str
-    site_role: Literal["source", "destination"]
-    scan_status: str
-    scan_status_label: str
+    initiative_id: uuid.UUID | None
+    initiative_name: str | None
+    site_id: uuid.UUID | None
+    site_name: str | None
+    # "other": a Time Clock station's site with no move
+    site_role: Literal["source", "destination", "other"] | None
+    scan_status: str | None
+    scan_status_label: str | None
 
 
 # ── kiosk local-data sync ──
@@ -3326,6 +3336,9 @@ class KioskPersonOut(BaseModel):
     last_name: str
     preferred_name: str | None = None
     rfid_tag: str | None = None
+    badge_uid: uuid.UUID               # what a printed badge's QR code carries
+    job_title: str | None = None
+    external_id: str | None = None     # shown as "Employee ID"
     is_worker: bool
     has_account: bool
 
@@ -3512,6 +3525,8 @@ class KioskTimeclockPerson(BaseModel):
     preferred_name: str | None = None
     avatar_url: str | None = None      # presigned, short-lived; None without an avatar
     rfid_tag: str | None = None
+    job_title: str | None = None
+    external_id: str | None = None     # shown as "Employee ID"
 
 
 class KioskTimeclockEntry(BaseModel):
@@ -3536,11 +3551,25 @@ class KioskTimeclockLastEntry(BaseModel):
     minutes: int
 
 
+class KioskTimeclockTodayEntry(BaseModel):
+    """One entry's share of today, for the Clock Out screen's list of
+    today's punches. `minutes` is clipped to today and net of break when
+    the shift started today; `clock_out_at` is None while still open."""
+
+    clock_in_at: datetime
+    clock_out_at: datetime | None = None
+    minutes: int
+
+
 class KioskTimeclockStatusOut(BaseModel):
     person: KioskTimeclockPerson
     clocked_in: bool
     entry: KioskTimeclockEntry | None = None
     last_entry: KioskTimeclockLastEntry | None = None
+    # "You've been working for 7h 24m today" — today is local to the
+    # kiosk's site (UTC without one), oldest punch first
+    today_minutes: int = 0
+    today_entries: list[KioskTimeclockTodayEntry] = []
 
 
 # ── kiosk containers (pack / unpack) ──
@@ -3824,6 +3853,9 @@ class KioskClockInIn(BaseModel):
     person_id: uuid.UUID
     site_id: uuid.UUID | None = None
     initiative_id: uuid.UUID | None = None
+    # The kiosk's own IANA zone: "today" falls back to it when the site
+    # has none (see `timeclock.site_zone`).
+    tz: str | None = Field(None, max_length=64)
 
 
 class KioskClockOutIn(BaseModel):
@@ -3832,6 +3864,18 @@ class KioskClockOutIn(BaseModel):
 
     serial: str = Field(min_length=1, max_length=120)
     person_id: uuid.UUID
+    tz: str | None = Field(None, max_length=64)   # as KioskClockInIn
+
+
+class KioskStationClockIn(BaseModel):
+    """A Time Clock station's punch under its station key, for both
+    clock-in and clock-out. No site or move: a station punch always uses
+    the device's own setup. No `at`, for the same reason as
+    `KioskClockInIn`."""
+
+    serial: str = Field(min_length=1, max_length=120)
+    person_id: uuid.UUID
+    tz: str | None = Field(None, max_length=64)   # as KioskClockInIn
 
 
 # ── Labels ──
@@ -4912,7 +4956,7 @@ class KioskSetupReadOut(BaseModel):
     site_name: str | None
     scan_status: str | None
     scan_status_label: str | None
-    station_type: Literal["label", "rfid"] | None
+    station_type: StationType | None
     reader: KioskSetupReaderOut | None
 
 

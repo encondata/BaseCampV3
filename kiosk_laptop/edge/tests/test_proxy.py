@@ -53,12 +53,17 @@ async def test_move_locked_session_cannot_read_another_moves_cache(app, client):
 
 
 async def test_offline_setup_options_filtered_for_move_session(app, client):
-    body = {"initiatives": [{"id": "m-1"}, {"id": "m-2"}], "scan_types": []}
+    body = {"initiatives": [{"id": "m-1"}, {"id": "m-2"}], "scan_types": [],
+            "sites": [{"id": "s-1", "name": "Dock 4"}, {"id": "s-2", "name": "Yard"}]}
     app.state.store.run("INSERT INTO cache VALUES ('/kiosk/setup-options', 200, ?, 'now')",
                         (json.dumps(body),))
     hdrs = make_session(app, kiosk_move={"initiative_id": "m-1", "name": "Move"})
     r = await client.get("/kiosk/setup-options", headers=hdrs)
     assert [i["id"] for i in r.json()["initiatives"]] == ["m-1"]
+    # as online: a move-password session gets no site list (it can't set up with no move)
+    assert r.json()["sites"] == []
+    r = await client.get("/kiosk/setup-options", headers=make_session(app))
+    assert [s["id"] for s in r.json()["sites"]] == ["s-1", "s-2"]
 
 
 async def test_online_only_write_offline_is_edge_offline(app, client, cloud):

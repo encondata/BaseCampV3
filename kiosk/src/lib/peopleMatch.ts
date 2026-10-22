@@ -43,6 +43,8 @@ export interface MatchPerson {
   last_name?: string | null;
   preferred_name?: string | null;
   rfid_tag?: string | null;
+  /** The person's badge UUID, as printed in a badge's QR/barcode. */
+  badge_uid?: string | null;
   is_worker?: boolean;
   has_account?: boolean;
 }
@@ -59,6 +61,8 @@ interface Entry<P extends MatchPerson> {
 
 export interface PeopleIndex<P extends MatchPerson = MatchPerson> {
   byRfid: Map<string, P>;
+  /** Badge UUID, lower-cased. */
+  byBadge: Map<string, P>;
   /** Full id and the eight-character short id, both lower-cased. */
   byId: Map<string, P>;
   entries: Entry<P>[];
@@ -107,6 +111,7 @@ function entryFor<P extends MatchPerson>(person: P): Entry<P> {
 
 export function buildPeopleIndex<P extends MatchPerson>(people: readonly P[]): PeopleIndex<P> {
   const byRfid = new Map<string, P>();
+  const byBadge = new Map<string, P>();
   const byId = new Map<string, P>();
   const entries: Entry<P>[] = [];
   for (const person of people) {
@@ -114,16 +119,19 @@ export function buildPeopleIndex<P extends MatchPerson>(people: readonly P[]): P
     // re-registering would make the match depend on roster order.
     const tag = rfidKey(person.rfid_tag);
     if (tag && !byRfid.has(tag)) byRfid.set(tag, person);
+    const badge = person.badge_uid?.trim().toLowerCase();
+    if (badge && !byBadge.has(badge)) byBadge.set(badge, person);
     const id = person.id.trim().toLowerCase();
     if (id && !byId.has(id)) byId.set(id, person);
     const short = id.slice(0, 8);
     if (short.length === 8 && !byId.has(short)) byId.set(short, person);
     entries.push(entryFor(person));
   }
-  return { byRfid, byId, entries, size: people.length };
+  return { byRfid, byBadge, byId, entries, size: people.length };
 }
 
-/** The badge/id door: a value that names exactly one person, or null. */
+/** The badge/id door: a value that names exactly one person, or null.
+ *  Tried in order: RFID tag, badge UUID, person id. */
 export function matchPersonExact<P extends MatchPerson>(
   index: PeopleIndex<P>, raw: string,
 ): P | null {
@@ -133,6 +141,8 @@ export function matchPersonExact<P extends MatchPerson>(
   const byTag = tag ? index.byRfid.get(tag) : undefined;
   if (byTag) return byTag;
   const lower = trimmed.toLowerCase();
+  const byBadge = index.byBadge.get(lower);
+  if (byBadge) return byBadge;
   const byFullId = index.byId.get(lower);
   // A full id is unambiguous; the eight-character short form is only
   // honored when the value actually looks like one, so a typed name

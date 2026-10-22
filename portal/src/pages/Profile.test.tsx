@@ -88,6 +88,10 @@ vi.mock('../auth/AuthContext', () => ({
 
 vi.mock('../lib/api', () => api);
 
+// jsdom has no canvas; the QR image itself is covered by BadgeQr.test.tsx
+const qr = vi.hoisted(() => ({ qrDataUrl: vi.fn((t: string) => `data:image/png;base64,QR-${t}`) }));
+vi.mock('../lib/qr', () => qr);
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -130,6 +134,25 @@ it('shows four tabs, Profile active by default at /me', async () => {
   expect(prefsTab.getAttribute('aria-selected')).toBe('false');
   expect(screen.getByRole('tab', { name: 'Notifications' }).getAttribute('aria-selected')).toBe('false');
   expect(screen.getByRole('tab', { name: 'History' }).getAttribute('aria-selected')).toBe('false');
+});
+
+it('/me shows My QR code with the badge uid QR', async () => {
+  renderAt('/me');
+
+  await waitFor(() => expect(
+    screen.getByRole('heading', { name: 'My QR code', level: 3 }),
+  ).toBeTruthy());
+  expect(screen.getByText('Show this at the kiosk to clock in and out.')).toBeTruthy();
+  const img = screen.getByAltText('Your time clock QR code');
+  expect(qr.qrDataUrl).toHaveBeenCalledWith('BADGE-1');
+  expect(Number(img.getAttribute('width'))).toBeGreaterThanOrEqual(220);
+});
+
+it('/me/preferences does not show My QR code', async () => {
+  renderAt('/me/preferences');
+
+  await waitFor(() => expect(screen.getByText('Appearance')).toBeTruthy());
+  expect(screen.queryByRole('heading', { name: 'My QR code' })).toBeNull();
 });
 
 it('/me shows the Profile panel and not the preferences sections', async () => {

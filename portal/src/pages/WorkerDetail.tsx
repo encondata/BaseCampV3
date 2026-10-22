@@ -11,6 +11,7 @@ import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
 import DataTable from '../components/DataTable';
 import NotesFilesPanel from '../components/NotesFilesPanel';
+import { printBadgeQr } from '../components/people/BadgeQr';
 import StatusHover from '../components/StatusHover';
 import CertsPanel from '../components/workers/CertsPanel';
 import LevelBadge from '../components/workers/LevelBadge';
@@ -261,8 +262,20 @@ export default function WorkerDetailPage() {
           <div className="panel">
             <div className="panel-head">
               <h3>{editingPerson ? 'Edit person details' : 'Person details'}</h3>
-              {canManage && !editingPerson && (
-                <button className="mini-btn" onClick={startPersonEdit}>Edit</button>
+              {!editingPerson && (worker.badge_uid || canManage) && (
+                <span className="activity-tools">
+                  {worker.badge_uid && (
+                    <button className="mini-btn" type="button"
+                            onClick={() => printBadgeQr({
+                              name: worker.display_name, badgeUid: worker.badge_uid as string,
+                            })}>
+                      Print QR
+                    </button>
+                  )}
+                  {canManage && (
+                    <button className="mini-btn" onClick={startPersonEdit}>Edit</button>
+                  )}
+                </span>
               )}
             </div>
             <div className="panel-body">

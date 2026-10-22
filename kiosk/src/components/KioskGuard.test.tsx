@@ -56,6 +56,21 @@ it('redirects to /login when anonymous', () => {
   expect(screen.getByText('Login page')).toBeTruthy();
 });
 
+it('sends an anonymous visitor to anonTo instead of /login when given one', () => {
+  auth.status = 'anon';
+  render(
+    <MemoryRouter initialEntries={['/guarded']}>
+      <Routes>
+        <Route path="/login" element={<div>Login page</div>} />
+        <Route path="/" element={<div>Station root</div>} />
+        <Route path="/guarded" element={<KioskGuard anonTo="/"><div>Protected page</div></KioskGuard>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  expect(screen.getByText('Station root')).toBeTruthy();
+  expect(screen.queryByText('Login page')).toBeNull();
+});
+
 it('shows the password-change notice with a sign-out button instead of the page', () => {
   auth.status = 'authed';
   auth.mustChangePassword = true;

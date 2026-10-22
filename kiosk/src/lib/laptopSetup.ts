@@ -22,12 +22,37 @@ function str(value: unknown): value is string {
   return typeof value === 'string' && value !== '';
 }
 
+/** A Time Clock setup may have no move, no site, and no scan type; those
+ *  become the "No move" / "No site" selection. A move or site that is set
+ *  still needs its name (and, for a move's site, its role). */
+function timeclockSelection(setup: EdgeSetup): KioskSetupSelection | null {
+  const { initiative_id, initiative_name, site_id, site_name, site_role } = setup;
+  const hasMove = initiative_id != null && initiative_id !== '';
+  const hasSite = site_id != null && site_id !== '';
+  if (hasMove && !str(initiative_name)) return null;
+  if (hasSite && !str(site_name)) return null;
+  let role: KioskSetupSelection['siteRole'] = 'none';
+  if (hasSite) {
+    role = hasMove && (site_role === 'source' || site_role === 'destination') ? site_role : 'other';
+  }
+  return {
+    initiativeId: hasMove ? initiative_id : '',
+    initiativeName: hasMove ? (initiative_name as string) : 'No move',
+    siteId: hasSite ? site_id : '',
+    siteName: hasSite ? (site_name as string) : 'No site',
+    siteRole: role,
+    scanStatus: '', scanLabel: '',
+    stationType: 'timeclock',
+  };
+}
+
 /** The kiosk's cached selection from the edge's copy; null when the copy
  *  is missing a field the summary needs. */
 export function selectionFromEdge(setup: EdgeSetup | null): KioskSetupSelection | null {
   if (!setup || typeof setup !== 'object') return null;
   const { initiative_id, initiative_name, site_id, site_name, site_role, scan_status,
     scan_status_label, station_type, reader } = setup;
+  if (station_type === 'timeclock') return timeclockSelection(setup);
   if (!str(initiative_id) || !str(initiative_name) || !str(site_id) || !str(site_name)
       || (site_role !== 'source' && site_role !== 'destination')
       || !str(scan_status) || !str(scan_status_label)) return null;
