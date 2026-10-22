@@ -1217,6 +1217,55 @@ class TroubleshootingModelTest {
         }
     }
 
+    /** An object or array may hold a quoted string whose text ends in a key and separator
+     *  (`{"password:"}`, `['sessionid=']`, `{pIn" "}`): the regex this replaced paired that key with
+     *  a quoted value opening at the string's closing quote and running on past the close, so the
+     *  mask runs on to that value's end, however deep the string sits. A string that ends in no key,
+     *  or whose key's value closes inside, takes nothing with it. Each of the first nine leaked. */
+    @Test fun aKeyInsideAMaskedObjectStillPairsWithItsValue() {
+        val cases = mapOf(
+            "psk={\"password:\"} hunter2" to "psk={[redacted]}[redacted]",
+            "token=['sessionid=']\"hunter2" to "token=[[redacted]][redacted]",
+            "pin:{'token:'} x" to "pin:{[redacted]}[redacted]",
+            "{\"psk\":{\"token:\"} x}" to "{\"psk\":{[redacted]}[redacted]",
+            "pin=[\"x\",\"psk=\"] x" to "pin=[[redacted]][redacted]",
+            "psk:{pIn\" \"},x" to "psk:{[redacted]}[redacted]",
+            "Authorization:'':[\"pwd:\"] x" to "Authorization:'[redacted]':[[redacted]][redacted]",
+            "psk:{\"a\":[{\"b\":{'c':\"token:\"}}]} hunter2" to "psk:{[redacted]}[redacted]",
+            "pin:[['x', {\"a\":'psk:'}]] hunter2" to "pin:[[redacted]][redacted]",
+            "psk:{\"token:\" \"x\"} y" to "psk:{[redacted]} y",
+            "{\"wlan.wpa.psk\":{\"value\":\"abc:\",\"type\":\"string\"},\"ip.addr\":{\"value\":\"10.0.0.5\"}}" to
+                "{\"wlan.wpa.psk\":{[redacted]},\"ip.addr\":{\"value\":\"10.0.0.5\"}}",
+        )
+        for ((line, masked) in cases) assertEquals(line, masked, redactSecrets(line))
+    }
+
+    /** `Authorization`'s credential goes with its scheme when the name is reached by a chain
+     *  (`pin:"a":Authorization: Basic cred`) just as when the scan finds the name itself; a chained
+     *  name that is no `Authorization` takes one value only. */
+    @Test fun anAuthorizationNameReachedByAChainStillLosesItsCredential() {
+        val cases = mapOf(
+            "pin=a: \"wlan.wpa.psk\" Authorization: Basic cred" to "pin=[redacted] \"[redacted]\" [redacted] [redacted] [redacted]",
+            "token:<09>\"x\" = Authorization: Basic cred" to "token:<09>\"[redacted]\" = [redacted] [redacted] [redacted]",
+            "pin:\"a\":Proxy-Authorization: Basic cred" to "pin:\"[redacted]\":[redacted] [redacted] [redacted]",
+            "pin:\"a\":Authorization=Basic cred" to "pin:\"[redacted]\":[redacted] [redacted]",
+            "pin=Authorization: Basic cred" to "pin=[redacted] [redacted] [redacted]",
+            "pin:\"a\":psk: x y" to "pin:\"[redacted]\":[redacted] [redacted] y",
+            "Authorization: Basic cred" to "Authorization: [redacted] [redacted]",
+            "Authorization: \"Basic\" cred" to "Authorization: \"[redacted]\" cred",
+        )
+        for ((line, masked) in cases) assertEquals(line, masked, redactSecrets(line))
+    }
+
+    /** An object masked in a chain shows a parent's closing braces glued to its close, as one the
+     *  scan found does, and the chain still looks on from after them. */
+    @Test fun aChainedObjectKeepsItsParentsClosingBrace() {
+        assertEquals("{\"pin\":[redacted] {[redacted]}}", redactSecrets("{\"pin\":a: {\"c\":1}}"))
+        assertEquals("{\"pin\":[redacted] [[redacted]]]}", redactSecrets("{\"pin\":a: [\"c\"]]}"))
+        assertEquals("pin:[redacted] {[redacted]}}", redactSecrets("pin:a: {x}y}"))
+        assertEquals("pin:[redacted] {[redacted]}} =[redacted]", redactSecrets("pin:a: {x}} =y"))
+    }
+
     @Test fun logKeepsTheLast5000LinesAndTheSharedReportFits() {
         val m = model()
         for (i in 1..5_010) m.log("line $i")

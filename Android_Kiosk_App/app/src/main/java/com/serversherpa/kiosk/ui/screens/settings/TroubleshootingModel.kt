@@ -1098,13 +1098,16 @@ internal fun redactSecrets(text: String, mask: (String) -> String = ::maskSecret
  *    close (braces inside strings don't count; one that never closes runs to the end of the text).
  *    A quoted text masked here may have been a key's name (`pin<09>:"wlan.wpa.psk":x`), or held
  *    one whose quoted value runs on past the closing quote (`token:<09>"&session_id:"…`), so what
- *    pairs with it goes too ([maskChain]);
+ *    pairs with it goes too ([maskChain]). An object or array may hold such a key as well
+ *    (`psk={"password:"} …`): the text its value runs on over is noted ([reopenPast]) and masked at
+ *    the end, so that pass 3 still reads the line as it would have;
  * 3. then their unquoted values, up to a space or a delimiter (so `password: a b c` loses only its
  *    first word), and anything glued to a masked object's close. After `Authorization`'s scheme
  *    (`Basic`, `Bearer`), the credential goes too, and a masked value that ends in a separator or
  *    where one starts takes the next value with it ([maskChain]);
  * 4. a URL's password (`https://admin:[redacted]@host`), last, so it can't hide a secret's name from
- *    passes 2 and 3.
+ *    passes 2 and 3;
+ * 5. the text noted in passes 2 and 3 ([withSpans]).
  *
  * Quoted values go first, across the whole line, so an unquoted value masked in pass 3 can't swallow
  * the next secret's name and leave its quoted value showing (`Cookie: session_id="…"`). A name is
@@ -1115,24 +1118,92 @@ internal fun redactSecrets(text: String, mask: (String) -> String = ::maskSecret
 private fun maskSecrets(text: String): String {
     if (text.isEmpty()) return text
     val tokens = text.replace(BEARER, "Bearer [redacted]").replace(JWT, "[redacted]")
-    return maskUrlPasswords(maskValues(maskValues(tokens, structured = true), structured = false))
+    val spans = ArrayList<Int>()
+    val quoted = maskValues(tokens, structured = true, spans)
+    val bare = maskValues(quoted, structured = false, spans)
+    return withSpans(maskUrlPasswords(bare, spans), spans)
+}
+
+/** One pass's output: [line] with values replaced by placeholders, built in order. It remembers
+ *  each replacement, so that a position in [line] can be found in the output once the pass is done
+ *  ([map]): the spans noted in one pass's coordinates follow the line through the next. */
+private class Masker(private val line: String) {
+    private val out = StringBuilder(line.length)
+    /** Four entries per replacement: from and to in [line], from and to in the output. */
+    private val edits = ArrayList<Int>()
+
+    fun copy(c: Char) { out.append(c) }
+    fun copy(from: Int, to: Int) { out.append(line, from, to) }
+    fun mask(from: Int, to: Int, placeholder: String) {
+        edits.add(from)
+        edits.add(to)
+        edits.add(out.length)
+        out.append(placeholder)
+        edits.add(out.length)
+    }
+
+    /** Where [at] in [line] is in the output: shifted by the replacements before it, or, when the text
+     *  it was in was replaced, just after that placeholder. */
+    private fun map(at: Int): Int {
+        var lo = 0
+        var hi = edits.size / 4
+        while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if (edits[mid * 4] <= at) lo = mid + 1 else hi = mid
+        }
+        if (lo == 0) return at
+        val e = (lo - 1) * 4
+        return if (at < edits[e + 1]) edits[e + 3] else edits[e + 3] + (at - edits[e + 1])
+    }
+
+    /** The output, with [spans] (positions in [line]) moved to its coordinates. */
+    fun finish(spans: MutableList<Int>): String {
+        for (k in spans.indices) spans[k] = map(spans[k])
+        return out.toString()
+    }
+}
+
+/** [line] with each span of [spans] (pairs of start and end, overlapping maybe) replaced by
+ *  `[redacted]`. */
+private fun withSpans(line: String, spans: List<Int>): String {
+    if (spans.isEmpty()) return line
+    val starts = (spans.indices step 2).filter { spans[it + 1] > spans[it] }.sortedBy { spans[it] }
+    if (starts.isEmpty()) return line
+    val out = StringBuilder(line.length)
+    var copied = 0
+    var from = spans[starts[0]]
+    var to = spans[starts[0] + 1]
+    for (k in starts.drop(1)) {
+        if (spans[k] <= to) {
+            to = maxOf(to, spans[k + 1])
+            continue
+        }
+        out.append(line, copied, from).append("[redacted]")
+        copied = to
+        from = spans[k]
+        to = spans[k + 1]
+    }
+    out.append(line, copied, from).append("[redacted]")
+    return out.append(line, to, line.length).toString()
 }
 
 /** One pass over [line]: the structured (quoted, object, array) values of secrets' names when
- *  [structured], else their unquoted values. */
-private fun maskValues(line: String, structured: Boolean): String {
+ *  [structured], else their unquoted values. [spans] (pairs of positions in [line]) are the texts
+ *  noted so far as masked on top of this; they come out in the output's coordinates, with those
+ *  noted here. */
+private fun maskValues(line: String, structured: Boolean, spans: MutableList<Int>): String {
     val n = line.length
-    val out = StringBuilder(n)
+    val out = Masker(line)
     var i = 0
     while (i < n) {
         if (!isNameChar(line[i])) {
-            out.append(line[i])
+            out.copy(line[i])
             i++
             continue
         }
         val nameStart = i
         while (i < n && isNameChar(line[i])) i++
-        out.append(line, nameStart, i)
+        out.copy(nameStart, i)
         val name = line.substring(nameStart, i)
         if (!isSecretName(name)) continue
         val nameEnd = i
@@ -1142,10 +1213,22 @@ private fun maskValues(line: String, structured: Boolean): String {
         if (structured) {
             val end = structuredEnd(line, valueStart)
             if (end < 0) continue
-            out.append(line, nameEnd, valueStart).append(masked(first))
-            // The quoted text is gone now, and it may have been a key's name (`pin<09>:"wlan.wpa.psk":x`)
-            // or held one (`token:<09>"&session_id:"…`): the value paired with it goes too.
-            i = if (first == '{' || first == '[') end else maskChain(line, out, valueStart, end)
+            out.copy(nameEnd, valueStart)
+            out.mask(valueStart, end, masked(first))
+            if (first == '{' || first == '[') {
+                // An object or array pairs with nothing itself: what is glued to its close and what
+                // follows wait for the second pass, which reads the line with every quoted value
+                // masked. But a key inside it may open a quoted value that runs on past its close
+                // (`psk={"password:"} x`, `pin=["x","psk="] x`), as a key inside a quoted text may
+                // (`token:<09>"&session_id:"x`): that text is noted, and the scan goes on from the
+                // close as before, so the second pass still finds what it would have.
+                reopenPast(line, valueStart, end, spans)
+                i = end
+            } else {
+                // The quoted text is gone now, and it may have been a key's name (`pin<09>:"wlan.wpa.psk":x`)
+                // or held one (`token:<09>"&session_id:"…`): the value paired with it goes too.
+                i = maskChain(line, out, valueStart, end, spans)
+            }
         } else {
             // Quoted values went in the first pass; an object or array (masked then) also takes
             // anything glued to its close (`{[redacted]}x`), as an unquoted value would, but not a
@@ -1153,25 +1236,24 @@ private fun maskValues(line: String, structured: Boolean): String {
             if (first == '"' || first == '\'') continue
             var end = bareEnd(line, valueStart)
             if (end < 0) continue
-            if (first == '{' || first == '[') {
-                val maskEnd = valueStart + masked(first).length
-                while (end > maskEnd && (line[end - 1] == '}' || line[end - 1] == ']')) end--
-            }
-            out.append(line, nameEnd, valueStart).append(masked(first))
+            if (first == '{' || first == '[') end = beforeClosers(line, valueStart + masked(first).length, end)
+            out.copy(nameEnd, valueStart)
+            out.mask(valueStart, end, masked(first))
             i = end
             // After `Authorization: Basic` (or `Bearer`), the credential is the next word.
             if (name.contains("authorization", ignoreCase = true)) {
                 val next = skipSpaces(line, end)
                 val credentialEnd = if (next > end && next < n) bareEnd(line, next) else -1
                 if (credentialEnd > 0) {
-                    out.append(line, end, next).append("[redacted]")
+                    out.copy(end, next)
+                    out.mask(next, credentialEnd, "[redacted]")
                     i = credentialEnd
                 }
             }
-            i = maskChain(line, out, valueStart, i)
+            i = maskChain(line, out, valueStart, i, spans, showClosers = true)
         }
     }
-    return out.toString()
+    return out.finish(spans)
 }
 
 /** Masks on from the value just masked at [start] until [end], whatever its text was hiding, and
@@ -1182,25 +1264,36 @@ private fun maskValues(line: String, structured: Boolean): String {
  *    ([reopenedQuote]). Else the text may have been a key's name (`"wlan.wpa.psk" c`, `"psk":c`),
  *    and the value paired with it goes ([keyValueStart]).
  *  - An unquoted value that ends in a separator or where one starts (`pin=key= c`, `pin:api_key":c`)
- *    held the next name, so that name's value goes, whatever the name was.
+ *    held the next name, so that name's value goes, whatever the name was. When that name is
+ *    `Authorization`'s (`pin:"a":Authorization: Basic cred`), its scheme's credential goes too, as
+ *    it does when the scan finds the name ([credentialAfter]).
  *  - An object or array masked here also takes anything glued to its close, as a value in the
- *    second pass does: a name inside it may pair with a value running past the close. */
-private fun maskChain(line: String, out: StringBuilder, start: Int, end: Int): Int {
+ *    second pass does: a name inside it may pair with a value running past the close. In the
+ *    second pass ([showClosers]) a parent's closing braces glued there (`{"pin":a: {"c":1}}`) are
+ *    shown, and the chain looks on from after them; the first pass hides them as before, since the
+ *    second reads its output for structure, and a brace shown there could close an object early.
+ *    A key inside it may open a quoted value running on past the close too: that text is noted
+ *    ([reopenPast]) and the chain reads on from the close as before. */
+private fun maskChain(line: String, out: Masker, start: Int, end: Int, spans: MutableList<Int>, showClosers: Boolean = false): Int {
     val n = line.length
     var s = start
     var i = end
+    var credential = credentialAfter(line, s, i)
     while (true) {
         val first = line[s]
-        val closedQuote = (first == '"' || first == '\'') && i - s > 1 && line[i - 1] == first
+        val quoted = first == '"' || first == '\''
+        val closedQuote = quoted && i - s > 1 && line[i - 1] == first
         if (closedQuote) {
             val reopened = reopenedQuote(line, s, i)
             val reopenedEnd = if (reopened < 0) -1 else quotedEnd(line, reopened)
             if (reopenedEnd > i) {
-                out.append("[redacted]")
+                out.mask(i, reopenedEnd, "[redacted]")
                 s = reopened
                 i = reopenedEnd
                 continue
             }
+        } else if ((first == '{' || first == '[') && i < n) {
+            reopenPast(line, s, i, spans)
         }
         // A quoted value that never closed ends at its line break, maybe after spaces: what pairs
         // on is what comes before them (`'wlan.wpa.psk"  ⏎ x`, `'a psk= ⏎ x`), across the break.
@@ -1210,38 +1303,105 @@ private fun maskChain(line: String, out: StringBuilder, start: Int, end: Int): I
             line[k - 1] == ':' || line[k - 1] == '=' -> skipSpaces(line, i)
             else -> separatorEnd(line, i)
         }
+        // The credential follows `Authorization`'s scheme when nothing else pairs with it: the
+        // next word is noted as masked, and the scan goes on from here as before.
+        val credentialDue = credential > 0 && --credential == 0
+        if (next < 0 && credentialDue && !quoted) {
+            val word = skipSpaces(line, i)
+            val wordEnd = if (word > i && word < n) bareEnd(line, word) else -1
+            if (wordEnd > 0) {
+                spans.add(word)
+                spans.add(wordEnd)
+            }
+        }
         if (next < 0 || next >= n) break
-        var nextEnd = maxOf(structuredEnd(line, next), bareEnd(line, next))
+        val structuredNext = structuredEnd(line, next)
+        var nextEnd = maxOf(structuredNext, bareEnd(line, next))
         if (nextEnd < 0) break
-        if (line[next] == '{' || line[next] == '[') nextEnd = maxOf(nextEnd, bareEnd(line, nextEnd))
-        out.append(line, i, next).append(masked(line[next]))
+        out.copy(i, next)
+        if (line[next] == '{' || line[next] == '[') {
+            nextEnd = maxOf(nextEnd, bareEnd(line, nextEnd))
+            val shown = if (showClosers) beforeClosers(line, structuredNext, nextEnd) else nextEnd
+            out.mask(next, shown, masked(line[next]))
+            out.copy(shown, nextEnd)
+        } else {
+            out.mask(next, nextEnd, masked(line[next]))
+        }
+        val due = credentialAfter(line, next, nextEnd)
+        if (due > 0) credential = due
         s = next
         i = nextEnd
     }
     return i
 }
 
-/** In the closed quoted value at [start] until [end], the quote at which a key and separator
- *  before it open a quoted value of their own: the last quote of the other kind inside the text
- *  (`'a token="b'`), else the closing quote (`"&session_id:"`). -1 when there is none. Such a
- *  value never closes inside the text, so it runs on past [end]. */
+/** When a key and separator inside the object or array at [start] until [end] open a quoted value
+ *  of their own that runs on past the close ([reopenedQuote]), notes the text from [end] to that
+ *  value's end in [spans]: it is masked at the end, on top of whatever the passes make of it, so
+ *  that they still read the line as if the value had closed where it did (the second pass pairs
+ *  what follows the close, and finds the names after it, as before). */
+private fun reopenPast(line: String, start: Int, end: Int, spans: MutableList<Int>) {
+    val reopened = reopenedQuote(line, start, end)
+    if (reopened < 0) return
+    spans.add(end)
+    spans.add(quotedEnd(line, reopened))
+}
+
+/** Where the text glued to a masked object or array, from [from] until [to], ends once a parent's
+ *  closing braces at its end are left out (`{"tokens":["x"]}` keeps its last `}`). */
+private fun beforeClosers(line: String, from: Int, to: Int): Int {
+    var end = to
+    while (end > from && (line[end - 1] == '}' || line[end - 1] == ']')) end--
+    return end
+}
+
+/** When the unquoted value at [at] until [end], masked in a chain, is an `…authorization` name and
+ *  its separator (`Authorization:`, `Authorization=Basic`), how many values along the chain its
+ *  credential follows: 1 when its scheme is in this value, 2 when the scheme is the next value. 0
+ *  for any other value. */
+private fun credentialAfter(line: String, at: Int, end: Int): Int {
+    if (line[at] == '"' || line[at] == '\'' || line[at] == '{' || line[at] == '[') return 0
+    var nameEnd = at
+    while (nameEnd < end && isNameChar(line[nameEnd])) nameEnd++
+    if (!line.substring(at, nameEnd).contains("authorization", ignoreCase = true)) return 0
+    val valueStart = separatorEnd(line, nameEnd)
+    return when {
+        valueStart < 0 -> 0
+        valueStart < end -> 1
+        else -> 2
+    }
+}
+
+/** In the structured value at [start] until [end] (quoted, object or array, closed, with text glued
+ *  to its close maybe), the quote at which a key and separator inside it ([keyEndsBefore]) open a
+ *  quoted value of their own that runs on past [end]; -1 when there is none. Only the last
+ *  unescaped quote of each kind can: an earlier one's value closes at the later quote. For a quoted
+ *  value that is its own closing quote (`"&session_id:"`) or the last quote of the other kind inside
+ *  it (`'a token="b'`); for an object or array the last of either kind (`{"password:"}`,
+ *  `['pin=']`). When both run on, the one that runs further wins. */
 private fun reopenedQuote(line: String, start: Int, end: Int): Int {
-    val quote = line[start]
-    val other = if (quote == '"') '\'' else '"'
-    var last = -1
+    var lastDouble = -1
+    var lastSingle = -1
     var i = start + 1
-    while (i < end - 1) {
+    while (i < end) {
         when (line[i]) {
             '\\' -> i++
-            other -> last = i
+            '"' -> lastDouble = i
+            '\'' -> lastSingle = i
         }
         i++
     }
-    return when {
-        last >= 0 && keyEndsBefore(line, last) -> last
-        keyEndsBefore(line, end - 1) -> end - 1
-        else -> -1
+    var reopened = -1
+    var reopenedEnd = end
+    for (quote in intArrayOf(lastDouble, lastSingle)) {
+        if (quote < 0 || !keyEndsBefore(line, quote)) continue
+        val valueEnd = quotedEnd(line, quote)
+        if (valueEnd > reopenedEnd) {
+            reopened = quote
+            reopenedEnd = valueEnd
+        }
     }
+    return reopened
 }
 
 /** A key's name and its separator end just before [at]: a secret's name, then `:` or `=` with
@@ -1416,11 +1576,11 @@ private fun bareEnd(line: String, start: Int): Int {
 }
 
 /** A URL's password masked: `scheme://user:password@host` keeps the user and host. Each URL's
- *  authority is read once, so it stays linear. */
-private fun maskUrlPasswords(line: String): String {
+ *  authority is read once, so it stays linear. [spans] follow the line through, as in [maskValues]. */
+private fun maskUrlPasswords(line: String, spans: MutableList<Int>): String {
     var at = line.indexOf("://")
     if (at < 0) return line
-    val out = StringBuilder(line.length)
+    val out = Masker(line)
     var copied = 0
     while (at >= 0) {
         val start = at + 3
@@ -1435,14 +1595,16 @@ private fun maskUrlPasswords(line: String): String {
             end++
         }
         if (lastAt > 0 && firstColon in start until lastAt - 1) {
-            out.append(line, copied, firstColon + 1).append("[redacted]")
+            out.copy(copied, firstColon + 1)
+            out.mask(firstColon + 1, lastAt, "[redacted]")
             copied = lastAt
         }
         // The next `://` can begin at the last character read as this authority's: the `:` of
         // `https://` in `http://h,https://u:p@h`.
         at = line.indexOf("://", maxOf(end - 1, start))
     }
-    return out.append(line, copied, line.length).toString()
+    out.copy(copied, line.length)
+    return out.finish(spans)
 }
 
 /** An unquoted value ends at a space or one of these. */
