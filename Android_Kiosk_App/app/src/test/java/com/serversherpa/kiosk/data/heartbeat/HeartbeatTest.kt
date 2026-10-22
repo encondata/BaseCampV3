@@ -155,14 +155,37 @@ class HeartbeatTest {
     }
 
     /** A station key is issued only to whoever the portal records as signed in here: signInNow
-     *  sends a sign-in beat on its own, and once landed the next beat is plain again. */
-    @Test fun signInNowSendsOneSignInBeat() = runTest {
+     *  sends a sign-in beat on its own, with the method of the sign-in this session came from. */
+    @Test fun signInNowSendsTheSessionsOwnMethod() = runTest {
+        val api = FakeKioskApi()
+        val (hb, prefs) = harness(backgroundScope, api)
+        hb.start(backgroundScope, signIn = LoginMethod.LINK)
+        settle(); hb.stop()
+        assertEquals("link", prefs.signInMethod.first())
+        hb.signInNow()
+        val last = api.heartbeats.last()
+        assertEquals(true, last.sign_in); assertEquals("link", last.login_method)
+        hb.now()
+        assertEquals(false, api.heartbeats.last().sign_in)              // landed: plain again
+    }
+
+    @Test fun signInNowWithNoKnownMethodSendsNoneRatherThanAGuess() = runTest {
         val api = FakeKioskApi()
         val (hb, _) = harness(backgroundScope, api)
         hb.signInNow()
-        assertEquals(1, api.heartbeats.size)
-        assertEquals(true, api.heartbeats[0].sign_in); assertEquals("password", api.heartbeats[0].login_method)
-        hb.now()
-        assertEquals(false, api.heartbeats[1].sign_in)
+        assertEquals(true, api.heartbeats.single().sign_in)
+        assertNull(api.heartbeats.single().login_method)
+    }
+
+    @Test fun signInNowKeepsAPendingSignInsMethod() = runTest {
+        val api = FakeKioskApi()
+        var fail = true
+        api.heartbeatResult = { if (fail) throw ApiError(0, "network") else HeartbeatResult("d", it.name, "ok", null) }
+        val (hb, _) = harness(backgroundScope, api)
+        hb.start(backgroundScope, signIn = LoginMethod.LINK)
+        settle(); hb.stop()
+        fail = false
+        hb.signInNow()
+        assertEquals("link", api.heartbeats.last().login_method)
     }
 }

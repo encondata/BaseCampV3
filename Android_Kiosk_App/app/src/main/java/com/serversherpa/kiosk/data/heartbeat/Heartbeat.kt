@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -68,23 +69,27 @@ class Heartbeat(
     suspend fun now() = beat()
 
     /** A sign-in beat right now, so the portal records who is signed in here (a station key is
-     *  issued only to that person). A sign-in still pending keeps its own method. */
-    suspend fun signInNow(method: LoginMethod = LoginMethod.PASSWORD) {
-        if (pendingSignIn == null) pendingSignIn = method
-        beat()
+     *  issued only to that person), with the session's own method: a sign-in still pending, else
+     *  the one the last sign-in beat recorded (a restored session is that sign-in). With neither
+     *  known, the beat goes without a method rather than a made-up one. */
+    suspend fun signInNow() {
+        val method = pendingSignIn ?: LoginMethod.fromWire(prefs.signInMethod.first())
+        if (method != null) { if (pendingSignIn == null) pendingSignIn = method; beat(); return }
+        beat(signInWithoutMethod = true)
     }
 
-    private suspend fun beat() {
+    private suspend fun beat(signInWithoutMethod: Boolean = false) {
         val (serial, name) = identity.get()
         val asSignIn = pendingSignIn
         try {
             val ack = prefs.pendingSetupClearAck()
             val result = api.heartbeat(HeartbeatIn(
                 serial = serial, name = name, mode = "android", version = config.kioskVersion,
-                raw_info = deviceInfo(), sign_in = asSignIn != null, login_method = asSignIn?.wire,
+                raw_info = deviceInfo(), sign_in = asSignIn != null || signInWithoutMethod, login_method = asSignIn?.wire,
                 setup_cleared = ack,
             ))
             if (asSignIn != null && pendingSignIn === asSignIn) pendingSignIn = null
+            if (asSignIn != null) prefs.setSignInMethod(asSignIn.wire)
             // Settle and apply before anything else can throw, so a clear is never deferred.
             prefs.settleSetupClearAck(ack, result.clear_setup)
             val asked = result.clear_setup

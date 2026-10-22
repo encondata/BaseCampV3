@@ -20,6 +20,22 @@ class KioskConfig(
     suspend fun portalUrlNow(): String = portalUrl.first()
 
     companion object {
+        /** "scheme://host:port" of an http(s) URL, lower-cased, with the default port spelled
+         *  out, so "https://Api.example" and "https://api.example:443/v1" match; null when it
+         *  isn't one. What a Time Clock station key is bound to. */
+        fun originOf(url: String): String? {
+            val uri = try { java.net.URI(url.trim()) } catch (e: Exception) { return null }
+            val scheme = uri.scheme?.lowercase() ?: return null
+            val host = uri.host?.lowercase() ?: return null
+            val port = when {
+                uri.port != -1 -> uri.port
+                scheme == "https" -> 443
+                scheme == "http" -> 80
+                else -> return null
+            }
+            return "$scheme://$host:$port"
+        }
+
         /** Trimmed, trailing slashes removed; only http(s) origins are accepted. */
         fun normalizeUrl(raw: String): String? {
             val v = raw.trim().trimEnd('/')

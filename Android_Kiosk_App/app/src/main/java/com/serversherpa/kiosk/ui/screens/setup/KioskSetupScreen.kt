@@ -42,7 +42,7 @@ fun KioskSetupScreen(nav: NavHostController) {
     val vm = kioskViewModel {
         KioskSetupViewModel(
             container.api, container.prefs, container.identity, container.sync,
-            stationKeys = container.stationKeys,
+            station = container.station,
             signInBeat = { container.heartbeat.signInNow() },
             signOut = { container.logout() },
         )
@@ -67,7 +67,7 @@ fun KioskSetupScreen(nav: NavHostController) {
         if (!wizardOpen && sel != null) {
             if (sel.stationType == TIMECLOCK_STATION) {
                 // A Time Clock station downloads no move data.
-                Text(buildString { append("This kiosk is a Time Clock station for "); append(sel.initiativeId?.let { sel.initiativeName } ?: "no move"); append(" at "); append(sel.siteId?.let { sel.siteName } ?: "no site"); append(".") },
+                Text(buildString { append("This kiosk is a Time Clock station for "); append(sel.initiativeName ?: "no move"); append(" at "); append(sel.siteName ?: "no site"); append(".") },
                     style = MaterialTheme.typography.bodyLarge)
             } else {
                 Text(buildString { append("This kiosk is set up for "); append(sel.initiativeName); append(" at "); append(sel.siteName); append(" ("); append(sel.siteRole); append(") · scan type "); append(sel.scanLabel) },

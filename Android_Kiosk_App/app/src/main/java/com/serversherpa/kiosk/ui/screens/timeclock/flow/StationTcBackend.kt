@@ -5,6 +5,7 @@ import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.model.KioskPersonRow
 import com.serversherpa.kiosk.core.model.KioskTimeclockStatus
 import com.serversherpa.kiosk.data.api.StationApi
+import com.serversherpa.kiosk.data.api.StationCredentials
 import com.serversherpa.kiosk.data.db.KioskDatabase
 import com.serversherpa.kiosk.data.db.toEntity
 import com.serversherpa.kiosk.data.identity.Identity
@@ -28,11 +29,11 @@ class StationTcBackend(
     private val identity: Identity,
     private val zone: () -> String = ::deviceZone,
 ) : TcBackend {
-    private suspend fun <T> keyed(block: suspend (key: String, serial: String) -> T): T {
-        val key = status.key() ?: throw ApiError(401, "station_key_missing")
+    private suspend fun <T> keyed(block: suspend (creds: StationCredentials, serial: String) -> T): T {
+        val creds = status.credentials() ?: throw ApiError(401, "station_key_missing")
         val serial = identity.get().serial
         return try {
-            block(key, serial).also { status.ok() }
+            block(creds, serial).also { status.ok() }
         } catch (e: ApiError) {
             status.failed(e)
             throw e
@@ -41,7 +42,7 @@ class StationTcBackend(
 
     override suspend fun people(): List<KioskPersonRow> {
         val fetched = try {
-            keyed { key, serial -> api.people(key, serial) }
+            keyed { creds, serial -> api.people(creds, serial) }
         } catch (e: ApiError) {
             val local = db.people().all()
             // A station error shows on Welcome; offline keeps the last list when there is one.
@@ -56,11 +57,11 @@ class StationTcBackend(
     }
 
     override suspend fun status(personId: String): KioskTimeclockStatus =
-        keyed { key, serial -> api.status(key, serial, personId, zone()) }
+        keyed { creds, serial -> api.status(creds, serial, personId, zone()) }
 
     override suspend fun clockIn(personId: String): KioskTimeclockStatus =
-        keyed { key, serial -> api.clockIn(key, serial, personId, zone()) }
+        keyed { creds, serial -> api.clockIn(creds, serial, personId, zone()) }
 
     override suspend fun clockOut(personId: String): KioskTimeclockStatus =
-        keyed { key, serial -> api.clockOut(key, serial, personId, zone()) }
+        keyed { creds, serial -> api.clockOut(creds, serial, personId, zone()) }
 }

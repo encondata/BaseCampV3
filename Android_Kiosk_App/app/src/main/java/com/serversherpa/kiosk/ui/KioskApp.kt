@@ -19,6 +19,7 @@ import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.ui.flash.ScanFlash
 import com.serversherpa.kiosk.ui.guards.KioskGuard
 import com.serversherpa.kiosk.ui.guards.SetupGate
+import com.serversherpa.kiosk.ui.guards.StationIdleReturn
 import com.serversherpa.kiosk.ui.screens.enroll.EnrollScreen
 import com.serversherpa.kiosk.ui.screens.home.HomeScreen
 import com.serversherpa.kiosk.ui.screens.labels.LabelsHomeScreen
@@ -47,8 +48,9 @@ fun KioskApp() {
                 // A signed-out Time Clock station rests on Welcome here (KioskGuard).
                 composable(Routes.HOME) { KioskGuard(nav, stationHome = true) { KioskShell(nav) { HomeScreen(nav) } } }
                 composable(Routes.SETUP) { KioskGuard(nav) { KioskShell(nav) { KioskSetupScreen(nav) } } }
+                // Reachable signed out (sign-in's gear): a Time Clock station returns to Welcome when idle.
                 composable(Routes.SETTINGS, arguments = listOf(navArgument("tab") { type = NavType.StringType; nullable = true })) { entry ->
-                    KioskShell(nav) { SettingsScreen(nav, entry.arguments?.getString("tab")) }
+                    StationIdleReturn(nav) { KioskShell(nav) { SettingsScreen(nav, entry.arguments?.getString("tab")) } }
                 }
                 gated(nav, Routes.SCAN, FeatureId.SCAN) { ScanScreen(nav) }
                 gated(nav, Routes.ENROLL, FeatureId.ENROLL) { EnrollScreen(nav) }

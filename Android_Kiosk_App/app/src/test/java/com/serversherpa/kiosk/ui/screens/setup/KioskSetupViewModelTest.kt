@@ -19,6 +19,7 @@ import com.serversherpa.kiosk.data.identity.Identity
 import com.serversherpa.kiosk.data.labels.LabelSettingsStore
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import com.serversherpa.kiosk.data.station.StationKeyStore
+import com.serversherpa.kiosk.data.station.StationStatus
 import com.serversherpa.kiosk.data.sync.Sync
 import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -209,6 +210,8 @@ class KioskSetupViewModelTest {
 
     // ---- the Time Clock path ----
 
+    private val ORIGIN = "https://api.example.com:443"
+
     private val tcOptions = options.copy(sites = listOf(SetupOptionSite("s1", "Origin"), SetupOptionSite("s2", "Dest"), SetupOptionSite("s9", "Yard")))
 
     private class Rig(val vm: KioskSetupViewModel, val api: FakeKioskApi, val prefs: KioskPrefs, val keys: StationKeyStore, val bodies: MutableList<KioskSetupIn>, val events: MutableList<String>)
@@ -227,12 +230,12 @@ class KioskSetupViewModelTest {
         }
         val prefs = KioskPrefs(PreferenceDataStoreFactory.create(scope = backgroundScope) { File(tmp.root, "$name.preferences_pb") })
         val keys = StationKeyStore(MemorySecretStore())
-        if (preKey != null) keys.put(preKey)
+        if (preKey != null) keys.put(preKey, ORIGIN)
         val sync = Sync(api, KioskDatabase.inMemory(ApplicationProvider.getApplicationContext()), backgroundScope)
         val vm = KioskSetupViewModel(
             api, prefs, Identity(prefs), sync, backgroundScope,
-            stationKeys = keys, signInBeat = { events += "beat" }, signOut = { events += "signOut" },
-            io = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler),
+            station = StationStatus(keys, apiBase = { "https://api.example.com" }, io = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)),
+            signInBeat = { events += "beat" }, signOut = { events += "signOut" },
         )
         return Rig(vm, api, prefs, keys, bodies, events)
     }
@@ -263,7 +266,7 @@ class KioskSetupViewModelTest {
         assertEquals(listOf("", "", ""), r.vm.siteChoices().map { it.second })   // no source/destination roles
         r.vm.selectSite("s9"); settle()
         assertEquals(KioskSetupIn(r.bodies[0].serial, null, "s9", null, "timeclock"), r.bodies.single())
-        assertEquals("tc-key-1", r.keys.get())
+        assertEquals("tc-key-1", r.keys.get(ORIGIN))
         val sel = r.prefs.setupSelection.first()!!
         assertEquals("timeclock", sel.stationType)
         assertNull(sel.initiativeId); assertEquals("s9", sel.siteId); assertNull(sel.scanStatus)
@@ -281,7 +284,7 @@ class KioskSetupViewModelTest {
         assertEquals(null, r.bodies.single().initiative_id)
         assertEquals(null, r.bodies.single().scan_status)
         assertEquals("timeclock", r.bodies.single().station_type)
-        assertEquals("tc-key-1", r.keys.get())
+        assertEquals("tc-key-1", r.keys.get(ORIGIN))
         assertEquals(true, r.vm.state.value.noSite)
     }
 
@@ -296,7 +299,7 @@ class KioskSetupViewModelTest {
         assertEquals("s2", r.bodies.single().site_id)
         assertEquals(null, r.bodies.single().scan_status)
         assertEquals("i1", r.prefs.setupSelection.first()?.initiativeId)
-        assertEquals("tc-key-1", r.keys.get())
+        assertEquals("tc-key-1", r.keys.get(ORIGIN))
     }
 
     @Test fun notSignedInHereSendsOneHeartbeatAndRetriesOnce() = runTest {
@@ -307,7 +310,7 @@ class KioskSetupViewModelTest {
         r.vm.selectKind(SetupKind.TIMECLOCK); r.vm.selectNoMove(); r.vm.selectSite("s1"); settle()
         assertEquals(2, tries)
         assertEquals(listOf("beat", "signOut"), r.events)
-        assertEquals("tc-key-2", r.keys.get())
+        assertEquals("tc-key-2", r.keys.get(ORIGIN))
     }
 
     @Test fun aSecondRefusalStopsAndStaysSignedIn() = runTest {
@@ -321,7 +324,7 @@ class KioskSetupViewModelTest {
         assertEquals("not_signed_in_here", r.vm.state.value.keyError)
         assertEquals(true, r.vm.state.value.wizardOpen)
         assertEquals(false, r.vm.state.value.submitting)
-        assertNull(r.keys.get())                                        // the old key went with the old setup
+        assertNull(r.keys.get(ORIGIN))                                        // the old key went with the old setup
         // the portal holds the Time Clock setup now, and so does this kiosk
         assertEquals("timeclock", r.prefs.setupSelection.first()?.stationType)
     }
@@ -337,7 +340,7 @@ class KioskSetupViewModelTest {
         r.vm.selectKind(SetupKind.REGULAR)
         r.vm.selectMove("i1"); r.vm.selectSite("s2"); r.vm.selectScanType("pre_stage"); r.vm.finish("top"); settle()
         assertNull(r.bodies.single().station_type)
-        assertNull(r.keys.get())
+        assertNull(r.keys.get(ORIGIN))
         assertNull(r.prefs.setupSelection.first()?.stationType)
         assertEquals(false, "signOut" in r.events)
     }

@@ -29,16 +29,20 @@ import org.robolectric.annotation.Config
 class StationTcBackendTest {
     @get:Rule val tmp = TemporaryFolder()
 
+    private companion object { const val BASE = "https://api.example.com"; const val ORIGIN = "https://api.example.com:443" }
+
     private val tina = KioskPersonRow("p1", "Tina Turner", "Tina", "Turner", badge_uid = "B1")
     private val sam = KioskPersonRow("p2", "Sam Stone", "Sam", "Stone")
 
     private class Rig(val backend: StationTcBackend, val api: FakeStationApi, val db: KioskDatabase, val keys: StationKeyStore, val status: StationStatus, val serial: String)
 
-    private suspend fun rig(key: String? = "k1", configure: FakeStationApi.() -> Unit = {}): Rig {
+    private var apiBase = BASE
+
+    private suspend fun rig(key: String? = "k1", keyOrigin: String = ORIGIN, configure: FakeStationApi.() -> Unit = {}): Rig {
         val api = FakeStationApi().apply { peopleResult = { listOf(tina, sam) }; configure() }
         val db = KioskDatabase.inMemory(ApplicationProvider.getApplicationContext())
-        val keys = StationKeyStore(MemorySecretStore()).apply { if (key != null) put(key) }
-        val status = StationStatus(keys)
+        val keys = StationKeyStore(MemorySecretStore()).apply { if (key != null) put(key, keyOrigin) }
+        val status = StationStatus(keys, apiBase = { apiBase })
         val prefs = KioskPrefs(PreferenceDataStoreFactory.create { File(tmp.root, "id.preferences_pb") })
         val identity = Identity(prefs)
         return Rig(StationTcBackend(db, api, status, identity, zone = { "America/Chicago" }), api, db, keys, status, identity.get().serial)
@@ -59,6 +63,7 @@ class StationTcBackendTest {
         r.backend.status("p1"); r.backend.clockIn("p1"); r.backend.clockOut("p1")
         assertEquals(listOf("status", "clockIn", "clockOut"), r.api.calls)
         assertEquals(listOf("k1", "k1", "k1"), r.api.keys)
+        assertEquals(listOf(BASE, BASE, BASE), r.api.bases)                 // the validated base
     }
 
     @Test fun offlineKeepsTheLastPeopleList() = runTest {
@@ -76,7 +81,7 @@ class StationTcBackendTest {
     @Test fun anInvalidKeyIsDropped() = runTest {
         val r = rig { statusResult = { throw ApiError(401, "station_key_invalid") } }
         try { r.backend.status("p1"); fail("expected a failure") } catch (e: ApiError) { assertEquals(401, e.status) }
-        assertNull(r.keys.get())
+        assertNull(r.keys.get(ORIGIN))
         assertEquals(false, r.status.hasKey.value)
     }
 
@@ -85,7 +90,7 @@ class StationTcBackendTest {
         r.db.people().insertAll(listOf(KioskPersonRow("p1", "Tina Turner").toEntity()))
         assertEquals(listOf("p1"), r.backend.people().map { it.id })     // the local copy, no error line
         assertEquals(true, r.status.paused.value)
-        assertEquals("k1", r.keys.get())
+        assertEquals("k1", r.keys.get(ORIGIN))
         r.api.peopleResult = { listOf(tina) }
         r.backend.people()
         assertEquals(false, r.status.paused.value)                        // renewed: running again
@@ -97,5 +102,17 @@ class StationTcBackendTest {
         try { r.backend.status("p1"); fail("expected a failure") } catch (e: ApiError) { assertEquals("station_key_missing", e.code) }
         assertEquals(emptyList<String>(), r.api.calls)
         assertEquals(false, r.status.hasKey.value)
+    }
+
+    /** The API URL was changed after the key was issued: the key is cleared, nothing is sent. */
+    @Test fun aKeyFromAnotherOriginIsNeverSent() = runTest {
+        apiBase = "https://evil.example.com"
+        val r = rig()
+        assertEquals(emptyList<KioskPersonRow>(), r.backend.people())
+        try { r.backend.clockIn("p1"); fail("expected a failure") } catch (e: ApiError) { assertEquals("station_key_missing", e.code) }
+        assertEquals(emptyList<String>(), r.api.calls)
+        assertEquals(false, r.status.hasKey.value)
+        apiBase = BASE
+        assertNull(r.keys.get(ORIGIN))                                     // dropped, not just hidden
     }
 }

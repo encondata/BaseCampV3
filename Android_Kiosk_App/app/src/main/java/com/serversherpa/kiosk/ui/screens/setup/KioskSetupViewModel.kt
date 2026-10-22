@@ -12,7 +12,8 @@ import com.serversherpa.kiosk.core.setup.SetupState
 import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.data.identity.Identity
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
-import com.serversherpa.kiosk.data.station.StationKeyStore
+import com.serversherpa.kiosk.data.station.StationStatus
+import com.serversherpa.kiosk.data.station.issueAndStore
 import com.serversherpa.kiosk.data.station.TIMECLOCK_STATION
 import com.serversherpa.kiosk.data.station.issueStationKeyRetrying
 import com.serversherpa.kiosk.data.sync.Sync
@@ -20,9 +21,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -32,7 +31,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /** The wizard's first step: what is this kiosk? */
 enum class SetupKind { REGULAR, TIMECLOCK }
@@ -77,18 +75,17 @@ fun formatMoveDates(i: SetupOptionInitiative): String? {
  *  - Regular: Move → Site → Scan type, then (here only) what labels print on, then the summary;
  *  - Time Clock: Move (or No move) → Site (the move's, or with no move any site or No site).
  *    Picking the site saves it with `station_type` "timeclock", issues and stores the station
- *    key ([stationKeys]; one [signInBeat] and retry on `not_signed_in_here`), and signs the
+ *    key ([station], bound to the API origin; one [signInBeat] and retry on `not_signed_in_here`), and signs the
  *    person out ([signOut]), which leaves the station resting on Welcome. No move data syncs.
  * A Regular setup drops any station key, since the portal has revoked it.
  */
 class KioskSetupViewModel(
     private val api: KioskApi, private val prefs: KioskPrefs, private val identity: Identity,
     private val sync: Sync, scopeOverride: CoroutineScope? = null,
-    private val stationKeys: StationKeyStore? = null,
+    /** The station key's store (it reads and writes the key off the main thread). */
+    private val station: StationStatus? = null,
     private val signInBeat: suspend () -> Unit = {},
     private val signOut: suspend () -> Unit = {},
-    /** Where the key store is touched: never the main thread (the Keystore unlock). */
-    private val io: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
     private val scope = scopeOverride ?: viewModelScope
     val selection: StateFlow<KioskSetupSelection?> = prefs.setupSelection.stateIn(scope, SharingStarted.Eagerly, null)
@@ -216,7 +213,7 @@ class KioskSetupViewModel(
                 val result = api.submitSetup(KioskSetupIn(identity.get().serial, ui.initiativeId, ui.siteId, scanKey))
                 prefs.setSetupSelection(KioskSetupSelection(result.initiative_id, result.initiative_name, result.site_id, result.site_name, result.site_role, result.scan_status, result.scan_status_label, labelKind))
                 // A regular kiosk holds no station key: the portal revoked any it had.
-                stationKeys?.let { keys -> withContext(io) { keys.clear() } }
+                station?.drop()
                 prefs.setSetupState(SetupState.COMPLETE)
                 prefs.dismissSetupClearNotice()   // set up again: the "administrator cleared" banner goes
                 _state.update { it.copy(submitting = false, wizardOpen = false) }
@@ -242,7 +239,7 @@ class KioskSetupViewModel(
             val serial = identity.get().serial
             try {
                 val result = api.submitSetup(KioskSetupIn(serial, ui.initiativeId.ifEmpty { null }, siteId, station_type = TIMECLOCK_STATION))
-                stationKeys?.let { keys -> withContext(io) { keys.clear() } }
+                station?.drop()
                 prefs.setSetupSelection(KioskSetupSelection(
                     result.initiative_id, result.initiative_name, result.site_id, result.site_name, result.site_role,
                     stationType = TIMECLOCK_STATION,
@@ -256,8 +253,8 @@ class KioskSetupViewModel(
                 return@launch
             }
             try {
-                val key = issueStationKeyRetrying(api, serial, signInBeat)
-                stationKeys?.let { keys -> withContext(io) { keys.put(key) } }
+                if (station != null) station.issueAndStore(api, serial, signInBeat)
+                else issueStationKeyRetrying(api, serial, signInBeat)
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 _state.update { it.copy(submitting = false, keyError = (e as? ApiError)?.code ?: "unknown_error") }

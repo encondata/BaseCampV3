@@ -67,7 +67,7 @@ fun ThisKioskPanel() {
                 MiniButton("Save URLs", onClick = {
                     val a = KioskConfig.normalizeUrl(api); val p = KioskConfig.normalizeUrl(portal)
                     if (a == null || p == null) { urlError = "Enter full http:// or https:// origins." }
-                    else scope.launch { container.prefs.setApiUrl(a); container.prefs.setPortalUrl(p); saved = "URLs saved. Sign in again if the API changed." }
+                    else scope.launch { container.saveApiUrl(a); container.prefs.setPortalUrl(p); saved = "URLs saved. Sign in again if the API changed." }
                 })
             }
         }

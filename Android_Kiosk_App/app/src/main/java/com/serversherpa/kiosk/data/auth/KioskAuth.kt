@@ -12,7 +12,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
-enum class LoginMethod(val wire: String) { PASSWORD("password"), LINK("link") }
+enum class LoginMethod(val wire: String) {
+    PASSWORD("password"), LINK("link");
+
+    companion object { fun fromWire(s: String?): LoginMethod? = entries.firstOrNull { it.wire == s } }
+}
 
 sealed interface AuthState {
     data object Loading : AuthState

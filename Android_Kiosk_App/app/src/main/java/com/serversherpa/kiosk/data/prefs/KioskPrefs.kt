@@ -48,6 +48,7 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
         val serial = stringPreferencesKey("ss.kiosk.serial")
         val name = stringPreferencesKey("ss.kiosk.name")
         val setupClear = stringPreferencesKey("ss.kiosk.setupClear")
+        val signInMethod = stringPreferencesKey("ss.kiosk.signInMethod")
     }
 
     val setupState: Flow<SetupState> = store.data.map { SetupState.fromWire(it[Keys.setupState]) }
@@ -141,6 +142,11 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
 
     val devMode: Flow<Boolean> = store.data.map { it[Keys.devMode] ?: false }
     suspend fun setDevMode(on: Boolean) { store.edit { it[Keys.devMode] = on } }
+
+    /** How the person signed in here last ("password" | "link"), as the last sign-in heartbeat
+     *  told the portal; a restored session is that same sign-in. */
+    val signInMethod: Flow<String?> = store.data.map { it[Keys.signInMethod] }
+    suspend fun setSignInMethod(wire: String) { store.edit { it[Keys.signInMethod] = wire } }
 
     val apiUrl: Flow<String?> = store.data.map { it[Keys.apiUrl] }
     suspend fun setApiUrl(url: String?) { store.edit { if (url == null) it.remove(Keys.apiUrl) else it[Keys.apiUrl] = url } }

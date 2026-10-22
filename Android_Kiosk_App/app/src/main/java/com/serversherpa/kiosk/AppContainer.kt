@@ -34,7 +34,7 @@ import com.serversherpa.kiosk.data.outbox.RoomOutboxStore
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import com.serversherpa.kiosk.data.station.StationKeyStore
 import com.serversherpa.kiosk.data.station.StationStatus
-import com.serversherpa.kiosk.data.station.issueStationKeyRetrying
+import com.serversherpa.kiosk.data.station.issueAndStore
 import com.serversherpa.kiosk.data.sync.Sync
 import com.serversherpa.kiosk.input.ScanBus
 import com.serversherpa.kiosk.input.camera.hasCamera
@@ -89,10 +89,10 @@ class AppContainer(
     val session = SessionStore(httpClient, config, scope)
     val api: KioskApi = apiOverride ?: OkHttpKioskApi(httpClient, config, session)
     /** A Time Clock station's signed-out calls: the station key only, no session. */
-    val stationApi: StationApi = stationApiOverride ?: OkHttpStationApi(httpClient, config)
+    val stationApi: StationApi = stationApiOverride ?: OkHttpStationApi(httpClient)
     val stationKeys = StationKeyStore(secretStore)
     /** Whether a Time Clock station's key is there, and whether the portal has paused it. */
-    val station = StationStatus(stationKeys)
+    val station = StationStatus(stationKeys, apiBase = { config.apiUrlNow() })
     val auth = KioskAuth(api, session, identity, scope)
     val sync = Sync(api, db, scope, fontsDir = File(app.filesDir, "label-fonts"))
     val labelEngine: LabelEngine = LabelGenerator(app)
@@ -129,7 +129,8 @@ class AppContainer(
         // Clear Setup revokes a Time Clock station's key on the portal; drop it here too.
         scope.launch(Dispatchers.IO) { heartbeat.setupCleared.collect { stationKeys.clear() } }
         SessionCoordinator(auth, heartbeat, foreground, scope).start()
-        MoveSetupGuard(auth.state, prefs, scope).start()
+        // A dropped setup can't keep a Time Clock station's key either.
+        MoveSetupGuard(auth.state, prefs, scope, onSetupDropped = { station.drop() }).start()
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 foreground.value = true
@@ -183,11 +184,22 @@ class AppContainer(
         cookieJar.clearRefreshCookie()
     }
 
-    /** Issues this kiosk's station key under the signed-in session and stores it, with the one
-     *  sign-in heartbeat and retry a `not_signed_in_here` answer calls for. Throws ApiError. */
+    /** Issues this kiosk's station key under the signed-in session and stores it bound to the
+     *  API origin, with the one sign-in heartbeat and retry a `not_signed_in_here` answer calls
+     *  for. Throws ApiError. */
     suspend fun issueStationKey() {
-        val key = issueStationKeyRetrying(api, identity.get().serial) { heartbeat.signInNow() }
-        withContext(Dispatchers.IO) { stationKeys.put(key) }
+        station.issueAndStore(api, identity.get().serial) { heartbeat.signInNow() }
+    }
+
+    /**
+     * Settings › This Kiosk's API URL, whoever saves it (signed in or not). A Time Clock
+     * station's key issued by another origin is dropped at once: it must never reach another
+     * server. The station then waits for a new key.
+     */
+    suspend fun saveApiUrl(url: String) {
+        prefs.setApiUrl(url)
+        val origin = KioskConfig.originOf(url) ?: url
+        withContext(Dispatchers.IO) { stationKeys.keepOnlyFor(origin) }
     }
 
     /**
@@ -196,7 +208,7 @@ class AppContainer(
      * be had throws ApiError and keeps the person signed in.
      */
     suspend fun startTimeclock() {
-        if (withContext(Dispatchers.IO) { stationKeys.get() } == null) issueStationKey()
+        if (station.credentials() == null) issueStationKey()
         logout()
     }
 }

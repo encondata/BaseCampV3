@@ -34,24 +34,56 @@ import com.serversherpa.kiosk.core.model.SystemStatus
 import com.serversherpa.kiosk.data.config.KioskConfig
 import java.io.IOException
 import java.net.URLEncoder
+import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 
-/** One call on [client] off the main thread; a transport failure is ApiError(0, "network").
- *  Shared by [OkHttpKioskApi] and [OkHttpStationApi]. */
-internal suspend fun executeCall(client: OkHttpClient, request: Request): Response = withContext(Dispatchers.IO) {
-    try { client.newCall(request).execute() } catch (e: IOException) { throw ApiError(0, "network") }
+/**
+ * One call on [client], on OkHttp's own threads; a transport failure is ApiError(0, "network").
+ * Shared by [OkHttpKioskApi] and [OkHttpStationApi].
+ *
+ * Cancellable: cancelling the coroutine (a `withTimeoutOrNull` read deadline, a screen going
+ * away) cancels the HTTP call itself, which a blocking `execute()` inside `withContext(IO)`
+ * never did. The body is read on the callback thread before resuming, so the whole exchange is
+ * covered and callers parse it from memory without touching the network.
+ */
+internal suspend fun executeCall(client: OkHttpClient, request: Request): Response = suspendCancellableCoroutine { cont ->
+    val call = client.newCall(request)
+    cont.invokeOnCancellation { call.cancel() }
+    call.enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            // Already cancelled: the resume is ignored.
+            cont.resumeWithException(ApiError(0, "network"))
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            val buffered = try {
+                response.use { r ->
+                    val body = r.body
+                    r.newBuilder().body(body?.bytes()?.toResponseBody(body.contentType())).build()
+                }
+            } catch (e: IOException) {
+                cont.resumeWithException(ApiError(0, "network"))
+                return
+            }
+            cont.resume(buffered) { _, value, _ -> value.close() }
+        }
+    })
 }
 
 /** Non-2xx → ApiError with detail.code (else unknown_error). Consumes the response. */

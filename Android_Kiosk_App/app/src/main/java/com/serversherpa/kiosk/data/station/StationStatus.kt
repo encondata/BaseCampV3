@@ -2,6 +2,8 @@ package com.serversherpa.kiosk.data.station
 
 import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.data.api.KioskApi
+import com.serversherpa.kiosk.data.api.StationCredentials
+import com.serversherpa.kiosk.data.config.KioskConfig
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,6 +23,9 @@ const val TIMECLOCK_STATION = "timeclock"
  */
 class StationStatus(
     private val keys: StationKeyStore,
+    /** The configured API base URL right now (KioskConfig.apiUrlNow): a key is used only at
+     *  the origin that issued it. */
+    private val apiBase: suspend () -> String,
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
     private val _paused = MutableStateFlow(false)
@@ -28,7 +33,26 @@ class StationStatus(
     /** Null until the key has been read once. */
     val hasKey: StateFlow<Boolean?> = keys.present
 
-    suspend fun key(): String? = withContext(io) { keys.get() }
+    /**
+     * The key with the base URL it was checked against, only when that URL's origin is the one
+     * that issued the key; otherwise the key is cleared and null comes back (Welcome then waits
+     * for a key, and nothing is sent). Station calls use the returned base URL and never read
+     * the configuration again, so the key can't follow a URL saved after this check.
+     */
+    suspend fun credentials(): StationCredentials? {
+        val base = apiBase()
+        val origin = KioskConfig.originOf(base) ?: base
+        return withContext(io) { keys.get(origin) }?.let { StationCredentials(it, base) }
+    }
+
+    /** Stores a freshly issued key, bound to [origin]: the API origin it was issued by. */
+    suspend fun store(key: String, origin: String) = withContext(io) { keys.put(key, origin) }
+
+    /** Drops the key (a new setup, Clear Setup, a dropped move setup). */
+    suspend fun drop() = withContext(io) { keys.clear() }
+
+    /** The configured API's origin, for a key about to be issued. */
+    suspend fun origin(): String = apiBase().let { KioskConfig.originOf(it) ?: it }
 
     /** A station call went through: the station is running. */
     fun ok() { _paused.value = false }
@@ -40,6 +64,15 @@ class StationStatus(
             e.status == 403 && e.code == "kiosk_not_registered" -> _paused.value = true
         }
     }
+}
+
+/**
+ * Issues this kiosk's key and stores it bound to the API origin it was asked of (read before
+ * the call, so a URL saved meanwhile can't adopt it). Throws ApiError.
+ */
+suspend fun StationStatus.issueAndStore(api: KioskApi, serial: String, signInBeat: suspend () -> Unit) {
+    val origin = origin()
+    store(issueStationKeyRetrying(api, serial, signInBeat), origin)
 }
 
 /**

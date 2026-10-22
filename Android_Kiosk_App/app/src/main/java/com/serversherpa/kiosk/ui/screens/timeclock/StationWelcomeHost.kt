@@ -51,7 +51,7 @@ fun StationWelcomeHost(nav: NavHostController) {
     val hasKey by station.hasKey.collectAsStateWithLifecycle()
     // The key's first read, off the main thread: until it lands the station is neither missing
     // its key nor paused.
-    LaunchedEffect(station) { station.key() }
+    LaunchedEffect(station) { station.credentials() }
     val keyMissing = hasKey == false
     val off = paused || keyMissing
     LaunchedEffect(off) { if (off && vm.state.value.step != TcStep.WELCOME) vm.reset() }

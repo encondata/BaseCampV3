@@ -19,16 +19,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.changedToDown
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -47,11 +43,11 @@ import com.serversherpa.kiosk.data.identity.KioskIdentity
 import com.serversherpa.kiosk.data.station.TIMECLOCK_STATION
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.ui.Routes
+import com.serversherpa.kiosk.ui.guards.StationIdleReturn
 import com.serversherpa.kiosk.ui.components.kioskViewModel
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.TcArrowLeftIcon
 import com.serversherpa.kiosk.ui.theme.Geologica
 import com.serversherpa.kiosk.ui.theme.StatusBarIcons
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.map
 
 /**
@@ -73,19 +69,14 @@ fun LoginScreen(nav: NavHostController) {
     val goHome = { nav.navigate(Routes.HOME) { popUpTo(0) } }
     var scanning by rememberSaveable { mutableStateOf(false) }
     // A Time Clock station (Login.tsx): the way back to its Welcome, which Home shows while
-    // nobody is signed in, taken on its own after a quiet minute so a worker who tapped the
-    // gear by mistake can't strand the station here.
+    // nobody is signed in, also taken on its own after a quiet minute (StationIdleReturn) so a
+    // worker who tapped the gear by mistake can't strand the station here.
     val station by remember(container) { container.prefs.setupSelection.map { it?.stationType == TIMECLOCK_STATION } }
         .collectAsStateWithLifecycle(initialValue = false)
-    var touched by remember { mutableIntStateOf(0) }
-    LaunchedEffect(station, touched, ui.email, ui.password, ui.movePassword, ui.view) {
-        if (station) { delay(TIMECLOCK_RETURN_MS); goHome() }
-    }
 
-    LoginContent(
+    StationIdleReturn(nav, restartKey = listOf(ui.email, ui.password, ui.movePassword, ui.view)) { LoginContent(
         ui = ui,
         backToTimeclock = if (station) goHome else null,
-        onActivity = { touched++ },
         kioskName = identity.name,
         actions = LoginActions(
             setEmail = vm::setEmail, setPassword = vm::setPassword, togglePassword = vm::togglePassword,
@@ -96,7 +87,7 @@ fun LoginScreen(nav: NavHostController) {
         ),
         canScan = container.hasCamera,
         pairPanel = { PairPanel(pairVm, portalUrl) { session: SessionData -> container.auth.completePair(session); goHome() } },
-    )
+    ) }
     // The kiosk's own camera, QR only: the first code read is the move password and is submitted at once.
     // Only over the Move password view: `scanning` is saved across process death but the view isn't, and a
     // scan's error lands in moveError, which no other view shows.
@@ -108,9 +99,6 @@ fun LoginScreen(nav: NavHostController) {
         qrOnly = true,
     )
 }
-
-/** On a Time Clock station an untouched sign-in page goes back to the time clock after this long. */
-internal const val TIMECLOCK_RETURN_MS = 60_000L
 
 /** Everything the screen can do; one place so the stateless [LoginContent] stays readable. */
 internal class LoginActions(
@@ -145,20 +133,9 @@ internal fun LoginContent(
     ui: LoginUi, kioskName: String, actions: LoginActions, canScan: Boolean = false,
     /** Set on a Time Clock station: the "Back to the time clock" button. */
     backToTimeclock: (() -> Unit)? = null,
-    /** Any touch on the page (the station's idle return starts over). */
-    onActivity: () -> Unit = {},
     pairPanel: @Composable () -> Unit,
 ) {
-    BoxWithConstraints(
-        Modifier.fillMaxSize().background(LoginPalette.Canvas).pointerInput(Unit) {
-            awaitPointerEventScope {
-                while (true) {
-                    val e = awaitPointerEvent(PointerEventPass.Initial)
-                    if (e.changes.any { it.changedToDown() }) onActivity()
-                }
-            }
-        },
-    ) {
+    BoxWithConstraints(Modifier.fillMaxSize().background(LoginPalette.Canvas)) {
         // Anchored at the bottom right; on a phone it spans the screen and crops to the peaks.
         val artHeight = loginArtHeight(maxWidth, maxHeight)
         val artWidth = loginArtWidth(maxWidth, artHeight)
