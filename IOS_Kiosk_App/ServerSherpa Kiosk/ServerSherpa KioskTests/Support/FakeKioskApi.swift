@@ -45,6 +45,29 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     var imageResult: @Sendable (String) throws -> Data = { _ in throw unset }
     var stationKeyResult: @Sendable (String) async throws -> String = { _ in throw unset }
 
+    // Rolodex. Options default to empty and duplicates to no matches; the rest throw `unset`.
+    var rolodexWorkersResult: @Sendable () async throws -> RolodexList = { throw unset }
+    var rolodexWorkerResult: @Sendable (String) async throws -> RolodexDetail = { _ in throw unset }
+    var rolodexOptionsResult: @Sendable () async throws -> RolodexOptions = { RolodexOptions() }
+    var rolodexDuplicatesResult: @Sendable (RolodexDuplicatesIn) async throws -> [RolodexMatch] = { _ in [] }
+    var rolodexCreateResult: @Sendable (RolodexCreateIn) async throws -> RolodexDetail = { _ in throw unset }
+    var rolodexUpdateResult: @Sendable (String, RolodexPatch) async throws -> RolodexDetail = { _, _ in throw unset }
+    var rolodexPhotoResult: @Sendable (String, Data) async throws -> RolodexPhotoOut = { _, _ in throw unset }
+    /// When set, every Rolodex call awaits this (with its name, as in `calls`) before
+    /// answering: holds a save, create or upload in flight.
+    var rolodexGate: (@Sendable (String) async -> Void)?
+
+    /// Every body `rolodexDuplicates` / `rolodexCreate` was called with, in order.
+    var rolodexDuplicateBodies: [RolodexDuplicatesIn] { lock.lock(); defer { lock.unlock() }; return _rolodexDuplicateBodies }
+    private var _rolodexDuplicateBodies: [RolodexDuplicatesIn] = []
+    var rolodexCreateBodies: [RolodexCreateIn] { lock.lock(); defer { lock.unlock() }; return _rolodexCreateBodies }
+    private var _rolodexCreateBodies: [RolodexCreateIn] = []
+    /// Every `rolodexUpdate` (id, patch) and `rolodexPhoto` (id, bytes), in order.
+    var rolodexPatches: [(id: String, patch: RolodexPatch)] { lock.lock(); defer { lock.unlock() }; return _rolodexPatches }
+    private var _rolodexPatches: [(id: String, patch: RolodexPatch)] = []
+    var rolodexPhotos: [(id: String, jpeg: Data)] { lock.lock(); defer { lock.unlock() }; return _rolodexPhotos }
+    private var _rolodexPhotos: [(id: String, jpeg: Data)] = []
+
     var calls: [String] { lock.lock(); defer { lock.unlock() }; return _calls }
     var heartbeats: [HeartbeatIn] { lock.lock(); defer { lock.unlock() }; return _heartbeats }
     /// Every body `postScans` was called with, in order.
@@ -114,6 +137,31 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     func clockIn(_ body: ClockInIn) async throws -> KioskTimeclockStatus { record("clockIn"); await clockInGate?(); return try clockInResult(body) }
     func clockOut(_ body: ClockOutIn) async throws -> KioskTimeclockStatus { record("clockOut"); return try clockOutResult(body) }
     func issueStationKey(serial: String) async throws -> String { record("issueStationKey"); return try await stationKeyResult(serial) }
+    func rolodexWorkers() async throws -> RolodexList {
+        record("rolodexWorkers"); await rolodexGate?("rolodexWorkers"); return try await rolodexWorkersResult()
+    }
+    func rolodexWorker(id: String) async throws -> RolodexDetail {
+        record("rolodexWorker"); await rolodexGate?("rolodexWorker"); return try await rolodexWorkerResult(id)
+    }
+    func rolodexOptions() async throws -> RolodexOptions {
+        record("rolodexOptions"); await rolodexGate?("rolodexOptions"); return try await rolodexOptionsResult()
+    }
+    func rolodexDuplicates(_ body: RolodexDuplicatesIn) async throws -> [RolodexMatch] {
+        lock.withLock { _rolodexDuplicateBodies.append(body) }
+        record("rolodexDuplicates"); await rolodexGate?("rolodexDuplicates"); return try await rolodexDuplicatesResult(body)
+    }
+    func rolodexCreate(_ body: RolodexCreateIn) async throws -> RolodexDetail {
+        lock.withLock { _rolodexCreateBodies.append(body) }
+        record("rolodexCreate"); await rolodexGate?("rolodexCreate"); return try await rolodexCreateResult(body)
+    }
+    func rolodexUpdate(id: String, patch: RolodexPatch) async throws -> RolodexDetail {
+        lock.withLock { _rolodexPatches.append((id, patch)) }
+        record("rolodexUpdate"); await rolodexGate?("rolodexUpdate"); return try await rolodexUpdateResult(id, patch)
+    }
+    func rolodexPhoto(id: String, jpeg: Data) async throws -> RolodexPhotoOut {
+        lock.withLock { _rolodexPhotos.append((id, jpeg)) }
+        record("rolodexPhoto"); await rolodexGate?("rolodexPhoto"); return try await rolodexPhotoResult(id, jpeg)
+    }
     func fetchImage(url: String) async throws -> Data {
         record("image"); await imageGate?(url)
         defer { finish("image:\(url)") }
