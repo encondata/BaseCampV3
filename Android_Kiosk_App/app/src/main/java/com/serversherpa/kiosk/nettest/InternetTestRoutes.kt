@@ -1,6 +1,7 @@
 package com.serversherpa.kiosk.nettest
 
 import java.util.Random
+import javax.net.SocketFactory
 import okhttp3.OkHttpClient
 
 /**
@@ -48,6 +49,18 @@ object InternetTestRoutes {
             conditioned = fresh
             return fresh.client
         }
+    }
+
+    /**
+     * The socket factory a printer connection should use: [factory] itself
+     * while the local network link isn't conditioned, otherwise a conditioned
+     * wrapper around it. The wrapper opens its sockets through [factory], so a
+     * Wi-Fi or Ethernet network's own factory keeps its binding. The profile is
+     * read here, once, so a session keeps the conditions it started with.
+     */
+    fun local(factory: SocketFactory): SocketFactory {
+        val profile = local ?: return factory
+        return ConditionedSocketFactory(factory, profile, random, sleeper)
     }
 
     /** Closes the conditioned client's idle connections, so none outlive the switch. */

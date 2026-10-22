@@ -9,6 +9,7 @@ import com.serversherpa.kiosk.core.printer.parseDirectory
 import com.serversherpa.kiosk.core.printer.parseGetvar
 import com.serversherpa.kiosk.core.printer.parseNetworkHostIdentification
 import com.serversherpa.kiosk.core.printer.parseHostStatus
+import com.serversherpa.kiosk.nettest.InternetTestRoutes // INTERNET-TEST
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.InetSocketAddress
@@ -173,8 +174,9 @@ internal suspend fun <T> zebraSession(
     dispatcher: CoroutineDispatcher = Dispatchers.IO,
     block: (Socket) -> T,
 ): T = withContext(dispatcher) {
+    val factory = InternetTestRoutes.local(socketFactory) // INTERNET-TEST
     val socket = try {
-        socketFactory.createSocket()
+        factory.createSocket() // INTERNET-TEST
     } catch (e: IOException) {
         throw PrinterUnreachable(host, e)
     }
