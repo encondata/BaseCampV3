@@ -140,7 +140,8 @@ class PrinterSetupViewModelTest {
     private lateinit var builder: LabelBuilder
     private lateinit var fontsDir: File
 
-    private val saved = SavedPrinter("10.0.0.5", "ZD421", "S1", 203)
+    private val savedHost = "10.0.0.5"
+    private val saved = SavedPrinter(savedHost, "ZD421", "S1", 203)
 
     private fun zebra(host: String) = synchronized(zebras) { zebras.getOrPut(host) { FakeZebra(host) } }
 
@@ -263,7 +264,7 @@ class PrinterSetupViewModelTest {
         assertEquals(2, vm.state.value.fontFix!!.installable.size)
 
         vm.checked { vm.installFonts() }
-        val z = zebra(saved.host)
+        val z = zebra(savedHost)
         assertEquals(listOf("ROBOTO.TTF", "LATO.TTF"), z.installed.map { it.first.uppercase() })
         assertArrayEquals(byteArrayOf(1, 2, 3), z.installed[0].second)
         assertArrayEquals(byteArrayOf(4, 5), z.installed[1].second)
@@ -288,7 +289,7 @@ class PrinterSetupViewModelTest {
 
     @Test fun peelIsDisabledWhenThePrinterHasNoPeelerAndEnabledWhenItDoesNotSay() = runBlocking<Unit> {
         store.setPeel(true)
-        val z = zebra(saved.host)
+        val z = zebra(savedHost)
         z.peeler = false
         val vm = vm()
         vm.checked { vm.checkAgain() }
@@ -337,7 +338,7 @@ class PrinterSetupViewModelTest {
 
     @Test fun aTestLabelWaitsForTheCheckThatIsTalkingToThePrinter() = runBlocking<Unit> {
         eventually("pick") { builder.pick.value?.dpi == 203 }
-        val z = zebra(saved.host)
+        val z = zebra(savedHost)
         val gate = CompletableDeferred<Unit>()
         z.statusGate = gate
         val vm = vm()
@@ -352,15 +353,15 @@ class PrinterSetupViewModelTest {
     }
 
     @Test fun checkAgainSavesTheModelSerialAndDpiOfAnotherPrinterAtTheSameAddress() = runBlocking<Unit> {
-        val z = zebra(saved.host)
+        val z = zebra(savedHost)
         z.model = "ZT230"; z.dpi = 300; z.serialNo = "NEW1"
         val vm = vm()
         vm.checked { vm.checkAgain() }
-        assertEquals(SavedPrinter(saved.host, "ZT230", "NEW1", 300), store.settings.first().printer)
+        assertEquals(SavedPrinter(savedHost, "ZT230", "NEW1", 300), store.settings.first().printer)
 
         z.model = "ZT410"; z.serialNo = null
         vm.checked { vm.checkAgain() }
-        assertEquals(SavedPrinter(saved.host, "ZT410", "", 300), store.settings.first().printer)
+        assertEquals(SavedPrinter(savedHost, "ZT410", "", 300), store.settings.first().printer)
     }
 
     @Test fun testLabelsAreSentWithTheCurrentOffsetsAndPrintMode() = runBlocking<Unit> {
@@ -372,7 +373,7 @@ class PrinterSetupViewModelTest {
 
         vm.printTest(TestLabel.ALIGNMENT)
         eventually("alignment sent") { vm.state.value.testMessage != null && !vm.state.value.testing }
-        val z = zebra(saved.host)
+        val z = zebra(savedHost)
         assertEquals(listOf("LT-3LS12|ALIGN 812x406 4x2 203|MMT"), z.sent)
         assertEquals("Alignment label (4x2) sent to the printer.", vm.state.value.testMessage)
 
@@ -393,7 +394,7 @@ class PrinterSetupViewModelTest {
     @Test fun aTestLabelThePrinterDoesNotTakeSaysSo() = runBlocking<Unit> {
         val vm = vm()
         eventually("pick") { builder.pick.value?.dpi == 203 }
-        zebra(saved.host).answers = false
+        zebra(savedHost).answers = false
         vm.printTest(TestLabel.ALIGNMENT)
         eventually("failed") { vm.state.value.testMessage != null && !vm.state.value.testing }
         assertEquals("Can't reach the printer at 10.0.0.5.", vm.state.value.testMessage)

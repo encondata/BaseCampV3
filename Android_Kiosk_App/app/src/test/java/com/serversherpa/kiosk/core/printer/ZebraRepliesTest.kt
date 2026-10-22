@@ -122,6 +122,34 @@ class ZebraRepliesTest {
         assertEquals(listOf("ROBOTO_R.TTF"), parseDirectory("- DIR E:*.*\r\n* e:roboto_r.ttf  12\r\n"))
     }
 
+    // A ZD421's ^HW over Bluetooth LE (2026-10-22): the real listing, sizes and a K flag included.
+    private val btHw = "\u0002\r\n- DIR E:*.* \r\n* E:85620388.TTF   1036584          \r\n* E:IN001.DMP      1032          \r\n" +
+        "* E:TT0003M_.TTF    169188       K  \r\n\r\n-  63311872 bytes free E: ONBOARD FLASH \r\n\u0003"
+
+    @Test fun directoryEntriesFromTheZD421Listing() {
+        assertEquals(
+            listOf(
+                DirectoryEntry("85620388.TTF", 1036584),
+                DirectoryEntry("IN001.DMP", 1032),
+                DirectoryEntry("TT0003M_.TTF", 169188),
+            ),
+            parseDirectoryEntries(btHw),
+        )
+        assertEquals(listOf("85620388.TTF", "IN001.DMP", "TT0003M_.TTF"), parseDirectory(btHw))
+    }
+
+    @Test fun directoryEntriesFollowTheSameRulesAsTheNames() {
+        // the last listing counts; a repeated name keeps its last row's size and place
+        val twice = "\u0002- DIR E:*.*\r\n*E:85620388.TTF  1035\r\n*E:IN001.DMP  900\r\n-2000 bytes free E:\u0003" +
+            "\u0002- DIR E:*.*\r\n*E:85620388.TTF  1036\r\n*E:NEW.TTF  901\r\n-1999 bytes free E:\u0003"
+        assertEquals(listOf(DirectoryEntry("85620388.TTF", 1036), DirectoryEntry("NEW.TTF", 901)), parseDirectoryEntries(twice))
+        val dup = "\u0002- DIR E:*.*\r\n*E:A.TTF  1\r\n*E:B.TTF  1\r\n*E:A.TTF  2\r\n-5 bytes free E:\u0003"
+        assertEquals(listOf(DirectoryEntry("B.TTF", 1), DirectoryEntry("A.TTF", 2)), parseDirectoryEntries(dup))
+        assertEquals(listOf(DirectoryEntry("ROBOTO_R.TTF", 12)), parseDirectoryEntries("- DIR E:*.*\r\n* e:roboto_r.ttf  12\r\n"))
+        assertEquals(emptyList<DirectoryEntry>(), parseDirectoryEntries(""))
+        assertEquals(emptyList<DirectoryEntry>(), parseDirectoryEntries("\u0002- DIR E:*.*\r\n-2000000 bytes free E:\u0003"))
+    }
+
     // ── a real ZT220's ^HH is neither a status nor a listing ──
     // (Like the portal's parser, ~HI parsing doesn't reject it: its counters' commas split it into
     // four "fields". NetworkZebra asks each query on its own connection, so no other reply reaches it.)
@@ -173,6 +201,43 @@ class ZebraRepliesTest {
             missingFonts(listOf("85620388.TTF", "ROBOTO_R.TTF", "TT0003M_.TTF"), listOf("85620388.TTF", "TEXT.ZPL")),
         )
         assertEquals(emptyList<String>(), missingFonts(listOf("A.TTF"), listOf("a.ttf")))
+    }
+
+    @Test fun damagedFontIsTheOneWithTheWrongSize() {
+        val library = listOf(
+            KioskLabelFont("f-r", "ROBOTO.TTF", 124336),
+            KioskLabelFont("f-s", "TT0003M_.TTF", 169188, resident = true),
+        )
+        val needed = listOf("ROBOTO.TTF", "TT0003M_.TTF")
+        // ROBOTO is half there; TT0003M_ is resident, so its size isn't the library's business
+        val cut = listOf(DirectoryEntry("ROBOTO.TTF", 60000), DirectoryEntry("TT0003M_.TTF", 160676))
+        assertEquals(listOf("ROBOTO.TTF"), damagedFonts(needed, library, cut))
+        val whole = listOf(DirectoryEntry("ROBOTO.TTF", 124336), DirectoryEntry("TT0003M_.TTF", 160676))
+        assertEquals(emptyList<String>(), damagedFonts(needed, library, whole))
+        // a library size of 0 means the size isn't known
+        val unsized = listOf(KioskLabelFont("f-r", "ROBOTO.TTF", 0))
+        assertEquals(emptyList<String>(), damagedFonts(needed, unsized, cut))
+    }
+
+    @Test fun damagedFontsNeedTheFontToBeThereAndTheLibraryToKnowIt() {
+        val library = listOf(
+            KioskLabelFont("a", "B.TTF", 100),
+            KioskLabelFont("b", "A.TTF", 100),
+            KioskLabelFont("c", "R.TTF", 100, resident = true),
+            // an older library row not yet flagged: the name still marks it resident
+            KioskLabelFont("d", "TT0003M_.TTF", 169188),
+        )
+        val onPrinter = listOf(
+            DirectoryEntry("A.TTF", 1), DirectoryEntry("B.TTF", 2), DirectoryEntry("R.TTF", 3),
+            DirectoryEntry("TT0003M_.TTF", 4), DirectoryEntry("SWISS2.TTF", 5),
+        )
+        // In `needed`'s order, upper-cased. Not damaged: a font that isn't on the printer (C.TTF,
+        // the missing-font check's), one the library doesn't have (SWISS2.TTF, X.TTF), and a
+        // resident one by flag (R.TTF) or by name (TT0003M_.TTF).
+        val needed = listOf("b.ttf", "A.TTF", "C.TTF", "X.TTF", "R.TTF", "TT0003M_.TTF", "SWISS2.TTF")
+        assertEquals(listOf("B.TTF", "A.TTF"), damagedFonts(needed, library, onPrinter))
+        assertEquals(emptyList<String>(), damagedFonts(emptyList(), library, onPrinter))
+        assertEquals(emptyList<String>(), damagedFonts(listOf("A.TTF"), library, emptyList()))
     }
 
     @Test fun theFontFixNeverInstallsAResidentFont() {

@@ -25,7 +25,11 @@ const val PREPARING_TEXT = "Labels are being prepared."
 
 fun stillBeingMadeText(done: Int, total: Int) =
     if (total == 0) PREPARING_TEXT else "Labels are still being made ($done of $total)."
-fun printerUnreachableText(host: String) = "Can't reach the printer at $host."
+/** "Can't reach the printer at 10.0.0.5." / "Can't reach the printer D8J224508535 over Bluetooth." */
+fun printerUnreachableText(p: SavedPrinter): String = when (val c = p.connection) {
+    is PrinterConnection.Network -> "Can't reach the printer at ${c.host}."
+    is PrinterConnection.Bluetooth -> "Can't reach the printer ${c.serial} over Bluetooth."
+}
 /** The printer took the connection but not the whole job in time: the label may be out. */
 const val PRINTER_TIMEOUT_TEXT = "The printer didn't finish answering. It may have printed the label — check before you retry."
 
@@ -211,10 +215,10 @@ class PrintQueue<A>(
         // did print must get its scan. The send's own deadline bounds this.
         return withContext(NonCancellable) {
             try {
-                deps.send(printer.host, bytes)
+                deps.send(printer.host.orEmpty(), bytes)
             } catch (e: Exception) {
-                log("couldn't send the label to ${printer.host}", e)
-                return@withContext fail(w, if (e is LabelSendTimeout) PRINTER_TIMEOUT_TEXT else printerUnreachableText(printer.host))
+                log("couldn't send the label to ${printer.host ?: printer.serial}", e)
+                return@withContext fail(w, if (e is LabelSendTimeout) PRINTER_TIMEOUT_TEXT else printerUnreachableText(printer))
             }
             // A scan records once, on its first label that goes out; a Reprint never does.
             var warning: String? = null

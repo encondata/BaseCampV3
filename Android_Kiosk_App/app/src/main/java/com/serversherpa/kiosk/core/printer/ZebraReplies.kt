@@ -14,6 +14,9 @@ object ZebraCommands {
     /** The printer's serial number (`~HI` doesn't carry one). */
     const val SERIAL_NUMBER = "! U1 getvar \"device.unique_id\"\r\n"
 
+    /** Cancels a half-received format: sent after a failed send so the printer doesn't wait for the rest of it. */
+    const val CANCEL_PARTIAL_FORMAT = "~JX"
+
     /** `~DYE:NAME,B,T,<bytes>,,`: a binary TrueType download to E:; the font's bytes follow. */
     fun downloadFontHeader(name: String, totalBytes: Int): String = "~DYE:$name,B,T,$totalBytes,,"
 }
@@ -102,22 +105,29 @@ private val DIR_ROW = Regex(
  *  taken for an empty drive. */
 fun isDirectoryListing(text: String): Boolean = DIR_HEADER.containsMatchIn(strip(text))
 
-/** `^HW` → `- DIR E:*.*` header, `* NAME.EXT <bytes>` rows, `-<n> bytes free` trailer: the object
- *  names, upper-cased; empty when the reply isn't a listing (see [isDirectoryListing]). A straggling
- *  earlier listing can precede the fresh one, so only the last `DIR x:` block counts, and a repeated
- *  name keeps its last row's place. Mirrors parseDirectory in portal/src/labels/zebraUsb.ts. */
-fun parseDirectory(text: String): List<String> {
+/** A file on the printer's E: drive: its upper-cased object name and its size in bytes. */
+data class DirectoryEntry(val name: String, val size: Int)
+
+/** `^HW` → `- DIR E:*.*` header, `* NAME.EXT <bytes>` rows, `-<n> bytes free` trailer: the objects
+ *  with their sizes, names upper-cased; empty when the reply isn't a listing (see
+ *  [isDirectoryListing]). A straggling earlier listing can precede the fresh one, so only the last
+ *  `DIR x:` block counts, and a repeated name keeps its last row's place and size. Mirrors
+ *  parseDirectory in portal/src/labels/zebraUsb.ts. */
+fun parseDirectoryEntries(text: String): List<DirectoryEntry> {
     val full = strip(text)
     val header = DIR_HEADER.findAll(full).lastOrNull() ?: return emptyList()
-    val names = LinkedHashSet<String>()
+    val entries = LinkedHashMap<String, Int>()
     for (line in full.substring(header.range.first).split(Regex("\r?\n"))) {
         val row = DIR_ROW.matchEntire(line) ?: continue
         val name = row.groupValues[1].uppercase()
-        names.remove(name)
-        names.add(name)
+        entries.remove(name)
+        entries[name] = jsParseInt(row.groupValues[2]) ?: 0
     }
-    return names.toList()
+    return entries.map { (name, size) -> DirectoryEntry(name, size) }
 }
+
+/** The object names of [parseDirectoryEntries]. */
+fun parseDirectory(text: String): List<String> = parseDirectoryEntries(text).map { it.name }
 
 /** An SGD getvar reply's value: surrounding whitespace and double quotes stripped; `"?"` (unknown
  *  variable) and an empty reply are null. Mirrors parseGetvar in kiosk/src/lib/stationPrinter.ts. */

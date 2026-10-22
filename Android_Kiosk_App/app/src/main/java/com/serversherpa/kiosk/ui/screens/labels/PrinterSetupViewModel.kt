@@ -11,6 +11,7 @@ import com.serversherpa.kiosk.core.labels.LabelPick
 import com.serversherpa.kiosk.core.labels.LabelSettings
 import com.serversherpa.kiosk.core.labels.NEEDS_UPDATE_TEXT
 import com.serversherpa.kiosk.core.labels.NO_TEMPLATE_AT_DPI
+import com.serversherpa.kiosk.core.labels.PrinterConnection
 import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.labels.TEMPLATE_FAILED
 import com.serversherpa.kiosk.core.labels.TEMPLATE_UNSUPPORTED
@@ -172,7 +173,11 @@ const val SCAN_FAILED_TEXT = "Couldn't scan the network."
 const val INVALID_IP_TEXT = "That isn't a valid IP address."
 const val NO_PEELER_TEXT = "This printer has no peeler."
 const val FONTS_INSTALLED_TEXT = "Fonts installed."
-fun noZebraAnswerText(host: String) = "No Zebra printer answered at $host."
+/** "No Zebra printer answered at 10.0.0.5." / "No Zebra printer answered over Bluetooth as D8J224508535." */
+fun noZebraAnswerText(c: PrinterConnection): String = when (c) {
+    is PrinterConnection.Network -> "No Zebra printer answered at ${c.host}."
+    is PrinterConnection.Bluetooth -> "No Zebra printer answered over Bluetooth as ${c.serial}."
+}
 fun fontInstallFailedText(name: String) = "Couldn't install $name."
 
 /**
@@ -283,7 +288,7 @@ class PrinterSetupViewModel(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _state.update { it.copy(choosing = null, chooseError = noZebraAnswerText(host)) }
+                _state.update { it.copy(choosing = null, chooseError = noZebraAnswerText(PrinterConnection.Network(host))) }
                 return@launch
             }
             store.setPrinter(saved)
@@ -315,11 +320,11 @@ class PrinterSetupViewModel(
                 fontMessage = if (keepFontMessage) it.fontMessage else null, fontError = keepFontMessage && it.fontError)
         }
         try {
-            val zebra = printerAt(saved.host)
+            val zebra = printerAt(saved.host.orEmpty())
             put(CheckRow(CheckKey.ANSWERS, CheckState.RUNNING))
             val id = quietly { zebra.identify() }
             if (id == null) {
-                put(CheckRow(CheckKey.ANSWERS, CheckState.FAIL, noZebraAnswerText(saved.host)))
+                put(CheckRow(CheckKey.ANSWERS, CheckState.FAIL, noZebraAnswerText(saved.connection)))
                 return
             }
             put(CheckRow(CheckKey.ANSWERS, CheckState.OK, "${id.model} · ${id.dpi} DPI"))
@@ -327,7 +332,7 @@ class PrinterSetupViewModel(
             val model = id.model.ifBlank { DEFAULT_MODEL }
             if (id.dpi != saved.dpi || model != saved.model) {
                 // Another printer took this address: its DPI picks the template (the builder rebuilds).
-                printer = SavedPrinter(saved.host, model, quietly { zebra.serial() }.orEmpty(), id.dpi)
+                printer = SavedPrinter(saved.connection, model, quietly { zebra.serial() }.orEmpty(), id.dpi)
                 store.setPrinter(printer)
             }
 
@@ -428,7 +433,7 @@ class PrinterSetupViewModel(
                 _state.update { it.copy(installing = false) }
                 return@launch
             }
-            val zebra = printerAt(printer.host)
+            val zebra = printerAt(printer.host.orEmpty())
             var failed: String? = null
             val files = db.labelFonts().all().associateBy { it.name.uppercase() }
             for (font in fix.installable) {
@@ -541,7 +546,7 @@ class PrinterSetupViewModel(
                     label.second to true
                 } else {
                     val shifted = parseZpl(helper("applyPrintSettings", LabelGenArgs.printSettings(zpl, offsets.first, offsets.second)))
-                    printerAt(printer.host).send(parseZpl(helper("withPrintMode", LabelGenArgs.printMode(shifted, s.peel))))
+                    printerAt(printer.host.orEmpty()).send(parseZpl(helper("withPrintMode", LabelGenArgs.printMode(shifted, s.peel))))
                     label.second to false
                 }
             } catch (e: CancellationException) {
@@ -551,7 +556,7 @@ class PrinterSetupViewModel(
             } catch (e: PrinterTimeout) {
                 TEST_TIMEOUT_TEXT to true
             } catch (e: PrinterException) {
-                printerUnreachableText(printer.host) to true
+                printerUnreachableText(printer) to true
             } catch (e: Exception) {
                 android.util.Log.w(TAG, "test label failed", e)
                 TEST_FAILED_TEXT to true
