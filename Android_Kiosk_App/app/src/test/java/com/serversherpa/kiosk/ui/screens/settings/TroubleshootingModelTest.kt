@@ -909,6 +909,103 @@ class TroubleshootingModelTest {
         }
     }
 
+    /** A secret's name is masked whatever its length: a bound on it would fail open. */
+    @Test fun aSecretNameOfAnyLengthIsMasked() {
+        for (n in listOf(65, 200, 10_000)) {
+            val pad = "x".repeat(n)
+            for (line in listOf(
+                "${pad}password=hunter2",
+                "password$pad=hunter2",
+                "$pad.wlan.wpa.psk$pad: \"hunter2 a b\"",
+                "! U1 setvar \"$pad.wpa.psk\" \"hunter2 a b\"",
+                "{\"${pad}_api_key\": \"hunter2\"}",
+            )) {
+                val out = redactSecrets(line)
+                assertFalse("$n: ${out.takeLast(80)}", out.contains("hunter2"))
+                assertTrue("$n: ${out.takeLast(80)}", out.contains("[redacted]"))
+            }
+        }
+    }
+
+    /** A quoted secret of a million characters, or of 100,000 escaped quotes, is hidden whole and
+     *  quickly (a regex recursing once a character overflowed the stack at about 2,000). */
+    @Test fun longQuotedSecretsAreHiddenWholeAndQuickly() {
+        val lines = listOf(
+            "a 1,000,000-character value" to ("password: \"" + "a".repeat(1_000_000) + "\" next"),
+            "100,000 escaped quotes" to ("password: \"" + "\\\"".repeat(100_000) + "\" next"),
+            "a 1,000,000-character single-quoted value" to ("password: '" + "b ".repeat(500_000) + "' next"),
+            "a 1,000,000-character value never closed" to ("password: \"" + "c".repeat(1_000_000)),
+        )
+        for ((what, line) in lines) {
+            val start = System.nanoTime()
+            val out = redactSecrets(line)
+            val ms = (System.nanoTime() - start) / 1_000_000
+            assertTrue("$what took $ms ms", ms < 1_000)
+            assertTrue("$what: ${out.take(80)}", out.length < 40)
+            assertTrue("$what: $out", out.startsWith("password: ") && out.contains("[redacted]"))
+        }
+    }
+
+    /** A line whose redaction fails, a stack overflow included, is replaced whole: never a crash,
+     *  never the line as it was. */
+    @Test fun aRedactionThatFailsMasksTheWholeLine() {
+        for (failure in listOf<Throwable>(StackOverflowError(), IllegalStateException("password=hunter2"), IndexOutOfBoundsException())) {
+            val out = redactSecrets("password=hunter2 and more") { throw failure }
+            assertEquals(REDACTION_FAILED_TEXT, out)
+        }
+        assertEquals("print.tone: 10", redactSecrets("print.tone: 10"))
+    }
+
+    /** A lowercase-to-uppercase step, an acronym's end and a digit start a new word part:
+     *  `userPin`, `adminPwd`, `apiKey`, `pin2` and `PINCode` are secrets' names; `spinning`,
+     *  `mapping`, `ping`, `pinned`, `dpi` and `Shipping` aren't. */
+    @Test fun camelCaseAndDigitsSplitWordParts() {
+        assertEquals("userPin=[redacted]", redactSecrets("userPin=1234"))
+        assertEquals("adminPwd: [redacted]", redactSecrets("adminPwd: x"))
+        assertEquals("apiKey=[redacted]", redactSecrets("apiKey=y"))
+        assertEquals("pin2=[redacted]", redactSecrets("pin2=z"))
+        assertEquals("userPIN=[redacted] PINCode=[redacted]", redactSecrets("userPIN=1 PINCode=2"))
+        assertEquals("\"bluetooth.bluetoothPin\" \"[redacted]\"", redactSecrets("\"bluetooth.bluetoothPin\" \"1234\""))
+        for (plain in listOf(
+            "spinning: yes", "mapping=on", "ping: 12", "pinned: 2", "dpi: 300", "Shipping: 3",
+            "Spinning=1", "shippingPinball=4", "\"head.resolution.in_dpi\" \"300\"",
+        )) {
+            assertEquals(plain, redactSecrets(plain))
+        }
+    }
+
+    /** `~HS`'s front-panel password is hidden however the command was typed. */
+    @Test fun thePanelPasswordIsHiddenWhateverTheCaseOrSpacing() {
+        for (command in listOf("~HS", " ~hs ", "~Hs\r\n", "\t~HS\r\n")) {
+            val shown = withoutPanelPassword(command, HS_REPLY)
+            assertTrue(command, shown.contains("\u0002****,0\u0003"))
+            assertFalse(command, shown.contains("\u00020000,0\u0003"))
+        }
+        assertEquals(HS_REPLY, withoutPanelPassword("~HI", HS_REPLY))
+    }
+
+    /** A format that asks the printer something (a ^H host command: ^HH, ^HW, ^HZ…) stays a query,
+     *  so its reply shows; any other format goes out as a send. */
+    @Test fun aFormatWithAHostCommandStaysAQuery() = runBlocking<Unit> {
+        zebra.replies = mapOf("^XA^HH^XZ\r\n" to "\u0002  PRINTER CONFIGURATION\u0003", "  ^xa^hwE:*.*^xz\r\n" to HW_REPLY)
+        val m = model(isAdmin = { true })
+        m.setCommandText("^XA^HH^XZ")
+        m.sendCommand()!!.join()
+        assertEquals("?^XA^HH^XZ\r\n", zebra.events.last())
+        assertEquals("\u0002  PRINTER CONFIGURATION\u0003", m.state.value.asks.last().reply)
+        m.setCommandText("  ^xa^hwE:*.*^xz")
+        m.sendCommand()!!.join()
+        assertEquals("?  ^xa^hwE:*.*^xz\r\n", zebra.events.last())
+        assertEquals(HW_REPLY, m.state.value.asks.last().reply)
+        // ^FH (field hex) isn't a host command: a format with it is still a send.
+        for (format in listOf("^XA^FO10,10^FDHello^FS^XZ", "^XA^FH^FDHi_20there^FS^XZ")) {
+            m.setCommandText(format)
+            m.sendCommand()!!.join()
+            assertEquals("$format\r\n", zebra.events.last())
+            assertEquals(FORMAT_SENT_TEXT, m.state.value.asks.last().meaning)
+        }
+    }
+
     @Test fun logKeepsTheLast5000LinesAndTheSharedReportFits() {
         val m = model()
         for (i in 1..5_010) m.log("line $i")

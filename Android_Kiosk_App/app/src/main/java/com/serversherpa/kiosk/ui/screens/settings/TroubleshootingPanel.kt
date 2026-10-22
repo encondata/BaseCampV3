@@ -76,6 +76,7 @@ import com.serversherpa.kiosk.ui.screens.labels.printerSummary
 import com.serversherpa.kiosk.ui.theme.ChipTone
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -372,11 +373,14 @@ private fun ReportSection(vm: TroubleshootingModel, ui: TroubleshootingUi) {
     var copied by remember { mutableStateOf(false) }
     var building by remember { mutableStateOf(false) }
     var slow by remember { mutableStateOf(false) }
+    var failed by remember { mutableStateOf(false) }
     // The report is built off the main thread (a long one takes a moment), then handed over here.
-    // Nothing new shows unless it takes long enough to notice.
+    // Nothing new shows unless it takes long enough to notice. A build that fails says so: it never
+    // takes the app down.
     fun withReport(use: (TroubleshootingReport) -> Unit) {
         if (building) return
         building = true
+        failed = false
         scope.launch {
             val notice = launch {
                 delay(REPORT_NOTICE_AFTER_MS)
@@ -384,6 +388,11 @@ private fun ReportSection(vm: TroubleshootingModel, ui: TroubleshootingUi) {
             }
             try {
                 use(vm.shareableReport())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                copied = false
+                failed = true
             } finally {
                 notice.cancel()
                 slow = false
@@ -411,6 +420,7 @@ private fun ReportSection(vm: TroubleshootingModel, ui: TroubleshootingUi) {
     }
     if (slow) Text("Preparing the report…", style = MaterialTheme.typography.bodyMedium, color = LocalKioskColors.current.textMute)
     if (copied) KioskToast(REPORT_COPIED_TEXT)
+    if (failed) KioskToast(REPORT_FAILED_TEXT, error = true)
 }
 
 // --- Pieces ---

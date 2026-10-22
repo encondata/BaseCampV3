@@ -165,13 +165,16 @@ const val SCAN_CUT_SHORT_TEXT = "The scan stopped because the printer was in use
 const val SCAN_ENDED_EARLY_TEXT = "The scan stopped early. Scan again."
 /** A command box command (a setvar, say) that replied nothing, as it does by design. */
 const val COMMAND_SENT_TEXT = "Sent, no reply."
-/** A label or format typed in the command box (it starts with `^XA`) went out as a send. */
+/** A label or format typed in the command box (it starts with `^XA` and asks the printer nothing)
+ *  went out as a send. */
 const val FORMAT_SENT_TEXT = "Sent as a label or format; no reply is read."
 /** The Bluetooth printer answered at another address than the saved one (look-alikes exist, so it
  *  is never saved here). */
 const val FOUND_ELSEWHERE_TEXT = "This printer answered at another Bluetooth address than the saved one, which wasn't " +
     "changed. If it's your printer, choose it again in Printer Setup to save the new address."
 const val REPORT_COPIED_TEXT = "Report copied."
+/** Copy or Share couldn't build the report (nothing was copied or shared). */
+const val REPORT_FAILED_TEXT = "Couldn't build the report. Try again."
 
 /** The most a copied or shared report carries (characters): Android hands both to the other app in
  *  one binder transaction, which fails past about 500 KB (the text goes as UTF-16). The oldest log
@@ -465,17 +468,17 @@ class TroubleshootingModel(
     fun setCommandText(text: String) = _state.update { it.copy(commandText = text) }
 
     /** The command box (admins and developers, checked now): the text as typed with straight
-     *  quotes and CR LF at the end. A label or format (it starts with `^XA`) goes out as a send, as
-     *  a label does: a cut font refuses it, and one cut off part-way marks the printer for a `~JX`.
-     *  Anything else is a query whose reply has no known end, so it is read until the printer goes
-     *  quiet. */
+     *  quotes and CR LF at the end. A label or format ([sendsAsFormat]) goes out as a send, as a
+     *  label does: a cut font refuses it, and one cut off part-way marks the printer for a `~JX`.
+     *  Anything else, a format with a `^H` host command included, is a query whose reply has no
+     *  known end, so it is read until the printer goes quiet. */
     fun sendCommand(): Job? {
         if (!showsCommandBox) return null
         val typed = _state.value.commandText
             .replace('“', '"').replace('”', '"').replace('‘', '\'').replace('’', '\'')
         if (typed.isBlank()) return null
         val command = if (typed.endsWith("\n")) typed else "$typed\r\n"
-        if (typed.trimStart().startsWith("^XA", ignoreCase = true)) return sendFormat(command)
+        if (sendsAsFormat(typed)) return sendFormat(command)
         return runQuery("Command", command, { false }, TroubleAction.COMMAND) { null }
     }
 
@@ -940,6 +943,18 @@ class TroubleshootingModel(
     }
 }
 
+/** [typed] (the command box's text) is a label or format to send: it starts with `^XA` and holds no
+ *  `^H` host command (`^HH`, `^HW`, `^HZ`…), whose answer would be lost on the send path. */
+internal fun sendsAsFormat(typed: String): Boolean {
+    if (!typed.trimStart().startsWith("^XA", ignoreCase = true)) return false
+    var i = typed.indexOf("^H", ignoreCase = true)
+    while (i >= 0) {
+        if (i + 2 < typed.length && typed[i + 2].isLetter()) return false
+        i = typed.indexOf("^H", i + 2, ignoreCase = true)
+    }
+    return true
+}
+
 /** A call the tab started: the printer, and the way to it under the lock and the guard. */
 private class Started(val printer: SavedPrinter, val zebra: LockedZebra)
 
@@ -1029,62 +1044,177 @@ fun visibleCommand(command: String): String = visibleBytes(command).replace("\n"
 
 // --- Keeping secrets out of the shared report ---
 
-/** Words that make a name a secret's wherever they are in it (`wlan.private_key_password`). */
-private const val SECRET_WORDS =
-    "password|passwd|passphrase|psk|token|secret|cookie|authorization|api[_-]?key|station[_-]?key|" +
-        "private[_-]?key|session[_-]?(?:id|key)|community|wep[_.-]?key"
-/** Short words that make a name a secret's only as a whole part of it (`bluetooth.bluetooth_pin`,
- *  `pwd`), never inside another word (`spinning`, `mapping`, `ping`). */
-private const val SECRET_PARTS = "(?<![A-Za-z0-9])(?:pin|pwd)(?![A-Za-z0-9])"
-private const val SECRET_WORD = "(?:$SECRET_WORDS|$SECRET_PARTS)"
+/** Words that make a name a secret's wherever they are in it, ignoring case
+ *  (`wlan.private_key_password`, `apiKey`). */
+private val SECRET_WORDS = listOf(
+    "password", "passwd", "passphrase", "psk", "token", "secret", "cookie", "authorization", "community",
+    "apikey", "api_key", "api-key", "stationkey", "station_key", "station-key",
+    "privatekey", "private_key", "private-key", "sessionid", "session_id", "session-id",
+    "sessionkey", "session_key", "session-key", "wepkey", "wep_key", "wep.key", "wep-key",
+)
 
-// Every pattern here stays linear on long runs (a pasted ^GFA label, a 64 KB one-line reply): a
-// match may only start where a name or token starts (the lookbehinds), and a name is at most 64
-// characters either side of its secret word. Unanchored and unbounded, they backtracked for
-// seconds to hours on such runs.
+/** Short words that make a name a secret's only as a whole word part (`bluetooth.bluetooth_pin`,
+ *  `userPin`, `pin2`, `pwd`), never inside another word (`spinning`, `mapping`, `ping`). */
+private val SECRET_PARTS = setOf("pin", "pwd")
+
+// The two token patterns run in linear time on long runs (a pasted ^GFA label, a 64 KB one-line
+// reply): BEARER's parts can't overlap, and JWT starts only where a token starts (a one-character
+// lookbehind) with possessive segments, which never backtrack. Names and values are found by
+// maskSecrets' single scan, with no regex: no length limit, no backtracking, no recursion.
 private val BEARER = Regex("""(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+""")
 private val JWT = Regex("""(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,}+\.[A-Za-z0-9_-]{5,}+\.[A-Za-z0-9_-]{5,}+""")
-/** A name that says it is a secret's, and what comes between it and its value: `=` or `:` (after a
- *  JSON key's closing quote), or SGD's `" "`. The value's own opening quote isn't part of it. */
-private const val SECRET_NAME_AND_SEPARATOR =
-    """((?<![A-Za-z0-9_.\-])[A-Za-z0-9_.\-]{0,64}?$SECRET_WORD[A-Za-z0-9_.\-]{0,64}(?:"?\s*[:=]\s*|"\s+))"""
-/** A quoted secret (`name: "a b c"`, `'a b c'`, JSON's `"name": "a b c"`, SGD's `"name" "a b c"`):
- *  everything up to the matching closing quote goes, spaces and all; a backslash escapes a quote,
- *  and one that never closes runs to the end of the line. */
-private val SECRET_QUOTED = Regex(
-    """(?im)$SECRET_NAME_AND_SEPARATOR(?:"(?:\\.|[^"\\\n])*(?:"|$)|'(?:\\.|[^'\\\n])*(?:'|$))""",
-)
-/** An unquoted secret (`name=value`, `name: value`): up to a space or a delimiter. */
-private val SECRET_BARE = Regex("""(?i)$SECRET_NAME_AND_SEPARATOR([^\s"';,&␍␊␂␃<>]+)""")
 private val GETVAR = Regex("""(?i)getvar\s+"([^"]*)"""")
-private val SECRET_NAME = Regex("(?i)$SECRET_WORD")
 /** `~HS`'s third string: the printer's front-panel password (4 digits), then a flag. */
 private val PANEL_PASSWORD = Regex("""\u0002\d{4},(\d)\u0003""")
 
-/** [text] with secret-looking values masked: bearer tokens, JSON web tokens, and the value of any
- *  `name=value`, `name: value`, `"name": "value"` or `"name" "value"` whose name says it is a secret
- *  (a password, PSK, token, key, cookie, …), a quoted one whole up to its closing quote. A backstop,
- *  not the defense: the report is built from what the tab hears, which never includes the app's own
- *  secrets (session, cookies, keys, move passwords); this catches the free text that can hold one,
- *  what an admin types into the command box and what a printer sends back. An unquoted value with
- *  spaces in it (`password: a b c`) loses only its first word. */
-internal fun redactSecrets(text: String): String {
-    if (text.isEmpty()) return text
-    return text
-        .replace(BEARER, "Bearer [redacted]")
-        .replace(JWT, "[redacted]")
-        .replace(SECRET_QUOTED) { m -> m.groupValues[1] + m.value[m.groupValues[1].length].let { q -> "$q[redacted]$q" } }
-        .replace(SECRET_BARE) { m -> m.groupValues[1] + "[redacted]" }
+/** What a line whose redaction failed becomes in the report: all of it goes. */
+const val REDACTION_FAILED_TEXT = "[redacted: this line couldn't be checked for secrets]"
+
+/**
+ * [text] (one line of the report) with secret-looking values masked by [mask] ([maskSecrets]). It
+ * fails closed: if masking throws anything (a stack overflow included), the whole line is
+ * [REDACTION_FAILED_TEXT], never the line as it was, and never a crash.
+ *
+ * A backstop, not the defense: the report is built from what the tab hears, which never includes
+ * the app's own secrets (session, cookies, keys, move passwords). This catches the free text that
+ * can hold one: what an admin types into the command box, what a printer sends back, and a
+ * socket's error message.
+ */
+internal fun redactSecrets(text: String, mask: (String) -> String = ::maskSecrets): String = try {
+    mask(text)
+} catch (t: Throwable) {
+    REDACTION_FAILED_TEXT
 }
+
+/**
+ * [text] with bearer tokens, JSON web tokens, and the value of any `name=value`, `name: value`,
+ * `"name": "value"` or `"name" "value"` whose name says it is a secret ([isSecretName]) masked. A
+ * quoted value goes whole, spaces and all, up to its matching closing quote (a backslash escapes
+ * the next character; one that never closes runs to the end of the line); an unquoted one up to a
+ * space or a delimiter, so `password: a b c` loses only its first word. One pass over the line:
+ * each maximal run of name characters is a name, whatever its length.
+ */
+private fun maskSecrets(text: String): String {
+    if (text.isEmpty()) return text
+    val line = text.replace(BEARER, "Bearer [redacted]").replace(JWT, "[redacted]")
+    val n = line.length
+    val out = StringBuilder(n)
+    var i = 0
+    while (i < n) {
+        if (!isNameChar(line[i])) {
+            out.append(line[i])
+            i++
+            continue
+        }
+        val nameStart = i
+        while (i < n && isNameChar(line[i])) i++
+        out.append(line, nameStart, i)
+        if (!isSecretName(line.substring(nameStart, i))) continue
+        // The separator: `=` or `:` (after a JSON key's closing quote, spaces either side), or SGD's `" "`.
+        val nameEnd = i
+        val keyQuote = nameEnd < n && line[nameEnd] == '"'
+        var j = if (keyQuote) nameEnd + 1 else nameEnd
+        val afterQuote = j
+        while (j < n && isSpace(line[j])) j++
+        val valueStart = when {
+            j < n && (line[j] == ':' || line[j] == '=') -> {
+                j++
+                while (j < n && isSpace(line[j])) j++
+                j
+            }
+            keyQuote && j > afterQuote -> j
+            else -> continue
+        }
+        val valueEnd = valueEnd(line, valueStart)
+        if (valueEnd < 0) continue
+        out.append(line, nameEnd, valueStart)
+        val quote = line[valueStart]
+        if (quote == '"' || quote == '\'') out.append(quote).append("[redacted]").append(quote) else out.append("[redacted]")
+        i = valueEnd
+    }
+    return out.toString()
+}
+
+/** Where the value starting at [start] ends (exclusive): a quoted one just after its matching
+ *  closing quote (a backslash escapes the next character), or at the end of the line when it never
+ *  closes; an unquoted one at a space or a delimiter. -1 when there is none. */
+private fun valueEnd(line: String, start: Int): Int {
+    val n = line.length
+    if (start >= n) return -1
+    val quote = line[start]
+    if (quote == '"' || quote == '\'') {
+        var i = start + 1
+        while (i < n) {
+            when (line[i]) {
+                '\n' -> return i
+                '\\' -> if (i + 1 < n && line[i + 1] != '\n') i += 2 else return i + 1
+                quote -> return i + 1
+                else -> i++
+            }
+        }
+        return n
+    }
+    var i = start
+    while (i < n && !isSpace(line[i]) && line[i] !in BARE_VALUE_ENDS) i++
+    return if (i > start) i else -1
+}
+
+/** An unquoted value ends at a space or one of these. */
+private const val BARE_VALUE_ENDS = "\"';,&␍␊␂␃<>"
+
+/** The characters names are made of (an SGD setting, a JSON key, a query parameter). */
+private fun isNameChar(c: Char): Boolean =
+    c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9' || c == '_' || c == '.' || c == '-'
+
+private fun isSpace(c: Char): Boolean = c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\u000B' || c == '\u000C'
+
+/** [name] says it is a secret's: it holds a secret word ([SECRET_WORDS]) anywhere, or a short one
+ *  ([SECRET_PARTS]) as a whole word part ([wordParts]). */
+internal fun isSecretName(name: String): Boolean {
+    val lower = name.lowercase(Locale.ROOT)
+    return SECRET_WORDS.any { lower.contains(it) } || wordParts(name).any { it.lowercase(Locale.ROOT) in SECRET_PARTS }
+}
+
+/** [name]'s word parts: split at anything that isn't a letter or digit, at a lowercase-to-uppercase
+ *  step (`userPin`), before an acronym's last capital when lowercase follows (`PINCode`), and
+ *  between letters and digits (`pin2`). */
+internal fun wordParts(name: String): List<String> {
+    val parts = ArrayList<String>()
+    var start = -1
+    for (i in name.indices) {
+        val c = name[i]
+        if (!c.isAsciiLetterOrDigit()) {
+            if (start >= 0) parts += name.substring(start, i)
+            start = -1
+            continue
+        }
+        if (start < 0) {
+            start = i
+            continue
+        }
+        val before = name[i - 1]
+        val split = (before.isLowerCase() && c.isUpperCase()) ||
+            (before.isDigit() != c.isDigit()) ||
+            (before.isUpperCase() && c.isUpperCase() && i + 1 < name.length && name[i + 1].isLowerCase())
+        if (split) {
+            parts += name.substring(start, i)
+            start = i
+        }
+    }
+    if (start >= 0) parts += name.substring(start)
+    return parts
+}
+
+private fun Char.isAsciiLetterOrDigit(): Boolean = this in 'a'..'z' || this in 'A'..'Z' || this in '0'..'9'
 
 /** [command] reads a setting whose name says it is a secret (`getvar "wlan.wpa.psk"`): its reply is
  *  that secret. */
 private fun asksForASecret(command: String): Boolean =
-    GETVAR.findAll(command).any { SECRET_NAME.containsMatchIn(it.groupValues[1]) }
+    GETVAR.findAll(command).any { isSecretName(it.groupValues[1]) }
 
 /** A `~HS` reply with the printer's front-panel password masked (on the tab and in the report). */
 internal fun withoutPanelPassword(command: String, reply: String): String =
-    if (command.trim() != ZebraCommands.HOST_STATUS) reply
+    if (!command.trim().equals(ZebraCommands.HOST_STATUS, ignoreCase = true)) reply
     else reply.replace(PANEL_PASSWORD) { "\u0002****,${it.groupValues[1]}\u0003" }
 
 private fun msText(ms: Long?): String = ms?.toString() ?: "?"

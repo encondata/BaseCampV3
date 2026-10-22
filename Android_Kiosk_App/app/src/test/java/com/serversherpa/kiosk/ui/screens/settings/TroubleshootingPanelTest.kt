@@ -336,6 +336,22 @@ class TroubleshootingPanelTest {
         compose.onNodeWithText(REPORT_COPIED_TEXT).performScrollTo().assertIsDisplayed()
     }
 
+    /** A report that fails to build (here, the device line overflows the stack) says so, and the
+     *  app carries on: Copy and Share never crash it. */
+    @Test fun aReportThatFailsToBuildSaysSoAndNothingCrashes() {
+        val vm = model(device = { throw StackOverflowError() })
+        show(vm)
+        compose.onNodeWithText("Copy").performScrollTo().performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText(REPORT_FAILED_TEXT).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Share").performScrollTo().performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText(REPORT_FAILED_TEXT).performScrollTo().assertIsDisplayed()
+        assertEquals(null, Shadows.shadowOf(app).nextStartedActivity)
+        // The tab still works.
+        compose.onNodeWithText("Read details").performScrollTo().performClick()
+        compose.waitUntil(5_000) { zebra.events.contains("?~HI") }
+    }
+
     /** `~HS`'s third string is the printer's front-panel password: hidden on screen too. */
     @Test fun theStatusReplyHidesThePanelPassword() {
         val vm = model()
