@@ -65,6 +65,8 @@ fun TestLabelSheet(
             }
             if (size != null) OffsetFields(vm, ui, size.dpi)
             KioskToast(ui.testMessage, error = ui.testError)
+            // Bluetooth off or not allowed, or a printer that forgot this device: the button that fixes it.
+            if (ui.testError) bluetoothFixFor(ui.testMessage)?.let { BluetoothFixButton(it) }
             Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SolidButton(if (ui.testing) "Sending…" else "Print test label", { vm.printTest(choice) }, enabled = !ui.busy)
                 MiniButton("Done", onDismiss, enabled = !ui.testing)

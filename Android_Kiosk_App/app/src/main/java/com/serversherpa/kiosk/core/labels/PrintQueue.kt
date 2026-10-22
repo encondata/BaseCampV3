@@ -38,6 +38,11 @@ const val PRINTER_TIMEOUT_TEXT = "The printer didn't finish answering. It may ha
 /** [PrintQueueDeps.send] throws this when the printer took the connection but not the whole job in time. */
 class LabelSendTimeout(cause: Throwable? = null) : Exception("the printer didn't take the whole label in time", cause)
 
+/** [PrintQueueDeps.send] throws this when the label didn't go out for a reason the crew fixes on the
+ *  device, not at the printer (Bluetooth off or not allowed, a printer that forgot this device):
+ *  its [message] says what to do. */
+class LabelSendRefused(override val message: String, cause: Throwable? = null) : Exception(message, cause)
+
 /** What a scan says for each outcome a label can store (kiosk/src/lib/printQueue.ts LABEL_REASONS). */
 private val LABEL_REASONS = mapOf(
     NO_TEMPLATE_AT_DPI to "No label for this asset: this move has no active label template at this printer's DPI. " +
@@ -102,8 +107,9 @@ interface PrintQueueDeps<A> {
     suspend fun prepare(zpl: String, settings: LabelSettings): PrintStep
     /** Sends [zpl] to the saved [printer], the way its connection reaches it; throws when it can't
      *  ([LabelSendTimeout] when the job may have gone out, [PrinterNeedsRestart] while a cut font
-     *  install keeps sends from the printer). Anything else, a failed clear before the label
-     *  included, means the label never went out: unreachable. */
+     *  install keeps sends from the printer, [LabelSendRefused] when the crew must fix something on
+     *  the device first). Anything else, a failed clear before the label included, means the label
+     *  never went out: unreachable. */
     suspend fun send(printer: SavedPrinter, zpl: String)
     /** Queues the Labeled scan; throws when it can't be saved. */
     suspend fun record(asset: A, scannedValue: String)
@@ -229,6 +235,7 @@ class PrintQueue<A>(
                 log("couldn't send the label to $to", e)
                 val message = when (e) {
                     is LabelSendTimeout -> PRINTER_TIMEOUT_TEXT
+                    is LabelSendRefused -> e.message
                     is PrinterNeedsRestart -> FONT_INSTALL_CUT_TEXT
                     else -> printerUnreachableText(printer)
                 }

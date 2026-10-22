@@ -73,6 +73,12 @@ data class BluetoothLinkInfo(
     val savedAddress: String? = null,
 )
 
+/** The link is up to [printer], a saved Bluetooth printer, by its confirmed serial. */
+fun BluetoothLinkInfo.isUpTo(printer: SavedPrinter?): Boolean {
+    val connection = printer?.connection as? PrinterConnection.Bluetooth ?: return false
+    return connected && info?.serial.equals(connection.serial, ignoreCase = true)
+}
+
 /** What Printer Setup and Troubleshooting use of [ZebraBluetooth] (so their tests can fake it). */
 interface BluetoothPrinting {
     val availability: StateFlow<BluetoothAvailability>
@@ -90,6 +96,9 @@ interface BluetoothPrinting {
 
     /** Reads [availability] again (after a permission prompt, say: no broadcast says so). */
     fun refreshAvailability()
+
+    /** Ends the scan and lets the printer go (see [ZebraBluetooth.close]). */
+    fun close()
 }
 
 /**
@@ -227,7 +236,7 @@ class ZebraBluetooth(
      *  changed): the connect or query in flight and every call waiting for its turn fail with
      *  [PrinterUnreachable] (none of them reconnects); a write already going out finishes within its
      *  budget, then the link closes. Nothing reconnects until the next call. */
-    fun close() {
+    override fun close() {
         inner.launch { closeNow() }
     }
 

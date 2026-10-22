@@ -324,15 +324,21 @@ class PrinterGuardTest {
         assertEquals(State.CLEAN, guard.state(a))
     }
 
-    /** Until the Bluetooth transport lands, the container never reaches a Bluetooth printer over
-     *  TCP (host ""): every call says it can't be reached, naming its serial. */
+    /** The container reaches a Bluetooth printer over the Bluetooth link, never over TCP (host
+     *  ""): with Bluetooth off, every call says so, naming its serial. */
     @Test fun aBluetoothPrinterNeverFallsThroughToTcp() = runBlocking<Unit> {
-        val c = testContainer()
+        val c = testContainer(bluetooth = FakeBluetoothLe(BluetoothAvailability.POWERED_OFF))
         val bt = SavedPrinter(PrinterConnection.Bluetooth("D8J224508535", null), "ZD421", "D8J224508535", 300)
         val z = c.zebraFor(bt)
+        assertTrue(z is BluetoothZebra)
         assertEquals("D8J224508535", z.address)
-        assertEquals("D8J224508535", throws<PrinterUnreachable> { z.identify() }.host)
-        assertEquals("D8J224508535", throws<PrinterUnreachable> { z.send("^XA^XZ") }.host)
-        assertEquals("D8J224508535", throws<PrinterUnreachable> { c.labelSender.send(bt, "^XA^XZ") }.host)
+        for (e in listOf(
+            throws<BluetoothUnavailable> { z.identify() },
+            throws<BluetoothUnavailable> { z.send("^XA^XZ") },
+            throws<BluetoothUnavailable> { c.labelSender.send(bt, "^XA^XZ") },
+        )) {
+            assertEquals("D8J224508535", e.host)
+            assertEquals(BluetoothAvailability.POWERED_OFF, e.availability)
+        }
     }
 }

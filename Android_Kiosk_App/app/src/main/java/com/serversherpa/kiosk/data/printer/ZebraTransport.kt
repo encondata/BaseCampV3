@@ -1,5 +1,7 @@
 package com.serversherpa.kiosk.data.printer
 
+import com.serversherpa.kiosk.core.labels.PrinterConnection
+import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.labels.isResidentFont
 import com.serversherpa.kiosk.core.printer.DirectoryEntry
 import com.serversherpa.kiosk.core.printer.HostId
@@ -101,10 +103,14 @@ fun replyHasQuotedValue(reply: ByteArray): Boolean = reply.count { it == '"'.cod
 /** `[A-Z0-9_\-]{1,64}\.TTF`, ASCII only. */
 private val FONT_NAME = Regex("""[A-Z0-9_\-]{1,64}\.TTF""")
 
-/** A printer this build has no way to reach: every call fails as [PrinterUnreachable] naming
- *  [address], and nothing is sent anywhere. The container gives one for a Bluetooth printer until
- *  its Bluetooth transport is wired in, so such a printer never falls through to TCP. */
-class UnreachableZebra(override val address: String) : ZebraTransport {
-    override suspend fun query(command: String, complete: (ByteArray) -> Boolean): String = throw PrinterUnreachable(address)
-    override suspend fun write(parts: List<ByteArray>, progress: WriteProgress?) = throw PrinterUnreachable(address)
+/** [printer] the way its connection reaches it: a network printer by its host ([network], the
+ *  container's [NetworkZebra]), a Bluetooth one over the app's link ([bluetooth], the container's
+ *  `ZebraBluetooth.transport`). A Bluetooth printer never falls through to TCP, nor the reverse. */
+fun transportFor(
+    printer: SavedPrinter,
+    network: (host: String) -> ZebraTransport,
+    bluetooth: (SavedPrinter) -> ZebraTransport,
+): ZebraTransport = when (val c = printer.connection) {
+    is PrinterConnection.Network -> network(c.host)
+    is PrinterConnection.Bluetooth -> bluetooth(printer)
 }

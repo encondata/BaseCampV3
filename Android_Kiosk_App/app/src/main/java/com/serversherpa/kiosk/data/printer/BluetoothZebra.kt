@@ -66,10 +66,28 @@ class BluetoothSerialMismatch(host: String, val found: String?) :
  *  it is forgotten in Android Settings and connected again (D10). */
 class BluetoothPairingLost(host: String) : PrinterException(host, pairingLostText(host))
 
-private fun unavailableText(availability: BluetoothAvailability): String = when (availability) {
+private fun unavailableText(availability: BluetoothAvailability): String =
+    bluetoothUnavailableText(availability) ?: "Bluetooth isn't ready yet. Try again in a moment."
+
+/** What to tell the crew when Bluetooth can't be used: it's off, not allowed for the kiosk, (API 30,
+ *  for a scan) Location is off, or the device has no Bluetooth LE. Null while it can be used, or
+ *  while its state isn't known yet. */
+fun bluetoothUnavailableText(availability: BluetoothAvailability): String? = when (availability) {
     BluetoothAvailability.POWERED_OFF -> BLUETOOTH_OFF_TEXT
     BluetoothAvailability.UNAUTHORIZED -> BLUETOOTH_DENIED_TEXT
     BluetoothAvailability.LOCATION_OFF -> LOCATION_OFF_TEXT
     BluetoothAvailability.UNSUPPORTED -> "This device doesn't support Bluetooth LE."
-    BluetoothAvailability.UNKNOWN, BluetoothAvailability.READY -> "Bluetooth isn't ready yet. Try again in a moment."
+    BluetoothAvailability.UNKNOWN, BluetoothAvailability.READY -> null
+}
+
+/** A Bluetooth failure the crew fixes on the device, not at the printer: Bluetooth off, not allowed,
+ *  missing or (a scan on API 30) Location off ([BluetoothUnavailable]), or a printer that forgot
+ *  this device ([BluetoothPairingLost]), also when it stopped the `~JX` clear before a call
+ *  ([PrinterClearFailed]). Null for any other failure (Bluetooth not ready in time reads as
+ *  unreachable). */
+fun bluetoothRefusal(error: Throwable): PrinterException? = when (error) {
+    is PrinterClearFailed -> error.cause?.let(::bluetoothRefusal)
+    is BluetoothUnavailable -> error.takeIf { bluetoothUnavailableText(it.availability) != null }
+    is BluetoothPairingLost -> error
+    else -> null
 }

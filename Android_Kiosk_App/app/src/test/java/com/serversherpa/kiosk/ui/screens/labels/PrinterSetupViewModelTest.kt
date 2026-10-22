@@ -8,12 +8,17 @@ import com.serversherpa.kiosk.core.labels.PrintQueue
 import com.serversherpa.kiosk.core.labels.PrintQueueDeps
 import com.serversherpa.kiosk.core.labels.PrintState
 import com.serversherpa.kiosk.core.labels.PrintStep
+import com.serversherpa.kiosk.core.labels.PrinterConnection
 import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
+import com.serversherpa.kiosk.core.printer.BLUETOOTH_DENIED_TEXT
+import com.serversherpa.kiosk.core.printer.BLUETOOTH_OFF_TEXT
 import com.serversherpa.kiosk.core.printer.DirectoryEntry
 import com.serversherpa.kiosk.core.printer.FONT_INSTALL_CUT_TEXT
 import com.serversherpa.kiosk.core.printer.HostId
 import com.serversherpa.kiosk.core.printer.HostStatus
+import com.serversherpa.kiosk.core.printer.LOCATION_OFF_TEXT
+import com.serversherpa.kiosk.core.printer.pairingLostText
 import com.serversherpa.kiosk.data.api.KioskJson
 import com.serversherpa.kiosk.data.db.KioskDatabase
 import com.serversherpa.kiosk.data.db.LABEL_CONTEXT_META_KEY
@@ -25,6 +30,12 @@ import com.serversherpa.kiosk.data.labels.LabelBuilder
 import com.serversherpa.kiosk.data.labels.LabelEngine
 import com.serversherpa.kiosk.data.labels.LabelSettingsStore
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
+import com.serversherpa.kiosk.data.printer.BluetoothAvailability
+import com.serversherpa.kiosk.data.printer.BluetoothPairingLost
+import com.serversherpa.kiosk.data.printer.BluetoothPrinterInfo
+import com.serversherpa.kiosk.data.printer.BluetoothUnavailable
+import com.serversherpa.kiosk.data.printer.FakeBluetoothPrinting
+import com.serversherpa.kiosk.data.printer.FoundBluetoothPrinter
 import com.serversherpa.kiosk.data.printer.FoundPrinter
 import com.serversherpa.kiosk.data.printer.PrinterGuard
 import com.serversherpa.kiosk.data.printer.PrinterLock
@@ -159,6 +170,8 @@ private class FakeZebra(val host: String) : SetupZebra {
     /** The step installFont() is waiting at. */
     @Volatile var atInstallHold: Double? = null
     @Volatile var line: FakeLine? = null
+    /** Every call that reaches the printer throws this when set (a Bluetooth refusal, say). */
+    @Volatile var failWith: Exception? = null
     /** The E: drive: each object's name and size. */
     val onE: MutableList<DirectoryEntry> = Collections.synchronizedList(ArrayList())
     val sent: MutableList<String> = Collections.synchronizedList(ArrayList())
@@ -168,6 +181,7 @@ private class FakeZebra(val host: String) : SetupZebra {
 
     private suspend fun use(what: String, detail: String = "") {
         calls += what
+        failWith?.let { throw it }
         if (!answers) throw PrinterUnreachable(host)
         line?.connect("$host $what" + if (detail.isEmpty()) "" else " $detail")
     }
@@ -180,7 +194,7 @@ private class FakeZebra(val host: String) : SetupZebra {
         return HostStatus(paperOut, false, 0, 0, false, false, false, false, false, false, false, false, "0", false, 0)
     }
     /** Like the transport's: null, never an error, when nothing answers. */
-    override suspend fun peelerPresent(): Boolean? { calls += "peeler"; return if (answers) peeler else null }
+    override suspend fun peelerPresent(): Boolean? { calls += "peeler"; return if (answers && failWith == null) peeler else null }
     override suspend fun fonts(): List<String> = fontEntries().map { it.name }
     override suspend fun fontEntries(): List<DirectoryEntry> { use("fonts"); return synchronized(onE) { onE.toList() } }
     override suspend fun send(zpl: String) {
@@ -226,6 +240,14 @@ class PrinterSetupViewModelTest {
 
     private val savedHost = "10.0.0.5"
     private val saved = SavedPrinter(savedHost, "ZD421", "S1", 203)
+    private val bt = FakeBluetoothPrinting()
+    private val btSerial = "D8J224508535"
+    private val btAddress = "AC:3F:A4:00:00:01"
+    private val btPrinter = SavedPrinter(PrinterConnection.Bluetooth(btSerial, btAddress), "ZD421", btSerial, 203)
+
+    /** A device a Bluetooth scan heard (a Zebra's name is its serial). */
+    private fun found(name: String = btSerial, address: String = btAddress, rssi: Int = -52, zebra: Boolean = false) =
+        FoundBluetoothPrinter(address, name, rssi, zebra)
 
     private fun zebra(host: String) = synchronized(zebras) { zebras.getOrPut(host) { FakeZebra(host) } }
 
@@ -249,7 +271,9 @@ class PrinterSetupViewModelTest {
     /** [screen]: the view model's own scope, for a test that closes the screen (cancels it). */
     private fun vm(pickWaitMs: Long = 5_000, screen: CoroutineScope = scope) = PrinterSetupViewModel(
         store, builder.pick, builder.status, engine, db, fontsDir,
-        scanner = { scanResult }, zebraFor = { p -> zebra(p.host.orEmpty()) }, printerLock = lock, printerGuard = guard,
+        scanner = { scanResult }, bluetooth = bt,
+        // A network printer by its host, a Bluetooth one by its serial.
+        zebraFor = { p -> zebra(p.host ?: (p.connection as PrinterConnection.Bluetooth).serial) }, printerLock = lock, printerGuard = guard,
         scopeOverride = screen, pickWaitMs = pickWaitMs,
     )
 
@@ -832,6 +856,238 @@ class PrinterSetupViewModelTest {
         assertEquals(PrintState.PRINTED, job.await().state)
         eventually("checks finished") { !vm.state.value.checking }
         assertEquals(1, line.maxOpen.get())
+    }
+
+    // --- Bluetooth ---------------------------------------------------------------------------
+
+    /** Picking a Bluetooth printer (D9): connect by the address picked with no serial (a renamed
+     *  printer's Bluetooth name isn't its serial), `~HI` under the lock, save it by Device
+     *  Information's serial and the address picked (never an address the link found it at), then
+     *  check it. The link stays up to the printer just saved. */
+    @Test fun bluetoothChooseSavesAndChecks() = runBlocking<Unit> {
+        eventually("pick") { builder.pick.value?.dpi == 203 }
+        val renamed = found(name = "Dock 4 Zebra", zebra = true)
+        val headphones = found(name = "Headphones", address = "11:22:33:44:55:66", rssi = -40)
+        // The link came up at another address than the one picked.
+        bt.answer = { BluetoothPrinterInfo("AC:3F:A4:00:00:99", "Zebra Technologies", "ZD421", btSerial, "V93.21.38Z", "7.3") }
+        val vm = vm()
+        vm.scanBluetooth()
+        eventually("scanning") { bt.scanning && vm.state.value.bluetoothScanning }
+        assertEquals(FindMode.BLUETOOTH, vm.state.value.findMode)
+        bt.hear(renamed, headphones)
+        eventually("listed") { vm.state.value.bluetoothFound == listOf(renamed, headphones) }
+        assertEquals(listOf(renamed), vm.state.value.bluetoothZebras)
+        assertEquals(listOf(headphones), vm.state.value.bluetoothOthers)
+
+        vm.checked { vm.chooseBluetooth(renamed) }
+        assertEquals(listOf<Pair<String?, String?>>(btAddress to null), bt.connects.toList())
+        assertEquals(SavedPrinter(PrinterConnection.Bluetooth(btSerial, btAddress), "ZD421", btSerial, 203), store.settings.first().printer)
+        val z = zebra(btSerial)
+        assertEquals("identify", z.calls.first())
+        assertEquals(2, z.calls.count { it == "identify" })
+        assertEquals(CheckState.OK, vm.row(CheckKey.ANSWERS)!!.state)
+        assertEquals("ZD421 · 203 DPI", vm.row(CheckKey.ANSWERS)!!.detail)
+        assertEquals(CheckState.OK, vm.row(CheckKey.DPI)!!.state)
+        assertFalse(vm.state.value.bluetoothScanning)
+        assertNull(vm.state.value.chooseError)
+        assertEquals(0, bt.closes)
+    }
+
+    /** A choice that fails after the link came up lets that printer go (an unsaved printer isn't
+     *  held from other devices), unless it is the saved printer, which Print Labels uses. */
+    @Test fun aBluetoothChoiceThatFailsLetsTheUnsavedPrinterGo() = runBlocking<Unit> {
+        zebra(btSerial).answers = false
+        val vm = vm()
+        vm.chooseBluetooth(found())
+        eventually("refused") { vm.state.value.chooseError != null && vm.state.value.choosing == null }
+        assertEquals("No Zebra printer answered over Bluetooth as D8J224508535.", vm.state.value.chooseError)
+        assertEquals(saved, store.settings.first().printer)
+        assertEquals(1, bt.closes)
+
+        store.setPrinter(btPrinter)
+        vm.chooseBluetooth(found())
+        eventually("refused again") { bt.connects.size == 2 && vm.state.value.choosing == null }
+        assertEquals(1, bt.closes)
+    }
+
+    /** Bluetooth off: the scan, a choice and a check say so (the screen offers Turn on Bluetooth),
+     *  and the scan runs again by itself once Bluetooth is on. */
+    @Test fun bluetoothOffSaysSo() = runBlocking<Unit> {
+        bt.availability.value = BluetoothAvailability.POWERED_OFF
+        val vm = vm()
+        vm.scanBluetooth()
+        eventually("refused") { vm.state.value.bluetoothMessage != null && !vm.state.value.bluetoothScanning }
+        assertEquals(BLUETOOTH_OFF_TEXT, vm.state.value.bluetoothMessage)
+        assertEquals(BluetoothAvailability.POWERED_OFF, vm.state.value.bluetoothUnavailable)
+        assertEquals(BluetoothFix.TURN_ON, bluetoothFixFor(vm.state.value.bluetoothMessage))
+        assertTrue(vm.state.value.bluetoothError)
+
+        bt.availability.value = BluetoothAvailability.READY
+        eventually("scanning again") { bt.scanning && vm.state.value.bluetoothScanning }
+        assertEquals(2, bt.scans)
+        assertNull(vm.state.value.bluetoothMessage)
+        assertNull(vm.state.value.bluetoothUnavailable)
+        // Stopped with no Zebra heard: says so, as information.
+        vm.stopBluetoothScan()
+        eventually("stopped") { !vm.state.value.bluetoothScanning && vm.state.value.bluetoothMessage != null }
+        assertEquals(NO_BLUETOOTH_PRINTERS_TEXT, vm.state.value.bluetoothMessage)
+        assertFalse(vm.state.value.bluetoothError)
+
+        bt.connectError = BluetoothUnavailable(btAddress, BluetoothAvailability.POWERED_OFF)
+        vm.chooseBluetooth(found())
+        eventually("choice refused") { vm.state.value.choosing == null && vm.state.value.bluetoothMessage == BLUETOOTH_OFF_TEXT }
+        assertNull(vm.state.value.chooseError)
+        assertEquals(saved, store.settings.first().printer)
+
+        store.setPrinter(btPrinter)
+        zebra(btSerial).failWith = BluetoothUnavailable(btSerial, BluetoothAvailability.POWERED_OFF)
+        vm.checked { vm.checkAgain() }
+        assertEquals(CheckState.FAIL, vm.row(CheckKey.ANSWERS)!!.state)
+        assertEquals(BLUETOOTH_OFF_TEXT, vm.row(CheckKey.ANSWERS)!!.detail)
+        assertEquals(BluetoothAvailability.POWERED_OFF, vm.state.value.bluetoothUnavailable)
+    }
+
+    /** Bluetooth not allowed: by the link's own reading, or (API 31+) a Location permission refused
+     *  beside the scan ones. Each says so with Open Settings; coming back with it allowed scans. */
+    @Test fun bluetoothDeniedSaysSo() = runBlocking<Unit> {
+        eventually("pick") { builder.pick.value?.dpi == 203 }
+        bt.availability.value = BluetoothAvailability.UNAUTHORIZED
+        val vm = vm()
+        vm.scanBluetooth()
+        eventually("refused") { vm.state.value.bluetoothMessage != null && !vm.state.value.bluetoothScanning }
+        assertEquals(BLUETOOTH_DENIED_TEXT, vm.state.value.bluetoothMessage)
+        assertEquals(BluetoothAvailability.UNAUTHORIZED, vm.state.value.bluetoothUnavailable)
+        assertEquals(BluetoothFix.ALLOW, bluetoothFixFor(vm.state.value.bluetoothMessage))
+        // Allowed in Settings: Android says nothing, so coming back reads Bluetooth again.
+        val refreshes = bt.refreshes
+        vm.appResumed(permitted = true)
+        assertTrue(bt.refreshes > refreshes)
+        bt.availability.value = BluetoothAvailability.READY
+        eventually("scanning again") { bt.scanning && vm.state.value.bluetoothScanning }
+
+        vm.stopBluetoothScan()
+        eventually("stopped") { !vm.state.value.bluetoothScanning }
+        val scans = bt.scans
+        vm.scanBluetooth(permitted = false)
+        eventually("refused without a scan") { vm.state.value.bluetoothMessage == BLUETOOTH_DENIED_TEXT }
+        assertEquals(BluetoothAvailability.UNAUTHORIZED, vm.state.value.bluetoothUnavailable)
+        assertEquals(scans, bt.scans)
+        vm.appResumed(permitted = true)
+        eventually("scanning once allowed") { bt.scans == scans + 1 && vm.state.value.bluetoothScanning }
+
+        // A test label to the saved Bluetooth printer says what to fix too.
+        store.setPrinter(btPrinter)
+        zebra(btSerial).failWith = BluetoothUnavailable(btSerial, BluetoothAvailability.UNAUTHORIZED)
+        vm.printTest(TestLabel.ALIGNMENT)
+        eventually("test refused") { !vm.state.value.testing && vm.state.value.testMessage != null }
+        assertEquals(BLUETOOTH_DENIED_TEXT, vm.state.value.testMessage)
+        assertTrue(vm.state.value.testError)
+    }
+
+    /** API 30 finds Bluetooth devices only with Location on: the scan says so (with Location
+     *  settings), and runs again by itself once Location is on. */
+    @Test fun locationOffSaysSo() = runBlocking<Unit> {
+        bt.availability.value = BluetoothAvailability.LOCATION_OFF
+        val vm = vm()
+        vm.scanBluetooth()
+        eventually("refused") { vm.state.value.bluetoothMessage != null && !vm.state.value.bluetoothScanning }
+        assertEquals(LOCATION_OFF_TEXT, vm.state.value.bluetoothMessage)
+        assertEquals(BluetoothAvailability.LOCATION_OFF, vm.state.value.bluetoothUnavailable)
+        assertEquals(BluetoothFix.LOCATION, bluetoothFixFor(vm.state.value.bluetoothMessage))
+        bt.availability.value = BluetoothAvailability.READY
+        eventually("scanning again") { bt.scanning && vm.state.value.bluetoothScanning }
+        assertNull(vm.state.value.bluetoothMessage)
+    }
+
+    /** The printer forgot this device (D10): the forget-it steps (naming the device the way
+     *  Android's Connected devices lists it), and Connect tries again once that's done: the same
+     *  choice, or the saved printer's checks. Nothing is saved meanwhile. */
+    @Test fun pairingLostShowsRecovery() = runBlocking<Unit> {
+        eventually("pick") { builder.pick.value?.dpi == 203 }
+        val vm = vm()
+        val renamed = found(name = "Dock 4 Zebra", zebra = true)
+        bt.connectError = BluetoothPairingLost(btAddress)
+        vm.chooseBluetooth(renamed)
+        eventually("refused") { vm.state.value.pairingLost != null && vm.state.value.choosing == null }
+        assertEquals(pairingLostText("Dock 4 Zebra"), vm.state.value.pairingLost)
+        assertEquals(BluetoothFix.FORGET, bluetoothFixFor(vm.state.value.pairingLost))
+        assertNull(vm.state.value.chooseError)
+        assertEquals(saved, store.settings.first().printer)
+
+        bt.connectError = null
+        vm.checked { vm.connectAgain() }
+        assertNull(vm.state.value.pairingLost)
+        assertEquals(btPrinter, store.settings.first().printer)
+        assertEquals(CheckState.OK, vm.row(CheckKey.ANSWERS)!!.state)
+
+        // A check meets it, here on the `~JX` a failed send left owed: the steps name the saved serial.
+        guard.markSendFailed(btPrinter.connection)
+        zebra(btSerial).failWith = BluetoothPairingLost(btSerial)
+        vm.checked { vm.checkAgain() }
+        assertEquals(pairingLostText(btSerial), vm.state.value.pairingLost)
+        assertEquals(CheckState.FAIL, vm.row(CheckKey.ANSWERS)!!.state)
+        assertEquals("No Zebra printer answered over Bluetooth as D8J224508535.", vm.row(CheckKey.ANSWERS)!!.detail)
+
+        zebra(btSerial).failWith = null
+        vm.checked { vm.connectAgain() }
+        assertNull(vm.state.value.pairingLost)
+        assertEquals(CheckState.OK, vm.row(CheckKey.ANSWERS)!!.state)
+    }
+
+    /** The time left is reckoned from the font's first progress report (waiting for the printer
+     *  isn't install time), at the measured Bluetooth speed (3.9 KB/s) until a meaningful amount
+     *  has gone out, then at the speed this install measured. */
+    @Test fun installEtaStartsAtTheFirstReportAndWaitsForEnoughBytes() = runBlocking<Unit> {
+        libraryFonts("ROBOTO.TTF" to ByteArray(400_000))
+        val z = zebra(savedHost)
+        z.installSteps = listOf(0.02, 0.03, 0.05, 1.0)
+        z.installHoldAt = 0.02
+        val vm = vm()
+        vm.checked { vm.checkAgain() }
+        // Something else holds the printer for 3 s before the font can start.
+        val holder = async(Dispatchers.Default) { lock.withLock { delay(3_000) } }
+        delay(50)
+        vm.installFonts()
+        eventually("8 KB sent") { z.atInstallHold == 0.02 && vm.state.value.installProgress == 0.02f }
+        // 392 KB at 3.9 KB/s.
+        assertEquals("about 2 min left", vm.state.value.installEta)
+        delay(1_200)
+        z.installHoldAt = 0.03
+        eventually("12 KB sent") { z.atInstallHold == 0.03 && vm.state.value.installProgress == 0.03f }
+        // Over a second on, but only 4 KB measured: still 3.9 KB/s (388 KB left).
+        assertEquals("about 2 min left", vm.state.value.installEta)
+        z.installHoldAt = 0.05
+        eventually("20 KB sent") { z.atInstallHold == 0.05 && vm.state.value.installProgress == 0.05f }
+        // 20 KB in about 1.2 s since the first report: about 25 s for the 380 KB left. Timed from
+        // before the 3 s wait for the printer, it would read over a minute.
+        val seconds = Regex("""about (\d+) s left""").matchEntire(vm.state.value.installEta.orEmpty())?.groupValues?.get(1)?.toInt()
+        assertTrue("measured: ${vm.state.value.installEta}", seconds != null && seconds < 60)
+        z.installHoldAt = null
+        eventually("installed") { !vm.state.value.installing }
+        holder.await()
+    }
+
+    /** Cancel shows it's stopping, and which font is going out, until that font has finished. */
+    @Test fun cancelSaysStoppingUntilTheFontGoingOutFinishes() = runBlocking<Unit> {
+        libraryFonts("ROBOTO.TTF" to byteArrayOf(1, 2, 3), "LATO.TTF" to byteArrayOf(4, 5))
+        val z = zebra(savedHost)
+        z.installSteps = listOf(0.5, 1.0)
+        z.installHoldAt = 0.5
+        val vm = vm()
+        vm.checked { vm.checkAgain() }
+        vm.installFonts()
+        eventually("first font half sent") { z.atInstallHold == 0.5 && vm.state.value.installFont != null }
+        assertEquals(InstallingFont("ROBOTO.TTF", 1, 2), vm.state.value.installFont)
+        assertEquals("Installing ROBOTO.TTF (1 of 2)…", vm.state.value.installStatus)
+        assertFalse(vm.state.value.installStopping)
+        vm.cancelInstall()
+        assertTrue(vm.state.value.installStopping)
+        assertEquals("Stopping after ROBOTO.TTF…", vm.state.value.installStatus)
+        z.installHoldAt = null
+        eventually("stopped") { !vm.state.value.installing }
+        assertFalse(vm.state.value.installStopping)
+        assertNull(vm.state.value.installFont)
+        assertEquals(1, z.calls.count { it == "installFont" })
     }
 
     @Test fun theFrontKindDefaultsTheAlignmentLabelTo2x1WithoutATemplateSize() {

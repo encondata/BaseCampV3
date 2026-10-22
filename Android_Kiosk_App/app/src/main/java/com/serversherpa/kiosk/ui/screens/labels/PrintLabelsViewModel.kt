@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.serversherpa.kiosk.core.labels.DEVICE_UNSUPPORTED_TEXT
 import com.serversherpa.kiosk.core.labels.LabelBuildStatus
 import com.serversherpa.kiosk.core.labels.LabelGenArgs
+import com.serversherpa.kiosk.core.labels.LabelSendRefused
 import com.serversherpa.kiosk.core.labels.LabelSendTimeout
 import com.serversherpa.kiosk.core.labels.LabelSettings
 import com.serversherpa.kiosk.core.labels.PREPARE_FAILED_TEXT
@@ -33,7 +34,9 @@ import com.serversherpa.kiosk.data.labels.LabelSettingsSource
 import com.serversherpa.kiosk.data.outbox.Outbox
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import com.serversherpa.kiosk.data.printer.LabelSender
+import com.serversherpa.kiosk.data.printer.PrinterException
 import com.serversherpa.kiosk.data.printer.PrinterTimeout
+import com.serversherpa.kiosk.data.printer.bluetoothRefusal
 import com.serversherpa.kiosk.data.sync.Sync
 import com.serversherpa.kiosk.data.sync.SyncPhase
 import com.serversherpa.kiosk.ui.flash.FlashController
@@ -61,7 +64,9 @@ data class PrintLabelsUi(
  * matched by asset ID or serial prints the asset's stored label on the saved printer and records
  * one Labeled scan through the outbox. The decisions live in [PrintQueue]. [sender] is the
  * container's: each label under the app-wide printer lock and guard (a `~JX` first after a failed
- * send, nothing while a font install is cut).
+ * send, nothing while a font install is cut), to a network or a Bluetooth printer. A Bluetooth
+ * failure the crew fixes on the device (Bluetooth off or not allowed, a printer that forgot it)
+ * says what to do; the screen puts the button that does it beside Retry.
  */
 class PrintLabelsViewModel(
     private val db: KioskDatabase,
@@ -112,6 +117,10 @@ class PrintLabelsViewModel(
             sender.send(printer, zpl)
         } catch (e: PrinterTimeout) {
             throw LabelSendTimeout(e)
+        } catch (e: PrinterException) {
+            // Bluetooth off or not allowed, or a printer that forgot this device: what to do.
+            val refusal = bluetoothRefusal(e) ?: throw e
+            throw LabelSendRefused(refusal.message ?: throw e, e)
         }
 
         override suspend fun record(asset: AssetEntity, scannedValue: String) {

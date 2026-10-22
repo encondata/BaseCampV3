@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -205,7 +207,10 @@ private fun LabelStatus(
     }
 }
 
-/** The latest scan, big: the asset, what happened, and Reprint or Retry. */
+/** The latest scan, big: the asset, what happened, and Reprint or Retry (with, for a Bluetooth
+ *  printer the crew must fix on the device first, the button that fixes it: turn Bluetooth on,
+ *  allow it, or forget the printer in Bluetooth settings). */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CurrentCard(e: PrintEntry<AssetEntity>, onReprint: () -> Unit, onRetry: () -> Unit) {
     val c = LocalKioskColors.current
@@ -231,7 +236,12 @@ private fun CurrentCard(e: PrintEntry<AssetEntity>, onReprint: () -> Unit, onRet
         e.message?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = ChipTone.RED.text) }
         e.recordWarning?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = ChipTone.AMBER.text) }
         if (e.state == PrintState.PRINTED && a != null) MiniButton("Reprint", onReprint)
-        if (e.state == PrintState.FAILED && a != null) MiniButton("Retry", onRetry)
+        if (e.state == PrintState.FAILED && a != null) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                MiniButton("Retry", onRetry)
+                bluetoothFixFor(e.message)?.let { BluetoothFixButton(it) }
+            }
+        }
     }
 }
 

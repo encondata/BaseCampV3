@@ -19,15 +19,18 @@ import com.serversherpa.kiosk.core.labels.parseSample
 import com.serversherpa.kiosk.core.labels.parseZpl
 import com.serversherpa.kiosk.core.labels.printerUnreachableText
 import com.serversherpa.kiosk.core.model.KioskLabelFont
+import com.serversherpa.kiosk.core.printer.BLUETOOTH_DENIED_TEXT
 import com.serversherpa.kiosk.core.printer.FONT_INSTALL_CUT_TEXT
 import com.serversherpa.kiosk.core.printer.FontFix
 import com.serversherpa.kiosk.core.printer.PrinterNeedsRestart
+import com.serversherpa.kiosk.core.printer.ZebraBluetoothSpec
 import com.serversherpa.kiosk.core.printer.builtInFontText
 import com.serversherpa.kiosk.core.printer.damagedFonts
 import com.serversherpa.kiosk.core.printer.fontFixFor
 import com.serversherpa.kiosk.core.printer.isIpv4
 import com.serversherpa.kiosk.core.printer.missingFonts
 import com.serversherpa.kiosk.core.printer.noTemplateText
+import com.serversherpa.kiosk.core.printer.pairingLostText
 import com.serversherpa.kiosk.core.printer.statusProblems
 import com.serversherpa.kiosk.data.db.KioskDatabase
 import com.serversherpa.kiosk.data.db.LABEL_CONTEXT_META_KEY
@@ -35,6 +38,12 @@ import com.serversherpa.kiosk.data.labels.LabelEngine
 import com.serversherpa.kiosk.data.labels.LabelEngineTimeoutException
 import com.serversherpa.kiosk.data.labels.LabelEngineUnsupportedException
 import com.serversherpa.kiosk.data.labels.LabelSettingsStore
+import com.serversherpa.kiosk.data.printer.BluetoothAvailability
+import com.serversherpa.kiosk.data.printer.BluetoothNotZebra
+import com.serversherpa.kiosk.data.printer.BluetoothPairingLost
+import com.serversherpa.kiosk.data.printer.BluetoothPrinting
+import com.serversherpa.kiosk.data.printer.BluetoothUnavailable
+import com.serversherpa.kiosk.data.printer.FoundBluetoothPrinter
 import com.serversherpa.kiosk.data.printer.FoundPrinter
 import com.serversherpa.kiosk.data.printer.LockedZebra
 import com.serversherpa.kiosk.data.printer.PrinterException
@@ -43,9 +52,12 @@ import com.serversherpa.kiosk.data.printer.PrinterLock
 import com.serversherpa.kiosk.data.printer.PrinterTimeout
 import com.serversherpa.kiosk.data.printer.SetupZebra
 import com.serversherpa.kiosk.data.printer.WriteProgress
+import com.serversherpa.kiosk.data.printer.bluetoothRefusal
+import com.serversherpa.kiosk.data.printer.bluetoothUnavailableText
 import com.serversherpa.kiosk.data.sync.Sync
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.ceil
 import kotlin.math.roundToInt
@@ -112,22 +124,44 @@ fun alignmentSizeFor(kind: LabelKind, dpi: Int, pick: LabelPick?): AlignmentSize
     return if (kind == LabelKind.FRONT) AlignmentSize(2.0, 1.0, dpi) else AlignmentSize(4.0, 2.0, dpi)
 }
 
+/** How the operator is finding a printer: a network scan, a typed IP, or a Bluetooth scan. */
+enum class FindMode { SCAN, IP, BLUETOOTH }
+
+/** A font install's font going out: its name, and which of how many it is. */
+data class InstallingFont(val name: String, val number: Int, val count: Int)
+
 data class PrinterSetupUi(
+    /** Null until one is picked. */
+    val findMode: FindMode? = null,
     val scanning: Boolean = false,
     /** Null until a scan finishes. */
     val found: List<FoundPrinter>? = null,
     val scanMessage: String? = null,
     val ipText: String = "",
-    /** The host being identified and saved. */
+    /** The host being identified and saved, or the Bluetooth address of the printer being chosen. */
     val choosing: String? = null,
     val chooseError: String? = null,
+    /** Every named device the Bluetooth scan heard, Zebras first: null until a scan starts. */
+    val bluetoothFound: List<FoundBluetoothPrinter>? = null,
+    val bluetoothScanning: Boolean = false,
+    /** Under the Bluetooth list: Bluetooth off, not allowed or missing, Location off, or no Zebra heard. */
+    val bluetoothMessage: String? = null,
+    /** The printer forgot this device: the steps that fix it (the screen adds Bluetooth settings and Connect). */
+    val pairingLost: String? = null,
+    /** Bluetooth couldn't be used (off, not allowed, missing, Location off), as the last scan,
+     *  choice, check or test label found; null when it could. */
+    val bluetoothUnavailable: BluetoothAvailability? = null,
     val checks: List<CheckRow> = emptyList(),
     val checking: Boolean = false,
     /** How many check runs have finished. */
     val checkRuns: Int = 0,
     val fontFix: FontFix? = null,
     val installing: Boolean = false,
-    /** While a font is going out: how much of it has (0..1), and about how long it has left. */
+    /** Cancel was tapped: the font going out finishes, then the install stops. */
+    val installStopping: Boolean = false,
+    /** The font going out. */
+    val installFont: InstallingFont? = null,
+    /** While a font is going out: how much of it has (0..1), and about how long the install has left. */
     val installProgress: Float? = null,
     val installEta: String? = null,
     val fontMessage: String? = null,
@@ -143,9 +177,22 @@ data class PrinterSetupUi(
     /** Peel-off can be chosen unless the printer said it has no peeler. */
     val peelAllowed: Boolean get() = peeler != false
     val busy: Boolean get() = choosing != null || installing || testing
+    /** The Bluetooth list's Zebras (named like a Zebra serial, or advertising Zebra), in the scan's order. */
+    val bluetoothZebras: List<FoundBluetoothPrinter> get() = bluetoothFound.orEmpty().filter { it.isZebra }
+    /** Every other named device the scan heard. */
+    val bluetoothOthers: List<FoundBluetoothPrinter> get() = bluetoothFound.orEmpty().filterNot { it.isZebra }
+    /** The Bluetooth message reads as an error (red); no Zebra heard is information. */
+    val bluetoothError: Boolean get() = bluetoothMessage != null && bluetoothMessage != NO_BLUETOOTH_PRINTERS_TEXT
+    /** "Installing ROBOTO.TTF (1 of 3)…" (no count for one font), "Stopping after ROBOTO.TTF…". */
+    val installStatus: String get() {
+        val font = installFont ?: return if (installStopping) "Stopping…" else "Installing fonts…"
+        if (installStopping) return "Stopping after ${font.name}…"
+        return if (font.count > 1) "Installing ${font.name} (${font.number} of ${font.count})…" else "Installing ${font.name}…"
+    }
 }
 
 const val NO_PRINTERS_FOUND_TEXT = "No Zebra printers found on this network."
+const val NO_BLUETOOTH_PRINTERS_TEXT = "No Zebra printers found nearby."
 const val SCAN_FAILED_TEXT = "Couldn't scan the network."
 const val INVALID_IP_TEXT = "That isn't a valid IP address."
 const val NO_PEELER_TEXT = "This printer has no peeler."
@@ -156,6 +203,8 @@ fun noZebraAnswerText(c: PrinterConnection): String = when (c) {
     is PrinterConnection.Bluetooth -> "No Zebra printer answered over Bluetooth as ${c.serial}."
 }
 fun fontInstallFailedText(name: String) = "Couldn't install $name."
+/** A device picked from the Bluetooth list that isn't a Zebra (its Device Information says so). */
+fun notAZebraText(name: String) = "$name isn't a Zebra printer."
 
 /** "about 40 s left", "about 4 min left": the time [remainingBytes] take at [bytesPerSecond]; null
  *  when nothing is left (or no rate is known). */
@@ -168,10 +217,18 @@ fun installEtaText(remainingBytes: Long, bytesPerSecond: Double): String? {
 
 /**
  * Printer Setup (the laptop's PrinterStep, kiosk/src/components/setup/PrinterStep.tsx): pick a
- * network Zebra (a scan or a typed IP), check it, install missing or damaged fonts, print test
- * labels, and set the offsets and peel/tear. Choosing a printer saves it; the label builder
- * rebuilds by itself when its DPI changes, and offsets and peel never rebuild (they apply at send
- * time).
+ * Zebra (a network scan, a typed IP, or a Bluetooth scan), check it, install missing or damaged
+ * fonts, print test labels, and set the offsets and peel/tear. Choosing a printer saves it; the
+ * label builder rebuilds by itself when its DPI changes, and offsets and peel never rebuild (they
+ * apply at send time).
+ *
+ * Bluetooth (D9–D11) goes through [bluetooth] (the container's `ZebraBluetooth`). The screen asks
+ * for the permissions the first time Bluetooth is picked. Picking a printer from the list connects
+ * to the address picked, asks `~HI` under the lock and the guard as a network choice does, and
+ * saves it by its serial (Device Information's, else its Bluetooth name) and that address: never
+ * an address the link found it at. Bluetooth off, not allowed, missing or (API 30) Location off
+ * says so, and the scan runs again by itself once Bluetooth can be used; a printer that forgot this
+ * device gets the forget-it steps, and Connect tries again once that's done.
  *
  * The checks inform and never block. The DPI and font checks read the builder's own template pick
  * for the saved printer ([pick]), waiting for the build a DPI change starts.
@@ -189,6 +246,7 @@ class PrinterSetupViewModel(
     private val db: KioskDatabase,
     private val fontsDir: File,
     private val scanner: suspend () -> List<FoundPrinter>,
+    private val bluetooth: BluetoothPrinting,
     zebraFor: (printer: SavedPrinter) -> SetupZebra,
     printerLock: PrinterLock,
     private val printerGuard: PrinterGuard,
@@ -215,10 +273,24 @@ class PrinterSetupViewModel(
     }
     /** Cancel was tapped during a font install: checked between fonts only. */
     @Volatile private var installCancelled = false
-    /** The font going out (its number and when it started): only its progress is shown. */
-    private class FontGoingOut(val id: Int, val startedNs: Long)
+    /** The font going out (its number, the bytes of the fonts after it, and its first progress
+     *  report): only its progress is shown. */
+    private class FontGoingOut(val id: Int, val bytesAfter: Long) {
+        @Volatile var firstReport: FirstReport? = null
+    }
+    /** When a font's bytes started moving, and how many had gone by then. */
+    private class FirstReport(val atNs: Long, val sent: Long)
     private val fontGoingOut = AtomicReference<FontGoingOut?>(null)
     private var fontsStarted = 0
+    /** The bytes per second this install measured so far: the next font's guess until it measures its own. */
+    @Volatile private var installRate: Double? = null
+    private var bluetoothScanJob: Job? = null
+    /** Bumped by each Bluetooth scan (and by one ended quietly): only the latest writes when it ends. */
+    private val bluetoothScanRun = AtomicInteger(0)
+    /** Stop ended the Bluetooth scan: it then says when no Zebra was heard. */
+    @Volatile private var bluetoothStopTapped = false
+    /** What Connect (beside the pairing-lost steps) tries again. */
+    @Volatile private var pairingRetry: PairingRetry? = null
     private var checksJob: Job? = null
     private var offsetsJob: Job? = null
     @Volatile private var pendingOffsets: Pair<Int, Int>? = null
@@ -230,11 +302,23 @@ class PrinterSetupViewModel(
             val s = settings.filterNotNull().first()
             if (!offsetsTouched) _state.update { it.copy(offsetXText = s.offsetX.toString(), offsetYText = s.offsetY.toString()) }
         }
+        // Bluetooth coming on, Location turned on, or a permission allowed (read again when the app
+        // comes back): a Bluetooth refusal showing scans again.
+        scope.launch {
+            bluetooth.availability.collect { availability ->
+                val s = _state.value
+                val waiting = s.findMode == FindMode.BLUETOOTH && s.bluetoothUnavailable != null && !s.bluetoothScanning && !s.busy
+                if (availability == BluetoothAvailability.READY && waiting) startBluetoothScan()
+            }
+        }
     }
 
     // --- choosing a printer ------------------------------------------------------------
 
+    /** The Scan network card (and Scan again): scan mode, and a scan. A Bluetooth scan stops. */
     fun scan() {
+        leaveBluetooth()
+        _state.update { it.copy(findMode = FindMode.SCAN) }
         if (_state.value.scanning) return
         _state.update { it.copy(scanning = true, scanMessage = null) }
         scope.launch {
@@ -259,6 +343,12 @@ class PrinterSetupViewModel(
         }
     }
 
+    /** The Enter IP card: IP mode. A Bluetooth scan stops. */
+    fun enterIp() {
+        leaveBluetooth()
+        _state.update { it.copy(findMode = FindMode.IP) }
+    }
+
     fun setIpText(text: String) = _state.update { it.copy(ipText = text, chooseError = null) }
 
     fun useIp() {
@@ -275,11 +365,7 @@ class PrinterSetupViewModel(
     /** Saves the printer at [host] (asked `~HI` first when [found] doesn't know its DPI), then checks it. */
     private fun choosePrinter(host: String, found: FoundPrinter?) {
         if (_state.value.busy) return
-        checksJob?.cancel()
-        _state.update {
-            it.copy(choosing = host, chooseError = null, checks = emptyList(), checking = false, fontFix = null,
-                fontMessage = null, peeler = null, testMessage = null)
-        }
+        beginChoosing(host)
         scope.launch {
             val saved = try {
                 val dpi = found?.dpi
@@ -303,6 +389,200 @@ class PrinterSetupViewModel(
         }
     }
 
+    /** A printer is being chosen ([key] names it in `choosing`): what was shown for the last one goes. */
+    private fun beginChoosing(key: String) {
+        checksJob?.cancel()
+        pairingRetry = null
+        _state.update {
+            it.copy(choosing = key, chooseError = null, checks = emptyList(), checking = false, fontFix = null,
+                fontMessage = null, peeler = null, testMessage = null, bluetoothMessage = null, bluetoothUnavailable = null,
+                pairingLost = null)
+        }
+    }
+
+    // --- Bluetooth -------------------------------------------------------------------------
+
+    /** The Bluetooth card (and Scan again): Bluetooth mode, and a scan of the printers nearby.
+     *  [permitted] is false when the screen's permission prompt came back refused: it says so
+     *  without scanning (on API 31+ a refused Location leaves the scan itself allowed, but Android
+     *  then hides what it hears). */
+    fun scanBluetooth(permitted: Boolean = true) {
+        _state.update { it.copy(findMode = FindMode.BLUETOOTH) }
+        if (!permitted) {
+            endBluetoothScan()
+            pairingRetry = null
+            _state.update {
+                it.copy(bluetoothMessage = BLUETOOTH_DENIED_TEXT, bluetoothUnavailable = BluetoothAvailability.UNAUTHORIZED, pairingLost = null)
+            }
+            return
+        }
+        bluetooth.refreshAvailability()
+        startBluetoothScan()
+    }
+
+    /** Stop: the scan ends, and what it heard stays listed. */
+    fun stopBluetoothScan() {
+        if (_state.value.bluetoothScanning) bluetoothStopTapped = true
+        bluetooth.stopScan()
+    }
+
+    /** The screen came back to the front (from Settings, say). Android sends nothing when a
+     *  permission is granted, so Bluetooth is read again; a scan the screen's prompt refused runs
+     *  once the permissions are [permitted] (the link's own refusals rescan when it reads READY). */
+    fun appResumed(permitted: Boolean) {
+        bluetooth.refreshAvailability()
+        val s = _state.value
+        if (permitted && s.findMode == FindMode.BLUETOOTH && s.bluetoothUnavailable == BluetoothAvailability.UNAUTHORIZED &&
+            bluetooth.availability.value == BluetoothAvailability.READY && !s.bluetoothScanning && !s.busy
+        ) {
+            startBluetoothScan()
+        }
+    }
+
+    /** Lists what the scan hears until it ends (30 s, Stop, Bluetooth refused, or another Bluetooth
+     *  call taking the radio), then says why nothing is listed: Bluetooth's refusal, or no Zebra
+     *  heard (only after its full 30 s or Stop). One ended by the screen (another mode, a choice)
+     *  says nothing. */
+    private fun startBluetoothScan() {
+        var started = false
+        _state.update {
+            started = false
+            if (it.bluetoothScanning) {
+                it
+            } else {
+                started = true
+                it.copy(bluetoothScanning = true, bluetoothFound = emptyList(), bluetoothMessage = null, bluetoothUnavailable = null, pairingLost = null)
+            }
+        }
+        if (!started) return
+        pairingRetry = null
+        bluetoothStopTapped = false
+        val run = bluetoothScanRun.incrementAndGet()
+        val startedNs = System.nanoTime()
+        bluetoothScanJob = scope.launch {
+            try {
+                bluetooth.scan().collect { found -> if (run == bluetoothScanRun.get()) _state.update { it.copy(bluetoothFound = found) } }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w(TAG, "Bluetooth scan failed", e)
+            }
+            if (run != bluetoothScanRun.get()) return@launch
+            val availability = bluetooth.availability.value
+            val refused = bluetoothUnavailableText(availability)
+            val ranItsCourse = bluetoothStopTapped || (System.nanoTime() - startedNs) / 1_000_000 >= ZebraBluetoothSpec.SCAN_MS
+            _state.update {
+                when {
+                    refused != null -> it.copy(bluetoothScanning = false, bluetoothUnavailable = availability, bluetoothMessage = refused)
+                    it.bluetoothZebras.isEmpty() && ranItsCourse -> it.copy(bluetoothScanning = false, bluetoothMessage = NO_BLUETOOTH_PRINTERS_TEXT)
+                    else -> it.copy(bluetoothScanning = false)
+                }
+            }
+        }
+    }
+
+    /** The scan stops quietly, keeping its list (the screen moved on). */
+    private fun endBluetoothScan() {
+        val job = bluetoothScanJob ?: return
+        bluetoothScanJob = null
+        bluetoothScanRun.incrementAndGet()
+        job.cancel()
+        _state.update { it.copy(bluetoothScanning = false) }
+    }
+
+    /** Another way to find a printer was picked: the Bluetooth scan stops, and its message goes. */
+    private fun leaveBluetooth() {
+        endBluetoothScan()
+        _state.update { it.copy(bluetoothMessage = null, bluetoothUnavailable = null) }
+    }
+
+    /**
+     * Saves the Bluetooth printer [found] picked from the list (D9), then checks it: connects to the
+     * address picked with no serial (a renamed printer's Bluetooth name isn't its serial, so it
+     * would be refused as a mismatch), asks `~HI` under the lock and the guard, and saves it by
+     * Device Information's serial (else its Bluetooth name) and the address picked. The address
+     * the link came up at is never saved: one found by a scan for the serial could be another
+     * device's. A choice that fails or is left after the link came up lets that printer go unless
+     * it is the saved one, so an unsaved printer isn't held from other devices.
+     */
+    fun chooseBluetooth(found: FoundBluetoothPrinter) {
+        if (_state.value.busy) return
+        endBluetoothScan()
+        beginChoosing(found.address)
+        scope.launch {
+            var linked = false
+            var serial: String? = null
+            val saved = try {
+                val info = bluetooth.connect(found.address, null)
+                linked = true
+                val s = info.serial?.takeIf { it.isNotBlank() } ?: found.name
+                serial = s
+                val connection = PrinterConnection.Bluetooth(s, found.address)
+                // Addresses the printer for its `~HI`; what is saved is built from the answers.
+                val id = unsavedPrinterAt(SavedPrinter(connection, DEFAULT_MODEL, s, 0)).identify()
+                SavedPrinter(connection, id.model.ifBlank { DEFAULT_MODEL }, s, id.dpi)
+            } catch (e: CancellationException) {
+                if (linked) letGoUnlessSaved(serial, settings.value?.printer)
+                throw e
+            } catch (e: Exception) {
+                if (linked) letGoUnlessSaved(serial, store.settings.first().printer)
+                when (val refusal = bluetoothRefusal(e)) {
+                    is BluetoothPairingLost -> {
+                        // Android's Connected devices lists the printer by its Bluetooth name.
+                        pairingRetry = PairingRetry.Choose(found)
+                        _state.update { it.copy(choosing = null, pairingLost = pairingLostText(found.name)) }
+                    }
+                    is BluetoothUnavailable -> _state.update {
+                        it.copy(choosing = null, bluetoothUnavailable = refusal.availability, bluetoothMessage = bluetoothUnavailableText(refusal.availability))
+                    }
+                    else -> {
+                        android.util.Log.w(TAG, "Bluetooth printer not chosen", e)
+                        val text = if (e is BluetoothNotZebra) notAZebraText(found.name) else noZebraAnswerText(PrinterConnection.Bluetooth(serial ?: found.name))
+                        _state.update { it.copy(choosing = null, chooseError = text) }
+                    }
+                }
+                return@launch
+            }
+            store.setPrinter(saved)
+            _state.update { it.copy(choosing = null) }
+            startChecks(saved)
+        }
+    }
+
+    /** A printer brought up to be chosen, then not saved, is let go; the [saved] printer's link stays
+     *  (Print Labels uses it). */
+    private fun letGoUnlessSaved(serial: String?, saved: SavedPrinter?) {
+        val savedSerial = (saved?.connection as? PrinterConnection.Bluetooth)?.serial
+        if (serial == null || savedSerial == null || !savedSerial.equals(serial, ignoreCase = true)) bluetooth.close()
+    }
+
+    /** Connect, beside the pairing-lost steps (once the printer is forgotten in Android Settings):
+     *  the same choice again, or the saved printer's checks. */
+    fun connectAgain() {
+        when (val retry = pairingRetry) {
+            is PairingRetry.Choose -> chooseBluetooth(retry.printer)
+            PairingRetry.Check -> checkAgain()
+            null -> Unit
+        }
+    }
+
+    /** Notes a Bluetooth refusal of a call to the saved [printer] (Bluetooth off or not allowed, or
+     *  the printer forgot this device, which Connect then checks again) and returns what to say;
+     *  null for any other failure. */
+    private fun noteRefusal(e: Throwable, printer: SavedPrinter): String? = when (val refusal = bluetoothRefusal(e)) {
+        is BluetoothUnavailable -> bluetoothUnavailableText(refusal.availability)?.also {
+            _state.update { s -> s.copy(bluetoothUnavailable = refusal.availability) }
+        }
+        is BluetoothPairingLost -> {
+            val serial = (printer.connection as? PrinterConnection.Bluetooth)?.serial ?: printer.serial
+            pairingLostText(serial).also { text ->
+                pairingRetry = PairingRetry.Check
+                _state.update { it.copy(pairingLost = text) }
+            }
+        }
+        else -> null
+    }
+
     // --- the checks ------------------------------------------------------------------------
 
     fun checkAgain() {
@@ -321,18 +601,37 @@ class PrinterSetupViewModel(
     }
 
     private suspend fun runChecks(saved: SavedPrinter, keepFontMessage: Boolean) {
+        pairingRetry = null
         _state.update {
             it.copy(checks = emptyList(), checking = true, fontFix = null, peeler = null,
-                fontMessage = if (keepFontMessage) it.fontMessage else null, fontError = keepFontMessage && it.fontError)
+                fontMessage = if (keepFontMessage) it.fontMessage else null, fontError = keepFontMessage && it.fontError,
+                bluetoothUnavailable = null, pairingLost = null)
         }
         try {
             val zebra = printerAt(saved)
             put(CheckRow(CheckKey.ANSWERS, CheckState.RUNNING))
-            val id = quietly { zebra.identify() }
+            var failure: Exception? = null
+            val id = try {
+                zebra.identify()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                failure = e
+                null
+            }
             if (id == null) {
+                // Bluetooth off or not allowed says so here; a printer that forgot this device gets
+                // the steps above the checks.
+                val refusal = failure?.let(::bluetoothRefusal)
+                val refused = failure?.let { noteRefusal(it, saved) }
                 // Still waiting for the rest of a font: it needs the restart.
                 val cut = printerGuard.state(saved.connection) == PrinterGuard.State.FONT_CUT
-                put(CheckRow(CheckKey.ANSWERS, CheckState.FAIL, if (cut) FONT_INSTALL_CUT_TEXT else noZebraAnswerText(saved.connection)))
+                val detail = when {
+                    refusal is BluetoothUnavailable && refused != null -> refused
+                    cut -> FONT_INSTALL_CUT_TEXT
+                    else -> noZebraAnswerText(saved.connection)
+                }
+                put(CheckRow(CheckKey.ANSWERS, CheckState.FAIL, detail))
                 return
             }
             put(CheckRow(CheckKey.ANSWERS, CheckState.OK, "${id.model} · ${id.dpi} DPI"))
@@ -442,11 +741,12 @@ class PrinterSetupViewModel(
         val fix = _state.value.fontFix ?: return
         if (_state.value.busy || fix.installable.isEmpty()) return
         installCancelled = false
-        _state.update { it.copy(installing = true, fontMessage = null, fontError = false) }
+        installRate = null
+        _state.update { it.copy(installing = true, installStopping = false, fontMessage = null, fontError = false) }
         scope.launch {
             val printer = store.settings.first().printer
             if (printer == null) {
-                _state.update { it.copy(installing = false) }
+                _state.update { it.copy(installing = false, installStopping = false) }
                 return@launch
             }
             val zebra = printerAt(printer)
@@ -454,17 +754,20 @@ class PrinterSetupViewModel(
             var cut = false
             var stopped = false
             val files = db.labelFonts().all().associateBy { it.name.uppercase() }
+            // Each font's size (the library's), for the time left across the fonts still to send.
+            val sizes = fix.installable.map { (files[it.name.uppercase()]?.size ?: 0).coerceAtLeast(0).toLong() }
             try {
-                for (font in fix.installable) {
+                for ((index, font) in fix.installable.withIndex()) {
                     if (installCancelled || !isActive) {
                         stopped = true
                         break
                     }
                     val name = font.name.uppercase()
+                    _state.update { it.copy(installFont = InstallingFont(name, index + 1, fix.installable.size)) }
                     try {
                         val file = files[name]?.fileName?.let { File(fontsDir, it) } ?: throw IOException("no file for $name")
                         val bytes = withContext(Dispatchers.IO) { file.readBytes() }
-                        zebra.installFont(name, bytes, fontStarted())
+                        zebra.installFont(name, bytes, fontStarted(bytesAfter = sizes.drop(index + 1).sum()))
                         fontFinished()
                     } catch (e: CancellationException) {
                         throw e
@@ -481,13 +784,14 @@ class PrinterSetupViewModel(
             // The screen closed: nothing more is sent or checked.
             if (!isActive) return@launch
             if (cut) {
-                _state.update { it.copy(installing = false, fontMessage = FONT_INSTALL_CUT_TEXT, fontError = true) }
+                _state.update { it.copy(installing = false, installStopping = false, fontMessage = FONT_INSTALL_CUT_TEXT, fontError = true) }
                 return@launch
             }
             delay(FONT_SETTLE_MS)
             _state.update {
                 it.copy(
                     installing = false,
+                    installStopping = false,
                     // Stopped before the rest: the check shows what is still missing.
                     fontMessage = failed?.let(::fontInstallFailedText) ?: if (stopped) null else FONTS_INSTALLED_TEXT,
                     fontError = failed != null,
@@ -501,36 +805,50 @@ class PrinterSetupViewModel(
     /** Stops a font install after the font going out: a download announces its size, so cutting
      *  one would leave the printer taking whatever comes next as font data (D8). */
     fun cancelInstall() {
-        if (_state.value.installing) installCancelled = true
+        if (!_state.value.installing) return
+        installCancelled = true
+        _state.update { it.copy(installStopping = true) }
     }
 
-    /** A font starts going out: its progress from 0, and the callback its install reports through
-     *  (from any thread; a report for a font that is done, or behind a newer one, is dropped). */
-    private fun fontStarted(): WriteProgress {
+    /** A font starts going out ([bytesAfter]: the fonts still to send after it): its progress from
+     *  0, and the callback its install reports through (from any thread; a report for a font that
+     *  is done, or behind a newer one, is dropped). */
+    private fun fontStarted(bytesAfter: Long): WriteProgress {
         val id = ++fontsStarted
-        fontGoingOut.set(FontGoingOut(id, System.nanoTime()))
+        fontGoingOut.set(FontGoingOut(id, bytesAfter))
         _state.update { it.copy(installProgress = 0f, installEta = null) }
         return { sent, total -> fontProgressed(id, sent, total) }
     }
 
+    /** The time left covers this font's bytes still to go and every font after it. It is reckoned
+     *  from the font's first report, when its bytes start moving (the wait for the printer lock and
+     *  a `~JX` before it aren't install time), at the speed measured since then once that has run
+     *  [ETA_MEASURE_AFTER_MS] and moved [ETA_MEASURE_AFTER_BYTES]; until then at the speed an
+     *  earlier font of this install measured, else [INSTALL_BYTES_PER_SECOND]. */
     private fun fontProgressed(id: Int, sent: Long, total: Long) {
+        val now = System.nanoTime()
         val going = fontGoingOut.get()
         if (going == null || going.id != id || total <= 0) return
         val fraction = (sent.toDouble() / total).coerceIn(0.0, 1.0).toFloat()
-        val seconds = (System.nanoTime() - going.startedNs) / 1e9
-        val rate = if (sent > 0 && seconds * 1_000 >= ETA_MEASURE_AFTER_MS) sent / seconds else INSTALL_BYTES_PER_SECOND
-        val eta = installEtaText(total - sent, rate)
+        val first = going.firstReport ?: FirstReport(now, sent).also { going.firstReport = it }
+        val elapsedMs = (now - first.atNs) / 1e6
+        val moved = sent - first.sent
+        if (elapsedMs >= ETA_MEASURE_AFTER_MS && moved >= ETA_MEASURE_AFTER_BYTES) installRate = moved / (elapsedMs / 1_000)
+        val eta = installEtaText(total - sent + going.bytesAfter, installRate ?: INSTALL_BYTES_PER_SECOND)
         _state.update { s ->
             if (fontGoingOut.get()?.id != id || fraction < (s.installProgress ?: 0f)) s else s.copy(installProgress = fraction, installEta = eta)
         }
     }
 
-    /** The font's install returned: all of it went out. */
-    private fun fontFinished() = _state.update { it.copy(installProgress = 1f, installEta = null) }
+    /** The font's install returned: all of it went out (the time left is the fonts after it). */
+    private fun fontFinished() {
+        val after = fontGoingOut.get()?.bytesAfter ?: 0
+        _state.update { it.copy(installProgress = 1f, installEta = installEtaText(after, installRate ?: INSTALL_BYTES_PER_SECOND)) }
+    }
 
     private fun fontsDone() {
         fontGoingOut.set(null)
-        _state.update { it.copy(installProgress = null, installEta = null) }
+        _state.update { it.copy(installProgress = null, installEta = null, installFont = null) }
     }
 
     // --- offsets and peel -------------------------------------------------------------------
@@ -629,10 +947,11 @@ class PrinterSetupViewModel(
                 DEVICE_UNSUPPORTED_TEXT to true
             } catch (e: PrinterNeedsRestart) {
                 FONT_INSTALL_CUT_TEXT to true
-            } catch (e: PrinterTimeout) {
-                TEST_TIMEOUT_TEXT to true
             } catch (e: PrinterException) {
-                printerUnreachableText(printer) to true
+                // Bluetooth off or not allowed, or a printer that forgot this device: what to do (the
+                // screen keeps the forget-it steps, with Connect, once the sheet closes).
+                val text = noteRefusal(e, printer) ?: if (e is PrinterTimeout) TEST_TIMEOUT_TEXT else printerUnreachableText(printer)
+                text to true
             } catch (e: Exception) {
                 android.util.Log.w(TAG, "test label failed", e)
                 TEST_FAILED_TEXT to true
@@ -668,10 +987,14 @@ class PrinterSetupViewModel(
         private const val DEFAULT_MODEL = "Zebra"
         /** How long a printer gets to file a downloaded font before the re-check (PrinterStep's). */
         const val FONT_SETTLE_MS = 500L
-        /** What a font install's time left is reckoned at until it has run for
-         *  [ETA_MEASURE_AFTER_MS]: the Bluetooth speed measured on a ZD421 (3.9 KB/s). */
+        /** What a font install's time left is reckoned at until it has measured its own speed (see
+         *  [ETA_MEASURE_AFTER_MS]): the Bluetooth speed measured on a ZD421 (3.9 KB/s). */
         const val INSTALL_BYTES_PER_SECOND = 3_900.0
+        /** A font's measured speed is trusted once its bytes have been moving this long and
+         *  [ETA_MEASURE_AFTER_BYTES] have gone: about 4 s of Bluetooth, so the first few acknowledged
+         *  chunks (and the pause before them) don't swing the estimate. */
         const val ETA_MEASURE_AFTER_MS = 1_000L
+        const val ETA_MEASURE_AFTER_BYTES = 16_384L
         const val OFFSET_SAVE_DELAY_MS = 500L
         /** How long the DPI check waits for the build a DPI change starts to pick a template. */
         const val PICK_WAIT_MS = 30_000L
@@ -696,4 +1019,11 @@ class PrinterSetupViewModel(
             else -> reason
         }
     }
+}
+
+/** What Connect, beside the pairing-lost steps, tries again: choosing that Bluetooth printer, or
+ *  the saved printer's checks. */
+private sealed interface PairingRetry {
+    data class Choose(val printer: FoundBluetoothPrinter) : PairingRetry
+    data object Check : PairingRetry
 }
