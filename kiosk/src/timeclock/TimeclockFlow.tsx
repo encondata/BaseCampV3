@@ -445,7 +445,7 @@ export default function TimeclockFlow({
               placeholder="Start typing your name…"
               autoComplete="off"
               spellCheck={false}
-              inputMode="none"
+              inputMode={keyboardShown ? 'none' : 'text'}
               disabled={looking}
               value={value}
               onChange={(e) => onValue(e.target.value)}

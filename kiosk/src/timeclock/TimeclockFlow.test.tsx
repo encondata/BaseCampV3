@@ -380,6 +380,21 @@ describe('Enter Your Name', () => {
       expect(localStorage.getItem(KEY)).toBe('hidden');
     });
 
+    it('the system touch keyboard is allowed while ours is hidden, and off while it is shown', async () => {
+      await toName();
+      expect(searchBox().getAttribute('inputmode')).toBe('text');
+      await user.click(showBtn());
+      expect(searchBox().getAttribute('inputmode')).toBe('none');
+      await user.click(hideBtn());
+      expect(searchBox().getAttribute('inputmode')).toBe('text');
+    });
+
+    it('Welcome\'s hidden scan input stays inputMode none', async () => {
+      renderFlow();
+      await peopleLoaded();
+      expect(scanInput().getAttribute('inputmode')).toBe('none');
+    });
+
     it('restores a stored "shown" choice on a fresh mount', async () => {
       localStorage.setItem(KEY, 'shown');
       await toName();
