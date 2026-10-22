@@ -478,3 +478,81 @@ what shipped, the rulings made on the way and what is still open.
   - Labelgen internals: `model.ts` is 704 lines and an `own`/`has` helper is
     duplicated; `sampleLabel`'s `reason` mixes notes and codes; the plan's
     font lookup swallows errors.
+
+## iOS implementation notes
+
+These notes were written after the iOS build (branch `ios-labels`, based on `android-labels`, with plan
+`docs/superpowers/plans/2026-10-21-ios-label-printing.md`). iOS follows the Android behavior above. The
+items below are where it differs, and why.
+
+### Store
+
+- SwiftData gets its first versioned schema, V1 → V2, through one lightweight migration. Golden
+  entity-hash tests freeze V1 and V2. V2 must stay frozen before any V3 is added.
+- A store that won't open is classified before anything is moved:
+  - protected data unavailable, a store that is compatible but won't open, or an unknown version:
+    the app runs in memory with no move, and nothing is moved;
+  - a corrupt SQLite store (code 11/26): the whole store folder is moved aside to
+    `serversherpa-kiosk.store.failed-<ts>/` and its unsent outbox is saved first.
+  - The old fallback never actually deleted anything, so a transient failure used to heal itself. Moving
+    the store aside unconditionally would have stranded unsent scans.
+- `KioskStore` is a hand-written `ModelActor` with a custom `SerialModelExecutor` on its own queue.
+  SwiftData's default executor runs each job on the caller's thread, which was the main thread for the
+  view models, sync and the outbox, and a large label build would have frozen the screen. The
+  `ModelContext` is created lazily on that queue, never on the caller's thread: a context made on the main
+  thread is a UI context with main-thread autosave until SwiftData converts it. Guard tests pin both
+  behaviors. Core Data's concurrency debugging does not catch `ModelContext` misuse on iOS 18.
+
+### Generator (JavaScriptCore)
+
+- The same bundle is copied to `IK/Resources/labelgen.js`. `build:labelgen` writes both copies, and
+  `bundle.test.ts` asserts that both match a fresh build.
+- Each context gets its own `JSVirtualMachine` and a dedicated thread. Calls are serialized by a Swift
+  async gate, so a waiting call never queues on an abandoned thread.
+- JavaScriptCore can't be interrupted. A call that times out, or whose caller is cancelled, abandons its
+  context and thread, and the next call starts a fresh one. The cost is a leaked thread until the runaway
+  finishes, plus one bundle reload.
+- The 30 s start limit mirrors Android's `CONNECT_TIMEOUT_MS` and gives `.timeout`. Any other start
+  failure is `.unsupported`. The unsupported copy on iOS is "This device can't make labels. Restart the
+  app; if it keeps happening, the app needs an update." (Android's WebView wording doesn't apply.)
+
+### Printer (Network.framework)
+
+- The scan sends plain `~HI`, as Android does. STX framing belongs to the reply.
+- Probes and connections to a host inside the device's `en*` RFC 1918 subnets prohibit cellular. That
+  matches Android binding the socket to the Wi-Fi/Ethernet network. USB Ethernet is still allowed.
+- Local Network permission uses `NSLocalNetworkUsageDescription`. A connection still `.waiting` past the
+  connect budget counts as unreachable. When every probe is denied by policy, the scan says "Allow Local
+  Network access for ServerSherpa Kiosk in Settings to find printers." On the first run the system prompt
+  may still be up during the first scan, so Printer Setup scans again once, when the app returns to the
+  foreground or after 2 s. The message only shows if that second scan is also denied.
+- One app-wide `PrinterLock` serializes every connection to the saved printer: Printer Setup's identify,
+  checks, font installs and test labels, plus Print Labels' send. It adds no check, poll or wait of its own.
+
+### Print Labels
+
+- Diverges from Android on purpose: labels already scanned keep printing and recording after the screen
+  closes. Android drops the jobs still waiting.
+  - One app-lifetime queue lives in `AppContainer`, so a re-entered screen can never interleave labels.
+  - Each job captures its move and site at scan time.
+- Signing out, a session that ends, and a change to the setup's move or site reset the queue:
+  - jobs still waiting are dropped;
+  - the list clears;
+  - a label already going out finishes on the printer but records nothing.
+- A Labeled scan records only if, in the same main-actor turn, the kiosk is still signed in on the job's
+  move and site. Retry and Reprint refuse another move's entry with "This label is from another move."
+  (new copy, with no Android equivalent).
+- When `ios-clear-setup` merges, server Clear Setup must reset the print jobs too, by calling
+  `printJobs.reset()` or writing `setupSelection = nil`.
+
+### Still owed (device)
+
+- On a real iPad with the ZD421:
+  - the Local Network prompt and the denied path;
+  - the scan finding the printer;
+  - a real print, peel mode and font install;
+  - one label compared byte for byte with the laptop's output.
+- Large-move build time and memory on iPad hardware.
+- A sync and scan smoke test on the new store executor.
+- The live layout in landscape on iPad and iPhone.
+- `storeIsTemporary` (a store running in memory) has no UI yet.
