@@ -8,6 +8,23 @@ enum BluetoothAvailability: Equatable, Sendable {
     case unknown, ready, poweredOff, unauthorized, unsupported
 }
 
+/// Why a screen's scan ended, for its words: only a scan that ran its full length (counted once
+/// Bluetooth was ready) or was stopped can say nothing was found.
+enum BluetoothScanEnd: Equatable, Sendable {
+    /// It ran its full `scanDuration` with Bluetooth ready.
+    case finished
+    /// `stopScan()` (the screen's Stop).
+    case stopped
+    /// A connect, write or query took the radio (a label going out, say).
+    case interrupted
+    /// `close()`: the app went to the background, signed out, or the saved printer changed.
+    case closed
+    /// Bluetooth is off, not allowed, or missing.
+    case refused
+    /// A newer scan started.
+    case replaced
+}
+
 /// A named device a scan heard.
 struct FoundBluetoothPrinter: Equatable, Sendable, Identifiable {
     /// The iPad's identifier for the device (iOS never shows its address).
@@ -55,6 +72,8 @@ struct BluetoothLinkInfo: Equatable, Sendable {
 @MainActor protocol BluetoothPrinting: AnyObject {
     var availability: BluetoothAvailability { get }
     var link: BluetoothLinkInfo { get }
+    /// Why the last scan ended (set before its stream finishes).
+    var lastScanEnd: BluetoothScanEnd? { get }
     func scan() -> AsyncStream<[FoundBluetoothPrinter]>
     func stopScan()
     func connect(peripheralId: UUID?, serial: String?) async throws -> BluetoothPrinterInfo
@@ -89,10 +108,12 @@ struct BluetoothTarget: Equatable, Sendable {
    asks for Bluetooth permission when Bluetooth is first picked (D11).
  - Connecting finds the printer by the iPad's identifier (`retrievePeripherals`), else by scanning
    for the name equal to its serial (D3); it is ready once Device Information is read and replies
-   (indications on From Printer Data) are on, within `connectReady`. A device whose manufacturer
-   isn't "Zebra Technologies" or that lacks the parser service is refused (`BluetoothNotZebra`), as
-   is one whose serial isn't the expected one (`BluetoothSerialMismatch`). A link that is up serves
-   every call for its serial, whichever identifier the call carries.
+   (indications on From Printer Data) are on, within `connectReady` counted from the connect (D7's
+   10 s: a search for the serial has its own `connectReady`, and a printer heard late in it gets a
+   fresh one for the connect). A device whose manufacturer isn't "Zebra Technologies" or that lacks
+   the parser service is refused (`BluetoothNotZebra`), as is one whose serial isn't the expected
+   one (`BluetoothSerialMismatch`). A link that is up serves every call for its serial, whichever
+   identifier the call carries.
  - A first connect that fails (`didFailToConnect`, or no link within `connectReady`) fails at once:
    `BluetoothPairingLost` for CBError 14 / 15 (D10), else `PrinterUnreachable`. A link that
    connected and dropped before Ready is retried at most `reconnectTries` times, `reconnectSpacing`
@@ -113,6 +134,8 @@ struct BluetoothTarget: Equatable, Sendable {
 final class ZebraBluetooth {
     private(set) var availability: BluetoothAvailability = .unknown
     private(set) var link = BluetoothLinkInfo()
+    /// Why the last screen's scan ended.
+    @ObservationIgnored private(set) var lastScanEnd: BluetoothScanEnd?
 
     @ObservationIgnored private let client: any BluetoothCentralClient
     @ObservationIgnored private let timeouts: ZebraBluetoothTimeouts
@@ -183,11 +206,13 @@ final class ZebraBluetooth {
     }
 
     /// Every named device nearby, strongest first, refreshed as the scan hears them. The stream
-    /// ends after `scanDuration`, on `stopScan()`, when a new scan starts, when Bluetooth goes
-    /// away, or when a connect, write or query starts (a scan shares the radio with the link).
+    /// ends after `scanDuration` of scanning (counted from when Bluetooth is ready and the radio
+    /// scans, so the first scan isn't spent behind iOS's permission prompt), on `stopScan()`, when
+    /// a new scan starts, when Bluetooth goes away, on `close()`, or when a connect, write or query
+    /// starts (a scan shares the radio with the link). `lastScanEnd` says which.
     func scan() -> AsyncStream<[FoundBluetoothPrinter]> {
         start()
-        endUiScan()
+        endUiScan(.replaced)
         nextScanId += 1
         let id = nextScanId
         let (stream, continuation) = AsyncStream.makeStream(of: [FoundBluetoothPrinter].self, bufferingPolicy: .bufferingNewest(1))
@@ -195,16 +220,12 @@ final class ZebraBluetooth {
             guard let self else { return }
             Task { @MainActor in self.uiScanAbandoned(id) }
         }
-        var scan = UiScan(id: id, continuation: continuation)
-        scan.timer = after(timeouts.scanDuration) { [weak self] in
-            if self?.uiScan?.id == id { self?.stopScan() }
-        }
-        uiScan = scan
-        if Self.isRefusal(availability) { endUiScan() } else { updateScanning() }
+        uiScan = UiScan(id: id, continuation: continuation)
+        if Self.isRefusal(availability) { endUiScan(.refused) } else { updateScanning() }
         return stream
     }
 
-    func stopScan() { endUiScan() }
+    func stopScan() { endUiScan(.stopped) }
 
     /// Connects to the printer (by identifier, else by serial), or returns the link already up to
     /// it. Throws `BluetoothUnavailable`, `BluetoothPrinterNotFound`, `BluetoothNotZebra`,
@@ -219,7 +240,7 @@ final class ZebraBluetooth {
     /// so does every call already waiting for its turn (none of them reconnects).
     func close() {
         closes += 1
-        endUiScan()
+        endUiScan(.closed)
         let error = PrinterUnreachable(host: host)
         switch phase {
         case .idle: break
@@ -237,7 +258,7 @@ final class ZebraBluetooth {
         try Task.checkCancellation()
         try await withTurn(host: target.serial) {
             _ = try await ensureReady(target)
-            endUiScan()
+            endUiScan(.interrupted)
             try await send(parts.reduce(into: Data()) { $0.append($1) }, progress: progress)
         }
     }
@@ -249,7 +270,7 @@ final class ZebraBluetooth {
         try Task.checkCancellation()
         return try await withTurn(host: target.serial) {
             _ = try await ensureReady(target)
-            endUiScan()
+            endUiScan(.interrupted)
             try await drain()
             rx = Data()
             collecting = true
@@ -328,7 +349,7 @@ final class ZebraBluetooth {
     }
 
     private func connectTo(_ found: any BluetoothPeripheral) {
-        endUiScan()
+        endUiScan(.interrupted)
         peripheral = found
         if target.serial == nil, let name = found.name { host = name }
         pendingServices = []
@@ -657,10 +678,25 @@ final class ZebraBluetooth {
             centralScanning = false
             central.stopScan()
         }
+        startScanClock()
+    }
+
+    /// A screen's scan runs `scanDuration` from when Bluetooth is ready and the radio scans for it,
+    /// not from the tap (the first scan waits behind iOS's permission prompt).
+    private func startScanClock() {
+        guard availability == .ready, centralScanning, var scan = uiScan, scan.timer == nil else { return }
+        let id = scan.id
+        scan.timer = after(timeouts.scanDuration) { [weak self] in
+            if self?.uiScan?.id == id { self?.endUiScan(.finished) }
+        }
+        uiScan = scan
     }
 
     private func discovered(_ p: any BluetoothPeripheral, name: String?, rssi: Int, advertisesZebra: Bool) {
         if phase == .finding, let serial = target.serial, let name, Self.sameSerial(name, serial) {
+            // The connect gets its own `connectReady` from the sighting: D7's 10 s count from the
+            // connect, and the search kept its own 10 s bound until now.
+            armDeadline()
             connectTo(p)
         }
         guard var scan = uiScan, let name, !name.isEmpty else { return }
@@ -683,10 +719,11 @@ final class ZebraBluetooth {
         uiScan = scan
     }
 
-    private func endUiScan() {
+    private func endUiScan(_ why: BluetoothScanEnd) {
         guard let scan = uiScan else { return }
         uiScan = nil
         scan.timer?.cancel()
+        lastScanEnd = why
         if scan.unpublished { scan.continuation.yield(Self.sorted(scan.seen)) }
         scan.continuation.finish()
         updateScanning()
@@ -751,7 +788,14 @@ final class ZebraBluetooth {
             return
         }
         centralScanning = false // CoreBluetooth ends scans and links itself
-        if Self.isRefusal(availability) { endUiScan() } // through a reset, a scan keeps waiting
+        if Self.isRefusal(availability) {
+            endUiScan(.refused)
+        } else if var scan = uiScan {
+            // Through a reset a scan keeps waiting, and its clock starts over once Bluetooth is back.
+            scan.timer?.cancel()
+            scan.timer = nil
+            uiScan = scan
+        }
         let error = BluetoothUnavailable(host: host, availability: availability)
         switch phase {
         case .idle: break

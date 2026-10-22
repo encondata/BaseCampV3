@@ -223,7 +223,9 @@ private struct NoBluetoothSerial: Error {}
  offsets and peel/tear. Choosing a printer saves it; the label builder rebuilds by itself when its
  DPI changes, and offsets and peel never rebuild (they apply at send time).
 
- Bluetooth (D9–D11): the first Bluetooth scan asks iOS for permission. Picking a printer from the
+ Bluetooth (D4, D9–D11): the first Bluetooth scan asks iOS for permission. Opening the screen with
+ a saved Bluetooth printer starts its link in the background (nothing waits for it, nothing is
+ checked), so the first check or test label needn't wait for the connect. Picking a printer from the
  list connects to it by the iPad's identifier for it, asks `~HI` for its model and DPI, saves it by
  its serial (Device Information's, else its Bluetooth name) and checks it. Bluetooth off or not
  allowed says so (Open Settings for not allowed); a printer that forgot this iPad gets the Forget
@@ -297,10 +299,8 @@ final class PrinterSetupViewModel {
     @ObservationIgnored private var bluetoothScanTask: Task<Void, Never>?
     /// Bumped by each Bluetooth scan: only the latest one writes when it ends.
     @ObservationIgnored private var bluetoothScanRun = 0
-    /// When the Bluetooth scan started, and whether Stop ended it: only a scan that ran its full
-    /// length or was stopped says it found no Zebra.
-    @ObservationIgnored private var bluetoothScanStarted = ContinuousClock.now
-    @ObservationIgnored private var bluetoothStopTapped = false
+    /// The background connect to the saved Bluetooth printer that opening the screen starts (D4).
+    @ObservationIgnored private var linkTask: Task<Void, Never>?
     /// What Connect (beside the pairing-lost steps) tries again.
     @ObservationIgnored private var pairingRetry: PairingRetry?
     @ObservationIgnored private var chooseTask: Task<Void, Never>?
@@ -369,8 +369,58 @@ final class PrinterSetupViewModel {
         wakeRescan()
     }
 
-    /// The screen is showing (again): the operator's actions work.
-    func open() { closed = false }
+    /// The screen is showing (again): the operator's actions work, and a saved Bluetooth printer's
+    /// link starts in the background (`connectSavedPrinter`). Returns that connect (tests await it).
+    @discardableResult func open() -> Task<Void, Never>? {
+        closed = false
+        return connectSavedPrinter()
+    }
+
+    /// D4: connects to the saved Bluetooth printer in the background, so the first check or test
+    /// label needn't wait for the link (one connect at a time; a network printer starts nothing).
+    /// Nothing waits for it and nothing is checked. A refusal the crew fixes on the iPad shows in
+    /// the screen's Bluetooth messages: a printer that forgot this iPad gets the steps, with Connect
+    /// (which checks it); Bluetooth off or not allowed says so (Open Settings for not allowed). Any
+    /// other failure (the printer off) says nothing: a check or test label will.
+    @discardableResult private func connectSavedPrinter() -> Task<Void, Never>? {
+        if let linkTask { return linkTask }
+        guard case .bluetooth(let serial, let peripheralId)? = settingsStore.current().printer?.connection else { return nil }
+        let bluetooth = self.bluetooth
+        let task = Task { [weak self] in
+            var failure: Error?
+            do {
+                _ = try await bluetooth.connect(peripheralId: peripheralId, serial: serial)
+            } catch {
+                failure = error
+            }
+            self?.linkConnected(failure)
+        }
+        linkTask = task
+        return task
+    }
+
+    private func linkConnected(_ failure: Error?) {
+        linkTask = nil
+        guard !closed else { return }
+        // What an earlier try said about Bluetooth no longer holds: this one says its own.
+        if linkRefusalShowing {
+            ui.bluetoothMessage = nil
+            ui.bluetoothUnavailable = nil
+        }
+        guard let failure else {
+            // Up: the saved printer no longer says it forgot this iPad.
+            if case .check? = pairingRetry { clearPairingLost() }
+            return
+        }
+        guard let text = noteBluetoothRefusal(failure, retry: .check) else { return }
+        // Off or not allowed: said here unless a Bluetooth scan's own message is showing.
+        if !(bluetoothRefusal(failure) is BluetoothPairingLost) && ui.findMode != .bluetooth { ui.bluetoothMessage = text }
+    }
+
+    /// The link refusal from opening the screen is showing (not a Bluetooth scan's message).
+    private var linkRefusalShowing: Bool {
+        ui.findMode == nil && ui.bluetoothMessage != nil && ui.bluetoothUnavailable != nil
+    }
 
     // MARK: Choosing a printer
 
@@ -471,8 +521,8 @@ final class PrinterSetupViewModel {
     /// Every scene phase, the first included (`active` is `.active`). Coming back to the front
     /// runs a denied scan's waiting rescan, or, with the denied message showing, scans once more
     /// (back from Settings). The same for Bluetooth: with Bluetooth off or not allowed showing,
-    /// coming back (from Settings or Control Center) scans for Bluetooth printers once more.
-    /// Nothing else starts here.
+    /// coming back (from Settings or Control Center) scans for Bluetooth printers once more, or,
+    /// when the saved printer's link said so, connects to it once more. Nothing else starts here.
     func scenePhaseChanged(active: Bool) {
         let cameBack = active && !sceneActive
         sceneActive = active
@@ -483,6 +533,8 @@ final class PrinterSetupViewModel {
             startScan(retryDenied: false)
         } else if ui.findMode == .bluetooth && ui.bluetoothUnavailable != nil && !ui.bluetoothScanning {
             startBluetoothScan()
+        } else if linkRefusalShowing {
+            connectSavedPrinter()
         }
     }
 
@@ -502,7 +554,6 @@ final class PrinterSetupViewModel {
 
     /// Stop: the scan ends, and what it heard stays listed.
     func stopBluetoothScan() {
-        if ui.bluetoothScanning { bluetoothStopTapped = true }
         bluetooth.stopScan()
     }
 
@@ -515,15 +566,14 @@ final class PrinterSetupViewModel {
         ui.bluetoothMessage = nil
         ui.bluetoothUnavailable = nil
         clearPairingLost()
-        bluetoothScanStarted = now()
-        bluetoothStopTapped = false
         let heard = bluetooth.scan()
         bluetoothScanTask = Task { await self.runBluetoothScan(heard, run: run) }
     }
 
     /// Lists what the scan hears until it ends (30 s, Stop, Bluetooth refused, or another Bluetooth
     /// call taking the radio), then says why nothing is listed: no Zebra heard only after its full
-    /// 30 s or Stop. One stopped by the screen (another mode, a choice, closing) says nothing.
+    /// 30 s of a ready Bluetooth (not counting the wait behind iOS's permission prompt) or Stop
+    /// (`lastScanEnd`). One stopped by the screen (another mode, a choice, closing) says nothing.
     private func runBluetoothScan(_ heard: AsyncStream<[FoundBluetoothPrinter]>, run: Int) async {
         for await list in heard where run == bluetoothScanRun { ui.bluetoothFound = list }
         guard run == bluetoothScanRun else { return }
@@ -533,8 +583,7 @@ final class PrinterSetupViewModel {
         if let text = bluetoothUnavailableText(availability) {
             ui.bluetoothUnavailable = availability
             ui.bluetoothMessage = text
-        } else if ui.bluetoothZebras.isEmpty
-                    && (bluetoothStopTapped || now() - bluetoothScanStarted >= .seconds(ZebraBluetoothSpec.scanDuration)) {
+        } else if ui.bluetoothZebras.isEmpty && (bluetooth.lastScanEnd == .finished || bluetooth.lastScanEnd == .stopped) {
             ui.bluetoothMessage = NO_BLUETOOTH_PRINTERS_TEXT
         }
     }
@@ -719,6 +768,8 @@ final class PrinterSetupViewModel {
         ui.fontFix = nil
         ui.damagedFonts = []
         ui.peeler = nil
+        // The check says Bluetooth's state in its own row: the link's message from opening goes.
+        if linkRefusalShowing { ui.bluetoothMessage = nil }
         ui.bluetoothUnavailable = nil
         clearPairingLost()
         if !keepFontMessage {

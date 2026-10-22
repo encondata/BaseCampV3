@@ -1500,12 +1500,18 @@ final class PrinterSetupViewModelTests {
         bluetooth.endScanByItself()
         await eventually("ended") { !vm.ui.bluetoothScanning }
         #expect(vm.ui.bluetoothMessage == nil)
+        // The same after a long wait behind iOS's Bluetooth prompt (the 30 s count only once
+        // Bluetooth is ready, so this scan didn't run its length).
+        vm.scanBluetooth()
+        clock.advance(.seconds(40))
+        bluetooth.endScanByItself()
+        await eventually("ended") { !vm.ui.bluetoothScanning }
+        #expect(vm.ui.bluetoothMessage == nil)
         // Its full 30 s with no Zebra heard: says so.
         vm.scanBluetooth()
         bluetooth.hear([headphones])
         await eventually("heard") { vm.ui.bluetoothFound == [headphones] }
-        clock.advance(.seconds(30))
-        bluetooth.endScanByItself()
+        bluetooth.finishScan()
         await eventually("ended") { !vm.ui.bluetoothScanning }
         #expect(vm.ui.bluetoothMessage == "No Zebra printers found nearby.")
 
@@ -1523,7 +1529,107 @@ final class PrinterSetupViewModelTests {
         vm.close()
         await eventually("stopped by leaving") { !bluetooth.scanning && !vm.ui.bluetoothScanning }
         #expect(vm.ui.bluetoothMessage == nil)
-        #expect(bluetooth.scans == 7)
+        #expect(bluetooth.scans == 8)
+    }
+
+    /// D4: opening Printer Setup with a saved Bluetooth printer starts the link in the background
+    /// (once at a time), so the first check or test label needn't wait for it. Nothing waits for
+    /// it, nothing is checked, and a network printer starts nothing.
+    @Test func openingWithASavedBluetoothPrinterConnectsInTheBackground() async throws {
+        try await start()
+        let network = vm()
+        #expect(network.open() == nil)
+        #expect(bluetooth.connects.isEmpty)
+
+        settings.setPrinter(bluetoothSaved)
+        guard case .bluetooth(_, let id?) = bluetoothSaved.connection else { Issue.record("no identifier"); return }
+        bluetooth.info[id] = zd421Info(id)
+        bluetooth.connectHold = true
+        let vm = vm()
+        let connecting = try #require(vm.open())
+        #expect(await waitUntil { bluetooth.connects.count == 1 })
+        #expect(bluetooth.connects == [BluetoothTarget(peripheralId: id, serial: ZD421_SERIAL)])
+        // Never blocking: the screen works meanwhile, and opening again joins the same connect.
+        vm.enterIp()
+        #expect(vm.ui.findMode == .ip)
+        #expect(vm.open() != nil)
+        bluetooth.connectHold = false
+        await connecting.value
+        #expect(bluetooth.link.connected)
+        #expect(bluetooth.connects.count == 1)
+        #expect(vm.ui.checks.isEmpty)
+        #expect(vm.ui.pairingLost == nil)
+        #expect(vm.ui.bluetoothMessage == nil)
+        #expect(zebras[ZD421_SERIAL] == nil)
+    }
+
+    /// A refusal on open shows in Printer Setup's own Bluetooth messages: a printer that forgot this
+    /// iPad gets the steps with Connect (which checks it); Bluetooth not allowed says so with Open
+    /// Settings; Bluetooth off says so. Any other failure (the printer off) says nothing until a
+    /// check or test label does. Back in the app with Bluetooth refused, it connects again.
+    @Test func aRefusalOnOpenShowsInPrinterSetup() async throws {
+        try await start()
+        await awaitPick203()
+        settings.setPrinter(bluetoothSaved)
+        guard case .bluetooth(_, let id?) = bluetoothSaved.connection else { Issue.record("no identifier"); return }
+        bluetooth.info[id] = zd421Info(id)
+
+        bluetooth.connectError = BluetoothPairingLost(host: ZD421_SERIAL)
+        let forgotten = vm()
+        await forgotten.open()?.value
+        #expect(forgotten.ui.pairingLost == pairingLostText(serial: ZD421_SERIAL))
+        #expect(!forgotten.ui.offersBluetoothSettings)
+        await checked(forgotten) { forgotten.connectAgain() }
+        #expect(row(forgotten, .answers)?.state == .ok)
+        #expect(forgotten.ui.pairingLost == nil)
+
+        bluetooth.connectError = BluetoothUnavailable(host: ZD421_SERIAL, availability: .unauthorized)
+        let denied = vm()
+        denied.scenePhaseChanged(active: true)
+        await denied.open()?.value
+        #expect(denied.ui.bluetoothMessage == BLUETOOTH_DENIED_TEXT)
+        #expect(denied.ui.bluetoothUnavailable == .unauthorized)
+        #expect(denied.ui.offersBluetoothSettings)
+        #expect(denied.ui.pairingLost == nil)
+        // Allowed in Settings, back in the app: connected, and the message goes.
+        bluetooth.connectError = nil
+        let before = bluetooth.connects.count
+        denied.scenePhaseChanged(active: false)
+        denied.scenePhaseChanged(active: true)
+        await eventually("connected again") { bluetooth.connects.count == before + 1 && denied.ui.bluetoothMessage == nil }
+        #expect(denied.ui.bluetoothUnavailable == nil)
+        #expect(!denied.ui.offersBluetoothSettings)
+
+        bluetooth.close()
+        bluetooth.connectError = BluetoothUnavailable(host: ZD421_SERIAL, availability: .poweredOff)
+        let off = vm()
+        await off.open()?.value
+        #expect(off.ui.bluetoothMessage == BLUETOOTH_OFF_TEXT)
+        #expect(off.ui.bluetoothError)
+        #expect(!off.ui.offersBluetoothSettings)
+        // A check says it in its own row instead.
+        await checked(off) { off.checkAgain() }
+        #expect(off.ui.bluetoothMessage == nil)
+
+        bluetooth.connectError = PrinterUnreachable(host: ZD421_SERIAL)
+        let away = vm()
+        await away.open()?.value
+        #expect(away.ui.bluetoothMessage == nil)
+        #expect(away.ui.pairingLost == nil)
+        #expect(away.ui.chooseError == nil)
+
+        // Back in the app with Bluetooth on again but the printer away: the old message goes.
+        bluetooth.connectError = BluetoothUnavailable(host: ZD421_SERIAL, availability: .poweredOff)
+        let later = vm()
+        later.scenePhaseChanged(active: true)
+        await later.open()?.value
+        #expect(later.ui.bluetoothMessage == BLUETOOTH_OFF_TEXT)
+        bluetooth.connectError = PrinterUnreachable(host: ZD421_SERIAL)
+        let tries = bluetooth.connects.count
+        later.scenePhaseChanged(active: false)
+        later.scenePhaseChanged(active: true)
+        await eventually("tried again") { bluetooth.connects.count == tries + 1 && later.ui.bluetoothMessage == nil }
+        #expect(later.ui.bluetoothUnavailable == nil)
     }
 
     /// Signal strength in words, with the number.

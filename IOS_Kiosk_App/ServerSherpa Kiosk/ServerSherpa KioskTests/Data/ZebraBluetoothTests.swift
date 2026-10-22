@@ -637,6 +637,23 @@ struct ZebraBluetoothTests {
         #expect(!bluetooth.link.connected)
     }
 
+    /// iOS forgot the identifier and the printer is heard late in the search for its serial: the
+    /// connect itself still gets the full `connectReady` from the sighting (D7's 10 s count from
+    /// the connect), and stays bounded by it.
+    @Test func aPrinterFoundLateGetsTheFullConnectTime() async throws {
+        let (bluetooth, client, sleeper) = make()
+        let p = FakePeripheral(serial: serial)
+        p.connectBehavior = .silent
+        let connecting = Task { try await bluetooth.connect(peripheralId: UUID(), serial: serial) }
+        try #require(await waitUntil { client.central.scanning && sleeper.pending(connectReady) == 1 })
+        client.central.advertise(p, rssi: -60)
+        try #require(await waitUntil { client.central.connects == [p.identifier] })
+        #expect(await waitUntil { sleeper.started(connectReady) == 2 && sleeper.pending(connectReady) == 1 })
+        sleeper.fire(connectReady)
+        await #expect(throws: PrinterUnreachable.self) { try await finish(connecting) }
+        #expect(client.central.cancels == [p.identifier])
+    }
+
     // MARK: Scanning
 
     @Test func scanListsNamedDevicesStrongestFirst() async throws {
@@ -672,6 +689,78 @@ struct ZebraBluetoothTests {
         bluetooth.stopScan()
         try await finish(stopped)
         #expect(!client.central.scanning)
+    }
+
+    /// D9's 30 s scan counts once Bluetooth is ready and the radio scans: the first scan on a new
+    /// iPad waits behind iOS's permission prompt without losing any of it, and a reset mid-scan
+    /// starts the 30 s over once Bluetooth is back.
+    @Test func theScanClockStartsOnceBluetoothIsReady() async throws {
+        let (bluetooth, client, sleeper) = make(state: .unknown)
+        let latest = Latest()
+        let stream = bluetooth.scan()
+        let listening = Task {
+            for await list in stream { latest.list = list }
+            latest.ended = true
+        }
+        try #require(await waitUntil { client.made == 1 })
+        for _ in 0..<10 { await Task.yield() }
+        #expect(sleeper.started(scanFor) == 0) // the prompt is still up
+        #expect(!client.central.scanning)
+        client.central.report(.poweredOn)
+        try #require(await waitUntil { client.central.scanning })
+        #expect(sleeper.started(scanFor) == 1)
+
+        client.central.report(.resetting)
+        try #require(await waitUntil { sleeper.pending(scanFor) == 0 })
+        #expect(!latest.ended)
+        client.central.report(.poweredOn)
+        try #require(await waitUntil { sleeper.started(scanFor) == 2 && sleeper.pending(scanFor) == 1 })
+        sleeper.fire(scanFor)
+        try await finish(listening)
+        #expect(latest.ended)
+        #expect(bluetooth.lastScanEnd == .finished)
+    }
+
+    /// How a scan ended, for the screens' words: its full 30 s, Stop, a connect, write or query
+    /// taking the radio, `close()`, Bluetooth refused, or a newer scan.
+    @Test func theScanSaysHowItEnded() async throws {
+        let (bluetooth, client, _) = make()
+        let p = FakePeripheral(serial: serial)
+        client.central.known = [p]
+        let zebra = try transport(printer(p), bluetooth)
+
+        var stream = bluetooth.scan()
+        var listening = Task { for await _ in stream {} }
+        try #require(await waitUntil { client.central.scanning })
+        bluetooth.stopScan()
+        try await finish(listening)
+        #expect(bluetooth.lastScanEnd == .stopped)
+
+        // A connect (the label's own) takes the radio, and so does a write on a link that is up.
+        for _ in 0..<2 {
+            stream = bluetooth.scan()
+            listening = Task { for await _ in stream {} }
+            try #require(await waitUntil { client.central.scanning })
+            try await within { try await zebra.send("^XA^XZ") }
+            try await finish(listening)
+            #expect(bluetooth.lastScanEnd == .interrupted)
+        }
+
+        stream = bluetooth.scan()
+        listening = Task { for await _ in stream {} }
+        try #require(await waitUntil { client.central.scanning })
+        let newer = bluetooth.scan()
+        let listeningNewer = Task { for await _ in newer {} }
+        try await finish(listening)
+        #expect(bluetooth.lastScanEnd == .replaced)
+        bluetooth.close()
+        try await finish(listeningNewer)
+        #expect(bluetooth.lastScanEnd == .closed)
+
+        let (off, _, _) = make(state: .poweredOff)
+        let refused = off.scan()
+        try await finish(Task { for await _ in refused {} })
+        #expect(off.lastScanEnd == .refused)
     }
 }
 

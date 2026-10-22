@@ -14,6 +14,8 @@ final class FakeBluetoothPrinting: BluetoothPrinting {
     var connectError: Error?
     /// While set, connect() waits (after recording the call).
     var connectHold = false
+    /// How the last scan ended (`ZebraBluetooth`'s reasons).
+    private(set) var lastScanEnd: BluetoothScanEnd?
     private(set) var scans = 0
     private(set) var connects: [BluetoothTarget] = []
     private(set) var closes = 0
@@ -25,7 +27,7 @@ final class FakeBluetoothPrinting: BluetoothPrinting {
 
     func scan() -> AsyncStream<[FoundBluetoothPrinter]> {
         scans += 1
-        endScan()
+        endScan(.replaced)
         let id = scans
         let (stream, continuation) = AsyncStream.makeStream(of: [FoundBluetoothPrinter].self)
         // The screen stopped listening (it left, or picked another way to find a printer).
@@ -35,6 +37,7 @@ final class FakeBluetoothPrinting: BluetoothPrinting {
         }
         // Bluetooth off, not allowed or missing: the scan ends at once (`ZebraBluetooth`'s rule).
         if [.poweredOff, .unauthorized, .unsupported].contains(availability) {
+            lastScanEnd = .refused
             continuation.finish()
         } else {
             feed = continuation
@@ -46,14 +49,17 @@ final class FakeBluetoothPrinting: BluetoothPrinting {
     /// What the scan heard so far, strongest first.
     func hear(_ list: [FoundBluetoothPrinter]) { feed?.yield(list) }
 
-    func stopScan() { endScan() }
+    func stopScan() { endScan(.stopped) }
 
-    /// The scan ends without Stop: its 30 s ran out, or another Bluetooth call took the radio.
-    func endScanByItself() { endScan() }
+    /// The scan's 30 s (counted once Bluetooth was ready) ran out.
+    func finishScan() { endScan(.finished) }
+
+    /// The scan ends without Stop: another Bluetooth call took the radio, say.
+    func endScanByItself(_ why: BluetoothScanEnd = .interrupted) { endScan(why) }
 
     func connect(peripheralId: UUID?, serial: String?) async throws -> BluetoothPrinterInfo {
         connects.append(BluetoothTarget(peripheralId: peripheralId, serial: serial))
-        endScan()
+        endScan(.interrupted)
         while connectHold { try await Task.sleep(for: .milliseconds(2)) }
         if let connectError { throw connectError }
         guard let id = peripheralId, let found = info[id] else { throw PrinterUnreachable(host: serial ?? "") }
@@ -63,7 +69,7 @@ final class FakeBluetoothPrinting: BluetoothPrinting {
 
     func close() {
         closes += 1
-        endScan()
+        endScan(.closed)
         link.connected = false
     }
 
@@ -72,9 +78,11 @@ final class FakeBluetoothPrinting: BluetoothPrinting {
         link = BluetoothLinkInfo(connected: true, info: printer, chunkBytes: 244)
     }
 
-    private func endScan() {
-        feed?.finish()
-        feed = nil
+    private func endScan(_ why: BluetoothScanEnd) {
+        guard let feed else { return }
+        lastScanEnd = why
+        feed.finish()
+        self.feed = nil
     }
 
     private func abandoned(_ id: Int) {

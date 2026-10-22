@@ -77,6 +77,8 @@ private struct PrinterSetupBody: View {
                 if ui.findMode == .scan { scanResults(ui, printer) }
                 if ui.findMode == .ip { ipEntry(ui) }
                 if ui.findMode == .bluetooth { bluetoothResults(ui, printer) }
+                // Opening the screen connected the saved Bluetooth printer, and Bluetooth refused.
+                if ui.findMode == nil { KioskToast(text: ui.bluetoothMessage, error: ui.bluetoothError) }
                 KioskToast(text: ui.chooseError, error: true)
                 if let steps = ui.pairingLost {
                     // The printer forgot this iPad: forget it in Settings too, then Connect. No Open
