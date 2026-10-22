@@ -49,6 +49,8 @@ import com.serversherpa.kiosk.core.devices.RegistrationState
 import com.serversherpa.kiosk.core.features.featureForRoute
 import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.data.identity.KioskIdentity
+import com.serversherpa.kiosk.nettest.NetTestChip // INTERNET-TEST
+import com.serversherpa.kiosk.nettest.netTestFootValue // INTERNET-TEST
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.theme.ChipTone
@@ -126,6 +128,7 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
                 }
             }
             if (authed != null) {
+                NetTestChip(onClick = { nav.navigate(Routes.settings("developer")) }) // INTERNET-TEST
                 // The way out doubles as the status light: its outline is the kiosk's
                 // registration state (green registered, amber expiring, red expired,
                 // slate unregistered), so the bar needs no separate chip for it.
@@ -150,6 +153,7 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
             setup?.let { FootItem("Move", it.initiativeName); FootItem("Site", it.siteName); FootItem("Scan", it.scanLabel) }
                 ?: authed?.kioskMove?.let { FootItem("Move", it.name) }
             if (devMode) FootItem("Dev mode", "On", valueColor = c.accent)
+            netTestFootValue()?.let { FootItem("Net test", it, valueColor = c.accent) } // INTERNET-TEST
         }
     }
 
