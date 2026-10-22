@@ -115,6 +115,8 @@ let currentRun = 0;
  * so only the newest run's outcome is ever visible.
  */
 export async function runSync(initiativeId: string, initiativeName: string): Promise<void> {
+  // A Time Clock station set up without a move has nothing to download.
+  if (initiativeId === '') return;
   const myRun = ++currentRun;
   const previous = status;
   if (myRun !== currentRun) return;

@@ -73,8 +73,18 @@ class KioskPrefsTest {
         val raw = """{"initiativeId":"i","initiativeName":"Move","siteId":"s","siteName":"Site","siteRole":"source","scanStatus":"pre_stage","scanLabel":"Pre-stage"}"""
         androidx.datastore.preferences.core.PreferenceDataStoreFactory.create(scope = scope) { File(tmp.root, "old.preferences_pb") }.let { store ->
             store.edit { it[stringPreferencesKey("ss.kiosk.setup")] = raw }
-            assertEquals("top", KioskPrefs(store).setupSelection.first()?.labelKind)
+            val sel = KioskPrefs(store).setupSelection.first()
+            assertEquals("top", sel?.labelKind)
+            // and as a regular kiosk, with every move field as saved
+            assertNull(sel?.stationType); assertEquals("i", sel?.initiativeId); assertEquals("pre_stage", sel?.scanStatus)
         }
+    }
+
+    @Test fun aTimeclockStationSelectionRoundTrips() = runBlocking {
+        val sel = KioskSetupSelection(siteId = "s", siteName = "Dallas", siteRole = "other", stationType = "timeclock")
+        prefs.setSetupSelection(sel)
+        val back = prefs.setupSelection.first()
+        assertEquals(sel, back); assertNull(back?.initiativeId); assertNull(back?.scanStatus)
     }
 
     @Test fun labelKindRoundTripsInTheSelection() = runBlocking {

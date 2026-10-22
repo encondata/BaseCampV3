@@ -166,6 +166,33 @@ struct LoginQuietLink: View {
     }
 }
 
+/// "Back to the time clock" (web `.kiosk-login-timeclock`): a Time Clock station's way back
+/// from sign-in to its Welcome screen.
+struct LoginBackToTimeclockButton: View {
+    let f: CGFloat
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10 * f) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 18 * f, weight: .semibold))
+                    .foregroundStyle(LoginTokens.orange)
+                Text("Back to the time clock")
+                    .font(KioskType.sans(20 * f, .semibold))
+                    .foregroundStyle(LoginTokens.ink)
+            }
+            .padding(.horizontal, 18 * f)
+            .frame(minHeight: max(44, 52 * f))
+            .background(Color.white.opacity(0.9), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(LoginTokens.line, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("login-back-to-timeclock")
+    }
+}
+
 /// The inline error line under the fields.
 struct LoginErrorText: View {
     let text: String?
@@ -219,12 +246,17 @@ struct LoginForm: View {
     @Bindable var vm: LoginViewModel
     let f: CGFloat
     let pair: PairViewModel
+    /// A Time Clock station's "Back to the time clock"; nil hides it.
+    var onBackToTimeclock: (() -> Void)? = nil
     @FocusState private var emailFocused: Bool
     @FocusState private var passwordFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             LoginBanners(status: vm.status, f: f)
+            if let onBackToTimeclock {
+                LoginBackToTimeclockButton(f: f, action: onBackToTimeclock).padding(.bottom, 18 * f)
+            }
             eyebrow
             Text("Sign in")
                 .font(KioskType.sans(62 * f, .heavy))

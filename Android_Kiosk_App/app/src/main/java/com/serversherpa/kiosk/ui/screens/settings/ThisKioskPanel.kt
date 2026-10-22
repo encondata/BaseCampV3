@@ -1,5 +1,6 @@
 package com.serversherpa.kiosk.ui.screens.settings
 
+import com.serversherpa.kiosk.ui.guards.LocalStationActivity
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -40,6 +41,8 @@ fun ThisKioskPanel() {
     var api by remember { mutableStateOf("") }
     var portal by remember { mutableStateOf("") }
     var nameError by remember { mutableStateOf<String?>(null) }
+    // Signed out at a Time Clock station, typing keeps the page from returning to Welcome.
+    val activity = LocalStationActivity.current
     var urlError by remember { mutableStateOf<String?>(null) }
     var saved by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(identity.name) { name = identity.name }
@@ -48,7 +51,7 @@ fun ThisKioskPanel() {
 
     Column {
         SettingsRow("Kiosk name", "What people see on their phone when they link with this kiosk. 1–80 characters.") {
-            OutlinedTextField(name, { name = it; nameError = null }, singleLine = true, isError = nameError != null, modifier = Modifier.fillMaxWidth().testTag("kiosk-name"))
+            OutlinedTextField(name, { name = it; nameError = null; activity() }, singleLine = true, isError = nameError != null, modifier = Modifier.fillMaxWidth().testTag("kiosk-name"))
             KioskToast(nameError, error = true)
             MiniButton("Save name", onClick = {
                 scope.launch {
@@ -60,14 +63,14 @@ fun ThisKioskPanel() {
         SettingsRow("Serial", "Generated once for this install; the portal's Kiosk Devices page lists it.") { Text(identity.serial, fontFamily = FragmentMono) }
         SettingsRow("Mode") { Text("Android", fontFamily = FragmentMono) }
         SettingsRow("API URL", "Where this kiosk talks to the portal. Must start with http:// or https://.") {
-            OutlinedTextField(api, { api = it; urlError = null }, singleLine = true, isError = urlError != null, modifier = Modifier.fillMaxWidth().testTag("api-url"))
-            OutlinedTextField(portal, { portal = it; urlError = null }, singleLine = true, label = { Text("Portal URL") }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+            OutlinedTextField(api, { api = it; urlError = null; activity() }, singleLine = true, isError = urlError != null, modifier = Modifier.fillMaxWidth().testTag("api-url"))
+            OutlinedTextField(portal, { portal = it; urlError = null; activity() }, singleLine = true, label = { Text("Portal URL") }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
             KioskToast(urlError, error = true)
             Row(Modifier.padding(top = 8.dp)) {
                 MiniButton("Save URLs", onClick = {
                     val a = KioskConfig.normalizeUrl(api); val p = KioskConfig.normalizeUrl(portal)
                     if (a == null || p == null) { urlError = "Enter full http:// or https:// origins." }
-                    else scope.launch { container.prefs.setApiUrl(a); container.prefs.setPortalUrl(p); saved = "URLs saved. Sign in again if the API changed." }
+                    else scope.launch { container.saveApiUrl(a); container.prefs.setPortalUrl(p); saved = "URLs saved. Sign in again if the API changed." }
                 })
             }
         }

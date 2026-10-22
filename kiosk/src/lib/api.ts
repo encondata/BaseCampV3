@@ -334,17 +334,20 @@ export interface SetupOptionScanType { key: string; label: string; color: string
 export interface SetupOptions {
   initiatives: SetupOptionInitiative[];
   scan_types: SetupOptionScanType[];
+  /** Every site, for a Time Clock station set up without a move. */
+  sites: SetupOptionSite[];
 }
 
 export interface KioskSetupResult {
   device_id: string;
-  initiative_id: string;
-  initiative_name: string;
-  site_id: string;
-  site_name: string;
-  site_role: 'source' | 'destination';
-  scan_status: string;
-  scan_status_label: string;
+  /** Null for a Time Clock station set up without a move, site, or scan type. */
+  initiative_id: string | null;
+  initiative_name: string | null;
+  site_id: string | null;
+  site_name: string | null;
+  site_role: 'source' | 'destination' | 'other' | null;
+  scan_status: string | null;
+  scan_status_label: string | null;
 }
 
 export async function getSetupOptions(): Promise<SetupOptions> {
@@ -354,10 +357,11 @@ export async function getSetupOptions(): Promise<SetupOptions> {
 
 /** `station_type` is sent only by a laptop (Kiosk Setup's first step); for
  *  `rfid` the edge adds the paired reader itself — the browser never sends
- *  reader details. */
+ *  reader details. A `timeclock` station may leave out the move, the site,
+ *  and the scan type. */
 export async function submitKioskSetup(body: {
-  serial: string; initiative_id: string; site_id: string; scan_status: string;
-  station_type?: 'label' | 'rfid';
+  serial: string; initiative_id: string | null; site_id: string | null; scan_status?: string;
+  station_type?: 'label' | 'rfid' | 'timeclock';
 }): Promise<KioskSetupResult> {
   const resp = await apiFetch('/kiosk/setup', {
     method: 'POST',
@@ -403,6 +407,10 @@ export interface KioskPersonRow {
   last_name: string;
   preferred_name: string | null;
   rfid_tag: string | null;
+  /** Badge UUID, matched by a scan of the printed badge. */
+  badge_uid?: string;
+  job_title?: string | null;
+  external_id?: string | null;
   is_worker: boolean;
   has_account: boolean;
 }
@@ -775,6 +783,8 @@ export interface KioskTimeclockPerson {
   preferred_name: string | null;
   avatar_url: string | null;
   rfid_tag: string | null;
+  job_title: string | null;
+  external_id: string | null;
 }
 
 /** The open entry, so the card can count up from `started_at` and name
@@ -802,13 +812,27 @@ export interface KioskTimeclockStatus {
   clocked_in: boolean;
   entry: KioskTimeclockEntry | null;
   last_entry: KioskTimeclockLastEntry | null;
+  /** Minutes worked today (the site's day, else the kiosk's, else UTC's),
+   *  open entry counted to now. */
+  today_minutes: number;
+  /** Today's entries, oldest first. */
+  today_entries: { clock_in_at: string; clock_out_at: string | null; minutes: number }[];
 }
 
 /** Is this person on the clock right now, and since when? 404
  *  `person_not_found` for someone the portal no longer has (or has
- *  archived) — a kiosk holding a stale local copy is the likely cause. */
-export async function fetchTimeclockStatus(personId: string): Promise<KioskTimeclockStatus> {
-  const resp = await apiFetch(`/kiosk/timeclock/${encodeURIComponent(personId)}`);
+ *  archived) — a kiosk holding a stale local copy is the likely cause.
+ *  `serial` names the kiosk so "today" is its site's day; `tz` (the
+ *  kiosk's own zone) is the day when the site has no zone. */
+export async function fetchTimeclockStatus(
+  personId: string, serial?: string, tz?: string,
+): Promise<KioskTimeclockStatus> {
+  const params = [
+    serial ? `serial=${encodeURIComponent(serial)}` : '',
+    tz ? `tz=${encodeURIComponent(tz)}` : '',
+  ].filter(Boolean);
+  const query = params.length ? `?${params.join('&')}` : '';
+  const resp = await apiFetch(`/kiosk/timeclock/${encodeURIComponent(personId)}${query}`);
   return jsonFrom<KioskTimeclockStatus>(resp);
 }
 
@@ -822,6 +846,8 @@ export async function fetchTimeclockStatus(personId: string): Promise<KioskTimec
 export async function postClockIn(body: {
   serial: string; person_id: string;
   site_id?: string | null; initiative_id?: string | null;
+  /** The kiosk's own zone, as for `fetchTimeclockStatus`. */
+  tz?: string;
 }): Promise<KioskTimeclockStatus> {
   const resp = await apiFetch('/kiosk/timeclock/clock-in', {
     method: 'POST',
@@ -835,7 +861,7 @@ export async function postClockIn(body: {
  *  the minutes worked. 409 `not_clocked_in` when there is none. No
  *  `at` either, for the same reason as `postClockIn`. */
 export async function postClockOut(body: {
-  serial: string; person_id: string;
+  serial: string; person_id: string; tz?: string;
 }): Promise<KioskTimeclockStatus> {
   const resp = await apiFetch('/kiosk/timeclock/clock-out', {
     method: 'POST',
@@ -1006,14 +1032,15 @@ export async function pairReader(body: {
  *  browser (D2): the setup answer's names plus, for an RFID station, the
  *  paired reader's summary. */
 export interface EdgeSetup {
-  initiative_id: string;
-  initiative_name: string;
-  site_id: string;
-  site_name: string;
-  site_role: 'source' | 'destination';
-  scan_status: string;
-  scan_status_label: string;
-  station_type: 'label' | 'rfid' | null;
+  /** The move, site, and scan fields are null only for a Time Clock station. */
+  initiative_id: string | null;
+  initiative_name: string | null;
+  site_id: string | null;
+  site_name: string | null;
+  site_role: 'source' | 'destination' | 'other' | null;
+  scan_status: string | null;
+  scan_status_label: string | null;
+  station_type: 'label' | 'rfid' | 'timeclock' | null;
   reader: { ip: string; serial: string; model: string; versions: Partial<ReaderVersions> } | null;
   /** A Label Station's saved printer settings; null until step 5 saves them. */
   label_station?: LabelStationSettings | null;

@@ -16,6 +16,8 @@ import com.serversherpa.kiosk.core.model.KioskScanBatchOut
 import com.serversherpa.kiosk.core.model.KioskSetupIn
 import com.serversherpa.kiosk.core.model.KioskSetupResult
 import com.serversherpa.kiosk.core.model.KioskSignOutIn
+import com.serversherpa.kiosk.core.model.KioskStationKeyIn
+import com.serversherpa.kiosk.core.model.KioskStationKeyOut
 import com.serversherpa.kiosk.core.model.KioskTimeclockStatus
 import com.serversherpa.kiosk.core.model.KioskTrucksSync
 import com.serversherpa.kiosk.core.model.LoginIn
@@ -31,20 +33,90 @@ import com.serversherpa.kiosk.core.model.SetupOptions
 import com.serversherpa.kiosk.core.model.SystemStatus
 import com.serversherpa.kiosk.data.config.KioskConfig
 import java.io.IOException
+import okhttp3.Dispatcher
 import java.net.URLEncoder
+import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+
+/**
+ * One call on [client], on OkHttp's own threads; a transport failure is ApiError(0, "network").
+ * Shared by [OkHttpKioskApi] and [OkHttpStationApi].
+ *
+ * Cancellable: cancelling the coroutine (a `withTimeoutOrNull` read deadline, a screen going
+ * away) cancels the HTTP call itself, which a blocking `execute()` inside `withContext(IO)`
+ * never did. The body is read on the callback thread before resuming, so the whole exchange is
+ * covered and callers parse it from memory without touching the network.
+ */
+internal suspend fun executeCall(client: OkHttpClient, request: Request): Response = suspendCancellableCoroutine { cont ->
+    val call = client.newCall(request)
+    cont.invokeOnCancellation { call.cancel() }
+    call.enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            // Already cancelled: the resume is ignored.
+            cont.resumeWithException(ApiError(0, "network"))
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            val buffered = try {
+                response.use { r ->
+                    val body = r.body
+                    r.newBuilder().body(body?.bytes()?.toResponseBody(body.contentType())).build()
+                }
+            } catch (e: Throwable) {
+                // Anything at all (an IOException, or an OutOfMemoryError in bytes()): resume once
+                // as a network failure rather than leave the caller waiting forever.
+                cont.resumeWithException(ApiError(0, "network"))
+                return
+            }
+            cont.resume(buffered) { _, value, _ -> value.close() }
+        }
+    })
+}
+
+/**
+ * The shared client's dispatcher. OkHttp's default allows 5 calls per host, so a few stuck
+ * heartbeat, outbox or sync calls could hold a punch in the queue for their whole 30 s read
+ * timeout; 16 leaves room for it. Every call this app makes goes to its one API host (presigned
+ * photo reads aside), so the overall cap matches.
+ */
+internal fun kioskDispatcher(): Dispatcher = Dispatcher().apply {
+    maxRequests = 16
+    maxRequestsPerHost = 16
+}
+
+/** Non-2xx → ApiError with detail.code (else unknown_error). Consumes the response. */
+internal fun apiErrorFrom(resp: Response): ApiError {
+    val text = try { resp.body?.string() } catch (e: Exception) { null }
+    var code = "unknown_error"
+    var detail: kotlinx.serialization.json.JsonElement? = null
+    if (!text.isNullOrBlank()) {
+        try {
+            val obj = KioskJson.parseToJsonElement(text).jsonObject
+            detail = obj["detail"]
+            code = (detail as? JsonObject)?.get("code")?.jsonPrimitive?.content ?: code
+        } catch (e: Exception) { /* non-JSON body */ }
+    }
+    return ApiError(resp.code, code, detail)
+}
+
+/** A query-string value, percent-encoded (spaces as %20). */
+internal fun q(value: String): String = URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 
 class OkHttpKioskApi(
     private val client: OkHttpClient,
@@ -61,30 +133,13 @@ class OkHttpKioskApi(
 
     private val emptyBody: RequestBody = ByteArray(0).toRequestBody(null)
 
-    private suspend fun execute(request: Request): Response = withContext(Dispatchers.IO) {
-        try {
-            client
-                .let(route) // INTERNET-TEST
-                .newCall(request).execute()
-        } catch (e: IOException) { throw ApiError(0, "network") }
-    }
+    private suspend fun execute(request: Request): Response = executeCall(client
+        .let(route) // INTERNET-TEST
+        , request)
 
     private suspend fun apiUrl(path: String): String = config.apiUrlNow() + path
 
-    /** Non-2xx → ApiError with detail.code (else unknown_error). Consumes the response. */
-    private fun errorFrom(resp: Response): ApiError {
-        val text = try { resp.body?.string() } catch (e: Exception) { null }
-        var code = "unknown_error"
-        var detail: kotlinx.serialization.json.JsonElement? = null
-        if (!text.isNullOrBlank()) {
-            try {
-                val obj = KioskJson.parseToJsonElement(text).jsonObject
-                detail = obj["detail"]
-                code = (detail as? JsonObject)?.get("code")?.jsonPrimitive?.content ?: code
-            } catch (e: Exception) { /* non-JSON body */ }
-        }
-        return ApiError(resp.code, code, detail)
-    }
+    private fun errorFrom(resp: Response): ApiError = apiErrorFrom(resp)
 
     private fun <T> parse(resp: Response, strategy: DeserializationStrategy<T>): T =
         KioskJson.decodeFromString(strategy, text(resp))
@@ -166,8 +221,6 @@ class OkHttpKioskApi(
 
     // ── setup & sync ────────────────────────────────────────────────
 
-    private fun q(value: String): String = URLEncoder.encode(value, "UTF-8").replace("+", "%20")
-
     override suspend fun setupOptions(): SetupOptions =
         parse(authed { url(apiUrl("/kiosk/setup-options")).get() }, SetupOptions.serializer())
 
@@ -215,12 +268,19 @@ class OkHttpKioskApi(
     override suspend fun postRfidEnroll(assetId: String, body: KioskRfidEnrollIn): KioskRfidEnroll =
         parse(authed { url(apiUrl("/kiosk/assets/${q(assetId)}/rfid")).post(jsonBody(KioskRfidEnrollIn.serializer(), body)) }, KioskRfidEnroll.serializer())
 
-    override suspend fun timeclockStatus(personId: String): KioskTimeclockStatus =
-        parse(authed { url(apiUrl("/kiosk/timeclock/${q(personId)}")).get() }, KioskTimeclockStatus.serializer())
+    override suspend fun timeclockStatus(personId: String, tz: String?): KioskTimeclockStatus {
+        val query = tz?.let { "?tz=${q(it)}" } ?: ""
+        return parse(authed { url(apiUrl("/kiosk/timeclock/${q(personId)}$query")).get() }, KioskTimeclockStatus.serializer())
+    }
 
     override suspend fun clockIn(body: ClockInIn): KioskTimeclockStatus =
         parse(authed { url(apiUrl("/kiosk/timeclock/clock-in")).post(jsonBody(ClockInIn.serializer(), body)) }, KioskTimeclockStatus.serializer())
 
     override suspend fun clockOut(body: ClockOutIn): KioskTimeclockStatus =
         parse(authed { url(apiUrl("/kiosk/timeclock/clock-out")).post(jsonBody(ClockOutIn.serializer(), body)) }, KioskTimeclockStatus.serializer())
+
+    // ── station key ─────────────────────────────────────────────────
+
+    override suspend fun issueStationKey(serial: String): String =
+        parse(authed { url(apiUrl("/kiosk/station-key")).post(jsonBody(KioskStationKeyIn.serializer(), KioskStationKeyIn(serial))) }, KioskStationKeyOut.serializer()).key
 }

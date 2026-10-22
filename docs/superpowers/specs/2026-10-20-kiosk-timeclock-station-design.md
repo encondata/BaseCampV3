@@ -341,3 +341,267 @@ above carry over.
 - Dark mode artwork and a dark time clock.
 - Offline punches through the edge outbox.
 - Optional limit of a station to the people on its move.
+
+## Implementation notes (phase 1)
+
+What shipped on branch `timeclock-station` (web/laptop only), and where it
+differs from the sections above. Where this section and §6 disagree, this
+section wins.
+
+### Display cookie instead of loopback
+
+§6 gated the signed-out edge routes on loopback requests. That was dropped:
+Docker hides the client address and `Host` can be spoofed, so a loopback
+check cannot be trusted. The edge uses a **display cookie** instead.
+
+- Name `ss_tc_display`. HttpOnly, SameSite=Strict, path `/edge/timeclock`,
+  max-age 400 days. `Secure` follows the edge's `secure_cookies` setting.
+- The edge stores only a hash of the token, never the token.
+- Only `POST /edge/timeclock/arm` sets it. Arming needs a signed-in session
+  that is **not** a move-password session (403 `move_locked`), and the laptop
+  must be a Time Clock station (409 `not_timeclock_station`) with a key (409
+  `station_key_missing` when the setup saved but the key issue failed). The
+  browser gets there through **Start Time Clock**. No rank rule was added.
+- Displays are revoked on every Kiosk Setup, every station-key clear or
+  replacement, Clear Setup and Wipe. A dropped key therefore needs a person
+  to arm the screen again. Start Time Clock does that after setup anyway.
+- Other LAN devices have no cookie, so they keep the normal signed-in kiosk.
+
+### A signed-in person never runs the station flow
+
+§6 said the flow punches through the key even when someone is signed in.
+That changed. The Time Clock tile on Home goes to **Start Time Clock**,
+which arms the display and signs the person out. A signed-in person never
+sees the station flow, so a worker never lands in Setup or Settings.
+
+- Kiosk Setup's Time Clock finish lands on Start Time Clock, not on Welcome,
+  because arming needs the signed-in session. Both cost one extra tap.
+- Start Time Clock's own sign-out makes the session anon while the page is
+  still on screen, so its guard sends anon to `/` (the station Welcome, or
+  sign-in on a kiosk that isn't armed), not to `/login`. A plain `/login`
+  redirect beat the page's own `navigate('/')` and stranded the station on
+  the sign-in page.
+- On an armed station, the login page shows **Back to the time clock**, and
+  returns there by itself after 60 seconds idle. Without it, the gear on
+  Welcome stranded the station on the sign-in page.
+
+### Station keys scoped by type
+
+A Time Clock key reaches only `/kiosk/station/timeclock/*` and
+`/kiosk/station/sync/people`. Every other station route answers 403
+`wrong_station_type` and **keeps the key**. The same check applies to Label
+and RFID keys against the Time Clock routes.
+
+- Station routes added: `GET /kiosk/station/timeclock/{person_id}?serial=`,
+  `POST /kiosk/station/timeclock/clock-in` and `clock-out`
+  (body `{serial, person_id}`).
+- `POST /kiosk/setup` accepts `timeclock` from any kiosk sub-type, with no
+  laptop check, since phases 2 and 3 need it. Keys are still issued to the
+  laptop only.
+- `setup-options.sites` is empty for move-password sessions, online and from
+  the edge's offline cache. Such a session cannot do a no-move setup, so
+  listing every site name would only leak; the wizard hides **No move** for it.
+- A move with no site is a 422 `bad_site` for `timeclock`, so the wizard
+  always sends a site when a move is picked.
+
+### Migration 0105
+
+`devices.station_type` CHECK now allows `timeclock`. The migration is
+numbered 0105. It was built on 0103 while 0104 (badge templates) was
+unmerged, and was re-pointed to chain on 0104 at the merge (442dd02e).
+
+### Edge routes
+
+All under `/edge/timeclock`. Punches go to the station routes under the key
+and the laptop's serial. The portal's status and JSON body come back as they
+are, so the browser sees `{"detail": {"code": ...}}`.
+
+- `GET /station`: public. `timeclock`, `ready`, `paused`, `armed`,
+  `key_missing`, `initiative_name`, `site_name`. Never the key or the serial.
+  `key_missing` is a Time Clock setup with no key; Welcome then says it is
+  waiting for its station key (a paused registration keeps its own notice).
+- `POST /arm`: described above. Answers 204.
+- `GET /people`: the cached people list (needs an armed display). 503
+  `people_not_synced` before the first sync.
+- `GET /status/{person_id}`, `POST /clock-in`, `POST /clock-out`: need an
+  armed display. A bad id is 422 `bad_person`.
+
+Error codes across the routes:
+
+| Code | Status | Meaning |
+|---|---|---|
+| `not_timeclock_display` | 403 | no armed display cookie |
+| `move_locked` | 403 | arming from a move-password session |
+| `not_timeclock_station` | 409 | arming when the laptop is not set up as a Time Clock station |
+| `station_key_missing` | 409 | arming a Time Clock station whose key hasn't arrived |
+| `station_not_ready` | 409 | punching with no Time Clock setup or no key |
+| `edge_offline` | 503 | the portal is unreachable (punches still need a connection) |
+| `people_not_synced` | 503 | no people list cached yet |
+| `bad_person` | 422 | person id missing or not a UUID |
+| `wrong_station_type` | 403 | portal: key of another type (key kept) |
+| `kiosk_not_registered` | 403 | portal: lapsed registration (key kept) |
+
+For a Time Clock station the edge's station sync pulls **people only**. The
+other four lists are skipped, since the portal refuses the key on them.
+
+### Setup
+
+The wizard gets a **Time Clock** path type. Path: type, then move
+(optional, with a **No move** card), then site. With a move, the site step
+offers that move's sites. With no move, it offers any site or **No site**.
+There is no scan type step. Finishing issues the station key and lands on
+Start Time Clock.
+
+Switching a laptop to Time Clock releases the RFID reader and rejects every
+pending scan with `station_changed`. Label settings are dropped on a switch
+from Label to Time Clock, as `laptop_setup.save` already does.
+
+### Today's hours
+
+`today_minutes` and `today_entries` follow §7 with these details:
+
+- The math runs in UTC. Local midnight in the kiosk's site zone is converted
+  to UTC first, so DST changes do not skew the subtraction.
+- A span counts only its overlap with local midnight to now. Minutes are
+  floored per span, so the total can be a minute or so under the exact sum.
+- `break_minutes` is subtracted only for shifts that **started today**. A
+  shift that began yesterday is clipped at midnight and loses no break.
+- **Which zone ("today" precedence).** The site's zone, else the kiosk's
+  own zone, else UTC. §7's plain UTC fallback reset "today" around 7 PM on
+  US stations, since most sites have no zone set. The browser sends its
+  IANA zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`) as `tz`:
+  in the query on `GET /kiosk/timeclock/{person_id}` and
+  `GET /kiosk/station/timeclock/{person_id}`, and in the body of every
+  clock-in and clock-out (session and station). On a station the browser
+  sends it to `/edge/timeclock/*`, and the edge forwards it only when it is
+  a non-empty string of at most 64 characters (otherwise it is dropped).
+  The API takes `tz` as optional, at most 64 characters (422 past that).
+  A name it does not know is skipped, never an error.
+
+### Kiosk UI
+
+- `pages/Timeclock.tsx` is **retired**. The new flow lives in
+  `kiosk/src/timeclock/` (reducer, backends, timers, screens), portrait and
+  landscape. `/timeclock` is still the route for the regular kiosk.
+- `matchPersonExact` now also matches `badge_uid`. The people store and sync
+  carry `badge_uid`, `job_title` and `external_id`.
+- Kiosk-mode clock-in still lets the server fall back to the device row's
+  site and move. It differs only if the local setup and the device row
+  disagree.
+- Punches have no client-side timeout. A dropped POST may still be recorded.
+  Idle exit still returns the station to Welcome, but a person who walks
+  away mid-hang gets no "may have been recorded" hint.
+
+### Worker QR codes
+
+Shipped as §8 describes: the **/me** card and **Print QR** on the worker
+page, shown only when the person has a `badge_uid`.
+
+### Accepted risks
+
+- `badge_uid` rides the bulk people sync, like `rfid_tag`. The QR is a
+  shortcut, not a credential: anyone can already punch anyone by name. If
+  that changes, resolve the QR on the server instead.
+- A move-password session sees a person's `today_entries` from other moves.
+  These are times only, with no move names, and the existing status route
+  already returns an open entry from any move with its move name.
+- Punches are not timed out on the client (see above).
+- The display cookie lives 400 days. Its lifetime is bounded by setup and the
+  key, so shorten the constant if that is too long.
+
+### Open follow-ups
+
+- A real screen-reader check of the card and tile buttons' accessible names.
+- No per-display disarm UI, and `timeclock_displays` rows are unbounded (one
+  per arm).
+- Live verification on the laptop stack: Time Clock setup, Start Time Clock,
+  punches by name and by badge UUID, both orientations, `/timeclock` as a
+  regular kiosk, and the portal QR. The controller does this after the notes
+  land.
+
+## Implementation notes (phases 2 and 3: Android and iOS)
+
+These notes were written after the build (branch `timeclock-native`, plan
+`docs/superpowers/plans/2026-10-21-timeclock-android-ios.md`). Each app now
+has the guided flow, which replaces its old Timeclock screen, and a Time Clock
+station mode.
+
+### API
+
+- A `timeclock` key may live on a `laptop`, `android`, `zebra` or `ios`
+  kiosk. RFID and Label stations stay laptop-only. The shared rule is
+  `station_keys.station_sub_type_ok`. `zebra` is included because the
+  Android app on a Zebra handheld reports that sub_type.
+- Setting a kiosk up again as a regular kiosk (no `station_type`) clears a
+  `timeclock` station type, and the type change revokes the key.
+
+### Both apps
+
+- Kiosk Setup starts with **What is this kiosk?** The two choices are
+  **Regular kiosk** ("Scan, enroll and print with a signed-in crew.") and
+  **Time Clock** ("Crews clock in and out here; it stays ready on its own.").
+  The Time Clock path is Move (or **No move**), then Site (or **No site**),
+  then finish.
+- Finishing issues the station key. If the server answers
+  `not_signed_in_here`, the app sends one sign-in heartbeat and retries
+  once. It stores the key, signs the person out, and lands on Welcome.
+- The key lives only in the secure store (EncryptedSharedPreferences on
+  Android, the Keychain on iOS). It is **bound to the API origin it was
+  issued for**:
+  - A key whose stored origin differs from the configured API URL is
+    dropped and never sent.
+  - Saving a different API URL in Settings drops it, whether or not anyone
+    is signed in.
+  - Station calls are built from the base URL that was checked.
+  - Why: a review found that a signed-out worker could reach Settings from
+    Login's gear and point the kiosk at another host.
+- When nobody is signed in at a station, the guard shows Welcome instead of
+  Login. The gear opens Login, which offers **Back to the time clock**.
+  Login, and Settings opened from it, return to Welcome after 60 s idle.
+- Signed in at a station, Home shows only Time Clock, Kiosk Setup and
+  Settings. The Time Clock tile signs the person out to Welcome.
+- The station syncs **people only**, through the station route. It does
+  this when Welcome starts and each time the flow returns to it.
+- Key errors:
+  - 401 `station_key_invalid` and 403 `wrong_station_type` drop the key and
+    show the waiting copy.
+  - 403 `kiosk_not_registered` keeps the key, shows the paused copy, and
+    retries every 60 s.
+- These drop the key: a regular re-setup, Reset app, Clear Setup (Android),
+  and a move-password sign-in that drops a station's setup.
+- **Try again** after a failed punch re-reads the status before punching
+  again, so a punch that was in fact recorded is never sent twice. The web
+  re-sends instead.
+- A camera button sits in the Enter Your Name box on devices with a camera,
+  so a phone with no built-in scanner can still read a badge QR.
+
+### Android
+
+- **Enter Your Name uses the system keyboard** (Jimmy, after testing on his
+  Pixel). The in-app keyboard made the screen jump as results changed.
+  - The box takes focus and opens the keyboard.
+  - The keyboard's Search key runs the old Search logic.
+  - Results scroll in a fixed area between the box and the keyboard.
+  - Landscape never uses the full-screen keyboard.
+- HTTP calls are cancellable (`enqueue` plus `call.cancel()`), so the 10 s
+  read timeout really fires. The shared client allows 16 requests per host.
+  Punches run `NonCancellable`, with no timeout.
+
+### iOS
+
+- Keeps the in-app on-screen keyboard for now.
+- SwiftData schema V3 adds the people fields. V2 is frozen with its golden
+  test.
+
+### Web and laptop
+
+- **Enter Your Name assumes a physical keyboard** (Jimmy). The on-screen
+  keyboard is hidden behind a keyboard icon in the search box. The kiosk
+  remembers the choice in `ss.kiosk.tcKeyboard`.
+
+### Owed
+
+- A hardware check on a Zebra handheld (DataWedge scans on Welcome and
+  Name).
+- A VoiceOver and TalkBack pass.
+- Checking the laptop's results-area heights live.

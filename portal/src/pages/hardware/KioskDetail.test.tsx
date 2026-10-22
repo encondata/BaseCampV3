@@ -195,6 +195,29 @@ it('hides Edit, Reset and the scan type picker below rank 80', async () => {
   expect(screen.queryByRole('combobox', { name: 'Scan type' })).toBeNull();
 });
 
+it('a Time Clock laptop reads "Time Clock" on Overview and Setup, with no scan type picker', async () => {
+  api.getDevice.mockResolvedValue(detail({
+    station_type: 'timeclock', rfid_reader: null,
+    scan_status: null, scan_status_label: null,
+    setup: {
+      initiative_id: 'i1', initiative_name: 'Initech ORD1 to AUS1 Migration',
+      site_id: 's1', site_name: 'ORD1', site_role: 'source', station_type: 'timeclock',
+      scan_status: null, scan_status_label: null,
+    },
+  }));
+  renderAt('/hardware/kiosks/k1');
+  await screen.findByRole('heading', { name: /Kiosk 97F0/ });
+  expect(screen.getAllByText('Time Clock \u00b7 Laptop').length).toBeGreaterThan(0);
+  expect(screen.getByText('Time Clock')).not.toBeNull();
+  expect(screen.queryByText(/timeclock/)).toBeNull();
+  cleanup();
+  renderAt('/hardware/kiosks/k1/setup');
+  await screen.findByText('Initech ORD1 to AUS1 Migration');
+  expect(screen.getByText('Time Clock')).not.toBeNull();
+  expect(screen.queryByRole('combobox', { name: 'Scan type' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Save scan type' })).toBeNull();
+});
+
 it('hides Edit without scanning_hardware change even at rank 80', async () => {
   auth.can = (_r, a) => a === 'view';
   renderAt('/hardware/kiosks/k1/settings');

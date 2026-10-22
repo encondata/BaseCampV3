@@ -28,7 +28,9 @@ struct KioskSetupViewModelTests {
     }
 
     private func makeVM() -> KioskSetupViewModel {
-        KioskSetupViewModel(api: api, identity: identity, prefs: prefs, sync: sync, auth: auth)
+        KioskSetupViewModel(api: api, identity: identity, prefs: prefs, sync: sync, auth: auth,
+                            heartbeat: Heartbeat(api: api, identity: identity, version: "1", rawInfo: { [:] }),
+                            station: TimeclockStation(keys: StationKeyStore(secrets: MemorySecretStore()), serial: { "SER" }, apiUrl: { TEST_API_URL }))
     }
 
     private func saved(_ state: SetupState = .complete) {
@@ -40,11 +42,12 @@ struct KioskSetupViewModelTests {
         api.submitSetupResult = { KioskSetupResult(deviceId: "d", initiativeId: $0.initiativeId, initiativeName: "Move A", siteId: $0.siteId, siteName: "Dest", siteRole: "destination", scanStatus: $0.scanStatus, scanStatusLabel: "Pre-stage") }
     }
 
-    @Test func wizardWalksFourStepsAndSaves() async {
+    @Test func wizardWalksFiveStepsAndSaves() async {
         acceptSetup()
         let vm = makeVM()
         await vm.load()
-        #expect(vm.step == .move)
+        #expect(vm.step == .type)
+        vm.pickKind(.regular); #expect(vm.step == .move)
         vm.pickMove("i1"); #expect(vm.step == .site)
         #expect(vm.siteChoices.map(\.site.name) == ["Origin", "Dest"])
         #expect(vm.siteChoices.map(\.role) == ["source", "destination"])
@@ -129,13 +132,14 @@ struct KioskSetupViewModelTests {
         #expect(api.calls.filter { $0 == "setupOptions" }.count == 1)
     }
 
-    @Test func stepHeaderCountsFourSteps() async {
+    @Test func stepHeaderCountsFiveSteps() async {
         let vm = makeVM()
         await vm.load()
-        #expect(vm.stepNumber == 1); #expect(vm.stepHeader == "STEP 1 OF 4 · MOVE")
-        vm.pickMove("i1"); #expect(vm.stepHeader == "STEP 2 OF 4 · SITE")
-        vm.pickSite("s1"); #expect(vm.stepHeader == "STEP 3 OF 4 · SCAN TYPE")
-        vm.pickScanType("pre_stage"); #expect(vm.stepNumber == 4); #expect(vm.stepHeader == "STEP 4 OF 4 · LABELS")
+        #expect(vm.stepNumber == 1); #expect(vm.stepHeader == "STEP 1 · TYPE")
+        vm.pickKind(.regular); #expect(vm.stepNumber == 2); #expect(vm.stepHeader == "STEP 2 OF 5 · MOVE")
+        vm.pickMove("i1"); #expect(vm.stepHeader == "STEP 3 OF 5 · SITE")
+        vm.pickSite("s1"); #expect(vm.stepHeader == "STEP 4 OF 5 · SCAN TYPE")
+        vm.pickScanType("pre_stage"); #expect(vm.stepNumber == 5); #expect(vm.stepHeader == "STEP 5 OF 5 · LABELS")
         acceptSetup()
         await vm.finish(.top)
         #expect(vm.stepNumber == nil); #expect(vm.stepHeader == nil)
@@ -211,16 +215,17 @@ struct KioskSetupViewModelTests {
     }
 
     @Test func incompleteSetupOpensTheWizard() {
-        #expect(makeVM().step == .move)
+        #expect(makeVM().step == .type)
         saved(.failed)
-        #expect(makeVM().step == .move)
+        #expect(makeVM().step == .type)
     }
 
     @Test func changeSetupPreselectsAndRevalidatesCachedChoices() async {
         saved()   // initiative "i" is not offered, so the cached choices are dropped
         let vm = makeVM()
         vm.changeSetup()
-        #expect(vm.step == .move)
+        #expect(vm.step == .type)
+        #expect(vm.kind == .regular)
         #expect(vm.initiativeId == "i")
         await waitUntil { vm.options != nil }
         #expect(vm.initiativeId == ""); #expect(vm.siteId == ""); #expect(vm.scanStatus == "")
@@ -252,13 +257,14 @@ struct KioskSetupViewModelTests {
         #expect(vm.loadError == nil); #expect(vm.options != nil)
     }
 
-    @Test func backStepsDownAndStopsAtMove() async {
+    @Test func backStepsDownAndStopsAtType() async {
         let vm = makeVM()
-        await vm.load(); vm.pickMove("i1"); vm.pickSite("s1"); vm.pickScanType("pre_stage")
+        await vm.load(); vm.pickKind(.regular); vm.pickMove("i1"); vm.pickSite("s1"); vm.pickScanType("pre_stage")
         vm.back(); #expect(vm.step == .scanType)
         vm.back(); #expect(vm.step == .site)
         vm.back(); #expect(vm.step == .move)
-        vm.back(); #expect(vm.step == .move)
+        vm.back(); #expect(vm.step == .type)
+        vm.back(); #expect(vm.step == .type)
     }
 
     @Test func pickingADifferentMoveClearsTheSite() async {

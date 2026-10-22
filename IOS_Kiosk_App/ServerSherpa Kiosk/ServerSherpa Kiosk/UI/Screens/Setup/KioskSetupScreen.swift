@@ -5,7 +5,8 @@ extension Color {
     init(cssHex css: String) { self.init(hex: parseCssHex(css)) }
 }
 
-/// kiosk/src/pages/KioskSetup.tsx: the four-step wizard (the last, Top or Front, as on Android) and the summary.
+/// kiosk/src/pages/KioskSetup.tsx: "What is this kiosk?", then the Regular kiosk's four steps (the
+/// last, Top or Front, as on Android) or the Time Clock station's Move and Site, and the summary.
 struct KioskSetupScreen: View {
     @Binding var path: [Route]
     @Environment(\.container) private var container
@@ -25,7 +26,8 @@ private struct KioskSetupBody: View {
     init(container: AppContainer, path: Binding<[Route]>) {
         self.container = container
         _path = path
-        _vm = State(initialValue: KioskSetupViewModel(api: container.api, identity: container.identity, prefs: container.prefs, sync: container.sync, auth: container.auth))
+        _vm = State(initialValue: KioskSetupViewModel(api: container.api, identity: container.identity, prefs: container.prefs, sync: container.sync,
+                                                      auth: container.auth, heartbeat: container.heartbeat, station: container.station))
     }
 
     private var columns: [GridItem] {
@@ -50,9 +52,10 @@ private struct KioskSetupBody: View {
 
     @ViewBuilder private var summary: some View {
         if let sel = vm.selection {
-            Text("This kiosk is set up for \(sel.initiativeName) at \(sel.siteName) (\(sel.siteRole)) · scan type \(sel.scanLabel)")
+            Text(setupSummaryText(sel))
                 .font(KioskType.bodyLarge).foregroundStyle(palette.text)
-            SyncSummaryView(status: container.sync.status) { vm.syncAgain() }
+            // a Time Clock station downloads no move data
+            if !sel.isTimeclockStation { SyncSummaryView(status: container.sync.status) { vm.syncAgain() } }
             HStack(spacing: 8) {
                 SecondaryButton("Change setup") { vm.changeSetup() }
                 PrimaryButton("Go to home") { path.removeAll() }
@@ -67,11 +70,14 @@ private struct KioskSetupBody: View {
         if let header = vm.stepHeader {
             Text(header).font(KioskType.labelSmall).foregroundStyle(palette.textMute)
         }
-        if let error = vm.loadError {
+        if vm.step == .type {
+            typeStep
+        } else if let error = vm.loadError {
             KioskToast(text: error, error: true)
             SecondaryButton("Retry") { Task { await vm.load() } }
         } else if let opts = vm.options {
             switch vm.step {
+            case .type: EmptyView()
             case .move: moveStep(opts)
             case .site: siteStep
             case .scanType: scanTypeStep(opts)
@@ -87,10 +93,36 @@ private struct KioskSetupBody: View {
         Text(text).font(KioskType.headline).foregroundStyle(palette.text).padding(.vertical, 8)
     }
 
+    private var typeStep: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            heading(KioskSetupViewModel.typeHeading)
+            LazyVGrid(columns: columns, spacing: 10) {
+                ForEach(KioskSetupViewModel.kindChoices, id: \.kind) { choice in
+                    SetupCard(selected: choice.kind == vm.kind) { vm.pickKind(choice.kind) } content: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(choice.title).font(KioskType.titleMedium).foregroundStyle(palette.text)
+                            mute(choice.blurb)
+                        }
+                    }
+                    .accessibilityIdentifier("setup-kind-\(choice.kind)")
+                }
+            }
+            if vm.canCancel { SecondaryButton("Cancel") { vm.cancelChange() }.padding(.top, 10) }
+        }
+    }
+
     private func moveStep(_ opts: SetupOptions) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             heading("Which move?")
             LazyVGrid(columns: columns, spacing: 10) {
+                if vm.offersNoMove {
+                    SetupCard(selected: vm.noMove) { vm.pickNoMove() } content: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("No move").font(KioskType.titleMedium).foregroundStyle(palette.text)
+                            mute(KioskSetupViewModel.noMoveBlurb)
+                        }
+                    }
+                }
                 ForEach(opts.initiatives, id: \.id) { i in
                     SetupCard(selected: i.id == vm.initiativeId) { vm.pickMove(i.id) } content: {
                         VStack(alignment: .leading, spacing: 4) {
@@ -104,7 +136,7 @@ private struct KioskSetupBody: View {
                 }
             }
             if opts.initiatives.isEmpty { Text("No active moves. Ask a coordinator to plan one.").font(KioskType.bodyMedium).foregroundStyle(palette.textMute) }
-            if vm.canCancel { SecondaryButton("Cancel") { vm.cancelChange() }.padding(.top, 10) }
+            SecondaryButton("Back") { vm.back() }.padding(.top, 10)
         }
     }
 
@@ -112,16 +144,29 @@ private struct KioskSetupBody: View {
         VStack(alignment: .leading, spacing: 0) {
             heading("Which site is this kiosk at?")
             let choices = vm.siteChoices
+            let timeclock = vm.kind == .timeclock
             LazyVGrid(columns: columns, spacing: 10) {
+                if vm.offersNoSite {
+                    SetupCard(selected: vm.noSite, enabled: !vm.saving) { Task { await vm.finishTimeclock(siteId: nil) } } content: {
+                        Text(vm.saving && vm.noSite ? "Saving…" : "No site").font(KioskType.titleMedium).foregroundStyle(palette.text)
+                    }
+                }
                 ForEach(choices, id: \.site.id) { c in
-                    SetupCard(selected: c.site.id == vm.siteId) { vm.pickSite(c.site.id) } content: {
-                        Text(c.role.uppercased()).font(KioskType.labelSmall).foregroundStyle(palette.textMute)
-                        Text(c.site.name).font(KioskType.titleMedium).foregroundStyle(palette.text)
+                    let saving = vm.saving && !vm.noSite && c.site.id == vm.siteId
+                    SetupCard(selected: c.site.id == vm.siteId, enabled: !vm.saving) {
+                        if timeclock { Task { await vm.finishTimeclock(siteId: c.site.id) } } else { vm.pickSite(c.site.id) }
+                    } content: {
+                        if !c.role.isEmpty { Text(c.role.uppercased()).font(KioskType.labelSmall).foregroundStyle(palette.textMute) }
+                        Text(saving ? "Saving…" : c.site.name).font(KioskType.titleMedium).foregroundStyle(palette.text)
                     }
                 }
             }
-            if choices.isEmpty { Text("This move has no sites yet. Ask a coordinator to add them.").font(KioskType.bodyMedium).foregroundStyle(palette.textMute) }
-            SecondaryButton("Back") { vm.back() }.padding(.top, 10)
+            if choices.isEmpty && !vm.offersNoSite { Text("This move has no sites yet. Ask a coordinator to add them.").font(KioskType.bodyMedium).foregroundStyle(palette.textMute) }
+            if timeclock, let code = vm.saveError { KioskToast(text: "Couldn't save the kiosk setup (\(code)). Try again.", error: true) }
+            if timeclock, let code = vm.keyError {
+                KioskToast(text: "The setup saved, but this time clock couldn't get its station key (\(code)). Pick the site again to retry.", error: true)
+            }
+            SecondaryButton("Back", enabled: !vm.saving) { vm.back() }.padding(.top, 10)
         }
     }
 

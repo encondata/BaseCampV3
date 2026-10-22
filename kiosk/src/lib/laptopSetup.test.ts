@@ -11,7 +11,8 @@ const syncMock = vi.hoisted(() => ({ runSync: vi.fn(() => Promise.resolve()) }))
 vi.mock('./sync', async (orig) => ({ ...(await orig<object>()), runSync: syncMock.runSync }));
 
 import { readKioskSetup, writeKioskSetup } from './kioskSetup';
-import { hydrateLaptopSetup } from './laptopSetup';
+import type { EdgeSetup } from './api';
+import { hydrateLaptopSetup, selectionFromEdge } from './laptopSetup';
 import { readSetupState, writeSetupState } from './setupState';
 
 const SHARED = {
@@ -149,4 +150,45 @@ it('a Label Station whose printer was saved is taken as complete', async () => {
     ...SHARED, station_type: 'label', reader: null, label_station: LABEL_STATION });
   expect(await hydrateLaptopSetup()).toBe(true);
   expect(readSetupState()).toBe('complete');
+});
+
+it('a Time Clock setup with no move, site, or scan maps to the no-move selection', async () => {
+  apiMock.getEdgeSetup.mockResolvedValue({
+    ...SHARED, initiative_id: null, initiative_name: null, site_id: null, site_name: null,
+    site_role: null, scan_status: null, scan_status_label: null, station_type: 'timeclock',
+    reader: null,
+  });
+  expect(await hydrateLaptopSetup()).toBe(true);
+  expect(readKioskSetup()).toEqual({
+    initiativeId: '', initiativeName: 'No move', siteId: '', siteName: 'No site',
+    siteRole: 'none', scanStatus: '', scanLabel: '', stationType: 'timeclock',
+  });
+  expect(readSetupState()).toBe('complete');
+});
+
+it('a Time Clock setup with a site but no move keeps the site as role "other"', () => {
+  expect(selectionFromEdge({
+    ...SHARED, initiative_id: null, initiative_name: null, site_id: 's-2', site_name: 'NAP22 Hall',
+    site_role: null, scan_status: null, scan_status_label: null, station_type: 'timeclock',
+    reader: null,
+  } as unknown as EdgeSetup)).toEqual({
+    initiativeId: '', initiativeName: 'No move', siteId: 's-2', siteName: 'NAP22 Hall',
+    siteRole: 'other', scanStatus: '', scanLabel: '', stationType: 'timeclock',
+  });
+});
+
+it('a Time Clock setup on a move keeps the move and the API\'s site role', () => {
+  expect(selectionFromEdge({
+    ...SHARED, scan_status: null, scan_status_label: null, station_type: 'timeclock', reader: null,
+  } as unknown as EdgeSetup)).toEqual({
+    initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration', siteId: 's-2',
+    siteName: 'NAP22 Hall', siteRole: 'destination', scanStatus: '', scanLabel: '',
+    stationType: 'timeclock',
+  });
+});
+
+it('a non-Time-Clock setup with nulls is still rejected', () => {
+  expect(selectionFromEdge({
+    ...SHARED, initiative_id: null, initiative_name: null,
+  } as unknown as EdgeSetup)).toBeNull();
 });

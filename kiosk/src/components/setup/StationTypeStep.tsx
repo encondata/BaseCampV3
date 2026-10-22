@@ -13,6 +13,11 @@ const CHOICES: { type: StationType; title: string; meta: string }[] = [
     title: 'RFID Station',
     meta: 'Pairs a Zebra FX reader on this network. Next: Select reader → Connect → Pair, then the move.',
   },
+  {
+    type: 'timeclock',
+    title: 'Time Clock',
+    meta: 'Workers clock in and out here. Next: Move (optional) → Site.',
+  },
 ];
 
 interface Props {

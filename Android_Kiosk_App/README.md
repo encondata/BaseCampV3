@@ -11,6 +11,14 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 
 `local.properties` (ignored) must point `sdk.dir` at the Android SDK. Or open this folder in Android Studio.
 
+## Release build (Google Play)
+
+```bash
+./gradlew bundleRelease   # app/build/outputs/bundle/release/app-release.aab
+```
+
+The release is signed with the Play upload key, which lives outside the repo: `~/.gradle/gradle.properties` sets `serversherpaUploadStoreFile` (the `.jks` path), `serversherpaUploadStorePassword`, `serversherpaUploadKeyAlias` and `serversherpaUploadKeyPassword`. Without them the bundle builds unsigned and Play refuses it. Google holds the app signing key (Play App Signing), so a lost upload key is reset through Play Console, not lost for good. Bump `versionCode` in `app/build.gradle.kts` before every upload. The store listing text and graphics are in `play-store/`.
+
 ## Install
 
 ```bash
@@ -46,6 +54,14 @@ Labels are made on the device by the shared TypeScript generator in `../kiosk/sr
   Regenerating should leave no diff unless the Python changed. If it did, fix the TypeScript until the reference tests pass again.
 - **Tests.** TypeScript: `npm --prefix kiosk test -- src/labelgen` (node environment, no jsdom). Android: the Gradle command under Build and test; `LabelBuilderTest`, `MigrationTest`, `SyncLabelsTest`, `PrintQueueTest` and `PrinterSetupViewModelTest` cover labels. `JavaScriptSandbox` can't run under Robolectric, so the generator is faked there; the real engine, printer scanning and printing need a device or emulator.
 - **Room schema.** Version 2 adds the label tables. Schemas are exported to `app/schemas/` and committed; export the new one before changing an entity.
+
+## Time Clock station
+
+Kiosk Setup › **Time Clock** makes this device a dedicated time clock. It signs out to a Welcome screen, and crews clock in and out there by name or with the QR code from the portal's /me page.
+- The station key is kept in EncryptedSharedPreferences and bound to the API origin. Changing the API URL drops it, and you run Kiosk Setup again.
+- The gear on Welcome opens sign-in.
+- Signed in, Home shows Time Clock, Kiosk Setup and Settings.
+- Design and rulings: `../docs/superpowers/specs/2026-10-20-kiosk-timeclock-station-design.md` (Implementation notes, phases 2 and 3).
 
 ## Icons and fonts
 

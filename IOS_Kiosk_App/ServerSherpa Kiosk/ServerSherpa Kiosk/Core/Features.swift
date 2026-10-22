@@ -27,6 +27,19 @@ let FEATURES: [KioskFeature] = [
     KioskFeature(id: .settings, route: "settings", title: "Settings", blurb: "Appearance, sound, devices, and more.", alwaysAvailable: true),
 ]
 
+/// The Time Clock station's Home tile (web `TIMECLOCK_STATION_FEATURE`): signs the person out,
+/// which lands the station on its Welcome screen. Not in FEATURES: only a Time Clock station's
+/// Home shows it, first. It shares the Timeclock icon.
+let TIMECLOCK_STATION_FEATURE = KioskFeature(id: .timeclock, route: "timeclock/station", title: "Time Clock",
+                                             blurb: "Start the time clock for workers.")
+
+/// What Home shows (web `homeFeatures`): a Time Clock station only Time Clock, Kiosk Setup and
+/// Settings (web `STATION_TILES.timeclock`; Jimmy owns these lists); any other kiosk every feature.
+func homeFeatures(stationType: String?) -> [KioskFeature] {
+    guard stationType == "timeclock" else { return FEATURES }
+    return [TIMECLOCK_STATION_FEATURE, feature(.setup), feature(.settings)]
+}
+
 func feature(_ id: FeatureId) -> KioskFeature {
     FEATURES.first { $0.id == id }!
 }

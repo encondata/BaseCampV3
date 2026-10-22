@@ -6,6 +6,7 @@ import {
   loginMethodLabel, registrationLabel, subTypeLabel, tokenExpiryState, vpnLabel,
   approvalLabel, bandLabel, routerClientTotal, routerInstallCommand,
   routerStatus, routerVpn, routerWifi, vpnChipClass, routerDisplayName,
+  stationLabel, stationTypeLabel,
 } from './devices';
 
 const R: DeviceItem = {
@@ -303,5 +304,21 @@ describe('Last seen as an age', () => {
     expect(deviceCellText(R, 'last_seen')).toBe('3 hours');
     vi.setSystemTime(new Date('2026-09-30T10:00:00Z'));
     expect(deviceCellText(R, 'last_seen')).toBe('30 days');
+  });
+});
+
+describe('station labels', () => {
+  it('names every station type, Time Clock included', () => {
+    expect(stationLabel('rfid')).toBe('RFID Station');
+    expect(stationLabel('label')).toBe('Label Station');
+    expect(stationLabel('timeclock')).toBe('Time Clock');
+    expect(stationLabel(null)).toBe('\u2014');
+    expect(stationLabel('future')).toBe('future');
+  });
+
+  it('the Type column reads "Time Clock \u00b7 Laptop" for a Time Clock laptop', () => {
+    expect(stationTypeLabel({ station_type: 'timeclock', sub_type: 'laptop' })).toBe('Time Clock \u00b7 Laptop');
+    expect(stationTypeLabel({ station_type: 'rfid', sub_type: 'laptop' })).toBe('RFID \u00b7 Laptop');
+    expect(stationTypeLabel({ station_type: 'label', sub_type: 'laptop' })).toBe('Label Station \u00b7 Laptop');
   });
 });

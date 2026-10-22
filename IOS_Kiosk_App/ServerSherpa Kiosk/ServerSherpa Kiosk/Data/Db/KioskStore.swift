@@ -80,6 +80,20 @@ actor KioskStore: ModelActor {
         }
     }
 
+    /// A Time Clock station's people sync (people only: its key reaches no other list). The
+    /// people table is replaced in one save; the move tables, the meta row and the labels are
+    /// left as they are.
+    func replacePeople(_ people: [KioskPersonRow]) throws {
+        do {
+            try modelContext.delete(model: PersonRecord.self)
+            for row in people { modelContext.insert(PersonRecord(row)) }
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
+    }
+
     /// In the server's order.
     func assets() throws -> [KioskAssetRow] {
         try modelContext.fetch(FetchDescriptor<AssetRecord>(sortBy: [SortDescriptor(\.position)])).map(\.row)

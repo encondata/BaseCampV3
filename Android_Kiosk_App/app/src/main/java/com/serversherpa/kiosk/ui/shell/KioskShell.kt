@@ -44,6 +44,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import com.serversherpa.kiosk.LocalAppContainer
+import com.serversherpa.kiosk.data.station.TIMECLOCK_STATION
 import com.serversherpa.kiosk.R
 import com.serversherpa.kiosk.core.devices.RegistrationState
 import com.serversherpa.kiosk.core.features.featureForRoute
@@ -56,6 +57,7 @@ import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.theme.ChipTone
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
+import com.serversherpa.kiosk.ui.theme.StatusBarIcons
 import kotlinx.coroutines.launch
 
 private val REG_TONE = mapOf(RegistrationState.OK to ChipTone.GREEN, RegistrationState.SOON to ChipTone.AMBER, RegistrationState.EXPIRED to ChipTone.RED, RegistrationState.NONE to ChipTone.SLATE)
@@ -79,6 +81,9 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
     // Signing out ends the shift's session from a button anyone can brush past, so
     // it asks first — and says so when scans are still waiting to be sent.
     var confirmSignOut by remember { mutableStateOf(false) }
+    // The top bar is always ink, so the status bar icons over it are light even
+    // when the system theme is light.
+    StatusBarIcons(darkIcons = false)
 
     Column(Modifier.fillMaxSize().background(c.paper2)) {
         // ── top bar ──
@@ -150,7 +155,8 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
             // sync light said nothing an operator acts on; the version lives in
             // Settings and Kiosk Setup owns the sync state.
             // A move-password session names its move before Kiosk Setup has run (as on the web).
-            setup?.let { FootItem("Move", it.initiativeName); FootItem("Site", it.siteName); FootItem("Scan", it.scanLabel) }
+            // A Time Clock station's setup may have no move, site or scan type: those items stay out.
+            setup?.let { s -> s.initiativeName?.let { FootItem("Move", it) }; s.siteName?.let { FootItem("Site", it) }; s.scanLabel?.let { FootItem("Scan", it) } }
                 ?: authed?.kioskMove?.let { FootItem("Move", it.name) }
             if (devMode) FootItem("Dev mode", "On", valueColor = c.accent)
             netTestFootValue()?.let { FootItem("Net test", it, valueColor = c.accent) } // INTERNET-TEST
@@ -176,7 +182,9 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
             confirmButton = {
                 TextButton(onClick = {
                     confirmSignOut = false
-                    scope.launch { container.logout(); nav.navigate(Routes.LOGIN) { popUpTo(0) } }
+                    // A Time Clock station signs out onto its Welcome (on Home), anything else onto sign-in.
+                    val to = if (setup?.stationType == TIMECLOCK_STATION) Routes.HOME else Routes.LOGIN
+                    scope.launch { container.logout(); nav.navigate(to) { popUpTo(0) } }
                 }) { Text("Sign out") }
             },
             dismissButton = { TextButton(onClick = { confirmSignOut = false }) { Text("Cancel") } },

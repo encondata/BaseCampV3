@@ -9,6 +9,13 @@ import { useKioskSetup } from '../lib/kioskSetup';
 import { isLaptop } from '../lib/platform';
 import { useKioskSetupState } from '../lib/setupState';
 
+const CLOCK_ICON = (
+  <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <circle cx="20" cy="20" r="15" stroke="currentColor" strokeWidth="2.5" />
+    <path d="M20 11v9l7 4" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
 const ICONS: Record<KioskFeature['id'], JSX.Element> = {
   // A reader's antenna: a small base with signal waves going out both sides.
   rfid: (
@@ -99,12 +106,9 @@ const ICONS: Record<KioskFeature['id'], JSX.Element> = {
       <circle cx="14" cy="14" r="2.5" fill="currentColor" />
     </svg>
   ),
-  timeclock: (
-    <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <circle cx="20" cy="20" r="15" stroke="currentColor" strokeWidth="2.5" />
-      <path d="M20 11v9l7 4" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  ),
+  timeclock: CLOCK_ICON,
+  // The Time Clock station's tile shows the same clock face.
+  clock: CLOCK_ICON,
   settings: (
     <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <path d="M6 12h20M31 12h3" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />

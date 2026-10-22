@@ -22,7 +22,13 @@ off-move alarm, and the portal refuses it to a Label key).
 The label template set is a soft step, the same as on the web kiosk: a
 refusal keeps the cached set, the rest of the move still lands, and the
 sync records `label_templates_http_<status>`. A portal from before the set
-answers 404, stored as an empty set (like the client asset list)."""
+answers 404, stored as an empty set (like the client asset list).
+
+A Time Clock Station pulls the people list only (it looks up whoever
+badges in), even with no move: under its station key when it holds one
+(`/kiosk/station/sync/people?serial=[&initiative_id=]`), else as the actor
+person, else `needs_sign_in`. It lands under the same `/kiosk/sync/people`
+cache key."""
 
 import json
 import logging
@@ -59,6 +65,9 @@ def station_sync_paths(initiative_id: str, serial: str,
     return [(by_name[name], f"/kiosk/station/sync/{name}?{q}") for name in STATION_SYNC
             if station_type != "label" or name not in RFID_ONLY_SYNC]
 
+
+PEOPLE = "/kiosk/sync/people"
+STATION_PEOPLE = "/kiosk/station/sync/people"
 
 SKIP_CODES = {"move_locked", "not_signed_in_here"}
 LABEL_TEMPLATES = "/kiosk/sync/label-templates"
@@ -108,7 +117,7 @@ class Syncer:
         self.after_sync: Callable[[], None] | None = None  # called after a sync lands
         store.run("INSERT OR IGNORE INTO sync_meta (id) VALUES (1)")
 
-    def set_target(self, initiative_id: str, actor_person_id: str) -> None:
+    def set_target(self, initiative_id: str | None, actor_person_id: str) -> None:
         self.store.run("UPDATE sync_meta SET initiative_id = ?, actor_person_id = ? WHERE id = 1",
                        (initiative_id, actor_person_id))
 
@@ -124,6 +133,8 @@ class Syncer:
     async def run(self) -> dict:
         meta = self.meta()
         initiative = meta["initiative_id"]
+        if station_key.is_timeclock_setup(self.store):
+            return await self._run_timeclock(initiative, meta["actor_person_id"])
         if not initiative:
             return meta
         actor = self._actor(meta["actor_person_id"])
@@ -212,6 +223,38 @@ class Syncer:
             c.execute("UPDATE sync_meta SET synced_at = ?, last_error = ? WHERE id = 1",
                       (now_iso(), error))
         self._recheck_rfid()
+        self._notify()
+        return self.meta()
+
+    async def _run_timeclock(self, initiative: str | None, configured: str | None) -> dict:
+        """A Time Clock Station: the people list only, move or no move."""
+        try:
+            resp = None
+            if station_key.has_key(self.store):
+                q = f"serial={quote(self.serial(), safe='')}"
+                if initiative:
+                    q += f"&initiative_id={quote(initiative, safe='')}"
+                resp = await station_key.request_as_station(
+                    self.upstream, "GET", f"{STATION_PEOPLE}?{q}")
+                path = STATION_PEOPLE
+            if resp is None:
+                actor = self._actor(configured)
+                if actor is not None:
+                    resp = await self.upstream.as_person(actor, "GET", PEOPLE)
+                path = PEOPLE
+            if resp is None:
+                return self._error("needs_sign_in")
+        except CloudOffline:
+            return self._error("offline")
+        if resp.status_code != 200:
+            return self._error(f"http_{resp.status_code}:{path}")
+        with self.store.tx() as c:
+            c.execute("INSERT INTO cache (key, status, body, stored_at) VALUES (?, 200, ?, ?) "
+                      "ON CONFLICT(key) DO UPDATE SET status = 200, body = excluded.body, "
+                      "stored_at = excluded.stored_at", (PEOPLE, resp.text, now_iso()))
+            note_cache_write()
+            c.execute("UPDATE sync_meta SET synced_at = ?, last_error = NULL WHERE id = 1",
+                      (now_iso(),))
         self._notify()
         return self.meta()
 

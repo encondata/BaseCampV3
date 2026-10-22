@@ -38,6 +38,9 @@ vi.mock('../components/AvatarUpload', () => ({ default: () => null }));
 vi.mock('../components/workers/CertsPanel', () => ({ default: () => null }));
 vi.mock('../components/NotesFilesPanel', () => ({ default: () => null }));
 
+const badge = vi.hoisted(() => ({ printBadgeQr: vi.fn() }));
+vi.mock('../components/people/BadgeQr', () => badge);
+
 const { default: WorkerDetail } = await import('./WorkerDetail');
 
 const WORKER: WorkerDetailItem = {
@@ -106,4 +109,17 @@ it('opens the shared grant dialog and reloads the worker on success', async () =
   expect(workers.getWorker).toHaveBeenCalledTimes(2);
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Give portal login' })).toBeNull());
   expect(screen.getByText('portal access')).toBeTruthy();
+});
+
+it('shows Print QR with a badge uid and prints the name and uid', async () => {
+  renderPage();
+  fireEvent.click(await screen.findByRole('button', { name: 'Print QR' }));
+  expect(badge.printBadgeQr).toHaveBeenCalledWith({ name: 'Wes Worker', badgeUid: 'B1' });
+});
+
+it('hides Print QR when the API withholds the badge uid', async () => {
+  workers.getWorker.mockResolvedValue({ ...WORKER, badge_uid: null });
+  renderPage();
+  await screen.findByRole('heading', { level: 1, name: /Wes Worker/ });
+  expect(screen.queryByRole('button', { name: 'Print QR' })).toBeNull();
 });

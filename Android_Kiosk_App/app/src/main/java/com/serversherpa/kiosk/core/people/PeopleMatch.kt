@@ -11,12 +11,16 @@ interface MatchPerson {
     val rfidTag: String?
     val isWorker: Boolean
     val hasAccount: Boolean
+    /** The person's badge UUID, as printed in a badge's QR code. */
+    val badgeUid: String?
 }
 
 internal class Entry<P : MatchPerson>(val person: P, val parts: List<String>, val fullNames: List<String>, val sortKey: String)
 
 class PeopleIndex<P : MatchPerson> internal constructor(
     val byRfid: Map<String, P>,
+    /** Badge UUIDs, lower-cased. */
+    val byBadge: Map<String, P>,
     /** Full id and the eight-character short id, both lower-cased. */
     val byId: Map<String, P>,
     private val entries: List<Entry<P>>,
@@ -58,25 +62,29 @@ private fun <P : MatchPerson> entryFor(person: P): Entry<P> {
 
 fun <P : MatchPerson> buildPeopleIndex(people: List<P>): PeopleIndex<P> {
     val byRfid = LinkedHashMap<String, P>()
+    val byBadge = LinkedHashMap<String, P>()
     val byId = LinkedHashMap<String, P>()
     val entries = ArrayList<Entry<P>>(people.size)
     for (person in people) {
         rfidKey(person.rfidTag)?.let { byRfid.putIfAbsent(it, person) }
+        person.badgeUid?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }?.let { byBadge.putIfAbsent(it, person) }
         val id = person.id.trim().lowercase()
         if (id.isNotEmpty()) byId.putIfAbsent(id, person)
         val short = id.take(8)
         if (short.length == 8) byId.putIfAbsent(short, person)
         entries.add(entryFor(person))
     }
-    return PeopleIndex(byRfid, byId, entries, people.size)
+    return PeopleIndex(byRfid, byBadge, byId, entries, people.size)
 }
 
-/** The badge/id door: a value naming exactly one person, or null. */
+/** The badge/id door: a value naming exactly one person, or null. Tried in order: RFID tag,
+ *  badge UUID, full person id, eight-character short id (kiosk/src/lib/peopleMatch.ts). */
 fun <P : MatchPerson> matchPersonExact(index: PeopleIndex<P>, raw: String): P? {
     val trimmed = raw.trim()
     if (trimmed.isEmpty()) return null
     rfidKey(trimmed)?.let { index.byRfid[it] }?.let { return it }
     val lower = trimmed.lowercase()
+    index.byBadge[lower]?.let { return it }
     val byId = index.byId[lower] ?: return null
     // The eight-character short form only counts when it looks like hex.
     return if (lower.length != 8 || SHORT_ID.matches(lower)) byId else null

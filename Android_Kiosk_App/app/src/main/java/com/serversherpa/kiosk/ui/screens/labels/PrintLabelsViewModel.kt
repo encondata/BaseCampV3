@@ -117,9 +117,11 @@ class PrintLabelsViewModel(
 
         override suspend fun record(asset: AssetEntity, scannedValue: String) {
             val sel = setup ?: throw IllegalStateException("no setup selection")
+            val siteId = sel.siteId ?: throw IllegalStateException("no site in the setup selection")
+            val initiativeId = sel.initiativeId ?: throw IllegalStateException("no move in the setup selection")
             outbox.enqueue(EnqueueInput(
                 scannedValue = scannedValue, scanType = "barcode", asset = asset.toOutboxAsset(),
-                siteId = sel.siteId, initiativeId = sel.initiativeId, scanStatus = LABELED,
+                siteId = siteId, initiativeId = initiativeId, scanStatus = LABELED,
             ))
         }
     }, now = { Instant.now().toString() }, log = { message, e -> android.util.Log.w(TAG, message, e) })
@@ -182,7 +184,7 @@ class PrintLabelsViewModel(
     fun retry(entryId: String) { scope.launch { queue.retry(entryId)?.let { settled(it) } } }
 
     /** Runs the move's sync again (labels need a sync since the version 2 upgrade). */
-    fun syncNow() { setup?.let { sync.run(it.initiativeId, it.initiativeName) } }
+    fun syncNow() { setup?.let { s -> s.initiativeId?.let { sync.run(it, s.initiativeName ?: "") } } }
 
     private fun settled(entry: PrintEntry<AssetEntity>) = feedback(entry.state == PrintState.PRINTED)
 

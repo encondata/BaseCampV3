@@ -35,7 +35,8 @@ SETUP_FIELDS = ("initiative_id", "initiative_name", "site_id", "site_name", "sit
 
 def save(store: Store, result: dict, station_type: str | None) -> dict:
     setup = {key: result.get(key) for key in SETUP_FIELDS}
-    setup["station_type"] = station_type if station_type in ("label", "rfid") else None
+    setup["station_type"] = (station_type if station_type in ("label", "rfid", "timeclock")
+                             else None)
     reader = pairing.cloud_reader(store) if setup["station_type"] == "rfid" else None
     setup["reader"] = reader
     setup["updated_at"] = now_iso()

@@ -6,6 +6,7 @@ import Testing
 @MainActor
 struct SettingsModelTests {
     private let prefs = KioskPrefs(defaults: freshDefaults())
+    private let station = TimeclockStation(keys: StationKeyStore(secrets: MemorySecretStore()), serial: { "SER" }, apiUrl: { TEST_API_URL })
 
     private func tabs(admin: Bool = false, developer: Bool = false, signedIn: Bool) -> [SettingsTab] {
         visibleTabs(isAdmin: admin, isDeveloper: developer, signedIn: signedIn)
@@ -67,7 +68,7 @@ struct SettingsModelTests {
     @Test func urlSaveStoresBothNormalized() async {
         let config = KioskConfig(prefs: prefs)
         let (refresher, auth) = signedOut()
-        #expect(await SettingsModel.saveUrls(api: " https://api.example.com/ ", portal: "http://portal.example.com", config: config, session: refresher, auth: auth) == nil)
+        #expect(await SettingsModel.saveUrls(api: " https://api.example.com/ ", portal: "http://portal.example.com", config: config, session: refresher, auth: auth, station: station) == nil)
         #expect(config.apiUrl == "https://api.example.com")
         #expect(config.portalUrl == "http://portal.example.com")
         #expect(refresher.cleared == 0)                  // signed out: nothing to sign out of
@@ -77,8 +78,8 @@ struct SettingsModelTests {
         let config = KioskConfig(prefs: prefs)
         let (refresher, auth) = signedOut()
         let api = config.apiUrl, portal = config.portalUrl
-        #expect(await SettingsModel.saveUrls(api: "ftp://x", portal: "https://p.example.com", config: config, session: refresher, auth: auth) == "Enter an http:// or https:// address.")
-        #expect(await SettingsModel.saveUrls(api: "https://a.example.com", portal: "nope", config: config, session: refresher, auth: auth) == "Enter an http:// or https:// address.")
+        #expect(await SettingsModel.saveUrls(api: "ftp://x", portal: "https://p.example.com", config: config, session: refresher, auth: auth, station: station) == "Enter an http:// or https:// address.")
+        #expect(await SettingsModel.saveUrls(api: "https://a.example.com", portal: "nope", config: config, session: refresher, auth: auth, station: station) == "Enter an http:// or https:// address.")
         #expect(config.apiUrl == api && config.portalUrl == portal)
     }
 
@@ -90,7 +91,7 @@ struct SettingsModelTests {
         let refresher = FakeRefresher()
         let auth = KioskAuth(api: FakeKioskApi(), refresher: refresher, identity: Identity(prefs: prefs, secrets: MemorySecretStore()), prefs: prefs)
         await auth.completePair(fakeSession())
-        #expect(await SettingsModel.saveUrls(api: "https://api.new.example.com", portal: config.portalUrl, config: config, session: refresher, auth: auth) == nil)
+        #expect(await SettingsModel.saveUrls(api: "https://api.new.example.com", portal: config.portalUrl, config: config, session: refresher, auth: auth, station: station) == nil)
         #expect(refresher.cleared == 1)
         #expect(refresher.stored == nil)
         #expect(auth.state == .anon)
@@ -104,7 +105,7 @@ struct SettingsModelTests {
         let refresher = FakeRefresher()
         let auth = KioskAuth(api: FakeKioskApi(), refresher: refresher, identity: Identity(prefs: prefs, secrets: MemorySecretStore()), prefs: prefs)
         await auth.completePair(fakeSession())
-        #expect(await SettingsModel.saveUrls(api: "https://API.example.com:443/", portal: "https://portal.example.com", config: config, session: refresher, auth: auth) == nil)
+        #expect(await SettingsModel.saveUrls(api: "https://API.example.com:443/", portal: "https://portal.example.com", config: config, session: refresher, auth: auth, station: station) == nil)
         #expect(refresher.cleared == 0)
         if case .authed = auth.state {} else { Issue.record("expected still signed in") }
         #expect(config.portalUrl == "https://portal.example.com")

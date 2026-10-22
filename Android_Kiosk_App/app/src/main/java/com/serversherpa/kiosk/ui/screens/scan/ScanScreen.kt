@@ -1,5 +1,6 @@
 package com.serversherpa.kiosk.ui.screens.scan
 
+import com.serversherpa.kiosk.core.model.headerLine
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -88,7 +89,7 @@ fun ScanScreen(nav: NavHostController) {
     if (camera) CameraScanSheet(onScan = { container.scanBus.publish(it) }, onDismiss = { camera = false })
 
     Column {
-        PageHeader("Kiosk · Scanning", "Scanning", setup?.let { "${it.initiativeName} · ${it.siteName} · ${it.scanLabel}" } ?: "Finish Kiosk Setup first.")
+        PageHeader("Kiosk · Scanning", "Scanning", setup?.headerLine(withScan = true) ?: "Finish Kiosk Setup first.")
         if (ui.loadStatus == LoadStatus.ERROR) KioskToast("Couldn't read this kiosk's local data.", error = true)
         if (empty) Text("No move data on this kiosk. Sync from Kiosk Setup.", color = c.textMute)
         val burst = rfidSession

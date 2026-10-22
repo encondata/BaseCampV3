@@ -22,7 +22,8 @@ struct FooterItem: Equatable {
     if let move = selection?.initiativeName ?? kioskMove?.name { items.append(FooterItem(label: "Move", value: move)) }
     if let selection {
         items.append(FooterItem(label: "Site", value: selection.siteName))
-        items.append(FooterItem(label: "Scan", value: selection.scanLabel))
+        // a Time Clock station has no scan type ("No move" / "No site" are its names)
+        if !selection.scanLabel.isEmpty { items.append(FooterItem(label: "Scan", value: selection.scanLabel)) }
     }
     items.append(FooterItem(label: "Data Sync", status: sync.phase == .done ? .good : .bad, detail: syncDetail(sync)))
     if devMode { items.append(FooterItem(label: "Dev mode", value: "On", accent: true)) }
@@ -43,6 +44,10 @@ struct FooterItem: Equatable {
 func personLabel(_ session: SessionData) -> String {
     session.kioskMove.map { "Kiosk · \($0.name)" } ?? session.person.displayName
 }
+
+/// The time clock owns the whole screen (its own header and footer), so the
+/// shell's top bar and footer step aside while it is on top.
+func shellHidesChrome(path: [Route]) -> Bool { path.last == .timeclock }
 
 /// The shell's "‹ Home" control shows only on a pushed screen.
 func showsBackButton(pathCount: Int) -> Bool { pathCount > 0 }
@@ -100,12 +105,13 @@ struct KioskShell<Content: View>: View {
     }
 
     var body: some View {
+        let chrome = !shellHidesChrome(path: path)
         VStack(spacing: 0) {
-            topBar
+            if chrome { topBar }
             content()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay(alignment: .bottom) { ToastHost().padding(.bottom, 12) }
-            footer
+            if chrome { footer }
         }
         .background(palette.paper2)
         .statusBarHidden(true)

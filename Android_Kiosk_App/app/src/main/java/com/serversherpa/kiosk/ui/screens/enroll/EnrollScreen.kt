@@ -1,5 +1,6 @@
 package com.serversherpa.kiosk.ui.screens.enroll
 
+import com.serversherpa.kiosk.core.model.headerLine
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -59,7 +60,7 @@ fun EnrollScreen(nav: NavHostController) {
     if (camera) CameraScanSheet(onScan = { container.scanBus.publish(it) }, onDismiss = { camera = false })
 
     Column {
-        PageHeader("Kiosk · RFID Enroll", "RFID Enroll", setup?.let { "${it.initiativeName} · ${it.siteName}" } ?: "Finish Kiosk Setup first.")
+        PageHeader("Kiosk · RFID Enroll", "RFID Enroll", setup?.headerLine() ?: "Finish Kiosk Setup first.")
         if (ui.loadStatus == LoadStatus.ERROR) KioskToast("Couldn't read this kiosk's local data.", error = true)
         if (empty) Text("No move data on this kiosk. Sync it from Kiosk Setup.", color = c.textMute)
         KioskToast(ui.toast)

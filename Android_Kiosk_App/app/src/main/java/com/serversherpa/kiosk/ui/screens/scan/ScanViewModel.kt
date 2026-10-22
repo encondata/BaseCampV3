@@ -101,7 +101,8 @@ class ScanViewModel(
         val a = appearance
         // A hardware scan can arrive before the roster or the setup is ready (the
         // typed input is disabled then). Say so instead of dropping it silently.
-        if (idx == null || sel == null || _state.value.rosterSize == 0) {
+        // A setup with no move, site or scan type (a Time Clock station's) cannot scan either.
+        if (idx == null || sel == null || sel.siteId == null || sel.initiativeId == null || sel.scanStatus == null || _state.value.rosterSize == 0) {
             flash.flash(hslToArgb(a.notFoundScan), a.flashMs); sound?.play(ScanSoundKind.NOT_FOUND)
             _state.update { it.copy(error = NO_MOVE_DATA) }
             return
@@ -160,7 +161,7 @@ class ScanViewModel(
         val idx = index
         val sel = setup
         val a = appearance
-        if (idx == null || sel == null || _state.value.rosterSize == 0) {
+        if (idx == null || sel == null || sel.siteId == null || sel.initiativeId == null || sel.scanStatus == null || _state.value.rosterSize == 0) {
             flash.flash(hslToArgb(a.notFoundScan), a.flashMs); sound?.play(ScanSoundKind.NOT_FOUND)
             _state.update { it.copy(error = NO_MOVE_DATA) }
             return

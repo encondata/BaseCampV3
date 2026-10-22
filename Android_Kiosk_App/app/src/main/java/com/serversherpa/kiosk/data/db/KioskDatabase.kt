@@ -27,12 +27,22 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
     }
 }
 
+/** Version 3: people keep their badge UUID, job title and Employee ID (the Time Clock's badge
+ *  door and confirm card). Nullable: an upgraded roster fills them on its next sync. */
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `people` ADD COLUMN `badge_uid` TEXT")
+        db.execSQL("ALTER TABLE `people` ADD COLUMN `job_title` TEXT")
+        db.execSQL("ALTER TABLE `people` ADD COLUMN `external_id` TEXT")
+    }
+}
+
 @Database(
     entities = [
         AssetEntity::class, PersonEntity::class, ContainerEntity::class, TruckEntity::class, MetaEntity::class, OutboxEntity::class,
         LabelTemplateEntity::class, LabelFontEntity::class, GeneratedLabelEntity::class,
     ],
-    version = 2, exportSchema = true,
+    version = 3, exportSchema = true,
 )
 abstract class KioskDatabase : RoomDatabase() {
     abstract fun assets(): AssetDao
@@ -49,7 +59,7 @@ abstract class KioskDatabase : RoomDatabase() {
         const val NAME = "serversherpa-kiosk"
 
         /** Every migration, oldest first. A schema change adds one here and exports its schema. */
-        val MIGRATIONS = arrayOf(MIGRATION_1_2)
+        val MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
 
         fun build(context: Context): KioskDatabase =
             Room.databaseBuilder(context.applicationContext, KioskDatabase::class.java, NAME).addMigrations(*MIGRATIONS).build()

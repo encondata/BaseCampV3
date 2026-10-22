@@ -11,13 +11,15 @@ break, never negative.
 """
 
 import uuid
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, time
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import TimeEntry
+from serversherpa.db.models import Site, TimeEntry
 from serversherpa.services.audit import diff, snapshot
 
 # The columns a clock-out touches — the audit diff is taken over these.
@@ -52,6 +54,72 @@ def worked_minutes(entry: TimeEntry) -> int:
         return 0
     span = int((entry.clock_out_at - entry.clock_in_at).total_seconds() // 60)
     return max(0, span - entry.break_minutes)
+
+
+@dataclass
+class TodaySpan:
+    """One entry's share of today: `clock_out_at` is None while open."""
+
+    clock_in_at: datetime
+    clock_out_at: datetime | None
+    minutes: int
+
+
+def _zone(name: str | None) -> ZoneInfo | None:
+    """`name` as a zone, or None when it is empty or not one this host knows.
+    The kiosk's `tz` is client input, so any lookup failure (an odd path
+    included) counts as unknown."""
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return None
+
+
+async def site_zone(
+    db: AsyncSession, site_id: uuid.UUID | None, fallback: str | None = None,
+) -> ZoneInfo:
+    """The zone "today" is read in: the site's own zone; else `fallback`
+    (the kiosk's own zone, sent by its browser as `tz`); else UTC. A name
+    that is empty or not one this host knows is skipped, never an error."""
+    name = None
+    if site_id is not None:
+        name = await db.scalar(select(Site.timezone).where(Site.id == site_id))
+    return _zone(name) or _zone(fallback) or ZoneInfo("UTC")
+
+
+async def today_summary(
+    db: AsyncSession, person_id: uuid.UUID, *, tz: ZoneInfo, now: datetime,
+) -> tuple[int, list[TodaySpan]]:
+    """Minutes worked so far today (local to `tz`) and the spans behind
+    them, oldest first — "You've been working for 7h 24m today".
+
+    A span counts only its overlap with [local midnight, now], so a shift
+    that started yesterday is clipped at midnight and an open one runs to
+    `now`. Break comes off only a shift that started today (a shift from
+    yesterday has nowhere today to put it); each span floors at 0."""
+    # All arithmetic in UTC: subtracting two aware datetimes that share a
+    # ZoneInfo is wall-clock math, which loses or gains an hour on a DST day.
+    now = now.astimezone(UTC)
+    day_start = datetime.combine(
+        now.astimezone(tz).date(), time.min, tzinfo=tz).astimezone(UTC)
+    entries = (await db.scalars(select(TimeEntry).where(
+        TimeEntry.person_id == person_id,
+        TimeEntry.clock_in_at < now,
+        TimeEntry.clock_out_at.is_(None) | (TimeEntry.clock_out_at > day_start))
+        .order_by(TimeEntry.clock_in_at))).all()
+    spans = []
+    for entry in entries:
+        start = max(entry.clock_in_at, day_start)
+        end = min(entry.clock_out_at or now, now)
+        minutes = int((end - start).total_seconds() // 60)
+        if entry.clock_in_at >= day_start:
+            minutes -= entry.break_minutes
+        spans.append(TodaySpan(clock_in_at=entry.clock_in_at,
+                               clock_out_at=entry.clock_out_at,
+                               minutes=max(0, minutes)))
+    return sum(s.minutes for s in spans), spans
 
 
 async def create_open_entry(

@@ -2,7 +2,7 @@ package com.serversherpa.kiosk.core.features
 
 import com.serversherpa.kiosk.core.setup.SetupState
 
-enum class FeatureId { SETUP, SCAN, ENROLL, CONTAINERS, TRUCKS, LABELS, TIMECLOCK, SETTINGS }
+enum class FeatureId { SETUP, SCAN, ENROLL, CONTAINERS, TRUCKS, LABELS, TIMECLOCK, SETTINGS, TIMECLOCK_STATION }
 
 /** One launcher tile / route. `placeholder` features open the generic
  *  "not available yet" page; `alwaysAvailable` ones ignore setup state. */
@@ -28,6 +28,17 @@ val FEATURES: List<KioskFeature> = listOf(
 )
 
 fun feature(id: FeatureId): KioskFeature = FEATURES.first { it.id == id }
+
+/** A Time Clock station's Home tile (kiosk/src/lib/features.ts TIMECLOCK_STATION_FEATURE): it
+ *  signs the person out and leaves the station on Welcome. Not in [FEATURES], and no route of
+ *  its own: Home runs it. */
+val TIMECLOCK_STATION_FEATURE = KioskFeature(FeatureId.TIMECLOCK_STATION, "timeclock-station", "Time Clock", "Start the time clock for workers.")
+
+/** What Home shows (kiosk/src/lib/features.ts STATION_TILES; Jimmy owns these lists): a Time
+ *  Clock station only Time Clock, Kiosk Setup and Settings; any other kiosk every feature. */
+fun homeFeatures(stationType: String?): List<KioskFeature> =
+    if (stationType == "timeclock") listOf(TIMECLOCK_STATION_FEATURE, feature(FeatureId.SETUP), feature(FeatureId.SETTINGS))
+    else FEATURES
 
 /** The feature whose route the nav destination is (route may carry `?tab=`). */
 fun featureForRoute(route: String?): KioskFeature? {
