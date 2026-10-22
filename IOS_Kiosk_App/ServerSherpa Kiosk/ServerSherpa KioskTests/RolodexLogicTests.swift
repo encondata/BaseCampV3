@@ -100,6 +100,15 @@ struct RolodexLogicTests {
         #expect(RolodexLogic.matches(r, query: "smi rob"))
     }
 
+    @Test func searchMatchesWholeHyphenatedNames() {
+        let r = row("x", "Robert", "Smith-Jones")
+        #expect(RolodexLogic.matches(r, query: "smith-jones"))
+        #expect(RolodexLogic.matches(r, query: "Smith-Jo"))
+        #expect(RolodexLogic.matches(r, query: "jones"))
+        #expect(RolodexLogic.matches(r, query: "smith"))
+        #expect(!RolodexLogic.matches(r, query: "smith-x"))
+    }
+
     @Test func emptyQueryMatchesEveryone() {
         #expect(crew.allSatisfy { RolodexLogic.matches($0, query: "") })
         #expect(crew.allSatisfy { RolodexLogic.matches($0, query: "   ") })
@@ -250,6 +259,14 @@ struct RolodexLogicTests {
                                    photoSkipped: true)
         #expect(String(decoding: try KioskJSON.encoder.encode(body), as: UTF8.self)
                 == #"{"allow_duplicate":false,"first_name":"Marcus","job_title":"Mover","last_name":"Reed","level":"L1","partner_id":"c1","photo_skipped":true}"#)
+    }
+
+    @Test func patchSetKeepsAClearedFieldAsNull() throws {
+        var patch = RolodexPatch()
+        patch.set(.phone, nil)
+        patch.set(.level, "L4")
+        #expect(patch == RolodexPatch([.phone: nil, .level: "L4"]))
+        #expect(try json(patch) == #"{"level":"L4","phone":null}"#)
     }
 
     @Test func patchRoundTripsThroughJSON() throws {

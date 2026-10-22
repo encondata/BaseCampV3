@@ -87,15 +87,17 @@ enum RolodexLogic {
     // MARK: search and filters
 
     /// Every whitespace-separated query term (folded) must prefix a word of the first,
-    /// last or preferred name, job title or company (each split on whitespace and
-    /// hyphens, then folded). An empty query matches everyone.
+    /// last or preferred name, job title or company. The words are each field's
+    /// whitespace-split words, folded whole (`Smith-Jones` → `smithjones`, so
+    /// "smith-jones" finds it) and also split on hyphens (`smith`, `jones`). An empty
+    /// query matches everyone.
     static func matches(_ row: RolodexRow, query: String) -> Bool {
         let terms = query.split(whereSeparator: \.isWhitespace).map { fold(String($0)) }.filter { !$0.isEmpty }
         if terms.isEmpty { return true }
         let words = [row.firstName, row.lastName, row.preferredName, row.jobTitle, row.company?.name]
             .compactMap { $0 }
-            .flatMap { $0.split(whereSeparator: { $0.isWhitespace || $0 == "-" }) }
-            .map { fold(String($0)) }
+            .flatMap { $0.split(whereSeparator: \.isWhitespace) }
+            .flatMap { word in [fold(String(word))] + word.split(separator: "-").map { fold(String($0)) } }
             .filter { !$0.isEmpty }
         return terms.allSatisfy { term in words.contains { $0.hasPrefix(term) } }
     }
@@ -143,9 +145,9 @@ enum RolodexLogic {
         var patch = RolodexPatch()
         for (field, before, after) in pairs {
             let value = clean(after)
-            if clean(before) != value { patch.fields[field] = .some(value) }
+            if clean(before) != value { patch.set(field, value) }
         }
-        if let status = clean(edited.status), status != clean(original.status) { patch.fields[.status] = status }
+        if let status = clean(edited.status), status != clean(original.status) { patch.set(.status, status) }
         return patch
     }
 

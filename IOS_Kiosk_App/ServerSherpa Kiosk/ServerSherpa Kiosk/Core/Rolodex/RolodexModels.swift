@@ -447,6 +447,7 @@ struct RolodexCreateIn: Codable, Equatable, Sendable {
 /// `PATCH /kiosk/rolodex/workers/{id}`: only the fields that changed. A field mapped to
 /// nil is sent as JSON `null` (the server clears it); a field not in `fields` is left out
 /// (unchanged). The synthesized encoder would drop nils, so `encode(to:)` is written out.
+/// `fields` is read-only outside: `fields[.phone] = nil` would delete the key, not clear it.
 struct RolodexPatch: Codable, Equatable, Sendable {
     enum Field: String, CodingKey, CaseIterable, Sendable {
         case firstName = "first_name"
@@ -459,11 +460,14 @@ struct RolodexPatch: Codable, Equatable, Sendable {
         case statusNote = "status_note"
     }
 
-    var fields: [Field: String?]
+    private(set) var fields: [Field: String?]
 
     init(_ fields: [Field: String?] = [:]) { self.fields = fields }
 
     var isEmpty: Bool { fields.isEmpty }
+
+    /// Sends `field` as `value`; nil sends `null` (clears it).
+    mutating func set(_ field: Field, _ value: String?) { fields[field] = .some(value) }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Field.self)
