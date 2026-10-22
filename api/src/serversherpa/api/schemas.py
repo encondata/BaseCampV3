@@ -3878,6 +3878,86 @@ class KioskStationClockIn(BaseModel):
     tz: str | None = Field(None, max_length=64)   # as KioskClockInIn
 
 
+# ── kiosk rolodex ──
+
+class KioskRolodexCompany(BaseModel):
+    """A worker's company (partner): on a row, and as a picker option."""
+
+    id: uuid.UUID
+    name: str
+
+
+class KioskRolodexWorkerOut(BaseModel):
+    """One Rolodex row. The apps cache the list offline, so it carries no
+    email or phone (the /kiosk/sync/people privacy rule); those load with
+    the worker page. `photo_url` is presigned and short-lived; the apps
+    cache photo bytes by `person_id` + `photo_version`, never by URL."""
+
+    person_id: uuid.UUID
+    first_name: str
+    last_name: str
+    preferred_name: str | None = None
+    display_name: str                      # preferred or first name + last name
+    job_title: str | None = None
+    company: KioskRolodexCompany | None = None
+    trade: str | None = None
+    level: str | None = None
+    level_color: str | None = None         # None for an unleveled worker
+    status: str
+    status_label: str
+    status_color: str | None = None
+    has_photo: bool
+    photo_url: str | None = None           # presigned, short-lived; None without a photo
+    photo_version: str | None = None       # changes with every new photo; None without one
+    rfid_enrolled: bool
+    has_account: bool                      # holds a portal login
+
+
+class KioskRolodexListOut(BaseModel):
+    generated_at: datetime
+    workers: list[KioskRolodexWorkerOut]
+
+
+class KioskRolodexWorkerDetailOut(KioskRolodexWorkerOut):
+    """The worker page: the row plus contact details and what the signed-in
+    admin may change, so the apps disable a control instead of showing a
+    403. `edit_block_reason` is set when the target has a portal login
+    ranked at or above the admin's; `status_block_reason` is `self` on
+    the admin's own row, else `rank_too_low` for a target ranked at or
+    above them."""
+
+    email: str | None = None
+    phone: str | None = None
+    external_id: str | None = None         # shown as "Employee ID"
+    status_note: str | None = None
+    can_edit: bool
+    can_change_status: bool
+    edit_block_reason: Literal["rank_too_low"] | None = None
+    status_block_reason: Literal["self", "rank_too_low"] | None = None
+
+
+class KioskRolodexLevelOut(BaseModel):
+    level: str
+    title: str
+    color: str
+
+
+class KioskRolodexStatusOut(BaseModel):
+    key: str
+    label: str
+    color: str
+
+
+class KioskRolodexOptionsOut(BaseModel):
+    """What the worker page's pickers offer: the level scale in rank
+    order, the active worker statuses in their sort order, and the
+    non-archived partners in natural order."""
+
+    levels: list[KioskRolodexLevelOut]
+    statuses: list[KioskRolodexStatusOut]
+    partners: list[KioskRolodexCompany]
+
+
 # ── Labels ──
 
 
