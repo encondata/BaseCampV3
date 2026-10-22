@@ -552,6 +552,63 @@ async def test_duplicates_by_name_email_phone(client, db, seeded_user):
     assert await check({"first_name": "Zed", "last_name": "Nobody", "phone": "0142"}) == []
 
 
+async def test_duplicates_flag_an_archived_persons_email(client, db, seeded_user):
+    """Create refuses an archived person's email (the unique index covers
+    them), so the duplicate check says so before the photo step: an
+    archived person comes back when the EMAIL matches, as a non-worker
+    (the apps give it no Open), and never for a name or phone match."""
+    _, hdrs = await _kiosk_admin(db, client)
+    crew = await _partner(db, "Summit Crew")
+    # archived, and still holding an active worker role, with a login
+    ana = await _worker(db, "Ana", "Ortiz", email="ana@example.com", phone="(312) 555-0142",
+                        archived=True, account=True, job_title="Rigger", partner_id=crew)
+    # archived people sharing only a name or only a phone with the request
+    await _worker(db, "Bea", "Archer", phone="(773) 555-0188", archived=True)
+    await _person(db, "Cy", "Dunn", archived=True)
+
+    async def check(body):
+        r = await client.post(f"{BASE}/duplicates", headers=hdrs, json=body)
+        assert r.status_code == 200, r.text
+        return r.json()["matches"]
+
+    # the email alone, in any case
+    for email in ("ana@example.com", "ANA@Example.com"):
+        matches = await check({"first_name": "Zed", "last_name": "Nobody", "email": email})
+        assert len(matches) == 1, email
+        m = matches[0]
+        assert set(m) == MATCH_FIELDS
+        assert m["person_id"] == str(ana)
+        assert m["is_worker"] is False          # no Open for an archived person
+        assert m["has_account"] is True
+        assert m["matched_on"] == ["email"]
+        assert m["display_name"] == "Ana Ortiz"
+        assert m["job_title"] == "Rigger" and m["company"] == "Summit Crew"
+
+    # name and phone also match this archived person, but only the email counts
+    matches = await check({"first_name": "Ana", "last_name": "Ortiz",
+                           "email": "ana@example.com", "phone": "312-555-0142"})
+    assert [(x["person_id"], x["matched_on"], x["is_worker"]) for x in matches] == [
+        (str(ana), ["email"], False)]
+
+    # a live person who shares the name still matches on the name, beside it
+    zed = await _worker(db, "Ana", "Ortiz", email="ana.ortiz@example.com")
+    matches = await check({"first_name": "Ana", "last_name": "Ortiz",
+                           "email": "ana@example.com"})
+    assert sorted((x["person_id"], tuple(x["matched_on"]), x["is_worker"]) for x in matches) == \
+        sorted([(str(ana), ("email",), False), (str(zed), ("name",), True)])
+
+    # an archived person is never a name or a phone match
+    matches = await check({"first_name": "Ana", "last_name": "Ortiz"})
+    assert [(x["person_id"], x["matched_on"]) for x in matches] == [(str(zed), ["name"])]
+    assert await check({"first_name": "Bea", "last_name": "Archer"}) == []
+    assert await check({"first_name": "Zed", "last_name": "Nobody",
+                        "phone": "773-555-0188"}) == []
+    assert await check({"first_name": "Cy", "last_name": "Dunn"}) == []
+    # an email nobody has
+    assert await check({"first_name": "Zed", "last_name": "Nobody",
+                        "email": "nobody@example.com"}) == []
+
+
 async def test_duplicates_match_preferred_names_and_workers(client, db, seeded_user):
     _, hdrs = await _kiosk_admin(db, client)
     crew = await _partner(db, "Summit Crew")

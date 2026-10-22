@@ -43,7 +43,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -366,47 +366,57 @@ async def find_duplicates(
     leading 1 dropped, under 7 digits is no key). `matched_on` names every
     way each person matched. Sorted by last name, then first name.
 
+    One exception, for email alone: an ARCHIVED person whose email matches
+    is returned too (`is_worker` False, `matched_on` ["email"]), because
+    create refuses that email (`_email_taken` counts archived people, as
+    the unique index does) and the admin should hear it before the photo
+    step. An archived person never matches on name or phone.
+
     SQL only narrows the candidates, and always to a superset of what the
     Python rules match; the Python rules are the answer."""
     keys = name_keys(first_name, last_name, preferred_name or "")
     email_key = (email or "").strip()
     phone_key = normalize_phone(phone or "")
 
-    conds = []
+    live_conds = []         # name and phone: non-archived people only
     if keys:
         # Whole "given last" strings, so "Mary Ann" + "Smith" finds "Mary" +
         # "Ann Smith" (a null preferred name concatenates to null: no match).
         wanted = sorted(keys)
-        conds.append(or_(
+        live_conds.append(or_(
             _squashed_sql(Person.first_name + " " + Person.last_name).in_(wanted),
             _squashed_sql(Person.preferred_name + " " + Person.last_name).in_(wanted),
             func.concat(Person.first_name, Person.last_name, Person.preferred_name)
             .regexp_match(_NOT_PLAIN_ASCII)))
-    if email_key:
-        conds.append(Person.email == email_key)            # CITEXT: any case
+    email_cond = Person.email == email_key if email_key else None   # CITEXT: any case
     if phone_key:
         # normalize_phone drops a leading 1 only from an 11-digit number
         spellings = [phone_key, f"1{phone_key}"] if len(phone_key) == 10 else [phone_key]
-        conds.append(func.regexp_replace(Person.phone, r"\D", "", "g").in_(spellings))
-    if not conds:
+        live_conds.append(func.regexp_replace(Person.phone, r"\D", "", "g").in_(spellings))
+    # the email rule reaches archived people too; the others only live ones
+    options = []
+    if live_conds:
+        options.append(and_(Person.archived_at.is_(None), or_(*live_conds)))
+    if email_cond is not None:
+        options.append(email_cond)
+    if not options:
         return []
 
     # Pass 1: just the matching columns of the candidates, judged in Python.
     candidates = (await db.execute(
         select(Person.id, Person.first_name, Person.last_name, Person.preferred_name,
-               Person.email, Person.phone)
-        .where(Person.archived_at.is_(None),
-               Person.source != KIOSK_MOVE_SOURCE,     # a move's hidden kiosk identity
-               or_(*conds))
+               Person.email, Person.phone, Person.archived_at.is_not(None))
+        .where(Person.source != KIOSK_MOVE_SOURCE,     # a move's hidden kiosk identity
+               or_(*options))
     )).all()
     matched_on: dict[uuid.UUID, list[str]] = {}
-    for pid, first, last, preferred, p_email, p_phone in candidates:
+    for pid, first, last, preferred, p_email, p_phone, archived in candidates:
         on = []
-        if keys & name_keys(first, last, preferred or ""):
+        if not archived and keys & name_keys(first, last, preferred or ""):
             on.append("name")
         if email_key and (p_email or "").casefold() == email_key.casefold():
             on.append("email")
-        if phone_key and normalize_phone(p_phone or "") == phone_key:
+        if not archived and phone_key and normalize_phone(p_phone or "") == phone_key:
             on.append("phone")
         if on:
             matched_on[pid] = on
@@ -431,7 +441,7 @@ async def find_duplicates(
             display_name=person.display_name,
             job_title=person.job_title,
             company=company,
-            is_worker=bool(worker),
+            is_worker=bool(worker) and person.archived_at is None,
             has_account=account_id is not None,
             photo_url=presign_get(person.avatar_key),
             photo_version=photo_version(person.avatar_key),
@@ -452,7 +462,8 @@ async def rolodex_duplicates(
     the details step (`find_duplicates`). A POST so names stay out of
     URLs; it writes nothing. Matches that aren't workers get no Open in
     the apps (the kiosk never grants roles); an email match blocks Create
-    anyway, since the email can't be reused."""
+    anyway, since the email can't be reused, and that includes an archived
+    person's email (the archived match is `is_worker: false`)."""
     return KioskRolodexDuplicatesOut(matches=await find_duplicates(db, **body.model_dump()))
 
 
