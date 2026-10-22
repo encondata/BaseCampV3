@@ -55,6 +55,14 @@ Labels are made on the device by the shared TypeScript generator in `../kiosk/sr
 - **Tests.** TypeScript: `npm --prefix kiosk test -- src/labelgen` (node environment, no jsdom). Android: the Gradle command under Build and test; `LabelBuilderTest`, `MigrationTest`, `SyncLabelsTest`, `PrintQueueTest` and `PrinterSetupViewModelTest` cover labels. `JavaScriptSandbox` can't run under Robolectric, so the generator is faked there; the real engine, printer scanning and printing need a device or emulator.
 - **Room schema.** Version 2 adds the label tables. Schemas are exported to `app/schemas/` and committed; export the new one before changing an entity.
 
+## Time Clock station
+
+Kiosk Setup › **Time Clock** makes this device a dedicated time clock. It signs out to a Welcome screen, and crews clock in and out there by name or with the QR code from the portal's /me page.
+- The station key is kept in EncryptedSharedPreferences and bound to the API origin. Changing the API URL drops it, and you run Kiosk Setup again.
+- The gear on Welcome opens sign-in.
+- Signed in, Home shows Time Clock, Kiosk Setup and Settings.
+- Design and rulings: `../docs/superpowers/specs/2026-10-20-kiosk-timeclock-station-design.md` (Implementation notes, phases 2 and 3).
+
 ## Icons and fonts
 
 `python3 tools/make_icons.py` regenerates the launcher icons from `../portal/public/images/serversherpa-logo.png`. Fonts are bundled (see `FONTS-LICENSE.md`).
