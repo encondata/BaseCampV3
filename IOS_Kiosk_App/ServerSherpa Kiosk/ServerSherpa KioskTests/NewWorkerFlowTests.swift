@@ -265,7 +265,7 @@ struct NewWorkerFlowTests {
         let first = Task { await f.createWithPhoto() }
         #expect(await waitUntil { f.creating && api.rolodexCreateBodies.count == 1 })
         await f.createWithPhoto()
-        await f.create(photo: photoTestJpeg(), photoSkipped: false, allowDuplicate: false)
+        f.continueWithoutPhoto()
         await f.createWithoutPhoto()
         #expect(api.rolodexCreateBodies.count == 1)
         await hold.open()
@@ -321,10 +321,10 @@ struct NewWorkerFlowTests {
     }
 
     @Test(arguments: zip(
-        [ApiError(status: 423, code: "read_only_mode"), ApiError(status: 409, code: "email_in_use"), ApiError.network()],
+        [ApiError(status: 423, code: "read_only_mode"), ApiError.network(), ApiError(status: 500, code: "unknown_error")],
         ["The system is in read-only mode, so changes can't be saved right now.",
-         "Another person already uses that email.",
-         "No connection. Try again when you're back online."]))
+         "No connection. Try again when you're back online.",
+         "Something went wrong. Try again."]))
     func aFailedCreateKeepsTheFormAndThePhoto(_ failure: ApiError, _ copy: String) async throws {
         let m = await loaded()
         let f = await onCropStep(m)
@@ -334,6 +334,85 @@ struct NewWorkerFlowTests {
         #expect(f.errorText == copy)
         #expect(f.active && !f.creating && f.stage == .crop && f.crop != nil && f.form == form)
         #expect(api.rolodexPhotos.isEmpty && m.selectedId == nil)
+    }
+
+    /// Final review M7: a create refused for a field (the email in use, a company archived or gone
+    /// since the form loaded, an unknown level) goes back to the details with the positioned photo
+    /// kept: the admin fixes the field, taps Next and Create worker, without a retake.
+    @Test(arguments: zip(
+        [ApiError(status: 409, code: "email_in_use"), ApiError(status: 422, code: "partner_archived"),
+         ApiError(status: 422, code: "partner_not_found"), ApiError(status: 422, code: "unknown_level")],
+        ["Another person already uses that email.", "Something went wrong. Try again.",
+         "Something went wrong. Try again.", "Something went wrong. Try again."]))
+    func aCreateRefusedForAFieldGoesBackToTheDetailsWithThePhoto(_ failure: ApiError, _ copy: String) async throws {
+        let m = await loaded()
+        let f = await onCropStep(m)
+        let crop = try #require(f.crop)
+        api.rolodexCreateResult = { _ in throw failure }
+        await f.createWithPhoto()
+        #expect(f.stage == .details && f.errorText == copy)
+        #expect(f.crop === crop && f.active && !f.creating)
+
+        f.form.email = "marcus.reed@example.com"
+        api.rolodexCreateResult = { _ in nwMarcus() }
+        await f.next()
+        #expect(f.stage == .crop && f.crop === crop && f.errorText == nil)
+        await f.createWithPhoto()
+        #expect(api.rolodexCreateBodies.count == 2 && api.rolodexCreateBodies.last?.email == "marcus.reed@example.com")
+        #expect(api.rolodexPhotos.count == 1 && !f.active && m.selectedId == "p-marcus")
+    }
+
+    /// Final review M8: "Loading photo…" has Cancel, back to the photo step; the slow pick is dropped.
+    @Test func cancelOnLoadingPhotoGoesBackToThePhotoStep() async throws {
+        let m = await loaded()
+        let f = await onPhotoStep(m)
+        let hold = HoldGate()
+        let picking = Task { await f.use { await hold.wait(); return photoTestJpeg() } }
+        #expect(await waitUntil { f.loadingPhoto })
+        f.cancelPhotoLoad()
+        #expect(f.stage == .photo && !f.loadingPhoto && !f.busy)
+        // the photo step works again
+        f.continueWithoutPhoto()
+        #expect(f.confirmNoPhoto)
+        f.takePhotoInstead()
+        await hold.open()
+        await picking.value
+        #expect(f.stage == .photo && f.crop == nil && !f.loadingPhoto)
+        await f.use(photoTestJpeg())
+        #expect(f.stage == .crop && f.crop != nil)
+
+        // ‹ Details drops a pick under way too
+        f.retake()
+        let slow = HoldGate()
+        let late = Task { await f.use { await slow.wait(); return photoTestJpeg() } }
+        #expect(await waitUntil { f.loadingPhoto })
+        f.backToDetails()
+        #expect(f.stage == .details && !f.loadingPhoto)
+        await slow.open()
+        await late.value
+        #expect(f.stage == .details && f.crop == nil)
+    }
+
+    /// Task 10 minor 2: a create refused as a possible duplicate whose re-check doesn't answer is
+    /// never sent again later: after Back and Next, Create anyway goes on to the photo.
+    @Test func aRefusedCreateIsNotSentAgainAfterAFailedRecheck() async throws {
+        let m = await loaded()
+        let f = await onCropStep(m)
+        api.rolodexCreateResult = { body in
+            guard body.allowDuplicate else { throw ApiError(status: 409, code: "possible_duplicate") }
+            return nwMarcus()
+        }
+        api.rolodexDuplicatesResult = { _ in throw ApiError.network() }
+        await f.createWithPhoto()
+        #expect(f.errorText == "No connection. Try again when you're back online." && !f.showMatches)
+        f.backToDetails()
+        api.rolodexDuplicatesResult = { _ in [WORKER_MATCH] }
+        await f.next()
+        #expect(f.showMatches)
+        await f.createAnyway()
+        #expect(f.stage == .crop && f.active && api.rolodexCreateBodies.count == 1)
+        await f.createWithPhoto()
+        #expect(api.rolodexCreateBodies.map(\.allowDuplicate) == [false, true] && !f.active)
     }
 
     /// Spec §3.15: Try again on a photo that didn't upload needs a connection, like every change.
@@ -357,6 +436,23 @@ struct NewWorkerFlowTests {
         #expect(!m.offline && m.photo.canRetry("p-marcus"))
         await m.photo.retry("p-marcus")
         #expect(api.rolodexPhotos.count == 2 && m.photo.failureText(for: "p-marcus") == nil)
+    }
+
+    /// Task 10 minor 1: a sign-out landing while the new worker's page opens (after the create,
+    /// before the photo goes up) starts no upload.
+    @Test func aSignOutAsTheNewWorkerOpensStartsNoUpload() async throws {
+        let hook = SignOutHook()
+        let who = owner
+        let m = RolodexModel(api: api, store: store, owner: { hook.check(); return who })
+        hook.model = m
+        await m.load()
+        let f = await onCropStep(m)
+        hook.armed = true   // the next owner check (the page opening) signs out
+        await f.createWithPhoto()
+        #expect(api.rolodexCreateBodies.count == 1)
+        #expect(api.rolodexPhotos.isEmpty)
+        #expect(!f.active && f.takeOpened() == nil && m.selectedId == nil)
+        #expect(m.photo.failureText(for: "p-marcus") == nil)
     }
 
     @Test func signingOutClosesTheFlowAndDropsALateCreate() async throws {
@@ -518,5 +614,19 @@ struct RolodexPhotoFlowTests {
         await using.value
         #expect(api.rolodexPhotos.isEmpty)
         #expect(!m.photo.uploading && m.photo.stage == .none)
+    }
+}
+
+/// Signs the Rolodex out from inside its owner check, once armed: a sign-out landing between
+/// two steps of a flow, exactly there.
+@MainActor
+private final class SignOutHook {
+    weak var model: RolodexModel?
+    var armed = false
+
+    func check() {
+        guard armed else { return }
+        armed = false
+        model?.clear()
     }
 }
