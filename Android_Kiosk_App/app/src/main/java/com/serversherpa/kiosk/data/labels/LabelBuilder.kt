@@ -88,8 +88,9 @@ class LabelBuilder(
     /** Builds in the background. [start] calls it after a sync and a kind or printer DPI change. */
     fun rebuild(reason: String) = replace { buildNow(reason) }
 
-    /** Stops any build and resets the status ("Clear local data" emptied the labels). */
-    fun stop() = replace { lock.withLock { _pick.value = null; _status.value = LabelBuildStatus() } }
+    /** Stops any build and resets the status, waiting for a sync: "Clear local data" or "Reset
+     *  app" emptied the labels, or the kiosk has never synced (as iOS's stop). */
+    fun stop() = replace { lock.withLock { _pick.value = null; _status.value = LabelBuildStatus(needs = LabelBuildNeed.SYNC) } }
 
     /** Cancels the running or waiting request at once, then runs [block] after it has finished. */
     private fun replace(block: suspend () -> Unit) {

@@ -566,6 +566,8 @@ class LabelBuilderTest {
         waitFor("IDLE") { b.status.value.phase == LabelBuildPhase.IDLE }
         kotlinx.coroutines.delay(200)
         assertEquals(LabelBuildPhase.IDLE, b.status.value.phase)
+        // Stopped, waiting for a sync (as iOS): the labels were cleared, or never synced.
+        assertEquals(com.serversherpa.kiosk.core.labels.LabelBuildNeed.SYNC, b.status.value.needs)
         assertTrue(stored().isEmpty())
         assertEquals(0, engine.gatePassed)
     }

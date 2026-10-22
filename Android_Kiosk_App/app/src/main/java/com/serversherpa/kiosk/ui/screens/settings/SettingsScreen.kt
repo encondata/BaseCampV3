@@ -18,6 +18,7 @@ import com.serversherpa.kiosk.core.settings.DEFAULT_TAB
 import com.serversherpa.kiosk.core.settings.SettingsTabId
 import com.serversherpa.kiosk.core.settings.visibleTabs
 import com.serversherpa.kiosk.data.auth.AuthState
+import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.components.PageHeader
 import com.serversherpa.kiosk.ui.components.Segmented
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
@@ -48,7 +49,8 @@ fun SettingsScreen(nav: NavHostController, requestedTab: String?) {
             SettingsTabId.DEVICES -> DevicesPanel()
             SettingsTabId.RFID -> RfidPanel()
             SettingsTabId.ADMIN -> AdminPanel()
-            SettingsTabId.DEVELOPER -> DeveloperPanel()
+            // Reset app ends on Home, popping everything (Print Labels' list with it).
+            SettingsTabId.DEVELOPER -> DeveloperPanel(goHome = { nav.navigate(Routes.HOME) { popUpTo(Routes.HOME) { inclusive = true } } })
         }
     }
 }

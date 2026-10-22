@@ -142,6 +142,25 @@ class AppContainer(
         rfid.start()
     }
 
+    /**
+     * Settings › Developer › Reset app: a fresh setup on a kiosk that stays signed in. Clears the
+     * synced move data (with the generated labels, templates and font files: Sync.clearLocalData),
+     * the Kiosk Setup selection and setup state, and the label settings (printer, offsets, peel).
+     * Keeps the outbox (unsent scans), the sign-in, the API and portal URLs, the kiosk's identity
+     * and name, and the appearance, sound, RFID, camera, checkpoint and developer-mode
+     * preferences. The label builder ends stopped, waiting for a sync. The Print Labels list
+     * lives in its screen's ViewModel, which the caller's trip Home clears. Throws when the local
+     * data couldn't be cleared; the setup is then left as it was. [clearLocalData] is a test seam.
+     */
+    suspend fun resetApp(clearLocalData: suspend () -> Unit = { sync.clearLocalData() }) {
+        clearLocalData()
+        prefs.clearSetup()
+        labelSettings.reset()
+        // No build left over. A settings change may still start one, which finds no synced move
+        // and ends at once waiting for a sync, as the stop does.
+        labelBuilder.stop()
+    }
+
     suspend fun logout() {
         auth.logout()
         cookieJar.clearRefreshCookie()
