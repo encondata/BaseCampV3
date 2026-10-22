@@ -215,6 +215,8 @@ private fun ColumnScope.WorkerView(ui: RolodexUi, vm: RolodexViewModel, wide: Bo
         if (detail != null) Field("Employee ID", detail.external_id, mono = true)
         detail?.status_note?.takeIf { it.isNotBlank() }?.let { Field("Status note", it) }
     }
+    // They come with the worker page, so not before it loads, nor offline.
+    if (detail != null) PreviousJobs(detail.jobs)
 }
 
 /**
@@ -347,8 +349,9 @@ private fun PhotoWithBadge(
     }
 }
 
+/** One of the worker page's cards: a small uppercase title over its rows, on paper with a hairline border. */
 @Composable
-private fun InfoCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+internal fun InfoCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     val c = LocalKioskColors.current
     Column(
         Modifier.fillMaxWidth().padding(top = 10.dp).clip(RoundedCornerShape(14.dp)).background(c.paper)

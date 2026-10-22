@@ -2,6 +2,7 @@ package com.serversherpa.kiosk.data.api
 
 import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.model.RolodexCreateIn
+import com.serversherpa.kiosk.core.model.RolodexDetail
 import com.serversherpa.kiosk.core.model.RolodexDuplicatesIn
 import com.serversherpa.kiosk.core.model.RolodexList
 import kotlinx.coroutines.runBlocking
@@ -54,12 +55,31 @@ class OkHttpKioskApiRolodexTest {
             h.server.enqueue(jsonResponse(200, detailJson))
             val d = h.api.rolodexWorker(pid)
             assertEquals("312-555-0142", d.phone); assertEquals("E-17", d.external_id)
+            assertTrue(d.jobs.isEmpty())                                   // an API without jobs: none
             assertTrue(d.can_edit); assertFalse(d.can_change_status)
             assertNull(d.edit_block_reason); assertEquals("self", d.status_block_reason)
             assertEquals(list.workers[0], d.toRow())
             val dreq = h.server.takeRequest()
             assertEquals("GET", dreq.method); assertEquals("/kiosk/rolodex/workers/$pid", dreq.path)
         }
+    }
+
+    /** The worker page's "Previous jobs", newest first as the API sends them; the nullable parts stay null. */
+    @Test fun detailCarriesPreviousJobs() {
+        val d = KioskJson.decodeFromString(RolodexDetail.serializer(), detailJson.dropLast(1) + ""","jobs":[
+            {"initiative_id":"i2","initiative_name":"NAP11 Hall Migration","type_label":"Move","type_color":"#a36207",
+             "status_label":"In progress","status_color":"#1668a7","work_type_label":"Lead","site_worked_name":"NAP11 Las Vegas",
+             "added_at":"2026-10-03T15:00:00Z"},
+            {"initiative_id":"i1","initiative_name":"Spring Refresh","type_label":"Project","type_color":"#1668a7",
+             "status_label":"Completed","status_color":"#178a4c","work_type_label":null,"site_worked_name":null,
+             "added_at":"2026-03-02T15:00:00Z"}]}""")
+        assertEquals(listOf("i2", "i1"), d.jobs.map { it.initiative_id })
+        val job = d.jobs[0]
+        assertEquals("NAP11 Hall Migration", job.initiative_name)
+        assertEquals("Move", job.type_label); assertEquals("In progress", job.status_label); assertEquals("#1668a7", job.status_color)
+        assertEquals("Lead", job.work_type_label); assertEquals("NAP11 Las Vegas", job.site_worked_name)
+        assertEquals("2026-10-03T15:00:00Z", job.added_at)
+        assertNull(d.jobs[1].work_type_label); assertNull(d.jobs[1].site_worked_name)
     }
 
     /** The cached list is the list payload re-encoded: email or phone in a row never survive it. */
