@@ -5,7 +5,7 @@ extension Color {
     init(cssHex css: String) { self.init(hex: parseCssHex(css)) }
 }
 
-/// kiosk/src/pages/KioskSetup.tsx: the three-step wizard and the summary.
+/// kiosk/src/pages/KioskSetup.tsx: the four-step wizard (the last, Top or Front, as on Android) and the summary.
 struct KioskSetupScreen: View {
     @Binding var path: [Route]
     @Environment(\.container) private var container
@@ -50,27 +50,9 @@ private struct KioskSetupBody: View {
 
     @ViewBuilder private var summary: some View {
         if let sel = vm.selection {
-            let sync = container.sync.status
             Text("This kiosk is set up for \(sel.initiativeName) at \(sel.siteName) (\(sel.siteRole)) · scan type \(sel.scanLabel)")
                 .font(KioskType.bodyLarge).foregroundStyle(palette.text)
-            HStack(spacing: 8) {
-                switch sync.phase {
-                case .idle:
-                    Text("No move data on this kiosk yet.").font(KioskType.bodyMedium).foregroundStyle(palette.text)
-                    SecondaryButton("Sync now") { vm.syncAgain() }
-                case .running:
-                    Text("Downloading move data…").font(KioskType.bodyMedium).foregroundStyle(palette.text)
-                case .done:
-                    Text("Local data: \(sync.assets ?? 0) assets · \(sync.people ?? 0) people · \(sync.containers ?? 0) containers · \(sync.trucks ?? 0) trucks" + (sync.syncedAt.map { " · synced \(Sync.formatSyncedAt($0))" } ?? ""))
-                        .font(KioskType.bodyMedium).foregroundStyle(palette.text)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    SecondaryButton("Sync again") { vm.syncAgain() }
-                case .error:
-                    KioskToast(text: "Couldn't download move data (\(sync.error ?? "unknown_error")).", error: true)
-                    SecondaryButton("Try again") { vm.syncAgain() }
-                }
-            }
-            .padding(.top, 12)
+            SyncSummaryView(status: container.sync.status) { vm.syncAgain() }
             HStack(spacing: 8) {
                 SecondaryButton("Change setup") { vm.changeSetup() }
                 PrimaryButton("Go to home") { path.removeAll() }
@@ -82,9 +64,8 @@ private struct KioskSetupBody: View {
     // MARK: wizard
 
     @ViewBuilder private var wizard: some View {
-        if let n = vm.stepNumber {
-            let name = ["Move", "Site", "Scan type"][n - 1]
-            Text("STEP \(n) OF 3 · \(name.uppercased())").font(KioskType.labelSmall).foregroundStyle(palette.textMute)
+        if let header = vm.stepHeader {
+            Text(header).font(KioskType.labelSmall).foregroundStyle(palette.textMute)
         }
         if let error = vm.loadError {
             KioskToast(text: error, error: true)
@@ -94,6 +75,7 @@ private struct KioskSetupBody: View {
             case .move: moveStep(opts)
             case .site: siteStep
             case .scanType: scanTypeStep(opts)
+            case .labels: labelsStep
             case .summary: EmptyView()
             }
         } else {
@@ -148,11 +130,28 @@ private struct KioskSetupBody: View {
             heading("Which scan type?")
             LazyVGrid(columns: columns, spacing: 10) {
                 ForEach(opts.scanTypes, id: \.key) { s in
-                    let saving = vm.saving && vm.scanStatus == s.key
-                    SetupCard(selected: s.key == vm.scanStatus, enabled: !vm.saving) { Task { await vm.pickScanType(s.key) } } content: {
+                    SetupCard(selected: s.key == vm.scanStatus) { vm.pickScanType(s.key) } content: {
                         HStack(spacing: 10) {
                             Circle().fill(Color(cssHex: s.color)).frame(width: 14, height: 14)
-                            Text(saving ? "Saving…" : s.label).font(KioskType.titleMedium).foregroundStyle(palette.text)
+                            Text(s.label).font(KioskType.titleMedium).foregroundStyle(palette.text)
+                        }
+                    }
+                }
+            }
+            SecondaryButton("Back") { vm.back() }.padding(.top, 10)
+        }
+    }
+
+    private var labelsStep: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            heading(KioskSetupViewModel.labelsHeading)
+            LazyVGrid(columns: columns, spacing: 10) {
+                ForEach(KioskSetupViewModel.labelKindChoices, id: \.kind) { choice in
+                    let saving = vm.saving && vm.labelKind == choice.kind
+                    SetupCard(selected: choice.kind == vm.labelKind, enabled: !vm.saving) { Task { await vm.finish(choice.kind) } } content: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(saving ? "Saving…" : choice.title).font(KioskType.titleMedium).foregroundStyle(palette.text)
+                            mute(choice.blurb)
                         }
                     }
                 }

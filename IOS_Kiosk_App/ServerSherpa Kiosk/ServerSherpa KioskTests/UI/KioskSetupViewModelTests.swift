@@ -36,8 +36,12 @@ struct KioskSetupViewModelTests {
         prefs.setupSelection = KioskSetupSelection(initiativeId: "i", initiativeName: "Move A", siteId: "s", siteName: "Dock 4", siteRole: "source", scanStatus: "pre_stage", scanLabel: "Pre-stage")
     }
 
-    @Test func wizardWalksThreeStepsAndSaves() async {
+    private func acceptSetup() {
         api.submitSetupResult = { KioskSetupResult(deviceId: "d", initiativeId: $0.initiativeId, initiativeName: "Move A", siteId: $0.siteId, siteName: "Dest", siteRole: "destination", scanStatus: $0.scanStatus, scanStatusLabel: "Pre-stage") }
+    }
+
+    @Test func wizardWalksFourStepsAndSaves() async {
+        acceptSetup()
         let vm = makeVM()
         await vm.load()
         #expect(vm.step == .move)
@@ -45,40 +49,113 @@ struct KioskSetupViewModelTests {
         #expect(vm.siteChoices.map(\.site.name) == ["Origin", "Dest"])
         #expect(vm.siteChoices.map(\.role) == ["source", "destination"])
         vm.pickSite("s2"); #expect(vm.step == .scanType)
-        await vm.pickScanType("pre_stage")
+        vm.pickScanType("pre_stage"); #expect(vm.step == .labels)
+        #expect(vm.scanStatus == "pre_stage")
+        #expect(!api.calls.contains("submitSetup"))         // the scan type only advances
+        #expect(vm.labelKind == .top)                        // Top is preselected
+        await vm.finish(.top)
         #expect(vm.step == .summary)
         #expect(!vm.saving)
         #expect(prefs.setupSelection?.siteName == "Dest")
+        #expect(prefs.setupSelection?.labelKind == "top")
         #expect(prefs.setupState == .complete)
         await waitUntil { api.calls.contains("syncAssets") }
         #expect(api.calls.contains("syncAssets"))
     }
 
-    /// Until Setup has its Top/Front step, saving a new selection keeps the saved label kind
-    /// (a fresh kiosk starts at Top).
-    @Test func savingANewSelectionKeepsTheLabelKind() async {
-        api.submitSetupResult = { KioskSetupResult(deviceId: "d", initiativeId: $0.initiativeId, initiativeName: "Move A", siteId: $0.siteId, siteName: "Dest", siteRole: "destination", scanStatus: $0.scanStatus, scanStatusLabel: "Pre-stage") }
-        prefs.setupSelection = KioskSetupSelection(initiativeId: "i", initiativeName: "Move A", siteId: "s", siteName: "Dock 4", siteRole: "source",
-                                                   scanStatus: "pre_stage", scanLabel: "Pre-stage", labelKind: "front")
+    @Test func finishingOnFrontSavesFrontAndTheStoreReportsIt() async {
+        acceptSetup()
+        let settings = LabelSettingsStore(prefs: prefs)
         let vm = makeVM()
         await vm.load()
-        vm.pickMove("i1"); vm.pickSite("s2")
-        await vm.pickScanType("pre_stage")
-        #expect(prefs.setupSelection?.siteName == "Dest")
+        vm.pickMove("i1"); vm.pickSite("s2"); vm.pickScanType("pre_stage")
+        #expect(settings.current().kind == .top)
+        await vm.finish(.front)
+        #expect(vm.labelKind == .front)
         #expect(prefs.setupSelection?.labelKind == "front")
+        #expect(settings.current().kind == .front)
+    }
+
+    @Test func backFromStepFourGoesToStepThree() async {
+        let vm = makeVM()
+        await vm.load()
+        vm.pickMove("i1"); vm.pickSite("s2"); vm.pickScanType("pre_stage")
+        #expect(vm.step == .labels)
+        vm.back(); #expect(vm.step == .scanType)
+        #expect(vm.scanStatus == "pre_stage")
+    }
+
+    /// A re-run ("Change setup") preselects the saved kind; a fresh setup preselects Top.
+    @Test func aRerunPreselectsTheSavedKind() async {
+        prefs.setupSelection = KioskSetupSelection(initiativeId: "i1", initiativeName: "Move A", siteId: "s2", siteName: "Dest", siteRole: "destination",
+                                                   scanStatus: "pre_stage", scanLabel: "Pre-stage", labelKind: "front")
+        prefs.setupState = .complete
+        let vm = makeVM()
+        #expect(vm.step == .summary)
+        vm.changeSetup()
+        #expect(vm.labelKind == .front)
+        await waitUntil { vm.options != nil }
+        vm.pickMove("i1"); vm.pickSite("s2"); vm.pickScanType("pre_stage")
+        #expect(vm.labelKind == .front)                      // still the saved kind on step 4
 
         prefs.setupSelection = nil
-        await vm.pickScanType("pre_stage")
-        #expect(prefs.setupSelection?.labelKind == "top")
+        vm.changeSetup()
+        #expect(vm.labelKind == .top)
+        #expect(makeVM().labelKind == .top)                  // a fresh setup starts at Top
+    }
+
+    /// A saved selection from before kinds existed (or an unknown kind) reads as Top.
+    @Test func anUnknownSavedKindPreselectsTop() {
+        prefs.setupSelection = KioskSetupSelection(initiativeId: "i1", initiativeName: "Move A", siteId: "s2", siteName: "Dest", siteRole: "destination",
+                                                   scanStatus: "pre_stage", scanLabel: "Pre-stage", labelKind: "side")
+        prefs.setupState = .complete
+        let vm = makeVM()
+        vm.changeSetup()
+        #expect(vm.labelKind == .top)
+    }
+
+    /// Changing an existing setup through the wizard lands on its summary, with no second load.
+    @Test func changingSetupThroughTheWizardDoesNotRestartIt() async {
+        api.submitSetupResult = { KioskSetupResult(deviceId: "d", initiativeId: $0.initiativeId, initiativeName: "Move A", siteId: $0.siteId, siteName: "Origin", siteRole: "source", scanStatus: $0.scanStatus, scanStatusLabel: "Pre-stage") }
+        prefs.setupSelection = KioskSetupSelection(initiativeId: "i1", initiativeName: "Move A", siteId: "s2", siteName: "Dest", siteRole: "destination", scanStatus: "pre_stage", scanLabel: "Pre-stage")
+        prefs.setupState = .complete
+        let vm = makeVM()
+        vm.changeSetup()
+        await waitUntil { vm.options != nil }
+        vm.pickMove("i1"); vm.pickSite("s1"); vm.pickScanType("pre_stage")
+        await vm.finish(.top)
+        #expect(vm.step == .summary)
+        #expect(prefs.setupSelection?.siteName == "Origin")
+        #expect(api.calls.filter { $0 == "setupOptions" }.count == 1)
+    }
+
+    @Test func stepHeaderCountsFourSteps() async {
+        let vm = makeVM()
+        await vm.load()
+        #expect(vm.stepNumber == 1); #expect(vm.stepHeader == "STEP 1 OF 4 · MOVE")
+        vm.pickMove("i1"); #expect(vm.stepHeader == "STEP 2 OF 4 · SITE")
+        vm.pickSite("s1"); #expect(vm.stepHeader == "STEP 3 OF 4 · SCAN TYPE")
+        vm.pickScanType("pre_stage"); #expect(vm.stepNumber == 4); #expect(vm.stepHeader == "STEP 4 OF 4 · LABELS")
+        acceptSetup()
+        await vm.finish(.top)
+        #expect(vm.stepNumber == nil); #expect(vm.stepHeader == nil)
+    }
+
+    @Test func labelKindCardsCopy() {
+        #expect(KioskSetupViewModel.labelKindChoices.map(\.kind) == [.top, .front])
+        #expect(KioskSetupViewModel.labelKindChoices.map(\.title) == ["Top", "Front"])
+        #expect(KioskSetupViewModel.labelKindChoices.map(\.blurb) == ["Labels for the top of the device.", "Labels for the front of the device."])
+        #expect(KioskSetupViewModel.labelsHeading == "What do labels print on?")
     }
 
     @Test func failureMarksFailedOnlyWhenNotAlreadyComplete() async {
         api.submitSetupResult = { _ in throw ApiError(status: 422, code: "bad_site") }
         let vm = makeVM()
-        await vm.load(); vm.pickMove("i1"); vm.pickSite("s1")
-        await vm.pickScanType("pre_stage")
+        await vm.load(); vm.pickMove("i1"); vm.pickSite("s1"); vm.pickScanType("pre_stage")
+        await vm.finish(.top)
         #expect(vm.saveError == "bad_site")
-        #expect(vm.step == .scanType)
+        #expect(vm.step == .labels)
+        #expect(!vm.saving)
         #expect(prefs.setupState == .failed)
         #expect(prefs.setupSelection == nil)
     }
@@ -89,9 +166,10 @@ struct KioskSetupViewModelTests {
         let vm = makeVM()
         vm.changeSetup()
         await waitUntil { vm.options != nil }
-        vm.pickMove("i1"); vm.pickSite("s1")
-        await vm.pickScanType("pre_stage")
+        vm.pickMove("i1"); vm.pickSite("s1"); vm.pickScanType("pre_stage")
+        await vm.finish(.front)
         #expect(prefs.setupState == .complete)
+        #expect(prefs.setupSelection?.labelKind == "top")   // the failed save keeps the saved kind
         #expect(prefs.setupSelection?.siteName == "Dock 4")
     }
 
@@ -176,7 +254,8 @@ struct KioskSetupViewModelTests {
 
     @Test func backStepsDownAndStopsAtMove() async {
         let vm = makeVM()
-        await vm.load(); vm.pickMove("i1"); vm.pickSite("s1")
+        await vm.load(); vm.pickMove("i1"); vm.pickSite("s1"); vm.pickScanType("pre_stage")
+        vm.back(); #expect(vm.step == .scanType)
         vm.back(); #expect(vm.step == .site)
         vm.back(); #expect(vm.step == .move)
         vm.back(); #expect(vm.step == .move)
