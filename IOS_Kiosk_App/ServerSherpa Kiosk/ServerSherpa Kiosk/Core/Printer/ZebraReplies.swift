@@ -74,6 +74,9 @@ private func trimmed(_ text: some StringProtocol) -> String {
     return String(scalars[start...end])
 }
 
+/// Kotlin's `String.trim()`, for the ports of Android code that trims what a person typed.
+func kotlinTrimmed(_ text: String) -> String { trimmed(text) }
+
 /// Kotlin's `Char.isWhitespace` (Java's `isWhitespace || isSpaceChar`), spelled out: U+0009–U+000D,
 /// U+001C–U+001F, the space separators (no-break spaces included) and U+2028/U+2029. Not U+0085.
 private let kotlinWhitespace: Set<Unicode.Scalar> = {

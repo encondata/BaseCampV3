@@ -25,6 +25,11 @@ final class AppContainer {
     /// The kiosk's one Print Labels queue and its list, for the app's lifetime: every Print Labels
     /// screen sends through it, so labels go out in scan order whichever screen scanned them.
     let printJobs: LabelPrintJobs
+    /// One connection to the saved printer at a time, app-wide: Print Labels' sends and every
+    /// Printer Setup call (identify, checks, font installs, test labels) go through it.
+    let printerLock: PrinterLock
+    /// The synced label font files (nil keeps font metadata only).
+    let fontsDir: URL?
     let scanBus = ScanBus()
     let flash = FlashController()
     let sound: SoundPlayer
@@ -65,6 +70,9 @@ final class AppContainer {
         self.coordinator = SessionCoordinator(refresher: sessionStore, auth: auth, heartbeat: heartbeat)
         self.store = store
         self.storeIsTemporary = storeIsTemporary
+        self.fontsDir = fontsDir
+        let printerLock = PrinterLock()
+        self.printerLock = printerLock
         let sync = Sync(api: api, store: store, fontsDir: fontsDir)
         let outbox = Outbox(store: store, api: api, serial: { identity.current.serial }, backgroundTask: backgroundTask)
         let labelSettings = LabelSettingsStore(prefs: prefs)
@@ -78,8 +86,9 @@ final class AppContainer {
         // call, and a printer is reached only when a scanned label is sent.
         self.printJobs = LabelPrintJobs(store: store, sync: sync, outbox: outbox, settings: labelSettings,
                                         build: labelBuilder.monitor, engine: labelEngine,
-                                        // Straight to the printer: no status checks before or after.
-                                        sender: { host, zpl in try await NetworkZebra(host: host).send(zpl) },
+                                        // Straight to the printer (no status checks before or after),
+                                        // one connection at a time with Printer Setup's calls.
+                                        sender: lockedSender(printerLock) { host, zpl in try await NetworkZebra(host: host).send(zpl) },
                                         isLive: printJobIsLive(auth: auth, prefs: prefs))
         self.sound = SoundPlayer(prefs: prefs)
 
