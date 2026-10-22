@@ -3921,10 +3921,11 @@ class KioskRolodexListOut(BaseModel):
 class KioskRolodexWorkerDetailOut(KioskRolodexWorkerOut):
     """The worker page: the row plus contact details and what the signed-in
     admin may change, so the apps disable a control instead of showing a
-    403. `edit_block_reason` is set when the target has a portal login
-    ranked at or above the admin's; `status_block_reason` is `self` on
-    the admin's own row, else `rank_too_low` for a target ranked at or
-    above them."""
+    403. `edit_block_reason` is `rank_too_low` when the target has a
+    portal login the admin can't touch (`can_touch_rank`), never on the
+    admin's own row; `status_block_reason` is `self` on the admin's own
+    row, else `rank_too_low` for a target the admin can't touch
+    (`can_touch_rank`)."""
 
     email: str | None = None
     phone: str | None = None

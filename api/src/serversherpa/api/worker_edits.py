@@ -10,17 +10,21 @@ existence/scope guard first and maps commit-time IntegrityErrors.
 `audit_extra` keys are merged into the audit row's `changes` (the kiosk
 passes `{"via": "kiosk_rolodex", "device": <serial>}`); an edit that
 changes nothing writes no audit row, extras or not.
+
+`visible_workers_query` is the one definition of which workers an actor
+can see, shared by the portal's `GET /workers` and the Rolodex.
 """
 
 import uuid
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
-from sqlalchemy import func, select, update
+from sqlalchemy import Select, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.access.resolver import can_touch_rank
+from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext
 from serversherpa.db.models import (
     AuthSession,
@@ -34,6 +38,7 @@ from serversherpa.db.models import (
     WorkerProfile,
 )
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 
 # A null on these Person columns is refused rather than cleared.
 REQUIRED_PERSON_FIELDS = ("first_name", "last_name", "country")
@@ -52,6 +57,29 @@ def _err(status: int, code: str) -> HTTPException:
 
 def _audit_changes(changes: dict, audit_extra: dict | None) -> dict:
     return {**changes, **(audit_extra or {})}
+
+
+def visible_workers_query(actor: AuthContext) -> Select:
+    """Every worker the actor may see: an active worker role, not
+    archived, not a move's hidden kiosk identity, inside the actor's
+    `workers` scope. One row per worker as (Person, WorkerProfile | None,
+    partner id, partner name, account person_id | None). Unordered:
+    callers add their own order_by (or a `Person.id ==` filter)."""
+    query = (
+        select(Person, WorkerProfile, Partner.id, Partner.name, UserAccount.person_id)
+        .join(PersonRole, (PersonRole.person_id == Person.id)
+              & (PersonRole.role == "worker")
+              & (PersonRole.revoked_at.is_(None)))
+        .outerjoin(WorkerProfile, WorkerProfile.person_id == Person.id)
+        .outerjoin(Partner, Partner.id == WorkerProfile.partner_id)
+        .outerjoin(UserAccount, UserAccount.person_id == Person.id)
+        .where(Person.archived_at.is_(None),
+               Person.source != KIOSK_MOVE_SOURCE)   # a move's hidden kiosk identity
+    )
+    cond = scope_conditions("workers", actor.access, actor.person.id)
+    if cond is not None:
+        query = query.where(cond)
+    return query
 
 
 async def target_rank(db: AsyncSession, person_id: uuid.UUID) -> int:

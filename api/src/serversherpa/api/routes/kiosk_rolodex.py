@@ -13,9 +13,10 @@ station key never reaches these routes (no person to rank-check, and
 stations run unattended). Each route adds its own `workers:*` permission.
 
 Which people (`require_rolodex_worker` and the list): exactly the portal's
-`GET /workers` set — an active worker role, not archived, not a move's
-hidden kiosk identity, inside the actor's `workers` scope. Anyone else is
-404 `person_not_found`, so ids can't be probed.
+`GET /workers` set, through the same `worker_edits.visible_workers_query`
+— an active worker role, not archived, not a move's hidden kiosk
+identity, inside the actor's `workers` scope. Anyone else is 404
+`person_not_found`, so ids can't be probed.
 
 Kiosk sessions reach `/kiosk/*` already (deps.enforce_session_scope), and
 read-only mode (423) and a forced password change (403) apply to every
@@ -27,7 +28,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import Select, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.access.defaults import GATE_BYPASS_RANK
@@ -43,18 +44,16 @@ from serversherpa.api.schemas import (
     KioskRolodexWorkerDetailOut,
     KioskRolodexWorkerOut,
 )
-from serversherpa.api.worker_edits import target_rank
+from serversherpa.api.worker_edits import target_rank, visible_workers_query
 from serversherpa.db.models import (
     Partner,
     Person,
-    PersonRole,
     StatusValue,
     UserAccount,
     WorkerLevel,
     WorkerProfile,
 )
 from serversherpa.db.ordering import natural
-from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.storage import presign_get
 from serversherpa.status.labels import level_colors, level_fields, status_fields, status_labels
 
@@ -80,27 +79,6 @@ async def rolodex_actor(
     return actor
 
 
-def _visible_workers(actor: AuthContext) -> Select:
-    """Every worker the actor can see in the portal: the query and scope
-    filter of `GET /workers`, one row per worker as
-    (Person, WorkerProfile | None, partner id, partner name, account id)."""
-    query = (
-        select(Person, WorkerProfile, Partner.id, Partner.name, UserAccount.person_id)
-        .join(PersonRole, (PersonRole.person_id == Person.id)
-              & (PersonRole.role == "worker")
-              & (PersonRole.revoked_at.is_(None)))
-        .outerjoin(WorkerProfile, WorkerProfile.person_id == Person.id)
-        .outerjoin(Partner, Partner.id == WorkerProfile.partner_id)
-        .outerjoin(UserAccount, UserAccount.person_id == Person.id)
-        .where(Person.archived_at.is_(None),
-               Person.source != KIOSK_MOVE_SOURCE)   # a move's hidden kiosk identity
-    )
-    cond = scope_conditions("workers", actor.access, actor.person.id)
-    if cond is not None:
-        query = query.where(cond)
-    return query
-
-
 async def require_rolodex_worker(
     db: AsyncSession, actor: AuthContext, person_id: uuid.UUID,
 ) -> Person:
@@ -108,7 +86,7 @@ async def require_rolodex_worker(
     person is missing, archived, a move's hidden identity, holds no active
     worker role, or is outside the actor's `workers` scope."""
     person = await db.scalar(
-        _visible_workers(actor).where(Person.id == person_id).limit(1))
+        visible_workers_query(actor).where(Person.id == person_id).limit(1))
     if person is None:
         raise _err(404, "person_not_found")
     return person
@@ -215,7 +193,7 @@ async def list_rolodex_workers(
     has no email or phone. One response, no paging."""
     generated_at = datetime.now(UTC)
     rows = (await db.execute(
-        _visible_workers(actor)
+        visible_workers_query(actor)
         .order_by(natural(Person.last_name), natural(Person.first_name), Person.id)
     )).all()
     labels = await status_labels(db, "worker")

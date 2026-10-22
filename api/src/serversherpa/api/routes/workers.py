@@ -30,7 +30,9 @@ from serversherpa.api.schemas import (
     WorkerLevelUpdateIn,
     WorkerProfileIn,
 )
-from serversherpa.api.worker_edits import apply_person_update, apply_profile_update
+from serversherpa.api.worker_edits import (
+    apply_person_update, apply_profile_update, visible_workers_query,
+)
 from serversherpa.db.models import (
     Initiative,
     InitiativePerson,
@@ -47,7 +49,6 @@ from serversherpa.db.models import (
 from serversherpa.db.ordering import natural
 from serversherpa.people import bulk_import as bulk
 from serversherpa.services.audit import audit, diff, snapshot
-from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.storage import presign_get
 from serversherpa.status.labels import (
     level_colors, level_fields, status_fields, status_labels,
@@ -97,22 +98,10 @@ async def list_workers(
     actor: AuthContext = require_permission("workers", "view"),
 ) -> list[WorkerItem]:
     today = date.today()
-    query = (
-        select(Person, WorkerProfile, Partner.id, Partner.name, UserAccount.person_id)
-        .join(PersonRole, (PersonRole.person_id == Person.id)
-              & (PersonRole.role == "worker")
-              & (PersonRole.revoked_at.is_(None)))
-        .outerjoin(WorkerProfile, WorkerProfile.person_id == Person.id)
-        .outerjoin(Partner, Partner.id == WorkerProfile.partner_id)
-        .outerjoin(UserAccount, UserAccount.person_id == Person.id)
-        .where(Person.archived_at.is_(None),
-               Person.source != KIOSK_MOVE_SOURCE)   # a move's hidden kiosk identity
+    rows = (await db.execute(
+        visible_workers_query(actor)
         .order_by(natural(Person.last_name), natural(Person.first_name))
-    )
-    cond = scope_conditions("workers", actor.access, actor.person.id)
-    if cond is not None:
-        query = query.where(cond)
-    rows = (await db.execute(query)).all()
+    )).all()
 
     person_ids = [p.id for p, *_ in rows]
     cert_rows = (await db.execute(
