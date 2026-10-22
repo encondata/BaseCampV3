@@ -65,12 +65,13 @@ struct NetworkZebra: ZebraTransport {
         return String(data: reply, encoding: .isoLatin1) ?? "" // Latin-1 decodes any bytes
     }
 
-    /// One connection for the whole job: each part as Network.framework takes it (`progress` hears
-    /// each), then a FIN.
+    /// One connection for the whole job: each part as Network.framework takes it, then a FIN.
+    /// `progress` hears 0 once the connection is open, then each part.
     func write(_ parts: [Data], progress: (@Sendable (_ sent: Int, _ total: Int) -> Void)?) async throws {
         let total = parts.reduce(0) { $0 + $1.count }
         try await zebraSession(host: host, port: port, parameters: parameters, connect: timeouts.connect, deadline: timeouts.send) { link in
             var sent = 0
+            progress?(sent, total)
             for part in parts {
                 try await link.write(part)
                 sent += part.count

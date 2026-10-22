@@ -111,7 +111,7 @@ struct PrintLabelsViewModelTests {
 
     /// Three assets: A-1 and A-3 with stored labels, A-2 with none at this DPI; the move's setup; the
     /// printer with offsets (4, -2) and peel unless `withPrinter` is false.
-    private func harness(withPrinter: Bool = true) async throws -> PrintLabelsViewModel {
+    private func harness(withPrinter: Bool = true, jobs: LabelPrintJobs? = nil) async throws -> PrintLabelsViewModel {
         let assets = [
             KioskAssetRow(id: "a1", assetId: "A-1", name: "Rack 1", rfid: "000000000000000000100348", serialNumber: "SN1", makeModel: "Dell"),
             KioskAssetRow(id: "a2", assetId: "A-2", name: "Rack 2", serialNumber: "SN2", makeModel: "HP"),
@@ -132,13 +132,13 @@ struct PrintLabelsViewModelTests {
             settings.setOffsets(x: 4, y: -2)
             settings.setPeel(true)
         }
-        let vm = makeVM()
+        let vm = makeVM(jobs: jobs)
         await vm.loadRoster()
         return vm
     }
 
-    private func makeVM() -> PrintLabelsViewModel {
-        PrintLabelsViewModel(jobs: jobs, store: store, sync: sync, prefs: prefs, settings: settings, build: build, flash: flash, sound: nil)
+    private func makeVM(jobs: LabelPrintJobs? = nil) -> PrintLabelsViewModel {
+        PrintLabelsViewModel(jobs: jobs ?? self.jobs, store: store, sync: sync, prefs: prefs, settings: settings, build: build, flash: flash, sound: nil)
     }
 
     /// Runs a scan to its end and waits for the list to show it.
@@ -210,6 +210,43 @@ struct PrintLabelsViewModelTests {
         await scan(vm, "A-1")
         #expect(vm.entries[0].message == "The printer didn't finish answering. It may have printed the label — check before you retry.")
         #expect(rows.isEmpty)
+    }
+
+    /// The container's sender: after a failed send the next label first clears the printer. A clear
+    /// that fails never sent the label, so it can't have printed: a timeout reads as unreachable
+    /// (not "it may have printed"), and a Local Network denial still says to allow it.
+    @Test func aClearThatFailsSaysThePrinterCantBeReached() async throws {
+        let printerGuard = PrinterGuard()
+        let device = self.device
+        let guarded = LabelPrintJobs(store: store, sync: sync, outbox: outbox, settings: settings, build: build, engine: engine,
+                                     sender: lockedSender(PrinterLock(), printerGuard) { printer, zpl in
+                                         try await device.send(printer.host ?? "", zpl)
+                                     },
+                                     isLive: printJobIsLive(auth: auth, prefs: prefs))
+        let vm = try await harness(jobs: guarded)
+        await printerGuard.markSendFailed(for: printer.connection)
+
+        device.failures = 1
+        device.timeouts = true
+        await scan(vm, "A-1")
+        #expect(vm.entries[0].state == .failed)
+        #expect(vm.entries[0].message == "Can't reach the printer at 10.0.0.5.")
+        #expect(device.started == ["~JX"])
+
+        device.timeouts = false
+        device.failures = 1
+        device.denied = true
+        await vm.retry(vm.entries[0].id)?.value
+        #expect(await waitUntil { device.started.count == 2 && vm.entries[0].state == .failed })
+        #expect(vm.entries[0].message == LOCAL_NETWORK_PRINTER_DENIED_TEXT)
+        #expect(device.sent.isEmpty)
+        #expect(rows.isEmpty)
+
+        device.denied = false
+        await vm.retry(vm.entries[0].id)?.value
+        #expect(await waitUntil { vm.entries[0].state == .printed })
+        #expect(device.sent.map(\.zpl) == ["~JX", "LT-2LS4|^XA^FDA-1^FS^XZ|MMP"])
+        #expect(rows.count == 1)
     }
 
     @Test func aSendKeptOffTheLocalNetworkSaysToAllowIt() async throws {

@@ -14,8 +14,9 @@ protocol ZebraTransport: Sendable {
     /// Sends `command` and reads the reply until `complete` says it is whole (or the transport's
     /// quiet and total limits), as Latin-1; throws `PrinterNoReply` when nothing came back.
     func query(_ command: String, complete: @escaping @Sendable (Data) -> Bool) async throws -> String
-    /// Writes `parts` in order as one job. `progress`, when given, hears the bytes written so far
-    /// and the total as they go out.
+    /// Writes `parts` in order as one job. `progress`, when given, hears `(0, total)` once the
+    /// bytes start going out (the printer is connected), then the bytes written so far: no report
+    /// means nothing was sent (`PrinterGuard` tells a cut font from one that never started by it).
     func write(_ parts: [Data], progress: (@Sendable (_ sent: Int, _ total: Int) -> Void)?) async throws
 }
 
@@ -131,6 +132,13 @@ struct PrinterBadReply: PrinterError {
 struct FontInstallRefused: LocalizedError, Sendable {
     var message: String
     var errorDescription: String? { message }
+}
+
+/// The connection waited with iOS's Local Network denial (`NetworkZebra` marks it), the `~JX`
+/// clear before a job included.
+func wasLocalNetworkDenied(_ error: Error) -> Bool {
+    if let clear = error as? PrinterClearFailed { return wasLocalNetworkDenied(clear.cause) }
+    return (error as? PrinterUnreachable)?.localNetworkDenied == true
 }
 
 // MARK: Replies

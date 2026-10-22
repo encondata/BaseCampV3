@@ -104,7 +104,8 @@ import Foundation
     private(set) var inStatus = false
     /// Thrown by send() when set.
     var sendError: Error?
-    /// Thrown by installFont() when set, once the font started going out.
+    /// Thrown by installFont() when set, once the font started going out (after its first
+    /// progress report). A printer that doesn't answer fails before anything goes out.
     var installError: Error?
     /// The fractions of each font installFont() reports as sent, in order.
     var installSteps: [Double] = [1]
@@ -182,6 +183,7 @@ import Foundation
 
     private func installNow(_ name: String, _ bytes: Data, _ progress: (@Sendable (Int, Int) -> Void)?) async throws {
         try await use("installFont", name)
+        progress?(0, bytes.count) // the download started
         if let installError { throw installError }
         for step in installSteps {
             progress?(Int(Double(bytes.count) * step), bytes.count)
@@ -557,7 +559,7 @@ final class PrinterSetupViewModelTests {
         await eventually("install failed") { !vm.ui.installing && vm.ui.fontMessage != nil }
         #expect(vm.ui.fontMessage == FONT_INSTALL_CUT_TEXT)
         #expect(vm.ui.fontError)
-        #expect(await printerGuard.state == .fontCut)
+        #expect(await printerGuard.state(for: saved.connection) == .fontCut)
         let callsAfterCut = z.calls
         #expect(callsAfterCut.last == "installFont")
 
@@ -579,17 +581,19 @@ final class PrinterSetupViewModelTests {
         z.installError = nil
         await checked(vm) { vm.checkAgain() }
         #expect(row(vm, .answers)?.state == .ok)
-        #expect(await printerGuard.state == .clean)
+        #expect(await printerGuard.state(for: saved.connection) == .clean)
         vm.printTest(.alignment)
         await eventually("sent") { !vm.ui.testing && z.sent.count == 1 }
         #expect(!vm.ui.testError)
     }
 
-    /// Choosing a printer asks it under the lock but not under the saved printer's guard: its
-    /// answer doesn't lift a stop the saved printer is under (the new one is saved a moment later).
+    /// A printer being chosen is asked under the lock and the shared guard, but its answer never
+    /// lifts a cut font's stop: not another printer's, and not the saved printer's own when it is
+    /// chosen again. The check after saving it does.
     @Test func choosingAPrinterDoesNotLiftTheSavedPrintersStop() async throws {
         try await start()
-        await printerGuard.markFontCut()
+        let savedConnection = saved.connection
+        await printerGuard.markFontCut(for: savedConnection)
         let z = zebra("10.0.0.10")
         let line = FakeLine()
         z.line = line
@@ -599,9 +603,73 @@ final class PrinterSetupViewModelTests {
         vm.useIp()
         await eventually("asked its serial") { line.held }
         #expect(z.calls == ["identify", "serial"])
-        #expect(await printerGuard.state == .fontCut)
+        #expect(await printerGuard.state(for: savedConnection) == .fontCut)
         line.hold = nil
         await eventually("saved") { self.current.printer?.host == "10.0.0.10" }
+
+        let z5 = zebra(savedHost)
+        let line5 = FakeLine()
+        z5.line = line5
+        line5.hold = "serial"
+        vm.setIpText(savedHost)
+        vm.useIp()
+        await eventually("asked the first printer's serial") { line5.held }
+        #expect(z5.calls == ["identify", "serial"])
+        #expect(await printerGuard.state(for: savedConnection) == .fontCut)
+        line5.hold = nil
+        await eventually("saved again and checked") { z5.calls.filter { $0 == "identify" }.count == 2 }
+        #expect(await waitUntilAsync { await self.printerGuard.state(for: savedConnection) == .clean })
+    }
+
+    /// The saved printer chosen again while it needs a clear: `~JX` goes before the probe's `~HI`.
+    @Test func reChoosingTheSavedPrinterClearsBeforeItsFirstQuery() async throws {
+        try await start()
+        await printerGuard.markSendFailed(for: saved.connection)
+        let z = zebra(savedHost)
+        let vm = vm()
+        vm.setIpText(savedHost)
+        vm.useIp()
+        await eventually("saved again") { self.current.printer?.serial == "S-10.0.0.5" }
+        #expect(Array(z.calls.prefix(2)) == ["send", "identify"])
+        #expect(z.sent == ["~JX"])
+        #expect(await printerGuard.state(for: saved.connection) == .clean)
+    }
+
+    /// A failed test label leaves the printer needing a clear: the next check sends `~JX` first
+    /// (D16), and only once.
+    @Test func aFailedTestLabelClearsBeforeTheNextCheck() async throws {
+        try await start()
+        await awaitPick203()
+        let z = zebra(savedHost)
+        z.sendError = PrinterUnreachable(host: savedHost)
+        let vm = vm()
+        vm.printTest(.alignment)
+        await eventually("failed") { !vm.ui.testing && vm.ui.testError }
+        z.sendError = nil
+        await checked(vm) { vm.checkAgain() }
+        #expect(Array(z.calls.prefix(3)) == ["send", "send", "identify"])
+        #expect(z.sent == ["~JX"])
+        #expect(row(vm, .answers)?.state == .ok)
+    }
+
+    /// A font install the printer never took (nothing answered, so no byte went out) cuts
+    /// nothing: it says which font, checks again, and labels still go out.
+    @Test func aFontInstallThatNeverStartedSaysWhichAndKeepsSending() async throws {
+        try await start()
+        try await libraryFonts([("ROBOTO.TTF", [1, 2, 3])])
+        let z = zebra(savedHost)
+        let vm = vm()
+        await checked(vm) { vm.checkAgain() }
+        z.answers = false
+        await checked(vm) { vm.installFonts() }
+        #expect(vm.ui.fontMessage == "Couldn't install ROBOTO.TTF.")
+        #expect(vm.ui.fontError)
+        #expect(row(vm, .answers)?.detail == "No Zebra printer answered at 10.0.0.5.")
+        #expect(await printerGuard.state(for: saved.connection) == .clean)
+        z.answers = true
+        vm.printTest(.alignment)
+        await eventually("sent") { !vm.ui.testing && z.sent.count == 1 }
+        #expect(!vm.ui.testError)
     }
 
     @Test func theInstallEtaReadsInSecondsThenMinutes() {

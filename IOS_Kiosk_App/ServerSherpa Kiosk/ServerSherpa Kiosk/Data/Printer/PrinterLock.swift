@@ -28,12 +28,13 @@ actor PrinterLock {
     }
 }
 
-/// `send` with each label sent under `lock` and `printerGuard`'s rules (a `~JX` first after a
-/// failed send, nothing while a font install is cut): the container's Print Labels sender.
+/// `send` with each label sent under `lock` and `printerGuard`'s rules for its printer (a `~JX`
+/// first after a failed send, nothing while a font install is cut): the container's Print Labels
+/// sender.
 func lockedSender(_ lock: PrinterLock, _ printerGuard: PrinterGuard, _ send: @escaping LabelSender) -> LabelSender {
     { printer, zpl in
         try await lock.withLock {
-            try await printerGuard.guarded(.send, clear: { try await send(printer, ZebraCommands.cancelPartialFormat) }) {
+            try await printerGuard.sending(for: printer.connection, clear: { try await send(printer, ZebraCommands.cancelPartialFormat) }) {
                 try await send(printer, zpl)
             }
         }
@@ -62,40 +63,48 @@ extension SetupZebra {
 
 extension NetworkZebra: SetupZebra {}
 
-/// `inner` with every call made under `lock` (one connection to the printer at a time) and its
-/// sends and font installs under `guard`'s rules; an answered `identify()` tells the guard.
+/// `inner`, the printer at `connection`, with every call made under `lock` (one connection to the
+/// printer at a time) and `guard`'s rules for that printer: a pending `~JX` before any call, and
+/// no send or font install while a font is cut. An answered `identify()` lifts that stop unless
+/// `liftsStop` is off (Printer Setup's probe of a printer being chosen, before it is saved).
 struct LockedZebra: SetupZebra {
     let inner: SetupZebra
+    let connection: PrinterConnection
     let lock: PrinterLock
     let `guard`: PrinterGuard
+    var liftsStop = true
 
     func identify() async throws -> HostId {
         try await lock.withLock {
-            let id = try await inner.identify()
-            await self.guard.printerAnswered()
+            let id = try await self.guard.asking(for: connection, clear: clear) { try await inner.identify() }
+            if liftsStop { await self.guard.printerAnswered(connection) }
             return id
         }
     }
 
-    func serial() async throws -> String? { try await lock.withLock { try await inner.serial() } }
-    func status() async throws -> HostStatus { try await lock.withLock { try await inner.status() } }
-    func peelerPresent() async throws -> Bool? { try await lock.withLock { try await inner.peelerPresent() } }
-    func fonts() async throws -> [String] { try await lock.withLock { try await inner.fonts() } }
-    func fontEntries() async throws -> [DirectoryEntry] { try await lock.withLock { try await inner.fontEntries() } }
+    func serial() async throws -> String? { try await ask { try await inner.serial() } }
+    func status() async throws -> HostStatus { try await ask { try await inner.status() } }
+    func peelerPresent() async throws -> Bool? { try await ask { try await inner.peelerPresent() } }
+    func fonts() async throws -> [String] { try await ask { try await inner.fonts() } }
+    func fontEntries() async throws -> [DirectoryEntry] { try await ask { try await inner.fontEntries() } }
 
     func send(_ zpl: String) async throws {
         try await lock.withLock {
-            try await self.guard.guarded(.send, clear: { try await inner.send(ZebraCommands.cancelPartialFormat) }) {
-                try await inner.send(zpl)
-            }
+            try await self.guard.sending(for: connection, clear: clear) { try await inner.send(zpl) }
         }
     }
 
     func installFont(name: String, bytes: Data, progress: (@Sendable (_ sent: Int, _ total: Int) -> Void)?) async throws {
         try await lock.withLock {
-            try await self.guard.guarded(.font, clear: { try await inner.send(ZebraCommands.cancelPartialFormat) }) {
-                try await inner.installFont(name: name, bytes: bytes, progress: progress)
+            try await self.guard.installing(for: connection, clear: clear, progress: progress) { tracked in
+                try await inner.installFont(name: name, bytes: bytes, progress: tracked)
             }
         }
     }
+
+    private func ask<T: Sendable>(_ query: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await lock.withLock { try await self.guard.asking(for: connection, clear: clear, query) }
+    }
+
+    private func clear() async throws { try await inner.send(ZebraCommands.cancelPartialFormat) }
 }

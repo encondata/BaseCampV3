@@ -151,7 +151,8 @@ struct PrintQueueDeps<A: Sendable>: Sendable {
     var prepare: @Sendable (_ zpl: String, _ settings: LabelSettings) async throws -> PrintStep
     /// Sends the ZPL to the saved printer; throws when it can't (`LabelSendLocalNetworkDenied`
     /// when iOS kept it off the local network, `LabelSendTimeout` when the job may have gone out,
-    /// `PrinterNeedsRestart` while a cut font install keeps sends from the printer).
+    /// `PrinterNeedsRestart` while a cut font install keeps sends from the printer). Anything else,
+    /// a failed clear before the label included, means the label never went out: unreachable.
     var send: @Sendable (_ printer: SavedPrinter, _ zpl: String) async throws -> Void
     /// Queues the Labeled scan; throws when it can't be saved.
     var record: @Sendable (_ asset: A, _ scannedValue: String) async throws -> Void

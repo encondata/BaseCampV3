@@ -34,8 +34,8 @@ final class AppContainer {
     /// One connection to the saved printer at a time, app-wide: Print Labels' sends and every
     /// Printer Setup call (identify, checks, font installs, test labels) go through it.
     let printerLock: PrinterLock
-    /// The saved printer's state after a failed send or a cut font install (the `~JX` clear, the
-    /// stop), applied under `printerLock` by the same callers. Starts clean for each printer.
+    /// Each printer's state after a failed send or a cut font install (the `~JX` clear, the stop),
+    /// keyed to its connection and applied under `printerLock` by the same callers.
     let printerGuard: PrinterGuard
     /// The synced label font files (nil keeps font metadata only).
     let fontsDir: URL?
@@ -129,10 +129,11 @@ final class AppContainer {
         NetworkZebra(host: printer.host ?? "")
     }
 
-    /// A clear or a cut font belongs to the printer it happened to: saving another connection (or
-    /// none) starts the guard clean, whoever saves it (`LabelSettingsStore` is the one writer). The
-    /// same printer saved again with what a check found (model, serial, DPI) keeps it. Follows the
-    /// saved printer's connection (Observation), skipping the value it starts with.
+    /// Housekeeping: the guard's marks are keyed to their printer already, and saving another
+    /// connection (or none) drops them all, whoever saves it (`LabelSettingsStore` is the one
+    /// writer). The same printer saved again with what a check found (model, serial, DPI) keeps
+    /// its own. Follows the saved printer's connection (Observation), skipping the value it starts
+    /// with.
     private static func resetPrinterGuardOnPrinterChange(settings: LabelSettingsStore, printerGuard: PrinterGuard) {
         let connections = observationStream { settings.current().printer?.connection }
         Task {

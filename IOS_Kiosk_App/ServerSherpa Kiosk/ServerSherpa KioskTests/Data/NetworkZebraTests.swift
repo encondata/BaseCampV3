@@ -237,14 +237,27 @@ struct NetworkZebraTests {
         await wentOut(Data("~DYE:ROBOTO.TTF,B,T,4,,".utf8) + font)
     }
 
+    /// Progress starts at 0 once the connection is open (the bytes start going out), then comes
+    /// after each part.
     @Test func writeReportsProgressPerPart() async throws {
         let p = try await FakePrinter.start()
         defer { p.close() }
         let reports = ProgressLog()
         try await zebra(p).installFont(name: "A.TTF", bytes: Data(count: 1_000), progress: { reports.add($0, $1) })
         let header = "~DYE:A.TTF,B,T,1000,,".utf8.count
-        #expect(reports.all == [[header, header + 1_000], [header + 1_000, header + 1_000]])
+        #expect(reports.all == [[0, header + 1_000], [header, header + 1_000], [header + 1_000, header + 1_000]])
         #expect(await p.received().count == 1)
+    }
+
+    /// Nothing listening: nothing went out, so no progress at all (a font install that never
+    /// started is not a cut one).
+    @Test func aRefusedConnectionReportsNoProgress() async throws {
+        let reports = ProgressLog()
+        let z = NetworkZebra(host: "127.0.0.1", port: try await closedPort(), timeouts: fast)
+        await #expect(throws: PrinterUnreachable.self) {
+            try await z.installFont(name: "A.TTF", bytes: Data(count: 10), progress: { reports.add($0, $1) })
+        }
+        #expect(reports.all.isEmpty)
     }
 
     /// After a failed send the next send opens one connection for exactly `~JX`, then one for the
@@ -253,8 +266,9 @@ struct NetworkZebraTests {
         let p = try await FakePrinter.start()
         defer { p.close() }
         let printerGuard = PrinterGuard()
-        await printerGuard.markSendFailed()
-        let locked = LockedZebra(inner: zebra(p), lock: PrinterLock(), guard: printerGuard)
+        let connection = PrinterConnection.network(host: "127.0.0.1")
+        await printerGuard.markSendFailed(for: connection)
+        let locked = LockedZebra(inner: zebra(p), connection: connection, lock: PrinterLock(), guard: printerGuard)
         try await locked.send("^XA^FDone^FS^XZ")
         let first = await p.received(2)
         #expect(first.count == 2)

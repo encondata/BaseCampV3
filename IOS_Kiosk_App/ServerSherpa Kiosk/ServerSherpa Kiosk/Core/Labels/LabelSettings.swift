@@ -15,7 +15,7 @@ enum LabelKind: String, CaseIterable, Sendable {
 /// How the iPad reaches its printer: a network host (TCP port 9100), or Bluetooth LE by the
 /// printer's serial (its Bluetooth name) plus this iPad's own identifier for it, which iOS hands
 /// out once the printer has been found (nil until then).
-enum PrinterConnection: Equatable, Sendable {
+enum PrinterConnection: Hashable, Sendable {
     case network(host: String)
     case bluetooth(serial: String, peripheralId: UUID?)
 }

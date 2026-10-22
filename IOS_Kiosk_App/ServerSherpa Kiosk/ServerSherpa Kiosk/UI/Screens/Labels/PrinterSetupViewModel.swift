@@ -142,9 +142,6 @@ func installEtaText(remainingBytes: Int, bytesPerSecond: Double) -> String? {
     return "about \(Int((seconds / 60).rounded())) min left"
 }
 
-/// The connection waited with iOS's Local Network denial (`NetworkZebra` marks it).
-func wasLocalNetworkDenied(_ error: Error) -> Bool { (error as? PrinterUnreachable)?.localNetworkDenied == true }
-
 /// No synced file for a font the library lists.
 private struct FontFileMissing: Error {}
 
@@ -209,8 +206,8 @@ final class PrinterSetupViewModel {
     @ObservationIgnored private let fontsDir: URL?
     @ObservationIgnored private let scanner: @Sendable () async throws -> ZebraScanResult
     @ObservationIgnored private let printerAt: @MainActor (SavedPrinter) -> SetupZebra
-    /// A printer being chosen, before it is saved: under the lock, with a guard of its own (its
-    /// answer says nothing about what the saved printer is left holding).
+    /// A printer being chosen, before it is saved: under the lock and the guard (a pending clear
+    /// still goes first), but its answer never lifts a cut font's stop (the check after saving does).
     @ObservationIgnored private let unsavedPrinterAt: @MainActor (SavedPrinter) -> SetupZebra
     @ObservationIgnored private let printerGuard: PrinterGuard
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
@@ -248,8 +245,12 @@ final class PrinterSetupViewModel {
         self.store = store
         self.fontsDir = fontsDir
         self.scanner = scanner
-        self.printerAt = { printer in LockedZebra(inner: zebraFor(printer), lock: printerLock, guard: printerGuard) }
-        self.unsavedPrinterAt = { printer in LockedZebra(inner: zebraFor(printer), lock: printerLock, guard: PrinterGuard()) }
+        self.printerAt = { printer in
+            LockedZebra(inner: zebraFor(printer), connection: printer.connection, lock: printerLock, guard: printerGuard)
+        }
+        self.unsavedPrinterAt = { printer in
+            LockedZebra(inner: zebraFor(printer), connection: printer.connection, lock: printerLock, guard: printerGuard, liftsStop: false)
+        }
         self.printerGuard = printerGuard
         self.sleep = sleep
         self.pickWait = pickWait
@@ -492,7 +493,7 @@ final class PrinterSetupViewModel {
             var detail = noZebraAnswerText(saved.connection)
             if wasLocalNetworkDenied(error) {
                 detail = LOCAL_NETWORK_PRINTER_DENIED_TEXT
-            } else if await printerGuard.state == .fontCut {
+            } else if await printerGuard.state(for: saved.connection) == .fontCut {
                 // Still waiting for the rest of a font: it needs the restart.
                 detail = FONT_INSTALL_CUT_TEXT
             }
@@ -661,7 +662,7 @@ final class PrinterSetupViewModel {
             } catch {
                 Self.log.warning("font install failed: \(name, privacy: .public): \(String(describing: error), privacy: .private)")
                 failed = name
-                cut = await printerGuard.state == .fontCut
+                cut = await printerGuard.state(for: printer.connection) == .fontCut
                 break
             }
         }
