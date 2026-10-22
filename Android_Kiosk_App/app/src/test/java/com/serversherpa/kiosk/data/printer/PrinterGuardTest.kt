@@ -68,6 +68,7 @@ private class RecordingZebra : SetupZebra {
     override suspend fun peelerPresent(): Boolean? { ask("peeler"); return null }
     override suspend fun fonts(): List<String> { ask("fonts"); return emptyList() }
     override suspend fun fontEntries(): List<DirectoryEntry> { ask("fontEntries"); return emptyList() }
+    override suspend fun query(command: String, complete: (ByteArray) -> Boolean): String { ask(command); return "" }
 
     override suspend fun send(zpl: String) {
         when (write(zpl)) {

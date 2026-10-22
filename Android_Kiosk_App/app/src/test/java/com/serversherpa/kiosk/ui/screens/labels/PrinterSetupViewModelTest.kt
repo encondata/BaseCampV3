@@ -39,6 +39,7 @@ import com.serversherpa.kiosk.data.printer.FoundBluetoothPrinter
 import com.serversherpa.kiosk.data.printer.FoundPrinter
 import com.serversherpa.kiosk.data.printer.PrinterGuard
 import com.serversherpa.kiosk.data.printer.PrinterLock
+import com.serversherpa.kiosk.data.printer.PrinterNoReply
 import com.serversherpa.kiosk.data.printer.PrinterTimeout
 import com.serversherpa.kiosk.data.printer.PrinterUnreachable
 import com.serversherpa.kiosk.data.printer.SetupZebra
@@ -197,6 +198,8 @@ private class FakeZebra(val host: String) : SetupZebra {
     override suspend fun peelerPresent(): Boolean? { calls += "peeler"; return if (answers && failWith == null) peeler else null }
     override suspend fun fonts(): List<String> = fontEntries().map { it.name }
     override suspend fun fontEntries(): List<DirectoryEntry> { use("fonts"); return synchronized(onE) { onE.toList() } }
+    /** Printer Setup never sends a raw query (Troubleshooting does). */
+    override suspend fun query(command: String, complete: (ByteArray) -> Boolean): String { use("query", command); throw PrinterNoReply(host) }
     override suspend fun send(zpl: String) {
         use("send", zpl)
         sendError?.let { throw it }

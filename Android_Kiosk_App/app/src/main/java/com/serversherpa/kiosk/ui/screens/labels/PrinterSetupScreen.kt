@@ -221,8 +221,9 @@ fun PrinterSetupScreen(nav: NavHostController) {
     }
 }
 
+/** A section's small uppercase heading (Printer Setup, Settings › Troubleshooting). */
 @Composable
-private fun Section(title: String) {
+internal fun Section(title: String) {
     val c = LocalKioskColors.current
     Text(
         title.uppercase(), style = MaterialTheme.typography.labelSmall, color = c.textMute,

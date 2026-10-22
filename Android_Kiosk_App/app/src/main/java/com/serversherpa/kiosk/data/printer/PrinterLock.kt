@@ -45,7 +45,8 @@ fun lockedSender(lock: PrinterLock, guard: PrinterGuard, send: LabelSender): Lab
     }
 }
 
-/** One Zebra, as Printer Setup talks to it: a [ZebraTransport] on the device ([TransportSetupZebra]). */
+/** One Zebra, as Printer Setup and Settings › Troubleshooting talk to it: a [ZebraTransport] on the
+ *  device ([TransportSetupZebra]). */
 interface SetupZebra {
     suspend fun identify(): HostId
     suspend fun serial(): String?
@@ -55,6 +56,11 @@ interface SetupZebra {
     suspend fun fontEntries(): List<DirectoryEntry>
     suspend fun send(zpl: String)
     suspend fun installFont(name: String, bytes: ByteArray, progress: WriteProgress? = null)
+
+    /** Sends [command] and returns the reply as the printer sent it (Latin-1), read until
+     *  [complete] says it is whole or the transport's quiet and total limits: Troubleshooting's ask
+     *  buttons and command box, which show the raw reply. */
+    suspend fun query(command: String, complete: (ByteArray) -> Boolean): String
 }
 
 /** [transport] as a [SetupZebra]: the shared commands, byte for byte. */
@@ -68,6 +74,7 @@ class TransportSetupZebra(val transport: ZebraTransport) : SetupZebra {
     override suspend fun send(zpl: String) = transport.send(zpl)
     override suspend fun installFont(name: String, bytes: ByteArray, progress: WriteProgress?) =
         transport.installFont(name, bytes, progress)
+    override suspend fun query(command: String, complete: (ByteArray) -> Boolean): String = transport.query(command, complete)
 }
 
 /**
@@ -99,8 +106,21 @@ class LockedZebra(
     override suspend fun fonts(): List<String> = ask { inner.fonts() }
     override suspend fun fontEntries(): List<DirectoryEntry> = ask { inner.fontEntries() }
 
+    override suspend fun query(command: String, complete: (ByteArray) -> Boolean): String = ask { inner.query(command, complete) }
+
     override suspend fun send(zpl: String) = lock.withLock {
         withContext(NonCancellable) { guard.sending(connection, ::clear) { inner.send(zpl) } }
+    }
+
+    /** Troubleshooting's Cut-send test (D16): sends [zpl] (the first half of a label) as [send]
+     *  does, then marks the printer as if that send had been cut off, both in one turn of the lock,
+     *  so a label queued behind it can't reach the printer before the mark and merge into the half.
+     *  It calls [inner] directly: the lock isn't reentrant. */
+    suspend fun sendCut(zpl: String) = lock.withLock {
+        withContext(NonCancellable) {
+            guard.sending(connection, ::clear) { inner.send(zpl) }
+            guard.markSendFailed(connection)
+        }
     }
 
     override suspend fun installFont(name: String, bytes: ByteArray, progress: WriteProgress?) = lock.withLock {
