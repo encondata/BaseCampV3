@@ -1,18 +1,39 @@
 package com.serversherpa.kiosk.data.printer
 
+import android.app.Application
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.test.core.app.ApplicationProvider
+import com.serversherpa.kiosk.AppContainer
 import com.serversherpa.kiosk.core.labels.PrinterConnection
+import com.serversherpa.kiosk.core.labels.PrinterIdentity
 import com.serversherpa.kiosk.core.labels.SavedPrinter
+import com.serversherpa.kiosk.core.labels.identity
 import com.serversherpa.kiosk.core.printer.DirectoryEntry
 import com.serversherpa.kiosk.core.printer.FONT_INSTALL_CUT_TEXT
 import com.serversherpa.kiosk.core.printer.HostId
 import com.serversherpa.kiosk.core.printer.HostStatus
 import com.serversherpa.kiosk.core.printer.PrinterNeedsRestart
 import com.serversherpa.kiosk.core.printer.ZebraCommands
+import com.serversherpa.kiosk.data.prefs.PrinterStopsStore
 import com.serversherpa.kiosk.data.printer.PrinterGuard.State
 import com.serversherpa.kiosk.testContainer
+import java.io.File
+import java.util.UUID
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -108,6 +129,15 @@ class PrinterGuardTest {
     private val printer = SavedPrinter("10.0.0.5", "ZD421", "S1", 203)
     private val other = SavedPrinter("10.0.0.6", "ZD421", "S2", 203)
     private val a: PrinterConnection get() = printer.connection
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    @After fun tearDown() = scope.cancel()
+
+    /** A DataStore of its own (one app launch's prefs, shared by the containers of a relaunch test). */
+    private fun freshStore(): DataStore<Preferences> {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        return PreferenceDataStoreFactory.create(scope = scope) { File(app.cacheDir, "guard-${UUID.randomUUID()}.preferences_pb") }
+    }
 
     /** The container's Print Labels sender over [zebra]. */
     private fun sender(zebra: RecordingZebra, guard: PrinterGuard): LabelSender =
@@ -295,34 +325,142 @@ class PrinterGuardTest {
         assertEquals(State.FONT_CUT, guard.state(a))
     }
 
-    /** The container's guard starts over for each saved printer: another connection (or none)
-     *  drops every mark; the same printer saved again with what a check found keeps its own. */
-    @Test fun guardResetsWhenThePrinterChanges() = runBlocking<Unit> {
+    /** A mark belongs to the printer, not to the way it was reached: a Bluetooth printer saved
+     *  again at another address (or none), or with its serial in another case, is the same printer
+     *  and keeps its mark (iOS keys by host or upper-cased serial: Ruling 7). */
+    @Test fun aMarkIsKeyedByThePrintersIdentityNotItsAddress() = runBlocking<Unit> {
+        val guard = PrinterGuard()
+        val atA = PrinterConnection.Bluetooth("D8J224508535", "AC:3F:A4:00:00:01")
+        val atB = PrinterConnection.Bluetooth("d8j224508535", "AC:3F:A4:00:00:02")
+        val noAddress = PrinterConnection.Bluetooth("D8J224508535", null)
+        guard.markSendFailed(atA)
+        assertEquals(State.NEEDS_CLEAR, guard.state(atB))
+        assertEquals(State.NEEDS_CLEAR, guard.state(noAddress))
+        guard.markFontCut(atB)
+        assertEquals(State.FONT_CUT, guard.state(atA))
+        guard.printerAnswered(noAddress)
+        assertEquals(State.CLEAN, guard.state(atA))
+        // Another serial is another printer; a network host is its own.
+        guard.markFontCut(atA)
+        assertEquals(State.CLEAN, guard.state(PrinterConnection.Bluetooth("XXJ224508599", "AC:3F:A4:00:00:01")))
+        assertEquals(State.CLEAN, guard.state(a))
+        assertEquals(PrinterIdentity.Bluetooth("D8J224508535"), atB.identity)
+        assertEquals(PrinterIdentity.Network("10.0.0.5"), a.identity)
+    }
+
+    /** Ruling 16: marks are keyed to their printer, so saving another printer drops none of them:
+     *  a printer left needing a clear still gets its `~JX` after A→B→A, and a cut font's stop stays
+     *  through a switch to Bluetooth, to none, and through Reset app (the printer is still waiting
+     *  for the rest of the font). */
+    @Test fun marksStayWhenAnotherPrinterIsSaved() = runBlocking<Unit> {
         val c = testContainer()
-        val guard = c.printerGuard
-        c.labelSettings.setPrinter(printer)
-        guard.markSendFailed(a)
+        try {
+            val guard = c.printerGuard
+            c.labelSettings.setPrinter(printer)
+            guard.markSendFailed(a)
 
-        c.labelSettings.setPrinter(SavedPrinter("10.0.0.5", "ZT230", "S2", 300))
-        assertEquals(State.NEEDS_CLEAR, guard.state(a))
+            // A → B → A: A's clear is still owed.
+            c.labelSettings.setPrinter(other)
+            c.labelSettings.setPrinter(printer)
+            assertEquals(State.NEEDS_CLEAR, guard.state(a))
+            val zebra = RecordingZebra()
+            lockedSender(c.printerLock, guard) { _, zpl -> zebra.send(zpl) }.send(printer, "LABEL")
+            assertEquals(listOf("~JX", "LABEL"), zebra.written)
 
-        c.labelSettings.setPrinter(other)
-        assertEquals(State.CLEAN, guard.state(a))
+            // B's cut font through a Bluetooth printer, none at all, and Reset app.
+            val bluetooth = PrinterConnection.Bluetooth("D8J224508535", "00:11:22:33:44:55")
+            guard.markFontCut(other.connection)
+            c.labelSettings.setPrinter(SavedPrinter(bluetooth, "ZD421", "D8J224508535", 300))
+            assertEquals(State.FONT_CUT, guard.state(other.connection))
+            c.labelSettings.setPrinter(null)
+            assertEquals(State.FONT_CUT, guard.state(other.connection))
+            c.labelSettings.setPrinter(printer)
+            c.resetApp(clearLocalData = {})
+            assertEquals(State.FONT_CUT, guard.state(other.connection))
+            assertNotNull(c.prefs.snapshot()[stringPreferencesKey("ss.kiosk.printerStops")])
+        } finally {
+            c.scope.cancel()
+            c.db.close()
+        }
+    }
 
-        val bluetooth = PrinterConnection.Bluetooth("D8J224508535", "00:11:22:33:44:55")
-        guard.markFontCut(other.connection)
-        c.labelSettings.setPrinter(SavedPrinter(bluetooth, "ZD421", "D8J224508535", 300))
-        assertEquals(State.CLEAN, guard.state(other.connection))
+    /** D8 outlives a relaunch: a font install cut off (the crew switched apps mid-install, then
+     *  Android killed the kiosk) leaves the printer waiting for the rest of the font, so the next
+     *  launch still refuses labels to it until it answers a check, which lifts the stop for good.
+     *  A pending clear stays in memory (D16): a relaunch forgets it. */
+    @Test fun aCutFontStopOutlivesARelaunch() = runBlocking<Unit> {
+        val store = freshStore()
+        val zebra = RecordingZebra()
+        val containers = ArrayList<AppContainer>()
+        fun launch(): AppContainer = testContainer(dataStore = store).also { containers += it }
+        try {
+            val first = launch()
+            zebra.failWrites(1)
+            val cutting = LockedZebra(zebra, a, first.printerLock, first.printerGuard)
+            throws<PrinterUnreachable> { cutting.installFont("ROBOTO.TTF", byteArrayOf(1, 2)) }
+            assertEquals(State.FONT_CUT, first.printerGuard.state(a))
+            first.printerGuard.markSendFailed(other.connection)
 
-        guard.markSendFailed(bluetooth)
-        c.labelSettings.setPrinter(null)
-        assertEquals(State.CLEAN, guard.state(bluetooth))
+            // Killed and launched again: still stopped, and only that printer. The stop is in place
+            // before anything can be sent.
+            val second = launch()
+            val send = lockedSender(second.printerLock, second.printerGuard) { _, zpl -> zebra.send(zpl) }
+            throws<PrinterNeedsRestart> { send.send(printer, "LABEL") }
+            assertTrue(zebra.written.isEmpty())
+            assertEquals(State.FONT_CUT, second.printerGuard.state(a))
+            assertEquals(State.CLEAN, second.printerGuard.state(other.connection))
+            send.send(other, "B1")
+            assertEquals(listOf("B1"), zebra.written)
 
-        // Settings › Developer › Reset app drops the printer too.
-        c.labelSettings.setPrinter(printer)
-        guard.markSendFailed(a)
-        c.labelSettings.reset()
-        assertEquals(State.CLEAN, guard.state(a))
+            // Restarted, it answers a check: the stop lifts, here and in every later launch.
+            LockedZebra(zebra, a, second.printerLock, second.printerGuard).identify()
+            assertEquals(State.CLEAN, second.printerGuard.state(a))
+            val third = launch()
+            lockedSender(third.printerLock, third.printerGuard) { _, zpl -> zebra.send(zpl) }.send(printer, "LABEL")
+            assertEquals(listOf("B1", "LABEL"), zebra.written)
+            assertEquals(State.CLEAN, third.printerGuard.state(a))
+        } finally {
+            for (c in containers) {
+                c.scope.cancel()
+                c.db.close()
+            }
+        }
+    }
+
+    /** The stops are kept by printer identity (a network host, or a Bluetooth serial in any case),
+     *  under `ss.kiosk.printerStops` in iOS's JSON shape; an unreadable value keeps none. */
+    @Test fun stopsAreKeptByPrinterIdentity() = runBlocking<Unit> {
+        val store = freshStore()
+        val key = stringPreferencesKey("ss.kiosk.printerStops")
+        val stops = PrinterStopsStore(store)
+        val first = PrinterGuard(stops, scope)
+        val bluetooth = PrinterConnection.Bluetooth("d8j224508535", "AC:3F:A4:00:00:01")
+        first.markFontCut(bluetooth)
+        first.markFontCut(a)
+        assertEquals(
+            """[{"type":"bluetooth","serial":"D8J224508535"},{"type":"network","host":"10.0.0.5"}]""",
+            store.data.first()[key],
+        )
+        assertEquals(setOf(PrinterIdentity.Bluetooth("D8J224508535"), PrinterIdentity.Network("10.0.0.5")), stops.load())
+        // A pending clear isn't kept.
+        first.markSendFailed(other.connection)
+        assertEquals(2, stops.load().size)
+
+        val again = PrinterGuard(stops, scope)
+        again.awaitRestored()
+        assertEquals(State.FONT_CUT, again.state(PrinterConnection.Bluetooth("D8J224508535", "AC:3F:A4:00:00:09")))
+        assertEquals(State.FONT_CUT, again.state(a))
+        assertEquals(State.CLEAN, again.state(other.connection))
+        again.printerAnswered(a)
+        assertEquals(setOf(PrinterIdentity.Bluetooth("D8J224508535")), stops.load())
+        again.printerAnswered(bluetooth)
+        assertNull("none left: the key goes", store.data.first()[key])
+
+        store.edit { it[key] = "not json" }
+        assertTrue(stops.load().isEmpty())
+        val unreadable = PrinterGuard(stops, scope)
+        unreadable.awaitRestored()
+        assertEquals(State.CLEAN, unreadable.state(bluetooth))
     }
 
     /** The container reaches a Bluetooth printer over the Bluetooth link, never over TCP (host

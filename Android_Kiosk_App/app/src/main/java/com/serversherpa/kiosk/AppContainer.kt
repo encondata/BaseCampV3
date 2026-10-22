@@ -128,12 +128,14 @@ class AppContainer(
      *  Printer Setup call (identify, checks, font installs, test labels) go through it. */
     val printerLock = PrinterLock()
     /** Each printer's state after a failed send or a cut font install (the `~JX` clear, the stop),
-     *  keyed to its connection and applied under [printerLock] by the same callers. Saving another
-     *  connection (or none) drops every mark, whoever saves it ([labelSettings] is the one writer). */
-    val printerGuard = PrinterGuard()
+     *  keyed to the printer and applied under [printerLock] by the same callers. The stops are kept
+     *  across launches (`KioskPrefs.printerStops`: a cut font leaves the printer waiting for the
+     *  rest of it, relaunch or not) and read back here in [scope]; saving another printer keeps
+     *  every mark (each belongs to its printer: Ruling 16). */
+    val printerGuard = PrinterGuard(prefs.printerStops, scope)
     /** The app's one Bluetooth LE link to a Zebra (D4): it connects on first need and stays up while
      *  the app is in use, and closes when the app goes to the background, on sign-out, when the
-     *  session ends, and when another printer is saved. Its own scope, a child of [scope] (cancelling
+     *  session ends, and when another printer is saved. Its own scope, a child of [scope] (canceling
      *  that stops the link's event loop), runs on Default, never Main: its progress callbacks (a font
      *  install's) run there. Nothing scans, and nothing asks for a permission, until Bluetooth is
      *  picked in Printer Setup or a Bluetooth printer is used. */
@@ -141,10 +143,11 @@ class AppContainer(
         bluetoothOverride ?: AndroidBluetoothLe(app),
         CoroutineScope(SupervisorJob(scope.coroutineContext[Job]) + Dispatchers.Default),
     )
+    /** The one writer of the saved printer. Another printer saved (or none): a link up to the
+     *  printer just saved stays (Printer Setup brought it up to choose it); a link to any other
+     *  printer lets it go. The guard's marks stay: each belongs to its printer, so switching A→B→A
+     *  still owes A its `~JX` (Ruling 16). */
     val labelSettings = LabelSettingsStore(prefs, onConnectionChange = {
-        printerGuard.reset()
-        // A link up to the printer just saved stays (Printer Setup brought it up to choose it);
-        // a link to any other printer lets it go.
         if (!zebraBluetooth.link.value.isUpTo(prefs.labels.first().printer)) zebraBluetooth.close()
     })
     /** Print Labels' sender: straight to the printer (no status checks before or after), one

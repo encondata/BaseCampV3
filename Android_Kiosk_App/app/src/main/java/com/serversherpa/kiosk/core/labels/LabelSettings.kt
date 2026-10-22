@@ -30,6 +30,30 @@ sealed interface PrinterConnection {
     data class Bluetooth(val serial: String, val address: String? = null) : PrinterConnection
 }
 
+/** Which printer a connection reaches, whatever the way: the network host, or the Bluetooth serial
+ *  (in any case). The address Android hands out for a Bluetooth printer only finds it, and can
+ *  change, so it isn't part of it (iOS Ruling 7). Saved as `{"type":"network","host":…}` or
+ *  `{"type":"bluetooth","serial":…}` (the printer stops, `PrinterStopsStore`). */
+@Serializable
+sealed interface PrinterIdentity {
+    @Serializable @SerialName("network")
+    data class Network(val host: String) : PrinterIdentity
+
+    @Serializable @SerialName("bluetooth")
+    data class Bluetooth(val serial: String) : PrinterIdentity
+
+    /** A stable order for saving ("bluetooth:…" before "network:…"). */
+    val sortKey: String get() = when (this) {
+        is Network -> "network:$host"
+        is Bluetooth -> "bluetooth:$serial"
+    }
+}
+
+val PrinterConnection.identity: PrinterIdentity get() = when (this) {
+    is PrinterConnection.Network -> PrinterIdentity.Network(host)
+    is PrinterConnection.Bluetooth -> PrinterIdentity.Bluetooth(serial.uppercase())
+}
+
 /** The Zebra labels print to; its [dpi] picks the template.
  *
  *  Saved as JSON with `connection` and, for a build from before Bluetooth, the old `host` beside
