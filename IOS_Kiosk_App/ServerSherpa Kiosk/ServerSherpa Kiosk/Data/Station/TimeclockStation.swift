@@ -79,19 +79,22 @@ final class TimeclockStation {
 
     // MARK: the key
 
-    /// The key and the kiosk's serial for a station call; nil without a key. A key whose origin
-    /// is not the current API URL's (or that has none) is dropped and nothing is sent.
-    func credentials() -> (key: String, serial: String)? {
+    /// The checked API base URL, the key and the kiosk's serial for a station call; nil without
+    /// a key. A key whose origin is not the current API URL's (or that has none) is dropped and
+    /// nothing is sent. The call must be built from the returned `base`, never from a fresh read
+    /// of the settings, so a URL saved after this check can't receive the key.
+    func credentials() -> (base: String, key: String, serial: String)? {
         guard let key = keys.get() else {
             hasKey = false
             return nil
         }
-        guard let bound = keys.origin(), bound == apiOrigin(apiUrl()) else {
+        let base = apiUrl()
+        guard let bound = keys.origin(), bound == apiOrigin(base) else {
             clearKey()
             return nil
         }
         hasKey = true
-        return (key, serial())
+        return (base, key, serial())
     }
 
     /// A freshly issued key (Kiosk Setup's Time Clock finish), bound to the current API origin.

@@ -14,11 +14,12 @@ struct StationApiTests {
     private struct Harness {
         let api = ApiHarness()
         let station: URLSessionStationApi
+        let base: String
         var server: StubServer { api.server }
 
         init() {
-            let base = api.server.baseURL
-            station = URLSessionStationApi(apiUrl: { base }, session: URLSessionKioskApi.makeSession(protocolClasses: [StubURLProtocol.self]))
+            base = api.server.baseURL
+            station = URLSessionStationApi(session: URLSessionKioskApi.makeSession(protocolClasses: [StubURLProtocol.self]))
         }
 
         func signIn() async throws {
@@ -28,11 +29,31 @@ struct StationApiTests {
         }
     }
 
+    /// The URL checked against the key's origin is the URL used: credentials are taken, then
+    /// Settings saves a new API URL, then the call is made. It goes to the original host only.
+    @MainActor @Test func aUrlSavedAfterTheCheckNeverReceivesTheKey() async throws {
+        let h = Harness()
+        let other = StubServer()
+        let url = MutableBox(h.base)
+        let station = TimeclockStation(keys: StationKeyStore(secrets: MemorySecretStore()), serial: { "ios-1" }, apiUrl: { url.value })
+        station.storeKey("k3y")
+        let creds = try #require(station.credentials())
+        url.value = other.baseURL                              // saved in between
+        h.server.enqueue(.json(200, #"{"generated_at":"g","people":[]}"#))
+        _ = try await h.station.people(base: creds.base, key: creds.key, serial: creds.serial)
+        #expect(h.server.requestCount == 1)
+        #expect(other.requestCount == 0)                       // the new host never sees the key
+        // the next call re-checks: the key no longer matches, so it is dropped and nothing goes out
+        #expect(station.credentials() == nil)
+        #expect(!station.hasKey)
+        #expect(other.requestCount == 0)
+    }
+
     @Test func peopleSendsOnlyTheStationKeyAndTheSerialInTheQuery() async throws {
         let h = Harness()
         try await h.signIn()   // a session exists, and still never rides along
         h.server.enqueue(.json(200, #"{"generated_at":"g","people":[{"id":"p1","display_name":"Bea","badge_uid":"b-1","is_worker":true,"has_account":false}]}"#))
-        let people = try await h.station.people(key: "k3y", serial: "ios 1")
+        let people = try await h.station.people(base: h.base, key: "k3y", serial: "ios 1")
         #expect(people.map(\.badgeUid) == ["b-1"])
         let req = try #require(h.server.takeRequest())
         #expect(req.method == "GET")
@@ -44,7 +65,7 @@ struct StationApiTests {
     @Test func statusReadsThePersonWithSerialAndZone() async throws {
         let h = Harness()
         h.server.enqueue(.json(200, statusJSON))
-        let st = try await h.station.status(key: "k3y", serial: "ios-1", personId: "p 1", tz: "America/Chicago")
+        let st = try await h.station.status(base: h.base, key: "k3y", serial: "ios-1", personId: "p 1", tz: "America/Chicago")
         #expect(st.clockedIn && st.todayMinutes == 5)
         let req = try #require(h.server.takeRequest())
         #expect(req.method == "GET")
@@ -56,7 +77,7 @@ struct StationApiTests {
         let h = Harness()
         try await h.signIn()
         h.server.enqueue(.json(200, statusJSON))
-        _ = try await h.station.clockIn(key: "k3y", serial: "ios-1", personId: "p1", tz: "UTC")
+        _ = try await h.station.clockIn(base: h.base, key: "k3y", serial: "ios-1", personId: "p1", tz: "UTC")
         let inReq = try #require(h.server.takeRequest())
         #expect(inReq.method == "POST")
         #expect(inReq.path == "/kiosk/station/timeclock/clock-in")
@@ -65,7 +86,7 @@ struct StationApiTests {
         #expect(inReq.bodyString == #"{"person_id":"p1","serial":"ios-1","tz":"UTC"}"#)
 
         h.server.enqueue(.json(200, #"{"person":{"id":"p1","display_name":"T"},"clocked_in":false,"last_entry":{"id":"e","started_at":"2026-10-21T08:00:00Z","ended_at":"2026-10-21T12:00:00Z","minutes":240}}"#))
-        let out = try await h.station.clockOut(key: "k3y", serial: "ios-1", personId: "p1", tz: "UTC")
+        let out = try await h.station.clockOut(base: h.base, key: "k3y", serial: "ios-1", personId: "p1", tz: "UTC")
         #expect(out.lastEntry?.minutes == 240)
         let outReq = try #require(h.server.takeRequest())
         #expect(outReq.path == "/kiosk/station/timeclock/clock-out")
@@ -87,7 +108,7 @@ struct StationApiTests {
         try await h.signIn()
         h.server.enqueue(.json(status, #"{"detail":{"code":"\#(code)"}}"#))
         do {
-            _ = try await h.station.clockIn(key: "k3y", serial: "ios-1", personId: "p1", tz: "UTC")
+            _ = try await h.station.clockIn(base: h.base, key: "k3y", serial: "ios-1", personId: "p1", tz: "UTC")
             Issue.record("expected ApiError")
         } catch let e as ApiError {
             #expect(e.status == status)
@@ -101,7 +122,7 @@ struct StationApiTests {
         let h = Harness()
         h.server.shutdown()
         do {
-            _ = try await h.station.people(key: "k3y", serial: "ios-1")
+            _ = try await h.station.people(base: h.base, key: "k3y", serial: "ios-1")
             Issue.record("expected ApiError")
         } catch let e as ApiError {
             #expect(e.isNetwork)

@@ -61,7 +61,7 @@ final class AppContainer {
         let session = URLSessionKioskApi.makeSession()
         let sessionStore = SessionStore(apiUrl: apiUrl, cookies: cookies, session: session)
         let api = URLSessionKioskApi(apiUrl: apiUrl, session: session, sessionStore: sessionStore, cookies: cookies)
-        let stationApi = URLSessionStationApi(apiUrl: apiUrl, session: session)
+        let stationApi = URLSessionStationApi(session: session)
         let stationKeys = StationKeyStore(secrets: secrets)
         let station = TimeclockStation(keys: stationKeys, serial: { identity.current.serial }, apiUrl: { config.apiUrl })
         let auth = KioskAuth(api: api, refresher: sessionStore, identity: identity, prefs: prefs, station: station)

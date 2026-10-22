@@ -27,24 +27,27 @@ final class FakeStationApi: StationApi, @unchecked Sendable {
     }
 
     var calls: [Call] { lock.withLock { _calls } }
+    /// The base URL each call was built from, in order.
+    var bases: [String] { lock.withLock { _bases } }
+    private var _bases: [String] = []
     var names: [String] { calls.map(\.name) }
 
-    private func record(_ call: Call) { lock.withLock { _calls.append(call) } }
+    private func record(_ call: Call, base: String) { lock.withLock { _calls.append(call); _bases.append(base) } }
 
-    func people(key: String, serial: String) async throws -> [KioskPersonRow] {
-        record(Call(name: "people", key: key, serial: serial, tz: nil))
+    func people(base: String, key: String, serial: String) async throws -> [KioskPersonRow] {
+        record(Call(name: "people", key: key, serial: serial, tz: nil), base: base)
         return try await peopleResult()
     }
-    func status(key: String, serial: String, personId: String, tz: String) async throws -> KioskTimeclockStatus {
-        record(Call(name: "status:\(personId)", key: key, serial: serial, tz: tz))
+    func status(base: String, key: String, serial: String, personId: String, tz: String) async throws -> KioskTimeclockStatus {
+        record(Call(name: "status:\(personId)", key: key, serial: serial, tz: tz), base: base)
         return try await statusResult(personId)
     }
-    func clockIn(key: String, serial: String, personId: String, tz: String) async throws -> KioskTimeclockStatus {
-        record(Call(name: "clockIn:\(personId)", key: key, serial: serial, tz: tz))
+    func clockIn(base: String, key: String, serial: String, personId: String, tz: String) async throws -> KioskTimeclockStatus {
+        record(Call(name: "clockIn:\(personId)", key: key, serial: serial, tz: tz), base: base)
         return try await clockInResult(personId)
     }
-    func clockOut(key: String, serial: String, personId: String, tz: String) async throws -> KioskTimeclockStatus {
-        record(Call(name: "clockOut:\(personId)", key: key, serial: serial, tz: tz))
+    func clockOut(base: String, key: String, serial: String, personId: String, tz: String) async throws -> KioskTimeclockStatus {
+        record(Call(name: "clockOut:\(personId)", key: key, serial: serial, tz: tz), base: base)
         return try await clockOutResult(personId)
     }
 }

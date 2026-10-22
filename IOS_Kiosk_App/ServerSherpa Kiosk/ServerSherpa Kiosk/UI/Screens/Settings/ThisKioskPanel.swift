@@ -31,11 +31,16 @@ struct ThisKioskPanel: View {
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.paperLine, lineWidth: 1))
     }
 
+    /// Typing here counts as activity on a Time Clock station's sign-in page (this panel is its
+    /// gear's sheet), so the quiet minute back to Welcome restarts with each keystroke. A no-op
+    /// anywhere else.
+    private func typed() { container.station.noteLoginActivity() }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsRow(title: "Kiosk name", detail: "What people see on their phone when they link with this kiosk. 1–\(NAME_MAX) characters.") {
                 field("Kiosk name", $name).accessibilityIdentifier("kiosk-name")
-                    .onChange(of: name) { nameError = nil }
+                    .onChange(of: name) { nameError = nil; typed() }
                 KioskToast(text: nameError, error: true)
                 SecondaryButton("Save name") {
                     if let error = SettingsModel.saveName(name, identity: identity) {
@@ -63,10 +68,10 @@ struct ThisKioskPanel: View {
             SettingsRow(title: "Device model") { Text(DeviceInfo.rawInfo()["model"] ?? "—").font(KioskType.mono(13)).foregroundStyle(palette.text) }
             SettingsRow(title: "API URL", detail: "Where this kiosk talks to the portal. Must start with http:// or https://. Saving a new API address signs this kiosk out.") {
                 field("https://api.serversherpa.com", $api, url: true).accessibilityIdentifier("api-url")
-                    .onChange(of: api) { urlError = nil }
+                    .onChange(of: api) { urlError = nil; typed() }
                 Text("Portal URL").font(KioskType.bodySmall).foregroundStyle(palette.textMute).padding(.top, 8)
                 field("https://portal.serversherpa.com", $portal, url: true).accessibilityIdentifier("portal-url")
-                    .onChange(of: portal) { urlError = nil }
+                    .onChange(of: portal) { urlError = nil; typed() }
                 KioskToast(text: urlError, error: true)
                 SecondaryButton("Save URLs") {
                     Task {

@@ -290,6 +290,15 @@ struct StationModeTests {
         model.stop()
     }
 
+    @Test func stationCallsAreBuiltFromTheCheckedBaseUrl() async throws {
+        let station = makeStation()
+        station.storeKey("k3y")
+        let backend = StationTcBackend(api: api, store: try makeStore(), station: station)
+        _ = try await backend.status(personId: "p1")
+        _ = try await backend.people()
+        #expect(api.bases == [TEST_API_URL, TEST_API_URL])
+    }
+
     @Test func aKeyWithNoOriginIsNeverSent() async throws {
         StationKeyStore(secrets: secrets).put("legacy")
         let station = makeStation()

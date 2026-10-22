@@ -31,7 +31,7 @@ struct StationTcBackend: TcBackend {
     /// network failure is the error.
     func people() async throws -> [KioskPersonRow] {
         do {
-            let rows = try await call { key, serial in try await api.people(key: key, serial: serial) }
+            let rows = try await call { base, key, serial in try await api.people(base: base, key: key, serial: serial) }
             try await store.replacePeople(rows)
             return rows
         } catch let error as ApiError {
@@ -43,25 +43,26 @@ struct StationTcBackend: TcBackend {
 
     func status(personId: String) async throws -> KioskTimeclockStatus {
         let tz = timeZone.identifier
-        return try await call { key, serial in try await api.status(key: key, serial: serial, personId: personId, tz: tz) }
+        return try await call { base, key, serial in try await api.status(base: base, key: key, serial: serial, personId: personId, tz: tz) }
     }
 
     func clockIn(personId: String) async throws -> KioskTimeclockStatus {
         let tz = timeZone.identifier
-        return try await call { key, serial in try await api.clockIn(key: key, serial: serial, personId: personId, tz: tz) }
+        return try await call { base, key, serial in try await api.clockIn(base: base, key: key, serial: serial, personId: personId, tz: tz) }
     }
 
     func clockOut(personId: String) async throws -> KioskTimeclockStatus {
         let tz = timeZone.identifier
-        return try await call { key, serial in try await api.clockOut(key: key, serial: serial, personId: personId, tz: tz) }
+        return try await call { base, key, serial in try await api.clockOut(base: base, key: key, serial: serial, personId: personId, tz: tz) }
     }
 
     /// One station call under the stored key, its outcome reported to the station.
-    private func call<T: Sendable>(_ op: @Sendable (String, String) async throws -> T) async throws -> T {
+    /// The request goes to the base URL the key was checked against (`credentials()`).
+    private func call<T: Sendable>(_ op: @Sendable (String, String, String) async throws -> T) async throws -> T {
         guard let credentials = await station.credentials() else { throw Self.notReady }
         let key = credentials.key
         do {
-            let result = try await op(key, credentials.serial)
+            let result = try await op(credentials.base, key, credentials.serial)
             await station.noteAnswered()
             return result
         } catch {
