@@ -102,8 +102,9 @@ fun PrinterSetupScreen(nav: NavHostController) {
     fun pickBluetooth() {
         vm.pickBluetooth(BluetoothPermissions.missing(context)) { permissionPrompt.launch(BluetoothPermissions.REQUIRED.toTypedArray()) }
     }
-    // Back from Settings (a permission allowed, Bluetooth or Location turned on): Android sends
-    // nothing for a permission, so Bluetooth is read again.
+    // The screen showing (D4: a saved Bluetooth printer's link starts in the background), and back
+    // from Settings (a permission allowed, Bluetooth or Location turned on): Android sends nothing
+    // for a permission, so Bluetooth is read again, and a link refusal showing connects again.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -166,9 +167,12 @@ fun PrinterSetupScreen(nav: NavHostController) {
                 enabled = !ui.busy && ui.ipText.isNotBlank(), modifier = Modifier.padding(top = 8.dp),
             )
         }
+        // Opening the screen connected the saved Bluetooth printer, and Bluetooth refused (off, not
+        // allowed): what to do, with the button that does it.
+        if (mode == null) BluetoothRefusal(ui.bluetoothMessage, error = ui.bluetoothError)
         KioskToast(ui.chooseError, error = true)
-        // The printer forgot this device (choosing it, a check or a test label): forget it in
-        // Android's Bluetooth settings too, then Connect.
+        // The printer forgot this device (opening the screen, choosing it, a check or a test label):
+        // forget it in Android's Bluetooth settings too, then Connect.
         ui.pairingLost?.let { PairingLostNotice(it, onConnect = vm::connectAgain, connectEnabled = !ui.busy && !ui.checking) }
 
         if (printer != null) {
@@ -178,9 +182,8 @@ fun PrinterSetupScreen(nav: NavHostController) {
             ui.fontFix?.let { fix ->
                 val failed = ui.checks.any { it.key == CheckKey.FONTS && it.state == CheckState.FAIL }
                 if (failed && fix.installable.isNotEmpty() && !ui.installing) {
-                    val n = fix.installable.size
                     MiniButton(
-                        "Install $n missing font${if (n == 1) "" else "s"}",
+                        fontInstallButtonText(fix.installable, ui.damagedFonts),
                         { vm.installFonts() }, enabled = !ui.busy && !ui.checking, modifier = Modifier.padding(top = 8.dp),
                     )
                 }

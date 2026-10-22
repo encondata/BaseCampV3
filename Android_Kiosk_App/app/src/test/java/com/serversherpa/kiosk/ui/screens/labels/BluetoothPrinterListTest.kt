@@ -112,6 +112,17 @@ class BluetoothPrinterListTest {
         return layouts.single()
     }
 
+    /** [text] shows in full on its lines inside a dialog (its own window, 480 px wide here). */
+    private fun assertWholeInDialog(text: String) {
+        val layout = layoutOf(text)
+        val last = layout.lineCount - 1
+        assertTrue("$text is ellipsized", !layout.isLineEllipsized(last))
+        assertTrue("$text is cut off below", !layout.didOverflowHeight)
+        assertEquals("$text lost characters", text.length, layout.getLineEnd(last, visibleEnd = true))
+        val node = compose.onNodeWithText(text, useUnmergedTree = true).fetchSemanticsNode().boundsInWindow
+        assertTrue("$text runs off the screen: $node", node.left >= 0f && node.right <= 480f)
+    }
+
     /** [text] shows in full on its lines (nothing ellipsized or cut off below), inside the screen. */
     private fun assertWhole(text: String) {
         val layout = layoutOf(text)
@@ -258,8 +269,12 @@ class BluetoothPrinterListTest {
         compose.onAllNodesWithText("Turn on Bluetooth").assertCountEquals(0)
     }
 
-    /** A test label refused because Bluetooth isn't allowed: the sheet shows Open Settings. */
-    @Test fun theTestLabelSheetShowsTheFixButton() {
+    /** A test label refused because Bluetooth isn't allowed: the sheet shows Open Settings. One a
+     *  printer that forgot this device refused: the steps with Bluetooth settings and Connect (the
+     *  steps say to tap it; it reads "Connecting…" while the checks run), whole on the handheld. */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun theTestLabelSheetShowsTheFixButton() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val db = KioskDatabase.inMemory(app)
@@ -272,12 +287,28 @@ class BluetoothPrinterListTest {
                 zebraFor = { error("not used") }, printerLock = PrinterLock(), printerGuard = PrinterGuard(), scopeOverride = scope,
             )
             ui = PrinterSetupUi(testMessage = BLUETOOTH_DENIED_TEXT, testError = true)
-            compose.setContent { KioskTheme { TestLabelSheet(vm, ui, AlignmentSize(4.0, 2.0, 203), "Vegas Top", onDismiss = {}) } }
+            compose.setContent { KioskTheme { TestLabelSheet(vm, ui, AlignmentSize(4.0, 2.0, 203), "Vegas Top", onDismiss = {}, onConnect = { connects++ }) } }
             // The sheet scrolls on the handheld: bring each into view first.
             compose.onNodeWithText(BLUETOOTH_DENIED_TEXT).performScrollTo().assertIsDisplayed()
             compose.onNodeWithText("Open Settings").performScrollTo().assertIsDisplayed().assertHasClickAction()
+            compose.onAllNodesWithText("Connect").assertCountEquals(0)
             ui = ui.copy(testMessage = "Alignment label (4x2) sent to the printer.", testError = false)
             compose.onAllNodesWithText("Open Settings").assertCountEquals(0)
+
+            val steps = pairingLostText("D8J224508535")
+            ui = ui.copy(testMessage = steps, testError = true)
+            compose.onNodeWithText(steps).performScrollTo().assertIsDisplayed()
+            assertWholeInDialog(steps)
+            compose.onNodeWithText("Bluetooth settings").performScrollTo().assertIsDisplayed().assertHasClickAction()
+            assertWholeInDialog("Bluetooth settings")
+            compose.onNodeWithText("Connect").performScrollTo().assertIsDisplayed().performClick()
+            assertEquals(1, connects)
+            ui = ui.copy(checking = true)
+            compose.onNodeWithText("Connecting…").performScrollTo().assertIsNotEnabled()
+            compose.onAllNodesWithText("Connect").assertCountEquals(0)
+            // Once the checks find the printer answering, the message and its buttons go.
+            ui = ui.copy(checking = false, testMessage = null, testError = false)
+            for (button in listOf("Connect", "Connecting…", "Bluetooth settings")) compose.onAllNodesWithText(button).assertCountEquals(0)
         } finally {
             scope.cancel()
             db.close()

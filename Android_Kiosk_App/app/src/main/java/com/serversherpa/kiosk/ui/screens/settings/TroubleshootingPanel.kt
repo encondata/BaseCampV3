@@ -65,11 +65,9 @@ import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.components.Segmented
 import com.serversherpa.kiosk.ui.components.SettingsRow
 import com.serversherpa.kiosk.ui.components.kioskViewModel
-import com.serversherpa.kiosk.ui.screens.labels.BluetoothFix
 import com.serversherpa.kiosk.ui.screens.labels.BluetoothRefusal
-import com.serversherpa.kiosk.ui.screens.labels.PairingLostNotice
+import com.serversherpa.kiosk.ui.screens.labels.PrinterReachNotice
 import com.serversherpa.kiosk.ui.screens.labels.Section
-import com.serversherpa.kiosk.ui.screens.labels.bluetoothFixFor
 import com.serversherpa.kiosk.ui.screens.labels.bluetoothSignalText
 import com.serversherpa.kiosk.ui.screens.labels.isSavedPrinter
 import com.serversherpa.kiosk.ui.screens.labels.printerSummary
@@ -517,11 +515,7 @@ private fun SpeedTable(rows: List<SpeedRow>) {
 @Composable
 private fun ReachCard(vm: TroubleshootingModel, ui: TroubleshootingUi, vararg sections: TroubleAction) {
     val reach = ui.reach?.takeIf { it.action in sections } ?: return
-    if (bluetoothFixFor(reach.text) == BluetoothFix.FORGET) {
-        PairingLostNotice(reach.text, onConnect = { vm.connectAgain() }, connectEnabled = ui.canCall)
-    } else {
-        BluetoothRefusal(reach.text)
-    }
+    PrinterReachNotice(reach.text, onConnect = { vm.connectAgain() }, connectEnabled = ui.canCall)
 }
 
 /** A thin bar while the tab waits on the printer. */

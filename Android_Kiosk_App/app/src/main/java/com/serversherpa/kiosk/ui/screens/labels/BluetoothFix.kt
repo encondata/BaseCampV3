@@ -45,6 +45,20 @@ fun bluetoothFixFor(text: String?): BluetoothFix? = when {
     else -> null
 }
 
+/**
+ * What a Bluetooth refusal the crew fixes on the handheld offers, from its words: the button that
+ * opens what fixes it ([fix]: Turn on Bluetooth, Open Settings, Location settings, or Bluetooth
+ * settings for a printer that forgot this device), and Connect ([offersConnect]) for that printer,
+ * whose steps end "then come back and tap Connect." The one rule for Print Labels, Printer Setup,
+ * its test-label sheet and Troubleshooting (iOS `printerReachProblem(for:)`). Null for text that
+ * is no refusal (no Bluetooth LE at all offers nothing).
+ */
+data class PrinterReachProblem(val text: String, val fix: BluetoothFix) {
+    val offersConnect: Boolean get() = fix == BluetoothFix.FORGET
+}
+
+fun printerReachProblem(text: String?): PrinterReachProblem? = text?.let { t -> bluetoothFixFor(t)?.let { PrinterReachProblem(t, it) } }
+
 /** [text] is the forget-it steps for some printer (they name it in the middle). */
 private fun isPairingLostText(text: String): Boolean {
     val (head, tail) = pairingLostText(SERIAL_MARK).split(SERIAL_MARK)
@@ -92,14 +106,26 @@ fun BluetoothRefusal(text: String?, error: Boolean = true) {
     bluetoothFixFor(text)?.let { BluetoothFixButton(it, Modifier.padding(bottom = 8.dp)) }
 }
 
-/** The printer forgot this device: the steps, then Bluetooth settings (where it's forgotten too)
- *  and Connect (once it is). */
+/**
+ * A Bluetooth refusal the crew fixes on the handheld, as [printerReachProblem] reads it: its words
+ * (red), the button that opens what fixes it, and, for a printer that forgot this device, Connect
+ * beside Bluetooth settings ([onConnect], reading "Connecting…" while [connecting]). Text that is
+ * no refusal shows as a plain message.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun PairingLostNotice(text: String, onConnect: () -> Unit, connectEnabled: Boolean = true) {
-    KioskToast(text, error = true)
+fun PrinterReachNotice(text: String, onConnect: () -> Unit, connectEnabled: Boolean = true, connecting: Boolean = false, error: Boolean = true) {
+    KioskToast(text, error = error)
+    val problem = printerReachProblem(text) ?: return
     FlowRow(Modifier.padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        BluetoothFixButton(BluetoothFix.FORGET)
-        MiniButton("Connect", onConnect, enabled = connectEnabled)
+        BluetoothFixButton(problem.fix)
+        if (problem.offersConnect) MiniButton(if (connecting) "Connecting…" else "Connect", onConnect, enabled = connectEnabled)
     }
+}
+
+/** The printer forgot this device: the steps, then Bluetooth settings (where it's forgotten too)
+ *  and Connect (once it is). */
+@Composable
+fun PairingLostNotice(text: String, onConnect: () -> Unit, connectEnabled: Boolean = true, connecting: Boolean = false) {
+    PrinterReachNotice(text, onConnect, connectEnabled, connecting)
 }

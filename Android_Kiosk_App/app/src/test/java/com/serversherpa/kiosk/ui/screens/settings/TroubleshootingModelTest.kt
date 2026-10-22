@@ -5,6 +5,7 @@ import com.serversherpa.kiosk.core.labels.LabelPick
 import com.serversherpa.kiosk.core.labels.PrinterConnection
 import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.printer.BLUETOOTH_DENIED_TEXT
+import com.serversherpa.kiosk.core.printer.SCAN_ENDED_EARLY_TEXT
 import com.serversherpa.kiosk.core.printer.BLUETOOTH_OFF_TEXT
 import com.serversherpa.kiosk.core.printer.FONT_INSTALL_CUT_TEXT
 import com.serversherpa.kiosk.core.printer.ZebraCommands

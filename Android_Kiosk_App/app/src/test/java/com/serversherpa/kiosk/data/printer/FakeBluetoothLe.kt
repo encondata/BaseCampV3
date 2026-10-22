@@ -26,6 +26,9 @@ class FakeBluetoothLe(
         private set
     /** Scans refuse to start (Android's scan throttle, say). */
     var refuseScan = false
+    /** How many times the link read Bluetooth's state. */
+    @Volatile var availabilityReads = 0
+        private set
 
     /** A printer at [address] (the office ZD421 unless told otherwise). */
     fun printer(
@@ -34,7 +37,10 @@ class FakeBluetoothLe(
         manufacturer: String = ZEBRA,
     ): FakePrinter = FakePrinter(address, serial, manufacturer).also { printers[address] = it }
 
-    override fun availability(): BluetoothAvailability = state
+    override fun availability(): BluetoothAvailability {
+        availabilityReads++
+        return state
+    }
 
     override fun listen(onEvent: (BluetoothLeEvent) -> Unit) {
         listener = onEvent

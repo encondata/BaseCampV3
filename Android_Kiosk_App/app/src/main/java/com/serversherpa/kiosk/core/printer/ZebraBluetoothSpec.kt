@@ -76,6 +76,10 @@ const val BLUETOOTH_DENIED_TEXT = "Allow Bluetooth for ServerSherpa Kiosk in Set
  *  permission doesn't disavow location). */
 const val LOCATION_OFF_TEXT = "Turn on Location to find Bluetooth printers on this device."
 
+/** A Bluetooth scan Android wouldn't run (it refused to start one, or ended it with an error: too
+ *  many scans in a short time, say). Information, not an error: Scan again fixes it. */
+const val SCAN_ENDED_EARLY_TEXT = "The scan stopped early. Scan again."
+
 /** Under the scan results, for a printer that doesn't show up. */
 const val BLUETOOTH_SCAN_HINT_TEXT =
     "Don't see the printer? Hold FEED on the printer for 5 seconds (the middle light blinks), then scan again. " +

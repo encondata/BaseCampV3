@@ -88,8 +88,9 @@ internal fun opensPrinterSetupFirst(printer: SavedPrinter?, phase: LabelBuildPha
 internal const val BUILD_FAILED_TEXT = "Labels couldn't be made. Try syncing again."
 
 /** A failed label's button: "Retry", or "Connect" when the printer forgot this device (its steps
- *  end "…then come back and tap Connect."). Both connect again and resend the same label. */
-internal fun retryText(message: String?): String = if (bluetoothFixFor(message) == BluetoothFix.FORGET) "Connect" else "Retry"
+ *  end "…then come back and tap Connect."; [printerReachProblem] is the one rule). Both connect
+ *  again and resend the same label. */
+internal fun retryText(message: String?): String = if (printerReachProblem(message)?.offersConnect == true) "Connect" else "Retry"
 
 internal fun statusText(e: PrintEntry<*>): String = when (e.state) {
     PrintState.QUEUED -> "Waiting to print"

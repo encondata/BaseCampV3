@@ -15,6 +15,7 @@ import com.serversherpa.kiosk.core.printer.FONT_INSTALL_CUT_TEXT
 import com.serversherpa.kiosk.core.printer.HostId
 import com.serversherpa.kiosk.core.printer.HostStatus
 import com.serversherpa.kiosk.core.printer.PrinterNeedsRestart
+import com.serversherpa.kiosk.core.printer.SCAN_ENDED_EARLY_TEXT
 import com.serversherpa.kiosk.core.printer.ZebraBluetoothSpec
 import com.serversherpa.kiosk.core.printer.ZebraCommands
 import com.serversherpa.kiosk.core.printer.isDirectoryListing
@@ -160,9 +161,6 @@ const val NO_TROUBLESHOOTING_PRINTER_TEXT = "No printer set up yet. Choose one i
 const val NOTHING_HEARD_TEXT = "No Bluetooth devices heard nearby."
 /** A scan a printer call cut short (a label going out shares the radio). */
 const val SCAN_CUT_SHORT_TEXT = "The scan stopped because the printer was in use. Scan again."
-/** A scan that ended early for another reason (the app went to the background, Android refused to
- *  scan again so soon). */
-const val SCAN_ENDED_EARLY_TEXT = "The scan stopped early. Scan again."
 /** A command box command (a setvar, say) that replied nothing, as it does by design. */
 const val COMMAND_SENT_TEXT = "Sent, no reply."
 /** A label or format typed in the command box (it starts with `^XA` and asks the printer nothing)
