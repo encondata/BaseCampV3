@@ -119,7 +119,7 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
                         modifier = Modifier.clickable { nav.navigate(Routes.settings("this-kiosk")) },
                     )
                     authed?.let {
-                        Text(" · ", color = c.textMute, style = MaterialTheme.typography.labelMedium)
+                        Text(" · ", color = c.textMute, style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
                         Text(
                             it.person.display_name, color = c.textMute, style = MaterialTheme.typography.bodySmall,
                             maxLines = 1, overflow = TextOverflow.Ellipsis,
