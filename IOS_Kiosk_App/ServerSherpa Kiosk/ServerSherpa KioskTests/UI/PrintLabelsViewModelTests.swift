@@ -564,3 +564,19 @@ struct PrintLabelsViewModelTests {
         #expect(printEntryTitle(KioskAssetRow(id: "a3", assetId: "A-3", name: "")) == "A-3")
     }
 }
+
+@Suite struct PrintLabelsOpensPrinterSetupTests {
+    private let printer = SavedPrinter(host: "10.0.0.5", model: "ZD421", serial: "", dpi: 203)
+
+    @Test func noPrinterOpensPrinterSetupOncePerVisit() {
+        #expect(opensPrinterSetupFirst(printer: nil, phase: .idle, alreadyOpened: false))
+        #expect(opensPrinterSetupFirst(printer: nil, phase: .done, alreadyOpened: false))
+        // Back from Printer Setup without saving: no bounce.
+        #expect(!opensPrinterSetupFirst(printer: nil, phase: .idle, alreadyOpened: true))
+    }
+
+    @Test func aSavedPrinterOrAnUnsupportedDeviceStaysOnPrintLabels() {
+        #expect(!opensPrinterSetupFirst(printer: printer, phase: .idle, alreadyOpened: false))
+        #expect(!opensPrinterSetupFirst(printer: nil, phase: .unsupportedDevice, alreadyOpened: false))
+    }
+}

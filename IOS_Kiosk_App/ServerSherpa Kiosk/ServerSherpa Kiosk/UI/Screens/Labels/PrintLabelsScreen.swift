@@ -16,6 +16,8 @@ private struct PrintLabelsBody: View {
     @Binding var path: [Route]
     @State private var vm: PrintLabelsViewModel
     @State private var camera = false
+    /// Printer Setup was opened for this visit because no printer was saved.
+    @State private var openedPrinterSetup = false
     @Environment(\.kioskPalette) private var palette
 
     init(container: AppContainer, path: Binding<[Route]>) {
@@ -78,6 +80,12 @@ private struct PrintLabelsBody: View {
         .background(palette.paper2)
         // Hands scans in only: the prints they start belong to the view model, so this ending
         // (the screen went off screen) cancels nothing already scanned.
+        .onAppear {
+            if opensPrinterSetupFirst(printer: vm.settings.printer, phase: vm.build.phase, alreadyOpened: openedPrinterSetup) {
+                openedPrinterSetup = true
+                path.append(.labelsPrinter)
+            }
+        }
         .task { await vm.follow(container.scanBus.events()) }
         .task(id: container.sync.rosterVersion) { await vm.loadRoster() }
         .fullScreenCover(isPresented: $camera) {

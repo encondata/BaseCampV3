@@ -18,6 +18,13 @@ func readySummary(_ build: LabelBuildStatus) -> String {
     return "\(ready) · " + problems.map { "\($0.count) \(PROBLEM_PHRASES[$0.code] ?? "with no label")" }.joined(separator: ", ")
 }
 
+/// Opening Print Labels with no printer saved goes straight on to Printer Setup, once per visit:
+/// coming back from Printer Setup without saving leaves Print Labels showing its own "Printer
+/// Setup" button rather than bouncing again. A device that can't make labels says so instead.
+func opensPrinterSetupFirst(printer: SavedPrinter?, phase: LabelBuildPhase, alreadyOpened: Bool) -> Bool {
+    printer == nil && phase != .unsupportedDevice && !alreadyOpened
+}
+
 let BUILD_FAILED_TEXT = "Labels couldn't be made. Try syncing again."
 
 /// What an entry's chip says.
