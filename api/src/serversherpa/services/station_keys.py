@@ -23,6 +23,18 @@ TIMECLOCK = "timeclock"
 STATION_TYPES: tuple[str, ...] = ("rfid", "label", TIMECLOCK)
 # the station types the scan-upload routes (sync, scans, heartbeat, sounds) serve
 UPLOAD_STATION_TYPES: tuple[str, ...] = ("rfid", "label")
+# kiosk sub_types that may hold a Time Clock key besides the laptop (every
+# station type); RFID and Label Stations stay laptop-only
+TIMECLOCK_SUB_TYPES: tuple[str, ...] = ("android", "zebra", "ios")
+
+
+def station_sub_type_ok(device: Device) -> bool:
+    """Whether the kiosk's platform may hold a key for its station type: a
+    laptop for any station type; an Android, Zebra or iOS kiosk only as a
+    Time Clock Station. Says nothing of the station type itself."""
+    return (device.sub_type == "laptop"
+            or (device.sub_type in TIMECLOCK_SUB_TYPES
+                and device.station_type == TIMECLOCK))
 
 
 def _hash(raw_key: str) -> str:
@@ -69,8 +81,9 @@ async def revoke(db: AsyncSession, device: Device, *,
 
 async def verify(db: AsyncSession, serial: str, raw_key: str) -> Device | None:
     """The kiosk Device for `serial` when `raw_key` matches its key and the
-    device is still a laptop station (any STATION_TYPES), else None (no device,
-    not a kiosk, no key, a wrong key, or no longer `laptop` / a station type).
+    device is still a station (any STATION_TYPES) on a platform that may hold
+    that key (station_sub_type_ok), else None (no device, not a kiosk, no key,
+    a wrong key, or no longer a station).
     Which routes a type may call is deps.station_device's job. Eligibility
     is checked only after the hash matches. Registration is not checked here;
     deps.station_device refuses a lapsed one with a 403 that keeps the key."""
@@ -79,6 +92,6 @@ async def verify(db: AsyncSession, serial: str, raw_key: str) -> Device | None:
         return None
     if not hmac.compare_digest(_hash(raw_key), device.station_key_hash):
         return None
-    if device.sub_type != "laptop" or device.station_type not in STATION_TYPES:
+    if not station_sub_type_ok(device) or device.station_type not in STATION_TYPES:
         return None
     return device

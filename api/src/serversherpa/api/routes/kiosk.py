@@ -665,9 +665,11 @@ LABEL_STATION_SCAN_STATUS = "labeled"
 
 
 def is_station(device: Device) -> bool:
-    """A laptop kiosk set up as an RFID, Label or Time Clock Station; each
-    holds a station key (deps.station_device scopes the routes by type)."""
-    return (device.sub_type == "laptop"
+    """A kiosk set up as an RFID, Label or Time Clock Station; each holds a
+    station key (deps.station_device scopes the routes by type). RFID and
+    Label Stations are laptops; a Time Clock Station may also be an Android,
+    Zebra or iOS kiosk (station_keys.station_sub_type_ok)."""
+    return (station_keys.station_sub_type_ok(device)
             and device.station_type in station_keys.STATION_TYPES)
 
 

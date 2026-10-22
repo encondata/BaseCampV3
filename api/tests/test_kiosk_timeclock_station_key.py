@@ -9,10 +9,11 @@ import uuid
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from serversherpa.db.models import Device
+from serversherpa.db.models import Device, Person, WorkerProfile
 from serversherpa.services import station_keys
-from tests.test_kiosk_station_key import SERIAL
+from tests.test_kiosk_station_key import SERIAL, _code, _device
 from tests.test_kiosk_station_scans import _auth, _scan, _station
+from tests.test_sites_api import login
 
 
 async def _set(db, device, **fields):
@@ -92,3 +93,52 @@ async def test_rfid_and_label_keys_unchanged(client, db, seeded_user):
     await _set(db, device, station_type="label")
     r = await client.get("/kiosk/station/sync/assets", headers=_auth(key), params=params)
     assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize("sub_type", ["android", "zebra", "ios"])
+async def test_android_timeclock_station_gets_and_uses_a_key(
+        client, db, seeded_user, sub_type):
+    """An Android, Zebra or iOS kiosk set up as a Time Clock Station signs in
+    (session_person_id stamped by the heartbeat), takes a key and punches
+    under it. Test name per the plan; parametrized over the three types."""
+    uid = seeded_user.id
+    hdrs = await login(client)
+    device, _ = await _device(db, person_id=uid, sub_type=sub_type,
+                              station_type="timeclock")
+    person = Person(first_name="Nia", last_name="Native", rfid_tag=f"TC-{uuid.uuid4().hex[:6]}")
+    db.add(person)
+    await db.flush()
+    db.add(WorkerProfile(person_id=person.id))
+    await db.commit()
+    pid = person.id
+    db.expunge(person)
+
+    r = await client.post("/kiosk/station-key", headers=hdrs, json={"serial": SERIAL})
+    assert r.status_code == 200, r.text
+    key = r.json()["key"]
+    assert key
+    got = await station_keys.verify(db, SERIAL, key)
+    assert got is not None and got.id == device.id
+
+    r = await client.get(f"/kiosk/station/timeclock/{pid}", headers=_auth(key),
+                         params={"serial": SERIAL})
+    assert r.status_code == 200, r.text
+    assert r.json()["clocked_in"] is False
+
+
+@pytest.mark.parametrize("station_type", ["rfid", "label"])
+async def test_android_rfid_station_still_refused(client, db, seeded_user, station_type):
+    """RFID and Label Stations stay laptop-only."""
+    uid = seeded_user.id
+    hdrs = await login(client)
+    await _device(db, person_id=uid, sub_type="android", station_type=station_type)
+    r = await client.post("/kiosk/station-key", headers=hdrs, json={"serial": SERIAL})
+    assert r.status_code == 409 and _code(r) == "not_rfid_station"
+
+
+@pytest.mark.parametrize("station_type", ["rfid", "label"])
+async def test_verify_refuses_non_laptop_rfid_and_label_keys(
+        client, db, seeded_user, station_type):
+    device, _, key = await _station(db)
+    await _set(db, device, sub_type="ios", station_type=station_type)
+    assert await station_keys.verify(db, SERIAL, key) is None
