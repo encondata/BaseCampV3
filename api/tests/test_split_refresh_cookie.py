@@ -278,10 +278,64 @@ async def test_no_parameter_refreshes_ss_refresh_as_before(client, db, seeded_us
     assert (await client.post("/auth/refresh")).status_code == 200
 
 
-async def test_no_parameter_ignores_the_portal_cookie(client, db, seeded_user):
+async def test_no_parameter_falls_back_to_the_portal_cookie(client, db, seeded_user):
+    """An old portal bundle signed in after the split: no ss_refresh, so the
+    portal cookie is refreshed — and the token stays in ss_portal_refresh."""
     await _portal_login(client)
     resp = await client.post("/auth/refresh")
-    assert resp.status_code == 401 and resp.json()["detail"]["code"] == "missing_refresh"
+    assert resp.status_code == 200, resp.text
+    assert await _is_portal_session(client, resp)
+    cookies = _set_cookies(resp)
+    assert PORTAL in cookies and not _cleared(cookies[PORTAL]) and KIOSK not in cookies
+    assert _jar_cookie(client, KIOSK) is None
+    assert (await client.post("/auth/refresh")).status_code == 200
+    rows = await _rows(db)
+    assert len(rows) == 3 and all(r.revoked_at is None for r in rows)
+
+
+async def test_no_parameter_portal_fallback_failure_clears_the_portal_cookie(
+        client, db, seeded_user):
+    await _portal_login(client)
+    await db.execute(update(AuthSession).values(
+        expires_at=datetime.now(UTC) - timedelta(minutes=1)))
+    await db.commit()
+    resp = await client.post("/auth/refresh")
+    assert resp.status_code == 401 and resp.json()["detail"]["code"] == "session_expired"
+    assert _cleared(_set_cookies(resp)[PORTAL])
+
+
+async def test_no_parameter_with_both_cookies_uses_ss_refresh(client, db, seeded_user):
+    await _portal_login(client)
+    await _kiosk_login(client)
+    resp = await client.post("/auth/refresh")
+    assert resp.status_code == 200, resp.text
+    assert not await _is_portal_session(client, resp)
+    cookies = _set_cookies(resp)
+    assert KIOSK in cookies and not _cleared(cookies[KIOSK]) and PORTAL not in cookies
+    rows = {r.client: r for r in await _rows(db) if r.rotated_at is not None}
+    assert set(rows) == {"kiosk"}
+
+
+async def test_no_parameter_logout_with_only_the_portal_cookie(client, db, seeded_user):
+    await _portal_login(client)
+    resp = await client.post("/auth/logout")
+    assert resp.status_code == 204
+    assert _cleared(_set_cookies(resp)[PORTAL])
+    rows = await _rows(db)
+    assert len(rows) == 1 and rows[0].revoke_reason == "logout"
+    assert _jar_cookie(client, PORTAL) is None
+
+
+async def test_no_parameter_logout_with_both_cookies_ends_only_ss_refresh(
+        client, db, seeded_user):
+    await _portal_login(client)
+    await _kiosk_login(client)
+    resp = await client.post("/auth/logout")
+    assert resp.status_code == 204
+    cookies = _set_cookies(resp)
+    assert _cleared(cookies[KIOSK]) and PORTAL not in cookies
+    rows = {r.client: r for r in await _rows(db)}
+    assert rows["kiosk"].revoke_reason == "logout" and rows["portal"].revoked_at is None
 
 
 async def test_bad_client_value_is_422(client, db, seeded_user):

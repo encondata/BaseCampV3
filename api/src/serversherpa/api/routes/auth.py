@@ -275,13 +275,18 @@ async def refresh(
     ss_refresh: Annotated[str | None, Cookie()] = None,
     ss_portal_refresh: Annotated[str | None, Cookie()] = None,
 ) -> SessionOut:
-    """No `client`: ss_refresh, exactly as before the split. `client=kiosk`:
+    """No `client`: ss_refresh, exactly as before the split; only when
+    there is no ss_refresh, ss_portal_refresh (a portal bundle from before
+    the split, signed in after it) — that session stays in
+    ss_portal_refresh. `client=kiosk`:
     ss_refresh, kiosk sessions only. `client=portal`: ss_portal_refresh, or
     a portal session still filed under ss_refresh (signed in before the
     split), which moves to ss_portal_refresh. A session of the other app
     answers 401 wrong_client and is left alone, cookie included."""
-    token, cookie, legacy = ss_refresh, REFRESH_COOKIE, False
-    if client == "portal" and ss_portal_refresh:
+    token, cookie, legacy, expect = ss_refresh, REFRESH_COOKIE, False, client
+    if client is None and not ss_refresh and ss_portal_refresh:
+        token, cookie, expect = ss_portal_refresh, PORTAL_REFRESH_COOKIE, "portal"
+    elif client == "portal" and ss_portal_refresh:
         token, cookie = ss_portal_refresh, PORTAL_REFRESH_COOKIE
     elif client == "portal" and ss_refresh:
         legacy = await auth_service.session_client(db, ss_refresh) == "portal"
@@ -291,11 +296,11 @@ async def refresh(
         result = await auth_service.refresh(
             db, refresh_token=token,
             ip=client_ip(request), user_agent=request.headers.get("user-agent"),
-            expect_client=client,
+            expect_client=expect,
         )
     except AuthError as exc:
         error = _auth_http_error(exc)
-        if client is None:
+        if client is None and cookie == REFRESH_COOKIE:
             _clear_refresh_cookie(response)  # as before the split
         elif exc.code != "wrong_client" and (cookie == PORTAL_REFRESH_COOKIE
                                              or legacy or client == "kiosk"):
@@ -309,7 +314,7 @@ async def refresh(
     out = session_response(
         result, response, await totp_status_out(db, result.account), await load_policy(db),
         await _kiosk_move_for(db, result),
-        cookie_name=REFRESH_COOKIE if client is None else refresh_cookie_name(result.client))
+        cookie_name=cookie if client is None else refresh_cookie_name(result.client))
     if legacy:
         _clear_refresh_cookie(response, REFRESH_COOKIE)   # moved to ss_portal_refresh
     return out
@@ -322,12 +327,18 @@ async def logout(
     ss_refresh: Annotated[str | None, Cookie()] = None,
     ss_portal_refresh: Annotated[str | None, Cookie()] = None,
 ) -> None:
-    """No `client`: end ss_refresh's session, exactly as before the split.
-    With `client`, only that app's sessions are revoked and only its own
-    cookies cleared; a session of the other app is left alone."""
+    """No `client`: end ss_refresh's session, exactly as before the split;
+    only when there is no ss_refresh, the portal session in
+    ss_portal_refresh. With `client`, only that app's sessions are revoked
+    and only its own cookies cleared; a session of the other app is left
+    alone."""
     if client is None:
         if ss_refresh:
             await auth_service.logout(db, refresh_token=ss_refresh)
+        elif ss_portal_refresh:
+            await auth_service.logout(
+                db, refresh_token=ss_portal_refresh, expect_client="portal")
+            _clear_refresh_cookie(response, PORTAL_REFRESH_COOKIE)
         _clear_refresh_cookie(response)
         return
     if client == "portal":
