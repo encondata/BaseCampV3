@@ -12,6 +12,9 @@ enum ZebraCommands {
     static let peelerPresent = "! U1 getvar \"sensor.peeler_present\"\r\n"
     /// The printer's serial number (`~HI` doesn't carry one).
     static let serialNumber = "! U1 getvar \"device.unique_id\"\r\n"
+    /// `~JX`: drops the label the printer is half way through receiving (labels already queued
+    /// still print). Sent first after a send failed part-way, never on a normal send.
+    static let cancelPartialFormat = "~JX"
 
     /// `~DYE:NAME,B,T,<bytes>,,`: a binary TrueType download to E:; the font's bytes follow.
     static func downloadFontHeader(name: String, totalBytes: Int) -> String {
@@ -170,11 +173,18 @@ func isDirectoryListing(_ text: String) -> Bool {
     return DIR_HEADER.firstMatch(in: full, range: nsRange(full)) != nil
 }
 
-/// `^HW` → `- DIR E:*.*` header, `* NAME.EXT <bytes>` rows, `-<n> bytes free` trailer: the object
-/// names, upper-cased; empty when the reply isn't a listing (see `isDirectoryListing`). A straggling
-/// earlier listing can precede the fresh one, so only the last `DIR x:` block counts, and a repeated
-/// name keeps its last row's place. Mirrors parseDirectory in portal/src/labels/zebraUsb.ts.
-func parseDirectory(_ text: String) -> [String] {
+/// A file on the printer's E: drive: its upper-cased object name and its size in bytes.
+struct DirectoryEntry: Equatable, Sendable {
+    var name: String
+    var size: Int
+}
+
+/// `^HW` → `- DIR E:*.*` header, `* NAME.EXT <bytes>` rows, `-<n> bytes free` trailer: the objects
+/// with their sizes, names upper-cased; empty when the reply isn't a listing (see
+/// `isDirectoryListing`). A straggling earlier listing can precede the fresh one, so only the last
+/// `DIR x:` block counts, and a repeated name keeps its last row's place and size. Mirrors
+/// parseDirectory in portal/src/labels/zebraUsb.ts.
+func parseDirectoryEntries(_ text: String) -> [DirectoryEntry] {
     let full = strip(text) as NSString
     guard let header = DIR_HEADER.matches(in: full as String, range: NSRange(location: 0, length: full.length)).last else {
         return []
@@ -188,15 +198,21 @@ func parseDirectory(_ text: String) -> [String] {
         start = brk.range.location + brk.range.length
     }
     lines.append(blockNS.substring(from: start))
-    var names: [String] = []
+    var entries: [DirectoryEntry] = []
     for line in lines {
         let range = NSRange(location: 0, length: (line as NSString).length)
         guard let row = DIR_ROW.firstMatch(in: line, options: [.anchored], range: range), row.range == range else { continue }
         let name = (line as NSString).substring(with: row.range(at: 1)).uppercased()
-        names.removeAll { $0 == name }
-        names.append(name)
+        let size = jsParseInt((line as NSString).substring(with: row.range(at: 2))) ?? 0
+        entries.removeAll { $0.name == name }
+        entries.append(DirectoryEntry(name: name, size: size))
     }
-    return names
+    return entries
+}
+
+/// The object names of `parseDirectoryEntries`.
+func parseDirectory(_ text: String) -> [String] {
+    parseDirectoryEntries(text).map(\.name)
 }
 
 /// An SGD getvar reply's value: surrounding whitespace and double quotes stripped; `"?"` (unknown

@@ -25,6 +25,8 @@ final class KioskPrefs {
         static let labels = "ss.kiosk.labels"
     }
 
+    nonisolated static let printerStopsKey = "ss.kiosk.printerStops"
+
     var setupState: SetupState { didSet { defaults.set(setupState.rawValue, forKey: Key.setupState) } }
     var setupSelection: KioskSetupSelection? {
         didSet {
@@ -88,6 +90,9 @@ final class KioskPrefs {
         checkpoints[id.storageKey] = key
     }
 
+    /// Where `PrinterGuard` keeps the printers stopped after a cut font install (D8).
+    var printerStops: PrinterStopsStore { PrinterStopsStore(defaults: defaults) }
+
     /// Reads and writes in one step, so two setters never overwrite each other's field.
     func updateLabels(_ change: (inout LabelOptions) -> Void) {
         var next = labels
@@ -97,5 +102,34 @@ final class KioskPrefs {
 
     private static func store(_ value: String?, _ key: String, _ defaults: UserDefaults) {
         if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+    }
+}
+
+/// The printers `PrinterGuard` stopped after a cut font install (D8), under
+/// `ss.kiosk.printerStops`: such a printer is still waiting for the rest of the font after the app
+/// is relaunched, so the stop must outlive the launch. A pending `~JX` clear isn't kept (D16 keeps
+/// it in memory). UserDefaults is thread-safe, so the guard writes it from its own actor, in the
+/// order its marks change.
+struct PrinterStopsStore: @unchecked Sendable {
+    static let key = KioskPrefs.printerStopsKey
+    let defaults: UserDefaults
+
+    /// The stopped printers; none when nothing (or nothing readable) is saved.
+    func load() -> Set<PrinterIdentity> {
+        guard let data = defaults.string(forKey: Self.key)?.data(using: .utf8),
+              let stops = try? KioskJSON.decoder.decode([PrinterIdentity].self, from: data) else { return [] }
+        return Set(stops)
+    }
+
+    /// Saves `stops` (none removes the key).
+    func save(_ stops: Set<PrinterIdentity>) {
+        guard !stops.isEmpty else {
+            defaults.removeObject(forKey: Self.key)
+            return
+        }
+        let sorted = stops.sorted { $0.sortKey < $1.sortKey }
+        if let data = try? KioskJSON.encoder.encode(sorted), let text = String(data: data, encoding: .utf8) {
+            defaults.set(text, forKey: Self.key)
+        }
     }
 }

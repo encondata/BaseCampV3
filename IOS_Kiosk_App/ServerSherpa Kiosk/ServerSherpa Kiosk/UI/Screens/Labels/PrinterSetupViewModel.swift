@@ -72,8 +72,9 @@ func alignmentSizeFor(kind: LabelKind, dpi: Int, pick: LabelPick?) -> AlignmentS
     return kind == .front ? AlignmentSize(widthIn: 2, heightIn: 1, dpi: dpi) : AlignmentSize(widthIn: 4, heightIn: 2, dpi: dpi)
 }
 
-/// How the operator is finding a printer: a network scan or a typed IP (nil until one is picked).
-enum PrinterFindMode: Sendable { case scan, ip }
+/// How the operator is finding a printer: a network scan, a typed IP, or a Bluetooth scan (nil
+/// until one is picked).
+enum PrinterFindMode: Sendable { case scan, ip, bluetooth }
 
 struct PrinterSetupUi: Equatable {
     var findMode: PrinterFindMode? = nil
@@ -82,15 +83,35 @@ struct PrinterSetupUi: Equatable {
     var found: [FoundPrinter]? = nil
     var scanMessage: String? = nil
     var ipText = ""
-    /// The host being identified and saved.
+    /// The host being identified and saved, or the Bluetooth printer's identifier (`uuidString`).
     var choosing: String? = nil
     var chooseError: String? = nil
+    /// Every named device the Bluetooth scan heard, strongest first: nil until a scan starts.
+    var bluetoothFound: [FoundBluetoothPrinter]? = nil
+    var bluetoothScanning = false
+    /// Under the Bluetooth list: Bluetooth off or not allowed, or no Zebra heard.
+    var bluetoothMessage: String? = nil
+    /// Bluetooth couldn't be used (off, not allowed, missing), as the last scan, choice or check
+    /// found; nil when it could.
+    var bluetoothUnavailable: BluetoothAvailability? = nil
+    /// The printer forgot this iPad: the steps to fix it (the screen adds Connect; no Open
+    /// Settings, which can't reach Settings › Bluetooth: Ruling 15).
+    var pairingLost: String? = nil
     var checks: [CheckRow] = []
     var checking = false
     /// How many check runs have finished.
     var checkRuns = 0
     var fontFix: FontFix? = nil
+    /// The fonts on the printer at the wrong size (upper-case): Install sends them again.
+    var damagedFonts: [String] = []
     var installing = false
+    /// Cancel was tapped: the font going out finishes, then the install stops.
+    var installStopping = false
+    /// The font going out: its name, and which of how many it is.
+    var installFont: InstallingFont? = nil
+    /// While a font is going out: how much of it has (0…1), and about how long it has left.
+    var installProgress: Double? = nil
+    var installEta: String? = nil
     var fontMessage: String? = nil
     var fontError = false
     /// What the peeler check found: true, false, or nil (unknown or not checked).
@@ -100,6 +121,10 @@ struct PrinterSetupUi: Equatable {
     var testing = false
     var testMessage: String? = nil
     var testError = false
+    /// The test label's message is Bluetooth not allowed: the sheet offers Settings.
+    var testBluetoothSettings = false
+    /// The test label's message is a printer that forgot this iPad: the sheet offers Connect.
+    var testPairingLost = false
 
     /// Peel-off can be chosen unless the printer said it has no peeler.
     var peelAllowed: Bool { peeler != false }
@@ -114,28 +139,98 @@ struct PrinterSetupUi: Equatable {
     }
     /// The test label sheet's own message says so: the sheet offers Settings.
     var testLocalNetworkDenied: Bool { testMessage == LOCAL_NETWORK_PRINTER_DENIED_TEXT }
+    /// "Installing ROBOTO.TTF (1 of 3)…" (no count for a single font), "Stopping after ROBOTO.TTF…".
+    var installStatus: String {
+        guard let font = installFont else { return installStopping ? "Stopping…" : "Installing fonts…" }
+        if installStopping { return "Stopping after \(font.name)…" }
+        return font.count > 1 ? "Installing \(font.name) (\(font.number) of \(font.count))…" : "Installing \(font.name)…"
+    }
+    /// The Bluetooth list's Zebras (named like a Zebra serial, or advertising Zebra), strongest first.
+    var bluetoothZebras: [FoundBluetoothPrinter] { (bluetoothFound ?? []).filter(\.isZebra) }
+    /// Every other named device the scan heard, strongest first.
+    var bluetoothOthers: [FoundBluetoothPrinter] { (bluetoothFound ?? []).filter { !$0.isZebra } }
+    /// The Bluetooth message reads as an error (red).
+    var bluetoothError: Bool { bluetoothMessage != nil && bluetoothMessage != NO_BLUETOOTH_PRINTERS_TEXT }
+    /// Bluetooth isn't allowed for the kiosk (the scan, choosing a printer, its Answers check): the
+    /// main screen offers Settings. (A printer that forgot this iPad gets Connect instead.)
+    var offersBluetoothSettings: Bool {
+        bluetoothMessage == BLUETOOTH_DENIED_TEXT || checks.contains { $0.detail == BLUETOOTH_DENIED_TEXT }
+    }
 }
 
 let NO_PRINTERS_FOUND_TEXT = "No Zebra printers found on this network."
+let NO_BLUETOOTH_PRINTERS_TEXT = "No Zebra printers found nearby."
+let NO_BLUETOOTH_SERIAL_TEXT = "This printer didn't report a serial number, so it can't be saved over Bluetooth."
 let SCAN_FAILED_TEXT = "Couldn't scan the network."
 let INVALID_IP_TEXT = "That isn't a valid IP address."
 let NO_PEELER_TEXT = "This printer has no peeler."
 let FONTS_INSTALLED_TEXT = "Fonts installed."
-func noZebraAnswerText(_ host: String) -> String { "No Zebra printer answered at \(host)." }
+/// "No Zebra printer answered at 10.0.0.5." / "No Zebra printer answered over Bluetooth as D8J224508535."
+func noZebraAnswerText(_ connection: PrinterConnection) -> String {
+    switch connection {
+    case .network(let host): "No Zebra printer answered at \(host)."
+    case .bluetooth(let serial, _): "No Zebra printer answered over Bluetooth as \(serial)."
+    }
+}
 func fontInstallFailedText(_ name: String) -> String { "Couldn't install \(name)." }
 
-/// The connection waited with iOS's Local Network denial (`NetworkZebra` marks it).
-func wasLocalNetworkDenied(_ error: Error) -> Bool { (error as? PrinterUnreachable)?.localNetworkDenied == true }
+/// "about 40 s left", "about 4 min left": the time `remainingBytes` take at `bytesPerSecond`;
+/// nil when nothing is left (or no rate is known).
+func installEtaText(remainingBytes: Int, bytesPerSecond: Double) -> String? {
+    guard remainingBytes > 0, bytesPerSecond > 0 else { return nil }
+    let seconds = (Double(remainingBytes) / bytesPerSecond).rounded(.up)
+    if seconds < 60 { return "about \(Int(seconds)) s left" }
+    return "about \(Int((seconds / 60).rounded())) min left"
+}
+
+/// "Strong signal (-52 dBm)": a Bluetooth device's signal in words (strong from -65 dBm, fair from
+/// -80), or "Signal unknown" when iOS gave no reading.
+func bluetoothSignalText(rssi: Int) -> String {
+    guard rssi < 0, rssi > -127 else { return "Signal unknown" }
+    let words = rssi >= -65 ? "Strong" : (rssi >= -80 ? "Fair" : "Weak")
+    return "\(words) signal (\(rssi) dBm)"
+}
+
+/// The font button: "Install 2 missing fonts", "Reinstall 1 damaged font", or both ("Install 1
+/// missing font, reinstall 1 damaged font"). `damaged` names (upper-case) the fonts on the printer
+/// at the wrong size; the rest of `installable` are missing.
+func fontInstallButtonText(installable: [KioskLabelFont], damaged: [String]) -> String {
+    func fonts(_ n: Int, _ kind: String) -> String { "\(n) \(kind) font\(n == 1 ? "" : "s")" }
+    let reinstall = installable.filter { damaged.contains($0.name.uppercased()) }.count
+    let install = installable.count - reinstall
+    if reinstall == 0 { return "Install \(fonts(install, "missing"))" }
+    if install == 0 { return "Reinstall \(fonts(reinstall, "damaged"))" }
+    return "Install \(fonts(install, "missing")), reinstall \(fonts(reinstall, "damaged"))"
+}
+
+/// A font install's font going out: its name and which of how many it is.
+struct InstallingFont: Equatable, Sendable {
+    var name: String
+    var number: Int
+    var count: Int
+}
 
 /// No synced file for a font the library lists.
 private struct FontFileMissing: Error {}
 
+/// A Bluetooth printer whose Device Information gave no serial: it couldn't be found again by it.
+private struct NoBluetoothSerial: Error {}
+
 /**
  Printer Setup (Android's PrinterSetupViewModel, the laptop's PrinterStep in
- kiosk/src/components/setup/PrinterStep.tsx): pick a network Zebra (a scan or a typed IP), check
- it, install missing fonts, print test labels, and set the offsets and peel/tear. Choosing a
- printer saves it; the label builder rebuilds by itself when its DPI changes, and offsets and peel
- never rebuild (they apply at send time).
+ kiosk/src/components/setup/PrinterStep.tsx): pick a Zebra (a network scan, a typed IP, or a
+ Bluetooth scan), check it, install missing or damaged fonts, print test labels, and set the
+ offsets and peel/tear. Choosing a printer saves it; the label builder rebuilds by itself when its
+ DPI changes, and offsets and peel never rebuild (they apply at send time).
+
+ Bluetooth (D4, D9–D11): the first Bluetooth scan asks iOS for permission. Opening the screen with
+ a saved Bluetooth printer starts its link in the background (nothing waits for it, nothing is
+ checked), so the first check or test label needn't wait for the connect. Picking a printer from the
+ list connects to it by the iPad's identifier for it, asks `~HI` for its model and DPI, saves it by
+ its serial (Device Information's, else its Bluetooth name) and checks it. Bluetooth off or not
+ allowed says so (Open Settings for not allowed); a printer that forgot this iPad gets the Forget
+ This Device steps, and Connect tries again once that's done (no Open Settings: iOS opens only this
+ app's page, not Settings › Bluetooth, Ruling 15).
 
  The checks inform and never block, and run only when the operator saves a printer or taps
  Check printer / Check again: nothing is checked on appear, polled, or checked on the print path.
@@ -143,8 +238,9 @@ private struct FontFileMissing: Error {}
  the build a DPI change starts (an unsynced kiosk, a failed build and an unsupported device answer
  at once).
 
- Every call to a printer goes through the container's `PrinterLock`, shared with Print Labels'
- queue: one connection to the printer at a time, app-wide.
+ Every call to a printer goes through the container's `PrinterLock` and `PrinterGuard`, shared
+ with Print Labels' queue: one connection to the printer at a time, app-wide, a `~JX` before the
+ next send after a failed one, and no sends after a cut font install until a check gets an answer.
 
  iOS only: the first scan can run while the system's "Allow Local Network" prompt is on screen and
  come back denied, so a denied scan runs once more when the app is back in front (scene phase
@@ -164,6 +260,11 @@ final class PrinterSetupViewModel {
     /// A denied scan runs again after this long if the app hasn't come back to the front first.
     nonisolated static let RESCAN_FALLBACK: Duration = .seconds(2)
     nonisolated static let OFFSET_LIMIT = 9_999
+    /// What a Bluetooth font install's time left is reckoned at until its bytes have been moving for
+    /// `ETA_MEASURE_AFTER`: the Bluetooth speed measured on a ZD421 (3.9 KB/s). A network install
+    /// shows no time left until then (a font usually goes out within a second).
+    nonisolated static let INSTALL_BYTES_PER_SECOND: Double = 3_900
+    nonisolated static let ETA_MEASURE_AFTER: Duration = .seconds(1)
 
     nonisolated static let TEMPLATES_UNKNOWN_TEXT = "Couldn't read the move's label templates. Check again in a moment."
     nonisolated static let SYNC_TO_CHECK_TEXT = "Sync this kiosk to check its label templates."
@@ -185,28 +286,53 @@ final class PrinterSetupViewModel {
     @ObservationIgnored private let store: KioskStore
     @ObservationIgnored private let fontsDir: URL?
     @ObservationIgnored private let scanner: @Sendable () async throws -> ZebraScanResult
-    @ObservationIgnored private let printerAt: @MainActor (String) -> SetupZebra
+    @ObservationIgnored private let bluetooth: BluetoothPrinting
+    @ObservationIgnored private let printerAt: @MainActor (SavedPrinter) -> SetupZebra
+    /// A printer being chosen, before it is saved: under the lock and the guard (a pending clear
+    /// still goes first), but its answer never lifts a cut font's stop (the check after saving does).
+    @ObservationIgnored private let unsavedPrinterAt: @MainActor (SavedPrinter) -> SetupZebra
+    @ObservationIgnored private let printerGuard: PrinterGuard
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
+    @ObservationIgnored private let now: @Sendable () -> ContinuousClock.Instant
     @ObservationIgnored private let pickWait: Duration
     @ObservationIgnored private var scanTask: Task<Void, Never>?
+    @ObservationIgnored private var bluetoothScanTask: Task<Void, Never>?
+    /// Bumped by each Bluetooth scan: only the latest one writes when it ends.
+    @ObservationIgnored private var bluetoothScanRun = 0
+    /// The background connect to the saved Bluetooth printer that opening the screen starts (D4).
+    @ObservationIgnored private var linkTask: Task<Void, Never>?
+    /// What Connect (beside the pairing-lost steps) tries again.
+    @ObservationIgnored private var pairingRetry: PairingRetry?
     @ObservationIgnored private var chooseTask: Task<Void, Never>?
     @ObservationIgnored private var checksTask: Task<Void, Never>?
     /// Bumped by each check run: only the latest one writes the rows.
     @ObservationIgnored private var checkRun = 0
     @ObservationIgnored private var offsetsTask: Task<Void, Never>?
+    /// Cancel was tapped during a font install: checked between fonts only.
+    @ObservationIgnored private var installCancelled = false
+    /// The font going out: only its progress is shown.
+    @ObservationIgnored private var fontGoingOut: FontGoingOut?
+    /// The bytes per second this install measured so far: the next font's guess until it measures its own.
+    @ObservationIgnored private var installRate: Double?
+    @ObservationIgnored private var fontsStarted = 0
     @ObservationIgnored private var rescanWait: CheckedContinuation<Void, Never>?
     @ObservationIgnored private var rescanTimer: Task<Void, Never>?
     /// The scene phase is `.active` (the screen reports every phase, the first included).
     @ObservationIgnored private var sceneActive = true
     @ObservationIgnored private var closed = false
 
-    /// `zebraAt` is the printer at a host (`NetworkZebra` on the device); every call to it is made
-    /// under `printerLock`. `fontsDir` holds the synced font files (`Sync.defaultFontsDir`).
+    /// `bluetooth` finds and connects Bluetooth printers (the container's `ZebraBluetooth`).
+    /// `zebraFor` is a printer the way its connection reaches it (`AppContainer.zebra(for:)` on
+    /// the device); every call to it is made under `printerLock` and `printerGuard`. `fontsDir`
+    /// holds the synced font files (`Sync.defaultFontsDir`). `now` times font installs.
     init(settings: LabelSettingsStore, build: LabelBuildMonitor, engine: LabelEngine, store: KioskStore, fontsDir: URL?,
          scanner: @escaping @Sendable () async throws -> ZebraScanResult,
-         zebraAt: @escaping @MainActor (String) -> SetupZebra,
+         bluetooth: BluetoothPrinting,
+         zebraFor: @escaping @MainActor (SavedPrinter) -> SetupZebra,
          printerLock: PrinterLock,
+         printerGuard: PrinterGuard,
          sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+         now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
          pickWait: Duration = PrinterSetupViewModel.PICK_WAIT) {
         self.settingsStore = settings
         self.build = build
@@ -214,8 +340,16 @@ final class PrinterSetupViewModel {
         self.store = store
         self.fontsDir = fontsDir
         self.scanner = scanner
-        self.printerAt = { host in LockedZebra(inner: zebraAt(host), lock: printerLock) }
+        self.bluetooth = bluetooth
+        self.printerAt = { printer in
+            LockedZebra(inner: zebraFor(printer), connection: printer.connection, lock: printerLock, guard: printerGuard)
+        }
+        self.unsavedPrinterAt = { printer in
+            LockedZebra(inner: zebraFor(printer), connection: printer.connection, lock: printerLock, guard: printerGuard, liftsStop: false)
+        }
+        self.printerGuard = printerGuard
         self.sleep = sleep
+        self.now = now
         self.pickWait = pickWait
         // The saved offsets fill the fields.
         let s = settings.current()
@@ -229,18 +363,71 @@ final class PrinterSetupViewModel {
     func close() {
         closed = true
         scanTask?.cancel()
+        endBluetoothScan()
         chooseTask?.cancel()
         checksTask?.cancel()
         wakeRescan()
     }
 
-    /// The screen is showing (again): the operator's actions work.
-    func open() { closed = false }
+    /// The screen is showing (again): the operator's actions work, and a saved Bluetooth printer's
+    /// link starts in the background (`connectSavedPrinter`). Returns that connect (tests await it).
+    @discardableResult func open() -> Task<Void, Never>? {
+        closed = false
+        return connectSavedPrinter()
+    }
+
+    /// D4: connects to the saved Bluetooth printer in the background, so the first check or test
+    /// label needn't wait for the link (one connect at a time; a network printer starts nothing).
+    /// Nothing waits for it and nothing is checked. A refusal the crew fixes on the iPad shows in
+    /// the screen's Bluetooth messages: a printer that forgot this iPad gets the steps, with Connect
+    /// (which checks it); Bluetooth off or not allowed says so (Open Settings for not allowed). Any
+    /// other failure (the printer off) says nothing: a check or test label will.
+    @discardableResult private func connectSavedPrinter() -> Task<Void, Never>? {
+        if let linkTask { return linkTask }
+        guard case .bluetooth(let serial, let peripheralId)? = settingsStore.current().printer?.connection else { return nil }
+        let bluetooth = self.bluetooth
+        let task = Task { [weak self] in
+            var failure: Error?
+            do {
+                _ = try await bluetooth.connect(peripheralId: peripheralId, serial: serial)
+            } catch {
+                failure = error
+            }
+            self?.linkConnected(failure)
+        }
+        linkTask = task
+        return task
+    }
+
+    private func linkConnected(_ failure: Error?) {
+        linkTask = nil
+        guard !closed else { return }
+        // What an earlier try said about Bluetooth no longer holds: this one says its own.
+        if linkRefusalShowing {
+            ui.bluetoothMessage = nil
+            ui.bluetoothUnavailable = nil
+        }
+        guard let failure else {
+            // Up: the saved printer no longer says it forgot this iPad.
+            if case .check? = pairingRetry { clearPairingLost() }
+            return
+        }
+        guard let text = noteBluetoothRefusal(failure, retry: .check) else { return }
+        // Off or not allowed: said here unless a Bluetooth scan's own message is showing.
+        if !(bluetoothRefusal(failure) is BluetoothPairingLost) && ui.findMode != .bluetooth { ui.bluetoothMessage = text }
+    }
+
+    /// The link refusal from opening the screen is showing (not a Bluetooth scan's message).
+    private var linkRefusalShowing: Bool {
+        ui.findMode == nil && ui.bluetoothMessage != nil && ui.bluetoothUnavailable != nil
+    }
 
     // MARK: Choosing a printer
 
-    /// The Scan network card (and Scan again): scan mode, and a scan.
+    /// The Scan network card (and Scan again): scan mode, and a scan. A Bluetooth scan stops, and
+    /// its message goes (it isn't shown in scan mode).
     func scan() {
+        leaveBluetooth()
         ui.findMode = .scan
         startScan(retryDenied: true)
     }
@@ -250,6 +437,12 @@ final class PrinterSetupViewModel {
     func enterIp() {
         guard ui.findMode != .ip else { return }
         ui.findMode = .ip
+        endNetworkScan()
+        leaveBluetooth()
+    }
+
+    /// A network scan still running stops (a denied one's rescan too), and its message goes.
+    private func endNetworkScan() {
         scanTask?.cancel()
         wakeRescan()
         ui.scanMessage = nil
@@ -327,7 +520,9 @@ final class PrinterSetupViewModel {
 
     /// Every scene phase, the first included (`active` is `.active`). Coming back to the front
     /// runs a denied scan's waiting rescan, or, with the denied message showing, scans once more
-    /// (back from Settings). Nothing else starts here.
+    /// (back from Settings). The same for Bluetooth: with Bluetooth off or not allowed showing,
+    /// coming back (from Settings or Control Center) scans for Bluetooth printers once more, or,
+    /// when the saved printer's link said so, connects to it once more. Nothing else starts here.
     func scenePhaseChanged(active: Bool) {
         let cameBack = active && !sceneActive
         sceneActive = active
@@ -336,7 +531,152 @@ final class PrinterSetupViewModel {
             wakeRescan()
         } else if ui.findMode == .scan && ui.scanMessage == LOCAL_NETWORK_DENIED_TEXT && !ui.scanning {
             startScan(retryDenied: false)
+        } else if ui.findMode == .bluetooth && ui.bluetoothUnavailable != nil && !ui.bluetoothScanning {
+            startBluetoothScan()
+        } else if linkRefusalShowing {
+            connectSavedPrinter()
         }
+    }
+
+    // MARK: Bluetooth
+
+    /// The Bluetooth card (and Scan again): Bluetooth mode, and a scan of the printers nearby (the
+    /// first asks iOS for Bluetooth permission). A network scan still running stops, and its
+    /// message goes (it isn't shown in Bluetooth mode).
+    func scanBluetooth() {
+        guard !closed else { return }
+        if ui.findMode != .bluetooth {
+            ui.findMode = .bluetooth
+            endNetworkScan()
+        }
+        startBluetoothScan()
+    }
+
+    /// Stop: the scan ends, and what it heard stays listed.
+    func stopBluetoothScan() {
+        bluetooth.stopScan()
+    }
+
+    private func startBluetoothScan() {
+        guard !ui.bluetoothScanning, !closed else { return }
+        bluetoothScanRun += 1
+        let run = bluetoothScanRun
+        ui.bluetoothScanning = true
+        ui.bluetoothFound = []
+        ui.bluetoothMessage = nil
+        ui.bluetoothUnavailable = nil
+        clearPairingLost()
+        let heard = bluetooth.scan()
+        bluetoothScanTask = Task { await self.runBluetoothScan(heard, run: run) }
+    }
+
+    /// Lists what the scan hears until it ends (30 s, Stop, Bluetooth refused, or another Bluetooth
+    /// call taking the radio), then says why nothing is listed: no Zebra heard only after its full
+    /// 30 s of a ready Bluetooth (not counting the wait behind iOS's permission prompt) or Stop
+    /// (`lastScanEnd`). One stopped by the screen (another mode, a choice, closing) says nothing.
+    private func runBluetoothScan(_ heard: AsyncStream<[FoundBluetoothPrinter]>, run: Int) async {
+        for await list in heard where run == bluetoothScanRun { ui.bluetoothFound = list }
+        guard run == bluetoothScanRun else { return }
+        bluetoothScanTask = nil
+        ui.bluetoothScanning = false
+        let availability = bluetooth.availability
+        if let text = bluetoothUnavailableText(availability) {
+            ui.bluetoothUnavailable = availability
+            ui.bluetoothMessage = text
+        } else if ui.bluetoothZebras.isEmpty && (bluetooth.lastScanEnd == .finished || bluetooth.lastScanEnd == .stopped) {
+            ui.bluetoothMessage = NO_BLUETOOTH_PRINTERS_TEXT
+        }
+    }
+
+    /// Another way to find a printer was picked: the Bluetooth scan stops, and its message goes.
+    private func leaveBluetooth() {
+        endBluetoothScan()
+        ui.bluetoothMessage = nil
+        ui.bluetoothUnavailable = nil
+    }
+
+    /// The scan stops quietly, keeping its list (the screen moved on).
+    private func endBluetoothScan() {
+        guard let task = bluetoothScanTask else { return }
+        bluetoothScanTask = nil
+        bluetoothScanRun += 1
+        task.cancel()
+        ui.bluetoothScanning = false
+    }
+
+    /// Saves the Bluetooth printer picked from the list (D9), then checks it.
+    func chooseBluetooth(_ printer: FoundBluetoothPrinter) {
+        guard !ui.busy, !closed else { return }
+        endBluetoothScan()
+        beginChoosing(printer.id.uuidString)
+        chooseTask = Task { await self.runChooseBluetooth(printer) }
+    }
+
+    /// Connect, beside the pairing-lost steps (once the printer is forgotten in Settings; on the
+    /// screen or in the test label sheet): the same printer again, or the saved printer's checks.
+    /// Checks that reach the printer clear the sheet's steps.
+    func connectAgain() {
+        switch pairingRetry {
+        case .choose(let printer)?: chooseBluetooth(printer)
+        case .check?: checkAgain()
+        case nil: break
+        }
+    }
+
+    /// Connects by the iPad's identifier (any serial: Device Information's is the one saved; a
+    /// printer that gives none is refused, as it couldn't be found again), asks `~HI` under the
+    /// lock and the guard as a network choice does, and saves the printer with that model and DPI.
+    /// A choice that fails or is left after the link came up lets that printer go unless it is the
+    /// saved one, so an unsaved printer isn't held from other devices.
+    private func runChooseBluetooth(_ found: FoundBluetoothPrinter) async {
+        let saved: SavedPrinter
+        var linked = false
+        var chosen: PrinterIdentity?
+        do {
+            let info = try await bluetooth.connect(peripheralId: found.id, serial: nil)
+            linked = true
+            guard let serial = info.serial, !Self.blank(serial) else { throw NoBluetoothSerial() }
+            let connection = PrinterConnection.bluetooth(serial: serial, peripheralId: info.peripheralId)
+            chosen = connection.identity
+            let id = try await unsavedPrinterAt(SavedPrinter(connection: connection, model: Self.DEFAULT_MODEL, serial: serial, dpi: 0)).identify()
+            try Task.checkCancellation()
+            saved = SavedPrinter(connection: connection, model: Self.blank(id.model) ? Self.DEFAULT_MODEL : id.model, serial: serial, dpi: id.dpi)
+        } catch {
+            ui.choosing = nil
+            if linked && (chosen == nil || settingsStore.current().printer?.connection.identity != chosen) { bluetooth.close() }
+            if error is CancellationError { return }
+            if error is NoBluetoothSerial {
+                ui.chooseError = NO_BLUETOOTH_SERIAL_TEXT
+            } else if let text = noteBluetoothRefusal(error, retry: .choose(found)) {
+                if !(bluetoothRefusal(error) is BluetoothPairingLost) { ui.bluetoothMessage = text }
+            } else {
+                Self.log.warning("bluetooth printer not chosen: \(String(describing: error), privacy: .private)")
+                ui.chooseError = (error as? BluetoothNotZebra)?.errorDescription
+                    ?? noZebraAnswerText(.bluetooth(serial: found.name, peripheralId: found.id))
+            }
+            return
+        }
+        settingsStore.setPrinter(saved)
+        ui.choosing = nil
+        startChecks(saved)
+    }
+
+    /// A Bluetooth failure the crew fixes on the iPad (`bluetoothRefusal`): notes Bluetooth off or
+    /// not allowed (`bluetoothUnavailable`), or a printer that forgot this iPad (`pairingLost`,
+    /// which Connect tries again with `retry`), and returns what to tell them; nil for any other.
+    private func noteBluetoothRefusal(_ error: Error, retry: PairingRetry) -> String? {
+        guard let refusal = bluetoothRefusal(error), let text = refusal.errorDescription else { return nil }
+        if let off = refusal as? BluetoothUnavailable { ui.bluetoothUnavailable = off.availability }
+        if refusal is BluetoothPairingLost {
+            ui.pairingLost = text
+            pairingRetry = retry
+        }
+        return text
+    }
+
+    private func clearPairingLost() {
+        ui.pairingLost = nil
+        pairingRetry = nil
     }
 
     func setIpText(_ text: String) {
@@ -358,16 +698,26 @@ final class PrinterSetupViewModel {
     /// Saves the printer at `host` (asked `~HI` first when `found` doesn't know its DPI), then checks it.
     private func choosePrinter(host: String, found: FoundPrinter?) {
         guard !ui.busy, !closed else { return }
+        beginChoosing(host)
+        chooseTask = Task { await self.runChoose(host: host, found: found) }
+    }
+
+    /// A printer is being chosen (`key` names it in `ui.choosing`): what was shown for the last one goes.
+    private func beginChoosing(_ key: String) {
         cancelChecks()
-        ui.choosing = host
+        ui.choosing = key
         ui.chooseError = nil
         ui.checks = []
         ui.checking = false
         ui.fontFix = nil
+        ui.damagedFonts = []
         ui.fontMessage = nil
         ui.peeler = nil
-        ui.testMessage = nil
-        chooseTask = Task { await self.runChoose(host: host, found: found) }
+        // The test label sheet's message goes with what it offered (Settings, Connect).
+        clearTestMessage()
+        ui.bluetoothMessage = nil
+        ui.bluetoothUnavailable = nil
+        clearPairingLost()
     }
 
     private func runChoose(host: String, found: FoundPrinter?) async {
@@ -376,7 +726,8 @@ final class PrinterSetupViewModel {
             if let found, let dpi = found.dpi {
                 saved = SavedPrinter(host: host, model: found.model ?? Self.DEFAULT_MODEL, serial: found.serial ?? "", dpi: dpi)
             } else {
-                let zebra = printerAt(host)
+                // Addresses the printer for its `~HI`; what is saved is built from the answers.
+                let zebra = unsavedPrinterAt(SavedPrinter(host: host, model: Self.DEFAULT_MODEL, serial: "", dpi: 0))
                 let id = try await zebra.identify()
                 let serial: String?
                 if let known = found?.serial { serial = known } else { serial = try await quietly { try await zebra.serial() } ?? nil }
@@ -388,7 +739,7 @@ final class PrinterSetupViewModel {
             return
         } catch {
             ui.choosing = nil
-            ui.chooseError = wasLocalNetworkDenied(error) ? LOCAL_NETWORK_PRINTER_DENIED_TEXT : noZebraAnswerText(host)
+            ui.chooseError = wasLocalNetworkDenied(error) ? LOCAL_NETWORK_PRINTER_DENIED_TEXT : noZebraAnswerText(.network(host: host))
             return
         }
         settingsStore.setPrinter(saved)
@@ -415,7 +766,12 @@ final class PrinterSetupViewModel {
         ui.checks = []
         ui.checking = true
         ui.fontFix = nil
+        ui.damagedFonts = []
         ui.peeler = nil
+        // The check says Bluetooth's state in its own row: the link's message from opening goes.
+        if linkRefusalShowing { ui.bluetoothMessage = nil }
+        ui.bluetoothUnavailable = nil
+        clearPairingLost()
         if !keepFontMessage {
             ui.fontMessage = nil
             ui.fontError = false
@@ -428,6 +784,8 @@ final class PrinterSetupViewModel {
             if run == checkRun {
                 ui.checking = false
                 ui.checkRuns += 1
+                // The printer no longer says it forgot this iPad: the test label sheet's steps go.
+                if ui.testPairingLost && ui.pairingLost == nil { clearTestMessage() }
             }
         }
         // Ends early (cancelled, or replaced by a newer run) without touching the rows.
@@ -446,13 +804,22 @@ final class PrinterSetupViewModel {
     }
 
     private func checks(_ saved: SavedPrinter, run: Int) async throws {
-        let zebra = printerAt(saved.host)
+        let zebra = printerAt(saved)
         try put(CheckRow(key: .answers, state: .running), run)
         let id: HostId
         switch try await attempt({ try await zebra.identify() }) {
         case .success(let answer): id = answer
         case .failure(let error):
-            let detail = wasLocalNetworkDenied(error) ? LOCAL_NETWORK_PRINTER_DENIED_TEXT : noZebraAnswerText(saved.host)
+            var detail = noZebraAnswerText(saved.connection)
+            if wasLocalNetworkDenied(error) {
+                detail = LOCAL_NETWORK_PRINTER_DENIED_TEXT
+            } else if let text = noteBluetoothRefusal(error, retry: .check) {
+                // Off or not allowed: say so here; a printer that forgot this iPad gets the steps above.
+                if bluetoothRefusal(error) is BluetoothUnavailable { detail = text }
+            } else if await printerGuard.state(for: saved.connection) == .fontCut {
+                // Still waiting for the rest of a font: it needs the restart.
+                detail = FONT_INSTALL_CUT_TEXT
+            }
             try put(CheckRow(key: .answers, state: .fail, detail: detail), run)
             return
         }
@@ -463,7 +830,7 @@ final class PrinterSetupViewModel {
             // Another printer took this address: its DPI picks the template (the builder rebuilds).
             let serial = try await quietly { try await zebra.serial() } ?? nil
             try live(run)
-            printer = SavedPrinter(host: saved.host, model: model, serial: serial ?? "", dpi: id.dpi)
+            printer = SavedPrinter(connection: saved.connection, model: model, serial: serial ?? "", dpi: id.dpi)
             settingsStore.setPrinter(printer)
         }
 
@@ -551,61 +918,171 @@ final class PrinterSetupViewModel {
         var needed: [String] = []
         for name in pick.fonts.map({ $0.uppercased() }) where !needed.contains(name) { needed.append(name) }
         if needed.isEmpty { return CheckRow(key: .fonts, state: .ok, detail: "No printer fonts needed.") }
-        guard let onPrinter = try await quietly({ try await zebra.fonts() }) else {
+        guard let onPrinter = try await quietly({ try await zebra.fontEntries() }) else {
             return CheckRow(key: .fonts, state: .fail, detail: "Couldn't read the fonts on the printer.")
         }
-        let missing = missingFonts(needed: needed, onPrinter: onPrinter)
-        if missing.isEmpty { return CheckRow(key: .fonts, state: .ok) }
         let library = ((try? await store.labelFonts()) ?? []).map { KioskLabelFont(id: $0.id, name: $0.name, size: $0.size, resident: $0.resident) }
         try live(run)
-        let fix = fontFixFor(missing: missing, library: library)
+        let missing = missingFonts(needed: needed, onPrinter: onPrinter.map(\.name))
+        // A download cut short leaves a smaller file under the right name: sending it again
+        // overwrites it.
+        let damaged = damagedFonts(needed: needed, library: library, onPrinter: onPrinter)
+        if missing.isEmpty && damaged.isEmpty { return CheckRow(key: .fonts, state: .ok) }
+        let fix = fontFixFor(missing: missing + damaged, library: library)
         ui.fontFix = fix
+        ui.damagedFonts = damaged
         let others = missing.filter { !fix.builtIn.contains($0) }
         let detail = [others.isEmpty ? nil : "Missing: \(others.joined(separator: ", ")).",
+                      damaged.isEmpty ? nil : "Damaged: \(damaged.joined(separator: ", ")) (reinstall).",
                       fix.builtIn.isEmpty ? nil : builtInFontText(fix.builtIn)].compactMap { $0 }.joined(separator: " ")
         return CheckRow(key: .fonts, state: .fail, detail: detail)
     }
 
-    /// Sends each missing font the library has (its synced file), then checks again after the
-    /// printer has had `FONT_SETTLE` to file them. The first failure stops the installs.
+    /// Sends each missing or damaged font the library has (its synced file), then checks again
+    /// after the printer has had `FONT_SETTLE` to file them. The first failure stops the installs;
+    /// one that cut a font off (a cancellation after its bytes started included) says to restart
+    /// the printer and checks nothing (the printer is waiting for the rest of the font).
     func installFonts() {
         guard let fix = ui.fontFix, !ui.busy, !fix.installable.isEmpty else { return }
         ui.installing = true
+        ui.installStopping = false
+        ui.installEta = nil
         ui.fontMessage = nil
         ui.fontError = false
+        installCancelled = false
+        installRate = nil
         Task { await self.runInstall(fix) }
+    }
+
+    /// Stops a font install after the font going out: a download announces its size, so cutting
+    /// one would leave the printer taking whatever comes next as font data (D8).
+    func cancelInstall() {
+        guard ui.installing else { return }
+        installCancelled = true
+        ui.installStopping = true
+    }
+
+    private func endInstall() {
+        ui.installing = false
+        ui.installStopping = false
     }
 
     private func runInstall(_ fix: FontFix) async {
         guard let printer = settingsStore.current().printer else {
-            ui.installing = false
+            endInstall()
             return
         }
-        let zebra = printerAt(printer.host)
+        let zebra = printerAt(printer)
         var failed: String?
+        var cut = false
+        var stopped = false
         var files: [String: LabelFontRow] = [:]
         for row in (try? await store.labelFonts()) ?? [] { files[row.name.uppercased()] = row }
-        for font in fix.installable {
+        // Each font's size (the library's), for the time left across the fonts still to send.
+        let sizes = fix.installable.map { max(files[$0.name.uppercased()]?.size ?? 0, 0) }
+        for (index, font) in fix.installable.enumerated() {
+            if installCancelled {
+                stopped = true
+                break
+            }
             let name = font.name.uppercased()
+            ui.installFont = InstallingFont(name: name, number: index + 1, count: fix.installable.count)
             do {
                 guard let fontsDir, let fileName = files[name]?.fileName else { throw FontFileMissing() }
                 let bytes = try await Self.readFont(fontsDir.appendingPathComponent(fileName))
-                try await zebra.installFont(name: name, bytes: bytes)
-            } catch is CancellationError {
-                ui.installing = false
-                return
+                let progress = fontStarted(overBluetooth: printer.isBluetooth, bytesAfter: sizes[(index + 1)...].reduce(0, +))
+                try await zebra.installFont(name: name, bytes: bytes, progress: progress)
+                fontFinished()
             } catch {
-                Self.log.warning("font install failed: \(name, privacy: .public): \(String(describing: error), privacy: .private)")
-                failed = name
+                let canceled = error is CancellationError
+                if !canceled {
+                    Self.log.warning("font install failed: \(name, privacy: .public): \(String(describing: error), privacy: .private)")
+                    failed = name
+                }
+                cut = await printerGuard.state(for: printer.connection) == .fontCut
+                // Canceled before its bytes went out: nothing to say.
+                if canceled && !cut {
+                    fontsDone()
+                    endInstall()
+                    return
+                }
                 break
             }
         }
+        fontsDone()
+        if cut {
+            endInstall()
+            ui.fontMessage = FONT_INSTALL_CUT_TEXT
+            ui.fontError = true
+            return
+        }
         try? await sleep(Self.FONT_SETTLE)
-        ui.installing = false
-        ui.fontMessage = failed.map(fontInstallFailedText) ?? FONTS_INSTALLED_TEXT
+        endInstall()
+        if let failed {
+            ui.fontMessage = fontInstallFailedText(failed)
+        } else {
+            // Stopped before the rest: the check shows what is still missing.
+            ui.fontMessage = stopped ? nil : FONTS_INSTALLED_TEXT
+        }
         ui.fontError = failed != nil
         // Fonts sent before a failure still turn green; the message stays.
         startChecks(printer, keepFontMessage: true)
+    }
+
+    /// A font starts going out: its progress from 0, and the callback its install reports through
+    /// (from any thread; each report notes when it came, then hops here, and one that arrives after
+    /// the font is done or behind a newer one is dropped).
+    private func fontStarted(overBluetooth: Bool, bytesAfter: Int) -> @Sendable (_ sent: Int, _ total: Int) -> Void {
+        fontsStarted += 1
+        let id = fontsStarted
+        fontGoingOut = FontGoingOut(id: id, overBluetooth: overBluetooth, bytesAfter: bytesAfter)
+        ui.installProgress = 0
+        let now = self.now
+        // Held only while the font goes out (the install's own task holds the view model as long).
+        return { sent, total in
+            let at = now()
+            Task { @MainActor in self.fontProgressed(id, sent: sent, total: total, at: at) }
+        }
+    }
+
+    /// The time left covers this font's bytes still to go and every font after it. It is reckoned
+    /// from the font's first report, when its bytes start moving (the wait for the printer lock and
+    /// a `~JX` before it aren't install time), at the speed measured since then once that is
+    /// `ETA_MEASURE_AFTER` old; until then at the speed an earlier font of this install measured,
+    /// else a Bluetooth install guesses `INSTALL_BYTES_PER_SECOND` and a network install shows none.
+    private func fontProgressed(_ id: Int, sent: Int, total: Int, at: ContinuousClock.Instant) {
+        guard var going = fontGoingOut, going.id == id, total > 0 else { return }
+        let fraction = min(max(Double(sent) / Double(total), 0), 1)
+        guard fraction >= ui.installProgress ?? 0 else { return }
+        let first = going.firstReport ?? (at, sent)
+        going.firstReport = first
+        fontGoingOut = going
+        ui.installProgress = fraction
+        let elapsed = at - first.at
+        let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+        if elapsed >= Self.ETA_MEASURE_AFTER && sent > first.sent { installRate = Double(sent - first.sent) / seconds }
+        ui.installEta = guessedRate(going).flatMap { installEtaText(remainingBytes: total - sent + going.bytesAfter, bytesPerSecond: $0) }
+    }
+
+    /// The speed measured so far in this install, else Bluetooth's measured 3.9 KB/s (a network
+    /// install has no guess).
+    private func guessedRate(_ going: FontGoingOut) -> Double? {
+        installRate ?? (going.overBluetooth ? Self.INSTALL_BYTES_PER_SECOND : nil)
+    }
+
+    /// The font's install returned: all of it went out (the time left is the fonts after it).
+    private func fontFinished() {
+        ui.installProgress = 1
+        ui.installEta = fontGoingOut.flatMap { going in
+            guessedRate(going).flatMap { installEtaText(remainingBytes: going.bytesAfter, bytesPerSecond: $0) }
+        }
+    }
+
+    private func fontsDone() {
+        fontGoingOut = nil
+        ui.installProgress = nil
+        ui.installEta = nil
+        ui.installFont = nil
     }
 
     @concurrent nonisolated private static func readFont(_ url: URL) async throws -> Data {
@@ -672,8 +1149,7 @@ final class PrinterSetupViewModel {
         guard !ui.busy else { return }
         let offsets = offsets()
         ui.testing = true
-        ui.testMessage = nil
-        ui.testError = false
+        clearTestMessage()
         offsetsTask?.cancel()
         settingsStore.setOffsets(x: offsets.x, y: offsets.y)
         Task { await self.runTest(which, offsets: offsets) }
@@ -687,6 +1163,8 @@ final class PrinterSetupViewModel {
         }
         let message: String
         let isError: Bool
+        var settingsOffered = false
+        var forgotten = false
         do {
             let zpl: String?
             let text: String
@@ -706,7 +1184,7 @@ final class PrinterSetupViewModel {
             }
             if let zpl {
                 let shifted = try parseZpl(try await helper("applyPrintSettings", LabelGenArgs.printSettings(zpl: zpl, offsetX: offsets.x, offsetY: offsets.y)))
-                try await printerAt(printer.host).send(try parseZpl(try await helper("withPrintMode", LabelGenArgs.printMode(zpl: shifted, peel: s.peel))))
+                try await printerAt(printer).send(try parseZpl(try await helper("withPrintMode", LabelGenArgs.printMode(zpl: shifted, peel: s.peel))))
                 (message, isError) = (text, false)
             } else {
                 (message, isError) = (text, true)
@@ -716,12 +1194,21 @@ final class PrinterSetupViewModel {
             return
         } catch where LabelEngineError.isUnsupported(error) {
             (message, isError) = (DEVICE_UNSUPPORTED_TEXT, true)
+        } catch is PrinterNeedsRestart {
+            (message, isError) = (FONT_INSTALL_CUT_TEXT, true)
         } catch where wasLocalNetworkDenied(error) {
             (message, isError) = (LOCAL_NETWORK_PRINTER_DENIED_TEXT, true)
+        } catch let error where bluetoothRefusal(error) != nil {
+            // Bluetooth off or not allowed, or a printer that forgot this iPad: what to do (the
+            // main screen keeps the forgotten printer's steps, with Connect, once the sheet closes).
+            let refusal = bluetoothRefusal(error)
+            (message, isError) = (noteBluetoothRefusal(error, retry: .check) ?? printerUnreachableText(printer), true)
+            settingsOffered = (refusal as? BluetoothUnavailable)?.availability == .unauthorized
+            forgotten = refusal is BluetoothPairingLost
         } catch is PrinterTimeout {
             (message, isError) = (Self.TEST_TIMEOUT_TEXT, true)
         } catch is PrinterError {
-            (message, isError) = (printerUnreachableText(printer.host), true)
+            (message, isError) = (printerUnreachableText(printer), true)
         } catch {
             Self.log.warning("test label failed: \(String(describing: error), privacy: .private)")
             (message, isError) = (Self.TEST_FAILED_TEXT, true)
@@ -729,6 +1216,15 @@ final class PrinterSetupViewModel {
         ui.testing = false
         ui.testMessage = message
         ui.testError = isError
+        ui.testBluetoothSettings = settingsOffered
+        ui.testPairingLost = forgotten
+    }
+
+    private func clearTestMessage() {
+        ui.testMessage = nil
+        ui.testError = false
+        ui.testBluetoothSettings = false
+        ui.testPairingLost = false
     }
 
     /// The helpers share the generator with the label build: one can time out right after a
@@ -791,4 +1287,20 @@ final class PrinterSetupViewModel {
         case let other?: return other
         }
     }
+}
+
+/// What Connect, beside the pairing-lost steps, tries again: choosing that Bluetooth printer, or
+/// the saved printer's checks.
+private enum PairingRetry {
+    case choose(FoundBluetoothPrinter)
+    case check
+}
+
+/// A font going out: its number, its transport, the bytes of the fonts still to send after it,
+/// and its first progress report (when its bytes started moving, and how many had gone by then).
+private struct FontGoingOut {
+    var id: Int
+    var overBluetooth: Bool
+    var bytesAfter: Int
+    var firstReport: (at: ContinuousClock.Instant, sent: Int)?
 }

@@ -31,7 +31,16 @@ struct TestLabelSheet: View {
                 .padding(.bottom, 8)
                 if let size { PrinterOffsetFields(vm: vm, dpi: size.dpi) }
                 KioskToast(text: ui.testMessage, error: ui.testError)
-                if ui.testLocalNetworkDenied { OpenSettingsButton() }
+                if ui.testLocalNetworkDenied || ui.testBluetoothSettings || ui.testPairingLost {
+                    HStack(spacing: 8) {
+                        if ui.testLocalNetworkDenied || ui.testBluetoothSettings { OpenSettingsButton() }
+                        // The printer forgot this iPad: Connect once it's forgotten in Settings too
+                        // (no Open Settings: it can't reach Settings › Bluetooth, Ruling 15).
+                        if ui.testPairingLost {
+                            SecondaryButton(ui.checking ? "Connecting…" : "Connect", enabled: !ui.busy && !ui.checking) { vm.connectAgain() }
+                        }
+                    }
+                }
                 HStack(spacing: 8) {
                     PrimaryButton(ui.testing ? "Sending…" : "Print test label", enabled: !ui.busy) { vm.printTest(choice) }
                     SecondaryButton("Done", enabled: !ui.testing, action: onDismiss)

@@ -204,6 +204,81 @@ struct NetworkZebraTests {
         #expect(p.connections.isEmpty)
     }
 
+    /// Through the transport seam every command still goes out byte for byte as before, each on
+    /// its own connection (the network path's one-connection-per-command).
+    @Test func networkBytesUnchanged() async throws {
+        let listing = "\u{02}\r\n- DIR E:*.* \r\n* E:ROBOTO.TTF    4 \r\n\r\n-  32346624 bytes free E: ONBOARD FLASH \r\n\u{03}"
+        let p = try await FakePrinter.start([("~HI", hi), ("~HS", hs), (serialQuery, "\"D2J123\""), (peelerQuery, "\"Present\""),
+                                             ("^XA^HWE:*.*^XZ", listing)])
+        defer { p.close() }
+        let t: any ZebraTransport = zebra(p)
+        #expect(t.address == "127.0.0.1")
+        var expected: [Data] = []
+        func wentOut(_ bytes: Data) async {
+            expected.append(bytes)
+            #expect(await p.received(expected.count) == expected)
+        }
+        #expect(try await t.identify().dpi == 300)
+        await wentOut(Data("~HI".utf8))
+        #expect(try await t.status().headOpen)
+        await wentOut(Data("~HS".utf8))
+        #expect(try await t.serial() == "D2J123")
+        await wentOut(Data("! U1 getvar \"device.unique_id\"\r\n".utf8))
+        #expect(try await t.peelerPresent() == true)
+        await wentOut(Data("! U1 getvar \"sensor.peeler_present\"\r\n".utf8))
+        #expect(try await t.fonts() == ["ROBOTO.TTF"])
+        await wentOut(Data("^XA^HWE:*.*^XZ".utf8))
+        #expect(try await t.fontEntries() == [DirectoryEntry(name: "ROBOTO.TTF", size: 4)])
+        await wentOut(Data("^XA^HWE:*.*^XZ".utf8))
+        try await t.send("^XA^CI28^FDCafé^FS^XZ")
+        await wentOut(Data("^XA^CI28^FDCafé^FS^XZ".utf8))
+        let font = Data([0, 1, 0xFE, 0xFF])
+        try await t.installFont(name: "roboto.ttf", bytes: font, progress: nil)
+        await wentOut(Data("~DYE:ROBOTO.TTF,B,T,4,,".utf8) + font)
+    }
+
+    /// Progress starts at 0 once the connection is open (the bytes start going out), then comes
+    /// after each part.
+    @Test func writeReportsProgressPerPart() async throws {
+        let p = try await FakePrinter.start()
+        defer { p.close() }
+        let reports = ProgressLog()
+        try await zebra(p).installFont(name: "A.TTF", bytes: Data(count: 1_000), progress: { reports.add($0, $1) })
+        let header = "~DYE:A.TTF,B,T,1000,,".utf8.count
+        #expect(reports.all == [[0, header + 1_000], [header, header + 1_000], [header + 1_000, header + 1_000]])
+        #expect(await p.received().count == 1)
+    }
+
+    /// Nothing listening: nothing went out, so no progress at all (a font install that never
+    /// started is not a cut one).
+    @Test func aRefusedConnectionReportsNoProgress() async throws {
+        let reports = ProgressLog()
+        let z = NetworkZebra(host: "127.0.0.1", port: try await closedPort(), timeouts: fast)
+        await #expect(throws: PrinterUnreachable.self) {
+            try await z.installFont(name: "A.TTF", bytes: Data(count: 10), progress: { reports.add($0, $1) })
+        }
+        #expect(reports.all.isEmpty)
+    }
+
+    /// After a failed send the next send opens one connection for exactly `~JX`, then one for the
+    /// label; the send after that is the label alone.
+    @Test func aClearAfterAFailedSendIsExactlyJXOnItsOwnConnection() async throws {
+        let p = try await FakePrinter.start()
+        defer { p.close() }
+        let printerGuard = PrinterGuard()
+        let connection = PrinterConnection.network(host: "127.0.0.1")
+        await printerGuard.markSendFailed(for: connection)
+        let locked = LockedZebra(inner: zebra(p), connection: connection, lock: PrinterLock(), guard: printerGuard)
+        try await locked.send("^XA^FDone^FS^XZ")
+        let first = await p.received(2)
+        #expect(first.count == 2)
+        #expect(Set(first) == [Data("~JX".utf8), Data("^XA^FDone^FS^XZ".utf8)])
+        try await locked.send("^XA^FDtwo^FS^XZ")
+        let all = await p.received(3)
+        #expect(all.count == 3)
+        #expect(all.last == Data("^XA^FDtwo^FS^XZ".utf8))
+    }
+
     @Test func aClosedPortIsUnreachable() async throws {
         // a refused connection ends at once (as Android's refused connect), not at the connect budget
         let z = NetworkZebra(host: "127.0.0.1", port: try await closedPort(), timeouts: ZebraTimeouts(connect: 10, idle: 0.3, total: 2, send: 5))
@@ -598,6 +673,14 @@ private final class Gate: @unchecked Sendable {
         }
         waiting.forEach { $0.resume() }
     }
+}
+
+/// The progress a write reported, as `[sent, total]` pairs in order.
+private final class ProgressLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var reports: [[Int]] = []
+    func add(_ sent: Int, _ total: Int) { lock.withLock { reports.append([sent, total]) } }
+    var all: [[Int]] { lock.withLock { reports } }
 }
 
 /// A thread-safe counter for probe tallies.

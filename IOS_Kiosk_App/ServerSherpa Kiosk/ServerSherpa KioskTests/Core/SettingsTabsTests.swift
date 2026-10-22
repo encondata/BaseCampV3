@@ -11,8 +11,8 @@ struct SettingsTabsTests {
         #expect(ids(isAdmin: true, isDeveloper: true, signedIn: false) == [.thisKiosk])
     }
 
-    @Test func workerSeesTheFourOpenTabs() {
-        #expect(ids(isAdmin: false, isDeveloper: false, signedIn: true) == [.appearance, .sound, .devices, .thisKiosk])
+    @Test func workerSeesTheFiveOpenTabs() {
+        #expect(ids(isAdmin: false, isDeveloper: false, signedIn: true) == [.appearance, .sound, .devices, .troubleshooting, .thisKiosk])
     }
 
     @Test func adminGetsAdminDeveloperGetsDeveloper() {

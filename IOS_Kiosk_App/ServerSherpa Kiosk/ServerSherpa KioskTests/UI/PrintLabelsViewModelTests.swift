@@ -45,6 +45,8 @@ import SwiftUI
     var timeouts = false
     /// The failures are iOS's Local Network denial.
     var denied = false
+    /// The failures throw this instead, when set.
+    var error: Error?
     var hold = false
     private(set) var atHold = false
 
@@ -56,6 +58,7 @@ import SwiftUI
         }
         if failures > 0 {
             failures -= 1
+            if let error { throw error }
             if timeouts { throw PrinterTimeout(host: host) }
             if denied { throw PrinterUnreachable(host: host, localNetworkDenied: true) }
             throw PrinterUnreachable(host: host)
@@ -95,6 +98,16 @@ struct PrintLabelsViewModelTests {
     private let jobs: LabelPrintJobs
     /// Signed in by `harness()`; the jobs record only while it is (the container's `isLive`).
     private let auth: KioskAuth
+    private let bluetooth = FakeBluetoothPrinting()
+    /// The office ZD421 saved as a Bluetooth printer, and what its Device Information says.
+    private let zd421Id = UUID()
+    private var zd421: SavedPrinter {
+        SavedPrinter(connection: .bluetooth(serial: "D8J224508535", peripheralId: zd421Id), model: "ZD421", serial: "D8J224508535", dpi: 203)
+    }
+    private var zd421Info: BluetoothPrinterInfo {
+        BluetoothPrinterInfo(peripheralId: zd421Id, manufacturer: "Zebra Technologies", model: "ZD421", serial: "D8J224508535",
+                             firmware: "V93.21.38Z", linkOs: "7.3")
+    }
 
     init() throws {
         store = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
@@ -105,13 +118,13 @@ struct PrintLabelsViewModelTests {
         // The container's wiring, minus its reset hooks: here only `isLive` stands between a
         // sign-out or a Setup change and a Labeled scan.
         jobs = LabelPrintJobs(store: store, sync: sync, outbox: outbox, settings: settings, build: build, engine: engine,
-                              sender: { host, zpl in try await device.send(host, zpl) },
+                              sender: { printer, zpl in try await device.send(printer.host ?? "", zpl) },
                               isLive: printJobIsLive(auth: auth, prefs: prefs))
     }
 
     /// Three assets: A-1 and A-3 with stored labels, A-2 with none at this DPI; the move's setup; the
     /// printer with offsets (4, -2) and peel unless `withPrinter` is false.
-    private func harness(withPrinter: Bool = true) async throws -> PrintLabelsViewModel {
+    private func harness(withPrinter: Bool = true, jobs: LabelPrintJobs? = nil) async throws -> PrintLabelsViewModel {
         let assets = [
             KioskAssetRow(id: "a1", assetId: "A-1", name: "Rack 1", rfid: "000000000000000000100348", serialNumber: "SN1", makeModel: "Dell"),
             KioskAssetRow(id: "a2", assetId: "A-2", name: "Rack 2", serialNumber: "SN2", makeModel: "HP"),
@@ -132,13 +145,14 @@ struct PrintLabelsViewModelTests {
             settings.setOffsets(x: 4, y: -2)
             settings.setPeel(true)
         }
-        let vm = makeVM()
+        let vm = makeVM(jobs: jobs)
         await vm.loadRoster()
         return vm
     }
 
-    private func makeVM() -> PrintLabelsViewModel {
-        PrintLabelsViewModel(jobs: jobs, store: store, sync: sync, prefs: prefs, settings: settings, build: build, flash: flash, sound: nil)
+    private func makeVM(jobs: LabelPrintJobs? = nil) -> PrintLabelsViewModel {
+        PrintLabelsViewModel(jobs: jobs ?? self.jobs, store: store, sync: sync, prefs: prefs, settings: settings, build: build,
+                             bluetooth: bluetooth, flash: flash, sound: nil)
     }
 
     /// Runs a scan to its end and waits for the list to show it.
@@ -203,6 +217,143 @@ struct PrintLabelsViewModelTests {
         #expect(engine.calls.count == 2) // the retry resent the same bytes
     }
 
+    /// D12: a Bluetooth printer that can't be reached is named by its serial. Bluetooth off or not
+    /// allowed (D11), and a printer that forgot this iPad (D10), say what to do instead, also when
+    /// they stopped the `~JX` before the label. None records a scan, and Retry prints once it's fixed.
+    @Test func printLabelsBluetoothUnreachableCopy() async throws {
+        let vm = try await harness()
+        settings.setPrinter(SavedPrinter(connection: .bluetooth(serial: "D8J224508535", peripheralId: UUID()), model: "ZD421",
+                                         serial: "D8J224508535", dpi: 203))
+        device.failures = 1
+        await scan(vm, "A-1")
+        #expect(vm.entries[0].message == "Can't reach the printer D8J224508535 over Bluetooth.")
+
+        let refusals: [(Error, String)] = [
+            (BluetoothUnavailable(host: "D8J224508535", availability: .poweredOff), BLUETOOTH_OFF_TEXT),
+            (BluetoothUnavailable(host: "D8J224508535", availability: .unauthorized), BLUETOOTH_DENIED_TEXT),
+            (BluetoothPairingLost(host: "D8J224508535"), pairingLostText(serial: "D8J224508535")),
+            (PrinterClearFailed(host: "D8J224508535", cause: BluetoothUnavailable(host: "D8J224508535", availability: .poweredOff)),
+             BLUETOOTH_OFF_TEXT),
+            // Not on yet (no answer from Bluetooth in time): just unreachable.
+            (BluetoothUnavailable(host: "D8J224508535", availability: .unknown), "Can't reach the printer D8J224508535 over Bluetooth."),
+        ]
+        for (error, message) in refusals {
+            device.failures = 1
+            device.error = error
+            await scan(vm, "A-1")
+            #expect(vm.entries[0].state == .failed)
+            #expect(vm.entries[0].message == message, "\(error)")
+        }
+        #expect(rows.isEmpty)
+        device.error = nil
+        await vm.retry(vm.entries[0].id)?.value
+        #expect(await waitUntil { vm.entries[0].state == .printed })
+        #expect(rows.count == 1)
+    }
+
+    // MARK: Bluetooth link on open (D4, D10, D11)
+
+    /// Opening Print Labels with a saved Bluetooth printer connects in the background, once, so the
+    /// first label needn't wait for the link: nothing waits for the connect, and a scan prints
+    /// meanwhile. A network printer starts nothing.
+    @Test func openingWithABluetoothPrinterConnectsInTheBackground() async throws {
+        let vm = try await harness()
+        #expect(vm.connectPrinter() == nil)
+        #expect(bluetooth.connects.isEmpty)
+
+        settings.setPrinter(zd421)
+        bluetooth.info[zd421Id] = zd421Info
+        bluetooth.connectHold = true
+        let connecting = try #require(vm.connectPrinter())
+        #expect(vm.connectPrinter() != nil) // opened again while it connects: the same connect
+        #expect(await waitUntil { bluetooth.connects.count == 1 })
+        #expect(bluetooth.connects == [BluetoothTarget(peripheralId: zd421Id, serial: "D8J224508535")])
+        #expect(vm.connecting)
+        await scan(vm, "A-1")
+        #expect(vm.entries[0].state == .printed)
+        bluetooth.connectHold = false
+        await connecting.value
+        #expect(!vm.connecting)
+        #expect(bluetooth.link.connected)
+        #expect(vm.printerProblem == nil)
+        #expect(bluetooth.connects.count == 1)
+    }
+
+    /// What stops the link and the crew fixes on the iPad shows on the screen: Bluetooth off; not
+    /// allowed (Open Settings); a printer that forgot this iPad (the steps and Connect, which
+    /// connects again: no Open Settings, as iOS can't open Settings › Bluetooth from an app,
+    /// Ruling 15). Any other failure (the printer off or out of range) says nothing here: a label's
+    /// own message does.
+    @Test func aBluetoothPrinterThatCantBeReachedFromTheIPadSaysWhatToDo() async throws {
+        let vm = try await harness()
+        settings.setPrinter(zd421)
+        bluetooth.info[zd421Id] = zd421Info
+        let cases: [(Error, PrinterReachProblem)] = [
+            (BluetoothUnavailable(host: "D8J224508535", availability: .poweredOff),
+             PrinterReachProblem(text: BLUETOOTH_OFF_TEXT, offersSettings: false, offersConnect: false)),
+            (BluetoothUnavailable(host: "D8J224508535", availability: .unauthorized),
+             PrinterReachProblem(text: BLUETOOTH_DENIED_TEXT, offersSettings: true, offersConnect: false)),
+            (BluetoothPairingLost(host: "D8J224508535"),
+             PrinterReachProblem(text: pairingLostText(serial: "D8J224508535"), offersSettings: false, offersConnect: true)),
+        ]
+        for (error, problem) in cases {
+            bluetooth.connectError = error
+            await vm.connectPrinter()?.value
+            #expect(vm.printerProblem == problem, "\(error)")
+        }
+        bluetooth.connectError = PrinterUnreachable(host: "D8J224508535")
+        await vm.connectPrinter()?.value
+        #expect(vm.printerProblem == nil)
+
+        // Forgotten in Settings, then Connect: connected, and the steps go.
+        bluetooth.connectError = BluetoothPairingLost(host: "D8J224508535")
+        await vm.connectPrinter()?.value
+        #expect(vm.printerProblem?.offersConnect == true)
+        bluetooth.connectError = nil
+        await vm.connectPrinter()?.value
+        #expect(vm.printerProblem == nil)
+        #expect(bluetooth.connects.count == 6)
+    }
+
+    /// The message goes once the link is up, whoever brought it up (a label's send, say), and
+    /// when a network printer is saved instead.
+    @Test func theReachMessageGoesOnceTheLinkIsUp() async throws {
+        let vm = try await harness()
+        settings.setPrinter(zd421)
+        bluetooth.connectError = BluetoothUnavailable(host: "D8J224508535", availability: .poweredOff)
+        await vm.connectPrinter()?.value
+        #expect(vm.printerProblem?.text == BLUETOOTH_OFF_TEXT)
+        bluetooth.linkUp(zd421Info)
+        #expect(vm.printerProblem == nil)
+
+        bluetooth.close()
+        await vm.connectPrinter()?.value
+        #expect(vm.printerProblem?.text == BLUETOOTH_OFF_TEXT)
+        settings.setPrinter(printer)
+        #expect(vm.printerProblem == nil)
+    }
+
+    /// Back in the app (from Settings or Control Center) with a message showing, it connects
+    /// again; with none showing, coming back starts nothing.
+    @Test func comingBackWithAReachMessageConnectsAgain() async throws {
+        let vm = try await harness()
+        settings.setPrinter(zd421)
+        bluetooth.info[zd421Id] = zd421Info
+        await vm.connectPrinter()?.value
+        vm.cameBackToTheApp()
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(bluetooth.connects.count == 1)
+
+        bluetooth.close()
+        bluetooth.connectError = BluetoothUnavailable(host: "D8J224508535", availability: .poweredOff)
+        await vm.connectPrinter()?.value
+        #expect(vm.printerProblem != nil)
+        bluetooth.connectError = nil
+        vm.cameBackToTheApp()
+        #expect(await waitUntil { bluetooth.connects.count == 3 && !vm.connecting })
+        #expect(vm.printerProblem == nil)
+    }
+
     @Test func aPrinterTimeoutSaysTheLabelMayHavePrinted() async throws {
         let vm = try await harness()
         device.failures = 1
@@ -210,6 +361,43 @@ struct PrintLabelsViewModelTests {
         await scan(vm, "A-1")
         #expect(vm.entries[0].message == "The printer didn't finish answering. It may have printed the label — check before you retry.")
         #expect(rows.isEmpty)
+    }
+
+    /// The container's sender: after a failed send the next label first clears the printer. A clear
+    /// that fails never sent the label, so it can't have printed: a timeout reads as unreachable
+    /// (not "it may have printed"), and a Local Network denial still says to allow it.
+    @Test func aClearThatFailsSaysThePrinterCantBeReached() async throws {
+        let printerGuard = PrinterGuard()
+        let device = self.device
+        let guarded = LabelPrintJobs(store: store, sync: sync, outbox: outbox, settings: settings, build: build, engine: engine,
+                                     sender: lockedSender(PrinterLock(), printerGuard) { printer, zpl in
+                                         try await device.send(printer.host ?? "", zpl)
+                                     },
+                                     isLive: printJobIsLive(auth: auth, prefs: prefs))
+        let vm = try await harness(jobs: guarded)
+        await printerGuard.markSendFailed(for: printer.connection)
+
+        device.failures = 1
+        device.timeouts = true
+        await scan(vm, "A-1")
+        #expect(vm.entries[0].state == .failed)
+        #expect(vm.entries[0].message == "Can't reach the printer at 10.0.0.5.")
+        #expect(device.started == ["~JX"])
+
+        device.timeouts = false
+        device.failures = 1
+        device.denied = true
+        await vm.retry(vm.entries[0].id)?.value
+        #expect(await waitUntil { device.started.count == 2 && vm.entries[0].state == .failed })
+        #expect(vm.entries[0].message == LOCAL_NETWORK_PRINTER_DENIED_TEXT)
+        #expect(device.sent.isEmpty)
+        #expect(rows.isEmpty)
+
+        device.denied = false
+        await vm.retry(vm.entries[0].id)?.value
+        #expect(await waitUntil { vm.entries[0].state == .printed })
+        #expect(device.sent.map(\.zpl) == ["~JX", "LT-2LS4|^XA^FDA-1^FS^XZ|MMP"])
+        #expect(rows.count == 1)
     }
 
     @Test func aSendKeptOffTheLocalNetworkSaysToAllowIt() async throws {

@@ -38,7 +38,7 @@ private final class Fake: @unchecked Sendable {
     private var _onLabel: @Sendable () async -> Void = {}
     private var _sendError: @Sendable () -> Error = { SendFailed() }
     private var _prepared: [String] = []
-    private var _sent: [(String, String)] = []
+    private var _sent: [(SavedPrinter, String)] = []
     private var _recorded: [(Asset, String)] = []
     private var _logged: [String] = []
     private var _labelCalls = 0
@@ -56,7 +56,7 @@ private final class Fake: @unchecked Sendable {
     var onLabel: @Sendable () async -> Void { get { locked { _onLabel } } set { locked { _onLabel = newValue } } }
     var sendError: @Sendable () -> Error { get { locked { _sendError } } set { locked { _sendError = newValue } } }
     var prepared: [String] { locked { _prepared } }
-    var sent: [(String, String)] { locked { _sent } }
+    var sent: [(SavedPrinter, String)] { locked { _sent } }
     var recorded: [(Asset, String)] { locked { _recorded } }
     var logged: [String] { locked { _logged } }
     var labelCalls: Int { locked { _labelCalls } }
@@ -74,13 +74,13 @@ private final class Fake: @unchecked Sendable {
                 self.locked { self._prepared.append(zpl) }
                 return .ready("[\(settings.offsetX),\(settings.offsetY),\(settings.peel)]\(zpl)")
             },
-            send: { host, zpl in
+            send: { printer, zpl in
                 await self.onSend()
                 // A real send stops when its task is cancelled.
                 if Task.isCancelled { throw CancellationError() }
                 let error: Error? = self.locked {
                     if self._failSends > 0 { self._failSends -= 1; return self._sendError() }
-                    self._sent.append((host, zpl))
+                    self._sent.append((printer, zpl))
                     return nil
                 }
                 if let error { throw error }
@@ -98,7 +98,8 @@ private final class Fake: @unchecked Sendable {
         )
     }
 
-    func sentPairs() -> [[String]] { sent.map { [$0.0, $0.1] } }
+    /// Each send as `[host, zpl]`.
+    func sentPairs() -> [[String]] { sent.map { [$0.0.host ?? "", $0.1] } }
     func recordedPairs() -> [[String]] { recorded.map { [$0.0.id, $0.1] } }
 }
 
@@ -162,6 +163,8 @@ struct PrintQueueTests {
         #expect(e.recorded)
         #expect(e.message == nil)
         #expect(fake.sentPairs() == [["10.0.0.5", "[4,-2,true]^XA^FDa1^FS^XZ"]])
+        // The send gets the whole saved printer: its connection picks the way there.
+        #expect(fake.sent.map(\.0) == fake.settings.printer.map { [$0] })
         #expect(fake.recordedPairs() == [["a1", "A-1"]])
         #expect(await q.entries == [e])
     }
@@ -443,6 +446,18 @@ struct PrintQueueTests {
         let e = try await queue(fake).scan(Asset("a1"), scannedValue: "A-1")
         #expect(e.state == .failed)
         #expect(e.message == LOCAL_NETWORK_PRINTER_DENIED_TEXT)
+        #expect(fake.recorded.isEmpty)
+    }
+
+    /// A cut font install stops sends to the printer until it answers a check: the label says so.
+    @Test func printQueueShowsFontCutText() async throws {
+        let fake = Fake()
+        fake.failSends = 1
+        fake.sendError = { PrinterNeedsRestart() }
+        let e = try await queue(fake).scan(Asset("a1"), scannedValue: "A-1")
+        #expect(e.state == .failed)
+        #expect(e.message == FONT_INSTALL_CUT_TEXT)
+        #expect(e.message == "The font install was cut off. Turn the printer off and on, then tap Check again.")
         #expect(fake.recorded.isEmpty)
     }
 
