@@ -15,6 +15,7 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.mockwebserver.MockResponse
@@ -94,12 +95,32 @@ class PortalShapingTest {
             .build()
     }
 
+    /** Servers that speak HTTP/2 in the clear, started by the tests that need one. */
+    private val h2Servers = mutableListOf<MockWebServer>()
+
     @After fun tearDown() {
         InternetTestRoutes.resetForTests()
         base.connectionPool.evictAll()
         server.shutdown()
+        h2Servers.forEach { it.shutdown() }
         serverLog.level = serverLogLevel
     }
+
+    private fun h2Server(): MockWebServer =
+        MockWebServer().apply {
+            protocols = listOf(Protocol.H2_PRIOR_KNOWLEDGE)
+            start()
+        }.also { h2Servers += it }
+
+    /** An HTTP/2 original client with a 1 s connect timeout. */
+    private fun h2Client(): OkHttpClient = OkHttpClient.Builder()
+        .protocols(listOf(Protocol.H2_PRIOR_KNOWLEDGE))
+        .connectTimeout(1, TimeUnit.SECONDS)
+        .readTimeout(2, TimeUnit.SECONDS)
+        .writeTimeout(2, TimeUnit.SECONDS)
+        .build()
+
+    private fun noContent() = MockResponse().setResponseCode(204)
 
     private fun get(client: OkHttpClient, url: HttpUrl = server.url("/")): String =
         client.newCall(Request.Builder().url(url).build()).execute().use { it.body!!.string() }
@@ -281,7 +302,9 @@ class PortalShapingTest {
             .build()
         InternetTestRoutes.random = ScriptedRandom(
             0.0, 0.99, // handshake: lost once (a 1 s retry), then through
+            0.99, // the request line and headers: through
             0.0, 0.99, // the upload's one chunk: dropped once (a 200 ms stall), then through
+            0.99, // the status line and headers: through
             0.0, 0.99, // the download's one chunk: the same
         )
         InternetTestRoutes.internet = LinkProfile(downDropPct = 50.0, upDropPct = 50.0)
@@ -294,6 +317,97 @@ class PortalShapingTest {
         assertTrue("1 s + 200 ms + 200 ms of stalls, took $took", took >= 1_400)
         assertEquals("hi", server.takeRequest().body.readUtf8())
         noTimeouts.connectionPool.evictAll()
+    }
+
+    /**
+     * Makes one clean call so the conditioned client holds a connection that has
+     * had its handshake, then switches to [profile] and makes a bodiless GET the
+     * server would answer with an empty 204. Returns the failure and how long it took.
+     */
+    private fun failOnAHandshakenConnection(profile: LinkProfile): Pair<SocketTimeoutException, Long> {
+        server.enqueue(ok())
+        server.enqueue(noContent())
+        val oneSecond = base.newBuilder().readTimeout(1, TimeUnit.SECONDS).writeTimeout(1, TimeUnit.SECONDS).build()
+        InternetTestRoutes.internet = LinkProfile(downDelayMs = 1)
+        val conditioned = InternetTestRoutes.portal(oneSecond)
+        assertEquals("ok", get(conditioned))
+        assertEquals("the handshaken connection is pooled", 1, conditioned.connectionPool.connectionCount())
+
+        InternetTestRoutes.internet = profile
+        assertSame(conditioned, InternetTestRoutes.portal(oneSecond))
+        var error: SocketTimeoutException? = null
+        val took = elapsedMs {
+            error = assertThrows(SocketTimeoutException::class.java) {
+                conditioned.newCall(Request.Builder().url(server.url("/empty")).build()).execute().close()
+            }
+        }
+        return requireNotNull(error) to took
+    }
+
+    @Test fun bodilessRequestStillDrawsADrop() {
+        val (error, took) = failOnAHandshakenConnection(LinkProfile(upDropPct = 100.0))
+
+        assertEquals("timeout", error.message)
+        assertTrue("stalls until the 1 s write timeout, took $took", took >= 1_000)
+        assertEquals("the GET never reached the server", 1, server.requestCount)
+    }
+
+    @Test fun emptyResponseStillDrawsADrop() {
+        val (error, took) = failOnAHandshakenConnection(LinkProfile(downDropPct = 100.0))
+
+        assertEquals("timeout", error.message)
+        assertTrue("stalls until the 1 s read timeout, took $took", took >= 1_000)
+        assertEquals("the GET went up, but its 204 never came down", 2, server.requestCount)
+    }
+
+    @Test fun http2FailedHandshakeIsNeverReused() {
+        val h2 = h2Server()
+        repeat(2) { h2.enqueue(noContent()) }
+        InternetTestRoutes.internet = Preset.LOSS_100.profile
+        val conditioned = InternetTestRoutes.portal(h2Client())
+
+        for (attempt in 1..2) {
+            var error: SocketTimeoutException? = null
+            val took = elapsedMs {
+                error = assertThrows(SocketTimeoutException::class.java) {
+                    conditioned.newCall(Request.Builder().url(h2.url("/h2")).build()).execute().close()
+                }
+            }
+            assertEquals("call $attempt pays a handshake of its own", "connect timed out", error?.message)
+            assertTrue("call $attempt hangs until the 1 s connect timeout, took $took", took >= 1_000)
+        }
+        assertEquals("nothing reached the server", 0, h2.requestCount)
+    }
+
+    @Test fun http2CallsShareOneHandshake() {
+        val h2 = h2Server()
+        repeat(2) { h2.enqueue(noContent()) }
+        val sleeper = WatchedSleeper()
+        InternetTestRoutes.sleeper = sleeper
+        InternetTestRoutes.internet = Preset.LOSS_100.profile
+        val conditioned = InternetTestRoutes.portal(h2Client())
+        val failures = arrayOfNulls<Throwable>(2)
+        fun start(i: Int) = thread {
+            try {
+                conditioned.newCall(Request.Builder().url(h2.url("/h2/$i")).build()).execute().close()
+            } catch (t: Throwable) {
+                failures[i] = t
+            }
+        }
+
+        val first = start(0)
+        assertTrue("the first call is in its handshake", sleeper.started.await(5, TimeUnit.SECONDS))
+        val second = start(1) // multiplexed onto the first call's new connection
+        first.join(5_000)
+        second.join(5_000)
+
+        assertFalse(first.isAlive || second.isAlive)
+        for (failure in failures) {
+            assertTrue("each call fails as a connect timeout, got $failure", failure is SocketTimeoutException)
+            assertEquals("connect timed out", failure?.message)
+        }
+        assertEquals("one handshake, the second call waited on it", listOf(1_000L), sleeper.calls.toList())
+        assertEquals("nothing reached the server", 0, h2.requestCount)
     }
 
     @Test fun interruptedSleepIsAnIoFailure() {

@@ -1,11 +1,13 @@
 package com.serversherpa.kiosk.nettest
 
+import java.io.IOException
 import java.io.InterruptedIOException
 import java.net.InetAddress
 import java.net.SocketTimeoutException
-import java.util.Collections
 import java.util.Random
 import java.util.WeakHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import okhttp3.Connection
 import okhttp3.ConnectionPool
 import okhttp3.Dns
@@ -75,10 +77,13 @@ internal class DelayedDns(
  * captured once at the start, so switching the tool mid-call never changes a
  * call already under way.
  *
- * A connection the interceptor hasn't seen before pays the handshake. Then the
- * request pays the upload delay and its body is paced up the link. The response
- * pays the download delay and its whole body is read and paced down here, on
- * OkHttp's thread, so the caller gets a body that's already in memory.
+ * A new connection pays the handshake before it carries anything. Then the
+ * request pays the upload delay, its line and headers take one segment's chance
+ * of a drop, and its body is paced up the link. The response pays the download
+ * delay, its status and headers take one segment's chance of a drop, and its
+ * whole body is read and paced down here, on OkHttp's thread, so the caller
+ * gets a body that's already in memory. So under 100% Loss nothing gets
+ * through, even a bodiless request or an empty response.
  *
  * A stall that outlasts the call's own timeout fails it the way a dead link
  * would, with a [SocketTimeoutException].
@@ -88,26 +93,26 @@ internal class LinkInterceptor(
     private val random: () -> Random,
     private val sleeper: Sleeper,
 ) : Interceptor {
-    /** Connections that have had their handshake. Weak, so a long-lived process doesn't keep dead ones. */
-    private val handshaken: MutableSet<Connection> = Collections.newSetFromMap(WeakHashMap())
+    /**
+     * Each connection's handshake, started by the first exchange on it. Weak,
+     * so a long-lived process doesn't keep dead connections. Guarded by itself.
+     */
+    private val handshakes = WeakHashMap<Connection, Handshake>()
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val link = profile() ?: return chain.proceed(chain.request())
         val shaper = LinkShaper(link, random(), sleeper)
 
-        val connection = chain.connection()
-        if (connection != null && synchronized(handshaken) { handshaken.add(connection) }) {
-            val connected = interruptibly { shaper.connect(chain.connectTimeoutMillis().orNoLimit()) }
-            if (!connected) throw SocketTimeoutException("connect timed out")
-        }
+        chain.connection()?.let { handshake(it, shaper, chain.connectTimeoutMillis().orNoLimit()) }
 
         interruptibly { shaper.sendBurst() }
+        val writeTimeoutMs = chain.writeTimeoutMillis().orNoLimit()
+        if (!interruptibly { shaper.paceUp(1, writeTimeoutMs) }) throw SocketTimeoutException("timeout")
         val request = chain.request()
         val body = request.body
         val paced = if (body == null || body.isDuplex()) {
             request
         } else {
-            val writeTimeoutMs = chain.writeTimeoutMillis().orNoLimit()
             request.newBuilder()
                 .method(request.method, PacedRequestBody(body) { bytes -> shaper.paceUp(bytes, writeTimeoutMs) })
                 .build()
@@ -116,15 +121,48 @@ internal class LinkInterceptor(
         val response = chain.proceed(paced)
         try {
             interruptibly { shaper.receiveBurst() }
+            val readTimeoutMs = chain.readTimeoutMillis().orNoLimit()
+            if (!interruptibly { shaper.paceDown(1, readTimeoutMs) }) throw SocketTimeoutException("timeout")
             val original = response.body ?: return response
             val contentType: MediaType? = original.contentType()
-            val bytes = readPaced(original.source(), chain.readTimeoutMillis().orNoLimit(), shaper)
+            val bytes = readPaced(original.source(), readTimeoutMs, shaper)
             original.close()
             return response.newBuilder().body(bytes.asResponseBody(contentType, bytes.size)).build()
         } catch (e: Throwable) {
             response.body?.close()
             throw e
         }
+    }
+
+    /**
+     * Holds the exchange until [connection]'s handshake has succeeded. The first
+     * exchange on a connection runs it; any exchange that joins the same
+     * connection meanwhile (HTTP/2 multiplexes) waits for that outcome, up to
+     * its own [timeoutMs]. A failed or interrupted handshake closes the socket,
+     * so OkHttp retires the connection on HTTP/1.1 and HTTP/2 alike, and every
+     * exchange on it fails as a connect timeout.
+     */
+    private fun handshake(connection: Connection, shaper: LinkShaper, timeoutMs: Long) {
+        var mine = false
+        val handshake = synchronized(handshakes) {
+            handshakes.getOrPut(connection) {
+                mine = true
+                Handshake()
+            }
+        }
+        val connected = if (mine) {
+            var ok = false
+            try {
+                ok = interruptibly { shaper.connect(timeoutMs) }
+            } finally {
+                handshake.finish(ok)
+                if (!ok) retire(connection)
+            }
+            ok
+        } else {
+            interruptibly { handshake.await(timeoutMs) }
+        }
+        if (!connected) throw SocketTimeoutException("connect timed out")
     }
 
     /** Reads the whole body off the connection, pacing each batch down the link. */
@@ -137,6 +175,30 @@ internal class LinkInterceptor(
             bytes.write(source.buffer, batch)
         }
         return bytes
+    }
+}
+
+/** One connection's handshake outcome, shared by every exchange on that connection. */
+private class Handshake {
+    private val finished = CountDownLatch(1)
+
+    @Volatile private var succeeded = false
+
+    fun finish(ok: Boolean) {
+        succeeded = ok
+        finished.countDown()
+    }
+
+    /** True once the handshake has succeeded; false if it failed, or hasn't finished within [timeoutMs]. */
+    fun await(timeoutMs: Long): Boolean = finished.await(timeoutMs, TimeUnit.MILLISECONDS) && succeeded
+}
+
+/** Closes [connection]'s socket. OkHttp then never hands that connection out again. */
+private fun retire(connection: Connection) {
+    try {
+        connection.socket().close()
+    } catch (e: IOException) {
+        // Already closed: nothing more to do.
     }
 }
 
