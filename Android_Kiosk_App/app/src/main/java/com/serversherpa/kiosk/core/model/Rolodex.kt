@@ -82,7 +82,7 @@ data class RolodexDetail(
     val has_account: Boolean = false,
     val email: String? = null,
     val phone: String? = null,
-    /** Shown as "Employee ID"; read-only here. */
+    /** The Employee ID. Not shown in the Rolodex (Jimmy, 2026-10-22); it still goes to the Time Clock's roster. */
     val external_id: String? = null,
     val status_note: String? = null,
     /** False when the person has a portal login ranked at or above the admin's. Missing reads as false. */

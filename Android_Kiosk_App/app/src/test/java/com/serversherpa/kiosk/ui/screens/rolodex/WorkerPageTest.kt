@@ -1,11 +1,24 @@
 package com.serversherpa.kiosk.ui.screens.rolodex
 
+import android.content.res.Configuration
+import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
+import androidx.activity.ComponentDialog
 import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.assertHasClickAction
+import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -14,7 +27,9 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.toSize
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -39,8 +54,12 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import org.robolectric.shadows.ShadowDialog
 
-/** The worker page, as the Rolodex route shows it inside the kiosk shell: its "Previous jobs" section. */
+/**
+ * The worker page, as the Rolodex route shows it inside the kiosk shell: the larger photo view, its
+ * "Previous jobs" section, and no Employee ID.
+ */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class WorkerPageTest {
@@ -108,6 +127,216 @@ class WorkerPageTest {
     }
 
     private fun top(text: String) = compose.onNodeWithText(text, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot.top
+
+    /**
+     * [abbott] with a [width]×[height] solid red photo already in the photo cache (the viewer and
+     * the avatar share it, so nothing is fetched). Each test passes its own [version].
+     */
+    private fun withPhoto(version: String, width: Int = 64, height: Int = 64): RolodexRow {
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply { eraseColor(android.graphics.Color.RED) }
+        WorkerPhotoCache.put(WorkerPhotoCache.key(abbott.person_id, version), bitmap.asImageBitmap())
+        return abbott.copy(photo_url = "https://files.example/abbott.jpg?sig=1", photo_version = version)
+    }
+
+    private fun viewerShown() = compose.onAllNodesWithTag("photo-viewer").fetchSemanticsNodes().isNotEmpty()
+
+    private fun waitForViewer(shown: Boolean) = compose.waitUntil(10_000) { viewerShown() == shown }
+
+    /** The system Back, as the viewer's window gets it. */
+    private fun pressBackInDialog() = compose.runOnUiThread {
+        (ShadowDialog.getLatestDialog() as ComponentDialog).onBackPressedDispatcher.onBackPressed()
+    }
+
+    // ── The photo, larger ──
+
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun tappingThePhotoOpensTheViewerAndCloseClosesIt() {
+        val row = withPhoto("v-open")
+        showPage(row, rolodexDetail(row))
+        compose.onNodeWithTag("worker-photo-view").assertHasClickAction().performClick()
+        waitForViewer(true)
+        compose.onNodeWithTag("photo-viewer-image").assertIsDisplayed()
+        compose.onNodeWithText("Photo for Ann Abbott").assertDoesNotExist()      // not the photo sheet
+        compose.onNodeWithTag("photo-viewer-close").assertIsDisplayed().assertTextEquals("Close").performClick()
+        waitForViewer(false)
+        compose.onNodeWithTag("worker-name").assertIsDisplayed()
+    }
+
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun theCameraBadgeStillOpensThePhotoSheetNotTheViewer() {
+        val row = withPhoto("v-badge")
+        showPage(row, rolodexDetail(row))
+        compose.onNodeWithTag("worker-photo").performClick()
+        waitForText("Photo for Ann Abbott")
+        assertTrue("the badge opened the viewer", !viewerShown())
+    }
+
+    /**
+     * Turning a phone recreates the activity, and on a Pixel the landscape window is wide enough for
+     * the split view, so the photo comes back somewhere else on the page: the viewer is still open.
+     */
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun theViewerStaysOpenWhenThePhoneTurnsIntoTheSplit() {
+        val row = withPhoto("v-turn")
+        val api = FakeKioskApi().apply {
+            rolodexWorkersResult = { RolodexList("now", listOf(row)) }
+            rolodexOptionsResult = { ROLODEX_OPTIONS }
+            rolodexWorkerResult = { rolodexDetail(row) }
+        }
+        val c = testContainer(api = api).also { it.auth.completePair(fakeSession(roles = listOf("admin"), maxRank = 60)) }
+        val vm = RolodexViewModel(c.api, c.db, c.rolodexCache)                  // outlives the activity, as the real one does
+        var widthDp = 360                                                       // not state: it changes only across the restore
+        val tester = StateRestorationTester(compose)
+        tester.setContent {
+            val turned = Configuration(LocalConfiguration.current).apply { screenWidthDp = widthDp }
+            CompositionLocalProvider(LocalAppContainer provides c, LocalConfiguration provides turned) {
+                KioskTheme { RolodexContent(vm, onNewWorker = null, onChangePhoto = null) }
+            }
+        }
+        waitFor("rolodex-row-p-abbott")
+        compose.onNodeWithTag("rolodex-row-p-abbott").performClick()
+        waitForText("ann@example.com")
+        compose.onNodeWithTag("rolodex-search").assertDoesNotExist()           // the phone page
+        compose.onNodeWithTag("worker-photo-view").performClick()
+        waitForViewer(true)
+
+        widthDp = 800
+        tester.emulateSavedInstanceStateRestore()
+        waitFor("rolodex-search")                                               // now the split view
+        waitForViewer(true)
+        compose.onNodeWithTag("photo-viewer-close").performClick()
+        waitForViewer(false)
+    }
+
+    /** A badge that is off (the worker can't be edited) opens nothing: the tap doesn't reach the photo under it. */
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun anOffBadgeOpensNothing() {
+        val row = withPhoto("v-badge-off")
+        showPage(row, rolodexDetail(row, canEdit = false))
+        compose.onNodeWithTag("worker-photo").assertIsNotEnabled().performClick()
+        compose.waitForIdle()
+        assertTrue("the off badge opened the viewer", !viewerShown())
+        compose.onNodeWithText("Photo for Ann Abbott").assertDoesNotExist()
+    }
+
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun backOrATapAnywhereClosesTheViewer() {
+        val row = withPhoto("v-close")
+        showPage(row, rolodexDetail(row))
+
+        compose.onNodeWithTag("worker-photo-view").performClick()
+        waitForViewer(true)
+        pressBackInDialog()
+        waitForViewer(false)
+        compose.onNodeWithTag("worker-name").assertIsDisplayed()               // Back closed the viewer, not the page
+
+        compose.onNodeWithTag("worker-photo-view").performClick()
+        waitForViewer(true)
+        compose.onNodeWithTag("photo-viewer").performTouchInput { click(Offset(width / 2f, height - 8f)) }   // the scrim
+        waitForViewer(false)
+
+        compose.onNodeWithTag("worker-photo-view").performClick()
+        waitForViewer(true)
+        compose.onNodeWithTag("photo-viewer-image").performClick()               // the photo itself
+        waitForViewer(false)
+    }
+
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun withoutAPhotoTappingDoesNothing() {
+        showPage(abbott, rolodexDetail(abbott))                                  // initials, no photo
+        compose.onNodeWithTag("worker-photo-view").assertHasNoClickAction().performClick()
+        compose.waitForIdle()
+        assertTrue("a viewer opened without a photo", !viewerShown())
+    }
+
+    @Config(qualifiers = "w1280dp-h800dp-land")
+    @Test fun theViewerOpensFromTheTabletSplitToo() {
+        val row = withPhoto("v-split")
+        showPage(row, rolodexDetail(row))
+        compose.onNodeWithTag("rolodex-search").assertIsDisplayed()              // the split view
+        compose.onNodeWithTag("worker-photo-view").performClick()
+        waitForViewer(true)
+        compose.onNodeWithTag("photo-viewer-close").performClick()
+        waitForViewer(false)
+    }
+
+    /**
+     * On a 320 dp handheld the viewer shows the whole photo (a portrait one here, which the avatar
+     * crops to a circle): its corners are the photo's, not the scrim, and it fits the screen.
+     */
+    @Config(qualifiers = "w320dp-h533dp-hdpi")
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Test fun theViewerShowsTheWholePhotoUnclippedAt320dp() {
+        val row = withPhoto("v-whole", width = 60, height = 80)
+        showPage(row, rolodexDetail(row))
+        compose.onNodeWithTag("worker-photo-view").performClick()
+        waitForViewer(true)
+        compose.waitForIdle()
+
+        val screen = compose.onNodeWithTag("photo-viewer").fetchSemanticsNode().boundsInWindow
+        // unclipped: boundsInWindow would be cut to the screen and hide an overflow
+        val image = compose.onNodeWithTag("photo-viewer-image").fetchSemanticsNode()
+        val node = Rect(image.positionInWindow, image.size.toSize())
+        val close = compose.onNodeWithTag("photo-viewer-close").fetchSemanticsNode().boundsInWindow
+        assertTrue("the viewer isn't full width: $screen", screen.width >= 320 * 1.5f - 1f)
+        for ((what, r) in listOf("photo" to node, "Close" to close)) {
+            assertTrue("$what runs off the screen: $r in $screen", r.left >= screen.left && r.right <= screen.right && r.top >= screen.top && r.bottom <= screen.bottom)
+        }
+        assertTrue("Close sits over the photo: $close, $node", close.bottom <= node.top)
+
+        // ContentScale.Fit: the photo's whole rectangle, centered in its box; its corners are photo,
+        // not scrim. The viewer's window is drawn to a bitmap (captureToImage waits on a frame
+        // callback Robolectric never sends).
+        val shot = renderLatestDialog()
+        val scale = minOf(node.width / 60f, node.height / 80f)
+        val w = 60 * scale
+        val h = 80 * scale
+        val left = node.left + (node.width - w) / 2
+        val top = node.top + (node.height - h) / 2
+        assertTrue("the photo is small: ${w}x$h px", w >= 200 * 1.5f)
+        for ((x, y) in listOf(left + 3 to top + 3, left + w - 4 to top + 3, left + 3 to top + h - 4, left + w - 4 to top + h - 4, left + w / 2 to top + h / 2)) {
+            assertEquals("($x, $y) isn't the photo", android.graphics.Color.RED, shot.getPixel(x.toInt(), y.toInt()))
+        }
+        // Not cropped to fill its box: the portrait photo leaves dark scrim above and below it.
+        assertTrue("no room above the photo to tell Fit from Crop: $top in $node", top - node.top >= 8)
+        for (y in listOf(top - 4, top + h + 3, screen.bottom - 4)) {
+            val px = shot.getPixel((left + w / 2).toInt(), y.toInt())
+            assertTrue("($y) isn't the dark scrim: ${Integer.toHexString(px)}", android.graphics.Color.red(px) < 40 && android.graphics.Color.green(px) < 40)
+        }
+    }
+
+    /** The latest dialog's window (the viewer) drawn in software, at its own pixel size. */
+    private fun renderLatestDialog(): Bitmap {
+        val decor = ShadowDialog.getLatestDialog().window!!.decorView
+        val shot = Bitmap.createBitmap(decor.width, decor.height, Bitmap.Config.ARGB_8888)
+        compose.runOnUiThread { decor.draw(android.graphics.Canvas(shot)) }
+        return shot
+    }
+
+    // ── No Employee ID ──
+
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun neitherThePageNorTheEditFormShowsTheEmployeeId() {
+        val row = abbott.copy(rfid_enrolled = true)
+        showPage(row, rolodexDetail(row))                                        // its external_id is SC-1042
+        compose.onNodeWithText("WORK").performScrollTo()
+        compose.onNodeWithText("Employee ID", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("SC-1042", substring = true).assertDoesNotExist()
+
+        compose.onNodeWithTag("worker-edit").performClick()
+        waitFor("edit-save")
+        compose.onNodeWithText("Employee ID", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("SC-1042", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("RFID enrolled").performScrollTo().assertIsDisplayed()          // the line keeps the RFID state
+    }
+
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun theEditFormSaysWhenRfidIsNotEnrolled() {
+        showPage(abbott, rolodexDetail(abbott))
+        compose.onNodeWithTag("worker-edit").performClick()
+        waitFor("edit-save")
+        compose.onNodeWithText("RFID not enrolled").performScrollTo().assertIsDisplayed()
+    }
 
     // ── Previous jobs ──
 
