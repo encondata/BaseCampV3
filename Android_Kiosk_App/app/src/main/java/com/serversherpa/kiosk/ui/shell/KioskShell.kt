@@ -54,6 +54,7 @@ import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.theme.ChipTone
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
+import com.serversherpa.kiosk.ui.theme.StatusBarIcons
 import kotlinx.coroutines.launch
 
 private val REG_TONE = mapOf(RegistrationState.OK to ChipTone.GREEN, RegistrationState.SOON to ChipTone.AMBER, RegistrationState.EXPIRED to ChipTone.RED, RegistrationState.NONE to ChipTone.SLATE)
@@ -77,6 +78,9 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
     // Signing out ends the shift's session from a button anyone can brush past, so
     // it asks first — and says so when scans are still waiting to be sent.
     var confirmSignOut by remember { mutableStateOf(false) }
+    // The top bar is always ink, so the status bar icons over it are light even
+    // when the system theme is light.
+    StatusBarIcons(darkIcons = false)
 
     Column(Modifier.fillMaxSize().background(c.paper2)) {
         // ── top bar ──

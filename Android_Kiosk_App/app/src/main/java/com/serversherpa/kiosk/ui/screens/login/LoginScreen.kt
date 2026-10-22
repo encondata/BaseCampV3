@@ -43,6 +43,7 @@ import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.components.kioskViewModel
 import com.serversherpa.kiosk.ui.theme.Geologica
+import com.serversherpa.kiosk.ui.theme.StatusBarIcons
 
 /**
  * The sign-in screen, in the light mockup style of the portal's login page
@@ -59,6 +60,7 @@ fun LoginScreen(nav: NavHostController) {
     val identity by container.identity.identity.collectAsStateWithLifecycle(initialValue = KioskIdentity("", ""))
     val portalUrl by container.config.portalUrl.collectAsStateWithLifecycle(initialValue = "")
     LaunchedEffect(Unit) { vm.loadBanners() }
+    StatusBarIcons(darkIcons = true)
     val goHome = { nav.navigate(Routes.HOME) { popUpTo(0) } }
     var scanning by rememberSaveable { mutableStateOf(false) }
 

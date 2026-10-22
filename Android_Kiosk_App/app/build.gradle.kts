@@ -21,12 +21,28 @@ android {
         buildConfigField("String", "DEFAULT_PORTAL_URL", "\"https://portal.dev.serversherpa.com\"")
     }
 
+    // The Play upload key lives outside the repo: ~/.gradle/gradle.properties holds the
+    // serversherpaUpload* properties (keystore path + passwords). Without them the release
+    // build stays unsigned, so a fresh checkout still assembles.
+    val uploadStoreFile = providers.gradleProperty("serversherpaUploadStoreFile").orNull
+    signingConfigs {
+        if (uploadStoreFile != null) {
+            create("upload") {
+                storeFile = file(uploadStoreFile)
+                storePassword = providers.gradleProperty("serversherpaUploadStorePassword").get()
+                keyAlias = providers.gradleProperty("serversherpaUploadKeyAlias").get()
+                keyPassword = providers.gradleProperty("serversherpaUploadKeyPassword").get()
+            }
+        }
+    }
+
     buildTypes {
         debug {
             buildConfigField("String", "DEFAULT_API_URL", "\"https://api.dev.serversherpa.com\"")
         }
         release {
             isMinifyEnabled = false
+            signingConfigs.findByName("upload")?.let { signingConfig = it }
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             buildConfigField("String", "DEFAULT_API_URL", "\"https://api.serversherpa.com\"")
         }
