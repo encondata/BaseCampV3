@@ -28,6 +28,7 @@ import com.serversherpa.kiosk.input.ScanSource
 import com.serversherpa.kiosk.testContainer
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.KEY_MISSING_TEXT
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.PAUSED_TEXT
+import com.serversherpa.kiosk.waitUntilIdlingMain
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -90,9 +91,9 @@ class StationModeTest {
         compose.onNodeWithText("Welcome!").assertIsDisplayed()
         compose.onNodeWithText("Sign in").assertDoesNotExist()
         // the people list comes from the station route, under the key, into the local copy
-        compose.waitUntil(5_000) { "people" in s.station.calls }
+        compose.waitUntilIdlingMain { "people" in s.station.calls }
         assertEquals("k1", s.station.keys.first())
-        compose.waitUntil(5_000) { runBlocking { s.c.db.people().count() } == 1 }
+        compose.waitUntilIdlingMain { runBlocking { s.c.db.people().count() } == 1 }
         assertEquals(false, "syncPeople" in s.api.calls)                 // never the session's sync
         compose.onNodeWithText(KEY_MISSING_TEXT).assertDoesNotExist()
         compose.onNodeWithText(PAUSED_TEXT).assertDoesNotExist()
@@ -112,7 +113,7 @@ class StationModeTest {
     @Test fun aRevokedKeyShowsWaitingForKey() {
         val s = station { statusResult = { throw ApiError(401, "station_key_invalid") } }
         waitForText("Welcome!")
-        compose.waitUntil(5_000) { runBlocking { s.c.db.people().count() } == 1 }
+        compose.waitUntilIdlingMain { runBlocking { s.c.db.people().count() } == 1 }
         compose.waitForIdle()
         s.c.scanBus.publish(ScanEvent("BADGE-1", ScanSource.DATAWEDGE))
         waitForText(KEY_MISSING_TEXT)
@@ -196,15 +197,15 @@ class StationModeTest {
     @Test fun aSignedOutUrlChangeClearsTheKey() {
         val s = station()
         waitForText("Welcome!")
-        compose.waitUntil(5_000) { "people" in s.station.calls }
+        compose.waitUntilIdlingMain { "people" in s.station.calls }
         compose.onAllNodesWithContentDescription("Settings").onFirst().performClick()
         waitForText("Back to the time clock")
         compose.onNodeWithContentDescription("Kiosk settings").performClick()
         compose.waitUntil(5_000) { compose.onAllNodesWithTag("api-url").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("api-url").performTextReplacement("https://evil.example.com")
         compose.onNodeWithText("Save URLs").performClick()
-        compose.waitUntil(5_000) { runBlocking { s.c.prefs.apiUrl.first() } == "https://evil.example.com" }
-        compose.waitUntil(5_000) { s.c.station.hasKey.value == false }
+        compose.waitUntilIdlingMain { runBlocking { s.c.prefs.apiUrl.first() } == "https://evil.example.com" }
+        compose.waitUntilIdlingMain { s.c.station.hasKey.value == false }
         assertNull(s.c.stationKeys.get(ORIGIN))
     }
 

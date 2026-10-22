@@ -12,6 +12,7 @@ import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.data.printer.FakeBluetoothLe
 import com.serversherpa.kiosk.testContainer
 import com.serversherpa.kiosk.ui.theme.KioskTheme
+import com.serversherpa.kiosk.waitUntilIdlingMain
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -49,15 +50,16 @@ class PrintLabelsScreenTest {
         compose.setContent {
             CompositionLocalProvider(LocalAppContainer provides container) { KioskTheme { PrintLabelsScreen(rememberNavController()) } }
         }
-        compose.waitUntil(5_000) { fake.connects.size == 1 && container.zebraBluetooth.link.value.connected }
+        // The warm-up runs in the ViewModel's scope, on the main thread: each wait runs its looper.
+        compose.waitUntilIdlingMain { fake.connects.size == 1 && container.zebraBluetooth.link.value.connected }
         assertEquals(listOf(address), fake.connects)
 
         // Backgrounded: the container closed the link. Back in front: it comes up again.
         container.zebraBluetooth.close()
-        compose.waitUntil(5_000) { !container.zebraBluetooth.link.value.connected }
+        compose.waitUntilIdlingMain { !container.zebraBluetooth.link.value.connected }
         compose.activityRule.scenario.moveToState(Lifecycle.State.STARTED)
         compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
-        compose.waitUntil(5_000) { fake.connects.size == 2 && container.zebraBluetooth.link.value.connected }
+        compose.waitUntilIdlingMain { fake.connects.size == 2 && container.zebraBluetooth.link.value.connected }
         assertTrue(fake.links.first().closed)
         assertEquals(listOf(address, address), fake.connects)
     }
