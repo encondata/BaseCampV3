@@ -28,9 +28,14 @@ class StationKeyStore(private val secrets: SecretStore) {
         return key
     }
 
+    /** Clears first, then writes the key, then its origin, so an app killed between any two
+     *  writes leaves no key, or the new key unbound (cleared on its next read), never an old
+     *  key bound to the new origin or the new key to the old one. */
     fun put(key: String, origin: String) {
-        secrets.put(ORIGIN_ACCOUNT, origin)
+        secrets.remove(ACCOUNT)
+        secrets.remove(ORIGIN_ACCOUNT)
         secrets.put(ACCOUNT, key)
+        secrets.put(ORIGIN_ACCOUNT, origin)
         _present.value = true
     }
 

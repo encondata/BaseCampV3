@@ -56,4 +56,28 @@ class StationKeyStoreTest {
         store.keepOnlyFor("http://10.0.0.5:8000")
         assertNull(secrets.get("station_key"))
     }
+
+    /** A store that dies (the app is killed) on its [dieAt]th write. */
+    private class Dying(val inner: MemorySecretStore, val dieAt: Int) : com.serversherpa.kiosk.data.api.SecretStore {
+        var writes = 0
+        private fun write(block: () -> Unit) { if (++writes == dieAt) throw IllegalStateException("killed"); block() }
+        override fun get(key: String) = inner.get(key)
+        override fun put(key: String, value: String) = write { inner.put(key, value) }
+        override fun remove(key: String) = write { inner.remove(key) }
+    }
+
+    /** Re-keying for a new API, killed after any write: the old key is never left bound to the
+     *  new origin (and the new key never to the old one). */
+    @Test fun aPutKilledHalfwayNeverBindsAKeyToTheWrongOrigin() {
+        val other = "https://other.example.com:443"
+        for (dieAt in 1..4) {
+            val mem = MemorySecretStore().apply { put("station_key", "old"); put("station_key_origin", home) }
+            runCatching { StationKeyStore(Dying(mem, dieAt)).put("new", other) }
+            val after = { MemorySecretStore().also { c -> for (k in listOf("station_key", "station_key_origin")) mem.get(k)?.let { c.put(k, it) } } }
+            val underNew = StationKeyStore(after()).get(other)
+            val underOld = StationKeyStore(after()).get(home)
+            org.junit.Assert.assertTrue("died at write $dieAt: $underNew handed to the new origin", underNew == null || underNew == "new")
+            org.junit.Assert.assertTrue("died at write $dieAt: $underOld handed to the old origin", underOld == null || underOld == "old")
+        }
+    }
 }

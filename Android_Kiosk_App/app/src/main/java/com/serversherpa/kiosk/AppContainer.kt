@@ -17,6 +17,7 @@ import com.serversherpa.kiosk.data.api.OkHttpStationApi
 import com.serversherpa.kiosk.data.api.RefreshCookieJar
 import com.serversherpa.kiosk.data.api.SecretStore
 import com.serversherpa.kiosk.data.api.SessionStore
+import com.serversherpa.kiosk.data.api.kioskDispatcher
 import com.serversherpa.kiosk.data.api.StationApi
 import com.serversherpa.kiosk.data.auth.KioskAuth
 import com.serversherpa.kiosk.data.auth.MoveSetupGuard
@@ -84,7 +85,7 @@ class AppContainer(
     val config = KioskConfig(prefs, BuildConfig.DEFAULT_API_URL, BuildConfig.DEFAULT_PORTAL_URL, BuildConfig.KIOSK_VERSION)
     val identity = Identity(prefs)
     val cookieJar = RefreshCookieJar(secretStore)
-    val httpClient: OkHttpClient = OkHttpClient.Builder().cookieJar(cookieJar)
+    val httpClient: OkHttpClient = OkHttpClient.Builder().cookieJar(cookieJar).dispatcher(kioskDispatcher())
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
     val session = SessionStore(httpClient, config, scope)
     val api: KioskApi = apiOverride ?: OkHttpKioskApi(httpClient, config, session)

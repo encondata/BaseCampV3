@@ -33,6 +33,7 @@ import com.serversherpa.kiosk.core.model.SetupOptions
 import com.serversherpa.kiosk.core.model.SystemStatus
 import com.serversherpa.kiosk.data.config.KioskConfig
 import java.io.IOException
+import okhttp3.Dispatcher
 import java.net.URLEncoder
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
@@ -77,13 +78,26 @@ internal suspend fun executeCall(client: OkHttpClient, request: Request): Respon
                     val body = r.body
                     r.newBuilder().body(body?.bytes()?.toResponseBody(body.contentType())).build()
                 }
-            } catch (e: IOException) {
+            } catch (e: Throwable) {
+                // Anything at all (an IOException, or an OutOfMemoryError in bytes()): resume once
+                // as a network failure rather than leave the caller waiting forever.
                 cont.resumeWithException(ApiError(0, "network"))
                 return
             }
             cont.resume(buffered) { _, value, _ -> value.close() }
         }
     })
+}
+
+/**
+ * The shared client's dispatcher. OkHttp's default allows 5 calls per host, so a few stuck
+ * heartbeat, outbox or sync calls could hold a punch in the queue for their whole 30 s read
+ * timeout; 16 leaves room for it. Every call this app makes goes to its one API host (presigned
+ * photo reads aside), so the overall cap matches.
+ */
+internal fun kioskDispatcher(): Dispatcher = Dispatcher().apply {
+    maxRequests = 16
+    maxRequestsPerHost = 16
 }
 
 /** Non-2xx → ApiError with detail.code (else unknown_error). Consumes the response. */

@@ -319,6 +319,26 @@ class TimeclockFlowViewModelTest {
         assertEquals(1, backend.calls.count { it.startsWith("clockIn") })
     }
 
+    /** Leaving mid-punch (the gear, Back from the system) cancels the view model's scope: the
+     *  punch still completes, as the blocking POST used to, and its answer is then ignored. */
+    @Test fun aPunchSurvivesCancellingTheScope() = runTest {
+        val gate = CompletableDeferred<KioskTimeclockStatus>()
+        var finished = false
+        val backend = FakeTcBackend().apply { clockInResult = { gate.await().also { finished = true } } }
+        val vmScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.test.StandardTestDispatcher(testScheduler) + kotlinx.coroutines.Job())
+        val flash = FlashController(backgroundScope)
+        val vm = TimeclockFlowViewModel(TcMode.KIOSK, backend, flash, null, flowOf(DEFAULT_APPEARANCE), scopeOverride = vmScope)
+        runCurrent()
+        vm.onScan("B-UID-1"); runCurrent()
+        vm.confirmYes(); vm.chooseIn(); runCurrent()
+        assertEquals(1, backend.calls.count { it.startsWith("clockIn") })
+        flash.clear()
+        vmScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+        gate.complete(on("p1")); runCurrent()
+        assertTrue("the punch ran to the end", finished)
+        assertNull("no feedback for a screen that is gone", flash.state.value)
+    }
+
     @Test fun aPunchNeverTimesOut() = runTest {
         val gate = CompletableDeferred<KioskTimeclockStatus>()
         val backend = FakeTcBackend().apply { clockInResult = { gate.await() } }

@@ -27,6 +27,9 @@ import com.serversherpa.kiosk.ui.sound.SoundPlayer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -37,6 +40,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -386,14 +390,18 @@ class TimeclockFlowViewModel(
                         return@launch
                     }
                 }
-                // No timeout: a punch that is slow may still be recorded, so it is never abandoned.
-                val next = if (kind == Punched.IN) backend.clockIn(personId) else backend.clockOut(personId)
-                if (mine != session) return@launch
+                // No timeout, and not cancelled by leaving the screen (the gear, a navigation): a
+                // punch that is slow may still be recorded, so it always runs to its answer. The
+                // answer is then dropped if this person or this screen has gone.
+                val next = withContext(NonCancellable) {
+                    if (kind == Punched.IN) backend.clockIn(personId) else backend.clockOut(personId)
+                }
+                if (mine != session || !currentCoroutineContext().isActive) return@launch
                 good()
                 apply(TcEvent.PunchSucceeded(next, kind))
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) {
-                if (mine != session) return@launch
+                if (mine != session || !currentCoroutineContext().isActive) return@launch
                 bad()
                 val code = codeOf(e)
                 apply(TcEvent.PunchFailed(code))
