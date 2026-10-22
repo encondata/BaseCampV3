@@ -1,6 +1,7 @@
 /**
- * The bundle Android runs (Android_Kiosk_App/app/src/main/assets/labelgen.js):
- * it must be a fresh build of labelgen/index.ts, and it must run in a bare
+ * The bundle Android runs (Android_Kiosk_App/app/src/main/assets/labelgen.js)
+ * and its byte copy for iOS (IOS_Kiosk_App/.../Resources/labelgen.js):
+ * both must be a fresh build of labelgen/index.ts, and it must run in a bare
  * JavaScript engine, with only the ECMAScript built-ins (no DOM, Intl,
  * TextEncoder, Node, timers or console), through the JSON-string surface alone.
  */
@@ -13,6 +14,9 @@ import { build, type Rollup } from 'vite';
 import { describe, expect, it } from 'vitest';
 
 const BUNDLE = new URL('../../../Android_Kiosk_App/app/src/main/assets/labelgen.js', import.meta.url);
+/** The iOS app runs the same bytes in JavaScriptCore. */
+const IOS_BUNDLE = new URL(
+  '../../../IOS_Kiosk_App/ServerSherpa Kiosk/ServerSherpa Kiosk/Resources/labelgen.js', import.meta.url);
 const CONFIG = fileURLToPath(new URL('../../vite.labelgen.config.ts', import.meta.url));
 interface ReferenceCase {
   name: string;
@@ -65,6 +69,12 @@ describe('the Android bundle', () => {
   it('is a fresh build of labelgen', async () => {
     const committed = readFileSync(BUNDLE, 'utf8');
     expect(committed === await freshBuild(), 'run npm --prefix kiosk run build:labelgen').toBe(true);
+  }, 60_000);
+
+  it('is copied byte for byte to the iOS app, also a fresh build', async () => {
+    const ios = readFileSync(IOS_BUNDLE);
+    expect(ios.equals(readFileSync(BUNDLE)), 'run npm --prefix kiosk run build:labelgen').toBe(true);
+    expect(ios.toString('utf8') === await freshBuild(), 'run npm --prefix kiosk run build:labelgen').toBe(true);
   }, 60_000);
 
   it('uses nothing beyond the ECMAScript built-ins', () => {
