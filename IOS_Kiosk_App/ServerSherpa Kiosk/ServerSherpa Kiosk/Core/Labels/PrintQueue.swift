@@ -342,7 +342,7 @@ actor PrintQueue<A: Sendable> {
             let message = if error is LabelSendTimeout {
                 PRINTER_TIMEOUT_TEXT
             } else if error is LabelSendLocalNetworkDenied {
-                LOCAL_NETWORK_DENIED_TEXT
+                LOCAL_NETWORK_PRINTER_DENIED_TEXT
             } else {
                 printerUnreachableText(printer.host)
             }

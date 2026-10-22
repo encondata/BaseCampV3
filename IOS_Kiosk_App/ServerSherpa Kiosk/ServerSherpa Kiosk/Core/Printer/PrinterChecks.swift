@@ -95,6 +95,10 @@ func isIpv4(_ text: String) -> Bool {
 /// The scan's message when iOS keeps the kiosk off the local network.
 let LOCAL_NETWORK_DENIED_TEXT = "Allow Local Network access for ServerSherpa Kiosk in Settings to find printers."
 
+/// The same denial when reaching the chosen printer (choosing it, its checks, a test label, a
+/// scanned label): iOS copy, no Android counterpart.
+let LOCAL_NETWORK_PRINTER_DENIED_TEXT = "Allow Local Network access for ServerSherpa Kiosk in Settings to reach the printer."
+
 /// How one scan probe ended.
 enum ProbeEnding: Equatable, Sendable {
     /// Something took the connection on the printer port.

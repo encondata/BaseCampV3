@@ -269,5 +269,6 @@ struct ZebraRepliesTests {
         #expect(!scanWasDeniedLocalNetwork([.deniedByPolicy, .answered]))
         #expect(!scanWasDeniedLocalNetwork([.unanswered]))
         #expect(LOCAL_NETWORK_DENIED_TEXT == "Allow Local Network access for ServerSherpa Kiosk in Settings to find printers.")
+        #expect(LOCAL_NETWORK_PRINTER_DENIED_TEXT == "Allow Local Network access for ServerSherpa Kiosk in Settings to reach the printer.")
     }
 }

@@ -31,7 +31,7 @@ struct TestLabelSheet: View {
                 .padding(.bottom, 8)
                 if let size { PrinterOffsetFields(vm: vm, dpi: size.dpi) }
                 KioskToast(text: ui.testMessage, error: ui.testError)
-                if ui.testMessage == LOCAL_NETWORK_DENIED_TEXT { OpenSettingsButton() }
+                if ui.testLocalNetworkDenied { OpenSettingsButton() }
                 HStack(spacing: 8) {
                     PrimaryButton(ui.testing ? "Sending…" : "Print test label", enabled: !ui.busy) { vm.printTest(choice) }
                     SecondaryButton("Done", enabled: !ui.testing, action: onDismiss)

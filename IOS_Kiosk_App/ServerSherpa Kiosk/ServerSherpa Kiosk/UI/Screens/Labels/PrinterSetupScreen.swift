@@ -12,8 +12,6 @@ struct PrinterSetupScreen: View {
     }
 }
 
-private enum FindMode { case scan, ip }
-
 private func checkTone(_ state: CheckState) -> ChipTone {
     switch state {
     case .ok: .green
@@ -35,7 +33,6 @@ private struct PrinterSetupBody: View {
     let container: AppContainer
     @Binding var path: [Route]
     @State private var vm: PrinterSetupViewModel
-    @State private var mode: FindMode?
     @State private var testOpen = false
     @Environment(\.kioskPalette) private var palette
     @Environment(\.scenePhase) private var scenePhase
@@ -61,11 +58,11 @@ private struct PrinterSetupBody: View {
                            subtitle: printer.map(printerSummary) ?? "No printer set up yet.")
 
                 SectionTitle(title: "Choose a printer")
-                SetupCard(selected: mode == .scan, enabled: !ui.busy, action: { mode = .scan; vm.scan() }) {
+                SetupCard(selected: ui.findMode == .scan, enabled: !ui.busy, action: { vm.scan() }) {
                     PrinterCardText(title: "Scan network", description: "Find Zebra printers on this device's Wi-Fi or Ethernet network.")
                 }
                 .padding(.bottom, 10)
-                SetupCard(selected: mode == .ip, enabled: !ui.busy, action: { mode = .ip }) {
+                SetupCard(selected: ui.findMode == .ip, enabled: !ui.busy, action: { vm.enterIp() }) {
                     PrinterCardText(title: "Enter IP", description: "Type the printer's IP address.")
                 }
                 .padding(.bottom, 10)
@@ -74,10 +71,11 @@ private struct PrinterSetupBody: View {
                 }
                 .padding(.bottom, 10)
 
-                if mode == .scan { scanResults(ui, printer) }
-                if mode == .ip { ipEntry(ui) }
+                if ui.findMode == .scan { scanResults(ui, printer) }
+                if ui.findMode == .ip { ipEntry(ui) }
                 KioskToast(text: ui.chooseError, error: true)
-                // The scan, choosing a printer, its Answers check or a test label met iOS's Local Network denial.
+                // The scan, choosing a printer or its Answers check met iOS's Local Network denial
+                // (the test label sheet offers its own).
                 if ui.localNetworkDenied && !ui.scanning { OpenSettingsButton().padding(.bottom, 8) }
 
                 if let printer {

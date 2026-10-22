@@ -218,7 +218,7 @@ struct PrintLabelsViewModelTests {
         device.denied = true
         await scan(vm, "A-1")
         #expect(vm.entries[0].state == .failed)
-        #expect(vm.entries[0].message == LOCAL_NETWORK_DENIED_TEXT)
+        #expect(vm.entries[0].message == LOCAL_NETWORK_PRINTER_DENIED_TEXT)
         #expect(rows.isEmpty)
     }
 

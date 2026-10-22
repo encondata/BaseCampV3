@@ -810,7 +810,7 @@ final class PrinterSetupViewModelTests {
         vm.setIpText("10.0.0.9")
         vm.useIp()
         await eventually("refused") { vm.ui.chooseError != nil && vm.ui.choosing == nil }
-        #expect(vm.ui.chooseError == LOCAL_NETWORK_DENIED_TEXT)
+        #expect(vm.ui.chooseError == LOCAL_NETWORK_PRINTER_DENIED_TEXT)
         #expect(vm.ui.localNetworkDenied)
         #expect(current.printer == saved)
     }
@@ -823,7 +823,7 @@ final class PrinterSetupViewModelTests {
         let vm = vm()
         await checked(vm) { vm.checkAgain() }
         #expect(row(vm, .answers)?.state == .fail)
-        #expect(row(vm, .answers)?.detail == LOCAL_NETWORK_DENIED_TEXT)
+        #expect(row(vm, .answers)?.detail == LOCAL_NETWORK_PRINTER_DENIED_TEXT)
         #expect(vm.ui.localNetworkDenied)
         // Allowed, checked again: the message and the Settings offer go.
         z.answers = true
@@ -841,9 +841,49 @@ final class PrinterSetupViewModelTests {
         let vm = vm()
         vm.printTest(.alignment)
         await eventually("refused") { !vm.ui.testing && vm.ui.testMessage != nil }
-        #expect(vm.ui.testMessage == LOCAL_NETWORK_DENIED_TEXT)
+        #expect(vm.ui.testMessage == LOCAL_NETWORK_PRINTER_DENIED_TEXT)
         #expect(vm.ui.testError)
+        // The sheet offers Settings under its own message; the main screen, which doesn't show
+        // that message, offers nothing (no stray Open Settings after the sheet closes).
+        #expect(vm.ui.testLocalNetworkDenied)
+        #expect(!vm.ui.localNetworkDenied)
+    }
+
+    /// Enter IP leaves scan mode: the scan's denied message (and so the Open Settings offer) goes,
+    /// and coming back to the app no longer rescans.
+    @Test func enterIpDropsTheDeniedScanMessageAndTheReturnRescan() async throws {
+        let gated = Sleeps(gated: true)
+        scanner.results = [ZebraScanResult(printers: [], localNetworkDenied: true)]
+        let vm = vm(sleeps: gated)
+        vm.scenePhaseChanged(active: true)
+        vm.scan()
+        #expect(await gated.gate!.tick())
+        await eventually("denied twice") { !vm.ui.scanning && vm.ui.scanMessage == LOCAL_NETWORK_DENIED_TEXT }
         #expect(vm.ui.localNetworkDenied)
+        vm.enterIp()
+        #expect(vm.ui.findMode == .ip)
+        #expect(vm.ui.scanMessage == nil)
+        #expect(!vm.ui.localNetworkDenied)
+        vm.scenePhaseChanged(active: false)
+        vm.scenePhaseChanged(active: true)
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(scanner.count == 2)
+        #expect(!vm.ui.scanning)
+    }
+
+    /// Enter IP while a denied scan waits for its rescan: the scan stops and says nothing.
+    @Test func enterIpStopsAScanWaitingToRescan() async throws {
+        let gated = Sleeps(gated: true)
+        scanner.results = [ZebraScanResult(printers: [], localNetworkDenied: true)]
+        let vm = vm(sleeps: gated)
+        vm.scan()
+        #expect(await gated.gate!.waitForSleepers(1))
+        vm.enterIp()
+        await eventually("stopped") { !vm.ui.scanning }
+        #expect(scanner.count == 1)
+        #expect(vm.ui.scanMessage == nil)
+        #expect(!vm.ui.localNetworkDenied)
+        #expect(await waitUntil { gated.gate!.waiterCount == 0 })
     }
 
     @Test func comingBackWithNoDeniedScanStartsNothingAndAFailedScanSaysSo() async throws {

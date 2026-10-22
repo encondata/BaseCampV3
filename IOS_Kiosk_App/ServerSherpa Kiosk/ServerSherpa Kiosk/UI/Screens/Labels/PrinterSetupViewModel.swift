@@ -72,7 +72,11 @@ func alignmentSizeFor(kind: LabelKind, dpi: Int, pick: LabelPick?) -> AlignmentS
     return kind == .front ? AlignmentSize(widthIn: 2, heightIn: 1, dpi: dpi) : AlignmentSize(widthIn: 4, heightIn: 2, dpi: dpi)
 }
 
+/// How the operator is finding a printer: a network scan or a typed IP (nil until one is picked).
+enum PrinterFindMode: Sendable { case scan, ip }
+
 struct PrinterSetupUi: Equatable {
+    var findMode: PrinterFindMode? = nil
     var scanning = false
     /// Nil until a scan finishes.
     var found: [FoundPrinter]? = nil
@@ -102,12 +106,14 @@ struct PrinterSetupUi: Equatable {
     var busy: Bool { choosing != nil || installing || testing }
     /// The scan message reads as an error (red).
     var scanError: Bool { scanMessage == SCAN_FAILED_TEXT || scanMessage == LOCAL_NETWORK_DENIED_TEXT }
-    /// iOS kept the kiosk off the local network: the scan (twice, see `scan()`), choosing a
-    /// printer, its Answers check or a test label says so, and the screen offers Settings.
+    /// A message the main screen shows says iOS kept the kiosk off the local network (the scan,
+    /// twice, see `scan()`; choosing a printer; its Answers check): the screen offers Settings.
     var localNetworkDenied: Bool {
-        scanMessage == LOCAL_NETWORK_DENIED_TEXT || chooseError == LOCAL_NETWORK_DENIED_TEXT
-            || testMessage == LOCAL_NETWORK_DENIED_TEXT || checks.contains { $0.detail == LOCAL_NETWORK_DENIED_TEXT }
+        scanMessage == LOCAL_NETWORK_DENIED_TEXT || chooseError == LOCAL_NETWORK_PRINTER_DENIED_TEXT
+            || checks.contains { $0.detail == LOCAL_NETWORK_PRINTER_DENIED_TEXT }
     }
+    /// The test label sheet's own message says so: the sheet offers Settings.
+    var testLocalNetworkDenied: Bool { testMessage == LOCAL_NETWORK_PRINTER_DENIED_TEXT }
 }
 
 let NO_PRINTERS_FOUND_TEXT = "No Zebra printers found on this network."
@@ -233,7 +239,21 @@ final class PrinterSetupViewModel {
 
     // MARK: Choosing a printer
 
-    func scan() { startScan(retryDenied: true) }
+    /// The Scan network card (and Scan again): scan mode, and a scan.
+    func scan() {
+        ui.findMode = .scan
+        startScan(retryDenied: true)
+    }
+
+    /// The Enter IP card: IP mode. A scan still running stops, and its message goes with it
+    /// (it isn't shown in IP mode).
+    func enterIp() {
+        guard ui.findMode != .ip else { return }
+        ui.findMode = .ip
+        scanTask?.cancel()
+        wakeRescan()
+        ui.scanMessage = nil
+    }
 
     /// `retryDenied`: a denial is scanned once more after the prompt (see the type's notes).
     private func startScan(retryDenied: Bool) {
@@ -259,6 +279,11 @@ final class PrinterSetupViewModel {
         } catch {
             Self.log.warning("printer scan failed: \(String(describing: error), privacy: .private)")
             result = nil
+        }
+        // Stopped (Enter IP, or the screen closed) after the scanner answered: say nothing.
+        if Task.isCancelled {
+            ui.scanning = false
+            return
         }
         let denied = result?.localNetworkDenied == true
         ui.scanning = false
@@ -309,7 +334,7 @@ final class PrinterSetupViewModel {
         guard cameBack else { return }
         if rescanWait != nil {
             wakeRescan()
-        } else if ui.scanMessage == LOCAL_NETWORK_DENIED_TEXT && !ui.scanning {
+        } else if ui.findMode == .scan && ui.scanMessage == LOCAL_NETWORK_DENIED_TEXT && !ui.scanning {
             startScan(retryDenied: false)
         }
     }
@@ -363,7 +388,7 @@ final class PrinterSetupViewModel {
             return
         } catch {
             ui.choosing = nil
-            ui.chooseError = wasLocalNetworkDenied(error) ? LOCAL_NETWORK_DENIED_TEXT : noZebraAnswerText(host)
+            ui.chooseError = wasLocalNetworkDenied(error) ? LOCAL_NETWORK_PRINTER_DENIED_TEXT : noZebraAnswerText(host)
             return
         }
         settingsStore.setPrinter(saved)
@@ -427,7 +452,7 @@ final class PrinterSetupViewModel {
         switch try await attempt({ try await zebra.identify() }) {
         case .success(let answer): id = answer
         case .failure(let error):
-            let detail = wasLocalNetworkDenied(error) ? LOCAL_NETWORK_DENIED_TEXT : noZebraAnswerText(saved.host)
+            let detail = wasLocalNetworkDenied(error) ? LOCAL_NETWORK_PRINTER_DENIED_TEXT : noZebraAnswerText(saved.host)
             try put(CheckRow(key: .answers, state: .fail, detail: detail), run)
             return
         }
@@ -692,7 +717,7 @@ final class PrinterSetupViewModel {
         } catch where LabelEngineError.isUnsupported(error) {
             (message, isError) = (DEVICE_UNSUPPORTED_TEXT, true)
         } catch where wasLocalNetworkDenied(error) {
-            (message, isError) = (LOCAL_NETWORK_DENIED_TEXT, true)
+            (message, isError) = (LOCAL_NETWORK_PRINTER_DENIED_TEXT, true)
         } catch is PrinterTimeout {
             (message, isError) = (Self.TEST_TIMEOUT_TEXT, true)
         } catch is PrinterError {
