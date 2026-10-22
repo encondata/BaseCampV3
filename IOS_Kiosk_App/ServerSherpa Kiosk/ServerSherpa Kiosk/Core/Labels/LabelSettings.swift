@@ -37,6 +37,41 @@ extension PrinterConnection {
     }
 }
 
+/// Saved as `{"type":"network","host":…}` or `{"type":"bluetooth","serial":…}` (`PrinterStopsStore`).
+extension PrinterIdentity: Codable {
+    private enum CodingKeys: String, CodingKey { case type, host, serial }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try c.decode(String.self, forKey: .type)
+        switch type {
+        case "network": self = .network(host: try c.decode(String.self, forKey: .host))
+        case "bluetooth": self = .bluetooth(serial: try c.decode(String.self, forKey: .serial).uppercased())
+        default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown printer identity \(type)")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .network(let host):
+            try c.encode("network", forKey: .type)
+            try c.encode(host, forKey: .host)
+        case .bluetooth(let serial):
+            try c.encode("bluetooth", forKey: .type)
+            try c.encode(serial, forKey: .serial)
+        }
+    }
+
+    /// A stable order for saving ("bluetooth:…" before "network:…").
+    var sortKey: String {
+        switch self {
+        case .network(let host): "network:\(host)"
+        case .bluetooth(let serial): "bluetooth:\(serial)"
+        }
+    }
+}
+
 extension PrinterConnection: Codable {
     private enum CodingKeys: String, CodingKey { case type, host, serial, peripheralId }
     private enum Kind: String { case network, bluetooth }

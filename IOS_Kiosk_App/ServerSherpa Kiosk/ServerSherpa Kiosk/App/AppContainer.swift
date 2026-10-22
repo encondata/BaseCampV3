@@ -35,7 +35,8 @@ final class AppContainer {
     /// Printer Setup call (identify, checks, font installs, test labels) go through it.
     let printerLock: PrinterLock
     /// Each printer's state after a failed send or a cut font install (the `~JX` clear, the stop),
-    /// keyed to the printer and applied under `printerLock` by the same callers.
+    /// keyed to the printer and applied under `printerLock` by the same callers. The stops are kept
+    /// across launches (`KioskPrefs.printerStops`).
     let printerGuard: PrinterGuard
     /// The app's one Bluetooth LE link to a Zebra (D4). Bluetooth itself starts (and iOS asks for
     /// permission) only once a Bluetooth printer is picked or used. The link closes when the app
@@ -94,7 +95,8 @@ final class AppContainer {
         self.fontsDir = fontsDir
         let printerLock = PrinterLock()
         self.printerLock = printerLock
-        let printerGuard = PrinterGuard()
+        // A cut font install's stop outlives a relaunch (the printer still waits for the font).
+        let printerGuard = PrinterGuard(stops: prefs.printerStops)
         self.printerGuard = printerGuard
         let bluetooth = ZebraBluetooth(client: bluetoothClient ?? CoreBluetoothClient())
         self.bluetooth = bluetooth
@@ -132,7 +134,7 @@ final class AppContainer {
             Task { await printJobs.reset() }
         }
         Self.resetPrintJobsOnMoveChange(prefs: prefs, jobs: printJobs)
-        Self.followSavedPrinter(settings: labelSettings, printerGuard: printerGuard, bluetooth: bluetooth)
+        Self.followSavedPrinter(settings: labelSettings, bluetooth: bluetooth)
     }
 
     /// The saved printer as Print Labels and Printer Setup reach it (`zebraTransport`).
@@ -140,15 +142,15 @@ final class AppContainer {
 
     /// Follows the saved printer (Observation; `LabelSettingsStore` is the one writer, whoever
     /// saves it), skipping the value it starts with:
-    /// - Another printer saved (another network host or Bluetooth serial), or none: the guard's
-    ///   marks all go (housekeeping: they are keyed to their printer already), and a Bluetooth link
-    ///   to a printer no longer saved closes. A link already up to the printer just saved (Printer
-    ///   Setup connected it to choose it) stays. The same printer saved again with what a check
-    ///   found, or under a new iPad identifier, changes neither (Ruling 7).
+    /// - Another printer saved (another network host or Bluetooth serial), or none: a Bluetooth
+    ///   link to a printer no longer saved closes. A link already up to the printer just saved
+    ///   (Printer Setup connected it to choose it) stays. The same printer saved again with what a
+    ///   check found, or under a new iPad identifier, changes nothing (Ruling 7). The guard's marks
+    ///   stay: each belongs to its printer, so switching A→B→A still owes A its `~JX` (Ruling 16).
     /// - The link up to the saved Bluetooth printer under another identifier than the saved one
     ///   (iOS forgot it, so the link found the printer by its serial): the printer is saved again
     ///   with that identifier, so the next connect goes straight to it.
-    private static func followSavedPrinter(settings: LabelSettingsStore, printerGuard: PrinterGuard, bluetooth: ZebraBluetooth) {
+    private static func followSavedPrinter(settings: LabelSettingsStore, bluetooth: ZebraBluetooth) {
         let identities = observationStream { settings.current().printer?.connection.identity }
         Task {
             var first = true
@@ -156,7 +158,6 @@ final class AppContainer {
                 if first { first = false; continue }
                 let linked = bluetooth.link.info?.serial.map { PrinterConnection.bluetooth(serial: $0, peripheralId: nil).identity }
                 if identity == nil || linked != identity { bluetooth.close() }
-                await printerGuard.reset()
             }
         }
         let links = observationStream { SavedPrinterLink(printer: settings.current().printer,

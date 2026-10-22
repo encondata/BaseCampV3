@@ -6,8 +6,8 @@ import Foundation
  Printer Setup (`LockedZebra`), and every rule runs inside the lock, so nothing reaches the printer
  between a check and its write. Each mark belongs to the printer it happened on (its identity: the
  network host or the Bluetooth serial, never the iPad's identifier for it, which can change), so a
- late failure of a printer no longer saved never applies to the one that is. It lives in memory;
- the container also drops every mark when another printer is saved.
+ late failure of a printer no longer saved never applies to the one that is, and saving another
+ printer drops none (A→B→A keeps A's marks: Ruling 16).
 
  - `needsClear`: a send failed part-way, so the printer may hold the start of a label the next one
    would merge into (D16). The next call to it (a send, a font install, or a Printer Setup query)
@@ -18,6 +18,8 @@ import Foundation
    count, so the printer takes everything after it as font data until that many bytes arrive (D8):
    sends and font installs are refused with `PrinterNeedsRestart` until a check finds the printer
    answering `~HI` (it was restarted). Queries still go out, with no clear (it would be font data).
+   The printer keeps waiting through an app relaunch, so these stops are kept in `PrinterStopsStore`
+   and restored at launch; `needsClear` lives in memory (D16).
 
  No check, poll or wait of its own: the only extra byte it ever sends is that one `~JX`.
  */
@@ -25,6 +27,15 @@ actor PrinterGuard {
     enum State: Equatable, Sendable { case clean, needsClear, fontCut }
 
     private var marks: [PrinterIdentity: State] = [:]
+    /// Where the `fontCut` stops are kept across launches (nil keeps them in memory only).
+    private let stops: PrinterStopsStore?
+
+    /// `stops` restores the printers stopped after a cut font install in an earlier launch, and
+    /// keeps every later change (the container passes `KioskPrefs.printerStops`).
+    init(stops: PrinterStopsStore? = nil) {
+        self.stops = stops
+        for identity in stops?.load() ?? [] { marks[identity] = .fontCut }
+    }
 
     func state(for connection: PrinterConnection) -> State { marks[connection.identity] ?? .clean }
 
@@ -33,16 +44,24 @@ actor PrinterGuard {
         if state(for: connection) == .clean { marks[connection.identity] = .needsClear }
     }
 
-    /// A font install was cut off: nothing more is sent until the printer answers a check.
-    func markFontCut(for connection: PrinterConnection) { marks[connection.identity] = .fontCut }
-
-    /// Every mark goes (another saved printer, or a fresh start).
-    func reset() { marks = [:] }
+    /// A font install was cut off: nothing more is sent until the printer answers a check, in this
+    /// launch or a later one.
+    func markFontCut(for connection: PrinterConnection) {
+        marks[connection.identity] = .fontCut
+        saveStops()
+    }
 
     /// `~HI` was answered: a printer waiting for the rest of a font couldn't have, so the stop
-    /// lifts. A pending clear stays (answering says nothing about a half label).
+    /// lifts (for later launches too). A pending clear stays (answering says nothing about a half
+    /// label).
     func printerAnswered(_ connection: PrinterConnection) {
-        if marks[connection.identity] == .fontCut { marks[connection.identity] = nil }
+        guard marks[connection.identity] == .fontCut else { return }
+        marks[connection.identity] = nil
+        saveStops()
+    }
+
+    private func saveStops() {
+        stops?.save(Set(marks.filter { $0.value == .fontCut }.keys))
     }
 
     /// A query (call it holding the printer lock): `clear` (which sends `~JX`) first when the

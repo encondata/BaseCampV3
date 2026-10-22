@@ -358,10 +358,10 @@ struct PrinterGuardTests {
         #expect(await printerGuard.state(for: first) == .clean)
     }
 
-    /// The container's guard starts over for each saved printer: another connection (or none)
-    /// drops every mark; the same printer saved again with what a check found keeps its own, and
-    /// so does a Bluetooth printer saved again under a new iPad identifier (Ruling 7).
-    @MainActor @Test func guardResetsWhenThePrinterChanges() async throws {
+    /// Ruling 16: marks are keyed to their printer, so saving another printer drops none of them:
+    /// a printer left needing a clear still gets its `~JX` after A→B→A, and a cut font's stop stays
+    /// through a switch to Bluetooth and back (the printer is still waiting for the rest of the font).
+    @MainActor @Test func marksStayWhenAnotherPrinterIsSaved() async throws {
         let defaults = freshDefaults()
         LabelSettingsStore(prefs: KioskPrefs(defaults: defaults)).setPrinter(printer)
         let c = AppContainer(defaults: defaults, secrets: MemorySecretStore(),
@@ -371,27 +371,86 @@ struct PrinterGuardTests {
         let a = self.a
         await printerGuard.markSendFailed(for: a)
 
-        c.labelSettings.setPrinter(SavedPrinter(host: "10.0.0.5", model: "ZT230", serial: "S2", dpi: 300))
+        // A → B → A: A's clear is still owed.
+        c.labelSettings.setPrinter(other)
+        try await Task.sleep(for: .milliseconds(100))
+        c.labelSettings.setPrinter(printer)
         try await Task.sleep(for: .milliseconds(100))
         #expect(await printerGuard.state(for: a) == .needsClear)
+        let zebra = RecordingZebra()
+        try await lockedSender(c.printerLock, printerGuard) { _, zpl in try await zebra.send(zpl) }(printer, "LABEL")
+        #expect(zebra.written == ["~JX", "LABEL"])
 
-        c.labelSettings.setPrinter(other)
-        #expect(await waitUntilAsync { await printerGuard.state(for: a) == .clean })
-
+        // B's cut font through a Bluetooth printer and none at all.
         let bluetooth = PrinterConnection.bluetooth(serial: "D8J224508535", peripheralId: nil)
         await printerGuard.markFontCut(for: other.connection)
         c.labelSettings.setPrinter(SavedPrinter(connection: bluetooth, model: "ZD421", serial: "D8J224508535", dpi: 300))
-        let otherConnection = other.connection
-        #expect(await waitUntilAsync { await printerGuard.state(for: otherConnection) == .clean })
-
-        // The same Bluetooth printer under a new iPad identifier is the same printer.
-        await printerGuard.markSendFailed(for: bluetooth)
-        c.labelSettings.setPrinter(SavedPrinter(connection: .bluetooth(serial: "D8J224508535", peripheralId: UUID()), model: "ZD421",
-                                                serial: "D8J224508535", dpi: 300))
         try await Task.sleep(for: .milliseconds(100))
-        #expect(await printerGuard.state(for: bluetooth) == .needsClear)
-
         c.labelSettings.setPrinter(nil)
-        #expect(await waitUntilAsync { await printerGuard.state(for: bluetooth) == .clean })
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await printerGuard.state(for: other.connection) == .fontCut)
+    }
+
+    /// The container's guard over `defaults` (a fresh launch of the app).
+    @MainActor private func launch(_ defaults: UserDefaults) throws -> AppContainer {
+        AppContainer(defaults: defaults, secrets: MemorySecretStore(), modelContainer: try KioskSchema.inMemoryContainer(),
+                     backgroundTask: NoBackgroundTasking(), labelEngine: FakeLabelEngine())
+    }
+
+    /// D8 outlives a relaunch: a font install cut off (the crew switched apps mid-install, then
+    /// iOS evicted the kiosk) leaves the printer waiting for the rest of the font, so the next
+    /// launch still refuses labels to it until it answers a check, which lifts the stop for good.
+    /// A pending clear stays in memory (D16): a relaunch forgets it.
+    @MainActor @Test func aCutFontStopOutlivesARelaunch() async throws {
+        let defaults = freshDefaults()
+        let printer = self.printer
+        let a = self.a
+        let zebra = RecordingZebra()
+        let first = try launch(defaults)
+        zebra.failWrites(1)
+        let cutting = LockedZebra(inner: zebra, connection: a, lock: first.printerLock, guard: first.printerGuard)
+        await #expect(throws: PrinterUnreachable.self) { try await cutting.installFont(name: "ROBOTO.TTF", bytes: Data([1, 2])) }
+        #expect(await first.printerGuard.state(for: a) == .fontCut)
+        await first.printerGuard.markSendFailed(for: other.connection)
+
+        // Evicted and launched again: still stopped, and only that printer.
+        let second = try launch(defaults)
+        #expect(await second.printerGuard.state(for: a) == .fontCut)
+        #expect(await second.printerGuard.state(for: other.connection) == .clean)
+        let send = lockedSender(second.printerLock, second.printerGuard) { _, zpl in try await zebra.send(zpl) }
+        await #expect(throws: PrinterNeedsRestart.self) { try await send(printer, "LABEL") }
+        #expect(zebra.written.isEmpty)
+
+        // Restarted, it answers a check: the stop lifts, here and in every later launch.
+        let check = LockedZebra(inner: zebra, connection: a, lock: second.printerLock, guard: second.printerGuard)
+        _ = try await check.identify()
+        #expect(await second.printerGuard.state(for: a) == .clean)
+        let third = try launch(defaults)
+        #expect(await third.printerGuard.state(for: a) == .clean)
+        try await lockedSender(third.printerLock, third.printerGuard) { _, zpl in try await zebra.send(zpl) }(printer, "LABEL")
+        #expect(zebra.written == ["LABEL"])
+    }
+
+    /// The stops are kept by printer identity (a network host, or a Bluetooth serial in any case),
+    /// under `ss.kiosk.printerStops`; an unreadable value keeps none.
+    @Test func stopsAreKeptByPrinterIdentity() async throws {
+        let defaults = freshDefaults()
+        let stops = PrinterStopsStore(defaults: defaults)
+        let first = PrinterGuard(stops: stops)
+        let bluetooth = PrinterConnection.bluetooth(serial: "d8j224508535", peripheralId: UUID())
+        await first.markFontCut(for: bluetooth)
+        await first.markFontCut(for: a)
+        #expect(defaults.string(forKey: "ss.kiosk.printerStops") != nil)
+        #expect(stops.load() == [.bluetooth(serial: "D8J224508535"), .network(host: "10.0.0.5")])
+
+        let again = PrinterGuard(stops: stops)
+        #expect(await again.state(for: .bluetooth(serial: "D8J224508535", peripheralId: nil)) == .fontCut)
+        #expect(await again.state(for: a) == .fontCut)
+        await again.printerAnswered(a)
+        #expect(stops.load() == [.bluetooth(serial: "D8J224508535")])
+
+        defaults.set("not json", forKey: "ss.kiosk.printerStops")
+        #expect(stops.load().isEmpty)
+        #expect(await PrinterGuard(stops: stops).state(for: bluetooth) == .clean)
     }
 }
