@@ -11,6 +11,7 @@ from typing import Annotated, Any, Literal
 from pydantic import (
     AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     EmailStr,
     Field,
@@ -3957,6 +3958,101 @@ class KioskRolodexOptionsOut(BaseModel):
     levels: list[KioskRolodexLevelOut]
     statuses: list[KioskRolodexStatusOut]
     partners: list[KioskRolodexCompany]
+
+
+def _blank_to_none(v: Any) -> Any:
+    """Strip a string; an all-blank one means "none" (cleared on a PATCH),
+    so a stray space never becomes a preferred name or a job title."""
+    if isinstance(v, str):
+        v = v.strip()
+        return v or None
+    return v
+
+
+# A worker's first or last name: stripped, never blank.
+RolodexName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+# An optional free-text field: stripped, blank → None.
+RolodexText = Annotated[str | None, BeforeValidator(_blank_to_none)]
+RolodexEmail = Annotated[EmailStr | None, BeforeValidator(_blank_to_none)]
+
+
+class KioskRolodexDuplicatesIn(BaseModel):
+    """The New worker form's names and contact details, checked against
+    everyone already in the portal before the photo step. In the body so
+    names never land in a URL. The email is a plain string here: a typo
+    simply matches nothing (the create call validates it)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    first_name: RolodexName
+    last_name: RolodexName
+    preferred_name: RolodexText = None
+    email: RolodexText = None
+    phone: RolodexText = None
+
+
+class KioskRolodexMatchOut(BaseModel):
+    """A person who may already be the worker being added. `is_worker` is
+    false for staff, portal users and client contacts (the kiosk never
+    grants roles, so the app offers no Open for them). `matched_on` lists
+    every way they matched, in the order name, email, phone."""
+
+    person_id: uuid.UUID
+    display_name: str
+    job_title: str | None = None
+    company: str | None = None             # their worker company's name
+    is_worker: bool
+    has_account: bool
+    photo_url: str | None = None           # presigned, short-lived
+    photo_version: str | None = None
+    matched_on: list[Literal["name", "email", "phone"]]
+
+
+class KioskRolodexDuplicatesOut(BaseModel):
+    matches: list[KioskRolodexMatchOut]
+
+
+class KioskRolodexCreateIn(BaseModel):
+    """New worker. Status starts Active (changed later on the worker page).
+    `allow_duplicate` answers a 409 `possible_duplicate`; it never lets an
+    email be reused. `photo_skipped` is sent only after the admin
+    confirmed "Create without photo", and lands in the audit row."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    first_name: RolodexName
+    last_name: RolodexName
+    preferred_name: RolodexText = None
+    job_title: RolodexText = None
+    phone: RolodexText = None
+    email: RolodexEmail = None
+    partner_id: uuid.UUID | None = None
+    trade: RolodexText = None
+    level: RolodexText = None
+    allow_duplicate: bool = False
+    photo_skipped: bool = False
+
+
+class KioskRolodexPatchIn(BaseModel):
+    """A worker page save: only the changed fields. Absent = unchanged;
+    null (or a blank string) clears; null on first or last name is 422
+    `first_name_required` / `last_name_required`. Employee ID and RFID tag
+    are read-only on the kiosk, so they aren't accepted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    first_name: RolodexName | None = None
+    last_name: RolodexName | None = None
+    preferred_name: RolodexText = None
+    job_title: RolodexText = None
+    phone: RolodexText = None
+    email: RolodexEmail = None
+    partner_id: uuid.UUID | None = None
+    trade: RolodexText = None
+    level: RolodexText = None
+    # vocabulary, validated against status_values like WorkerProfileIn
+    status: str | None = None
+    status_note: RolodexText = None
 
 
 # ── Labels ──
