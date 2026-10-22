@@ -3919,6 +3919,24 @@ class KioskRolodexListOut(BaseModel):
     workers: list[KioskRolodexWorkerOut]
 
 
+class KioskRolodexJobItem(BaseModel):
+    """One of the worker page's "Previous jobs": an initiative the worker
+    was added to, from the portal's worker history
+    (`worker_edits.initiative_history`) minus the internal `rating` and the
+    work type's color. Labels and colors are the vocabulary's (an unmapped
+    key reads as itself, in slate)."""
+
+    initiative_id: uuid.UUID
+    initiative_name: str
+    type_label: str | None = None
+    type_color: str | None = None
+    status_label: str
+    status_color: str
+    work_type_label: str | None = None     # None when the worker has no work type on it
+    site_worked_name: str | None = None    # None when no site worked was recorded
+    added_at: datetime                     # when the worker was added to the initiative
+
+
 class KioskRolodexWorkerDetailOut(KioskRolodexWorkerOut):
     """The worker page: the row plus contact details and what the signed-in
     admin may change, so the apps disable a control instead of showing a
@@ -3926,16 +3944,18 @@ class KioskRolodexWorkerDetailOut(KioskRolodexWorkerOut):
     portal login the admin can't touch (`can_touch_rank`), never on the
     admin's own row; `status_block_reason` is `self` on the admin's own
     row, else `rank_too_low` for a target the admin can't touch
-    (`can_touch_rank`)."""
+    (`can_touch_rank`). `jobs` is the worker's "Previous jobs", newest
+    first (added 2026-10-22; an older app ignores it)."""
 
     email: str | None = None
     phone: str | None = None
-    external_id: str | None = None         # shown as "Employee ID"
+    external_id: str | None = None         # Employee ID; the apps no longer show it
     status_note: str | None = None
     can_edit: bool
     can_change_status: bool
     edit_block_reason: Literal["rank_too_low"] | None = None
     status_block_reason: Literal["self", "rank_too_low"] | None = None
+    jobs: list[KioskRolodexJobItem] = []
 
 
 class KioskRolodexLevelOut(BaseModel):

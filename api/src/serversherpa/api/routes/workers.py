@@ -23,7 +23,6 @@ from serversherpa.api.schemas import (
     PartnerRef,
     ProfileUpdateIn,
     WorkerDetailOut,
-    WorkerInitiativeItem,
     WorkerItem,
     WorkerLevelCreateIn,
     WorkerLevelOut,
@@ -31,16 +30,12 @@ from serversherpa.api.schemas import (
     WorkerProfileIn,
 )
 from serversherpa.api.worker_edits import (
-    apply_person_update, apply_profile_update, visible_workers_query,
+    apply_person_update, apply_profile_update, initiative_history, visible_workers_query,
 )
 from serversherpa.db.models import (
-    Initiative,
-    InitiativePerson,
     Partner,
     Person,
     PersonRole,
-    Site,
-    StatusValue,
     UserAccount,
     WorkerCertification,
     WorkerLevel,
@@ -138,9 +133,6 @@ async def list_workers(
         )
         for person, profile, partner_id, partner_name, account_id in rows
     ]
-
-
-_VOCAB_FALLBACK = "#51606f"     # mirrors initiatives.py's unmapped-key color
 
 
 # ── bulk import ────────────────────────────────────────────────────
@@ -258,40 +250,9 @@ async def get_worker(
     # Initiative/site membership history and several Person fields
     # (rating lives inside `initiatives`, plus notes/badge/RFID/address) are
     # internal-only: a partner-anchored actor (e.g. vendor_admin, who holds
-    # workers:view over their own supplied workers) must not receive them —
-    # the join below also carries no scope check of its own, so skipping it
-    # entirely for non-global actors is simplest and cheapest.
-    initiatives: list[WorkerInitiativeItem] = []
-    if actor.access.is_global:
-        # one query per vocabulary, mirroring initiatives.py::_people_rows
-        vocab_rows = await db.scalars(select(StatusValue).where(
-            StatusValue.record_type.in_(
-                ["initiative", "initiative_type", "initiative_work_type"])))
-        vocabs: dict[str, dict[str, tuple[str, str]]] = {}
-        for s in vocab_rows:
-            vocabs.setdefault(s.record_type, {})[s.key] = (s.label, s.color)
-
-        memberships = (await db.execute(
-            select(InitiativePerson, Initiative, Site.name)
-            .join(Initiative, Initiative.id == InitiativePerson.initiative_id)
-            .outerjoin(Site, Site.id == InitiativePerson.site_worked_id)
-            .where(InitiativePerson.person_id == person_id)
-            .order_by(InitiativePerson.created_at.desc()))).all()
-        for m, init, site_name in memberships:
-            wt = (vocabs.get("initiative_work_type", {}).get(
-                      m.work_type, (m.work_type, _VOCAB_FALLBACK))
-                  if m.work_type is not None else (None, None))
-            t = vocabs.get("initiative_type", {}).get(
-                init.initiative_type, (init.initiative_type, _VOCAB_FALLBACK))
-            s = vocabs.get("initiative", {}).get(
-                init.status, (init.status, _VOCAB_FALLBACK))
-            initiatives.append(WorkerInitiativeItem(
-                initiative_id=init.id, initiative_name=init.name,
-                type_label=t[0], type_color=t[1],
-                status_label=s[0], status_color=s[1],
-                work_type_label=wt[0], work_type_color=wt[1],
-                site_worked_name=site_name, rating=m.rating,
-                added_at=m.created_at))
+    # workers:view over their own supplied workers) must not receive them.
+    # `initiative_history` answers non-global actors with an empty list.
+    initiatives = await initiative_history(db, actor, person_id)
 
     is_global = actor.access.is_global
     return WorkerDetailOut(
