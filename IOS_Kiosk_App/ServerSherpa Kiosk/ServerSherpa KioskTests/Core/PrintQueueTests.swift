@@ -41,6 +41,7 @@ private final class Fake: @unchecked Sendable {
     private var _sent: [(String, String)] = []
     private var _recorded: [(Asset, String)] = []
     private var _logged: [String] = []
+    private var _labelCalls = 0
 
     private func locked<T>(_ body: () -> T) -> T { lock.lock(); defer { lock.unlock() }; return body() }
 
@@ -58,11 +59,13 @@ private final class Fake: @unchecked Sendable {
     var sent: [(String, String)] { locked { _sent } }
     var recorded: [(Asset, String)] { locked { _recorded } }
     var logged: [String] { locked { _logged } }
+    var labelCalls: Int { locked { _labelCalls } }
 
     var deps: PrintQueueDeps<Asset> {
         PrintQueueDeps(
             settings: { self.settings },
             label: { asset in
+                self.locked { self._labelCalls += 1 }
                 await self.onLabel()
                 return self.label(asset)
             },
@@ -73,6 +76,8 @@ private final class Fake: @unchecked Sendable {
             },
             send: { host, zpl in
                 await self.onSend()
+                // A real send stops when its task is cancelled.
+                if Task.isCancelled { throw CancellationError() }
                 let error: Error? = self.locked {
                     if self._failSends > 0 { self._failSends -= 1; return self._sendError() }
                     self._sent.append((host, zpl))
@@ -81,6 +86,7 @@ private final class Fake: @unchecked Sendable {
                 if let error { throw error }
             },
             record: { asset, value in
+                if Task.isCancelled { throw CancellationError() }
                 let fail: Bool = self.locked {
                     if self._failRecord { return true }
                     self._recorded.append((asset, value))
@@ -314,6 +320,33 @@ struct PrintQueueTests {
         #expect(try await q.scan(Asset("a2"), scannedValue: "A-2").state == .printed)
     }
 
+    /// Android's Mutex.withLock: a job cancelled while it waits its turn never starts.
+    @Test func aJobCancelledWhileQueuedNeverStarts() async throws {
+        let gate = Gate()
+        let atSend = Gate()
+        let fake = Fake()
+        fake.onSend = {
+            await atSend.open()
+            await gate.wait()
+        }
+        let q = queue(fake)
+        let first = Task { try await q.scan(Asset("a1"), scannedValue: "A-1") }
+        await atSend.wait()
+        let second = Task { try await q.scan(Asset("a2"), scannedValue: "A-2") }
+        while await q.entries.count < 2 { await Task.yield() }
+        second.cancel()
+        await gate.open()
+        #expect(try await first.value.state == .printed)
+        await #expect(throws: CancellationError.self) { try await second.value }
+        // Only the first job read and prepared its label; the cancelled one is still queued.
+        #expect(fake.labelCalls == 1)
+        #expect(fake.prepared == ["^XA^FDa1^FS^XZ"])
+        #expect(await q.entries.map(\.state) == [.queued, .printed])
+        // The queue still runs the next job.
+        #expect(try await q.scan(Asset("a3"), scannedValue: "A-3").state == .printed)
+        #expect(fake.sent.map(\.1) == ["[4,-2,true]^XA^FDa1^FS^XZ", "[4,-2,true]^XA^FDa3^FS^XZ"])
+    }
+
     @Test func jobsRunOneAtATimeInArrivalOrder() async throws {
         let gate = Gate()
         let atSend = Gate()
@@ -348,7 +381,7 @@ struct PrintQueueTests {
         let fake = Fake()
         fake.prepare = { _, _ in .refused(DEVICE_UNSUPPORTED_TEXT) }
         let e = try await PrintQueue(deps: fake.deps, now: { "t" }).scan(Asset("a1"), scannedValue: "A-1")
-        #expect(e.message == "This device can't make labels (its system WebView is too old).")
+        #expect(e.message == "This device can't make labels. Restart the app; if it keeps happening, the app needs an update.")
     }
 
     @Test func aLabelReadThatThrowsSaysSoAndLogs() async throws {
@@ -404,7 +437,7 @@ struct PrintQueueTests {
         let fake = Fake()
         fake.prepare = { zpl, settings in try await engine.prepare(zpl, settings) }
         let e = try await queue(fake).scan(Asset("a1"), scannedValue: "A-1")
-        #expect(e.message == "This device can't make labels (its system WebView is too old).")
+        #expect(e.message == "This device can't make labels. Restart the app; if it keeps happening, the app needs an update.")
         #expect(fake.sent.isEmpty)
         #expect(fake.recorded.isEmpty)
     }
@@ -453,13 +486,13 @@ struct PrintQueueTests {
         #expect(labelFor(nil, LabelBuildStatus(phase: .running, done: 1, total: 4), syncing: true) == syncing)
         // A device that can't make labels says so first.
         #expect(labelFor(nil, LabelBuildStatus(phase: .unsupportedDevice), syncing: true)
-            == .refused("This device can't make labels (its system WebView is too old)."))
+            == .refused("This device can't make labels. Restart the app; if it keeps happening, the app needs an update."))
         #expect(labelFor(StoredLabel(zpl: "^XA^XZ", outcome: OUTCOME_OK, templateId: "t1"), done, syncing: false) == .ready("^XA^XZ"))
     }
 
     @Test func anUnsupportedDeviceNeverPrints() {
         let step = labelFor(StoredLabel(zpl: "^XA^XZ", outcome: OUTCOME_OK, templateId: "t1"), LabelBuildStatus(phase: .unsupportedDevice))
-        #expect(step == .refused("This device can't make labels (its system WebView is too old)."))
+        #expect(step == .refused("This device can't make labels. Restart the app; if it keeps happening, the app needs an update."))
     }
 
     @Test func noLabelAndASyncNeededSaysSync() {

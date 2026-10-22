@@ -9,7 +9,7 @@ struct LabelBuildStatusTests {
         #expect(s.done == 0)
         #expect(s.total == 0)
         #expect(s.ready == 0)
-        #expect(s.problems == [:])
+        #expect(s.problems == [])
         #expect(s.notes == [])
         #expect(s.needs == nil)
     }
@@ -17,8 +17,17 @@ struct LabelBuildStatusTests {
     @Test func tallyCountsReadyAndProblemsByOutcome() {
         let t = tallyOutcomes(["ok", NO_TEMPLATE_AT_DPI, "ok", TEMPLATE_FAILED, NO_TEMPLATE_AT_DPI, "ok"])
         #expect(t.ready == 3)
-        #expect(t.problems == [NO_TEMPLATE_AT_DPI: 2, TEMPLATE_FAILED: 1])
-        #expect(tallyOutcomes([String]()) == LabelTally(ready: 0, problems: [:]))
+        #expect(t.problems == [OutcomeCount(code: NO_TEMPLATE_AT_DPI, count: 2), OutcomeCount(code: TEMPLATE_FAILED, count: 1)])
+        #expect(tallyOutcomes([String]()) == LabelTally(ready: 0, problems: []))
+    }
+
+    /// Android's LinkedHashMap: codes keep the order they were first seen, not a sorted one.
+    @Test func problemsKeepTheirFirstSeenOrder() {
+        let t = tallyOutcomes([TEMPLATE_UNSUPPORTED, "ok", NO_TEMPLATE_AT_DPI, TEMPLATE_UNSUPPORTED])
+        #expect(t.problems.map(\.code) == [TEMPLATE_UNSUPPORTED, NO_TEMPLATE_AT_DPI])
+        #expect(t.problems.map(\.count) == [2, 1])
+        let reversed = tallyOutcomes([NO_TEMPLATE_AT_DPI, TEMPLATE_UNSUPPORTED])
+        #expect(reversed.problems.map(\.code) == [NO_TEMPLATE_AT_DPI, TEMPLATE_UNSUPPORTED])
     }
 
     @Test func progressIsDoneOverTotal() {

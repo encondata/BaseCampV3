@@ -14,7 +14,7 @@ enum LabelBuildNeed: Equatable, Sendable { case printer, sync }
 
 /// The on-device label build. `total` is how many labels this build renders (only assets whose
 /// inputs changed) and `done` how many of them are finished. `ready` counts the move's assets
-/// whose current label prints; `problems` counts the others by outcome code. `notes` are the
+/// whose current label prints; `problems` counts the others by outcome code, in first-seen order. `notes` are the
 /// template pick's notes (a template only at another DPI). `templateId`, `fonts` and
 /// `availableDpis` come from the plan for Printer Setup's checks. `error` says why a build failed.
 struct LabelBuildStatus: Equatable, Sendable {
@@ -22,7 +22,7 @@ struct LabelBuildStatus: Equatable, Sendable {
     var done: Int = 0
     var total: Int = 0
     var ready: Int = 0
-    var problems: [String: Int] = [:]
+    var problems: [OutcomeCount] = []
     var notes: [String] = []
     var needs: LabelBuildNeed? = nil
     var templateId: String? = nil
@@ -56,17 +56,32 @@ struct LabelPick: Equatable, Sendable {
     var failed: Bool = false
 }
 
-struct LabelTally: Equatable, Sendable {
-    var ready: Int
-    var problems: [String: Int]
+/// How many labels have one outcome code. A list of these keeps Android's LinkedHashMap order:
+/// the order the codes were first seen, which the ready summary joins in.
+struct OutcomeCount: Equatable, Sendable {
+    var code: String
+    var count: Int
 }
 
-/// Ready labels and the rest counted by outcome.
+struct LabelTally: Equatable, Sendable {
+    var ready: Int
+    var problems: [OutcomeCount]
+}
+
+/// Ready labels and the rest counted by outcome, each code in the order it was first seen.
 func tallyOutcomes<S: Sequence>(_ outcomes: S) -> LabelTally where S.Element == String {
     var ready = 0
-    var problems: [String: Int] = [:]
+    var problems: [OutcomeCount] = []
+    var index: [String: Int] = [:]
     for o in outcomes {
-        if o == OUTCOME_OK { ready += 1 } else { problems[o, default: 0] += 1 }
+        if o == OUTCOME_OK {
+            ready += 1
+        } else if let i = index[o] {
+            problems[i].count += 1
+        } else {
+            index[o] = problems.count
+            problems.append(OutcomeCount(code: o, count: 1))
+        }
     }
     return LabelTally(ready: ready, problems: problems)
 }

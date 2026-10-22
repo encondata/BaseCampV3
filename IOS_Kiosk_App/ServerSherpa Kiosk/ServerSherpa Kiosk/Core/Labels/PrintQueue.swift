@@ -2,7 +2,9 @@ import Foundation
 
 let NO_PRINTER_TEXT = "No printer set up. Open Printer Setup."
 let NO_MATCH_TEXT = "No asset matches that scan."
-let DEVICE_UNSUPPORTED_TEXT = "This device can't make labels (its system WebView is too old)."
+/// Deliberately not Android's wording ("its system WebView is too old"): iOS runs the generator in
+/// JavaScriptCore, so an unsupported device is one whose engine failed to start.
+let DEVICE_UNSUPPORTED_TEXT = "This device can't make labels. Restart the app; if it keeps happening, the app needs an update."
 let SYNC_NEEDED_TEXT = "Sync this kiosk to make labels."
 /// The template is a newer design than this app's generator prints (the laptop's NEEDS_UPDATE_TEXT).
 let NEEDS_UPDATE_TEXT = "This device needs an app update to print this template."
@@ -178,8 +180,6 @@ actor PrintQueue<A: Sendable> {
     /// One job at a time, in the order they asked.
     private var busy = false
     private var waiting: [CheckedContinuation<Void, Never>] = []
-    /// The job whose label is going out; kept so nothing but its own end drops it.
-    private var finishing: Task<PrintEntry<A>, Never>?
     private let changesContinuation: AsyncStream<[PrintEntry<A>]>.Continuation
 
     /// Newest first.
@@ -259,6 +259,9 @@ actor PrintQueue<A: Sendable> {
     private func fail(_ w: Work, _ message: String) -> PrintEntry<A> { update(w, .failed, message) }
 
     private func execute(_ w: Work) async throws -> PrintEntry<A> {
+        // A caller cancelled while it waited its turn stops here, its entry still queued (Android's
+        // Mutex.withLock throws the same way).
+        try Task.checkCancellation()
         guard let asset = w.entry.asset else { return fail(w, NO_MATCH_TEXT) }
         update(w, .sending, nil)
         let printer: SavedPrinter
@@ -294,10 +297,7 @@ actor PrintQueue<A: Sendable> {
         // cancellation, and awaiting its value waits for it either way. The send's own deadline
         // bounds this.
         let task = Task { await self.finish(w, asset: asset, printer: printer, bytes: bytes) }
-        finishing = task
-        let entry = await task.value
-        finishing = nil
-        return entry
+        return await task.value
     }
 
     private func finish(_ w: Work, asset: A, printer: SavedPrinter, bytes: String) async -> PrintEntry<A> {
