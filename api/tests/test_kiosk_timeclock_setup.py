@@ -211,6 +211,19 @@ async def test_timeclock_setup_no_move_no_site(client, db, seeded_user):
     assert r.json()["initiative_id"] is None and r.json()["site_id"] is None
 
 
+async def test_regular_re_setup_clears_a_timeclock_station(client, db, seeded_user):
+    """A Time Clock kiosk set up again as a regular kiosk (no station type) is no
+    longer a Time Clock Station: its type clears, so Kiosk Devices stops listing it."""
+    hdrs = await login(client)
+    s = await _seed(db)
+    assert (await _setup(client, hdrs)).status_code == 200
+    assert (await _device(db, s["device_id"])).station_type == "timeclock"
+    r = await _setup(client, hdrs, move=s["move_id"], site=s["dest_id"],
+                     scan=s["scan_key"], station_type=None)
+    assert r.status_code == 200, r.text
+    assert (await _device(db, s["device_id"])).station_type is None
+
+
 async def test_non_timeclock_still_requires_move_site_scan(client, db, seeded_user):
     hdrs = await login(client)
     s = await _seed(db)
