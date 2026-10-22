@@ -19,6 +19,7 @@ import com.serversherpa.kiosk.data.db.KioskDatabase
 import com.serversherpa.kiosk.data.db.MetaEntity
 import com.serversherpa.kiosk.data.db.PersonEntity
 import com.serversherpa.kiosk.data.db.ROLODEX_META_KEY
+import com.serversherpa.kiosk.data.rolodex.RolodexCacheStore
 import com.serversherpa.kiosk.testContainer
 import java.time.Instant
 import java.time.ZoneId
@@ -108,8 +109,11 @@ class RolodexViewModelTest {
         rolodexWorkerResult = { id -> rolodexDetail(listOf(obrien, abbott, nunez).first { it.person_id == id }) }
     }
 
+    /** Whether an admin is signed in, as the cache store sees it (AppContainer reads the auth state). */
+    private var admin = true
+
     private fun TestScope.build(api: FakeKioskApi, db: KioskDatabase = newDb(), now: Instant = T1, scope: CoroutineScope = backgroundScope): RolodexViewModel {
-        val vm = RolodexViewModel(api, db, scopeOverride = scope, clock = { now })
+        val vm = RolodexViewModel(api, db, RolodexCacheStore(db) { admin }, scopeOverride = scope, clock = { now })
         settle { !vm.state.value.loading }
         // A list that loaded is cached just after it shows.
         val ui = vm.state.value
@@ -403,11 +407,43 @@ class RolodexViewModelTest {
         assertEquals("Lead", db.people().get("p-abbott")?.jobTitle)
     }
 
+    // ── the offline copy after sign-out (spec §3.15) ──
+
+    /** Sign-out clears the list; a save that answers afterwards must not write it back. */
+    @Test fun aSaveThatLandsAfterSignOutLeavesNoListOnDisk() = runTest {
+        val db = newDb()
+        val gate = CompletableDeferred<Unit>()
+        val api = onlineApi()
+        api.rolodexUpdateResult = { _, _ -> gate.await(); rolodexDetail(abbott).copy(job_title = "Lead") }
+        val vm = build(api, db)
+        vm.updateEdit(editing(vm).copy(jobTitle = "Lead"))
+        vm.save(); settle()
+        admin = false                                           // signed out: logout sets Anon, then deletes
+        runBlocking { db.meta().delete(ROLODEX_META_KEY) }
+        gate.complete(Unit); settle { !vm.state.value.saving }
+        assertEquals("Lead", vm.state.value.detail?.job_title)  // the save itself went through
+        settle()
+        assertNull(cached(db))
+    }
+
+    @Test fun aListThatLandsAfterSignOutLeavesNoListOnDisk() = runTest {
+        val db = newDb()
+        val gate = CompletableDeferred<Unit>()
+        val api = onlineApi().apply { rolodexWorkersResult = { gate.await(); RolodexList("now", listOf(abbott)) } }
+        val vm = RolodexViewModel(api, db, RolodexCacheStore(db) { admin }, scopeOverride = backgroundScope, clock = { T1 })
+        settle()
+        admin = false
+        gate.complete(Unit); settle { !vm.state.value.loading }
+        settle()
+        assertNull(cached(db))
+    }
+
     // ── copy and helpers ──
 
     @Test fun errorTextUsesTheSpecWords() {
         // A scope that is already gone: nothing loads, only the words are under test.
-        val vm = RolodexViewModel(FakeKioskApi(), newDb(), scopeOverride = CoroutineScope(Job()).also { it.cancel() }, clock = { T1 })
+        val db = newDb()
+        val vm = RolodexViewModel(FakeKioskApi(), db, RolodexCacheStore(db) { true }, scopeOverride = CoroutineScope(Job()).also { it.cancel() }, clock = { T1 })
         assertEquals("Your account can't use the Rolodex.", vm.errorText("forbidden"))
         assertEquals("Your account can't use the Rolodex.", vm.errorText("move_locked"))
         assertEquals("The system is in read-only mode, so changes can't be saved right now.", vm.errorText("read_only_mode"))

@@ -24,9 +24,8 @@ import com.serversherpa.kiosk.core.people.validate
 import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.data.api.KioskJson
 import com.serversherpa.kiosk.data.db.KioskDatabase
-import com.serversherpa.kiosk.data.db.MetaEntity
 import com.serversherpa.kiosk.data.db.PersonEntity
-import com.serversherpa.kiosk.data.db.ROLODEX_META_KEY
+import com.serversherpa.kiosk.data.rolodex.RolodexCacheStore
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -50,7 +49,7 @@ import kotlinx.serialization.Serializable
 internal const val ROLODEX_READ_TIMEOUT_MS = 20_000L
 
 /**
- * The offline copy of the list in the Room `meta` table (key [ROLODEX_META_KEY]): the rows and
+ * The offline copy of the list, kept by [RolodexCacheStore] in the Room `meta` table: the rows and
  * options as last loaded, and when. [RolodexRow] has no email or phone, so neither is ever stored.
  */
 @Serializable
@@ -163,6 +162,8 @@ internal suspend fun KioskDatabase.upsertWorker(d: RolodexDetail) = withTransact
 class RolodexViewModel(
     private val api: KioskApi,
     private val db: KioskDatabase,
+    /** The offline list's one owner (AppContainer.rolodexCache): it refuses writes once the admin has signed out. */
+    private val cache: RolodexCacheStore,
     scopeOverride: CoroutineScope? = null,
     private val clock: () -> Instant = { Instant.now() },
 ) : ViewModel() {
@@ -367,23 +368,23 @@ class RolodexViewModel(
     }
 
     private suspend fun readCache(): RolodexCache? = try {
-        db.meta().get(ROLODEX_META_KEY)?.value?.let { text ->
+        cache.read()?.let { text ->
             withContext(Dispatchers.Default) { KioskJson.decodeFromString(RolodexCache.serializer(), text) }
         }
     } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
 
-    /** Best effort: a list that couldn't be cached still shows. */
+    /** Best effort: a list that couldn't be cached still shows. The store refuses it after sign-out. */
     private suspend fun writeCache() {
         val s = _state.value
-        val cache = RolodexCache((s.cachedAt ?: clock()).toString(), rows, s.options)
+        val copy = RolodexCache((s.cachedAt ?: clock()).toString(), rows, s.options)
         try {
-            val text = withContext(Dispatchers.Default) { KioskJson.encodeToString(RolodexCache.serializer(), cache) }
-            db.meta().put(MetaEntity(ROLODEX_META_KEY, text))
+            val text = withContext(Dispatchers.Default) { KioskJson.encodeToString(RolodexCache.serializer(), copy) }
+            cache.write(text)
         } catch (e: CancellationException) { throw e } catch (_: Exception) {}
     }
 
     private suspend fun deleteCache() {
-        try { db.meta().delete(ROLODEX_META_KEY) } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+        try { cache.clear() } catch (e: CancellationException) { throw e } catch (_: Exception) {}
     }
 
     /** A read that gives up after [ROLODEX_READ_TIMEOUT_MS] as no connection. */

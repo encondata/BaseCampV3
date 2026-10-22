@@ -1,10 +1,13 @@
 package com.serversherpa.kiosk.ui.screens.rolodex
 
+import androidx.activity.ComponentActivity
+import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
@@ -12,6 +15,10 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.assertTextContains
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.serversherpa.kiosk.AppContainer
 import com.serversherpa.kiosk.LocalAppContainer
@@ -21,7 +28,11 @@ import com.serversherpa.kiosk.data.FakeKioskApi
 import com.serversherpa.kiosk.data.api.KioskJson
 import com.serversherpa.kiosk.data.db.MetaEntity
 import com.serversherpa.kiosk.data.db.ROLODEX_META_KEY
+import com.serversherpa.kiosk.data.fakeSession
 import com.serversherpa.kiosk.testContainer
+import com.serversherpa.kiosk.ui.Routes
+import com.serversherpa.kiosk.ui.shell.KioskShell
+import kotlinx.coroutines.CompletableDeferred
 import com.serversherpa.kiosk.ui.theme.KioskTheme
 import kotlinx.coroutines.runBlocking
 import org.junit.Rule
@@ -33,7 +44,8 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class RolodexScreenTest {
-    @get:Rule val compose = createComposeRule()
+    // An activity rule: the Back test presses the activity's own Back.
+    @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
     private val abbott = rolodexRow("p-abbott", "Ann", "Abbott", job = "Rigger", company = "Summit Crew")
     private val carter = rolodexRow("p-carter", "Ben", "Carter", job = "Lead tech", status = "standby", hasPhoto = false)
@@ -44,8 +56,11 @@ class RolodexScreenTest {
         rolodexWorkerResult = { id -> rolodexDetail(listOf(abbott, carter).first { it.person_id == id }) }
     }
 
+    /** A signed-in admin's container: the offline list is kept only for one. */
+    private fun admin(api: FakeKioskApi) = testContainer(api = api).also { it.auth.completePair(fakeSession(roles = listOf("admin"), maxRank = 60)) }
+
     private fun show(api: FakeKioskApi, prepare: (AppContainer) -> Unit = {}): AppContainer {
-        val c = testContainer(api = api)
+        val c = admin(api)
         prepare(c)
         compose.setContent {
             CompositionLocalProvider(LocalAppContainer provides c) { KioskTheme { RolodexScreen(rememberNavController()) } }
@@ -53,6 +68,27 @@ class RolodexScreenTest {
         waitFor("rolodex-row-p-abbott")
         return c
     }
+
+    /** As the app routes it: Home, then the Rolodex inside the kiosk shell (whose page has 16 dp padding). */
+    private fun showRouted(api: FakeKioskApi): AppContainer {
+        val c = admin(api)
+        compose.setContent {
+            CompositionLocalProvider(LocalAppContainer provides c) {
+                KioskTheme {
+                    val nav = rememberNavController()
+                    NavHost(nav, startDestination = Routes.HOME) {
+                        composable(Routes.HOME) { Text("home page") }
+                        composable(Routes.ROLODEX) { KioskShell(nav, scroll = false) { RolodexScreen(nav) } }
+                    }
+                    LaunchedEffect(Unit) { nav.navigate(Routes.ROLODEX) }
+                }
+            }
+        }
+        waitFor("rolodex-row-p-abbott")
+        return c
+    }
+
+    private fun pressBack() = compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
 
     private fun waitFor(tag: String) =
         compose.waitUntil(10_000) { compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty() }
@@ -134,5 +170,55 @@ class RolodexScreenTest {
         compose.onNodeWithTag("rolodex-search").performTextInput("lead")
         compose.waitUntil(10_000) { compose.onAllNodesWithTag("rolodex-row-p-abbott").fetchSemanticsNodes().isEmpty() }
         compose.onNodeWithTag("rolodex-row-p-carter").assertIsDisplayed()
+    }
+
+    /** Review Focus 4: Back while a save runs does nothing (it must not leave the route); the save's
+     *  failure then shows on the form as typed, and Back after that cancels the form. */
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun backWhileSavingKeepsTheFormAndItsError() {
+        val gate = CompletableDeferred<Unit>()
+        showRouted(api().apply { rolodexUpdateResult = { _, _ -> gate.await(); throw ApiError(423, "read_only_mode") } })
+        compose.onNodeWithTag("rolodex-row-p-abbott").performClick()
+        waitForText("ann@example.com")
+        compose.onNodeWithTag("worker-edit").performClick()
+        waitFor("edit-job")
+        compose.onNodeWithTag("edit-job").performTextReplacement("Lead rigger")
+        compose.onNodeWithTag("edit-save").performScrollTo().performClick()
+        waitForText("Saving…")
+
+        pressBack()
+        compose.waitForIdle()
+        compose.onNodeWithText("home page").assertDoesNotExist()
+        compose.onNodeWithTag("edit-save").assertExists()
+
+        gate.complete(Unit)
+        waitForText("The system is in read-only mode, so changes can't be saved right now.")
+        compose.onNodeWithTag("edit-job").assertTextContains("Lead rigger")
+        compose.onNodeWithText("home page").assertDoesNotExist()
+
+        pressBack()                                                         // not saving now: Back cancels the form
+        waitFor("worker-edit")
+        compose.onNodeWithTag("edit-save").assertDoesNotExist()
+    }
+
+    /** Ruling S11: the split starts at a 600 dp window, measured outside the shell's padding. */
+    @Config(qualifiers = "w600dp-h800dp")
+    @Test fun aSixHundredDpWindowSplits() {
+        showRouted(api())
+        compose.onNodeWithText("Choose a worker to see their page.").assertIsDisplayed()
+        compose.onNodeWithTag("rolodex-row-p-abbott").performClick()
+        waitForText("ann@example.com")
+        compose.onNodeWithTag("rolodex-search").assertIsDisplayed()
+        compose.onNodeWithText("‹ Rolodex").assertDoesNotExist()
+    }
+
+    @Config(qualifiers = "w599dp-h800dp")
+    @Test fun aFiveNinetyNineDpWindowTakesTurns() {
+        showRouted(api())
+        compose.onNodeWithText("Choose a worker to see their page.").assertDoesNotExist()
+        compose.onNodeWithTag("rolodex-row-p-abbott").performClick()
+        waitForText("ann@example.com")
+        compose.onNodeWithText("‹ Rolodex").assertIsDisplayed()
+        compose.onNodeWithTag("rolodex-search").assertDoesNotExist()
     }
 }

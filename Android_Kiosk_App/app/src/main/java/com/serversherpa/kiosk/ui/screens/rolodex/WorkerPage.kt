@@ -5,10 +5,12 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -93,11 +95,19 @@ internal fun WorkerPage(
 ) {
     val detail = ui.detail
     val editing = ui.editing
-    Column(modifier.verticalScroll(rememberScrollState())) {
-        if (editing != null && detail != null) EditForm(ui, detail, editing, vm, wide)
-        else WorkerView(ui, vm, wide, onBack, onPhoto)
+    BoxWithConstraints(modifier) {
+        // A split's page beside the list can be narrow (a 600 dp window leaves it about 200 dp):
+        // the side-by-side header and paired fields need room, else it lays out as on a phone.
+        val roomy = wide && maxWidth >= ROOMY_PAGE_WIDTH
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            if (editing != null && detail != null) EditForm(ui, detail, editing, vm, roomy)
+            else WorkerView(ui, vm, roomy, onBack, onPhoto)
+        }
     }
 }
+
+/** The page width from which the header sits in one row and phone and email pair up. */
+private val ROOMY_PAGE_WIDTH = 440.dp
 
 @Composable
 private fun ColumnScope.WorkerView(ui: RolodexUi, vm: RolodexViewModel, wide: Boolean, onBack: (() -> Unit)?, onPhoto: (() -> Unit)?) {

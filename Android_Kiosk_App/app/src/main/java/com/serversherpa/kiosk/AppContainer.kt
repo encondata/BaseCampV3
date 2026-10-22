@@ -19,12 +19,12 @@ import com.serversherpa.kiosk.data.api.SecretStore
 import com.serversherpa.kiosk.data.api.SessionStore
 import com.serversherpa.kiosk.data.api.kioskDispatcher
 import com.serversherpa.kiosk.data.api.StationApi
+import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.data.auth.KioskAuth
 import com.serversherpa.kiosk.data.auth.MoveSetupGuard
 import com.serversherpa.kiosk.data.auth.SessionCoordinator
 import com.serversherpa.kiosk.data.config.KioskConfig
 import com.serversherpa.kiosk.data.db.KioskDatabase
-import com.serversherpa.kiosk.data.db.ROLODEX_META_KEY
 import com.serversherpa.kiosk.data.heartbeat.Heartbeat
 import com.serversherpa.kiosk.data.identity.Identity
 import com.serversherpa.kiosk.data.labels.LabelBuilder
@@ -34,6 +34,7 @@ import com.serversherpa.kiosk.data.labels.LabelSettingsStore
 import com.serversherpa.kiosk.data.outbox.Outbox
 import com.serversherpa.kiosk.data.outbox.RoomOutboxStore
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
+import com.serversherpa.kiosk.data.rolodex.RolodexCacheStore
 import com.serversherpa.kiosk.data.station.StationKeyStore
 import com.serversherpa.kiosk.data.station.StationStatus
 import com.serversherpa.kiosk.data.station.issueAndStore
@@ -55,6 +56,7 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -102,6 +104,8 @@ class AppContainer(
     /** Whether a Time Clock station's key is there, and whether the portal has paused it. */
     val station = StationStatus(stationKeys, apiBase = { config.apiUrlNow() })
     val auth = KioskAuth(api, session, identity, scope)
+    /** The Rolodex's offline list: kept only while an admin is signed in. */
+    val rolodexCache = RolodexCacheStore(db) { (auth.state.value as? AuthState.Authed)?.isAdmin == true }
     val sync = Sync(api, db, scope, fontsDir = File(app.filesDir, "label-fonts"))
     val labelEngine: LabelEngine = LabelGenerator(app)
     val labelSettings = LabelSettingsStore(prefs)
@@ -134,7 +138,8 @@ class AppContainer(
         scope.launch { identity.get(); auth.restore() }
         scope.launch { sync.hydrate() }
         labelBuilder.start(sync.status)
-        scope.launch { session.sessionEnded.collect { cookieJar.clearRefreshCookie(); clearRolodexCache() } }
+        scope.launch { session.sessionEnded.collect { cookieJar.clearRefreshCookie() } }
+        watchRolodexCache()
         // Clear Setup revokes a Time Clock station's key on the portal; drop it here too.
         scope.launch(Dispatchers.IO) { heartbeat.setupCleared.collect { stationKeys.clear() } }
         SessionCoordinator(auth, heartbeat, foreground, scope).start()
@@ -183,7 +188,7 @@ class AppContainer(
      */
     suspend fun resetApp(clearLocalData: suspend () -> Unit = { sync.clearLocalData() }) {
         clearLocalData()
-        db.meta().delete(ROLODEX_META_KEY)
+        rolodexCache.clear()
         prefs.clearSetup()
         withContext(Dispatchers.IO) { stationKeys.clear() }
         labelSettings.reset()
@@ -196,14 +201,14 @@ class AppContainer(
         internetTest.beforeSignOut() // INTERNET-TEST
         auth.logout()
         cookieJar.clearRefreshCookie()
-        clearRolodexCache()
+        // Also done by the watch below; here too so it's done when this returns. The delete runs to
+        // the end even though signing out disposes the screen whose scope called this.
+        try { rolodexCache.clear() } catch (e: CancellationException) { throw e } catch (_: Exception) { /* the watch tries again */ }
     }
 
-    /** The Rolodex's offline list holds names an admin loaded: it goes with the session (sign-out,
-     *  session end) and with Reset app. Best effort: a failed delete never blocks a sign-out. */
-    private suspend fun clearRolodexCache() {
-        try { db.meta().delete(ROLODEX_META_KEY) } catch (e: CancellationException) { throw e } catch (_: Exception) {}
-    }
+    /** The Rolodex's offline list holds names an admin loaded: it goes on every end of a session
+     *  (Sign out, a session that ended, one that couldn't be restored at launch). Called by start(). */
+    internal fun watchRolodexCache(): Job = rolodexCache.clearWhenTheSessionEnds(auth.state, scope)
 
     /** Issues this kiosk's station key under the signed-in session and stores it bound to the
      *  API origin, with the one sign-in heartbeat and retry a `not_signed_in_here` answer calls
