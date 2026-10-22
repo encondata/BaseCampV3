@@ -62,7 +62,7 @@ it('apiFetch refreshes once on 401, retries, and ends the session when refresh f
   const resp = await api.apiFetch('/x');
   expect(resp.status).toBe(401);
   const urls = fetchMock.mock.calls.map(([u]) => String(u));
-  expect(urls).toEqual(['http://api.test/auth/login', 'http://api.test/x', 'http://api.test/auth/refresh']);
+  expect(urls).toEqual(['http://api.test/auth/login', 'http://api.test/x', 'http://api.test/auth/refresh?client=kiosk']);
   expect(ended).toHaveBeenCalledTimes(1);
   expect(api.getSessionExpiresAt()).toBeNull();
   off();
@@ -204,4 +204,25 @@ it('submitKioskSetup passes station_type through', async () => {
   });
   const [, init] = (fetchMock.mock.calls as unknown as Call[]).at(-1)!;
   expect(JSON.parse(String(init?.body)).station_type).toBe('rfid');
+});
+
+it('refreshSession posts to /auth/refresh?client=kiosk and a wrong_client 401 signs out', async () => {
+  const fetchMock = vi.fn(async () => json({ detail: { code: 'wrong_client' } }, 401));
+  vi.stubGlobal('fetch', fetchMock);
+  expect(await api.refreshSession()).toBeNull();
+  const [url, init] = fetchMock.mock.calls[0] as unknown as Call;
+  expect(url).toBe('http://api.test/auth/refresh?client=kiosk');
+  expect(init?.method).toBe('POST');
+  expect(init?.credentials).toBe('include');
+  expect(api.getSessionExpiresAt()).toBeNull();
+});
+
+it('logoutRequest posts to /auth/logout?client=kiosk', async () => {
+  const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+  vi.stubGlobal('fetch', fetchMock);
+  await api.logoutRequest();
+  const [url, init] = fetchMock.mock.calls[0] as unknown as Call;
+  expect(url).toBe('http://api.test/auth/logout?client=kiosk');
+  expect(init?.method).toBe('POST');
+  expect(init?.credentials).toBe('include');
 });
