@@ -261,7 +261,7 @@ async def test_a_private_page_cannot_become_a_help_guide(client, db):
     assert _code(resp) == "private"
 
 
-async def test_help_for_a_page_that_became_private_is_404_for_who_cant_see_it(client, db):
+async def test_help_for_a_page_that_became_private_is_204_for_who_cant_see_it(client, db):
     s = await _setup(client, db)
     page = await _page(client, s, db)
     admin, _ = await login_as(client, db, roles=("admin",))
@@ -272,8 +272,8 @@ async def test_help_for_a_page_that_became_private_is_404_for_who_cant_see_it(cl
     assert (await client.get("/wiki/help", headers=s["viewer"], params=ask)).status_code == 200
 
     await _private(client, s["owner"], page["id"])
-    assert (await client.get("/wiki/help", headers=s["viewer"], params=ask)).status_code == 404
-    assert (await client.get("/wiki/help", headers=admin, params=ask)).status_code == 404
+    assert (await client.get("/wiki/help", headers=s["viewer"], params=ask)).status_code == 204
+    assert (await client.get("/wiki/help", headers=admin, params=ask)).status_code == 204
     # the author still finds it
     assert (await client.get("/wiki/help", headers=s["owner"], params=ask)).status_code == 200
 
