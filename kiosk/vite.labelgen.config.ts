@@ -2,11 +2,13 @@ import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vite';
 
-// The label generator as ONE self-contained script for the Android kiosk,
-// which runs it in a JavaScriptEngine sandbox (kiosk/src/labelgen/index.ts
-// installs `globalThis.labelgen`). Committed to the app's assets; rebuild
-// with `npm --prefix kiosk run build:labelgen` whenever labelgen changes
-// (kiosk/src/labelgen/bundle.test.ts fails until the file is fresh).
+// The label generator as ONE self-contained script for the native kiosks:
+// Android runs it in a JavaScriptEngine sandbox, iOS in JavaScriptCore
+// (kiosk/src/labelgen/index.ts installs `globalThis.labelgen`). Built into
+// the Android app's assets; `build:labelgen` then copies the same bytes to
+// IOS_Kiosk_App/ServerSherpa Kiosk/ServerSherpa Kiosk/Resources/labelgen.js.
+// Rebuild with `npm --prefix kiosk run build:labelgen` whenever labelgen
+// changes (kiosk/src/labelgen/bundle.test.ts fails until both are fresh).
 // The output is deterministic: no hashes, no timestamps, no minifier.
 export default defineConfig({
   configFile: false,

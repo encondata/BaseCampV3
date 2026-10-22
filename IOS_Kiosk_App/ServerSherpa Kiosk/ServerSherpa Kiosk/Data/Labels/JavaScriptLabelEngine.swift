@@ -13,7 +13,7 @@ import os
 /// Every context gets its own `JSVirtualMachine` (contexts on one VM share its lock, so a runaway
 /// would block the new one) and its own thread; only the call holding the gate is ever sent to a
 /// context, so no call waits behind an abandoned one.
-final class JavaScriptLabelEngine: LabelEngine, @unchecked Sendable {
+final class JavaScriptLabelEngine: LabelEngine, Sendable {
     private struct State {
         var current: LabelJSContext?
         var serial = 0
@@ -56,7 +56,9 @@ final class JavaScriptLabelEngine: LabelEngine, @unchecked Sendable {
         return try await exclusively(fn) { $0.invoke(fn, argsJson) }
     }
 
-    /// Starts the context if it isn't up yet; false when it can't start.
+    /// Starts the context if it isn't up yet; false when it can't start. Starting waits its turn at
+    /// the gate, and a caller cancelled while it waits also gets false: a false from a cancelled
+    /// task doesn't mean the device is unsupported.
     func isSupported() async -> Bool {
         if state.withLock({ $0.current }) != nil { return true }
         do {
@@ -97,7 +99,8 @@ final class JavaScriptLabelEngine: LabelEngine, @unchecked Sendable {
             return try await Self.run(fn, on: context, seconds: timeoutSeconds(fn), work)
         } catch {
             if !(error is CancellationError) {
-                Self.log.warning("label generator call \(fn, privacy: .public) failed; starting over: \(String(describing: error), privacy: .public)")
+                // The case is public; the message stays private (JavaScriptCore's can quote the arguments).
+                Self.log.warning("label generator call \(fn, privacy: .public) failed (\(Self.caseName(error), privacy: .public)); starting over: \(String(describing: error), privacy: .private)")
             }
             retire(context)
             throw error
@@ -127,6 +130,17 @@ final class JavaScriptLabelEngine: LabelEngine, @unchecked Sendable {
         }
         state.withLock { $0.current = context }
         return context
+    }
+
+    /// The error's kind without its message, safe to log publicly.
+    private static func caseName(_ error: Error) -> String {
+        switch error as? LabelEngineError {
+        case .unsupported: "unsupported"
+        case .evaluationFailed: "evaluationFailed"
+        case .timeout: "timeout"
+        case .notAllowed: "notAllowed"
+        case nil: String(describing: type(of: error))
+        }
     }
 
     private func retire(_ context: LabelJSContext) {
@@ -238,7 +252,7 @@ private final class LabelEngineThread: @unchecked Sendable {
     }
 
     /// Runs `block` on the thread after whatever it is running now.
-    func perform(_ block: @escaping () -> Void) {
+    func perform(_ block: @escaping @Sendable () -> Void) {
         lock.withLock {
             guard !stopping else { return }
             enqueue { autoreleasepool { block() } }

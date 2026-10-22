@@ -51,11 +51,19 @@ private final class Order: @unchecked Sendable {
     var all: [String] { lock.withLock { names } }
 }
 
+/// A script that outlasts every test time limit, yet ends (10 s), so its abandoned thread exits
+/// instead of spinning a core for the rest of the test host. JavaScriptCore can't interrupt it.
+private let boundedRunaway = "const t = Date.now(); while (Date.now() - t < 10000) {} 'late'"
+
 private func bytes(_ text: String?) -> [UInt8]? { text.map { Array($0.utf8) } }
 
 /// The label generator in JavaScriptCore, running the real bundle the app ships (the test host
 /// is the app, so `Bundle.main` holds Resources/labelgen.js). Port of Android `LabelGeneratorTest`
 /// where it applies (the sandbox connect and dead-sandbox cases have no JavaScriptCore analog).
+/// Serialized: several tests spin a core in JavaScript (abandoned runaways for 10 s after their
+/// test ends), and running them side by side starved timing-sensitive suites running in parallel
+/// (the `StubURLProtocol` redirect tests failed under that load).
+@Suite(.serialized)
 final class JavaScriptLabelEngineTests {
     @Test func theAppShipsTheBundle() throws {
         let url = try #require(Bundle.main.url(forResource: "labelgen", withExtension: "js"))
@@ -198,13 +206,13 @@ final class JavaScriptLabelEngineTests {
 
         let started = Date()
         await #expect(throws: LabelEngineError.timeout("_evaluateForTesting")) {
-            try await engine._evaluateForTesting("while(true){}")
+            try await engine._evaluateForTesting(boundedRunaway)
         }
         let waited = Date().timeIntervalSince(started)
         #expect(waited >= 0.4 && waited < 3, "timed out after \(waited) s")
 
-        // The runaway is still spinning on the abandoned context's thread (JavaScriptCore can't be
-        // interrupted); this call starts a fresh context with the bundle loaded.
+        // The runaway is still spinning on the abandoned context's thread for seconds yet
+        // (JavaScriptCore can't interrupt it); this call starts a fresh context with the bundle loaded.
         #expect(try await engine._evaluateForTesting("typeof globalThis.__mark") == "undefined")
         let mode = try parseZpl(try await engine.call("withPrintMode", LabelGenArgs.printMode(zpl: "^XA^XZ", peel: true)))
         #expect(mode.contains("^MMP"))
@@ -217,13 +225,60 @@ final class JavaScriptLabelEngineTests {
     func aCallWaitingBehindARunawayRunsOnTheFreshContextNotTheAbandonedOne() async throws {
         let engine = JavaScriptLabelEngine(timeoutSeconds: { _ in 1 })
         _ = try await engine._evaluateForTesting("String(1)")
-        let runaway = Task { try await engine._evaluateForTesting("while(true){}") }
+        let runaway = Task { try await engine._evaluateForTesting(boundedRunaway) }
         try await Task.sleep(for: .milliseconds(200))
         // Waits its turn in the gate, never on the runaway's thread: once the runaway times out
         // this runs on a fresh context, with its own full time limit.
         let mode = try parseZpl(try await engine.call("withPrintMode", LabelGenArgs.printMode(zpl: "^XA^XZ", peel: true)))
         #expect(mode.contains("^MMP"))
         await #expect(throws: LabelEngineError.timeout("_evaluateForTesting")) { try await runaway.value }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aRunawaysLateResultNeverAnswersALaterCall() async throws {
+        let engine = JavaScriptLabelEngine(timeoutSeconds: { _ in 0.5 })
+        await #expect(throws: LabelEngineError.timeout("_evaluateForTesting")) {
+            try await engine._evaluateForTesting("const t = Date.now(); while (Date.now() - t < 1500) {} 'late'")
+        }
+        // While the runaway still spins, and again once it has finished: each call gets its own answer.
+        #expect(try await engine._evaluateForTesting("'during'") == "during")
+        try await Task.sleep(for: .milliseconds(1500))
+        #expect(try await engine._evaluateForTesting("'after'") == "after")
+        let mode = try parseZpl(try await engine.call("withPrintMode", LabelGenArgs.printMode(zpl: "^XA^XZ", peel: true)))
+        #expect(mode.contains("^MMP"))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aCallCancelledWhileRunningRetiresItsContextAndFreesTheGate() async throws {
+        let engine = JavaScriptLabelEngine()
+        #expect(try await engine._evaluateForTesting("globalThis.__mark = 'old'; String(__mark)") == "old")
+        let running = Task { try await engine._evaluateForTesting("const t = Date.now(); while (Date.now() - t < 3000) {} 'late'") }
+        try await Task.sleep(for: .milliseconds(200))
+        let cancelled = Date()
+        running.cancel()
+        await #expect(throws: CancellationError.self) { try await running.value }
+        #expect(Date().timeIntervalSince(cancelled) < 1)
+
+        // The gate is free at once (the spin has seconds to go) and the call runs on a fresh context.
+        let started = Date()
+        #expect(try await engine._evaluateForTesting("typeof globalThis.__mark") == "undefined")
+        let mode = try parseZpl(try await engine.call("withPrintMode", LabelGenArgs.printMode(zpl: "^XA^XZ", peel: false)))
+        #expect(mode.contains("^MMT"))
+        #expect(Date().timeIntervalSince(started) < 2, "the next call waited \(Date().timeIntervalSince(started)) s")
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aStartThatRunsPastItsLimitTimesOut() async throws {
+        let real = try String(contentsOf: try #require(Bundle.main.url(forResource: "labelgen", withExtension: "js")), encoding: .utf8)
+        let engine = JavaScriptLabelEngine(startTimeoutSeconds: 0.3, bundleSource: {
+            Thread.sleep(forTimeInterval: 2)
+            return real
+        })
+        let started = Date()
+        await #expect(throws: LabelEngineError.timeout("withPrintMode")) {
+            try await engine.call("withPrintMode", LabelGenArgs.printMode(zpl: "^XA^XZ", peel: false))
+        }
+        #expect(Date().timeIntervalSince(started) < 1.5)
     }
 
     @Test(.timeLimit(.minutes(1)))
