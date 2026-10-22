@@ -25,6 +25,7 @@ func rolodexSplit(sizeClass: UserInterfaceSizeClass?, width: CGFloat?) -> Bool {
 struct RolodexView: View {
     @Binding var path: [Route]
     @Environment(RolodexModel.self) private var model
+    @Environment(\.container) private var container
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.kioskPalette) private var palette
     @State private var width: CGFloat?
@@ -61,6 +62,20 @@ struct RolodexView: View {
             // Not a `.task`: pushing a worker page would cancel the load half way.
             Task { await model.load() }
         }
+        // "+ New". Its state is in the model; Cancel and a sign-out close it from there.
+        .fullScreenCover(isPresented: Binding(get: { model.newWorker.active }, set: { if !$0 { model.newWorker.cancel() } }),
+                         onDismiss: showOpenedWorker) {
+            NewWorkerFlowView(flow: model.newWorker)
+                .rolodexPresented(container, model, palette)
+        }
+    }
+
+    /// After a create (or a duplicate's Open) the worker's page shows: beside the list on a wide
+    /// screen (already selected), pushed on a narrow one.
+    private func showOpenedWorker() {
+        guard let id = model.newWorker.takeOpened() else { return }
+        if model.selectedId != id { Task { await model.select(id) } }
+        if !rolodexSplit(sizeClass: sizeClass, width: width) { path.append(.rolodexWorker(id)) }
     }
 }
 

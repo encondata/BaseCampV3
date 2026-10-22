@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 import UIKit
 
@@ -57,6 +58,7 @@ struct RolodexWorkerView: View {
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .background(palette.paper2)
+        .modifier(RolodexPhotoScreens(flow: model.photo))
     }
 
     // MARK: the page
@@ -78,6 +80,9 @@ struct RolodexWorkerView: View {
                         Spacer(minLength: 8)
                         editButton
                     }
+                }
+                if let failure = model.photo.failureText(for: row.personId) {
+                    RolodexPhotoRetry(personId: row.personId, text: failure)
                 }
                 if let reason = model.editBlockText {
                     note(reason)
@@ -166,8 +171,9 @@ struct RolodexWorkerView: View {
     }
 }
 
-/// The photo with its camera badge (Take new photo / Choose photo, Task 10). The badge is off
-/// while the worker can't be edited or the kiosk is offline.
+/// The photo with its camera badge: "Photo for Ana Ortiz" offers Take new photo (on a device with
+/// a camera) and Choose photo; no Remove, since photos are required. The badge is off while the
+/// worker can't be edited or the kiosk is offline.
 private struct RolodexPhotoBadge: View {
     let row: RolodexRow
     let size: CGFloat
@@ -175,6 +181,19 @@ private struct RolodexPhotoBadge: View {
     @Environment(\.kioskPalette) private var palette
 
     var body: some View {
+        let photo = model.photo
+        photoWithBadge
+            .confirmationDialog("Photo for \(photo.target?.name ?? rolodexName(row))",
+                                isPresented: Binding(get: { photo.sheet }, set: { photo.sheet = $0 }), titleVisibility: .visible) {
+                if CameraSupport.hasCamera {
+                    Button("Take new photo") { photo.takePhoto() }
+                }
+                Button("Choose photo") { photo.chooseFromLibrary() }
+                Button("Cancel", role: .cancel) { photo.close() }
+            }
+    }
+
+    @ViewBuilder private var photoWithBadge: some View {
         let badge = size >= 100 ? 34.0 : 28.0
         RolodexAvatar(row: row, size: size)
             .overlay(Circle().stroke(palette.paper, lineWidth: 4))
@@ -269,10 +288,16 @@ private struct RolodexEditForm: View {
                         field("Job title", \.jobTitle, content: .jobTitle)
                         field("Phone", \.phone, keyboard: .phonePad, content: .telephoneNumber)
                         field("Email", \.email, keyboard: .emailAddress, content: .emailAddress, capitalize: false)
-                        picker("Company", value: edit.partnerId, options: companyOptions(detail)) { model.editing?.partnerId = $0 }
+                        RolodexMenuField(label: "Company", value: edit.partnerId,
+                                         options: rolodexCompanyOptions(model.options, current: detail.company), disabled: model.saving) {
+                            model.editing?.partnerId = $0
+                        }
                         HStack(alignment: .top, spacing: 8) {
                             field("Trade", \.trade)
-                            picker("Level", value: edit.level, options: levelOptions(detail)) { model.editing?.level = $0 }
+                            RolodexMenuField(label: "Level", value: edit.level,
+                                             options: rolodexLevelOptions(model.options, current: detail.level), disabled: model.saving) {
+                                model.editing?.level = $0
+                            }
                         }
                         status(edit, detail)
                         if edit.status == RolodexLogic.blacklistKey {
@@ -319,71 +344,8 @@ private struct RolodexEditForm: View {
 
     private func field(_ label: String, _ key: WritableKeyPath<RolodexEdit, String>, keyboard: UIKeyboardType = .default,
                        content: UITextContentType? = nil, capitalize: Bool = true, multiline: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(KioskType.bodySmall).foregroundStyle(palette.textMute)
-            Group {
-                if multiline {
-                    TextField(label, text: binding(key), axis: .vertical).lineLimit(2...5).padding(.vertical, 12)
-                } else {
-                    TextField(label, text: binding(key))
-                }
-            }
-            .keyboardType(keyboard)
-            .textContentType(content)
-            .textInputAutocapitalization(capitalize ? .words : .never)
-            .autocorrectionDisabled()
-            .submitLabel(.done)
-            .disabled(model.saving)
-            .rolodexField(palette)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// A menu picker styled as a field; nil is "None".
-    private func picker(_ label: String, value: String?, options: [(id: String, name: String)],
-                        set: @escaping (String?) -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(KioskType.bodySmall).foregroundStyle(palette.textMute)
-            Menu {
-                Button { set(nil) } label: { if value == nil { Label("None", systemImage: "checkmark") } else { Text("None") } }
-                ForEach(options, id: \.id) { option in
-                    Button { set(option.id) } label: {
-                        if option.id == value { Label(option.name, systemImage: "checkmark") } else { Text(option.name) }
-                    }
-                }
-            } label: {
-                HStack {
-                    Text(options.first { $0.id == value }?.name ?? value ?? "None")
-                        .foregroundStyle(value == nil ? palette.textMute : palette.text)
-                        .lineLimit(1)
-                    Spacer(minLength: 6)
-                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 12, weight: .semibold)).foregroundStyle(palette.textMute)
-                }
-                .rolodexField(palette)
-                .contentShape(Rectangle())
-            }
-            .disabled(model.saving)
-            .accessibilityLabel(label)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// Non-archived companies, plus the worker's own when it has since been archived (spec §3.9).
-    private func companyOptions(_ detail: RolodexDetail) -> [(id: String, name: String)] {
-        var options = model.options.partners.map { (id: $0.id, name: $0.name) }
-        if let company = detail.company, !options.contains(where: { $0.id == company.id }) {
-            options.append((id: company.id, name: company.name))
-        }
-        return options
-    }
-
-    /// The level scale ("L3 · Lead"), plus the worker's own level when the scale didn't load.
-    private func levelOptions(_ detail: RolodexDetail) -> [(id: String, name: String)] {
-        var options = model.options.levels.map { (id: $0.level, name: $0.title.isEmpty ? $0.level : "\($0.level) · \($0.title)") }
-        if let level = detail.level, !options.contains(where: { $0.id == level }) {
-            options.append((id: level, name: level))
-        }
-        return options
+        RolodexTextField(label: label, text: binding(key), keyboard: keyboard, content: content, capitalize: capitalize,
+                         multiline: multiline, disabled: model.saving)
     }
 
     @ViewBuilder private func status(_ edit: RolodexEdit, _ detail: RolodexDetail) -> some View {
@@ -409,5 +371,222 @@ private struct RolodexEditForm: View {
             statuses.append(RolodexStatus(key: detail.status, label: detail.statusLabel, color: detail.statusColor))
         }
         return statuses
+    }
+}
+
+// MARK: - Form fields (the Edit and New worker forms)
+
+/// A labeled text field in the kiosk's field look.
+struct RolodexTextField: View {
+    let label: String
+    @Binding var text: String
+    var keyboard: UIKeyboardType = .default
+    var content: UITextContentType? = nil
+    var capitalize = true
+    var multiline = false
+    var disabled = false
+    @Environment(\.kioskPalette) private var palette
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(KioskType.bodySmall).foregroundStyle(palette.textMute)
+            Group {
+                if multiline {
+                    TextField(label, text: $text, axis: .vertical).lineLimit(2...5).padding(.vertical, 12)
+                } else {
+                    TextField(label, text: $text)
+                }
+            }
+            .keyboardType(keyboard)
+            .textContentType(content)
+            .textInputAutocapitalization(capitalize ? .words : .never)
+            .autocorrectionDisabled()
+            .submitLabel(.done)
+            .disabled(disabled)
+            .rolodexField(palette)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// A menu picker styled as a field; nil is "None" (shown as `placeholder`).
+struct RolodexMenuField: View {
+    let label: String
+    let value: String?
+    let options: [(id: String, name: String)]
+    var placeholder = "None"
+    var disabled = false
+    let set: (String?) -> Void
+    @Environment(\.kioskPalette) private var palette
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(KioskType.bodySmall).foregroundStyle(palette.textMute)
+            Menu {
+                Button { set(nil) } label: { if value == nil { Label("None", systemImage: "checkmark") } else { Text("None") } }
+                ForEach(options, id: \.id) { option in
+                    Button { set(option.id) } label: {
+                        if option.id == value { Label(option.name, systemImage: "checkmark") } else { Text(option.name) }
+                    }
+                }
+            } label: {
+                HStack {
+                    Text(options.first { $0.id == value }?.name ?? value ?? placeholder)
+                        .foregroundStyle(value == nil ? palette.textMute : palette.text)
+                        .lineLimit(1)
+                    Spacer(minLength: 6)
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 12, weight: .semibold)).foregroundStyle(palette.textMute)
+                }
+                .rolodexField(palette)
+                .contentShape(Rectangle())
+            }
+            .disabled(disabled)
+            .accessibilityLabel(label)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Non-archived companies, plus the worker's own when it has since been archived (spec §3.9).
+func rolodexCompanyOptions(_ options: RolodexOptions, current: RolodexCompany?) -> [(id: String, name: String)] {
+    var list = options.partners.map { (id: $0.id, name: $0.name) }
+    if let current, !list.contains(where: { $0.id == current.id }) {
+        list.append((id: current.id, name: current.name))
+    }
+    return list
+}
+
+/// The level scale ("L3 · Lead"), plus the worker's own level when the scale didn't load.
+func rolodexLevelOptions(_ options: RolodexOptions, current: String?) -> [(id: String, name: String)] {
+    var list = options.levels.map { (id: $0.level, name: $0.title.isEmpty ? $0.level : "\($0.level) · \($0.title)") }
+    if let current, !list.contains(where: { $0.id == current }) {
+        list.append((id: current, name: current))
+    }
+    return list
+}
+
+// MARK: - New photo
+
+/// The worker page's photo screens: the library (from "Choose photo"), and a full-screen cover
+/// for the camera and "Position your photo". All their state is in `RolodexPhotoFlow`.
+private struct RolodexPhotoScreens: ViewModifier {
+    @Bindable var flow: RolodexPhotoFlow
+    @Environment(RolodexModel.self) private var model
+    @Environment(\.container) private var container
+    @Environment(\.kioskPalette) private var palette
+    @State private var picked: PhotosPickerItem?
+
+    func body(content: Content) -> some View {
+        content
+            // From the page; the camera's Library is presented by the cover itself.
+            .photosPicker(isPresented: Binding(get: { flow.library && !flow.coverShown }, set: { if !$0 { flow.library = false } }),
+                          selection: $picked, matching: .images, preferredItemEncoding: .current)
+            .onChange(of: picked) { _, item in
+                guard let item else { return }
+                picked = nil
+                Task { await flow.use { try await item.loadTransferable(type: Data.self) } }
+            }
+            .fullScreenCover(isPresented: Binding(get: { flow.coverShown }, set: { if !$0 { flow.close() } })) {
+                RolodexPhotoCover(flow: flow)
+                    .rolodexPresented(container, model, palette)
+            }
+    }
+}
+
+/// The camera (or Choose photo), the decode, then "Position your photo" and Use photo.
+private struct RolodexPhotoCover: View {
+    @Bindable var flow: RolodexPhotoFlow
+    @State private var picked: PhotosPickerItem?
+
+    var body: some View {
+        Group {
+            switch flow.stage {
+            case .none:
+                Color.black.ignoresSafeArea()
+            case .camera:
+                PhotoCaptureView(backTitle: "Cancel", onBack: { flow.close() }, front: $flow.frontCamera, busyText: nil,
+                                 errorText: flow.errorText, onCapture: { data in Task { await flow.use(data) } },
+                                 onLibrary: { flow.chooseFromLibrary() })
+            case .loading:
+                PhotoLoadingView(backTitle: "Cancel") { flow.close() }
+            case .crop:
+                if let crop = flow.crop {
+                    PhotoCropView(crop: crop, useTitle: "Use photo", busyText: flow.uploading ? "Saving…" : nil,
+                                  errorText: flow.errorText, onRetake: { flow.retake() }, onUse: { Task { await flow.usePhoto() } })
+                }
+            }
+        }
+        .photosPicker(isPresented: Binding(get: { flow.library && flow.coverShown }, set: { if !$0 { flow.library = false } }),
+                      selection: $picked, matching: .images, preferredItemEncoding: .current)
+        .onChange(of: picked) { _, item in
+            guard let item else { return }
+            picked = nil
+            Task { await flow.use { try await item.loadTransferable(type: Data.self) } }
+        }
+    }
+}
+
+/// A library pick on its way (a big photo, or one still in iCloud, takes a moment).
+struct PhotoLoadingView: View {
+    let backTitle: String
+    let onBack: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PhotoStepBar(backTitle: backTitle, title: "Photo", onBack: onBack)
+            VStack(spacing: 10) {
+                ProgressView().tint(Color.white)
+                Text("Loading photo…").font(KioskType.labelLarge).foregroundStyle(Color.white)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityIdentifier("photo-loading")
+        }
+        .background(Color.black.ignoresSafeArea())
+    }
+}
+
+/// "Marcus Reed was saved, but the photo didn't upload." with Try again (spec §3.6), on the page
+/// of a worker created with a photo that didn't make it.
+private struct RolodexPhotoRetry: View {
+    let personId: String
+    let text: String
+    @Environment(RolodexModel.self) private var model
+    @Environment(\.kioskPalette) private var palette
+
+    var body: some View {
+        let photo = model.photo
+        let retrying = photo.isRetrying(personId)
+        VStack(alignment: .leading, spacing: 8) {
+            Text(text)
+                .font(KioskType.sans(14, .semibold))
+                .foregroundStyle(palette.isDark ? palette.text : ChipTone.red.text)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("rolodex-photo-failed")
+            if let why = photo.retryErrorText(for: personId) {
+                Text(why).font(KioskType.bodySmall).foregroundStyle(palette.textMute).fixedSize(horizontal: false, vertical: true)
+            }
+            SecondaryButton(retrying ? "Uploading…" : "Try again", enabled: !retrying, borderColor: ChipTone.red.border) {
+                Task { await photo.retry(personId) }
+            }
+            .fixedSize()
+            .accessibilityIdentifier("rolodex-photo-retry")
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ChipTone.red.bg, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(ChipTone.red.border, lineWidth: 1))
+        .padding(.top, 12)
+    }
+}
+
+extension View {
+    /// What a cover or sheet over the Rolodex reads from its presenter, passed again (as the
+    /// kiosk's other sheets pass the palette).
+    func rolodexPresented(_ container: AppContainer, _ model: RolodexModel, _ palette: KioskPalette) -> some View {
+        environment(\.container, container)
+            .environment(model)
+            .environment(\.kioskPalette, palette)
+            .environment(\.kioskAccent, palette.accent)
+            .tint(palette.accent)
     }
 }

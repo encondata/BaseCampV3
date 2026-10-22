@@ -57,7 +57,12 @@ struct RolodexAvatar: View {
     }
 
     /// Rows (44 pt) share a small decode; the worker page's photo a larger one.
-    private var pixels: Int { size <= 64 ? 160 : 400 }
+    nonisolated static let rowPixels = 160
+    nonisolated static let pagePixels = 400
+    /// Both decodes, which a new photo's upload puts in the cache.
+    nonisolated static let pixelSizes = [rowPixels, pagePixels]
+
+    private var pixels: Int { size <= 64 ? Self.rowPixels : Self.pagePixels }
 
     private var key: String? {
         photoVersion.map { RolodexPhotoCache.key(personId: personId, photoVersion: $0, pixels: pixels) }

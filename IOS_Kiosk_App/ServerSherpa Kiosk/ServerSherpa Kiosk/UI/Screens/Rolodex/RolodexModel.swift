@@ -85,7 +85,7 @@ extension KioskPersonRow {
 /// connection it shows the last list this admin loaded on this kiosk, read-only.
 ///
 /// Network calls, decoding and the list's indexing run off the main actor (`@concurrent`).
-/// Task 10 adds photos and the New worker flow (see the hooks at the end).
+/// Photos and the New worker flow keep their state in `photo` and `newWorker` (their own files).
 @MainActor @Observable
 final class RolodexModel {
     /// Whose list it is: the signed-in admin and the API they signed in to.
@@ -131,10 +131,16 @@ final class RolodexModel {
     /// What went wrong with the last save, in the spec's words.
     private(set) var errorText: String?
 
+    /// The camera badge's new photo, and new workers' photos that didn't upload.
+    let photo: RolodexPhotoFlow
+    /// "+ New".
+    let newWorker: RolodexNewWorkerFlow
+
     @ObservationIgnored private let api: KioskApi
     @ObservationIgnored private let store: KioskStore
     @ObservationIgnored private let owner: @MainActor () -> Owner?
     @ObservationIgnored private let now: () -> Date
+    @ObservationIgnored private let photoCache: RolodexPhotoCache
     @ObservationIgnored private var index: [String: RolodexIndexed] = [:]
     /// When the list on screen came from the server (the offline copy's own time).
     @ObservationIgnored private var listTime: Date?
@@ -144,11 +150,18 @@ final class RolodexModel {
     @ObservationIgnored private var detailToken = 0
 
     /// `owner` is nil while nobody (or no admin) is signed in: nothing loads.
-    init(api: KioskApi, store: KioskStore, owner: @escaping @MainActor () -> Owner?, now: @escaping () -> Date = Date.init) {
+    init(api: KioskApi, store: KioskStore, owner: @escaping @MainActor () -> Owner?, now: @escaping () -> Date = Date.init,
+         photoCache: RolodexPhotoCache = .shared) {
         self.api = api
         self.store = store
         self.owner = owner
         self.now = now
+        self.photoCache = photoCache
+        let photo = RolodexPhotoFlow(api: api, cache: photoCache)
+        self.photo = photo
+        newWorker = RolodexNewWorkerFlow(api: api, photo: photo)
+        photo.host = self
+        newWorker.host = self
     }
 
     // MARK: loading
@@ -322,11 +335,44 @@ final class RolodexModel {
         }
     }
 
-    /// The server's answer to a save (Task 10: a create or a photo upload): the page when it's
-    /// open, the list row, then the Time Clock's roster and the offline copy.
+    /// The server's answer to a save or a create: the page when it's open, the list row, then the
+    /// Time Clock's roster and the offline copy.
     func applyWorker(_ worker: RolodexDetail) async {
         showWorker(worker)
         await persistWorker(worker, generation: generation)
+    }
+
+    /// A worker the New worker flow just created: their page opens from the create's answer (no
+    /// fetch), and they join the list, the Time Clock's roster and the offline copy.
+    func open(_ worker: RolodexDetail) async {
+        if !saving {
+            selectedId = worker.personId
+            detail = worker
+            detailError = nil
+            detailLoading = false
+            detailToken += 1
+            editing = nil
+            errorText = nil
+        }
+        await applyWorker(worker)
+    }
+
+    /// A new photo for `personId` (`RolodexPhotoFlow`): the page (when it's theirs) and the list
+    /// row show it, and the offline copy keeps it. An Edit form in progress is left as typed.
+    func applyPhoto(personId: String, _ out: RolodexPhotoOut) async {
+        if var page = detail, page.personId == personId {
+            page.hasPhoto = true
+            page.photoUrl = out.photoUrl
+            page.photoVersion = out.photoVersion
+            detail = page
+        }
+        if var row = rows.first(where: { $0.personId == personId }) {
+            row.hasPhoto = true
+            row.photoUrl = out.photoUrl
+            row.photoVersion = out.photoVersion
+            upsertRow(row)
+        }
+        if let owner = owner() { await saveCache(owner: owner, generation: generation) }
     }
 
     private func showWorker(_ worker: RolodexDetail) {
@@ -364,7 +410,9 @@ final class RolodexModel {
         editing = nil
         saving = false
         errorText = nil
-        RolodexPhotoCache.shared.removeAll()
+        photo.reset()
+        newWorker.reset()
+        photoCache.removeAll()
         let store = self.store
         return Task { try? await store.clearRolodexCache() }
     }
@@ -531,14 +579,21 @@ final class RolodexModel {
         if mine != generation { try? await store.clearRolodexCache() }
     }
 
-    // MARK: Task 10 (photos and New worker) fills these in
+    // MARK: photos and New worker (state in `photo` and `newWorker`)
 
-    /// The camera badge on the worker page (Take new photo / Choose photo). Nothing yet.
-    func startPhoto() {}
+    /// The camera badge on the worker page: Take new photo / Choose photo, when the worker can be
+    /// edited (`canEdit`: the server allows it and the kiosk is online).
+    func startPhoto() {
+        guard canEdit, let detail else { return }
+        photo.start(for: detail)
+    }
 
-    /// "+ New" in the list header. Off until the New worker flow exists.
-    var canStartNewWorker: Bool { false }
+    /// "+ New" works with a list from the server (not the offline copy) for a signed-in admin.
+    var canStartNewWorker: Bool { loaded && !offline && owner() != nil }
 
-    /// Opens the New worker flow. Nothing yet.
-    func startNewWorker() {}
+    /// Opens the New worker flow with an empty form.
+    func startNewWorker() {
+        guard canStartNewWorker else { return }
+        newWorker.start()
+    }
 }
