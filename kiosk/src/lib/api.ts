@@ -103,7 +103,7 @@ let refreshInFlight: Promise<SessionData | null> | null = null;
 export function refreshSession(): Promise<SessionData | null> {
   refreshInFlight ??= (async () => {
     try {
-      const resp = await fetch(`${apiUrl()}/auth/refresh`, { method: 'POST', credentials: 'include' });
+      const resp = await fetch(`${apiUrl()}/auth/refresh?client=kiosk`, { method: 'POST', credentials: 'include' });
       if (!resp.ok) {
         clearLocalSession();
         return null;
@@ -186,7 +186,7 @@ export async function moveLoginRequest(password: string): Promise<SessionData> {
 
 export async function logoutRequest(): Promise<void> {
   try {
-    await fetch(`${apiUrl()}/auth/logout`, { method: 'POST', credentials: 'include' });
+    await fetch(`${apiUrl()}/auth/logout?client=kiosk`, { method: 'POST', credentials: 'include' });
   } catch {
     /* offline logout still clears local state */
   } finally {

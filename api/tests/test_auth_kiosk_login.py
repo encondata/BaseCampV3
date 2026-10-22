@@ -29,7 +29,7 @@ async def test_kiosk_login_refused_without_kiosk_permission(client, db, seeded_u
         "email": "cv@test.example.com", "password": PW, "client": "kiosk"})
     assert resp.status_code == 403, resp.text
     assert resp.json()["detail"]["code"] == "kiosk_not_allowed"
-    assert "ss_refresh" not in resp.cookies
+    assert "ss_refresh" not in resp.cookies and "ss_portal_refresh" not in resp.cookies
     sessions = (await db.scalars(select(AuthSession))).all()
     assert len(sessions) == 1                      # only make_login's portal login
     account = await db.scalar(select(UserAccount).where(
@@ -47,7 +47,7 @@ async def test_kiosk_login_allowed_for_worker(client, db, seeded_user):
         "email": "w@test.example.com", "password": PW, "client": "kiosk"})
     assert resp.status_code == 200, resp.text
     assert resp.json()["perms"]["kiosk"]["view"] is True
-    assert "ss_refresh" in resp.cookies
+    assert "ss_refresh" in resp.cookies and "ss_portal_refresh" not in resp.cookies
 
 
 async def test_portal_login_unchanged_for_client_viewer(client, db, seeded_user):

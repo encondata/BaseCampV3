@@ -55,7 +55,7 @@ async def test_switch_off_never_challenges_even_when_enrolled(client, db, seeded
     resp = await _login(client)
     assert resp.status_code == 200 and resp.json()["status"] == "ok"
     assert resp.json()["totp"]["enrolled"] is True
-    assert "ss_refresh" in resp.cookies
+    assert "ss_portal_refresh" in resp.cookies and "ss_refresh" not in resp.cookies
 
 
 async def test_enrolled_user_gets_verify_challenge_no_session(client, db, seeded_user):
@@ -66,7 +66,8 @@ async def test_enrolled_user_gets_verify_challenge_no_session(client, db, seeded
     body = resp.json()
     assert body["status"] == "totp_verify" and body["challenge_token"]
     assert body["backup_codes_remaining"] == 8
-    assert "ss_refresh" not in resp.cookies and "access_token" not in body
+    assert "ss_portal_refresh" not in resp.cookies and "ss_refresh" not in resp.cookies
+    assert "access_token" not in body
     assert (await db.scalar(select(AuthSession).where(
         AuthSession.person_id == seeded_user.id))) is None
 
@@ -143,7 +144,8 @@ async def test_verify_right_code_mints_session(client, db, seeded_user):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "ok" and body["access_token"]
-    assert "ss_refresh" in resp.cookies and "ss_trust" not in resp.cookies
+    assert "ss_portal_refresh" in resp.cookies and "ss_trust" not in resp.cookies
+    assert "ss_refresh" not in resp.cookies
     me = await client.get("/auth/me", headers={"Authorization": f"Bearer {body['access_token']}"})
     assert me.status_code == 200 and me.json()["totp"]["enrolled"] is True
 
@@ -186,7 +188,7 @@ async def test_remember_sets_trust_cookie_and_next_login_skips_code(client, db, 
     again = await client.post("/auth/login", json={"email": EMAIL, "password": PW})
     assert again.json()["status"] == "ok"
     # logging out must not clear the trust cookie — only the session
-    logout = await client.post("/auth/logout")
+    logout = await client.post("/auth/logout?client=portal")
     assert logout.status_code == 204
     assert client.cookies.get("ss_trust") == trust
     # but wipe it by hand, and the next login is challenged again
@@ -258,7 +260,8 @@ async def test_forced_enrollment_flow_mints_session(client, db, seeded_user):
     body = good.json()
     assert len(body["backup_codes"]) == 8
     assert body["session"]["status"] == "ok" and body["session"]["totp"]["enrolled"] is True
-    assert "ss_refresh" in good.cookies and "ss_trust" in good.cookies
+    assert "ss_portal_refresh" in good.cookies and "ss_trust" in good.cookies
+    assert "ss_refresh" not in good.cookies
     # the challenge token is spent: the account is enrolled now
     spent = await client.post("/auth/totp/enroll/start", headers=hdrs)
     assert spent.status_code == 401 and spent.json()["detail"]["code"] == "invalid_challenge"
@@ -323,7 +326,7 @@ async def test_self_service_enrollment_no_new_session(client, db, seeded_user):
     good = await client.post("/auth/totp/enroll/confirm", headers=hdrs,
                              json={"code": pyotp.TOTP(secret).now()})
     assert good.status_code == 200 and good.json()["session"] is None
-    assert "ss_refresh" not in good.cookies
+    assert "ss_portal_refresh" not in good.cookies and "ss_refresh" not in good.cookies
     me = await client.get("/auth/me", headers=hdrs)
     assert me.json()["totp"]["enrolled"] is True
     again = await client.post("/auth/totp/enroll/start", headers=hdrs)

@@ -20,7 +20,7 @@ const json = (body: unknown, status = 200) =>
 type Call = [string, RequestInit | undefined];
 /** The calls a test made, without the session refresh apiFetch tries first. */
 const callsOf = (fetchMock: ReturnType<typeof vi.fn>) => (fetchMock.mock.calls as unknown as Call[])
-  .filter(([url]) => !String(url).endsWith('/auth/refresh'));
+  .filter(([url]) => !String(url).includes('/auth/refresh'));
 
 const HI = '\x02ZT411-300dpi,V85.20.19,12,8176KB\x03';
 const HS = '\x02030,0,0,1218,000,0,0,0,000,0,0,0\x03\r\n\x02001,0,0,0,1,2,6,0,00000000,1,000\x03\r\n\x021234,0\x03';
