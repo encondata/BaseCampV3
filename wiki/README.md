@@ -216,8 +216,10 @@ client and renderer.
   and a stored `portal:/sites/:id` are the same context. A lookup matches
   the *longest* stored context that covers the requested one
   (`portal:/bulk` covers `portal:/bulk/time` but not `portal:/bulkx`),
-  skipping any guide the caller can't currently view, and 404s when none
-  qualifies. On a 404, the button instead opens
+  skipping any guide the caller can't currently view, and answers 204 No
+  Content when none qualifies (not a 404: most screens have no guide and
+  the button asks on every page, so an error status would put a red line
+  in the console each time). With no guide, the button instead opens
   `{wiki_origin}/admin/help-links?context=<context>` — the wiki's Help
   links page, wiki administrators only — with "Link a guide" pre-filled
   for exactly that context, so fixing a missing guide is one click from
