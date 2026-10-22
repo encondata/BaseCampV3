@@ -30,6 +30,7 @@ import com.serversherpa.kiosk.data.printer.BluetoothAvailability
 import com.serversherpa.kiosk.data.printer.BluetoothLinkInfo
 import com.serversherpa.kiosk.data.printer.BluetoothPrinterNotFound
 import com.serversherpa.kiosk.data.printer.BluetoothPrinting
+import com.serversherpa.kiosk.data.printer.BluetoothScanEnd
 import com.serversherpa.kiosk.data.printer.FoundBluetoothPrinter
 import com.serversherpa.kiosk.data.printer.LockedZebra
 import com.serversherpa.kiosk.data.printer.PrinterClearFailed
@@ -41,6 +42,7 @@ import com.serversherpa.kiosk.data.printer.PrinterTimeout
 import com.serversherpa.kiosk.data.printer.PrinterUnreachable
 import com.serversherpa.kiosk.data.printer.SetupZebra
 import com.serversherpa.kiosk.data.printer.WriteProgress
+import com.serversherpa.kiosk.data.printer.ZebraBluetooth
 import com.serversherpa.kiosk.data.printer.ZebraNetwork
 import com.serversherpa.kiosk.data.printer.bluetoothRefusal
 import com.serversherpa.kiosk.data.printer.bluetoothUnavailableText
@@ -234,8 +236,15 @@ data class TroubleshootingUi(
         return link.takeIf { it.info?.serial.equals(c.serial, ignoreCase = true) }
     }
 
-    /** The saved Bluetooth printer last answered at another address than the saved one. */
-    val foundElsewhere: Boolean get() = printerLink?.let { it.savedAddress != null && it.info != null } == true
+    /** The saved Bluetooth printer last answered at another address than the one saved now (the
+     *  link's address against the saved connection's, whatever their case): once the printer is
+     *  chosen again where it answers, which saves that address, nothing is amiss. */
+    val foundElsewhere: Boolean get() {
+        val c = printer?.connection as? PrinterConnection.Bluetooth ?: return false
+        val saved = c.address ?: return false
+        val at = printerLink?.info?.address ?: return false
+        return !saved.equals(at, ignoreCase = true)
+    }
 
     /** The scan's message reads as an error (red); nothing heard, or a scan cut short, is information. */
     val scanError: Boolean get() = scanMessage != null && scanMessage !in SCAN_NOTES
@@ -262,8 +271,11 @@ data class TroubleshootingUi(
  *   sample label through the normal path, so `~JX` goes first. Only the full label may print.
  * - Bluetooth scan: every named device nearby with its signal, Zebras flagged ("why can't I find my
  *   printer?"). It starts only when Scan is tapped (the screen asks for the permissions first), never
- *   during a speed test (it shares the radio and would lower its KB/s). A scan cut short says so.
- * - Report: all of the above and the last [LOG_CAP] log lines, as text to copy or share.
+ *   during a speed test (it shares the radio and would lower its KB/s). A scan a printer call cut
+ *   short says so, and so does one Android wouldn't run; "nothing heard" only after a full scan of a
+ *   ready adapter or Stop.
+ * - Report: all of the above and the last [LOG_CAP] log lines, merged in time with the Bluetooth
+ *   link's own events (`ZebraBluetooth.events`, "Bluetooth: …"), as text to copy or share.
  *
  * Nothing here saves a printer: [settings] is read only. Every call to the printer goes through
  * [LockedZebra] with the app's [PrinterLock] and [PrinterGuard], so nothing interleaves with Print
@@ -319,8 +331,6 @@ class TroubleshootingModel(
     @Volatile private var promptRefused = false
     /** A scan met Bluetooth refusing: scan again once it reads READY (while the tab is open). */
     @Volatile private var rescanWhenReady = false
-    /** Stop ended the scan: it then says when nothing was heard. */
-    @Volatile private var stopTapped = false
     private val logLock = Any()
     private val log = ArrayDeque<TroubleLogLine>()
 
@@ -372,10 +382,12 @@ class TroubleshootingModel(
                 add(DetailLine("Bluetooth address", c.address ?: "Not known yet"))
                 // What Bluetooth last reported (reading it starts nothing).
                 bluetoothStateText(ui.availability)?.let { add(DetailLine("Bluetooth", it)) }
+                // Where the link found it against the address saved now (never saved from here).
                 val at = link?.info?.address
-                if (at != null && link.savedAddress != null) {
-                    add(DetailLine("Found at", "$at (saved ${link.savedAddress})"))
-                } else if (at != null && c.address == null) {
+                val savedAt = c.address
+                if (at != null && savedAt != null && !savedAt.equals(at, ignoreCase = true)) {
+                    add(DetailLine("Found at", "$at (saved $savedAt)"))
+                } else if (at != null && savedAt == null) {
                     add(DetailLine("Found at", at))
                 }
                 val since = link?.connectedAtMs
@@ -675,7 +687,6 @@ class TroubleshootingModel(
 
     /** Stop: the scan ends, and what it heard stays listed. */
     fun stopScan() {
-        if (_state.value.scanning) stopTapped = true
         bluetooth.stopScan()
     }
 
@@ -706,9 +717,6 @@ class TroubleshootingModel(
         }
         if (!started) return
         val run = scanRun.incrementAndGet()
-        stopTapped = false
-        val startedNs = System.nanoTime()
-        val startedAtMs = clock()
         log("Bluetooth scan started")
         scanJob = scope.launch {
             try {
@@ -722,18 +730,19 @@ class TroubleshootingModel(
             scanJob = null
             val refused = bluetoothUnavailableText(bluetooth.availability.value)
             if (refused != null) rescanWhenReady = true
-            // "Nothing heard" only after the full scan or Stop. One that ended early says why: a
-            // printer call took the radio (the link was used since it started), or something else.
-            val ranItsCourse = stopTapped || (System.nanoTime() - startedNs) / 1_000_000 >= ZebraBluetoothSpec.SCAN_MS
-            val printerUsed = (bluetooth.link.value.lastActivityMs ?: Long.MIN_VALUE) >= startedAtMs
+            // "Nothing heard" only after the full scan (30 s of a ready Bluetooth) or Stop. One that
+            // ended early says why (`lastScanEnd`): a printer call took the radio, or Android
+            // wouldn't scan; one closed (the app went to the background) says nothing.
+            val end = bluetooth.lastScanEnd
             var devices = emptyList<FoundBluetoothPrinter>()
             _state.update {
                 devices = it.found.orEmpty()
                 val message = when {
                     refused != null -> refused
-                    ranItsCourse -> if (devices.isEmpty()) NOTHING_HEARD_TEXT else null
-                    printerUsed -> SCAN_CUT_SHORT_TEXT
-                    else -> SCAN_ENDED_EARLY_TEXT
+                    end == BluetoothScanEnd.INTERRUPTED -> SCAN_CUT_SHORT_TEXT
+                    end == BluetoothScanEnd.FAILED -> SCAN_ENDED_EARLY_TEXT
+                    (end == BluetoothScanEnd.FINISHED || end == BluetoothScanEnd.STOPPED) && devices.isEmpty() -> NOTHING_HEARD_TEXT
+                    else -> null
                 }
                 it.copy(scanning = false, scanMessage = message)
             }
@@ -843,8 +852,12 @@ class TroubleshootingModel(
 
         out += ""
         val logs = logLines
-        out += "== Log (${logs.size} lines; the last $LOG_CAP are kept) =="
-        return TroubleshootingReport(name, fit(out.map(::redactSecrets), logs.map { redactSecrets("${clockText(it.atMs, millis = true)}  ${it.text}") }, maxChars))
+        val events = bluetooth.events
+        out += "== Log (${logs.size} lines; the last $LOG_CAP are kept) and Bluetooth link events " +
+            "(${events.size}; the last ${ZebraBluetooth.EVENT_CAP} are kept) =="
+        // The tab's lines and the link's events in time order (a stable sort keeps each in its own order).
+        val merged = (logs + events.map { TroubleLogLine(it.atMs, "Bluetooth: ${it.text}") }).sortedBy { it.atMs }
+        return TroubleshootingReport(name, fit(out.map(::redactSecrets), merged.map { redactSecrets("${clockText(it.atMs, millis = true)}  ${it.text}") }, maxChars))
     }
 
     /** The report for Copy and Share, at most [SHARE_MAX_CHARS], built on [reportDispatcher]: a
@@ -1215,11 +1228,11 @@ private fun maskValues(line: String, structured: Boolean, spans: MutableList<Int
             out.mask(valueStart, end, masked(first))
             if (first == '{' || first == '[') {
                 // An object or array pairs with nothing itself: what is glued to its close and what
-                // follows wait for the second pass, which reads the line with every quoted value
-                // masked. But a key inside it may open a quoted value that runs on past its close
+                // follows wait for pass 3, which reads the line with every quoted value masked. But
+                // a key inside it may open a quoted value that runs on past its close
                 // (`psk={"password:"} x`, `pin=["x","psk="] x`), as a key inside a quoted text may
                 // (`token:<09>"&session_id:"x`): that text is noted, and the scan goes on from the
-                // close as before, so the second pass still finds what it would have.
+                // close as before, so pass 3 still finds what it would have.
                 reopenPast(line, valueStart, end, spans)
                 i = end
             } else {
@@ -1228,7 +1241,7 @@ private fun maskValues(line: String, structured: Boolean, spans: MutableList<Int
                 i = maskChain(line, out, valueStart, end, spans)
             }
         } else {
-            // Quoted values went in the first pass; an object or array (masked then) also takes
+            // Quoted values went in pass 2; an object or array (masked then) also takes
             // anything glued to its close (`{[redacted]}x`), as an unquoted value would, but not a
             // parent's closing braces (`{"tokens":["x"]}` keeps its last `}`).
             if (first == '"' || first == '\'') continue
@@ -1265,11 +1278,11 @@ private fun maskValues(line: String, structured: Boolean, spans: MutableList<Int
  *    held the next name, so that name's value goes, whatever the name was. When that name is
  *    `Authorization`'s (`pin:"a":Authorization: Basic cred`), its scheme's credential goes too, as
  *    it does when the scan finds the name ([credentialAfter]).
- *  - An object or array masked here also takes anything glued to its close, as a value in the
- *    second pass does: a name inside it may pair with a value running past the close. In the
- *    second pass ([showClosers]) a parent's closing braces glued there (`{"pin":a: {"c":1}}`) are
- *    shown, and the chain looks on from after them; the first pass hides them as before, since the
- *    second reads its output for structure, and a brace shown there could close an object early.
+ *  - An object or array masked here also takes anything glued to its close, as a value in pass 3
+ *    does: a name inside it may pair with a value running past the close. In pass 3
+ *    ([showClosers]) a parent's closing braces glued there (`{"pin":a: {"c":1}}`) are shown, and
+ *    the chain looks on from after them; pass 2 hides them as before, since pass 3 reads its output
+ *    for structure, and a brace shown there could close an object early.
  *    A key inside it may open a quoted value running on past the close too: that text is noted
  *    ([reopenPast]) and the chain reads on from the close as before. */
 private fun maskChain(line: String, out: Masker, start: Int, end: Int, spans: MutableList<Int>, showClosers: Boolean = false): Int {
@@ -1336,8 +1349,8 @@ private fun maskChain(line: String, out: Masker, start: Int, end: Int, spans: Mu
 /** When a key and separator inside the object or array at [start] until [end] open a quoted value
  *  of their own that runs on past the close ([reopenedQuote]), notes the text from [end] to that
  *  value's end in [spans]: it is masked at the end, on top of whatever the passes make of it, so
- *  that they still read the line as if the value had closed where it did (the second pass pairs
- *  what follows the close, and finds the names after it, as before). */
+ *  that they still read the line as if the value had closed where it did (pass 3 pairs what
+ *  follows the close, and finds the names after it, as before). */
 private fun reopenPast(line: String, start: Int, end: Int, spans: MutableList<Int>) {
     val reopened = reopenedQuote(line, start, end)
     if (reopened < 0) return
@@ -1353,16 +1366,30 @@ private fun beforeClosers(line: String, from: Int, to: Int): Int {
     return end
 }
 
-/** When the unquoted value at [at] until [end], masked in a chain, is an `…authorization` name and
- *  its separator (`Authorization:`, `Authorization=Basic`), how many values along the chain its
- *  credential follows: 1 when its scheme is in this value, 2 when the scheme is the next value. 0
- *  for any other value. */
+/** When the value at [at] until [end], masked in a chain, is an `…authorization` name and its
+ *  separator (`Authorization:`, `Authorization=Basic`), or a quoted one with a `:` or `=` after its
+ *  closing quote (`"Authorization": Basic`, `'Authorization'=Basic`), how many values along the
+ *  chain its credential follows: 1 when its scheme is in this value, 2 when the scheme is the next
+ *  value. 0 for any other value (an object or array, a quoted text with no separator after it). */
 private fun credentialAfter(line: String, at: Int, end: Int): Int {
-    if (line[at] == '"' || line[at] == '\'' || line[at] == '{' || line[at] == '[') return 0
-    var nameEnd = at
-    while (nameEnd < end && isNameChar(line[nameEnd])) nameEnd++
-    if (!line.substring(at, nameEnd).contains("authorization", ignoreCase = true)) return 0
-    val valueStart = separatorEnd(line, nameEnd)
+    val first = line[at]
+    if (first == '{' || first == '[') return 0
+    val valueStart: Int
+    if (first == '"' || first == '\'') {
+        // The name is the quoted text (read once, within this value): a separator must follow the
+        // closing quote, as it must an unquoted name.
+        val close = quotedEnd(line, at)
+        if (close > end || close - at < 3 || line[close - 1] != first) return 0
+        if (!line.substring(at + 1, close - 1).contains("authorization", ignoreCase = true)) return 0
+        val j = skipSpaces(line, close)
+        if (j >= line.length || (line[j] != ':' && line[j] != '=')) return 0
+        valueStart = skipSpaces(line, j + 1)
+    } else {
+        var nameEnd = at
+        while (nameEnd < end && isNameChar(line[nameEnd])) nameEnd++
+        if (!line.substring(at, nameEnd).contains("authorization", ignoreCase = true)) return 0
+        valueStart = separatorEnd(line, nameEnd)
+    }
     return when {
         valueStart < 0 -> 0
         valueStart < end -> 1

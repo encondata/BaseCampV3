@@ -822,7 +822,7 @@ class PrinterSetupViewModelTest {
     }
 
     /** Runs [test] on a fresh line to the saved printer; a failing check lets go of any held
-     *  connection, so a label going out (it can't be cancelled) still ends and the test fails
+     *  connection, so a label going out (it can't be canceled) still ends and the test fails
      *  instead of hanging. */
     private fun withLine(test: suspend CoroutineScope.(FakeLine) -> Unit) = runBlocking<Unit> {
         val line = FakeLine()

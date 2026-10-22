@@ -174,7 +174,7 @@ class BluetoothPrinterListTest {
         assertEquals(listOf(renamed), chosen)
     }
 
-    /** Off, not allowed and (API 30) Location off: the message, and a button that opens the screen
+    /** Off, not allowed and Location off: the message, and a button that opens the screen
      *  that fixes it. No Bluetooth LE: the message alone (nothing on the device can fix it). */
     @Test
     @GraphicsMode(GraphicsMode.Mode.NATIVE)

@@ -19,7 +19,7 @@ import kotlinx.coroutines.withContext
  * apply the container's [PrinterGuard] inside it.
  *
  * It only serializes: no check, poll or wait of its own. Callers go in the order they asked (the
- * coroutine [Mutex] is fair), and a caller cancelled while it waits leaves the queue without ever
+ * coroutine [Mutex] is fair), and a caller canceled while it waits leaves the queue without ever
  * holding the lock.
  */
 class PrinterLock {
@@ -83,7 +83,7 @@ class TransportSetupZebra(val transport: ZebraTransport) : SetupZebra {
  * send or font install while a font is cut. An answered [identify] lifts that stop unless
  * [liftsStop] is off (Printer Setup's probe of a printer being chosen, before it is saved).
  *
- * A send or font install whose caller is cancelled (its screen closed) while it waits for the lock
+ * A send or font install whose caller is canceled (its screen closed) while it waits for the lock
  * never starts; once it holds the lock it finishes, its `~JX` included, bounded by the transport's
  * own deadline: cut off, the printer would hold half a label, or wait for the rest of a font (D8).
  */

@@ -2,6 +2,7 @@ package com.serversherpa.kiosk.ui.screens.settings
 
 import com.serversherpa.kiosk.core.labels.LabelKind
 import com.serversherpa.kiosk.core.labels.LabelPick
+import com.serversherpa.kiosk.core.labels.LabelSettings
 import com.serversherpa.kiosk.core.labels.PrinterConnection
 import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.printer.BLUETOOTH_DENIED_TEXT
@@ -15,9 +16,11 @@ import com.serversherpa.kiosk.core.settings.SettingsTabId
 import com.serversherpa.kiosk.core.settings.visibleTabs
 import com.serversherpa.kiosk.data.printer.BluetoothAvailability
 import com.serversherpa.kiosk.data.printer.BluetoothDrop
+import com.serversherpa.kiosk.data.printer.BluetoothLinkEvent
 import com.serversherpa.kiosk.data.printer.BluetoothLinkInfo
 import com.serversherpa.kiosk.data.printer.BluetoothPairingLost
 import com.serversherpa.kiosk.data.printer.BluetoothPrinterInfo
+import com.serversherpa.kiosk.data.printer.BluetoothScanEnd
 import com.serversherpa.kiosk.data.printer.BluetoothUnavailable
 import com.serversherpa.kiosk.data.printer.FakeBluetoothPrinting
 import com.serversherpa.kiosk.data.printer.FoundBluetoothPrinter
@@ -487,17 +490,26 @@ class TroubleshootingModelTest {
         m.appResumed(permitted = true)
         eventually("scanning after the permission") { bluetooth.scans == refusedAt + 1 }
 
-        // A printer call that takes the radio cuts the scan short: it says so. One that ends early
-        // otherwise (the app went to the background) says only that.
-        bluetooth.link.value = bluetooth.link.value.copy(lastActivityMs = System.currentTimeMillis() + 1_000)
-        bluetooth.endScan()
+        // A printer call that takes the radio cuts the scan short: it says so (as information). One
+        // Android wouldn't run says so too; one closed (the app went to the background) says nothing;
+        // one that ran its full 30 s of a ready Bluetooth with nothing heard says so.
+        bluetooth.endScan() // interrupted by a printer call
         eventually("cut short") { m.state.value.scanMessage == SCAN_CUT_SHORT_TEXT }
         assertFalse(m.state.value.scanError)
-        bluetooth.link.value = bluetooth.link.value.copy(lastActivityMs = null)
         m.scan()
         eventually("scanning") { bluetooth.scanning }
-        bluetooth.endScan()
+        bluetooth.endScan(BluetoothScanEnd.FAILED)
         eventually("ended early") { m.state.value.scanMessage == SCAN_ENDED_EARLY_TEXT }
+        assertFalse(m.state.value.scanError)
+        m.scan()
+        eventually("scanning") { bluetooth.scanning }
+        bluetooth.endScan(BluetoothScanEnd.CLOSED)
+        eventually("ended") { !m.state.value.scanning }
+        assertNull(m.state.value.scanMessage)
+        m.scan()
+        eventually("scanning") { bluetooth.scanning }
+        bluetooth.finishScan()
+        eventually("nothing heard") { m.state.value.scanMessage == NOTHING_HEARD_TEXT }
 
         // Leaving the tab ends the scan; nothing scans while it is away.
         m.scan()
@@ -623,6 +635,82 @@ class TroubleshootingModelTest {
         bluetooth.link.value = link.copy(mtu = null, chunkBytes = 20)
         eventually("no MTU") { m.state.value.link.mtu == null }
         assertTrue(DetailLine("Write size", "20 bytes per chunk (the MTU request failed)") in m.connectionLines())
+    }
+
+    /** F3: the "Found at B (saved A)" line and the amber notice follow the address saved now against
+     *  the link's, so once the operator chooses the printer again at B (which saves B) they go,
+     *  whatever the link recorded when it came up; the address's case doesn't matter. */
+    @Test fun reChoosingAtTheFoundAddressClearsTheMismatch() = runBlocking<Unit> {
+        val settings = FixedSettings(bluetoothPrinter)
+        val m = TroubleshootingModel(
+            settings, bluetooth, { zebra }, lock, guard, isAdmin = { false }, isDeveloper = { false },
+            device = { DEVICE_TEXT }, scopeOverride = scope, zone = ZoneOffset.UTC,
+        )
+        eventually("settings read") { m.state.value.settings != null }
+        val link = BluetoothLinkInfo(
+            connected = true,
+            info = BluetoothPrinterInfo(FOUND_ADDRESS, "Zebra Technologies", "ZD421", ZD421_SERIAL, "V93.21.38Z", "7.3"),
+            chunkBytes = 244, mtu = 247, connectedAtMs = 1_792_000_000_000L, lastActivityMs = 1_792_000_000_000L, savedAddress = SAVED_ADDRESS,
+        )
+        bluetooth.link.value = link
+        eventually("link shown") { m.state.value.link == link }
+        assertTrue(m.state.value.foundElsewhere)
+        assertTrue(DetailLine("Found at", "$FOUND_ADDRESS (saved $SAVED_ADDRESS)") in m.connectionLines())
+        assertTrue(m.report().text.contains("Found at: $FOUND_ADDRESS (saved $SAVED_ADDRESS)"))
+
+        // Chosen again at B in Printer Setup (the link stays up, its record as it was): saved at B.
+        settings.settings.value = LabelSettings(printer = bluetoothPrinter.copy(connection = PrinterConnection.Bluetooth(ZD421_SERIAL, FOUND_ADDRESS.lowercase())))
+        eventually("saved at B") { (m.state.value.printer?.connection as? PrinterConnection.Bluetooth)?.address == FOUND_ADDRESS.lowercase() }
+        assertFalse(m.state.value.foundElsewhere)
+        assertTrue(m.connectionLines().none { it.label == "Found at" })
+        assertFalse(m.report().text.contains("Found at"))
+        assertTrue(DetailLine("Bluetooth address", FOUND_ADDRESS.lowercase()) in m.connectionLines())
+
+        // Saved with no address at all: where it was found, with no mismatch.
+        settings.settings.value = LabelSettings(printer = bluetoothPrinter.copy(connection = PrinterConnection.Bluetooth(ZD421_SERIAL, null)))
+        eventually("no address") { (m.state.value.printer?.connection as? PrinterConnection.Bluetooth)?.address == null }
+        assertFalse(m.state.value.foundElsewhere)
+        assertTrue(DetailLine("Found at", FOUND_ADDRESS) in m.connectionLines())
+
+        // Saved at A again while the link is up at B: the mismatch shows, whatever the link recorded.
+        settings.settings.value = LabelSettings(printer = bluetoothPrinter)
+        bluetooth.link.value = link.copy(savedAddress = null)
+        eventually("saved at A") {
+            (m.state.value.printer?.connection as? PrinterConnection.Bluetooth)?.address == SAVED_ADDRESS && m.state.value.link.savedAddress == null
+        }
+        assertTrue(m.state.value.foundElsewhere)
+        assertTrue(DetailLine("Found at", "$FOUND_ADDRESS (saved $SAVED_ADDRESS)") in m.connectionLines())
+        assertTrue(bluetooth.connects.isEmpty())
+    }
+
+    /** The report's log carries the Bluetooth link's own events ("Bluetooth: …") beside the tab's
+     *  lines, in time order (ties keep each list's order), under a header that counts both, and
+     *  the redaction runs over them too. */
+    @Test fun theReportMergesTheLinksEventsIntoTheLogByTime() = runBlocking<Unit> {
+        var now = 1_792_000_000_000L
+        val m = TroubleshootingModel(
+            FixedSettings(bluetoothPrinter), bluetooth, { zebra }, lock, guard, isAdmin = { false }, isDeveloper = { false },
+            device = { DEVICE_TEXT }, scopeOverride = scope, clock = { now }, zone = ZoneOffset.UTC,
+        )
+        eventually("settings read") { m.state.value.settings != null }
+        m.log("first tab line")
+        bluetooth.events += BluetoothLinkEvent(now - 60_000, "Connect to D8J224508535 started")
+        bluetooth.events += BluetoothLinkEvent(now + 500, "Link dropped: The link closed")
+        bluetooth.events += BluetoothLinkEvent(now + 500, "Reconnect try 1 of 3 in 3 s")
+        now += 1_000
+        m.log("second tab line")
+        bluetooth.events += BluetoothLinkEvent(now + 10, "Connect failed: password=hunter2")
+        val text = m.report(nowMs = now + 5_000).text
+        assertTrue(text, text.contains("== Log (2 lines; the last 5000 are kept) and Bluetooth link events (4; the last 500 are kept) =="))
+        val order = listOf(
+            "  Bluetooth: Connect to D8J224508535 started", "  first tab line", "17:46:40.500  Bluetooth: Link dropped: The link closed",
+            "  Bluetooth: Reconnect try 1 of 3 in 3 s", "  second tab line", "  Bluetooth: Connect failed: password=[redacted]",
+        )
+        val positions = order.map { line -> text.indexOf(line).also { assertTrue(line, it >= 0) } }
+        assertEquals(positions, positions.sorted())
+        assertFalse(text.contains("hunter2"))
+        // The tab's own log keeps only its lines.
+        assertEquals(listOf("first tab line", "second tab line"), m.logLines.map { it.text })
     }
 
     // --- Report (ruling 4) ---
@@ -1251,6 +1339,11 @@ class TroubleshootingModelTest {
             "pin:\"a\":Proxy-Authorization: Basic cred" to "pin:\"[redacted]\":[redacted] [redacted] [redacted]",
             "pin:\"a\":Authorization=Basic cred" to "pin:\"[redacted]\":[redacted] [redacted]",
             "pin=Authorization: Basic cred" to "pin=[redacted] [redacted] [redacted]",
+            // The name quoted (a JSON key, say) and reached by a chain: the same, when a separator follows the quote.
+            "pin:\"a\":\"Authorization\": Basic cred" to "pin:\"[redacted]\":\"[redacted]\": [redacted] [redacted]",
+            "pin:\"a\":'Authorization': Basic cred" to "pin:\"[redacted]\":'[redacted]': [redacted] [redacted]",
+            "pin:\"a\":\"Proxy-Authorization\"=Basic cred" to "pin:\"[redacted]\":\"[redacted]\"=[redacted] [redacted]",
+            "pin:\"a\":\"Authorization\": \"Basic\" cred" to "pin:\"[redacted]\":\"[redacted]\": \"[redacted]\" cred",
             "pin:\"a\":psk: x y" to "pin:\"[redacted]\":[redacted] [redacted] y",
             "Authorization: Basic cred" to "Authorization: [redacted] [redacted]",
             "Authorization: \"Basic\" cred" to "Authorization: \"[redacted]\" cred",

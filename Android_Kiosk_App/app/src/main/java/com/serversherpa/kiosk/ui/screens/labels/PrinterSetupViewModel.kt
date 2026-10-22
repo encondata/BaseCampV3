@@ -306,7 +306,7 @@ class PrinterSetupViewModel(
         LockedZebra(zebraFor(p), p.connection, printerLock, printerGuard, liftsStop = false)
     }
     /** Cancel was tapped during a font install: checked between fonts only. */
-    @Volatile private var installCancelled = false
+    @Volatile private var installCanceled = false
     /** The font going out (its number, the bytes of the fonts after it, whether it goes over
      *  Bluetooth, and its first progress report): only its progress is shown. */
     private class FontGoingOut(val id: Int, val bytesAfter: Long, val overBluetooth: Boolean) {
@@ -934,7 +934,7 @@ class PrinterSetupViewModel(
     fun installFonts() {
         val fix = _state.value.fontFix ?: return
         if (_state.value.busy || fix.installable.isEmpty()) return
-        installCancelled = false
+        installCanceled = false
         installRate = null
         _state.update { it.copy(installing = true, installStopping = false, fontMessage = null, fontError = false) }
         scope.launch {
@@ -952,7 +952,7 @@ class PrinterSetupViewModel(
             val sizes = fix.installable.map { (files[it.name.uppercase()]?.size ?: 0).coerceAtLeast(0).toLong() }
             try {
                 for ((index, font) in fix.installable.withIndex()) {
-                    if (installCancelled || !isActive) {
+                    if (installCanceled || !isActive) {
                         stopped = true
                         break
                     }
@@ -1001,7 +1001,7 @@ class PrinterSetupViewModel(
      *  one would leave the printer taking whatever comes next as font data (D8). */
     fun cancelInstall() {
         if (!_state.value.installing) return
-        installCancelled = true
+        installCanceled = true
         _state.update { it.copy(installStopping = true) }
     }
 

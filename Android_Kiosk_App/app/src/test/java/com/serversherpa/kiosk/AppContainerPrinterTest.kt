@@ -130,18 +130,22 @@ class AppContainerPrinterTest {
         }
     }
 
-    /** The link's scope is the container's child: cancelling the container's scope stops it (a call
-     *  after that is cancelled, and never reaches the adapter). */
+    /** The link's scope is the container's child: canceling the container's scope stops it (a call
+     *  after that is canceled, and never reaches the adapter). */
     @Test fun linkStopsWithTheContainersScope() = runBlocking<Unit> {
         val fake = FakeBluetoothLe()
         fake.printer(address)
         val c = testContainer(bluetooth = fake)
-        c.linkUp(fake)
-        val connects = fake.connects.size
-        c.shutDown()
-        val after = runCatching { c.zebraBluetooth.connect("AC:3F:A4:00:00:09", "XXJ224508599") }
-        assertTrue("$after", after.exceptionOrNull() is CancellationException)
-        assertEquals(connects, fake.connects.size)
+        try {
+            c.linkUp(fake)
+            val connects = fake.connects.size
+            withTimeout(10_000) { c.scope.coroutineContext[Job]!!.cancelAndJoin() }
+            val after = runCatching { c.zebraBluetooth.connect("AC:3F:A4:00:00:09", "XXJ224508599") }
+            assertTrue("$after", after.exceptionOrNull() is CancellationException)
+            assertEquals(connects, fake.connects.size)
+        } finally {
+            c.shutDown()
+        }
     }
 
     /** Saving the printer the link is already up to (Printer Setup brought it up to choose it)
