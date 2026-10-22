@@ -103,15 +103,19 @@ what would make step 2 delete something it shouldn't.
 
 ## Dry runs
 
-Both were run in a throwaway worktree that was thrown away afterward. The
-second used the commands above exactly as written.
+Each was run in a throwaway worktree that was thrown away afterward. The
+runs after the main merge used the commands above exactly as written.
 
 - **2026-10-22, before the main merge** (base `798ba91b`): both packages and
   every marked line deleted. 574 tests passed and `assembleDebug` built.
-- **2026-10-22, after the main merge** (base `cc7b3288`, Time Clock station
-  and database v3 merged in): 21 marked lines and both packages deleted,
-  `git grep` found nothing left. 716 tests passed and `assembleDebug` built.
-  (The first attempt had one failure, `RfidPanelTest.restoreDefaultsPutsEverythingBack`,
-  which expected a power of 27 and read 9. It passes on its own and the whole
-  suite passed on the rerun. It looks like a timing flake in that Compose
-  test, and it doesn't touch Internet Test code.)
+- **2026-10-22, after the main merge** (Time Clock station and database v3
+  merged in), run twice: on `cc7b3288` and on `17a7ec0d`, which adds this file
+  and the guard test. Both times 21 marked lines and both packages were
+  deleted, `git grep` found nothing left, and 716 tests passed and
+  `assembleDebug` built. Both times the first run in the fresh worktree had
+  one failure in a Compose test that passes on its own (first
+  `RfidPanelTest.restoreDefaultsPutsEverythingBack`, then
+  `StationModeTest.theTimeClockTileFetchesAMissingKeyFirst`), and the rerun was
+  clean. It isn't removal: the same cold first run of `17a7ec0d` with nothing
+  deleted failed `RfidPanelTest` the same way (839 tests, 1 failed). If a first
+  run in a new worktree fails in a Compose test, rerun it.
