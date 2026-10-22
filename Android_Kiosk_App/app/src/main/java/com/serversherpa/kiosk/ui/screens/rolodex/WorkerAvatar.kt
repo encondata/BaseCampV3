@@ -32,7 +32,7 @@ import com.serversherpa.kiosk.ui.screens.timeclock.screens.loadPhoto
 import com.serversherpa.kiosk.ui.theme.Geologica
 
 /** Photos are decoded no larger than this (Rolodex photos are 512 px; a portal upload may be far bigger). */
-private const val PHOTO_DECODE_PX = 384
+internal const val PHOTO_DECODE_PX = 384
 
 /**
  * Worker photos already fetched, in memory, keyed by person and photo version: never by the

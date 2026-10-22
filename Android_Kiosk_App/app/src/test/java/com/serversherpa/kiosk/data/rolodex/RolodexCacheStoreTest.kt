@@ -120,6 +120,18 @@ class RolodexCacheStoreTest {
         } finally { watch.cancel() }
     }
 
+    /** start() watches the session: the start-up restore that finds no session clears the list
+     *  (with the watch left out of start(), the row stays and this fails). */
+    @Test fun startingTheAppWatchesTheSession() {
+        val c = testContainer(api = FakeKioskApi())
+        runBlocking { c.db.meta().put(MetaEntity(ROLODEX_META_KEY, "{}")) }
+        try {
+            c.start()                              // restores (refused: nothing listens on 127.0.0.1:1) → signed out
+            waitFor("the restore's sign-out") { c.auth.state.value == AuthState.Anon }
+            waitFor("the list cleared by start()'s watch") { row(c.db) == null }
+        } finally { c.scope.cancel() }
+    }
+
     /** Signing out from the shell: its scope is cancelled once the session is gone, mid-logout. The
      *  delete must still run (NonCancellable in the store). */
     @Test fun signOutStillClearsTheListWhenItsScopeIsCancelledMidWay() = runBlocking<Unit> {

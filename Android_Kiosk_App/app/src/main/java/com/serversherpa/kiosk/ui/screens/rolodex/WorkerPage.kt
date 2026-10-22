@@ -24,7 +24,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -40,8 +42,13 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -53,18 +60,24 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.serversherpa.kiosk.core.model.RolodexDetail
 import com.serversherpa.kiosk.core.people.BLACKLIST_STATUS
 import com.serversherpa.kiosk.core.people.RolodexEdit
 import com.serversherpa.kiosk.core.people.fold
 import com.serversherpa.kiosk.core.people.matchesTerms
 import com.serversherpa.kiosk.core.people.queryTerms
+import com.serversherpa.kiosk.input.camera.PhotoCaptureSheet
+import com.serversherpa.kiosk.input.camera.PhotoStepBar
+import com.serversherpa.kiosk.input.camera.PhotoStepsWindow
+import com.serversherpa.kiosk.input.camera.rememberPhotoPicker
 import com.serversherpa.kiosk.ui.components.CameraIcon
 import com.serversherpa.kiosk.ui.components.KioskToast
 import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.components.PageHeader
 import com.serversherpa.kiosk.ui.components.Segmented
 import com.serversherpa.kiosk.ui.components.SolidButton
+import com.serversherpa.kiosk.ui.components.lineIcon
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.TcChevronIcon
 import com.serversherpa.kiosk.ui.theme.ChipTone
 import com.serversherpa.kiosk.ui.theme.FragmentMono
@@ -81,8 +94,9 @@ private fun statusBlockedText(reason: String?): String =
  * The selected worker's page (mockup 4-photo-required-and-worker-page): the photo with its camera
  * badge, name, "job title · company", status and RFID chips, then the Contact and Work cards. Edit
  * switches the cards to fields. Before the page loads, and offline, it shows what the list row
- * knows. [onBack] is the phone's "‹ Rolodex" (null in the split view); [onPhoto] is the photo
- * sheet's hook (Task 7), and the badge is disabled while it is null.
+ * knows. [onBack] is the phone's "‹ Rolodex" (null in the split view); [onPhoto] opens the photo
+ * sheet ([WorkerPhotoScreens]). The badge is off without it, when the worker can't be edited, and
+ * offline (spec §3.17). A new worker whose photo didn't upload gets the failure box with Try again.
  */
 @Composable
 internal fun WorkerPage(
@@ -177,6 +191,9 @@ private fun ColumnScope.WorkerView(ui: RolodexUi, vm: RolodexViewModel, wide: Bo
         KioskToast(ui.error, error = true)
         if (detail == null && !ui.detailLoading) MiniButton("Try again", onClick = { vm.select(personId) })
     }
+    // A new worker whose photo didn't upload after the create (spec §3.6).
+    val photoUi by vm.photos.state.collectAsStateWithLifecycle()
+    photoUi.failures[personId]?.let { failure -> PhotoRetry(failure, offline = ui.offline) { vm.retryPhoto(personId) } }
 
     InfoCard("Contact") {
         if (detail == null) {
@@ -199,6 +216,107 @@ private fun ColumnScope.WorkerView(ui: RolodexUi, vm: RolodexViewModel, wide: Bo
         detail?.status_note?.takeIf { it.isNotBlank() }?.let { Field("Status note", it) }
     }
 }
+
+/**
+ * "Marcus Reed was saved, but the photo didn't upload." with Try again (the same photo), and why
+ * the last try failed. Try again needs a connection (spec §3.15).
+ */
+@Composable
+private fun PhotoRetry(failure: PhotoFailure, offline: Boolean, onRetry: () -> Unit) {
+    val c = LocalKioskColors.current
+    Column(
+        Modifier.fillMaxWidth().padding(top = 8.dp).background(ChipTone.RED.bg, RoundedCornerShape(10.dp))
+            .border(1.dp, ChipTone.RED.border, RoundedCornerShape(10.dp)).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            photoFailureText(failure.name), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold,
+            color = if (c.isDark) c.textDark else lerp(ChipTone.RED.text, Color.Black, 0.3f), modifier = Modifier.testTag("photo-failed"),
+        )
+        failure.retryError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.textMute) }
+        if (offline) Text("Changes need a connection.", style = MaterialTheme.typography.bodySmall, color = c.textMute)
+        MiniButton(
+            if (failure.retrying) "Uploading…" else "Try again", onClick = onRetry, enabled = !failure.retrying && !offline,
+            borderColor = ChipTone.RED.border, modifier = Modifier.testTag("photo-retry"),
+        )
+    }
+}
+
+/**
+ * The camera badge's screens (mockup 4): "Photo for Ana Ortiz" (Take new photo when the device has
+ * a camera, Choose photo, Cancel), then the camera or the library, "Position your photo", and Use
+ * photo. Every bit of state is in [RolodexPhotoFlow].
+ */
+@Composable
+internal fun WorkerPhotoScreens(vm: RolodexViewModel, hasCamera: Boolean) {
+    val c = LocalKioskColors.current
+    val photos = vm.photos
+    val ui by photos.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current.applicationContext
+    val pick = rememberPhotoPicker { uri -> photos.use { decodeForCrop(context, uri) } }
+    val target = ui.target ?: return
+
+    if (ui.sheet) {
+        Dialog(onDismissRequest = photos::close) {
+            Column(Modifier.fillMaxWidth().background(c.paper, RoundedCornerShape(16.dp)).padding(vertical = 12.dp)) {
+                Text(
+                    "Photo for ${target.name}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = c.textDark,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp).semantics { heading() },
+                )
+                if (hasCamera) SheetOption(CameraIcon, "Take new photo", "photo-take", photos::takePhoto)
+                SheetOption(PictureIcon, "Choose photo", "photo-library") { photos.closeSheet(); pick() }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = photos::close, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel", color = c.accent, fontWeight = FontWeight.SemiBold) }
+                }
+            }
+        }
+    }
+
+    if (ui.stage != PhotoStage.NONE) {
+        PhotoStepsWindow(onBack = { if (ui.stage == PhotoStage.CROP) photos.retake() else photos.close() }) { insets ->
+            val crop = ui.crop
+            when {
+                ui.stage == PhotoStage.CROP && crop != null -> PhotoCropScreen(
+                    crop, useLabel = "Use photo", busyText = if (ui.uploading) "Saving…" else null, errorText = ui.error,
+                    onRetake = photos::retake, onUse = photos::usePhoto, insets = insets,
+                )
+                ui.stage == PhotoStage.LOADING -> Column(Modifier.fillMaxSize()) {
+                    PhotoStepBar("Cancel", backEnabled = true, title = "Photo", onBack = photos::close, topInset = insets.calculateTopPadding())
+                    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Text("Loading photo…", style = MaterialTheme.typography.labelLarge, color = Color.White)
+                    }
+                }
+                else -> PhotoCaptureSheet(
+                    backLabel = "Cancel", onBack = photos::close, hasCamera = hasCamera, busyText = null, errorText = ui.error,
+                    onCapture = { bytes -> photos.use { decodeForCrop(bytes) } }, onLibrary = pick, insets = insets,
+                )
+            }
+        }
+    }
+}
+
+/** A row of the photo sheet: an icon and the action. */
+@Composable
+private fun SheetOption(icon: ImageVector, text: String, tag: String, onClick: () -> Unit) {
+    val c = LocalKioskColors.current
+    Row(
+        Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onClick).heightIn(min = 52.dp).padding(horizontal = 18.dp).testTag(tag),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = c.textDark, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(14.dp))
+        Text(text, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, color = c.textDark)
+    }
+}
+
+/** Choose photo: a framed picture. */
+private val PictureIcon: ImageVector = lineIcon(
+    "picture",
+    listOf("M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z", "M3 16l5-5 4 4 3-3 6 6"),
+    fills = listOf("M15.5 8a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z"),
+)
 
 /** The photo (white ring, soft shadow) with the amber camera badge at its lower right. */
 @Composable
@@ -325,7 +443,7 @@ private fun EditForm(ui: RolodexUi, detail: RolodexDetail, start: RolodexEdit, v
 }
 
 @Composable
-private fun TextBox(
+internal fun TextBox(
     label: String, value: String, saving: Boolean, tag: String, modifier: Modifier,
     words: Boolean = false, keyboard: KeyboardType = KeyboardType.Text, onChange: (String) -> Unit,
 ) {
@@ -339,13 +457,17 @@ private fun TextBox(
     )
 }
 
-/** A field-shaped button that opens a picker: an outlined box like the text fields, with a chevron. */
+/**
+ * A field-shaped button that opens a picker: an outlined box like the text fields, with a chevron.
+ * [hint] shows [value] muted, as a prompt ("Choose a company") rather than a choice.
+ */
 @Composable
-private fun PickBox(label: String, value: String, saving: Boolean, tag: String, modifier: Modifier, onClick: () -> Unit) {
+internal fun PickBox(label: String, value: String, saving: Boolean, tag: String, modifier: Modifier, hint: Boolean = false, onClick: () -> Unit) {
     val c = LocalKioskColors.current
     Box(modifier) {
         OutlinedTextField(
             value, {}, label = { Text(label) }, singleLine = true, readOnly = true, enabled = !saving,
+            textStyle = if (hint) LocalTextStyle.current.copy(color = c.textMute) else LocalTextStyle.current,
             trailingIcon = { Icon(TcChevronIcon, contentDescription = null, tint = c.textMute, modifier = Modifier.size(18.dp)) },
             modifier = Modifier.fillMaxWidth(),
         )
@@ -356,7 +478,7 @@ private fun PickBox(label: String, value: String, saving: Boolean, tag: String, 
 
 /** A list to pick one from (the app has no dropdowns): a search box above long lists. */
 @Composable
-private fun PickerDialog(title: String, choices: List<Pair<String?, String>>, selected: String?, onPick: (String?) -> Unit, onDismiss: () -> Unit) {
+internal fun PickerDialog(title: String, choices: List<Pair<String?, String>>, selected: String?, onPick: (String?) -> Unit, onDismiss: () -> Unit) {
     val c = LocalKioskColors.current
     var query by remember { mutableStateOf("") }
     val terms = queryTerms(query)

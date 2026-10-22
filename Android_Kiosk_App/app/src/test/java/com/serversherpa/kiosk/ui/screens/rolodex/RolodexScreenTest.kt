@@ -7,6 +7,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -16,7 +17,6 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
-import androidx.compose.ui.test.assertTextContains
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -32,8 +32,8 @@ import com.serversherpa.kiosk.data.fakeSession
 import com.serversherpa.kiosk.testContainer
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.shell.KioskShell
-import kotlinx.coroutines.CompletableDeferred
 import com.serversherpa.kiosk.ui.theme.KioskTheme
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import org.junit.Rule
 import org.junit.Test
@@ -201,9 +201,9 @@ class RolodexScreenTest {
         compose.onNodeWithTag("edit-save").assertDoesNotExist()
     }
 
-    /** Ruling S11: the split starts at a 600 dp window, measured outside the shell's padding. */
-    @Config(qualifiers = "w600dp-h800dp")
-    @Test fun aSixHundredDpWindowSplits() {
+    /** Rulings S11 and S14: the split starts at a 720 dp window, measured outside the shell's padding. */
+    @Config(qualifiers = "w720dp-h800dp")
+    @Test fun aSevenTwentyDpWindowSplits() {
         showRouted(api())
         compose.onNodeWithText("Choose a worker to see their page.").assertIsDisplayed()
         compose.onNodeWithTag("rolodex-row-p-abbott").performClick()
@@ -212,13 +212,59 @@ class RolodexScreenTest {
         compose.onNodeWithText("‹ Rolodex").assertDoesNotExist()
     }
 
-    @Config(qualifiers = "w599dp-h800dp")
-    @Test fun aFiveNinetyNineDpWindowTakesTurns() {
+    @Config(qualifiers = "w719dp-h800dp")
+    @Test fun aSevenNineteenDpWindowTakesTurns() {
         showRouted(api())
         compose.onNodeWithText("Choose a worker to see their page.").assertDoesNotExist()
         compose.onNodeWithTag("rolodex-row-p-abbott").performClick()
         waitForText("ann@example.com")
         compose.onNodeWithText("‹ Rolodex").assertIsDisplayed()
         compose.onNodeWithTag("rolodex-search").assertDoesNotExist()
+    }
+
+    // ── Task 7 hooks: "+ New" and the camera badge ──
+
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun newOpensTheDetailsStepAndCancelGoesBack() {
+        show(api())
+        compose.onNodeWithTag("rolodex-new").assertIsEnabled().performClick()
+        waitForText("STEP 1 OF 2 · DETAILS")
+        compose.onNodeWithText("First name *").assertExists()
+        compose.onNodeWithTag("new-worker-next").assertExists()
+        compose.onNodeWithTag("rolodex-search").assertDoesNotExist()
+        compose.onNodeWithTag("new-worker-cancel").performClick()
+        waitFor("rolodex-search")
+    }
+
+    /** Spec §3.11: a device without a camera (as Robolectric reports) offers Choose photo only. */
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun theCameraBadgeOffersChoosePhotoWithoutACamera() {
+        show(api())
+        compose.onNodeWithTag("rolodex-row-p-abbott").performClick()
+        waitForText("ann@example.com")
+        compose.onNodeWithTag("worker-photo").assertIsEnabled().performClick()
+        waitForText("Photo for Ann Abbott")
+        compose.onNodeWithText("Choose photo").assertExists()
+        compose.onNodeWithText("Take new photo").assertDoesNotExist()
+        compose.onNodeWithText("Cancel").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Photo for Ann Abbott").fetchSemanticsNodes().isEmpty() }
+    }
+
+    /** The New worker details are typed into the form and Next runs the duplicate check. */
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun nextFromTheDetailsChecksForDuplicates() {
+        val api = api().apply { rolodexDuplicatesResult = { listOf(com.serversherpa.kiosk.core.model.RolodexMatch("p-abbott", "Ann Abbott", "Rigger", "Summit Crew", is_worker = true, matched_on = listOf("name"))) } }
+        show(api)
+        compose.onNodeWithTag("rolodex-new").performClick()
+        waitFor("new-first")
+        compose.onNodeWithTag("new-first").performTextInput("Ann")
+        compose.onNodeWithTag("new-last").performTextInput("Abbott")
+        compose.onNodeWithTag("new-worker-next").performClick()
+        waitForText("Possible duplicate")
+        compose.onNodeWithTag("duplicate-open-p-abbott").assertExists()
+        compose.onNodeWithTag("duplicate-create-anyway").assertIsEnabled()
+        compose.onNodeWithTag("duplicate-open-p-abbott").performClick()
+        waitForText("ann@example.com")
+        compose.onNodeWithText("Possible duplicate").assertDoesNotExist()
     }
 }

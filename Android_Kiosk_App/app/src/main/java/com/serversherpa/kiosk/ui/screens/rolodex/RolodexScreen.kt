@@ -26,8 +26,9 @@ import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.ui.components.kioskViewModel
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
 
-/** From this window width up, the list and the worker page sit side by side (spec §3.10). */
-private val SPLIT_MIN_WIDTH = 600.dp
+/** From this window width up, the list and the worker page sit side by side (spec §3.10, Ruling S14:
+ *  below it the page beside a 360 dp list is too narrow for its fields). */
+private val SPLIT_MIN_WIDTH = 720.dp
 
 /** The list pane's width in the split view. */
 private val LIST_PANE_WIDTH = 360.dp
@@ -37,9 +38,7 @@ private val LIST_PANE_WIDTH = 360.dp
 fun RolodexScreen(@Suppress("UNUSED_PARAMETER") nav: NavHostController) {
     val container = LocalAppContainer.current
     val vm = kioskViewModel { RolodexViewModel(container.api, container.db, container.rolodexCache) }
-    // Task 7 hooks: the New worker flow (onNewWorker) and the photo sheet (onChangePhoto).
-    // Until they are wired, "+ New" and the camera badge show disabled.
-    RolodexContent(vm, onNewWorker = null, onChangePhoto = null)
+    RolodexContent(vm, onNewWorker = vm::startNewWorker, onChangePhoto = { vm.startPhoto() })
 }
 
 /**
@@ -48,20 +47,27 @@ fun RolodexScreen(@Suppress("UNUSED_PARAMETER") nav: NavHostController) {
  * measured, not this page's, which the shell pads (Ruling S11). Ruling P3: Android has no top-bar
  * back, so the phone's page has its own "‹ Rolodex", and system Back closes the page. With the
  * Edit form open, Back cancels it, and while it saves Back does nothing: leaving would lose the
- * typed form and a failed save's error (Review Focus 4).
+ * typed form and a failed save's error (Review Focus 4). "+ New" ([onNewWorker]) fills the page
+ * with the New worker details, where Back is Cancel (not while the worker is being created); the
+ * camera badge ([onChangePhoto]) opens the photo sheet over the page.
  */
 @Composable
 internal fun RolodexContent(vm: RolodexViewModel, onNewWorker: (() -> Unit)?, onChangePhoto: ((personId: String) -> Unit)?) {
     val c = LocalKioskColors.current
     val ui by vm.state.collectAsStateWithLifecycle()
+    val newWorker by vm.newWorker.state.collectAsStateWithLifecycle()
+    val hasCamera = LocalAppContainer.current.hasCamera
     // Here, not in the list: the phone's list leaves the screen while a page is open, and the
     // search text and scroll position must be as they were when it comes back.
     var query by remember { mutableStateOf(ui.query) }
     val listState = rememberLazyListState()
     val wide = LocalConfiguration.current.screenWidthDp.dp >= SPLIT_MIN_WIDTH
     Box(Modifier.fillMaxSize()) {
-        BackHandler(enabled = ui.editing != null) { if (!ui.saving) vm.cancelEdit() }
-        BackHandler(enabled = !wide && ui.selectedId != null && ui.editing == null) { vm.select(null) }
+        BackHandler(enabled = newWorker == null && ui.editing != null) { if (!ui.saving) vm.cancelEdit() }
+        BackHandler(enabled = newWorker == null && !wide && ui.selectedId != null && ui.editing == null) { vm.select(null) }
+        BackHandler(enabled = newWorker != null) { vm.newWorker.cancel() }
+        WorkerPhotoScreens(vm, hasCamera)
+
         val photo = onChangePhoto?.let { open -> ui.selectedId?.let { id -> { open(id) } } }
         val list = @Composable { modifier: Modifier ->
             RolodexList(
@@ -69,7 +75,9 @@ internal fun RolodexContent(vm: RolodexViewModel, onNewWorker: (() -> Unit)?, on
                 onRefresh = vm::refresh, onNew = onNewWorker, listState = listState, modifier = modifier,
             )
         }
+        val flow = newWorker
         when {
+            flow != null -> NewWorkerScreen(vm, flow, ui.options, hasCamera, Modifier.fillMaxSize())
             wide -> Row(Modifier.fillMaxSize()) {
                 list(Modifier.width(LIST_PANE_WIDTH).fillMaxHeight())
                 Spacer(Modifier.width(16.dp))

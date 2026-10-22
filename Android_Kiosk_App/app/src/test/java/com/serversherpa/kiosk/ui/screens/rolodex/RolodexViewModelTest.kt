@@ -1,6 +1,8 @@
 package com.serversherpa.kiosk.ui.screens.rolodex
 
+import android.graphics.Bitmap
 import androidx.test.core.app.ApplicationProvider
+import com.serversherpa.kiosk.NativeFontsSettled
 import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.model.RolodexCompany
 import com.serversherpa.kiosk.core.model.RolodexDetail
@@ -8,6 +10,7 @@ import com.serversherpa.kiosk.core.model.RolodexLevel
 import com.serversherpa.kiosk.core.model.RolodexList
 import com.serversherpa.kiosk.core.model.RolodexOptions
 import com.serversherpa.kiosk.core.model.RolodexPartner
+import com.serversherpa.kiosk.core.model.RolodexPhotoOut
 import com.serversherpa.kiosk.core.model.RolodexRow
 import com.serversherpa.kiosk.core.model.RolodexStatus
 import com.serversherpa.kiosk.core.people.FILTER_ALL
@@ -40,10 +43,12 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 private val T1: Instant = Instant.parse("2026-10-22T20:42:00Z")
 private val T2: Instant = Instant.parse("2026-10-22T21:10:00Z")
@@ -84,6 +89,9 @@ internal val ROLODEX_OPTIONS = RolodexOptions(
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class RolodexViewModelTest {
+    // A few photo tests use native graphics (real bitmaps and JPEGs).
+    @get:Rule val fonts = NativeFontsSettled()
+
     private val abbott = rolodexRow("p-abbott", "Ann", "Abbott", job = "Rigger", company = "Summit Crew", status = "standby")
     private val nunez = rolodexRow("p-nunez", "José", "Núñez", job = "Mover", hasPhoto = false)
     private val obrien = rolodexRow("p-obrien", "Sean", "O'Brien", status = "blacklist")
@@ -436,6 +444,112 @@ class RolodexViewModelTest {
         gate.complete(Unit); settle { !vm.state.value.loading }
         settle()
         assertNull(cached(db))
+    }
+
+    // ── photos (the worker page's camera badge) ──
+
+    @Test fun aNewPhotoRefreshesThePageTheRowAndTheOfflineCopy() = runTest {
+        val db = newDb()
+        val api = onlineApi().apply { rolodexPhotoResult = { _, _ -> RolodexPhotoOut("https://files/abbott-v2.jpg", "v2") } }
+        val vm = build(api, db)
+        vm.select("p-abbott"); settle { !vm.state.value.detailLoading }
+        val out = vm.uploadPhoto("p-abbott", byteArrayOf(1, 2, 3))
+        assertEquals("v2", out.photo_version)
+        assertEquals(listOf("p-abbott"), api.rolodexPhotos.map { it.first })
+        val ui = vm.state.value
+        assertEquals("v2", ui.detail?.photo_version)
+        assertEquals("https://files/abbott-v2.jpg", ui.detail?.photo_url)
+        assertTrue(ui.detail!!.has_photo)
+        val row = ui.rows.first { it.person_id == "p-abbott" }
+        assertEquals("v2", row.photo_version)
+        assertEquals("https://files/abbott-v2.jpg", row.photo_url)
+        assertNull(ui.rows.first { it.person_id == "p-nunez" }.photo_version)
+        settle { cached(db)?.contains("v2") == true }
+        assertFalse(cached(db)!!.contains("email"))
+    }
+
+    /** Spec §3.17: the camera badge follows the edit rule, and needs a connection. */
+    @Test fun thePhotoActionIsOffWhenThePersonCantBeEditedOrOffline() = runTest {
+        val vm = build(onlineApi().apply { rolodexWorkerResult = { rolodexDetail(abbott, canEdit = false) } })
+        vm.select("p-abbott"); settle { !vm.state.value.detailLoading }
+        assertNotNull(vm.state.value.detail)                    // the page is there; only the photo is refused
+        vm.startPhoto()
+        assertFalse(vm.photos.state.value.sheet)
+        assertNull(vm.photos.state.value.target)
+
+        val db = newDb()
+        build(onlineApi(), db)
+        val offline = build(onlineApi().apply { rolodexWorkersResult = { throw ApiError(0, "network") } }, db)
+        offline.select("p-abbott"); settle { !offline.state.value.detailLoading }
+        offline.startPhoto()
+        assertFalse(offline.photos.state.value.sheet)
+
+        val ok = build(onlineApi())
+        ok.select("p-abbott"); settle { !ok.state.value.detailLoading }
+        ok.startPhoto()
+        assertTrue(ok.photos.state.value.sheet)
+        assertEquals(PhotoTarget("p-abbott", "Ann Abbott"), ok.photos.state.value.target)
+    }
+
+    /** Take new photo → Position your photo → Use photo: one upload (a second tap sends nothing), then the page shows it. */
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Test fun usePhotoUploadsOnceAndClosesThePhotoScreens() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val api = onlineApi().apply { rolodexPhotoResult = { _, _ -> gate.await(); RolodexPhotoOut("https://files/abbott-v2.jpg", "v2") } }
+        val vm = build(api)
+        vm.select("p-abbott"); settle { !vm.state.value.detailLoading }
+        vm.startPhoto()
+        vm.photos.takePhoto()
+        assertEquals(PhotoStage.CAMERA, vm.photos.state.value.stage)
+        assertFalse(vm.photos.state.value.sheet)
+        vm.photos.use { Bitmap.createBitmap(600, 400, Bitmap.Config.ARGB_8888) }; settle { vm.photos.state.value.stage == PhotoStage.CROP }
+        vm.photos.usePhoto()
+        vm.photos.usePhoto(); settle { api.rolodexPhotos.isNotEmpty() }
+        vm.photos.usePhoto(); settle()
+        assertEquals(1, api.rolodexPhotos.size)
+        assertTrue(vm.photos.state.value.uploading)
+        gate.complete(Unit); settle { !vm.photos.state.value.uploading }
+        assertEquals(PhotoStage.NONE, vm.photos.state.value.stage)
+        assertNull(vm.photos.state.value.target)
+        assertEquals("v2", vm.state.value.detail?.photo_version)
+        assertEquals("v2", vm.state.value.rows.first { it.person_id == "p-abbott" }.photo_version)
+    }
+
+    /** A refused upload keeps the positioned photo and says why, in the spec's words. */
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Test fun aRefusedUploadKeepsTheCropAndSaysWhy() = runTest {
+        val cases = listOf(
+            ApiError(413, "file_too_large") to "That photo couldn't be used. Take or choose another one.",
+            ApiError(422, "unreadable_image") to "That photo couldn't be used. Take or choose another one.",
+            ApiError(403, "rank_too_low") to "This person has a portal login ranked above yours.",
+            ApiError(0, "network") to "No connection. Try again when you're back online.",
+        )
+        for ((failure, copy) in cases) {
+            val api = onlineApi().apply { rolodexPhotoResult = { _, _ -> throw failure } }
+            val vm = build(api)
+            vm.select("p-abbott"); settle { !vm.state.value.detailLoading }
+            vm.startPhoto()
+            vm.photos.takePhoto()
+            vm.photos.use { Bitmap.createBitmap(600, 400, Bitmap.Config.ARGB_8888) }; settle { vm.photos.state.value.stage == PhotoStage.CROP }
+            val crop = vm.photos.state.value.crop
+            vm.photos.usePhoto(); settle { api.rolodexPhotos.isNotEmpty() && !vm.photos.state.value.uploading }
+            assertEquals(failure.code, copy, vm.photos.state.value.error)
+            assertEquals(failure.code, PhotoStage.CROP, vm.photos.state.value.stage)
+            assertTrue(failure.code, crop === vm.photos.state.value.crop)
+            assertNull(failure.code, vm.state.value.detail?.photo_version)
+        }
+    }
+
+    @Test fun aPickThatIsntAPictureGoesBackToThePhotoStepAndSaysSo() = runTest {
+        val vm = build(onlineApi())
+        vm.select("p-abbott"); settle { !vm.state.value.detailLoading }
+        vm.startPhoto()
+        vm.photos.closeSheet()                                  // Choose photo: the picker opens from the page
+        vm.photos.use { null }; settle { vm.photos.state.value.stage != PhotoStage.LOADING }
+        assertEquals(PhotoStage.CAMERA, vm.photos.state.value.stage)
+        assertEquals("That photo couldn't be used. Take or choose another one.", vm.photos.state.value.error)
+        vm.photos.close()
+        assertNull(vm.photos.state.value.target)
     }
 
     // ── copy and helpers ──

@@ -23,6 +23,10 @@ import kotlinx.coroutines.withContext
 class RolodexCacheStore(private val db: KioskDatabase, private val allowed: () -> Boolean) {
     private val lock = Mutex()
 
+    /** Whether an admin is signed in right now. The Rolodex checks it before it starts a write a
+     *  sign-out should stop (the photo upload after a create). */
+    val adminSignedIn: Boolean get() = allowed()
+
     /** The cached list's JSON, or null (none, or nobody allowed to read it is signed in). */
     suspend fun read(): String? = lock.withLock {
         if (allowed()) db.meta().get(ROLODEX_META_KEY)?.value else null

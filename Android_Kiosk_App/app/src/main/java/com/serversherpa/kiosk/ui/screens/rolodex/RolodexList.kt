@@ -95,7 +95,8 @@ internal fun ColorChip(text: String, color: Color?, modifier: Modifier = Modifie
 /**
  * The A–Z list (mockup 2-list-chosen): header with the count and "+ New", the offline banner, a
  * search field, the filter chips with their counts, then the letter sections with a jump strip on
- * the right edge. [onNew] is the New worker flow's hook (Task 7); null shows "+ New" disabled.
+ * the right edge. [onNew] opens the New worker flow; "+ New" is off without it, offline, before a
+ * list has loaded, and while the Edit form is open ([RolodexUi.canStartNewWorker]).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -119,7 +120,7 @@ internal fun RolodexList(
             IconButton(onClick = onRefresh, enabled = !ui.loading, modifier = Modifier.testTag("rolodex-refresh").semantics { contentDescription = "Refresh" }) {
                 Icon(RefreshIcon, contentDescription = null, tint = if (ui.loading) c.textMute else c.textDark)
             }
-            SolidButton("+ New", onClick = { onNew?.invoke() }, enabled = onNew != null && !ui.offline, modifier = Modifier.testTag("rolodex-new"))
+            SolidButton("+ New", onClick = { onNew?.invoke() }, enabled = onNew != null && ui.canStartNewWorker, modifier = Modifier.testTag("rolodex-new"))
         }
         val cachedAt = ui.cachedAt
         if (ui.offline && cachedAt != null) {

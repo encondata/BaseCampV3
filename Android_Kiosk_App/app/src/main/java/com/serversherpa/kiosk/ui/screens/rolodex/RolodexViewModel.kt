@@ -6,6 +6,7 @@ import androidx.room.withTransaction
 import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.model.RolodexDetail
 import com.serversherpa.kiosk.core.model.RolodexOptions
+import com.serversherpa.kiosk.core.model.RolodexPhotoOut
 import com.serversherpa.kiosk.core.model.RolodexRow
 import com.serversherpa.kiosk.core.people.FILTER_ALL
 import com.serversherpa.kiosk.core.people.FILTER_NO_PHOTO
@@ -92,6 +93,9 @@ data class RolodexUi(
 ) {
     /** The selected worker's list row: the page shows it offline, and before the detail lands. */
     val selectedRow: RolodexRow? get() = selectedId?.let { id -> rows.firstOrNull { it.person_id == id } }
+
+    /** "+ New" works online, once a list has loaded (a refused list leaves none), and not over an open Edit form. */
+    val canStartNewWorker: Boolean get() = !offline && cachedAt != null && editing == null && !saving
 }
 
 /** The spec's words (§4.2) for an API error code; null and unknown codes get the catch-all. */
@@ -157,7 +161,8 @@ internal suspend fun KioskDatabase.upsertWorker(d: RolodexDetail) = withTransact
  * The Rolodex (spec §4.2–§4.3): the A–Z worker list with search and filters, the selected worker's
  * page and its Edit form. The list is cached in Room for offline reading; edits need a connection.
  * Reads give up after [ROLODEX_READ_TIMEOUT_MS]; writes run under NonCancellable, so leaving the
- * screen can't half-cancel a PATCH.
+ * screen can't half-cancel a PATCH. The photo screens and the upload live in [photos], "+ New" in
+ * [newWorker]; both run in this scope and report back here (a new photo, a created worker).
  */
 class RolodexViewModel(
     private val api: KioskApi,
@@ -170,6 +175,12 @@ class RolodexViewModel(
     private val scope = scopeOverride ?: viewModelScope
     private val _state = MutableStateFlow(RolodexUi(loading = true))
     val state: StateFlow<RolodexUi> = _state
+
+    /** The camera badge's photo screens and the upload, plus new workers' photos that didn't upload (Try again). */
+    val photos = RolodexPhotoFlow(api, scope, signedIn = { cache.adminSignedIn }, onUploaded = ::applyPhoto)
+
+    /** "+ New". */
+    val newWorker = NewWorkerFlow(api, scope, photos, signedIn = { cache.adminSignedIn }, onCreated = ::openCreated, onOpen = { select(it) })
 
     /** One worker with the parts the list needs worked out once: typing never folds the list again. */
     private class Entry(val row: RolodexRow, val key: RolodexSortKey, val words: List<String>, val letter: String)
@@ -325,6 +336,55 @@ class RolodexViewModel(
                 _state.update { it.copy(saving = false, error = rolodexErrorText((e as? ApiError)?.code)) }
             }
         }
+    }
+
+    // ── photos and new workers (spec §3.6, §3.17, §4.2) ──
+
+    /** The camera badge: the photo sheet, for a worker the admin may edit, online. */
+    fun startPhoto() {
+        val s = _state.value
+        val detail = s.detail ?: return
+        if (!detail.can_edit || s.offline || s.editing != null || s.saving) return
+        photos.start(PhotoTarget(detail.person_id, detail.display_name.ifBlank { "${detail.first_name} ${detail.last_name}".trim() }))
+    }
+
+    /** "+ New" ([RolodexUi.canStartNewWorker]). */
+    fun startNewWorker() {
+        if (!_state.value.canStartNewWorker) return
+        newWorker.start()
+    }
+
+    /** Sends [jpeg] as [personId]'s photo; the page, the list row and the offline copy then show it. Throws the API's error. */
+    suspend fun uploadPhoto(personId: String, jpeg: ByteArray): RolodexPhotoOut = photos.uploadPhoto(personId, jpeg)
+
+    /** Try again for a new worker's photo that didn't upload. It needs a connection (spec §3.15). */
+    fun retryPhoto(personId: String) {
+        if (_state.value.offline) return
+        photos.retry(personId)
+    }
+
+    /**
+     * A worker just created: their page opens from the create's answer (no fetch), their row joins
+     * the list (no reload), the Time Clock's roster has them, and the offline copy follows.
+     */
+    private suspend fun openCreated(created: RolodexDetail) {
+        try { db.upsertWorker(created) } catch (e: CancellationException) { throw e } catch (_: Exception) { /* the next people sync brings them */ }
+        replaceRow(created.toRow())
+        detailJob?.cancel()
+        _state.update { project(it.copy(selectedId = created.person_id, detail = created, detailLoading = false, editing = null, error = null)) }
+        writeCache()
+    }
+
+    /** A new photo on the page and the list row (an open Edit form is left alone), then the offline copy. */
+    private suspend fun applyPhoto(personId: String, out: RolodexPhotoOut) {
+        index.firstOrNull { it.row.person_id == personId }?.row?.let {
+            replaceRow(it.copy(has_photo = true, photo_url = out.photo_url, photo_version = out.photo_version))
+        }
+        _state.update { s ->
+            val detail = s.detail?.takeIf { it.person_id == personId }?.copy(has_photo = true, photo_url = out.photo_url, photo_version = out.photo_version)
+            project(s.copy(detail = detail ?: s.detail))
+        }
+        writeCache()
     }
 
     /** The spec's words for an API error code (§4.2). */
