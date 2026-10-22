@@ -1122,6 +1122,101 @@ class TroubleshootingModelTest {
         assertTrue(m.report().text.contains("␂****,0␃"))
     }
 
+    /** A chain that takes a quoted SGD name (`pin=abc: "wlan.wpa.psk" hunter2`) still pairs that
+     *  name with the value after it, with `" "`, `":` or a tab as the separator; and the chains that
+     *  already worked keep their shape. */
+    @Test fun aChainedQuotedKeyStillPairsWithItsValue() {
+        val cases = mapOf(
+            "pin=abc: \"wlan.wpa.psk\" hunter2" to "pin=[redacted] \"[redacted]\" [redacted]",
+            "Cookie: a= \"session_id\" hunter2" to "Cookie: [redacted] \"[redacted]\" [redacted]",
+            "pin=1234 = \"wlan.wpa.psk\" hunter2" to "pin=[redacted] = \"[redacted]\" [redacted]",
+            "pin=1234\" \"wlan.wpa.psk\" hunter2" to "pin=[redacted]\" \"[redacted]\" [redacted]",
+            "pin=1234 : \"wlan.wpa.psk\"\thunter2" to "pin=[redacted] : \"[redacted]\"\t[redacted]",
+            "! U1 setvar \"bluetooth.bluetooth_pin\" 12:34: \"wlan.wpa.psk\" hunter2" to
+                "! U1 setvar \"bluetooth.bluetooth_pin\" [redacted] \"[redacted]\" [redacted]",
+            "pin=a:\"psk\":hunter2" to "pin=[redacted]\"[redacted]\":[redacted]",
+            // A quoted text that is no secret's name pairs with nothing: what follows it stays.
+            "pin=a: \"x\" hunter2" to "pin=[redacted] \"[redacted]\" hunter2",
+        )
+        for ((line, masked) in cases) assertEquals(line, masked, redactSecrets(line))
+    }
+
+    /** A URL whose `://` begins at the character that ended the last URL's authority (`h,https://`)
+     *  still loses its password. */
+    @Test fun aUrlRightAfterAnotherUrlsAuthorityStillLosesItsPassword() {
+        assertEquals("http://h,https://u:[redacted]@h2/", redactSecrets("http://h,https://u:hunter2@h2/"))
+        assertEquals("x://y:z://admin:[redacted]@host", redactSecrets("x://y:z://admin:hunter2@host"))
+        assertEquals("a://b:c://d:[redacted]@e f://g:[redacted]@h", redactSecrets("a://b:c://d:p1@e f://g:p2@h"))
+    }
+
+    /** An object or array that never closes runs to the end of the text, not to the line break: a
+     *  name inside it would otherwise pair with a value on the next line. One that closes on a later
+     *  line is masked up to its close. */
+    @Test fun anUnclosedObjectRunsToTheEndOfTheText() {
+        assertEquals("token={[redacted]}", redactSecrets("token={a pin:\nhunter2"))
+        assertEquals("token={[redacted]}", redactSecrets("token={a \"pin\"\nhunter2"))
+        assertEquals("token=[[redacted]]", redactSecrets("token=[a\npsk: \"x y\""))
+        assertEquals("psk:{[redacted]} next=1", redactSecrets("psk:{a\n} next=1"))
+    }
+
+    /** A quoted text masked as a value may have been a key's name (`pin<09>:"wlan.wpa.psk":x`): the
+     *  value after `:`, `=` or SGD's spaces goes too, while a quoted value followed by plain text
+     *  (`password: "a b c" next`) takes nothing with it. */
+    @Test fun aQuotedKeyMaskedAsAValueStillHidesItsOwnValue() {
+        val cases = mapOf(
+            "pin<09>:\"wlan.wpa.psk\":x" to "pin<09>:\"[redacted]\":[redacted]",
+            "pin<09>:\"wlan.wpa.psk\" hunter2" to "pin<09>:\"[redacted]\" [redacted]",
+            "pin<09>:\"wlan.wpa.psk\"<09>hunter2" to "pin<09>:\"[redacted]\"<09>[redacted]",
+            "pin<09>:\"foo\" = hunter2" to "pin<09>:\"[redacted]\" = [redacted]",
+            "pin<09>:\"psk\":session_id=\"hunter2 abc\"" to "pin<09>:\"[redacted]\":[redacted]\"[redacted]\"",
+            "password: \"a b c\" next" to "password: \"[redacted]\" next",
+            "! U1 setvar \"wlan.wpa.psk\" \"hunter2 x\" , Choices: 0-64" to "! U1 setvar \"wlan.wpa.psk\" \"[redacted]\" , Choices: 0-64",
+        )
+        for ((line, masked) in cases) assertEquals(line, masked, redactSecrets(line))
+    }
+
+    /** A masked object or array takes what is glued to its close, but not a parent's closing braces:
+     *  `{"tokens":["x"]}` keeps its last `}`. */
+    @Test fun aMaskedObjectKeepsItsParentsClosingBrace() {
+        assertEquals("{\"tokens\":[[redacted]]}", redactSecrets("{\"tokens\":[\"x\"]}"))
+        assertEquals("{\"psk\":{[redacted]}}", redactSecrets("{\"psk\":{\"a\":1}}"))
+        assertEquals("{\"a\":{\"psk\":[[redacted]]}}", redactSecrets("{\"a\":{\"psk\":[1,2]}}"))
+        assertEquals("pin:{[redacted]}", redactSecrets("pin:{}ZZZZ"))
+        assertEquals("pin:{[redacted]}}}", redactSecrets("pin:{}ZZ}}"))
+    }
+
+    /** What the round-4 differential fuzz found: a quoted text that holds a key and separator
+     *  (`"&session_id:"`, `'a token="b'`, `'x psk" '`) pairs them with a quoted value that opens at
+     *  its closing quote, or at the last quote of the other kind inside it, and runs on past the
+     *  mask; and an object masked in a chain takes what is glued to its close. Each leaked before. */
+    @Test fun aKeyInsideAMaskedQuotedTextStillPairsWithItsValue() {
+        val cases = mapOf(
+            "token:<09>\"&session_id:\"hunter2 x" to "token:<09>\"[redacted]\"[redacted]",
+            "psk<09>=\"session_id:\"hunter2\" next" to "psk<09>=\"[redacted]\"[redacted] next",
+            "pin=<09>'a token=\"b' c\"" to "pin=<09>'[redacted]'[redacted]",
+            "pinZAZ='x psk\" ' y'" to "pinZAZ='[redacted]'[redacted]",
+            "pin:\t\"\"={&:psk::}hunter2 x" to "pin:\t\"[redacted]\"={[redacted]} x",
+            // One that never closed ends at its line break, and its key pairs across the break.
+            "pin=a:'wlan.wpa.psk\"  \n  hunter2 x" to "pin=[redacted]'[redacted]'\n  [redacted] x",
+            "pin=a:'psk=  \nhunter2" to "pin=[redacted]'[redacted]'\n[redacted]",
+            // A quoted value that ends in a colon after an ordinary word pairs with nothing.
+            "wlan.wpa.psk : \"abc:\" , Choices: 0-64" to "wlan.wpa.psk : \"[redacted]\" , Choices: 0-64",
+        )
+        for ((line, masked) in cases) assertEquals(line, masked, redactSecrets(line))
+        // The fuzz's own inputs, with the markers the regex they replaced had masked.
+        val found = listOf(
+            "=ZAZBasic token:<09>\"&session_id:\"passwordCookie;Authorization\\ZBZ" to listOf("ZBZ"),
+            "@ZAZ=Basic session_id:\t\"\"={&:session_id::}ZBZaZCZ{{" to listOf("ZBZ", "ZCZ"),
+            "=:\"psk<09>\n:'://;]&token]&\"session_id=\"'ZAZwlan.wpa.psk" to listOf("ZAZ"),
+            "pin\"=ZAZ\"::<0D>[ passwordZBZhttps://u:{]]ZCZhttp://h,{<09>;ZDZ" to listOf("ZAZ", "ZCZ"),
+            "}Basic }=\"psk<09><09>=\"ZAZZBZ\\token=\"[ZCZ&" to listOf("ZCZ"),
+        )
+        for ((line, markers) in found) {
+            val out = redactSecrets(line)
+            for (marker in markers) assertFalse("$line -> $out", out.contains(marker))
+        }
+    }
+
     @Test fun logKeepsTheLast5000LinesAndTheSharedReportFits() {
         val m = model()
         for (i in 1..5_010) m.log("line $i")
