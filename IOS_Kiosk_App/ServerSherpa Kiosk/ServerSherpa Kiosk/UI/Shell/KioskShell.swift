@@ -44,6 +44,10 @@ func personLabel(_ session: SessionData) -> String {
     session.kioskMove.map { "Kiosk · \($0.name)" } ?? session.person.displayName
 }
 
+/// The time clock owns the whole screen (its own header and footer), so the
+/// shell's top bar and footer step aside while it is on top.
+func shellHidesChrome(path: [Route]) -> Bool { path.last == .timeclock }
+
 /// The shell's "‹ Home" control shows only on a pushed screen.
 func showsBackButton(pathCount: Int) -> Bool { pathCount > 0 }
 
@@ -100,12 +104,13 @@ struct KioskShell<Content: View>: View {
     }
 
     var body: some View {
+        let chrome = !shellHidesChrome(path: path)
         VStack(spacing: 0) {
-            topBar
+            if chrome { topBar }
             content()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay(alignment: .bottom) { ToastHost().padding(.bottom, 12) }
-            footer
+            if chrome { footer }
         }
         .background(palette.paper2)
         .statusBarHidden(true)
