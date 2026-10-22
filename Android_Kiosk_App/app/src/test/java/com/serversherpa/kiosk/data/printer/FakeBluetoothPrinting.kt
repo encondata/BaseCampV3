@@ -16,6 +16,11 @@ import kotlinx.coroutines.flow.receiveAsFlow
 class FakeBluetoothPrinting(state: BluetoothAvailability = BluetoothAvailability.READY) : BluetoothPrinting {
     override val availability = MutableStateFlow(state)
     override val link = MutableStateFlow(BluetoothLinkInfo())
+    /** How the last scan ended (`ZebraBluetooth`'s reasons). */
+    @Volatile override var lastScanEnd: BluetoothScanEnd? = null
+        private set
+    /** The link's event log, as a test fills it. */
+    override val events: MutableList<BluetoothLinkEvent> = Collections.synchronizedList(ArrayList())
 
     /** Every connect, as (address, serial). */
     val connects: MutableList<Pair<String?, String?>> = Collections.synchronizedList(ArrayList())
@@ -38,8 +43,17 @@ class FakeBluetoothPrinting(state: BluetoothAvailability = BluetoothAvailability
 
     override fun scan(): Flow<List<FoundBluetoothPrinter>> {
         scans++
+        endScan(BluetoothScanEnd.REPLACED)
         val out = Channel<List<FoundBluetoothPrinter>>(Channel.UNLIMITED)
-        if (availability.value != BluetoothAvailability.READY) out.close() else scan = out
+        // Bluetooth off, not allowed, missing, or Location off: the scan ends at once
+        // (`ZebraBluetooth`'s rule); one asked while Bluetooth is turning on waits.
+        when (availability.value) {
+            BluetoothAvailability.READY, BluetoothAvailability.UNKNOWN -> scan = out
+            else -> {
+                lastScanEnd = BluetoothScanEnd.REFUSED
+                out.close()
+            }
+        }
         return out.receiveAsFlow().onCompletion { if (scan === out) scan = null }
     }
 
@@ -48,19 +62,26 @@ class FakeBluetoothPrinting(state: BluetoothAvailability = BluetoothAvailability
         scan?.trySend(found.toList())
     }
 
-    /** The running scan ends by itself (its 30 s, or Bluetooth going off). */
-    fun endScan() {
-        scan?.close()
+    /** The running scan ends without Stop: another Bluetooth call took the radio (the default),
+     *  Bluetooth went away, Android wouldn't scan, or ([why] = FINISHED) its 30 s ran out. */
+    fun endScan(why: BluetoothScanEnd = BluetoothScanEnd.INTERRUPTED) {
+        val out = scan ?: return
+        lastScanEnd = why
+        out.close()
         scan = null
     }
 
+    /** The scan's 30 s (counted once Bluetooth was ready) ran out. */
+    fun finishScan() = endScan(BluetoothScanEnd.FINISHED)
+
     override fun stopScan() {
         stops++
-        endScan()
+        endScan(BluetoothScanEnd.STOPPED)
     }
 
     override suspend fun connect(address: String?, serial: String?): BluetoothPrinterInfo {
         connects += address to serial
+        endScan(BluetoothScanEnd.INTERRUPTED)
         connectGate?.await()
         connectError?.let { throw it }
         val info = answer(address)
@@ -74,7 +95,7 @@ class FakeBluetoothPrinting(state: BluetoothAvailability = BluetoothAvailability
 
     override fun close() {
         closes++
-        endScan()
+        endScan(BluetoothScanEnd.CLOSED)
         link.value = link.value.copy(connected = false)
     }
 }

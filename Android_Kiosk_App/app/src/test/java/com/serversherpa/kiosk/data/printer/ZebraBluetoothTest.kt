@@ -17,6 +17,7 @@ import com.serversherpa.kiosk.data.printer.BluetoothAvailability.UNSUPPORTED
 import com.serversherpa.kiosk.data.printer.FakeBluetoothLe.Companion.SERIAL
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -618,6 +619,156 @@ class ZebraBluetoothTest {
         assertTrue(unknownFake.connects.isEmpty())
     }
 
+    /** The saved address is stale and the printer is heard late in the search for its serial: the
+     *  connect itself still gets the full `CONNECT_READY_MS` from the sighting (D7's 10 s count from
+     *  the connect; the search had its own), and stays bounded by it. */
+    @Test fun aPrinterHeardLateGetsTheFullConnectTime() = runTest {
+        val (bluetooth, fake) = make()
+        fake.printer(addr2).autoAnswer = false
+        val connect = start { bluetooth.connect(addr, SERIAL) }
+        runCurrent()
+        advanceTimeBy(9_000)
+        runCurrent()
+        assertTrue(fake.scanning)
+        fake.advertise(addr2, SERIAL, -60)
+        runCurrent()
+        assertEquals(listOf(addr, addr2), fake.connects)
+        // Its setup takes a while (each operation answered 150 ms after it goes out): ready past
+        // the 10 s the search alone would have had.
+        val gatt = fake.links.last()
+        while (!connect.isCompleted) {
+            advanceTimeBy(150)
+            runCurrent()
+            if (gatt.waitingForAnswer) gatt.answer()
+            runCurrent()
+        }
+        assertEquals(addr2, connect.await().getOrThrow().address)
+        assertTrue("ready at $currentTime", currentTime > ZebraBluetoothSpec.CONNECT_READY_MS)
+        assertTrue(bluetooth.link.value.connected)
+
+        // Heard at 9 s but never connecting: unreachable at 9 s + CONNECT_READY_MS, not at 10 s.
+        val (late, lateFake) = make()
+        lateFake.printer(addr2).connect = FakePrinter.Connect.SILENT
+        val from = currentTime
+        val never = start { late.connect(addr, SERIAL) }
+        runCurrent()
+        advanceTimeBy(9_000)
+        runCurrent()
+        lateFake.advertise(addr2, SERIAL, -60)
+        runCurrent()
+        assertEquals(listOf(addr, addr2), lateFake.connects)
+        advanceTimeBy(ZebraBluetoothSpec.CONNECT_READY_MS - 1)
+        runCurrent()
+        assertFalse(never.isCompleted)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(SERIAL, never.await().failure<PrinterUnreachable>().host)
+        assertEquals(from + 9_000 + ZebraBluetoothSpec.CONNECT_READY_MS, currentTime)
+        assertTrue(lateFake.links.all { it.closed })
+        assertFalse(lateFake.scanning)
+
+        // With no address at all the search has the whole budget, and a late sighting the same fresh time.
+        val (byName, byNameFake) = make()
+        byNameFake.printer(addr2).connect = FakePrinter.Connect.SILENT
+        val namedFrom = currentTime
+        val named = start { byName.connect(null, SERIAL) }
+        runCurrent()
+        advanceTimeBy(ZebraBluetoothSpec.CONNECT_READY_MS - 500)
+        runCurrent()
+        byNameFake.advertise(addr2, SERIAL, -60)
+        runCurrent()
+        assertEquals(listOf(addr2), byNameFake.connects)
+        advanceTimeBy(ZebraBluetoothSpec.CONNECT_READY_MS)
+        runCurrent()
+        named.await().failure<PrinterUnreachable>()
+        assertEquals(namedFrom + 2 * ZebraBluetoothSpec.CONNECT_READY_MS - 500, currentTime)
+    }
+
+    /** Printer Setup's choose flow connects by the address picked, with no serial, on a link that
+     *  may already be up there: the saved-address record (Troubleshooting's "Found at … (saved …)")
+     *  follows the address each call carries, so a printer chosen again at the address it answers
+     *  at shows no mismatch. Nothing here saves an address. */
+    @Test fun aCallOnTheLinkAlreadyUpRefreshesTheSavedAddressRecord() = runTest {
+        val (bluetooth, fake) = make()
+        fake.printer(addr2)
+        val first = start { bluetooth.transport(printer(addr)).write(listOf("^XA^XZ".toByteArray())) }
+        advanceTimeBy(ZebraBluetoothSpec.ADDRESS_TRY_MS)
+        runCurrent()
+        fake.advertise(addr2, SERIAL, -60)
+        runCurrent()
+        assertTrue(first.await().isSuccess)
+        assertEquals(addr, bluetooth.link.value.savedAddress)
+
+        // Chosen again at B (no serial: the choose flow): the link is reused, and the record goes.
+        assertEquals(addr2, bluetooth.connect(addr2, null).address)
+        assertEquals(2, fake.connects.size)
+        assertNull(bluetooth.link.value.savedAddress)
+        // A call for the printer still saved at A: the mismatch is back; one saved at B: none.
+        bluetooth.connect(addr, SERIAL)
+        assertEquals(addr, bluetooth.link.value.savedAddress)
+        bluetooth.transport(printer(addr2)).write(listOf("^XA^XZ".toByteArray()))
+        assertNull(bluetooth.link.value.savedAddress)
+        // A call that names no address says nothing about one.
+        bluetooth.connect(null, SERIAL)
+        assertNull(bluetooth.link.value.savedAddress)
+        assertEquals(2, fake.connects.size)
+    }
+
+    /** A label queued while a warm-up's connect is in flight joins that connect: with the printer
+     *  off, both fail at `CONNECT_READY_MS`, not the label a whole connect later. A call queued
+     *  after the failure, or for another printer, makes its own. */
+    @Test fun aCallQueuedBehindAConnectSharesItsOutcome() = runTest {
+        val (bluetooth, fake) = make()
+        fake.printer(addr).connect = FakePrinter.Connect.SILENT // off, or out of range
+        fake.printer(addr2, serial = "XXJ224508599") // another printer nearby
+        val warmUp = start { bluetooth.connect(addr, SERIAL) }
+        runCurrent()
+        advanceTimeBy(1_000)
+        runCurrent()
+        val sent = mutableListOf<Long>()
+        val label = start { bluetooth.transport(printer()).write(listOf("^XA^XZ".toByteArray())) { s, _ -> sent += s } }
+        val other = start { bluetooth.connect(addr2, null) }
+        runCurrent()
+        advanceTimeBy(ZebraBluetoothSpec.CONNECT_READY_MS - 1_000 - 1)
+        runCurrent()
+        assertFalse(warmUp.isCompleted)
+        assertFalse(label.isCompleted)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(SERIAL, warmUp.await().failure<PrinterUnreachable>().host)
+        assertEquals("the label shares the warm-up's failure", SERIAL, label.await().failure<PrinterUnreachable>().host)
+        assertEquals(ZebraBluetoothSpec.CONNECT_READY_MS, currentTime)
+        assertTrue(sent.isEmpty())
+        // The other printer's connect queued behind them is its own.
+        assertEquals(addr2, other.await().getOrThrow().address)
+        assertEquals(listOf(addr, addr2), fake.connects)
+
+        // A label after the failure tries again by itself (the printer is back).
+        fake.printers.getValue(addr).connect = FakePrinter.Connect.ANSWER
+        bluetooth.transport(printer()).write(listOf("^XA^XZ".toByteArray()))
+        assertEquals(listOf(addr, addr2, addr), fake.connects)
+        assertEquals("^XA^XZ", String(fake.links.last().written()))
+
+        // Queued behind a connect that comes up, a label goes out on that link.
+        fake.links.last().drop(8)
+        runCurrent()
+        fake.printers.getValue(addr).autoAnswer = false
+        val again = start { bluetooth.connect(addr, SERIAL) }
+        runCurrent()
+        val queued = start { bluetooth.transport(printer()).write(listOf("^XA^XZ".toByteArray())) }
+        runCurrent()
+        val gatt = fake.links.last()
+        while (!again.isCompleted) {
+            if (gatt.waitingForAnswer) gatt.answer()
+            runCurrent()
+        }
+        assertTrue(again.await().isSuccess)
+        fake.printers.getValue(addr).autoAnswer = true
+        runCurrent()
+        assertTrue(queued.await().isSuccess)
+        assertEquals(4, fake.connects.size)
+    }
+
     @Test fun pairingLostStopsRetries() = runTest {
         suspend fun refused(setUp: FakePrinter.() -> Unit) {
             val (bluetooth, fake) = make()
@@ -1025,5 +1176,150 @@ class ZebraBluetoothTest {
         runCurrent()
         assertTrue(beforeConnect.isCompleted)
         assertFalse(fake.scanning)
+    }
+
+    /** D9's 30 s scan counts once Bluetooth is ready and the radio scans: a scan asked while
+     *  Bluetooth is turning on waits without losing any of it, and a reset mid-scan starts the
+     *  30 s over once Bluetooth is back. */
+    @Test fun theScanClockStartsOnceBluetoothIsReady() = runTest {
+        val (bluetooth, fake) = make(UNKNOWN) // turning on
+        val listening = launch { bluetooth.scan().collect {} }
+        runCurrent()
+        assertFalse(fake.scanning)
+        advanceTimeBy(ZebraBluetoothSpec.SCAN_MS + 5_000)
+        runCurrent()
+        assertFalse("a scan asked while Bluetooth is turning on waits", listening.isCompleted)
+        assertNull(bluetooth.lastScanEnd)
+        fake.report(READY)
+        runCurrent()
+        assertTrue(fake.scanning)
+        advanceTimeBy(ZebraBluetoothSpec.SCAN_MS - 1)
+        runCurrent()
+        assertFalse(listening.isCompleted)
+
+        // Turning off and on again mid-scan: the clock starts over once Bluetooth is back.
+        fake.report(UNKNOWN)
+        runCurrent()
+        assertFalse(listening.isCompleted)
+        advanceTimeBy(2_000)
+        runCurrent()
+        assertFalse("the old deadline passed while Bluetooth was away", listening.isCompleted)
+        fake.report(READY)
+        runCurrent()
+        assertTrue(fake.scanning)
+        val restarted = currentTime
+        advanceTimeBy(ZebraBluetoothSpec.SCAN_MS - 1)
+        runCurrent()
+        assertFalse(listening.isCompleted)
+        advanceTimeBy(1)
+        runCurrent()
+        assertTrue(listening.isCompleted)
+        assertEquals(restarted + ZebraBluetoothSpec.SCAN_MS, currentTime)
+        assertEquals(BluetoothScanEnd.FINISHED, bluetooth.lastScanEnd)
+        assertFalse(fake.scanning)
+    }
+
+    /** How a scan ended, for the screens' words: its full 30 s, Stop, a connect, write or query
+     *  taking the radio, `close()`, Bluetooth (or Location) refused, a newer scan, or Android not
+     *  scanning (it refused to start one, or ended it with an error). */
+    @Test fun theScanSaysHowItEnded() = runTest {
+        val (bluetooth, fake) = make()
+        fake.printer(addr)
+        suspend fun scanThen(end: suspend () -> Unit): BluetoothScanEnd? {
+            val listening = launch { bluetooth.scan().collect {} }
+            runCurrent()
+            assertTrue(fake.scanning)
+            end()
+            runCurrent()
+            assertTrue(listening.isCompleted)
+            return bluetooth.lastScanEnd
+        }
+        assertEquals(BluetoothScanEnd.STOPPED, scanThen { bluetooth.stopScan() })
+        // A connect (a label's own) takes the radio, and so does a write on a link that is up.
+        assertEquals(BluetoothScanEnd.INTERRUPTED, scanThen { bluetooth.connect(addr, SERIAL) })
+        assertEquals(BluetoothScanEnd.INTERRUPTED, scanThen { bluetooth.transport(printer()).write(listOf("^XA^XZ".toByteArray())) })
+        assertEquals(BluetoothScanEnd.INTERRUPTED, scanThen { runCatching { bluetooth.transport(printer()).query(ZebraCommands.HOST_IDENTIFICATION, frames(1)) } })
+        var newer: Job? = null
+        assertEquals(BluetoothScanEnd.REPLACED, scanThen { newer = launch { bluetooth.scan().collect {} } })
+        bluetooth.close()
+        runCurrent()
+        assertTrue(newer!!.isCompleted)
+        assertEquals(BluetoothScanEnd.CLOSED, bluetooth.lastScanEnd)
+        assertEquals(BluetoothScanEnd.REFUSED, scanThen { fake.report(POWERED_OFF) })
+        fake.report(READY)
+        runCurrent()
+        assertEquals(BluetoothScanEnd.REFUSED, scanThen { fake.report(LOCATION_OFF) })
+        fake.report(READY)
+        runCurrent()
+        assertEquals(BluetoothScanEnd.FAILED, scanThen { fake.scanFails(6) }) // too many scans in a short time
+        assertFalse(fake.scanning)
+
+        // Refused outright: ends at once, saying so.
+        val (off, _) = make(POWERED_OFF)
+        assertTrue(off.scan().toList().isEmpty())
+        assertEquals(BluetoothScanEnd.REFUSED, off.lastScanEnd)
+        // Android wouldn't start the scan at all.
+        val (throttled, throttledFake) = make()
+        throttledFake.refuseScan = true
+        assertTrue(throttled.scan().toList().isEmpty())
+        assertEquals(BluetoothScanEnd.FAILED, throttled.lastScanEnd)
+    }
+
+    // --- The link's event log ---
+
+    /** D13: the link keeps a log of what happened to it for the Troubleshooting report: Bluetooth's
+     *  state, each connect's phases with their times, the chunk size, drops and why, reconnect
+     *  tries and pairing errors. Times are the clock's. */
+    @Test fun theLinkLogsWhatHappensToIt() = runTest {
+        val (bluetooth, fake) = make(UNKNOWN)
+        fake.printer(addr)
+        val connect = start { bluetooth.connect(addr, SERIAL) }
+        runCurrent()
+        advanceTimeBy(1_000)
+        fake.report(READY)
+        runCurrent()
+        assertTrue(connect.await().isSuccess)
+        advanceTimeBy(1_000)
+        fake.links.last().drop(8)
+        runCurrent()
+        // Drops before ready, a reconnect, then the printer forgets this device.
+        fake.printers.getValue(addr).dropsOnDiscover.addAll(listOf(8, 5))
+        val again = start { bluetooth.connect(addr, SERIAL) }
+        runCurrent()
+        advanceTimeBy(ZebraBluetoothSpec.RECONNECT_SPACING_MS)
+        runCurrent()
+        again.await().failure<BluetoothPairingLost>()
+        fake.report(POWERED_OFF)
+        runCurrent()
+
+        val events = bluetooth.events
+        val log = events.joinToString("\n") { it.text }
+        for (expected in listOf(
+            "Bluetooth is turning on or off", "Bluetooth is on", "Connect to D8J224508535 started", "Trying the saved address $addr",
+            "Connected after 1.00 s", "Ready in 1.00 s", "ZD421", "serial D8J224508535", "244 bytes per chunk (MTU 247)",
+            "Link dropped", "status 8", "Dropped before ready", "Reconnect try 1 of 3 in 3 s", "status 5",
+            "the printer forgot this device", "Connect to D8J224508535 failed after 3.00 s", "Bluetooth is off",
+        )) {
+            assertTrue("$expected in:\n$log", log.contains(expected))
+        }
+        assertEquals(2_000L, events.first { it.text.startsWith("Link dropped") }.atMs)
+        assertEquals(events.sortedBy { it.atMs }, events)
+        assertTrue(events.all { it.atMs in 0..currentTime })
+        // The state is noted when it changes, not each time it is read.
+        bluetooth.refreshAvailability()
+        bluetooth.refreshAvailability()
+        runCurrent()
+        assertEquals(events.size, bluetooth.events.size)
+    }
+
+    /** The log keeps the newest `EVENT_CAP` events. */
+    @Test fun theLinkLogIsCapped() = runTest {
+        val (bluetooth, fake) = make()
+        repeat(ZebraBluetooth.EVENT_CAP + 21) {
+            fake.report(if (it % 2 == 0) POWERED_OFF else READY)
+            runCurrent()
+        }
+        assertEquals(ZebraBluetooth.EVENT_CAP, bluetooth.events.size)
+        assertEquals("Bluetooth is off", bluetooth.events.last().text)
     }
 }

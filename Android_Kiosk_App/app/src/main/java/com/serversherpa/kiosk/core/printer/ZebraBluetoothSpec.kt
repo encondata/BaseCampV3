@@ -44,7 +44,8 @@ object ZebraBluetoothSpec {
     /** A scan for printers. */
     const val SCAN_MS = 30_000L
     /** Connecting by the saved Bluetooth address gets this long (of [CONNECT_READY_MS]) to answer
-     *  before the rest of the budget scans for the printer's serial instead (D3). */
+     *  before the rest of the budget scans for the printer's serial instead (D3); a printer the scan
+     *  hears then gets a fresh [CONNECT_READY_MS] for the connect itself (D7 counts from the connect). */
     const val ADDRESS_TRY_MS = 5_000L
     /** Each Device Information read is waited for this long (the spike's fallback); a value that
      *  comes later is still kept, and the link never waits on it alone. */

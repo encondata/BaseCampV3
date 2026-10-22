@@ -57,6 +57,30 @@ data class BluetoothPrinterInfo(
  *  of time), and why. */
 data class BluetoothDrop(val atMs: Long, val reason: String)
 
+/** Why a screen's scan ended, for its words: only a scan that ran its full length (counted once
+ *  Bluetooth was ready and the radio scanned) or was stopped can say nothing was found. */
+enum class BluetoothScanEnd {
+    /** It ran its full `SCAN_MS` with Bluetooth ready. */
+    FINISHED,
+    /** [BluetoothPrinting.stopScan] (the screen's Stop). */
+    STOPPED,
+    /** A connect, write or query took the radio (a label going out, say). */
+    INTERRUPTED,
+    /** [BluetoothPrinting.close]: the app went to the background, signed out, or the saved printer changed. */
+    CLOSED,
+    /** Bluetooth is off, not allowed or missing, or Location is off (a scan needs it). */
+    REFUSED,
+    /** A newer scan started. */
+    REPLACED,
+    /** Android wouldn't scan: it refused to start one, or ended it with an error (too many scans in
+     *  a short time, say). */
+    FAILED,
+}
+
+/** One thing that happened to the Bluetooth link (Bluetooth's state, a connect's phases, a drop, a
+ *  retry), for the Troubleshooting report's log (D13). [atMs] is the link's clock's. */
+data class BluetoothLinkEvent(val atMs: Long, val text: String)
+
 /** The one link, for the connection details. [info], [chunkBytes], [mtu] and [savedAddress] stay
  *  from the last link once it is down. Times are the clock's (wall-clock milliseconds on the
  *  device). [savedAddress] is the address the printer was asked for at (the saved one) when the
@@ -84,9 +108,17 @@ interface BluetoothPrinting {
     val availability: StateFlow<BluetoothAvailability>
     val link: StateFlow<BluetoothLinkInfo>
 
+    /** Why the last scan ended (set before its flow completes); null before any scan. */
+    val lastScanEnd: BluetoothScanEnd?
+
+    /** What happened to the link, oldest first (the newest `ZebraBluetooth.EVENT_CAP` are kept). */
+    val events: List<BluetoothLinkEvent>
+
     /** Every named device nearby, Zebras first, refreshed as the scan hears them; ends after
-     *  `SCAN_MS`, on [stopScan], when another scan starts, when Bluetooth stops, or when a
-     *  connect, write or query starts. Ends at once when [availability] doesn't allow a scan. */
+     *  `SCAN_MS` of scanning (counted from when Bluetooth is ready and the radio scans, so a scan
+     *  asked while Bluetooth is turning on waits for it), on [stopScan], when another scan starts,
+     *  when Bluetooth stops, on [close], or when a connect, write or query starts. Ends at once when
+     *  [availability] refuses a scan. [lastScanEnd] says which. */
     fun scan(): Flow<List<FoundBluetoothPrinter>>
     fun stopScan()
 
@@ -108,8 +140,11 @@ interface BluetoothPrinting {
  *
  * - **Connecting** tries the saved address first (D3), then, when it differs, the address the last
  *   link to this serial used this run (never saved). The addresses share `ADDRESS_TRY_MS`; if
- *   neither comes up, the rest of `CONNECT_READY_MS` scans for the name equal to the serial. A
- *   link up at another address than the saved one says so in `link.savedAddress`. Ready once:
+ *   neither comes up, the rest of `CONNECT_READY_MS` scans for the name equal to the serial, and a
+ *   printer heard gets a fresh `CONNECT_READY_MS` for the connect itself (D7's 10 s count from the
+ *   connect; the search had its own). A link up at another address than the one the call carries
+ *   says so in `link.savedAddress`. A call queued behind a connect for its printer shares that
+ *   connect's outcome (a label queued during a warm-up that fails fails with it). Ready once:
  *   1. services are discovered (a device without Zebra's parser service is [BluetoothNotZebra]);
  *   2. Device Information is read, one value at a time, each waited for `DEVICE_INFO_READ_MS`;
  *   3. the MTU is requested (`REQUESTED_MTU`; 20-byte chunks when it fails);
@@ -133,6 +168,9 @@ interface BluetoothPrinting {
  * - **[close]** (background, sign-out, a printer change) ends the scan; fails a connect in progress,
  *   a query in flight and every call waiting for its turn; and lets a write already going out (a
  *   label, test label or font) finish within its budget before the link closes.
+ * - **[events]** logs what happened to the link (Bluetooth's state, each connect's phases and
+ *   times, the chunk size, drops, retries, pairing errors) for the Troubleshooting report: the
+ *   app's own words plus an address or serial, never a reply's bytes.
  *
  * Threading: every bit of state lives on one dispatcher, [scope]'s own limited to one coroutine at
  * a time (any dispatcher but `Unconfined`; the container's `Dispatchers.Default` scope is fine).
@@ -150,7 +188,7 @@ class ZebraBluetooth(
     private val confined: CoroutineDispatcher =
         ((scope.coroutineContext[ContinuationInterceptor] as? CoroutineDispatcher) ?: Dispatchers.Default).limitedParallelism(1)
     private val inner = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]) + confined)
-    private val events = Channel<Event>(Channel.UNLIMITED)
+    private val eventQueue = Channel<Event>(Channel.UNLIMITED)
 
     private val availabilityState = MutableStateFlow(client.availability())
     private val linkState = MutableStateFlow(BluetoothLinkInfo())
@@ -169,6 +207,15 @@ class ZebraBluetooth(
     private var stage = Stage.WAITING
     private var availabilityWaiter: CompletableDeferred<Unit>? = null
     private var finding: Finding? = null
+    /** Numbers each connect, and what the last one that failed was for: a call that queued behind
+     *  it for the same printer shares that failure instead of connecting again. */
+    private var attempts = 0
+    private var attemptTarget: BluetoothTarget? = null
+    private var lastFailure: AttemptFailure? = null
+    /** The connect the call about to run queued behind (set by [withTurn] for its body). */
+    private var joinedAttempt: Int? = null
+    /** When the connect in progress started: the event log times its phases from it. */
+    private var connectStartedMs = 0L
 
     // Calls.
     private var turnTaken = false
@@ -176,6 +223,12 @@ class ZebraBluetooth(
     /** A write (not a query) is going out: [close] lets it finish. */
     private var writing = false
     private var closeAfterWrite = false
+
+    // The event log (read from any thread).
+    private val eventLog = ArrayDeque<BluetoothLinkEvent>()
+    override val events: List<BluetoothLinkEvent> get() = synchronized(eventLog) { eventLog.toList() }
+    /** The state the log last noted: it is noted when it changes, not each time it is read. */
+    private var notedState: BluetoothAvailability? = null
 
     // Replies.
     private val rx = ByteArrayOutputStream()
@@ -189,11 +242,14 @@ class ZebraBluetooth(
     private var scanning = false
     private var uiScan: UiScan? = null
     private var scanIds = 0
+    @Volatile override var lastScanEnd: BluetoothScanEnd? = null
+        private set
 
     init {
-        client.listen { events.trySend(Event.Client(it)) }
+        noteState(availabilityState.value)
+        client.listen { eventQueue.trySend(Event.Client(it)) }
         inner.launch {
-            for (event in events) {
+            for (event in eventQueue) {
                 try {
                     handle(event)
                 } catch (e: RuntimeException) {
@@ -212,7 +268,7 @@ class ZebraBluetooth(
     }.buffer(Channel.CONFLATED)
 
     override fun stopScan() {
-        inner.launch { endUiScan() }
+        inner.launch { endUiScan(BluetoothScanEnd.STOPPED) }
     }
 
     override fun refreshAvailability() {
@@ -247,7 +303,7 @@ class ZebraBluetooth(
     internal suspend fun write(target: BluetoothTarget, parts: List<ByteArray>, progress: WriteProgress?) = withContext(confined) {
         withTurn(target.serial.orEmpty()) {
             ensureReady(target)
-            endUiScan()
+            endUiScan(BluetoothScanEnd.INTERRUPTED)
             writing = true
             try {
                 send(concat(parts), progress)
@@ -266,7 +322,7 @@ class ZebraBluetooth(
         withContext(confined) {
             withTurn(target.serial.orEmpty()) {
                 ensureReady(target)
-                endUiScan()
+                endUiScan(BluetoothScanEnd.INTERRUPTED)
                 drain()
                 rx.reset()
                 collecting = true
@@ -285,10 +341,13 @@ class ZebraBluetooth(
 
     /** Runs [body] once every earlier call's body has finished, in the order asked. A call still
      *  waiting when [close] runs fails with [PrinterUnreachable] naming [name]; one canceled while
-     *  it waits leaves the line. */
+     *  it waits leaves the line. A call that queued behind a connect in progress is told which
+     *  ([joinedAttempt]), so it can share that connect's failure ([ensureReady]). */
     private suspend fun <T> withTurn(name: String, body: suspend () -> T): T {
+        var joined: Int? = null
         if (turnTaken) {
             val waiter = TurnWaiter(name)
+            joined = attempts.takeIf { attempt != null }
             turnWaiters.addLast(waiter)
             try {
                 waiter.turn.await()
@@ -302,8 +361,10 @@ class ZebraBluetooth(
         }
         try {
             currentCoroutineContext().ensureActive()
+            joinedAttempt = joined
             return body()
         } finally {
+            joinedAttempt = null
             passTurn()
         }
     }
@@ -322,62 +383,106 @@ class ZebraBluetooth(
     // --- Connecting ---
 
     /** The ready link to [target], or a new one: the connect runs as its own job, so [close] or
-     *  Bluetooth going off can end it whatever the caller is. */
+     *  Bluetooth going off can end it whatever the caller is. A call that queued behind a connect
+     *  for this printer that failed meanwhile shares that failure (a label queued during a warm-up
+     *  that fails fails with it, at `CONNECT_READY_MS`, not a whole connect later). */
     private suspend fun ensureReady(target: BluetoothTarget): BluetoothPrinterInfo {
+        val joined = joinedAttempt
+        joinedAttempt = null
         val up = current
-        if (phase == Phase.READY && up != null && matches(up, target)) return up.info!!
+        if (phase == Phase.READY && up != null && matches(up, target)) {
+            // The address this call carries (the saved one) against the link's is the mismatch
+            // record Troubleshooting shows: a printer chosen again at the address it answers at has none.
+            if (target.address != null) {
+                linkState.update { it.copy(savedAddress = target.address.takeUnless { saved -> saved.equals(up.address, ignoreCase = true) }) }
+            }
+            return up.info!!
+        }
+        lastFailure?.let { failed -> if (joined == failed.id && sameTarget(failed.target, target)) throw failed.error }
         if (phase == Phase.READY) endLink(PrinterUnreachable(host)) // one link at a time
         phase = Phase.CONNECTING
+        val id = ++attempts
+        attemptTarget = target
         val job = inner.async { establish(target) }
         attempt = job
         try {
-            return job.await()
+            return job.await().also { lastFailure = null }
         } catch (e: CancellationException) {
-            abortReason?.let { throw it }
+            abortReason?.let { throw connectFailed(id, target, it) }
             job.cancel()
             throw e
+        } catch (e: Exception) {
+            throw connectFailed(id, target, e)
         } finally {
             attempt = null
+            attemptTarget = null
             abortReason = null
             if (phase == Phase.CONNECTING) phase = Phase.IDLE
         }
     }
 
+    /** The connect [id] for [target] failed with [error]: noted for the log and for the calls that
+     *  queued behind it. */
+    private fun connectFailed(id: Int, target: BluetoothTarget, error: Throwable): Throwable {
+        lastFailure = AttemptFailure(id, target, error)
+        note("Connect to ${host.ifEmpty { "the printer" }} failed after ${sinceConnect()} s: ${eventText(error)}")
+        return error
+    }
+
     private suspend fun establish(target: BluetoothTarget): BluetoothPrinterInfo {
         host = target.serial ?: target.address.orEmpty()
+        connectStartedMs = clock()
+        note("Connect to ${host.ifEmpty { "a printer" }} started")
         // The saved address first (D3), then the one the last link to this serial used, if it differs.
         val known = knownAddress(target.serial)?.takeUnless { it.equals(target.address, ignoreCase = true) }
         val addresses = listOfNotNull(target.address, known)
-        var retryAt: String? = null
+        var step: Step = Step.Locate
         var retriesUsed = 0
         while (true) {
             stage = Stage.WAITING
-            val isRetry = retryAt != null
             val outcome = withTimeoutOrNull(ZebraBluetoothSpec.CONNECT_READY_MS) {
                 try {
-                    val again = retryAt
-                    Outcome.Ready(if (again == null) firstTry(target, addresses) else reconnect(target, again))
+                    Outcome.Ready(
+                        when (val s = step) {
+                            Step.Locate -> firstTry(target, addresses)
+                            is Step.Connect -> reconnect(target, s.address)
+                        },
+                    )
+                } catch (e: HeardLate) {
+                    Outcome.Heard(e.address)
                 } catch (e: NeverConnected) {
                     Outcome.NeverUp(e)
                 } catch (e: DroppedBeforeReady) {
                     Outcome.Dropped(e)
                 }
-            } ?: throw deadlineError()
+            } ?: run {
+                note("No link within ${ZebraBluetoothSpec.CONNECT_READY_MS / 1_000} s (still ${stageText()})")
+                throw deadlineError()
+            }
             when (outcome) {
                 is Outcome.Ready -> return outcome.info
+                is Outcome.Heard -> {
+                    // The connect gets its own CONNECT_READY_MS from the sighting: D7's 10 s count
+                    // from the connect, and the search kept its own until now.
+                    step = Step.Connect(outcome.address)
+                    continue
+                }
                 is Outcome.NeverUp -> {
+                    note("Connect failed: ${outcome.error.message}")
                     if (outcome.error.pairingLost) throw BluetoothPairingLost(host)
-                    if (!isRetry) throw PrinterUnreachable(host)
+                    if (retriesUsed == 0) throw PrinterUnreachable(host)
                     // A reconnect that failed counts as one of the drop's tries.
                 }
                 is Outcome.Dropped -> {
                     recordDrop(outcome.error.reason)
+                    note("Dropped before ready: ${outcome.error.reason}")
                     if (outcome.error.pairingLost) throw BluetoothPairingLost(host)
-                    retryAt = outcome.error.address
+                    step = Step.Connect(outcome.error.address)
                 }
             }
             retriesUsed++
             if (retriesUsed > ZebraBluetoothSpec.RECONNECT_TRIES) throw PrinterUnreachable(host)
+            note("Reconnect try $retriesUsed of ${ZebraBluetoothSpec.RECONNECT_TRIES} in ${ZebraBluetoothSpec.RECONNECT_SPACING_MS / 1_000} s")
             stage = Stage.RETRYING
             delay(ZebraBluetoothSpec.RECONNECT_SPACING_MS)
         }
@@ -385,24 +490,32 @@ class ZebraBluetooth(
 
     /** A first try, within its deadline: each of [addresses] in order (they share `ADDRESS_TRY_MS`
      *  while a scan or another address follows), then a scan for the serial; the scan alone when
-     *  no address is known. */
+     *  no address is known. A printer the scan hears is handed back ([HeardLate]) so that its
+     *  connect gets a deadline of its own. */
     private suspend fun firstTry(target: BluetoothTarget, addresses: List<String>): BluetoothPrinterInfo {
         awaitBluetooth(needsScan = addresses.isEmpty())
-        if (addresses.isEmpty()) return connectAndSetUp(findBySerial(target, addressKnown = false), target, null)
+        if (addresses.isEmpty()) {
+            note("No address known: scanning for the name $host")
+            throw HeardLate(findBySerial(target, addressKnown = false))
+        }
         val canScan = !target.serial.isNullOrEmpty() && availabilityState.value == BluetoothAvailability.READY
         val share = ZebraBluetoothSpec.ADDRESS_TRY_MS / addresses.size
         for ((i, address) in addresses.withIndex()) {
+            note(if (address == target.address) "Trying the saved address $address" else "Trying the address the last link used, $address")
             if (i == addresses.lastIndex && !canScan) return connectAndSetUp(address, target, null)
             try {
                 return connectAndSetUp(address, target, share)
             } catch (e: NeverConnected) {
                 if (e.pairingLost) throw e
+                note("No link at $address: ${e.message}")
             }
         }
-        return connectAndSetUp(findBySerial(target, addressKnown = true), target, null)
+        note("Not reached by address: scanning for the name $host")
+        throw HeardLate(findBySerial(target, addressKnown = true))
     }
 
-    /** A retry after a drop before Ready: the address that connected, with no scan. */
+    /** A connect to [address] alone, with no scan: a retry after a drop before Ready (the address
+     *  that connected), or the printer the search for its serial heard. */
     private suspend fun reconnect(target: BluetoothTarget, address: String): BluetoothPrinterInfo {
         awaitBluetooth(needsScan = false)
         return connectAndSetUp(address, target, null)
@@ -441,7 +554,7 @@ class ZebraBluetooth(
         finding = search
         try {
             updateScanning()
-            return search.found.await()
+            return search.found.await().also { note("Heard $serial at $it after ${sinceConnect()} s") }
         } finally {
             if (finding === search) finding = null
             updateScanning()
@@ -452,10 +565,10 @@ class ZebraBluetooth(
      *  long the link may take to come up before this gives up ([NeverConnected]). Any failure closes
      *  the GATT. */
     private suspend fun connectAndSetUp(address: String, target: BluetoothTarget, connectWithinMs: Long?): BluetoothPrinterInfo {
-        endUiScan()
+        endUiScan(BluetoothScanEnd.INTERRUPTED)
         stage = Stage.CONNECTING
         val id = ++linkIds
-        val gatt = client.connect(address) { events.trySend(Event.Gatt(id, it)) } ?: throw NeverConnected(NOT_STARTED)
+        val gatt = client.connect(address) { eventQueue.trySend(Event.Gatt(id, it)) } ?: throw NeverConnected(NOT_STARTED)
         val link = Link(id, address, gatt)
         current = link
         var ready = false
@@ -465,6 +578,7 @@ class ZebraBluetooth(
             } else {
                 withTimeoutOrNull(connectWithinMs) { link.connected.await() } ?: throw NeverConnected(NOT_STARTED)
             }
+            note("Connected after ${sinceConnect()} s: reading Device Information")
             stage = Stage.SETTING_UP
             val info = setUp(link, target)
             ready = true
@@ -509,14 +623,20 @@ class ZebraBluetooth(
         link.ready = true
         phase = Phase.READY
         val at = clock()
+        val chunk = ZebraBluetoothSpec.chunkBytes(link.mtu)
         // The idle clock starts here: time spent connecting isn't idle time on a working link.
         linkState.update {
             it.copy(
-                connected = true, info = info, mtu = link.mtu, chunkBytes = ZebraBluetoothSpec.chunkBytes(link.mtu),
+                connected = true, info = info, mtu = link.mtu, chunkBytes = chunk,
                 connectedAtMs = at, lastActivityMs = at,
                 savedAddress = target.address?.takeUnless { saved -> saved.equals(link.address, ignoreCase = true) },
             )
         }
+        note(
+            "Ready in ${sinceConnect()} s: ${info.model ?: "model not read"} · serial ${info.serial ?: "not read"}" +
+                " · firmware ${info.firmware ?: "not read"} · Link-OS ${info.linkOs ?: "not read"}" +
+                " · $chunk bytes per chunk ${link.mtu?.let { "(MTU $it)" } ?: "(the MTU request failed)"}",
+        )
         return info
     }
 
@@ -656,7 +776,9 @@ class ZebraBluetooth(
                     .awaitOrUnreachable() as GattEvent.CharacteristicWritten
                 when {
                     ack.status in GattStatus.PAIRING_LOST -> {
-                        recordDrop("The printer refused a write: it wants a pairing this device no longer has (status ${ack.status})")
+                        val reason = "The printer refused a write: it wants a pairing this device no longer has (status ${ack.status})"
+                        recordDrop(reason)
+                        note("Link dropped: $reason (the printer forgot this device)")
                         endLink(BluetoothPairingLost(host))
                         throw BluetoothPairingLost(host)
                     }
@@ -671,6 +793,7 @@ class ZebraBluetooth(
         if (sent == null) {
             if (current === link) {
                 recordDrop("A send ran past its time limit")
+                note("A send of $total bytes ran past its ${ZebraBluetoothSpec.sendBudgetMs(bytes.size) / 1_000} s limit: link closed")
                 endLink(PrinterTimeout(host))
             }
             throw PrinterTimeout(host)
@@ -755,11 +878,12 @@ class ZebraBluetooth(
     // --- Closing ---
 
     private fun closeNow() {
-        endUiScan()
+        endUiScan(BluetoothScanEnd.CLOSED)
         while (turnWaiters.isNotEmpty()) {
             val waiter = turnWaiters.removeFirst()
             waiter.turn.completeExceptionally(PrinterUnreachable(waiter.name))
         }
+        if (phase != Phase.IDLE) note("Link closed by the app (background, sign-out or another printer)")
         when (phase) {
             Phase.IDLE -> Unit
             Phase.CONNECTING -> abort(PrinterUnreachable(host))
@@ -769,27 +893,26 @@ class ZebraBluetooth(
 
     // --- Scanning ---
 
+    /** A screen's scan: it ends at once when Bluetooth refuses one; while Bluetooth is turning on
+     *  (or off) it waits, and its clock starts once the radio scans ([startScanClock]). */
     private fun startUiScan(out: SendChannel<List<FoundBluetoothPrinter>>): Int {
-        endUiScan()
+        endUiScan(BluetoothScanEnd.REPLACED)
         val scan = UiScan(++scanIds, out)
-        if (readAvailability() != BluetoothAvailability.READY) {
-            out.close()
-            return scan.id
-        }
         uiScan = scan
-        scan.timer = inner.launch {
-            delay(ZebraBluetoothSpec.SCAN_MS)
-            if (uiScan === scan) endUiScan()
+        if (isRefusal(readAvailability())) {
+            endUiScan(BluetoothScanEnd.REFUSED)
+        } else {
+            updateScanning()
         }
-        updateScanning()
         return scan.id
     }
 
-    private fun endUiScan() {
+    private fun endUiScan(why: BluetoothScanEnd) {
         val scan = uiScan ?: return
         uiScan = null
         scan.timer?.cancel()
         scan.refresh?.cancel()
+        lastScanEnd = why
         if (scan.unpublished) scan.out.trySend(sorted(scan.seen.values))
         scan.out.close()
         updateScanning()
@@ -809,10 +932,26 @@ class ZebraBluetooth(
         val wanted = (uiScan != null || finding != null) && availabilityState.value == BluetoothAvailability.READY
         if (wanted && !scanning) {
             scanning = client.startScan()
-            if (!scanning) scanFailed()
+            if (!scanning) {
+                scanFailed()
+                return
+            }
         } else if (!wanted && scanning) {
             scanning = false
             client.stopScan()
+        }
+        startScanClock()
+    }
+
+    /** A screen's scan runs `SCAN_MS` from when Bluetooth is ready and the radio scans for it, not
+     *  from the tap (a scan asked while Bluetooth is turning on waits for it; through a reset the
+     *  clock starts over). */
+    private fun startScanClock() {
+        val scan = uiScan ?: return
+        if (scan.timer != null || !scanning || availabilityState.value != BluetoothAvailability.READY) return
+        scan.timer = inner.launch {
+            delay(ZebraBluetoothSpec.SCAN_MS)
+            if (uiScan === scan) endUiScan(BluetoothScanEnd.FINISHED)
         }
     }
 
@@ -823,7 +962,7 @@ class ZebraBluetooth(
             finding = null
             it.found.completeExceptionally(it.notFound())
         }
-        endUiScan()
+        endUiScan(BluetoothScanEnd.FAILED)
     }
 
     private fun advertised(ad: BluetoothLeEvent.Advertised) {
@@ -893,7 +1032,9 @@ class ZebraBluetooth(
             }
             !link.everConnected -> link.connected.completeExceptionally(NeverConnected(event.status, pairingLost))
             link.ready -> {
-                recordDrop(describeDisconnect(event.status))
+                val reason = describeDisconnect(event.status)
+                recordDrop(reason)
+                note("Link dropped: $reason" + if (pairingLost) " (the printer forgot this device)" else "")
                 endLink(if (pairingLost) BluetoothPairingLost(host) else PrinterUnreachable(host))
             }
             else -> link.queue.fail(DroppedBeforeReady(link.address, describeDisconnect(event.status), pairingLost))
@@ -905,6 +1046,7 @@ class ZebraBluetooth(
         when {
             link.ready -> {
                 recordDrop(BOND_LOST_REASON)
+                note("Link dropped: $BOND_LOST_REASON (the printer forgot this device)")
                 endLink(BluetoothPairingLost(host))
             }
             !link.everConnected -> link.connected.completeExceptionally(NeverConnected(NOT_STARTED, pairingLost = true))
@@ -914,26 +1056,35 @@ class ZebraBluetooth(
 
     /** Bluetooth's state changed (or was read again): a connect waiting for it goes on; one in
      *  progress, or the link, ends when Bluetooth is off, not allowed or missing; Location going off
-     *  ends only scans. */
+     *  ends only scans. A screen's scan waits through Bluetooth turning on or off, its clock
+     *  starting over once Bluetooth is back. */
     private fun availabilityChanged() {
         val now = readAvailability()
         availabilityWaiter?.complete(Unit)
         when (now) {
             BluetoothAvailability.READY -> updateScanning() // a scan asked for before Bluetooth was on starts now
-            BluetoothAvailability.UNKNOWN -> Unit // turning on or off: the next state decides
+            BluetoothAvailability.UNKNOWN -> {
+                // Turning on or off: the next state decides. A scan keeps waiting, its clock stopped.
+                uiScan?.let {
+                    it.timer?.cancel()
+                    it.timer = null
+                }
+                updateScanning()
+            }
             BluetoothAvailability.LOCATION_OFF -> {
                 if (finding != null) abort(BluetoothUnavailable(host, now))
-                endUiScan()
+                endUiScan(BluetoothScanEnd.REFUSED)
                 updateScanning()
             }
             BluetoothAvailability.POWERED_OFF, BluetoothAvailability.UNAUTHORIZED, BluetoothAvailability.UNSUPPORTED -> {
-                endUiScan()
+                endUiScan(BluetoothScanEnd.REFUSED)
                 updateScanning()
                 when (phase) {
                     Phase.IDLE -> Unit
                     Phase.CONNECTING -> abort(BluetoothUnavailable(host, now))
                     Phase.READY -> {
                         recordDrop("Bluetooth stopped on this device")
+                        note("Link dropped: Bluetooth stopped on this device")
                         endLink(BluetoothUnavailable(host, now))
                     }
                 }
@@ -941,13 +1092,54 @@ class ZebraBluetooth(
         }
     }
 
-    private fun readAvailability(): BluetoothAvailability = client.availability().also { availabilityState.value = it }
+    private fun readAvailability(): BluetoothAvailability = client.availability().also {
+        availabilityState.value = it
+        noteState(it)
+    }
+
+    // --- The event log ---
+
+    /** Adds [text] to the link's log, keeping the newest [EVENT_CAP]. */
+    private fun note(text: String) {
+        synchronized(eventLog) {
+            eventLog.addLast(BluetoothLinkEvent(clock(), text))
+            while (eventLog.size > EVENT_CAP) eventLog.removeFirst()
+        }
+    }
+
+    /** Bluetooth's state, noted when it changes. */
+    private fun noteState(state: BluetoothAvailability) {
+        if (state == notedState) return
+        notedState = state
+        note(stateText(state))
+    }
+
+    /** "1.15": seconds since the connect in progress started. */
+    private fun sinceConnect(): String = String.format(java.util.Locale.US, "%.2f", (clock() - connectStartedMs) / 1_000.0)
+
+    private fun stageText(): String = when (stage) {
+        Stage.WAITING -> "waiting for Bluetooth"
+        Stage.FINDING, Stage.FINDING_KNOWN -> "scanning for its name"
+        Stage.CONNECTING -> "connecting"
+        Stage.SETTING_UP -> "setting up"
+        Stage.RETRYING -> "waiting to retry"
+    }
 
     // --- Pieces ---
 
     private enum class Phase { IDLE, CONNECTING, READY }
 
     private enum class Stage { WAITING, FINDING, FINDING_KNOWN, CONNECTING, SETTING_UP, RETRYING }
+
+    /** What a connect's try does next: locate the printer (addresses, then its name), or connect
+     *  to one address (a retry after a drop, or the printer its search heard). */
+    private sealed interface Step {
+        data object Locate : Step
+        class Connect(val address: String) : Step
+    }
+
+    /** The connect numbered [id], for [target], failed with [error]. */
+    private class AttemptFailure(val id: Int, val target: BluetoothTarget, val error: Throwable)
 
     private sealed interface Event {
         class Client(val event: BluetoothLeEvent) : Event {
@@ -994,13 +1186,19 @@ class ZebraBluetooth(
 
     private sealed interface Outcome {
         class Ready(val info: BluetoothPrinterInfo) : Outcome
+        /** The search for the serial heard the printer at [address]: the connect comes next. */
+        class Heard(val address: String) : Outcome
         class NeverUp(val error: NeverConnected) : Outcome
         class Dropped(val error: DroppedBeforeReady) : Outcome
     }
 
+    /** The search for the serial heard the printer at [address] (thrown out of the locate step, so
+     *  the connect gets a deadline of its own). */
+    private class HeardLate(val address: String) : Exception("Heard at $address")
+
     /** The link never came up ([status] is Android's, when it said). */
     private class NeverConnected(val status: Int, val pairingLost: Boolean = status in GattStatus.PAIRING_LOST_ON_DISCONNECT) :
-        Exception("The link never came up (status $status)")
+        Exception("the link never came up (status $status)")
 
     /** The link came up and dropped before it was Ready. */
     private class DroppedBeforeReady(val address: String, val reason: String, val pairingLost: Boolean) : Exception(reason)
@@ -1015,33 +1213,35 @@ class ZebraBluetooth(
         throw PrinterUnreachable(host)
     }
 
-    private companion object {
-        const val TAG = "ZebraBluetooth"
-        val PARSER = gattUuid(ZebraBluetoothSpec.SERVICE_UUID)
-        val TO_PRINTER = gattUuid(ZebraBluetoothSpec.TO_PRINTER_UUID)
-        val FROM_PRINTER = gattUuid(ZebraBluetoothSpec.FROM_PRINTER_UUID)
-        val MANUFACTURER = gattUuid(ZebraBluetoothSpec.MANUFACTURER_UUID)
-        val SERIAL = gattUuid(ZebraBluetoothSpec.SERIAL_UUID)
+    companion object {
+        /** How many of the newest events the log keeps (iOS's cap). */
+        const val EVENT_CAP = 500
+        private const val TAG = "ZebraBluetooth"
+        private val PARSER = gattUuid(ZebraBluetoothSpec.SERVICE_UUID)
+        private val TO_PRINTER = gattUuid(ZebraBluetoothSpec.TO_PRINTER_UUID)
+        private val FROM_PRINTER = gattUuid(ZebraBluetoothSpec.FROM_PRINTER_UUID)
+        private val MANUFACTURER = gattUuid(ZebraBluetoothSpec.MANUFACTURER_UUID)
+        private val SERIAL = gattUuid(ZebraBluetoothSpec.SERIAL_UUID)
         /** Identity first, so a refusal comes before the rest is read. */
-        val DEVICE_INFO = listOf(
+        private val DEVICE_INFO = listOf(
             ZebraBluetoothSpec.MANUFACTURER_UUID, ZebraBluetoothSpec.SERIAL_UUID, ZebraBluetoothSpec.MODEL_UUID,
             ZebraBluetoothSpec.FIRMWARE_UUID, ZebraBluetoothSpec.LINK_OS_UUID,
         ).map(::gattUuid)
-        const val ZEBRA_MANUFACTURER = "Zebra Technologies"
-        const val NOT_STARTED = -1
-        const val SCAN_REFRESH_MS = 500L
-        const val BOND_LOST_REASON = "The printer's pairing with this device was removed"
+        private const val ZEBRA_MANUFACTURER = "Zebra Technologies"
+        private const val NOT_STARTED = -1
+        private const val SCAN_REFRESH_MS = 500L
+        private const val BOND_LOST_REASON = "The printer's pairing with this device was removed"
 
         /** Zebras first, then serial-like names, then signal in 10 dB steps (rows don't jump on
          *  every advertisement), then name. */
-        val ORDER: Comparator<FoundBluetoothPrinter> = compareByDescending<FoundBluetoothPrinter> { it.isZebra }
+        private val ORDER: Comparator<FoundBluetoothPrinter> = compareByDescending<FoundBluetoothPrinter> { it.isZebra }
             .thenByDescending { ZebraBluetoothSpec.looksLikeZebraSerial(it.name) }
             .thenByDescending { Math.floorDiv(it.rssi, 10) }
             .thenBy { it.name }
 
-        fun sorted(found: Collection<FoundBluetoothPrinter>): List<FoundBluetoothPrinter> = found.sortedWith(ORDER)
+        private fun sorted(found: Collection<FoundBluetoothPrinter>): List<FoundBluetoothPrinter> = found.sortedWith(ORDER)
 
-        fun concat(parts: List<ByteArray>): ByteArray {
+        private fun concat(parts: List<ByteArray>): ByteArray {
             val all = ByteArray(parts.sumOf { it.size })
             var at = 0
             for (part in parts) {
@@ -1051,11 +1251,45 @@ class ZebraBluetooth(
             return all
         }
 
-        fun isWhole(reply: ByteArray, complete: (ByteArray) -> Boolean): Boolean =
+        private fun isWhole(reply: ByteArray, complete: (ByteArray) -> Boolean): Boolean =
             reply.isNotEmpty() && (reply.size >= ZebraNetwork.MAX_REPLY || complete(reply))
 
         /** A Device Information value: UTF-8 without padding NULs or spaces; null when empty. */
-        fun decodeInfo(value: ByteArray?): String? =
+        private fun decodeInfo(value: ByteArray?): String? =
             value?.toString(Charsets.UTF_8)?.trim { it == '\u0000' || it.isWhitespace() }?.takeIf { it.isNotEmpty() }
+
+        /** Bluetooth off, not allowed or missing, or Location off: a scan ends at once. */
+        private fun isRefusal(state: BluetoothAvailability): Boolean = when (state) {
+            BluetoothAvailability.POWERED_OFF, BluetoothAvailability.UNAUTHORIZED,
+            BluetoothAvailability.UNSUPPORTED, BluetoothAvailability.LOCATION_OFF -> true
+            BluetoothAvailability.READY, BluetoothAvailability.UNKNOWN -> false
+        }
+
+        /** Two calls are for the same printer: by serial when both name one, else by address. */
+        private fun sameTarget(a: BluetoothTarget, b: BluetoothTarget): Boolean = when {
+            a.serial != null && b.serial != null -> a.serial.equals(b.serial, ignoreCase = true)
+            a.serial == null && b.serial == null -> a.address != null && a.address.equals(b.address, ignoreCase = true)
+            else -> a.address != null && a.address.equals(b.address, ignoreCase = true)
+        }
+
+        private fun stateText(state: BluetoothAvailability): String = when (state) {
+            BluetoothAvailability.READY -> "Bluetooth is on"
+            BluetoothAvailability.POWERED_OFF -> "Bluetooth is off"
+            BluetoothAvailability.UNAUTHORIZED -> "Bluetooth isn't allowed for ServerSherpa Kiosk"
+            BluetoothAvailability.UNSUPPORTED -> "Bluetooth isn't supported on this device"
+            BluetoothAvailability.LOCATION_OFF -> "Bluetooth is on; Location is off, so nothing can be scanned for"
+            BluetoothAvailability.UNKNOWN -> "Bluetooth is turning on or off"
+        }
+
+        /** Why a connect failed, in a few words for the log. */
+        private fun eventText(error: Throwable): String = when (error) {
+            is BluetoothPairingLost -> "the printer forgot this device (pairing lost)"
+            is BluetoothUnavailable -> bluetoothUnavailableText(error.availability) ?: "Bluetooth wasn't ready"
+            is BluetoothSerialMismatch -> "another printer answered (serial ${error.found ?: "not read"})"
+            is BluetoothNotZebra -> "not a Zebra printer"
+            is BluetoothPrinterNotFound -> "not heard nearby"
+            is PrinterUnreachable -> "no link"
+            else -> error.toString()
+        }
     }
 }
