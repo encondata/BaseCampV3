@@ -290,7 +290,9 @@ internal fun WorkerPhotoScreens(vm: RolodexViewModel, hasCamera: Boolean) {
                 }
                 else -> PhotoCaptureSheet(
                     backLabel = "Cancel", onBack = photos::close, hasCamera = hasCamera, busyText = null, errorText = ui.error,
-                    onCapture = { bytes -> photos.use { decodeForCrop(bytes) } }, onLibrary = pick, insets = insets,
+                    capturing = ui.capturing, onCaptureStart = photos::captureStarted,
+                    onCapture = { bytes -> photos.use { decodeForCrop(bytes) } }, onCaptureFailed = photos::captureFailed,
+                    front = ui.front, onFlip = photos::flip, onLibrary = pick, insets = insets,
                 )
             }
         }

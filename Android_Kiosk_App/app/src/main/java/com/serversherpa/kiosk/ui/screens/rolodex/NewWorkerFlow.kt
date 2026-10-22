@@ -63,6 +63,10 @@ data class NewWorkerUi(
     val uploading: Boolean = false,
     /** A capture or a pick is being decoded. */
     val loadingPhoto: Boolean = false,
+    /** The shutter was pressed and the capture hasn't landed yet (M3: it holds "Continue without photo"). */
+    val capturing: Boolean = false,
+    /** Flip: the front camera. Kept across Retake and Back within the flow; a new flow starts on the back camera. */
+    val front: Boolean = false,
     /** What went wrong, in the spec's words. */
     val error: String? = null,
     /** The people the new worker may already be. */
@@ -76,8 +80,8 @@ data class NewWorkerUi(
     /** The photo, positioned (kept on Back to the details; Retake drops it). */
     val crop: PhotoCrop? = null,
 ) {
-    /** Something is under way; the buttons wait. */
-    val busy: Boolean get() = checking || creating || loadingPhoto
+    /** Something is under way (a capture on its way included); the buttons wait. */
+    val busy: Boolean get() = checking || creating || loadingPhoto || capturing
 
     /** The name the worker will show: preferred (else first) name and last name. */
     val workerName: String get() =
@@ -265,18 +269,24 @@ class NewWorkerFlow internal constructor(
         refused = null
         skipAsked = false
         visit++
-        _state.value = s.copy(stage = NewWorkerStage.DETAILS, confirmNoPhoto = false, error = null, loadingPhoto = false)
+        _state.value = s.copy(stage = NewWorkerStage.DETAILS, confirmNoPhoto = false, error = null, loadingPhoto = false, capturing = false)
     }
 
     // ── the photo ──
 
-    /** A capture or a pick ([load] decodes it, off the main thread): "Position your photo". One that isn't a picture stays on the photo step and says so. */
+    /**
+     * A capture or a pick ([load] decodes it, off the main thread): "Position your photo". One that
+     * isn't a picture stays on the photo step and says so. A photo on its way closes "Create …
+     * without a photo?" and forgets the ask: a create can't skip a photo the admin took (M3).
+     */
     fun usePhoto(load: suspend () -> Bitmap?) {
         val s = _state.value ?: return
-        if (s.stage != NewWorkerStage.PHOTO || s.busy) return
+        // Not [NewWorkerUi.busy]: a capture on its way lands here.
+        if (s.stage != NewWorkerStage.PHOTO || s.checking || s.creating || s.loadingPhoto) return
         val mine = ++visit
         val gen = generation
-        _state.value = s.copy(loadingPhoto = true, error = null)
+        skipAsked = false
+        _state.value = s.copy(loadingPhoto = true, capturing = false, confirmNoPhoto = false, error = null)
         scope.launch {
             val crop = decodeCrop(load)
             if (gen != generation || mine != visit) return@launch
@@ -293,7 +303,28 @@ class NewWorkerFlow internal constructor(
         if (s.creating || s.checking) return
         refused = null
         visit++
-        _state.value = s.copy(crop = null, error = null, stage = NewWorkerStage.PHOTO, loadingPhoto = false)
+        _state.value = s.copy(crop = null, error = null, stage = NewWorkerStage.PHOTO, loadingPhoto = false, capturing = false)
+    }
+
+    /**
+     * The shutter: a capture may start (true) on the photo step when nothing else is under way. Until
+     * it lands ([usePhoto]) or fails ([captureFailed]) the step waits, "Continue without photo" included.
+     */
+    fun captureStarted(): Boolean {
+        val s = _state.value ?: return false
+        if (s.stage != NewWorkerStage.PHOTO || s.busy || s.confirmNoPhoto) return false
+        _state.value = s.copy(capturing = true, error = null)
+        return true
+    }
+
+    /** The capture failed (the camera says why): the step is free again. */
+    fun captureFailed() = change { it.copy(capturing = false) }
+
+    /** Flip: the other camera, kept until the flow ends. Not while a capture is on its way. */
+    fun flip() {
+        val s = _state.value ?: return
+        if (s.stage != NewWorkerStage.PHOTO || s.capturing) return
+        _state.value = s.copy(front = !s.front)
     }
 
     /** The quiet "Continue without photo" link: asks first. */
@@ -338,14 +369,14 @@ class NewWorkerFlow internal constructor(
     /**
      * Creates the worker from the form with [photo]. One create at a time: a call while one is
      * under way sends nothing. The rules the screens follow hold here too: a photo is required
-     * unless the admin confirmed "Create without photo" ([photoSkipped], with no photo), and
+     * unless the admin confirmed "Create without photo" on the photo step ([photoSkipped], with no photo), and
      * [allowDuplicate] only after Create anyway, never past an email match.
      */
     fun create(photo: ByteArray?, photoSkipped: Boolean, allowDuplicate: Boolean) {
         val s = _state.value ?: return
         if (s.busy) return
         if (photo == null && !photoSkipped) return
-        if (photoSkipped && (photo != null || !skipAsked)) return
+        if (photoSkipped && (photo != null || !skipAsked || s.stage != NewWorkerStage.PHOTO)) return
         if (allowDuplicate && (!s.allowDuplicate || !s.canCreateAnyway)) return
         skipAsked = false
         _state.value = s.copy(creating = true, confirmNoPhoto = false, error = null)

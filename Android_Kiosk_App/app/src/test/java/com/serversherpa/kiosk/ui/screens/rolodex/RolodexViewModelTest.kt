@@ -585,6 +585,49 @@ class RolodexViewModelTest {
         }
     }
 
+    /** Task 7 minor 2: Flip holds across Retake; the next photo starts on the back camera. */
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Test fun flipSurvivesRetakeOnTheWorkerPage() = runTest {
+        val vm = build(onlineApi())
+        vm.select("p-abbott"); settle { !vm.state.value.detailLoading }
+        vm.startPhoto()
+        vm.photos.takePhoto()
+        assertFalse(vm.photos.state.value.front)
+        vm.photos.flip()
+        assertTrue(vm.photos.state.value.front)
+        vm.photos.use { Bitmap.createBitmap(600, 400, Bitmap.Config.ARGB_8888) }; settle { vm.photos.state.value.stage == PhotoStage.CROP }
+        vm.photos.retake()
+        assertEquals(PhotoStage.CAMERA, vm.photos.state.value.stage)
+        assertTrue(vm.photos.state.value.front)
+        vm.photos.close()
+        assertFalse(vm.photos.state.value.front)
+        vm.startPhoto()
+        vm.photos.takePhoto()
+        assertFalse(vm.photos.state.value.front)
+    }
+
+    /** One capture at a time: one on its way holds the shutter and Flip; a failed one frees them, and one that lands decodes. */
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Test fun aCaptureOnItsWayHoldsTheCameraOnTheWorkerPage() = runTest {
+        val vm = build(onlineApi())
+        vm.select("p-abbott"); settle { !vm.state.value.detailLoading }
+        vm.startPhoto()
+        assertFalse(vm.photos.captureStarted())                 // the sheet, not the camera
+        vm.photos.takePhoto()
+        assertTrue(vm.photos.captureStarted())
+        assertTrue(vm.photos.state.value.capturing)
+        assertFalse(vm.photos.captureStarted())
+        vm.photos.flip()
+        assertFalse(vm.photos.state.value.front)
+        vm.photos.captureFailed()
+        assertFalse(vm.photos.state.value.capturing)
+        assertTrue(vm.photos.captureStarted())
+        vm.photos.use { Bitmap.createBitmap(600, 400, Bitmap.Config.ARGB_8888) }
+        assertFalse(vm.photos.state.value.capturing)
+        settle { vm.photos.state.value.stage == PhotoStage.CROP }
+        assertEquals(PhotoStage.CROP, vm.photos.state.value.stage)
+    }
+
     @Test fun aPickThatIsntAPictureGoesBackToThePhotoStepAndSaysSo() = runTest {
         val vm = build(onlineApi())
         vm.select("p-abbott"); settle { !vm.state.value.detailLoading }

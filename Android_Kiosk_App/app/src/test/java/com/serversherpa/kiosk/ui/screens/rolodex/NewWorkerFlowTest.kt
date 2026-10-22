@@ -291,6 +291,96 @@ class NewWorkerFlowTest {
         assertEquals("That photo couldn't be used. Take or choose another one.", flowState?.error)
     }
 
+    // ── the camera (M3, Task 7 minor 2) ──
+
+    /** M3: a capture on its way holds "Continue without photo": a create can't skip the photo being taken. */
+    @Test fun aCaptureInFlightBlocksContinueWithoutPhoto() = runTest {
+        val api = api()
+        val vm = started(api)
+        atPhoto(vm)
+        assertTrue(vm.newWorker.captureStarted())
+        assertTrue(flowState!!.capturing)
+        assertTrue(flowState!!.busy)
+        assertFalse(vm.newWorker.captureStarted())             // one capture at a time
+        vm.newWorker.flip()                                     // no switching cameras mid-shot
+        assertFalse(flowState!!.front)
+        vm.newWorker.continueWithoutPhoto()
+        assertFalse(flowState!!.confirmNoPhoto)
+        vm.newWorker.createWithoutPhoto(); settle()
+        vm.newWorker.create(null, photoSkipped = true, allowDuplicate = false); settle()
+        assertTrue(api.rolodexCreates.isEmpty())
+
+        // The capture lands: Position your photo, with no confirmation over it.
+        vm.newWorker.usePhoto { picture() }; settle { flowState?.loadingPhoto == false }
+        assertEquals(NewWorkerStage.CROP, flowState?.stage)
+        assertFalse(flowState!!.capturing)
+        assertFalse(flowState!!.confirmNoPhoto)
+    }
+
+    @Test fun aFailedCaptureFreesTheStep() = runTest {
+        val vm = started(api())
+        atPhoto(vm)
+        vm.newWorker.captureStarted()
+        vm.newWorker.captureFailed()
+        assertFalse(flowState!!.capturing)
+        assertFalse(flowState!!.busy)
+        vm.newWorker.continueWithoutPhoto()
+        assertTrue(flowState!!.confirmNoPhoto)
+    }
+
+    /** While a capture or a pick is decoded, "Continue without photo" waits too. */
+    @Test fun aDecodeInFlightBlocksContinueWithoutPhoto() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val vm = started(api())
+        atPhoto(vm)
+        vm.newWorker.usePhoto { gate.await(); picture() }
+        assertTrue(flowState!!.loadingPhoto)
+        vm.newWorker.continueWithoutPhoto()
+        assertFalse(flowState!!.confirmNoPhoto)
+        gate.complete(Unit); settle { flowState?.loadingPhoto == false }
+        assertEquals(NewWorkerStage.CROP, flowState?.stage)
+        assertFalse(flowState!!.confirmNoPhoto)
+    }
+
+    /** Belt and braces: a photo that lands under the confirmation closes it, and no create may then skip it. */
+    @Test fun aPhotoThatLandsUnderTheConfirmationClosesIt() = runTest {
+        val api = api()
+        val vm = started(api)
+        atPhoto(vm)
+        vm.newWorker.continueWithoutPhoto()
+        assertTrue(flowState!!.confirmNoPhoto)
+        vm.newWorker.usePhoto { picture() }; settle { flowState?.loadingPhoto == false }
+        assertEquals(NewWorkerStage.CROP, flowState?.stage)
+        assertFalse(flowState!!.confirmNoPhoto)
+        vm.newWorker.createWithoutPhoto(); settle()
+        vm.newWorker.create(null, photoSkipped = true, allowDuplicate = false); settle()
+        assertTrue(api.rolodexCreates.isEmpty())
+    }
+
+    /** Task 7 minor 2: Flip holds across Retake and Back within the flow; a new flow starts on the back camera. */
+    @Test fun flipSurvivesRetakeUntilTheFlowEnds() = runTest {
+        val vm = started(api())
+        atPhoto(vm)
+        assertFalse(flowState!!.front)
+        vm.newWorker.flip()
+        assertTrue(flowState!!.front)
+        vm.newWorker.usePhoto { picture() }; settle { flowState?.loadingPhoto == false }
+        assertEquals(NewWorkerStage.CROP, flowState?.stage)
+        vm.newWorker.retake()
+        assertEquals(NewWorkerStage.PHOTO, flowState?.stage)
+        assertTrue(flowState!!.front)
+        vm.newWorker.backToDetails()
+        vm.newWorker.next(); settle { flowState?.checking == false }
+        assertEquals(NewWorkerStage.PHOTO, flowState?.stage)
+        assertTrue(flowState!!.front)
+        vm.newWorker.flip()
+        assertFalse(flowState!!.front)
+        vm.newWorker.flip()
+        vm.newWorker.cancel()
+        vm.startNewWorker()
+        assertFalse(flowState!!.front)
+    }
+
     @Test fun retakeAndBackKeepTheDetailsAndThePhoto() = runTest {
         val vm = started(api())
         atCrop(vm)

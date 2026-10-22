@@ -48,6 +48,10 @@ data class RolodexPhotoUi(
     val crop: PhotoCrop? = null,
     /** Use photo: the JPEG is on its way. */
     val uploading: Boolean = false,
+    /** The shutter was pressed and the capture hasn't landed yet: the camera's other actions wait. */
+    val capturing: Boolean = false,
+    /** Flip: the front camera. Kept across Retake; every new photo starts on the back camera. */
+    val front: Boolean = false,
     /** What went wrong with the picture or its upload, in the spec's words. */
     val error: String? = null,
     /** New workers whose photo didn't upload after the create, by person id. */
@@ -99,7 +103,7 @@ class RolodexPhotoFlow internal constructor(
         val s = _state.value
         if (s.target == null || s.uploading || s.stage == PhotoStage.LOADING) return
         val mine = ++visit
-        _state.update { it.copy(sheet = false, error = null, stage = PhotoStage.LOADING) }
+        _state.update { it.copy(sheet = false, error = null, stage = PhotoStage.LOADING, capturing = false) }
         scope.launch {
             val crop = decodeCrop(load)
             if (mine != visit || _state.value.target == null) return@launch
@@ -110,11 +114,29 @@ class RolodexPhotoFlow internal constructor(
         }
     }
 
-    /** Retake: back to the photo step. */
+    /** Retake: back to the photo step (on the camera Flip last chose). */
     fun retake() {
         if (_state.value.uploading) return
         visit++
-        _state.update { it.copy(crop = null, error = null, stage = PhotoStage.CAMERA) }
+        _state.update { it.copy(crop = null, error = null, stage = PhotoStage.CAMERA, capturing = false) }
+    }
+
+    /** The shutter: a capture may start (true) on the camera when none is on its way. [use] or [captureFailed] follows. */
+    fun captureStarted(): Boolean {
+        val s = _state.value
+        if (s.target == null || s.uploading || s.stage != PhotoStage.CAMERA || s.capturing) return false
+        _state.update { it.copy(capturing = true, error = null) }
+        return true
+    }
+
+    /** The capture failed (the camera says why): the shutter is free again. */
+    fun captureFailed() = _state.update { it.copy(capturing = false) }
+
+    /** Flip: the other camera, kept across Retake. Not while a capture is on its way. */
+    fun flip() {
+        val s = _state.value
+        if (s.stage != PhotoStage.CAMERA || s.capturing) return
+        _state.update { it.copy(front = !it.front) }
     }
 
     /** Cancel (the sheet, the camera, or Back): nothing changes. Not while the photo uploads. */
@@ -125,7 +147,7 @@ class RolodexPhotoFlow internal constructor(
 
     private fun closeScreens() {
         visit++
-        _state.update { it.copy(target = null, sheet = false, stage = PhotoStage.NONE, crop = null, error = null) }
+        _state.update { it.copy(target = null, sheet = false, stage = PhotoStage.NONE, crop = null, error = null, capturing = false, front = false) }
     }
 
     /**

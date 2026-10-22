@@ -90,8 +90,11 @@ internal fun NewWorkerScreen(vm: RolodexViewModel, flow: NewWorkerUi, options: R
             } else {
                 PhotoCaptureSheet(
                     backLabel = "‹ Details", onBack = nw::backToDetails, hasCamera = hasCamera, busyText = flow.busyText,
-                    errorText = flow.error, onCapture = { bytes -> nw.usePhoto { decodeForCrop(bytes) } }, onLibrary = pick, insets = insets,
+                    errorText = flow.error, capturing = flow.capturing, onCaptureStart = nw::captureStarted,
+                    onCapture = { bytes -> nw.usePhoto { decodeForCrop(bytes) } }, onCaptureFailed = nw::captureFailed,
+                    front = flow.front, onFlip = nw::flip, onLibrary = pick, insets = insets,
                 ) {
+                    // Off while anything is under way, a capture on its way included (M3).
                     Text(
                         "Continue without photo", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium,
                         color = Color.White.copy(alpha = 0.75f), textDecoration = TextDecoration.Underline,
