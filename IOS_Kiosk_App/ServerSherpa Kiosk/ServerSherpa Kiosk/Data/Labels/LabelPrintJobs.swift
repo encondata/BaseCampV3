@@ -32,12 +32,25 @@ extension Sync: PrintLabelsSync {
 }
 
 /// What one print job prints: the matched asset, and the move (site and initiative) it was
-/// scanned for. The move is taken at scan time, so a job records its Labeled scan under that
-/// move even if Kiosk Setup changes before the label goes out.
+/// scanned for, taken at scan time. A job records its Labeled scan under that move, and only
+/// while it is still the kiosk's move in the same signed-in session (`printJobIsLive`): a
+/// Kiosk Setup change or a sign-out drops the jobs still waiting, and a label already going out
+/// then finishes on the printer without recording.
 struct PrintTarget: Equatable, Sendable {
     var asset: KioskAssetRow
     var siteId: String
     var initiativeId: String
+}
+
+/// Whether a job may still record its Labeled scan: someone is signed in and the kiosk's saved
+/// move and site are still the ones the job was scanned for. Read on the main actor in the same
+/// turn as the record, so it lines up exactly with a sign-out (`logout()` and `endSession()` go
+/// anonymous synchronously) or a Kiosk Setup write.
+func printJobIsLive(auth: KioskAuth, prefs: KioskPrefs) -> @MainActor @Sendable (PrintTarget) -> Bool {
+    { target in
+        guard case .authed = auth.state, let sel = prefs.setupSelection else { return false }
+        return sel.initiativeId == target.initiativeId && sel.siteId == target.siteId
+    }
 }
 
 /// The outbox couldn't save a printed label's Labeled scan.
@@ -80,9 +93,12 @@ final class LabelPrintJobs {
 
     /// The real job: the stored label (refused while a build or a sync runs) → the saved offsets
     /// and print mode applied by the generator → `sender`, straight to the printer with no checks
-    /// before or after → one Labeled scan through the outbox under the job's move.
+    /// before or after → one Labeled scan through the outbox under the job's move, only while
+    /// `isLive` says the job still belongs to the kiosk's session and move (otherwise nothing
+    /// records, with no warning: the scan belongs to the session before).
     convenience init(store: PrintLabelsStore, sync: PrintLabelsSync, outbox: Outbox, settings: LabelSettingsSource,
-                     build: LabelBuildStatusSource, engine: LabelEngine, sender: @escaping LabelSender) {
+                     build: LabelBuildStatusSource, engine: LabelEngine, sender: @escaping LabelSender,
+                     isLive: @escaping @MainActor @Sendable (PrintTarget) -> Bool) {
         let log: @Sendable (String, Error) -> Void = { message, error in
             // An error can quote the label or the printer's address: private in the log.
             LabelPrintJobs.log.warning("print labels: \(message, privacy: .public): \(String(describing: error), privacy: .private)")
@@ -106,13 +122,21 @@ final class LabelPrintJobs {
                 }
             },
             record: { target, scannedValue in
-                let row = await outbox.enqueue(EnqueueInput(
-                    scannedValue: scannedValue, scanType: "barcode", asset: target.asset.outboxAsset,
-                    siteId: target.siteId, initiativeId: target.initiativeId, scanStatus: LabelPrintJobs.LABELED))
-                if row == nil { throw LabeledScanNotSaved() }
+                try await LabelPrintJobs.recordIfLive(target, scannedValue, outbox: outbox, isLive: isLive)
             },
             log: log
         ))
+    }
+
+    /// The check and the enqueue start in one main-actor turn, so no sign-out or Setup write
+    /// can land between them.
+    private static func recordIfLive(_ target: PrintTarget, _ scannedValue: String, outbox: Outbox,
+                                     isLive: @MainActor (PrintTarget) -> Bool) async throws {
+        guard isLive(target) else { return }
+        let row = await outbox.enqueue(EnqueueInput(
+            scannedValue: scannedValue, scanType: "barcode", asset: target.asset.outboxAsset,
+            siteId: target.siteId, initiativeId: target.initiativeId, scanStatus: LABELED))
+        if row == nil { throw LabeledScanNotSaved() }
     }
 
     /// Starts over for a new session or move: waiting jobs are dropped unsent, the list empties,

@@ -90,14 +90,20 @@ struct PrintLabelsViewModelTests {
     private let settings: LabelSettingsStore
     /// The container's one queue: every view model of a test shares it.
     private let jobs: LabelPrintJobs
+    /// Signed in by `harness()`; the jobs record only while it is (the container's `isLive`).
+    private let auth: KioskAuth
 
     init() throws {
         store = KioskStore(modelContainer: try KioskSchema.inMemoryContainer())
         outbox = Outbox(store: MemoryOutboxStore(), api: api, serial: { "kiosk-ios-test" }, backgroundTask: NoBackgroundTasking())
         settings = LabelSettingsStore(prefs: prefs)
         let device = self.device
+        auth = KioskAuth(api: api, refresher: FakeRefresher(), identity: Identity(prefs: prefs, secrets: MemorySecretStore()), prefs: prefs)
+        // The container's wiring, minus its reset hooks: here only `isLive` stands between a
+        // sign-out or a Setup change and a Labeled scan.
         jobs = LabelPrintJobs(store: store, sync: sync, outbox: outbox, settings: settings, build: build, engine: engine,
-                              sender: { host, zpl in try await device.send(host, zpl) })
+                              sender: { host, zpl in try await device.send(host, zpl) },
+                              isLive: printJobIsLive(auth: auth, prefs: prefs))
     }
 
     /// Three assets: A-1 and A-3 with stored labels, A-2 with none at this DPI; the move's setup; the
@@ -117,6 +123,7 @@ struct PrintLabelsViewModelTests {
         ], ifMove: "i1")
         prefs.setupSelection = KioskSetupSelection(initiativeId: "i1", initiativeName: "Move", siteId: "s1", siteName: "Site",
                                                    siteRole: "source", scanStatus: "pre_stage", scanLabel: "Pre-stage")
+        await auth.completePair(fakeSession())
         if withPrinter {
             settings.setPrinter(printer)
             settings.setOffsets(x: 4, y: -2)
@@ -437,9 +444,9 @@ struct PrintLabelsViewModelTests {
         #expect(rows.count == 3)
     }
 
-    /// A job records under the move it was scanned for, even when Kiosk Setup changes before
-    /// its label goes out.
-    @Test func aJobRecordsUnderTheMoveItWasScannedFor() async throws {
+    /// Kiosk Setup switches to another move while a label is going out: the label finishes on
+    /// the printer, but its scan (for the move before) is never recorded, under either move.
+    @Test func aSetupChangeWhileALabelGoesOutRecordsNothing() async throws {
         let vm = try await harness()
         device.hold = true
         vm.onScan("A-1")
@@ -447,9 +454,39 @@ struct PrintLabelsViewModelTests {
         prefs.setupSelection = KioskSetupSelection(initiativeId: "i2", initiativeName: "Other", siteId: "s2", siteName: "Elsewhere",
                                                    siteRole: "destination", scanStatus: "received", scanLabel: "Received")
         device.hold = false
-        #expect(await waitUntil { rows.count == 1 })
-        #expect(rows[0].siteId == "s1")
-        #expect(rows[0].initiativeId == "i1")
+        #expect(await waitUntil { vm.entries.first?.state == .printed })
+        #expect(device.sent.count == 1)
+        #expect(rows.isEmpty)
+        #expect(vm.entries.first?.recordWarning == nil)
+    }
+
+    /// A sign-out while a label is going out: it finishes on the printer and records nothing
+    /// (silently: no warning). The record checks the session in the same main-actor turn.
+    @Test func aSignOutWhileALabelGoesOutRecordsNothing() async throws {
+        let vm = try await harness()
+        device.hold = true
+        vm.onScan("A-1")
+        #expect(await waitUntil { device.atHold })
+        auth.endSession()
+        device.hold = false
+        #expect(await waitUntil { vm.entries.first?.state == .printed })
+        #expect(device.sent.count == 1)
+        #expect(rows.isEmpty)
+        #expect(vm.entries.first?.recordWarning == nil)
+    }
+
+    /// The container's predicate: signed in, and the job's move and site are the kiosk's.
+    @Test func aJobIsLiveOnlyInASignedInSessionOnItsMoveAndSite() async throws {
+        let live = printJobIsLive(auth: auth, prefs: prefs)
+        let target = PrintTarget(asset: KioskAssetRow(id: "a1"), siteId: "s1", initiativeId: "i1")
+        prefs.setupSelection = testSelection(initiativeId: "i1")
+        #expect(!live(target)) // signed out
+        await auth.completePair(fakeSession())
+        #expect(live(target))
+        #expect(!live(PrintTarget(asset: target.asset, siteId: "s9", initiativeId: "i1")))
+        #expect(!live(PrintTarget(asset: target.asset, siteId: "s1", initiativeId: "i2")))
+        prefs.setupSelection = nil
+        #expect(!live(target))
     }
 
     @Test func aRosterWithoutASetupSelectionSaysSoAndPrintsNothing() async throws {

@@ -79,7 +79,8 @@ final class AppContainer {
         self.printJobs = LabelPrintJobs(store: store, sync: sync, outbox: outbox, settings: labelSettings,
                                         build: labelBuilder.monitor, engine: labelEngine,
                                         // Straight to the printer: no status checks before or after.
-                                        sender: { host, zpl in try await NetworkZebra(host: host).send(zpl) })
+                                        sender: { host, zpl in try await NetworkZebra(host: host).send(zpl) },
+                                        isLive: printJobIsLive(auth: auth, prefs: prefs))
         self.sound = SoundPlayer(prefs: prefs)
 
         // Print Labels' list and its waiting jobs belong to one session on one move.
