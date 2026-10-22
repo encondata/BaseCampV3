@@ -38,6 +38,9 @@ protocol LabelSettingsSource: Sendable {
 
     func setPeel(_ peel: Bool) { prefs.updateLabels { $0.peel = peel } }
 
+    /// No printer, zero offsets, tear-off: the defaults (Reset app).
+    func reset() { prefs.updateLabels { $0 = LabelOptions() } }
+
     private static func read(_ prefs: KioskPrefs) -> LabelSettings {
         let options = prefs.labels
         return LabelSettings(kind: LabelKind.fromWire(prefs.setupSelection?.labelKind), printer: options.printer,

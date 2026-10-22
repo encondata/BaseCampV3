@@ -117,6 +117,25 @@ final class AppContainer {
         }
     }
 
+    /// Settings › Developer › Reset app: a fresh setup without reinstalling. Clears the Print Labels
+    /// jobs, the move's synced data (roster, label templates, generated labels, fonts and their
+    /// files: `Sync.clearLocalData`), the Kiosk Setup selection and setup state, and the label
+    /// settings (printer, offsets, peel). Keeps the outbox (unsent scans), the sign-in, the API
+    /// and portal URLs, the kiosk's identity and name, and appearance, sound, camera, checkpoint
+    /// and developer-mode preferences. The label builder ends stopped, waiting for a sync.
+    /// Throws when the local data couldn't be cleared; the setup is then left as it was.
+    func resetApp() async throws {
+        // Nothing waiting prints for the setup being cleared.
+        await printJobs.reset()
+        try await sync.clearLocalData()
+        prefs.setupSelection = nil
+        prefs.setupState = .incomplete
+        labelSettings.reset()
+        // No build left over. A settings change may still start one, which finds no synced
+        // move and ends at once waiting for a sync, as the stop does.
+        await labelBuilder.stop()
+    }
+
     /// Keychain, UserDefaults.standard and the on-disk store (see `openStore`).
     static func live() -> AppContainer {
         let opened = openStore()

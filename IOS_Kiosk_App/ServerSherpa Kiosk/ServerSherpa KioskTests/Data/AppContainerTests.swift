@@ -105,4 +105,71 @@ struct AppContainerTests {
         try await Task.sleep(for: .milliseconds(100))
         #expect(c.printJobs.entries.map(\.scannedValue) == [v])
     }
+
+    /// Settings › Developer › Reset app: a fresh setup, nothing about the move or the printer
+    /// remembered; unsent scans, the sign-in, the URLs and the preferences stay.
+    @Test func resetAppStartsAFreshSetupAndKeepsScansAndTheSignIn() async throws {
+        let defaults = freshDefaults()
+        KioskPrefs(defaults: defaults).apiUrl = "http://127.0.0.1:9"   // nothing listens
+        let engine = FakeLabelEngine()
+        let c = AppContainer(defaults: defaults, secrets: MemorySecretStore(),
+                             modelContainer: try KioskSchema.inMemoryContainer(), backgroundTask: NoBackgroundTasking(),
+                             labelEngine: engine)
+        await c.auth.completePair(fakeSession())
+        c.prefs.portalUrl = "https://portal.example"
+        c.prefs.devMode = true
+        c.prefs.setupState = .complete
+        c.prefs.setupSelection = testSelection(initiativeId: "i1")
+        c.labelSettings.setPrinter(SavedPrinter(host: "10.0.0.5", model: "ZD421", serial: "S1", dpi: 203))
+        c.labelSettings.setOffsets(x: 12, y: -3)
+        c.labelSettings.setPeel(true)
+        let meta = SyncMeta(initiativeId: "i1", initiativeName: "Move", assets: 1, people: 0, containers: 0, trucks: 0, syncedAt: "now")
+        try await c.store.replaceRoster(assets: [KioskAssetRow(id: "a1", assetId: "A-1")], people: [], containers: [], trucks: [], meta: meta,
+                                        payloads: [#"{"id":"a1","asset_id":"A-1"}"#], labelContext: #"{"move_name":"Move"}"#,
+                                        templates: [LabelTemplateRow(id: "t1", json: #"{"id":"t1"}"#)])
+        try await c.store.replaceLabelFonts([LabelFontRow(id: "f1", name: "ROBOTO.TTF", size: 3, resident: false, fileName: nil)])
+        let following = await c.labelBuilder.start(syncStatus: c.sync.statusUpdates())
+        defer { following.cancel() }
+        await c.labelBuilder.buildNow("test")
+        #expect(c.labelBuilder.monitor.pick?.templateId == "t1")
+        #expect(try await c.store.storedLabel(assetId: "a1") != nil)
+        let scan = await c.outbox.enqueue(EnqueueInput(scannedValue: "A-1", scanType: "barcode", asset: nil, siteId: "s1",
+                                                       initiativeId: "i1", scanStatus: "pre_stage"))
+        #expect(scan != nil)
+        let outboxBefore = try await c.store.outboxAll()
+        #expect(outboxBefore.count == 1)
+        let job = await listOne(c)
+        #expect(c.printJobs.entries.map(\.scannedValue) == [job])
+
+        try await c.resetApp()
+
+        // Cleared.
+        #expect(c.prefs.setupSelection == nil)
+        #expect(c.prefs.setupState == .incomplete)
+        #expect(c.labelSettings.current() == LabelSettings())
+        #expect(c.prefs.labels == LabelOptions())
+        #expect(try await c.store.assets().isEmpty)
+        #expect(try await c.store.labelTemplates().isEmpty)
+        #expect(try await c.store.labelFonts().isEmpty)
+        #expect(try await c.store.storedLabel(assetId: "a1") == nil)
+        #expect(try await c.store.meta() == nil)
+        #expect(try await c.store.labelContext() == nil)
+        #expect(await cleared(c, job))
+        #expect(c.printJobs.entries.isEmpty)
+        // The builder ends waiting for a sync, nothing running and nothing picked, and stays so.
+        let builder = c.labelBuilder.monitor
+        #expect(await waitUntil { builder.status.needs == .sync && builder.status.phase != .running && builder.pick == nil })
+        let plans = engine.count("buildPlan")
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(builder.status.needs == .sync)
+        #expect(builder.status.phase != .running)
+        #expect(builder.pick == nil)
+        #expect(engine.count("buildPlan") == plans)
+        // Kept.
+        #expect(try await c.store.outboxAll() == outboxBefore)
+        guard case .authed = c.auth.state else { Issue.record("signed out by the reset"); return }
+        #expect(c.prefs.apiUrl == "http://127.0.0.1:9")
+        #expect(c.prefs.portalUrl == "https://portal.example")
+        #expect(c.prefs.devMode)
+    }
 }

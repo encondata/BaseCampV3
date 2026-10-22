@@ -73,7 +73,8 @@ actor LabelBuilder {
     /// Builds in the background. `start` calls it after a sync and a kind or printer DPI change.
     func rebuild(reason: String) { replace(.build(reason)) }
 
-    /// Stops any build and resets the status ("Clear local data" emptied the labels).
+    /// Stops any build and resets the status ("Clear local data" or Reset app emptied the labels,
+    /// so they wait for a sync).
     func stop() { replace(.stop) }
 
     private enum Request {
@@ -173,7 +174,7 @@ actor LabelBuilder {
         await lock()
         defer { unlock() }
         await setPick(nil)
-        await setStatus(LabelBuildStatus())
+        await setStatus(LabelBuildStatus(needs: .sync))
     }
 
     private func build() async throws {
