@@ -93,6 +93,7 @@ class RemovalGuardTest {
             "InternetTestRoutes::portal",
             "InternetTestSection()",
             "NetTestChip()",
+            "NetTestChipNavigation(nav)",
             "netTestFootValue()",
             "// INTERNET-TEST",
         ).forEach { assertTrue("should refer: $it", RemovalScan.refers(it)) }
@@ -151,7 +152,9 @@ class RemovalGuardTest {
             "$APP/data/api/OkHttpKioskApi.kt" to 2,
             "$APP/data/auth/MoveSetupGuard.kt" to 2,
             "$APP/data/printer/NetworkZebra.kt" to 2,
+            "$APP/ui/screens/timeclock/TimeclockScreen.kt" to 2,
             "$APP/ui/screens/timeclock/screens/ConfirmPerson.kt" to 2,
+            "$APP/ui/screens/timeclock/screens/TcShell.kt" to 2,
             "$APP/ui/screens/settings/DeveloperPanel.kt" to 2,
             "$APP/ui/shell/KioskShell.kt" to 4,
         )

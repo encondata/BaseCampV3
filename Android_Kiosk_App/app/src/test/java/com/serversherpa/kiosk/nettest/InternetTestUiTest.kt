@@ -41,10 +41,17 @@ import androidx.navigation.navArgument
 import com.serversherpa.kiosk.AppContainer
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.NativeFontsSettled
+import com.serversherpa.kiosk.core.model.KioskSetupSelection
+import com.serversherpa.kiosk.core.setup.SetupState
+import com.serversherpa.kiosk.data.FakeKioskApi
+import com.serversherpa.kiosk.data.FakeStationApi
+import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.data.fakeSession
 import com.serversherpa.kiosk.testContainer
+import com.serversherpa.kiosk.ui.KioskApp
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.screens.settings.DeveloperPanel
+import com.serversherpa.kiosk.ui.screens.timeclock.TimeclockScreen
 import com.serversherpa.kiosk.ui.shell.KioskShell
 import com.serversherpa.kiosk.ui.theme.KioskTheme
 import java.time.Instant
@@ -67,8 +74,8 @@ import org.robolectric.annotation.GraphicsMode
 
 /**
  * What the developer sees (design 4.1 and 4.3): the Internet Test section in
- * Settings › Developer, the amber Net test chip in the top bar, and the footer
- * item. Settings round-trip through the real controller and its DataStore, so
+ * Settings › Developer, the amber Net test chip in the top bar and in the Time
+ * Clock's header, and the footer item. Settings round-trip through the real controller and its DataStore, so
  * the tests wait for each write to land.
  */
 @RunWith(RobolectricTestRunner::class)
@@ -441,5 +448,109 @@ class InternetTestUiTest {
         compose.waitForIdle()
         assertEquals(Routes.SETTINGS, nav.currentDestination?.route)
         assertEquals("developer", nav.currentBackStackEntry?.arguments?.getString("tab"))
+    }
+
+    /*
+     * The Time Clock owns the whole screen (no kiosk top bar), so its own
+     * header carries the chip: on every step a signed-in kiosk's Time Clock
+     * shows, and never on a Time Clock station's, where nobody is signed in.
+     */
+
+    /** The regular kiosk's Time Clock (KIOSK mode), signed in, with the Settings route to land on. */
+    private fun showSignedInTimeClock() {
+        c.auth.completePair(fakeSession())
+        show {
+            nav = rememberNavController()
+            NavHost(nav, startDestination = Routes.TIMECLOCK) {
+                composable(Routes.TIMECLOCK) { TimeclockScreen(nav) }
+                composable(Routes.HOME) { Text("home page") }
+                composable(Routes.SETTINGS, arguments = listOf(navArgument("tab") { type = NavType.StringType; nullable = true })) { entry ->
+                    Text("settings page: ${entry.arguments?.getString("tab")}")
+                }
+            }
+        }
+        awaitText(TC_TAGLINE)
+    }
+
+    @Test fun timeClockShowsTheChipWhileSignedInAndOn() {
+        showSignedInTimeClock()
+        assertEquals(0, count("Net test"))
+
+        runBlocking { c.internetTest.setEnabled(true) }
+
+        awaitText("Net test")
+        compose.onNodeWithText("Net test").assertIsDisplayed().assertHasClickAction()
+        compose.onNodeWithText(TC_TAGLINE).assertIsDisplayed()
+
+        runBlocking { c.internetTest.setEnabled(false) }
+        compose.waitUntil(5_000) { count("Net test") == 0 }
+    }
+
+    @Test fun theTimeClockChipOpensDeveloperSettings() {
+        runBlocking { c.internetTest.setEnabled(true) }
+        showSignedInTimeClock()
+        awaitText("Net test")
+
+        compose.onNodeWithText("Net test").performClick()
+
+        awaitText("settings page: developer")
+        compose.waitForIdle()
+        assertEquals(Routes.SETTINGS, nav.currentDestination?.route)
+        assertEquals("developer", nav.currentBackStackEntry?.arguments?.getString("tab"))
+    }
+
+    /**
+     * The 320 dp MC2200 with real fonts. The wordmark is already too wide for
+     * it, so the chip sits above the date, in the clock's column: switched
+     * on, it shows its whole label and takes no width from the wordmark or
+     * the tagline.
+     */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w320dp-h533dp-hdpi")
+    fun theTimeClockChipLeavesTheWordmarkAloneOnA320dpHandheld() {
+        showSignedInTimeClock()
+        val brand = layoutOf("ServerSherpa").size.width
+        val tagline = layoutOf(TC_TAGLINE).size.width
+
+        runBlocking { c.internetTest.setEnabled(true) }
+        awaitText("Net test")
+
+        assertTrue("the chip's label is cut off", whole("Net test"))
+        assertEquals("the chip took width from the wordmark", brand, layoutOf("ServerSherpa").size.width)
+        assertEquals("the chip took width from the tagline", tagline, layoutOf(TC_TAGLINE).size.width)
+    }
+
+    /**
+     * A Time Clock station resting on Welcome through the app's own routes
+     * (as StationModeTest sets one up): nobody is signed in, so no chip, even
+     * with the switch on. (Running, the controller would have turned it off;
+     * the chip's own sign-in check is what this proves.)
+     */
+    @Test fun aTimeClockStationShowsNoChip() {
+        c.scope.cancel()
+        c.db.close()
+        c = testContainer(api = FakeKioskApi(), stationApi = FakeStationApi())
+        runBlocking {
+            c.identity.get()
+            c.prefs.setSetupSelection(KioskSetupSelection(siteId = "s1", siteName = "Dock 4", siteRole = "other", stationType = "timeclock"))
+            c.prefs.setSetupState(SetupState.COMPLETE)
+            c.stationKeys.put("k1", "http://127.0.0.1:1")
+            c.auth.restore()
+            c.internetTest.setEnabled(true)
+        }
+        assertEquals(AuthState.Anon, c.auth.state.value)
+        compose.setContent { CompositionLocalProvider(LocalAppContainer provides c) { KioskApp() } }
+
+        awaitText("Welcome!")
+        compose.waitUntil(5_000) { settings().enabled }
+        compose.waitForIdle()
+        compose.onNodeWithText(TC_TAGLINE).assertIsDisplayed()
+        assertEquals(0, count("Net test", ignoreCase = true))
+    }
+
+    private companion object {
+        /** The Time Clock header's tagline, under the wordmark. */
+        const val TC_TAGLINE = "DATACENTER RELOCATION TOOLS"
     }
 }

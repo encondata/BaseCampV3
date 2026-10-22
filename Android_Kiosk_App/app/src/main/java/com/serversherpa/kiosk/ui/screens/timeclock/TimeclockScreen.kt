@@ -5,6 +5,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.navigation.NavHostController
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.data.sync.SyncPhase
+import com.serversherpa.kiosk.nettest.NetTestChipNavigation // INTERNET-TEST
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.components.kioskViewModel
 import com.serversherpa.kiosk.ui.screens.timeclock.flow.SessionTcBackend
@@ -37,5 +38,6 @@ fun TimeclockScreen(nav: NavHostController) {
     LaunchedEffect(vm) {
         vm.exits.collect { nav.navigate(Routes.HOME) { popUpTo(Routes.HOME) { inclusive = true } } }
     }
+    NetTestChipNavigation(nav) // INTERNET-TEST
     TimeclockFlowScreen(vm)
 }

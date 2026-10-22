@@ -51,6 +51,8 @@ class MarkedLinesAreDeletableTest {
             "        internetTest.beforeSignOut() $MARK",
             "        InternetTestSection() $MARK",
             "        NetTestChip(onClick = { nav.navigate(Routes.SETTINGS) }) $MARK",
+            "        NetTestChip(onLightPaper = true) $MARK",
+            "        NetTestChipNavigation(nav) $MARK",
             "        netTestFootValue()?.let { FootItem(it) } $MARK",
             "        OkHttpKioskApi(httpClient, config, session,",
             "            route = InternetTestRoutes::portal, $MARK",
@@ -131,7 +133,9 @@ internal object DeletableShapes {
     const val MARKER = "// INTERNET-TEST"
 
     /** Internet Test's own names that a marked statement or expression may use. */
-    val SYMBOLS = setOf("internetTest", "InternetTest", "InternetTestRoutes", "InternetTestSection", "NetTestChip", "netTestFootValue")
+    val SYMBOLS = setOf(
+        "internetTest", "InternetTest", "InternetTestRoutes", "InternetTestSection", "NetTestChip", "NetTestChipNavigation", "netTestFootValue",
+    )
 
     /**
      * The names a whole marked statement may start with. Not `InternetTestRoutes`:

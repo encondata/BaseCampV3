@@ -19,7 +19,7 @@ Run these from `Android_Kiosk_App/`.
 
 2. **Delete every line marked `// INTERNET-TEST`.** Each marked line holds only
    Internet Test code, on a line of its own, so deleting the whole line is the
-   whole change. There are 21 of them in the seven files listed below:
+   whole change. There are 25 of them in the nine files listed below:
 
    ```
    grep -rl "// INTERNET-TEST" app/src | xargs sed -i '' '/\/\/ INTERNET-TEST/d'
@@ -59,7 +59,7 @@ The deletion in step 2 doesn't touch either one.
 ## The touch points
 
 Outside the two packages, the app refers to Internet Test in exactly these
-seven files (paths under `app/src/main/java/com/serversherpa/kiosk/`). Each
+nine files (paths under `app/src/main/java/com/serversherpa/kiosk/`). Each
 added fragment sits alone on its own marked line, so the original code on the
 lines around it is the same with or without it.
 
@@ -69,7 +69,9 @@ lines around it is the same with or without it.
 | `data/api/OkHttpKioskApi.kt` | 2 | The `route` constructor parameter (default `{ it }`) and the `.let(route)` step in `execute()` |
 | `data/auth/MoveSetupGuard.kt` | 2 | The `onDropped` constructor parameter (default `{}`) and the `onDropped()` call after a setup drop |
 | `data/printer/NetworkZebra.kt` | 2 | An import and the `.let(InternetTestRoutes::local)` step in `zebraSession()` |
+| `ui/screens/timeclock/TimeclockScreen.kt` | 2 | An import and the `NetTestChipNavigation(nav)` call, which opens Settings › Developer when the Time Clock header's chip is tapped |
 | `ui/screens/timeclock/screens/ConfirmPerson.kt` | 2 | An import and the `.let(InternetTestRoutes::portal)` step in `loadPhoto()` (the Time Clock photo download) |
+| `ui/screens/timeclock/screens/TcShell.kt` | 2 | An import and the `NetTestChip(onLightPaper = true)` in the Time Clock's header (`TcHeader`), between the wordmark and the clock |
 | `ui/screens/settings/DeveloperPanel.kt` | 2 | An import and the `InternetTestSection()` call |
 | `ui/shell/KioskShell.kt` | 4 | Two imports; the `NetTestChip(...)` in the top bar; the "Net test" footer item |
 
