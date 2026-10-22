@@ -36,6 +36,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.data.printer.BluetoothPermissions
+import com.serversherpa.kiosk.data.printer.isUpTo
 import com.serversherpa.kiosk.data.printer.FoundPrinter
 import com.serversherpa.kiosk.data.printer.TransportSetupZebra
 import com.serversherpa.kiosk.data.printer.ZebraScanner
@@ -90,9 +91,11 @@ fun PrinterSetupScreen(nav: NavHostController) {
     val ui by vm.state.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
     val pick by vm.currentPick.collectAsStateWithLifecycle()
+    val link by vm.bluetoothLink.collectAsStateWithLifecycle()
     var testOpen by remember { mutableStateOf(false) }
     val printer = settings?.printer
     val mode = ui.findMode
+    val connected = link.isUpTo(printer)
 
     // Bluetooth's permissions are asked for the first time Bluetooth is picked, never before: all
     // of them at once (precise location with approximate), the granted ones passing silently.
@@ -122,7 +125,7 @@ fun PrinterSetupScreen(nav: NavHostController) {
         PageHeader(
             "Kiosk · Label Printing", "Printer Setup",
             when {
-                printer != null -> printerSummary(printer)
+                printer != null -> printerSummary(printer) + if (connected) " · $CONNECTED_TEXT" else ""
                 settings != null -> "No printer set up yet."
                 else -> null
             },
@@ -153,7 +156,7 @@ fun PrinterSetupScreen(nav: NavHostController) {
             if (ui.found != null && !ui.scanning) MiniButton("Scan again", { vm.scan() }, enabled = !ui.busy)
         }
         if (mode == FindMode.BLUETOOTH) {
-            BluetoothResults(ui, printer, onChoose = vm::chooseBluetooth, onStop = vm::stopBluetoothScan, onScanAgain = { pickBluetooth() })
+            BluetoothResults(ui, printer, connected, onChoose = vm::chooseBluetooth, onStop = vm::stopBluetoothScan, onScanAgain = { pickBluetooth() })
         }
         if (mode == FindMode.IP) {
             OutlinedTextField(

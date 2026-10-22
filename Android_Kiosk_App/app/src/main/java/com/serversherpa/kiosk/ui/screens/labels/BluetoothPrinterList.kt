@@ -46,13 +46,16 @@ fun BluetoothCard(selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
 /**
  * What the Bluetooth scan heard: while it runs, a line with Stop; Bluetooth's refusal (with the
  * button that fixes it) or "no Zebra heard"; the Zebras (named like a serial, or advertising
- * Zebra) with their signal and Connect; every other named device folded under "Other devices";
+ * Zebra) with their signal and Connect (Connected on the saved printer while its link is up); every
+ * other named device folded under "Other devices";
  * the FEED hint; and Scan again once it has ended.
  */
 @Composable
 fun BluetoothResults(
     ui: PrinterSetupUi,
     saved: SavedPrinter?,
+    /** The link is up to [saved]. */
+    connected: Boolean,
     onChoose: (FoundBluetoothPrinter) -> Unit,
     onStop: () -> Unit,
     onScanAgain: () -> Unit,
@@ -67,34 +70,47 @@ fun BluetoothResults(
         LinearProgressIndicator(color = c.accent, trackColor = c.paperLine, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp))
     }
     BluetoothRefusal(ui.bluetoothMessage, error = ui.bluetoothError)
-    for (p in ui.bluetoothZebras) BluetoothRow(p, ui, saved, onChoose)
+    for (p in ui.bluetoothZebras) BluetoothRow(p, ui, saved, connected, onChoose)
     val others = ui.bluetoothOthers
     if (others.isNotEmpty()) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("Other devices (${others.size})", style = MaterialTheme.typography.titleSmall, color = c.textDark, modifier = Modifier.weight(1f))
             LinkButton(if (othersOpen) "Hide" else "Show") { othersOpen = !othersOpen }
         }
-        if (othersOpen) for (p in others) BluetoothRow(p, ui, saved, onChoose)
+        if (othersOpen) for (p in others) BluetoothRow(p, ui, saved, connected, onChoose)
     }
     Text(BLUETOOTH_SCAN_HINT_TEXT, style = MaterialTheme.typography.bodySmall, color = c.textMute, modifier = Modifier.padding(vertical = 6.dp))
     if (!ui.bluetoothScanning && ui.bluetoothFound != null) MiniButton("Scan again", onScanAgain, enabled = ui.bluetoothScanAllowed)
 }
 
-/** A device the scan heard: its name (a Zebra's is its serial), its signal, and Connect. */
+/** A device the scan heard: its name (a Zebra's is its serial), its signal, and Connect, or
+ *  Connected when it is the saved printer and the link is up to it. */
 @Composable
-private fun BluetoothRow(p: FoundBluetoothPrinter, ui: PrinterSetupUi, saved: SavedPrinter?, onChoose: (FoundBluetoothPrinter) -> Unit) {
+private fun BluetoothRow(p: FoundBluetoothPrinter, ui: PrinterSetupUi, saved: SavedPrinter?, connected: Boolean, onChoose: (FoundBluetoothPrinter) -> Unit) {
     val c = LocalKioskColors.current
-    SetupCard(isSavedPrinter(p, saved), onClick = { onChoose(p) }, enabled = !ui.busy, modifier = Modifier.padding(bottom = 8.dp)) {
+    val isSaved = isSavedPrinter(p, saved)
+    SetupCard(isSaved, onClick = { onChoose(p) }, enabled = !ui.busy, modifier = Modifier.padding(bottom = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
                 p.name, fontFamily = FragmentMono, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
                 color = c.textDark, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
             )
-            Text(if (ui.choosing == p.address) "Connecting…" else "Connect", style = MaterialTheme.typography.labelLarge, color = c.accent)
+            Text(bluetoothRowAction(ui.choosing == p.address, isSaved && connected), style = MaterialTheme.typography.labelLarge, color = c.accent)
         }
         Text(bluetoothSignalText(p.rssi), style = MaterialTheme.typography.bodySmall, color = c.textMute)
     }
 }
+
+/** What a scan row's action reads: Connecting… while it is being chosen, Connected while it is the
+ *  saved printer with its link up, else Connect. */
+internal fun bluetoothRowAction(choosing: Boolean, connected: Boolean): String = when {
+    choosing -> "Connecting…"
+    connected -> CONNECTED_TEXT
+    else -> "Connect"
+}
+
+/** The saved Bluetooth printer's link is up: its scan row and Printer Setup's header say so. */
+const val CONNECTED_TEXT = "Connected"
 
 /** The device is the saved Bluetooth printer: by the address it was saved with, or, only when none
  *  was saved, by its name (a Zebra's is its serial). A look-alike advertising the saved serial at

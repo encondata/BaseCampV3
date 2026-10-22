@@ -96,11 +96,11 @@ class BluetoothPrinterListTest {
     private var connects = 0
 
     /** Printer Setup's choose section as the screen lays it out, inside the shell's 16 dp gutters. */
-    private fun show(saved: SavedPrinter? = null) = compose.setContent {
+    private fun show(saved: SavedPrinter? = null, connected: Boolean = false) = compose.setContent {
         KioskTheme {
             Column(Modifier.padding(horizontal = 16.dp)) {
                 BluetoothCard(selected = ui.findMode == FindMode.BLUETOOTH, enabled = ui.bluetoothScanAllowed, onClick = {})
-                BluetoothResults(ui, saved, onChoose = { chosen += it }, onStop = { stops++ }, onScanAgain = {})
+                BluetoothResults(ui, saved, connected, onChoose = { chosen += it }, onStop = { stops++ }, onScanAgain = {})
                 ui.pairingLost?.let { PairingLostNotice(it, onConnect = { connects++ }) }
             }
         }
@@ -326,6 +326,26 @@ class BluetoothPrinterListTest {
         assertTrue(isSavedPrinter(zebra.copy(address = "66:55:44:33:22:11"), noAddress))
         assertFalse(isSavedPrinter(renamed, noAddress))
         assertFalse(isSavedPrinter(zebra, SavedPrinter("10.0.0.5", "ZD421", "S1", 203)))
+    }
+
+    /** Once the chosen printer is saved and its link is up, its row says Connected; the other rows
+     *  (a look-alike at another address included) still say Connect. */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun theSavedPrinterSaysConnectedWhileItsLinkIsUp() {
+        val saved = SavedPrinter(PrinterConnection.Bluetooth("D8J224508535", zebra.address), "ZD421", "D8J224508535", 203)
+        val lookAlike = zebra.copy(address = "66:55:44:33:22:11", rssi = -70)
+        ui = PrinterSetupUi(findMode = FindMode.BLUETOOTH, bluetoothFound = listOf(zebra, lookAlike, renamed))
+        show(saved, connected = true)
+        compose.onAllNodesWithText(CONNECTED_TEXT).assertCountEquals(1)
+        compose.onAllNodesWithText("Connect").assertCountEquals(2)
+        assertWhole(CONNECTED_TEXT)
+    }
+
+    @Test fun aScanRowsActionReadsConnectingConnectedOrConnect() {
+        assertEquals("Connecting…", bluetoothRowAction(choosing = true, connected = true))
+        assertEquals("Connected", bluetoothRowAction(choosing = false, connected = true))
+        assertEquals("Connect", bluetoothRowAction(choosing = false, connected = false))
     }
 
     /** While a check asks the printer, the Bluetooth card is off (its scan would be ended by it). */

@@ -42,6 +42,7 @@ import com.serversherpa.kiosk.data.labels.LabelSettingsStore
 import com.serversherpa.kiosk.data.printer.BluetoothAvailability
 import com.serversherpa.kiosk.data.printer.BluetoothNotZebra
 import com.serversherpa.kiosk.data.printer.BluetoothPairingLost
+import com.serversherpa.kiosk.data.printer.BluetoothLinkInfo
 import com.serversherpa.kiosk.data.printer.BluetoothPrinting
 import com.serversherpa.kiosk.data.printer.BluetoothScanEnd
 import com.serversherpa.kiosk.data.printer.BluetoothUnavailable
@@ -295,6 +296,8 @@ class PrinterSetupViewModel(
     /** Null until the settings are first read. */
     val settings: StateFlow<LabelSettings?> = store.settings.stateIn(scope, SharingStarted.Eagerly, null)
     val currentPick: StateFlow<LabelPick?> = pick
+    /** The Bluetooth link, so the screen can say when the saved printer is connected. */
+    val bluetoothLink: StateFlow<BluetoothLinkInfo> = bluetooth.link
 
     /** The saved printer: every call (checks, font installs, test labels) under the app-wide lock
      *  and guard, so a test label never opens a second connection while a check or a label is
