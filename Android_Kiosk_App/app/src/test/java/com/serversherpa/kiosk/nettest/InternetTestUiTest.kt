@@ -40,17 +40,16 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.serversherpa.kiosk.AppContainer
 import com.serversherpa.kiosk.LocalAppContainer
+import com.serversherpa.kiosk.NativeFontsSettled
 import com.serversherpa.kiosk.data.fakeSession
 import com.serversherpa.kiosk.testContainer
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.screens.settings.DeveloperPanel
 import com.serversherpa.kiosk.ui.shell.KioskShell
 import com.serversherpa.kiosk.ui.theme.KioskTheme
-import java.nio.file.FileSystems
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -60,10 +59,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.RuleChain
-import org.junit.rules.TestRule
-import org.junit.runner.Description
 import org.junit.runner.RunWith
-import org.junit.runners.model.Statement
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
@@ -333,12 +329,14 @@ class InternetTestUiTest {
     /**
      * With the switch off: no chip and the brand whole (and the kiosk name too
      * when [nameFitsWhileOff]). Then switched on: the chip shows its full label,
-     * the brand is still whole, and Sign out stays.
+     * the brand is still whole, Sign out stays, and the bar is exactly as tall
+     * as with the switch off.
      */
     private fun assertChipFits(kioskName: String, nameFitsWhileOff: Boolean) {
         assertEquals(0, count("Net test"))
         assertTrue("the brand is cut off with the switch off", brandWhole())
         if (nameFitsWhileOff) assertTrue("the kiosk name is cut off with the switch off", whole(kioskName))
+        val barOnly = pageTop()
 
         runBlocking { c.internetTest.setEnabled(true) }
         awaitText("Net test")
@@ -347,6 +345,7 @@ class InternetTestUiTest {
         assertTrue("the brand is cut off with the chip on", brandWhole())
         compose.onNodeWithText("Net test").assertIsDisplayed().assertHasClickAction()
         compose.onNodeWithText("Sign out").assertIsDisplayed()
+        assertEquals("the chip made the bar taller", barOnly, pageTop())
     }
 
     /*
@@ -361,15 +360,9 @@ class InternetTestUiTest {
     @Config(qualifiers = "w320dp-h533dp-hdpi")
     fun chipFitsOnA320dpHandheld() {
         showSignedInShell("Kiosk 8CE2")
-        val barOnly = pageTop()
 
         assertChipFits("Kiosk 8CE2", nameFitsWhileOff = true)
 
-        // The pill adds no height to the bar. (Only checked here: when the chip
-        // and a longer name, or larger text, squeeze the bar's " · " separator,
-        // that original Text wraps and the bar grows. A kiosk name that is long
-        // enough does that with the switch off too.)
-        assertEquals(barOnly, pageTop())
         // A small pill, but a full-height tap target within the bar.
         compose.onNodeWithText("Net test").assertTouchHeightIsEqualTo(48.dp)
         compose.onNodeWithText("Net test").performTouchInput { click(center) }
@@ -388,7 +381,17 @@ class InternetTestUiTest {
         assertChipFits("Ashburn DC2 Receiving Dock", nameFitsWhileOff = false)
     }
 
-    /** Larger system text (font scale 1.15) with a default-format name: chip and brand both still whole. */
+    /** A mid-length name squeezes the " · " after it to a sliver; the bar still keeps its height. */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w320dp-h533dp-hdpi")
+    fun chipFitsBesideAMidLengthKioskName() {
+        showSignedInShell("Dallas Dock 4")
+
+        assertChipFits("Dallas Dock 4", nameFitsWhileOff = true)
+    }
+
+    /** Larger system text (font scale 1.15) with a default-format name: chip and brand whole, the bar no taller. */
     @Test
     @GraphicsMode(GraphicsMode.Mode.NATIVE)
     @Config(qualifiers = "w320dp-h533dp-hdpi")
@@ -420,30 +423,5 @@ class InternetTestUiTest {
         compose.waitForIdle()
         assertEquals(Routes.SETTINGS, nav.currentDestination?.route)
         assertEquals("developer", nav.currentBackStackEntry?.arguments?.getString("tab"))
-    }
-}
-
-/**
- * Before a native-graphics test, waits out another Robolectric sandbox that is
- * still unpacking the native runtime's fonts (about 160 MB). Robolectric 4.14
- * holds the fonts jar open as a zip file system while it copies them, and a
- * sandbox that starts loading meanwhile fails with
- * FileSystemAlreadyExistsException. The legacy-graphics tests start that copy
- * on a background thread (Room's first query), so a native-graphics test right
- * after them would collide with it. The file system is open exactly while a
- * copy is in progress.
- */
-private class NativeFontsSettled : TestRule {
-    override fun apply(base: Statement, description: Description): Statement = object : Statement() {
-        override fun evaluate() {
-            if (description.getAnnotation(GraphicsMode::class.java)?.value == GraphicsMode.Mode.NATIVE) awaitFontsCopied()
-            base.evaluate()
-        }
-    }
-
-    private fun awaitFontsCopied() {
-        val fonts = javaClass.classLoader?.getResource("fonts/")?.toURI()?.takeIf { it.scheme == "jar" } ?: return
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60)
-        while (runCatching { FileSystems.getFileSystem(fonts) }.isSuccess && System.nanoTime() < deadline) Thread.sleep(20)
     }
 }
