@@ -164,7 +164,7 @@ async def test_approve_then_poll_mints_a_fresh_session_for_the_approver(client, 
     assert body["status"] == "approved"
     assert body["session"]["person"]["email"] == "alice@test.example.com"
     assert body["session"]["perms"]["kiosk"]["view"] is True
-    assert "ss_refresh" in resp.cookies
+    assert "ss_refresh" in resp.cookies and "ss_portal_refresh" not in resp.cookies
 
     sessions = (await db.scalars(select(AuthSession))).all()
     assert len(sessions) == 2
@@ -228,7 +228,7 @@ async def test_approver_disabled_before_claim_is_denied(client, db, seeded_user)
     await db.commit()
     resp = await _poll(client, d)
     assert resp.json()["status"] == "denied"
-    assert "ss_refresh" not in resp.cookies
+    assert "ss_refresh" not in resp.cookies and "ss_portal_refresh" not in resp.cookies
     assert len((await db.scalars(select(AuthSession))).all()) == 1
 
     audit_row = await db.scalar(select(AuditLog).where(

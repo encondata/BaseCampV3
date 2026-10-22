@@ -23,7 +23,7 @@ async def test_login_success_returns_tokens_roles_and_cookie(client, seeded_user
     assert body["person"]["display_name"] == "Alice Anderson"
     assert body["roles"] == ["staff"]
     assert body["access_token"]
-    assert "ss_refresh" in resp.cookies
+    assert "ss_portal_refresh" in resp.cookies and "ss_refresh" not in resp.cookies
     # 24h absolute deadline (SS_SESSION_TTL_SECONDS=86400 in dev .env)
     deadline = datetime.fromisoformat(body["session_expires_at"])
     hours = (deadline - datetime.now(UTC)).total_seconds() / 3600
@@ -77,7 +77,7 @@ async def test_refresh_rotates_and_inherits_absolute_deadline(client, seeded_use
     login_body = (await _login(client)).json()
     deadline_at_login = login_body["session_expires_at"]
 
-    resp = await client.post("/auth/refresh")
+    resp = await client.post("/auth/refresh?client=portal")
     assert resp.status_code == 200
     body = resp.json()
     assert body["access_token"]
@@ -99,12 +99,12 @@ async def test_refresh_rotates_and_inherits_absolute_deadline(client, seeded_use
 
 async def test_replayed_refresh_token_revokes_whole_family(client, seeded_user, db):
     await _login(client)
-    stolen = client.cookies["ss_refresh"]
+    stolen = client.cookies["ss_portal_refresh"]
 
-    assert (await client.post("/auth/refresh")).status_code == 200  # legit rotation
+    assert (await client.post("/auth/refresh?client=portal")).status_code == 200  # legit rotation
 
-    client.cookies.set("ss_refresh", stolen, path="/auth")  # attacker replays
-    resp = await client.post("/auth/refresh")
+    client.cookies.set("ss_portal_refresh", stolen, path="/auth")  # attacker replays
+    resp = await client.post("/auth/refresh?client=portal")
     assert resp.status_code == 401
     assert resp.json()["detail"]["code"] == "session_reuse_detected"
 
@@ -119,7 +119,7 @@ async def test_expired_session_cannot_refresh(client, seeded_user, db):
     await _login(client)
     await db.execute(text("UPDATE auth_sessions SET expires_at = now() - interval '1 minute'"))
     await db.commit()
-    resp = await client.post("/auth/refresh")
+    resp = await client.post("/auth/refresh?client=portal")
     assert resp.status_code == 401
     assert resp.json()["detail"]["code"] == "session_expired"
 
@@ -136,7 +136,7 @@ async def test_refresh_without_cookie(client):
 async def test_logout_revokes_family_and_kills_access_token(client, seeded_user, db):
     token = (await _login(client)).json()["access_token"]
 
-    resp = await client.post("/auth/logout")
+    resp = await client.post("/auth/logout?client=portal")
     assert resp.status_code == 204
 
     row = (await db.scalars(select(AuthSession))).one()
@@ -148,4 +148,4 @@ async def test_logout_revokes_family_and_kills_access_token(client, seeded_user,
     assert me.json()["detail"]["code"] == "session_ended"
 
     # and the refresh cookie is gone from the jar
-    assert (await client.post("/auth/refresh")).status_code == 401
+    assert (await client.post("/auth/refresh?client=portal")).status_code == 401

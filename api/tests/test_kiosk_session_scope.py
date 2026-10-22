@@ -78,7 +78,7 @@ async def test_session_row_records_which_app_minted_it(client, db, seeded_user):
 
 async def test_refresh_keeps_the_kiosk_scope(client, db, seeded_user):
     resp = await _kiosk_login(client)
-    assert "ss_refresh" in resp.cookies
+    assert "ss_refresh" in resp.cookies and "ss_portal_refresh" not in resp.cookies
     refreshed = await client.post("/auth/refresh")
     assert refreshed.status_code == 200, refreshed.text
     await _assert_kiosk_scoped(client, _hdrs(refreshed))
