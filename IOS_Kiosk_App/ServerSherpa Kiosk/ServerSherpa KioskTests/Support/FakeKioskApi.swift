@@ -50,6 +50,10 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     /// Every body `postScans` was called with, in order.
     var scanBatches: [KioskScanBatchIn] { lock.lock(); defer { lock.unlock() }; return _scanBatches }
 
+    /// Every body `submitSetup` was called with, in order.
+    var submitSetupBodies: [KioskSetupIn] { lock.lock(); defer { lock.unlock() }; return _submitSetupBodies }
+    private var _submitSetupBodies: [KioskSetupIn] = []
+
     /// The `serial` and `tz` each status read was sent with, in order.
     var statusQueries: [(serial: String?, tz: String?)] { lock.lock(); defer { lock.unlock() }; return _statusQueries }
     private var _statusQueries: [(serial: String?, tz: String?)] = []
@@ -80,7 +84,10 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     }
     func signOut(serial: String, credentials: SignOutCredentials) async { record("signOut"); await signOutGate?() }
     func setupOptions() async throws -> SetupOptions { record("setupOptions"); return try setupOptionsResult() }
-    func submitSetup(_ body: KioskSetupIn) async throws -> KioskSetupResult { record("submitSetup"); return try submitSetupResult(body) }
+    func submitSetup(_ body: KioskSetupIn) async throws -> KioskSetupResult {
+        lock.lock(); _submitSetupBodies.append(body); lock.unlock()
+        record("submitSetup"); return try submitSetupResult(body)
+    }
     func syncAssets(initiativeId: String) async throws -> KioskAssetsSync { record("syncAssets"); return try await assets() }
     func syncPeople() async throws -> KioskPeopleSync { record("syncPeople"); return try await people() }
     func syncContainers(initiativeId: String) async throws -> KioskContainersSync { record("syncContainers"); return try await containers() }

@@ -22,7 +22,8 @@ struct FooterItem: Equatable {
     if let move = selection?.initiativeName ?? kioskMove?.name { items.append(FooterItem(label: "Move", value: move)) }
     if let selection {
         items.append(FooterItem(label: "Site", value: selection.siteName))
-        items.append(FooterItem(label: "Scan", value: selection.scanLabel))
+        // a Time Clock station has no scan type ("No move" / "No site" are its names)
+        if !selection.scanLabel.isEmpty { items.append(FooterItem(label: "Scan", value: selection.scanLabel)) }
     }
     items.append(FooterItem(label: "Data Sync", status: sync.phase == .done ? .good : .bad, detail: syncDetail(sync)))
     if devMode { items.append(FooterItem(label: "Dev mode", value: "On", accent: true)) }

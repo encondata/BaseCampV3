@@ -3,7 +3,8 @@ import SwiftUI
 /// The kiosk's Timeclock tile: the guided time clock in kiosk mode. It starts at
 /// Enter Your Name, and every exit (Done, idle, Back on Enter Your Name) goes Home.
 /// The people are the kiosk's synced copy, re-read whenever a sync lands; camera
-/// scans arrive through the scan bus.
+/// scans arrive through the scan bus. On a Time Clock station the punches go through
+/// the station key even while someone is signed in (`kioskTimeclockBackend`).
 struct TimeclockScreen: View {
     @Environment(\.container) private var container
 
@@ -23,7 +24,7 @@ private struct TimeclockKioskHost: View {
         self.container = container
         let prefs = container.prefs
         _model = State(initialValue: TimeclockFlowModel(
-            mode: .kiosk, backend: SessionTcBackend(container: container), flash: container.flash, sound: container.sound,
+            mode: .kiosk, backend: kioskTimeclockBackend(container: container), flash: container.flash, sound: container.sound,
             appearance: { prefs.appearance }, fetchImage: { [api = container.api] in try await api.fetchImage(url: $0) }))
     }
 

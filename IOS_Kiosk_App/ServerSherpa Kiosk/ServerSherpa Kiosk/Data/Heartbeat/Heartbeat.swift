@@ -56,6 +56,13 @@ final class Heartbeat {
     /// Beat right now (after a rename). Resolves after the attempt.
     func now() async { await beat() }
 
+    /// A sign-in beat right now: the portal records this person as signed in here again (Kiosk
+    /// Setup's station key needs that, 403 `not_signed_in_here` otherwise). Resolves after the attempt.
+    func signInNow(_ method: LoginMethod) async {
+        pendingSignIn = method
+        await beat()
+    }
+
     private func beat() async {
         let me = identity.current
         let asSignIn = pendingSignIn

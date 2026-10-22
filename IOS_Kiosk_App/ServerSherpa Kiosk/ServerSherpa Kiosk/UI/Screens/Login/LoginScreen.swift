@@ -77,12 +77,22 @@ private struct LoginScreenBody: View {
                 if new == .pair { Task { await pair.begin() } } else if old == .pair { pair.stop() }
             }
             .onDisappear { pair.stop() }
+            // a Time Clock station's sign-in page goes back to Welcome after a quiet minute
+            .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in container.station.noteLoginActivity() })
+            .onChange(of: "\(vm.email)\u{0}\(vm.password)") { container.station.noteLoginActivity() }
             .sheet(isPresented: $kioskSheet) { SettingsScreen(initialTab: .thisKiosk, onDone: { kioskSheet = false }) }
     }
 
     private func form(_ metrics: LoginMetrics) -> some View {
-        LoginForm(vm: vm, f: metrics.f, pair: pair)
+        LoginForm(vm: vm, f: metrics.f, pair: pair, onBackToTimeclock: backToTimeclock)
         .frame(width: metrics.formWidth)
+    }
+
+    /// On a Time Clock station (reached through Welcome's gear): the way back to its Welcome.
+    private var backToTimeclock: (() -> Void)? {
+        guard loginOffersBackToTimeclock(selection: container.prefs.setupSelection) else { return nil }
+        let station = container.station
+        return { station.backToTimeclock() }
     }
 
     /// The form column on the right (≥ 900 pt); the scene is drawn behind it.

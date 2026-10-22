@@ -26,6 +26,9 @@ final class KioskAuth {
     /// Set only by login()/moveLogin()/completePair(), never by a cookie restore,
     /// so the API can auto-register the kiosk and record how the person signed in.
     @ObservationIgnored private var pendingSignIn: LoginMethod?
+    /// How the person signed in on this kiosk (nil after a cookie restore): a later sign-in beat
+    /// (Kiosk Setup's station key retry) reports the same method.
+    @ObservationIgnored private(set) var lastSignIn: LoginMethod?
 
     /// Runs first in `logout()`; the container points it at `heartbeat.stop()` and the print
     /// jobs' reset.
@@ -49,6 +52,7 @@ final class KioskAuth {
     func login(email: String, password: String) async throws {
         let data = try await api.login(email: email, password: password)
         pendingSignIn = .password
+        lastSignIn = .password
         apply(data)
     }
 
@@ -56,6 +60,7 @@ final class KioskAuth {
     func moveLogin(password: String) async throws {
         let data = try await api.moveLogin(password: password)
         pendingSignIn = .password
+        lastSignIn = .password
         apply(data)
     }
 
@@ -64,6 +69,7 @@ final class KioskAuth {
     func completePair(_ data: SessionData, cookie: PairCookie? = nil) async {
         await refresher.adopt(data, cookie: cookie)
         pendingSignIn = .link
+        lastSignIn = .link
         apply(data)
     }
 
