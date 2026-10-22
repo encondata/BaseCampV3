@@ -169,10 +169,23 @@ enum RolodexLogic {
         return patch
     }
 
-    /// The first problem that blocks saving, as shown to the admin, or nil.
+    /// The first problem that blocks saving, as shown to the admin, or nil: the names, then the
+    /// email (a blank one is fine), then the blacklist note.
     static func validate(_ edit: RolodexEdit) -> String? {
         if clean(edit.firstName) == nil || clean(edit.lastName) == nil { return "First and last name are required." }
+        if let email = clean(edit.email), !looksLikeEmail(email) { return "Enter a valid email address." }
         if clean(edit.status) == blacklistKey && clean(edit.statusNote) == nil { return "Add a note to blacklist someone." }
         return nil
+    }
+
+    /// name@domain.tld: no spaces, one `@`, a dot in the domain, and nothing empty around the `@`
+    /// or any dot. The server refuses a bad email with a 422 that carries no code, so the device
+    /// has to catch it.
+    static func looksLikeEmail(_ s: String) -> Bool {
+        guard !s.contains(where: \.isWhitespace) else { return false }
+        let parts = s.split(separator: "@", omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty else { return false }
+        let labels = parts[1].split(separator: ".", omittingEmptySubsequences: false)
+        return labels.count >= 2 && labels.allSatisfy { !$0.isEmpty }
     }
 }

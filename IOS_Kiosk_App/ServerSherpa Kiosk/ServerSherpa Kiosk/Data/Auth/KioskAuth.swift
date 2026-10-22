@@ -38,6 +38,9 @@ final class KioskAuth {
     /// Runs in `endSession()`, a session that ended without `logout()` (it expired or was
     /// revoked); the container points it at the print jobs' reset.
     @ObservationIgnored var onSessionEnded: (@MainActor () -> Void)?
+    /// Runs when the launch restore finds no live session (it ended while the app was closed);
+    /// the container points it at the Rolodex's clear. Nothing else about the restore changes.
+    @ObservationIgnored var onRestoreFailed: (@MainActor () -> Void)?
 
     init(api: KioskApi, refresher: SessionRefresher, identity: Identity, prefs: KioskPrefs, station: TimeclockStation? = nil) {
         self.api = api
@@ -49,7 +52,12 @@ final class KioskAuth {
 
     /// Cookie restore on launch.
     func restore() async {
-        if let data = await refresher.refresh() { apply(data) } else { state = .anon }
+        if let data = await refresher.refresh() {
+            apply(data)
+        } else {
+            onRestoreFailed?()
+            state = .anon
+        }
     }
 
     func login(email: String, password: String) async throws {

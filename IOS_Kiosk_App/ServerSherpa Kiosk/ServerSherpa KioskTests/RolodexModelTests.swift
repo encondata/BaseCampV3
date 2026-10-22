@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Testing
+import UIKit
 @testable import ServerSherpa_Kiosk
 
 private let ANA = RolodexRow(personId: "p-ana", firstName: "Ana", lastName: "Ortiz", displayName: "Ana Ortiz", jobTitle: "Rigger",
@@ -113,11 +114,48 @@ struct RolodexModelTests {
 
     @Test func aRefusedAccountSeesTheSpecCopyAndNoCachedList() async throws {
         await model().load()
+        #expect(try await store.rolodexCache() != nil)
         api.rolodexWorkersResult = { throw ApiError(status: 403, code: "forbidden") }
         let m = model()
         await m.load()
         #expect(m.rows.isEmpty && !m.offline)
         #expect(m.listError == "Your account can't use the Rolodex.")
+        // nor on disk (spec §3.15)
+        #expect(try await store.rolodexCache() == nil)
+    }
+
+    /// A sign-out landing while the list is loading leaves no offline copy behind.
+    @Test func aSignOutDuringALoadLeavesNoCache() async throws {
+        let m = model()
+        let hold = HoldGate()
+        api.rolodexGate = { name in if name == "rolodexWorkers" { await hold.wait() } }
+        let loading = Task { await m.load() }
+        #expect(await waitUntil { m.loading })
+        let cleared = m.clear()
+        await hold.open()
+        await loading.value
+        await cleared.value
+        #expect(m.rows.isEmpty && !m.loaded)
+        #expect(try await store.rolodexCache() == nil)
+    }
+
+    /// A sign-out landing while a save is in flight: the save's answer writes nothing back.
+    @Test func aSignOutDuringASaveLeavesNoCache() async throws {
+        let m = await anaOpen()
+        m.startEdit()
+        m.editing?.jobTitle = "Lead rigger"
+        let hold = HoldGate()
+        api.rolodexGate = { name in if name == "rolodexUpdate" { await hold.wait() } }
+        api.rolodexUpdateResult = { _, _ in anaDetail { $0.jobTitle = "Lead rigger" } }
+        let saving = Task { await m.save() }
+        #expect(await waitUntil { m.saving })
+        let cleared = m.clear()
+        await cleared.value
+        await hold.open()
+        #expect(await saving.value == false)
+        #expect(try await store.rolodexCache() == nil)
+        #expect(try await store.people().isEmpty)
+        #expect(m.detail == nil && m.rows.isEmpty)
     }
 
     @Test func aRefreshThatLosesTheConnectionKeepsTheListAndGoesOffline() async throws {
@@ -339,6 +377,41 @@ struct RolodexModelTests {
         #expect(m.rows.first { $0.personId == ANA.personId }?.jobTitle == "Rigger")
     }
 
+    /// Review Focus 4: leaving the worker while the save is in flight doesn't happen (the page
+    /// stays), so a failed save still shows its error over the form as typed.
+    @Test func theWorkerStaysOpenWhileASaveIsInFlight() async throws {
+        let m = model()
+        await m.load()
+        await m.select(ANA.personId)
+        m.startEdit()
+        m.editing?.jobTitle = "Lead rigger"
+        let typed = m.editing
+        let hold = HoldGate()
+        api.rolodexGate = { name in if name == "rolodexUpdate" { await hold.wait() } }
+        api.rolodexUpdateResult = { _, _ in throw ApiError(status: 423, code: "read_only_mode") }
+        let saving = Task { await m.save() }
+        #expect(await waitUntil { m.saving })
+        await m.select(BO.personId)
+        #expect(m.selectedId == ANA.personId)
+        #expect(m.editing == typed)
+        await hold.open()
+        #expect(await saving.value == false)
+        #expect(m.errorText == "The system is in read-only mode, so changes can't be saved right now.")
+        #expect(m.editing == typed)
+        // once the save is over, leaving works again
+        await m.select(BO.personId)
+        #expect(m.selectedId == BO.personId)
+    }
+
+    @Test func aMalformedEmailIsCaughtBeforeSending() async throws {
+        let m = await anaOpen()
+        m.startEdit()
+        m.editing?.email = "ana@example"
+        #expect(await m.save() == false)
+        #expect(m.errorText == "Enter a valid email address.")
+        #expect(api.rolodexPatches.isEmpty)
+    }
+
     @Test func aFormThatDoesNotValidateSendsNothing() async throws {
         let m = await anaOpen()
         m.startEdit()
@@ -387,6 +460,57 @@ struct RolodexModelTests {
         #expect(RolodexModel.errorText(for: ApiError(status: 423, code: "unknown_error"))
                 == "The system is in read-only mode, so changes can't be saved right now.")
         #expect(RolodexModel.errorText(for: ApiError.network()) == "No connection. Try again when you're back online.")
+    }
+}
+
+/// Counts the fetches a photo load makes.
+private final class FetchLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _urls: [String] = []
+    var urls: [String] { lock.withLock { _urls } }
+    func add(_ url: String) { lock.withLock { _urls.append(url) } }
+}
+
+/// The avatar's loader: a failed fetch (an expired presigned link) caches nothing, so the fresh
+/// link the next row or page brings is fetched; a cached photo is never fetched again.
+struct RolodexAvatarTests {
+    private static func png(_ side: Int) -> Data {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format).pngData { ctx in
+            UIColor.orange.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: side, height: side))
+        }
+    }
+
+    @Test func aFreshLinkRestartsTheLoad() {
+        let key = RolodexPhotoCache.key(personId: "p1", photoVersion: "v1", pixels: 160)
+        #expect(rolodexAvatarTaskId(key: key, url: "https://s3/a?sig=old") != rolodexAvatarTaskId(key: key, url: "https://s3/a?sig=new"))
+        #expect(rolodexAvatarTaskId(key: key, url: "https://s3/a?sig=old") == rolodexAvatarTaskId(key: key, url: "https://s3/a?sig=old"))
+        #expect(rolodexAvatarTaskId(key: nil, url: nil) != rolodexAvatarTaskId(key: key, url: nil))
+    }
+
+    @Test func anExpiredLinkIsRetriedWithTheFreshOneAndACachedPhotoIsNotFetched() async throws {
+        let cache = RolodexPhotoCache()
+        let key = RolodexPhotoCache.key(personId: "p1", photoVersion: "v1", pixels: 160)
+        let log = FetchLog()
+        let image = Self.png(600)
+        let fetch: @Sendable (String) async throws -> Data = { url in
+            log.add(url)
+            guard url.hasSuffix("new") else { throw ApiError(status: 403, code: "unknown_error") }   // S3: the link expired
+            return image
+        }
+        #expect(await RolodexAvatar.photo(key: key, url: "https://s3/a?sig=old", pixels: 160, cache: cache, fetch: fetch) == nil)
+        #expect(cache.image(key) == nil)
+        let fresh = try #require(await RolodexAvatar.photo(key: key, url: "https://s3/a?sig=new", pixels: 160, cache: cache, fetch: fetch))
+        #expect(max(fresh.size.width, fresh.size.height) <= 160)
+        #expect(cache.image(key) != nil)
+        // cached: another link (even an expired one) isn't fetched
+        #expect(await RolodexAvatar.photo(key: key, url: "https://s3/a?sig=old", pixels: 160, cache: cache, fetch: fetch) != nil)
+        #expect(log.urls == ["https://s3/a?sig=old", "https://s3/a?sig=new"])
+        // no link, nothing cached: nothing to fetch
+        #expect(await RolodexAvatar.photo(key: "p2:v1:160", url: nil, pixels: 160, cache: cache, fetch: fetch) == nil)
+        #expect(log.urls.count == 2)
     }
 }
 

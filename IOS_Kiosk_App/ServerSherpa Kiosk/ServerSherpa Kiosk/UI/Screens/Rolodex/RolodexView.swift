@@ -58,8 +58,6 @@ struct RolodexView: View {
         .onAppear {
             guard !opened else { return }
             opened = true
-            // An Edit form left open when "‹ Home" was tapped doesn't come back with the next visit.
-            model.cancelEdit()
             // Not a `.task`: pushing a worker page would cancel the load half way.
             Task { await model.load() }
         }

@@ -29,6 +29,11 @@ final class RolodexPhotoCache: @unchecked Sendable {
     func removeAll() { cache.removeAllObjects() }
 }
 
+/// The avatar's load restarts when the photo's version changes and also when its presigned
+/// link does: a fetch that failed on an expired link (600 s) tries again once the row or the
+/// worker's page brings a fresh one. A photo already showing or cached isn't fetched again.
+func rolodexAvatarTaskId(key: String?, url: String?) -> String { "\(key ?? "")|\(url ?? "")" }
+
 /// A worker's round photo, or their initials on the Time Clock's gray gradient while there's
 /// none (or it can't load). The photo is fetched (unauthenticated, presigned) and shrunk off the
 /// main actor, then cached in `RolodexPhotoCache`.
@@ -40,6 +45,8 @@ struct RolodexAvatar: View {
     let size: CGFloat
     @Environment(\.container) private var container
     @State private var image: UIImage?
+    /// The cache key `image` was loaded for.
+    @State private var imageKey: String?
 
     init(row: RolodexRow, size: CGFloat) {
         personId = row.personId
@@ -58,7 +65,7 @@ struct RolodexAvatar: View {
 
     var body: some View {
         // A cached photo shows on the first frame (no initials flash while scrolling back).
-        let shown = image ?? key.flatMap { RolodexPhotoCache.shared.image($0) }
+        let shown = (imageKey == key ? image : nil) ?? key.flatMap { RolodexPhotoCache.shared.image($0) }
         ZStack {
             if let shown {
                 Image(uiImage: shown).resizable().scaledToFill()
@@ -72,29 +79,32 @@ struct RolodexAvatar: View {
         .frame(width: size, height: size)
         .clipShape(Circle())
         .accessibilityHidden(true)
-        .task(id: key) { await load() }
+        .task(id: rolodexAvatarTaskId(key: key, url: photoUrl)) { await load() }
     }
 
     private func load() async {
         guard let key else {
             image = nil
+            imageKey = nil
             return
         }
-        if let hit = RolodexPhotoCache.shared.image(key) {
-            image = hit
-            return
-        }
-        image = nil
-        guard let url = photoUrl, !url.isEmpty else { return }
-        guard let photo = await Self.fetch(container.api, url: url, pixels: pixels), !Task.isCancelled else { return }
-        RolodexPhotoCache.shared.store(photo, key)
+        if imageKey == key, image != nil { return }
+        let api = container.api
+        guard let photo = await Self.photo(key: key, url: photoUrl, pixels: pixels, fetch: { try await api.fetchImage(url: $0) }),
+              !Task.isCancelled else { return }
         image = photo
+        imageKey = key
     }
 
-    /// Any failure (no connection, an expired link, not an image) leaves the initials.
-    @concurrent nonisolated private static func fetch(_ api: KioskApi, url: String, pixels: Int) async -> UIImage? {
-        guard let data = try? await api.fetchImage(url: url) else { return nil }
-        return downsample(data, maxPixels: pixels)
+    /// The photo for `key`: the cached one, else fetched from `url`, shrunk to `pixels` and cached.
+    /// Nil without a link or on any failure (no connection, an expired link, not an image), which
+    /// caches nothing, so a later call with a fresh link tries again.
+    @concurrent nonisolated static func photo(key: String, url: String?, pixels: Int, cache: RolodexPhotoCache = .shared,
+                                              fetch: @Sendable (String) async throws -> Data) async -> UIImage? {
+        if let hit = cache.image(key) { return hit }
+        guard let url, !url.isEmpty, let data = try? await fetch(url), let photo = downsample(data, maxPixels: pixels) else { return nil }
+        cache.store(photo, key)
+        return photo
     }
 
     /// At most `maxPixels` on the long side, EXIF orientation applied.

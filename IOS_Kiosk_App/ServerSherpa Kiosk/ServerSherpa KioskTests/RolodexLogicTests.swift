@@ -208,6 +208,22 @@ struct RolodexLogicTests {
         #expect(RolodexLogic.validate(e) == nil)
     }
 
+    /// Ruling S8: a non-blank email must look like name@domain.tld (the server's 422 for a bad
+    /// email carries no code). Order: names, then email, then the blacklist note.
+    @Test func validateRefusesAMalformedEmail() {
+        func check(_ email: String) -> String? { RolodexLogic.validate(RolodexEdit(firstName: "Ana", lastName: "Ortiz", email: email)) }
+        #expect(check("ana@example.com") == nil)
+        #expect(check("") == nil)
+        #expect(check("  ") == nil)
+        #expect(check(" ana@example.com ") == nil)   // trimmed, as it's sent
+        for bad in ["ana@example", "ana example@x.com", "@x.com", "ana@@x.com", "ana@x@y.com", "ana@.com", "ana@x.", "ana@x..com", "ana"] {
+            #expect(check(bad) == "Enter a valid email address.", "\(bad)")
+        }
+        #expect(RolodexLogic.validate(RolodexEdit(firstName: "", lastName: "Ortiz", email: "bad")) == "First and last name are required.")
+        #expect(RolodexLogic.validate(RolodexEdit(firstName: "Ana", lastName: "Ortiz", email: "bad", status: "blacklist"))
+                == "Enter a valid email address.")
+    }
+
     // MARK: wire models
 
     @Test func rowAndDetailDecodeTheContract() throws {

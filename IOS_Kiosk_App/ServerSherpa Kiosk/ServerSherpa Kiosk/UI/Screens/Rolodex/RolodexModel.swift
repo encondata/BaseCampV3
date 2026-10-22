@@ -177,12 +177,16 @@ final class RolodexModel {
             cachedAt = nil
             listError = nil
             loaded = true
-            await saveCache(owner: owner)
+            await saveCache(owner: owner, generation: mine)
         case .failure(let error):
             if error is CancellationError { return }
             guard Self.isOffline(error) else {
                 listError = Self.errorText(for: error)
-                if (error as? ApiError)?.code == "forbidden" || (error as? ApiError)?.code == "move_locked" { forgetList() }
+                // A refused account keeps no list, on screen or on disk.
+                if ["forbidden", "move_locked"].contains((error as? ApiError)?.code) {
+                    forgetList()
+                    try? await store.clearRolodexCache()
+                }
                 return
             }
             if let cache = await Self.readCache(store, owner: owner) {
@@ -208,8 +212,10 @@ final class RolodexModel {
         if let id = selectedId, editing == nil, !offline, !detailLoading { await loadDetail(id) }
     }
 
-    /// Opens a worker's page (nil closes it). Leaving a worker drops an unsaved Edit form.
+    /// Opens a worker's page (nil closes it). Leaving a worker drops an unsaved Edit form; while a
+    /// save is in flight the page stays put, so the save's result (or its error) has somewhere to show.
     func select(_ id: String?) async {
+        guard !saving else { return }
         if let id, id == selectedId, detailLoading || detail?.personId == id { return }
         if id == nil && selectedId == nil { return }
         selectedId = id
@@ -306,7 +312,7 @@ final class RolodexModel {
             guard mine == generation else { return false }
             showWorker(saved)
             saving = false
-            await persistWorker(saved)
+            await persistWorker(saved, generation: mine)
             return true
         } catch {
             guard mine == generation else { return false }
@@ -320,7 +326,7 @@ final class RolodexModel {
     /// open, the list row, then the Time Clock's roster and the offline copy.
     func applyWorker(_ worker: RolodexDetail) async {
         showWorker(worker)
-        await persistWorker(worker)
+        await persistWorker(worker, generation: generation)
     }
 
     private func showWorker(_ worker: RolodexDetail) {
@@ -333,9 +339,9 @@ final class RolodexModel {
     }
 
     /// The roster keeps the person's RFID tag and badge; the offline copy never holds email or phone.
-    private func persistWorker(_ worker: RolodexDetail) async {
+    private func persistWorker(_ worker: RolodexDetail, generation mine: Int) async {
         try? await store.upsertRosterPerson(KioskPersonRow(rolodex: worker))
-        if let owner = owner() { await saveCache(owner: owner) }
+        if let owner = owner() { await saveCache(owner: owner, generation: mine) }
     }
 
     // MARK: sign-out
@@ -516,10 +522,13 @@ final class RolodexModel {
         try? await store.storeRolodexCache(String(decoding: data, as: UTF8.self))
     }
 
-    private func saveCache(owner: Owner) async {
-        guard let listTime else { return }
+    /// Writes the offline copy for work started in `generation`. A `clear()` (a sign-out) that
+    /// lands while the write is under way deletes the copy again, so it never outlives the session.
+    private func saveCache(owner: Owner, generation mine: Int) async {
+        guard mine == generation, let listTime else { return }
         await Self.writeCache(store, RolodexCache(ownerId: owner.personId, apiUrl: owner.apiUrl,
                                                   loadedAt: listTime.timeIntervalSince1970, workers: rows))
+        if mine != generation { try? await store.clearRolodexCache() }
     }
 
     // MARK: Task 10 (photos and New worker) fills these in

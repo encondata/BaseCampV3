@@ -125,6 +125,8 @@ final class AppContainer {
             Task { await printJobs.reset() }
             rolodex.clear()
         }
+        // A session that ended while the app was closed takes the Rolodex's offline copy with it.
+        auth.onRestoreFailed = { rolodex.clear() }
         Self.resetPrintJobsOnMoveChange(prefs: prefs, jobs: printJobs)
     }
 

@@ -10,6 +10,8 @@ struct RolodexWorkerScreen: View {
 
     var body: some View {
         RolodexWorkerView(onBack: {
+            // Stay while a save is in flight: its result (or error) shows on this page.
+            guard !model.saving else { return }
             model.cancelEdit()
             if !path.isEmpty { path.removeLast() }
         })
