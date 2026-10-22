@@ -17,6 +17,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,6 +37,7 @@ import com.serversherpa.kiosk.core.labels.NO_TEMPLATE_AT_DPI
 import com.serversherpa.kiosk.core.labels.PrintEntry
 import com.serversherpa.kiosk.core.labels.PrintState
 import com.serversherpa.kiosk.core.labels.SYNC_NEEDED_TEXT
+import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.labels.TEMPLATE_FAILED
 import com.serversherpa.kiosk.core.labels.TEMPLATE_UNSUPPORTED
 import com.serversherpa.kiosk.data.db.AssetEntity
@@ -75,6 +77,14 @@ internal fun readySummary(build: LabelBuildStatus): String {
     if (problems.isEmpty()) return ready
     return "$ready · " + problems.entries.joinToString(", ") { (code, n) -> "$n ${PROBLEM_PHRASES[code] ?: "with no label"}" }
 }
+
+/**
+ * Opening Print Labels with no printer saved goes straight on to Printer Setup, once per visit:
+ * coming back from Printer Setup without saving leaves Print Labels showing its own "Printer
+ * Setup" button rather than bouncing again. A device that can't make labels says so instead.
+ */
+internal fun opensPrinterSetupFirst(printer: SavedPrinter?, phase: LabelBuildPhase, alreadyOpened: Boolean): Boolean =
+    printer == null && phase != LabelBuildPhase.UNSUPPORTED_DEVICE && !alreadyOpened
 
 internal const val BUILD_FAILED_TEXT = "Labels couldn't be made. Try syncing again."
 
@@ -119,10 +129,21 @@ fun PrintLabelsScreen(nav: NavHostController) {
     val syncStatus by container.sync.status.collectAsStateWithLifecycle()
     val setup by container.prefs.setupSelection.collectAsStateWithLifecycle(initialValue = null)
     var camera by remember { mutableStateOf(false) }
+    // Saved with this visit's back stack entry: a rotation, or the return from Printer Setup,
+    // doesn't open it again; a new visit starts over.
+    var openedPrinterSetup by rememberSaveable { mutableStateOf(false) }
     val empty = ui.loadStatus == LoadStatus.READY && ui.rosterSize == 0
     val disabled = ui.loadStatus != LoadStatus.READY || empty || setup == null
 
     LaunchedEffect(Unit) { container.scanBus.events.collect { vm.onScan(it.value) } }
+    // Once the stored settings are read (null until then).
+    LaunchedEffect(settings == null) {
+        val read = settings ?: return@LaunchedEffect
+        if (opensPrinterSetupFirst(read.printer, build.phase, openedPrinterSetup)) {
+            openedPrinterSetup = true
+            nav.navigate(Routes.LABELS_PRINTER)
+        }
+    }
 
     if (camera) CameraScanSheet(onScan = { container.scanBus.publish(it) }, onDismiss = { camera = false })
 

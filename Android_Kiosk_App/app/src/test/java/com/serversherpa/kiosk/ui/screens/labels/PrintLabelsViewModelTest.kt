@@ -45,6 +45,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -268,5 +269,19 @@ class PrintLabelsViewModelTest {
             "0 labels ready · 1 whose template needs an app update, 4 with no label",
             readySummary(LabelBuildStatus(LabelBuildPhase.DONE, problems = linkedMapOf("template_unsupported" to 1, "something_new" to 4))),
         )
+    }
+
+    @Test fun printLabelsOpensPrinterSetupFirstOnlyWithNoPrinterOncePerVisit() {
+        val printer = SavedPrinter("10.0.0.5", "ZD421", "S1", 203)
+        // No printer: straight on to Printer Setup, whatever the build is doing.
+        for (phase in listOf(LabelBuildPhase.IDLE, LabelBuildPhase.RUNNING, LabelBuildPhase.DONE, LabelBuildPhase.ERROR)) {
+            assertTrue(phase.name, opensPrinterSetupFirst(null, phase, alreadyOpened = false))
+        }
+        // A saved printer stays on Print Labels.
+        assertFalse(opensPrinterSetupFirst(printer, LabelBuildPhase.IDLE, alreadyOpened = false))
+        // Back from Printer Setup without saving: no bounce.
+        assertFalse(opensPrinterSetupFirst(null, LabelBuildPhase.DONE, alreadyOpened = true))
+        // A device that can't make labels says so instead.
+        assertFalse(opensPrinterSetupFirst(null, LabelBuildPhase.UNSUPPORTED_DEVICE, alreadyOpened = false))
     }
 }
