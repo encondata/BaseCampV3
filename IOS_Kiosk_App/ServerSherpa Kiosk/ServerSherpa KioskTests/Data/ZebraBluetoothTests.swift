@@ -128,6 +128,86 @@ struct ZebraBluetoothTests {
         #expect(started.sent == [0, 244, 300])
     }
 
+    @Test func sendBudgetEndsAStalledWrite() async throws {
+        let (bluetooth, client, sleeper) = make()
+        let p = try await connected(bluetooth, client)
+        p.autoAck = false
+        let zebra = bluetooth.transport(for: printer(p))
+        let budget = Duration.seconds(ZebraBluetoothSpec.sendBudget(bytes: 1000))
+
+        // The acknowledgment never comes.
+        let stalled = Task { try await zebra.write([Data(count: 1000)], progress: nil) }
+        try #require(await waitUntil { p.writes.count == 1 && sleeper.pending(budget) == 1 })
+        sleeper.fire(budget)
+        await #expect(throws: PrinterTimeout.self) { try await finish(stalled) }
+        #expect(!bluetooth.link.connected)
+        #expect(bluetooth.link.lastDrop?.at == at)
+        #expect(client.central.cancels == [p.identifier])
+        p.ack() // a late acknowledgment changes nothing
+        for _ in 0..<10 { await Task.yield() }
+        #expect(p.writes.count == 1)
+
+        // The budget runs out just as a chunk is acknowledged: the rest of the send is still cut.
+        let racing = Task { try await zebra.write([Data(count: 1000)], progress: nil) }
+        try #require(await waitUntil { p.writes.count == 2 && sleeper.pending(budget) == 1 })
+        p.ack()
+        sleeper.fire(budget)
+        await #expect(throws: PrinterTimeout.self) { try await finish(racing) }
+        let written = p.writes.count
+        for _ in 0..<10 { await Task.yield() }
+        #expect(p.writes.count == written)
+        #expect(!bluetooth.link.connected)
+    }
+
+    @Test func failedWriteIsUnreachable() async throws {
+        let (bluetooth, client, _) = make()
+        let p = try await connected(bluetooth, client)
+        p.autoAck = false
+        let send = Task { try await bluetooth.transport(for: printer(p)).write([Data(count: 600)], progress: nil) }
+        try #require(await waitUntil { p.writes.count == 1 })
+        p.ack(error: NSError(domain: CBATTErrorDomain, code: 3)) // writeNotPermitted
+        do {
+            try await finish(send)
+            Issue.record("a write the printer refused must fail")
+        } catch let error as PrinterUnreachable {
+            #expect(error.host == serial)
+        }
+        #expect(p.writes.count == 1)
+    }
+
+    @Test func closeFailsQueuedCalls() async throws {
+        let (bluetooth, client, _) = make()
+        let p = try await connected(bluetooth, client)
+        p.autoAck = false
+        let zebra = bluetooth.transport(for: printer(p))
+        let inFlight = Task { try await zebra.write([Data(count: 10)], progress: nil) }
+        try #require(await waitUntil { p.writes.count == 1 })
+        let queuedSend = Task { try await zebra.send("^XA^FDB^FS^XZ") }
+        let queuedQuery = Task { try await zebra.query(ZebraCommands.hostStatus, complete: frames(3)) }
+        try #require(await waitUntil { bluetooth.waitingCalls == 2 })
+
+        bluetooth.close()
+
+        await #expect(throws: PrinterUnreachable.self) { try await finish(inFlight) }
+        await #expect(throws: PrinterUnreachable.self) { try await finish(queuedSend) }
+        await #expect(throws: PrinterUnreachable.self) { try await finish(queuedQuery) }
+        for _ in 0..<10 { await Task.yield() }
+        #expect(client.central.connects.count == 1)
+        #expect(p.writes.count == 1)
+
+        // A call made after close() reconnects; a queued call whose task is cancelled never runs.
+        let next = Task { try await zebra.write([Data(count: 10)], progress: nil) }
+        try #require(await waitUntil { p.writes.count == 2 })
+        let cancelled = Task { try await zebra.send("^XA^FDC^FS^XZ") }
+        try #require(await waitUntil { bluetooth.waitingCalls == 1 })
+        cancelled.cancel()
+        p.ack()
+        try await finish(next)
+        await #expect(throws: CancellationError.self) { try await finish(cancelled) }
+        #expect(client.central.connects.count == 2)
+        #expect(p.writes.count == 2)
+    }
+
     @Test func backgroundCloseFailsPendingSend() async throws {
         let (bluetooth, client, _) = make()
         let p = try await connected(bluetooth, client)
@@ -415,6 +495,55 @@ struct ZebraBluetoothTests {
         for _ in 0..<10 { await Task.yield() }
         #expect(client.central.connects.count == 1)
         #expect(sleeper.started(spacing) == 0)
+    }
+
+    @Test func failedFirstConnectIsNotRetried() async throws {
+        // CBError 10 (connectionFailed): nothing was ever up, so no retry and no drop.
+        let (bluetooth, client, sleeper) = make()
+        let p = FakePeripheral(serial: serial)
+        p.connectBehavior = .fail(cbError(10))
+        client.central.known = [p]
+        await #expect(throws: PrinterUnreachable.self) {
+            _ = try await within { try await bluetooth.connect(peripheralId: p.identifier, serial: serial) }
+        }
+        for _ in 0..<10 { await Task.yield() }
+        #expect(client.central.connects.count == 1)
+        #expect(sleeper.started(spacing) == 0)
+        #expect(bluetooth.link.lastDrop == nil)
+
+        // The printer forgot this iPad: the recovery, after one connect.
+        for code in [14, 15] {
+            let (bluetooth, client, sleeper) = make()
+            let p = FakePeripheral(serial: serial)
+            p.connectBehavior = .fail(cbError(code))
+            client.central.known = [p]
+            await #expect(throws: BluetoothPairingLost.self) {
+                _ = try await within { try await bluetooth.connect(peripheralId: p.identifier, serial: serial) }
+            }
+            for _ in 0..<10 { await Task.yield() }
+            #expect(client.central.connects.count == 1)
+            #expect(sleeper.started(spacing) == 0)
+            #expect(bluetooth.link.lastDrop == nil)
+        }
+    }
+
+    @Test func failedReconnectCountsAsATry() async throws {
+        let (bluetooth, client, sleeper) = make()
+        let p = FakePeripheral(serial: serial)
+        p.dropsOnDiscover = [cbError(7)]
+        client.central.known = [p]
+        let connecting = Task { try await bluetooth.connect(peripheralId: p.identifier, serial: serial) }
+        try #require(await waitUntil { sleeper.pending(spacing) == 1 })
+        p.connectBehavior = .fail(cbError(10)) // the reconnects never connect
+
+        for retry in 1...3 {
+            try #require(await waitUntil { sleeper.started(spacing) == retry && sleeper.pending(spacing) == 1 })
+            sleeper.fire(spacing)
+        }
+        await #expect(throws: PrinterUnreachable.self) { try await finish(connecting) }
+        #expect(client.central.connects.count == 4)
+        #expect(sleeper.started(spacing) == 3)
+        #expect(bluetooth.link.lastDrop?.reason == describeBluetoothError(cbError(7))) // the drop, not the failed reconnects
     }
 
     @Test func dropBeforeReadyRetriesThreeTimes() async throws {

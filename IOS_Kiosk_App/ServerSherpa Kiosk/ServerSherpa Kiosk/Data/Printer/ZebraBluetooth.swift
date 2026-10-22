@@ -81,8 +81,10 @@ struct BluetoothTarget: Equatable, Sendable {
    isn't "Zebra Technologies" or that lacks the parser service is refused (`BluetoothNotZebra`), as
    is one whose serial isn't the expected one (`BluetoothSerialMismatch`). A link that is up serves
    every call for its serial, whichever identifier the call carries.
- - A drop before Ready is retried at most `reconnectTries` times, `reconnectSpacing` apart, unless
-   the printer forgot this iPad (CBError 14 / 15: `BluetoothPairingLost`, D10). A drop after Ready
+ - A first connect that fails (`didFailToConnect`, or no link within `connectReady`) fails at once:
+   `BluetoothPairingLost` for CBError 14 / 15 (D10), else `PrinterUnreachable`. A link that
+   connected and dropped before Ready is retried at most `reconnectTries` times, `reconnectSpacing`
+   apart (a reconnect that fails counts as one of them), never after CBError 14 / 15. A drop after Ready
    fails the write or query in flight at once, is recorded as `link.lastDrop`, and nothing
    reconnects until the next call needs the printer (D4).
  - Writes and queries (`BluetoothZebra`) take turns: one at a time, in the order asked, each
@@ -118,7 +120,8 @@ final class ZebraBluetooth {
     @ObservationIgnored private var target = BluetoothTarget()
     /// The name errors carry for the link (the serial, once known).
     @ObservationIgnored private var host = ""
-    @ObservationIgnored private var dropsBeforeReady = 0
+    /// Tries used after the link dropped before Ready (a failed reconnect counts too).
+    @ObservationIgnored private var retriesUsed = 0
     @ObservationIgnored private var pendingServices: Set<String> = []
     @ObservationIgnored private var pendingReads: Set<String> = []
     @ObservationIgnored private var deviceInfo: [String: String] = [:]
@@ -130,8 +133,14 @@ final class ZebraBluetooth {
 
     // Writes and queries.
     @ObservationIgnored private var turnTaken = false
+    /// Counts `close()`s: a call queued before one fails when its turn comes.
+    @ObservationIgnored private var closes = 0
     @ObservationIgnored private var turnWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var ackWaiter: CheckedContinuation<Void, Error>?
+    @ObservationIgnored private var nextSendId = 0
+    /// The send in flight, and the send whose budget ran out.
+    @ObservationIgnored private var runningSend: Int?
+    @ObservationIgnored private var expiredSend: Int?
     @ObservationIgnored private var drainWaiter: CheckedContinuation<Void, Error>?
     @ObservationIgnored private var drainTimer: Task<Void, Never>?
     /// Running while a byte arrived within the last `drainQuiet`.
@@ -190,22 +199,28 @@ final class ZebraBluetooth {
     /// `BluetoothSerialMismatch`, `BluetoothPairingLost` or `PrinterUnreachable`.
     func connect(peripheralId: UUID?, serial: String?) async throws -> BluetoothPrinterInfo {
         try Task.checkCancellation()
-        return try await withTurn { try await ensureReady(BluetoothTarget(peripheralId: peripheralId, serial: serial)) }
+        return try await withTurn(host: serial) { try await ensureReady(BluetoothTarget(peripheralId: peripheralId, serial: serial)) }
     }
 
     /// The transport for a saved Bluetooth printer (its serial and the iPad's identifier for it).
+    /// Callers pick the transport by `printer.connection`; a network printer is a programming error
+    /// (it asserts in debug builds, and a release build gets a transport that looks for a Bluetooth
+    /// printer named its serial, which never reaches the network printer).
     func transport(for printer: SavedPrinter) -> BluetoothZebra {
         switch printer.connection {
         case .bluetooth(let serial, let peripheralId):
-            BluetoothZebra(bluetooth: self, serial: serial, peripheralId: peripheralId)
-        case .network: // callers pick the transport by connection; by serial, should one ask anyway
-            BluetoothZebra(bluetooth: self, serial: printer.serial, peripheralId: nil)
+            return BluetoothZebra(bluetooth: self, serial: serial, peripheralId: peripheralId)
+        case .network:
+            assertionFailure("transport(for:) is for Bluetooth printers; a network printer uses NetworkZebra")
+            return BluetoothZebra(bluetooth: self, serial: printer.serial, peripheralId: nil)
         }
     }
 
     /// Ends the scan and the link (the app went to the background, signed out, or the saved
-    /// printer changed): a connect, write or query waiting on it fails with `PrinterUnreachable`.
+    /// printer changed): the connect, write or query in flight fails with `PrinterUnreachable`, and
+    /// so does every call already waiting for its turn (none of them reconnects).
     func close() {
+        closes += 1
         endUiScan()
         let error = PrinterUnreachable(host: host)
         switch phase {
@@ -222,7 +237,7 @@ final class ZebraBluetooth {
     /// bytes acknowledged so far; nothing when nothing was sent.
     func write(_ parts: [Data], on target: BluetoothTarget, progress: (@Sendable (_ sent: Int, _ total: Int) -> Void)?) async throws {
         try Task.checkCancellation()
-        try await withTurn {
+        try await withTurn(host: target.serial) {
             _ = try await ensureReady(target)
             endUiScan()
             try await send(parts.reduce(into: Data()) { $0.append($1) }, progress: progress)
@@ -234,7 +249,7 @@ final class ZebraBluetooth {
     /// `PrinterNoReply` when nothing came back.
     func query(_ command: String, on target: BluetoothTarget, complete: @escaping @Sendable (Data) -> Bool) async throws -> String {
         try Task.checkCancellation()
-        return try await withTurn {
+        return try await withTurn(host: target.serial) {
             _ = try await ensureReady(target)
             endUiScan()
             try await drain()
@@ -250,8 +265,15 @@ final class ZebraBluetooth {
 
     // MARK: Turns
 
-    /// Runs `body` once every earlier call's body has finished (in the order asked).
-    private func withTurn<T>(_ body: () async throws -> T) async throws -> T {
+    /// Calls waiting for their turn behind the one in flight.
+    var waitingCalls: Int { turnWaiters.count }
+
+    /// Runs `body` once every earlier call's body has finished (in the order asked). A call that
+    /// waited through a `close()` fails as the call in flight did (`PrinterUnreachable`, `host` its
+    /// serial), and one whose task was cancelled while it waited throws `CancellationError`:
+    /// neither reconnects.
+    private func withTurn<T>(host serial: String?, _ body: () async throws -> T) async throws -> T {
+        let closesBefore = closes
         if turnTaken {
             await withCheckedContinuation { turnWaiters.append($0) }
         } else {
@@ -260,6 +282,8 @@ final class ZebraBluetooth {
         defer {
             if turnWaiters.isEmpty { turnTaken = false } else { turnWaiters.removeFirst().resume() }
         }
+        guard closes == closesBefore else { throw PrinterUnreachable(host: serial ?? host) }
+        try Task.checkCancellation()
         return try await body()
     }
 
@@ -274,7 +298,7 @@ final class ZebraBluetooth {
             attempt += 1
             self.target = target
             host = target.serial ?? ""
-            dropsBeforeReady = 0
+            retriesUsed = 0
             phase = .waitingForBluetooth
             armDeadline()
             proceed()
@@ -417,16 +441,33 @@ final class ZebraBluetooth {
         }
     }
 
-    /// The link dropped (or the connect failed) before Ready: try again after `reconnectSpacing`,
-    /// at most `reconnectTries` times, never after the printer forgot this iPad.
+    /// A link that connected dropped before Ready: the drop is recorded and the link is tried
+    /// again (`retry()`), unless the printer forgot this iPad (CBError 14 / 15).
     private func droppedBeforeReady(_ error: Error?) {
         attemptTimer?.cancel()
         attemptTimer = nil
-        phase = .retrying
+        phase = .retrying // the link is gone: nothing to cancel
         link.lastDrop = BluetoothDrop(at: now(), reason: describeBluetoothError(error))
         if isBluetoothPairingLost(error) { return failAttempt(BluetoothPairingLost(host: host)) }
-        dropsBeforeReady += 1
-        guard dropsBeforeReady <= ZebraBluetoothSpec.reconnectTries else { return failAttempt(PrinterUnreachable(host: host)) }
+        retry()
+    }
+
+    /// A connect that never connected (`didFailToConnect`). Nothing was up, so no drop is
+    /// recorded. A first try fails at once; one made after a drop before Ready counts as one of
+    /// that drop's tries.
+    private func connectFailed(_ error: Error?) {
+        attemptTimer?.cancel()
+        attemptTimer = nil
+        phase = .retrying // no connection: nothing to cancel
+        if isBluetoothPairingLost(error) { return failAttempt(BluetoothPairingLost(host: host)) }
+        guard retriesUsed > 0 else { return failAttempt(PrinterUnreachable(host: host)) }
+        retry()
+    }
+
+    /// Connects again after `reconnectSpacing`, at most `reconnectTries` times after the drop.
+    private func retry() {
+        retriesUsed += 1
+        guard retriesUsed <= ZebraBluetoothSpec.reconnectTries else { return failAttempt(PrinterUnreachable(host: host)) }
         let mine = attempt
         attemptTimer = after(timeouts.reconnectSpacing) { [weak self] in
             guard let self, self.attempt == mine, self.phase == .retrying, let p = self.peripheral else { return }
@@ -483,20 +524,31 @@ final class ZebraBluetooth {
 
     // MARK: Writing and reading
 
-    /// Writes `bytes` in acknowledged chunks within the send budget. A budget that runs out ends
-    /// the link (a late acknowledgment must not be taken for the next write's).
+    /// Writes `bytes` in acknowledged chunks within the send budget. A budget that runs out while
+    /// the send is still running (waiting for an acknowledgment or between chunks) ends it with
+    /// `PrinterTimeout` and ends the link (a late acknowledgment must not be taken for the next
+    /// write's).
     private func send(_ bytes: Data, progress: (@Sendable (_ sent: Int, _ total: Int) -> Void)?) async throws {
         let total = bytes.count
-        let mine = attempt
+        let onLink = attempt
+        nextSendId += 1
+        let mine = nextSendId
+        runningSend = mine
         let budget = after(ZebraBluetoothSpec.sendBudget(bytes: total)) { [weak self] in
-            guard let self, self.attempt == mine, self.phase == .ready, self.ackWaiter != nil else { return }
+            guard let self, self.runningSend == mine, self.phase == .ready, self.attempt == onLink else { return }
+            self.expiredSend = mine
             self.link.lastDrop = BluetoothDrop(at: self.now(), reason: "A send ran past its time limit")
             self.endLink(failing: PrinterTimeout(host: self.host))
         }
-        defer { budget.cancel() }
+        defer {
+            budget.cancel()
+            if runningSend == mine { runningSend = nil }
+            if expiredSend == mine { expiredSend = nil }
+        }
         var sent = 0
         repeat {
-            guard phase == .ready, attempt == mine, let p = peripheral else { throw PrinterUnreachable(host: host) }
+            if expiredSend == mine { throw PrinterTimeout(host: host) }
+            guard phase == .ready, attempt == onLink, let p = peripheral else { throw PrinterUnreachable(host: host) }
             if sent == 0 { progress?(0, total) }
             guard sent < total else { return }
             let end = min(sent + max(Self.minimumChunk, p.maximumWriteLength), total)
@@ -661,7 +713,7 @@ final class ZebraBluetooth {
         case .connected(let p):
             if isLink(p), phase == .connecting { didConnect(p) }
         case .failedToConnect(let p, let error):
-            if isLink(p), phase == .connecting { droppedBeforeReady(error) }
+            if isLink(p), phase == .connecting { connectFailed(error) }
         case .disconnected(let p, let error):
             guard isLink(p) else { return }
             switch phase {
@@ -797,7 +849,7 @@ private enum Phase: Equatable {
     case discovering
     case reading
     case subscribing
-    /// Waiting `reconnectSpacing` after a drop before Ready.
+    /// The link is down between tries (waiting `reconnectSpacing` after a drop before Ready).
     case retrying
     case ready
 
