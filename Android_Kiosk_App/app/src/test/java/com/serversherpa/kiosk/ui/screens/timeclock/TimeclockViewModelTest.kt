@@ -87,12 +87,16 @@ class TimeclockViewModelTest {
     }
 
     @Test fun punchErrorsMapAndRefreshStatus() = runTest {
-        val api = FakeKioskApi().apply { clockInResult = { throw ApiError(409, "already_clocked_in") } }
+        var punchZone: String? = null
+        val api = FakeKioskApi().apply { clockInResult = { punchZone = it.tz; throw ApiError(409, "already_clocked_in") } }
         val vm = build(api)
         vm.onChange("100348"); settle()
         vm.punch(); settle()
         assertEquals("They are already clocked in. Refreshing…", vm.state.value.error)
         assertEquals(2, api.calls.count { it == "timeclockStatus" })
+        // every status read sends the device's zone
+        assertEquals(listOf(java.time.ZoneId.systemDefault().id, java.time.ZoneId.systemDefault().id), api.statusZones)
+        assertEquals(java.time.ZoneId.systemDefault().id, punchZone)
         assertEquals("3h 12m", formatMinutes(192)); assertEquals("45m", formatMinutes(45)); assertEquals("JH", initialsOf("Jimmy Henderson"))
     }
 }

@@ -147,7 +147,8 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
             // sync light said nothing an operator acts on; the version lives in
             // Settings and Kiosk Setup owns the sync state.
             // A move-password session names its move before Kiosk Setup has run (as on the web).
-            setup?.let { FootItem("Move", it.initiativeName); FootItem("Site", it.siteName); FootItem("Scan", it.scanLabel) }
+            // A Time Clock station's setup may have no move, site or scan type: those items stay out.
+            setup?.let { s -> s.initiativeName?.let { FootItem("Move", it) }; s.siteName?.let { FootItem("Site", it) }; s.scanLabel?.let { FootItem("Scan", it) } }
                 ?: authed?.kioskMove?.let { FootItem("Move", it.name) }
             if (devMode) FootItem("Dev mode", "On", valueColor = c.accent)
         }

@@ -144,7 +144,7 @@ class TimeclockViewModel(
         _state.update { it.copy(statusPhase = LoadStatus.LOADING) }
         scope.launch {
             try {
-                val next = api.timeclockStatus(personId)
+                val next = api.timeclockStatus(personId, ZoneId.systemDefault().id)
                 if (mine != statusId) return@launch
                 _state.update { it.copy(status = next, statusPhase = LoadStatus.READY, nowMs = clock()) }
             } catch (e: CancellationException) { throw e
@@ -196,7 +196,7 @@ class TimeclockViewModel(
             try {
                 val serial = identity.get().serial
                 val sel = setup
-                val next = if (clockingOut) api.clockOut(ClockOutIn(serial, person.id)) else api.clockIn(ClockInIn(serial, person.id, sel?.siteId, sel?.initiativeId))
+                val next = if (clockingOut) api.clockOut(ClockOutIn(serial, person.id, ZoneId.systemDefault().id)) else api.clockIn(ClockInIn(serial, person.id, sel?.siteId, sel?.initiativeId, ZoneId.systemDefault().id))
                 flashGood()
                 val name = next.person.display_name
                 val minutes = next.last_entry?.minutes

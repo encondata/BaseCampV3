@@ -119,7 +119,7 @@ class KioskSetupViewModel(
     fun openWizard(preselect: Boolean) {
         val sel = selection.value
         _state.update {
-            if (preselect && sel != null) it.copy(wizardOpen = true, step = 1, submitError = null, initiativeId = sel.initiativeId, siteId = sel.siteId, scanStatus = sel.scanStatus, labelKind = sel.labelKind)
+            if (preselect && sel != null) it.copy(wizardOpen = true, step = 1, submitError = null, initiativeId = sel.initiativeId ?: "", siteId = sel.siteId ?: "", scanStatus = sel.scanStatus ?: "", labelKind = sel.labelKind)
             else it.copy(wizardOpen = true, step = 1, submitError = null, initiativeId = "", siteId = "", scanStatus = "", labelKind = "top")
         }
         load()
@@ -148,7 +148,7 @@ class KioskSetupViewModel(
                 prefs.setSetupState(SetupState.COMPLETE)
                 prefs.dismissSetupClearNotice()   // set up again: the "administrator cleared" banner goes
                 _state.update { it.copy(submitting = false, wizardOpen = false) }
-                sync.run(result.initiative_id, result.initiative_name)
+                result.initiative_id?.let { sync.run(it, result.initiative_name ?: "") }
             } catch (e: Exception) {
                 if (prefs.setupState.first() != SetupState.COMPLETE) prefs.setSetupState(SetupState.FAILED)
                 _state.update { it.copy(submitting = false, submitError = (e as? ApiError)?.code ?: "unknown_error") }
@@ -156,5 +156,5 @@ class KioskSetupViewModel(
         }
     }
 
-    fun resync() { selection.value?.let { sync.run(it.initiativeId, it.initiativeName) } }
+    fun resync() { selection.value?.let { s -> s.initiativeId?.let { sync.run(it, s.initiativeName ?: "") } } }
 }

@@ -13,9 +13,11 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import com.serversherpa.kiosk.data.api.AndroidSecretStore
 import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.data.api.OkHttpKioskApi
+import com.serversherpa.kiosk.data.api.OkHttpStationApi
 import com.serversherpa.kiosk.data.api.RefreshCookieJar
 import com.serversherpa.kiosk.data.api.SecretStore
 import com.serversherpa.kiosk.data.api.SessionStore
+import com.serversherpa.kiosk.data.api.StationApi
 import com.serversherpa.kiosk.data.auth.KioskAuth
 import com.serversherpa.kiosk.data.auth.MoveSetupGuard
 import com.serversherpa.kiosk.data.auth.SessionCoordinator
@@ -30,6 +32,7 @@ import com.serversherpa.kiosk.data.labels.LabelSettingsStore
 import com.serversherpa.kiosk.data.outbox.Outbox
 import com.serversherpa.kiosk.data.outbox.RoomOutboxStore
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
+import com.serversherpa.kiosk.data.station.StationKeyStore
 import com.serversherpa.kiosk.data.sync.Sync
 import com.serversherpa.kiosk.input.ScanBus
 import com.serversherpa.kiosk.input.camera.hasCamera
@@ -79,6 +82,9 @@ class AppContainer(
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
     val session = SessionStore(httpClient, config, scope)
     val api: KioskApi = OkHttpKioskApi(httpClient, config, session)
+    /** A Time Clock station's signed-out calls: the station key only, no session. */
+    val stationApi: StationApi = OkHttpStationApi(httpClient, config)
+    val stationKeys = StationKeyStore(secretStore)
     val auth = KioskAuth(api, session, identity, scope)
     val sync = Sync(api, db, scope, fontsDir = File(app.filesDir, "label-fonts"))
     val labelEngine: LabelEngine = LabelGenerator(app)

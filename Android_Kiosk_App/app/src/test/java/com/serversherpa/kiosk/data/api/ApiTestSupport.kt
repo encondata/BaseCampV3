@@ -27,6 +27,7 @@ class ApiHarness(tmpDir: File) : AutoCloseable {
     var now = 1_000_000L
     val session = SessionStore(client, config, scope, clock = { now })
     val api = OkHttpKioskApi(client, config, session)
+    val stationApi = OkHttpStationApi(client, config)
 
     override fun close() { server.shutdown(); scope.cancel() }
 }

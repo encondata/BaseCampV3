@@ -56,6 +56,31 @@ class MigrationTest {
         }
     }
 
+    /** Version 3: people gain badge_uid, job_title and external_id (all nullable). A synced
+     *  roster survives the upgrade with the new columns empty until the next sync. */
+    @Test fun v2ToV3AddsPeopleBadgeJobTitleAndEmployeeId() {
+        helper.createDatabase(KioskDatabase.NAME, 2).apply {
+            execSQL(
+                "INSERT INTO people (id, display_name, first_name, last_name, preferred_name, rfid_tag, is_worker, has_account) " +
+                    "VALUES ('p1', 'Tina T', 'Tina', 'T', NULL, '1003', 1, 0)",
+            )
+            close()
+        }
+        helper.runMigrationsAndValidate(KioskDatabase.NAME, 3, true, MIGRATION_2_3).apply {
+            query("SELECT display_name, rfid_tag, badge_uid, job_title, external_id FROM people").use { c ->
+                assertEquals(1, c.count); c.moveToFirst()
+                assertEquals("Tina T", c.getString(0)); assertEquals("1003", c.getString(1))
+                assertNull(c.getString(2)); assertNull(c.getString(3)); assertNull(c.getString(4))
+            }
+            close()
+        }
+    }
+
+    @Test fun v1ToV3RunsEveryMigration() {
+        seedV1()
+        helper.runMigrationsAndValidate(KioskDatabase.NAME, 3, true, *KioskDatabase.MIGRATIONS).close()
+    }
+
     @Test fun theAppsBuilderOpensAMigratedDatabase() = runBlocking {
         seedV1()
         val db = KioskDatabase.build(context)
@@ -71,6 +96,8 @@ class MigrationTest {
             assertEquals(0, db.labelTemplates().count())
             assertEquals(0, db.labelFonts().all().size)
             assertNull(db.generatedLabels().get("a1"))
+            db.people().insertAll(listOf(PersonEntity("p1", "Tina T", "Tina", "T", null, "1003", true, false, "b-1", "Mover", "E-7")))
+            assertEquals("E-7", db.people().all().single().externalId)
         } finally { db.close() }
     }
 }

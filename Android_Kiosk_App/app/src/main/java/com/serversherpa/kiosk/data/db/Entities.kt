@@ -56,9 +56,15 @@ data class PersonEntity(
     @ColumnInfo(name = "rfid_tag") override val rfidTag: String?,
     @ColumnInfo(name = "is_worker") override val isWorker: Boolean,
     @ColumnInfo(name = "has_account") override val hasAccount: Boolean,
+    @ColumnInfo(name = "badge_uid") override val badgeUid: String? = null,
+    @ColumnInfo(name = "job_title") val jobTitle: String? = null,
+    /** Shown as "Employee ID". */
+    @ColumnInfo(name = "external_id") val externalId: String? = null,
 ) : MatchPerson
 
-fun KioskPersonRow.toEntity() = PersonEntity(id, display_name, first_name, last_name, preferred_name, rfid_tag, is_worker, has_account)
+fun KioskPersonRow.toEntity() = PersonEntity(
+    id, display_name, first_name, last_name, preferred_name, rfid_tag, is_worker, has_account, badge_uid, job_title, external_id,
+)
 
 @Entity(tableName = "containers", indices = [Index("rfid_tag"), Index("name")])
 data class ContainerEntity(
