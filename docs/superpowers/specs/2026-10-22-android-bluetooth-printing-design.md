@@ -77,3 +77,30 @@ Type and file names beyond the plan's, the exact Compose layout of the Bluetooth
 
 ## 7. Hardware checks owed (after the build; Pixel 10 Pro XL and the office ZD421, then an MC2200)
 The MTU the printer grants Android; whether the printer's Bluetooth address is stable across power cycles (reconnect by address); idle-drop timing; a second device near a connected printer; security modes 2/3 and the Android forget-device recovery; range in an aisle; whether a disconnect resets the printer's parser mid-label; RFD40 + printer at the same time; the MC2200 (API 30) permission and Location path.
+
+## 8. Implementation notes (2026-10-23)
+
+Built on branch `android-ble-printing` by subagent-driven development: six planned tasks, per-task reviews with fix rounds, a five-lens final review (13 confirmed findings, one fix wave), a cleanup pass, and a device pass.
+
+**Rulings that changed or sharpened the design**
+- **Address order.** The saved address is tried first, then the address verified earlier in this run, then a name scan for the serial. Device Information's manufacturer and serial are checked before any write. An address found by scanning is never saved; Troubleshooting shows "Found at B (saved A)", computed from the saved connection, until the operator chooses the printer again.
+- **`close()`.** A write already going out finishes within its budget, then the link closes. A job that arrives after the app went to the background reconnects and finishes.
+- **Location.** Required for scans at every API level (the manifest's `BLUETOOTH_SCAN` has no `neverForLocation`, shared with the RFD40). COARSE is requested with FINE. Approximate-only counts as not allowed.
+- **Warm-ups.** Opening Print Labels or Printer Setup warms the link, and so does coming back to Print Labels from the background. A warm-up never blocks or speaks for itself. A label queued during one joins its connect.
+- **No unrequested checks.** Printer Setup never runs its checks by itself. When Bluetooth comes back, a check refusal clears and the link warms; the checks run on a tap.
+- **Font-cut stops.** They persist across a relaunch, keyed by printer identity, and are lifted by that printer's `~HI` (iOS 5c3eec9c). Saving another printer no longer resets the guard.
+- **Install ETA.** Follows iOS: Bluetooth guesses 3.9 KB/s until it has measured a rate; network shows nothing until measured.
+- **Worst case.** A held PrinterLock can wait about 59 s for a printer that keeps dropping just before Ready: 10 s locate + 10 s connect + 3 × (3 + 10 s).
+- **Troubleshooting.** A typed `^XA` format goes as a send unless it holds a `^H`/`~H` host query; this differs from iOS on purpose. The share report keeps secrets out by construction. A linear, fail-closed redaction scanner backs that up; it was fuzzed differentially against the old regex over 50M+ inputs.
+- **Connected label.** Printer Setup shows "Connected" on the saved printer's row and in the header while its link is up (Jimmy, at the device pass).
+
+**Device pass:** Jimmy, 2026-10-23, Pixel 10 Pro XL with the office ZD421 over Bluetooth: connect, print and the tested flows work ("bluetooth is fine and working").
+- Not recorded: the MTU granted and whether the address stays stable across power cycles.
+- Still owed: the MC2200 (API 30) permission and Location path and its 320 dp layout, including the Time Clock's two-line header on Enter Your Name, plus security modes 2/3.
+
+**Also on this branch**
+- The Rolodex `(?U)` crash fix, with an `AndroidRegexTest` guard.
+- Rolodex: the photo viewer, Previous jobs (latest 50 + `jobs_total`, migration 0106), Employee ID hidden on Android.
+- The RfidPermissions COARSE request.
+- The Time Clock wordmark at 320 dp.
+- Robolectric-safe Compose waits (`waitUntilIdlingMain`).
