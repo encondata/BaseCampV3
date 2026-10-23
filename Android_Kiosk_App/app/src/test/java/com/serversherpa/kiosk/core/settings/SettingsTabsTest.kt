@@ -11,9 +11,12 @@ class SettingsTabsTest {
         assertEquals(listOf(SettingsTabId.THIS_KIOSK), ids(isAdmin = true, isDeveloper = true, signedIn = false))
     }
 
-    @Test fun workerSeesTheFiveOpenTabs() {
+    @Test fun workerSeesTheSixOpenTabs() {
         assertEquals(
-            listOf(SettingsTabId.APPEARANCE, SettingsTabId.SOUND, SettingsTabId.DEVICES, SettingsTabId.RFID, SettingsTabId.THIS_KIOSK),
+            listOf(
+                SettingsTabId.APPEARANCE, SettingsTabId.SOUND, SettingsTabId.DEVICES, SettingsTabId.TROUBLESHOOTING,
+                SettingsTabId.RFID, SettingsTabId.THIS_KIOSK,
+            ),
             ids(isAdmin = false, isDeveloper = false, signedIn = true),
         )
     }

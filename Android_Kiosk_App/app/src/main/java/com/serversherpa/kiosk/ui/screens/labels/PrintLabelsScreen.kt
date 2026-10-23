@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -14,6 +16,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -25,6 +28,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import com.serversherpa.kiosk.LocalAppContainer
@@ -42,8 +48,6 @@ import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.labels.TEMPLATE_FAILED
 import com.serversherpa.kiosk.core.labels.TEMPLATE_UNSUPPORTED
 import com.serversherpa.kiosk.data.db.AssetEntity
-import com.serversherpa.kiosk.data.printer.LocalNetworks
-import com.serversherpa.kiosk.data.printer.NetworkZebra
 import com.serversherpa.kiosk.data.sync.SyncPhase
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.input.datawedge.DataWedge
@@ -61,8 +65,6 @@ import com.serversherpa.kiosk.ui.screens.scan.scanTime
 import com.serversherpa.kiosk.ui.theme.ChipTone
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 /** How the header describes the assets left without a label, by reason. */
 private val PROBLEM_PHRASES = mapOf(
@@ -89,6 +91,11 @@ internal fun opensPrinterSetupFirst(printer: SavedPrinter?, phase: LabelBuildPha
 
 internal const val BUILD_FAILED_TEXT = "Labels couldn't be made. Try syncing again."
 
+/** A failed label's button: "Retry", or "Connect" when the printer forgot this device (its steps
+ *  end "…then come back and tap Connect."; [printerReachProblem] is the one rule). Both connect
+ *  again and resend the same label. */
+internal fun retryText(message: String?): String = if (printerReachProblem(message)?.offersConnect == true) "Connect" else "Retry"
+
 internal fun statusText(e: PrintEntry<*>): String = when (e.state) {
     PrintState.QUEUED -> "Waiting to print"
     PrintState.SENDING -> "Printing"
@@ -113,14 +120,12 @@ fun PrintLabelsScreen(nav: NavHostController) {
     val c = LocalKioskColors.current
     val context = LocalContext.current
     val vm = kioskViewModel {
-        val app = context.applicationContext
         PrintLabelsViewModel(
             container.db, container.sync, container.outbox, container.prefs, container.labelSettings,
             container.labelBuilder.status, container.labelEngine,
-            sender = { host, zpl ->
-                withContext(Dispatchers.IO) { NetworkZebra(host, socketFactory = LocalNetworks.socketFactoryFor(app, host)).send(zpl) }
-            },
+            sender = container.labelSender,
             flash = container.flash, sound = container.sound,
+            bluetooth = container.zebraBluetooth,
         )
     }
     val ui by vm.state.collectAsStateWithLifecycle()
@@ -137,6 +142,14 @@ fun PrintLabelsScreen(nav: NavHostController) {
     val disabled = ui.loadStatus != LoadStatus.READY || empty || setup == null
 
     LaunchedEffect(Unit) { container.scanBus.events.collect { vm.onScan(it.value) } }
+    // The screen showing, and back from the background (which closed the link): a saved Bluetooth
+    // printer's link comes up in the background; nothing waits for it.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) vm.warmUpPrinter() }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     // Once the stored settings are read (null until then).
     LaunchedEffect(settings == null) {
         val read = settings ?: return@LaunchedEffect
@@ -212,9 +225,12 @@ private fun LabelStatus(
     }
 }
 
-/** The latest scan, big: the asset, what happened, and Reprint or Retry. */
+/** The latest scan, big: the asset, what happened, and Reprint or Retry (with, for a Bluetooth
+ *  printer the crew must fix on the device first, the button that fixes it: turn Bluetooth on,
+ *  allow it, or forget the printer in Bluetooth settings). */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun CurrentCard(e: PrintEntry<AssetEntity>, onReprint: () -> Unit, onRetry: () -> Unit) {
+internal fun CurrentCard(e: PrintEntry<AssetEntity>, onReprint: () -> Unit, onRetry: () -> Unit) {
     val c = LocalKioskColors.current
     val t = tone(e.state)
     Column(
@@ -238,7 +254,12 @@ private fun CurrentCard(e: PrintEntry<AssetEntity>, onReprint: () -> Unit, onRet
         e.message?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = ChipTone.RED.text) }
         e.recordWarning?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = ChipTone.AMBER.text) }
         if (e.state == PrintState.PRINTED && a != null) MiniButton("Reprint", onReprint)
-        if (e.state == PrintState.FAILED && a != null) MiniButton("Retry", onRetry)
+        if (e.state == PrintState.FAILED && a != null) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                MiniButton(retryText(e.message), onRetry)
+                bluetoothFixFor(e.message)?.let { BluetoothFixButton(it) }
+            }
+        }
     }
 }
 
@@ -267,7 +288,7 @@ private fun PrintRow(e: PrintEntry<AssetEntity>, showRetry: Boolean, onRetry: ()
         )
         if (e.state == PrintState.FAILED) e.message?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = ChipTone.RED.text) }
         e.recordWarning?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = ChipTone.AMBER.text) }
-        if (showRetry && e.state == PrintState.FAILED && a != null) MiniButton("Retry", onRetry, modifier = Modifier.padding(top = 4.dp))
+        if (showRetry && e.state == PrintState.FAILED && a != null) MiniButton(retryText(e.message), onRetry, modifier = Modifier.padding(top = 4.dp))
     }
     HorizontalDivider(color = c.paperLine)
 }

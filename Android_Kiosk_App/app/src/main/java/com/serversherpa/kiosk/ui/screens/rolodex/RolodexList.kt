@@ -87,6 +87,7 @@ internal fun ColorChip(text: String, color: Color?, modifier: Modifier = Modifie
     val ink = if (c.isDark) base else lerp(base, Color.Black, 0.4f)
     Text(
         text, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, color = ink, maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
         modifier = modifier.background(base.copy(alpha = 0.14f), RoundedCornerShape(999.dp))
             .border(1.dp, base.copy(alpha = 0.4f), RoundedCornerShape(999.dp)).padding(horizontal = 9.dp, vertical = 2.dp),
     )

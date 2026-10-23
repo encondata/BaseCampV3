@@ -1,5 +1,7 @@
 package com.serversherpa.kiosk.core.labels
 
+import com.serversherpa.kiosk.core.printer.FONT_INSTALL_CUT_TEXT
+import com.serversherpa.kiosk.core.printer.PrinterNeedsRestart
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,12 +27,21 @@ const val PREPARING_TEXT = "Labels are being prepared."
 
 fun stillBeingMadeText(done: Int, total: Int) =
     if (total == 0) PREPARING_TEXT else "Labels are still being made ($done of $total)."
-fun printerUnreachableText(host: String) = "Can't reach the printer at $host."
+/** "Can't reach the printer at 10.0.0.5." / "Can't reach the printer D8J224508535 over Bluetooth." */
+fun printerUnreachableText(p: SavedPrinter): String = when (val c = p.connection) {
+    is PrinterConnection.Network -> "Can't reach the printer at ${c.host}."
+    is PrinterConnection.Bluetooth -> "Can't reach the printer ${c.serial} over Bluetooth."
+}
 /** The printer took the connection but not the whole job in time: the label may be out. */
 const val PRINTER_TIMEOUT_TEXT = "The printer didn't finish answering. It may have printed the label — check before you retry."
 
 /** [PrintQueueDeps.send] throws this when the printer took the connection but not the whole job in time. */
 class LabelSendTimeout(cause: Throwable? = null) : Exception("the printer didn't take the whole label in time", cause)
+
+/** [PrintQueueDeps.send] throws this when the label didn't go out for a reason the crew fixes on the
+ *  device, not at the printer (Bluetooth off or not allowed, a printer that forgot this device):
+ *  its [message] says what to do. */
+class LabelSendRefused(override val message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /** What a scan says for each outcome a label can store (kiosk/src/lib/printQueue.ts LABEL_REASONS). */
 private val LABEL_REASONS = mapOf(
@@ -94,9 +105,12 @@ interface PrintQueueDeps<A> {
     suspend fun label(asset: A): PrintStep
     /** The label with the saved offsets and peel or tear mode applied. */
     suspend fun prepare(zpl: String, settings: LabelSettings): PrintStep
-    /** Sends [zpl] to the printer at [host]; throws when it can't ([LabelSendTimeout] when the job
-     *  may have gone out). */
-    suspend fun send(host: String, zpl: String)
+    /** Sends [zpl] to the saved [printer], the way its connection reaches it; throws when it can't
+     *  ([LabelSendTimeout] when the job may have gone out, [PrinterNeedsRestart] while a cut font
+     *  install keeps sends from the printer, [LabelSendRefused] when the crew must fix something on
+     *  the device first). Anything else, a failed clear before the label included, means the label
+     *  never went out: unreachable. */
+    suspend fun send(printer: SavedPrinter, zpl: String)
     /** Queues the Labeled scan; throws when it can't be saved. */
     suspend fun record(asset: A, scannedValue: String)
 }
@@ -208,13 +222,24 @@ class PrintQueue<A>(
         w.sent = bytes
         // Once the label starts going out, the send, its record and the entry's outcome finish even
         // if the screen closes: a cancelled send would close the socket mid-label, and a label that
-        // did print must get its scan. The send's own deadline bounds this.
+        // did print must get its scan. This includes the wait for the printer lock, bounded only by
+        // the lock holder's own time limit, then the send's own deadline.
         return withContext(NonCancellable) {
             try {
-                deps.send(printer.host, bytes)
+                deps.send(printer, bytes)
             } catch (e: Exception) {
-                log("couldn't send the label to ${printer.host}", e)
-                return@withContext fail(w, if (e is LabelSendTimeout) PRINTER_TIMEOUT_TEXT else printerUnreachableText(printer.host))
+                val to = when (val c = printer.connection) {
+                    is PrinterConnection.Network -> "the printer at ${c.host}"
+                    is PrinterConnection.Bluetooth -> "the Bluetooth printer ${c.serial}"
+                }
+                log("couldn't send the label to $to", e)
+                val message = when (e) {
+                    is LabelSendTimeout -> PRINTER_TIMEOUT_TEXT
+                    is LabelSendRefused -> e.message
+                    is PrinterNeedsRestart -> FONT_INSTALL_CUT_TEXT
+                    else -> printerUnreachableText(printer)
+                }
+                return@withContext fail(w, message)
             }
             // A scan records once, on its first label that goes out; a Reprint never does.
             var warning: String? = null

@@ -7,8 +7,13 @@ import com.serversherpa.kiosk.core.labels.LabelBuildStatus
 import com.serversherpa.kiosk.core.labels.LabelSettings
 import com.serversherpa.kiosk.core.labels.OUTCOME_OK
 import com.serversherpa.kiosk.core.labels.PrintState
+import com.serversherpa.kiosk.core.labels.PrinterConnection
 import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.model.KioskAssetRow
+import com.serversherpa.kiosk.core.printer.BLUETOOTH_DENIED_TEXT
+import com.serversherpa.kiosk.core.printer.BLUETOOTH_OFF_TEXT
+import com.serversherpa.kiosk.core.printer.FONT_INSTALL_CUT_TEXT
+import com.serversherpa.kiosk.core.printer.pairingLostText
 import com.serversherpa.kiosk.data.api.KioskJson
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.data.FakeKioskApi
@@ -22,8 +27,16 @@ import com.serversherpa.kiosk.data.labels.LabelEngineUnsupportedException
 import com.serversherpa.kiosk.data.labels.LabelSettingsSource
 import com.serversherpa.kiosk.data.outbox.MemoryOutboxStore
 import com.serversherpa.kiosk.data.outbox.Outbox
+import com.serversherpa.kiosk.data.printer.BluetoothAvailability
+import com.serversherpa.kiosk.data.printer.BluetoothPairingLost
+import com.serversherpa.kiosk.data.printer.BluetoothUnavailable
+import com.serversherpa.kiosk.data.printer.FakeBluetoothPrinting
+import com.serversherpa.kiosk.data.printer.LabelSender
+import com.serversherpa.kiosk.data.printer.PrinterGuard
+import com.serversherpa.kiosk.data.printer.PrinterLock
 import com.serversherpa.kiosk.data.printer.PrinterTimeout
 import com.serversherpa.kiosk.data.printer.PrinterUnreachable
+import com.serversherpa.kiosk.data.printer.lockedSender
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.core.model.KioskPeopleSync
@@ -89,12 +102,19 @@ class PrintLabelsViewModelTest {
         val vm: PrintLabelsViewModel, val db: KioskDatabase, val outbox: Outbox, val engine: PrintHelperEngine,
         val sent: MutableList<Pair<String, String>>, val status: MutableStateFlow<LabelBuildStatus>,
         val sendFailures: IntArray, val timeoutSends: BooleanArray, val sync: Sync,
+        /** Every send the printer was asked for, in order, whether or not it went out. */
+        val started: MutableList<String>,
+        /** When set, every send throws it (a Bluetooth refusal, say). */
+        val failWith: Array<Exception?>,
     )
 
-    /** [syncGate]: when set, a sync waits for it (holding the RUNNING phase). */
+    /** [syncGate]: when set, a sync waits for it (holding the RUNNING phase). [guard]: when set, the
+     *  sender is the container's ([lockedSender] under a lock and [guard]) over the fake printer. */
     private suspend fun TestScope.harness(
         name: String, settings: LabelSettings = LabelSettings(printer = printer, offsetX = 4, offsetY = -2, peel = true),
         syncGate: CompletableDeferred<Unit>? = null,
+        guard: PrinterGuard? = null,
+        bluetooth: FakeBluetoothPrinting? = null,
     ): Harness {
         val db = KioskDatabase.inMemory(ApplicationProvider.getApplicationContext())
         db.assets().insertAll(listOf(
@@ -111,24 +131,31 @@ class PrintLabelsViewModelTest {
         val outbox = Outbox(MemoryOutboxStore(), api, Identity(prefs), backgroundScope, clock = { testScheduler.currentTime })
         val engine = PrintHelperEngine()
         val sent = ArrayList<Pair<String, String>>()
+        val started = ArrayList<String>()
         val sendFailures = intArrayOf(0)
         val timeoutSends = booleanArrayOf(false)
+        val failWith = arrayOfNulls<Exception>(1)
         val status = MutableStateFlow(LabelBuildStatus(LabelBuildPhase.DONE, ready = 1, problems = mapOf("no_template_at_dpi" to 1), templateId = "t1"))
         val source = object : LabelSettingsSource { override val settings = MutableStateFlow(settings) }
         val syncApi = if (syncGate == null) api else object : KioskApi by api {
             override suspend fun syncPeople(): KioskPeopleSync { syncGate.await(); return api.syncPeople() }
         }
         val sync = Sync(syncApi, db, backgroundScope)
+        val device = LabelSender { p, zpl ->
+            val host = p.host.orEmpty()
+            started += zpl
+            failWith[0]?.let { throw it }
+            if (sendFailures[0] > 0) { sendFailures[0]--; throw if (timeoutSends[0]) PrinterTimeout(host) else PrinterUnreachable(host) }
+            sent += host to zpl
+        }
         val vm = PrintLabelsViewModel(
             db, sync, outbox, prefs, source, status, engine,
-            sender = { host, zpl ->
-                if (sendFailures[0] > 0) { sendFailures[0]--; throw if (timeoutSends[0]) PrinterTimeout(host) else PrinterUnreachable(host) }
-                sent += host to zpl
-            },
+            sender = if (guard == null) device else lockedSender(PrinterLock(), guard, device),
             flash = FlashController(backgroundScope), sound = null, scopeOverride = backgroundScope,
+            bluetooth = bluetooth,
         )
         settle()
-        return Harness(vm, db, outbox, engine, sent, status, sendFailures, timeoutSends, sync)
+        return Harness(vm, db, outbox, engine, sent, status, sendFailures, timeoutSends, sync, started, failWith)
     }
 
     @Test fun aScannedAssetIdPrintsItsStoredLabelWithTheSendSettingsAndRecordsOneLabeledScan() = runTest {
@@ -192,6 +219,123 @@ class PrintLabelsViewModelTest {
         assertEquals("The printer didn't finish answering. It may have printed the label — check before you retry.", h.vm.entries.value[0].message)
         assertTrue(h.outbox.snapshot.value.rows.isEmpty())
         h.db.close()
+    }
+
+    /** The container's sender: after a failed send the next label first clears the printer. A clear
+     *  that fails never sent the label, so it can't have printed: a timeout reads as unreachable
+     *  (not "it may have printed"). */
+    @Test fun aClearThatFailsSaysThePrinterCantBeReached() = runTest {
+        val guard = PrinterGuard()
+        val h = harness("p12", guard = guard)
+        guard.markSendFailed(printer.connection)
+        h.sendFailures[0] = 1; h.timeoutSends[0] = true
+        h.vm.onScan("A-1"); settle()
+        assertEquals(PrintState.FAILED, h.vm.entries.value[0].state)
+        assertEquals("Can't reach the printer at 10.0.0.5.", h.vm.entries.value[0].message)
+        assertEquals(listOf("~JX"), h.started)
+        assertTrue(h.sent.isEmpty())
+        assertTrue(h.outbox.snapshot.value.rows.isEmpty())
+
+        h.timeoutSends[0] = false
+        h.vm.retry(h.vm.entries.value[0].id); settle()
+        assertEquals(PrintState.PRINTED, h.vm.entries.value[0].state)
+        assertEquals(listOf("10.0.0.5" to "~JX", "10.0.0.5" to "LT-2LS4|^XA^FDA-1^FS^XZ|MMP"), h.sent)
+        assertEquals(1, h.outbox.snapshot.value.rows.size)
+        h.db.close()
+    }
+
+    /** A cut font install keeps labels from the printer, saying to restart it, until a check gets
+     *  an answer; nothing is sent or recorded meanwhile. */
+    @Test fun aCutFontStopsLabelsAndSaysToRestartThePrinter() = runTest {
+        val guard = PrinterGuard()
+        val h = harness("p13", guard = guard)
+        guard.markFontCut(printer.connection)
+        h.vm.onScan("A-1"); settle()
+        assertEquals(PrintState.FAILED, h.vm.entries.value[0].state)
+        assertEquals(FONT_INSTALL_CUT_TEXT, h.vm.entries.value[0].message)
+        assertTrue(h.started.isEmpty())
+        assertTrue(h.outbox.snapshot.value.rows.isEmpty())
+
+        guard.printerAnswered(printer.connection)
+        h.vm.retry(h.vm.entries.value[0].id); settle()
+        assertEquals(PrintState.PRINTED, h.vm.entries.value[0].state)
+        assertEquals(listOf("LT-2LS4|^XA^FDA-1^FS^XZ|MMP"), h.started)
+        h.db.close()
+    }
+
+    /** A Bluetooth printer's failures name it by its serial, and one the crew fixes on the device
+     *  (Bluetooth off or not allowed, a printer that forgot it) says what to do, also when it
+     *  stopped the `~JX` owed before the label (which then never went out). */
+    @Test fun printLabelsBluetoothUnreachableCopy() = runTest {
+        val serial = "D8J224508535"
+        val bluetooth = SavedPrinter(PrinterConnection.Bluetooth(serial, "AC:3F:A4:00:00:01"), "ZD421", serial, 300)
+        val guard = PrinterGuard()
+        val h = harness("p14", LabelSettings(printer = bluetooth), guard = guard)
+        h.failWith[0] = PrinterUnreachable(serial)
+        h.vm.onScan("A-1"); settle()
+        val entry = h.vm.entries.value[0]
+        assertEquals(PrintState.FAILED, entry.state)
+        assertEquals("Can't reach the printer D8J224508535 over Bluetooth.", entry.message)
+
+        h.failWith[0] = BluetoothUnavailable(serial, BluetoothAvailability.POWERED_OFF)
+        h.vm.retry(entry.id); settle()
+        assertEquals(BLUETOOTH_OFF_TEXT, h.vm.entries.value[0].message)
+        assertEquals(listOf("^XA^FDA-1^FS^XZ|MMT", "~JX"), h.started.map { it.substringAfter("LT0LS0|") })
+
+        h.failWith[0] = BluetoothUnavailable(serial, BluetoothAvailability.UNAUTHORIZED)
+        h.vm.retry(entry.id); settle()
+        assertEquals(BLUETOOTH_DENIED_TEXT, h.vm.entries.value[0].message)
+
+        h.failWith[0] = BluetoothPairingLost(serial)
+        h.vm.retry(entry.id); settle()
+        assertEquals(pairingLostText(serial), h.vm.entries.value[0].message)
+        assertTrue(h.sent.isEmpty())
+        assertTrue(h.outbox.snapshot.value.rows.isEmpty())
+
+        h.failWith[0] = null
+        h.vm.retry(entry.id); settle()
+        assertEquals(PrintState.PRINTED, h.vm.entries.value[0].state)
+        assertEquals(listOf("~JX", "LT0LS0|^XA^FDA-1^FS^XZ|MMT"), h.sent.map { it.second })
+        assertEquals(1, h.outbox.snapshot.value.rows.size)
+        h.db.close()
+    }
+
+    /** Opening Print Labels warms up a saved Bluetooth printer's link (D4) in the background:
+     *  nothing waits for it (a label scanned meanwhile goes out), there is one at a time, and a
+     *  connect that fails says nothing (the label's own failure does). A network printer starts
+     *  nothing. */
+    @Test fun printLabelsWarmsUpTheBluetoothLinkWhenItOpens() = runTest {
+        val serial = "D8J224508535"
+        val address = "AC:3F:A4:00:00:01"
+        val bluetooth = SavedPrinter(PrinterConnection.Bluetooth(serial, address), "ZD421", serial, 300)
+        val link = FakeBluetoothPrinting()
+        val gate = CompletableDeferred<Unit>()
+        link.connectGate = gate
+        val h = harness("p15", LabelSettings(printer = bluetooth), bluetooth = link)
+        h.vm.warmUpPrinter(); settle()
+        assertEquals(listOf<Pair<String?, String?>>(address to serial), link.connects.toList())
+        h.vm.warmUpPrinter(); settle()
+        assertEquals(1, link.connects.size)
+        // The connect is still going: a scanned label goes out all the same.
+        h.vm.onScan("A-1"); settle()
+        assertEquals(PrintState.PRINTED, h.vm.entries.value[0].state)
+        assertEquals(1, h.sent.size)
+        gate.complete(Unit); settle()
+
+        // A connect that fails says nothing of its own.
+        link.connectGate = null
+        link.connectError = BluetoothUnavailable(serial, BluetoothAvailability.POWERED_OFF)
+        h.vm.warmUpPrinter(); settle()
+        assertEquals(2, link.connects.size)
+        assertEquals(null, h.vm.state.value.error)
+        assertEquals(1, h.vm.entries.value.size)
+        h.db.close()
+
+        val network = FakeBluetoothPrinting()
+        val n = harness("p16", bluetooth = network)
+        n.vm.warmUpPrinter(); settle()
+        assertTrue(network.connects.isEmpty())
+        n.db.close()
     }
 
     @Test fun aScanWhileTheBuildRunsIsRefusedEvenWithAStoredLabel() = runTest {

@@ -12,15 +12,22 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import com.serversherpa.kiosk.LocalAppContainer
+import com.serversherpa.kiosk.core.labels.PrinterConnection
 import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.components.PageHeader
 import com.serversherpa.kiosk.ui.components.SetupCard
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
 
-/** "ZD421 at 10.0.0.5 · 203 dpi". */
-internal fun printerSummary(p: SavedPrinter): String =
-    listOf(p.model.ifBlank { "Zebra" } + " at " + p.host, "${p.dpi} dpi").joinToString(" · ")
+/** "ZD421 at 10.0.0.5 · 203 dpi" / "ZD421 · Bluetooth D8J224508535 · 300 dpi" ("Zebra" when the
+ *  printer didn't name its model). */
+internal fun printerSummary(p: SavedPrinter): String {
+    val model = p.model.ifBlank { "Zebra" }
+    return when (val c = p.connection) {
+        is PrinterConnection.Network -> "$model at ${c.host} · ${p.dpi} dpi"
+        is PrinterConnection.Bluetooth -> "$model · Bluetooth ${c.serial} · ${p.dpi} dpi"
+    }
+}
 
 /** The Label Printing tile: Print Labels and Printer Setup. */
 @Composable

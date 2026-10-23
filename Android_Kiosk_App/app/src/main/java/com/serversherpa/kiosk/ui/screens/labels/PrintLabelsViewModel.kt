@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.serversherpa.kiosk.core.labels.DEVICE_UNSUPPORTED_TEXT
 import com.serversherpa.kiosk.core.labels.LabelBuildStatus
 import com.serversherpa.kiosk.core.labels.LabelGenArgs
+import com.serversherpa.kiosk.core.labels.LabelSendRefused
 import com.serversherpa.kiosk.core.labels.LabelSendTimeout
 import com.serversherpa.kiosk.core.labels.LabelSettings
 import com.serversherpa.kiosk.core.labels.PREPARE_FAILED_TEXT
@@ -13,6 +14,8 @@ import com.serversherpa.kiosk.core.labels.PrintQueue
 import com.serversherpa.kiosk.core.labels.PrintQueueDeps
 import com.serversherpa.kiosk.core.labels.PrintState
 import com.serversherpa.kiosk.core.labels.PrintStep
+import com.serversherpa.kiosk.core.labels.PrinterConnection
+import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.labels.StoredLabel
 import com.serversherpa.kiosk.core.labels.labelFor
 import com.serversherpa.kiosk.core.labels.parseZpl
@@ -31,7 +34,11 @@ import com.serversherpa.kiosk.data.labels.LabelEngineUnsupportedException
 import com.serversherpa.kiosk.data.labels.LabelSettingsSource
 import com.serversherpa.kiosk.data.outbox.Outbox
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
+import com.serversherpa.kiosk.data.printer.BluetoothPrinting
+import com.serversherpa.kiosk.data.printer.LabelSender
+import com.serversherpa.kiosk.data.printer.PrinterException
 import com.serversherpa.kiosk.data.printer.PrinterTimeout
+import com.serversherpa.kiosk.data.printer.bluetoothRefusal
 import com.serversherpa.kiosk.data.sync.Sync
 import com.serversherpa.kiosk.data.sync.SyncPhase
 import com.serversherpa.kiosk.ui.flash.FlashController
@@ -42,6 +49,7 @@ import com.serversherpa.kiosk.ui.sound.SoundPlayer
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -50,19 +58,19 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-/** Sends ZPL to the network printer at a host (NetworkZebra on the device). */
-fun interface LabelSender {
-    suspend fun send(host: String, zpl: String)
-}
-
 data class PrintLabelsUi(
     val loadStatus: LoadStatus = LoadStatus.LOADING, val rosterSize: Int = 0, val value: String = "", val error: String? = null,
 )
 
 /**
  * Print Labels (the laptop's Printing Station, kiosk/src/pages/PrintingStation.tsx): a scan
- * matched by asset ID or serial prints the asset's stored label on the saved network printer
- * and records one Labeled scan through the outbox. The decisions live in [PrintQueue].
+ * matched by asset ID or serial prints the asset's stored label on the saved printer and records
+ * one Labeled scan through the outbox. The decisions live in [PrintQueue]. [sender] is the
+ * container's: each label under the app-wide printer lock and guard (a `~JX` first after a failed
+ * send, nothing while a font install is cut), to a network or a Bluetooth printer. A Bluetooth
+ * failure the crew fixes on the device (Bluetooth off or not allowed, a printer that forgot it)
+ * says what to do; the screen puts the button that does it beside Retry. A saved Bluetooth
+ * printer's link is warmed up when the screen opens ([warmUpPrinter]), through [bluetooth].
  */
 class PrintLabelsViewModel(
     private val db: KioskDatabase,
@@ -76,6 +84,8 @@ class PrintLabelsViewModel(
     private val flash: FlashController,
     private val sound: SoundPlayer?,
     scopeOverride: CoroutineScope? = null,
+    /** The container's Bluetooth link (null: nothing is warmed up). */
+    private val bluetooth: BluetoothPrinting? = null,
 ) : ViewModel() {
     private val scope = scopeOverride ?: viewModelScope
     private val _state = MutableStateFlow(PrintLabelsUi())
@@ -85,6 +95,7 @@ class PrintLabelsViewModel(
     @Volatile private var index: ScanIndex<AssetEntity>? = null
     @Volatile private var setup: KioskSetupSelection? = null
     @Volatile private var appearance = DEFAULT_APPEARANCE
+    @Volatile private var warmUp: Job? = null
 
     private val queue = PrintQueue(object : PrintQueueDeps<AssetEntity> {
         override suspend fun settings(): LabelSettings = labelSettings.settings.first()
@@ -109,10 +120,14 @@ class PrintLabelsViewModel(
             PrintStep.Refused(PREPARE_FAILED_TEXT)
         }
 
-        override suspend fun send(host: String, zpl: String) = try {
-            sender.send(host, zpl)
+        override suspend fun send(printer: SavedPrinter, zpl: String) = try {
+            sender.send(printer, zpl)
         } catch (e: PrinterTimeout) {
             throw LabelSendTimeout(e)
+        } catch (e: PrinterException) {
+            // Bluetooth off or not allowed, or a printer that forgot this device: what to do.
+            val refusal = bluetoothRefusal(e) ?: throw e
+            throw LabelSendRefused(refusal.message ?: throw e, e)
         }
 
         override suspend fun record(asset: AssetEntity, scannedValue: String) {
@@ -182,6 +197,28 @@ class PrintLabelsViewModel(
     fun reprint(entryId: String) { scope.launch { queue.reprint(entryId)?.let { settled(it) } } }
 
     fun retry(entryId: String) { scope.launch { queue.retry(entryId)?.let { settled(it) } } }
+
+    /**
+     * The screen opened: a saved Bluetooth printer's link comes up in the background (D4: connect
+     * on first need), so the first label needn't wait for it. A warm-up only: nothing waits for it
+     * (a label scanned meanwhile goes out as always, taking its turn on the link after the
+     * connect), it takes no printer lock, and it says nothing (a label's own failure says what is
+     * wrong). One at a time; a network printer, or none, starts nothing.
+     */
+    fun warmUpPrinter() {
+        val link = bluetooth ?: return
+        if (warmUp?.isActive == true) return
+        warmUp = scope.launch {
+            val printer = labelSettings.settings.first().printer?.connection as? PrinterConnection.Bluetooth ?: return@launch
+            try {
+                link.connect(printer.address, printer.serial)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.i(TAG, "the Bluetooth printer's warm-up didn't connect", e)
+            }
+        }
+    }
 
     /** Runs the move's sync again (labels need a sync since the version 2 upgrade). */
     fun syncNow() { setup?.let { s -> s.initiativeId?.let { sync.run(it, s.initiativeName ?: "") } } }

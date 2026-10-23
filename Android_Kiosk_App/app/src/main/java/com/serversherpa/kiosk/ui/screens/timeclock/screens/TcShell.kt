@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.Row
@@ -134,17 +135,24 @@ private fun rememberNow(): Instant {
     return now
 }
 
-/** The logo and wordmark with the live date and time; the gear only when [onSettings] is set. */
+/** The logo and wordmark with the live date and time; the gear only when [onSettings] is set. On a
+ *  screen too narrow for all of it on one line (the 320 dp MC2200), the date and time (and the
+ *  gear) move to a line of their own below, at the end, so the wordmark always shows whole: the
+ *  wordmark's line breaks at its full width, and it takes the rest of its line. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TcHeader(onSettings: (() -> Unit)?) {
     val s = LocalTcSizes.current
     val now = rememberNow()
-    Row(
+    FlowRow(
         Modifier.fillMaxWidth().padding(start = s.pad, end = s.pad, top = s.pad),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.End),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(s.dp(10f, 1.8f, 20f))) {
+        Row(
+            Modifier.weight(1f).align(Alignment.CenterVertically),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(s.dp(10f, 1.8f, 20f)),
+        ) {
             val logo = s.dp(44f, 7.5f, 92f)
             Image(painterResource(R.drawable.login_logo), contentDescription = null, modifier = Modifier.size(logo).clip(CircleShape))
             Column {
@@ -165,14 +173,15 @@ private fun TcHeader(onSettings: (() -> Unit)?) {
                 )
             }
         }
-        Column(horizontalAlignment = Alignment.End) {
+        Column(Modifier.align(Alignment.CenterVertically), horizontalAlignment = Alignment.End) {
             NetTestChip(onLightPaper = true) // INTERNET-TEST
             Text(formatHeaderDate(now), style = tcText(s.sp(11f, 1.6f, 17f), color = TcColors.Slate, align = TextAlign.End))
             Text(formatClock(now.toString()), style = tcText(s.sp(20f, 3.6f, 40f), FontWeight.Bold, align = TextAlign.End))
         }
         if (onSettings != null) {
             Box(
-                Modifier.size(56.dp).clip(CircleShape).clickable(role = Role.Button, onClick = onSettings).testTag("tc-gear"),
+                Modifier.align(Alignment.CenterVertically).size(56.dp).clip(CircleShape)
+                    .clickable(role = Role.Button, onClick = onSettings).testTag("tc-gear"),
                 contentAlignment = Alignment.Center,
             ) { Icon(TcGearIcon, contentDescription = "Settings", tint = TcColors.Slate, modifier = Modifier.size(26.dp)) }
         }

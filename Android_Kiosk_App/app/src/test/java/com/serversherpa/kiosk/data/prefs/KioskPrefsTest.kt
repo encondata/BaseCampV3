@@ -3,6 +3,8 @@ package com.serversherpa.kiosk.data.prefs
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.serversherpa.kiosk.core.labels.PrinterConnection
+import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.core.settings.CheckpointId
 import com.serversherpa.kiosk.core.settings.DEFAULT_APPEARANCE
@@ -78,6 +80,27 @@ class KioskPrefsTest {
             // and as a regular kiosk, with every move field as saved
             assertNull(sel?.stationType); assertEquals("i", sel?.initiativeId); assertEquals("pre_stage", sel?.scanStatus)
         }
+    }
+
+    /** A printer saved before Bluetooth has only `host`: it loads as the same network printer and
+     *  the offsets and peel beside it survive (a decode failure would fall back to fresh settings). */
+    @Test fun aPrinterSavedBeforeBluetoothLoadsAsNetwork() = runBlocking {
+        val raw = """{"printer":{"host":"10.0.0.5","model":"ZD421","serial":"X","dpi":203},"offsetX":3,"offsetY":-2,"peel":true}"""
+        val store = PreferenceDataStoreFactory.create(scope = scope) { File(tmp.root, "old-printer.preferences_pb") }
+        store.edit { it[stringPreferencesKey("ss.kiosk.labels")] = raw }
+        val labels = KioskPrefs(store).labels.first()
+        assertEquals(SavedPrinter("10.0.0.5", "ZD421", "X", 203), labels.printer)
+        assertEquals(PrinterConnection.Network("10.0.0.5"), labels.printer?.connection)
+        assertEquals(3, labels.offsetX); assertEquals(-2, labels.offsetY); assertEquals(true, labels.peel)
+    }
+
+    @Test fun aBluetoothPrinterRoundTripsThroughThePrefs() = runBlocking {
+        val bt = SavedPrinter(PrinterConnection.Bluetooth("D8J224508535", "C4:7B:A3:00:11:22"), "ZD421", "D8J224508535", 300)
+        prefs.updateLabels { it.copy(printer = bt, offsetX = 5) }
+        val labels = prefs.labels.first()
+        assertEquals(bt, labels.printer); assertEquals(5, labels.offsetX)
+        // the old `host` key is there, blank, for an older build
+        assertEquals(true, prefs.snapshot()[stringPreferencesKey("ss.kiosk.labels")]?.contains(""""host":"""""))
     }
 
     @Test fun aTimeclockStationSelectionRoundTrips() = runBlocking {

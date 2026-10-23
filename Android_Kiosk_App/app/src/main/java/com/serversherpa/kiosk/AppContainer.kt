@@ -10,6 +10,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.data.api.AndroidSecretStore
 import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.data.api.OkHttpKioskApi
@@ -34,6 +35,19 @@ import com.serversherpa.kiosk.data.labels.LabelSettingsStore
 import com.serversherpa.kiosk.data.outbox.Outbox
 import com.serversherpa.kiosk.data.outbox.RoomOutboxStore
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
+import com.serversherpa.kiosk.data.printer.AndroidBluetoothLe
+import com.serversherpa.kiosk.data.printer.BluetoothLeClient
+import com.serversherpa.kiosk.data.printer.LabelSender
+import com.serversherpa.kiosk.data.printer.LocalNetworks
+import com.serversherpa.kiosk.data.printer.NetworkZebra
+import com.serversherpa.kiosk.data.printer.PrinterGuard
+import com.serversherpa.kiosk.data.printer.PrinterLock
+import com.serversherpa.kiosk.data.printer.ZebraBluetooth
+import com.serversherpa.kiosk.data.printer.ZebraTransport
+import com.serversherpa.kiosk.data.printer.isUpTo
+import com.serversherpa.kiosk.data.printer.lockedSender
+import com.serversherpa.kiosk.data.printer.send
+import com.serversherpa.kiosk.data.printer.transportFor
 import com.serversherpa.kiosk.data.rolodex.RolodexCacheStore
 import com.serversherpa.kiosk.data.station.StationKeyStore
 import com.serversherpa.kiosk.data.station.StationStatus
@@ -76,6 +90,8 @@ class AppContainer(
     /** Tests: fakes for the portal's session and station clients. */
     apiOverride: KioskApi? = null,
     stationApiOverride: StationApi? = null,
+    /** Tests: a fake Bluetooth LE adapter for the printer link. */
+    bluetoothOverride: BluetoothLeClient? = null,
 ) {
     /** EncryptedSharedPreferences unlocks an Android Keystore key — too slow for
      *  Application.onCreate. The jar's first use builds it, on whatever OkHttp
@@ -108,7 +124,37 @@ class AppContainer(
     val rolodexCache = RolodexCacheStore(db) { (auth.state.value as? AuthState.Authed)?.isAdmin == true }
     val sync = Sync(api, db, scope, fontsDir = File(app.filesDir, "label-fonts"))
     val labelEngine: LabelEngine = LabelGenerator(app)
-    val labelSettings = LabelSettingsStore(prefs)
+    /** One connection to the saved printer at a time, app-wide: Print Labels' sends and every
+     *  Printer Setup call (identify, checks, font installs, test labels) go through it. */
+    val printerLock = PrinterLock()
+    /** Each printer's state after a failed send or a cut font install (the `~JX` clear, the stop),
+     *  keyed to the printer and applied under [printerLock] by the same callers. The stops are kept
+     *  across launches (`KioskPrefs.printerStops`: a cut font leaves the printer waiting for the
+     *  rest of it, relaunch or not) and read back here in [scope]; saving another printer keeps
+     *  every mark (each belongs to its printer: Ruling 16). */
+    val printerGuard = PrinterGuard(prefs.printerStops, scope)
+    /** The app's one Bluetooth LE link to a Zebra (D4): it connects on first need and stays up while
+     *  the app is in use, and closes when the app goes to the background, on sign-out, when the
+     *  session ends, and when another printer is saved. Its own scope, a child of [scope] (canceling
+     *  that stops the link's event loop), runs on Default, never Main: its progress callbacks (a font
+     *  install's) run there. Nothing scans, and nothing asks for a permission, until Bluetooth is
+     *  picked in Printer Setup or a Bluetooth printer is used. */
+    val zebraBluetooth = ZebraBluetooth(
+        bluetoothOverride ?: AndroidBluetoothLe(app),
+        CoroutineScope(SupervisorJob(scope.coroutineContext[Job]) + Dispatchers.Default),
+    )
+    /** The one writer of the saved printer. Another printer saved (or none): a link up to the
+     *  printer just saved stays (Printer Setup brought it up to choose it); a link to any other
+     *  printer lets it go. The guard's marks stay: each belongs to its printer, so switching A→B→A
+     *  still owes A its `~JX` (Ruling 16). */
+    val labelSettings = LabelSettingsStore(prefs, onConnectionChange = {
+        if (!zebraBluetooth.link.value.isUpTo(prefs.labels.first().printer)) zebraBluetooth.close()
+    })
+    /** Print Labels' sender: straight to the printer (no status checks before or after), one
+     *  connection at a time with Printer Setup's calls, under the guard's rules. */
+    val labelSender: LabelSender = lockedSender(printerLock, printerGuard) { printer, zpl ->
+        withContext(Dispatchers.IO) { zebraFor(printer).send(zpl) }
+    }
     val labelBuilder = LabelBuilder(db, labelEngine, labelSettings, scope)
     val outbox = Outbox(RoomOutboxStore(db.outbox()), api, identity, scope)
     val hasDataWedge: Boolean = DataWedge.isPresent(app)
@@ -132,13 +178,49 @@ class AppContainer(
     val rfidReader: RfidReader = rfidReaderOverride ?: ZebraRfidReader(app, scope)
     val rfid = RfidController(rfidReader, prefs.rfid, scope)
 
+    /** The app coming to the front and going to the background (ProcessLifecycleOwner; [start]
+     *  registers it). */
+    internal val processLifecycle: DefaultLifecycleObserver = object : DefaultLifecycleObserver {
+        override fun onStart(owner: LifecycleOwner) {
+            foreground.value = true
+            outbox.start()
+            // Called directly here, not from inside a scope.launch: a
+            // fast background/foreground/background flurry (an incoming
+            // call, the notification shade, a screen lock) must not let
+            // this land after a disconnectForLifecycle() a later onStop
+            // issues, or the reverse. connectForLifecycle() enqueues
+            // synchronously onto RfidController's own command channel —
+            // the same one arm()/disarm()/stopBurst() use — so as long
+            // as onStart/onStop each call straight in like this, the
+            // order those calls land in that channel always matches the
+            // order Android delivered the lifecycle events, regardless
+            // of how long the enabled/permission check or the connect
+            // itself then takes. See RfidController's class doc.
+            rfid.connectForLifecycle { prefs.rfid.first().enabled && RfidPermissions.granted(app) }
+            // Back from Settings, say: Android sends nothing when a permission is granted.
+            zebraBluetooth.refreshAvailability()
+        }
+        override fun onStop(owner: LifecycleOwner) {
+            foreground.value = false
+            rfid.disconnectForLifecycle()
+            outbox.stop()
+            // No Bluetooth in the background: a label already going out finishes, then the link closes.
+            zebraBluetooth.close()
+        }
+    }
+
     fun start() {
         internetTest.start(auth.state, prefs.devMode, heartbeat.setupCleared) // INTERNET-TEST
         // Two launches: the footer's sync line must not wait on auth's network call.
         scope.launch { identity.get(); auth.restore() }
         scope.launch { sync.hydrate() }
         labelBuilder.start(sync.status)
-        scope.launch { session.sessionEnded.collect { cookieJar.clearRefreshCookie() } }
+        scope.launch {
+            session.sessionEnded.collect {
+                cookieJar.clearRefreshCookie()
+                zebraBluetooth.close()
+            }
+        }
         watchRolodexCache()
         // Clear Setup revokes a Time Clock station's key on the portal; drop it here too.
         scope.launch(Dispatchers.IO) { heartbeat.setupCleared.collect { stationKeys.clear() } }
@@ -147,30 +229,7 @@ class AppContainer(
         MoveSetupGuard(auth.state, prefs, scope, onSetupDropped = { station.drop() },
             onDropped = internetTest::onSetupDropped, // INTERNET-TEST
         ).start()
-        ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
-            override fun onStart(owner: LifecycleOwner) {
-                foreground.value = true
-                outbox.start()
-                // Called directly here, not from inside a scope.launch: a
-                // fast background/foreground/background flurry (an incoming
-                // call, the notification shade, a screen lock) must not let
-                // this land after a disconnectForLifecycle() a later onStop
-                // issues, or the reverse. connectForLifecycle() enqueues
-                // synchronously onto RfidController's own command channel —
-                // the same one arm()/disarm()/stopBurst() use — so as long
-                // as onStart/onStop each call straight in like this, the
-                // order those calls land in that channel always matches the
-                // order Android delivered the lifecycle events, regardless
-                // of how long the enabled/permission check or the connect
-                // itself then takes. See RfidController's class doc.
-                rfid.connectForLifecycle { prefs.rfid.first().enabled && RfidPermissions.granted(app) }
-            }
-            override fun onStop(owner: LifecycleOwner) {
-                foreground.value = false
-                rfid.disconnectForLifecycle()
-                outbox.stop()
-            }
-        })
+        ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycle)
         DataWedge.configure(app)
         rfid.start()
     }
@@ -197,8 +256,18 @@ class AppContainer(
         labelBuilder.stop()
     }
 
+    /** The saved printer the way its connection reaches it: the network printer at its host, over
+     *  the Wi-Fi or Ethernet network's own sockets; the Bluetooth printer over [zebraBluetooth] (by
+     *  the address it was saved with, else its serial). */
+    fun zebraFor(printer: SavedPrinter): ZebraTransport = transportFor(
+        printer,
+        network = { host -> NetworkZebra(host, socketFactory = LocalNetworks.socketFactoryFor(app, host)) },
+        bluetooth = zebraBluetooth::transport,
+    )
+
     suspend fun logout() {
         internetTest.beforeSignOut() // INTERNET-TEST
+        zebraBluetooth.close()
         auth.logout()
         cookieJar.clearRefreshCookie()
         // Also done by the watch below; here too so it's done when this returns. The delete runs to

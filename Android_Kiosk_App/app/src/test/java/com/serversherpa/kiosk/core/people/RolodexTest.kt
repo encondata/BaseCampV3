@@ -46,6 +46,12 @@ class RolodexTest {
         assertEquals("a٣²〇", fold("A٣²〇"))
     }
 
+    @Test fun foldTreatsUnicodeSpacesAsSpaces() {
+        // No-break space, ideographic space, line separator and NEL count as spaces, as on iOS.
+        assertEquals("ana ortiz", fold("Ana Ortiz"))
+        assertEquals("ana ortiz", fold(" Ana　 Ortiz\u0085"))
+    }
+
     // ── sort and sections (Review Focus 1) ──────────────────────────
 
     @Test fun nunezSortsAndSectionsUnderN() {

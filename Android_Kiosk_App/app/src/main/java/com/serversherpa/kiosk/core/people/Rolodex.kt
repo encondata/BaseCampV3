@@ -20,10 +20,11 @@ const val FILTER_NO_PHOTO = "no_photo"
 /** Section key for last names that don't start with a–z. Its section comes after Z. */
 const val OTHER_SECTION = "#"
 
-// (?U): \s is Unicode whitespace (a no-break space too), as on iOS.
+// Unicode whitespace (a no-break space too), as on iOS, spelled out as \s plus \p{Z} and NEL:
+// Android's ICU regex engine rejects the (?U) flag that would say it (PatternSyntaxException).
 private val COMBINING_MARKS = Regex("\\p{M}+")
-private val NOT_LETTER_DIGIT_OR_SPACE = Regex("(?U)[^\\p{L}\\p{N}\\s]+")
-private val SPACES = Regex("(?U)\\s+")
+private val NOT_LETTER_DIGIT_OR_SPACE = Regex("[^\\p{L}\\p{N}\\s\\p{Z}\\u0085]+")
+private val SPACES = Regex("[\\s\\p{Z}\\u0085]+")
 private val HYPHENS = Regex("-+")
 
 /**

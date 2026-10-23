@@ -47,6 +47,7 @@ fun SettingsScreen(nav: NavHostController, requestedTab: String?) {
             SettingsTabId.APPEARANCE -> AppearancePanel()
             SettingsTabId.SOUND -> SoundPanel()
             SettingsTabId.DEVICES -> DevicesPanel()
+            SettingsTabId.TROUBLESHOOTING -> TroubleshootingPanel(openPrinterSetup = { nav.navigate(Routes.LABELS_PRINTER) })
             SettingsTabId.RFID -> RfidPanel()
             SettingsTabId.ADMIN -> AdminPanel()
             // Reset app ends on Home, popping everything (Print Labels' list with it).

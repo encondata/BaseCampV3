@@ -1,7 +1,8 @@
 package com.serversherpa.kiosk.core.settings
 
 enum class SettingsTabId(val wire: String) {
-    APPEARANCE("appearance"), SOUND("sound"), DEVICES("devices"), RFID("rfid"), THIS_KIOSK("this-kiosk"),
+    APPEARANCE("appearance"), SOUND("sound"), DEVICES("devices"), TROUBLESHOOTING("troubleshooting"), RFID("rfid"),
+    THIS_KIOSK("this-kiosk"),
     ADMIN("admin"), DEVELOPER("developer");
 
     companion object { fun fromWire(s: String?) = entries.firstOrNull { it.wire == s } }
@@ -22,6 +23,9 @@ val SETTINGS_TABS: List<SettingsTab> = listOf(
     SettingsTab(SettingsTabId.APPEARANCE, "Appearance", "Theme, accent, and text size for this kiosk."),
     SettingsTab(SettingsTabId.SOUND, "Sound", "Scan and alert sounds."),
     SettingsTab(SettingsTabId.DEVICES, "Devices", "Scanners, printers, and readers attached to this kiosk."),
+    // Anyone signed in: the printer's connection and tests (the command box and Cut-send test
+    // inside it follow the role).
+    SettingsTab(SettingsTabId.TROUBLESHOOTING, "Troubleshooting", "Printer connection, tests and a report to share."),
     SettingsTab(SettingsTabId.RFID, "RFID", "The RFID reader attached to this kiosk."),
     SettingsTab(SettingsTabId.THIS_KIOSK, "This Kiosk", "This kiosk's name, identity, and connection.", anon = true),
     SettingsTab(SettingsTabId.ADMIN, "Admin", "Kiosk administration.", requires = TabRequirement.ADMIN),

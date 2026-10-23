@@ -1,14 +1,5 @@
 package com.serversherpa.kiosk.data.printer
 
-import com.serversherpa.kiosk.core.labels.isResidentFont
-import com.serversherpa.kiosk.core.printer.HostId
-import com.serversherpa.kiosk.core.printer.HostStatus
-import com.serversherpa.kiosk.core.printer.ZebraCommands
-import com.serversherpa.kiosk.core.printer.isDirectoryListing
-import com.serversherpa.kiosk.core.printer.parseDirectory
-import com.serversherpa.kiosk.core.printer.parseGetvar
-import com.serversherpa.kiosk.core.printer.parseNetworkHostIdentification
-import com.serversherpa.kiosk.core.printer.parseHostStatus
 import com.serversherpa.kiosk.nettest.InternetTestRoutes // INTERNET-TEST
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -68,8 +59,8 @@ class PrinterBadReply(host: String, what: String) : PrinterException(host, "The 
 /**
  * A Zebra on the LAN, spoken to over its raw port: one connection per command, as the laptop edge
  * does. Queries read the reply until it is whole (the printer keeps the connection open), the idle
- * wait, the total wait or 64 KB; sends write and close. Replies are read as Latin-1, ZPL is sent as
- * UTF-8 (labels carry `^CI28`), and a font's bytes go raw after its ASCII header.
+ * wait, the total wait or 64 KB; writes write and close. What is sent and how replies are read is
+ * the [ZebraTransport] extensions' (identify, status, fonts, send, installFont and the rest).
  *
  * [socketFactory] opens the socket: pass the Wi-Fi or Ethernet network's own factory
  * ([LocalNetworks.socketFactoryFor]) so traffic reaches the printer even when another network is
@@ -80,55 +71,10 @@ class NetworkZebra(
     val port: Int = ZebraNetwork.PORT,
     private val timeouts: ZebraTimeouts = ZebraTimeouts(),
     private val socketFactory: SocketFactory = SocketFactory.getDefault(),
-) {
-    /** `~HI`: model, firmware, resolution. */
-    suspend fun identify(): HostId =
-        parseNetworkHostIdentification(query(ZebraCommands.HOST_IDENTIFICATION, frames(1)))
-            ?: throw PrinterBadReply(host, "identification")
+) : ZebraTransport {
+    override val address: String get() = host
 
-    /** `~HS`: paper, head, pause and the rest (three frames). */
-    suspend fun status(): HostStatus =
-        parseHostStatus(query(ZebraCommands.HOST_STATUS, frames(3))) ?: throw PrinterBadReply(host, "status")
-
-    /** Whether a peeler is fitted; null when the printer doesn't say (an unknown variable, no or an
-     *  unreadable answer, or no printer at all). */
-    suspend fun peelerPresent(): Boolean? = when (getvar(ZebraCommands.PEELER_PRESENT)?.lowercase()) {
-        "present" -> true
-        "not present" -> false
-        else -> null
-    }
-
-    /** The printer's serial number; null when it doesn't say. */
-    suspend fun serial(): String? = getvar(ZebraCommands.SERIAL_NUMBER)
-
-    /** The object names on E: (fonts and anything else stored there), upper-cased. */
-    suspend fun fonts(): List<String> {
-        val reply = query(ZebraCommands.FONT_DIRECTORY, frames(1))
-        if (!isDirectoryListing(reply)) throw PrinterBadReply(host, "font listing")
-        return parseDirectory(reply)
-    }
-
-    /** Sends a job as is: no status checks before or after. */
-    suspend fun send(zpl: String) = write(zpl.toByteArray(Charsets.UTF_8))
-
-    /** Installs a TrueType font on E: as [name] (upper-cased): `~DYE:NAME,B,T,<len>,,` then the
-     *  bytes. A resident font is never installed, and a name that isn't a plain `NAME.TTF` is
-     *  refused before anything is sent. */
-    suspend fun installFont(name: String, bytes: ByteArray) {
-        val upper = name.uppercase()
-        require(FONT_NAME.matches(upper)) { "Not a printer font name: $name" }
-        require(!isResidentFont(upper)) { "$upper is built into the printer and is never installed" }
-        require(bytes.isNotEmpty()) { "$upper has no bytes" }
-        write(ZebraCommands.downloadFontHeader(upper, bytes.size).toByteArray(Charsets.US_ASCII), bytes)
-    }
-
-    private suspend fun getvar(command: String): String? = try {
-        parseGetvar(query(command, quoted))
-    } catch (_: PrinterException) {
-        null
-    }
-
-    private suspend fun query(command: String, complete: (ByteArray) -> Boolean): String {
+    override suspend fun query(command: String, complete: (ByteArray) -> Boolean): String {
         val reply = zebraSession(socketFactory, host, port, timeouts.connectMs, timeouts.totalMs + WRITE_SLACK_MS) { socket ->
             socket.getOutputStream().apply { write(command.toByteArray(Charsets.UTF_8)); flush() }
             readReply(socket, timeouts.idleMs, timeouts.totalMs, ZebraNetwork.MAX_REPLY, complete)
@@ -137,10 +83,19 @@ class NetworkZebra(
         return String(reply, Charsets.ISO_8859_1)
     }
 
-    private suspend fun write(vararg parts: ByteArray) {
+    /** One connection for the whole job: each part, then a FIN. [progress] hears 0 once the
+     *  connection is open, then each part as the socket takes it. */
+    override suspend fun write(parts: List<ByteArray>, progress: WriteProgress?) {
+        val total = parts.sumOf { it.size.toLong() }
         zebraSession(socketFactory, host, port, timeouts.connectMs, timeouts.sendMs) { socket ->
             val out = socket.getOutputStream()
-            for (part in parts) out.write(part)
+            var sent = 0L
+            progress?.invoke(sent, total)
+            for (part in parts) {
+                out.write(part)
+                sent += part.size
+                progress?.invoke(sent, total)
+            }
             out.flush()
             socket.shutdownOutput()
         }
@@ -148,11 +103,6 @@ class NetworkZebra(
 
     private companion object {
         const val WRITE_SLACK_MS = 1_000L
-        val FONT_NAME = Regex("""[A-Z0-9_\-]{1,64}\.TTF""")
-        // When each reply is whole (the edge's REPLY_COMPLETE): ~HS is three STX..ETX frames,
-        // ~HI and the E: listing one, a getvar one quoted value.
-        fun frames(n: Int): (ByteArray) -> Boolean = { reply -> reply.count { it == 0x03.toByte() } >= n }
-        val quoted: (ByteArray) -> Boolean = { reply -> reply.count { it == '"'.code.toByte() } >= 2 }
     }
 }
 

@@ -20,6 +20,28 @@ fun missingFonts(needed: List<String>, onPrinter: List<String>): List<String> {
     return needed.filter { it.uppercase() !in present }
 }
 
+/** The [needed] fonts that are on the printer but whose size isn't the library's: a download that
+ *  was cut short leaves a smaller file under the right name. Upper-case names, in [needed]'s order.
+ *  A resident font (by name or the library's flag) is the printer's own, a font the library
+ *  doesn't have (or has at size 0, unknown) has nothing to compare with, and a font that isn't
+ *  there is [missingFonts]' to report. */
+fun damagedFonts(needed: List<String>, library: List<KioskLabelFont>, onPrinter: List<DirectoryEntry>): List<String> {
+    val printerSizes = HashMap<String, Int>()
+    for (entry in onPrinter) printerSizes[entry.name.uppercase()] = entry.size
+    val librarySizes = HashMap<String, Int>()
+    val flaggedResident = HashSet<String>()
+    for (font in library) {
+        val name = font.name.uppercase()
+        if (name !in librarySizes) librarySizes[name] = font.size
+        if (font.resident) flaggedResident.add(name)
+    }
+    return needed.map { it.uppercase() }.filter { name ->
+        val onPrinterSize = printerSizes[name] ?: return@filter false
+        val librarySize = librarySizes[name] ?: return@filter false
+        librarySize > 0 && !isResidentFont(name, name in flaggedResident) && onPrinterSize != librarySize
+    }
+}
+
 /** What to do about the fonts missing from the printer: install the library's (never a resident
  *  one), say a built-in one is missing, and name the rest as not in the library. */
 data class FontFix(val installable: List<KioskLabelFont>, val builtIn: List<String>, val notInLibrary: List<String>)

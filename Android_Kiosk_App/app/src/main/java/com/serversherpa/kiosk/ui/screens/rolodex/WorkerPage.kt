@@ -35,6 +35,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,7 +81,6 @@ import com.serversherpa.kiosk.ui.components.SolidButton
 import com.serversherpa.kiosk.ui.components.lineIcon
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.TcChevronIcon
 import com.serversherpa.kiosk.ui.theme.ChipTone
-import com.serversherpa.kiosk.ui.theme.FragmentMono
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
 
 /** Why Edit is off for a worker whose portal login outranks the admin (spec §4.2). */
@@ -92,11 +92,12 @@ private fun statusBlockedText(reason: String?): String =
 
 /**
  * The selected worker's page (mockup 4-photo-required-and-worker-page): the photo with its camera
- * badge, name, "job title · company", status and RFID chips, then the Contact and Work cards. Edit
- * switches the cards to fields. Before the page loads, and offline, it shows what the list row
- * knows. [onBack] is the phone's "‹ Rolodex" (null in the split view); [onPhoto] opens the photo
- * sheet ([WorkerPhotoScreens]). The badge is off without it, when the worker can't be edited, and
- * offline (spec §3.17). A new worker whose photo didn't upload gets the failure box with Try again.
+ * badge, name, "job title · company", status and RFID chips, then the Contact and Work cards and
+ * Previous jobs. Tapping the photo shows it large ([PhotoViewer]). Edit switches the cards to
+ * fields. Before the page loads, and offline, it shows what the list row knows. [onBack] is the
+ * phone's "‹ Rolodex" (null in the split view); [onPhoto] opens the photo sheet
+ * ([WorkerPhotoScreens]). The badge is off without it, when the worker can't be edited, and offline
+ * (spec §3.17). A new worker whose photo didn't upload gets the failure box with Try again.
  */
 @Composable
 internal fun WorkerPage(
@@ -212,9 +213,10 @@ private fun ColumnScope.WorkerView(ui: RolodexUi, vm: RolodexViewModel, wide: Bo
         val trade = detail?.trade ?: row?.trade
         val level = detail?.level ?: row?.level
         Field("Trade · Level", listOfNotNull(trade?.takeIf { it.isNotBlank() }, level).joinToString(" · ").ifEmpty { null })
-        if (detail != null) Field("Employee ID", detail.external_id, mono = true)
         detail?.status_note?.takeIf { it.isNotBlank() }?.let { Field("Status note", it) }
     }
+    // They come with the worker page, so not before it loads, nor offline.
+    if (detail != null) PreviousJobs(detail.jobs, detail.jobs_total)
 }
 
 /**
@@ -322,7 +324,11 @@ private val PictureIcon: ImageVector = lineIcon(
     fills = listOf("M15.5 8a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z"),
 )
 
-/** The photo (white ring, soft shadow) with the amber camera badge at its lower right. */
+/**
+ * The photo (white ring, soft shadow) with the amber camera badge at its lower right. Tapping the
+ * photo opens it large ([PhotoViewer]) once it has loaded; with no photo (initials) a tap does
+ * nothing. The badge sits on top, so tapping it only ever opens the photo sheet ([onPhoto]).
+ */
 @Composable
 private fun PhotoWithBadge(
     personId: String, name: String, photoUrl: String?, photoVersion: String?, size: Dp,
@@ -330,10 +336,18 @@ private fun PhotoWithBadge(
 ) {
     val c = LocalKioskColors.current
     val badge = if (size > 100.dp) 34.dp else 28.dp
+    val photo = rememberWorkerPhoto(personId, photoUrl, photoVersion)
+    // Saved under its own key, per person: turning the device recreates the activity, and a phone
+    // that turns wide enough for the split view puts the photo in another place on the page, where
+    // a positional key wouldn't find it. Per person, as the split view keeps the page up while
+    // another worker is chosen.
+    var viewing by rememberSaveable(personId, key = "rolodex-photo-viewer:$personId") { mutableStateOf(false) }
+    val view = if (photo == null) Modifier else Modifier.clip(CircleShape)
+        .clickable(onClickLabel = "View photo") { viewing = true }.semantics { contentDescription = "Photo of $name" }
     Box {
         WorkerAvatar(
-            personId, name, photoUrl, photoVersion, size,
-            Modifier.shadow(10.dp, CircleShape).border(4.dp, Color.White, CircleShape),
+            name, photo, size,
+            Modifier.shadow(10.dp, CircleShape).border(4.dp, Color.White, CircleShape).then(view).testTag("worker-photo-view"),
         )
         Box(
             Modifier.align(Alignment.BottomEnd).size(badge).alpha(if (badgeEnabled) 1f else 0.45f)
@@ -345,10 +359,12 @@ private fun PhotoWithBadge(
             Icon(CameraIcon, contentDescription = null, tint = c.ink, modifier = Modifier.size(badge * 0.5f))
         }
     }
+    if (viewing && photo != null) PhotoViewer(photo, name, onClose = { viewing = false })
 }
 
+/** One of the worker page's cards: a small uppercase title over its rows, on paper with a hairline border. */
 @Composable
-private fun InfoCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+internal fun InfoCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     val c = LocalKioskColors.current
     Column(
         Modifier.fillMaxWidth().padding(top = 10.dp).clip(RoundedCornerShape(14.dp)).background(c.paper)
@@ -360,7 +376,7 @@ private fun InfoCard(title: String, content: @Composable ColumnScope.() -> Unit)
 }
 
 @Composable
-private fun Field(label: String, value: String?, mono: Boolean = false) {
+private fun Field(label: String, value: String?) {
     val c = LocalKioskColors.current
     Column {
         Spacer(Modifier.fillMaxWidth().height(1.dp).background(c.paperLine))
@@ -368,7 +384,7 @@ private fun Field(label: String, value: String?, mono: Boolean = false) {
             Text(label, style = MaterialTheme.typography.bodyMedium, color = c.textMute, modifier = Modifier.width(120.dp))
             Text(
                 value?.takeIf { it.isNotBlank() } ?: "—", style = MaterialTheme.typography.bodyMedium, color = c.textDark,
-                fontFamily = if (mono) FragmentMono else null, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -378,9 +394,9 @@ private fun Field(label: String, value: String?, mono: Boolean = false) {
 
 /**
  * The Edit form (mockup "Editing"): first* and last*, preferred name, job title, phone, email,
- * company, trade, level and status, with a required note when Blacklist is chosen. Employee ID
- * and RFID stay read-only. The fields keep their own text (typing never waits on the view model's
- * flow) and hand every change to [RolodexViewModel.updateEdit].
+ * company, trade, level and status, with a required note when Blacklist is chosen. RFID enrollment
+ * shows read-only below; the Employee ID isn't shown (Jimmy, 2026-10-22). The fields keep their own
+ * text (typing never waits on the view model's flow) and hand every change to [RolodexViewModel.updateEdit].
  */
 @Composable
 private fun EditForm(ui: RolodexUi, detail: RolodexDetail, start: RolodexEdit, vm: RolodexViewModel, wide: Boolean) {
@@ -431,7 +447,7 @@ private fun EditForm(ui: RolodexUi, detail: RolodexDetail, start: RolodexEdit, v
         )
     }
     Text(
-        "Employee ID ${detail.external_id?.takeIf { it.isNotBlank() } ?: "—"} · RFID ${if (detail.rfid_enrolled) "enrolled" else "not enrolled"}",
+        "RFID ${if (detail.rfid_enrolled) "enrolled" else "not enrolled"}",
         style = MaterialTheme.typography.bodySmall, color = c.textMute, modifier = Modifier.padding(top = 10.dp),
     )
     KioskToast(ui.error, error = true)

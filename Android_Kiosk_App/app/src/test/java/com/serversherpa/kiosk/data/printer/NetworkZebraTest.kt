@@ -1,5 +1,7 @@
 package com.serversherpa.kiosk.data.printer
 
+import com.serversherpa.kiosk.core.labels.PrinterConnection
+import com.serversherpa.kiosk.core.printer.DirectoryEntry
 import com.serversherpa.kiosk.core.printer.HostId
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -8,6 +10,7 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
+import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
@@ -161,6 +164,89 @@ class NetworkZebraTest {
         assertThrows(IllegalArgumentException::class.java) { runBlocking { z.installFont("X.TTF^XA", byteArrayOf(1)) } }
         assertThrows(IllegalArgumentException::class.java) { runBlocking { z.installFont("EMPTY.TTF", ByteArray(0)) } }
         assertTrue(p.connections.isEmpty())
+    }
+
+    private val serialQuery = "! U1 getvar \"device.unique_id\"\r\n"
+    private val peelerQuery = "! U1 getvar \"sensor.peeler_present\"\r\n"
+
+    /** Through the transport seam every command still goes out byte for byte as before, each on
+     *  its own connection (the network path's one-connection-per-command). */
+    @Test fun networkBytesUnchanged() = runBlocking<Unit> {
+        val listing = "\u0002\r\n- DIR E:*.* \r\n* E:ROBOTO.TTF    4 \r\n\r\n-  32346624 bytes free E: ONBOARD FLASH \r\n\u0003"
+        val p = fake(mapOf("~HI" to hi, "~HS" to hs, serialQuery to "\"D2J123\"", peelerQuery to "\"Present\"", "^XA^HWE:*.*^XZ" to listing))
+        val t: ZebraTransport = zebra(p)
+        assertEquals("127.0.0.1", t.address)
+        val expected = ArrayList<ByteArray>()
+        fun wentOut(bytes: ByteArray) {
+            expected += bytes
+            val got = p.received(expected.size)
+            assertEquals(expected.size, got.size)
+            expected.zip(got).forEach { (e, g) -> assertArrayEquals(e, g) }
+        }
+        assertEquals(300, t.identify().dpi)
+        wentOut("~HI".toByteArray(Charsets.UTF_8))
+        assertTrue(t.status().headOpen)
+        wentOut("~HS".toByteArray(Charsets.UTF_8))
+        assertEquals("D2J123", t.serial())
+        wentOut(serialQuery.toByteArray(Charsets.UTF_8))
+        assertEquals(true, t.peelerPresent())
+        wentOut(peelerQuery.toByteArray(Charsets.UTF_8))
+        assertEquals(listOf("ROBOTO.TTF"), t.fonts())
+        wentOut("^XA^HWE:*.*^XZ".toByteArray(Charsets.UTF_8))
+        assertEquals(listOf(DirectoryEntry("ROBOTO.TTF", 4)), t.fontEntries())
+        wentOut("^XA^HWE:*.*^XZ".toByteArray(Charsets.UTF_8))
+        t.send("^XA^CI28^FDCafé^FS^XZ")
+        wentOut("^XA^CI28^FDCafé^FS^XZ".toByteArray(Charsets.UTF_8))
+        val font = byteArrayOf(0, 1, 0xFE.toByte(), 0xFF.toByte())
+        t.installFont("roboto.ttf", font)
+        wentOut("~DYE:ROBOTO.TTF,B,T,4,,".toByteArray(Charsets.US_ASCII) + font)
+        // Printer Setup's view of the same transport sends the same bytes.
+        val setup = TransportSetupZebra(t)
+        assertEquals(listOf(DirectoryEntry("ROBOTO.TTF", 4)), setup.fontEntries())
+        wentOut("^XA^HWE:*.*^XZ".toByteArray(Charsets.UTF_8))
+        setup.installFont("roboto.ttf", font)
+        wentOut("~DYE:ROBOTO.TTF,B,T,4,,".toByteArray(Charsets.US_ASCII) + font)
+    }
+
+    /** Progress starts at 0 once the connection is open (the bytes start going out), then comes
+     *  after each part. */
+    @Test fun writeReportsProgressPerPart() = runBlocking<Unit> {
+        val p = fake()
+        val reports = Collections.synchronizedList(ArrayList<Pair<Long, Long>>())
+        zebra(p).installFont("A.TTF", ByteArray(1_000)) { sent, total -> reports += sent to total }
+        val header = "~DYE:A.TTF,B,T,1000,,".length.toLong()
+        val total = header + 1_000
+        assertEquals(listOf(0L to total, header to total, total to total), reports.toList())
+        assertEquals(1, p.received().size)
+    }
+
+    /** Nothing listening: nothing went out, so no progress at all (a font install that never
+     *  started is not a cut one). */
+    @Test fun aRefusedConnectionReportsNoProgress() {
+        val reports = Collections.synchronizedList(ArrayList<Pair<Long, Long>>())
+        val z = NetworkZebra("127.0.0.1", closedPort(), fast)
+        assertThrows(PrinterUnreachable::class.java) {
+            runBlocking { z.installFont("A.TTF", ByteArray(10)) { sent, total -> reports += sent to total } }
+        }
+        assertTrue(reports.isEmpty())
+    }
+
+    /** After a failed send the next send opens one connection for exactly `~JX`, then one for the
+     *  label; the send after that is the label alone. */
+    @Test fun aClearAfterAFailedSendIsExactlyJXOnItsOwnConnection() = runBlocking<Unit> {
+        val p = fake()
+        val guard = PrinterGuard()
+        val connection = PrinterConnection.Network("127.0.0.1")
+        guard.markSendFailed(connection)
+        val locked = LockedZebra(TransportSetupZebra(zebra(p)), connection, PrinterLock(), guard)
+        locked.send("^XA^FDone^FS^XZ")
+        val first = p.received(2)
+        assertEquals(2, first.size)
+        assertEquals(setOf("~JX", "^XA^FDone^FS^XZ"), first.map { String(it, Charsets.UTF_8) }.toSet())
+        locked.send("^XA^FDtwo^FS^XZ")
+        val all = p.received(3)
+        assertEquals(3, all.size)
+        assertArrayEquals("^XA^FDtwo^FS^XZ".toByteArray(Charsets.UTF_8), all.last())
     }
 
     @Test fun aClosedPortIsUnreachable() {

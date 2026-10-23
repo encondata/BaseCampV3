@@ -13,6 +13,10 @@ changes nothing writes no audit row, extras or not.
 
 `visible_workers_query` is the one definition of which workers an actor
 can see, shared by the portal's `GET /workers` and the Rolodex.
+`initiative_history` is a worker's initiative/site history, shared by the
+portal's `GET /workers/{id}` and the Rolodex's worker page ("Previous
+jobs", which keeps the newest 50 and reads the count from
+`initiative_history_total`); both answer global actors only.
 """
 
 import uuid
@@ -26,19 +30,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.access.resolver import can_touch_rank
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext
+from serversherpa.api.schemas import WorkerInitiativeItem
 from serversherpa.db.models import (
     AuthSession,
+    Initiative,
+    InitiativePerson,
     Partner,
     Person,
     PersonRole,
     Role,
+    Site,
     StatusValue,
     UserAccount,
     WorkerLevel,
     WorkerProfile,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
+from serversherpa.status.labels import UNKNOWN_COLOR
 
 # A null on these Person columns is refused rather than cleared.
 REQUIRED_PERSON_FIELDS = ("first_name", "last_name", "country")
@@ -80,6 +90,74 @@ def visible_workers_query(actor: AuthContext) -> Select:
     if cond is not None:
         query = query.where(cond)
     return query
+
+
+async def initiative_history(
+    db: AsyncSession, actor: AuthContext, person_id: uuid.UUID,
+    limit: int | None = None,
+) -> list[WorkerInitiativeItem]:
+    """Every initiative the person was added to (their initiative_people
+    rows), newest first (equal times by initiative name, naturally), with
+    the initiative's type and status and the person's work type resolved to
+    vocabulary labels and colors (a key with no vocabulary row reads as
+    itself in `UNKNOWN_COLOR`, as status chips do), the site they worked
+    and the rating. `limit` keeps only the newest that many (the index on
+    `(person_id, created_at DESC)`, migration 0106, serves it).
+
+    Global actors only: anyone else gets an empty list. The history
+    (rating above all) is internal, and the join carries no scope check of
+    its own, so a partner-anchored actor (e.g. vendor_admin, who holds
+    `workers:view` over their own supplied workers) must never receive it.
+    The check lives here, not in the callers, so every route that shows the
+    history inherits it."""
+    if not actor.access.is_global:
+        return []
+    # one query per vocabulary, mirroring initiatives.py::_people_rows
+    vocab_rows = await db.scalars(select(StatusValue).where(
+        StatusValue.record_type.in_(
+            ["initiative", "initiative_type", "initiative_work_type"])))
+    vocabs: dict[str, dict[str, tuple[str, str]]] = {}
+    for s in vocab_rows:
+        vocabs.setdefault(s.record_type, {})[s.key] = (s.label, s.color)
+
+    memberships = (await db.execute(
+        select(InitiativePerson, Initiative, Site.name)
+        .join(Initiative, Initiative.id == InitiativePerson.initiative_id)
+        .outerjoin(Site, Site.id == InitiativePerson.site_worked_id)
+        .where(InitiativePerson.person_id == person_id)
+        .order_by(InitiativePerson.created_at.desc(), natural(Initiative.name), Initiative.id)
+        .limit(limit))).all()
+    history: list[WorkerInitiativeItem] = []
+    for m, init, site_name in memberships:
+        wt = (vocabs.get("initiative_work_type", {}).get(
+                  m.work_type, (m.work_type, UNKNOWN_COLOR))
+              if m.work_type is not None else (None, None))
+        t = vocabs.get("initiative_type", {}).get(
+            init.initiative_type, (init.initiative_type, UNKNOWN_COLOR))
+        st = vocabs.get("initiative", {}).get(
+            init.status, (init.status, UNKNOWN_COLOR))
+        history.append(WorkerInitiativeItem(
+            initiative_id=init.id, initiative_name=init.name,
+            type_label=t[0], type_color=t[1],
+            status_label=st[0], status_color=st[1],
+            work_type_label=wt[0], work_type_color=wt[1],
+            site_worked_name=site_name, rating=m.rating,
+            added_at=m.created_at))
+    return history
+
+
+async def initiative_history_total(
+    db: AsyncSession, actor: AuthContext, person_id: uuid.UUID,
+) -> int:
+    """How many initiatives `initiative_history` would list for the
+    person with no limit; 0 for a non-global actor (the same rule)."""
+    if not actor.access.is_global:
+        return 0
+    return await db.scalar(
+        select(func.count())
+        .select_from(InitiativePerson)
+        .join(Initiative, Initiative.id == InitiativePerson.initiative_id)
+        .where(InitiativePerson.person_id == person_id)) or 0
 
 
 async def target_rank(db: AsyncSession, person_id: uuid.UUID) -> int:

@@ -57,6 +57,7 @@ from serversherpa.api.schemas import (
     KioskRolodexCreateIn,
     KioskRolodexDuplicatesIn,
     KioskRolodexDuplicatesOut,
+    KioskRolodexJobItem,
     KioskRolodexLevelOut,
     KioskRolodexListOut,
     KioskRolodexMatchOut,
@@ -71,6 +72,8 @@ from serversherpa.api.worker_edits import (
     apply_person_update,
     apply_profile_update,
     get_or_create_profile,
+    initiative_history,
+    initiative_history_total,
     target_rank,
     visible_workers_query,
 )
@@ -187,10 +190,24 @@ async def _block_reasons(
     return edit_block, status_block
 
 
+# What a "Previous jobs" row keeps of the portal's history item: not the
+# rating (internal performance data) or the work type's color.
+JOB_FIELDS = frozenset(KioskRolodexJobItem.model_fields)
+# The worker page lists at most this many jobs, the newest; `jobs_total`
+# says how many there are in all.
+JOBS_CAP = 50
+
+
 async def worker_detail(
     db: AsyncSession, actor: AuthContext, person: Person,
 ) -> KioskRolodexWorkerDetailOut:
-    """The worker page for a person `require_rolodex_worker` returned."""
+    """The worker page for a person `require_rolodex_worker` returned.
+
+    `jobs` comes from the portal's own history query, the newest
+    `JOBS_CAP`, with `jobs_total` counting them all. `rolodex_actor`
+    already lets only global roles in, and `initiative_history` answers
+    anyone else with an empty list on its own, so the history can't reach
+    a non-global actor even through a future caller of this function."""
     profile = await db.get(WorkerProfile, person.id)
     partner = (await db.get(Partner, profile.partner_id)
                if profile is not None and profile.partner_id else None)
@@ -211,6 +228,9 @@ async def worker_detail(
         can_change_status=status_block is None,
         edit_block_reason=edit_block,
         status_block_reason=status_block,
+        jobs=[KioskRolodexJobItem(**item.model_dump(include=JOB_FIELDS))
+              for item in await initiative_history(db, actor, person.id, limit=JOBS_CAP)],
+        jobs_total=await initiative_history_total(db, actor, person.id),
     )
 
 
@@ -251,8 +271,8 @@ async def get_rolodex_worker(
     _perm: AuthContext = require_permission("workers", "view"),
 ) -> KioskRolodexWorkerDetailOut:
     """The worker page: the row plus email, phone, Employee ID and status
-    note, and what this admin may change (`can_edit`,
-    `can_change_status` and their reasons)."""
+    note, what this admin may change (`can_edit`, `can_change_status` and
+    their reasons), and the worker's previous jobs, newest first."""
     person = await require_rolodex_worker(db, actor, person_id)
     return await worker_detail(db, actor, person)
 

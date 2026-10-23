@@ -30,7 +30,10 @@ import com.serversherpa.kiosk.ui.theme.LocalKioskColors
  * Printer Setup's test labels (the web kiosk's TestLabelModal): an alignment label (boxes that
  * fill the picked template's size) or a sample label (the picked template with sample values),
  * sent with the offsets in the fields and the saved peel/tear mode. The offsets are here too, so
- * a label can be adjusted and printed again until it lines up.
+ * a label can be adjusted and printed again until it lines up. A test label Bluetooth refused
+ * shows the button that fixes it; a printer that forgot this device gets Connect too ([onConnect],
+ * the saved printer's checks), as its steps say. The message goes once the checks find the printer
+ * answering again, or another printer is chosen.
  */
 @Composable
 fun TestLabelSheet(
@@ -39,6 +42,7 @@ fun TestLabelSheet(
     size: AlignmentSize?,
     templateName: String?,
     onDismiss: () -> Unit,
+    onConnect: () -> Unit = vm::connectAgain,
 ) {
     val c = LocalKioskColors.current
     var choice by remember { mutableStateOf(TestLabel.ALIGNMENT) }
@@ -64,7 +68,16 @@ fun TestLabelSheet(
                 CardText("Sample label", "${templateName ?: "The move's template"} filled with sample values.")
             }
             if (size != null) OffsetFields(vm, ui, size.dpi)
-            KioskToast(ui.testMessage, error = ui.testError)
+            val message = ui.testMessage
+            if (message != null) {
+                if (ui.testError && printerReachProblem(message) != null) {
+                    // Bluetooth off or not allowed, or a printer that forgot this device: the button
+                    // that fixes it, and Connect for that printer (its steps say to tap it).
+                    PrinterReachNotice(message, onConnect, connectEnabled = !ui.busy && !ui.checking, connecting = ui.checking)
+                } else {
+                    KioskToast(message, error = ui.testError)
+                }
+            }
             Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SolidButton(if (ui.testing) "Sending…" else "Print test label", { vm.printTest(choice) }, enabled = !ui.busy)
                 MiniButton("Done", onDismiss, enabled = !ui.testing)

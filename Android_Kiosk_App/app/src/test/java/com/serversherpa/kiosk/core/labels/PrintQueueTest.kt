@@ -1,5 +1,7 @@
 package com.serversherpa.kiosk.core.labels
 
+import com.serversherpa.kiosk.core.printer.FONT_INSTALL_CUT_TEXT
+import com.serversherpa.kiosk.core.printer.PrinterNeedsRestart
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
@@ -25,7 +27,10 @@ class PrintQueueTest {
         var sendError: () -> Exception = { java.io.IOException("connect timed out") },
     ) : PrintQueueDeps<Asset> {
         val prepared = ArrayList<String>()
+        /** Each send as (host, zpl). */
         val sent = ArrayList<Pair<String, String>>()
+        /** The printer each send was given. */
+        val sentTo = ArrayList<SavedPrinter>()
         val recorded = ArrayList<Pair<Asset, String>>()
         override suspend fun settings() = settings
         override suspend fun label(asset: Asset) = label.invoke(asset)
@@ -33,10 +38,11 @@ class PrintQueueTest {
             prepared += zpl
             return PrintStep.Ready("[${settings.offsetX},${settings.offsetY},${settings.peel}]$zpl")
         }
-        override suspend fun send(host: String, zpl: String) {
+        override suspend fun send(printer: SavedPrinter, zpl: String) {
             onSend()
             if (failSends > 0) { failSends--; throw sendError() }
-            sent += host to zpl
+            sent += printer.host.orEmpty() to zpl
+            sentTo += printer
         }
         override suspend fun record(asset: Asset, scannedValue: String) {
             if (failRecord) throw IllegalStateException("disk")
@@ -54,6 +60,8 @@ class PrintQueueTest {
         assertTrue(e.recorded)
         assertNull(e.message)
         assertEquals(listOf("10.0.0.5" to "[4,-2,true]^XA^FDa1^FS^XZ"), deps.sent)
+        // The send gets the whole saved printer: its connection picks the way there.
+        assertEquals(listOf(printer), deps.sentTo)
         assertEquals(listOf(Asset("a1") to "A-1"), deps.recorded)
         assertEquals(listOf(e), q.entries.value)
     }
@@ -189,6 +197,27 @@ class PrintQueueTest {
         assertEquals(PrintState.FAILED, e.state)
         assertEquals("The printer didn't finish answering. It may have printed the label — check before you retry.", e.message)
         assertTrue(deps.recorded.isEmpty())
+    }
+
+    /** A cut font install stops sends to the printer until it answers a check: the label says so. */
+    @Test fun printQueueShowsFontCutText() = runTest {
+        val deps = Deps(failSends = 1, sendError = { PrinterNeedsRestart() })
+        val e = queue(deps).scan(Asset("a1"), "A-1")
+        assertEquals(PrintState.FAILED, e.state)
+        assertEquals(FONT_INSTALL_CUT_TEXT, e.message)
+        assertEquals("The font install was cut off. Turn the printer off and on, then tap Check again.", e.message)
+        assertTrue(deps.recorded.isEmpty())
+    }
+
+    /** A Bluetooth printer that can't be reached is named by its serial. */
+    @Test fun anUnreachableBluetoothPrinterIsNamedBySerial() = runTest {
+        val bt = SavedPrinter(PrinterConnection.Bluetooth("D8J224508535", "00:11:22:33:44:55"), "ZD421", "D8J224508535", 300)
+        val deps = Deps(settings = LabelSettings(printer = bt), failSends = 1)
+        val e = queue(deps).scan(Asset("a1"), "A-1")
+        assertEquals("Can't reach the printer D8J224508535 over Bluetooth.", e.message)
+        deps.label = { PrintStep.Ready("^XA^XZ") }
+        assertEquals(PrintState.PRINTED, queue(deps).scan(Asset("a2"), "A-2").state)
+        assertEquals(listOf(bt), deps.sentTo)
     }
 
     @Test fun aPrepareFailureShowsItsMessage() = runTest {

@@ -99,7 +99,7 @@ fun RfidPanel() {
                     Switch(checked = s.enabled, onCheckedChange = { on ->
                         save(s.copy(enabled = on))
                         if (on) {
-                            if (missingPermissions.isNotEmpty()) permissionLauncher.launch(RfidPermissions.REQUIRED.toTypedArray())
+                            if (missingPermissions.isNotEmpty()) permissionLauncher.launch(RfidPermissions.REQUESTED.toTypedArray())
                         } else {
                             disconnectAttemptInFlight = true
                             scope.launch {

@@ -58,10 +58,19 @@ fun WorkerAvatar(row: RolodexRow, size: Dp, modifier: Modifier = Modifier) =
 /**
  * A worker's photo in a circle, or the gray initials gradient (as the Time Clock draws them) when
  * there is none, while it loads, offline (a cached list's photo links have expired) or when it
- * fails. The fetch is the Time Clock's [loadPhoto], decoded downsampled.
+ * fails. The fetch is [rememberWorkerPhoto]'s.
  */
 @Composable
-fun WorkerAvatar(personId: String, name: String, photoUrl: String?, photoVersion: String?, size: Dp, modifier: Modifier = Modifier) {
+fun WorkerAvatar(personId: String, name: String, photoUrl: String?, photoVersion: String?, size: Dp, modifier: Modifier = Modifier) =
+    WorkerAvatar(name, rememberWorkerPhoto(personId, photoUrl, photoVersion), size, modifier)
+
+/**
+ * A worker's photo as far as it has loaded: from [WorkerPhotoCache] by person and [photoVersion],
+ * else fetched with the Time Clock's [loadPhoto], decoded downsampled, and cached. Null without a
+ * photo, while it loads, offline (a cached list's photo links have expired) or when it fails.
+ */
+@Composable
+internal fun rememberWorkerPhoto(personId: String, photoUrl: String?, photoVersion: String?): ImageBitmap? {
     val client = LocalAppContainer.current.httpClient
     val key = photoVersion?.let { WorkerPhotoCache.key(personId, it) }
     var photo by remember(key) { mutableStateOf(key?.let(WorkerPhotoCache::get)) }
@@ -70,10 +79,15 @@ fun WorkerAvatar(personId: String, name: String, photoUrl: String?, photoVersion
         if (key == null || photo != null || photoUrl == null) return@LaunchedEffect
         loadPhoto(client, photoUrl, PHOTO_DECODE_PX)?.let { WorkerPhotoCache.put(key, it); photo = it }
     }
+    return photo
+}
+
+/** [photo] cropped to a circle, or [name]'s gray initials when it's null. */
+@Composable
+internal fun WorkerAvatar(name: String, photo: ImageBitmap?, size: Dp, modifier: Modifier = Modifier) {
     val circle = modifier.size(size).clip(CircleShape)
-    val shown = photo
-    if (shown != null) {
-        Image(shown, contentDescription = null, contentScale = ContentScale.Crop, modifier = circle)
+    if (photo != null) {
+        Image(photo, contentDescription = null, contentScale = ContentScale.Crop, modifier = circle)
     } else {
         Box(circle.background(Brush.linearGradient(listOf(Color(0xFF334155), Color(0xFF64748B)))), contentAlignment = Alignment.Center) {
             Text(

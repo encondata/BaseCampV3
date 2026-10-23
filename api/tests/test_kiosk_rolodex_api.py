@@ -31,11 +31,13 @@ from serversherpa.db.models import (
     AuditLog,
     AuthSession,
     Initiative,
+    InitiativePerson,
     Partner,
     PermissionOverride,
     Person,
     PersonRole,
     Role,
+    Site,
     StatusValue,
     UserAccount,
     WorkerProfile,
@@ -59,7 +61,13 @@ ROW_FIELDS = {
 }
 DETAIL_FIELDS = ROW_FIELDS | {
     "email", "phone", "external_id", "status_note", "can_edit",
-    "can_change_status", "edit_block_reason", "status_block_reason",
+    "can_change_status", "edit_block_reason", "status_block_reason", "jobs",
+    "jobs_total",
+}
+# One "Previous jobs" row. No `rating`: it's internal performance data.
+JOB_FIELDS = {
+    "initiative_id", "initiative_name", "type_label", "type_color", "status_label",
+    "status_color", "work_type_label", "site_worked_name", "added_at",
 }
 
 
@@ -317,6 +325,7 @@ async def test_detail_flags(client, db, seeded_user):
         "paz@example.com", "555-0100", "E-77")
     assert (d["status"], d["status_label"], d["status_note"]) == (
         "blacklist", "Blacklist", "No-show twice")
+    assert d["jobs"] == []
     # no portal login
     assert d["has_account"] is False
     assert (d["can_edit"], d["edit_block_reason"]) == (True, None)
@@ -356,6 +365,204 @@ async def test_status_flag_follows_the_profile_guard_without_a_login(client, db,
     r = await client.put(f"/workers/{ranked}/profile", headers=portal_admin,
                          json={"status": "standby"})
     assert r.status_code == 403 and _code(r) == "rank_too_low", r.text
+
+
+# ── previous jobs ────────────────────────────────────────────────────
+
+async def _job(db, person_id, name, *, initiative_type="move", status="in_progress",
+               work_type=None, site_id=None, rating=None, added_at=None):
+    """`person_id` on a new initiative, as the initiative's People tab adds
+    them (an initiative_people row). -> initiative id"""
+    init = Initiative(name=name, initiative_type=initiative_type, status=status)
+    db.add(init)
+    await db.flush()
+    init_id = init.id
+    db.add(InitiativePerson(
+        initiative_id=init_id, person_id=person_id, work_type=work_type,
+        site_worked_id=site_id, rating=rating,
+        **({"created_at": added_at} if added_at is not None else {})))
+    await db.commit()
+    return init_id
+
+
+async def _vocab(db, record_type, key):
+    """(label, color) of a status_values row, as the portal resolves it."""
+    row = await db.scalar(select(StatusValue).where(
+        StatusValue.record_type == record_type, StatusValue.key == key))
+    return row.label, row.color
+
+
+async def test_detail_lists_previous_jobs_newest_first(client, db, seeded_user):
+    _, hdrs = await _kiosk_admin(db, client)
+    paz = await _worker(db, "Paz", "Plain")
+    other = await _worker(db, "Oli", "Other")
+    site = Site(name="NAP11 Las Vegas")
+    db.add(site)
+    await db.flush()
+    site_id = site.id
+    await db.commit()
+    old = await _job(db, paz, "Spring Refresh", initiative_type="project",
+                     status="completed", work_type="tech",
+                     added_at=datetime(2026, 3, 2, 15, 0, tzinfo=UTC))
+    mid = await _job(db, paz, "NAP11 Hall Migration", work_type="lead", site_id=site_id,
+                     rating=4, added_at=datetime(2026, 9, 14, 15, 0, tzinfo=UTC))
+    new = await _job(db, paz, "Gala Load-in", initiative_type="event", status="scheduled",
+                     added_at=datetime(2026, 10, 3, 15, 0, tzinfo=UTC))
+    await _job(db, other, "Someone Else's Move")
+
+    r = await client.get(f"{BASE}/workers/{paz}", headers=hdrs)
+    assert r.status_code == 200, r.text
+    jobs = r.json()["jobs"]
+    assert [j["initiative_id"] for j in jobs] == [str(new), str(mid), str(old)]
+    for job in jobs:
+        assert set(job) == JOB_FIELDS                       # no rating
+    newest, middle, oldest = jobs
+    assert middle["initiative_name"] == "NAP11 Hall Migration"
+    assert (middle["type_label"], middle["type_color"]) == await _vocab(
+        db, "initiative_type", "move")
+    assert (middle["status_label"], middle["status_color"]) == await _vocab(
+        db, "initiative", "in_progress")
+    assert middle["work_type_label"] == (await _vocab(db, "initiative_work_type", "lead"))[0]
+    assert middle["site_worked_name"] == "NAP11 Las Vegas"
+    assert datetime.fromisoformat(middle["added_at"]) == datetime(2026, 9, 14, 15, 0, tzinfo=UTC)
+    assert (oldest["type_label"], oldest["status_label"], oldest["work_type_label"]) == (
+        (await _vocab(db, "initiative_type", "project"))[0],
+        (await _vocab(db, "initiative", "completed"))[0],
+        (await _vocab(db, "initiative_work_type", "tech"))[0])
+    # no work type and no site worked: both null, nothing made up
+    assert (newest["initiative_name"], newest["work_type_label"], newest["site_worked_name"]) == (
+        "Gala Load-in", None, None)
+    assert (newest["status_label"], newest["status_color"]) == await _vocab(
+        db, "initiative", "scheduled")
+
+    # the same history the portal's worker page shows (one shared query),
+    # which still carries the rating
+    portal = await _make(db, client, "admin", "portal-admin@test.example.com")
+    r = await client.get(f"/workers/{paz}", headers=portal)
+    assert r.status_code == 200, r.text
+    history = r.json()["initiatives"]
+    assert [{k: h[k] for k in JOB_FIELDS} for h in history] == jobs
+    assert [h["rating"] for h in history] == [None, 4, None]
+
+
+async def test_create_and_patch_answer_with_jobs(client, db, seeded_user):
+    """Create and PATCH return the worker page, so they carry the jobs too."""
+    _, hdrs = await _kiosk_admin(db, client)
+    paz = await _worker(db, "Paz", "Plain")
+    init = await _job(db, paz, "NAP11 Hall Migration", work_type="lead")
+
+    r = await client.patch(f"{BASE}/workers/{paz}", headers=hdrs, json={"job_title": "Rigger"})
+    assert r.status_code == 200, r.text
+    assert [j["initiative_id"] for j in r.json()["jobs"]] == [str(init)]
+
+    r = await client.post(f"{BASE}/workers", headers=hdrs,
+                          json={"first_name": "Nia", "last_name": "New"})
+    assert r.status_code == 201, r.text
+    assert r.json()["jobs"] == []
+
+
+async def test_jobs_never_reach_a_non_global_actor(client, db, seeded_user):
+    """rolodex_actor lets only global roles in; the history helper refuses
+    anyone else on its own as well, so a partner-anchored actor never gets a
+    worker's job history (the portal route relies on the same check)."""
+    from serversherpa.api.worker_edits import initiative_history
+
+    paz = await _worker(db, "Paz", "Plain")
+    await _job(db, paz, "NAP11 Hall Migration", work_type="lead", rating=5)
+
+    def actor(is_global):
+        return SimpleNamespace(person=SimpleNamespace(id=uuid.uuid4()),
+                               access=SimpleNamespace(is_global=is_global, max_rank=100))
+
+    assert [j.initiative_name for j in await initiative_history(db, actor(True), paz)] == [
+        "NAP11 Hall Migration"]
+    assert await initiative_history(db, actor(False), paz) == []
+    person = await db.get(Person, paz)
+    page = await rolodex_module.worker_detail(db, actor(False), person)
+    assert page.jobs == []
+    page = await rolodex_module.worker_detail(db, actor(True), person)
+    assert [j.initiative_name for j in page.jobs] == ["NAP11 Hall Migration"]
+
+
+async def test_jobs_are_capped_at_the_latest_50_with_the_total(client, db, seeded_user):
+    """A long history sends the newest 50 jobs and says how many there are
+    (`jobs_total`), so the page can say "Showing the latest 50 of N jobs."
+    The portal's worker page still lists them all."""
+    from datetime import timedelta
+
+    _, hdrs = await _kiosk_admin(db, client)
+    paz = await _worker(db, "Paz", "Plain")
+    start = datetime(2025, 1, 1, 15, 0, tzinfo=UTC)
+    ids = [await _job(db, paz, f"Job {i:02d}", added_at=start + timedelta(days=i))
+           for i in range(52)]
+    assert rolodex_module.JOBS_CAP == 50
+
+    r = await client.get(f"{BASE}/workers/{paz}", headers=hdrs)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["jobs_total"] == 52
+    assert [j["initiative_id"] for j in body["jobs"]] == [str(i) for i in reversed(ids[2:])]
+
+    # a short history: all of it, and the total says the same
+    few = await _worker(db, "Fay", "Few")
+    for i in range(3):
+        await _job(db, few, f"Few {i}", added_at=start + timedelta(days=i))
+    body = (await client.get(f"{BASE}/workers/{few}", headers=hdrs)).json()
+    assert (len(body["jobs"]), body["jobs_total"]) == (3, 3)
+    none = await _worker(db, "Nel", "None")
+    body = (await client.get(f"{BASE}/workers/{none}", headers=hdrs)).json()
+    assert (body["jobs"], body["jobs_total"]) == ([], 0)
+
+    portal = await _make(db, client, "admin", "portal-cap@test.example.com")
+    r = await client.get(f"/workers/{paz}", headers=portal)
+    assert r.status_code == 200, r.text
+    assert len(r.json()["initiatives"]) == 52
+
+
+async def test_jobs_added_at_the_same_moment_order_by_name(client, db, seeded_user):
+    """Equal `created_at` (a bulk add) orders by initiative name, naturally,
+    so the 50 kept are the same every time; the portal reads the same order."""
+    _, hdrs = await _kiosk_admin(db, client)
+    paz = await _worker(db, "Paz", "Plain")
+    at = datetime(2026, 9, 14, 15, 0, tzinfo=UTC)
+    for name in ["Rack 10", "rack 1", "Rack 2"]:
+        await _job(db, paz, name, added_at=at)
+    await _job(db, paz, "Later", added_at=datetime(2026, 9, 15, 15, 0, tzinfo=UTC))
+    body = (await client.get(f"{BASE}/workers/{paz}", headers=hdrs)).json()
+    assert [j["initiative_name"] for j in body["jobs"]] == ["Later", "rack 1", "Rack 2", "Rack 10"]
+    portal = await _make(db, client, "admin", "portal-tie@test.example.com")
+    history = (await client.get(f"/workers/{paz}", headers=portal)).json()["initiatives"]
+    assert [h["initiative_name"] for h in history] == ["Later", "rack 1", "Rack 2", "Rack 10"]
+
+
+async def test_jobs_total_never_reaches_a_non_global_actor(db, seeded_user):
+    from serversherpa.api.worker_edits import initiative_history_total
+
+    paz = await _worker(db, "Paz", "Plain")
+    await _job(db, paz, "NAP11 Hall Migration")
+
+    def actor(is_global):
+        return SimpleNamespace(person=SimpleNamespace(id=uuid.uuid4()),
+                               access=SimpleNamespace(is_global=is_global, max_rank=100))
+
+    assert await initiative_history_total(db, actor(True), paz) == 1
+    assert await initiative_history_total(db, actor(False), paz) == 0
+    person = await db.get(Person, paz)
+    page = await rolodex_module.worker_detail(db, actor(False), person)
+    assert (page.jobs, page.jobs_total) == ([], 0)
+
+
+def test_the_history_falls_back_to_the_status_chips_color():
+    """A vocabulary key with no status_values row (unreachable while the
+    composite FKs stand) reads as itself in the color status chips use
+    (`status.labels.UNKNOWN_COLOR`), imported rather than copied, so the
+    portal's worker page and the Rolodex can't drift from the chips."""
+    from serversherpa.api import worker_edits
+    from serversherpa.status import labels
+
+    assert not hasattr(worker_edits, "VOCAB_FALLBACK")
+    assert worker_edits.UNKNOWN_COLOR is labels.UNKNOWN_COLOR
+    assert labels.UNKNOWN_COLOR == "#51606f"    # the value the portal always sent
 
 
 async def test_photo_version_changes_with_key(client, db, seeded_user):
@@ -726,6 +933,7 @@ async def test_create_makes_a_time_clock_worker(client, db, seeded_user):
     assert (d["has_photo"], d["photo_url"], d["photo_version"]) == (False, None, None)
     assert (d["has_account"], d["rfid_enrolled"], d["external_id"]) == (False, False, None)
     assert (d["can_edit"], d["can_change_status"]) == (True, True)
+    assert d["jobs"] == []
 
     person = await _fresh(db, Person, pid)
     assert person.source == "manual"

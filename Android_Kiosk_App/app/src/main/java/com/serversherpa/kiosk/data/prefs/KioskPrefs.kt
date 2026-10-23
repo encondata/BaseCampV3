@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.serversherpa.kiosk.core.labels.LabelOptions
+import com.serversherpa.kiosk.core.labels.PrinterIdentity
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.parseRfidSettings
@@ -17,10 +18,12 @@ import com.serversherpa.kiosk.core.settings.parseAppearance
 import com.serversherpa.kiosk.core.settings.parseSoundSettings
 import com.serversherpa.kiosk.core.settings.toJson
 import com.serversherpa.kiosk.core.setup.SetupState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
 /** Clear Setup memory — same JSON shape and key as the web kiosk's setupClear.ts. */
@@ -137,6 +140,9 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
         store.edit { it[Keys.labels] = json.encodeToString(LabelOptions.serializer(), change(decodeLabels(it[Keys.labels]))) }
     }
 
+    /** Where `PrinterGuard` keeps the printers stopped after a cut font install (D8). */
+    val printerStops: PrinterStopsStore get() = PrinterStopsStore(store)
+
     fun checkpoint(id: CheckpointId): Flow<String> = store.data.map { it[stringPreferencesKey(id.storageKey)]?.takeIf { v -> v.isNotBlank() } ?: id.fallback }
     suspend fun setCheckpoint(id: CheckpointId, key: String) { store.edit { it[stringPreferencesKey(id.storageKey)] = key } }
 
@@ -161,4 +167,47 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
     suspend fun setName(name: String?) { store.edit { if (name == null) it.remove(Keys.name) else it[Keys.name] = name } }
 
     suspend fun snapshot(): Preferences = store.data.first()
+}
+
+/**
+ * The printers `PrinterGuard` stopped after a cut font install (D8), under `ss.kiosk.printerStops`
+ * (iOS's key and JSON shape): such a printer is still waiting for the rest of the font after the
+ * app is relaunched, so the stop must outlive the launch. A pending `~JX` clear isn't kept (D16
+ * keeps it in memory). The guard writes it in the order its marks change.
+ */
+class PrinterStopsStore(private val store: DataStore<Preferences>) {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    /** The stopped printers; none when nothing (or nothing readable) is saved. A Bluetooth serial
+     *  reads back upper-cased, whatever was written. */
+    suspend fun load(): Set<PrinterIdentity> {
+        val raw = try {
+            store.data.first()[KEY]
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        } ?: return emptySet()
+        val stops = try {
+            json.decodeFromString(ListSerializer(PrinterIdentity.serializer()), raw)
+        } catch (e: Exception) {
+            return emptySet()
+        }
+        return stops.map { if (it is PrinterIdentity.Bluetooth) PrinterIdentity.Bluetooth(it.serial.uppercase()) else it }.toSet()
+    }
+
+    /** Saves [stops] (none removes the key). */
+    suspend fun save(stops: Set<PrinterIdentity>) {
+        store.edit {
+            if (stops.isEmpty()) {
+                it.remove(KEY)
+            } else {
+                it[KEY] = json.encodeToString(ListSerializer(PrinterIdentity.serializer()), stops.sortedBy { s -> s.sortKey })
+            }
+        }
+    }
+
+    companion object {
+        val KEY = stringPreferencesKey("ss.kiosk.printerStops")
+    }
 }
