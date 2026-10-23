@@ -308,7 +308,9 @@ class RfidPanelTest {
         compose.androidRule.activityRule.scenario.onActivity { activity ->
             requested = Shadows.shadowOf(activity).lastRequestedPermission?.requestedPermissions
         }
-        assertEquals(RfidPermissions.REQUIRED.toSet(), requested?.toSet())
+        // Precise location is asked together with approximate (Android 12+ ignores precise alone).
+        assertEquals(RfidPermissions.REQUESTED.toSet(), requested?.toSet())
+        assertTrue(requested.orEmpty().contains(android.Manifest.permission.ACCESS_COARSE_LOCATION))
     }
 
     /**
