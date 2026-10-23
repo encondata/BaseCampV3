@@ -341,6 +341,9 @@ class PrinterSetupViewModel(
     /** The screen has shown once ([open] ran): later resumes are returns. */
     @Volatile private var opened = false
     private var checksJob: Job? = null
+    /** Bumped by each check run started and by one canceled (iOS's `checkRun`): only the latest
+     *  run ends the checking state and settles what waited for it. */
+    private val checkRun = AtomicInteger(0)
     private var offsetsJob: Job? = null
     @Volatile private var pendingOffsets: Pair<Int, Int>? = null
     @Volatile private var offsetsTouched = false
@@ -372,7 +375,13 @@ class PrinterSetupViewModel(
                         bluetoothUnavailable = null,
                     )
                 }
-                connectSavedPrinter()
+                // A scan Bluetooth also stopped runs once the link's connect ends, not beside it
+                // (the connect would end the scan): settle looks again then.
+                val link = connectSavedPrinter() ?: linkJob
+                scope.launch {
+                    link?.join()
+                    settle()
+                }
             }
             linkRefusalShowing -> connectSavedPrinter()
             rescanWhenReady && !promptRefused && s.findMode == FindMode.BLUETOOTH && !s.bluetoothScanning -> startBluetoothScan()
@@ -528,7 +537,7 @@ class PrinterSetupViewModel(
 
     /** A printer is being chosen ([key] names it in `choosing`): what was shown for the last one goes. */
     private fun beginChoosing(key: String) {
-        checksJob?.cancel()
+        cancelChecks()
         pairingRetry = null
         rescanWhenReady = false
         relinkWhenReady = false
@@ -568,7 +577,7 @@ class PrinterSetupViewModel(
             pairingRetry = null
             rescanWhenReady = false
             _state.update {
-                it.copy(bluetoothMessage = BLUETOOTH_DENIED_TEXT, bluetoothUnavailable = BluetoothAvailability.UNAUTHORIZED, pairingLost = null)
+                it.withoutConnectOffer().copy(bluetoothMessage = BLUETOOTH_DENIED_TEXT, bluetoothUnavailable = BluetoothAvailability.UNAUTHORIZED)
             }
             return
         }
@@ -619,7 +628,7 @@ class PrinterSetupViewModel(
                 it
             } else {
                 started = true
-                it.copy(bluetoothScanning = true, bluetoothFound = emptyList(), bluetoothMessage = null, bluetoothUnavailable = null, pairingLost = null)
+                it.withoutConnectOffer().copy(bluetoothScanning = true, bluetoothFound = emptyList(), bluetoothMessage = null, bluetoothUnavailable = null)
             }
         }
         if (!started) return
@@ -649,6 +658,13 @@ class PrinterSetupViewModel(
                 }
             }
         }
+    }
+
+    /** Connect (what [pairingRetry] holds) goes, so whatever offered it goes with it: the pairing-lost
+     *  steps above the checks and the test label sheet's (a Connect that would do nothing). */
+    private fun PrinterSetupUi.withoutConnectOffer(): PrinterSetupUi {
+        val sheetOffer = testError && bluetoothFixFor(testMessage) == BluetoothFix.FORGET
+        return copy(pairingLost = null, testMessage = if (sheetOffer) null else testMessage, testError = testError && !sheetOffer)
     }
 
     /** The scan stops quietly, keeping its list (the screen moved on). */
@@ -770,11 +786,18 @@ class PrinterSetupViewModel(
         scope.launch { store.settings.first().printer?.let { startChecks(it) } }
     }
 
-    private fun startChecks(printer: SavedPrinter, keepFontMessage: Boolean = false) {
+    /** The check run going (if any) is canceled: it no longer writes its ending (iOS's `cancelChecks`). */
+    private fun cancelChecks() {
         checksJob?.cancel()
+        checkRun.incrementAndGet()
+    }
+
+    private fun startChecks(printer: SavedPrinter, keepFontMessage: Boolean = false) {
+        cancelChecks()
+        val run = checkRun.get()
         // A check query would end a Bluetooth scan without a word: the scan stops first.
         endBluetoothScan()
-        checksJob = scope.launch { runChecks(printer, keepFontMessage) }
+        checksJob = scope.launch { runChecks(printer, keepFontMessage, run) }
     }
 
     private fun put(row: CheckRow) = _state.update { s ->
@@ -782,7 +805,9 @@ class PrinterSetupViewModel(
         s.copy(checks = rows.sortedBy { it.key.ordinal })
     }
 
-    private suspend fun runChecks(saved: SavedPrinter, keepFontMessage: Boolean) {
+    /** [run]: this run's number; a run canceled or replaced since ends without writing its ending
+     *  or settling (the newer run, or what canceled it, owns the screen now). */
+    private suspend fun runChecks(saved: SavedPrinter, keepFontMessage: Boolean, run: Int) {
         pairingRetry = null
         relinkWhenReady = false
         // The check says Bluetooth's state in its own row: the link's message from opening goes.
@@ -857,15 +882,17 @@ class PrinterSetupViewModel(
             put(CheckRow(CheckKey.FONTS, CheckState.RUNNING))
             put(fontsRow(zebra, (picked as? PickWait.Got)?.pick))
         } finally {
-            _state.update {
-                // The printer no longer says it forgot this device: the test label sheet's steps go.
-                val stale = it.pairingLost == null && it.testError && bluetoothFixFor(it.testMessage) == BluetoothFix.FORGET
-                it.copy(
-                    checking = false, checkRuns = it.checkRuns + 1,
-                    testMessage = if (stale) null else it.testMessage, testError = if (stale) false else it.testError,
-                )
+            if (run == checkRun.get()) {
+                _state.update {
+                    // The printer no longer says it forgot this device: the test label sheet's steps go.
+                    val stale = it.pairingLost == null && it.testError && bluetoothFixFor(it.testMessage) == BluetoothFix.FORGET
+                    it.copy(
+                        checking = false, checkRuns = it.checkRuns + 1,
+                        testMessage = if (stale) null else it.testMessage, testError = if (stale) false else it.testError,
+                    )
+                }
+                settle()
             }
-            settle()
         }
     }
 

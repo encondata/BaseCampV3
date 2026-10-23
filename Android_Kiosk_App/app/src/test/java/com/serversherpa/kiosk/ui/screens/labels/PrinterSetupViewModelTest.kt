@@ -1094,6 +1094,48 @@ class PrinterSetupViewModelTest {
         assertFalse(vm.state.value.testError)
     }
 
+    /** A Bluetooth scan drops Connect (it would retry nothing), so the test label sheet's
+     *  pairing-lost steps go with it: reopening the sheet shows no Connect that does nothing. Any
+     *  other test message stays. */
+    @Test fun aBluetoothScanTakesTheSheetsConnectWithIt() = runBlocking<Unit> {
+        eventually("pick") { builder.pick.value?.dpi == 203 }
+        store.setPrinter(btPrinter)
+        val vm = vm()
+        zebra(btSerial).failWith = BluetoothPairingLost(btSerial)
+        vm.printTest(TestLabel.ALIGNMENT)
+        eventually("test refused") { !vm.state.value.testing && vm.state.value.testMessage != null }
+        assertEquals(pairingLostText(btSerial), vm.state.value.testMessage)
+        assertTrue(printerReachProblem(vm.state.value.testMessage)!!.offersConnect)
+
+        vm.scanBluetooth()
+        eventually("scanning") { bt.scanning && vm.state.value.bluetoothScanning }
+        assertNull(vm.state.value.pairingLost)
+        assertNull("the sheet's Connect went with the screen's", vm.state.value.testMessage)
+        assertFalse(vm.state.value.testError)
+        vm.stopBluetoothScan()
+        eventually("stopped") { !vm.state.value.bluetoothScanning }
+
+        // A refused prompt drops it too.
+        vm.printTest(TestLabel.ALIGNMENT)
+        eventually("refused again") { !vm.state.value.testing && vm.state.value.testMessage == pairingLostText(btSerial) }
+        vm.scanBluetooth(permitted = false)
+        assertNull(vm.state.value.testMessage)
+        assertNull(vm.state.value.pairingLost)
+
+        // A test message that offers no Connect stays.
+        zebra(btSerial).failWith = null
+        zebra(btSerial).sendError = PrinterUnreachable(btSerial)
+        vm.printTest(TestLabel.ALIGNMENT)
+        eventually("not taken") { !vm.state.value.testing && vm.state.value.testMessage != null }
+        val other = vm.state.value.testMessage
+        vm.scanBluetooth()
+        eventually("scanning again") { bt.scanning && vm.state.value.bluetoothScanning }
+        assertEquals(other, vm.state.value.testMessage)
+        assertTrue(vm.state.value.testError)
+        vm.stopBluetoothScan()
+        eventually("stopped again") { !vm.state.value.bluetoothScanning }
+    }
+
     /** A device whose Device Information gives no serial is refused (iOS's words): it couldn't be
      *  found, or confirmed, again by it. Nothing is asked of it or saved, and the link lets it go. */
     @Test fun aDeviceThatReportsNoSerialIsRefused() = runBlocking<Unit> {
@@ -1220,6 +1262,73 @@ class PrinterSetupViewModelTest {
         assertEquals(before, bt.scans)
         again.complete(Unit)
         eventually("the prompt's answer applied") { bt.scans == before + 1 && vm.state.value.bluetoothScanning }
+    }
+
+    /** Bluetooth off refused a scan and then a check: once it is on, the check's relink runs, and
+     *  the scan it also stopped runs once that connect ends (never beside it: the connect would
+     *  end the scan), so the stale "Turn on Bluetooth" message and its button go. */
+    @Test fun aRescanPendingBesideARelinkRunsOnceTheLinkIsUp() = runBlocking<Unit> {
+        eventually("pick") { builder.pick.value?.dpi == 203 }
+        store.setPrinter(btPrinter)
+        val vm = vm()
+        bt.availability.value = BluetoothAvailability.POWERED_OFF
+        vm.scanBluetooth()
+        eventually("scan refused") { vm.state.value.bluetoothMessage == BLUETOOTH_OFF_TEXT && !vm.state.value.bluetoothScanning }
+        zebra(btSerial).failWith = BluetoothUnavailable(btSerial, BluetoothAvailability.POWERED_OFF)
+        vm.checked { vm.checkAgain() }
+        assertEquals(BLUETOOTH_OFF_TEXT, vm.row(CheckKey.ANSWERS)!!.detail)
+
+        zebra(btSerial).failWith = null
+        val gate = CompletableDeferred<Unit>()
+        bt.connectGate = gate
+        val scans = bt.scans
+        val connects = bt.connects.size
+        bt.availability.value = BluetoothAvailability.READY
+        eventually("the link warming up") { bt.connects.size == connects + 1 }
+        delay(200)
+        assertEquals("no scan beside the connect", scans, bt.scans)
+        gate.complete(Unit)
+        eventually("the stopped scan ran once the link was up") { bt.scans == scans + 1 && vm.state.value.bluetoothScanning }
+        assertNull(vm.state.value.bluetoothMessage)
+        assertNull(vm.state.value.bluetoothUnavailable)
+        assertEquals(connects + 1, bt.connects.size)
+        vm.stopBluetoothScan()
+        eventually("stopped") { !vm.state.value.bluetoothScanning }
+    }
+
+    /** A check run replaced by a newer one ends without writing its ending: it neither reads as
+     *  finished while the newer run asks the printer nor runs what waited for the checks (a scan
+     *  Bluetooth stopped), as iOS's `run == checkRun`. */
+    @Test fun aReplacedCheckRunLeavesTheScreenToTheNewerRun() = runBlocking<Unit> {
+        eventually("pick") { builder.pick.value?.dpi == 203 }
+        val z = zebra(savedHost)
+        z.statusGate = CompletableDeferred()
+        val vm = vm()
+        bt.availability.value = BluetoothAvailability.POWERED_OFF
+        vm.scanBluetooth()
+        eventually("refused") { vm.state.value.bluetoothMessage == BLUETOOTH_OFF_TEXT && !vm.state.value.bluetoothScanning }
+        val scans = bt.scans
+        vm.checkAgain()
+        withTimeout(8_000) { z.inStatus.await() }
+        bt.availability.value = BluetoothAvailability.READY
+        delay(100)
+        // Check again while the first run asks the printer: the first is replaced.
+        val z2 = FakeZebra(savedHost)
+        val gate2 = CompletableDeferred<Unit>()
+        z2.statusGate = gate2
+        synchronized(zebras) { zebras[savedHost] = z2 }
+        val runs = vm.state.value.checkRuns
+        vm.checkAgain()
+        withTimeout(8_000) { z2.inStatus.await() }
+        delay(300)
+        assertTrue("the newer run is still checking", vm.state.value.checking)
+        assertEquals("the replaced run didn't count as finished", runs, vm.state.value.checkRuns)
+        assertEquals("no scan while the newer run asks the printer", scans, bt.scans)
+        gate2.complete(Unit)
+        eventually("the newer run ended and settled") { !vm.state.value.checking && bt.scans == scans + 1 }
+        assertEquals(runs + 1, vm.state.value.checkRuns)
+        vm.stopBluetoothScan()
+        eventually("stopped") { !vm.state.value.bluetoothScanning }
     }
 
     /** D4: opening Printer Setup with a saved Bluetooth printer starts the link in the background

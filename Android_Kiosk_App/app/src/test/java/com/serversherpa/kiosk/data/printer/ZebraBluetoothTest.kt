@@ -442,8 +442,7 @@ class ZebraBluetoothTest {
         assertEquals(listOf(addr, addr2), fake.connects)
         assertTrue(send.await().isSuccess)
         assertEquals("^XA^XZ", String(fake.links.last().written()))
-        assertEquals(addr2, bluetooth.link.value.info?.address)
-        assertEquals("found elsewhere: the saved address is kept for the details", addr, bluetooth.link.value.savedAddress)
+        assertEquals("found elsewhere: the link says where it came up", addr2, bluetooth.link.value.info?.address)
 
         // A saved address that fails at once goes straight to the scan.
         val (quick, quickFake) = make()
@@ -489,7 +488,6 @@ class ZebraBluetoothTest {
         assertTrue(first.await().isSuccess)
         assertEquals(listOf(addr, addr2), fake.connects)
         assertEquals(addr2, bluetooth.link.value.info?.address)
-        assertEquals(addr, bluetooth.link.value.savedAddress)
 
         // The link drops. The next use tries the saved A first, then B (known this run, never
         // saved), with no scan: they share the address time.
@@ -506,7 +504,7 @@ class ZebraBluetoothTest {
         assertEquals(listOf(addr, addr2, addr, addr2), fake.connects)
         assertEquals(ZebraBluetoothSpec.ADDRESS_TRY_MS / 2, currentTime - from)
         assertEquals(scans, fake.scanStarts)
-        assertEquals(addr, bluetooth.link.value.savedAddress)
+        assertEquals(addr2, bluetooth.link.value.info?.address)
 
         // The printer answers at A again: the link is there, and the mismatch is gone.
         fake.links.last().drop(8)
@@ -516,7 +514,6 @@ class ZebraBluetoothTest {
         assertEquals(addr, fake.connects.last())
         assertEquals(5, fake.connects.size)
         assertEquals(addr, bluetooth.link.value.info?.address)
-        assertNull(bluetooth.link.value.savedAddress)
     }
 
     @Test fun aDeviceFoundByNameMustStillBeTheZebra() = runTest {
@@ -685,10 +682,10 @@ class ZebraBluetoothTest {
     }
 
     /** Printer Setup's choose flow connects by the address picked, with no serial, on a link that
-     *  may already be up there: the saved-address record (Troubleshooting's "Found at … (saved …)")
-     *  follows the address each call carries, so a printer chosen again at the address it answers
-     *  at shows no mismatch. Nothing here saves an address. */
-    @Test fun aCallOnTheLinkAlreadyUpRefreshesTheSavedAddressRecord() = runTest {
+     *  may already be up there: the link is reused whatever address or serial the call carries for
+     *  that printer (Troubleshooting compares the saved address with the link's itself). Nothing
+     *  here saves an address. */
+    @Test fun aCallOnTheLinkAlreadyUpReusesIt() = runTest {
         val (bluetooth, fake) = make()
         fake.printer(addr2)
         val first = start { bluetooth.transport(printer(addr)).write(listOf("^XA^XZ".toByteArray())) }
@@ -697,21 +694,17 @@ class ZebraBluetoothTest {
         fake.advertise(addr2, SERIAL, -60)
         runCurrent()
         assertTrue(first.await().isSuccess)
-        assertEquals(addr, bluetooth.link.value.savedAddress)
 
-        // Chosen again at B (no serial: the choose flow): the link is reused, and the record goes.
+        // Chosen again at B (no serial: the choose flow): the link is reused.
         assertEquals(addr2, bluetooth.connect(addr2, null).address)
         assertEquals(2, fake.connects.size)
-        assertNull(bluetooth.link.value.savedAddress)
-        // A call for the printer still saved at A: the mismatch is back; one saved at B: none.
-        bluetooth.connect(addr, SERIAL)
-        assertEquals(addr, bluetooth.link.value.savedAddress)
+        // A call for the printer still saved at A, one saved at B, and one that names no address:
+        // all on the same link.
+        assertEquals(addr2, bluetooth.connect(addr, SERIAL).address)
         bluetooth.transport(printer(addr2)).write(listOf("^XA^XZ".toByteArray()))
-        assertNull(bluetooth.link.value.savedAddress)
-        // A call that names no address says nothing about one.
-        bluetooth.connect(null, SERIAL)
-        assertNull(bluetooth.link.value.savedAddress)
+        assertEquals(addr2, bluetooth.connect(null, SERIAL).address)
         assertEquals(2, fake.connects.size)
+        assertEquals(addr2, bluetooth.link.value.info?.address)
     }
 
     /** A label queued while a warm-up's connect is in flight joins that connect: with the printer

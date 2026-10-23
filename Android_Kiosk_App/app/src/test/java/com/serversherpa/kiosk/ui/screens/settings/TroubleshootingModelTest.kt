@@ -604,7 +604,6 @@ class TroubleshootingModelTest {
             info = BluetoothPrinterInfo(FOUND_ADDRESS, "Zebra Technologies", "ZD421", ZD421_SERIAL, "V93.21.38Z", "7.3"),
             chunkBytes = 244, mtu = 247, connectedAtMs = 1_792_000_000_000L, lastActivityMs = 1_792_000_065_000L,
             lastDrop = BluetoothDrop(1_791_999_000_000L, "The link timed out: the printer is off or out of range (status 8)"),
-            savedAddress = SAVED_ADDRESS,
         )
         bluetooth.link.value = link
         eventually("link shown") { m.state.value.link == link }
@@ -638,8 +637,8 @@ class TroubleshootingModelTest {
     }
 
     /** F3: the "Found at B (saved A)" line and the amber notice follow the address saved now against
-     *  the link's, so once the operator chooses the printer again at B (which saves B) they go,
-     *  whatever the link recorded when it came up; the address's case doesn't matter. */
+     *  the link's, so once the operator chooses the printer again at B (which saves B) they go; the
+     *  address's case doesn't matter. */
     @Test fun reChoosingAtTheFoundAddressClearsTheMismatch() = runBlocking<Unit> {
         val settings = FixedSettings(bluetoothPrinter)
         val m = TroubleshootingModel(
@@ -650,7 +649,7 @@ class TroubleshootingModelTest {
         val link = BluetoothLinkInfo(
             connected = true,
             info = BluetoothPrinterInfo(FOUND_ADDRESS, "Zebra Technologies", "ZD421", ZD421_SERIAL, "V93.21.38Z", "7.3"),
-            chunkBytes = 244, mtu = 247, connectedAtMs = 1_792_000_000_000L, lastActivityMs = 1_792_000_000_000L, savedAddress = SAVED_ADDRESS,
+            chunkBytes = 244, mtu = 247, connectedAtMs = 1_792_000_000_000L, lastActivityMs = 1_792_000_000_000L,
         )
         bluetooth.link.value = link
         eventually("link shown") { m.state.value.link == link }
@@ -658,7 +657,7 @@ class TroubleshootingModelTest {
         assertTrue(DetailLine("Found at", "$FOUND_ADDRESS (saved $SAVED_ADDRESS)") in m.connectionLines())
         assertTrue(m.report().text.contains("Found at: $FOUND_ADDRESS (saved $SAVED_ADDRESS)"))
 
-        // Chosen again at B in Printer Setup (the link stays up, its record as it was): saved at B.
+        // Chosen again at B in Printer Setup (the link stays up as it was): saved at B.
         settings.settings.value = LabelSettings(printer = bluetoothPrinter.copy(connection = PrinterConnection.Bluetooth(ZD421_SERIAL, FOUND_ADDRESS.lowercase())))
         eventually("saved at B") { (m.state.value.printer?.connection as? PrinterConnection.Bluetooth)?.address == FOUND_ADDRESS.lowercase() }
         assertFalse(m.state.value.foundElsewhere)
@@ -672,12 +671,9 @@ class TroubleshootingModelTest {
         assertFalse(m.state.value.foundElsewhere)
         assertTrue(DetailLine("Found at", FOUND_ADDRESS) in m.connectionLines())
 
-        // Saved at A again while the link is up at B: the mismatch shows, whatever the link recorded.
+        // Saved at A again while the link is up at B: the mismatch shows.
         settings.settings.value = LabelSettings(printer = bluetoothPrinter)
-        bluetooth.link.value = link.copy(savedAddress = null)
-        eventually("saved at A") {
-            (m.state.value.printer?.connection as? PrinterConnection.Bluetooth)?.address == SAVED_ADDRESS && m.state.value.link.savedAddress == null
-        }
+        eventually("saved at A") { (m.state.value.printer?.connection as? PrinterConnection.Bluetooth)?.address == SAVED_ADDRESS }
         assertTrue(m.state.value.foundElsewhere)
         assertTrue(DetailLine("Found at", "$FOUND_ADDRESS (saved $SAVED_ADDRESS)") in m.connectionLines())
         assertTrue(bluetooth.connects.isEmpty())
@@ -721,7 +717,7 @@ class TroubleshootingModelTest {
             connected = true,
             info = BluetoothPrinterInfo(FOUND_ADDRESS, "Zebra Technologies", "ZD421", ZD421_SERIAL, "V93.21.38Z", "7.3"),
             chunkBytes = 244, mtu = 247, connectedAtMs = 1_792_000_000_000L, lastActivityMs = 1_792_000_065_000L,
-            lastDrop = BluetoothDrop(1_791_999_000_000L, "The printer ended the link (status 19)"), savedAddress = SAVED_ADDRESS,
+            lastDrop = BluetoothDrop(1_791_999_000_000L, "The printer ended the link (status 19)"),
         )
         bluetooth.link.value = link
         eventually("link shown") { m.state.value.link == link }

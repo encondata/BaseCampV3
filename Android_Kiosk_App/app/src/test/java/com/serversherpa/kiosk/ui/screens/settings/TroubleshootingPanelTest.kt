@@ -143,7 +143,6 @@ class TroubleshootingPanelTest {
             info = BluetoothPrinterInfo(FOUND_ADDRESS, "Zebra Technologies", "ZD421", ZD421_SERIAL, "V93.21.38Z", "7.3"),
             chunkBytes = 244, mtu = 247, connectedAtMs = 1_792_000_000_000L, lastActivityMs = 1_792_000_065_000L,
             lastDrop = BluetoothDrop(1_791_999_000_000L, "The link timed out: the printer is off or out of range (status 8)"),
-            savedAddress = SAVED_ADDRESS,
         )
         zebra.replies = mapOf(ZebraCommands.FONT_DIRECTORY to HW_REPLY, ZebraCommands.SERIAL_NUMBER to "\"$ZD421_SERIAL\"")
         show(vm)

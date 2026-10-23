@@ -11,8 +11,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.dp
@@ -21,6 +24,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.test.core.app.ApplicationProvider
 import com.serversherpa.kiosk.AppContainer
 import com.serversherpa.kiosk.LocalAppContainer
+import com.serversherpa.kiosk.core.labels.PrinterConnection
+import com.serversherpa.kiosk.core.labels.SavedPrinter
 import com.serversherpa.kiosk.core.printer.BLUETOOTH_OFF_TEXT
 import com.serversherpa.kiosk.data.printer.BluetoothAvailability
 import com.serversherpa.kiosk.data.printer.BluetoothPermissions
@@ -28,6 +33,7 @@ import com.serversherpa.kiosk.data.printer.FakeBluetoothLe
 import com.serversherpa.kiosk.testContainer
 import com.serversherpa.kiosk.ui.theme.KioskTheme
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -38,6 +44,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /**
  * Printer Setup's permission wiring (D11): the Bluetooth permissions are asked for the first time
@@ -58,14 +65,50 @@ class PrinterSetupScreenTest {
         container.db.close()
     }
 
-    private fun show() {
+    /** The screen inside the shell's 16 dp gutters, once [ready] shows. */
+    private fun show(ready: String = "No printer set up yet.") {
         compose.setContent {
             CompositionLocalProvider(LocalAppContainer provides container) {
                 KioskTheme { Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) { PrinterSetupScreen(rememberNavController()) } }
             }
         }
-        compose.waitUntil(5_000) { compose.onAllNodes(hasText("No printer set up yet.")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText(ready)).fetchSemanticsNodes().isNotEmpty() }
         compose.waitForIdle()
+    }
+
+    private fun layoutOf(text: String): TextLayoutResult {
+        val layouts = mutableListOf<TextLayoutResult>()
+        compose.onNodeWithText(text, useUnmergedTree = true).fetchSemanticsNode().config[SemanticsActions.GetTextLayoutResult].action?.invoke(layouts)
+        return layouts.single()
+    }
+
+    /** [text] shows in full on its lines (nothing ellipsized or cut off below), inside the screen. */
+    private fun assertWhole(text: String) {
+        compose.onNodeWithText(text, useUnmergedTree = true).performScrollTo().assertIsDisplayed()
+        val layout = layoutOf(text)
+        val last = layout.lineCount - 1
+        assertTrue("$text is ellipsized", !layout.isLineEllipsized(last))
+        assertTrue("$text is cut off below", !layout.didOverflowHeight)
+        assertEquals("$text lost characters", text.length, layout.getLineEnd(last, visibleEnd = true))
+        val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
+        val node = compose.onNodeWithText(text, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertTrue("$text runs off the screen: $node in $root", node.left >= root.left && node.right <= root.right)
+    }
+
+    /** Opening the screen with a saved Bluetooth printer and Bluetooth off (no way of finding a
+     *  printer picked yet): the link's refusal shows whole on a 320 dp handheld, with its button
+     *  inside the screen. */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun theOpenRefusalWithNoFindModeFitsA320dpHandheld() {
+        Shadows.shadowOf(app).grantPermissions(*BluetoothPermissions.REQUIRED.toTypedArray())
+        val saved = SavedPrinter(PrinterConnection.Bluetooth("D8J224508535", "AC:3F:A4:00:00:01"), "ZD421", "D8J224508535", 203)
+        runBlocking { container.labelSettings.setPrinter(saved) }
+        show(ready = BLUETOOTH_OFF_TEXT)
+        assertWhole(BLUETOOTH_OFF_TEXT)
+        assertWhole("Turn on Bluetooth")
+        compose.onNode(hasClickAction() and hasText("Turn on Bluetooth")).assertIsDisplayed()
+        assertEquals("nothing scanned", 0, fake.scanStarts)
     }
 
     @Test fun theBluetoothPermissionsAreAskedOnTheFirstPickNeverAtLaunch() {

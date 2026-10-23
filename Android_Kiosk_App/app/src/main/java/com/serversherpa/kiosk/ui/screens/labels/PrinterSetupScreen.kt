@@ -176,7 +176,7 @@ fun PrinterSetupScreen(nav: NavHostController) {
         KioskToast(ui.chooseError, error = true)
         // The printer forgot this device (opening the screen, choosing it, a check or a test label):
         // forget it in Android's Bluetooth settings too, then Connect.
-        ui.pairingLost?.let { PairingLostNotice(it, onConnect = vm::connectAgain, connectEnabled = !ui.busy && !ui.checking) }
+        ui.pairingLost?.let { PairingLostNotice(it, onConnect = vm::connectAgain, connectEnabled = !ui.busy && !ui.checking, connecting = ui.checking) }
 
         if (printer != null) {
             Section("Checks")

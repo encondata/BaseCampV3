@@ -22,16 +22,25 @@ import com.serversherpa.kiosk.data.prefs.PrinterStopsStore
 import com.serversherpa.kiosk.data.printer.PrinterGuard.State
 import com.serversherpa.kiosk.testContainer
 import java.io.File
+import java.io.IOException
 import java.util.UUID
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
@@ -116,6 +125,21 @@ private class RecordingZebra : SetupZebra {
     companion object {
         const val HOST = "10.0.0.5"
     }
+}
+
+/** [store], whose reads wait for [gate] (a slow first read of the prefs at launch). */
+private class GatedReads(private val store: DataStore<Preferences>, private val gate: CompletableDeferred<Unit>) : DataStore<Preferences> {
+    override val data: Flow<Preferences> = flow {
+        gate.await()
+        emitAll(store.data)
+    }
+    override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences = store.updateData(transform)
+}
+
+/** [store], whose every write fails as a full or broken disk does. */
+private class FailingWrites(private val store: DataStore<Preferences>) : DataStore<Preferences> {
+    override val data: Flow<Preferences> = store.data
+    override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences = throw IOException("disk full")
 }
 
 /**
@@ -461,6 +485,44 @@ class PrinterGuardTest {
         val unreadable = PrinterGuard(stops, scope)
         unreadable.awaitRestored()
         assertEquals(State.CLEAN, unreadable.state(bluetooth))
+    }
+
+    /** A send waits for the stops of an earlier launch to be read back (its rule waits for the
+     *  restore by itself): with the read held, nothing reaches the printer, and once it lands the
+     *  send is refused (the printer is still waiting for the rest of a font). */
+    @Test fun aSendWaitsForTheStopsOfAnEarlierLaunch() = runBlocking<Unit> {
+        val store = freshStore()
+        PrinterGuard(PrinterStopsStore(store), scope).markFontCut(a)
+        val gate = CompletableDeferred<Unit>()
+        val zebra = RecordingZebra()
+        val guard = PrinterGuard(PrinterStopsStore(GatedReads(store, gate)), scope)
+        val sending = scope.async { sender(zebra, guard).send(printer, "LABEL") }
+        delay(300)
+        assertFalse("the send waits for the restore", sending.isCompleted)
+        assertTrue(zebra.written.isEmpty())
+        gate.complete(Unit)
+        val refused = runCatching { withTimeout(8_000) { sending.await() } }.exceptionOrNull()
+        assertTrue("refused once restored: $refused", refused is PrinterNeedsRestart)
+        assertTrue(zebra.written.isEmpty())
+    }
+
+    /** A stop the DataStore can't write is still kept for this launch (logged, never thrown): a
+     *  cut font still stops sends, and a printer that answers `~HI` still reads as answered and
+     *  lifts it, as a check needs. */
+    @Test fun aStopsWriteThatFailsKeepsTheMarksInMemory() = runBlocking<Unit> {
+        val zebra = RecordingZebra()
+        val guard = PrinterGuard(PrinterStopsStore(FailingWrites(freshStore())), scope)
+        val setup = setup(zebra, guard)
+        zebra.failWrites(1)
+        // The install's own failure comes out, not the write's.
+        throws<PrinterUnreachable> { setup.installFont("ROBOTO.TTF", byteArrayOf(1, 2)) }
+        assertEquals(State.FONT_CUT, guard.state(a))
+        throws<PrinterNeedsRestart> { sender(zebra, guard).send(printer, "LABEL") }
+        // The check's `~HI` is answered: it reads as answered, and the stop lifts.
+        assertEquals("ZD421", setup.identify().model)
+        assertEquals(State.CLEAN, guard.state(a))
+        sender(zebra, guard).send(printer, "LABEL")
+        assertEquals(listOf("LABEL"), zebra.written)
     }
 
     /** The container reaches a Bluetooth printer over the Bluetooth link, never over TCP (host

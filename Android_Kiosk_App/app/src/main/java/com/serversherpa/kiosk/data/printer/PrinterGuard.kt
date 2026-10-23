@@ -5,6 +5,7 @@ import com.serversherpa.kiosk.core.labels.PrinterIdentity
 import com.serversherpa.kiosk.core.labels.identity
 import com.serversherpa.kiosk.core.printer.PrinterNeedsRestart
 import com.serversherpa.kiosk.data.prefs.PrinterStopsStore
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -97,13 +98,19 @@ class PrinterGuard(
     }
 
     /** Writes the stops as they are now, one write at a time and in order, so the last word is the
-     *  latest state. Never cut short by a caller's cancellation. */
+     *  latest state. Never cut short by a caller's cancellation. A write that fails is logged, never
+     *  thrown: the marks in memory stay right for this launch, and the call that changed them (a
+     *  cut install, an answered `~HI`) reports its own outcome. */
     private suspend fun saveStops() {
         val store = stops ?: return
         withContext(NonCancellable) {
             saving.withLock {
                 val cut = synchronized(marks) { marks.filterValues { it == State.FONT_CUT }.keys.toSet() }
-                store.save(cut)
+                try {
+                    store.save(cut)
+                } catch (e: IOException) {
+                    android.util.Log.w(TAG, "couldn't keep the printer stops for the next launch", e)
+                }
             }
         }
     }
@@ -175,6 +182,8 @@ class PrinterGuard(
         }
     }
 }
+
+private const val TAG = "PrinterGuard"
 
 /** The `~JX` clear before a call failed: the job or query itself never went out, so a label can't
  *  have printed. Its cause is why the clear failed. */

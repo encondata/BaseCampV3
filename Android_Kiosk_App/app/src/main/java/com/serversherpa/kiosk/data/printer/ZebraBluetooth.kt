@@ -81,11 +81,10 @@ enum class BluetoothScanEnd {
  *  retry), for the Troubleshooting report's log (D13). [atMs] is the link's clock's. */
 data class BluetoothLinkEvent(val atMs: Long, val text: String)
 
-/** The one link, for the connection details. [info], [chunkBytes], [mtu] and [savedAddress] stay
- *  from the last link once it is down. Times are the clock's (wall-clock milliseconds on the
- *  device). [savedAddress] is the address the printer was asked for at (the saved one) when the
- *  link came up at another one ([BluetoothPrinterInfo.address]: found by its serial, or at the
- *  address an earlier link used); null when they match or none was given. It is never saved. */
+/** The one link, for the connection details. [info], [chunkBytes] and [mtu] stay from the last
+ *  link once it is down. Times are the clock's (wall-clock milliseconds on the device). Where the
+ *  link came up ([BluetoothPrinterInfo.address]) against the address saved now is Troubleshooting's
+ *  to compare: the link records no saved address of its own. */
 data class BluetoothLinkInfo(
     val connected: Boolean = false,
     val info: BluetoothPrinterInfo? = null,
@@ -94,7 +93,6 @@ data class BluetoothLinkInfo(
     val connectedAtMs: Long? = null,
     val lastActivityMs: Long? = null,
     val lastDrop: BluetoothDrop? = null,
-    val savedAddress: String? = null,
 )
 
 /** The link is up to [printer], a saved Bluetooth printer, by its confirmed serial. */
@@ -142,8 +140,7 @@ interface BluetoothPrinting {
  *   link to this serial used this run (never saved). The addresses share `ADDRESS_TRY_MS`; if
  *   neither comes up, the rest of `CONNECT_READY_MS` scans for the name equal to the serial, and a
  *   printer heard gets a fresh `CONNECT_READY_MS` for the connect itself (D7's 10 s count from the
- *   connect; the search had its own). A link up at another address than the one the call carries
- *   says so in `link.savedAddress`. A call queued behind a connect for its printer shares that
+ *   connect; the search had its own). A call queued behind a connect for its printer shares that
  *   connect's outcome (a label queued during a warm-up that fails fails with it). Ready once:
  *   1. services are discovered (a device without Zebra's parser service is [BluetoothNotZebra]);
  *   2. Device Information is read, one value at a time, each waited for `DEVICE_INFO_READ_MS`;
@@ -390,14 +387,7 @@ class ZebraBluetooth(
         val joined = joinedAttempt
         joinedAttempt = null
         val up = current
-        if (phase == Phase.READY && up != null && matches(up, target)) {
-            // The address this call carries (the saved one) against the link's is the mismatch
-            // record Troubleshooting shows: a printer chosen again at the address it answers at has none.
-            if (target.address != null) {
-                linkState.update { it.copy(savedAddress = target.address.takeUnless { saved -> saved.equals(up.address, ignoreCase = true) }) }
-            }
-            return up.info!!
-        }
+        if (phase == Phase.READY && up != null && matches(up, target)) return up.info!!
         lastFailure?.let { failed -> if (joined == failed.id && sameTarget(failed.target, target)) throw failed.error }
         if (phase == Phase.READY) endLink(PrinterUnreachable(host)) // one link at a time
         phase = Phase.CONNECTING
@@ -629,7 +619,6 @@ class ZebraBluetooth(
             it.copy(
                 connected = true, info = info, mtu = link.mtu, chunkBytes = chunk,
                 connectedAtMs = at, lastActivityMs = at,
-                savedAddress = target.address?.takeUnless { saved -> saved.equals(link.address, ignoreCase = true) },
             )
         }
         note(
