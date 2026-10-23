@@ -6,12 +6,13 @@ This module is the ONLY place configuration is read; the rest of the
 codebase imports ``get_settings()``.
 """
 
+import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, SecretStr, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # repo root = two levels up from api/src/serversherpa/config.py -> api/ -> root
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -63,6 +64,15 @@ class Settings(BaseSettings):
     password_reset_confirm_rate_limit: int = 20   # /check + /confirm calls per IP per hour
     # admin-sent account invites (POST /users with invite, POST /users/{id}/invite)
     invite_ttl_minutes: int = 1440                # invite link lifetime (24 hours)
+
+    # ── Kiosk biometric sign-in (Android key attestation) ──
+    # SHA-256 digests of the kiosk app's signing certificates that may enroll
+    # a biometric key (release upload key, Play app signing key, and the debug
+    # key in development): comma-separated hex, colons and case ignored.
+    # Empty = every enroll is refused (attestation reason "package").
+    kiosk_signing_digests: Annotated[list[str], NoDecode] = []
+    # Google's attestation revocation list (security/attestation_status.py)
+    attestation_status_url: str = "https://android.googleapis.com/attestation/status"
 
     # ── Scans ──────────────────────────────────────────────
     scans_history_default: int = Field(100, ge=1)  # history rows when caller omits limit
@@ -160,6 +170,22 @@ class Settings(BaseSettings):
     cert_acme_key: SecretStr | None = None  # base64 of this environment's ACME account key
     cert_droplet_id: str = ""              # the droplet this worker runs on
     cert_challenge_port: int = 8089
+
+    @field_validator("kiosk_signing_digests", mode="before")
+    @classmethod
+    def _split_signing_digests(cls, value):
+        if isinstance(value, str):
+            value = value.split(",")
+        digests = []
+        for item in value or []:
+            digest = re.sub(r"[\s:]", "", str(item)).lower()
+            if not digest:
+                continue
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ValueError(
+                    f"SS_KIOSK_SIGNING_DIGESTS: {item!r} is not a hex SHA-256 digest")
+            digests.append(digest)
+        return digests
 
     @property
     def sync_database_url(self) -> str:

@@ -22,6 +22,7 @@ dependencies = [
     "httpx>=0.27",
     "anthropic>=0.116",
     "cryptography>=42",
+    "pyasn1>=0.6",             # Android key attestation's KeyDescription (security/key_attestation.py)
     "jinja2>=3.1",
     "weasyprint>=62",
     "pdf417gen>=0.7",
@@ -49,6 +50,8 @@ where = ["src"]
 "serversherpa.mail" = ["templates/*"]
 # vegas_v2.json is the Vegas Destination design seed-label-templates loads
 "serversherpa.labels" = ["fixtures/*.json"]
+# the pinned Google hardware attestation roots (security/key_attestation.py)
+"serversherpa.security" = ["attestation_roots/*.pem", "attestation_roots/README.md"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

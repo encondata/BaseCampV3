@@ -17,7 +17,7 @@ import typer
 from sqlalchemy import select
 
 from serversherpa.db.engine import dispose_engine, get_sessionmaker, set_application_name
-from serversherpa.db.models import UserAccount
+from serversherpa.db.models import SystemConfig, UserAccount
 from serversherpa.services.password_policy import (
     PasswordReused,
     apply_password,
@@ -499,6 +499,39 @@ def reset_totp(
         await dispose_engine()
 
     asyncio.run(_run())
+
+
+async def _refresh_attestation_status(transport=None) -> int:
+    """One session: fetch Google's list, store it, commit, dispose. Returns
+    how many entries were stored (tests pass a fake `transport`)."""
+    from serversherpa.security.attestation_status import SECTION, refresh_attestation_status
+
+    try:
+        async with get_sessionmaker()() as db:
+            await refresh_attestation_status(db, transport=transport)
+            await db.commit()
+            row = await db.get(SystemConfig, SECTION)
+            return len(row.data["entries"])
+    finally:
+        await dispose_engine()
+
+
+@app.command(name="refresh-attestation-status")
+def refresh_attestation_status_command() -> None:
+    """Fetch Google's Android attestation revocation list into system config
+    now, instead of waiting for the notification worker's daily refresh.
+    Biometric enroll is refused until a list less than 7 days old exists."""
+    from serversherpa.security.attestation_status import AttestationStatusFetchError
+
+    _name_connections("refresh-attestation-status")
+    try:
+        count = asyncio.run(_refresh_attestation_status())
+    except AttestationStatusFetchError as exc:
+        typer.secho(f"Could not refresh the attestation status list: {exc}",
+                    fg="red", err=True)
+        raise typer.Exit(code=1) from None
+    typer.secho(f"Attestation status list refreshed: {count} revoked or suspended "
+                "certificate(s).", fg="green")
 
 
 def _run_worker_process(poll_seconds: float) -> None:
