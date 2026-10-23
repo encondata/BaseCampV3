@@ -180,7 +180,7 @@ async def poll_pair(
     result = await auth_service.start_session(
         db, account, ip=client_ip(request),
         user_agent=request.headers.get("user-agent"),
-        audit_action="login_pair", access=access, client="kiosk")
+        audit_action="login_pair", access=access, client="kiosk", login_method="link")
     return PairPollOut(status="approved", session=session_response(
         result, response, await totp_status_out(db, account), await load_policy(db)))
 
@@ -279,7 +279,7 @@ async def move_login(
     result = await auth_service.start_session(
         db, account, ip=client_ip(request), user_agent=request.headers.get("user-agent"),
         audit_action="login_move", access=access, client="kiosk",
-        initiative_id=initiative.id)
+        initiative_id=initiative.id, login_method="move")
     return session_response(result, response, await totp_status_out(db, account),
                             await load_policy(db), kiosk_move=kiosk_move)
 

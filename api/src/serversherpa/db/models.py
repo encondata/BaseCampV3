@@ -6,8 +6,8 @@ from datetime import date, datetime, time
 from decimal import Decimal
 
 from sqlalchemy import (
-    BigInteger, Boolean, CheckConstraint, Date, Float, ForeignKey, Identity, Integer, Numeric,
-    SmallInteger, String, Text, Time, text,
+    BigInteger, Boolean, CheckConstraint, Date, Float, ForeignKey, Identity, Index, Integer,
+    LargeBinary, Numeric, SmallInteger, String, Text, Time, text,
 )
 from sqlalchemy.dialects.postgresql import (
     ARRAY, BYTEA, CITEXT, INET, JSONB, TIMESTAMP, TSVECTOR, UUID,
@@ -298,6 +298,11 @@ class AuthSession(Base):
     # /kiosk/heartbeat (first binding wins), carried through rotation. Config
     # sync over the person heartbeat serves only this serial.
     kiosk_serial: Mapped[str | None]
+    # How the session signed in: "password" | "link" | "move" | "biometric"
+    # (migration 0107; NULL on older rows). Set only by start_session from
+    # the route that signed in, carried through rotation; never taken from
+    # anything the client reports.
+    login_method: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
@@ -1235,6 +1240,42 @@ class Device(Base):
         ForeignKey("people.id", ondelete="SET NULL"))
     config_reported_at: Mapped[datetime | None]  # last report of any kind
     config_applied_version: Mapped[int | None]   # what the kiosk says it runs
+    # Personal device (migration 0107): the one person this phone belongs
+    # to, who may enroll a biometric key on it. Set by an admin in the portal.
+    personal_person_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    personal_set_at: Mapped[datetime | None]
+    personal_set_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+
+
+class BiometricKey(Base):
+    """A device-bound EC P-256 key a person signs kiosk sign-in challenges
+    with (migration 0107). One live key per (person, device): a partial
+    unique index where revoked_at is null. password_sign_in_at is the
+    30-day anchor; last_nonce is the last challenge's jti (single use)."""
+
+    __tablename__ = "biometric_keys"
+    __table_args__ = (
+        Index("biometric_keys_live_person_device_key", "person_id", "device_id",
+              unique=True, postgresql_where=text("revoked_at IS NULL")),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    person_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("people.id", ondelete="CASCADE"))
+    device_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("devices.id", ondelete="CASCADE"))
+    public_key: Mapped[bytes] = mapped_column(LargeBinary)  # DER SubjectPublicKeyInfo
+    key_alg: Mapped[str] = mapped_column(server_default=text("'ES256'"))
+    security_level: Mapped[str]                             # "tee" | "strongbox"
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    password_sign_in_at: Mapped[datetime]
+    last_used_at: Mapped[datetime | None]
+    last_nonce: Mapped[str | None]
+    revoked_at: Mapped[datetime | None]
+    revoke_reason: Mapped[str | None]
 
 
 class KioskSound(Base):
