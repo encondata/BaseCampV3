@@ -3951,7 +3951,7 @@ class KioskRolodexWorkerDetailOut(KioskRolodexWorkerOut):
 
     email: str | None = None
     phone: str | None = None
-    external_id: str | None = None         # Employee ID; the apps no longer show it
+    external_id: str | None = None         # Employee ID; the Android app no longer shows it (iOS still does)
     status_note: str | None = None
     can_edit: bool
     can_change_status: bool

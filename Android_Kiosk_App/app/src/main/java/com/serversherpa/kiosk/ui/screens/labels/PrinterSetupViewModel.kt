@@ -440,7 +440,7 @@ class PrinterSetupViewModel(
             // Up: the saved printer no longer says it forgot this device.
             if (pairingRetry == PairingRetry.Check) {
                 pairingRetry = null
-                _state.update { it.copy(pairingLost = null) }
+                _state.update { it.copy(pairingLost = null).withoutConnectOffer() }
             }
             return
         }
@@ -787,14 +787,13 @@ class PrinterSetupViewModel(
     }
 
     /** The check run going (if any) is canceled: it no longer writes its ending (iOS's `cancelChecks`). */
-    private fun cancelChecks() {
+    private fun cancelChecks(): Int {
         checksJob?.cancel()
-        checkRun.incrementAndGet()
+        return checkRun.incrementAndGet()
     }
 
     private fun startChecks(printer: SavedPrinter, keepFontMessage: Boolean = false) {
-        cancelChecks()
-        val run = checkRun.get()
+        val run = cancelChecks()
         // A check query would end a Bluetooth scan without a word: the scan stops first.
         endBluetoothScan()
         checksJob = scope.launch { runChecks(printer, keepFontMessage, run) }

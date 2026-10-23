@@ -22,6 +22,7 @@ import com.serversherpa.kiosk.ui.theme.LocalKioskColors
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import java.time.format.DateTimeParseException
 import java.util.Locale
 
@@ -92,6 +93,12 @@ internal fun jobLine(job: RolodexJob): String? =
 internal fun jobAddedText(addedAt: String?, zone: ZoneId = ZoneId.systemDefault(), locale: Locale = Locale.getDefault()): String? {
     if (addedAt.isNullOrBlank()) return null
     val at = try { OffsetDateTime.parse(addedAt) } catch (e: DateTimeParseException) { return null }
-    val pattern = DateFormat.getBestDateTimePattern(locale, "yMMMd")
-    return "Added " + DateTimeFormatter.ofPattern(pattern, locale).format(at.atZoneSameInstant(zone))
+    // A locale whose pattern holds a letter java.time doesn't take (a non-Gregorian calendar's)
+    // falls back to its medium style rather than failing the page.
+    val format = try {
+        DateTimeFormatter.ofPattern(DateFormat.getBestDateTimePattern(locale, "yMMMd"), locale)
+    } catch (e: IllegalArgumentException) {
+        DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(locale)
+    }
+    return "Added " + format.format(at.atZoneSameInstant(zone))
 }

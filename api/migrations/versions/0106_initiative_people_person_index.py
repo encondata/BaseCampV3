@@ -3,8 +3,8 @@
 A worker's history (the portal's worker page, and the kiosk Rolodex's
 "Previous jobs", which keeps the newest 50) reads one person's memberships
 newest first. The table had an index on initiative_id only, so each read
-scanned every membership; this one serves the filter, the order and the
-limit together.
+scanned every membership; this one serves the filter and the newest-first
+order (ties by initiative name are sorted after the join).
 
 Revision ID: 0106
 Revises: 0105
