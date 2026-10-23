@@ -3945,7 +3945,9 @@ class KioskRolodexWorkerDetailOut(KioskRolodexWorkerOut):
     admin's own row; `status_block_reason` is `self` on the admin's own
     row, else `rank_too_low` for a target the admin can't touch
     (`can_touch_rank`). `jobs` is the worker's "Previous jobs", newest
-    first (added 2026-10-22; an older app ignores it)."""
+    first, at most the latest 50 (added 2026-10-22; an older app ignores
+    it); `jobs_total` is how many there are in all (added 2026-10-23), so
+    the apps can say "Showing the latest 50 of N jobs." under the list."""
 
     email: str | None = None
     phone: str | None = None
@@ -3956,6 +3958,7 @@ class KioskRolodexWorkerDetailOut(KioskRolodexWorkerOut):
     edit_block_reason: Literal["rank_too_low"] | None = None
     status_block_reason: Literal["self", "rank_too_low"] | None = None
     jobs: list[KioskRolodexJobItem] = []
+    jobs_total: int = 0
 
 
 class KioskRolodexLevelOut(BaseModel):

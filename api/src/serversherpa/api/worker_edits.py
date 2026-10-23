@@ -15,7 +15,8 @@ changes nothing writes no audit row, extras or not.
 can see, shared by the portal's `GET /workers` and the Rolodex.
 `initiative_history` is a worker's initiative/site history, shared by the
 portal's `GET /workers/{id}` and the Rolodex's worker page ("Previous
-jobs"); it answers global actors only.
+jobs", which keeps the newest 50 and reads the count from
+`initiative_history_total`); both answer global actors only.
 """
 
 import uuid
@@ -44,8 +45,10 @@ from serversherpa.db.models import (
     WorkerLevel,
     WorkerProfile,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
+from serversherpa.status.labels import UNKNOWN_COLOR
 
 # A null on these Person columns is refused rather than cleared.
 REQUIRED_PERSON_FIELDS = ("first_name", "last_name", "country")
@@ -89,18 +92,17 @@ def visible_workers_query(actor: AuthContext) -> Select:
     return query
 
 
-# An initiative vocabulary key with no status_values row keeps its key as
-# the label and gets this color (mirrors initiatives.py's unmapped-key color).
-VOCAB_FALLBACK = "#51606f"
-
-
 async def initiative_history(
     db: AsyncSession, actor: AuthContext, person_id: uuid.UUID,
+    limit: int | None = None,
 ) -> list[WorkerInitiativeItem]:
     """Every initiative the person was added to (their initiative_people
-    rows), newest first, with the initiative's type and status and the
-    person's work type resolved to vocabulary labels and colors, the site
-    they worked and the rating.
+    rows), newest first (equal times by initiative name, naturally), with
+    the initiative's type and status and the person's work type resolved to
+    vocabulary labels and colors (a key with no vocabulary row reads as
+    itself in `UNKNOWN_COLOR`, as status chips do), the site they worked
+    and the rating. `limit` keeps only the newest that many (the index on
+    `(person_id, created_at DESC)`, migration 0106, serves it).
 
     Global actors only: anyone else gets an empty list. The history
     (rating above all) is internal, and the join carries no scope check of
@@ -123,16 +125,17 @@ async def initiative_history(
         .join(Initiative, Initiative.id == InitiativePerson.initiative_id)
         .outerjoin(Site, Site.id == InitiativePerson.site_worked_id)
         .where(InitiativePerson.person_id == person_id)
-        .order_by(InitiativePerson.created_at.desc()))).all()
+        .order_by(InitiativePerson.created_at.desc(), natural(Initiative.name), Initiative.id)
+        .limit(limit))).all()
     history: list[WorkerInitiativeItem] = []
     for m, init, site_name in memberships:
         wt = (vocabs.get("initiative_work_type", {}).get(
-                  m.work_type, (m.work_type, VOCAB_FALLBACK))
+                  m.work_type, (m.work_type, UNKNOWN_COLOR))
               if m.work_type is not None else (None, None))
         t = vocabs.get("initiative_type", {}).get(
-            init.initiative_type, (init.initiative_type, VOCAB_FALLBACK))
+            init.initiative_type, (init.initiative_type, UNKNOWN_COLOR))
         st = vocabs.get("initiative", {}).get(
-            init.status, (init.status, VOCAB_FALLBACK))
+            init.status, (init.status, UNKNOWN_COLOR))
         history.append(WorkerInitiativeItem(
             initiative_id=init.id, initiative_name=init.name,
             type_label=t[0], type_color=t[1],
@@ -141,6 +144,20 @@ async def initiative_history(
             site_worked_name=site_name, rating=m.rating,
             added_at=m.created_at))
     return history
+
+
+async def initiative_history_total(
+    db: AsyncSession, actor: AuthContext, person_id: uuid.UUID,
+) -> int:
+    """How many initiatives `initiative_history` would list for the
+    person with no limit; 0 for a non-global actor (the same rule)."""
+    if not actor.access.is_global:
+        return 0
+    return await db.scalar(
+        select(func.count())
+        .select_from(InitiativePerson)
+        .join(Initiative, Initiative.id == InitiativePerson.initiative_id)
+        .where(InitiativePerson.person_id == person_id)) or 0
 
 
 async def target_rank(db: AsyncSession, person_id: uuid.UUID) -> int:
