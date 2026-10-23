@@ -38,6 +38,7 @@ import com.serversherpa.kiosk.input.rfid.FakeRfidReader
 import com.serversherpa.kiosk.input.rfid.RfidPermissions
 import com.serversherpa.kiosk.input.rfid.RfidReader
 import com.serversherpa.kiosk.testContainer
+import com.serversherpa.kiosk.waitUntilIdlingMain
 import com.serversherpa.kiosk.ui.theme.KioskTheme
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
@@ -96,7 +97,8 @@ class RfidPanelTest {
         val c = testContainer()
         compose.setRfidPanelContent(c)
         compose.onNodeWithText("Click to start and stop").performScrollTo().performClick()
-        compose.waitForIdle()
+        // The write lands on DataStore's own thread after the click: wait for it, not just for Compose.
+        compose.waitUntilIdlingMain { runBlocking { c.prefs.rfid.first() }.triggerMode == RfidTriggerMode.TOGGLE }
         assertEquals(RfidTriggerMode.TOGGLE, runBlocking { c.prefs.rfid.first() }.triggerMode)
     }
 
@@ -104,7 +106,8 @@ class RfidPanelTest {
         val c = testContainer()
         compose.setRfidPanelContent(c)
         compose.onNodeWithText("Barcode").performScrollTo().performClick()
-        compose.waitForIdle()
+        // The write lands on DataStore's own thread after the click: wait for it, not just for Compose.
+        compose.waitUntilIdlingMain { runBlocking { c.prefs.rfid.first() }.triggerPersonality == RfidTriggerPersonality.BARCODE }
         assertEquals(RfidTriggerPersonality.BARCODE, runBlocking { c.prefs.rfid.first() }.triggerPersonality)
     }
 
@@ -112,7 +115,8 @@ class RfidPanelTest {
         val c = testContainer()
         compose.setRfidPanelContent(c)
         compose.onNodeWithText("Yes").performScrollTo().performClick()
-        compose.waitForIdle()
+        // The write lands on DataStore's own thread after the click: wait for it, not just for Compose.
+        compose.waitUntilIdlingMain { runBlocking { c.prefs.rfid.first() }.scannerPluginMode == ScannerPluginMode.ON }
         assertEquals(ScannerPluginMode.ON, runBlocking { c.prefs.rfid.first() }.scannerPluginMode)
     }
 
@@ -121,7 +125,8 @@ class RfidPanelTest {
         runBlocking { c.prefs.setRfid(com.serversherpa.kiosk.core.rfid.RfidSettings(enabled = true, powerDbm = 9)) }
         compose.setRfidPanelContent(c)
         compose.onNodeWithText("Restore defaults").performScrollTo().performClick()
-        compose.waitForIdle()
+        // The write lands on DataStore's own thread after the click: wait for it, not just for Compose.
+        compose.waitUntilIdlingMain { runBlocking { c.prefs.rfid.first() }.powerDbm == 27 }
         assertEquals(27, runBlocking { c.prefs.rfid.first() }.powerDbm)
     }
 
