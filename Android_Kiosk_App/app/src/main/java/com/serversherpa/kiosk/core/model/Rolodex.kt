@@ -93,8 +93,11 @@ data class RolodexDetail(
     val edit_block_reason: String? = null,
     /** `self`, `rank_too_low` or null. */
     val status_block_reason: String? = null,
-    /** The worker's previous jobs, newest first. An API from before them sends none: empty. */
+    /** The worker's previous jobs, newest first: the latest 50. An API from before them sends none: empty. */
     val jobs: List<RolodexJob> = emptyList(),
+    /** How many previous jobs the worker has in all ([jobs] holds at most the latest 50). An API
+     *  from before the total sends none: 0, which never reads as more than are shown. */
+    val jobs_total: Int = 0,
 ) {
     /** This person as a list row (no email or phone), e.g. to replace the row after a save. */
     fun toRow(): RolodexRow = RolodexRow(

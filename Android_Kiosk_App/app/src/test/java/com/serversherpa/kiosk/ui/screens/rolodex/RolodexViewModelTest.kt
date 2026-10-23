@@ -70,6 +70,7 @@ internal fun rolodexRow(
 internal fun rolodexDetail(
     row: RolodexRow, email: String? = "${row.first_name.lowercase()}@example.com", phone: String? = "(312) 555-0142",
     canEdit: Boolean = true, canChangeStatus: Boolean = true, statusNote: String? = null, jobs: List<RolodexJob> = emptyList(),
+    jobsTotal: Int = jobs.size,
 ) = RolodexDetail(
     person_id = row.person_id, first_name = row.first_name, last_name = row.last_name, preferred_name = row.preferred_name,
     display_name = row.display_name, job_title = row.job_title, company = row.company, trade = row.trade, level = row.level,
@@ -79,6 +80,7 @@ internal fun rolodexDetail(
     edit_block_reason = if (canEdit) null else "rank_too_low",
     status_block_reason = if (canChangeStatus) null else "self",
     jobs = jobs,
+    jobs_total = jobsTotal,
 )
 
 internal val ROLODEX_OPTIONS = RolodexOptions(

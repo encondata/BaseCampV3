@@ -45,8 +45,12 @@ import com.serversherpa.kiosk.testContainer
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.shell.KioskShell
 import com.serversherpa.kiosk.ui.theme.KioskTheme
+import java.util.Locale
+import java.util.TimeZone
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.RuleChain
@@ -65,6 +69,20 @@ import org.robolectric.shadows.ShadowDialog
 class WorkerPageTest {
     private val compose = createAndroidComposeRule<ComponentActivity>()
     @get:Rule val rules: RuleChain = RuleChain.outerRule(NativeFontsSettled()).around(compose)
+
+    private val zone = TimeZone.getDefault()
+    private val locale = Locale.getDefault()
+
+    /** The "Added Oct 3, 2026" lines are the device's zone and locale: pinned, so the host's don't matter. */
+    @Before fun pin() {
+        TimeZone.setDefault(TimeZone.getTimeZone("America/Chicago"))
+        Locale.setDefault(Locale.US)
+    }
+
+    @After fun unpin() {
+        TimeZone.setDefault(zone)
+        Locale.setDefault(locale)
+    }
 
     private val abbott = rolodexRow("p-abbott", "Ann", "Abbott", job = "Rigger", company = "Summit Crew")
 
@@ -351,6 +369,40 @@ class WorkerPageTest {
         // below the details, in the API's order
         assertTrue(top("WORK") < top("PREVIOUS JOBS"))
         assertTrue(top("NAP11 Hall Migration") < top("Spring Refresh"))
+    }
+
+    /** A worker with more jobs than the page lists (the latest 50) says how many there are, below
+     *  the last row; one with no more than are shown says nothing. */
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun aLongHistorySaysHowManyJobsThereAre() {
+        val fifty = (50 downTo 1).map { i -> migration.copy(initiative_id = "i-$i", initiative_name = "Job $i") }
+        showPage(abbott, rolodexDetail(abbott, jobs = fifty, jobsTotal = 73))
+        compose.onNodeWithText("Showing the latest 50 of 73 jobs.").performScrollTo().assertIsDisplayed()
+        assertTrue(top("Job 1") < top("Showing the latest 50 of 73 jobs."))
+    }
+
+    @Config(qualifiers = "w360dp-h800dp")
+    @Test fun aShortHistorySaysNothingMore() {
+        showPage(abbott, rolodexDetail(abbott, jobs = listOf(migration, refresh)))
+        compose.onNodeWithText("Spring Refresh").performScrollTo().assertIsDisplayed()
+        assertEquals(0, compose.onAllNodesWithTag("worker-jobs-shown").fetchSemanticsNodes().size)
+    }
+
+    /** A long custom status keeps to 120 dp (ellipsized) on a 320 dp handheld, so the job's name
+     *  keeps its room beside it. */
+    @Config(qualifiers = "w320dp-h533dp-hdpi")
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Test fun aLongStatusChipLeavesTheNameItsRoom() {
+        val custom = migration.copy(status_label = "Awaiting client sign-off on the phase two cutover")
+        showPage(abbott, rolodexDetail(abbott, jobs = listOf(custom)))
+        compose.onNodeWithText(custom.initiative_name).performScrollTo().assertIsDisplayed()
+        val chip = compose.onNodeWithTag("worker-job-status", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertTrue("the chip is wider than 120 dp: $chip", chip.width <= 120 * 1.5f + 0.5f)
+        assertTrue("the status isn't ellipsized", layoutOf(custom.status_label).isLineEllipsized(0))
+        val name = compose.onNodeWithText(custom.initiative_name, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertTrue("the name is squeezed: $name", name.width >= 120 * 1.5f)
+        assertWhole(custom.initiative_name)
+        assertTrue(name.right <= chip.left)
     }
 
     @Config(qualifiers = "w360dp-h800dp")

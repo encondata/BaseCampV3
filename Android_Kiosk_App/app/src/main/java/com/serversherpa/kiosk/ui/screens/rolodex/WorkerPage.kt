@@ -216,7 +216,7 @@ private fun ColumnScope.WorkerView(ui: RolodexUi, vm: RolodexViewModel, wide: Bo
         detail?.status_note?.takeIf { it.isNotBlank() }?.let { Field("Status note", it) }
     }
     // They come with the worker page, so not before it loads, nor offline.
-    if (detail != null) PreviousJobs(detail.jobs)
+    if (detail != null) PreviousJobs(detail.jobs, detail.jobs_total)
 }
 
 /**
@@ -341,7 +341,7 @@ private fun PhotoWithBadge(
     // that turns wide enough for the split view puts the photo in another place on the page, where
     // a positional key wouldn't find it. Per person, as the split view keeps the page up while
     // another worker is chosen.
-    var viewing by rememberSaveable(key = "rolodex-photo-viewer:$personId") { mutableStateOf(false) }
+    var viewing by rememberSaveable(personId, key = "rolodex-photo-viewer:$personId") { mutableStateOf(false) }
     val view = if (photo == null) Modifier else Modifier.clip(CircleShape)
         .clickable(onClickLabel = "View photo") { viewing = true }.semantics { contentDescription = "Photo of $name" }
     Box {

@@ -31,15 +31,21 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
@@ -74,6 +80,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -124,17 +131,23 @@ private val FlipIcon: ImageVector = lineIcon(
  * photo"), like [CameraScanSheet]: a Dialog, so the camera fills the screen instead of the shell's
  * padded page. The steps switch inside one window, so the page under it never flashes between
  * them. Back calls [onBack]. The system bars' insets are read here, outside the window, where
- * they are live (inside a Dialog they read zero), and handed to [content].
+ * they are live (inside a Dialog they read zero), and handed to [content]: the status bar on top,
+ * the navigation bar below, and at the sides the navigation bar (landscape with 3-button
+ * navigation) and the display cutout.
  */
 @Composable
 fun PhotoStepsWindow(onBack: () -> Unit, content: @Composable (insets: PaddingValues) -> Unit) {
     val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val direction = LocalLayoutDirection.current
+    val sides = WindowInsets.navigationBars.union(WindowInsets.displayCutout).only(WindowInsetsSides.Horizontal).asPaddingValues()
+    val start = sides.calculateStartPadding(direction)
+    val end = sides.calculateEndPadding(direction)
     Dialog(
         onDismissRequest = onBack,
         properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false, decorFitsSystemWindows = false),
     ) {
-        Box(Modifier.fillMaxSize().background(BACKDROP)) { content(PaddingValues(top = top, bottom = bottom)) }
+        Box(Modifier.fillMaxSize().background(BACKDROP)) { content(PaddingValues(start = start, top = top, end = end, bottom = bottom)) }
     }
 }
 
