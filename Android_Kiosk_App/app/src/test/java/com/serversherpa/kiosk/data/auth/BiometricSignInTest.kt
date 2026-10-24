@@ -344,14 +344,28 @@ class BiometricSignInTest {
         val r = rig()
         r.enrolledAndSignedOut()
         r.api.bioChallengeResult = { card() }
-        for ((code, reason) in listOf("kiosk_not_allowed" to NotAllowedReason.KIOSK_NOT_ALLOWED, "account_disabled" to NotAllowedReason.ACCOUNT_DISABLED)) {
-            r.api.bioSignInResult = { _, _, _ -> throw ApiError(403, code) }
-            val out = r.bio.signIn(ok)
-            assertTrue(code, out is BiometricOutcome.NotAllowed)
-            assertTrue(code, (out as BiometricOutcome.NotAllowed).message.isNotBlank())
-            assertEquals(code, reason, out.reason)
-        }
+        r.api.bioSignInResult = { _, _, _ -> throw ApiError(403, "kiosk_not_allowed") }
+        val out = r.bio.signIn(ok)
+        assertTrue(out is BiometricOutcome.NotAllowed)
+        assertTrue((out as BiometricOutcome.NotAllowed).message.isNotBlank())
+        assertEquals(NotAllowedReason.KIOSK_NOT_ALLOWED, out.reason)
         assertTrue(r.keys.hasKey)                       // access can come back
+        assertNotNull(r.prefs.biometric.first())
+    }
+
+    @Test fun aDisabledAccountForgetsLocallySoTheCardStopsComingBack() = runTest {
+        // an archived person's phone otherwise looped: card → account_disabled → card
+        val r = rig()
+        r.enrolledAndSignedOut()
+        r.api.bioChallengeResult = { card() }
+        r.api.bioSignInResult = { _, _, _ -> throw ApiError(403, "account_disabled") }
+        val out = r.bio.signIn(ok)
+        assertTrue(out is BiometricOutcome.NotAllowed)
+        assertEquals(BIOMETRIC_ACCOUNT_DISABLED_MESSAGE, (out as BiometricOutcome.NotAllowed).message)
+        assertEquals(NotAllowedReason.ACCOUNT_DISABLED, out.reason)
+        assertFalse(r.keys.hasKey)
+        assertNull(r.prefs.biometric.first())
+        assertNull(r.bio.card())
     }
 
     @Test fun reassignedOrRevokedForgetsLocallyAndFallsBack() = runTest {

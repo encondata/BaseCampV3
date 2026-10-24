@@ -374,13 +374,15 @@ class BiometricSignIn(
     }
 
     /** Sign-in and challenge refusals. A key the server no longer has for this phone is done
-     *  here too: revoked, reassigned, or no longer a personal phone. */
+     *  here too: revoked, reassigned, or no longer a personal phone. A disabled account (or an
+     *  archived person) is forgotten here as well, so the card doesn't come back after the
+     *  message; a re-enabled person turns fingerprint on again after a password sign-in. */
     private suspend fun signInFailure(code: String): BiometricOutcome = when (code) {
         "no_biometric", "not_personal_device" -> { dropLocal(); BiometricOutcome.NotAllowed(BIOMETRIC_REMOVED_MESSAGE, NotAllowedReason.REMOVED) }
         "biometric_expired" -> BiometricOutcome.Expired
         "password_change_required" -> BiometricOutcome.PasswordChange
         "kiosk_not_allowed" -> BiometricOutcome.NotAllowed(BIOMETRIC_KIOSK_NOT_ALLOWED_MESSAGE, NotAllowedReason.KIOSK_NOT_ALLOWED)
-        "account_disabled" -> BiometricOutcome.NotAllowed(BIOMETRIC_ACCOUNT_DISABLED_MESSAGE, NotAllowedReason.ACCOUNT_DISABLED)
+        "account_disabled" -> { dropLocal(); BiometricOutcome.NotAllowed(BIOMETRIC_ACCOUNT_DISABLED_MESSAGE, NotAllowedReason.ACCOUNT_DISABLED) }
         "biometric_rate_limited" -> BiometricOutcome.Failed(BIOMETRIC_RATE_LIMITED_MESSAGE)
         "network" -> BiometricOutcome.Failed(BIOMETRIC_NETWORK_MESSAGE)
         UNEXPECTED -> BiometricOutcome.Failed(BIOMETRIC_SOMETHING_WRONG_MESSAGE)

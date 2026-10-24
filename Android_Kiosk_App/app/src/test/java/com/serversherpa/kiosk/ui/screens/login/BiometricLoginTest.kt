@@ -316,6 +316,8 @@ class BiometricLoginTest {
         showLogin(p, FakePrompter { it })
         waitForText("This account is disabled. Contact your coordinator.")
         compose.onNodeWithTag("login-password").assertIsDisplayed()
+        // the phone forgets the key, so the card doesn't come back next time
+        compose.waitUntilIdlingMain { runBlocking { p.c.prefs.biometric.first() } == null }
     }
 
     @Test fun aNetworkFailureStaysOnTheCardWithItsMessage() {
