@@ -37,6 +37,7 @@ from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
     AuthSession, LogEntry, SystemConfig, SystemProcess, TrustedDevice,
 )
+from serversherpa.services import biometric
 from serversherpa.services.audit import audit
 from serversherpa.services.storage import delete_object, loggable, presign_get, put_object
 from serversherpa.services.text import has_control_chars
@@ -443,9 +444,13 @@ async def revoke_all_sessions(
     await db.execute(
         update(TrustedDevice).where(TrustedDevice.revoked_at.is_(None))
         .values(revoked_at=now))
+    # every live biometric key, whether or not its owner has a live session
+    # and including the caller's own (a key outlives the sessions it mints)
+    revoked_keys = await biometric.revoke_keys(db, reason="admin", actor_id=actor.person.id)
     audit(db, actor_id=actor.person.id, entity_type="auth",
           entity_id="all", action="sessions.revoke_all",
-          changes={"revoked_sessions": len(live), "revoked_people": len(people)})
+          changes={"revoked_sessions": len(live), "revoked_people": len(people),
+                   "revoked_biometric_keys": revoked_keys})
     await db.commit()
     return RevokeAllSessionsOut(revoked_sessions=len(live), revoked_people=len(people))
 

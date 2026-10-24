@@ -58,7 +58,7 @@ from serversherpa.db.ordering import natural
 from serversherpa.mail import email_enabled
 from serversherpa.notifications import reset_requests
 from serversherpa.notifications.requests import resolve_copies
-from serversherpa.services import invites
+from serversherpa.services import biometric, invites
 from serversherpa.services import totp as totp_service
 from serversherpa.services.activity import person_activity
 from serversherpa.services.audit import audit, diff, snapshot
@@ -687,6 +687,8 @@ async def disable_account(
     account.disabled_at = now
     account.updated_at = now
     await revoke_all_sessions(db, person_id, "account_disabled")
+    await biometric.revoke_keys(db, person_id=person_id, reason="account_disabled",
+                                actor_id=actor.person.id)
     audit(db, actor_id=actor.person.id, entity_type="user_account",
           entity_id=str(person_id), action="account.disable")
     await db.commit()
@@ -791,6 +793,10 @@ async def demote_to_worker(
         # rows would block the account delete below; delete them outright
         # (which also signs the person out everywhere).
         await db.execute(delete(AuthSession).where(AuthSession.person_id == person_id))
+        # biometric_keys cascade only on a person delete, not on this account
+        # delete, so the keys must be revoked explicitly (and audited).
+        await biometric.revoke_keys(db, person_id=person_id, reason="demoted",
+                                    actor_id=actor.person.id, ip=client_ip(request))
         await db.delete(account)   # password_history cascades
 
         audit(db, actor_id=actor.person.id, entity_type="user_account",
@@ -931,6 +937,8 @@ async def revoke_all_user_sessions(
     """Sign the person out everywhere without disabling them."""
     await _load_target(db, actor, person_id)
     await revoke_all_sessions(db, person_id, "admin")
+    await biometric.revoke_keys(db, person_id=person_id, reason="admin",
+                                actor_id=actor.person.id)
     await totp_service.revoke_trust(db, person_id)
     audit(db, actor_id=actor.person.id, entity_type="auth",
           entity_id=str(person_id), action="session.revoke_all", changes={})
