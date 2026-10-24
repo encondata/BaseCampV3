@@ -124,7 +124,7 @@ export default function KioskOverviewTab({ detail: d, canEdit = false, onSaved =
   onSaved?: (next: DeviceDetail) => void;
 }) {
   return (
-    <div className="profile-grid">
+    <div className="kd-grid">
       <div className="panel">
         <div className="panel-head"><h3>Kiosk</h3></div>
         <div className="panel-body">
@@ -133,7 +133,7 @@ export default function KioskOverviewTab({ detail: d, canEdit = false, onSaved =
             <dt>Type</dt><dd>{stationTypeLabel(d)}</dd>
             <dt>Platform</dt><dd>{subTypeLabel(d.sub_type)}</dd>
             <dt>Station type</dt><dd>{stationLabel(d.station_type)}</dd>
-            <dt>Version</dt><dd className="mono">{d.version ?? '—'}</dd>
+            <dt>Version</dt><dd className={d.version ? 'mono' : undefined}>{d.version ?? '—'}</dd>
             <PersonalDevice detail={d} canEdit={canEdit} onSaved={onSaved} />
             <dt>Registration</dt>
             <dd>

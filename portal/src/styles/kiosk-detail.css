@@ -2,14 +2,25 @@
  * type scale comes from profile.css (.panel, .kv, .pf-form), directory.css
  * (.segmented, chips, lists) and reports.css (the modal header). */
 
-/* ── Settings tab: one panel per section, two columns ─────────────── */
+/* ── Card grid for every tab (Overview, Devices, Setup & move, Settings):
+ *  two equal columns, cards in a row share their height, and no card is
+ *  pushed down — profile.css's `.panel + .panel` stacking margin would
+ *  otherwise drop every second card in a row by 18px. One column on narrow
+ *  windows. */
+.kd-grid,
 .kd-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
-  align-items: start;
+  align-items: stretch;
 }
+.kd-grid { margin-top: 18px; }
+.kd-grid .panel + .panel,
 .kd-cards .panel + .panel { margin-top: 0; }
+@media (max-width: 1080px) {
+  .kd-grid,
+  .kd-cards { grid-template-columns: minmax(0, 1fr); }
+}
 .kd-card-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .kd-card-title h3 { margin: 0; }
 .kd-card-title .set-note { padding: 0; }
