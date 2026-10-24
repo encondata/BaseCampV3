@@ -54,7 +54,8 @@ interface KioskApi {
      *  enroll_window_closed (not a fresh password session here) / not_personal_device, 423. */
     suspend fun biometricEnrollChallenge(serial: String): String
     /** POST /kiosk/biometric/enroll under the session. [chain]: leaf first, standard base64 DER.
-     *  403 enroll_window_closed / not_personal_device, 401 bad_challenge, 422 attestation_failed
+     *  403 enroll_window_closed / not_personal_device, 422 bad_enroll_nonce (expired, spent or
+     *  someone else's: never a 401, which would end the session) / attestation_failed
      *  (detail.reason) / attestation_status_unavailable, 423 read_only_mode. */
     suspend fun biometricEnroll(serial: String, nonce: String, chain: List<String>): BiometricEnrollOut
     /** POST /kiosk/biometric/challenge, no session: whose card this phone shows, and the challenge

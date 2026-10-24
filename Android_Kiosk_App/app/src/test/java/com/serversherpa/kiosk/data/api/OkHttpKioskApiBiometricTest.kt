@@ -1,12 +1,15 @@
 package com.serversherpa.kiosk.data.api
 
 import com.serversherpa.kiosk.core.ApiError
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.mockwebserver.MockResponse
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.fail
 import org.junit.Rule
@@ -113,6 +116,24 @@ class OkHttpKioskApiBiometricTest {
             assertEquals("Bearer tok1", req.getHeader("Authorization"))
             h.server.enqueue(jsonResponse(423, """{"detail":{"code":"read_only_mode"}}"""))
             try { h.api.biometricForget("s1"); fail() } catch (e: ApiError) { assertEquals("read_only_mode", e.code) }
+        }
+    }
+
+    @Test fun aStaleEnrollNonceNeverSignsOut() = runBlocking {
+        ApiHarness(tmp.root).use { h ->
+            h.server.enqueue(sessionResponse()); h.api.login("a@b.c", "pw"); h.server.takeRequest()
+            var ended = false
+            val watcher = launch { h.session.sessionEnded.first(); ended = true }
+            kotlinx.coroutines.yield()
+            h.server.enqueue(jsonResponse(422, """{"detail":{"code":"bad_enroll_nonce"}}"""))
+            try { h.api.biometricEnroll("s1", "stale", listOf("AAA=")); fail("expected ApiError") } catch (e: ApiError) {
+                assertEquals(422, e.status); assertEquals("bad_enroll_nonce", e.code)
+            }
+            assertEquals("/kiosk/biometric/enroll", h.server.takeRequest().path)
+            assertEquals(2, h.server.requestCount)          // no /auth/refresh, no retry
+            assertEquals("tok1", h.session.accessToken())
+            assertFalse(ended)
+            watcher.cancel()
         }
     }
 }

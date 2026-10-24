@@ -133,13 +133,15 @@ async def enroll(
 ) -> BiometricEnrollOut:
     # the device row, locked: two enrolls on one phone run one at a time
     device = await _enrollable_device(db, actor, body.serial, lock=True)
+    # Nonce problems (expired, spent, someone else's) are 422 bad_enroll_nonce, never a 401:
+    # this route runs under the session, and a 401 there reads to the app as a dead session.
     try:
         nonce = biometric.decode_enroll_nonce(body.nonce)
     except TokenError:
-        raise _err(401, "bad_challenge") from None
+        raise _err(422, "bad_enroll_nonce") from None
     if (nonce.person_id != actor.person.id or nonce.family_id != actor.session.family_id
             or nonce.serial != body.serial or await biometric.nonce_spent(db, nonce, device.id)):
-        raise _err(401, "bad_challenge")
+        raise _err(422, "bad_enroll_nonce")
     chain = _decode_chain(body.chain)
     # binds an unbound session here; refused when another serial won the bind
     if not await _bind_kiosk_session(db, actor, device):

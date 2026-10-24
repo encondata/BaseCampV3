@@ -14,6 +14,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -77,6 +79,8 @@ const val BIOMETRIC_NETWORK_MESSAGE = "Can't reach the server. Check the kiosk's
 const val BIOMETRIC_TRY_AGAIN_MESSAGE = "Fingerprint sign-in didn't go through. Try again, or use your password."
 const val BIOMETRIC_ENROLL_WINDOW_MESSAGE = "Sign in with your password again to turn on fingerprint sign-in."
 const val BIOMETRIC_ENROLL_FAILED_MESSAGE = "Couldn't turn on fingerprint sign-in. Try again later."
+const val BIOMETRIC_ENROLL_RETRY_MESSAGE = "Turning on fingerprint sign-in took too long. Tap Turn on to try again."
+const val BIOMETRIC_SOMETHING_WRONG_MESSAGE = "Something went wrong. Try again, or use your password."
 
 /**
  * Biometric sign-in on a personal phone: who is offered enrollment, Turn on, the card, sign-in
@@ -85,6 +89,10 @@ const val BIOMETRIC_ENROLL_FAILED_MESSAGE = "Couldn't turn on fingerprint sign-i
  *
  * A key this phone can no longer use (Android invalidated it, or the server no longer has it for
  * this phone) is forgotten on the phone only: the server row is useless without the private key.
+ * A Keystore or secret store that throws is "unusable this time", never a reason to forget a key.
+ *
+ * Single flight: one [enroll] or [signIn] at a time (they share the one Keystore alias). A second
+ * call while one runs returns Canceled at once; [forget] waits for the running one.
  */
 class BiometricSignIn(
     private val api: KioskApi,
@@ -96,6 +104,8 @@ class BiometricSignIn(
     private val stationKeyPresent: suspend () -> Boolean,
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
+    private val busy = Mutex()
+
     /** The phone's enrollment (whose key, and its email), or null: Settings › This Kiosk's row. */
     val enrollment: Flow<BiometricEnrollment?> = prefs.biometric
 
@@ -105,36 +115,62 @@ class BiometricSignIn(
      * shared station (a station type or a station key), with a strong biometric ready, no live
      * key of theirs here already, and the server agreeing this is their personal phone (the
      * enroll-challenge answers, which it only does inside the 10-minute enroll window).
+     * Never throws: anything unexpected is "not now".
      */
-    suspend fun offerEnroll(): Boolean {
+    suspend fun offerEnroll(): Boolean = try {
+        decideOffer()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        false
+    }
+
+    private suspend fun decideOffer(): Boolean {
+        if (sharedStation() != false) return false
         val me = eligibleSession() ?: return false
         if (withContext(io) { keys.canUse() } != BiometricReadiness.READY) return false
         val serial = serial()
         val local = prefs.biometric.first()
         if (local != null && local.personId == me.person.id) {
-            val live = withContext(io) { keys.signer() } != null && try {
-                api.biometricChallenge(serial).key_id == local.keyId
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                if (codeOf(e) != "no_biometric") return false   // offline, throttled: ask another time
-                false
+            when (probe()) {
+                Probe.UNAVAILABLE -> return false
+                Probe.GONE -> dropLocal()
+                is Probe.Ready -> {
+                    val live = try {
+                        api.biometricChallenge(serial).key_id == local.keyId
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        if (codeOf(e) != "no_biometric") return false   // offline, throttled: ask another time
+                        false
+                    }
+                    if (live) return false            // this password sign-in renews it
+                    dropLocal()
+                }
             }
-            if (live) return false            // this password sign-in renews it
-            dropLocal()
         }
-        return try {
-            api.biometricEnrollChallenge(serial); true
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            false
-        }
+        api.biometricEnrollChallenge(serial)          // throws: not personal, window closed, offline
+        return true
     }
 
     /** Turn on: a fresh nonce, a new key attested to it, one prompt to prove the key works, then
-     *  the chain to the server. Any old key here is replaced. */
+     *  the chain to the server. Any old key here is replaced. Canceled while another enroll or
+     *  sign-in runs. */
     suspend fun enroll(prompt: BiometricPrompter): EnrollOutcome {
+        if (!busy.tryLock()) return EnrollOutcome.Canceled
+        try {
+            return enrollLocked(prompt)
+        } finally {
+            busy.unlock()
+        }
+    }
+
+    private suspend fun enrollLocked(prompt: BiometricPrompter): EnrollOutcome {
+        when (sharedStation()) {
+            true -> return EnrollOutcome.Unsupported
+            null -> return EnrollOutcome.Failed(BIOMETRIC_ENROLL_FAILED_MESSAGE)
+            false -> Unit
+        }
         val me = eligibleSession() ?: return EnrollOutcome.Failed(BIOMETRIC_ENROLL_WINDOW_MESSAGE)
         val email = auth.currentSignIn?.email ?: me.person.email
         val serial = serial()
@@ -155,7 +191,7 @@ class BiometricSignIn(
             } catch (e: Exception) {
                 return EnrollOutcome.Unsupported
             }
-            val signer = withContext(io) { keys.signer() } ?: return EnrollOutcome.Unsupported
+            val signer = (probe() as? Probe.Ready)?.signature ?: return EnrollOutcome.Unsupported
             val proven = try { prompt.authenticate(signer) } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
                 ?: return EnrollOutcome.Canceled
             try {
@@ -176,19 +212,32 @@ class BiometricSignIn(
             enrolled = true
             return EnrollOutcome.Enrolled
         } finally {
-            if (!enrolled) withContext(NonCancellable) { dropLocal() }
+            if (!enrolled) withContext(NonCancellable) { try { dropLocal() } catch (e: Exception) { /* best effort */ } }
         }
     }
 
     /**
      * The card for the sign-in screen, or null for the password form: no key here, a shared
      * station, a key Android invalidated or the server no longer has for this phone (both
-     * forgotten here), or the server out of reach. Each call may fetch a new challenge.
+     * forgotten here), the Keystore unavailable this time, or the server out of reach. Each call
+     * may fetch a new challenge. Never throws.
      */
-    suspend fun card(): BiometricCard? {
-        if (sharedStation()) return null
+    suspend fun card(): BiometricCard? = try {
+        cardOrNull()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    }
+
+    private suspend fun cardOrNull(): BiometricCard? {
+        if (sharedStation() != false) return null
         val local = prefs.biometric.first() ?: return null
-        if (withContext(io) { keys.signer() } == null) { dropLocal(); return null }
+        when (probe()) {
+            Probe.GONE -> { dropLocal(); return null }
+            Probe.UNAVAILABLE -> return null
+            is Probe.Ready -> Unit
+        }
         val c = try {
             api.biometricChallenge(serial())
         } catch (e: CancellationException) {
@@ -202,13 +251,40 @@ class BiometricSignIn(
     }
 
     /**
-     * Sign in with the key: a fresh challenge (each attempt spends one), the prompt, the signed
-     * challenge to the server, and the session adopted by KioskAuth (Authed, method BIOMETRIC).
+     * Sign in with the key: the prompt first, then a fresh challenge (each attempt spends one),
+     * signed with the authenticated Signature (an auth-per-use key allows update/sign after the
+     * prompt), and the session adopted by KioskAuth (Authed, method BIOMETRIC). The UI skips the
+     * prompt for an expired card ([BiometricCard.expired]); a challenge that turns out expired
+     * here still ends Expired without a sign-in. Canceled while another enroll or sign-in runs.
      */
     suspend fun signIn(prompt: BiometricPrompter): BiometricOutcome {
+        if (!busy.tryLock()) return BiometricOutcome.Canceled
+        try {
+            return signInLocked(prompt)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return BiometricOutcome.Failed(BIOMETRIC_TRY_AGAIN_MESSAGE)   // prefs or identity unreadable
+        } finally {
+            busy.unlock()
+        }
+    }
+
+    private suspend fun signInLocked(prompt: BiometricPrompter): BiometricOutcome {
         val local = prefs.biometric.first() ?: return BiometricOutcome.Invalidated
-        if (sharedStation()) return BiometricOutcome.NotAllowed(BIOMETRIC_REMOVED_MESSAGE)
-        val signer = withContext(io) { keys.signer() } ?: run { dropLocal(); return BiometricOutcome.Invalidated }
+        when (sharedStation()) {
+            true -> return BiometricOutcome.NotAllowed(BIOMETRIC_REMOVED_MESSAGE)
+            null -> return BiometricOutcome.Failed(BIOMETRIC_TRY_AGAIN_MESSAGE)
+            false -> Unit
+        }
+        val signer = when (val p = probe()) {
+            Probe.GONE -> { dropLocal(); return BiometricOutcome.Invalidated }
+            Probe.UNAVAILABLE -> return BiometricOutcome.Failed(BIOMETRIC_TRY_AGAIN_MESSAGE)
+            is Probe.Ready -> p.signature
+        }
+        val signed = try { prompt.authenticate(signer) } catch (e: CancellationException) { throw e } catch (e: Exception) {
+            return BiometricOutcome.Failed(BIOMETRIC_TRY_AGAIN_MESSAGE)
+        } ?: return BiometricOutcome.Canceled
         val c = try {
             api.biometricChallenge(serial())
         } catch (e: CancellationException) {
@@ -218,9 +294,6 @@ class BiometricSignIn(
         }
         if (c.key_id != local.keyId) { dropLocal(); return BiometricOutcome.NotAllowed(BIOMETRIC_REMOVED_MESSAGE) }
         if (c.expired) return BiometricOutcome.Expired
-        val signed = try { prompt.authenticate(signer) } catch (e: CancellationException) { throw e } catch (e: Exception) {
-            return BiometricOutcome.Failed(BIOMETRIC_TRY_AGAIN_MESSAGE)
-        } ?: return BiometricOutcome.Canceled
         val signature = try {
             withContext(io) { signed.update(c.challenge.toByteArray(Charsets.UTF_8)); signed.sign() }
         } catch (e: CancellationException) {
@@ -240,8 +313,9 @@ class BiometricSignIn(
     }
 
     /** Forget this device. Signed in: revoke on the server, then forget here. Signed out: here
-     *  only. The phone always forgets; false when the server call failed. */
-    suspend fun forget(signedIn: Boolean): Boolean {
+     *  only. The phone always forgets; false when the server call failed. Waits for a running
+     *  enroll or sign-in. */
+    suspend fun forget(signedIn: Boolean): Boolean = busy.withLock {
         var ok = true
         if (signedIn) {
             ok = try {
@@ -253,24 +327,47 @@ class BiometricSignIn(
             }
         }
         dropLocal()
-        return ok
+        ok
     }
 
     // ── rules ───────────────────────────────────────────────────────
 
     /** The signed-in session when it may enroll: a person's own password sign-in on this launch,
-     *  not locked to a move, on a phone that isn't a shared station. */
-    private suspend fun eligibleSession(): AuthState.Authed? {
+     *  not locked to a move. (The shared-station rule is checked by each caller.) */
+    private fun eligibleSession(): AuthState.Authed? {
         val authed = auth.state.value as? AuthState.Authed ?: return null
         if (authed.kioskMove != null) return null
         if (auth.currentSignIn?.method != LoginMethod.PASSWORD) return null
-        if (sharedStation()) return null
         return authed
     }
 
-    /** A Time Clock (or any) station type, or a station key: never anyone's personal phone. */
-    private suspend fun sharedStation(): Boolean =
+    /** A Time Clock (or any) station type, or a station key: never anyone's personal phone.
+     *  Null when it can't be told this time (prefs or the secure store threw). */
+    private suspend fun sharedStation(): Boolean? = try {
         prefs.setupSelection.first()?.stationType != null || stationKeyPresent()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    }
+
+    private sealed interface Probe {
+        data class Ready(val signature: Signature) : Probe
+        /** No key, or Android invalidated it: forget it here. */
+        data object GONE : Probe
+        /** The Keystore threw: unusable this time, the key may be fine. */
+        data object UNAVAILABLE : Probe
+    }
+
+    /** The key probe: [BiometricKeys.signer] needs no prompt (an auth-per-use key is checked at
+     *  sign(), not initSign()), so it is how every flow learns whether the key still works. */
+    private suspend fun probe(): Probe = try {
+        withContext(io) { keys.signer() }?.let { Probe.Ready(it) } ?: Probe.GONE
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Probe.UNAVAILABLE
+    }
 
     /** Sign-in and challenge refusals. A key the server no longer has for this phone is done
      *  here too: revoked, reassigned, or no longer a personal phone. */
@@ -282,12 +379,15 @@ class BiometricSignIn(
         "account_disabled" -> BiometricOutcome.NotAllowed(BIOMETRIC_ACCOUNT_DISABLED_MESSAGE)
         "biometric_rate_limited" -> BiometricOutcome.Failed(BIOMETRIC_RATE_LIMITED_MESSAGE)
         "network" -> BiometricOutcome.Failed(BIOMETRIC_NETWORK_MESSAGE)
+        UNEXPECTED -> BiometricOutcome.Failed(BIOMETRIC_SOMETHING_WRONG_MESSAGE)
         else -> BiometricOutcome.Failed(BIOMETRIC_TRY_AGAIN_MESSAGE)   // bad_challenge, bad_signature, …
     }
 
     private fun enrollFailure(code: String): EnrollOutcome = when (code) {
         "attestation_failed", "not_personal_device" -> EnrollOutcome.Unsupported
         "enroll_window_closed" -> EnrollOutcome.Failed(BIOMETRIC_ENROLL_WINDOW_MESSAGE)
+        // The nonce ran out (a prompt left open past 5 minutes) or was spent: start over.
+        "bad_enroll_nonce" -> EnrollOutcome.Failed(BIOMETRIC_ENROLL_RETRY_MESSAGE)
         "network" -> EnrollOutcome.Failed(BIOMETRIC_NETWORK_MESSAGE)
         else -> EnrollOutcome.Failed(BIOMETRIC_ENROLL_FAILED_MESSAGE)
     }
@@ -302,7 +402,13 @@ class BiometricSignIn(
 
     private suspend fun serial(): String = identity.get().serial
 
-    private fun codeOf(e: Exception): String = (e as? ApiError)?.code ?: "network"
+    /** The API's code; anything else (a 200 whose body didn't decode) is [UNEXPECTED], not the
+     *  network: the transport already turns every I/O failure into ApiError(0, "network"). */
+    private fun codeOf(e: Exception): String = (e as? ApiError)?.code ?: UNEXPECTED
 
     private fun sha256(s: String): ByteArray = MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8))
+
+    private companion object {
+        const val UNEXPECTED = "unexpected"
+    }
 }

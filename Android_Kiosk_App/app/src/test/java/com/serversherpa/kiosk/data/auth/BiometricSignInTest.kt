@@ -17,7 +17,9 @@ import java.security.Signature
 import java.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -43,6 +45,7 @@ class BiometricSignInTest {
         val refresher: FakeRefresher,
         val bio: BiometricSignIn,
         var stationKey: Boolean,
+        var stationKeyError: Exception? = null,
     ) {
         suspend fun serial() = prefs.serial.first()!!
     }
@@ -60,7 +63,7 @@ class BiometricSignInTest {
         val refresher = FakeRefresher()
         val auth = KioskAuth(api, refresher, identity, scope)
         lateinit var r: Rig
-        val bio = BiometricSignIn(api, auth, keys, prefs, identity, stationKeyPresent = { r.stationKey })
+        val bio = BiometricSignIn(api, auth, keys, prefs, identity, stationKeyPresent = { r.stationKeyError?.let { throw it }; r.stationKey })
         r = Rig(api, keys, prefs, auth, refresher, bio, stationKey = false)
         return r
     }
@@ -314,11 +317,11 @@ class BiometricSignInTest {
     @Test fun expiredMapsToExpired() = runTest {
         val r = rig()
         r.enrolledAndSignedOut()
-        var prompted = false
-        // Already past the 30 days: straight to the password form, no prompt.
+        // Already past the 30 days: the card says so (the UI skips the prompt), and a sign-in
+        // whose challenge says so ends Expired without sending anything.
         r.api.bioChallengeResult = { card(expired = true) }
-        assertEquals(BiometricOutcome.Expired, r.bio.signIn { prompted = true; it })
-        assertFalse(prompted)
+        assertEquals(true, r.bio.card()?.expired)
+        assertEquals(BiometricOutcome.Expired, r.bio.signIn(ok))
         assertTrue(r.api.bioSignIns.isEmpty())
         // Crossed the line while the card was up.
         r.api.bioChallengeResult = { card() }
@@ -364,14 +367,23 @@ class BiometricSignInTest {
         }
     }
 
-    @Test fun reassignedBeforeThePromptForgetsLocally() = runTest {
+    @Test fun reassignedAtTheChallengeForgetsLocally() = runTest {
         val r = rig()
         r.enrolledAndSignedOut()
         r.api.bioChallengeResult = { throw ApiError(404, "no_biometric") }
-        var prompted = false
-        assertTrue(r.bio.signIn { prompted = true; it } is BiometricOutcome.NotAllowed)
-        assertFalse(prompted)
+        assertTrue(r.bio.signIn(ok) is BiometricOutcome.NotAllowed)
+        assertTrue(r.api.bioSignIns.isEmpty())
         assertFalse(r.keys.hasKey)
+    }
+
+    @Test fun thePromptComesBeforeTheChallenge() = runTest {
+        val r = rig()
+        r.enrolledAndSignedOut()
+        r.api.bioChallengeResult = { card() }
+        var callsAtPrompt: List<String>? = null
+        assertEquals(BiometricOutcome.SignedIn, r.bio.signIn { callsAtPrompt = r.api.calls.toList(); it })
+        assertEquals(emptyList<String>(), callsAtPrompt)
+        assertEquals(listOf("bioChallenge", "bioSignIn"), r.api.calls)
     }
 
     @Test fun invalidatedKeyIsDeletedLocallyAndFallsBack() = runTest {
@@ -409,7 +421,7 @@ class BiometricSignInTest {
         r.enrolledAndSignedOut()
         r.api.bioChallengeResult = { card() }
         assertEquals(BiometricOutcome.Canceled, r.bio.signIn(cancel))
-        assertTrue(r.api.bioSignIns.isEmpty())
+        assertTrue(r.api.calls.isEmpty())               // a canceled prompt spends no challenge
         assertTrue(r.keys.hasKey)
         assertNotNull(r.prefs.biometric.first())
         assertNotNull(r.bio.card())
@@ -486,5 +498,130 @@ class BiometricSignInTest {
         assertFalse(r.bio.forget(signedIn = true))
         assertFalse(r.keys.hasKey)
         assertNull(r.prefs.biometric.first())
+    }
+
+    // ── fix round 1 ─────────────────────────────────────────────────
+
+    @Test fun aStaleEnrollNonceIsTryAgain() = runTest {
+        val r = rig()
+        r.auth.login("tina@example.com", "pw")
+        r.api.bioEnrollResult = { _, _, _ -> throw ApiError(422, "bad_enroll_nonce") }
+        assertEquals(EnrollOutcome.Failed(BIOMETRIC_ENROLL_RETRY_MESSAGE), r.bio.enroll(ok))
+        assertFalse(r.keys.hasKey)
+        assertTrue(r.auth.state.value is AuthState.Authed)
+    }
+
+    @Test fun aThrowingKeystoreIsUnusableThisTimeAndKeepsTheKey() = runTest {
+        val r = rig()
+        r.enrolledAndSignedOut()
+        r.api.bioChallengeResult = { card() }
+        r.keys.signerError = java.security.ProviderException("keystore busy")
+        assertNull(r.bio.card())
+        var prompted = false
+        assertEquals(BiometricOutcome.Failed(BIOMETRIC_TRY_AGAIN_MESSAGE), r.bio.signIn { prompted = true; it })
+        assertFalse(prompted)
+        assertTrue(r.keys.hasKey)
+        assertNotNull(r.prefs.biometric.first())
+        assertTrue(r.api.calls.isEmpty())
+        r.keys.signerError = null
+        assertNotNull(r.bio.card())
+        assertEquals(BiometricOutcome.SignedIn, r.bio.signIn(ok))
+    }
+
+    @Test fun aThrowingKeystoreNeverOffersAndNeverThrows() = runTest {
+        val r = rig()
+        r.enrolledAndSignedOut()
+        r.api.bioChallengeResult = { card() }
+        r.auth.login("tina@example.com", "pw")
+        r.keys.signerError = java.security.ProviderException("keystore busy")
+        assertFalse(r.bio.offerEnroll())               // this person's key may still be live
+        assertTrue(r.keys.hasKey)
+        r.keys.signerError = null
+        r.keys.canUseError = IllegalStateException("no BiometricManager")
+        assertFalse(r.bio.offerEnroll())
+        r.keys.canUseError = null
+        r.stationKeyError = SecurityException("secure store locked")
+        assertFalse(r.bio.offerEnroll())
+        assertFalse("bioEnrollChallenge" in r.api.calls)
+    }
+
+    @Test fun aKeystoreThatThrowsAfterCreateIsUnsupported() = runTest {
+        val r = rig()
+        r.auth.login("tina@example.com", "pw")
+        r.keys.signerError = java.security.ProviderException("keystore busy")
+        assertEquals(EnrollOutcome.Unsupported, r.bio.enroll(ok))
+        assertTrue(r.api.bioEnrolls.isEmpty())
+        assertFalse(r.keys.hasKey)
+        assertNull(r.prefs.biometric.first())
+    }
+
+    @Test fun anUnreadableStationLookupShowsNoCardAndKeepsTheKey() = runTest {
+        val r = rig()
+        r.enrolledAndSignedOut()
+        r.api.bioChallengeResult = { card() }
+        r.stationKeyError = SecurityException("secure store locked")
+        assertNull(r.bio.card())
+        assertEquals(BiometricOutcome.Failed(BIOMETRIC_TRY_AGAIN_MESSAGE), r.bio.signIn(ok))
+        r.auth.login("tina@example.com", "pw")
+        assertTrue(r.bio.enroll(ok) is EnrollOutcome.Failed)
+        assertTrue(r.keys.hasKey)
+        assertNotNull(r.prefs.biometric.first())
+        assertTrue(r.api.calls.none { it.startsWith("bio") })
+    }
+
+    @Test fun aSecondEnrollWhileOneRunsIsCanceled() = runTest {
+        val r = rig()
+        r.auth.login("tina@example.com", "pw")
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        r.api.bioEnrollChallengeResult = { gate.await(); "nonce-1" }
+        val first = async { r.bio.enroll(ok) }
+        runCurrent()
+        assertEquals(EnrollOutcome.Canceled, r.bio.enroll(ok))
+        assertEquals(BiometricOutcome.Canceled, r.bio.signIn(ok))
+        gate.complete(Unit)
+        assertEquals(EnrollOutcome.Enrolled, first.await())
+        assertEquals(1, r.keys.challenges.size)
+        assertTrue(r.keys.hasKey)
+        assertEquals("key-1", r.prefs.biometric.first()?.keyId)
+        assertEquals(EnrollOutcome.Enrolled, r.bio.enroll(ok))      // free again once it ends
+    }
+
+    @Test fun aSecondSignInWhileThePromptIsUpIsCanceled() = runTest {
+        val r = rig()
+        r.enrolledAndSignedOut()
+        r.api.bioChallengeResult = { card() }
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val first = async { r.bio.signIn { gate.await(); it } }
+        runCurrent()
+        assertEquals(BiometricOutcome.Canceled, r.bio.signIn(ok))
+        assertEquals(EnrollOutcome.Canceled, r.bio.enroll(ok))
+        gate.complete(Unit)
+        assertEquals(BiometricOutcome.SignedIn, first.await())
+        assertEquals(1, r.api.bioSignIns.size)
+        assertTrue(r.keys.hasKey)
+    }
+
+    @Test fun anUndecodableAnswerIsSomethingWentWrongNotTheNetwork() = runTest {
+        val r = rig()
+        r.enrolledAndSignedOut()
+        r.api.bioChallengeResult = { card() }
+        r.api.bioSignInResult = { _, _, _ -> throw kotlinx.serialization.SerializationException("bad body") }
+        assertEquals(BiometricOutcome.Failed(BIOMETRIC_SOMETHING_WRONG_MESSAGE), r.bio.signIn(ok))
+        r.api.bioSignInResult = { _, _, _ -> throw ApiError(0, "network") }
+        assertEquals(BiometricOutcome.Failed(BIOMETRIC_NETWORK_MESSAGE), r.bio.signIn(ok))
+        assertTrue(r.keys.hasKey)
+    }
+
+    @Test fun aFailedPrefsWriteNeverEscapes() = runTest {
+        val r = rig()
+        r.enrolledAndSignedOut()
+        r.api.bioChallengeResult = { throw ApiError(404, "no_biometric") }   // card() and signIn() forget…
+        assertTrue(tmp.root.setWritable(false))                              // …and the write fails
+        try {
+            assertNull(r.bio.card())
+            assertEquals(BiometricOutcome.Failed(BIOMETRIC_TRY_AGAIN_MESSAGE), r.bio.signIn(ok))
+        } finally {
+            tmp.root.setWritable(true)
+        }
     }
 }

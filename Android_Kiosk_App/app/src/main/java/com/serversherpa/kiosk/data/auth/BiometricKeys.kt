@@ -6,11 +6,11 @@ import android.content.pm.PackageManager
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
-import android.security.keystore.StrongBoxUnavailableException
 import androidx.biometric.BiometricManager
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.PrivateKey
+import java.security.ProviderException
 import java.security.Signature
 import java.security.UnrecoverableKeyException
 import java.security.spec.ECGenParameterSpec
@@ -32,7 +32,9 @@ interface BiometricKeys {
 
     /** A `SHA256withECDSA` Signature initialized with the key, for the biometric prompt's
      *  CryptoObject; null when there is no key, or Android invalidated it (a new fingerprint
-     *  enrolled, the screen lock removed). */
+     *  enrolled, the screen lock removed). Also the key's probe: initSign needs no prompt for an
+     *  auth-per-use key, so a non-null answer means the key still works. Throws when the Keystore
+     *  can't answer this time; the key may be fine, so callers never forget it for that. */
     fun signer(): Signature?
 
     fun delete()
@@ -56,7 +58,10 @@ class AndroidBiometricKeys(private val context: Context) : BiometricKeys {
         val strongBox = context.packageManager.hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE)
         try {
             generate(nonce, strongBox)
-        } catch (e: StrongBoxUnavailableException) {
+        } catch (e: ProviderException) {
+            // StrongBoxUnavailableException, or a StrongBox that fails some other way: try the TEE.
+            if (!strongBox) throw e
+            delete()
             generate(nonce, strongBox = false)
         }
         val chain = keyStore().getCertificateChain(ALIAS) ?: error("no attestation chain")

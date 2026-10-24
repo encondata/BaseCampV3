@@ -387,22 +387,24 @@ async def test_enroll_replaces_older_key(client, db, seeded_user, attest):
 
 
 async def test_enroll_nonce_is_single_use_and_bound(client, db, seeded_user, attest):
+    # Nonce problems are 422 bad_enroll_nonce, never a 401: enroll runs under the session, and
+    # the app reads any 401 there as a dead session and signs the person out.
     hdrs, person = await _worker_on_phone(db, client)
     nonce = (await _enroll_challenge(client, hdrs)).json()["nonce"]
     assert (await _enroll(client, hdrs, nonce=nonce)).status_code == 200
     again = await _enroll(client, hdrs, nonce=nonce)
-    assert again.status_code == 401 and _code(again) == "bad_challenge"
+    assert again.status_code == 422 and _code(again) == "bad_enroll_nonce"
     # a sign-in challenge is not an enroll nonce, nor is garbage
     c = (await _challenge(client)).json()["challenge"]
     for bad in (c, "not-a-token"):
         r = await _enroll(client, hdrs, nonce=bad)
-        assert r.status_code == 401 and _code(r) == "bad_challenge"
+        assert r.status_code == 422 and _code(r) == "bad_enroll_nonce"
     # another person's nonce
     other_hdrs, _ = await _worker_on_phone(db, client, "bio-two@test.example.com",
                                           "android-bio-0002")
     theirs = (await _enroll_challenge(client, other_hdrs, "android-bio-0002")).json()["nonce"]
     r = await _enroll(client, hdrs, nonce=theirs)
-    assert r.status_code == 401 and _code(r) == "bad_challenge"
+    assert r.status_code == 422 and _code(r) == "bad_enroll_nonce"
     # each binding on its own: the person, the session family, the serial
     db.expire_all()
     family = await db.scalar(select(AuthSession.family_id).where(
@@ -411,11 +413,30 @@ async def test_enroll_nonce_is_single_use_and_bound(client, db, seeded_user, att
                     biometric.make_enroll_nonce(person.id, uuid.uuid4(), SERIAL),
                     biometric.make_enroll_nonce(person.id, family, "android-bio-0002")):
         r = await _enroll(client, hdrs, nonce=crafted)
-        assert r.status_code == 401 and _code(r) == "bad_challenge"
+        assert r.status_code == 422 and _code(r) == "bad_enroll_nonce"
     # the control: all three right is accepted
     ok = await _enroll(client, hdrs, nonce=biometric.make_enroll_nonce(person.id, family, SERIAL))
     assert ok.status_code == 200, ok.text
     assert len(attest.calls) == 2
+
+
+async def test_enroll_expired_nonce_is_422_and_the_session_lives(client, db, seeded_user, attest):
+    # A Turn on prompt left open past the nonce's 5 minutes: a 422 the app maps to "try again",
+    # never a 401 that would sign the person out.
+    hdrs, person = await _worker_on_phone(db, client)
+    family = await db.scalar(select(AuthSession.family_id).where(
+        AuthSession.person_id == person.id, AuthSession.client == "kiosk"))
+    ttl = biometric.ENROLL_NONCE_TTL_SECONDS
+    biometric.ENROLL_NONCE_TTL_SECONDS = -5
+    try:
+        stale = biometric.make_enroll_nonce(person.id, family, SERIAL)
+    finally:
+        biometric.ENROLL_NONCE_TTL_SECONDS = ttl
+    r = await _enroll(client, hdrs, nonce=stale)
+    assert r.status_code == 422 and _code(r) == "bad_enroll_nonce"
+    assert attest.calls == []
+    # the session is untouched: a fresh nonce enrolls under the same headers
+    assert (await _enroll(client, hdrs)).status_code == 200
 
 
 async def test_enroll_refused_when_status_stale(client, db, seeded_user, attest, monkeypatch):
