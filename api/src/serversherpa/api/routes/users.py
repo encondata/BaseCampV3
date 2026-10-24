@@ -1006,8 +1006,9 @@ async def list_user_biometric_keys(
     actor: AuthContext = require_permission("users", "view"),
 ) -> list[BiometricKeyOut]:
     """Their live biometric sign-in keys, newest first. Gated like the
-    remembered browsers: users:change, a global actor, and the person
-    themself or a target whose rank the actor can touch (403 otherwise)."""
+    remembered browsers: the route needs users:view, and the list itself
+    needs users:change, a global actor, and the person themself or a
+    target whose rank the actor can touch (403 forbidden otherwise)."""
     await _visible_user(db, actor, person_id)
     if not _may_see_device_details(actor, person_id, await _target_rank(db, person_id)):
         raise _err(403, "forbidden")

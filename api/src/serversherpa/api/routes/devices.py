@@ -14,7 +14,7 @@ from sqlalchemy import Integer, and_, func, or_, select, update
 from sqlalchemy.orm import aliased
 
 from serversherpa.access.defaults import GATE_BYPASS_RANK, SUPER_ADMIN_RANK
-from serversherpa.access.resolver import resolve_access
+from serversherpa.access.resolver import AccessInfo, resolve_access, resolve_access_many
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.routes.kiosk import (
     allowed_scan_types, delete_kiosk_sound_object, kiosk_sound_response, save_kiosk_sound,
@@ -24,13 +24,13 @@ from serversherpa.api.schemas import (
     ClearOfflineKioskItem, ClearOfflineKiosksIn, ClearOfflineKiosksOut,
     DeviceConfigHistoryItem, DeviceCreate, DeviceDetail, DeviceItem, DeviceLeaseItem,
     DevicePatch, DevicePersonalIn, DeviceRegisterIn, DeviceScanTypeIn, KioskSoundItem,
-    KioskSoundOut,
+    KioskSoundOut, PersonalCandidateOut,
 )
 from serversherpa.db.models import (
     AuditLog, Device, DeviceDhcpLease, Initiative, KioskSound, Person, ProcessedScan,
     RawScan, Site, StatusValue, UserAccount,
 )
-from serversherpa.db.ordering import natural
+from serversherpa.db.ordering import natural, natural_key
 from serversherpa.services import biometric, kiosk_config, station_keys
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.kiosk_config import ConfigError
@@ -634,6 +634,7 @@ async def _detail_for(db: DbSession, device_id: uuid.UUID) -> dict:
     return item | {
         "personal_person": personal_person,
         "personal_biometric": personal_biometric,
+        "shared_station": biometric.shared_station(d),
         "config": d.config,
         "config_version": d.config_version or 0,
         "config_changed_at": d.config_changed_at,
@@ -779,20 +780,71 @@ async def patch_device_scan_type(
     return await _detail_for(db, device_id)
 
 
+# GET /devices/{id}/personal-candidates answers at most this many people
+PERSONAL_CANDIDATE_LIMIT = 50
+
+
+def _refusal_for(person: Person, account: UserAccount | None,
+                 access: AccessInfo | None) -> str | None:
+    """The one eligibility rule for a personal phone, shared by the PUT and
+    the picker's candidate list: a login account that is not disabled, a
+    person who is not archived, not a move's hidden kiosk identity, and
+    kiosk:view. `access` is only read once the rest has passed."""
+    if account is None:
+        return "no_account"
+    if account.disabled_at is not None or person.archived_at is not None:
+        return "account_disabled"
+    if person.source == KIOSK_MOVE_SOURCE:
+        return "move_identity"
+    if access is None or not access.can("kiosk", "view"):
+        return "no_kiosk_view"
+    return None
+
+
 async def _personal_refusal(db: DbSession, person_id: uuid.UUID) -> str | None:
-    """Why `person_id` can't have a personal phone, or None when they can:
-    a login account, kiosk:view, and not a move's hidden kiosk identity.
-    404 person_not_found for an unknown id."""
+    """Why `person_id` can't have a personal phone, or None when they can
+    (_refusal_for). 404 person_not_found for an unknown id."""
     person = await db.get(Person, person_id)
     if person is None:
         raise _err(404, "person_not_found")
-    if await db.get(UserAccount, person_id) is None:
-        return "no_account"
-    if person.source == KIOSK_MOVE_SOURCE:
-        return "move_identity"
-    if not (await resolve_access(db, person_id)).can("kiosk", "view"):
-        return "no_kiosk_view"
-    return None
+    account = await db.get(UserAccount, person_id)
+    # without access the rule never passes, so this is the cheap refusal
+    # or "no_kiosk_view", which only the resolved access can settle
+    early = _refusal_for(person, account, None)
+    if early != "no_kiosk_view":
+        return early
+    return _refusal_for(person, account, await resolve_access(db, person_id))
+
+
+@router.get("/{device_id}/personal-candidates", response_model=list[PersonalCandidateOut])
+async def list_personal_candidates(
+    device_id: uuid.UUID, db: DbSession,
+    q: Annotated[str | None, Query(max_length=200)] = None,
+    actor: AuthContext = require_permission("scanning_hardware", "change"),
+) -> list[PersonalCandidateOut]:
+    """The people the Personal device picker may offer: only those the PUT
+    accepts (_refusal_for), natural-sorted by name, at most
+    PERSONAL_CANDIDATE_LIMIT. `q` matches the name or either email,
+    case-insensitively. Gated like the PUT."""
+    _require_super_admin(actor)
+    await _kiosk_or_error(db, device_id)
+    rows = (await db.execute(
+        select(Person, UserAccount)
+        .join(UserAccount, UserAccount.person_id == Person.id)
+        .where(UserAccount.disabled_at.is_(None), Person.archived_at.is_(None),
+               Person.source != KIOSK_MOVE_SOURCE))).all()
+    needle = (q or "").strip().casefold()
+    if needle:
+        rows = [(p, a) for p, a in rows
+                if any(needle in (text or "").casefold()
+                       for text in (p.display_name, p.first_name, p.last_name,
+                                    p.email, a.email))]
+    access = await resolve_access_many(db, [p.id for p, _ in rows])
+    eligible = [(p, a) for p, a in rows if _refusal_for(p, a, access[p.id]) is None]
+    eligible.sort(key=lambda row: natural_key(row[0].display_name))
+    return [PersonalCandidateOut(person_id=p.id, display_name=p.display_name,
+                                 login_email=a.email)
+            for p, a in eligible[:PERSONAL_CANDIDATE_LIMIT]]
 
 
 @router.put("/{device_id}/personal", response_model=DeviceDetail)
@@ -803,7 +855,8 @@ async def put_device_personal(
     """Make this kiosk someone's personal phone (biometric sign-in), or
     clear it with `person_id: null`. Refused with 422 not_eligible plus a
     `reason`: shared_station (a Label, RFID or Time Clock station, or a
-    station-key kiosk), no_account, no_kiosk_view or move_identity.
+    station-key kiosk), no_account, account_disabled (a disabled account
+    or an archived person), no_kiosk_view or move_identity.
     Changing or clearing the person revokes every live biometric key on the
     device (reason `reassigned`), so an earlier owner's key can never come
     back. The same person again changes nothing."""
@@ -842,7 +895,7 @@ async def forget_device_biometric(
     (reason `forgotten`). The personal assignment stays. Nothing to forget
     is a quiet 204."""
     _require_super_admin(actor)
-    device = await _kiosk_or_error(db, device_id)
+    device = await _locked_kiosk(db, device_id)
     revoked = await biometric.revoke_keys(db, device_id=device.id, reason="forgotten",
                                           actor_id=actor.person.id)
     if revoked:

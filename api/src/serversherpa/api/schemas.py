@@ -3090,12 +3090,23 @@ class DeviceDetail(DeviceItem):
     # person's fingerprint key on it is live (null when nobody's)
     personal_person: PersonalPersonOut | None = None
     personal_biometric: PersonalBiometricOut | None = None
+    # a Label, RFID or Time Clock station, or any kiosk holding a station
+    # key: never anyone's personal phone (biometric.shared_station)
+    shared_station: bool = False
 
 
 class DevicePersonalIn(BaseModel):
     """PUT /devices/{id}/personal: the person, or null to clear."""
 
     person_id: uuid.UUID | None
+
+
+class PersonalCandidateOut(BaseModel):
+    """GET /devices/{id}/personal-candidates: one person the PUT accepts."""
+
+    person_id: uuid.UUID
+    display_name: str
+    login_email: str
 
 
 class BiometricKeyOut(BaseModel):

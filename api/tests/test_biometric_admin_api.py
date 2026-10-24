@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
+from serversherpa.api.routes import devices as devices_routes
 from serversherpa.db.models import (
     AuditLog,
     BiometricKey,
@@ -21,6 +22,7 @@ from serversherpa.db.models import (
     Person,
     PersonRole,
     Role,
+    UserAccount,
 )
 from serversherpa.services import biometric
 from tests.test_access_roles_api import login_admin
@@ -208,6 +210,22 @@ async def test_personal_put_refuses_ineligible_people(client, db, seeded_user):
     assert await _audits(db, "personal_set") == []
 
 
+async def test_personal_put_refuses_a_disabled_account_or_an_archived_person(
+        client, db, seeded_user):
+    device_id = await _kiosk(db)
+    sa, _ = await _super(db, client)
+    disabled = await _worker(db, "bio-off@test.example.com", "Off")
+    archived = await _worker(db, "bio-gone@test.example.com", "Gone")
+    (await db.get(UserAccount, disabled.id)).disabled_at = datetime.now(UTC)
+    (await db.get(Person, archived.id)).archived_at = datetime.now(UTC)
+    await db.commit()
+    for person_id in (disabled.id, archived.id):
+        r = await _put_personal(client, sa, device_id, person_id)
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"] == {"code": "not_eligible", "reason": "account_disabled"}
+    assert (await _fresh_device(db, device_id)).personal_person_id is None
+
+
 @pytest.mark.parametrize("station", ["timeclock", "label", "rfid", "station_key"])
 async def test_personal_put_refuses_shared_stations(client, db, seeded_user, station):
     w = await _worker(db)
@@ -321,6 +339,100 @@ async def test_personal_put_is_frozen_in_read_only_mode(client, db, seeded_user)
     assert r.status_code == 423
 
 
+# ── GET /devices/{id}/personal-candidates ───────────────────────────
+
+def _cands(client, hdrs, device_id, q=None):
+    params = {"q": q} if q is not None else None
+    return client.get(f"/devices/{device_id}/personal-candidates", headers=hdrs,
+                      params=params)
+
+
+async def test_personal_candidates_offer_only_eligible_people(client, db, seeded_user):
+    device_id = await _kiosk(db)
+    sa, _ = await _super(db, client)
+    ok = await _worker(db, "bio-ok@test.example.com", "Okay", "Pickme")
+    bare = Person(first_name="Bare", last_name="Pickme")
+    mover = await _add_user(db, first="Move", last="Pickme", email="mv@test.example.com",
+                            role="worker")
+    blocked = await _add_user(db, first="Blocked", last="Pickme",
+                              email="nk@test.example.com", role="worker")
+    disabled = await _worker(db, "bio-off@test.example.com", "Off", "Pickme")
+    archived = await _worker(db, "bio-gone@test.example.com", "Gone", "Pickme")
+    db.add(bare)
+    db.add(PermissionOverride(person_id=blocked.id, resource="kiosk", action="view",
+                              allow=False))
+    (await db.get(Person, mover.id)).source = "kiosk_move"
+    (await db.get(UserAccount, disabled.id)).disabled_at = datetime.now(UTC)
+    (await db.get(Person, archived.id)).archived_at = datetime.now(UTC)
+    await db.commit()
+    r = await _cands(client, sa, device_id)
+    assert r.status_code == 200, r.text
+    ids = {row["person_id"] for row in r.json()}
+    assert str(ok.id) in ids
+    for person in (bare, mover, blocked, disabled, archived):
+        assert str(person.id) not in ids, person.first_name
+    # every row the picker offers is one the PUT accepts
+    ok_row = next(row for row in r.json() if row["person_id"] == str(ok.id))
+    assert ok_row == {"person_id": str(ok.id), "display_name": "Okay Pickme",
+                      "login_email": "bio-ok@test.example.com"}
+    assert (await _put_personal(client, sa, device_id, ok.id)).status_code == 200
+
+
+async def test_personal_candidates_search_and_natural_order(client, db, seeded_user):
+    device_id = await _kiosk(db)
+    sa, _ = await _super(db, client)
+    for first, email in (("Al 10", "al10@test.example.com"), ("bo", "bo@test.example.com"),
+                         ("Al 2", "al2@test.example.com")):
+        await _worker(db, email, first, "Sortcheck")
+    r = await _cands(client, sa, device_id, "sortCHECK")
+    assert r.status_code == 200, r.text
+    assert [row["display_name"] for row in r.json()] == [
+        "Al 2 Sortcheck", "Al 10 Sortcheck", "bo Sortcheck"]
+    # the login email matches too
+    r = await _cands(client, sa, device_id, "AL10@test")
+    assert [row["display_name"] for row in r.json()] == ["Al 10 Sortcheck"]
+    assert (await _cands(client, sa, device_id, "nobody-like-this")).json() == []
+
+
+async def test_personal_candidates_are_capped(client, db, seeded_user, monkeypatch):
+    device_id = await _kiosk(db)
+    sa, _ = await _super(db, client)
+    for i in range(3):
+        await _worker(db, f"cap{i}@test.example.com", f"Cap {i}", "Capped")
+    monkeypatch.setattr(devices_routes, "PERSONAL_CANDIDATE_LIMIT", 2)
+    r = await _cands(client, sa, device_id, "capped")
+    assert [row["display_name"] for row in r.json()] == ["Cap 0 Capped", "Cap 1 Capped"]
+    assert devices_routes.PERSONAL_CANDIDATE_LIMIT == 2
+
+
+async def test_personal_candidates_are_gated_like_the_put(client, db, seeded_user):
+    device_id = await _kiosk(db)
+    lead = await _rank_79_hardware_lead(db, client)
+    r = await _cands(client, lead, device_id)
+    assert r.status_code == 403 and _code(r) == "forbidden_rank"
+    admin60 = await login_admin(client, db, seeded_user)
+    r = await _cands(client, admin60, device_id)
+    assert r.status_code == 403 and _code(r) == "forbidden_rank"
+    _, sa_id = await _super(db, client)
+    db.add(PermissionOverride(person_id=sa_id, resource="scanning_hardware",
+                              action="change", allow=False))
+    await db.commit()
+    sa_no_change = await login(client, email="bio-sa@test.example.com")
+    r = await _cands(client, sa_no_change, device_id)
+    assert r.status_code == 403 and _code(r) != "forbidden_rank"
+    other, _ = await _super(db, client, "bio-sa2@test.example.com")
+    r = await _cands(client, other, uuid.uuid4())
+    assert r.status_code == 404 and _code(r) == "device_not_found"
+    router = Device(device_type="router", name="R1", serial="r-1")
+    db.add(router)
+    await db.commit()
+    r = await _cands(client, other, router.id)
+    assert r.status_code == 409 and _code(r) == "not_a_kiosk"
+    r = await client.get(f"/devices/{device_id}/personal-candidates", headers=other,
+                         params={"q": "x" * 201})
+    assert r.status_code == 422
+
+
 # ── device detail ───────────────────────────────────────────────────
 
 async def test_device_detail_shows_personal_person_and_biometric(client, db, seeded_user):
@@ -348,6 +460,18 @@ async def test_device_detail_shows_personal_person_and_biometric(client, db, see
     assert "personal_person" not in rows[0]
 
 
+@pytest.mark.parametrize("station", [None, "timeclock", "label", "rfid", "station_key"])
+async def test_device_detail_says_whether_it_is_a_shared_station(
+        client, db, seeded_user, station):
+    kw = ({} if station is None
+          else {"station_key_hash": "x" * 64} if station == "station_key"
+          else {"station_type": station})
+    device_id = await _kiosk(db, **kw)
+    sa, _ = await _super(db, client)
+    body = (await client.get(f"/devices/{device_id}", headers=sa)).json()
+    assert body["shared_station"] is (station is not None)
+
+
 # ── DELETE /devices/{id}/biometric ──────────────────────────────────
 
 async def test_device_forget_revokes_the_key_and_audits(client, db, seeded_user):
@@ -372,6 +496,25 @@ async def test_device_forget_revokes_the_key_and_audits(client, db, seeded_user)
     assert len(await _audits(db, "biometric_forget")) == 1
     r = await client.delete(f"/devices/{uuid.uuid4()}/biometric", headers=sa)
     assert r.status_code == 404 and _code(r) == "device_not_found"
+
+
+async def test_device_forget_locks_the_kiosk_row(client, db, seeded_user, monkeypatch):
+    # like the PUT, the forget reads the kiosk FOR UPDATE (_locked_kiosk)
+    a = await _worker(db)
+    device_id = await _kiosk(db)
+    sa, _ = await _super(db, client)
+    seen = []
+    real = devices_routes._locked_kiosk
+
+    async def spy(db_, did):
+        seen.append(did)
+        return await real(db_, did)
+
+    monkeypatch.setattr(devices_routes, "_locked_kiosk", spy)
+    await _key(db, a.id, device_id)
+    assert (await client.delete(f"/devices/{device_id}/biometric",
+                                headers=sa)).status_code == 204
+    assert seen == [device_id]
 
 
 async def test_deleting_a_device_cascades_its_keys(client, db, seeded_user):
