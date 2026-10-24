@@ -5,18 +5,43 @@ import androidx.lifecycle.viewModelScope
 import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.model.SystemStatus
 import com.serversherpa.kiosk.data.api.KioskApi
+import com.serversherpa.kiosk.data.auth.AuthState
+import com.serversherpa.kiosk.data.auth.BIOMETRIC_EXPIRED_MESSAGE
+import com.serversherpa.kiosk.data.auth.BIOMETRIC_PASSWORD_CHANGE_MESSAGE
+import com.serversherpa.kiosk.data.auth.BIOMETRIC_TRY_AGAIN_MESSAGE
+import com.serversherpa.kiosk.data.auth.BiometricCard
+import com.serversherpa.kiosk.data.auth.BiometricOutcome
+import com.serversherpa.kiosk.data.auth.BiometricPrompter
+import com.serversherpa.kiosk.data.auth.BiometricSignIn
 import com.serversherpa.kiosk.data.auth.KioskAuth
+import com.serversherpa.kiosk.data.auth.NotAllowedReason
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-enum class LoginView { PASSWORD, CHOOSER, LINK, MOVE }
+/** BIOMETRIC is the "Sign in as …" card; CHOOSER is its Other account (the password form with every route). */
+enum class LoginView { PASSWORD, CHOOSER, LINK, MOVE, BIOMETRIC }
 
 data class LoginUi(
     val view: LoginView = LoginView.PASSWORD,
+    /** The phone's biometric card, while [view] is BIOMETRIC (kept for Use password's email). */
+    val card: BiometricCard? = null,
+    /** This phone has an enrollment and its card is still on its way: "Checking…" with Use
+     *  password, instead of a form the card would then replace. */
+    val cardPending: Boolean = false,
+    /** A biometric sign-in is running (the prompt is up, or the server is answering). */
+    val bioBusy: Boolean = false,
+    /** The card's line after a sign-in that left the person on it (lockout, network, …). */
+    val bioError: String? = null,
+    /** The line above the password form after the card sent the person there (expired, password change, …). */
+    val notice: String? = null,
+    /** [notice] reads as an error (red) rather than a note. */
+    val noticeError: Boolean = false,
     val email: String = "", val password: String = "", val showPassword: Boolean = false,
     val error: String? = null, val invalidEmail: Boolean = false, val invalidPassword: Boolean = false, val loading: Boolean = false,
     val movePassword: String = "", val moveError: String? = null, val moveLoading: Boolean = false,
@@ -44,16 +69,29 @@ val MOVE_ERROR_MESSAGES = ERROR_MESSAGES + mapOf(
 class LoginViewModel(
     private val auth: KioskAuth,
     private val api: KioskApi,
+    /** Null where the screen has no biometric sign-in (unit tests of the password form). */
+    private val biometric: BiometricSignIn? = null,
+    /** Told after each password sign-in; it decides on its own whether to offer Turn on. */
+    private val enrollOffer: EnrollOffer? = null,
     scopeOverride: CoroutineScope? = null,
 ) : ViewModel() {
     private val scope = scopeOverride ?: viewModelScope
     private val _state = MutableStateFlow(LoginUi())
     val state: StateFlow<LoginUi> = _state
 
-    fun setEmail(v: String) = _state.update { it.copy(email = v, invalidEmail = false, error = null) }
-    fun setPassword(v: String) = _state.update { it.copy(password = v, invalidPassword = false, error = null) }
+    // Once per screen (this ViewModel outlives a rotation; a new visit to the sign-in page makes a new one).
+    private var cardLoaded = false
+    private var autoPrompted = false
+    // The person chose the form while the card was on its way: it never replaces that form.
+    @Volatile private var cardDeclined = false
+
+    fun setEmail(v: String) = _state.update { it.copy(email = v, invalidEmail = false, error = null, cardPending = false) }
+    fun setPassword(v: String) = _state.update { it.copy(password = v, invalidPassword = false, error = null, cardPending = false) }
     fun togglePassword() = _state.update { it.copy(showPassword = !it.showPassword) }
-    fun setView(v: LoginView) = _state.update { it.copy(view = v, error = null, moveError = null, movePassword = "") }
+    fun setView(v: LoginView) {
+        cardDeclined = true
+        _state.update { it.copy(view = v, error = null, moveError = null, movePassword = "", notice = null, bioError = null, cardPending = false) }
+    }
     fun setMovePassword(v: String) = _state.update { it.copy(movePassword = v, moveError = null) }
 
     fun loadBanners() { scope.launch { try { _state.update { it.copy(status = api.systemStatus()) } } catch (e: Exception) { /* best effort */ } } }
@@ -76,8 +114,10 @@ class LoginViewModel(
                 _state.update { it.copy(loading = false, error = ERROR_MESSAGES[code] ?: "Login failed. Please try again.", invalidEmail = true, invalidPassword = true, password = "") }
                 return@launch
             }
-            // After the try: a navigation throw is not a failed sign-in.
+            // After the try: a navigation throw is not a failed sign-in. The offer is decided in the
+            // background (never on the way Home), and only after a password sign-in.
             _state.update { it.copy(loading = false) }
+            enrollOffer?.afterPasswordSignIn()
             onDone()
         }
     }
@@ -109,4 +149,117 @@ class LoginViewModel(
         setMovePassword(value)
         submitMove(onDone)
     }
+
+    // ── biometric sign-in ──────────────────────────────────────────
+
+    /**
+     * Once per screen, signed out only: the phone's card, if it has one. BiometricSignIn decides
+     * who never gets one (no key, a shared station, a key Android or the server dropped). An
+     * expired card is the password form with its email and the expired line, never a prompt. The
+     * card arrives over the network, so it replaces the form only if the person hasn't started on it.
+     * While it is on its way on a phone with an enrollment, the screen says "Checking…" (with Use
+     * password) for up to [CARD_PENDING_MAX_MS]; offline, that ends on the form.
+     */
+    fun loadCard() {
+        val bio = biometric ?: return
+        if (cardLoaded) return
+        cardLoaded = true
+        if (auth.state.value is AuthState.Authed) return
+        scope.launch {
+            // The local record only decides whether to say "Checking…": nothing from it is shown, since
+            // card() hasn't yet checked it (a shared station now, a key gone, another person's phone).
+            val local = try { bio.enrollment.first() } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+            val cap = if (local == null) null else {
+                _state.update { if (untouched(it)) it.copy(cardPending = true) else it }
+                launch { delay(CARD_PENDING_MAX_MS); _state.update { it.copy(cardPending = false) } }
+            }
+            val card = try {
+                bio.card()
+            } finally {
+                cap?.cancel()
+                _state.update { it.copy(cardPending = false) }
+            } ?: return@launch
+            _state.update { s ->
+                when {
+                    !untouched(s) -> s
+                    card.expired -> s.copy(card = card, email = card.email.orEmpty(), notice = BIOMETRIC_EXPIRED_MESSAGE, noticeError = false)
+                    else -> s.copy(view = LoginView.BIOMETRIC, card = card, bioError = null)
+                }
+            }
+        }
+    }
+
+    private fun untouched(s: LoginUi) =
+        !cardDeclined && s.view == LoginView.PASSWORD && s.email.isEmpty() && s.password.isEmpty() && !s.loading
+
+    /** The prompt that starts on its own when the card appears: once per screen, never again on a
+     *  recomposition or a rotation, and never for an expired card. */
+    fun autoPrompt(prompter: BiometricPrompter, onDone: () -> Unit) {
+        val s = _state.value
+        if (autoPrompted || s.view != LoginView.BIOMETRIC || s.card == null || s.card.expired) return
+        autoPrompted = true
+        signInWithBiometric(prompter, onDone)
+    }
+
+    /** The card's button (and the auto prompt): the system prompt, then the server. */
+    fun signInWithBiometric(prompter: BiometricPrompter, onDone: () -> Unit) {
+        val bio = biometric ?: return
+        val s = _state.value
+        if (s.bioBusy || s.view != LoginView.BIOMETRIC) return
+        _state.update { it.copy(bioBusy = true, bioError = null) }
+        scope.launch {
+            var problem: PromptProblem? = null
+            val outcome = try {
+                bio.signIn(problemAware(prompter) { problem = it })
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                BiometricOutcome.Failed(BIOMETRIC_TRY_AGAIN_MESSAGE)
+            }
+            when (outcome) {
+                BiometricOutcome.SignedIn -> { _state.update { it.copy(bioBusy = false) }; onDone() }
+                BiometricOutcome.Canceled -> _state.update { it.copy(bioBusy = false, bioError = cardLine(problem)) }
+                is BiometricOutcome.Failed -> _state.update { it.copy(bioBusy = false, bioError = outcome.message) }
+                BiometricOutcome.Expired -> toPassword(BIOMETRIC_EXPIRED_MESSAGE, error = false, keepEmail = true)
+                BiometricOutcome.PasswordChange -> toPassword(BIOMETRIC_PASSWORD_CHANGE_MESSAGE, error = true, keepEmail = true)
+                // A phone that is no longer this person's (reassigned, revoked) keeps none of their email.
+                is BiometricOutcome.NotAllowed -> toPassword(outcome.message, error = true, keepEmail = outcome.reason != NotAllowedReason.REMOVED)
+                BiometricOutcome.Invalidated -> toPassword(null, error = false, keepEmail = false)
+            }
+        }
+    }
+
+    /** The card's Use password: this person's password form, with the email from the validated
+     *  card. During "Checking…" there is no card yet, so the form opens empty. */
+    fun usePassword() {
+        cardDeclined = true
+        _state.update {
+            it.copy(
+                view = LoginView.PASSWORD, email = it.card?.email.orEmpty(), password = "",
+                bioError = null, notice = null, error = null, cardPending = false,
+            )
+        }
+    }
+
+    /** The card's Other account: today's choices for someone else, nothing filled in. */
+    fun otherAccount() {
+        cardDeclined = true
+        _state.update { it.copy(view = LoginView.CHOOSER, email = "", password = "", bioError = null, notice = null, error = null, cardPending = false) }
+    }
+
+    private fun cardLine(problem: PromptProblem?): String? = when (problem) {
+        PromptProblem.LOCKED_OUT -> BIOMETRIC_LOCKOUT_MESSAGE
+        PromptProblem.UNAVAILABLE -> BIOMETRIC_UNAVAILABLE_MESSAGE
+        null -> null
+    }
+
+    private fun toPassword(notice: String?, error: Boolean, keepEmail: Boolean) = _state.update {
+        it.copy(
+            view = LoginView.PASSWORD, bioBusy = false, bioError = null, notice = notice, noticeError = error,
+            email = if (keepEmail) it.card?.email.orEmpty() else "", password = "", card = if (keepEmail) it.card else null,
+        )
+    }
 }
+
+/** The longest "Checking…" waits for the card before the form shows anyway. */
+const val CARD_PENDING_MAX_MS = 3_000L

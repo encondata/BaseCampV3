@@ -1,13 +1,15 @@
 package com.serversherpa.kiosk
 
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.fragment.app.FragmentActivity
 import com.serversherpa.kiosk.ui.KioskApp
 
-class MainActivity : ComponentActivity() {
+/** A FragmentActivity (a ComponentActivity with a FragmentManager): androidx.biometric's
+ *  BiometricPrompt hosts its prompt in a fragment of it. */
+class MainActivity : FragmentActivity() {
     private val container get() = (application as KioskApplication).container
 
     override fun onCreate(savedInstanceState: Bundle?) {

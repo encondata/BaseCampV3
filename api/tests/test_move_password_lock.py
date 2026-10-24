@@ -103,13 +103,15 @@ async def test_revoke_move_sessions_catches_an_unlocked_identity_session(db, see
     account = await svc.ensure_kiosk_identity(db, init)
     await db.commit()
     stray = await auth_service.start_session(
-        db, account, ip=None, user_agent=None, client="kiosk", audit_action="login_pair")
+        db, account, ip=None, user_agent=None, client="kiosk", audit_action="login_pair",
+        login_method="link")
     await db.commit()
     assert (await db.get(AuthSession, stray.session_id)).initiative_id is None
     # someone else's session is untouched
     alice = await db.get(UserAccount, seeded_user.id, options=[joinedload(UserAccount.person)])
     other = await auth_service.start_session(
-        db, alice, ip=None, user_agent=None, client="kiosk", audit_action="login")
+        db, alice, ip=None, user_agent=None, client="kiosk", audit_action="login",
+        login_method="password")
     await db.commit()
     assert await svc.revoke_move_sessions(db, init.id) == 1
     await db.commit()

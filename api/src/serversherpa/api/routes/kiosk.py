@@ -26,7 +26,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from serversherpa.access.resolver import resolve_access
 from serversherpa.api.deps import (
     AuthContext, DbSession, authenticate_request, client_ip, enforce_read_only_config,
-    rate_limit_ip, require_permission, station_device,
+    rate_limit_ip, require_permission, session_started_at, station_device,
 )
 from serversherpa.api.routes.auth import (
     _scope_out, person_out, session_response, totp_status_out,
@@ -83,6 +83,7 @@ from serversherpa.labels.kiosk_templates import (
 )
 from serversherpa.labels.template_fonts import design_fonts, fonts_used
 from serversherpa.services import auth as auth_service
+from serversherpa.services import biometric
 from serversherpa.services import kiosk_config
 from serversherpa.services import kiosk_pairing as pairing
 from serversherpa.services import move_password as move_password_service
@@ -180,7 +181,7 @@ async def poll_pair(
     result = await auth_service.start_session(
         db, account, ip=client_ip(request),
         user_agent=request.headers.get("user-agent"),
-        audit_action="login_pair", access=access, client="kiosk")
+        audit_action="login_pair", access=access, client="kiosk", login_method="link")
     return PairPollOut(status="approved", session=session_response(
         result, response, await totp_status_out(db, account), await load_policy(db)))
 
@@ -242,6 +243,14 @@ async def _move_login_failures_total(db: AsyncSession) -> int:
         select(func.count()).select_from(AuditLog).where(*_move_login_window())) or 0
 
 
+async def move_login_capped(db: AsyncSession, bucket: str) -> bool:
+    """True once `bucket` (or every caller together) has reached the
+    failure cap. Shared by move-login and biometric sign-in: their failures
+    are the same audit rows, so they count against one cap."""
+    return (await _move_login_failures(db, bucket) >= MOVE_LOGIN_IP_LIMIT
+            or await _move_login_failures_total(db) >= MOVE_LOGIN_GLOBAL_LIMIT)
+
+
 async def _move_login_failed(db: AsyncSession, ip: str | None, bucket: str, reason: str,
                              status: int = 401, **extra) -> HTTPException:
     audit(db, actor_id=None, entity_type="auth", entity_id=MOVE_LOGIN_AUDIT_ID,
@@ -260,8 +269,7 @@ async def move_login(
     raw_ip = rate_limit_ip(request)
     ip = _inet_or_none(raw_ip)
     bucket = move_login_bucket(raw_ip)
-    if await _move_login_failures(db, bucket) >= MOVE_LOGIN_IP_LIMIT \
-            or await _move_login_failures_total(db) >= MOVE_LOGIN_GLOBAL_LIMIT:
+    if await move_login_capped(db, bucket):
         raise _err(429, "move_login_rate_limited")
     initiative = await move_password_service.find_initiative_by_password(db, body.password)
     if initiative is None:
@@ -279,7 +287,7 @@ async def move_login(
     result = await auth_service.start_session(
         db, account, ip=client_ip(request), user_agent=request.headers.get("user-agent"),
         audit_action="login_move", access=access, client="kiosk",
-        initiative_id=initiative.id)
+        initiative_id=initiative.id, login_method="move")
     return session_response(result, response, await totp_status_out(db, account),
                             await load_policy(db), kiosk_move=kiosk_move)
 
@@ -519,7 +527,7 @@ async def heartbeat(
     # sign-in or not. Portal sessions never sync. A station-keyed RFID
     # Station syncs config only on /kiosk/station/heartbeat (scan type still comes
     # back to its own session).
-    own_kiosk = await _bind_kiosk_session(db, actor, body.serial)
+    own_kiosk = await _bind_kiosk_session(db, actor, device)
     # Reader telemetry (and so config) rides the station heartbeat only for
     # an RFID Station; a keyed Label Station has no station heartbeat.
     if own_kiosk and (device.station_key_hash is None or not is_rfid_station(device)):
@@ -538,22 +546,31 @@ async def heartbeat(
                         client_ip=client_ip(request), **sync)
 
 
-async def _bind_kiosk_session(db: AsyncSession, actor: AuthContext, serial: str) -> bool:
+async def _bind_kiosk_session(db: AsyncSession, actor: AuthContext, device: Device) -> bool:
     """True when the caller's session is a kiosk session that belongs to
-    `serial`. An unbound kiosk session is bound to `serial` here, in the
-    heartbeat's transaction, by a guarded UPDATE: under concurrency the
-    first binding wins and the loser reads it back."""
+    `device`'s serial. An unbound kiosk session is bound to it here, in the
+    caller's transaction, by a guarded UPDATE: under concurrency the first
+    binding wins and the loser reads it back.
+
+    The binding of a password session is that person's password sign-in on
+    this device, so it renews their biometric key here (its 30 days count
+    from the sign-in). Only the session row's own login_method counts,
+    never the heartbeat's self-reported one; NULL (an old row) is not a
+    password sign-in."""
     session = actor.session
     if session.client != "kiosk":
         return False
     if session.kiosk_serial is None:
-        await db.execute(
+        bound = await db.execute(
             update(AuthSession)
             .where(AuthSession.id == session.id, AuthSession.kiosk_serial.is_(None))
-            .values(kiosk_serial=serial)
+            .values(kiosk_serial=device.serial)
             .execution_options(synchronize_session=False))
         await db.refresh(session, ["kiosk_serial"])
-    return session.kiosk_serial == serial
+        if bound.rowcount == 1 and session.login_method == "password":
+            await biometric.renew_on_password_bind(
+                db, session.person_id, device.id, at=session_started_at(session))
+    return session.kiosk_serial == device.serial
 
 
 async def _scan_fields(db: AsyncSession, device: Device) -> dict:
@@ -844,10 +861,15 @@ async def kiosk_setup(
         device.rfid_paired_at = None
         # a Label or Time Clock Station keeps its station key unless the
         # type or move changed (revoked above)
-    elif device.station_type == station_keys.TIMECLOCK:
-        # set up again as a regular kiosk: no longer a Time Clock Station
-        # (its key was revoked above as a type change)
+    elif device.station_type is not None:
+        # set up again as a regular kiosk: no longer a Label, RFID or Time
+        # Clock Station, and no paired reader (its key was revoked above as
+        # a type change), so it can be someone's personal phone again
         _stamp("station_type", None)
+        for field in ("rfid_reader_ip", "rfid_reader_serial",
+                      "rfid_reader_model", "rfid_reader_versions"):
+            _stamp(field, None)
+        device.rfid_paired_at = None
 
     device.current_initiative_id = new_initiative_id
     device.site_id = site.id if site is not None else None

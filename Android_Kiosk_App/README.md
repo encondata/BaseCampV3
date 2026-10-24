@@ -84,6 +84,21 @@ Kiosk Setup › **Time Clock** makes this device a dedicated time clock. It sign
 - Signed in, Home shows Time Clock, Kiosk Setup and Settings.
 - Design and rulings: `../docs/superpowers/specs/2026-10-20-kiosk-timeclock-station-design.md` (Implementation notes, phases 2 and 3).
 
+## Sign-in
+
+Besides email and password, the link with phone and the move password, a person's own phone can sign in with a fingerprint or face. Design and rulings: `../docs/superpowers/specs/2026-10-23-kiosk-biometric-sign-in-design.md`.
+- **Who it's for.** Only the person assigned to the phone in the portal (Scanning Hardware › Kiosks › the device › Personal device). A device with a station key or a station type (label, RFID, time clock) is shared, so it never qualifies.
+- **Turning it on.** After a password sign-in on that phone, the app offers "Use fingerprint or face…". Turn on runs the system prompt once.
+- **How it works.** The phone holds an EC key in Android Keystore that only a strong biometric can unlock. The server checks Android key attestation when the key is registered, and each sign-in answers a one-time challenge with a signature. The phone stores no password or token for it.
+- **30 days.** Biometric sign-in lasts 30 days from the last password sign-in. Biometric sign-ins don't extend it; a password sign-in does.
+- **Sign-in screen.** It opens on a "Sign in as …" card and starts the prompt. **Other account** opens the usual choices, and **Use password** opens the password form with the person's email filled in.
+- **When it turns off.** A new fingerprint is enrolled or the screen lock is removed (Android invalidates the key, and the app drops it). The password is changed or reset, the account is disabled, or the phone is reassigned to someone else (or made non-personal). After a key is dropped, the next password sign-in offers it again.
+- **Forget.** In Settings › This Kiosk, on /me, or on the user page. The device's page in the portal can forget it too.
+
+**Server.** `SS_KIOSK_SIGNING_DIGESTS` lists the allowed app signing-certificate SHA-256 digests (release, Play app signing, and the debug key in dev); enrollment is refused for any other. `serversherpa refresh-attestation-status` seeds Google's revocation list, which the notification worker then refreshes daily. Enrollment is refused until a list exists.
+
+**Tests.** `BiometricSignInTest` and the login tests use a software P-256 key (`FakeBiometricKeys`) and a fake prompt only. The real Keystore, attestation and BiometricPrompt need a device.
+
 ## Icons and fonts
 
 `python3 tools/make_icons.py` regenerates the launcher icons from `../portal/public/images/serversherpa-logo.png`. Fonts are bundled (see `FONTS-LICENSE.md`).

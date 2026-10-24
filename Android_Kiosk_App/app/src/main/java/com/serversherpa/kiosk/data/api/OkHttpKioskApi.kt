@@ -1,6 +1,12 @@
 package com.serversherpa.kiosk.data.api
 
 import com.serversherpa.kiosk.core.ApiError
+import com.serversherpa.kiosk.core.model.BiometricChallengeOut
+import com.serversherpa.kiosk.core.model.BiometricEnrollChallengeOut
+import com.serversherpa.kiosk.core.model.BiometricEnrollIn
+import com.serversherpa.kiosk.core.model.BiometricEnrollOut
+import com.serversherpa.kiosk.core.model.BiometricSerialIn
+import com.serversherpa.kiosk.core.model.BiometricSignInIn
 import com.serversherpa.kiosk.core.model.ClockInIn
 import com.serversherpa.kiosk.core.model.ClockOutIn
 import com.serversherpa.kiosk.core.model.HeartbeatIn
@@ -226,6 +232,26 @@ class OkHttpKioskApi(
         try {
             authed { url(apiUrl("/kiosk/sign-out")).post(jsonBody(KioskSignOutIn.serializer(), KioskSignOutIn(serial))) }.close()
         } catch (e: ApiError) { /* ignore */ }
+    }
+
+    // ── biometric sign-in ───────────────────────────────────────────
+
+    override suspend fun biometricEnrollChallenge(serial: String): String =
+        parse(authed { url(apiUrl("/kiosk/biometric/enroll-challenge")).post(jsonBody(BiometricSerialIn.serializer(), BiometricSerialIn(serial))) }, BiometricEnrollChallengeOut.serializer()).nonce
+
+    override suspend fun biometricEnroll(serial: String, nonce: String, chain: List<String>): BiometricEnrollOut =
+        parse(authed { url(apiUrl("/kiosk/biometric/enroll")).post(jsonBody(BiometricEnrollIn.serializer(), BiometricEnrollIn(serial, nonce, chain))) }, BiometricEnrollOut.serializer())
+
+    override suspend fun biometricChallenge(serial: String): BiometricChallengeOut =
+        parse(plain { url(apiUrl("/kiosk/biometric/challenge")).post(jsonBody(BiometricSerialIn.serializer(), BiometricSerialIn(serial))) }, BiometricChallengeOut.serializer())
+
+    override suspend fun biometricSignIn(keyId: String, challenge: String, signature: String): SessionData {
+        val resp = plain { url(apiUrl("/kiosk/biometric/sign-in")).post(jsonBody(BiometricSignInIn.serializer(), BiometricSignInIn(keyId, challenge, signature))) }
+        return parse(resp, SessionData.serializer()).also { session.store(it) }
+    }
+
+    override suspend fun biometricForget(serial: String) {
+        authed { url(apiUrl("/kiosk/biometric?serial=${q(serial)}")).delete() }.use { if (!it.isSuccessful) throw errorFrom(it) }
     }
 
     // ── setup & sync ────────────────────────────────────────────────

@@ -349,7 +349,7 @@ class HeartbeatIn(BaseModel):
     version: str | None = Field(default=None, max_length=40)
     raw_info: dict[str, Any] = Field(default_factory=dict)
     sign_in: bool = False
-    login_method: Literal["password", "link"] | None = None
+    login_method: Literal["password", "link", "biometric"] | None = None
     # Clear Setup acknowledgment: the request id this kiosk has just applied.
     setup_cleared: uuid.UUID | None = None
     # Accepted and ignored, so older edges that still attach the RFID
@@ -396,6 +396,55 @@ class HeartbeatOut(KioskConfigReplyMixin):
 
 class KioskSignOutIn(BaseModel):
     serial: str = Field(min_length=1, max_length=120)
+
+
+# ── kiosk biometric sign-in (spec 2026-10-23) ───────────────────────
+
+class BiometricSerialIn(BaseModel):
+    """enroll-challenge and challenge: the kiosk's serial."""
+
+    serial: str = Field(min_length=1, max_length=120)
+
+
+class BiometricEnrollChallengeOut(BaseModel):
+    # A signed token (typ "bioenroll", 5 minutes). The app passes the SHA-256
+    # of its UTF-8 bytes to KeyGenParameterSpec.setAttestationChallenge.
+    nonce: str
+
+
+class BiometricEnrollIn(BaseModel):
+    serial: str = Field(min_length=1, max_length=120)
+    nonce: str = Field(min_length=1, max_length=2048)
+    # KeyStore.getCertificateChain, leaf first, each certificate's DER in
+    # standard base64
+    chain: list[str] = Field(min_length=1, max_length=10)
+
+    @field_validator("chain")
+    @classmethod
+    def _bounded(cls, v: list[str]) -> list[str]:
+        if any(len(c) > 16_384 for c in v):
+            raise ValueError("certificate too large")
+        return v
+
+
+class BiometricEnrollOut(BaseModel):
+    key_id: uuid.UUID
+    security_level: Literal["tee", "strongbox"]
+    renews_at: datetime          # 30 days after the password sign-in
+
+
+class BiometricChallengeOut(BaseModel):
+    key_id: uuid.UUID
+    challenge: str               # sign its UTF-8 bytes with SHA256withECDSA
+    display_name: str
+    photo_url: str | None = None
+    expired: bool                # past 30 days: sign in with the password
+
+
+class BiometricSignInIn(BaseModel):
+    key_id: uuid.UUID
+    challenge: str = Field(min_length=1, max_length=2048)
+    signature: str = Field(min_length=1, max_length=512)   # base64 DER ECDSA
 
 
 class PersonDetail(BaseModel):
@@ -3009,6 +3058,20 @@ class ScanTypeOption(BaseModel):
     color: str | None
 
 
+class PersonalPersonOut(BaseModel):
+    id: uuid.UUID
+    display_name: str
+
+
+class PersonalBiometricOut(BaseModel):
+    """`on`: the personal person has a live (unrevoked) key on the device.
+    `renews_at`: when its 30 days from the last password sign-in run out
+    (null when off); a past date means the next sign-in needs the password."""
+
+    on: bool
+    renews_at: datetime | None
+
+
 class DeviceDetail(DeviceItem):
     """GET /devices/{id}: the list row plus the kiosk config and its sync
     state, the setup and the scan types the portal may pick."""
@@ -3023,6 +3086,40 @@ class DeviceDetail(DeviceItem):
     sync_state: Literal["in_sync", "pending", "waiting_first_report"] | None
     setup: DeviceSetupOut
     scan_type_options: list[ScanTypeOption]
+    # biometric sign-in: whose personal phone this is, and whether that
+    # person's fingerprint key on it is live (null when nobody's)
+    personal_person: PersonalPersonOut | None = None
+    personal_biometric: PersonalBiometricOut | None = None
+    # a Label, RFID or Time Clock station, or any kiosk holding a station
+    # key: never anyone's personal phone (biometric.shared_station)
+    shared_station: bool = False
+
+
+class DevicePersonalIn(BaseModel):
+    """PUT /devices/{id}/personal: the person, or null to clear."""
+
+    person_id: uuid.UUID | None
+
+
+class PersonalCandidateOut(BaseModel):
+    """GET /devices/{id}/personal-candidates: one person the PUT accepts."""
+
+    person_id: uuid.UUID
+    display_name: str
+    login_email: str
+
+
+class BiometricKeyOut(BaseModel):
+    """One live biometric sign-in key: the phone it lives on and when its
+    30 days from the last password sign-in run out."""
+
+    id: uuid.UUID
+    device_id: uuid.UUID
+    device_name: str
+    security_level: Literal["tee", "strongbox"]
+    created_at: datetime
+    last_used_at: datetime | None
+    renews_at: datetime
 
 
 class DeviceScanTypeIn(BaseModel):

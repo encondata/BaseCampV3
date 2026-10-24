@@ -403,7 +403,8 @@ async def _finish_challenge(
     when asked, remember this browser."""
     ip = client_ip(request)
     ua = request.headers.get("user-agent")
-    result = await auth_service.start_session(db, actor.account, ip=ip, user_agent=ua)
+    result = await auth_service.start_session(db, actor.account, ip=ip, user_agent=ua,
+                                              login_method="password")
     if remember:
         _set_trust_cookie(response, await totp_service.issue_trust(
             db, actor.account, user_agent=ua, ip=ip))

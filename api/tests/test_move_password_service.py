@@ -106,7 +106,7 @@ async def test_same_password_again_keeps_sessions(db, seeded_user):
     await db.commit()
     result = await auth_service.start_session(
         db, account, ip=None, user_agent=None, client="kiosk",
-        audit_action="login_move", initiative_id=init.id)
+        audit_action="login_move", initiative_id=init.id, login_method="move")
     await db.commit()
     await set_password(db, init, " Crew-2026! ", actor_id=seeded_user.id)
     await db.commit()
@@ -139,7 +139,7 @@ async def test_revoke_move_sessions_and_rename(db, seeded_user):
     await db.commit()
     result = await auth_service.start_session(
         db, account, ip=None, user_agent=None, client="kiosk",
-        audit_action="login_move", initiative_id=init.id)
+        audit_action="login_move", initiative_id=init.id, login_method="move")
     await db.commit()
     session_id = result.session_id
     row = await db.get(AuthSession, session_id)

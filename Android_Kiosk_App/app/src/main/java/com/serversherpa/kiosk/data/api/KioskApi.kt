@@ -1,5 +1,7 @@
 package com.serversherpa.kiosk.data.api
 
+import com.serversherpa.kiosk.core.model.BiometricChallengeOut
+import com.serversherpa.kiosk.core.model.BiometricEnrollOut
 import com.serversherpa.kiosk.core.model.ClockInIn
 import com.serversherpa.kiosk.core.model.ClockOutIn
 import com.serversherpa.kiosk.core.model.HeartbeatIn
@@ -45,6 +47,27 @@ interface KioskApi {
     suspend fun heartbeat(body: HeartbeatIn): HeartbeatResult
     /** Never throws — the kiosk is dropping its own token either way. */
     suspend fun signOut(serial: String)
+
+    // ── biometric sign-in (errors as {"detail":{"code":…}}) ─────────
+
+    /** POST /kiosk/biometric/enroll-challenge under the session: the enroll nonce. 403
+     *  enroll_window_closed (not a fresh password session here) / not_personal_device, 423. */
+    suspend fun biometricEnrollChallenge(serial: String): String
+    /** POST /kiosk/biometric/enroll under the session. [chain]: leaf first, standard base64 DER.
+     *  403 enroll_window_closed / not_personal_device, 422 bad_enroll_nonce (expired, spent or
+     *  someone else's: never a 401, which would end the session) / attestation_failed
+     *  (detail.reason) / attestation_status_unavailable, 423 read_only_mode. */
+    suspend fun biometricEnroll(serial: String, nonce: String, chain: List<String>): BiometricEnrollOut
+    /** POST /kiosk/biometric/challenge, no session: whose card this phone shows, and the challenge
+     *  to sign. 404 no_biometric, 429 biometric_rate_limited. */
+    suspend fun biometricChallenge(serial: String): BiometricChallengeOut
+    /** POST /kiosk/biometric/sign-in, no session; stores the session like [login] (the server sets
+     *  the refresh cookie and binds the session to the serial). 429 biometric_rate_limited, 401
+     *  bad_challenge / bad_signature / account_disabled, 404 no_biometric, 403 not_personal_device /
+     *  kiosk_not_allowed / password_change_required / biometric_expired. */
+    suspend fun biometricSignIn(keyId: String, challenge: String, signature: String): SessionData
+    /** DELETE /kiosk/biometric?serial= under the session: revokes the person's own key here (204 always). */
+    suspend fun biometricForget(serial: String)
 
     // ── setup & sync ────────────────────────────────────────────────
 

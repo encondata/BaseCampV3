@@ -145,15 +145,17 @@ async def login(
             raise AuthError("kiosk_not_allowed")
 
     return await start_session(db, account, ip=ip, user_agent=user_agent,
-                               access=access, client=client)
+                               access=access, client=client, login_method="password")
 
 
 async def start_session(
     db: AsyncSession, account: UserAccount, *,
     ip: str | None, user_agent: str | None,
+    login_method: str,
     audit_action: str = "login", access: AccessInfo | None = None,
     client: str = "portal",
     initiative_id: uuid.UUID | None = None,
+    kiosk_serial: str | None = None,
 ) -> AuthResult:
     """Mint a session for an account whose holder has just proven who they
     are — a password login, or a kiosk pairing they approved on their
@@ -164,6 +166,12 @@ async def start_session(
     `client` ("portal" | "kiosk") is recorded on the session row and
     every token rotated from it. `initiative_id` locks the session to one
     move (a move-password kiosk sign-in) and is carried through rotation.
+    `login_method` ("password" | "link" | "move" | "biometric") is how the
+    holder proved who they are; the route that signed in names it, it is
+    recorded on the session row and carried through rotation, and it is
+    never taken from anything the client reports.
+    `kiosk_serial` binds a kiosk session to its kiosk at once (a biometric
+    sign-in proves the phone); otherwise the first heartbeat binds it.
     A kiosk login is exempt from the 2FA challenge, so its session is held
     to the kiosk routes — see enforce_session_scope in api/deps.py."""
     settings = get_settings()
@@ -186,6 +194,8 @@ async def start_session(
         user_agent=user_agent,
         client=client,
         initiative_id=initiative_id,
+        login_method=login_method,
+        kiosk_serial=kiosk_serial,
     )
     db.add(session)
     audit(db, actor_id=account.person_id, entity_type="auth",
@@ -283,6 +293,7 @@ async def refresh(
         client=session.client,          # a kiosk session stays kiosk-scoped forever
         initiative_id=session.initiative_id,   # and a move session stays on its move
         kiosk_serial=session.kiosk_serial,     # and a bound kiosk session on its kiosk
+        login_method=session.login_method,     # and keeps how it signed in
     ))
     # successor row must hit the DB before the old row can point at it
     await db.flush()

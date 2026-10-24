@@ -46,6 +46,7 @@ from serversherpa.db.models import (
     WorkerProfile,
 )
 from serversherpa.db.ordering import natural
+from serversherpa.services import biometric
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.status.labels import UNKNOWN_COLOR
@@ -314,6 +315,8 @@ async def apply_profile_update(
                        AuthSession.revoked_at.is_(None))
                 .values(revoked_at=now, revoke_reason="account_disabled")
             )
+            await biometric.revoke_keys(db, person_id=person_id, reason="blacklist",
+                                        actor_id=actor.person.id)
         elif old_status == "blacklist" and new_status != "blacklist":
             account.disabled_at = None
             account.failed_login_count = 0

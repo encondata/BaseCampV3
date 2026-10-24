@@ -6,6 +6,9 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.test.core.app.ApplicationProvider
 import com.serversherpa.kiosk.data.api.KioskApi
+import com.serversherpa.kiosk.data.auth.BiometricKeys
+import com.serversherpa.kiosk.data.auth.BiometricReadiness
+import com.serversherpa.kiosk.data.auth.FakeBiometricKeys
 import com.serversherpa.kiosk.data.api.MemorySecretStore
 import com.serversherpa.kiosk.data.api.StationApi
 import com.serversherpa.kiosk.data.db.KioskDatabase
@@ -26,13 +29,16 @@ import kotlinx.coroutines.runBlocking
  *  [api] and [stationApi] replace the real HTTP clients (the session, auth and heartbeat use [api]).
  *  [bluetooth] is the printer link's adapter: a [FakeBluetoothLe] (Bluetooth on, no printers) unless
  *  a test passes its own, so no test touches Android's Bluetooth. [dataStore] is a fresh one unless
- *  a test passes its own (a relaunch: two containers over the same prefs). */
+ *  a test passes its own (a relaunch: two containers over the same prefs). [biometricKeys] is a
+ *  [FakeBiometricKeys] with no biometric hardware unless a test passes its own, so no test touches
+ *  AndroidKeyStore and no password sign-in is offered fingerprint by accident. */
 fun testContainer(
     rfidReader: RfidReader = FakeRfidReader(),
     api: KioskApi? = null,
     stationApi: StationApi? = null,
     bluetooth: BluetoothLeClient = FakeBluetoothLe(),
     dataStore: DataStore<Preferences>? = null,
+    biometricKeys: BiometricKeys = FakeBiometricKeys(BiometricReadiness.NO_HARDWARE),
 ): AppContainer {
     val app = ApplicationProvider.getApplicationContext<Application>()
     val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -47,6 +53,7 @@ fun testContainer(
         apiOverride = api,
         stationApiOverride = stationApi,
         bluetoothOverride = bluetooth,
+        biometricKeysOverride = biometricKeys,
     )
     runBlocking { c.prefs.setApiUrl("http://127.0.0.1:1") }
     return c

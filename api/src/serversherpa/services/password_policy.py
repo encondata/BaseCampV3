@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.config import get_settings
 from serversherpa.db.models import PasswordHistory, UserAccount
 from serversherpa.security.passwords import hash_password, verify_password
+from serversherpa.services import biometric
 from serversherpa.system.config_store import read_section
 
 HISTORY_KEEP = 24   # the largest history_count the policy allows
@@ -127,6 +128,7 @@ async def assert_not_reused(db: AsyncSession, policy: PasswordPolicy,
 async def apply_password(db: AsyncSession, account: UserAccount, new_password: str, *,
                          must_change: bool, now: datetime) -> None:
     """Set the password, stamp the account, record history and trim it.
+    Also revokes the person's biometric keys ("password_change").
     Adds to the caller's session; never commits. A brand-new account
     (no password_hash yet) records only the new password."""
     pepper = get_settings().password_pepper.get_secret_value()
@@ -147,6 +149,10 @@ async def apply_password(db: AsyncSession, account: UserAccount, new_password: s
     db.add(PasswordHistory(person_id=account.person_id,
                            password_hash=account.password_hash, created_at=now))
     await db.flush()
+    # A new password ends every fingerprint sign-in the person has, on every
+    # phone (own change, admin reset, self-service reset, invite, CLI). It
+    # rides this transaction, so the caller's commit makes it final.
+    await biometric.revoke_keys(db, person_id=account.person_id, reason="password_change")
     keep = select(PasswordHistory.id).where(
         PasswordHistory.person_id == account.person_id
     ).order_by(PasswordHistory.created_at.desc()).limit(HISTORY_KEEP)

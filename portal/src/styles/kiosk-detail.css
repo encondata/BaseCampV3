@@ -66,3 +66,9 @@
 /* the stale-version note (409 config_changed) with its Reload button */
 .kd-stale { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 0 0 12px; }
 .kd-stale .pf-error { margin: 0; }
+
+/* ── Overview: the Personal device row (biometric sign-in) ─────────── */
+.kd-personal { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; }
+/* the person picker: content-sized, a readable hint */
+.modal-card.reports-modal-card.rgm-card.kd-personal-card { width: min(560px, 96vw); max-width: 96vw; }
+.kd-personal-card .rgm-head-text .page-hint { max-width: 60ch; }

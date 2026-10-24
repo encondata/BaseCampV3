@@ -149,9 +149,19 @@ READ_ONLY_EXEMPT_PATHS = frozenset({
     # renders one mock-data test label and stores nothing: a Label Station's
     # setup must still be able to print a test label during a freeze
     "/kiosk/labels/test-render",
+    # biometric sign-in is a sign-in, like /kiosk/pair*: the card's challenge
+    # and the signed answer (both unauthenticated, so listed for
+    # completeness). DELETE /kiosk/biometric forgets the caller's own key
+    # (closing a hole, like forgetting a remembered browser). Enroll and its
+    # challenge stay frozen.
+    "/kiosk/biometric/challenge", "/kiosk/biometric/sign-in", "/kiosk/biometric",
+    # my biometric keys, listed and forgotten one at a time (the prefix
+    # below), exactly as my remembered browsers are. The admin
+    # /users/{id}/biometric-keys and /devices/{id}/biometric stay frozen.
+    "/auth/me/biometric-keys",
 })
 READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/auth/me/trusted-browsers/",
-                             "/kiosk/pair")
+                             "/auth/me/biometric-keys/", "/kiosk/pair")
 # Paths with an id in them. `POST /wiki/nodes/{id}/view` is telemetry, not
 # a state change: the route answers 204 during a freeze and simply doesn't
 # count the view, so a reader opening a page never sees a read-only error.

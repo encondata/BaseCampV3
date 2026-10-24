@@ -830,6 +830,46 @@ export async function forgetAllUserTrustedBrowsers(personId: string): Promise<vo
   if (!resp.ok) throw await errorFrom(resp);
 }
 
+/** One live biometric sign-in key (a personal kiosk phone), newest first. */
+export interface BiometricKey {
+  id: string;
+  device_id: string;
+  device_name: string;
+  security_level: 'tee' | 'strongbox';
+  created_at: string;
+  last_used_at: string | null;
+  renews_at: string;
+}
+
+export async function listUserBiometricKeys(personId: string): Promise<BiometricKey[]> {
+  const resp = await apiFetch(`/users/${personId}/biometric-keys`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** A key that is already gone (404) counts as forgotten. */
+export async function forgetUserBiometricKey(personId: string, keyId: string): Promise<void> {
+  const resp = await apiFetch(`/users/${personId}/biometric-keys/${keyId}`, { method: 'DELETE' });
+  if (!resp.ok && resp.status !== 404) throw await errorFrom(resp);
+}
+
+export async function forgetAllUserBiometricKeys(personId: string): Promise<void> {
+  const resp = await apiFetch(`/users/${personId}/biometric-keys`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function listMyBiometricKeys(): Promise<BiometricKey[]> {
+  const resp = await apiFetch('/auth/me/biometric-keys');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** A key that is already gone (404) counts as forgotten. */
+export async function forgetMyBiometricKey(keyId: string): Promise<void> {
+  const resp = await apiFetch(`/auth/me/biometric-keys/${keyId}`, { method: 'DELETE' });
+  if (!resp.ok && resp.status !== 404) throw await errorFrom(resp);
+}
+
 /** Slim projection of GET /users for pickers (the Users page reads the
  *  full payload itself). */
 export interface UserSummary {
@@ -5210,7 +5250,18 @@ export interface DeviceDetail extends DeviceItem {
   sync_state: KioskSyncState | null;
   setup: DeviceSetup;
   scan_type_options: ScanTypeOption[];
+  /** Biometric sign-in: whose personal phone this is (null when nobody's),
+   *  and whether that person's fingerprint key on it is live. Optional so
+   *  older fixtures stay valid. */
+  personal_person?: PersonalPerson | null;
+  personal_biometric?: PersonalBiometric | null;
+  /** A Label, RFID or Time Clock station, or a kiosk holding a station key:
+   *  never anyone's personal phone. Optional so older fixtures stay valid. */
+  shared_station?: boolean;
 }
+
+export interface PersonalPerson { id: string; display_name: string }
+export interface PersonalBiometric { on: boolean; renews_at: string | null }
 
 export interface DeviceConfigHistoryItem {
   at: string;
@@ -5264,6 +5315,44 @@ export async function setDeviceScanType(id: string, scanStatus: string): Promise
   });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
+}
+
+/** One person the Personal device picker may offer (GET
+ *  /devices/{id}/personal-candidates): only people the PUT accepts. */
+export interface PersonalCandidate { person_id: string; display_name: string; login_email: string }
+
+/** How many people one candidates answer holds (the server's cap). */
+export const PERSONAL_CANDIDATE_LIMIT = 50;
+
+/** The people this kiosk can be the personal phone of, natural-sorted by
+ *  name, at most PERSONAL_CANDIDATE_LIMIT; `q` searches name and email. */
+export async function listPersonalCandidates(id: string, q = ''): Promise<PersonalCandidate[]> {
+  const term = q.trim();
+  const qs = term ? `?${new URLSearchParams({ q: term })}` : '';
+  const resp = await apiFetch(`/devices/${id}/personal-candidates${qs}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Make the kiosk someone's personal phone, or clear it with null. Refused
+ *  with 422 `not_eligible` + `detail.reason` (shared_station, no_account,
+ *  account_disabled, no_kiosk_view, move_identity). Changing or clearing
+ *  revokes the device's live biometric key. */
+export async function setDevicePersonal(id: string, personId: string | null): Promise<DeviceDetail> {
+  const resp = await apiFetch(`/devices/${id}/personal`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ person_id: personId }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Forget fingerprint: revoke the live biometric key on this kiosk (the
+ *  personal assignment stays). Nothing to forget is still a 204. */
+export async function forgetDeviceBiometric(id: string): Promise<void> {
+  const resp = await apiFetch(`/devices/${id}/biometric`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
 }
 
 export async function getDeviceConfigHistory(id: string): Promise<DeviceConfigHistoryItem[]> {

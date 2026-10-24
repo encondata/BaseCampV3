@@ -91,4 +91,43 @@ class KioskAuthTest {
         assertEquals(AuthState.Anon, auth.state.value)
         assertNull(auth.takePendingSignIn())
     }
+
+    @Test fun biometricSignInAdoptsTheSessionAsABiometricSignIn() = runTest {
+        val refresher = FakeRefresher()
+        val auth = KioskAuth(FakeKioskApi(), refresher, testIdentity(tmp.root, backgroundScope), backgroundScope)
+        val data = fakeSession()
+        auth.signInWithBiometric(data)
+        assertEquals(data, (auth.state.value as AuthState.Authed).session)
+        assertEquals(data, refresher.stored)
+        assertEquals(LoginMethod.BIOMETRIC, auth.takePendingSignIn())
+        assertEquals(CurrentSignIn(LoginMethod.BIOMETRIC), auth.currentSignIn)
+        assertEquals("biometric", LoginMethod.BIOMETRIC.wire)
+        assertEquals(LoginMethod.BIOMETRIC, LoginMethod.fromWire("biometric"))
+    }
+
+    @Test fun currentSignInIsOnlyAPersonsOwnSignInOnThisLaunch() = runTest {
+        val refresher = FakeRefresher().apply { refreshResult = { fakeSession() } }
+        val api = FakeKioskApi().apply {
+            loginResult = { fakeSession() }
+            moveLoginResult = { fakeSession(kioskMove = KioskMove("m1", "Move")) }
+        }
+        val auth = KioskAuth(api, refresher, testIdentity(tmp.root, backgroundScope), backgroundScope)
+        auth.login("tina@example.com", "pw")
+        assertEquals(CurrentSignIn(LoginMethod.PASSWORD, "tina@example.com"), auth.currentSignIn)
+        auth.takePendingSignIn()                       // the heartbeat taking it changes nothing here
+        assertEquals(LoginMethod.PASSWORD, auth.currentSignIn?.method)
+        auth.restore()                                 // a cookie restore is not a sign-in
+        assertNull(auth.currentSignIn)
+        auth.login("tina@example.com", "pw")
+        auth.logout()
+        assertNull(auth.currentSignIn)
+        auth.loginWithMovePassword("orange")           // a move password isn't a person's password
+        assertNull(auth.currentSignIn)
+        auth.completePair(fakeSession())
+        assertEquals(CurrentSignIn(LoginMethod.LINK), auth.currentSignIn)
+        auth.login("tina@example.com", "pw")
+        refresher.sessionEnded.tryEmit(Unit)
+        runCurrent()
+        assertNull(auth.currentSignIn)
+    }
 }

@@ -16,6 +16,8 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from serversherpa.config import get_settings
 from serversherpa.db.models import AuditLog, Device, Initiative
+from tests.test_biometric_admin_api import _super as _bio_super
+from tests.test_biometric_admin_api import _worker as _bio_worker
 from tests.test_kiosk_setup_api import (
     SERIAL,
     _seed_initiatives,
@@ -127,18 +129,52 @@ async def test_label_with_a_reader_ignores_it_and_clears(client, db, seeded_user
     assert d.rfid_paired_at is None
 
 
-async def test_omitting_both_leaves_them_untouched(client, db, seeded_user):
+async def test_a_plain_setup_clears_an_rfid_station(client, db, seeded_user):
+    # a regular Kiosk Setup (no station_type) means a regular kiosk: the
+    # stamped type and its paired reader go, like a Time Clock Station's
     hdrs = await login(client)
     body, device_id = await _setup_body(db)
     await client.post("/kiosk/setup", headers=hdrs,
                       json={**body, "station_type": "rfid", "reader": READER})
-    before = await _device(db, device_id)
-    paired = before.rfid_paired_at
     r = await client.post("/kiosk/setup", headers=hdrs, json=body)
     assert r.status_code == 200, r.text
     d = await _device(db, device_id)
-    assert d.station_type == "rfid" and d.rfid_reader_serial == "FX9600-AB12"
-    assert d.rfid_paired_at == paired
+    assert d.station_type is None
+    assert d.rfid_reader_ip is None and d.rfid_reader_serial is None
+    assert d.rfid_reader_model is None and d.rfid_reader_versions is None
+    assert d.rfid_paired_at is None
+    rows = (await db.scalars(select(AuditLog).where(
+        AuditLog.action == "kiosk_station_setup",
+        AuditLog.entity_id == str(device_id)))).all()
+    assert {"from": "rfid", "to": None} in [r.changes.get("station_type") for r in rows]
+
+
+async def test_a_plain_setup_clears_a_label_station_and_its_key(client, db, seeded_user):
+    # final review Important 1: a Label Station set up again as a regular
+    # kiosk stops being shared, so it can become someone's personal phone
+    hdrs = await login(client)
+    body, device_id = await _setup_body(db)
+    r = await client.post("/kiosk/setup", headers=hdrs, json={**body, "station_type": "label"})
+    assert r.status_code == 200, r.text
+    d = await _device(db, device_id)
+    d.station_key_hash = "k" * 64
+    d.station_key_initiative_id = uuid.UUID(body["initiative_id"])
+    await db.commit()
+    r = await client.post("/kiosk/setup", headers=hdrs, json=body)
+    assert r.status_code == 200, r.text
+    d = await _device(db, device_id)
+    assert d.station_type is None
+    assert d.station_key_hash is None and d.station_key_initiative_id is None
+    revokes = (await db.scalars(select(AuditLog).where(
+        AuditLog.action == "station_key_revoke",
+        AuditLog.entity_id == str(device_id)))).all()
+    assert [a.changes for a in revokes] == [{"reason": "station_type_change"}]
+    worker = await _bio_worker(db)
+    sa, _ = await _bio_super(db, client)
+    r = await client.put(f"/devices/{device_id}/personal", headers=sa,
+                         json={"person_id": str(worker.id)})
+    assert r.status_code == 200, r.text
+    assert r.json()["personal_person"]["id"] == str(worker.id)
 
 
 async def test_move_locked_session_is_still_refused(client, db, seeded_user):
@@ -180,8 +216,13 @@ async def test_audit_row_only_when_something_changed(client, db, seeded_user):
     assert len(await rows()) == 1
     await client.post("/kiosk/setup", headers=hdrs, json={**body, "station_type": "label"})
     assert len(await rows()) == 2
-    await client.post("/kiosk/setup", headers=hdrs, json=body)  # omitted: nothing
-    assert len(await rows()) == 2
+    # a plain setup clears the stamped type (one row), and again changes nothing
+    await client.post("/kiosk/setup", headers=hdrs, json=body)
+    got = await rows()
+    assert len(got) == 3
+    assert {"station_type": {"from": "label", "to": None}} in [g.changes for g in got]
+    await client.post("/kiosk/setup", headers=hdrs, json=body)
+    assert len(await rows()) == 3
 
 
 async def test_list_and_detail_include_the_fields(client, db, seeded_user):

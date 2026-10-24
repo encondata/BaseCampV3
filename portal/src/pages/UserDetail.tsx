@@ -347,7 +347,7 @@ export default function UserDetail() {
                 <div className="eyebrow">Sessions</div>
                 <h3>Sign out everywhere</h3>
                 <p className="page-hint">
-                  Every live sign-in for {person.display_name} is revoked immediately. Their account stays enabled and they can sign in again with their password.
+                  Every live sign-in for {person.display_name} is revoked immediately, and fingerprint sign-in on their phone turns off until their next password sign-in. Their account stays enabled and they can sign in again with their password.
                 </p>
               </div>
             </div>

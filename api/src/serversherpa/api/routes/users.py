@@ -23,6 +23,7 @@ from serversherpa.api.schemas import (
     AccessGroupsOut,
     AccessGroupsUpdateIn,
     AccountCreateIn,
+    BiometricKeyOut,
     MyActivityItem,
     OrgRefOut,
     PartnerRef,
@@ -58,7 +59,7 @@ from serversherpa.db.ordering import natural
 from serversherpa.mail import email_enabled
 from serversherpa.notifications import reset_requests
 from serversherpa.notifications.requests import resolve_copies
-from serversherpa.services import invites
+from serversherpa.services import biometric, invites
 from serversherpa.services import totp as totp_service
 from serversherpa.services.activity import person_activity
 from serversherpa.services.audit import audit, diff, snapshot
@@ -687,6 +688,8 @@ async def disable_account(
     account.disabled_at = now
     account.updated_at = now
     await revoke_all_sessions(db, person_id, "account_disabled")
+    await biometric.revoke_keys(db, person_id=person_id, reason="account_disabled",
+                                actor_id=actor.person.id)
     audit(db, actor_id=actor.person.id, entity_type="user_account",
           entity_id=str(person_id), action="account.disable")
     await db.commit()
@@ -791,6 +794,10 @@ async def demote_to_worker(
         # rows would block the account delete below; delete them outright
         # (which also signs the person out everywhere).
         await db.execute(delete(AuthSession).where(AuthSession.person_id == person_id))
+        # biometric_keys cascade only on a person delete, not on this account
+        # delete, so the keys must be revoked explicitly (and audited).
+        await biometric.revoke_keys(db, person_id=person_id, reason="demoted",
+                                    actor_id=actor.person.id, ip=client_ip(request))
         await db.delete(account)   # password_history cascades
 
         audit(db, actor_id=actor.person.id, entity_type="user_account",
@@ -931,6 +938,8 @@ async def revoke_all_user_sessions(
     """Sign the person out everywhere without disabling them."""
     await _load_target(db, actor, person_id)
     await revoke_all_sessions(db, person_id, "admin")
+    await biometric.revoke_keys(db, person_id=person_id, reason="admin",
+                                actor_id=actor.person.id)
     await totp_service.revoke_trust(db, person_id)
     audit(db, actor_id=actor.person.id, entity_type="auth",
           entity_id=str(person_id), action="session.revoke_all", changes={})
@@ -986,6 +995,61 @@ async def forget_all_user_trusted_browsers(
     if count:
         audit(db, actor_id=actor.person.id, entity_type="user_account",
               entity_id=str(person_id), action="totp.trust_forget_all",
+              changes={"count": count})
+    await db.commit()
+
+
+@router.get("/{person_id}/biometric-keys", response_model=list[BiometricKeyOut])
+async def list_user_biometric_keys(
+    person_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("users", "view"),
+) -> list[BiometricKeyOut]:
+    """Their live biometric sign-in keys, newest first. Gated like the
+    remembered browsers: the route needs users:view, and the list itself
+    needs users:change, a global actor, and the person themself or a
+    target whose rank the actor can touch (403 forbidden otherwise)."""
+    await _visible_user(db, actor, person_id)
+    if not _may_see_device_details(actor, person_id, await _target_rank(db, person_id)):
+        raise _err(403, "forbidden")
+    return [BiometricKeyOut(**row) for row in await biometric.list_live_keys(db, person_id)]
+
+
+@router.delete("/{person_id}/biometric-keys/{key_id}", status_code=204)
+async def forget_user_biometric_key(
+    person_id: uuid.UUID,
+    key_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("users", "change"),
+) -> None:
+    """Forget one of their biometric keys (reason `forgotten`): that phone
+    asks for the password again."""
+    await _load_target(db, actor, person_id)
+    key = await biometric.live_key_by_id(db, person_id, key_id)
+    if key is None:
+        raise _err(404, "biometric_key_not_found")
+    device_id = key.device_id
+    await biometric.revoke_keys(db, person_id=person_id, key_id=key_id,
+                                reason="forgotten", actor_id=actor.person.id)
+    audit(db, actor_id=actor.person.id, entity_type="user_account",
+          entity_id=str(person_id), action="biometric_forget",
+          changes={"key_id": str(key_id), "device_id": str(device_id)})
+    await db.commit()
+
+
+@router.delete("/{person_id}/biometric-keys", status_code=204)
+async def forget_all_user_biometric_keys(
+    person_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("users", "change"),
+) -> None:
+    """Forget every biometric key of theirs (reason `forgotten`)."""
+    await _load_target(db, actor, person_id)
+    count = await biometric.revoke_keys(db, person_id=person_id, reason="forgotten",
+                                        actor_id=actor.person.id)
+    if count:
+        audit(db, actor_id=actor.person.id, entity_type="user_account",
+              entity_id=str(person_id), action="biometric_forget_all",
               changes={"count": count})
     await db.commit()
 

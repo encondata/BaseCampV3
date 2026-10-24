@@ -1,8 +1,10 @@
 """The notification-worker loop — a separate process from the API
 (`serversherpa notification-worker`). Each poll it delivers the email
 outbox (mail/delivery.py); once an hour it runs the password-expiry
-reminder sweep (notifications/password_reminders.py); every 15 minutes it
-logs a status line. Quiet hours / DND are applied when a notification is
+reminder sweep (notifications/password_reminders.py); once a day it
+refreshes Google's Android attestation revocation list
+(security/attestation_status.py, retried hourly after a failure); every 15
+minutes it logs a status line. Quiet hours / DND are applied when a notification is
 queued (notifications/email.py), which sets the email's send time."""
 
 import asyncio
@@ -16,10 +18,13 @@ from serversherpa.db.models import NotificationGroup, NotificationGroupMember
 from serversherpa.mail import email_enabled
 from serversherpa.mail.delivery import deliver_once
 from serversherpa.notifications.password_reminders import run_reminders_once
+from serversherpa.security import attestation_status
 
 logger = logging.getLogger("serversherpa.notifications.worker")
 IDLE_LOG_SECONDS = 900   # one INFO status line every 15 min
 REMINDER_INTERVAL_SECONDS = 3600
+ATTESTATION_STATUS_INTERVAL_SECONDS = 86_400
+ATTESTATION_STATUS_RETRY_SECONDS = 3600
 
 
 async def status_counts(db: AsyncSession) -> tuple[int, int]:
@@ -45,6 +50,21 @@ async def run_once(maker) -> None:
         groups, members, "on" if email_enabled() else "off (SMTP not configured)")
 
 
+async def run_attestation_refresh(maker) -> bool:
+    """Refresh the cached attestation revocation list. A failure is logged and
+    reported (False), never raised: the loop retries after
+    ATTESTATION_STATUS_RETRY_SECONDS, and the old list stays until then."""
+    try:
+        async with maker() as db:
+            await attestation_status.refresh_attestation_status(db)
+            await db.commit()
+    except Exception:
+        logger.warning("could not refresh the attestation revocation list — retrying "
+                       "in an hour", exc_info=True)
+        return False
+    return True
+
+
 async def run_forever(poll_seconds: float = 5.0) -> None:
     from serversherpa.db.engine import get_sessionmaker
     from serversherpa.system.admin_config import poll_workers_paused
@@ -59,7 +79,8 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
                                 meta_fn=lambda: dict(pause_state))
 
     logger.info("notification worker online — email outbox every %.0fs, hourly "
-                "password expiry reminders", poll_seconds)
+                "password expiry reminders, daily attestation revocation list",
+                poll_seconds)
 
     maker = get_sessionmaker()
     try:
@@ -67,6 +88,7 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
         # interval in the past so the first loop iteration always logs.
         last_log = time.monotonic() - IDLE_LOG_SECONDS
         last_reminders = time.monotonic() - REMINDER_INTERVAL_SECONDS
+        last_attestation = time.monotonic() - ATTESTATION_STATUS_INTERVAL_SECONDS
         while True:
             # read-only mode's "also pause background services": idle (still
             # heart-beating as paused) until the flag clears — no work lost
@@ -94,6 +116,12 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
                 if sent:
                     logger.info("sent %d password expiry reminder(s)", sent)
                 last_reminders = now
+            if now - last_attestation >= ATTESTATION_STATUS_INTERVAL_SECONDS:
+                if await run_attestation_refresh(maker):
+                    last_attestation = now
+                else:
+                    last_attestation = (now - ATTESTATION_STATUS_INTERVAL_SECONDS
+                                        + ATTESTATION_STATUS_RETRY_SECONDS)
             if now - last_log >= IDLE_LOG_SECONDS:
                 await run_once(maker)
                 last_log = now

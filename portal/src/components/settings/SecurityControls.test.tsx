@@ -41,10 +41,15 @@ it('loads the policy and saves a change; requiring 2FA also shows enabled', asyn
 });
 
 it('End all sessions confirms, calls the API, and reports the count', async () => {
-  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
   render(<SecurityControls />);
   await waitFor(() => expect(switches()[0].disabled).toBe(false));
+  expect(screen.getByText(
+    'Sign everyone out on every device, and fingerprint sign-in on their phone turns off until their next password sign-in. Your current session stays signed in.',
+  )).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'End all sessions' }));
+  expect(confirm).toHaveBeenCalledWith(
+    'Sign everyone out on every device, and fingerprint sign-in on their phone turns off until their next password sign-in? You will stay signed in here.');
   await waitFor(() => expect(api.revokeAllSessions).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(screen.getByText(/Signed out 4 sessions across 3 people/)).toBeTruthy());
 });

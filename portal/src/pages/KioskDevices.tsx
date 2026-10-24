@@ -65,8 +65,9 @@ import '../styles/hardware.css';
 // ceiling, measured 1174 at 1512px). Ten default columns is dense, so most of the
 // non-primary/identifier ones carry a short label that collapses their
 // fixed/derived floor to the 72px absolute minimum — the long label still
-// shows whenever the column actually has the room.
-const COLUMNS: ColumnDef[] = [
+// shows whenever the column actually has the room. Login (hidden by default)
+// carries a 104px floor so its widest chip, "Fingerprint", never clips.
+export const KIOSK_COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: '1.2fr', default: true, min: 140 },
   { key: 'sub_type', label: 'Type', width: '1fr', default: true, min: 130 },
   { key: 'ip', label: 'IP', width: '1fr', default: true, min: 100 },
@@ -74,7 +75,7 @@ const COLUMNS: ColumnDef[] = [
   { key: 'version', label: 'Version', short: 'Ver', width: '72px', default: true },
   { key: 'registration', label: 'Registration', short: 'Reg.', width: '72px', default: true },
   { key: 'signed_in', label: 'Signed in', short: 'Sign-in', width: '1fr', default: true },
-  { key: 'login_method', label: 'Login', width: '72px', default: false },
+  { key: 'login_method', label: 'Login', width: '1fr', default: false, min: 104 },
   { key: 'current_move', label: 'Current Move', short: 'Move', width: '1.2fr', default: true },
   { key: 'scan_status', label: 'Scan Type', short: 'Scan', width: '1fr', default: true },
   { key: 'site', label: 'Site', width: '1fr', default: true },
@@ -82,8 +83,8 @@ const COLUMNS: ColumnDef[] = [
   { key: 'last_seen', label: 'Last seen', width: '1fr', default: false, min: 96 },
 ];
 
-const ALL_COLUMN_KEYS = new Set<string>(COLUMNS.map((c) => c.key));
-const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
+const ALL_COLUMN_KEYS = new Set<string>(KIOSK_COLUMNS.map((c) => c.key));
+const DEFAULT_VISIBLE = new Set<string>(KIOSK_COLUMNS.filter((c) => c.default).map((c) => c.key));
 
 const deviceCellTextTyped: CellText<DeviceItem> = (d, key) => deviceCellText(d, key);
 
@@ -315,7 +316,7 @@ export default function KioskDevices() {
     });
   }, [devices, facets, filters, query, sortKey, sortDir, haystack]);
 
-  const orderedCols = applyColumnOrder(COLUMNS, colOrder);
+  const orderedCols = applyColumnOrder(KIOSK_COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),

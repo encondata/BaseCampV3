@@ -30,6 +30,12 @@ import kotlinx.serialization.json.Json
 @Serializable
 data class SetupClearRecord(val id: String, val acked: Boolean = false, val notice: Boolean = false)
 
+/** This phone's biometric sign-in, saved at enrollment: the server's key id, and whose key it is.
+ *  [email] is the address typed at that password sign-in (the server never sends one), so the
+ *  expired card can pre-fill it. The private key itself lives in Android Keystore. */
+@Serializable
+data class BiometricEnrollment(val keyId: String, val personId: String, val email: String? = null)
+
 /**
  * Every kiosk-local value the web kiosk kept in localStorage, in one
  * DataStore file. Keys keep the web's `ss.kiosk.*` names so the two apps
@@ -52,6 +58,7 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
         val name = stringPreferencesKey("ss.kiosk.name")
         val setupClear = stringPreferencesKey("ss.kiosk.setupClear")
         val signInMethod = stringPreferencesKey("ss.kiosk.signInMethod")
+        val biometric = stringPreferencesKey("ss.kiosk.biometric")
     }
 
     val setupState: Flow<SetupState> = store.data.map { SetupState.fromWire(it[Keys.setupState]) }
@@ -149,10 +156,18 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
     val devMode: Flow<Boolean> = store.data.map { it[Keys.devMode] ?: false }
     suspend fun setDevMode(on: Boolean) { store.edit { it[Keys.devMode] = on } }
 
-    /** How the person signed in here last ("password" | "link"), as the last sign-in heartbeat
+    /** How the person signed in here last ("password" | "link" | "biometric"), as the last sign-in heartbeat
      *  told the portal; a restored session is that same sign-in. */
     val signInMethod: Flow<String?> = store.data.map { it[Keys.signInMethod] }
     suspend fun setSignInMethod(wire: String) { store.edit { it[Keys.signInMethod] = wire } }
+
+    /** This phone's biometric sign-in, or null (none, or nothing readable). One key, one write. */
+    val biometric: Flow<BiometricEnrollment?> = store.data.map { p ->
+        p[Keys.biometric]?.let { raw -> try { json.decodeFromString<BiometricEnrollment>(raw) } catch (e: Exception) { null } }
+    }
+    suspend fun setBiometric(enrollment: BiometricEnrollment?) {
+        store.edit { if (enrollment == null) it.remove(Keys.biometric) else it[Keys.biometric] = json.encodeToString(BiometricEnrollment.serializer(), enrollment) }
+    }
 
     val apiUrl: Flow<String?> = store.data.map { it[Keys.apiUrl] }
     suspend fun setApiUrl(url: String?) { store.edit { if (url == null) it.remove(Keys.apiUrl) else it[Keys.apiUrl] = url } }

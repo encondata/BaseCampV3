@@ -14,6 +14,7 @@ import ChangePasswordForm from '../components/ChangePasswordForm';
 import { BadgeQr } from '../components/people/BadgeQr';
 import RegenerateCodesModal from '../components/totp/RegenerateCodesModal';
 import TotpEnrollModal from '../components/totp/TotpEnrollModal';
+import UserBiometricKeys from '../components/users/UserBiometricKeys';
 import {
   forgetAllMyTrustedBrowsers,
   forgetMyTrustedBrowser,
@@ -434,6 +435,7 @@ export default function Profile() {
           </div>
         </div>
       )}
+      <UserBiometricKeys personId={null} />
       </>
       )}
 
