@@ -26,6 +26,7 @@ import com.serversherpa.kiosk.ui.screens.home.HomeScreen
 import com.serversherpa.kiosk.ui.screens.labels.LabelsHomeScreen
 import com.serversherpa.kiosk.ui.screens.labels.PrintLabelsScreen
 import com.serversherpa.kiosk.ui.screens.labels.PrinterSetupScreen
+import com.serversherpa.kiosk.ui.screens.login.EnrollOfferHost
 import com.serversherpa.kiosk.ui.screens.login.LoginScreen
 import com.serversherpa.kiosk.ui.screens.placeholder.FeaturePlaceholderScreen
 import com.serversherpa.kiosk.ui.screens.rolodex.RolodexScreen
@@ -68,6 +69,7 @@ fun KioskApp() {
                 composable(Routes.ROLODEX) { KioskGuard(nav) { AdminGate(nav) { KioskShell(nav, scroll = false) { RolodexScreen(nav) } } } }
             }
             ScanFlash(container.flash)
+            EnrollOfferHost(container.enrollOffer)
             SetupClearedRedirect(nav, container.heartbeat.setupCleared)
         }
     }

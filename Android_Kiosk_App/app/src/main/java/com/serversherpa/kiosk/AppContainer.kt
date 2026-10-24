@@ -67,6 +67,7 @@ import com.serversherpa.kiosk.input.rfid.ZebraRfidReader
 import com.serversherpa.kiosk.nettest.InternetTest // INTERNET-TEST
 import com.serversherpa.kiosk.nettest.InternetTestRoutes // INTERNET-TEST
 import com.serversherpa.kiosk.ui.flash.FlashController
+import com.serversherpa.kiosk.ui.screens.login.EnrollOffer
 import com.serversherpa.kiosk.ui.sound.SoundPlayer
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -130,6 +131,8 @@ class AppContainer(
         api, auth, biometricKeysOverride ?: AndroidBiometricKeys(app), prefs, identity,
         stationKeyPresent = { withContext(Dispatchers.IO) { stationKeys.get(config.apiUrlNow()) != null } },
     )
+    /** The Turn on sheet after a password sign-in (KioskApp shows it over any signed-in screen). */
+    val enrollOffer = EnrollOffer(biometric, auth, scope)
     /** The Rolodex's offline list: kept only while an admin is signed in. */
     val rolodexCache = RolodexCacheStore(db) { (auth.state.value as? AuthState.Authed)?.isAdmin == true }
     val sync = Sync(api, db, scope, fontsDir = File(app.filesDir, "label-fonts"))

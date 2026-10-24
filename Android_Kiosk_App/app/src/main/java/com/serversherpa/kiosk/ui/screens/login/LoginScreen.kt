@@ -1,6 +1,9 @@
 package com.serversherpa.kiosk.ui.screens.login
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -9,10 +12,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
@@ -25,6 +30,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -39,13 +48,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.model.SessionData
+import com.serversherpa.kiosk.data.auth.BiometricCard
 import com.serversherpa.kiosk.data.identity.KioskIdentity
 import com.serversherpa.kiosk.data.station.TIMECLOCK_STATION
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.guards.StationIdleReturn
 import com.serversherpa.kiosk.ui.components.kioskViewModel
+import com.serversherpa.kiosk.ui.screens.timeclock.flow.initialsOf
 import com.serversherpa.kiosk.ui.screens.timeclock.screens.TcArrowLeftIcon
+import com.serversherpa.kiosk.ui.screens.timeclock.screens.loadPhoto
 import com.serversherpa.kiosk.ui.theme.Geologica
 import com.serversherpa.kiosk.ui.theme.StatusBarIcons
 import kotlinx.coroutines.flow.map
@@ -59,14 +71,17 @@ import kotlinx.coroutines.flow.map
 @Composable
 fun LoginScreen(nav: NavHostController) {
     val container = LocalAppContainer.current
-    val vm = kioskViewModel { LoginViewModel(container.auth, container.api) }
+    val vm = kioskViewModel { LoginViewModel(container.auth, container.api, container.biometric, container.enrollOffer) }
     val pairVm = kioskViewModel { PairViewModel(container.api, container.identity) }
     val ui by vm.state.collectAsStateWithLifecycle()
     val identity by container.identity.identity.collectAsStateWithLifecycle(initialValue = KioskIdentity("", ""))
     val portalUrl by container.config.portalUrl.collectAsStateWithLifecycle(initialValue = "")
-    LaunchedEffect(Unit) { vm.loadBanners() }
+    LaunchedEffect(Unit) { vm.loadBanners(); vm.loadCard() }
     StatusBarIcons(darkIcons = true)
     val goHome = { nav.navigate(Routes.HOME) { popUpTo(0) } }
+    // The card's prompt starts on its own when the card appears; the ViewModel lets it run once.
+    val prompter = rememberBiometricPrompter(ui.card?.let { "Sign in as ${it.displayName}" } ?: SIGN_IN_PROMPT_TITLE)
+    LaunchedEffect(ui.view, ui.card) { vm.autoPrompt(prompter, goHome) }
     var scanning by rememberSaveable { mutableStateOf(false) }
     // A Time Clock station (Login.tsx): the way back to its Welcome, which Home shows while
     // nobody is signed in, also taken on its own after a quiet minute (StationIdleReturn) so a
@@ -84,6 +99,9 @@ fun LoginScreen(nav: NavHostController) {
             setView = vm::setView, setMovePassword = vm::setMovePassword, submitMove = { vm.submitMove(goHome) },
             openSettings = { nav.navigate(Routes.settings("this-kiosk")) },
             scanMove = { scanning = true },
+            bioSignIn = { vm.signInWithBiometric(prompter, goHome) },
+            usePassword = vm::usePassword,
+            otherAccount = vm::otherAccount,
         ),
         canScan = container.hasCamera,
         pairPanel = { PairPanel(pairVm, portalUrl) { session: SessionData -> container.auth.completePair(session); goHome() } },
@@ -111,6 +129,10 @@ internal class LoginActions(
     val submitMove: () -> Unit,
     val openSettings: () -> Unit,
     val scanMove: () -> Unit,
+    /** The card's own button: the prompt again. */
+    val bioSignIn: () -> Unit = {},
+    val usePassword: () -> Unit = {},
+    val otherAccount: () -> Unit = {},
 )
 
 /** The artwork's band takes up to this share of the screen's height (a 480x800 Zebra MC2200 is ~533 dp tall). */
@@ -174,7 +196,11 @@ internal fun LoginContent(
                 when (ui.view) {
                     // The chooser is the password view with its routes showing; the routes are always
                     // shown now, so both views draw the same form.
-                    LoginView.PASSWORD, LoginView.CHOOSER -> PasswordForm(ui, actions)
+                    LoginView.PASSWORD, LoginView.CHOOSER -> {
+                        LoginNotice(ui.notice, error = ui.noticeError, modifier = Modifier.padding(bottom = 12.dp))
+                        PasswordForm(ui, actions)
+                    }
+                    LoginView.BIOMETRIC -> ui.card?.let { BiometricCardView(it, ui, actions) }
                     LoginView.LINK -> {
                         pairPanel()
                         LoginLink("Back to email & password", Modifier.align(Alignment.Start)) { actions.setView(LoginView.PASSWORD) }
@@ -224,4 +250,38 @@ private fun ColumnScope.PasswordForm(ui: LoginUi, actions: LoginActions) {
     LoginOrDivider()
     LoginSecondaryButton("Link with phone", RouteLinkIcon, { actions.setView(LoginView.LINK) })
     LoginSecondaryButton("Move password", LockIcon, { actions.setView(LoginView.MOVE) }, Modifier.padding(top = 10.dp))
+}
+
+/**
+ * The "Sign in as …" card: the person's photo (initials until it lands, or when there is none),
+ * the button that brings the prompt back, the line from the last try, then Use password and
+ * Other account (the password form with every route, for someone else).
+ */
+@Composable
+private fun ColumnScope.BiometricCardView(card: BiometricCard, ui: LoginUi, actions: LoginActions) {
+    LoginAvatar(card.photoUrl, card.displayName, Modifier.align(Alignment.CenterHorizontally).padding(bottom = 16.dp).testTag("login-bio-avatar"))
+    LoginPrimaryButton(
+        "Sign in as ${card.displayName}", actions.bioSignIn,
+        Modifier.testTag("login-bio-sign-in"), loading = ui.bioBusy, enabled = !ui.bioBusy,
+    )
+    ui.bioError?.let { Text(it, color = LoginPalette.ErrorText, fontFamily = Geologica, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp)) }
+    LoginSecondaryButton("Use password", LockIcon, actions.usePassword, Modifier.padding(top = 12.dp).testTag("login-bio-password"))
+    LoginLink("Other account", Modifier.align(Alignment.Start).padding(top = 4.dp).testTag("login-bio-other"), actions.otherAccount)
+}
+
+/** A round photo, or the initials on ink while it loads or when there is none. */
+@Composable
+private fun LoginAvatar(url: String?, name: String, modifier: Modifier = Modifier) {
+    val client = LocalAppContainer.current.httpClient
+    var bitmap by remember(url) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(url) { if (url != null) bitmap = loadPhoto(client, url, maxSide = 256) }
+    val ring = modifier.size(88.dp).clip(CircleShape).border(3.dp, Color.White, CircleShape)
+    val bmp = bitmap
+    if (bmp != null) {
+        Image(bmp, contentDescription = null, contentScale = ContentScale.Crop, modifier = ring)
+    } else {
+        Box(ring.background(LoginPalette.Ink), contentAlignment = Alignment.Center) {
+            Text(initialsOf(name), color = Color.White, fontFamily = Geologica, fontWeight = FontWeight.Bold, fontSize = 30.sp)
+        }
+    }
 }

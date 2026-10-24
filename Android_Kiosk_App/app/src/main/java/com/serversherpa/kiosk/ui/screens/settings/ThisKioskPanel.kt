@@ -1,10 +1,14 @@
 package com.serversherpa.kiosk.ui.screens.settings
 
 import com.serversherpa.kiosk.ui.guards.LocalStationActivity
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -14,6 +18,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -23,10 +28,67 @@ import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.data.config.KioskConfig
 import com.serversherpa.kiosk.data.identity.KioskIdentity
 import com.serversherpa.kiosk.ui.components.KioskToast
+import com.serversherpa.kiosk.ui.components.LinkButton
 import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.components.SettingsRow
 import com.serversherpa.kiosk.ui.theme.FragmentMono
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+
+const val FINGERPRINT_ON_TEXT = "Fingerprint sign-in: On ·"
+const val FINGERPRINT_FORGET = "Forget this device"
+const val FINGERPRINT_OFF_TEXT = "Off. After a password sign-in on a phone assigned to you, the app offers to turn it on."
+const val FINGERPRINT_NOT_YOURS_TEXT = "On for another person. Only they can forget it here, or an admin in the portal."
+const val FINGERPRINT_FORGOTTEN = "This phone forgot fingerprint sign-in."
+const val FINGERPRINT_FORGET_FAILED = "Couldn't forget fingerprint sign-in on this phone. Try again."
+const val FINGERPRINT_FORGOTTEN_HERE_ONLY = "This phone forgot fingerprint sign-in. The portal couldn't be told; an admin can remove it there."
+
+/**
+ * Fingerprint sign-in on this phone: "On · Forget this device" for its own person (signed in) or
+ * anyone signed out (then the phone forgets it, and the portal's key is useless without it),
+ * otherwise a line saying why there is nothing to forget.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun FingerprintRow() {
+    val container = LocalAppContainer.current
+    val scope = rememberCoroutineScope()
+    // Collected on the main thread, so the value is written to Compose state there. Under the
+    // Compose test harness the collector otherwise resumed on DataStore's IO thread, and that
+    // background write sometimes never redrew the row.
+    val enrollment by container.biometric.enrollment.collectAsStateWithLifecycle(initialValue = null, context = Dispatchers.Main.immediate)
+    val auth by container.auth.state.collectAsStateWithLifecycle()
+    var busy by remember { mutableStateOf(false) }
+    var done by remember { mutableStateOf<String?>(null) }
+    val signedIn = auth as? AuthState.Authed
+    val mine = enrollment?.let { e -> signedIn == null || e.personId == signedIn.person.id } == true
+    SettingsRow("Biometric sign-in", "Signs this phone's own person in with fingerprint or face.") {
+        when {
+            enrollment == null -> Text(FINGERPRINT_OFF_TEXT, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("fingerprint-row"))
+            !mine -> Text(FINGERPRINT_NOT_YOURS_TEXT, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("fingerprint-row"))
+            else -> FlowRow(Modifier.testTag("fingerprint-row"), verticalArrangement = Arrangement.Center) {
+                Text(FINGERPRINT_ON_TEXT, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.align(Alignment.CenterVertically))
+                LinkButton(FINGERPRINT_FORGET, Modifier.testTag("fingerprint-forget")) {
+                    if (busy) return@LinkButton
+                    busy = true
+                    scope.launch {
+                        done = try {
+                            if (container.biometric.forget(signedIn = signedIn != null)) FINGERPRINT_FORGOTTEN else FINGERPRINT_FORGOTTEN_HERE_ONLY
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            FINGERPRINT_FORGET_FAILED      // the phone's record couldn't be written
+                        } finally {
+                            busy = false
+                        }
+                    }
+                }
+            }
+        }
+        KioskToast(done)
+    }
+}
 
 /** Name, serial, mode, API/portal URLs, version — usable signed out. */
 @Composable
@@ -62,6 +124,7 @@ fun ThisKioskPanel() {
         }
         SettingsRow("Serial", "Generated once for this install; the portal's Kiosk Devices page lists it.") { Text(identity.serial, fontFamily = FragmentMono) }
         SettingsRow("Mode") { Text("Android", fontFamily = FragmentMono) }
+        FingerprintRow()
         SettingsRow("API URL", "Where this kiosk talks to the portal. Must start with http:// or https://.") {
             OutlinedTextField(api, { api = it; urlError = null; activity() }, singleLine = true, isError = urlError != null, modifier = Modifier.fillMaxWidth().testTag("api-url"))
             OutlinedTextField(portal, { portal = it; urlError = null; activity() }, singleLine = true, label = { Text("Portal URL") }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
