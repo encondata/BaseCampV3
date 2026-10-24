@@ -42,6 +42,20 @@ open class FakeKioskApi : KioskApi {
     override suspend fun pollPair(code: String, pollToken: String) = pollResult().also { calls += "poll" }
     override suspend fun heartbeat(body: HeartbeatIn): HeartbeatResult { calls += "heartbeat"; heartbeats += body; return heartbeatResult(body) }
     override suspend fun signOut(serial: String) { calls += "signOut" }
+    // ── biometric sign-in ──
+    // Suspending, so a test can hold a call open. Each call is recorded in `calls` first.
+    var bioEnrollChallengeResult: suspend (String) -> String = { "nonce-1" }
+    var bioEnrollResult: suspend (String, String, List<String>) -> BiometricEnrollOut = { _, _, _ -> BiometricEnrollOut("key-1", "tee", "2026-11-22T00:00:00Z") }
+    val bioEnrolls = ArrayList<Triple<String, String, List<String>>>()
+    var bioChallengeResult: suspend (String) -> BiometricChallengeOut = { throw ApiError(404, "no_biometric") }
+    var bioSignInResult: suspend (String, String, String) -> SessionData = { _, _, _ -> fakeSession() }
+    val bioSignIns = ArrayList<Triple<String, String, String>>()
+    var bioForgetResult: suspend (String) -> Unit = { }
+    override suspend fun biometricEnrollChallenge(serial: String): String { calls += "bioEnrollChallenge"; return bioEnrollChallengeResult(serial) }
+    override suspend fun biometricEnroll(serial: String, nonce: String, chain: List<String>): BiometricEnrollOut { calls += "bioEnroll"; bioEnrolls += Triple(serial, nonce, chain); return bioEnrollResult(serial, nonce, chain) }
+    override suspend fun biometricChallenge(serial: String): BiometricChallengeOut { calls += "bioChallenge"; return bioChallengeResult(serial) }
+    override suspend fun biometricSignIn(keyId: String, challenge: String, signature: String): SessionData { calls += "bioSignIn"; bioSignIns += Triple(keyId, challenge, signature); return bioSignInResult(keyId, challenge, signature) }
+    override suspend fun biometricForget(serial: String) { calls += "bioForget:$serial"; bioForgetResult(serial) }
     override suspend fun setupOptions() = setupOptionsResult().also { calls += "setupOptions" }
     override suspend fun submitSetup(body: KioskSetupIn) = submitSetupResult(body).also { calls += "submitSetup" }
     override suspend fun syncAssets(initiativeId: String) = assets().also { calls += "syncAssets" }
@@ -88,9 +102,9 @@ open class FakeKioskApi : KioskApi {
     override suspend fun rolodexPhoto(personId: String, jpeg: ByteArray): RolodexPhotoOut { calls += "rolodexPhoto:$personId"; rolodexPhotos += personId to jpeg; return rolodexPhotoResult(personId, jpeg) }
 }
 
-fun fakeSession(roles: List<String> = listOf("worker"), maxRank: Int = 20, mustChange: Boolean = false, kioskMove: KioskMove? = null) = SessionData(
+fun fakeSession(roles: List<String> = listOf("worker"), maxRank: Int = 20, mustChange: Boolean = false, kioskMove: KioskMove? = null, personId: String = "p1") = SessionData(
     access_token = "tok", expires_in = 900, session_expires_at = "2026-09-16T00:00:00Z",
-    person = PersonOut(id = "p1", first_name = "Tina", last_name = "T", display_name = "Tina T"),
+    person = PersonOut(id = personId, first_name = "Tina", last_name = "T", display_name = "Tina T"),
     roles = roles, must_change_password = mustChange, perms = mapOf("kiosk" to mapOf("view" to true)), max_rank = maxRank, kiosk_move = kioskMove,
 )
 

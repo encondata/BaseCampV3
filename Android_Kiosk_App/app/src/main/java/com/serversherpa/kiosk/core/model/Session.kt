@@ -51,3 +51,35 @@ data class SystemStatus(
     val workers_paused: Boolean = false,
     val banner: String? = null,
 )
+
+// ── biometric sign-in (/kiosk/biometric/*) ──────────────────────────
+
+/** enroll-challenge and challenge: the kiosk's serial. */
+@Serializable
+data class BiometricSerialIn(val serial: String)
+
+/** A signed enroll nonce (5 minutes). The key's attestation challenge is the SHA-256 of its UTF-8 bytes. */
+@Serializable
+data class BiometricEnrollChallengeOut(val nonce: String)
+
+/** [chain]: KeyStore.getCertificateChain, leaf first, each certificate's DER in standard base64. */
+@Serializable
+data class BiometricEnrollIn(val serial: String, val nonce: String, val chain: List<String>)
+
+@Serializable
+data class BiometricEnrollOut(val key_id: String, val security_level: String, val renews_at: String)
+
+/** [challenge]: sign its UTF-8 bytes with SHA256withECDSA. [expired]: past the 30 days, so the
+ *  password form instead. No email comes from the server; the app keeps it from enrollment. */
+@Serializable
+data class BiometricChallengeOut(
+    val key_id: String,
+    val challenge: String,
+    val display_name: String,
+    val photo_url: String? = null,
+    val expired: Boolean = false,
+)
+
+/** [signature]: the DER ECDSA signature, standard base64. */
+@Serializable
+data class BiometricSignInIn(val key_id: String, val challenge: String, val signature: String)

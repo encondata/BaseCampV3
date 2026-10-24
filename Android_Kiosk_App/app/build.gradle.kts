@@ -107,6 +107,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     // The label generator (assets/labelgen.js) runs in an isolated V8 sandbox from the system WebView.
     implementation(libs.androidx.javascriptengine)
+    implementation(libs.androidx.biometric)
     // The RFIDAPI3 .aar is wired in as a raw local artifact (see
     // RFIDAPI3Library/build.gradle), not a real Maven/AAR dependency.
     implementation(project(":RFIDAPI3Library"))

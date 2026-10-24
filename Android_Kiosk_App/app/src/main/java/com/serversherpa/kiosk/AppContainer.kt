@@ -21,6 +21,9 @@ import com.serversherpa.kiosk.data.api.SessionStore
 import com.serversherpa.kiosk.data.api.kioskDispatcher
 import com.serversherpa.kiosk.data.api.StationApi
 import com.serversherpa.kiosk.data.auth.AuthState
+import com.serversherpa.kiosk.data.auth.AndroidBiometricKeys
+import com.serversherpa.kiosk.data.auth.BiometricKeys
+import com.serversherpa.kiosk.data.auth.BiometricSignIn
 import com.serversherpa.kiosk.data.auth.KioskAuth
 import com.serversherpa.kiosk.data.auth.MoveSetupGuard
 import com.serversherpa.kiosk.data.auth.SessionCoordinator
@@ -92,6 +95,8 @@ class AppContainer(
     stationApiOverride: StationApi? = null,
     /** Tests: a fake Bluetooth LE adapter for the printer link. */
     bluetoothOverride: BluetoothLeClient? = null,
+    /** Tests: the biometric sign-in key (JVM tests have no AndroidKeyStore). */
+    biometricKeysOverride: BiometricKeys? = null,
 ) {
     /** EncryptedSharedPreferences unlocks an Android Keystore key — too slow for
      *  Application.onCreate. The jar's first use builds it, on whatever OkHttp
@@ -120,6 +125,11 @@ class AppContainer(
     /** Whether a Time Clock station's key is there, and whether the portal has paused it. */
     val station = StationStatus(stationKeys, apiBase = { config.apiUrlNow() })
     val auth = KioskAuth(api, session, identity, scope)
+    /** Fingerprint or face sign-in on a personal phone: the offer, Turn on, the card, Forget. */
+    val biometric = BiometricSignIn(
+        api, auth, biometricKeysOverride ?: AndroidBiometricKeys(app), prefs, identity,
+        stationKeyPresent = { withContext(Dispatchers.IO) { stationKeys.get(config.apiUrlNow()) != null } },
+    )
     /** The Rolodex's offline list: kept only while an admin is signed in. */
     val rolodexCache = RolodexCacheStore(db) { (auth.state.value as? AuthState.Authed)?.isAdmin == true }
     val sync = Sync(api, db, scope, fontsDir = File(app.filesDir, "label-fonts"))
