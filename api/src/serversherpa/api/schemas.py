@@ -3058,6 +3058,20 @@ class ScanTypeOption(BaseModel):
     color: str | None
 
 
+class PersonalPersonOut(BaseModel):
+    id: uuid.UUID
+    display_name: str
+
+
+class PersonalBiometricOut(BaseModel):
+    """`on`: the personal person has a live (unrevoked) key on the device.
+    `renews_at`: when its 30 days from the last password sign-in run out
+    (null when off); a past date means the next sign-in needs the password."""
+
+    on: bool
+    renews_at: datetime | None
+
+
 class DeviceDetail(DeviceItem):
     """GET /devices/{id}: the list row plus the kiosk config and its sync
     state, the setup and the scan types the portal may pick."""
@@ -3072,6 +3086,29 @@ class DeviceDetail(DeviceItem):
     sync_state: Literal["in_sync", "pending", "waiting_first_report"] | None
     setup: DeviceSetupOut
     scan_type_options: list[ScanTypeOption]
+    # biometric sign-in: whose personal phone this is, and whether that
+    # person's fingerprint key on it is live (null when nobody's)
+    personal_person: PersonalPersonOut | None = None
+    personal_biometric: PersonalBiometricOut | None = None
+
+
+class DevicePersonalIn(BaseModel):
+    """PUT /devices/{id}/personal: the person, or null to clear."""
+
+    person_id: uuid.UUID | None
+
+
+class BiometricKeyOut(BaseModel):
+    """One live biometric sign-in key: the phone it lives on and when its
+    30 days from the last password sign-in run out."""
+
+    id: uuid.UUID
+    device_id: uuid.UUID
+    device_name: str
+    security_level: Literal["tee", "strongbox"]
+    created_at: datetime
+    last_used_at: datetime | None
+    renews_at: datetime
 
 
 class DeviceScanTypeIn(BaseModel):

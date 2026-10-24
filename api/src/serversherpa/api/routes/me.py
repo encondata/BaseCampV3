@@ -19,6 +19,7 @@ from serversherpa.api.routes.notifications import (
     effective_settings,
 )
 from serversherpa.api.schemas import (
+    BiometricKeyOut,
     ChangePasswordIn,
     MembershipRequestCreateIn,
     MembershipRequestOut,
@@ -44,6 +45,7 @@ from serversherpa.db.models import (
 from serversherpa.db.ordering import natural
 from serversherpa.notifications.requests import RequestError, cancel_request, create_request
 from serversherpa.security.passwords import verify_password
+from serversherpa.services import biometric
 from serversherpa.services import totp as totp_service
 from serversherpa.services.activity import ABOUT_ENTITY_TYPES, person_activity
 from serversherpa.services.audit import audit, diff, snapshot
@@ -190,6 +192,29 @@ async def forget_all_trusted_browsers(
               changes={"count": count})
     await db.commit()
     clear_trust_cookie(response)
+
+
+@router.get("/biometric-keys", response_model=list[BiometricKeyOut])
+async def list_my_biometric_keys(user: CurrentUser, db: DbSession) -> list[BiometricKeyOut]:
+    """My live biometric sign-in keys (one per phone), newest first."""
+    return [BiometricKeyOut(**row)
+            for row in await biometric.list_live_keys(db, user.person.id)]
+
+
+@router.delete("/biometric-keys/{key_id}", status_code=204)
+async def forget_my_biometric_key(key_id: uuid.UUID, user: CurrentUser, db: DbSession) -> None:
+    """Forget one of my biometric keys (reason `forgotten`). Never frozen,
+    like forgetting a remembered browser: it only closes a way in."""
+    key = await biometric.live_key_by_id(db, user.person.id, key_id)
+    if key is None:
+        raise HTTPException(status_code=404, detail={"code": "biometric_key_not_found"})
+    device_id = key.device_id
+    await biometric.revoke_keys(db, person_id=user.person.id, key_id=key_id,
+                                reason="forgotten", actor_id=user.person.id)
+    audit(db, actor_id=user.person.id, entity_type="user_account",
+          entity_id=str(user.person.id), action="biometric_forget",
+          changes={"key_id": str(key_id), "device_id": str(device_id)})
+    await db.commit()
 
 
 @router.post("/password", status_code=204)

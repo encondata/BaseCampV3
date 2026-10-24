@@ -446,7 +446,8 @@ async def revoke_all_sessions(
         .values(revoked_at=now))
     # every live biometric key, whether or not its owner has a live session
     # and including the caller's own (a key outlives the sessions it mints)
-    revoked_keys = await biometric.revoke_keys(db, reason="admin", actor_id=actor.person.id)
+    revoked_keys = await biometric.revoke_keys(db, reason="admin", actor_id=actor.person.id,
+                                                all_keys=True)
     audit(db, actor_id=actor.person.id, entity_type="auth",
           entity_id="all", action="sessions.revoke_all",
           changes={"revoked_sessions": len(live), "revoked_people": len(people),

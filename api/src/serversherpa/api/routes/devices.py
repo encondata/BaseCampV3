@@ -14,6 +14,7 @@ from sqlalchemy import Integer, and_, func, or_, select, update
 from sqlalchemy.orm import aliased
 
 from serversherpa.access.defaults import GATE_BYPASS_RANK, SUPER_ADMIN_RANK
+from serversherpa.access.resolver import resolve_access
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.routes.kiosk import (
     allowed_scan_types, delete_kiosk_sound_object, kiosk_sound_response, save_kiosk_sound,
@@ -22,16 +23,18 @@ from serversherpa.api.routes.kiosk import (
 from serversherpa.api.schemas import (
     ClearOfflineKioskItem, ClearOfflineKiosksIn, ClearOfflineKiosksOut,
     DeviceConfigHistoryItem, DeviceCreate, DeviceDetail, DeviceItem, DeviceLeaseItem,
-    DevicePatch, DeviceRegisterIn, DeviceScanTypeIn, KioskSoundItem, KioskSoundOut,
+    DevicePatch, DevicePersonalIn, DeviceRegisterIn, DeviceScanTypeIn, KioskSoundItem,
+    KioskSoundOut,
 )
 from serversherpa.db.models import (
     AuditLog, Device, DeviceDhcpLease, Initiative, KioskSound, Person, ProcessedScan,
-    RawScan, Site, StatusValue,
+    RawScan, Site, StatusValue, UserAccount,
 )
 from serversherpa.db.ordering import natural
-from serversherpa.services import kiosk_config, station_keys
+from serversherpa.services import biometric, kiosk_config, station_keys
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.kiosk_config import ConfigError
+from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.router_agent import resolve_router_copies
 
 router = APIRouter(prefix="/devices", tags=["devices"])
@@ -620,7 +623,17 @@ async def _detail_for(db: DbSession, device_id: uuid.UUID) -> dict:
             site_role = "destination"
     options = (await allowed_scan_types(db, d)
                if d.device_type == "kiosk" else [])
+    personal_person = personal_biometric = None
+    owner = (await db.get(Person, d.personal_person_id)
+             if d.personal_person_id else None)
+    if owner is not None:
+        personal_person = {"id": owner.id, "display_name": owner.display_name}
+        key = await biometric.live_key(db, owner.id, d.id)
+        personal_biometric = {"on": key is not None,
+                              "renews_at": biometric.renews_at(key) if key else None}
     return item | {
+        "personal_person": personal_person,
+        "personal_biometric": personal_biometric,
         "config": d.config,
         "config_version": d.config_version or 0,
         "config_changed_at": d.config_changed_at,
@@ -764,6 +777,79 @@ async def patch_device_scan_type(
                        "scan_status": {"from": before, "to": body.scan_status}})
     await db.commit()
     return await _detail_for(db, device_id)
+
+
+async def _personal_refusal(db: DbSession, person_id: uuid.UUID) -> str | None:
+    """Why `person_id` can't have a personal phone, or None when they can:
+    a login account, kiosk:view, and not a move's hidden kiosk identity.
+    404 person_not_found for an unknown id."""
+    person = await db.get(Person, person_id)
+    if person is None:
+        raise _err(404, "person_not_found")
+    if await db.get(UserAccount, person_id) is None:
+        return "no_account"
+    if person.source == KIOSK_MOVE_SOURCE:
+        return "move_identity"
+    if not (await resolve_access(db, person_id)).can("kiosk", "view"):
+        return "no_kiosk_view"
+    return None
+
+
+@router.put("/{device_id}/personal", response_model=DeviceDetail)
+async def put_device_personal(
+    device_id: uuid.UUID, body: DevicePersonalIn, db: DbSession,
+    actor: AuthContext = require_permission("scanning_hardware", "change"),
+) -> dict:
+    """Make this kiosk someone's personal phone (biometric sign-in), or
+    clear it with `person_id: null`. Refused with 422 not_eligible plus a
+    `reason`: shared_station (a Label, RFID or Time Clock station, or a
+    station-key kiosk), no_account, no_kiosk_view or move_identity.
+    Changing or clearing the person revokes every live biometric key on the
+    device (reason `reassigned`), so an earlier owner's key can never come
+    back. The same person again changes nothing."""
+    _require_super_admin(actor)
+    device = await _locked_kiosk(db, device_id)
+    before, after = device.personal_person_id, body.person_id
+    if after is not None:
+        reason = ("shared_station" if biometric.shared_station(device)
+                  else await _personal_refusal(db, after))
+        if reason is not None:
+            await db.rollback()
+            raise _err(422, "not_eligible", reason=reason)
+    if after != before:
+        now = datetime.now(UTC)
+        await biometric.revoke_keys(db, device_id=device.id, reason="reassigned",
+                                    actor_id=actor.person.id)
+        device.personal_person_id = after
+        device.personal_set_at = now if after else None
+        device.personal_set_by = actor.person.id if after else None
+        device.updated_at = now
+        audit(db, actor_id=actor.person.id, entity_type="device",
+              entity_id=str(device.id),
+              action="personal_set" if after else "personal_cleared",
+              changes={"person_id": {"from": str(before) if before else None,
+                                     "to": str(after) if after else None}})
+    await db.commit()
+    return await _detail_for(db, device_id)
+
+
+@router.delete("/{device_id}/biometric", status_code=204)
+async def forget_device_biometric(
+    device_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("scanning_hardware", "change"),
+) -> None:
+    """Forget fingerprint: revoke the live biometric key on this kiosk
+    (reason `forgotten`). The personal assignment stays. Nothing to forget
+    is a quiet 204."""
+    _require_super_admin(actor)
+    device = await _kiosk_or_error(db, device_id)
+    revoked = await biometric.revoke_keys(db, device_id=device.id, reason="forgotten",
+                                          actor_id=actor.person.id)
+    if revoked:
+        audit(db, actor_id=actor.person.id, entity_type="device",
+              entity_id=str(device.id), action="biometric_forget",
+              changes={"serial": device.serial, "source": "portal"})
+    await db.commit()
 
 
 @router.get("/{device_id}/config/history", response_model=list[DeviceConfigHistoryItem])

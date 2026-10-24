@@ -85,10 +85,8 @@ async def _kiosk_device(db: AsyncSession, serial: str, *, lock: bool = False) ->
 
 
 def _shared_station(device: Device) -> bool:
-    """A Label, RFID or Time Clock station, or any kiosk holding a station
-    key, is shared: it is never anyone's personal phone for biometrics,
-    whatever its personal_person_id says."""
-    return device.station_key_hash is not None or device.station_type is not None
+    """A shared station is never anyone's personal phone (biometric.shared_station)."""
+    return biometric.shared_station(device)
 
 
 async def _enrollable_device(db: AsyncSession, actor: AuthContext, serial: str, *,

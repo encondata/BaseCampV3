@@ -215,6 +215,36 @@ def signature_valid(public_key_der: bytes, challenge: str, signature: bytes) -> 
 
 # ── keys ────────────────────────────────────────────────────────────
 
+def shared_station(device: Device) -> bool:
+    """A Label, RFID or Time Clock station, or any kiosk holding a station
+    key, is shared: it is never anyone's personal phone for biometrics,
+    whatever its personal_person_id says."""
+    return device.station_key_hash is not None or device.station_type is not None
+
+
+async def list_live_keys(db: AsyncSession, person_id: uuid.UUID) -> list[dict]:
+    """The person's live keys, newest first, as BiometricKeyOut fields (the
+    user page and /auth/me). Never the public key or the nonce."""
+    rows = (await db.execute(
+        select(BiometricKey, Device.name)
+        .join(Device, Device.id == BiometricKey.device_id)
+        .where(BiometricKey.person_id == person_id, BiometricKey.revoked_at.is_(None))
+        .order_by(BiometricKey.created_at.desc(), BiometricKey.id))).all()
+    return [{"id": key.id, "device_id": key.device_id, "device_name": name,
+             "security_level": key.security_level, "created_at": key.created_at,
+             "last_used_at": key.last_used_at, "renews_at": renews_at(key)}
+            for key, name in rows]
+
+
+async def live_key_by_id(db: AsyncSession, person_id: uuid.UUID,
+                         key_id: uuid.UUID) -> BiometricKey | None:
+    """The person's live key `key_id`; None for another person's, a revoked
+    or an unknown key."""
+    return await db.scalar(select(BiometricKey).where(
+        BiometricKey.id == key_id, BiometricKey.person_id == person_id,
+        BiometricKey.revoked_at.is_(None)))
+
+
 async def live_key(db: AsyncSession, person_id: uuid.UUID,
                    device_id: uuid.UUID) -> BiometricKey | None:
     return await db.scalar(select(BiometricKey).where(
@@ -268,11 +298,16 @@ async def revoke_keys(
     db: AsyncSession, *, person_id: uuid.UUID | None = None,
     device_id: uuid.UUID | None = None, reason: str,
     key_id: uuid.UUID | None = None, actor_id: uuid.UUID | None = None,
-    ip: str | None = None,
+    ip: str | None = None, all_keys: bool = False,
 ) -> int:
     """Revoke the live keys matching every filter given, each audited as
-    `biometric_revoke` with `reason`. No filter revokes every live key (the
-    global revoke-all). Returns how many were revoked. Does not commit."""
+    `biometric_revoke` with `reason`. Revoking every live key (the global
+    revoke-all) takes `all_keys=True`: a call with no filter and no
+    all_keys raises ValueError, so a `person_id=None` passed by mistake
+    can't wipe everyone's keys. Returns how many were revoked. Does not
+    commit."""
+    if not all_keys and person_id is None and device_id is None and key_id is None:
+        raise ValueError("revoke_keys needs a person, device or key filter, or all_keys=True")
     stmt = (update(BiometricKey).where(BiometricKey.revoked_at.is_(None))
             .values(revoked_at=datetime.now(UTC), revoke_reason=reason, last_nonce=None)
             .returning(BiometricKey.id, BiometricKey.person_id, BiometricKey.device_id)
