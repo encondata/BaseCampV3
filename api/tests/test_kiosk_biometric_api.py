@@ -12,6 +12,7 @@ Design: docs/superpowers/specs/2026-10-23-kiosk-biometric-sign-in-design.md
 
 import base64
 import hashlib
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -473,6 +474,22 @@ async def test_enroll_attestation_failure_carries_the_reason(client, db, seeded_
                           json={"serial": SERIAL, "nonce": nonce, "chain": ["@@@"]})
     assert r.status_code == 422
     assert r.json()["detail"] == {"code": "attestation_failed", "reason": "parse"}
+
+
+async def test_enroll_attestation_refusal_is_logged_with_its_detail(
+        client, db, seeded_user, attest, caplog):
+    # the API answers only the reason; the server log keeps the detail
+    hdrs, _ = await _worker_on_phone(db, client)
+    attest.error = AttestationError("boot_state", "bootloader unlocked")
+    with caplog.at_level(logging.WARNING, logger="serversherpa.services.biometric"):
+        r = await _enroll(client, hdrs)
+    assert r.status_code == 422
+    refused = [rec for rec in caplog.records
+               if rec.name == "serversherpa.services.biometric"]
+    assert [(rec.levelno, rec.getMessage()) for rec in refused] == [
+        (logging.WARNING, "attestation refused: boot_state bootloader unlocked")]
+    # no chain bytes in the log
+    assert "leaf-der" not in caplog.text and "root-der" not in caplog.text
 
 
 async def test_move_identity_never_enrolls(client, db, seeded_user, attest):

@@ -27,6 +27,7 @@ Design: docs/superpowers/specs/2026-10-23-kiosk-biometric-sign-in-design.md
 """
 
 import hashlib
+import logging
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -50,6 +51,8 @@ from serversherpa.security.key_attestation import (
 from serversherpa.security.tokens import ISSUER as JWT_ISSUER
 from serversherpa.security.tokens import TokenError
 from serversherpa.services.audit import audit
+
+logger = logging.getLogger(__name__)
 
 LIFETIME = timedelta(days=30)            # from the last password sign-in
 ENROLL_WINDOW = timedelta(minutes=10)    # a password session this fresh may enroll
@@ -277,6 +280,9 @@ async def enroll(
             chain_der, nonce=attestation_challenge(nonce),
             digests=set(get_settings().kiosk_signing_digests), status=status, now=now)
     except AttestationError as exc:
+        # the API answers only the reason; the log keeps the detail (never
+        # the chain itself) for whoever looks into a refused phone
+        logger.warning("attestation refused: %s %s", exc.reason, exc.detail)
         raise BiometricError(422, "attestation_failed", reason=exc.reason) from None
     await revoke_keys(db, device_id=device.id, reason="replaced", actor_id=person_id, ip=ip)
     await db.flush()          # the old live key leaves the partial unique index first
