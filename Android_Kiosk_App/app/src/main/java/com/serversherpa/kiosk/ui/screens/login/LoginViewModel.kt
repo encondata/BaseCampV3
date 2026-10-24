@@ -8,13 +8,13 @@ import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.data.auth.BIOMETRIC_EXPIRED_MESSAGE
 import com.serversherpa.kiosk.data.auth.BIOMETRIC_PASSWORD_CHANGE_MESSAGE
-import com.serversherpa.kiosk.data.auth.BIOMETRIC_REMOVED_MESSAGE
 import com.serversherpa.kiosk.data.auth.BIOMETRIC_TRY_AGAIN_MESSAGE
 import com.serversherpa.kiosk.data.auth.BiometricCard
 import com.serversherpa.kiosk.data.auth.BiometricOutcome
 import com.serversherpa.kiosk.data.auth.BiometricPrompter
 import com.serversherpa.kiosk.data.auth.BiometricSignIn
 import com.serversherpa.kiosk.data.auth.KioskAuth
+import com.serversherpa.kiosk.data.auth.NotAllowedReason
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -84,8 +84,6 @@ class LoginViewModel(
     private var autoPrompted = false
     // The person chose the form while the card was on its way: it never replaces that form.
     @Volatile private var cardDeclined = false
-    // The email saved with this phone's enrollment, for Use password before the card arrives.
-    @Volatile private var enrolledEmail: String? = null
 
     fun setEmail(v: String) = _state.update { it.copy(email = v, invalidEmail = false, error = null, cardPending = false) }
     fun setPassword(v: String) = _state.update { it.copy(password = v, invalidPassword = false, error = null, cardPending = false) }
@@ -168,9 +166,10 @@ class LoginViewModel(
         cardLoaded = true
         if (auth.state.value is AuthState.Authed) return
         scope.launch {
+            // The local record only decides whether to say "Checking…": nothing from it is shown, since
+            // card() hasn't yet checked it (a shared station now, a key gone, another person's phone).
             val local = try { bio.enrollment.first() } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
             val cap = if (local == null) null else {
-                enrolledEmail = local.email
                 _state.update { if (untouched(it)) it.copy(cardPending = true) else it }
                 launch { delay(CARD_PENDING_MAX_MS); _state.update { it.copy(cardPending = false) } }
             }
@@ -224,18 +223,19 @@ class LoginViewModel(
                 BiometricOutcome.Expired -> toPassword(BIOMETRIC_EXPIRED_MESSAGE, error = false, keepEmail = true)
                 BiometricOutcome.PasswordChange -> toPassword(BIOMETRIC_PASSWORD_CHANGE_MESSAGE, error = true, keepEmail = true)
                 // A phone that is no longer this person's (reassigned, revoked) keeps none of their email.
-                is BiometricOutcome.NotAllowed -> toPassword(outcome.message, error = true, keepEmail = outcome.message != BIOMETRIC_REMOVED_MESSAGE)
+                is BiometricOutcome.NotAllowed -> toPassword(outcome.message, error = true, keepEmail = outcome.reason != NotAllowedReason.REMOVED)
                 BiometricOutcome.Invalidated -> toPassword(null, error = false, keepEmail = false)
             }
         }
     }
 
-    /** The card's Use password (or "Checking…"'s): this person's password form, their email filled in. */
+    /** The card's Use password: this person's password form, with the email from the validated
+     *  card. During "Checking…" there is no card yet, so the form opens empty. */
     fun usePassword() {
         cardDeclined = true
         _state.update {
             it.copy(
-                view = LoginView.PASSWORD, email = it.card?.email ?: enrolledEmail.orEmpty(), password = "",
+                view = LoginView.PASSWORD, email = it.card?.email.orEmpty(), password = "",
                 bioError = null, notice = null, error = null, cardPending = false,
             )
         }

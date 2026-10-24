@@ -67,8 +67,8 @@ class EnrollOffer(
     private var deciding: Job? = null
     private var turningOn: Job? = null
 
-    /** Tests: the offer is still being decided. */
-    internal val isDeciding: Boolean get() = synchronized(lock) { deciding?.isActive == true }
+    /** Tests: the job deciding the latest offer (a close forgets it, so capture it first). */
+    internal val decidingJob: Job? get() = synchronized(lock) { deciding }
 
     init {
         scope.launch {

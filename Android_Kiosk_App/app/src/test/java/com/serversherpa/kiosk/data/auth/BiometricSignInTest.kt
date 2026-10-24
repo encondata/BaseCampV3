@@ -344,11 +344,12 @@ class BiometricSignInTest {
         val r = rig()
         r.enrolledAndSignedOut()
         r.api.bioChallengeResult = { card() }
-        for (code in listOf("kiosk_not_allowed", "account_disabled")) {
+        for ((code, reason) in listOf("kiosk_not_allowed" to NotAllowedReason.KIOSK_NOT_ALLOWED, "account_disabled" to NotAllowedReason.ACCOUNT_DISABLED)) {
             r.api.bioSignInResult = { _, _, _ -> throw ApiError(403, code) }
             val out = r.bio.signIn(ok)
             assertTrue(code, out is BiometricOutcome.NotAllowed)
             assertTrue(code, (out as BiometricOutcome.NotAllowed).message.isNotBlank())
+            assertEquals(code, reason, out.reason)
         }
         assertTrue(r.keys.hasKey)                       // access can come back
     }
@@ -361,6 +362,7 @@ class BiometricSignInTest {
             r.api.bioSignInResult = { _, _, _ -> throw ApiError(if (code == "no_biometric") 404 else 403, code) }
             val out = r.bio.signIn(ok)
             assertTrue(code, out is BiometricOutcome.NotAllowed)
+            assertEquals(code, NotAllowedReason.REMOVED, (out as BiometricOutcome.NotAllowed).reason)
             assertFalse(code, r.keys.hasKey)
             assertNull(code, r.prefs.biometric.first())
             assertNull(code, r.bio.card())
@@ -371,7 +373,7 @@ class BiometricSignInTest {
         val r = rig()
         r.enrolledAndSignedOut()
         r.api.bioChallengeResult = { throw ApiError(404, "no_biometric") }
-        assertTrue(r.bio.signIn(ok) is BiometricOutcome.NotAllowed)
+        assertEquals(NotAllowedReason.REMOVED, (r.bio.signIn(ok) as BiometricOutcome.NotAllowed).reason)
         assertTrue(r.api.bioSignIns.isEmpty())
         assertFalse(r.keys.hasKey)
     }

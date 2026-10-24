@@ -21,7 +21,6 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
-import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -123,6 +122,9 @@ class BiometricLoginTest {
     private fun waitForText(text: String, substring: Boolean = false) =
         compose.waitUntil(5_000) { compose.onAllNodesWithText(text, substring = substring).fetchSemanticsNodes().isNotEmpty() }
 
+    private fun emailField(): String =
+        compose.onNodeWithTag("login-email").fetchSemanticsNode().config[SemanticsProperties.EditableText].text
+
     private fun waitForTag(tag: String) =
         compose.waitUntil(5_000) { compose.onAllNodes(hasTestTag(tag)).fetchSemanticsNodes().isNotEmpty() }
 
@@ -205,7 +207,7 @@ class BiometricLoginTest {
     @Test fun usePasswordShowsThePasswordFormWithTheEmail() {
         val p = enrolledPhone()
         showLogin(p, FakePrompter())
-        waitForText("Use password")
+        waitForText("Sign in as Tina T")                                   // the validated card, not "Checking…"
         compose.onNodeWithText("Use password").performScrollTo().performClick()
         compose.onNodeWithTag("login-email").assertTextContains("tina@example.com")
         compose.onNodeWithTag("login-password").assertIsDisplayed()
@@ -258,7 +260,7 @@ class BiometricLoginTest {
         compose.onNodeWithTag("login-password").assertIsDisplayed()
         compose.onNodeWithText("Sign in as Tina T").assertDoesNotExist()
         // The phone is no longer Tina's: none of her email is left on the form.
-        assertEquals("", compose.onNodeWithTag("login-email").fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
+        assertEquals("", emailField())
         compose.waitUntilIdlingMain { runBlocking { p.c.prefs.biometric.first() } == null }
         assertFalse(p.keys.hasKey)
     }
@@ -294,7 +296,7 @@ class BiometricLoginTest {
         compose.onNodeWithText("Sign in as Tina T").performClick()
         waitForTag("login-email")
         compose.onNodeWithText("Sign in as Tina T").assertDoesNotExist()
-        assertEquals("", compose.onNodeWithTag("login-email").fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
+        assertEquals("", emailField())
         compose.onNodeWithText(BIOMETRIC_REMOVED_MESSAGE).assertDoesNotExist()
         compose.waitUntilIdlingMain { runBlocking { p.c.prefs.biometric.first() } == null }
         assertEquals(1, prompter.calls)      // never prompted for a key that can't sign
@@ -347,6 +349,16 @@ class BiometricLoginTest {
         waitForTag("login-email")
         compose.onNodeWithText("Checking…").assertDoesNotExist()
         compose.onNodeWithTag("login-password").assertIsDisplayed()
+        assertEquals("", emailField())                                     // no card, no email
+    }
+
+    @Test fun aKeyGoneBeforeTheCardNeverPrefills() {
+        val p = enrolledPhone()
+        p.keys.invalidated = true                                          // card() finds the key unusable: null
+        showLogin(p, FakePrompter())
+        waitForTag("login-email")
+        assertEquals("", emailField())
+        assertFalse("bioChallenge" in p.api.calls)
     }
 
     @Test fun checkingGivesUpAfterThreeSecondsAndALateCardNeverReplacesAStartedForm() {
@@ -367,16 +379,17 @@ class BiometricLoginTest {
         assertEquals(0, prompter.calls)
     }
 
-    @Test fun usePasswordWhileCheckingKeepsTheFormWithTheEmail() {
+    @Test fun usePasswordWhileCheckingOpensAnEmptyFormThatALateCardNeverReplaces() {
         val p = enrolledPhone()
         val held = Held<BiometricChallengeOut>()
         p.api.bioChallengeResult = { held.await() }
         val prompter = FakePrompter()
         showLogin(p, prompter)
         waitForText("Checking…")
+        compose.onNodeWithText("tina@example.com", substring = true).assertDoesNotExist()   // "Checking…" shows no email
         compose.onNodeWithText("Use password").performClick()
-        compose.onNodeWithTag("login-email").assertTextContains("tina@example.com")
-        compose.onNodeWithTag("login-email").performTextClearance()        // an empty form is still the person's choice
+        // Nothing is validated yet, so the saved email stays off the form.
+        assertEquals("", emailField())
         held.answer.complete(challenge())
         settle(held)
         compose.onNodeWithText("Sign in as Tina T").assertDoesNotExist()
@@ -406,6 +419,7 @@ class BiometricLoginTest {
         waitForTag("login-email")                                          // the card's lookup has ended
         compose.waitForIdle()
         compose.onNodeWithText("Sign in as Tina T").assertDoesNotExist()
+        assertEquals("", emailField())                                     // the leftover enrollment's email never shows
         assertEquals(0, prompter.calls)
         assertFalse("bioChallenge" in station.api.calls)
     }

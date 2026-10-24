@@ -46,9 +46,10 @@ sealed interface BiometricOutcome {
     data object Expired : BiometricOutcome
     /** "Your password needs changing in the portal." The key stays. */
     data object PasswordChange : BiometricOutcome
-    /** The password form with [message]: no kiosk access, a disabled account, or the phone is no
-     *  longer this person's (reassigned, revoked; the local key is already forgotten then). */
-    data class NotAllowed(val message: String) : BiometricOutcome
+    /** The password form with [message], for [reason]: the phone is no longer this person's
+     *  (reassigned, revoked, now a shared station; the local key is already forgotten unless it's a
+     *  station), no kiosk access, or a disabled account. */
+    data class NotAllowed(val message: String, val reason: NotAllowedReason) : BiometricOutcome
     /** Android invalidated the key (a new fingerprint, the screen lock removed), or there is none:
      *  forgotten on the phone; the password form, and the next password sign-in offers again. */
     data object Invalidated : BiometricOutcome
@@ -57,6 +58,9 @@ sealed interface BiometricOutcome {
     /** Nothing changed; stay on the card with [message] (fetch a fresh card before retrying). */
     data class Failed(val message: String) : BiometricOutcome
 }
+
+/** Why a biometric sign-in was refused. Only [REMOVED] means the phone is no longer this person's. */
+enum class NotAllowedReason { REMOVED, KIOSK_NOT_ALLOWED, ACCOUNT_DISABLED }
 
 /** How Turn on ended. Every outcome but [Enrolled] leaves no key on the phone. */
 sealed interface EnrollOutcome {
@@ -273,7 +277,7 @@ class BiometricSignIn(
     private suspend fun signInLocked(prompt: BiometricPrompter): BiometricOutcome {
         val local = prefs.biometric.first() ?: return BiometricOutcome.Invalidated
         when (sharedStation()) {
-            true -> return BiometricOutcome.NotAllowed(BIOMETRIC_REMOVED_MESSAGE)
+            true -> return BiometricOutcome.NotAllowed(BIOMETRIC_REMOVED_MESSAGE, NotAllowedReason.REMOVED)
             null -> return BiometricOutcome.Failed(BIOMETRIC_TRY_AGAIN_MESSAGE)
             false -> Unit
         }
@@ -292,7 +296,7 @@ class BiometricSignIn(
         } catch (e: Exception) {
             return signInFailure(codeOf(e))
         }
-        if (c.key_id != local.keyId) { dropLocal(); return BiometricOutcome.NotAllowed(BIOMETRIC_REMOVED_MESSAGE) }
+        if (c.key_id != local.keyId) { dropLocal(); return BiometricOutcome.NotAllowed(BIOMETRIC_REMOVED_MESSAGE, NotAllowedReason.REMOVED) }
         if (c.expired) return BiometricOutcome.Expired
         val signature = try {
             withContext(io) { signed.update(c.challenge.toByteArray(Charsets.UTF_8)); signed.sign() }
@@ -372,11 +376,11 @@ class BiometricSignIn(
     /** Sign-in and challenge refusals. A key the server no longer has for this phone is done
      *  here too: revoked, reassigned, or no longer a personal phone. */
     private suspend fun signInFailure(code: String): BiometricOutcome = when (code) {
-        "no_biometric", "not_personal_device" -> { dropLocal(); BiometricOutcome.NotAllowed(BIOMETRIC_REMOVED_MESSAGE) }
+        "no_biometric", "not_personal_device" -> { dropLocal(); BiometricOutcome.NotAllowed(BIOMETRIC_REMOVED_MESSAGE, NotAllowedReason.REMOVED) }
         "biometric_expired" -> BiometricOutcome.Expired
         "password_change_required" -> BiometricOutcome.PasswordChange
-        "kiosk_not_allowed" -> BiometricOutcome.NotAllowed(BIOMETRIC_KIOSK_NOT_ALLOWED_MESSAGE)
-        "account_disabled" -> BiometricOutcome.NotAllowed(BIOMETRIC_ACCOUNT_DISABLED_MESSAGE)
+        "kiosk_not_allowed" -> BiometricOutcome.NotAllowed(BIOMETRIC_KIOSK_NOT_ALLOWED_MESSAGE, NotAllowedReason.KIOSK_NOT_ALLOWED)
+        "account_disabled" -> BiometricOutcome.NotAllowed(BIOMETRIC_ACCOUNT_DISABLED_MESSAGE, NotAllowedReason.ACCOUNT_DISABLED)
         "biometric_rate_limited" -> BiometricOutcome.Failed(BIOMETRIC_RATE_LIMITED_MESSAGE)
         "network" -> BiometricOutcome.Failed(BIOMETRIC_NETWORK_MESSAGE)
         UNEXPECTED -> BiometricOutcome.Failed(BIOMETRIC_SOMETHING_WRONG_MESSAGE)

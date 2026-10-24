@@ -50,7 +50,9 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -200,13 +202,17 @@ class EnrollOfferSheetTest {
     @Test fun noOfferWhenSignedOutBeforeTheAnswer() {
         val p = personalPhone()
         val answer = CompletableDeferred<String>()
-        p.api.bioEnrollChallengeResult = { answer.await() }
+        val answered = CompletableDeferred<Unit>()
+        // The offer's call stays open across the sign-out, then answers yes.
+        p.api.bioEnrollChallengeResult = { withContext(NonCancellable) { answer.await() }.also { answered.complete(Unit) } }
         showApp(p, FakePrompter())
         signInWithPassword()
         compose.waitUntilIdlingMain { "bioEnrollChallenge" in p.api.calls }
+        val deciding = p.c.enrollOffer.decidingJob!!                     // captured before the sign-out forgets it
         signOutToLogin(p)
         answer.complete("nonce-1")
-        compose.waitUntilIdlingMain { !p.c.enrollOffer.isDeciding }
+        // The fake handed the yes back, and the job that would show the sheet has ended.
+        compose.waitUntilIdlingMain { answered.isCompleted && deciding.isCompleted }
         compose.waitForIdle()
         compose.onNodeWithText(ENROLL_OFFER_TEXT).assertDoesNotExist()
         assertNull(p.c.enrollOffer.state.value)
@@ -219,9 +225,10 @@ class EnrollOfferSheetTest {
         runBlocking { p.c.auth.login("tina@example.com", "pw") }
         p.c.enrollOffer.afterPasswordSignIn()
         compose.waitUntilIdlingMain { "bioEnrollChallenge" in p.api.calls }
+        val deciding = p.c.enrollOffer.decidingJob!!
         p.c.auth.completePair(fakeSession(personId = "p2"))       // straight to another person, never signed out
         answer.complete("nonce-1")
-        compose.waitUntilIdlingMain { !p.c.enrollOffer.isDeciding }
+        compose.waitUntilIdlingMain { deciding.isCompleted }
         assertNull(p.c.enrollOffer.state.value)
     }
 
