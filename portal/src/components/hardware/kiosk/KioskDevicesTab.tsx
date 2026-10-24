@@ -13,6 +13,10 @@ import { naturalCompare } from '../../../lib/naturalSort';
 
 const dash = (v: unknown) => (v === null || v === undefined || v === '' ? '—' : String(v));
 
+/** `.kv dd.mono` only when there is a value: a missing one stays a plain
+ *  dash, so a column of dashes and values lines up in one font. */
+const monoIf = (v: unknown) => (dash(v) === '—' ? undefined : 'mono');
+
 const scalar = (v: unknown) => (v !== null && typeof v === 'object' ? JSON.stringify(v) : dash(v));
 
 const keyTitle = (k: string) => {
@@ -32,18 +36,18 @@ export default function KioskDevicesTab({ detail: d }: { detail: DeviceDetail })
   const dots = (n: unknown) => (typeof n === 'number' ? `${n} dots` : '—');
 
   return (
-    <div className="profile-grid">
+    <div className="kd-grid">
       <div className="panel">
         <div className="panel-head"><h3>This device</h3></div>
         <div className="panel-body">
           <dl className="kv">
             <dt>Platform</dt><dd>{subTypeLabel(d.sub_type)}</dd>
-            <dt>Serial</dt><dd className="mono">{dash(d.serial)}</dd>
-            <dt>MAC</dt><dd className="mono">{dash(d.mac)}</dd>
-            <dt>LAN IP</dt><dd className="mono">{dash(d.lan_ip)}</dd>
-            <dt>WAN IP</dt><dd className="mono">{dash(d.wan_ip)}</dd>
+            <dt>Serial</dt><dd className={monoIf(d.serial)}>{dash(d.serial)}</dd>
+            <dt>MAC</dt><dd className={monoIf(d.mac)}>{dash(d.mac)}</dd>
+            <dt>LAN IP</dt><dd className={monoIf(d.lan_ip)}>{dash(d.lan_ip)}</dd>
+            <dt>WAN IP</dt><dd className={monoIf(d.wan_ip)}>{dash(d.wan_ip)}</dd>
             <dt>Model</dt><dd>{dash(d.model)}</dd>
-            <dt>App version</dt><dd className="mono">{dash(d.version)}</dd>
+            <dt>App version</dt><dd className={monoIf(d.version)}>{dash(d.version)}</dd>
           </dl>
         </div>
       </div>
@@ -54,14 +58,14 @@ export default function KioskDevicesTab({ detail: d }: { detail: DeviceDetail })
           {reader ? (
             <dl className="kv">
               <dt>Model</dt><dd>{dash(reader.model)}</dd>
-              <dt>Serial</dt><dd className="mono">{dash(reader.serial)}</dd>
-              <dt>IP</dt><dd className="mono">{dash(reader.ip)}</dd>
+              <dt>Serial</dt><dd className={monoIf(reader.serial)}>{dash(reader.serial)}</dd>
+              <dt>IP</dt><dd className={monoIf(reader.ip)}>{dash(reader.ip)}</dd>
               <dt>Paired</dt>
-              <dd>{reader.paired_at ? <span className="mono">{fullDateTime(reader.paired_at)}</span> : '—'}</dd>
+              <dd className={monoIf(reader.paired_at)}>{reader.paired_at ? fullDateTime(reader.paired_at) : '—'}</dd>
               {versions.map(([k, v]) => (
                 <Fragment key={k}>
                   <dt>{keyTitle(k.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase())}</dt>
-                  <dd className="mono">{dash(v)}</dd>
+                  <dd className={monoIf(v)}>{dash(v)}</dd>
                 </Fragment>
               ))}
             </dl>
@@ -94,7 +98,7 @@ export default function KioskDevicesTab({ detail: d }: { detail: DeviceDetail })
               <dt>Model</dt><dd>{dash(station.printer.model)}</dd>
               {station.printer.type === 'network' && (
                 <>
-                  <dt>IP</dt><dd className="mono">{dash(station.printer.ip)}</dd>
+                  <dt>IP</dt><dd className={monoIf(station.printer.ip)}>{dash(station.printer.ip)}</dd>
                 </>
               )}
               <dt>DPI</dt><dd>{typeof station.dpi === 'number' ? `${station.dpi} dpi` : '—'}</dd>

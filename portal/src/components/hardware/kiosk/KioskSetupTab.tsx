@@ -49,7 +49,7 @@ export default function KioskSetupTab({ detail: d, canEdit, onSaved }: {
   const options = d.scan_type_options.map((o) => ({ value: o.key, label: o.label }));
 
   return (
-    <div className="profile-grid">
+    <div className="kd-grid">
       <div className="panel">
         <div className="panel-head"><h3>Kiosk Setup</h3></div>
         <div className="panel-body">
