@@ -116,6 +116,7 @@ export function loginMethodLabel(m: string | null): string {
   if (m == null) return '—';
   if (m === 'password') return 'Password';
   if (m === 'link') return 'Phone link';
+  if (m === 'biometric') return 'Fingerprint';
   return m;
 }
 

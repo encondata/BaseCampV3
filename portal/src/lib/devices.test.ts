@@ -197,6 +197,7 @@ describe('kiosk session accessors', () => {
   it('loginMethodLabel maps known values, passes through unknown, dashes null', () => {
     expect(loginMethodLabel('password')).toBe('Password');
     expect(loginMethodLabel('link')).toBe('Phone link');
+    expect(loginMethodLabel('biometric')).toBe('Fingerprint');
     expect(loginMethodLabel('badge')).toBe('badge');
     expect(loginMethodLabel(null)).toBe('—');
   });

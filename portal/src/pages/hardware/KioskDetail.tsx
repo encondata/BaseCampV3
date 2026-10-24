@@ -5,7 +5,7 @@
  * Setup & move, History — each on its own sub-path like UserDetail's.
  *
  * Anyone with scanning_hardware view sees the page. Editing (settings,
- * Reset, scan type, sound upload) needs super admin (rank 80+) AND
+ * Reset, scan type, sound upload, the personal device) needs super admin (rank 80+) AND
  * scanning_hardware change; the API enforces the same gate.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -195,7 +195,7 @@ export default function KioskDetail() {
         ))}
       </div>
 
-      {tab === 'overview' && <KioskOverviewTab detail={detail} />}
+      {tab === 'overview' && <KioskOverviewTab detail={detail} canEdit={canEdit} onSaved={setDetail} />}
       {tab === 'settings' && (
         <KioskSettingsTab detail={detail} history={history} sounds={sounds} statuses={statuses}
                           canEdit={canEdit} onSaved={onSaved} onSoundsChanged={loadSounds}

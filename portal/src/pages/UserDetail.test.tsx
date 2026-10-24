@@ -7,7 +7,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { MyActivityItem, TrustedBrowsers, UserDetailOut } from '../lib/api';
+import type { BiometricKey, MyActivityItem, TrustedBrowsers, UserDetailOut } from '../lib/api';
 
 const auth = vi.hoisted(() => ({
   personId: 'me-1',
@@ -55,6 +55,9 @@ const api = vi.hoisted(() => ({
   listUserTrustedBrowsers: vi.fn(async (): Promise<TrustedBrowsers> => ({ trust_days: 7, browsers: [] })),
   forgetUserTrustedBrowser: vi.fn(async () => {}),
   forgetAllUserTrustedBrowsers: vi.fn(async () => {}),
+  listUserBiometricKeys: vi.fn(async (): Promise<BiometricKey[]> => []),
+  forgetUserBiometricKey: vi.fn(async () => {}),
+  forgetAllUserBiometricKeys: vi.fn(async () => {}),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -107,6 +110,7 @@ beforeEach(() => {
   auth.perms = new Set(['users:view', 'users:change', 'access:view', 'access:change', 'audit:view']);
   api.getUserDetail.mockResolvedValue(DETAIL);
   api.listUserTrustedBrowsers.mockResolvedValue({ trust_days: 7, browsers: [] });
+  api.listUserBiometricKeys.mockResolvedValue([]);
 });
 afterEach(cleanup);
 
@@ -565,4 +569,94 @@ it('an active account keeps Reset password (header and Account panel) and has no
   await screen.findByRole('heading', { level: 1, name: /Wan Worker/ });
   expect(screen.getAllByRole('button', { name: 'Reset password' })).toHaveLength(2);
   expect(screen.queryByRole('button', { name: 'Resend invite' })).toBeNull();
+});
+
+/* ── Biometric sign-in panel ───────────────────────────────────────── */
+
+const KEYS: BiometricKey[] = [
+  { id: 'bk1', device_id: 'k1', device_name: 'Pixel 8 Pat', security_level: 'strongbox',
+    created_at: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+    last_used_at: new Date(Date.now() - 3_600_000).toISOString(),
+    renews_at: '2099-11-22T12:00:00Z' },
+  { id: 'bk2', device_id: 'k2', device_name: 'Old Tablet', security_level: 'tee',
+    created_at: new Date(Date.now() - 40 * 86_400_000).toISOString(), last_used_at: null,
+    renews_at: '2020-01-02T12:00:00Z' },
+];
+
+async function biometricPanel(): Promise<HTMLElement> {
+  return (await screen.findByRole('heading', { name: 'Biometric sign-in', level: 3 })).closest('.panel') as HTMLElement;
+}
+
+it('Biometric sign-in lists keys by device, created, last used and renews-by, with Forget and Forget all', async () => {
+  api.listUserBiometricKeys.mockResolvedValue(KEYS);
+  renderAt('/people/users/p1');
+  const panel = await biometricPanel();
+  expect(api.listUserBiometricKeys).toHaveBeenCalledWith('p1');
+  expect(within(panel).getByText('2 devices')).toBeTruthy();
+  expect(within(panel).getByText('Pixel 8 Pat')).toBeTruthy();
+  expect(within(panel).getByText('added 2d ago · last used 1h ago · renews by Nov 22')).toBeTruthy();
+  expect(within(panel).getByText(/never used · expired · renews at their next password sign-in/)).toBeTruthy();
+  expect(within(panel).getAllByRole('button', { name: 'Forget' })).toHaveLength(2);
+  expect(within(panel).getByRole('button', { name: 'Forget all' })).toBeTruthy();
+});
+
+it('Forget on a key calls the API and drops the row; a failure shows inline', async () => {
+  api.listUserBiometricKeys.mockResolvedValue(KEYS);
+  api.forgetUserBiometricKey.mockRejectedValueOnce(new Error('network'));
+  renderAt('/people/users/p1');
+  const panel = await biometricPanel();
+  fireEvent.click(within(panel).getAllByRole('button', { name: 'Forget' })[0]);
+  expect((await within(panel).findByRole('alert')).textContent).toBe('Could not forget that fingerprint. Try again.');
+  expect(within(panel).getAllByRole('button', { name: 'Forget' })).toHaveLength(2);
+  fireEvent.click(within(panel).getAllByRole('button', { name: 'Forget' })[0]);
+  await waitFor(() => expect(api.forgetUserBiometricKey).toHaveBeenLastCalledWith('p1', 'bk1'));
+  await waitFor(() => expect(within(panel).getAllByRole('button', { name: 'Forget' })).toHaveLength(1));
+  expect(within(panel).queryByText('Pixel 8 Pat')).toBeNull();
+});
+
+it('Forget all confirms in a Biometric sign-in modal, then empties the list', async () => {
+  api.listUserBiometricKeys.mockResolvedValue(KEYS);
+  renderAt('/people/users/p1');
+  const panel = await biometricPanel();
+  fireEvent.click(within(panel).getByRole('button', { name: 'Forget all' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Forget all fingerprint sign-ins' });
+  expect(within(dialog).getByText('Biometric sign-in')).toBeTruthy();
+  expect(within(dialog).getByText(/Wan Worker/)).toBeTruthy();
+  api.forgetAllUserBiometricKeys.mockRejectedValueOnce(
+    Object.assign(new Error('The portal is read-only right now.'), { code: 'read_only_mode' }));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Forget all fingerprints' }));
+  await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('The portal is read-only right now.'));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Forget all fingerprints' }));
+  await waitFor(() => expect(api.forgetAllUserBiometricKeys).toHaveBeenLastCalledWith('p1'));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(await within(panel).findByText('0 devices')).toBeTruthy();
+  expect(within(panel).getByText('No fingerprint sign-in on any device.')).toBeTruthy();
+});
+
+it('Biometric sign-in is read-only without users:change, and hidden with the sessions block', async () => {
+  auth.perms.delete('users:change');
+  api.listUserBiometricKeys.mockResolvedValue(KEYS);
+  renderAt('/people/users/p1');
+  const panel = await biometricPanel();
+  expect(within(panel).getByText('Pixel 8 Pat')).toBeTruthy();
+  expect(within(panel).queryByRole('button')).toBeNull();
+  cleanup();
+  vi.clearAllMocks();
+  api.getUserDetail.mockResolvedValue({ ...DETAIL, sessions: null });
+  renderAt('/people/users/p1');
+  await screen.findByRole('heading', { level: 1, name: /Wan Worker/ });
+  expect(screen.queryByRole('heading', { name: 'Biometric sign-in', level: 3 })).toBeNull();
+  expect(api.listUserBiometricKeys).not.toHaveBeenCalled();
+});
+
+it('on your own user page Biometric sign-in has no Forget and points to My account', async () => {
+  auth.personId = 'p1';
+  api.listUserBiometricKeys.mockResolvedValue(KEYS);
+  renderAt('/people/users/p1');
+  const panel = await biometricPanel();
+  expect(within(panel).getByText('Pixel 8 Pat')).toBeTruthy();
+  expect(within(panel).queryByRole('button', { name: 'Forget' })).toBeNull();
+  expect(within(panel).queryByRole('button', { name: 'Forget all' })).toBeNull();
+  expect(within(panel).getByText(/Manage your own on/).textContent).toBe('Manage your own on My account');
+  expect(within(panel).getByRole('link', { name: 'My account' }).getAttribute('href')).toBe('/me');
 });

@@ -10,7 +10,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
-import type { PersonDetail, TotpStatus, TrustedBrowser, UiPreferences } from '../lib/api';
+import type { BiometricKey, PersonDetail, TotpStatus, TrustedBrowser, UiPreferences } from '../lib/api';
 
 type TB = TrustedBrowser;
 
@@ -32,6 +32,8 @@ const api = vi.hoisted(() => ({
   listMyTrustedBrowsers: vi.fn(async () => ({ trust_days: 7, browsers: [] as TB[] })),
   forgetMyTrustedBrowser: vi.fn(async () => {}),
   forgetAllMyTrustedBrowsers: vi.fn(async () => {}),
+  listMyBiometricKeys: vi.fn(async (): Promise<BiometricKey[]> => []),
+  forgetMyBiometricKey: vi.fn(async () => {}),
   // MeNotifications (the Notifications tab) loads the person's groups on mount
   listMyNotificationGroups: vi.fn(async () => []),
 }));
@@ -99,6 +101,7 @@ afterEach(() => {
   api.getSessionsRequest.mockImplementation(async () => []);
   api.getMyActivityRequest.mockImplementation(async () => []);
   api.listMyTrustedBrowsers.mockImplementation(async () => ({ trust_days: 7, browsers: [] }));
+  api.listMyBiometricKeys.mockImplementation(async () => []);
   auth.totp = { enrolled: false, enrolled_at: null, required: false, backup_codes_remaining: 0 };
 });
 
@@ -348,4 +351,47 @@ it('a failed Forget shows an inline error and keeps the row; a failed Forget all
   expect((await within(panel).findByRole('alert')).textContent).toBe('Could not forget the browsers. Try again.');
   expect(within(panel).getAllByRole('button', { name: 'Forget' })).toHaveLength(1);
   confirm.mockRestore();
+});
+
+/* ── Biometric sign-in (/me) ───────────────────────────────────────── */
+
+const MY_KEYS: BiometricKey[] = [
+  { id: 'bk1', device_id: 'k1', device_name: 'Pixel 8 Ada', security_level: 'strongbox',
+    created_at: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+    last_used_at: new Date(Date.now() - 3_600_000).toISOString(),
+    renews_at: '2099-11-22T12:00:00Z' },
+  { id: 'bk2', device_id: 'k2', device_name: 'Old Tablet', security_level: 'tee',
+    created_at: new Date(Date.now() - 4 * 86_400_000).toISOString(), last_used_at: null,
+    renews_at: '2099-12-01T12:00:00Z' },
+];
+
+it('/me Biometric sign-in lists your keys with Forget (no Forget all); Forget drops the row', async () => {
+  api.listMyBiometricKeys.mockImplementation(async () => MY_KEYS);
+  renderAt('/me');
+  const panel = (await screen.findByRole('heading', { name: 'Biometric sign-in', level: 3 })).closest('.panel') as HTMLElement;
+  expect(within(panel).getByText('2 devices')).toBeTruthy();
+  expect(within(panel).getByText('added 2d ago · last used 1h ago · renews by Nov 22')).toBeTruthy();
+  expect(within(panel).queryByRole('button', { name: 'Forget all' })).toBeNull();
+  fireEvent.click(within(panel).getAllByRole('button', { name: 'Forget' })[0]);
+  await waitFor(() => expect(api.forgetMyBiometricKey).toHaveBeenCalledWith('bk1'));
+  await waitFor(() => expect(within(panel).getAllByRole('button', { name: 'Forget' })).toHaveLength(1));
+  expect(within(panel).queryByText('Pixel 8 Ada')).toBeNull();
+  expect(within(panel).getByText('1 device')).toBeTruthy();
+});
+
+it('/me Biometric sign-in shows a failed Forget inline and keeps the row', async () => {
+  api.listMyBiometricKeys.mockImplementation(async () => MY_KEYS);
+  api.forgetMyBiometricKey.mockRejectedValueOnce(new Error('network'));
+  renderAt('/me');
+  const panel = (await screen.findByRole('heading', { name: 'Biometric sign-in', level: 3 })).closest('.panel') as HTMLElement;
+  fireEvent.click(within(panel).getAllByRole('button', { name: 'Forget' })[0]);
+  expect((await within(panel).findByRole('alert')).textContent).toBe('Could not forget that fingerprint. Try again.');
+  expect(within(panel).getAllByRole('button', { name: 'Forget' })).toHaveLength(2);
+});
+
+it('/me hides Biometric sign-in when you have no keys', async () => {
+  renderAt('/me');
+  await screen.findByRole('heading', { name: 'Active sessions', level: 3 });
+  await waitFor(() => expect(api.listMyBiometricKeys).toHaveBeenCalled());
+  expect(screen.queryByRole('heading', { name: 'Biometric sign-in', level: 3 })).toBeNull();
 });

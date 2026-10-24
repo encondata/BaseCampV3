@@ -13,6 +13,7 @@ import { describeUserAgent, longDate, relativeTime } from '../../lib/format';
 import { STATUS_META, type DetailMode } from '../../lib/users';
 import { Switch } from '../Switch';
 import TwoFactorOffNote from '../TwoFactorOffNote';
+import UserBiometricKeys from './UserBiometricKeys';
 import UserTrustedBrowsers from './UserTrustedBrowsers';
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -23,9 +24,10 @@ const SOURCE_LABEL: Record<string, string> = {
 
 // `mode` is accepted (not just canManageUsers) so callers keep passing the
 // same DetailMode they compute for the rest of the page; this component
-// only needs canManageUsers to gate its own buttons.
+// gates its own buttons on canManageUsers, and uses `mode === 'self'` only to
+// point Biometric sign-in at /me (the API refuses an admin's own forget).
 export default function UserProfileTab({
-  detail, canManageUsers, reloadKey, onEdit, onReset, onSignOutAll, onResetTotp, onToggleTotpRequired,
+  detail, mode, canManageUsers, reloadKey, onEdit, onReset, onSignOutAll, onResetTotp, onToggleTotpRequired,
 }: {
   detail: UserDetailOut;
   mode: DetailMode;
@@ -248,6 +250,10 @@ export default function UserProfileTab({
       {sessions !== null && (
         <UserTrustedBrowsers personId={person.id} personName={person.display_name}
                              canManage={canManage} reloadKey={reloadKey} />
+      )}
+      {sessions !== null && (
+        <UserBiometricKeys personId={person.id} personName={person.display_name}
+                           canManage={canManage} ownPage={mode === 'self'} reloadKey={reloadKey} />
       )}
     </>
   );
