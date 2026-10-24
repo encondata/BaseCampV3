@@ -31,6 +31,12 @@ signing attestation chains on February 1, 2026.
 - The root is the trust anchor, so its own validity dates are not checked.
   That keeps the 2016 certificate (expired 2026-05-24) usable for devices
   whose chains still embed it.
+- The RSA key (subject SERIALNUMBER=f92009e853b6b045) is also the factory
+  root: a chain of exactly four certificates under it, whose intermediate has
+  a SERIALNUMBER subject, keeps working after its certificates expire
+  (Google: "Expired factory keys: Still trustworthy"). Chains under the EC
+  root, and remote-provisioned chains under the RSA root, keep their dates
+  checked. A root certificate anywhere but the end of a chain is refused.
 - `api/tests/test_key_attestation.py::test_pinned_google_roots` checks these
   five fingerprints, so a changed or added file fails the suite until this
   table and the test agree.

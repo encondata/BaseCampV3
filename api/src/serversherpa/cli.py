@@ -503,7 +503,8 @@ def reset_totp(
 
 async def _refresh_attestation_status(transport=None) -> int:
     """One session: fetch Google's list, store it, commit, dispose. Returns
-    how many entries were stored (tests pass a fake `transport`)."""
+    how many entries the stored list has, whatever their status (tests pass a
+    fake `transport`)."""
     from serversherpa.security.attestation_status import SECTION, refresh_attestation_status
 
     try:
@@ -530,8 +531,7 @@ def refresh_attestation_status_command() -> None:
         typer.secho(f"Could not refresh the attestation status list: {exc}",
                     fg="red", err=True)
         raise typer.Exit(code=1) from None
-    typer.secho(f"Attestation status list refreshed: {count} revoked or suspended "
-                "certificate(s).", fg="green")
+    typer.secho(f"Attestation status list refreshed: {count} entries stored.", fg="green")
 
 
 def _run_worker_process(poll_seconds: float) -> None:

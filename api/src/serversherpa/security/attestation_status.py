@@ -9,6 +9,7 @@ does it on demand. Biometric enroll reads it back with `load_status` and
 refuses with attestation_status_unavailable when it is missing or older than
 seven days (`AttestationStatus.fresh`)."""
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -25,7 +26,10 @@ SECTION = "attestation_status"
 MAX_AGE = timedelta(days=7)
 # Statuses that mean "don't trust this certificate" (Google's schema enum).
 UNTRUSTED = frozenset({"REVOKED", "SUSPENDED"})
-FETCH_TIMEOUT = httpx.Timeout(30.0)
+FETCH_TIMEOUT = httpx.Timeout(30.0)       # per connect / read
+# The whole fetch, so a server trickling bytes inside the read timeout can't
+# hold the notification worker's loop.
+FETCH_DEADLINE_SECONDS = 60.0
 # The list is ~180 KB today; anything far bigger is not Google's list.
 MAX_BYTES = 16 * 1024 * 1024
 
@@ -97,11 +101,22 @@ async def refresh_attestation_status(
         now: datetime | None = None) -> None:
     """Fetch Google's list and store `{fetched_at, entries}` under
     system_config['attestation_status']. The caller commits. Raises
-    AttestationStatusFetchError (and writes nothing) when the fetch fails."""
+    AttestationStatusFetchError (and writes nothing) when the fetch fails,
+    runs past FETCH_DEADLINE_SECONDS, or returns no entries."""
     from serversherpa.db.models import SystemConfig
 
     url = get_settings().attestation_status_url
-    entries = _clean_entries(await _fetch(url, transport))
+    try:
+        async with asyncio.timeout(FETCH_DEADLINE_SECONDS):
+            fetched = await _fetch(url, transport)
+    except TimeoutError:
+        raise AttestationStatusFetchError(
+            f"{url} did not finish within the {FETCH_DEADLINE_SECONDS:g} s deadline") from None
+    entries = _clean_entries(fetched)
+    if not entries:
+        # Google's list has always had entries; storing an empty one would
+        # un-revoke every certificate, so keep the cached list instead.
+        raise AttestationStatusFetchError(f"{url} returned an empty list")
     now = now or datetime.now(UTC)
     data = {"fetched_at": now.isoformat(), "entries": entries}
     row = await db.get(SystemConfig, SECTION)

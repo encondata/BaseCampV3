@@ -4,9 +4,10 @@ At enroll the app sends the new key's certificate chain
 (`KeyStore.getCertificateChain`, leaf first, DER). `verify_attestation`
 accepts it only when:
 
-- every certificate is signed by the next, and the last one carries the
-  public key of a pinned Google hardware attestation root
-  (security/attestation_roots/, see its README);
+- it has 3 to 6 certificates, each signed by the next; the last one, and
+  only the last one, is a root, and it carries the public key of a pinned
+  Google hardware attestation root (security/attestation_roots/, see its
+  README);
 - no certificate is expired (see `_check_validity` for Google's two
   exceptions) and no serial is on Google's revocation list;
 - the leaf, and only the leaf, has the KeyDescription extension
@@ -14,8 +15,8 @@ accepts it only when:
   - attestationChallenge == the enroll nonce;
   - attestation and KeyMint security level TrustedEnvironment or StrongBox;
   - hardware enforced: algorithm EC, curve P-256, purpose SIGN, userAuthType
-    including biometric; no noAuthRequired and no authTimeout anywhere (auth
-    on every use);
+    exactly biometric (no password bit); no noAuthRequired and no authTimeout
+    anywhere (auth on every use);
   - attestationApplicationId: package com.serversherpa.kiosk, signed with a
     certificate whose SHA-256 is on the allowlist;
   - rootOfTrust: deviceLocked and verifiedBootState Verified.
@@ -51,6 +52,11 @@ KEY_DESCRIPTION_OID = x509.ObjectIdentifier("1.3.6.1.4.1.11129.2.1.17")
 KIOSK_PACKAGE = b"com.serversherpa.kiosk"
 ROOTS_DIR = Path(__file__).resolve().parent / "attestation_roots"
 MIN_ATTESTATION_VERSION = 3
+# Google's RSA root's subject (SERIALNUMBER=...): chains under it from
+# factory-provisioned devices stay trusted after they expire.
+FACTORY_ROOT_SERIAL = "f92009e853b6b045"
+FACTORY_CHAIN_LENGTH = 4          # leaf, batch, intermediate, root
+MAX_CHAIN_LENGTH = 6              # remote-provisioned chains run longer
 
 Reason = Literal["chain", "root", "expired", "revoked", "challenge", "security_level",
                  "key_properties", "user_auth", "package", "boot_state", "parse"]
@@ -204,6 +210,15 @@ def _spki(cert: x509.Certificate) -> bytes:
         serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
 
 
+def factory_root_spkis(roots) -> set[bytes]:
+    """The public keys of the pinned roots that sign factory-provisioned
+    chains: Google's RSA root, subject SERIALNUMBER=f92009e853b6b045 (all four
+    of its certificates share one key). The EC root is RKP only."""
+    return {_spki(r) for r in roots
+            if any(a.value == FACTORY_ROOT_SERIAL
+                   for a in r.subject.get_attributes_for_oid(NameOID.SERIAL_NUMBER))}
+
+
 def _has_serial_number_attr(name: x509.Name) -> bool:
     return bool(name.get_attributes_for_oid(NameOID.SERIAL_NUMBER))
 
@@ -221,10 +236,18 @@ def _has_key_description(cert: x509.Certificate) -> bool:
 def _check_chain(certs: list[x509.Certificate], roots) -> None:
     if len(certs) < 3:
         raise AttestationError("chain", "need the leaf, an intermediate and the root")
+    if len(certs) > MAX_CHAIN_LENGTH:
+        raise AttestationError("chain", f"more than {MAX_CHAIN_LENGTH} certificates")
     top = certs[-1]
     pinned = {_spki(r) for r in roots}
     if _spki(top) not in pinned:
         raise AttestationError("root", "the chain does not end at a pinned Google root")
+    # Exactly one anchor, at the end: a root (or any copy, reissue or
+    # cross-certificate of a pinned key) inside the chain would change its
+    # shape, e.g. make a remote-provisioned chain look factory-provisioned.
+    for cert in certs[:-1]:
+        if cert.subject == cert.issuer or _spki(cert) in pinned:
+            raise AttestationError("chain", "a root certificate appears below the anchor")
     for cert, issuer in zip(certs, certs[1:] + [top], strict=True):
         try:
             cert.verify_directly_issued_by(issuer)
@@ -240,20 +263,22 @@ def _check_chain(certs: list[x509.Certificate], roots) -> None:
         raise AttestationError("chain", "a certificate above the leaf has a KeyDescription")
 
 
-def _check_validity(certs: list[x509.Certificate], now: datetime) -> None:
+def _check_validity(certs: list[x509.Certificate], roots, now: datetime) -> None:
     """No certificate may be expired, with Google's two exceptions:
 
     - the root is the trust anchor (pinned by its key), so its own dates
       aren't checked: Google's 2016 RSA root certificate expired on
       2026-05-24 and older devices still send it;
-    - a factory-provisioned chain (Google's RSA root over an intermediate
-      whose subject has a SERIALNUMBER) is trusted after it expires: Google
+    - a factory-provisioned chain (exactly leaf, batch, intermediate and
+      root; the root has the pinned RSA root's key and the intermediate just
+      below it has a SERIALNUMBER subject) is trusted after it expires: Google
       says those devices can't rotate their keys and stay trustworthy unless
       revoked. Remote-provisioned chains keep their dates checked.
 
     The leaf's notBefore comes from the device clock, so only its notAfter
     is checked (Google's verifier skips the leaf entirely)."""
-    factory = (_has_serial_number_attr(certs[-1].subject)
+    factory = (len(certs) == FACTORY_CHAIN_LENGTH
+               and _spki(certs[-1]) in factory_root_spkis(roots)
                and _has_serial_number_attr(certs[-2].subject))
     for index, cert in enumerate(certs[:-1]):
         if index > 0 and now < cert.not_valid_before_utc:
@@ -307,8 +332,9 @@ def _check_user_auth(sw: dict, hw: dict) -> None:
         raise AttestationError("user_auth", "the key needs no user authentication")
     if AUTH_TIMEOUT in sw or AUTH_TIMEOUT in hw:
         raise AttestationError("user_auth", "the key has an auth timeout, not auth per use")
-    if USER_AUTH_TYPE not in hw or not int(hw[USER_AUTH_TYPE]) & AUTHENTICATOR_FINGERPRINT:
-        raise AttestationError("user_auth", "the key does not require a strong biometric")
+    # exactly biometric: a password bit (or ANY) would let a PIN use the key
+    if USER_AUTH_TYPE not in hw or int(hw[USER_AUTH_TYPE]) != AUTHENTICATOR_FINGERPRINT:
+        raise AttestationError("user_auth", "only a strong biometric may unlock the key")
 
 
 def _check_package(sw: dict, hw: dict, digests: set[str]) -> None:
@@ -361,7 +387,7 @@ def verify_attestation(chain_der: list[bytes], *, nonce: bytes, digests: set[str
             raise AttestationError("parse", "a certificate is not DER X.509") from exc
 
     _check_chain(certs, roots)
-    _check_validity(certs, now)
+    _check_validity(certs, roots, now)
     _check_revocation(certs, status)
 
     leaf = certs[0]                     # never read the extension of any other cert

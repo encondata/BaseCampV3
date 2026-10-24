@@ -160,43 +160,74 @@ class Chain:
 
 
 def make_chain(*, kd: bytes | None = None, leaf_key=None, root_key_name: str = "root",
-               factory: bool = False, intermediate_not_after: datetime | None = None,
+               factory: bool = False, middle: int | None = None,
+               root_serial_attr: str | None = None,
+               intermediate_not_after: datetime | None = None,
                leaf_not_after: datetime | None = None,
                root_not_after: datetime | None = None,
                intermediate_extension: bytes | None = None,
                leaf_extension: bool = True) -> Chain:
-    """root → intermediate → leaf. `factory` gives the root and intermediate a
-    SERIALNUMBER attribute, the shape of a factory-provisioned chain under
-    Google's RSA root."""
-    root_key, inter_key = ec_key(root_key_name), ec_key("intermediate")
+    """leaf → `middle` certificates → root (default one in the middle).
+
+    `factory` builds the 4-certificate shape of a factory-provisioned chain:
+    leaf → batch → intermediate (SERIALNUMBER subject) → root whose subject is
+    SERIALNUMBER=f92009e853b6b045, like Google's RSA root.
+    `root_serial_attr` gives a non-factory chain's root a SERIALNUMBER.
+    `intermediate_not_after` applies to every certificate between the leaf and
+    the root; `intermediate_extension` goes on the one just above the leaf."""
+    middle = (2 if factory else 1) if middle is None else middle
+    root_key = ec_key(root_key_name)
     leaf_key = leaf_key or ec_key("leaf")
-    root_name = _name("Test Attestation Root", "f92009e853b6b045" if factory else None)
-    inter_name = _name("Test Attestation Intermediate", "c6047571d8f0d17c" if factory else None)
+    root_name = _name("Test Attestation Root",
+                      "f92009e853b6b045" if factory else root_serial_attr)
     long_ago = datetime(2020, 1, 1, tzinfo=UTC)
     root = make_cert(subject=root_name, issuer=root_name, public_key=root_key.public_key(),
                      signing_key=root_key, serial=0x1001, not_before=long_ago,
                      not_after=root_not_after or datetime(2040, 1, 1, tzinfo=UTC), ca=True)
-    inter_ext = ([x509.UnrecognizedExtension(KEY_DESCRIPTION_OID, intermediate_extension)]
-                 if intermediate_extension is not None else [])
-    inter = make_cert(subject=inter_name, issuer=root_name,
-                      public_key=inter_key.public_key(), signing_key=root_key,
-                      serial=0x2bad2002, not_before=long_ago,
-                      not_after=intermediate_not_after or datetime(2036, 1, 1, tzinfo=UTC),
-                      ca=True, extensions=inter_ext)
+    # built top-down: index 0 sits just under the root
+    above_name, above_key = root_name, root_key
+    middles: list[x509.Certificate] = []
+    for i in range(middle):
+        key = ec_key("intermediate" if i == middle - 1 else f"intermediate-{i}")
+        top = i == 0
+        name = _name("Test Attestation Intermediate" if i == middle - 1
+                     else f"Test Attestation CA {i}",
+                     "c6047571d8f0d17c" if factory and top else None)
+        ext = ([x509.UnrecognizedExtension(KEY_DESCRIPTION_OID, intermediate_extension)]
+               if intermediate_extension is not None and i == middle - 1 else [])
+        middles.append(make_cert(
+            subject=name, issuer=above_name, public_key=key.public_key(),
+            signing_key=above_key, serial=0x2bad2002 + i, not_before=long_ago,
+            not_after=intermediate_not_after or datetime(2036, 1, 1, tzinfo=UTC),
+            ca=True, extensions=ext))
+        above_name, above_key = name, key
     leaf_ext = ([x509.UnrecognizedExtension(KEY_DESCRIPTION_OID,
                                             kd if kd is not None else key_description())]
                 if leaf_extension else [])
-    leaf = make_cert(subject=_name("Android Keystore Key"), issuer=inter_name,
-                     public_key=leaf_key.public_key(), signing_key=inter_key,
+    leaf = make_cert(subject=_name("Android Keystore Key"), issuer=above_name,
+                     public_key=leaf_key.public_key(), signing_key=above_key,
                      serial=1, not_before=datetime(1970, 1, 1, tzinfo=UTC),
                      not_after=leaf_not_after or datetime(2048, 1, 1, tzinfo=UTC),
                      ca=False, extensions=leaf_ext)
-    certs = [leaf, inter, root]
+    certs = [leaf, *reversed(middles), root]
     return Chain(
         der=[c.public_bytes(serialization.Encoding.DER) for c in certs], root=root,
         certs=certs,
         leaf_public_der=leaf_key.public_key().public_bytes(
             serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo))
+
+
+def reissue(cert: x509.Certificate, key_name: str = "root", serial: int = 0x1002,
+            not_after: datetime | None = None) -> x509.Certificate:
+    """A self-signed reissue of a root: same name and key, new serial."""
+    key = ec_key(key_name)
+    return make_cert(subject=cert.subject, issuer=cert.subject, public_key=key.public_key(),
+                     signing_key=key, serial=serial, not_before=cert.not_valid_before_utc,
+                     not_after=not_after or datetime(2042, 1, 1, tzinfo=UTC), ca=True)
+
+
+def der(cert: x509.Certificate) -> bytes:
+    return cert.public_bytes(serialization.Encoding.DER)
 
 
 def rsa_leaf_key():

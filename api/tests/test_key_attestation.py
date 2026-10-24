@@ -17,6 +17,7 @@ from serversherpa.security.attestation_status import AttestationStatus
 from serversherpa.security.key_attestation import (
     AttestationError,
     AttestedKey,
+    factory_root_spkis,
     google_roots,
     verify_attestation,
 )
@@ -39,12 +40,17 @@ from tests.attestation_helpers import (
     UNVERIFIED,
     USER_AUTH_TYPE,
     VERIFY,
+    _name,
     application_id,
     default_hw,
     default_sw,
+    der,
+    ec_key,
     explicit,
     key_description,
+    make_cert,
     make_chain,
+    reissue,
     root_of_trust,
     rsa_leaf_key,
     set_of_ints,
@@ -197,6 +203,111 @@ def test_expired_pinned_root_is_still_the_trust_anchor():
     assert verify(chain).security_level == "strongbox"
 
 
+# ── chain shape: the factory exemption can't be unlocked ───────────
+
+def _expired_rkp_under_factory_root():
+    """An RKP-shaped chain (no SERIALNUMBER below the root) under a root with
+    Google's RSA-root subject, whose intermediate expired 60 days ago."""
+    return make_chain(root_serial_attr="f92009e853b6b045",
+                      intermediate_not_after=NOW - timedelta(days=60))
+
+
+def test_expired_rkp_chain_under_the_rsa_root_refused():
+    chain = _expired_rkp_under_factory_root()
+    refused(chain, "expired")
+
+
+def test_appended_root_refused():
+    """[leaf, inter, root, root]: a copy of the anchor below the anchor."""
+    chain = _expired_rkp_under_factory_root()
+    chain.der = [*chain.der, chain.der[-1]]
+    refused(chain, "chain")
+
+
+def test_appended_root_reissue_on_expired_rkp_chain_refused():
+    chain = _expired_rkp_under_factory_root()
+    newer = reissue(chain.root)
+    chain.der = [*chain.der, der(newer)]
+    refused(chain, "chain", roots=[chain.root, newer])
+
+
+def test_root_in_place_of_the_intermediate_refused():
+    """[leaf, root, root]: the leaf signed by the root itself."""
+    chain = make_chain(middle=0)
+    chain.der = [chain.der[0], chain.der[1], chain.der[1]]
+    refused(chain, "chain")
+
+
+def test_pinned_key_below_the_anchor_refused():
+    """A cross-certificate carrying the root's key under another name."""
+    base = make_chain()
+    root_key = ec_key("root")
+    cross_name = _name("Cross-signed root key")
+    cross = make_cert(subject=cross_name, issuer=base.root.subject,
+                      public_key=root_key.public_key(), signing_key=root_key,
+                      serial=0x3003, not_before=base.root.not_valid_before_utc,
+                      not_after=base.root.not_valid_after_utc, ca=True)
+    leaf = make_cert(subject=base.certs[0].subject, issuer=cross_name,
+                     public_key=ec_key("leaf").public_key(), signing_key=root_key,
+                     serial=1, not_before=base.certs[0].not_valid_before_utc,
+                     not_after=base.certs[0].not_valid_after_utc, ca=False,
+                     extensions=[base.certs[0].extensions[-1].value])
+    base.der = [der(leaf), der(cross), base.der[-1]]
+    refused(base, "chain")
+
+
+def test_self_issued_certificate_below_the_anchor_refused():
+    """A certificate named like the root (subject == issuer) but with another
+    key, signed by the root: self-issued, so refused even though its key isn't
+    pinned."""
+    base = make_chain()
+    other = ec_key("self-issued")
+    twin = make_cert(subject=base.root.subject, issuer=base.root.subject,
+                     public_key=other.public_key(), signing_key=ec_key("root"),
+                     serial=0x4004, not_before=base.root.not_valid_before_utc,
+                     not_after=base.root.not_valid_after_utc, ca=True)
+    leaf = make_cert(subject=base.certs[0].subject, issuer=base.root.subject,
+                     public_key=ec_key("leaf").public_key(), signing_key=other,
+                     serial=1, not_before=base.certs[0].not_valid_before_utc,
+                     not_after=base.certs[0].not_valid_after_utc, ca=False,
+                     extensions=[base.certs[0].extensions[-1].value])
+    base.der = [der(leaf), der(twin), base.der[-1]]
+    refused(base, "chain")
+
+
+def test_six_certificates_attest_seven_refused():
+    assert verify(make_chain(middle=4)).security_level == "strongbox"
+    refused(make_chain(middle=5), "chain")
+
+
+def test_factory_exemption_needs_four_certificates():
+    """A 3-certificate chain shaped like a factory chain keeps its dates."""
+    chain = make_chain(factory=True, middle=1,
+                       intermediate_not_after=NOW - timedelta(days=60))
+    refused(chain, "expired")
+
+
+def test_four_certificate_rkp_chain_under_the_rsa_root_keeps_its_dates():
+    """4 certificates under the factory root key, but the one below the root
+    has no SERIALNUMBER subject: remote-provisioned, so its dates count."""
+    chain = make_chain(root_serial_attr="f92009e853b6b045", middle=2,
+                       intermediate_not_after=NOW - timedelta(days=60))
+    assert len(chain.der) == 4
+    refused(chain, "expired")
+
+
+def test_factory_exemption_needs_the_pinned_factory_root_key():
+    """The chain's own root claims Google's RSA-root subject, but the pinned
+    certificate with that key has another name: not a factory root."""
+    chain = make_chain(factory=True, intermediate_not_after=NOW - timedelta(days=60))
+    root_key = ec_key("root")
+    renamed = make_cert(subject=_name("Plain test root"), issuer=_name("Plain test root"),
+                        public_key=root_key.public_key(), signing_key=root_key,
+                        serial=0x1003, not_before=chain.root.not_valid_before_utc,
+                        not_after=chain.root.not_valid_after_utc, ca=True)
+    refused(chain, "expired", roots=[renamed])
+
+
 # ── key properties ─────────────────────────────────────────────────
 
 def test_rsa_key_refused():
@@ -263,10 +374,12 @@ def test_missing_user_auth_type_refused():
     refused(make_chain(kd=key_description(hw=hw_with(USER_AUTH_TYPE=None))), "user_auth")
 
 
-def test_biometric_or_password_auth_attests():
-    chain = make_chain(kd=key_description(hw=hw_with(
-        USER_AUTH_TYPE=explicit(USER_AUTH_TYPE, univ.Integer(PASSWORD | FINGERPRINT)))))
-    assert verify(chain).security_level == "strongbox"
+@pytest.mark.parametrize("auth_type", [PASSWORD | FINGERPRINT, 0xFFFFFFFF])
+def test_auth_a_pin_can_satisfy_refused(auth_type):
+    """Only a strong biometric may unlock the key: a password bit (or ANY,
+    0xFFFFFFFF) means a PIN could use it."""
+    refused(make_chain(kd=key_description(hw=hw_with(
+        USER_AUTH_TYPE=explicit(USER_AUTH_TYPE, univ.Integer(auth_type))))), "user_auth")
 
 
 # ── package ────────────────────────────────────────────────────────
@@ -357,6 +470,12 @@ def test_pinned_google_roots():
     assert any(isinstance(c, x509.Certificate) and c.subject.rfc4514_string()
                == "C=US,O=Google LLC,OU=Android,CN=Key Attestation CA1"
                for c in google_roots())
+    # the factory exemption applies under the RSA key only, never the EC root
+    rsa_roots = [c for c in google_roots() if "f92009e853b6b045" in c.subject.rfc4514_string()]
+    assert len(rsa_roots) == 4
+    assert factory_root_spkis(google_roots()) == {
+        rsa_roots[0].public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)}
 
 
 def test_stale_status_is_the_callers_check_not_a_refusal():

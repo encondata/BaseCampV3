@@ -59,10 +59,11 @@ async def test_refresh_replaces_the_previous_list(db):
     await refresh_attestation_status(db, transport=fake_google(GOOGLE_LIST), now=NOW)
     await db.commit()
     later = NOW + timedelta(days=1)
-    await refresh_attestation_status(db, transport=fake_google({"entries": {}}), now=later)
+    newer = {"entries": {"abc123": {"status": "REVOKED", "reason": "KEY_COMPROMISE"}}}
+    await refresh_attestation_status(db, transport=fake_google(newer), now=later)
     await db.commit()
     status = await load_status(db)
-    assert status == AttestationStatus(fetched_at=later, revoked_serials=set())
+    assert status == AttestationStatus(fetched_at=later, revoked_serials={"abc123"})
 
 
 async def test_serials_are_normalized(db):
@@ -79,6 +80,7 @@ async def test_serials_are_normalized(db):
     (b"<html>oops</html>", 200),
     ({"not_entries": {}}, 200),
     ({"entries": ["a list"]}, 200),
+    ({"entries": {}}, 200),
     (GOOGLE_LIST, 503),
 ])
 async def test_a_bad_fetch_keeps_the_old_list(db, body, status_code):
@@ -90,6 +92,45 @@ async def test_a_bad_fetch_keeps_the_old_list(db, body, status_code):
             now=NOW + timedelta(days=1))
     await db.rollback()
     assert (await load_status(db)).fetched_at == NOW
+
+
+async def test_an_empty_list_never_replaces_the_cached_one(db):
+    """Google's list has never been empty; an empty one is a broken fetch,
+    and storing it would un-revoke every certificate."""
+    await refresh_attestation_status(db, transport=fake_google(GOOGLE_LIST), now=NOW)
+    await db.commit()
+    with pytest.raises(AttestationStatusFetchError, match="empty"):
+        await refresh_attestation_status(db, transport=fake_google({"entries": {}}),
+                                         now=NOW + timedelta(days=1))
+    await db.rollback()
+    status = await load_status(db)
+    assert status.fetched_at == NOW and "2c8cdddfd5e03bfc" in status.revoked_serials
+
+
+async def test_a_slow_drip_response_hits_the_total_deadline(db, monkeypatch):
+    """Each chunk arrives inside the per-read timeout, but the whole fetch
+    has a deadline, so a trickling server can't hold the worker loop."""
+    import asyncio
+
+    from serversherpa.security import attestation_status
+
+    monkeypatch.setattr(attestation_status, "FETCH_DEADLINE_SECONDS", 0.3)
+
+    class Drip(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'{"entries": {'
+            while True:
+                await asyncio.sleep(0.05)
+                yield b" "
+
+    def handler(request):
+        return httpx.Response(200, stream=Drip())
+
+    with pytest.raises(AttestationStatusFetchError, match="deadline"):
+        # the outer wait_for turns a missing deadline into a failure, not a hang
+        await asyncio.wait_for(refresh_attestation_status(
+            db, transport=httpx.MockTransport(handler), now=NOW), timeout=5)
+    assert await load_status(db) is None
 
 
 async def test_no_list_yet_loads_none(db):
@@ -162,7 +203,7 @@ def test_cli_command_reports_the_count(monkeypatch):
     monkeypatch.setattr(cli, "_refresh_attestation_status", fake)
     result = runner.invoke(app, ["refresh-attestation-status"])
     assert result.exit_code == 0, result.output
-    assert "1765" in result.output
+    assert "1765 entries stored" in result.output
 
 
 def test_cli_command_fails_loudly(monkeypatch):
