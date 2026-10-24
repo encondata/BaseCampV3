@@ -205,7 +205,7 @@ The downgrade drops them.
   - `rfid` requires `reader`; a missing reader is 422 `reader_required`.
   - `rfid` requires the device's `sub_type == 'laptop'`, otherwise 422 `rfid_needs_laptop`.
   - `label` clears the reader columns.
-  - Omitting `station_type` (older kiosks) leaves both untouched.
+  - Omitting `station_type` (a plain Kiosk Setup) clears any station type and the paired reader (changed 2026-10-24 by biometric sign-in).
   - Existing move-lock and serial-ownership rules apply unchanged.
 - **Audit:** `kiosk_station_setup` with the before/after diff.
 - **Device payloads:** list and detail return `station_type` and a `rfid_reader` object (or null).
@@ -255,7 +255,7 @@ All of these reuse the existing list, chip and detail idioms.
 **Cloud (pytest):**
 
 - migration up and down
-- setup validation: `reader_required`, `rfid_needs_laptop`, `label` clears the reader, an omitted station type leaves it untouched
+- setup validation: `reader_required`, `rfid_needs_laptop`, `label` clears the reader, an omitted station type (a plain Kiosk Setup) clears any station type and the paired reader (changed 2026-10-24 by biometric sign-in)
 - the move lock
 - the audit entry
 - device list and detail fields
