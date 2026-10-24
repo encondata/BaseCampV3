@@ -197,13 +197,15 @@ internal fun LoginPrimaryButton(
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 14.dp),
         modifier = modifier.fillMaxWidth().heightIn(min = 56.dp),
     ) {
-        Text(text, fontFamily = Geologica, fontWeight = FontWeight.Medium, fontSize = 17.sp)
+        // fill = false: the words keep their width when they fit, and wrap rather than push the
+        // arrow off a 320 dp button ("Sign in as Jimmy Henderson" is ~229 dp).
+        Text(text, fontFamily = Geologica, fontWeight = FontWeight.Medium, fontSize = 17.sp, modifier = Modifier.weight(1f, fill = false))
         if (loading) {
             Spacer(Modifier.width(10.dp))
             CircularProgressIndicator(Modifier.size(18.dp), color = LoginPalette.Orange, trackColor = Color.White.copy(alpha = .25f), strokeWidth = 2.dp)
         } else if (arrow) {
             Spacer(Modifier.width(10.dp))
-            Icon(ArrowIcon, contentDescription = null, tint = LoginPalette.Orange, modifier = Modifier.size(22.dp))
+            Icon(ArrowIcon, contentDescription = null, tint = LoginPalette.Orange, modifier = Modifier.size(22.dp).testTag("login-button-arrow"))
         }
     }
 }

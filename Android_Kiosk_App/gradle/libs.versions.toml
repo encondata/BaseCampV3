@@ -22,6 +22,9 @@ zxing = "3.5.3"
 robolectric = "4.14.1"
 javascriptengine = "1.1.1"
 biometric = "1.1.0"
+# FragmentActivity for BiometricPrompt. Pinned explicitly: biometric only asks for 1.2.5, whose
+# FragmentActivity rejects the 32-bit request codes every ActivityResult launcher uses.
+fragment = "1.8.6"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -62,6 +65,7 @@ kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 androidx-javascriptengine = { group = "androidx.javascriptengine", name = "javascriptengine", version.ref = "javascriptengine" }
+androidx-fragment-ktx = { group = "androidx.fragment", name = "fragment-ktx", version.ref = "fragment" }
 androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }
 
 [plugins]

@@ -36,6 +36,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 const val ENROLL_OFFER_TEXT = "Use fingerprint or face to sign in on this phone? You'll sign in with your password again every 30 days."
@@ -47,8 +48,13 @@ data class EnrollOfferUi(val busy: Boolean = false, val message: String? = null)
  * The Turn on offer after a password sign-in. It lives in the app (AppContainer), not the sign-in
  * screen: the screen is gone by the time the server answers, and the sign-in never waits for it.
  * [state] is non-null while the sheet should show. The offer only lands while the same person is
- * still signed in; signing out (or the session ending) closes it. BiometricSignIn decides who is
- * offered: never a move password, a shared station or a restored session.
+ * still signed in; signing out (or the session ending) closes it and stops a running Turn on.
+ * BiometricSignIn decides who is offered: never a move password, a shared station or a restored
+ * session.
+ *
+ * The work runs on the app's background scope. A sign-out's close and an answer's write hold
+ * [lock], so they never interleave; a write also re-checks who is signed in after it lands, since
+ * the sign-out itself (auth's state) may change on another thread just before.
  */
 class EnrollOffer(
     private val biometric: BiometricSignIn,
@@ -57,7 +63,12 @@ class EnrollOffer(
 ) {
     private val _state = MutableStateFlow<EnrollOfferUi?>(null)
     val state: StateFlow<EnrollOfferUi?> = _state
-    @Volatile private var deciding: Job? = null
+    private val lock = Any()
+    private var deciding: Job? = null
+    private var turningOn: Job? = null
+
+    /** Tests: the offer is still being decided. */
+    internal val isDeciding: Boolean get() = synchronized(lock) { deciding?.isActive == true }
 
     init {
         scope.launch {
@@ -68,9 +79,12 @@ class EnrollOffer(
     /** After a person's password sign-in: asks in the background, shows the sheet on a yes. */
     fun afterPasswordSignIn() {
         val person = signedIn() ?: return
-        deciding?.cancel()
-        deciding = scope.launch {
-            if (biometric.offerEnroll() && signedIn() == person) _state.value = EnrollOfferUi()
+        synchronized(lock) {
+            deciding?.cancel()
+            deciding = scope.launch {
+                if (!biometric.offerEnroll()) return@launch
+                show(person, EnrollOfferUi(), replaceOnly = false)
+            }
         }
     }
 
@@ -79,31 +93,48 @@ class EnrollOffer(
 
     /** Turn on: the system prompt once, then the key to the server. The sheet closes when it's on. */
     fun turnOn(prompter: BiometricPrompter) {
-        val now = _state.value ?: return
-        if (now.busy) return
-        _state.value = EnrollOfferUi(busy = true)
-        scope.launch {
-            var lockedOut = false
-            val outcome = try {
-                biometric.enroll(lockoutAware(prompter) { lockedOut = true })
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                EnrollOutcome.Failed(BIOMETRIC_ENROLL_FAILED_MESSAGE)   // the enrollment couldn't be saved
-            }
-            if (_state.value == null) return@launch                   // signed out meanwhile
-            _state.value = when (outcome) {
-                EnrollOutcome.Enrolled -> null
-                EnrollOutcome.Canceled -> EnrollOfferUi(message = if (lockedOut) BIOMETRIC_LOCKOUT_MESSAGE else null)
-                EnrollOutcome.Unsupported -> EnrollOfferUi(message = BIOMETRIC_UNSUPPORTED_MESSAGE)
-                is EnrollOutcome.Failed -> EnrollOfferUi(message = outcome.message)
-            }
+        val person = signedIn() ?: return close()
+        synchronized(lock) {
+            val now = _state.value ?: return
+            if (now.busy) return
+            _state.value = EnrollOfferUi(busy = true)
+            turningOn = scope.launch { runTurnOn(person, prompter) }
         }
     }
 
-    private fun close() {
+    private suspend fun runTurnOn(person: String, prompter: BiometricPrompter) {
+        var problem: PromptProblem? = null
+        val outcome = try {
+            biometric.enroll(problemAware(prompter) { problem = it })
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            EnrollOutcome.Failed(BIOMETRIC_ENROLL_FAILED_MESSAGE)   // the enrollment couldn't be saved
+        }
+        val next = when (outcome) {
+            EnrollOutcome.Enrolled -> null
+            EnrollOutcome.Canceled -> EnrollOfferUi(message = sheetLine(problem))
+            EnrollOutcome.Unsupported -> EnrollOfferUi(message = BIOMETRIC_UNSUPPORTED_MESSAGE)
+            is EnrollOutcome.Failed -> EnrollOfferUi(message = outcome.message)
+        }
+        if (next == null) _state.value = null else show(person, next, replaceOnly = true)
+    }
+
+    /** Shows [next] while [person] is still signed in; [replaceOnly] replaces an open sheet only
+     *  (one a sign-out closed stays closed). Re-checked after the write. */
+    private fun show(person: String, next: EnrollOfferUi, replaceOnly: Boolean) {
+        synchronized(lock) {
+            if (signedIn() != person) return
+            _state.update { cur -> if (replaceOnly && cur == null) null else next }
+        }
+        if (signedIn() != person) close()
+    }
+
+    private fun close() = synchronized(lock) {
         deciding?.cancel()
         deciding = null
+        turningOn?.cancel()
+        turningOn = null
         _state.value = null
     }
 
@@ -113,12 +144,18 @@ class EnrollOffer(
         if (authed.mustChangePassword) return null
         return authed.person.id
     }
+
+    private fun sheetLine(problem: PromptProblem?): String? = when (problem) {
+        PromptProblem.LOCKED_OUT -> ENROLL_LOCKOUT_MESSAGE
+        PromptProblem.UNAVAILABLE -> ENROLL_UNAVAILABLE_MESSAGE
+        null -> null
+    }
 }
 
 /** Beside the app's NavHost: the sheet over whichever signed-in screen the person is on. */
 @Composable
 fun EnrollOfferHost(offer: EnrollOffer) {
-    // Collected on the main thread: the offer's state changes on the app's background scope.
+    // Collected on the main thread, where the offer's state changes (see ThisKioskPanel's row).
     val ui by offer.state.collectAsStateWithLifecycle(context = Dispatchers.Main.immediate)
     val prompter = rememberBiometricPrompter(ENROLL_PROMPT_TITLE)
     ui?.let { EnrollOfferSheet(it, onTurnOn = { offer.turnOn(prompter) }, onNotNow = offer::notNow) }

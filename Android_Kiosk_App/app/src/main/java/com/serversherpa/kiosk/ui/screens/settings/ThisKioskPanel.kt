@@ -42,7 +42,7 @@ const val FINGERPRINT_OFF_TEXT = "Off. After a password sign-in on a phone assig
 const val FINGERPRINT_NOT_YOURS_TEXT = "On for another person. Only they can forget it here, or an admin in the portal."
 const val FINGERPRINT_FORGOTTEN = "This phone forgot fingerprint sign-in."
 const val FINGERPRINT_FORGET_FAILED = "Couldn't forget fingerprint sign-in on this phone. Try again."
-const val FINGERPRINT_FORGOTTEN_HERE_ONLY = "This phone forgot fingerprint sign-in. The portal couldn't be told; an admin can remove it there."
+const val FINGERPRINT_FORGOTTEN_HERE_ONLY = "This phone forgot fingerprint sign-in, but the portal couldn't be reached. An admin can remove it there."
 
 /**
  * Fingerprint sign-in on this phone: "On · Forget this device" for its own person (signed in) or
@@ -63,7 +63,7 @@ private fun FingerprintRow() {
     var done by remember { mutableStateOf<String?>(null) }
     val signedIn = auth as? AuthState.Authed
     val mine = enrollment?.let { e -> signedIn == null || e.personId == signedIn.person.id } == true
-    SettingsRow("Biometric sign-in", "Signs this phone's own person in with fingerprint or face.") {
+    SettingsRow("Biometric sign-in", "Sign in with fingerprint or face on a phone assigned to you.") {
         when {
             enrollment == null -> Text(FINGERPRINT_OFF_TEXT, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("fingerprint-row"))
             !mine -> Text(FINGERPRINT_NOT_YOURS_TEXT, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("fingerprint-row"))

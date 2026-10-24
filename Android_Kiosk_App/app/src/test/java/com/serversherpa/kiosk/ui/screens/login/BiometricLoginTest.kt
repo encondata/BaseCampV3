@@ -1,16 +1,19 @@
 package com.serversherpa.kiosk.ui.screens.login
 
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import android.os.Looper
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.test.assertTextContains
-import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -18,8 +21,8 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
-import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -31,7 +34,10 @@ import com.serversherpa.kiosk.core.model.KioskMove
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.data.FakeKioskApi
 import com.serversherpa.kiosk.data.auth.AuthState
+import com.serversherpa.kiosk.NativeFontsSettled
 import com.serversherpa.kiosk.data.auth.BIOMETRIC_EXPIRED_MESSAGE
+import com.serversherpa.kiosk.data.auth.BIOMETRIC_KIOSK_NOT_ALLOWED_MESSAGE
+import com.serversherpa.kiosk.data.auth.BIOMETRIC_RATE_LIMITED_MESSAGE
 import com.serversherpa.kiosk.data.auth.BIOMETRIC_PASSWORD_CHANGE_MESSAGE
 import com.serversherpa.kiosk.data.auth.BIOMETRIC_REMOVED_MESSAGE
 import com.serversherpa.kiosk.data.auth.BiometricPrompter
@@ -48,6 +54,7 @@ import com.serversherpa.kiosk.ui.screens.settings.ThisKioskPanel
 import com.serversherpa.kiosk.ui.theme.KioskTheme
 import com.serversherpa.kiosk.waitUntilIdlingMain
 import java.security.Signature
+import java.time.Duration
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -56,16 +63,20 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
+import org.junit.rules.RuleChain
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /** The "Sign in as …" card, its fallbacks, and Settings › This Kiosk's Forget, on a 320 dp phone. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w320dp-h533dp")
 class BiometricLoginTest {
-    @get:Rule val compose = createComposeRule()
+    private val compose = createComposeRule()
+    @get:Rule val rules: RuleChain = RuleChain.outerRule(NativeFontsSettled()).around(compose)
 
     /** Counts prompts; answers with [answer] (cancel by default). */
     private class FakePrompter(var answer: suspend (Signature) -> Signature? = { null }) : BiometricPrompter {
@@ -111,6 +122,23 @@ class BiometricLoginTest {
 
     private fun waitForText(text: String, substring: Boolean = false) =
         compose.waitUntil(5_000) { compose.onAllNodesWithText(text, substring = substring).fetchSemanticsNodes().isNotEmpty() }
+
+    private fun waitForTag(tag: String) =
+        compose.waitUntil(5_000) { compose.onAllNodes(hasTestTag(tag)).fetchSemanticsNodes().isNotEmpty() }
+
+    /** A fake answer held open until the test completes it; [returned] completes once the app has it. */
+    private class Held<T> {
+        val answer = CompletableDeferred<T>()
+        val returned = CompletableDeferred<Unit>()
+        suspend fun await(): T = answer.await().also { returned.complete(Unit) }
+    }
+
+    /** Lets the main thread run what the held answer resumed (the ViewModel's update follows it at once). */
+    private fun settle(held: Held<*>) {
+        compose.waitUntilIdlingMain { held.returned.isCompleted }
+        shadowOf(Looper.getMainLooper()).idle()
+        compose.waitForIdle()
+    }
 
     // ── the card ────────────────────────────────────────────────────
 
@@ -229,8 +257,55 @@ class BiometricLoginTest {
         waitForText(BIOMETRIC_REMOVED_MESSAGE)
         compose.onNodeWithTag("login-password").assertIsDisplayed()
         compose.onNodeWithText("Sign in as Tina T").assertDoesNotExist()
+        // The phone is no longer Tina's: none of her email is left on the form.
+        assertEquals("", compose.onNodeWithTag("login-email").fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
         compose.waitUntilIdlingMain { runBlocking { p.c.prefs.biometric.first() } == null }
         assertFalse(p.keys.hasKey)
+    }
+
+    @Test fun kioskAccessRemovedFallsBackToPasswordWithItsMessageAndTheEmail() {
+        val p = enrolledPhone()
+        p.api.bioSignInResult = { _, _, _ -> throw ApiError(403, "kiosk_not_allowed") }
+        showLogin(p, FakePrompter { it })
+        waitForText(BIOMETRIC_KIOSK_NOT_ALLOWED_MESSAGE)
+        compose.onNodeWithText("Sign in as Tina T").assertDoesNotExist()
+        compose.onNodeWithTag("login-email").assertTextContains("tina@example.com")
+        assertTrue(runBlocking { p.c.prefs.biometric.first() } != null)     // still her phone
+    }
+
+    @Test fun rateLimitedStaysOnTheCardWithItsMessage() {
+        val p = enrolledPhone()
+        p.api.bioSignInResult = { _, _, _ -> throw ApiError(429, "biometric_rate_limited") }
+        showLogin(p, FakePrompter { it })
+        waitForText(BIOMETRIC_RATE_LIMITED_MESSAGE)
+        compose.onNodeWithText("Sign in as Tina T").assertIsDisplayed()
+        compose.onNodeWithTag("login-email").assertDoesNotExist()
+    }
+
+    @Test fun aKeyAndroidDroppedAfterTheCardShowedIsThePlainForm() {
+        val p = enrolledPhone()
+        val prompter = FakePrompter()
+        showLogin(p, prompter)
+        waitForText("Sign in as Tina T")
+        compose.waitUntilIdlingMain { prompter.calls == 1 }
+        // A new fingerprint enrolled in Android while the card was up: the key is gone.
+        p.keys.invalidated = true
+        prompter.answer = { it }
+        compose.onNodeWithText("Sign in as Tina T").performClick()
+        waitForTag("login-email")
+        compose.onNodeWithText("Sign in as Tina T").assertDoesNotExist()
+        assertEquals("", compose.onNodeWithTag("login-email").fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
+        compose.onNodeWithText(BIOMETRIC_REMOVED_MESSAGE).assertDoesNotExist()
+        compose.waitUntilIdlingMain { runBlocking { p.c.prefs.biometric.first() } == null }
+        assertEquals(1, prompter.calls)      // never prompted for a key that can't sign
+        assertFalse("bioSignIn" in p.api.calls)
+    }
+
+    @Test fun anUnavailableSensorSaysSoAndStaysOnTheCard() {
+        val p = enrolledPhone()
+        showLogin(p, FakePrompter { throw BiometricUnavailable() })
+        waitForText(BIOMETRIC_UNAVAILABLE_MESSAGE)
+        compose.onNodeWithText("Sign in as Tina T").assertIsDisplayed()
     }
 
     @Test fun aDisabledAccountFallsBackToPasswordWithMessage() {
@@ -249,20 +324,63 @@ class BiometricLoginTest {
         compose.onNodeWithText("Sign in as Tina T").assertIsDisplayed()
     }
 
-    @Test fun aCardThatArrivesLateNeverReplacesAStartedForm() {
+    // ── while the card is on its way ────────────────────────────────
+
+    @Test fun checkingShowsWhileTheCardIsOnItsWayThenTheCard() {
         val p = enrolledPhone()
-        val answer = CompletableDeferred<BiometricChallengeOut>()
-        p.api.bioChallengeResult = { answer.await() }
+        val held = Held<BiometricChallengeOut>()
+        p.api.bioChallengeResult = { held.await() }
+        showLogin(p, FakePrompter())
+        waitForText("Checking…")
+        compose.onNodeWithTag("login-bio-pending").assertIsDisplayed()
+        compose.onNodeWithText("Use password").assertIsDisplayed()
+        compose.onNodeWithTag("login-email").assertDoesNotExist()            // no form to flash away
+        held.answer.complete(challenge())
+        waitForText("Sign in as Tina T")
+        compose.onNodeWithText("Checking…").assertDoesNotExist()
+    }
+
+    @Test fun offlineEndsOnTheForm() {
+        val p = enrolledPhone()
+        p.api.bioChallengeResult = { throw ApiError(0, "network") }
+        showLogin(p, FakePrompter())
+        waitForTag("login-email")
+        compose.onNodeWithText("Checking…").assertDoesNotExist()
+        compose.onNodeWithTag("login-password").assertIsDisplayed()
+    }
+
+    @Test fun checkingGivesUpAfterThreeSecondsAndALateCardNeverReplacesAStartedForm() {
+        val p = enrolledPhone()
+        val held = Held<BiometricChallengeOut>()
+        p.api.bioChallengeResult = { held.await() }
         val prompter = FakePrompter()
         showLogin(p, prompter)
-        compose.waitUntilIdlingMain { "bioChallenge" in p.api.calls }
+        waitForText("Checking…")
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(CARD_PENDING_MAX_MS))
+        waitForTag("login-email")
+        compose.onNodeWithText("Checking…").assertDoesNotExist()
         compose.onNodeWithTag("login-email").performTextInput("sam@example.com")
-        answer.complete(challenge())
-        compose.waitForIdle()
-        Thread.sleep(200)
-        compose.waitForIdle()
+        held.answer.complete(challenge())
+        settle(held)
         compose.onNodeWithText("Sign in as Tina T").assertDoesNotExist()
         compose.onNodeWithTag("login-email").assertTextContains("sam@example.com")
+        assertEquals(0, prompter.calls)
+    }
+
+    @Test fun usePasswordWhileCheckingKeepsTheFormWithTheEmail() {
+        val p = enrolledPhone()
+        val held = Held<BiometricChallengeOut>()
+        p.api.bioChallengeResult = { held.await() }
+        val prompter = FakePrompter()
+        showLogin(p, prompter)
+        waitForText("Checking…")
+        compose.onNodeWithText("Use password").performClick()
+        compose.onNodeWithTag("login-email").assertTextContains("tina@example.com")
+        compose.onNodeWithTag("login-email").performTextClearance()        // an empty form is still the person's choice
+        held.answer.complete(challenge())
+        settle(held)
+        compose.onNodeWithText("Sign in as Tina T").assertDoesNotExist()
+        compose.onNodeWithTag("login-password").assertIsDisplayed()
         assertEquals(0, prompter.calls)
     }
 
@@ -270,7 +388,8 @@ class BiometricLoginTest {
         val p = enrolledPhone(enrolled = false)
         val prompter = FakePrompter()
         showLogin(p, prompter)
-        compose.onNodeWithTag("login-email").assertIsDisplayed()
+        compose.onNodeWithTag("login-email").assertIsDisplayed()           // no enrollment: never "Checking…"
+        compose.onNodeWithText("Checking…").assertDoesNotExist()
         compose.waitForIdle()
         compose.onNodeWithText("Sign in as Tina T").assertDoesNotExist()
         assertEquals(0, prompter.calls)
@@ -284,7 +403,7 @@ class BiometricLoginTest {
         runBlocking { station.c.prefs.setSetupSelection(KioskSetupSelection(stationType = TIMECLOCK_STATION)) }
         val prompter = FakePrompter { it }
         showLogin(station, prompter)
-        compose.onNodeWithTag("login-email").assertIsDisplayed()
+        waitForTag("login-email")                                          // the card's lookup has ended
         compose.waitForIdle()
         compose.onNodeWithText("Sign in as Tina T").assertDoesNotExist()
         assertEquals(0, prompter.calls)
@@ -309,21 +428,44 @@ class BiometricLoginTest {
 
     // ── 320 dp ──────────────────────────────────────────────────────
 
-    @Test fun cardFits320dp() {
+    /** Real fonts (native graphics) on the 320 dp MC2200: only a real text layout measures the name. */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w320dp-h533dp-hdpi")
+    fun cardFits320dp() {
         val p = enrolledPhone()
-        p.api.bioChallengeResult = { BiometricChallengeOut("key-1", "c", "Maximiliana Featherstonehaugh-Cholmondeley", null, false) }
+        p.api.bioChallengeResult = { BiometricChallengeOut("key-1", "c", "Jimmy Henderson", null, false) }
         compose.setContent {
             CompositionLocalProvider(LocalAppContainer provides p.c, LocalBiometricPrompter provides FakePrompter()) {
-                KioskTheme { Box(Modifier.size(320.dp, 533.dp)) { LoginScreen(rememberNavController()) } }
+                KioskTheme { LoginScreen(rememberNavController()) }
             }
         }
-        waitForText("Sign in as Maximiliana", substring = true)
+        val label = "Sign in as Jimmy Henderson"
+        compose.waitUntil(5_000) { compose.onAllNodesWithText(label, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
         for (tag in listOf("login-bio-avatar", "login-bio-sign-in", "login-bio-password", "login-bio-other")) {
-            val node = compose.onNodeWithTag(tag).performScrollTo().assertIsDisplayed()
-            val b = node.getBoundsInRoot()
-            assertTrue("$tag starts on screen", b.left >= 0.dp)
-            assertTrue("$tag ends inside 320 dp (${b.right})", b.right <= 320.dp)
+            val b = compose.onNodeWithTag(tag).performScrollTo().assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            assertTrue("$tag starts on screen", b.left >= root.left)
+            assertTrue("$tag ends inside the screen (${b.right} > ${root.right})", b.right <= root.right)
         }
+        // The words are all there: not ellipsized, not cut off, every character laid out.
+        val layouts = mutableListOf<TextLayoutResult>()
+        compose.onNodeWithText(label, useUnmergedTree = true).fetchSemanticsNode().config[SemanticsActions.GetTextLayoutResult].action?.invoke(layouts)
+        val layout = layouts.single()
+        val last = layout.lineCount - 1
+        assertFalse("$label is ellipsized", layout.isLineEllipsized(last))
+        assertFalse("$label is cut off below", layout.didOverflowHeight)
+        for (i in 0 until layout.lineCount) assertTrue("$label line $i runs past its box", layout.getLineRight(i) <= layout.size.width + 0.5f)
+        // Its box sits inside the button.
+        val words = compose.onNodeWithText(label, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertEquals("$label lost characters", label.length, layout.getLineEnd(last, visibleEnd = true))
+        // And the orange arrow keeps its full 22 dp inside the button.
+        val button = compose.onNodeWithTag("login-bio-sign-in").fetchSemanticsNode().boundsInRoot
+        val arrow = compose.onNodeWithTag("login-button-arrow", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val density = compose.onRoot().fetchSemanticsNode().layoutInfo.density.density
+        assertTrue("the arrow is squeezed to ${arrow.width / density} dp", arrow.width / density >= 21.5f)
+        assertTrue("the arrow sits inside the button", arrow.right <= button.right && arrow.left >= button.left)
+        assertTrue("the words sit inside the button", words.left >= button.left && words.right <= arrow.left)
     }
 
     // ── Settings › This Kiosk ───────────────────────────────────────

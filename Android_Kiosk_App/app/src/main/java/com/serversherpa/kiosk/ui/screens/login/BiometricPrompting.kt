@@ -18,17 +18,31 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 
-/** The card's and the sheet's line after too many tries (BiometricPrompt's lockouts). */
+/** The card's line after too many tries (BiometricPrompt's lockouts). */
 const val BIOMETRIC_LOCKOUT_MESSAGE = "Too many tries. Use your password, or try again later."
+/** The card's line when the sensor can't be used right now (no hardware, none enrolled, a security update due). */
+const val BIOMETRIC_UNAVAILABLE_MESSAGE = "Fingerprint isn't available right now. Use your password."
+/** The Turn on sheet's versions: the person is already signed in, so no "use your password". */
+const val ENROLL_LOCKOUT_MESSAGE = "Too many tries. Try again later."
+const val ENROLL_UNAVAILABLE_MESSAGE = "Fingerprint isn't available right now. Try again later."
 
 /** The system prompt's titles and its one button. The button cancels: the person stays where they were. */
 internal const val SIGN_IN_PROMPT_TITLE = "Sign in to ServerSherpa"
 internal const val ENROLL_PROMPT_TITLE = "Turn on fingerprint sign-in"
 internal const val PROMPT_CANCEL = "Cancel"
 
-/** Thrown by [SystemBiometricPrompter] when Android locked biometrics after too many tries. The
- *  screens turn it into [BIOMETRIC_LOCKOUT_MESSAGE] with [lockoutAware]; it never reaches BiometricSignIn. */
-class BiometricLockedOut : Exception("biometric lockout")
+/** Why the system prompt ended without a signature, when the person should be told. */
+enum class PromptProblem { LOCKED_OUT, UNAVAILABLE }
+
+/** Thrown by [SystemBiometricPrompter] for a [PromptProblem]. The screens turn it into their line
+ *  with [problemAware]; it never reaches BiometricSignIn. */
+open class BiometricPromptProblem(val problem: PromptProblem) : Exception("biometric prompt: $problem")
+
+/** Android locked biometrics after too many tries. */
+class BiometricLockedOut : BiometricPromptProblem(PromptProblem.LOCKED_OUT)
+
+/** The sensor can't be used right now: no hardware, none enrolled, unavailable, a security update due. */
+class BiometricUnavailable : BiometricPromptProblem(PromptProblem.UNAVAILABLE)
 
 /** Tests: a fake prompt. Null (the app) means the system's BiometricPrompt. */
 val LocalBiometricPrompter = staticCompositionLocalOf<BiometricPrompter?> { null }
@@ -41,24 +55,31 @@ fun rememberBiometricPrompter(title: String): BiometricPrompter {
     return remember(activity, title) { SystemBiometricPrompter(activity, title) }
 }
 
-/** [prompter] with a lockout turned into a cancel (null), after calling [onLockout]: the data
- *  layer sees Canceled, and the screen shows the lockout line instead of staying silent. */
-fun lockoutAware(prompter: BiometricPrompter, onLockout: () -> Unit): BiometricPrompter = BiometricPrompter { signature ->
+/** [prompter] with a [PromptProblem] turned into a cancel (null), after calling [onProblem]: the
+ *  data layer sees Canceled, and the screen shows the problem's line instead of staying silent. */
+fun problemAware(prompter: BiometricPrompter, onProblem: (PromptProblem) -> Unit): BiometricPrompter = BiometricPrompter { signature ->
     try {
         prompter.authenticate(signature)
-    } catch (e: BiometricLockedOut) {
-        onLockout()
+    } catch (e: BiometricPromptProblem) {
+        onProblem(e.problem)
         null
     }
 }
 
-internal fun isLockout(errorCode: Int): Boolean =
-    errorCode == BiometricPrompt.ERROR_LOCKOUT || errorCode == BiometricPrompt.ERROR_LOCKOUT_PERMANENT
+/** The prompt's error codes worth a line; every other one (the person canceled, the Cancel
+ *  button, the system dismissed it, a timeout) is silent. */
+internal fun problemOf(errorCode: Int): PromptProblem? = when (errorCode) {
+    BiometricPrompt.ERROR_LOCKOUT, BiometricPrompt.ERROR_LOCKOUT_PERMANENT -> PromptProblem.LOCKED_OUT
+    BiometricPrompt.ERROR_HW_UNAVAILABLE, BiometricPrompt.ERROR_NO_BIOMETRICS,
+    BiometricPrompt.ERROR_HW_NOT_PRESENT, BiometricPrompt.ERROR_SECURITY_UPDATE_REQUIRED -> PromptProblem.UNAVAILABLE
+    else -> null
+}
 
 /**
  * How the prompt's callbacks end the wait: success gives the authenticated Signature; a lockout
- * throws [BiometricLockedOut]; every other error (the person canceled, the Cancel button, the
- * system dismissed it) is null, which keeps the person where they were. One bad finger
+ * throws [BiometricLockedOut] and an unusable sensor [BiometricUnavailable]; every other error
+ * (the person canceled, the Cancel button, the system dismissed it) is null, which keeps the
+ * person where they were. One bad finger
  * ([BiometricPrompt.AuthenticationCallback.onAuthenticationFailed]) is not the end: the prompt
  * stays up and lets them try again. [finish] is called at most once.
  */
@@ -69,7 +90,13 @@ internal fun promptCallback(finish: (Result<Signature?>) -> Unit): BiometricProm
         override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) =
             end(Result.success(result.cryptoObject?.signature))
         override fun onAuthenticationError(errorCode: Int, errString: CharSequence) =
-            end(if (isLockout(errorCode)) Result.failure(BiometricLockedOut()) else Result.success(null))
+            end(
+                when (problemOf(errorCode)) {
+                    PromptProblem.LOCKED_OUT -> Result.failure(BiometricLockedOut())
+                    PromptProblem.UNAVAILABLE -> Result.failure(BiometricUnavailable())
+                    null -> Result.success(null)
+                },
+            )
         override fun onAuthenticationFailed() = Unit
     }
 

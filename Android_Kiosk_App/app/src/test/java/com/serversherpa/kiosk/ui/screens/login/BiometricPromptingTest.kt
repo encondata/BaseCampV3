@@ -47,6 +47,13 @@ class BiometricPromptingTest {
         }
     }
 
+    @Test fun anUnusableSensorThrowsUnavailable() {
+        for (code in listOf(BiometricPrompt.ERROR_HW_UNAVAILABLE, BiometricPrompt.ERROR_NO_BIOMETRICS, BiometricPrompt.ERROR_HW_NOT_PRESENT, BiometricPrompt.ERROR_SECURITY_UPDATE_REQUIRED)) {
+            val r = ends { it.onAuthenticationError(code, "x") }
+            assertTrue("$code", r.single().exceptionOrNull() is BiometricUnavailable)
+        }
+    }
+
     @Test fun cancelAndTheButtonAreNullNotLockout() {
         for (code in listOf(BiometricPrompt.ERROR_USER_CANCELED, BiometricPrompt.ERROR_NEGATIVE_BUTTON, BiometricPrompt.ERROR_CANCELED, BiometricPrompt.ERROR_TIMEOUT)) {
             val r = ends { it.onAuthenticationError(code, "x") }
@@ -72,14 +79,13 @@ class BiometricPromptingTest {
         assertNull(r.single().getOrThrow())
     }
 
-    @Test fun lockoutAwareTurnsALockoutIntoACancelAndSaysSo() = runBlocking {
-        var lockouts = 0
-        val wrapped = lockoutAware(BiometricPrompter { throw BiometricLockedOut() }) { lockouts++ }
-        assertNull(wrapped.authenticate(signature))
-        assertEquals(1, lockouts)
-        val passes = lockoutAware(BiometricPrompter { it }) { lockouts++ }
-        assertSame(signature, passes.authenticate(signature))
-        assertEquals(1, lockouts)
+    @Test fun problemAwareTurnsAProblemIntoACancelAndSaysWhich() = runBlocking {
+        val seen = ArrayList<PromptProblem>()
+        assertNull(problemAware(BiometricPrompter { throw BiometricLockedOut() }) { seen += it }.authenticate(signature))
+        assertNull(problemAware(BiometricPrompter { throw BiometricUnavailable() }) { seen += it }.authenticate(signature))
+        assertEquals(listOf(PromptProblem.LOCKED_OUT, PromptProblem.UNAVAILABLE), seen)
+        assertSame(signature, problemAware(BiometricPrompter { it }) { seen += it }.authenticate(signature))
+        assertEquals(2, seen.size)
     }
 
     @Test fun withoutAFragmentActivityThePromptAnswersNull() = runBlocking {

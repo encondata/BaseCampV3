@@ -4,8 +4,9 @@ import android.app.Application
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.getBoundsInRoot
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
@@ -13,7 +14,6 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
-import androidx.compose.ui.unit.dp
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
@@ -25,6 +25,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.test.core.app.ApplicationProvider
 import com.serversherpa.kiosk.AppContainer
 import com.serversherpa.kiosk.LocalAppContainer
+import com.serversherpa.kiosk.NativeFontsSettled
 import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.model.KioskMove
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
@@ -49,6 +50,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -56,16 +58,19 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
+import org.junit.rules.RuleChain
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /** The Turn on sheet after a password sign-in, at 320 dp. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w320dp-h533dp")
 class EnrollOfferSheetTest {
-    @get:Rule val compose = createComposeRule()
+    private val compose = createComposeRule()
+    @get:Rule val rules: RuleChain = RuleChain.outerRule(NativeFontsSettled()).around(compose)
 
     private class FakePrompter(var answer: suspend (Signature) -> Signature? = { it }) : BiometricPrompter {
         @Volatile var calls = 0
@@ -201,8 +206,7 @@ class EnrollOfferSheetTest {
         compose.waitUntilIdlingMain { "bioEnrollChallenge" in p.api.calls }
         signOutToLogin(p)
         answer.complete("nonce-1")
-        compose.waitForIdle()
-        Thread.sleep(200)
+        compose.waitUntilIdlingMain { !p.c.enrollOffer.isDeciding }
         compose.waitForIdle()
         compose.onNodeWithText(ENROLL_OFFER_TEXT).assertDoesNotExist()
         assertNull(p.c.enrollOffer.state.value)
@@ -217,8 +221,7 @@ class EnrollOfferSheetTest {
         compose.waitUntilIdlingMain { "bioEnrollChallenge" in p.api.calls }
         p.c.auth.completePair(fakeSession(personId = "p2"))       // straight to another person, never signed out
         answer.complete("nonce-1")
-        Thread.sleep(200)
-        compose.waitForIdle()
+        compose.waitUntilIdlingMain { !p.c.enrollOffer.isDeciding }
         assertNull(p.c.enrollOffer.state.value)
     }
 
@@ -303,7 +306,7 @@ class EnrollOfferSheetTest {
         waitForText(ENROLL_OFFER_TEXT)
         compose.onNodeWithText("Turn on").performClick()
         compose.waitUntilIdlingMain { prompter.calls == 1 }
-        compose.waitUntil(5_000) { p.c.enrollOffer.state.value?.busy == false }
+        compose.waitUntilIdlingMain { p.c.enrollOffer.state.value?.busy == false }
         compose.onNodeWithText(ENROLL_OFFER_TEXT).assertIsDisplayed()
         compose.onNodeWithText("Turn on").assertIsDisplayed()
         assertNull(p.c.enrollOffer.state.value?.message)
@@ -315,19 +318,67 @@ class EnrollOfferSheetTest {
         signInWithPassword()
         waitForText(ENROLL_OFFER_TEXT)
         compose.onNodeWithText("Turn on").performClick()
-        waitForText(BIOMETRIC_LOCKOUT_MESSAGE)
+        waitForText(ENROLL_LOCKOUT_MESSAGE)
     }
 
-    @Test fun theSheetFits320dp() {
+    @Test fun anUnavailableSensorDuringTurnOnSaysSo() {
+        val p = personalPhone()
+        showApp(p, FakePrompter { throw BiometricUnavailable() })
+        signInWithPassword()
+        waitForText(ENROLL_OFFER_TEXT)
+        compose.onNodeWithText("Turn on").performClick()
+        waitForText(ENROLL_UNAVAILABLE_MESSAGE)
+        compose.onNodeWithText("Turn on").assertIsDisplayed()
+    }
+
+    @Test fun signingOutDuringTurnOnStopsItAndTheSheetStaysClosed() {
+        val p = personalPhone()
+        val held = CompletableDeferred<String>()
+        var asks = 0
+        p.api.bioEnrollChallengeResult = { if (++asks == 1) "nonce-1" else held.await() }   // the offer's, then Turn on's
+        showApp(p, FakePrompter())
+        signInWithPassword()
+        waitForText(ENROLL_OFFER_TEXT)
+        compose.onNodeWithText("Turn on").performClick()
+        compose.waitUntilIdlingMain { asks == 2 }
+        signOutToLogin(p)
+        waitGone(ENROLL_OFFER_TEXT)
+        held.complete("nonce-2")
+        // A barrier: Forget waits for any enroll still holding BiometricSignIn's lock to end.
+        val barrier = p.c.scope.async(Dispatchers.IO) { p.c.biometric.forget(signedIn = false) }
+        compose.waitUntilIdlingMain { barrier.isCompleted }
+        compose.waitForIdle()
+        assertNull(p.c.enrollOffer.state.value)
+        compose.onNodeWithText(ENROLL_OFFER_TEXT).assertDoesNotExist()
+        assertFalse("bioEnroll" in p.api.calls)        // Turn on was stopped, not finished behind the sign-in screen
+        assertFalse(p.keys.hasKey)
+    }
+
+    /** Real fonts (native graphics) on the 320 dp MC2200: the words wrap inside the sheet, never off it. */
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w320dp-h533dp-hdpi")
+    fun theSheetFits320dp() {
         val p = personalPhone()
         showApp(p, FakePrompter())
         signInWithPassword()
         waitForText(ENROLL_OFFER_TEXT)
-        for (text in listOf(ENROLL_OFFER_TEXT, "Turn on", "Not now")) {
-            val b = compose.onNodeWithText(text).assertIsDisplayed().getBoundsInRoot()
-            assertTrue("$text starts on screen", b.left >= 0.dp)
-            assertTrue("$text ends inside 320 dp (${b.right})", b.right <= 320.dp)
+        val sheet = compose.onNodeWithTag("enroll-offer-sheet").fetchSemanticsNode()
+        val density = sheet.layoutInfo.density.density
+        assertTrue("the sheet starts on screen", sheet.boundsInRoot.left >= 0f)
+        assertTrue("the sheet is ${sheet.boundsInRoot.right / density} dp wide", sheet.boundsInRoot.right / density <= 320f)
+        for (text in listOf(ENROLL_OFFER_TEXT, "Fingerprint sign-in", "Turn on", "Not now")) {
+            val node = compose.onNodeWithText(text, useUnmergedTree = true).assertIsDisplayed().fetchSemanticsNode()
+            assertTrue("$text ends inside the sheet", node.boundsInRoot.right <= sheet.boundsInRoot.right)
+            val layouts = mutableListOf<TextLayoutResult>()
+            node.config[SemanticsActions.GetTextLayoutResult].action?.invoke(layouts)
+            val layout = layouts.single()
+            val last = layout.lineCount - 1
+            assertFalse("$text is ellipsized", layout.isLineEllipsized(last))
+            assertFalse("$text is cut off below", layout.didOverflowHeight)
+            // Every line inside the text's own box (half a pixel of rounding allowed).
+            for (i in 0 until layout.lineCount) assertTrue("$text line $i runs past its box", layout.getLineRight(i) <= layout.size.width + 0.5f)
+            assertEquals("$text lost characters", text.length, layout.getLineEnd(last, visibleEnd = true))
         }
-        assertTrue(compose.onNodeWithTag("enroll-offer-sheet").getBoundsInRoot().right <= 320.dp)
     }
 }

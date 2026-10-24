@@ -196,7 +196,9 @@ internal fun LoginContent(
                 when (ui.view) {
                     // The chooser is the password view with its routes showing; the routes are always
                     // shown now, so both views draw the same form.
-                    LoginView.PASSWORD, LoginView.CHOOSER -> {
+                    LoginView.PASSWORD, LoginView.CHOOSER -> if (ui.cardPending) {
+                        CardPendingView(actions)
+                    } else {
                         LoginNotice(ui.notice, error = ui.noticeError, modifier = Modifier.padding(bottom = 12.dp))
                         PasswordForm(ui, actions)
                     }
@@ -269,13 +271,29 @@ private fun ColumnScope.BiometricCardView(card: BiometricCard, ui: LoginUi, acti
     LoginLink("Other account", Modifier.align(Alignment.Start).padding(top = 4.dp).testTag("login-bio-other"), actions.otherAccount)
 }
 
+/** The card on its way: the avatar's empty circle, "Checking…", and Use password for anyone who won't wait. */
+@Composable
+private fun ColumnScope.CardPendingView(actions: LoginActions) {
+    Box(
+        Modifier.align(Alignment.CenterHorizontally).padding(bottom = 16.dp).size(AVATAR_SIZE).clip(CircleShape)
+            .background(LoginPalette.Line).testTag("login-bio-pending"),
+    )
+    Text(
+        "Checking…", color = LoginPalette.Slate, fontFamily = Geologica, fontSize = 15.sp,
+        modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 16.dp),
+    )
+    LoginSecondaryButton("Use password", LockIcon, actions.usePassword, Modifier.testTag("login-bio-password"))
+}
+
+private val AVATAR_SIZE = 88.dp
+
 /** A round photo, or the initials on ink while it loads or when there is none. */
 @Composable
 private fun LoginAvatar(url: String?, name: String, modifier: Modifier = Modifier) {
     val client = LocalAppContainer.current.httpClient
     var bitmap by remember(url) { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(url) { if (url != null) bitmap = loadPhoto(client, url, maxSide = 256) }
-    val ring = modifier.size(88.dp).clip(CircleShape).border(3.dp, Color.White, CircleShape)
+    val ring = modifier.size(AVATAR_SIZE).clip(CircleShape).border(3.dp, Color.White, CircleShape)
     val bmp = bitmap
     if (bmp != null) {
         Image(bmp, contentDescription = null, contentScale = ContentScale.Crop, modifier = ring)
