@@ -163,3 +163,35 @@ When the kiosk app runs on a person's own phone, that person is nearly always th
 - Removing the screen lock.
 - Forget from the app, from /me and from the user page.
 - Clearing the device assignment in the portal.
+
+## Implementation notes (2026-10-24)
+
+Built on branch `biometric-sign-in` by subagent-driven development, with per-task reviews and fix rounds.
+
+**Rulings that changed or sharpened the design**
+- **Certificate expiry.** Follows Google's attestation documentation, not the spec's literal "no certificate expired": factory-key chains under the RSA root stay trusted past expiry and root dates are unchecked. The literal rule would reject every device under the 2016 root (expired 2026-05-24). Revocation still applies.
+- **Chain shape.** The factory exemption needs exactly 4 certificates; RKP chains are at most 6.
+- **`userAuthType`.** Must be exactly biometric (no password bit). The app sets `AUTH_BIOMETRIC_STRONG` only.
+- **Attestation challenge.** SHA-256 of the nonce (UTF-8), because of KeyMint's 128-byte cap.
+- **Challenge reuse.** `/challenge` returns the outstanding challenge while 20 s or more of its 60 s remain, so a third party who knows the serial can void it at most once it is 40 s old. A new one is minted only when none is outstanding, or it expired or was spent. Single use still holds. The per-IP cap is 120 per 5 minutes (shared site NAT).
+- **Rate limit.** Biometric sign-in failures are audited under move-login's id with method `biometric`, share its per-IP cap, and return 429 `biometric_rate_limited`.
+- **Shared stations.** A device with a station key or any station type (label, RFID, time clock) is never personal, on any layer: enroll returns `not_personal_device`, the challenge returns 404 `no_biometric`, and the picker and PUT refuse assigning one.
+- **Regular setup.** A plain Kiosk Setup clears any station type, not only the time clock.
+- **Enroll nonce errors.** Expired, spent or mismatched nonces return 422 `bad_enroll_nonce`; sign-in keeps 401 `bad_challenge`. On an authenticated route 401 means "session dead" to every client.
+- **Prompt order.** The phone prompts first, then fetches the challenge and signs (auth-per-use allows the update after auth). A single-flight lock lives in `BiometricSignIn`.
+- **Session binding.** Sign-in binds the new session to the key's device serial.
+- **No email until validated.** No email is shown until the device card is validated; there is no fallback to a stale local record, and "Checking…" shows no email.
+- **Personal candidates.** The picker uses a dedicated endpoint, `GET /devices/{id}/personal-candidates?q=`, with the same gate as PUT, returning only eligible people.
+- **Revocation.** The `apply_password` choke point revokes keys on every password-setting path. A global revoke-all also revokes the caller's own keys. Changing or clearing a device's personal person revokes its live keys. An admin's forget refuses their own keys (`cannot_target_self`), so they use /me.
+- **Account disabled.** Android drops its local record on `account_disabled` too.
+- **Operations.** A CLI `serversherpa refresh-attestation-status` seeds the cached status list; enroll is refused with `attestation_status_unavailable` until a list exists. Malformed `SS_KIOSK_SIGNING_DIGESTS` fails settings validation; unset or empty is valid.
+- **End all sessions.** The portal confirm reads: "Sign everyone out on every device? Fingerprint sign-in on their phones turns off until their next password sign-in. You will stay signed in here."
+
+**Device pass:** Jimmy, 2026-10-24, Pixel 10 Pro XL (Kiosk F4E1) against the dev stack: "bio works".
+- The dev database is migrated to 0107, the attestation status list was seeded with 1,765 entries, and the debug signing digest was added to `SS_KIOSK_SIGNING_DIGESTS`.
+
+**Still owed**
+- A real-device attestation chain fixture.
+- An MC2200 check: whether its chain reaches a Google root.
+- The iOS Face ID follow-up.
+- The release and Play signing digests must be added to `SS_KIOSK_SIGNING_DIGESTS` before production.

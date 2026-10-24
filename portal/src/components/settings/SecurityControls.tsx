@@ -42,7 +42,7 @@ export default function SecurityControls({ canChange = true }: { canChange?: boo
   };
 
   const endAll = async () => {
-    if (!window.confirm('Sign everyone out on every device, and fingerprint sign-in on their phone turns off until their next password sign-in? You will stay signed in here.')) return;
+    if (!window.confirm('Sign everyone out on every device? Fingerprint sign-in on their phones turns off until their next password sign-in. You will stay signed in here.')) return;
     setBusy(true); setError(null); setRevoked(null);
     try { setRevoked(await revokeAllSessions()); }
     catch (err) { setError({ card: 'sessions', text: err instanceof ApiError ? err.message : 'Could not end sessions.' }); }

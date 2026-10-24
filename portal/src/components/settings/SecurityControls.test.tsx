@@ -49,7 +49,7 @@ it('End all sessions confirms, calls the API, and reports the count', async () =
   )).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'End all sessions' }));
   expect(confirm).toHaveBeenCalledWith(
-    'Sign everyone out on every device, and fingerprint sign-in on their phone turns off until their next password sign-in? You will stay signed in here.');
+    'Sign everyone out on every device? Fingerprint sign-in on their phones turns off until their next password sign-in. You will stay signed in here.');
   await waitFor(() => expect(api.revokeAllSessions).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(screen.getByText(/Signed out 4 sessions across 3 people/)).toBeTruthy());
 });
