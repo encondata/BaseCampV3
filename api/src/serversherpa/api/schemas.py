@@ -349,7 +349,7 @@ class HeartbeatIn(BaseModel):
     version: str | None = Field(default=None, max_length=40)
     raw_info: dict[str, Any] = Field(default_factory=dict)
     sign_in: bool = False
-    login_method: Literal["password", "link"] | None = None
+    login_method: Literal["password", "link", "biometric"] | None = None
     # Clear Setup acknowledgment: the request id this kiosk has just applied.
     setup_cleared: uuid.UUID | None = None
     # Accepted and ignored, so older edges that still attach the RFID
@@ -396,6 +396,55 @@ class HeartbeatOut(KioskConfigReplyMixin):
 
 class KioskSignOutIn(BaseModel):
     serial: str = Field(min_length=1, max_length=120)
+
+
+# ── kiosk biometric sign-in (spec 2026-10-23) ───────────────────────
+
+class BiometricSerialIn(BaseModel):
+    """enroll-challenge and challenge: the kiosk's serial."""
+
+    serial: str = Field(min_length=1, max_length=120)
+
+
+class BiometricEnrollChallengeOut(BaseModel):
+    # A signed token (typ "bioenroll", 5 minutes). The app passes the SHA-256
+    # of its UTF-8 bytes to KeyGenParameterSpec.setAttestationChallenge.
+    nonce: str
+
+
+class BiometricEnrollIn(BaseModel):
+    serial: str = Field(min_length=1, max_length=120)
+    nonce: str = Field(min_length=1, max_length=2048)
+    # KeyStore.getCertificateChain, leaf first, each certificate's DER in
+    # standard base64
+    chain: list[str] = Field(min_length=1, max_length=10)
+
+    @field_validator("chain")
+    @classmethod
+    def _bounded(cls, v: list[str]) -> list[str]:
+        if any(len(c) > 16_384 for c in v):
+            raise ValueError("certificate too large")
+        return v
+
+
+class BiometricEnrollOut(BaseModel):
+    key_id: uuid.UUID
+    security_level: Literal["tee", "strongbox"]
+    renews_at: datetime          # 30 days after the password sign-in
+
+
+class BiometricChallengeOut(BaseModel):
+    key_id: uuid.UUID
+    challenge: str               # sign its UTF-8 bytes with SHA256withECDSA
+    display_name: str
+    photo_url: str | None = None
+    expired: bool                # past 30 days: sign in with the password
+
+
+class BiometricSignInIn(BaseModel):
+    key_id: uuid.UUID
+    challenge: str = Field(min_length=1, max_length=2048)
+    signature: str = Field(min_length=1, max_length=512)   # base64 DER ECDSA
 
 
 class PersonDetail(BaseModel):

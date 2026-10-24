@@ -149,6 +149,12 @@ READ_ONLY_EXEMPT_PATHS = frozenset({
     # renders one mock-data test label and stores nothing: a Label Station's
     # setup must still be able to print a test label during a freeze
     "/kiosk/labels/test-render",
+    # biometric sign-in is a sign-in, like /kiosk/pair*: the card's challenge
+    # and the signed answer (both unauthenticated, so listed for
+    # completeness). DELETE /kiosk/biometric forgets the caller's own key
+    # (closing a hole, like forgetting a remembered browser). Enroll and its
+    # challenge stay frozen.
+    "/kiosk/biometric/challenge", "/kiosk/biometric/sign-in", "/kiosk/biometric",
 })
 READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/auth/me/trusted-browsers/",
                              "/kiosk/pair")

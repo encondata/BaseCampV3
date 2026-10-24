@@ -1228,7 +1228,7 @@ class Device(Base):
     station_key_issued_at: Mapped[datetime | None]
     station_key_issued_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("people.id", ondelete="SET NULL"))
-    station_key_issued_via: Mapped[str | None]   # password | link | move_password
+    station_key_issued_via: Mapped[str | None]   # password | link | biometric | move_password
     # Kiosk settings in the portal (migration 0099): one whole config
     # document, newest whole config wins (services/kiosk_config.py).
     # config NULL = the kiosk has never reported and the portal never edited.
