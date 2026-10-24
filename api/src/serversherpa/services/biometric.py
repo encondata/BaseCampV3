@@ -13,9 +13,11 @@ the challenge string).
   challenge at 128 bytes, and the JWT is longer). It is spent once any key
   has been enrolled for that person on that device since it was issued.
 - The sign-in challenge is a signed JWT (typ "bio", 60 seconds) naming the
-  key, with a random jti. Issuing one records its jti on the key row
-  (`last_nonce`), so a newer challenge voids the older one; a sign-in
-  attempt clears it, so a challenge is good for one attempt.
+  key, with a random jti. Issuing one records its jti and issue time on the
+  key row (`last_nonce`); only the recorded one is accepted. Asking again
+  while it is outstanding returns the same challenge (challenge_for), so a
+  stranger who knows the serial can't void it; a sign-in attempt clears it,
+  so a challenge is good for one attempt.
 - `password_sign_in_at` is the 30-day anchor: the password sign-in the key
   was enrolled under, moved forward when a later password session binds
   the device's serial (renew_on_password_bind). Biometric sign-ins never
@@ -52,6 +54,9 @@ from serversherpa.services.audit import audit
 LIFETIME = timedelta(days=30)            # from the last password sign-in
 ENROLL_WINDOW = timedelta(minutes=10)    # a password session this fresh may enroll
 CHALLENGE_TTL_SECONDS = 60
+# /challenge hands the outstanding challenge out again while at least this
+# long is left (time to run the biometric prompt); otherwise a new one
+CHALLENGE_REUSE_MIN_SECONDS = 20
 ENROLL_NONCE_TTL_SECONDS = 300
 CHALLENGE_TYP = "bio"
 ENROLL_TYP = "bioenroll"
@@ -98,30 +103,68 @@ def _secret() -> str:
     return get_settings().jwt_secret.get_secret_value()
 
 
+def _challenge_token(key_id: uuid.UUID | str, jti: str, iat: int, ttl_seconds: int) -> str:
+    # HS256 over the same claims is the same token, so an outstanding
+    # challenge can be handed out again from what the key row records
+    return jwt.encode(
+        {"iss": JWT_ISSUER, "sub": str(key_id), "jti": jti, "iat": iat,
+         "exp": iat + ttl_seconds, "typ": CHALLENGE_TYP},
+        _secret(), algorithm="HS256")
+
+
+def _nonce_id(jti: str, iat: int) -> str:
+    """What last_nonce records for a challenge: its jti and issue time."""
+    return f"{jti}:{iat}"
+
+
 def make_sign_in_challenge(
     key_id: uuid.UUID | str, *, ttl_seconds: int = CHALLENGE_TTL_SECONDS,
 ) -> tuple[str, str]:
-    """A sign-in challenge for `key_id` and its jti (to record as last_nonce)."""
-    now = datetime.now(UTC)
+    """A new sign-in challenge for `key_id` and its nonce id (to record as
+    last_nonce)."""
     jti = secrets.token_urlsafe(16)
-    token = jwt.encode(
-        {"iss": JWT_ISSUER, "sub": str(key_id), "jti": jti, "iat": now,
-         "exp": now + timedelta(seconds=ttl_seconds), "typ": CHALLENGE_TYP},
-        _secret(), algorithm="HS256")
-    return token, jti
+    iat = int(datetime.now(UTC).timestamp())
+    return _challenge_token(key_id, jti, iat, ttl_seconds), _nonce_id(jti, iat)
+
+
+def outstanding_challenge(key: BiometricKey) -> str | None:
+    """The key's recorded challenge, re-issued, while it is unspent and has
+    at least CHALLENGE_REUSE_MIN_SECONDS left to be signed in; else None."""
+    jti, sep, iat_text = (key.last_nonce or "").rpartition(":")
+    if not sep or not jti:
+        return None
+    try:
+        iat = int(iat_text)
+    except ValueError:
+        return None
+    left = iat + CHALLENGE_TTL_SECONDS - datetime.now(UTC).timestamp()
+    if left < CHALLENGE_REUSE_MIN_SECONDS:
+        return None
+    return _challenge_token(key.id, jti, iat, CHALLENGE_TTL_SECONDS)
+
+
+def challenge_for(key: BiometricKey) -> str:
+    """The challenge the card shows: the outstanding one, or a new one
+    recorded on the key. Asking again never voids an outstanding one, so
+    knowing a phone's serial is not enough to knock its owner's card out;
+    a sign-in attempt spends it. Does not commit."""
+    token = outstanding_challenge(key)
+    if token is None:
+        token, key.last_nonce = make_sign_in_challenge(key.id)
+    return token
 
 
 def decode_sign_in_challenge(token: str) -> tuple[uuid.UUID, str]:
-    """(key id, jti) of an unexpired sign-in challenge, else TokenError."""
+    """(key id, nonce id) of an unexpired sign-in challenge, else TokenError."""
     try:
         claims = jwt.decode(token, _secret(), algorithms=["HS256"], issuer=JWT_ISSUER,
                             options={"require": ["exp", "iat", "sub", "jti"]})
         if claims.get("typ") != CHALLENGE_TYP:
             raise TokenError("wrong token type")
-        return uuid.UUID(claims["sub"]), str(claims["jti"])
+        return uuid.UUID(claims["sub"]), _nonce_id(str(claims["jti"]), int(claims["iat"]))
     except jwt.InvalidTokenError as exc:
         raise TokenError(str(exc)) from exc
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise TokenError("invalid subject") from exc
 
 

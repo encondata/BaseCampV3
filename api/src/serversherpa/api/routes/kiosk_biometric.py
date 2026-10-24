@@ -8,7 +8,10 @@ password sign-in there.
   that is personal to that person. Frozen by read-only mode like any write.
 - `POST /challenge` and `POST /sign-in` (no auth): the card the sign-in
   screen shows and the signed answer to it. Never frozen, like /kiosk/pair*.
-  Sign-in failures count against move-login's per-IP failure cap.
+  /challenge has its own per-IP cap; sign-in failures count against
+  move-login's per-IP failure cap. The new session is bound to the phone.
+- A shared station (Label, RFID or Time Clock station, or any kiosk with a
+  station key) is never personal: no enroll, no card, no sign-in.
 - `DELETE ?serial=` (kiosk session): forget the caller's own key on that
   phone. Exempt from the freeze, like forgetting a remembered browser.
 
@@ -59,8 +62,17 @@ from serversherpa.services.biometric import BiometricError
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.password_policy import change_reason, load_policy
 from serversherpa.services.storage import presign_get
+from serversherpa.wiki.share_links import IpRateLimiter
 
 router = APIRouter(prefix="/kiosk/biometric", tags=["kiosk"])
+
+# Per-process, per-IP (rate_limit_ip, /64 for IPv6) cap on /challenge: the
+# card is fetched when the sign-in screen opens and after a failed attempt,
+# and phones at one site often share an address, so the cap is generous.
+CHALLENGE_IP_LIMIT = 120
+CHALLENGE_WINDOW_SECONDS = 300
+challenge_limiter = IpRateLimiter(limit=CHALLENGE_IP_LIMIT,
+                                  window_seconds=CHALLENGE_WINDOW_SECONDS)
 
 
 def _err(status: int, code: str, **extra) -> HTTPException:
@@ -70,6 +82,13 @@ def _err(status: int, code: str, **extra) -> HTTPException:
 async def _kiosk_device(db: AsyncSession, serial: str, *, lock: bool = False) -> Device | None:
     stmt = select(Device).where(Device.serial == serial, Device.device_type == "kiosk")
     return await db.scalar(stmt.with_for_update() if lock else stmt)
+
+
+def _shared_station(device: Device) -> bool:
+    """A Label, RFID or Time Clock station, or any kiosk holding a station
+    key, is shared: it is never anyone's personal phone for biometrics,
+    whatever its personal_person_id says."""
+    return device.station_key_hash is not None or device.station_type is not None
 
 
 async def _enrollable_device(db: AsyncSession, actor: AuthContext, serial: str, *,
@@ -87,7 +106,7 @@ async def _enrollable_device(db: AsyncSession, actor: AuthContext, serial: str, 
         raise _err(403, "enroll_window_closed")
     device = await _kiosk_device(db, serial, lock=lock)
     if (device is None or device.personal_person_id != actor.person.id
-            or actor.person.source == KIOSK_MOVE_SOURCE):
+            or _shared_station(device) or actor.person.source == KIOSK_MOVE_SOURCE):
         raise _err(403, "not_personal_device")
     return device
 
@@ -124,8 +143,9 @@ async def enroll(
             or nonce.serial != body.serial or await biometric.nonce_spent(db, nonce, device.id)):
         raise _err(401, "bad_challenge")
     chain = _decode_chain(body.chain)
-    if actor.session.kiosk_serial is None:
-        await _bind_kiosk_session(db, actor, device)
+    # binds an unbound session here; refused when another serial won the bind
+    if not await _bind_kiosk_session(db, actor, device):
+        raise _err(403, "enroll_window_closed")
     try:
         key = await biometric.enroll(
             db, person_id=actor.person.id, device=device, nonce=body.nonce,
@@ -141,20 +161,25 @@ async def enroll(
 
 
 @router.post("/challenge", response_model=BiometricChallengeOut)
-async def challenge(body: BiometricSerialIn, db: DbSession) -> BiometricChallengeOut:
+async def challenge(
+    body: BiometricSerialIn, request: Request, db: DbSession,
+) -> BiometricChallengeOut:
     """The sign-in card for this phone: its personal person's live key, a
-    fresh challenge for it (voiding any earlier one), their name and photo,
+    challenge for it, their name and photo,
     and whether the 30 days have run out. Never their email. 404
-    no_biometric when the phone has no such key."""
+    no_biometric when the phone has no such key, or is a shared station.
+    An outstanding challenge is returned again, never replaced (see
+    biometric.challenge_for); per-IP capped."""
+    if not challenge_limiter.hit(rate_limit_ip(request)):
+        raise _err(429, "biometric_rate_limited")
     device = await _kiosk_device(db, body.serial)
-    if device is None or device.personal_person_id is None:
+    if device is None or device.personal_person_id is None or _shared_station(device):
         raise _err(404, "no_biometric")
     person = await db.get(Person, device.personal_person_id)
     key = await biometric.live_key(db, device.personal_person_id, device.id)
     if key is None or person is None or person.source == KIOSK_MOVE_SOURCE:
         raise _err(404, "no_biometric")
-    token, jti = biometric.make_sign_in_challenge(key.id)
-    key.last_nonce = jti
+    token = biometric.challenge_for(key)
     out = BiometricChallengeOut(
         key_id=key.id, challenge=token, display_name=person.display_name,
         photo_url=presign_get(person.avatar_key), expired=biometric.is_expired(key))
@@ -181,7 +206,7 @@ async def sign_in(
                                         method="biometric", key_id=str(body.key_id))
 
     try:
-        key_id, jti = biometric.decode_sign_in_challenge(body.challenge)
+        key_id, nonce_id = biometric.decode_sign_in_challenge(body.challenge)
     except TokenError:
         raise await fail("bad_challenge", 401) from None
     if key_id != body.key_id:
@@ -190,7 +215,7 @@ async def sign_in(
                           .with_for_update())
     if key is None or key.revoked_at is not None:
         raise await fail("no_biometric", 404)
-    if key.last_nonce is None or key.last_nonce != jti:
+    if key.last_nonce is None or key.last_nonce != nonce_id:
         raise await fail("bad_challenge", 401)
     key.last_nonce = None                    # spent, whatever happens next
     try:
@@ -201,7 +226,8 @@ async def sign_in(
         raise await fail("bad_signature", 401)
 
     device = await db.get(Device, key.device_id)
-    if device is None or device.personal_person_id != key.person_id:
+    if (device is None or device.personal_person_id != key.person_id
+            or _shared_station(device)):
         raise await fail("not_personal_device", 403)
     account = await db.scalar(
         select(UserAccount).options(joinedload(UserAccount.person))
@@ -222,7 +248,7 @@ async def sign_in(
     result = await auth_service.start_session(
         db, account, ip=client_ip(request), user_agent=request.headers.get("user-agent"),
         audit_action="login_biometric", access=access, client="kiosk",
-        login_method="biometric")
+        login_method="biometric", kiosk_serial=device.serial)
     return session_response(result, response, await totp_status_out(db, account), policy)
 
 

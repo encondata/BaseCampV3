@@ -295,6 +295,13 @@ async def test_enroll_needs_a_kiosk_session_on_this_serial(client, db, seeded_us
     await _make_personal(db, "android-bio-other", person.id)
     r = await _enroll_challenge(client, hdrs, "android-bio-other")
     assert r.status_code == 403 and _code(r) == "enroll_window_closed"
+    # enroll itself refuses it too, even with a well-formed nonce
+    db.expire_all()
+    family = await db.scalar(select(AuthSession.family_id).where(
+        AuthSession.person_id == person.id, AuthSession.kiosk_serial == SERIAL))
+    r = await _enroll(client, hdrs, "android-bio-other",
+                      nonce=biometric.make_enroll_nonce(person.id, family, "android-bio-other"))
+    assert r.status_code == 403 and _code(r) == "enroll_window_closed"
     # a portal session never enrolls
     portal = await login(client, email=EMAIL)
     r = await _enroll_challenge(client, portal)
@@ -315,6 +322,33 @@ async def test_enroll_binds_an_unbound_session(client, db, seeded_user, attest):
         AuthSession.person_id == person.id, AuthSession.client == "kiosk")
         .order_by(AuthSession.created_at.desc()).limit(1))
     assert newest.kiosk_serial == SERIAL
+
+
+async def test_enroll_refused_when_the_bind_loses(client, db, seeded_user, attest, monkeypatch):
+    """The session was unbound when enroll looked, but another serial bound
+    it first: the guarded bind loses and enroll refuses."""
+    await _make(db, client, "worker", EMAIL)
+    await _beat(client, await _kiosk_login(client))
+    person = await _person(db)
+    await _make_personal(db, SERIAL, person.id)
+    hdrs = await _kiosk_login(client)          # never sent a heartbeat
+    nonce = (await _enroll_challenge(client, hdrs)).json()["nonce"]
+    real = bio_routes._enrollable_device
+
+    async def racing(db_, actor, serial, **kw):
+        device = await real(db_, actor, serial, **kw)
+        if kw.get("lock"):
+            await db_.execute(
+                update(AuthSession).where(AuthSession.id == actor.session.id)
+                .values(kiosk_serial="android-bio-elsewhere")
+                .execution_options(synchronize_session=False))
+        return device
+
+    monkeypatch.setattr(bio_routes, "_enrollable_device", racing)
+    r = await _enroll(client, hdrs, nonce=nonce)
+    assert r.status_code == 403 and _code(r) == "enroll_window_closed"
+    assert attest.calls == []
+    assert (await db.scalar(select(BiometricKey))) is None
 
 
 async def test_enroll_needs_personal_device(client, db, seeded_user, attest):
@@ -446,6 +480,28 @@ async def test_move_identity_never_enrolls(client, db, seeded_user, attest):
     assert attest.calls == []
 
 
+@pytest.mark.parametrize("station", [
+    {"station_type": "timeclock"}, {"station_type": "label"}, {"station_type": "rfid"},
+    {"station_key_hash": "ab" * 32},
+], ids=["timeclock", "label", "rfid", "station_key"])
+async def test_shared_stations_are_never_personal(client, db, seeded_user, attest, station):
+    hdrs, _, key_id, key = await _enrolled(db, client, attest)
+    nonce = (await _enroll_challenge(client, hdrs)).json()["nonce"]
+    card = (await _challenge(client)).json()        # the card is showing
+    db.expire_all()
+    await db.execute(update(Device).where(Device.serial == SERIAL).values(**station))
+    await db.commit()
+    r = await _enroll_challenge(client, hdrs)
+    assert r.status_code == 403 and _code(r) == "not_personal_device"
+    r = await _enroll(client, hdrs, nonce=nonce)
+    assert r.status_code == 403 and _code(r) == "not_personal_device"
+    r = await _challenge(client)
+    assert r.status_code == 404 and _code(r) == "no_biometric"
+    r = await _sign_in(client, key_id, card["challenge"], _sign(key, card["challenge"]))
+    assert r.status_code == 403 and _code(r) == "not_personal_device"
+    assert len(attest.calls) == 1             # only the enroll before the change
+
+
 # ── challenge ───────────────────────────────────────────────────────
 
 async def test_challenge_404_without_key(client, db, seeded_user, attest):
@@ -511,6 +567,7 @@ async def test_sign_in_mints_kiosk_session_with_biometric_method(client, db, see
         AuthSession.token_hash == hash_refresh_token(r.cookies["ss_refresh"])))
     assert session.client == "kiosk" and session.login_method == "biometric"
     assert session.initiative_id is None
+    assert session.kiosk_serial == SERIAL     # bound to the phone it signed in on
     audit_row = await db.scalar(select(AuditLog).where(AuditLog.action == "login_biometric"))
     assert audit_row.actor_person_id == person.id
     row = await _key(db, key_id)
@@ -543,14 +600,60 @@ async def test_challenge_single_use(client, db, seeded_user, attest):
     assert replay.status_code == 401 and _code(replay) == "bad_challenge"
 
 
-async def test_new_challenge_voids_old(client, db, seeded_user, attest):
+async def test_challenge_reuses_outstanding(client, db, seeded_user, attest):
+    """A second /challenge returns the outstanding challenge instead of
+    voiding it, so whoever knows the serial can't knock the owner's card
+    out. Sign-in still spends it."""
     _, _, key_id, key = await _enrolled(db, client, attest)
-    old = (await _challenge(client)).json()["challenge"]
-    new = (await _challenge(client)).json()["challenge"]
-    r = await _sign_in(client, key_id, old, _sign(key, old))
-    assert r.status_code == 401 and _code(r) == "bad_challenge"
-    r = await _sign_in(client, key_id, new, _sign(key, new))
+    first = (await _challenge(client)).json()["challenge"]
+    second = (await _challenge(client)).json()["challenge"]
+    assert second == first
+    r = await _sign_in(client, key_id, first, _sign(key, first))
     assert r.status_code == 200, r.text
+    third = (await _challenge(client)).json()["challenge"]
+    assert third != first                     # the spent one is never handed out again
+    # one too close to expiring to be signed in time is replaced
+    row = await _key(db, key_id)
+    jti, iat = row.last_nonce.split(":")
+    aged = int(iat) - (biometric.CHALLENGE_TTL_SECONDS - biometric.CHALLENGE_REUSE_MIN_SECONDS + 1)
+    await db.execute(update(BiometricKey).where(BiometricKey.id == key_id)
+                     .values(last_nonce=f"{jti}:{aged}"))
+    await db.commit()
+    fourth = (await _challenge(client)).json()["challenge"]
+    assert biometric.decode_sign_in_challenge(fourth)[1].split(":")[0] != jti   # a new one
+    r = await _sign_in(client, key_id, third, _sign(key, third))
+    assert r.status_code == 401 and _code(r) == "bad_challenge"
+    r = await _sign_in(client, key_id, fourth, _sign(key, fourth))
+    assert r.status_code == 200, r.text
+    # an expired one is replaced too
+    row = await _key(db, key_id)
+    assert row.last_nonce is None
+    fifth = (await _challenge(client)).json()["challenge"]
+    row = await _key(db, key_id)
+    jti, iat = row.last_nonce.split(":")
+    await db.execute(update(BiometricKey).where(BiometricKey.id == key_id)
+                     .values(last_nonce=f"{jti}:{int(iat) - 120}"))
+    await db.commit()
+    sixth = (await _challenge(client)).json()["challenge"]
+    assert sixth != fifth
+    assert biometric.decode_sign_in_challenge(sixth)[1].split(":")[0] != jti
+    r = await _sign_in(client, key_id, sixth, _sign(key, sixth))
+    assert r.status_code == 200, r.text
+
+
+async def test_challenge_rate_limited(client, db, seeded_user, attest, monkeypatch):
+    from serversherpa.wiki.share_links import IpRateLimiter
+
+    await _enrolled(db, client, attest)
+    monkeypatch.setattr(bio_routes, "challenge_limiter",
+                        IpRateLimiter(limit=3, window_seconds=300))
+    for _ in range(3):
+        assert (await _challenge(client)).status_code == 200
+    r = await _challenge(client)
+    assert r.status_code == 429 and _code(r) == "biometric_rate_limited"
+    # unknown serials count too: probing is what the cap is for
+    r = await _challenge(client, "no-such-phone")
+    assert r.status_code == 429
 
 
 async def test_challenge_belongs_to_its_key(client, db, seeded_user, attest):

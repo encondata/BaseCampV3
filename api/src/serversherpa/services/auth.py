@@ -155,6 +155,7 @@ async def start_session(
     audit_action: str = "login", access: AccessInfo | None = None,
     client: str = "portal",
     initiative_id: uuid.UUID | None = None,
+    kiosk_serial: str | None = None,
 ) -> AuthResult:
     """Mint a session for an account whose holder has just proven who they
     are — a password login, or a kiosk pairing they approved on their
@@ -169,6 +170,8 @@ async def start_session(
     holder proved who they are; the route that signed in names it, it is
     recorded on the session row and carried through rotation, and it is
     never taken from anything the client reports.
+    `kiosk_serial` binds a kiosk session to its kiosk at once (a biometric
+    sign-in proves the phone); otherwise the first heartbeat binds it.
     A kiosk login is exempt from the 2FA challenge, so its session is held
     to the kiosk routes — see enforce_session_scope in api/deps.py."""
     settings = get_settings()
@@ -192,6 +195,7 @@ async def start_session(
         client=client,
         initiative_id=initiative_id,
         login_method=login_method,
+        kiosk_serial=kiosk_serial,
     )
     db.add(session)
     audit(db, actor_id=account.person_id, entity_type="auth",
