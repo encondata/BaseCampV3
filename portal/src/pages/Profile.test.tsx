@@ -359,7 +359,7 @@ const MY_KEYS: BiometricKey[] = [
   { id: 'bk1', device_id: 'k1', device_name: 'Pixel 8 Ada', security_level: 'strongbox',
     created_at: new Date(Date.now() - 2 * 86_400_000).toISOString(),
     last_used_at: new Date(Date.now() - 3_600_000).toISOString(),
-    renews_at: '2099-11-22T12:00:00Z' },
+    renews_at: new Date(2099, 10, 22, 12).toISOString() },   // local noon: "Nov 22" anywhere
   { id: 'bk2', device_id: 'k2', device_name: 'Old Tablet', security_level: 'tee',
     created_at: new Date(Date.now() - 4 * 86_400_000).toISOString(), last_used_at: null,
     renews_at: '2099-12-01T12:00:00Z' },

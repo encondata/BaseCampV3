@@ -23,7 +23,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { ApiError, type DeviceItem, type UiPreferences } from '../lib/api';
-import { LIST_FIT } from '../lib/listTools';
+import { LIST_FIT, columnFloor, listGridStyle } from '../lib/listTools';
 
 const auth = vi.hoisted(() => {
   const state: { can: (resource: string, action: string) => boolean; maxRank: number } = {
@@ -135,7 +135,7 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-const { default: KioskDevices } = await import('./KioskDevices');
+const { default: KioskDevices, KIOSK_COLUMNS } = await import('./KioskDevices');
 
 it('kiosk devices list: column floors, shared template + minimum, sideways-scroll card', async () => {
   render(<MemoryRouter><KioskDevices /></MemoryRouter>);
@@ -148,6 +148,17 @@ it('kiosk devices list: column floors, shared template + minimum, sideways-scrol
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
+});
+
+it('the Login column is wide enough for a "Fingerprint" chip', () => {
+  const login = KIOSK_COLUMNS.find((c) => c.key === 'login_method')!;
+  // the 12px chip: about 7.4px a character (the floor's own rate) plus 9px of
+  // padding and a 1px border either side
+  const chip = Math.ceil('Fingerprint'.length * 7.4) + 20;
+  expect(columnFloor(login)).toBeGreaterThanOrEqual(chip);
+  // a floor, not a fixed track: it grows with the room like its neighbors
+  expect(listGridStyle([login]).gridTemplateColumns).toBe(`minmax(${columnFloor(login)}px, 1fr)`);
+  expect(login.default).toBe(false);   // the ten defaults still fit LIST_FIT.page
 });
 
 it('renders seeded rows sorted by name asc, with the type tag, current move, and scan-type chip', async () => {

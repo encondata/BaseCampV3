@@ -24,19 +24,16 @@ import {
   forgetAllUserBiometricKeys, forgetMyBiometricKey, forgetUserBiometricKey, listMyBiometricKeys,
   listUserBiometricKeys, type BiometricKey,
 } from '../../lib/api';
-import { keyForgetErrorMessage, renewalPassed, renewsText } from '../../lib/biometric';
+import { keyForgetErrorMessage, renewsText } from '../../lib/biometric';
 import { relativeTime } from '../../lib/format';
 
 type Props =
   | { personId: string; personName: string; canManage: boolean; ownPage: boolean; reloadKey?: number }
   | { personId: null; personName?: undefined; canManage?: undefined; ownPage?: undefined; reloadKey?: number };
 
-function keyLine(k: BiometricKey, self: boolean): string {
-  const renews = renewalPassed(k.renews_at)
-    ? `expired · renews at ${self ? 'your' : 'their'} next password sign-in`
-    : renewsText(k.renews_at);
+function keyLine(k: BiometricKey): string {
   return `added ${relativeTime(k.created_at)} · `
-    + `${k.last_used_at ? `last used ${relativeTime(k.last_used_at)}` : 'never used'} · ${renews}`;
+    + `${k.last_used_at ? `last used ${relativeTime(k.last_used_at)}` : 'never used'} · ${renewsText(k.renews_at)}`;
 }
 
 export default function UserBiometricKeys(props: Props) {
@@ -130,7 +127,7 @@ export default function UserBiometricKeys(props: Props) {
                 </div>
                 <div className="session-main cell">
                   <div className="cell-top"><b>{k.device_name}</b></div>
-                  <div className="mono">{keyLine(k, self)}</div>
+                  <div className="mono">{keyLine(k)}</div>
                 </div>
                 {canForget && (
                   <button className="mini-btn" onClick={() => void forgetOne(k.id)}>Forget</button>

@@ -42,7 +42,7 @@ export default function SecurityControls({ canChange = true }: { canChange?: boo
   };
 
   const endAll = async () => {
-    if (!window.confirm('Sign everyone out on every device? You will stay signed in here.')) return;
+    if (!window.confirm('Sign everyone out on every device, and fingerprint sign-in on their phone turns off until their next password sign-in? You will stay signed in here.')) return;
     setBusy(true); setError(null); setRevoked(null);
     try { setRevoked(await revokeAllSessions()); }
     catch (err) { setError({ card: 'sessions', text: err instanceof ApiError ? err.message : 'Could not end sessions.' }); }
@@ -113,7 +113,7 @@ export default function SecurityControls({ canChange = true }: { canChange?: boo
       <div className="set-row">
         <div className="set-label">
           <b>End all sessions</b>
-          <span>Sign everyone out on every device. Your current session stays signed in.</span>
+          <span>Sign everyone out on every device, and fingerprint sign-in on their phone turns off until their next password sign-in. Your current session stays signed in.</span>
           {revoked && (
             <span className="set-ok">
               Signed out {revoked.revoked_sessions} session{revoked.revoked_sessions === 1 ? '' : 's'} across {revoked.revoked_people} {revoked.revoked_people === 1 ? 'person' : 'people'}.

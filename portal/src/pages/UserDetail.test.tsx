@@ -194,6 +194,9 @@ it('Sign out everywhere confirms, posts, and reloads', async () => {
   renderAt('/people/users/p1');
   await screen.findByRole('heading', { level: 1, name: /Wan Worker/ });
   fireEvent.click(screen.getByRole('button', { name: 'Sign out everywhere' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Sign out everywhere' });
+  expect(dialog.textContent).toContain(
+    'is revoked immediately, and fingerprint sign-in on their phone turns off until their next password sign-in.');
   fireEvent.click(await screen.findByRole('button', { name: 'Sign out all sessions' }));
   await waitFor(() => expect(api.revokeAllUserSessions).toHaveBeenCalledWith('p1'));
   await waitFor(() => expect(api.getUserDetail).toHaveBeenCalledTimes(2));
@@ -577,7 +580,7 @@ const KEYS: BiometricKey[] = [
   { id: 'bk1', device_id: 'k1', device_name: 'Pixel 8 Pat', security_level: 'strongbox',
     created_at: new Date(Date.now() - 2 * 86_400_000).toISOString(),
     last_used_at: new Date(Date.now() - 3_600_000).toISOString(),
-    renews_at: '2099-11-22T12:00:00Z' },
+    renews_at: new Date(2099, 10, 22, 12).toISOString() },   // local noon: "Nov 22" anywhere
   { id: 'bk2', device_id: 'k2', device_name: 'Old Tablet', security_level: 'tee',
     created_at: new Date(Date.now() - 40 * 86_400_000).toISOString(), last_used_at: null,
     renews_at: '2020-01-02T12:00:00Z' },
@@ -595,7 +598,7 @@ it('Biometric sign-in lists keys by device, created, last used and renews-by, wi
   expect(within(panel).getByText('2 devices')).toBeTruthy();
   expect(within(panel).getByText('Pixel 8 Pat')).toBeTruthy();
   expect(within(panel).getByText('added 2d ago · last used 1h ago · renews by Nov 22')).toBeTruthy();
-  expect(within(panel).getByText(/never used · expired · renews at their next password sign-in/)).toBeTruthy();
+  expect(within(panel).getByText(/never used · expired · renews at the next password sign-in/)).toBeTruthy();
   expect(within(panel).getAllByRole('button', { name: 'Forget' })).toHaveLength(2);
   expect(within(panel).getByRole('button', { name: 'Forget all' })).toBeTruthy();
 });
