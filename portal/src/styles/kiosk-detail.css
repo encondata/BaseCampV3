@@ -83,3 +83,8 @@
 /* the person picker: content-sized, a readable hint */
 .modal-card.reports-modal-card.rgm-card.kd-personal-card { width: min(560px, 96vw); max-width: 96vw; }
 .kd-personal-card .rgm-head-text .page-hint { max-width: 60ch; }
+/* the card is a fixed width, so the email column takes what is left and
+   each row (its divider and selection highlight) spans the whole list */
+.kd-personal-card .ini-picker-list {
+  grid-template-columns: max-content minmax(0, max-content) minmax(0, 1fr);
+}
