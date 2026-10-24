@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 import {
   forgetAllUserBiometricKeys, forgetDeviceBiometric, forgetMyBiometricKey, forgetUserBiometricKey,
-  listMyBiometricKeys, listUserBiometricKeys, setDevicePersonal,
+  listMyBiometricKeys, listPersonalCandidates, listUserBiometricKeys, setDevicePersonal,
 } from './api';
 
 const SESSION = {
@@ -33,6 +33,18 @@ function call(fn: ReturnType<typeof mockFetch>, method?: string): [string, Reque
 }
 
 afterEach(() => vi.unstubAllGlobals());
+
+it("listPersonalCandidates GETs the device's eligible people, with the search when there is one", async () => {
+  const rows = [{ person_id: 'p2', display_name: 'Sam Lead', login_email: 'sam@x.test' }];
+  let fetch = mockFetch(200, rows);
+  expect(await listPersonalCandidates('k1', ' sam & co ')).toEqual(rows);
+  let [url] = call(fetch);
+  expect(url).toMatch(/\/devices\/k1\/personal-candidates\?q=sam\+%26\+co$/);
+  fetch = mockFetch(200, []);
+  await listPersonalCandidates('k1', '   ');
+  [url] = call(fetch);
+  expect(url).toMatch(/\/devices\/k1\/personal-candidates$/);
+});
 
 it('setDevicePersonal PUTs the person id, or null to clear', async () => {
   let fetch = mockFetch(200, { id: 'k1' });

@@ -53,6 +53,7 @@ const api = vi.hoisted(() => ({
   setDevicePersonal: vi.fn(),
   forgetDeviceBiometric: vi.fn(),
   listUsers: vi.fn(),
+  listPersonalCandidates: vi.fn(),
 }));
 
 vi.mock('../../lib/api', async (importActual) => ({
@@ -509,22 +510,36 @@ it('an edit elsewhere sends label_station back untouched', async () => {
 
 /* ── Personal device (biometric sign-in) ───────────────────────────── */
 
+/** Local noon on Nov 22: "Nov 22" in every time zone. */
+const NOV_22 = new Date(2099, 10, 22, 12).toISOString();
+
 /** A plain (non-station) phone kiosk that is Lee's personal device. */
 function personal(overrides: Partial<DeviceDetail> = {}): DeviceDetail {
   const base = detail();
   return detail({
     sub_type: 'android', station_type: null, rfid_reader: null,
     setup: { ...base.setup, station_type: null },
+    shared_station: false,
     personal_person: { id: 'p9', display_name: 'Lee Owner' },
-    personal_biometric: { on: true, renews_at: '2099-11-22T12:00:00Z' },
+    personal_biometric: { on: true, renews_at: NOV_22 },
     ...overrides,
   });
 }
 
+/** What GET /devices/{id}/personal-candidates answers: eligible people only. */
 const PEOPLE = [
-  { person_id: 'p2', display_name: 'Sam Lead', login_email: 'sam@x.test', avatar_url: null },
-  { person_id: 'p3', display_name: 'Ann Other', login_email: 'ann@x.test', avatar_url: null },
+  { person_id: 'p2', display_name: 'Sam Lead', login_email: 'sam@x.test' },
+  { person_id: 'p3', display_name: 'Ann Other', login_email: 'ann@x.test' },
 ];
+
+/** The server's search: name or email, case-insensitively. */
+function candidates() {
+  api.listPersonalCandidates.mockImplementation(async (_id: string, q?: string) => {
+    const needle = (q ?? '').trim().toLowerCase();
+    return PEOPLE.filter((p) => !needle || p.display_name.toLowerCase().includes(needle)
+      || p.login_email.toLowerCase().includes(needle));
+  });
+}
 
 function personalRow(): HTMLElement {
   return screen.getByTestId('kiosk-personal');
@@ -547,7 +562,7 @@ it('an expired key reads expired; no key reads off and offers no Forget fingerpr
   api.getDevice.mockResolvedValue(personal({ personal_biometric: { on: true, renews_at: '2020-01-02T12:00:00Z' } }));
   renderAt('/hardware/kiosks/k1');
   await screen.findByRole('heading', { name: /Kiosk 97F0/ });
-  expect(within(personalRow()).getByText('Fingerprint expired · renews at their next password sign-in')).not.toBeNull();
+  expect(within(personalRow()).getByText('Fingerprint expired · renews at the next password sign-in')).not.toBeNull();
   cleanup();
   api.getDevice.mockResolvedValue(personal({ personal_biometric: { on: false, renews_at: null } }));
   renderAt('/hardware/kiosks/k1');
@@ -556,10 +571,10 @@ it('an expired key reads expired; no key reads off and offers no Forget fingerpr
   expect(within(personalRow()).queryByRole('button', { name: 'Forget fingerprint' })).toBeNull();
 });
 
-it('the picker saves the chosen person', async () => {
+it("the picker offers the server's eligible people, searches there, and saves the chosen person", async () => {
   const user = userEvent.setup();
   api.getDevice.mockResolvedValue(personal({ personal_person: null, personal_biometric: null }));
-  api.listUsers.mockResolvedValue(PEOPLE);
+  candidates();
   api.setDevicePersonal.mockResolvedValue(personal({
     personal_person: { id: 'p2', display_name: 'Sam Lead' }, personal_biometric: { on: false, renews_at: null },
   }));
@@ -570,8 +585,11 @@ it('the picker saves the chosen person', async () => {
   const dialog = await screen.findByRole('dialog', { name: 'Whose phone is this?' });
   expect(within(dialog).getByText('Kiosk 97F0 · Personal device')).not.toBeNull();
   expect(await within(dialog).findByText('Ann Other')).not.toBeNull();
+  expect(api.listPersonalCandidates).toHaveBeenCalledWith('k1', '');
   await user.type(within(dialog).getByRole('searchbox', { name: 'Search people' }), 'sam');
-  expect(within(dialog).queryByText('Ann Other')).toBeNull();
+  await waitFor(() => expect(within(dialog).queryByText('Ann Other')).toBeNull());
+  expect(api.listPersonalCandidates).toHaveBeenLastCalledWith('k1', 'sam');
+  expect(api.listUsers).not.toHaveBeenCalled();
   const save = within(dialog).getByRole('button', { name: 'Save' }) as HTMLButtonElement;
   expect(save.disabled).toBe(true);
   await user.click(within(dialog).getByRole('radio', { name: /Sam Lead/ }));
@@ -585,7 +603,7 @@ it('the picker saves the chosen person', async () => {
 it('a not_eligible refusal shows its reason in the picker and keeps it open', async () => {
   const user = userEvent.setup();
   api.getDevice.mockResolvedValue(personal({ personal_person: null, personal_biometric: null }));
-  api.listUsers.mockResolvedValue(PEOPLE);
+  candidates();
   api.setDevicePersonal.mockRejectedValue(
     new ApiError(422, 'not_eligible', { code: 'not_eligible', reason: 'no_kiosk_view' }));
   renderAt('/hardware/kiosks/k1');
@@ -658,6 +676,17 @@ it('a shared station says it cannot be a personal device; a stale person there c
   expect(within(personalRow()).getByText('Lee Owner')).not.toBeNull();
   expect(within(personalRow()).getByText("Shared station — can't be a personal device")).not.toBeNull();
   expect(within(personalRow()).getAllByRole('button').map((b) => b.textContent)).toEqual(['Clear']);
+});
+
+it('a station-key kiosk with no station type reads as shared (the shared_station flag)', async () => {
+  api.getDevice.mockResolvedValue(personal({
+    shared_station: true, personal_person: null, personal_biometric: null,
+  }));
+  renderAt('/hardware/kiosks/k1');
+  await screen.findByRole('heading', { name: /Kiosk 97F0/ });
+  expect(within(personalRow()).getByText("Shared station — can't be a personal device")).not.toBeNull();
+  expect(within(personalRow()).queryByRole('button', { name: 'Choose person…' })).toBeNull();
+  expect(within(personalRow()).queryByText('None')).toBeNull();
 });
 
 it('a biometric session reads "Fingerprint" on Overview', async () => {

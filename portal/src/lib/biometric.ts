@@ -20,11 +20,13 @@ export function renewalPassed(renewsAt: string | null, now = Date.now()): boolea
   return renewsAt != null && Date.parse(renewsAt) <= now;
 }
 
+/** The expired line, the same on the device page, the user page and /me:
+ *  it names no one, so it reads right whoever is looking. */
+export const EXPIRED_RENEWS = 'expired · renews at the next password sign-in';
+
 /** The renews part of a key line: "renews by Nov 22", or expired. */
 export function renewsText(renewsAt: string, now = Date.now()): string {
-  return renewalPassed(renewsAt, now)
-    ? 'expired · renews at their next password sign-in'
-    : `renews by ${monthDay(renewsAt)}`;
+  return renewalPassed(renewsAt, now) ? EXPIRED_RENEWS : `renews by ${monthDay(renewsAt)}`;
 }
 
 export type FingerprintState = 'on' | 'expired' | 'off';
@@ -38,20 +40,24 @@ export function fingerprintState(b: PersonalBiometric | null | undefined, now = 
 export function fingerprintStatus(b: PersonalBiometric | null | undefined, now = Date.now()): string {
   const state = fingerprintState(b, now);
   if (state === 'off') return 'Fingerprint off';
-  if (state === 'expired') return 'Fingerprint expired · renews at their next password sign-in';
+  if (state === 'expired') return `Fingerprint ${EXPIRED_RENEWS}`;
   return b?.renews_at ? `Fingerprint on · renews by ${monthDay(b.renews_at)}` : 'Fingerprint on';
 }
 
+/** The server's `shared_station` (a station type or a station key), with
+ *  the station type as a fallback for a payload without the flag. */
 export function isSharedStation(
-  d: Pick<DeviceDetail, 'station_type'> & { setup: Pick<DeviceDetail['setup'], 'station_type'> },
+  d: Pick<DeviceDetail, 'station_type' | 'shared_station'>
+    & { setup: Pick<DeviceDetail['setup'], 'station_type'> },
 ): boolean {
-  return (d.station_type ?? d.setup.station_type) != null;
+  return d.shared_station === true || (d.station_type ?? d.setup.station_type) != null;
 }
 
 const NOT_ELIGIBLE: Record<string, string> = {
   no_account: 'They need a portal login first.',
   no_kiosk_view: "They don't have kiosk access.",
   move_identity: "That's a move's kiosk identity, not a person.",
+  account_disabled: 'Their account is disabled.',
   shared_station: SHARED_STATION_LINE,
 };
 
@@ -78,12 +84,20 @@ export function personalErrorMessage(err: unknown): string {
   return "Couldn't save. Try again.";
 }
 
+const KEY_FORGET_ERRORS: Record<string, string> = {
+  cannot_target_self: 'Manage your own on My account.',
+  forbidden: "You don't have the rights to change this person.",
+  rank_too_low: "You don't have the rights to change this person.",
+  user_not_found: 'That person no longer exists.',
+};
+
 /** A failed key forget on the user page or /me: the API's read-only
- *  sentence, the self refusal, otherwise a plain retry line. */
+ *  sentence, the self, rights and gone refusals, otherwise a plain retry
+ *  line. */
 export function keyForgetErrorMessage(err: unknown, which: 'one' | 'all' = 'all'): string {
   const e = err as ErrLike;
   if (e?.code === 'read_only_mode' && e.message) return e.message;
-  if (e?.code === 'cannot_target_self') return 'Manage your own on My account.';
+  if (e?.code && KEY_FORGET_ERRORS[e.code]) return KEY_FORGET_ERRORS[e.code];
   return which === 'one'
     ? 'Could not forget that fingerprint. Try again.'
     : 'Could not forget the fingerprints. Try again.';

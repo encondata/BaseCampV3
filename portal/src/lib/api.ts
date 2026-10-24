@@ -5255,6 +5255,9 @@ export interface DeviceDetail extends DeviceItem {
    *  older fixtures stay valid. */
   personal_person?: PersonalPerson | null;
   personal_biometric?: PersonalBiometric | null;
+  /** A Label, RFID or Time Clock station, or a kiosk holding a station key:
+   *  never anyone's personal phone. Optional so older fixtures stay valid. */
+  shared_station?: boolean;
 }
 
 export interface PersonalPerson { id: string; display_name: string }
@@ -5314,10 +5317,27 @@ export async function setDeviceScanType(id: string, scanStatus: string): Promise
   return resp.json();
 }
 
+/** One person the Personal device picker may offer (GET
+ *  /devices/{id}/personal-candidates): only people the PUT accepts. */
+export interface PersonalCandidate { person_id: string; display_name: string; login_email: string }
+
+/** How many people one candidates answer holds (the server's cap). */
+export const PERSONAL_CANDIDATE_LIMIT = 50;
+
+/** The people this kiosk can be the personal phone of, natural-sorted by
+ *  name, at most PERSONAL_CANDIDATE_LIMIT; `q` searches name and email. */
+export async function listPersonalCandidates(id: string, q = ''): Promise<PersonalCandidate[]> {
+  const term = q.trim();
+  const qs = term ? `?${new URLSearchParams({ q: term })}` : '';
+  const resp = await apiFetch(`/devices/${id}/personal-candidates${qs}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 /** Make the kiosk someone's personal phone, or clear it with null. Refused
  *  with 422 `not_eligible` + `detail.reason` (shared_station, no_account,
- *  no_kiosk_view, move_identity). Changing or clearing revokes the device's
- *  live biometric key. */
+ *  account_disabled, no_kiosk_view, move_identity). Changing or clearing
+ *  revokes the device's live biometric key. */
 export async function setDevicePersonal(id: string, personId: string | null): Promise<DeviceDetail> {
   const resp = await apiFetch(`/devices/${id}/personal`, {
     method: 'PUT',

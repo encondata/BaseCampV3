@@ -1,20 +1,25 @@
 /**
  * Pick whose personal phone a kiosk is (biometric sign-in, spec
- * 2026-10-23-kiosk-biometric-sign-in §Portal). The list is GET /users: people
- * with a portal login, never a move's hidden kiosk identity. Kiosk access
- * isn't something that list can filter on, so the server is the final check:
- * a `not_eligible` refusal shows its reason here and the modal stays open.
+ * 2026-10-23-kiosk-biometric-sign-in §Portal). The list is GET
+ * /devices/{id}/personal-candidates: only people the server would accept (a
+ * portal login that is not disabled, kiosk access, not archived, never a
+ * move's hidden kiosk identity), searched on the server as you type. A
+ * `not_eligible` refusal (someone changed in the meantime) still shows its
+ * reason here and the modal stays open.
  *
  * The report-generate header and the initiative picker's list (reports.css
  * `ini-picker`), sized to its content.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { listUsers, setDevicePersonal, type DeviceDetail, type UserSummary } from '../../../lib/api';
+import {
+  PERSONAL_CANDIDATE_LIMIT, listPersonalCandidates, setDevicePersonal, type DeviceDetail,
+  type PersonalCandidate,
+} from '../../../lib/api';
 import { personalErrorMessage } from '../../../lib/biometric';
 
-/** How many matches the list shows at once. */
-export const PERSONAL_PICK_LIMIT = 100;
+/** How long typing pauses before the search goes to the server. */
+export const PERSONAL_SEARCH_DEBOUNCE_MS = 250;
 
 const SEARCH_ICON = (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
@@ -27,20 +32,28 @@ export default function PersonalDeviceModal({ detail, onSaved, onClose }: {
   onSaved: (next: DeviceDetail) => void;
   onClose: () => void;
 }) {
-  const [people, setPeople] = useState<UserSummary[] | null>(null);
+  const [people, setPeople] = useState<PersonalCandidate[] | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [query, setQuery] = useState('');
   const [picked, setPicked] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
+  // the first list straight away, then each search once typing pauses; a
+  // late answer for an older search never replaces a newer one
+  const term = query.trim();
+  const firstLoad = useRef(true);
   useEffect(() => {
     let live = true;
-    listUsers()
-      .then((rows) => { if (live) setPeople(rows); })
-      .catch(() => { if (live) { setPeople([]); setLoadError(true); } });
-    return () => { live = false; };
-  }, []);
+    const delay = firstLoad.current ? 0 : PERSONAL_SEARCH_DEBOUNCE_MS;
+    firstLoad.current = false;
+    const timer = setTimeout(() => {
+      listPersonalCandidates(detail.id, term)
+        .then((rows) => { if (live) { setPeople(rows); setLoadError(false); } })
+        .catch(() => { if (live) { setPeople([]); setLoadError(true); } });
+    }, delay);
+    return () => { live = false; clearTimeout(timer); };
+  }, [detail.id, term]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -51,12 +64,8 @@ export default function PersonalDeviceModal({ detail, onSaved, onClose }: {
   }, [busy, onClose]);
 
   const current = detail.personal_person?.id ?? null;
-  const matches = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return (people ?? []).filter((p) => p.person_id !== current && (!q
-      || p.display_name.toLowerCase().includes(q) || (p.login_email ?? '').toLowerCase().includes(q)));
-  }, [people, query, current]);
-  const shown = useMemo(() => matches.slice(0, PERSONAL_PICK_LIMIT), [matches]);
+  const shown = useMemo(
+    () => (people ?? []).filter((p) => p.person_id !== current), [people, current]);
 
   // a pick the filter hides is no pick
   useEffect(() => {
@@ -85,7 +94,7 @@ export default function PersonalDeviceModal({ detail, onSaved, onClose }: {
             <h3>Whose phone is this?</h3>
             <p className="page-hint">
               Pick the person who carries this phone. After a password sign-in on it, they can turn on
-              fingerprint or face sign-in. They need a portal login and kiosk access.
+              fingerprint or face sign-in. Only people with a portal login and kiosk access are listed.
             </p>
           </div>
           <button type="button" className="modal-close" aria-label="Close" onClick={onClose} disabled={busy}>
@@ -112,15 +121,15 @@ export default function PersonalDeviceModal({ detail, onSaved, onClose }: {
               {shown.map((p) => (
                 <label key={p.person_id} className={`mini-row ini-picker-row ${picked === p.person_id ? 'on' : ''}`}>
                   <input type="radio" name="kd-personal-person"
-                    aria-label={`${p.display_name}${p.login_email ? `, ${p.login_email}` : ''}`}
+                    aria-label={`${p.display_name}, ${p.login_email}`}
                     checked={picked === p.person_id} onChange={() => { setPicked(p.person_id); setError(''); }} />
                   <span className="cell-primary"><span className="pn"><b>{p.display_name}</b></span></span>
-                  <span className="cell-sub">{p.login_email ?? '—'}</span>
+                  <span className="cell-sub">{p.login_email}</span>
                 </label>
               ))}
             </div>
-            {matches.length > PERSONAL_PICK_LIMIT && (
-              <p className="page-hint">The first {PERSONAL_PICK_LIMIT} by name: type more of a name to narrow them.</p>
+            {(people?.length ?? 0) >= PERSONAL_CANDIDATE_LIMIT && (
+              <p className="page-hint">The first {PERSONAL_CANDIDATE_LIMIT} by name: type more of a name to narrow them.</p>
             )}
           </div>
           {error && <div className="pf-error" role="alert">{error}</div>}
