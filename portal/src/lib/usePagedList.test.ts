@@ -205,7 +205,7 @@ describe('usePagedList', () => {
     expect(result.current.error).toBeNull();
   });
 
-  it('a loadMore failure keeps the rows and the cursor so it can be retried', async () => {
+  it('a loadMore failure keeps the rows and cursor; retry() tries that page again', async () => {
     let fail = true;
     const fetchPage = vi.fn(async (p: PagedFetchParams<Q>) => {
       if (p.cursor === null) return page([1], 'c1');
@@ -220,9 +220,87 @@ describe('usePagedList', () => {
     expect(result.current.hasMore).toBe(true);
 
     fail = false;
-    act(() => result.current.loadMore());
+    act(() => result.current.retry());
     await waitFor(() => expect(result.current.rows).toEqual([{ id: 1 }, { id: 2 }]));
     expect(result.current.error).toBeNull();
+  });
+
+  it('loadMore is a no-op after a loadMore failure (no tight retry loop) until retry() or reload()', async () => {
+    let failMore = true;
+    const fetchPage = vi.fn(async (p: PagedFetchParams<Q>) => {
+      if (p.cursor === null) return page([1], 'c1');
+      if (failMore) throw new Error('later');
+      return page([2], null);
+    });
+    const { result } = renderHook(() => usePagedList<Row, Q>({ fetchPage, query: base }));
+    await waitFor(() => expect(result.current.hasMore).toBe(true));
+    act(() => result.current.loadMore());
+    await waitFor(() => expect(result.current.error).toBe('later'));
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+
+    // an auto-trigger near the end of the list keeps calling loadMore
+    for (let i = 0; i < 5; i++) act(() => result.current.loadMore());
+    await act(async () => { await Promise.resolve(); });
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+    expect(result.current.error).toBe('later');
+
+    // retry() is the way out; failing again blocks loadMore again
+    act(() => result.current.retry());
+    await waitFor(() => expect(fetchPage).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(result.current.loadingMore).toBe(false));
+    act(() => result.current.loadMore());
+    expect(fetchPage).toHaveBeenCalledTimes(3);
+
+    // reload() clears the block too
+    failMore = false;
+    act(() => result.current.reload());
+    await waitFor(() => expect(result.current.hasMore).toBe(true));
+    act(() => result.current.loadMore());
+    await waitFor(() => expect(result.current.rows).toEqual([{ id: 1 }, { id: 2 }]));
+  });
+
+  it('loadMore reuses the query and search of the page 1 it continues, not a newer pending search', async () => {
+    vi.useFakeTimers();
+    const fetchPage = vi.fn(async (p: PagedFetchParams<Q>) =>
+      p.cursor === null ? page([1], 'c1') : page([2], null));
+    const { result, rerender } = renderHook(
+      ({ search }: { search: string }) => usePagedList<Row, Q>({ fetchPage, query: base, search }),
+      { initialProps: { search: 'a' } },
+    );
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    rerender({ search: 'ab' }); // typed, still inside the debounce window
+    act(() => result.current.loadMore());
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(fetchPage.mock.calls[1][0]).toEqual({ ...base, search: 'a', cursor: 'c1' });
+  });
+
+  it('reports loading in the same render that a query or enabled change lands, with no idle frame', async () => {
+    const seen: boolean[] = [];
+    const fetchPage = vi.fn((_p: PagedFetchParams<Q>) =>
+      fetchPage.mock.calls.length === 1 ? Promise.resolve(page([1], null)) : new Promise<PagedResponse<Row>>(() => {}));
+    const { result, rerender } = renderHook(
+      ({ query, enabled }: { query: Q; enabled: boolean }) => {
+        const list = usePagedList<Row, Q>({ fetchPage, query, enabled });
+        seen.push(list.loading);
+        return list;
+      },
+      { initialProps: { query: base, enabled: true } },
+    );
+    expect(seen[0]).toBe(true);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    seen.length = 0;
+    rerender({ query: { ...base, sort: 'device' }, enabled: true });
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every(Boolean)).toBe(true);        // never false in between
+    expect(result.current.reloading).toBe(true);   // old rows still shown
+
+    // disabling reports idle at once; re-enabling reports loading at once
+    rerender({ query: { ...base, sort: 'device' }, enabled: false });
+    expect(result.current.loading).toBe(false);
+    seen.length = 0;
+    rerender({ query: { ...base, sort: 'device' }, enabled: true });
+    expect(seen.every(Boolean)).toBe(true);
   });
 
   it('reload re-fetches page 1 with the current query', async () => {
@@ -232,6 +310,16 @@ describe('usePagedList', () => {
     act(() => result.current.reload());
     await waitFor(() => expect(fetchPage).toHaveBeenCalledTimes(2));
     expect(fetchPage.mock.calls[1][0]).toEqual({ ...base, search: '', cursor: null });
+  });
+
+  it('reload() does not fetch while disabled', async () => {
+    const fetchPage = vi.fn(async (_p: PagedFetchParams<Q>) => page([1], null));
+    const { result } = renderHook(() =>
+      usePagedList<Row, Q>({ fetchPage, query: base, enabled: false }));
+    act(() => result.current.reload());
+    await act(async () => { await Promise.resolve(); });
+    expect(fetchPage).not.toHaveBeenCalled();
+    expect(result.current.loading).toBe(false);
   });
 
   it('does not fetch while disabled, and loads once enabled', async () => {

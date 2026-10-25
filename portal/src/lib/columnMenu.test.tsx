@@ -88,6 +88,23 @@ describe('passesColumnFilters', () => {
   });
 });
 
+describe('passesColumnFilters exclude', () => {
+  it('drops rows whose displayed value is excluded, with the em dash standing for blanks', () => {
+    const f: ColumnFilters = { name: { exclude: ['Alpha', 'Bravo'] } };
+    expect(rows.filter((r) => passesColumnFilters(r, f, text)).map((r) => r.id)).toEqual(['3', '4']);
+    const blanks: ColumnFilters = { site: { exclude: ['—'] } };
+    expect(rows.filter((r) => passesColumnFilters(r, blanks, text)).map((r) => r.id))
+      .toEqual(['1', '2', '3']);
+  });
+
+  it('AND-combines with a text filter, and an empty exclude filters nothing', () => {
+    const f: ColumnFilters = { name: { text: 'a', exclude: ['Alpha'] } };
+    expect(rows.filter((r) => passesColumnFilters(r, f, text)).map((r) => r.id))
+      .toEqual(['2', '3', '4']);
+    expect(rows.every((r) => passesColumnFilters(r, { name: { exclude: [] } }, text))).toBe(true);
+  });
+});
+
 describe('rowsForMenu', () => {
   it("ignores the column's own filter, so an already-checked value stays offered", () => {
     // site filter narrowed to just DA1 — if rowsForMenu applied it, DA10/DA2
@@ -637,6 +654,21 @@ describe('usePersistentListState', () => {
     expect(result.current.filters).toEqual({});
   });
 
+  it('keeps an exclude filter through setFilter and sanitize, never alongside values', () => {
+    const { result } = renderHook(() => usePersistentListState('sites', {
+      visible: new Set(['name', 'status']), sortKey: 'name', sortDir: 1,
+    }));
+    act(() => { result.current.setFilter('status', { exclude: ['active'] }); });
+    expect(result.current.filters).toEqual({ status: { exclude: ['active'] } });
+    const known = new Set(['name', 'status']);
+    const defaults = { visible: new Set(['name']), sortKey: 'name', sortDir: 1 as const };
+    expect(sanitize({ filters: { status: { exclude: ['a', 5, 'b'] } } }, known, defaults).filters)
+      .toEqual({ status: { exclude: ['a', 'b'] } });
+    expect(sanitize({ filters: { status: { values: ['a'], exclude: ['b'] } } }, known, defaults).filters)
+      .toEqual({ status: { values: ['a'] } });
+    expect(sanitize({ filters: { status: { exclude: [] } } }, known, defaults).filters).toEqual({});
+  });
+
   it('hydrates order from stored prefs, dropping unknown keys and junk', () => {
     auth.preferences.list_prefs = {
       sites: { order: ['site', 'ghost', 42, 'name'] },
@@ -754,7 +786,7 @@ describe('ColumnMenu with a valuesSource', () => {
     expect(screen.queryByText('0000AB12')).toBeNull();
 
     await user.click(screen.getByText('AB12')); // uncheck it
-    expect(onFilter).toHaveBeenLastCalledWith('primary', { values: ['XYZ'] });
+    expect(onFilter).toHaveBeenLastCalledWith('primary', { exclude: ['0000AB12'] });
   });
 
   it('re-queries the source with the typed text after the debounce and aborts the superseded call', async () => {
@@ -844,5 +876,193 @@ describe('ColumnMenu with a valuesSource', () => {
     rerender(<ColumnMenu {...props} valuesSource={make()} />);
     rerender(<ColumnMenu {...props} valuesSource={make()} />);
     expect(calls).toHaveLength(1);
+  });
+
+  it('unchecking from the implicit all-checked state adds the value to exclude, and re-checking removes it', async () => {
+    const user = userEvent.setup();
+    const onFilter = vi.fn();
+    const source = vi.fn<ColumnValuesSource>(async () => [
+      { value: 'DA1', count: 3 }, { value: 'DA2', count: 2 }, { value: '—', count: 1 }]);
+    const { rerender } = render(<ColumnMenu colKey="site" label="Site" valuesSource={source}
+                       filter={undefined} {...noop} onFilter={onFilter} />);
+    await user.click(screen.getByRole('button', { name: 'Site column menu' }));
+    await screen.findByText('DA2');
+
+    await user.click(screen.getByText('DA2'));
+    expect(onFilter).toHaveBeenLastCalledWith('site', { exclude: ['DA2'] });
+    expect(screen.getByText('DA2').closest('button')!.className).not.toContain('on');
+    expect(screen.getByText('DA1').closest('button')!.className).toContain('on');
+
+    await user.click(screen.getByText('—'));
+    expect(onFilter).toHaveBeenLastCalledWith('site', { exclude: ['DA2', '—'] });
+
+    await user.click(screen.getByText('DA2')); // re-check
+    expect(onFilter).toHaveBeenLastCalledWith('site', { exclude: ['—'] });
+    await user.click(screen.getByText('—'));
+    expect(onFilter).toHaveBeenLastCalledWith('site', null);
+    expect(screen.getByText('DA2').closest('button')!.className).toContain('on');
+    rerender(<div />);
+  });
+
+  it('starts from an existing exclude filter and Select all clears it', async () => {
+    const user = userEvent.setup();
+    const onFilter = vi.fn();
+    const source = vi.fn<ColumnValuesSource>(async () => [
+      { value: 'DA1', count: 3 }, { value: 'DA2', count: 2 }]);
+    render(<ColumnMenu colKey="site" label="Site" valuesSource={source}
+                       filter={{ exclude: ['DA1'] }} {...noop} onFilter={onFilter} />);
+    expect(screen.getByRole('button', { name: 'Site column menu' }).className).toContain('filtered');
+    await user.click(screen.getByRole('button', { name: 'Site column menu' }));
+    await screen.findByText('DA2');
+    expect(screen.getByText('DA1').closest('button')!.className).not.toContain('on');
+    expect(screen.getByText('DA2').closest('button')!.className).toContain('on');
+
+    await user.click(screen.getByText('DA2'));
+    expect(onFilter).toHaveBeenLastCalledWith('site', { exclude: ['DA1', 'DA2'] });
+    await user.click(screen.getByRole('button', { name: 'Select all' }));
+    expect(onFilter).toHaveBeenLastCalledWith('site', null);
+    expect(screen.getByText('DA1').closest('button')!.className).toContain('on');
+  });
+
+  it('from an include selection a toggle stays in include mode, never mixing in exclude', async () => {
+    const user = userEvent.setup();
+    const onFilter = vi.fn();
+    const source = vi.fn<ColumnValuesSource>(async () => [
+      { value: 'DA1', count: 3 }, { value: 'DA2', count: 2 }, { value: 'DA3', count: 1 }]);
+    render(<ColumnMenu colKey="site" label="Site" valuesSource={source}
+                       filter={{ values: ['DA1', 'DA2'] }} {...noop} onFilter={onFilter} />);
+    await user.click(screen.getByRole('button', { name: 'Site column menu' }));
+    await screen.findByText('DA3');
+    await user.click(screen.getByText('DA2'));   // uncheck
+    expect(onFilter).toHaveBeenLastCalledWith('site', { values: ['DA1'] });
+    await user.click(screen.getByText('DA3'));   // check
+    expect(onFilter).toHaveBeenLastCalledWith('site', { values: ['DA1', 'DA3'] });
+    for (const call of onFilter.mock.calls) expect(call[1]).not.toHaveProperty('exclude');
+  });
+
+  it('excludes by value when the list is capped at 500, instead of listing 499 loaded values', async () => {
+    const user = userEvent.setup();
+    const onFilter = vi.fn();
+    const many: ColumnValue[] = Array.from({ length: 500 }, (_, i) => ({ value: `V${i}`, count: 1 }));
+    const source = vi.fn<ColumnValuesSource>(async () => many);
+    render(<ColumnMenu colKey="primary" label="Value" valuesSource={source}
+                       filter={undefined} {...noop} onFilter={onFilter} />);
+    await user.click(screen.getByRole('button', { name: 'Value column menu' }));
+    await screen.findByText('V499');
+    await user.click(screen.getByText('V7'));
+    expect(onFilter).toHaveBeenLastCalledWith('primary', { exclude: ['V7'] });
+  });
+
+  it('hints to type to narrow only when the list reached the 500 cap', async () => {
+    const user = userEvent.setup();
+    const many: ColumnValue[] = Array.from({ length: 500 }, (_, i) => ({ value: `V${i}`, count: 1 }));
+    const source = vi.fn<ColumnValuesSource>()
+      .mockResolvedValueOnce(many.slice(0, 499))
+      .mockResolvedValueOnce(many);
+    const props = { colKey: 'primary', label: 'Value', filter: undefined, ...noop } as const;
+    const { rerender } = render(<ColumnMenu {...props} valuesSource={source} />);
+    await user.click(screen.getByRole('button', { name: 'Value column menu' }));
+    await screen.findByText('V498');
+    expect(screen.queryByText('Top 500 shown — type to narrow')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Value column menu' })); // close
+    rerender(<ColumnMenu {...props} valuesSource={source} />);
+    await user.click(screen.getByRole('button', { name: 'Value column menu' })); // reopen
+    await screen.findByText('Top 500 shown — type to narrow');
+  });
+
+  it('commits typed text to the filter only after a pause, once, with the latest text', async () => {
+    vi.useFakeTimers();
+    try {
+      const onFilter = vi.fn();
+      const source = vi.fn<ColumnValuesSource>(async () => [{ value: 'DA1', count: 1 }]);
+      render(<ColumnMenu colKey="site" label="Site" valuesSource={source}
+                         filter={undefined} {...noop} onFilter={onFilter} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Site column menu' }));
+      const box = screen.getByPlaceholderText('Filter Site');
+      fireEvent.change(box, { target: { value: 'd' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      fireEvent.change(box, { target: { value: 'da' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+      expect(onFilter).not.toHaveBeenCalled();
+      await act(async () => { await vi.advanceTimersByTimeAsync(60); });
+      expect(onFilter).toHaveBeenCalledTimes(1);
+      expect(onFilter).toHaveBeenCalledWith('site', { text: 'da' });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('flushes a pending text commit on Enter and on close, and drops it on unmount', async () => {
+    vi.useFakeTimers();
+    try {
+      const onFilter = vi.fn();
+      const source = vi.fn<ColumnValuesSource>(async () => []);
+      const { unmount } = render(<ColumnMenu colKey="site" label="Site" valuesSource={source}
+                         filter={undefined} {...noop} onFilter={onFilter} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Site column menu' }));
+      const box = screen.getByPlaceholderText('Filter Site');
+
+      fireEvent.change(box, { target: { value: 'da' } });
+      fireEvent.keyDown(box, { key: 'Enter' });
+      expect(onFilter).toHaveBeenCalledTimes(1);
+      expect(onFilter).toHaveBeenLastCalledWith('site', { text: 'da' });
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(onFilter).toHaveBeenCalledTimes(1);   // the timer was cancelled by the flush
+
+      fireEvent.change(box, { target: { value: 'dax' } });
+      fireEvent.keyDown(document, { key: 'Escape' });   // close
+      expect(onFilter).toHaveBeenCalledTimes(2);
+      expect(onFilter).toHaveBeenLastCalledWith('site', { text: 'dax' });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Site column menu' }));
+      fireEvent.change(screen.getByPlaceholderText('Filter Site'), { target: { value: 'gone' } });
+      unmount();
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(onFilter).toHaveBeenCalledTimes(2);   // no commit after unmount
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a value click commits the typed text immediately and cancels the pending commit', async () => {
+    vi.useFakeTimers();
+    try {
+      const onFilter = vi.fn();
+      const source = vi.fn<ColumnValuesSource>(async () => [{ value: 'DA1', count: 1 }]);
+      render(<ColumnMenu colKey="site" label="Site" valuesSource={source}
+                         filter={undefined} {...noop} onFilter={onFilter} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Site column menu' }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      fireEvent.change(screen.getByPlaceholderText('Filter Site'), { target: { value: 'da' } });
+      fireEvent.click(screen.getByText('DA1'));
+      expect(onFilter).toHaveBeenCalledTimes(1);
+      expect(onFilter).toHaveBeenLastCalledWith('site', { text: 'da', exclude: ['DA1'] });
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(onFilter).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('the sync menu (no source) still commits each keystroke at once', async () => {
+    const user = userEvent.setup();
+    const onFilter = vi.fn();
+    render(<ColumnMenu colKey="name" label="Name" allRows={rows} text={text} filter={undefined}
+                       {...noop} onFilter={onFilter} />);
+    await user.click(screen.getByRole('button', { name: 'Name column menu' }));
+    await user.type(screen.getByPlaceholderText('Filter Name'), 'al');
+    expect(onFilter.mock.calls.map((c) => c[1])).toEqual([{ text: 'a' }, { text: 'al' }]);
+    await user.click(screen.getByText('Alpha'));   // uncheck: include-list, never exclude
+    expect(onFilter.mock.lastCall![1]).toEqual({ text: 'al', values: ['Bravo', 'Charlie', 'Delta'] });
+  });
+
+  it('re-queries an open menu when valuesKey changes (search, date range), not otherwise', async () => {
+    const user = userEvent.setup();
+    const source = vi.fn<ColumnValuesSource>(async () => [{ value: 'DA1', count: 1 }]);
+    const props = { colKey: 'site', label: 'Site', valuesSource: source, onFilter: vi.fn(),
+                    onSort: vi.fn(), sortDir: null, filters: {}, filter: undefined } as const;
+    const { rerender } = render(<ColumnMenu {...props} valuesKey="q=a" />);
+    await user.click(screen.getByRole('button', { name: 'Site column menu' }));
+    await screen.findByText('DA1');
+    expect(source).toHaveBeenCalledTimes(1);
+    rerender(<ColumnMenu {...props} valuesKey="q=a" />);
+    expect(source).toHaveBeenCalledTimes(1);
+    rerender(<ColumnMenu {...props} valuesKey="q=ab" />);
+    await waitFor(() => expect(source).toHaveBeenCalledTimes(2));
   });
 });

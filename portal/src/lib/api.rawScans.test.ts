@@ -60,6 +60,17 @@ it('getRawScanPage sends sort, cursor and filters (JSON, blanks dropped) and ret
   expect((init.headers as Record<string, string>).Authorization).toBe('Bearer tok');
 });
 
+it('getRawScanPage sends exclude lists (blank ones dropped)', async () => {
+  const calls = mockFetch(json({ rows: [], next_cursor: null, total: 0 }));
+  await getRawScanPage({ filters: {
+    site: { exclude: ['DA1', '—'] }, source: { exclude: [] }, status: { text: 'a', exclude: ['x'] },
+  } });
+  const u = new URL((calls()[0] as [string])[0]);
+  expect(JSON.parse(u.searchParams.get('filters')!)).toEqual({
+    site: { exclude: ['DA1', '—'] }, status: { text: 'a', exclude: ['x'] },
+  });
+});
+
 it('getRawScanPage omits cursor/filters when absent or null', async () => {
   const calls = mockFetch(json({ rows: [], next_cursor: null, total: 0 }));
   await getRawScanPage({ cursor: null, filters: {} });

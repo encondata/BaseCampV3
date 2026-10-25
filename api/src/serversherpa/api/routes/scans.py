@@ -167,7 +167,7 @@ async def page_raw_scans(
     until: datetime | None = None,
 ) -> RawScanPage:
     """Keyset-paged raw scans. `filters` is the portal's ColumnFilters as
-    JSON ({colKey: {text?, values?}}, matched on the displayed text); `q`
+    JSON ({colKey: {text?, values?, exclude?}}, matched on the displayed text); `q`
     searches every text column; the cursor is opaque."""
     query = _raw_query(q, filters, since, until)
     try:

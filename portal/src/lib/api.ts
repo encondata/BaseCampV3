@@ -3016,7 +3016,7 @@ export type RawScanFacetColumn =
 
 /** One column's filter in the API's `filters` JSON (same shape as the
  *  portal's ColumnFilter, kept structural here so api.ts stays UI-free). */
-export interface RawScanColumnFilter { text?: string; values?: string[] }
+export interface RawScanColumnFilter { text?: string; values?: string[]; exclude?: string[] }
 
 /** The query params every raw-scans endpoint shares. */
 export interface RawScanFilterQuery {
@@ -3063,7 +3063,8 @@ function rawScanParams(query: RawScanFilterQuery & {
     const clean: RawScanColumnFilter = {};
     if (f.text) clean.text = f.text;
     if (f.values && f.values.length) clean.values = f.values;
-    if (clean.text || clean.values) active[col] = clean;
+    if (f.exclude && f.exclude.length) clean.exclude = f.exclude;
+    if (clean.text || clean.values || clean.exclude) active[col] = clean;
   }
   if (Object.keys(active).length) params.set('filters', JSON.stringify(active));
   return params;

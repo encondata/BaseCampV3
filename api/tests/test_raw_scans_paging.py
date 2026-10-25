@@ -31,6 +31,17 @@ SOURCES = ["kiosk", "reader", "", "import"]
 N = 300
 
 
+def _scanned_value(i: int) -> str:
+    """Mostly VAL-nnn; a few "=SUM(n)" cells for CSV injection, and rows that
+    differ only in case (VAL-a / VAL-A are equal under the `natural` collation,
+    so the cursor's collated-equality branch and the id tie-break get used)."""
+    if i % 50 == 0:
+        return f"=SUM({i})"
+    if i % 50 == 7:
+        return "VAL-a" if i % 100 == 7 else "VAL-A"
+    return f"VAL-{i % 97:03d}"
+
+
 @pytest.fixture
 async def world(db, seeded_user):
     """300 scans with plenty of equal sort values (and, for ingested, one
@@ -50,7 +61,7 @@ async def world(db, seeded_user):
         op_ = people[i % 4] if i % 4 < 3 else None
         site = sites[i % 5] if i % 5 < 3 else None
         rows.append(RawScan(
-            scanned_value=f"VAL-{i % 97:03d}" if i % 50 else f"=SUM({i})",
+            scanned_value=_scanned_value(i),
             scan_type=SCAN_TYPES[i % 3], status=STATUSES[(i // 5) % 4],
             scanned_at=T0 + timedelta(minutes=i % 60),
             device_id=DEVICES[(i // 2) % 4], operator_id=op_.id if op_ else None,
@@ -133,6 +144,22 @@ async def test_every_sort_pages_without_gaps_or_duplicates(
     assert totals == {N}
     assert len(ids) == len(set(ids)) == N
     assert ids == expected_order(world, sort, direction)
+
+
+@pytest.mark.parametrize("direction", ["asc", "desc"])
+async def test_case_variants_tie_and_split_across_pages_by_id(client, world, direction):
+    """VAL-a and VAL-A are equal under the `natural` collation: pages of 1 and
+    2 cut right through the tie, and the id must decide, with nothing lost."""
+    hdrs = await login(client)
+    flt = f(primary={"text": "val-a"})
+    ties = [r for r in world if r["primary"] in ("VAL-a", "VAL-A")]
+    assert {r["primary"] for r in ties} == {"VAL-a", "VAL-A"} and len(ties) > 4
+    want = [r["id"] for r in sorted(ties, key=lambda r: r["id"],
+                                    reverse=direction == "desc")]
+    for limit in (1, 2):
+        ids, totals = await walk(client, hdrs, limit=limit, sort="primary",
+                                 dir=direction, filters=flt)
+        assert ids == want and totals == {len(want)}
 
 
 async def test_last_page_has_no_cursor_and_exact_fit_does_too(client, world):
@@ -226,6 +253,64 @@ async def test_dash_value_matches_empty_cells(client, world, col):
     both = await matching(client, hdrs, world,
                           filters=f(**{col: {"values": ["—", "zzz-none"]}}))
     assert both == want
+
+
+@pytest.mark.parametrize("col", ["scan_type", "status", "device", "operator",
+                                 "site", "location", "source", "primary"])
+async def test_exclude_drops_the_listed_displayed_values(client, world, col):
+    hdrs = await login(client)
+    values = sorted({shown(r, col) for r in world})
+    drop = values[:2]
+    got = await matching(client, hdrs, world,
+                         filters=f(**{col: {"exclude": drop}}))
+    want = {r["id"] for r in world if shown(r, col) not in drop}
+    assert want and got == want and len(want) < len(world)
+
+
+@pytest.mark.parametrize("col", ["status", "device", "operator", "site",
+                                 "location", "source"])
+async def test_exclude_dash_means_non_empty(client, world, col):
+    hdrs = await login(client)
+    got = await matching(client, hdrs, world, filters=f(**{col: {"exclude": ["—"]}}))
+    want = {r["id"] for r in world if r[col]}
+    assert want and got == want
+    both = await matching(client, hdrs, world, filters=f(
+        **{col: {"exclude": ["—", "zzz-none"]}}))
+    assert both == want
+
+
+async def test_exclude_combines_with_other_columns_text_values_and_search(client, world):
+    hdrs = await login(client)
+    got = await matching(client, hdrs, world, filters=f(
+        operator={"exclude": ["Ann Alpha", "—"]},
+        source={"values": ["kiosk", "reader"]},
+        device={"text": "dev-1", "exclude": ["dev-10"]}),
+        q="dock")
+    assert got == {r["id"] for r in world
+                   if r["operator"] not in ("Ann Alpha", "")
+                   and r["source"] in ("kiosk", "reader")
+                   and "dev-1" in r["device"] and r["device"] != "dev-10"
+                   and "dock" in " ".join(
+                       r[k] for k in ["primary", "scan_type", "status", "device",
+                                      "operator", "site", "location",
+                                      "source"]).lower()}
+    # values and exclude on one column both hold (the portal never sends both)
+    got = await matching(client, hdrs, world, filters=f(
+        site={"values": ["Site 1", "Site 2"], "exclude": ["Site 2"]}))
+    assert got == {r["id"] for r in world if r["site"] == "Site 1"}
+
+
+async def test_exclude_applies_to_paging_total_and_export(client, world):
+    hdrs = await login(client)
+    flt = f(operator={"exclude": ["Ann Alpha"]})
+    want = [i for i in expected_order(world, "primary", "asc")
+            if next(r for r in world if r["id"] == i)["operator"] != "Ann Alpha"]
+    ids, totals = await walk(client, hdrs, limit=11, sort="primary", dir="asc",
+                             filters=flt)
+    assert ids == want and totals == {len(want)}
+    _, rows = await get_export(client, hdrs, filters=flt)
+    assert len(rows) - 1 == len(want)
+    assert "Ann Alpha" not in {r[5] for r in rows[1:]}
 
 
 async def test_text_filter_is_a_case_insensitive_substring(client, world):
@@ -364,6 +449,18 @@ async def test_facets_leave_out_the_columns_own_filter(client, world):
     assert {g["value"]: g["count"] for g in got} == want and want
 
 
+async def test_facets_ignore_the_columns_own_exclude_but_apply_the_others(client, world):
+    hdrs = await login(client)
+    filters = f(operator={"exclude": ["Ann Alpha"]}, source={"exclude": ["kiosk"]})
+    got = await get_facets(client, hdrs, column="operator", filters=filters)
+    want: dict[str, int] = {}
+    for r in world:
+        if r["source"] != "kiosk":
+            want[shown(r, "operator")] = want.get(shown(r, "operator"), 0) + 1
+    assert {g["value"]: g["count"] for g in got} == want
+    assert "Ann Alpha" in want                  # own exclude not applied
+
+
 async def test_facet_search_narrows_the_list(client, world):
     hdrs = await login(client)
     got = await get_facets(client, hdrs, column="primary", search="val-09")
@@ -468,6 +565,12 @@ async def test_export_with_nothing_matching_is_just_the_header(client, world):
     {"filters": '{"site": {"values": "a"}}'},
     {"filters": '{"site": {"values": [1]}}'},
     {"filters": '{"site": {"other": "a"}}'},
+    {"filters": '{"site": {"exclude": "a"}}'},
+    {"filters": '{"site": {"exclude": [1]}}'},
+    {"filters": '{"site": {"exclude": ["a", null]}}'},
+    {"filters": json.dumps({"site": {"exclude": ["x"] * 1001}})},
+    {"filters": json.dumps({"site": {"values": ["x"] * 1001}})},
+    {"filters": json.dumps({"site": {"text": "x" * 501}})},
     {"since": "yesterday"},
 ])
 async def test_bad_requests_are_422(client, world, params):

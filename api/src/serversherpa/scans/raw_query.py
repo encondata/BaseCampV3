@@ -136,6 +136,7 @@ def _raw_sort_value(key: str) -> ColumnElement:
 class ColumnFilter:
     text: str = ""
     values: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -147,7 +148,11 @@ class RawScanQuery:
 
 
 def parse_filters(raw: str | None) -> dict[str, ColumnFilter]:
-    """The portal's ColumnFilters as JSON: {colKey: {text?, values?}}.
+    """The portal's ColumnFilters as JSON: {colKey: {text?, values?, exclude?}}.
+
+    `values` keeps only the listed displayed texts; `exclude` drops them
+    (the column menu's "everything except these", which stays short however
+    many distinct values the column has). Both follow the same limits.
 
     A saved filter on `scanned`/`ingested` is dropped rather than refused:
     those columns no longer filter by text (the date range does that), and
@@ -164,23 +169,22 @@ def parse_filters(raw: str | None) -> dict[str, ColumnFilter]:
     for key, spec in data.items():
         if key not in SORT_COLUMNS or not isinstance(spec, dict):
             raise RawQueryError("invalid_filters")
-        if set(spec) - {"text", "values"}:
+        if set(spec) - {"text", "values", "exclude"}:
             raise RawQueryError("invalid_filters")
-        text = spec.get("text", "")
-        values = spec.get("values", [])
-        if text is None:
-            text = ""
-        if values is None:
-            values = []
-        if (not isinstance(text, str) or len(text) > MAX_FILTER_TEXT
-                or not isinstance(values, list)
-                or len(values) > MAX_FILTER_VALUES
-                or not all(isinstance(v, str) for v in values)):
+        text, values, exclude = (
+            default if spec.get(name) is None else spec[name]
+            for name, default in (("text", ""), ("values", []), ("exclude", [])))
+        if not isinstance(text, str) or len(text) > MAX_FILTER_TEXT:
             raise RawQueryError("invalid_filters")
+        for listed in (values, exclude):
+            if (not isinstance(listed, list) or len(listed) > MAX_FILTER_VALUES
+                    or not all(isinstance(v, str) for v in listed)):
+                raise RawQueryError("invalid_filters")
         if key in DATE_COLUMNS:
             continue
-        if text or values:
-            out[key] = ColumnFilter(text=text, values=tuple(values))
+        if text or values or exclude:
+            out[key] = ColumnFilter(text=text, values=tuple(values),
+                                    exclude=tuple(exclude))
     return out
 
 
@@ -200,6 +204,8 @@ def _conditions(query: RawScanQuery, skip: str | None = None) -> list[ColumnElem
             conds.append(shown.icontains(f.text, autoescape=True))
         if f.values:
             conds.append(shown.in_(f.values))
+        if f.exclude:
+            conds.append(shown.not_in(f.exclude))
     if query.since is not None:
         conds.append(RawScan.scanned_at >= query.since)
     if query.until is not None:

@@ -62,6 +62,7 @@ export function passesColumnFilters<T>(
     const cell = text(row, colKey);
     if (f.text && !cell.toLowerCase().includes(f.text.toLowerCase())) return false;
     if (f.values && f.values.length && !f.values.includes(displayOf(cell))) return false;
+    if (f.exclude && f.exclude.length && f.exclude.includes(displayOf(cell))) return false;
   }
   return true;
 }
@@ -102,8 +103,13 @@ export type ColumnValuesSource = (
   query: { search: string; signal: AbortSignal },
 ) => Promise<ColumnValue[]>;
 
-/** Wait after the last keystroke before re-querying a values source. */
+/** Wait after the last keystroke before re-querying a values source, and
+ *  before the typed text is committed as the column's filter (with a source). */
 export const VALUES_SEARCH_DEBOUNCE_MS = 250;
+
+/** A values source returns at most this many entries (the facets endpoint's
+ *  cap); a full list means more exist, so the menu says to type to narrow. */
+export const VALUES_SOURCE_CAP = 500;
 
 type RemoteValues =
   | { status: 'loading'; items: ColumnValue[] }
@@ -123,8 +129,14 @@ const MENU_MIN_WIDTH = 220;
  *  search + .colmenu-list max-height 220 + separators + actions row. */
 const MENU_MAX_HEIGHT = 380;
 
+/** An exclude list to start an editing session from (never alongside values). */
+function seedExclude(filter: ColumnFilter | undefined): string[] | undefined {
+  if (filter?.values && filter.values.length) return undefined;
+  return filter?.exclude && filter.exclude.length ? filter.exclude : undefined;
+}
+
 export function ColumnMenu<T>({
-  colKey, label, allRows, filters, text, valuesSource, displayValue,
+  colKey, label, allRows, filters, text, valuesSource, valuesKey, displayValue,
   filter, onFilter, sortDir, onSort,
 }: {
   colKey: string;
@@ -145,6 +157,10 @@ export function ColumnMenu<T>({
    *  from `allRows`: loaded when the menu opens, re-queried as the user types.
    *  Read through a ref, so a fresh function identity each render is fine. */
   valuesSource?: ColumnValuesSource;
+  /** With `valuesSource`: an opaque key for every other input that shapes the
+   *  list (global search, date range, extra params). An open menu re-queries
+   *  when it changes; the other columns' `filters` are tracked on their own. */
+  valuesKey?: string;
   /** With `valuesSource`: how to show a raw value in the checklist, while the
    *  raw value is still what goes into the filter. */
   displayValue?: (value: string) => string;
@@ -163,6 +179,9 @@ export function ColumnMenu<T>({
   // to yet.
   const [typed, setTyped] = useState(filter?.text ?? '');
   const [localValues, setLocalValues] = useState(filter?.values);
+  // With a source, "all checked except these" (see toggleValue). Mutually
+  // exclusive with localValues.
+  const [localExclude, setLocalExclude] = useState(seedExclude(filter));
   const { triggerRef: ref, menuRef, pos, host } = usePortaledMenu(
     open, () => setOpen(false), { width: MENU_MIN_WIDTH, height: MENU_MAX_HEIGHT });
 
@@ -202,13 +221,31 @@ export function ColumnMenu<T>({
         if (!controller.signal.aborted) setRemote({ status: 'error', items: [] });
       });
     return () => controller.abort();
-  }, [open, remoteOn, querySearch, othersKey]);
+  }, [open, remoteOn, querySearch, othersKey, valuesKey]);
+
+  // With a source the typed text is committed as the filter after a pause,
+  // like the list query; this holds that timer. commit() cancels it (it
+  // commits the latest text itself), and a close flushes it.
+  const pendingCommit = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushRef = useRef<() => void>(() => {});
+  const cancelPendingCommit = () => {
+    if (pendingCommit.current !== null) clearTimeout(pendingCommit.current);
+    pendingCommit.current = null;
+  };
+  const flushPendingCommit = () => {
+    if (pendingCommit.current === null) return;
+    cancelPendingCommit();
+    flushRef.current();
+  };
+  useEffect(() => { if (!open) flushPendingCommit(); }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => cancelPendingCommit, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function openMenu() {
     // Seed everything here, not in an effect, so the first query already
     // carries the filter's current text and never a stale one.
     setTyped(filter?.text ?? '');
     setLocalValues(filter?.values);
+    setLocalExclude(seedExclude(filter));
     setQuerySearch(filter?.text ?? '');
     setRemote({ status: 'loading', items: [] });
     setOpen(true);
@@ -229,6 +266,7 @@ export function ColumnMenu<T>({
     if (open) {
       setTyped(filter?.text ?? '');
       setLocalValues(filter?.values);
+      setLocalExclude(seedExclude(filter));
     }
     // Intentionally NOT reactive to `filter` while open — the menu owns its
     // own edit state during an editing session.
@@ -257,15 +295,24 @@ export function ColumnMenu<T>({
     return allValues.filter((v) => v.toLowerCase().includes(needle));
   }, [allValues, typed, remoteOn]);
 
-  const isChecked = (v: string) => !localValues || localValues.includes(v);
-  const isFiltered = Boolean(filter?.text || (filter?.values && filter.values.length > 0));
+  const isChecked = (v: string) => {
+    if (remoteOn && localExclude) return !localExclude.includes(v);
+    return !localValues || localValues.includes(v);
+  };
+  const isFiltered = Boolean(
+    filter?.text || (filter?.values && filter.values.length > 0)
+    || (filter?.exclude && filter.exclude.length > 0));
 
-  function commit(nextText: string, nextValues: string[] | undefined) {
+  function commit(nextText: string, nextValues: string[] | undefined,
+                  nextExclude?: string[]) {
+    cancelPendingCommit();
     const next: ColumnFilter = {};
     if (nextText.trim()) next.text = nextText;
     if (nextValues && nextValues.length) next.values = nextValues;
-    onFilter(colKey, next.text || next.values ? next : null);
+    else if (nextExclude && nextExclude.length) next.exclude = nextExclude;
+    onFilter(colKey, next.text || next.values || next.exclude ? next : null);
   }
+  flushRef.current = () => commit(typed, localValues, localExclude);
 
   function applyValues(values: string[]) {
     setLocalValues(values);
@@ -278,6 +325,7 @@ export function ColumnMenu<T>({
     // loaded subset.
     if (remoteOn) {
       setLocalValues(undefined);
+      setLocalExclude(undefined);
       commit(typed, undefined);
     } else {
       applyValues(narrowed);
@@ -285,6 +333,16 @@ export function ColumnMenu<T>({
   }
 
   function toggleValue(v: string) {
+    if (remoteOn && !localValues) {
+      // From "all checked" (or an exclude list) a toggle edits the exclude
+      // list: listing the loaded values instead would drop every value past
+      // the server's cap, and a long include list overflows the request URL.
+      const base = localExclude ?? [];
+      const next = base.includes(v) ? base.filter((x) => x !== v) : [...base, v];
+      setLocalExclude(next.length ? next : undefined);
+      commit(typed, undefined, next);
+      return;
+    }
     const base = localValues ?? allValues;
     const next = base.includes(v) ? base.filter((x) => x !== v) : [...base, v];
     applyValues(next);
@@ -292,12 +350,23 @@ export function ColumnMenu<T>({
 
   function onTypeFilter(next: string) {
     setTyped(next);
-    commit(next, localValues);
+    if (!remoteOn) {
+      commit(next, localValues);
+      return;
+    }
+    // Debounced: every commit re-filters (and re-fetches) the whole list.
+    cancelPendingCommit();
+    pendingCommit.current = setTimeout(() => {
+      pendingCommit.current = null;
+      commit(next, localValues, localExclude);
+    }, VALUES_SEARCH_DEBOUNCE_MS);
   }
 
   function clearFilter() {
+    cancelPendingCommit();
     setTyped('');
     setLocalValues(undefined);
+    setLocalExclude(undefined);
     onFilter(colKey, null);
   }
 
@@ -339,6 +408,7 @@ export function ColumnMenu<T>({
             placeholder={`Filter ${label}`}
             value={typed}
             onChange={(e) => onTypeFilter(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') flushPendingCommit(); }}
           />
           <div className="colmenu-list" aria-busy={remoteOn && remote.status === 'loading'}>
             {remoteOn && remote.status === 'loading' && remote.items.length === 0 && (
@@ -349,6 +419,9 @@ export function ColumnMenu<T>({
             )}
             {narrowed.length === 0 && (!remoteOn || remote.status === 'ready') && (
               <div className="pop-empty">No matches</div>
+            )}
+            {remoteOn && remote.status === 'ready' && remote.items.length >= VALUES_SOURCE_CAP && (
+              <div className="pop-empty">Top {VALUES_SOURCE_CAP} shown — type to narrow</div>
             )}
             {narrowed.map((v) => (
               <button key={v} type="button" className={`pop-item ${isChecked(v) ? 'on' : ''}`}
@@ -490,7 +563,12 @@ export function sanitize(
         const values = f.values.filter((v): v is string => typeof v === 'string');
         if (values.length) clean.values = values;
       }
-      if (clean.text || clean.values) filters[colKey] = clean;
+      // A filter never carries both; an include list wins.
+      if (!clean.values && Array.isArray(f.exclude)) {
+        const exclude = f.exclude.filter((v): v is string => typeof v === 'string');
+        if (exclude.length) clean.exclude = exclude;
+      }
+      if (clean.text || clean.values || clean.exclude) filters[colKey] = clean;
     }
   }
 
@@ -626,7 +704,8 @@ export function usePersistentListState(
 
   const setFilter = useCallback((colKey: string, f: ColumnFilter | null) => {
     setFiltersState((prev) => {
-      const isBlank = !f || (!f.text && !(f.values && f.values.length));
+      const isBlank = !f || (!f.text && !(f.values && f.values.length)
+        && !(f.exclude && f.exclude.length));
       if (isBlank) {
         if (!(colKey in prev)) return prev;
         const next = { ...prev };

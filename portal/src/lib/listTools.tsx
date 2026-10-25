@@ -440,7 +440,10 @@ export function passesFacets(
  * chip cousin); the menu UI, matcher, and persistence hook live in
  * lib/columnMenu.tsx, which re-exports these two for one-stop importing. */
 
-export interface ColumnFilter { text?: string; values?: string[] }
+/** `values` keeps only the listed cells; `exclude` drops the listed cells
+ *  (an async column menu's "everything except these", which stays short
+ *  however many distinct values there are). A filter never sets both. */
+export interface ColumnFilter { text?: string; values?: string[]; exclude?: string[] }
 export type ColumnFilters = Record<string, ColumnFilter>;
 
 export function activeFilterCount(filters: ColumnFilters): number {

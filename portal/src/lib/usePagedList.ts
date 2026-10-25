@@ -54,10 +54,16 @@ export interface PagedList<T> {
   loadingMore: boolean;
   error: string | null;
   hasMore: boolean;
-  /** Appends the next page. No-op while a load is in flight or when there is
-   *  no next page. */
+  /** Appends the next page. No-op while a load is in flight, when there is
+   *  no next page, or after a loadMore failure (so an auto-trigger near the
+   *  end of the list cannot retry in a tight loop) until `retry()` or
+   *  `reload()` is called. */
   loadMore: () => void;
-  /** Reloads page 1 with the current query and search. */
+  /** Tries the page that failed to load again (an explicit user action,
+   *  e.g. a Retry button next to `error`). */
+  retry: () => void;
+  /** Reloads page 1 with the current query and search. Does nothing while
+   *  the list is disabled. */
   reload: () => void;
 }
 
@@ -73,7 +79,10 @@ export function usePagedList<T, Q extends object>(
 ): PagedList<T> {
   const [rows, setRows] = useState<T[]>([]);
   const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(enabled);
+  // A page-1 request is in flight. `loading` also covers the render between a
+  // query/enabled change and the effect that starts the fetch (see below).
+  const [fetching, setFetching] = useState(false);
+  const [settledKey, setSettledKey] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
@@ -93,14 +102,20 @@ export function usePagedList<T, Q extends object>(
   const queryKey = JSON.stringify(query);
   const queryRef = useRef(query);
   queryRef.current = query;
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
+  // The query + debounced search a page-1 load is (or should be) running for.
+  const wantedKey = enabled ? JSON.stringify([queryKey, debouncedSearch]) : null;
 
   const seqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const cursorRef = useRef<string | null>(null);
   const inFlightRef = useRef(false);
-  /** The params page 1 of the current result was loaded with; loadMore reuses
-   *  them so a half-typed search never mixes into a later page. */
-  const paramsRef = useRef<Q | null>(null);
+  /** The query AND search page 1 of the current result was loaded with;
+   *  loadMore reuses both so a newer search never mixes into a later page. */
+  const paramsRef = useRef<{ query: Q; search: string } | null>(null);
+  /** A loadMore failed: loadMore stays a no-op until retry() or reload(). */
+  const moreFailedRef = useRef(false);
   const searchRef = useRef(debouncedSearch);
   searchRef.current = debouncedSearch;
 
@@ -112,15 +127,18 @@ export function usePagedList<T, Q extends object>(
   }, []);
 
   const loadFirst = useCallback(() => {
+    if (!enabledRef.current) return;
     cancelInFlight();
+    moreFailedRef.current = false;
     const seq = seqRef.current;
     const controller = new AbortController();
     abortRef.current = controller;
     inFlightRef.current = true;
     const params = queryRef.current;
     const searchText = searchRef.current;
-    paramsRef.current = params;
-    setLoading(true);
+    const key = JSON.stringify([JSON.stringify(params), searchText]);
+    paramsRef.current = { query: params, search: searchText };
+    setFetching(true);
     setLoadingMore(false);
     setError(null);
     fetchRef.current({ ...params, search: searchText, cursor: null }, controller.signal)
@@ -131,7 +149,8 @@ export function usePagedList<T, Q extends object>(
         setRows(page.rows);
         setTotal(page.total);
         setHasMore(page.next_cursor !== null);
-        setLoading(false);
+        setFetching(false);
+        setSettledKey(key);
       })
       .catch((e: unknown) => {
         if (seq !== seqRef.current) return;
@@ -142,21 +161,23 @@ export function usePagedList<T, Q extends object>(
         setTotal(0);
         setHasMore(false);
         setError(messageOf(e));
-        setLoading(false);
+        setFetching(false);
+        setSettledKey(key);
       });
   }, [cancelInFlight]);
 
   const loadMore = useCallback(() => {
     const cursor = cursorRef.current;
     const params = paramsRef.current;
-    if (cursor === null || params === null || inFlightRef.current) return;
+    if (cursor === null || params === null || inFlightRef.current
+      || moreFailedRef.current) return;
     const seq = seqRef.current;
     const controller = new AbortController();
     abortRef.current = controller;
     inFlightRef.current = true;
     setLoadingMore(true);
     setError(null);
-    fetchRef.current({ ...params, search: searchRef.current, cursor }, controller.signal)
+    fetchRef.current({ ...params.query, search: params.search, cursor }, controller.signal)
       .then((page) => {
         if (seq !== seqRef.current) return;
         inFlightRef.current = false;
@@ -169,17 +190,24 @@ export function usePagedList<T, Q extends object>(
       .catch((e: unknown) => {
         if (seq !== seqRef.current) return;
         inFlightRef.current = false;
-        // Keep the rows and the cursor: calling loadMore again retries.
+        // Keep the rows and the cursor; loadMore stays idle until retry().
+        moreFailedRef.current = true;
         setError(messageOf(e));
         setLoadingMore(false);
       });
   }, []);
 
+  const retry = useCallback(() => {
+    moreFailedRef.current = false;
+    loadMore();
+  }, [loadMore]);
+
   useEffect(() => {
     if (!enabled) {
       cancelInFlight();
-      setLoading(false);
+      setFetching(false);
       setLoadingMore(false);
+      setSettledKey(null);
       return;
     }
     loadFirst();
@@ -191,9 +219,12 @@ export function usePagedList<T, Q extends object>(
   // Drop anything still in flight on unmount.
   useEffect(() => cancelInFlight, [cancelInFlight]);
 
+  // Loading from the render the query/enabled/search changes, not from the
+  // effect after it: the key being wanted differs from the one last settled.
+  const loading = enabled && (fetching || wantedKey !== settledKey);
   return {
     rows, total, loading,
     reloading: loading && rows.length > 0,
-    loadingMore, error, hasMore, loadMore, reload: loadFirst,
+    loadingMore, error, hasMore, loadMore, retry, reload: loadFirst,
   };
 }
