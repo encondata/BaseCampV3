@@ -1,38 +1,43 @@
 /**
- * Raw scans — the unprocessed inbox, Containers.tsx pattern: full standard
- * list (filter/sort/columns/export). Read-only: rows arrive from kiosk/
- * reader ingest and leave via the future matcher/pruner; raw_scans will be
- * kept bounded by the future pruning job, so full client-side load is
- * acceptable. No god-edit/delete, no archived column, no deep-link focus.
+ * Raw scans — the unprocessed inbox, Containers.tsx pattern: the full
+ * standard list (filter/sort/columns/export), but loaded in pages from the
+ * server. raw_scans runs to 100k+ rows, so sorting, column filters, search,
+ * the Scanned date range, the checklist values (facets) and the CSV export
+ * all run in the API; the list appends the next page as the scroller nears
+ * the end. Read-only: rows arrive from kiosk/reader ingest and leave via the
+ * future matcher/pruner. No god-edit/delete, no archived column, no
+ * deep-link focus.
  */
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../../auth/AuthContext';
 import {
-  ApiError, listRawScans, type RawScanRow,
+  ApiError, downloadRawScansCsv, getRawScanFacets, getRawScanPage,
+  type RawScanFacetColumn, type RawScanRow, type RawScanSort,
 } from '../../lib/api';
-import { rawScanCellText, rawScanSearchText } from '../../lib/scans';
 import { statusChip } from '../../lib/chips';
 import {
-  ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
-  usePersistentListState,
+  ColumnMenu, EmptyClearFilters, FilterSummaryChip, usePersistentListState,
+  type ColumnValuesSource,
 } from '../../lib/columnMenu';
-import { naturalCompare } from '../../lib/sites';
+import { DateRangeMenu } from '../../lib/dateRangeMenu';
 import {
   applyColumnOrder,
   ColHead,
   ColumnsButton,
   ExportButton,
-  exportCsv,
   listGridStyle,
   listScale,
   moveKey,
   titleFor,
   useReorderDrag,
-  useSearchHaystacks,
   visibleColumnsFor,
 } from '../../lib/listTools';
+import {
+  activeRawFilters, rangeBounds, rangeFilter, scannedRange, serverColumnFilters,
+} from '../../lib/rawScanQuery';
+import { usePagedList } from '../../lib/usePagedList';
 import { VirtualRows } from '../../lib/virtualRows';
 import {
   RAW_SCAN_COLUMNS as COLUMNS, RAW_SCAN_PRIMARY_COL as PRIMARY_COL,
@@ -44,86 +49,92 @@ const ALL_COLUMN_KEYS = new Set<string>([...COLUMNS.map((c) => c.key), 'primary'
 const DEFAULT_VISIBLE = new Set<string>(
   COLUMNS.filter((c) => c.default).map((c) => c.key));
 
-function sortValueFor(r: RawScanRow, key: string): string {
-  switch (key) {
-    case 'primary': return r.scanned_value.toLowerCase();
-    case 'status': return (r.status_label ?? '').toLowerCase();
-    case 'scan_type': return r.scan_type_label.toLowerCase();
-    case 'scanned': return r.scanned_at;
-    case 'device': return r.device_id.toLowerCase();
-    case 'operator': return (r.operator_name ?? '').toLowerCase();
-    case 'site': return (r.site_name ?? '').toLowerCase();
-    case 'location': return r.location_detail.toLowerCase();
-    case 'source': return r.source.toLowerCase();
-    case 'ingested': return r.created_at;
-    default: return '';
-  }
-}
-
-const CSV_COLUMNS: [string, (r: RawScanRow) => string][] = [
-  ['Scanned at', (r) => r.scanned_at],
-  ['Value', (r) => r.scanned_value],
-  ['Scan status', (r) => r.status_label ?? ''],
-  ['Method', (r) => r.scan_type_label],
-  ['Device', (r) => r.device_id],
-  ['Operator', (r) => r.operator_name ?? ''],
-  ['Site', (r) => r.site_name ?? ''],
-  ['Location', (r) => r.location_detail],
-  ['Source', (r) => r.source],
-  ['Ingested', (r) => r.created_at],
-];
+/** Rows per request. */
+const PAGE_SIZE = 100;
 
 export default function RawScansTab({ onCount }: {
   onCount: (n: number | null) => void;
 }) {
   const { preferences } = useAuth();
   const listGridScale = listScale(preferences?.list_size);
-  const [scans, setScans] = useState<RawScanRow[] | null>(null);
-  const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [openId, setOpenId] = useState<number | null>(null);
+  const [exportError, setExportError] = useState('');
   const {
     visibleCols, setVisibleCols,
     sortKey, sortDir, setSort, toggleSort,
-    filters, setFilter, clearFilters,
+    filters: savedFilters, setFilter, clearFilters,
     colOrder, setColOrder,
   } = usePersistentListState(
     'raw_scans', { visible: DEFAULT_VISIBLE, sortKey: 'scanned', sortDir: -1 },
     ALL_COLUMN_KEYS,
   );
 
-  const load = async () => {
+  // What really applies: stale Scanned / Ingested entries from older saved
+  // prefs are dropped here (the server ignores them too).
+  const filters = useMemo(() => activeRawFilters(savedFilters), [savedFilters]);
+  const range = useMemo(() => scannedRange(filters), [filters]);
+  const columnFilters = useMemo(() => serverColumnFilters(filters), [filters]);
+  const { since, until } = useMemo(() => rangeBounds(range), [range]);
+  const q = query.trim();
+
+  const list = usePagedList({
+    query: useMemo(() => ({
+      sort: sortKey as RawScanSort,
+      dir: sortDir === 1 ? 'asc' as const : 'desc' as const,
+      filters: columnFilters, since, until, limit: PAGE_SIZE,
+    }), [sortKey, sortDir, columnFilters, since, until]),
+    search: query,
+    fetchPage: async ({ search, ...params }, signal) => {
+      try {
+        return await getRawScanPage({ ...params, q: search.trim() }, signal);
+      } catch (err) {
+        if (signal.aborted) throw err;
+        if (params.cursor) throw new Error('Couldn’t load more scans.');
+        throw new Error(err instanceof ApiError && err.status === 403
+          ? 'You do not have permission to view scans.'
+          : 'Failed to load raw scans.');
+      }
+    },
+  });
+  const { rows: scans, total } = list;
+  const failed = list.error !== null && scans.length === 0;
+
+  // The page header's count follows the server total.
+  useEffect(() => {
+    if (failed) onCount(null);
+    else if (!list.loading) onCount(total);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [failed, list.loading, total]);
+
+  // Checklist values come from the facets endpoint, given everything else
+  // that narrows the list. The open menu refreshes when `valuesKey` changes.
+  const valuesKey = JSON.stringify({ q, since, until });
+  const sourceFor = (column: RawScanFacetColumn): ColumnValuesSource =>
+    ({ search, signal }) =>
+      getRawScanFacets(column, { q, since, until, filters: columnFilters, search }, signal);
+
+  // The Value menu shows a read as the row does (RFID tags without their zero
+  // padding) but filters on the raw value; the facets carry no scan type, so
+  // values already on screen use theirs and others show as reported.
+  const typeOfValue = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of scans) m.set(r.scanned_value, r.scan_type);
+    return m;
+  }, [scans]);
+  const displayValue = (v: string) => displayScanValue(v, typeOfValue.get(v));
+
+  const exportCsv = async () => {
+    setExportError('');
     try {
-      const rows = await listRawScans({});
-      setScans(rows);
-      setError('');
-      onCount(rows.length);
-    } catch (err) {
-      setError(err instanceof ApiError && err.status === 403
-        ? 'You do not have permission to view scans.'
-        : 'Failed to load raw scans.');
-      onCount(null);
+      await downloadRawScansCsv({
+        q, filters: columnFilters, since, until,
+        sort: sortKey as RawScanSort, dir: sortDir === 1 ? 'asc' : 'desc',
+      });
+    } catch {
+      setExportError('Export failed. Try again.');
     }
   };
-
-  useEffect(() => {
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const haystack = useSearchHaystacks(scans, rawScanSearchText);
-
-  const visible = useMemo(() => {
-    if (!scans) return [];
-    const q = query.trim().toLowerCase();
-    const rows = scans.filter((r) => {
-      if (!passesColumnFilters(r, filters, rawScanCellText)) return false;
-      if (!q) return true;
-      return haystack(r).includes(q);
-    });
-    return rows.sort((a, b) =>
-      naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
-  }, [scans, filters, query, sortKey, sortDir, haystack]);
 
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
@@ -187,23 +198,37 @@ export default function RawScansTab({ onCount }: {
             <input placeholder="Filter this list…" value={query}
                    onChange={(e) => setQuery(e.target.value)} />
           </div>
-          <span className="result-count">{visible.length} of {scans?.length ?? 0} shown</span>
+          <span className="result-count" aria-live="polite">
+            {failed ? '' : list.loading && scans.length === 0 ? 'Loading…'
+              : list.reloading ? 'Updating…'
+                : `${scans.length.toLocaleString()} of ${total.toLocaleString()} shown`}
+          </span>
           <FilterSummaryChip filters={filters} onClear={clearFilters} />
           <ColumnsButton columns={orderedCols} visible={visibleCols} onChange={setVisibleCols} godMode={false} onReorder={setColOrder} />
-          <ExportButton onExport={() => exportCsv('raw-scans', CSV_COLUMNS, visible)} />
+          <ExportButton onExport={() => void exportCsv()} />
         </div>
       </div>
 
-      {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load scans</b>{error}</div>}
+      {failed && (
+        <div className="dir-empty" style={{ marginBottom: 12 }}>
+          <b>Cannot load scans</b>{list.error}
+          <div className="audit-more">
+            <button type="button" className="mini-btn" onClick={list.reload}>Reload</button>
+          </div>
+        </div>
+      )}
+      {exportError && (
+        <div className="dir-empty" style={{ marginBottom: 12 }}><b>{exportError}</b></div>
+      )}
 
-      {!error && (
-        <div className="dir-list list-scroll">
+      {!failed && (
+        <div className="dir-list list-scroll" aria-busy={list.loading}>
           <div className="list-head" style={rowStyle}>
             <ColHead col={PRIMARY_COL} sortDir={sortKey === 'primary' ? sortDir : null}
                      onToggleSort={() => toggleSort('primary')}>
-              <ColumnMenu colKey="primary" label="Value"
-                          allRows={scans ?? []} filters={filters}
-                          text={rawScanCellText}
+              <ColumnMenu colKey="primary" label="Value" filters={filters}
+                          valuesSource={sourceFor('primary')} valuesKey={valuesKey}
+                          displayValue={displayValue}
                           filter={filters.primary} onFilter={setFilter}
                           sortDir={sortKey === 'primary' ? sortDir : null}
                           onSort={(dir) => setSort('primary', dir)} />
@@ -213,25 +238,36 @@ export default function RawScansTab({ onCount }: {
                        onToggleSort={() => toggleSort(c.key)}
                        className={headerDrag.dropClass(c.key)}
                        dragProps={headerDrag.dragProps(c.key)}>
-                <ColumnMenu colKey={c.key} label={c.label}
-                            allRows={scans ?? []} filters={filters}
-                            text={rawScanCellText}
-                            filter={filters[c.key]} onFilter={setFilter}
-                            sortDir={sortKey === c.key ? sortDir : null}
-                            onSort={(dir) => setSort(c.key, dir)} />
+                {c.key === 'scanned' ? (
+                  <DateRangeMenu label={c.label} range={range}
+                                 onChange={(r) => setFilter('scanned', rangeFilter(r))}
+                                 sortDir={sortKey === c.key ? sortDir : null}
+                                 onSort={(dir) => setSort(c.key, dir)} />
+                ) : c.key === 'ingested' ? (
+                  <DateRangeMenu label={c.label}
+                                 sortDir={sortKey === c.key ? sortDir : null}
+                                 onSort={(dir) => setSort(c.key, dir)} />
+                ) : (
+                  <ColumnMenu colKey={c.key} label={c.label} filters={filters}
+                              valuesSource={sourceFor(c.key as RawScanFacetColumn)}
+                              valuesKey={valuesKey}
+                              filter={filters[c.key]} onFilter={setFilter}
+                              sortDir={sortKey === c.key ? sortDir : null}
+                              onSort={(dir) => setSort(c.key, dir)} />
+                )}
               </ColHead>
             ))}
             <span className="col-head" aria-hidden="true" />
           </div>
 
-          {scans && visible.length === 0 && (
+          {!list.loading && !list.error && scans.length === 0 && (
             <div className="dir-empty">
               <b>No matches</b>Try a different filter — raw scans appear when readers report in.
               <EmptyClearFilters filters={filters} onClear={clearFilters} />
             </div>
           )}
 
-          <VirtualRows rows={visible}
+          <VirtualRows rows={scans} onNearEnd={list.loadMore}
             renderRow={(r, vp) => {
               const open = openId === r.id;
               return (
@@ -262,6 +298,16 @@ export default function RawScansTab({ onCount }: {
                 </div>
               );
             }} />
+
+          {list.loadingMore && (
+            <div className="audit-more" role="status"><span className="set-note">Loading more…</span></div>
+          )}
+          {list.error && scans.length > 0 && (
+            <div className="audit-more">
+              <span className="set-note">{list.error}</span>
+              <button type="button" className="mini-btn" onClick={list.retry}>Retry</button>
+            </div>
+          )}
         </div>
       )}
     </>

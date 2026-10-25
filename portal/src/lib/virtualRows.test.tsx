@@ -7,7 +7,7 @@
  * subset-with-spacer branch above it.
  */
 
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { VirtualRows, VIRTUAL_THRESHOLD, type VirtualRowProps } from './virtualRows';
@@ -89,5 +89,55 @@ describe('VirtualRows', () => {
     const parents = new Set([...dirRows].map((el) => el.parentElement));
     expect(parents.size).toBe(1);
     expect(parents.has(spacer)).toBe(true);
+  });
+
+  describe('onNearEnd', () => {
+    // The scroller's bottom is 600 (the beforeEach mock); move the list's.
+    function listBottom(px: number) {
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+        function (this: HTMLElement) {
+          const bottom = this.classList.contains('portal-main') ? 600 : px;
+          return { top: 0, left: 0, right: 800, bottom, width: 800, height: bottom,
+                   x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+        });
+    }
+    const renderWith = (rows: number[], onNearEnd?: () => void) => render(
+      <div className="portal-main">
+        <VirtualRows<number> rows={rows} onNearEnd={onNearEnd}
+          renderRow={(r, vp?: VirtualRowProps) => (
+            <div key={r} className="dir-row" {...vp} style={vp?.style} />
+          )} />
+      </div>);
+
+    it('fires on mount when the end is already within reach, and on row growth', () => {
+      listBottom(700);
+      const onNearEnd = vi.fn();
+      const { rerender } = renderWith([1, 2, 3], onNearEnd);
+      expect(onNearEnd).toHaveBeenCalledTimes(1);
+      rerender(
+        <div className="portal-main">
+          <VirtualRows<number> rows={[1, 2, 3, 4]} onNearEnd={onNearEnd}
+            renderRow={(r) => <div key={r} className="dir-row" />} />
+        </div>);
+      expect(onNearEnd).toHaveBeenCalledTimes(2);
+    });
+
+    it('waits for the scroller to get close, in both the plain and windowed modes', () => {
+      for (const count of [50, 1000]) {
+        cleanup();
+        listBottom(5000);
+        const onNearEnd = vi.fn();
+        const { container } = renderWith(Array.from({ length: count }, (_, i) => i), onNearEnd);
+        expect(onNearEnd).not.toHaveBeenCalled();
+        listBottom(900);
+        fireEvent.scroll(container.querySelector('.portal-main') as HTMLElement);
+        expect(onNearEnd).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it('does nothing without a callback', () => {
+      listBottom(700);
+      expect(() => renderWith([1, 2, 3])).not.toThrow();
+    });
   });
 });
