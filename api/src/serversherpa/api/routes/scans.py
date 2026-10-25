@@ -5,19 +5,22 @@ leave via the future matcher/pruner — nothing here mutates them."""
 
 import uuid
 from datetime import UTC, datetime, time, timedelta
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     AssetScanItem, PeopleFlowEvent, PeopleFlowOut, ProcessedScanItem,
-    ProcessedScanPatch, RawScanItem, ScanDailyStat,
+    ProcessedScanPatch, RawScanFacet, RawScanItem, RawScanPage, ScanDailyStat,
 )
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
     Asset, Container, Person, ProcessedScan, RawScan, Site, StatusValue,
 )
+from serversherpa.scans import raw_query
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.storage import presign_get
 
@@ -132,6 +135,84 @@ async def list_raw_scans(
                         **_raw_context(s, scan_types, asset_statuses,
                                        people, sites))
             for s in scans]
+
+
+RawSort = Literal["primary", "scan_type", "scanned", "device", "operator",
+                  "site", "location", "source", "ingested", "status"]
+RawFacetColumn = Literal["primary", "scan_type", "device", "operator", "site",
+                         "location", "source", "status"]
+
+
+def _raw_query(q: str, filters: str | None, since: datetime | None,
+               until: datetime | None) -> raw_query.RawScanQuery:
+    try:
+        return raw_query.RawScanQuery(
+            q=q, filters=raw_query.parse_filters(filters),
+            since=since, until=until)
+    except raw_query.RawQueryError as exc:
+        raise _err(422, exc.code) from None
+
+
+@router.get("/raw/page", response_model=RawScanPage)
+async def page_raw_scans(
+    db: DbSession,
+    actor: AuthContext = require_permission("scans", "view"),
+    sort: RawSort = "scanned",
+    direction: Literal["asc", "desc"] = Query("desc", alias="dir"),
+    limit: int = Query(100, ge=1, le=500),
+    cursor: str | None = None,
+    q: str = "",
+    filters: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> RawScanPage:
+    """Keyset-paged raw scans. `filters` is the portal's ColumnFilters as
+    JSON ({colKey: {text?, values?}}, matched on the displayed text); `q`
+    searches every text column; the cursor is opaque."""
+    query = _raw_query(q, filters, since, until)
+    try:
+        rows, next_cursor, total = await raw_query.page(
+            db, query, sort=sort, direction=direction, limit=limit, cursor=cursor)
+    except raw_query.RawQueryError as exc:
+        raise _err(422, exc.code) from None
+    return RawScanPage(rows=rows, next_cursor=next_cursor, total=total)
+
+
+@router.get("/raw/facets", response_model=list[RawScanFacet])
+async def raw_scan_facets(
+    db: DbSession,
+    column: RawFacetColumn,
+    actor: AuthContext = require_permission("scans", "view"),
+    q: str = "",
+    filters: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    search: str = "",
+) -> list[RawScanFacet]:
+    """A column's distinct displayed values with counts (most frequent
+    first, at most 500), narrowed by every filter except the column's own."""
+    query = _raw_query(q, filters, since, until)
+    rows = await raw_query.facets(db, query, column, search)
+    return [RawScanFacet(**r) for r in rows]
+
+
+@router.get("/raw/export")
+async def export_raw_scans(
+    db: DbSession,
+    actor: AuthContext = require_permission("scans", "view"),
+    sort: RawSort = "scanned",
+    direction: Literal["asc", "desc"] = Query("desc", alias="dir"),
+    q: str = "",
+    filters: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> StreamingResponse:
+    """Every matching raw scan, in the current sort, as a streamed CSV."""
+    query = _raw_query(q, filters, since, until)
+    return StreamingResponse(
+        raw_query.export_csv(db, query, sort=sort, direction=direction),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="raw-scans.csv"'})
 
 
 @router.get("/stats/daily", response_model=list[ScanDailyStat])
