@@ -1714,6 +1714,22 @@ class RawScanItem(BaseModel):
     created_at: datetime
 
 
+class RawScanPage(BaseModel):
+    """One page of the Raw scans list. `total` counts every matching row,
+    not only this page; `next_cursor` is null on the last page."""
+
+    rows: list[RawScanItem]
+    next_cursor: str | None = None
+    total: int
+
+
+class RawScanFacet(BaseModel):
+    """One distinct displayed value of a Raw scans column and its row count."""
+
+    value: str
+    count: int
+
+
 class StatusProvenanceOut(BaseModel):
     """When (and via what) a row's status became its current value —
     the payload behind every list's status-chip hover popup."""

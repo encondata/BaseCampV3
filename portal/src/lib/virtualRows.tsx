@@ -11,11 +11,14 @@
  */
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
-  useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode,
+  useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode,
 } from 'react';
 
 export const VIRTUAL_THRESHOLD = 300;
 const ESTIMATED_ROW_PX = 58;
+/** `onNearEnd` fires once the end of the list is this close to the bottom of
+ *  the scroller (about ten rows below the fold). */
+const NEAR_END_PX = 600;
 
 export interface VirtualRowProps {
   ref: (el: HTMLElement | null) => void;
@@ -23,9 +26,14 @@ export interface VirtualRowProps {
   'data-index': number;
 }
 
-export function VirtualRows<T>({ rows, renderRow }: {
+export function VirtualRows<T>({ rows, renderRow, onNearEnd }: {
   rows: T[];
   renderRow: (row: T, vp?: VirtualRowProps) => ReactNode;
+  /** Server-paged lists: called when the scroller is within a few rows of the
+   *  end of what is loaded (on scroll, on mount, and whenever the row count
+   *  changes, so a short page keeps loading until it fills the screen). May
+   *  be called repeatedly — the callee must ignore calls while it is busy. */
+  onNearEnd?: () => void;
 }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [margin, setMargin] = useState(0);
@@ -53,6 +61,24 @@ export function VirtualRows<T>({ rows, renderRow }: {
     overscan: 12,
     scrollMargin: margin,
   });
+
+  const nearEndRef = useRef(onNearEnd);
+  nearEndRef.current = onNearEnd;
+  const watchEnd = Boolean(onNearEnd);
+  useEffect(() => {
+    if (!watchEnd) return;
+    const wrap = wrapRef.current;
+    const scroller = wrap?.closest('.portal-main');
+    if (!wrap || !scroller) return;
+    const check = () => {
+      const below = wrap.getBoundingClientRect().bottom
+        - scroller.getBoundingClientRect().bottom;
+      if (below < NEAR_END_PX) nearEndRef.current?.();
+    };
+    check();
+    scroller.addEventListener('scroll', check, { passive: true });
+    return () => scroller.removeEventListener('scroll', check);
+  }, [watchEnd, virtual, rows.length]);
 
   if (!virtual) {
     return <div ref={wrapRef}>{rows.map((r) => renderRow(r))}</div>;

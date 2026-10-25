@@ -2,9 +2,12 @@
 "Rack 2" before "Rack 10" and ignores case, through the `natural` ICU
 collation from migration 0082.
 
-ORDER BY only. The collation is non-deterministic, so it must never be
-used in WHERE, LIKE, DISTINCT, GROUP BY, joins or indexes — equality and
-search keep the column's own collation.
+Use it for ORDER BY and for comparisons that must agree with that order
+(=, <, > — a keyset cursor compares with the same collation it sorts by;
+"Val-a" = "VAL-A" under it, so the id tie-break decides). The collation is
+non-deterministic, so LIKE/ILIKE on it errors before PG18, and it does not
+belong in DISTINCT, GROUP BY, joins or indexes — search and set membership
+keep the column's own collation.
 
 Python-side sorts of display text use `natural_key`, the same rule.
 """

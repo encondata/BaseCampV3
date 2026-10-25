@@ -3004,6 +3004,105 @@ export async function listRawScans(query: RawScanQuery): Promise<RawScanRow[]> {
   return resp.json();
 }
 
+/** Sort keys GET /scans/raw/page and /export accept. */
+export type RawScanSort =
+  | 'primary' | 'scan_type' | 'scanned' | 'device' | 'operator'
+  | 'site' | 'location' | 'source' | 'ingested' | 'status';
+
+/** Columns GET /scans/raw/facets can list values for (no scanned/ingested). */
+export type RawScanFacetColumn =
+  | 'primary' | 'scan_type' | 'status' | 'device' | 'operator'
+  | 'site' | 'location' | 'source';
+
+/** One column's filter in the API's `filters` JSON (same shape as the
+ *  portal's ColumnFilter, kept structural here so api.ts stays UI-free). */
+export interface RawScanColumnFilter { text?: string; values?: string[]; exclude?: string[] }
+
+/** The query params every raw-scans endpoint shares. */
+export interface RawScanFilterQuery {
+  /** Global search (substring over the row's displayed values). */
+  q?: string;
+  /** Per-column filters, keyed by column key; sent as one JSON string. */
+  filters?: Record<string, RawScanColumnFilter>;
+  /** ISO datetimes on scanned_at, inclusive. */
+  since?: string;
+  until?: string;
+}
+
+export interface RawScanPageQuery extends RawScanFilterQuery {
+  sort?: RawScanSort;
+  dir?: 'asc' | 'desc';
+  /** 1..500, default 100 server side. */
+  limit?: number;
+  /** `next_cursor` of the previous page. */
+  cursor?: string | null;
+}
+
+export interface RawScanPage {
+  rows: RawScanRow[];
+  next_cursor: string | null;
+  /** All rows matching q/filters/since/until, on every page. */
+  total: number;
+}
+
+/** One checklist entry; an empty cell comes back as the value "\u2014" (em dash). */
+export interface RawScanFacet { value: string; count: number }
+
+function rawScanParams(query: RawScanFilterQuery & {
+  sort?: string; dir?: string; limit?: number; cursor?: string | null;
+  column?: string; search?: string;
+}): URLSearchParams {
+  const params = new URLSearchParams();
+  const { filters, ...plain } = query;
+  for (const [key, value] of Object.entries(plain)) {
+    if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+  }
+  // Drop blank column filters so the URL carries only what narrows the list.
+  const active: Record<string, RawScanColumnFilter> = {};
+  for (const [col, f] of Object.entries(filters ?? {})) {
+    const clean: RawScanColumnFilter = {};
+    if (f.text) clean.text = f.text;
+    if (f.values && f.values.length) clean.values = f.values;
+    if (f.exclude && f.exclude.length) clean.exclude = f.exclude;
+    if (clean.text || clean.values || clean.exclude) active[col] = clean;
+  }
+  if (Object.keys(active).length) params.set('filters', JSON.stringify(active));
+  return params;
+}
+
+/** One page of raw scans (GET /scans/raw/page), sorted/filtered server side. */
+export async function getRawScanPage(
+  query: RawScanPageQuery, signal?: AbortSignal,
+): Promise<RawScanPage> {
+  const resp = await apiFetch(`/scans/raw/page?${rawScanParams(query).toString()}`, { signal });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Distinct displayed values + counts for one column (GET /scans/raw/facets).
+ *  The column's own entry in `filters` is ignored by the server. `search`
+ *  narrows to values containing that text. */
+export async function getRawScanFacets(
+  column: RawScanFacetColumn,
+  query: RawScanFilterQuery & { search?: string } = {},
+  signal?: AbortSignal,
+): Promise<RawScanFacet[]> {
+  const resp = await apiFetch(
+    `/scans/raw/facets?${rawScanParams({ ...query, column }).toString()}`, { signal });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Download every raw scan matching the query as CSV (GET /scans/raw/export),
+ *  through the session's bearer token, saved as raw-scans-YYYY-MM-DD.csv. */
+export function downloadRawScansCsv(
+  query: RawScanFilterQuery & { sort?: RawScanSort; dir?: 'asc' | 'desc' } = {},
+): Promise<void> {
+  const day = new Date().toISOString().slice(0, 10);
+  return downloadAttachment(
+    `/scans/raw/export?${rawScanParams(query).toString()}`, `raw-scans-${day}.csv`);
+}
+
 /** When (and via what) a row's status became its current value — the
  *  payload behind status-chip hover popups (GET /status/provenance). */
 export interface StatusProvenance {
