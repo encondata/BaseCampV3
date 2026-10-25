@@ -6,7 +6,7 @@
  * <ColumnMenu> popover's checklist-narrowing + Select-all behavior.
  */
 
-import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -20,6 +20,8 @@ import { sanitize,
   uniqueValues,
   usePersistentListState,
   type CellText,
+  type ColumnValue,
+  type ColumnValuesSource,
   type ColumnFilters,
 } from './columnMenu';
 import type { UiPreferences } from './api';
@@ -701,5 +703,146 @@ describe('sanitize surfaces default columns the user never saw', () => {
     sanitize({ visible: ['model'] }, known, defaults);
     expect(defaults.visible.has('primary')).toBe(false);
     expect([...defaults.visible]).toEqual(['asset_id', 'model', 'status']);
+  });
+});
+
+/* ── ColumnMenu with a server-backed values source ────────────────── */
+
+describe('ColumnMenu with a valuesSource', () => {
+  const noop = { onFilter: vi.fn(), onSort: vi.fn(), sortDir: null, filters: {} } as const;
+
+  function deferredValues() {
+    let resolve!: (v: ColumnValue[]) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<ColumnValue[]>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  }
+
+  it('does not call the source until the menu opens, then shows a loading state and the values with counts', async () => {
+    const user = userEvent.setup();
+    const d = deferredValues();
+    const source = vi.fn<ColumnValuesSource>(() => d.promise);
+    render(<ColumnMenu colKey="site" label="Site" valuesSource={source} filter={undefined} {...noop} />);
+    expect(source).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Site column menu' }));
+    expect(source).toHaveBeenCalledTimes(1);
+    expect(source.mock.calls[0][0].search).toBe('');
+    expect(source.mock.calls[0][0].signal).toBeInstanceOf(AbortSignal);
+    expect(screen.getByText('Loading…')).toBeDefined();
+
+    await act(async () => { d.resolve([{ value: 'DA1', count: 1200 }, { value: '—', count: 3 }]); });
+    expect(screen.queryByText('Loading…')).toBeNull();
+    expect(screen.getByText('DA1')).toBeDefined();
+    expect(screen.getByText('1,200')).toBeDefined();
+    expect(screen.getByText('3')).toBeDefined();
+  });
+
+  it('shows the display label but sends the raw value in the filter', async () => {
+    const user = userEvent.setup();
+    const onFilter = vi.fn();
+    const source = vi.fn<ColumnValuesSource>(async () => [
+      { value: '0000AB12', count: 2 }, { value: 'XYZ', count: 1 },
+    ]);
+    render(
+      <ColumnMenu colKey="primary" label="Value" valuesSource={source}
+                  displayValue={(v) => v.replace(/^0+/, '')}
+                  filter={undefined} {...noop} onFilter={onFilter} />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Value column menu' }));
+    await screen.findByText('AB12');
+    expect(screen.queryByText('0000AB12')).toBeNull();
+
+    await user.click(screen.getByText('AB12')); // uncheck it
+    expect(onFilter).toHaveBeenLastCalledWith('primary', { values: ['XYZ'] });
+  });
+
+  it('re-queries the source with the typed text after the debounce and aborts the superseded call', async () => {
+    const user = userEvent.setup();
+    const source = vi.fn<ColumnValuesSource>(async ({ search }) =>
+      (search ? [{ value: 'DA10', count: 1 }] : [{ value: 'DA1', count: 1 }, { value: 'DA10', count: 1 }]));
+    render(<ColumnMenu colKey="site" label="Site" valuesSource={source} filter={undefined} {...noop} />);
+    await user.click(screen.getByRole('button', { name: 'Site column menu' }));
+    await screen.findByText('DA1');
+    const firstSignal = source.mock.calls[0][0].signal;
+
+    await user.type(screen.getByPlaceholderText('Filter Site'), 'da10');
+    await waitFor(() => expect(source).toHaveBeenCalledTimes(2));
+    expect(source.mock.calls[1][0].search).toBe('da10');
+    expect(firstSignal.aborted).toBe(true);
+    await waitFor(() => expect(screen.queryByText('DA1')).toBeNull());
+    expect(screen.getByText('DA10')).toBeDefined();
+  });
+
+  it('seeds the first query with the filter\'s existing text', async () => {
+    const user = userEvent.setup();
+    const source = vi.fn<ColumnValuesSource>(async () => []);
+    render(<ColumnMenu colKey="site" label="Site" valuesSource={source}
+                       filter={{ text: 'da' }} {...noop} />);
+    await user.click(screen.getByRole('button', { name: 'Site column menu' }));
+    await waitFor(() => expect(source).toHaveBeenCalled());
+    expect(source.mock.calls.every((c) => c[0].search === 'da')).toBe(true);
+    expect(source).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows an error line when the source fails and an empty line for no matches', async () => {
+    const user = userEvent.setup();
+    const source = vi.fn<ColumnValuesSource>()
+      .mockRejectedValueOnce(new Error('nope'))
+      .mockResolvedValueOnce([]);
+    const { rerender } = render(
+      <ColumnMenu colKey="site" label="Site" valuesSource={source} filter={undefined} {...noop} />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Site column menu' }));
+    await screen.findByText('Couldn’t load values');
+
+    await user.click(screen.getByRole('button', { name: 'Site column menu' })); // close
+    rerender(<ColumnMenu colKey="site" label="Site" valuesSource={source} filter={undefined} {...noop} />);
+    await user.click(screen.getByRole('button', { name: 'Site column menu' })); // reopen
+    await screen.findByText('No matches');
+  });
+
+  it('Select all drops the value selection instead of listing the loaded subset', async () => {
+    const user = userEvent.setup();
+    const onFilter = vi.fn();
+    const source = vi.fn<ColumnValuesSource>(async () => [{ value: 'DA1', count: 1 }, { value: 'DA2', count: 1 }]);
+    render(<ColumnMenu colKey="site" label="Site" valuesSource={source}
+                       filter={{ values: ['DA1'] }} {...noop} onFilter={onFilter} />);
+    await user.click(screen.getByRole('button', { name: 'Site column menu' }));
+    await screen.findByText('DA2');
+    await user.click(screen.getByRole('button', { name: 'Select all' }));
+    expect(onFilter).toHaveBeenLastCalledWith('site', null);
+  });
+
+  it('re-queries an open menu when another column\'s filter changes, but not on its own', async () => {
+    const user = userEvent.setup();
+    const source = vi.fn<ColumnValuesSource>(async () => [{ value: 'DA1', count: 1 }]);
+    const props = { colKey: 'site', label: 'Site', valuesSource: source, onFilter: vi.fn(),
+                    onSort: vi.fn(), sortDir: null } as const;
+    const { rerender } = render(<ColumnMenu {...props} filters={{}} filter={undefined} />);
+    await user.click(screen.getByRole('button', { name: 'Site column menu' }));
+    await screen.findByText('DA1');
+    expect(source).toHaveBeenCalledTimes(1);
+
+    rerender(<ColumnMenu {...props} filters={{ site: { values: ['DA1'] } }} filter={{ values: ['DA1'] }} />);
+    expect(source).toHaveBeenCalledTimes(1);
+
+    rerender(<ColumnMenu {...props} filters={{ site: { values: ['DA1'] }, status: { text: 'x' } }}
+                         filter={{ values: ['DA1'] }} />);
+    await waitFor(() => expect(source).toHaveBeenCalledTimes(2));
+  });
+
+  it('a new source function identity on re-render does not re-query', async () => {
+    const user = userEvent.setup();
+    const calls: number[] = [];
+    const make = () => vi.fn<ColumnValuesSource>(async () => { calls.push(1); return [{ value: 'A', count: 1 }]; });
+    const props = { colKey: 'site', label: 'Site', filter: undefined, filters: {},
+                    onFilter: vi.fn(), onSort: vi.fn(), sortDir: null } as const;
+    const { rerender } = render(<ColumnMenu {...props} valuesSource={make()} />);
+    await user.click(screen.getByRole('button', { name: 'Site column menu' }));
+    await screen.findByText('A');
+    rerender(<ColumnMenu {...props} valuesSource={make()} />);
+    rerender(<ColumnMenu {...props} valuesSource={make()} />);
+    expect(calls).toHaveLength(1);
   });
 });
