@@ -84,10 +84,10 @@ export default function RawScansTab({ onCount }: {
       dir: sortDir === 1 ? 'asc' as const : 'desc' as const,
       filters: columnFilters, since, until, limit: PAGE_SIZE,
     }), [sortKey, sortDir, columnFilters, since, until]),
-    search: query,
+    search: q,
     fetchPage: async ({ search, ...params }, signal) => {
       try {
-        return await getRawScanPage({ ...params, q: search.trim() }, signal);
+        return await getRawScanPage({ ...params, q: search }, signal);
       } catch (err) {
         if (signal.aborted) throw err;
         if (params.cursor) throw new Error('Couldn’t load more scans.');
