@@ -63,8 +63,9 @@ DEFAULTS: dict[str, dict] = {
     "branding": {"company_name": DEFAULT_COMPANY_NAME, "company_logo_key": None},
     # Learning portal policy (learning/settings.py). A null number means the
     # rule is off: general codes never expire, documents stay valid, nothing
-    # is purged. email_text overrides the built-in invite/reminder/due copy:
-    # {template: {lang: {"subject": str, "intro": str}}}.
+    # is purged. email_text overrides a learning email's subject and intro,
+    # keyed by kind (invite, reminder, complete, new_version, link):
+    # {kind: {lang: {"subject": str, "intro": str}}}.
     "learning": {
         "code_max_failures": 10, "code_lockout_seconds": 900,
         "ip_limit": 30, "ip_window_seconds": 300, "global_limit": 300,

@@ -75,9 +75,11 @@ async def run_learning(maker, state: dict) -> None:
     try:
         out = await run_learning_once(maker)
         state["failed"] = False
-    except Exception:
+    except Exception as exc:
+        # the class only: the text of a DB error can carry SQL parameters
         if not state["failed"]:
-            logger.warning("could not run the learning sweep — retrying", exc_info=True)
+            logger.warning("could not run the learning sweep — retrying (%s)",
+                           type(exc).__name__)
         state["failed"] = True
         return
     if out["invites"] or out["reminders"] or out["overdue"]:

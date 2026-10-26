@@ -66,6 +66,8 @@ async def test_put_validates_and_audits(client, db, seeded_user):
         {"languages": ["en", "en"]},
         {"email_text": {"invite": {"fr": {"subject": "a", "intro": "b"}}}},
         {"email_text": {"invite": {"en": {"subject": "a"}}}},
+        {"email_text": {"due": {"en": {"subject": "a", "intro": "b"}}}},
+        {"email_text": {"invite": {"en": {"subject": "x" * 201, "intro": "b"}}}},
     ):
         resp = await client.put("/system/learning", headers=hdrs, json=bad)
         assert resp.status_code == 422, (bad, resp.text)

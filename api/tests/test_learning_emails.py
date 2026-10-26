@@ -5,18 +5,19 @@ the invites went out."""
 import base64
 import io
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from PIL import Image
 from sqlalchemy import select
 
 from serversherpa.config import learn_url
-from serversherpa.db.models import EmailOutbox, Person, SystemConfig
+from serversherpa.db.models import EmailOutbox, Person, SystemConfig, UserAccount
 from serversherpa.learning import codes, emails
 from serversherpa.learning.models import (
     LearningCode,
     LearningEmailLog,
     LearningInviteSchedule,
+    LearningSession,
     LearningSignoff,
 )
 from serversherpa.services.password_reset import hash_token
@@ -116,10 +117,12 @@ async def test_no_email_returns_none_and_counts(client, db, seeded_user):
     done = await _worker(db, "Dana", "Done", "dana@test.example.com")
     resp = await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs, json={})
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"sent": 1, "no_email": 1, "skipped_complete": 0}
+    assert resp.json() == {"sent": 1, "no_email": 1, "skipped_complete": 0,
+                           "already_invited": 0}
     resp = await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs,
                              json={"person_ids": [str(wanda.id), str(done.id)]})
-    assert resp.json() == {"sent": 1, "no_email": 0, "skipped_complete": 1}
+    assert resp.json() == {"sent": 1, "no_email": 0, "skipped_complete": 1,
+                           "already_invited": 0}
 
     assert [m.person_id for m in await _outbox(db)] == [wanda.id, wanda.id]
     # the sends issue no code for someone the email can't reach
@@ -267,3 +270,59 @@ async def test_person_email_falls_back_to_login_email(db, seeded_user):
     row, code, token = await codes.issue(db, alice.id, move.id, actor_id=None)
     mail = await emails.send_invite(db, alice, row, code, token, move, None)
     assert mail.to_address == "alice@test.example.com"
+
+
+async def test_second_send_now_only_invites_newcomers(client, db, seeded_user):
+    hdrs = await _manager(db, client)
+    doc = await _doc(db, "Site safety")
+    await _packet(db, [doc])
+    move = await _initiative(db)
+    first = await _worker(db, "Fay", "First", "fay@test.example.com")
+    await _on_move(db, client, hdrs, move, first)
+    resp = await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs, json={})
+    assert resp.json()["sent"] == 1
+    [code] = list(await db.scalars(select(LearningCode).where(
+        LearningCode.person_id == first.id)))
+    session = LearningSession(code_id=code.id, person_id=first.id, token_hash="t-1",
+                              expires_at=code.created_at + timedelta(days=1))
+    db.add(session)
+    # someone joins with late adds off, so only Send now can invite them
+    schedule = await db.get(LearningInviteSchedule, move.id)
+    schedule.late_adds = False
+    await db.commit()
+    second = await _worker(db, "Sid", "Second", "sid@test.example.com")
+    await _on_move(db, client, hdrs, move, second)
+
+    resp = await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs, json={})
+    assert resp.json() == {"sent": 1, "no_email": 0, "skipped_complete": 0,
+                           "already_invited": 1}
+    rows = list(await db.scalars(select(LearningCode).where(
+        LearningCode.person_id == first.id).execution_options(populate_existing=True)))
+    assert [(r.id, r.revoked_at) for r in rows] == [(code.id, None)]
+    await db.refresh(session)
+    assert session.revoked_at is None
+    assert [m.person_id for m in await _outbox(db)] == [first.id, second.id]
+
+    # Resend still re-issues
+    resp = await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs,
+                             json={"person_ids": [str(first.id)]})
+    assert resp.json()["sent"] == 1
+    rows = list(await db.scalars(select(LearningCode).where(
+        LearningCode.person_id == first.id).execution_options(populate_existing=True)))
+    assert len(rows) == 2 and [r.id for r in rows if r.revoked_at is None] != [code.id]
+    await db.refresh(session)
+    assert session.revoked_at is not None
+
+
+async def test_archived_or_disabled_people_get_no_email(db, seeded_user):
+    move = await _initiative(db)
+    archived = await _worker(db, "Art", "Archived", "art@test.example.com")
+    archived.archived_at = datetime.now(UTC)
+    await db.commit()
+    assert await emails.address_for(db, archived.id) is None
+    account = await db.get(UserAccount, seeded_user.id)
+    account.disabled_at = datetime.now(UTC)
+    await db.commit()
+    assert await emails.address_for(db, seeded_user.id) is None
+    row, code, token = await codes.issue(db, archived.id, move.id, actor_id=None)
+    assert await emails.send_invite(db, archived, row, code, token, move, None) is None

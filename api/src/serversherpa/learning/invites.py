@@ -20,19 +20,19 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import Initiative, InitiativePerson, Person, Site
+from serversherpa.db.models import Initiative, InitiativePerson, Person
 from serversherpa.db.ordering import natural
 from serversherpa.learning import codes, emails
 from serversherpa.learning.assign import OPEN_STATUSES
 from serversherpa.learning.models import (
     LearningAssignment,
     LearningCode,
+    LearningEmailLog,
     LearningInviteSchedule,
     LearningPacket,
 )
 from serversherpa.learning.settings import load_settings
 from serversherpa.services.audit import audit
-from serversherpa.services.timeclock import _zone
 from serversherpa.services.timezone import stored_day
 
 SCHEDULE_FIELDS = ("mode", "send_offset_days", "send_time", "reminder_offsets",
@@ -98,36 +98,26 @@ async def send_at(db: AsyncSession, initiative: Initiative,
     return local_at(day, schedule.send_time, zone)
 
 
-def _site_of(initiative: Initiative) -> uuid.UUID | None:
-    """The site whose zone the initiative's times are read in (the same
-    order as codes.initiative_zone)."""
-    return next((s for s in (initiative.site_id, initiative.destination_site_id,
-                             initiative.origin_site_id) if s is not None), None)
-
-
 async def send_markers(db: AsyncSession,
                        initiatives: list[Initiative]) -> dict[uuid.UUID, datetime | None]:
     """For the initiatives timeline: when each initiative's invites went
     out, or when its scheduled send will; None for a manual schedule that
-    hasn't sent (or no schedule). Three queries for any number."""
+    hasn't sent (or no schedule). Two or three queries for any number."""
     ids = [i.id for i in initiatives]
     schedules = {s.initiative_id: s for s in await db.scalars(
         select(LearningInviteSchedule).where(LearningInviteSchedule.initiative_id.in_(ids)))
                  } if ids else {}
-    site_ids = {_site_of(i) for i in initiatives if i.id in schedules} - {None}
-    zones = dict((await db.execute(select(Site.id, Site.timezone).where(
-        Site.id.in_(site_ids)))).all()) if site_ids else {}
+    pending = [i for i in initiatives if i.id in schedules and i.scheduled_start is not None
+               and schedules[i.id].sent_at is None and schedules[i.id].mode == "scheduled"]
+    zones = await codes.initiative_zones(db, pending)
     out: dict[uuid.UUID, datetime | None] = {}
     for i in initiatives:
         schedule = schedules.get(i.id)
-        if schedule is None:
-            out[i.id] = None
-        elif schedule.sent_at is not None:
+        if schedule is not None and schedule.sent_at is not None:
             out[i.id] = schedule.sent_at
-        elif schedule.mode == "scheduled" and i.scheduled_start is not None:
-            zone = _zone(zones.get(_site_of(i))) or ZoneInfo("UTC")
+        elif i.id in zones:
             day = stored_day(i.scheduled_start) - timedelta(days=schedule.send_offset_days)
-            out[i.id] = local_at(day, schedule.send_time, zone)
+            out[i.id] = local_at(day, schedule.send_time, zones[i.id])
         else:
             out[i.id] = None
     return out
@@ -202,18 +192,54 @@ async def send_invite_for(db: AsyncSession, person_id: uuid.UUID, initiative_id:
     return mail is not None
 
 
+async def invited_people(db: AsyncSession, initiative_id: uuid.UUID) -> set[uuid.UUID]:
+    """People holding a working code for the initiative (not revoked, not
+    expired) that an invite email went out for."""
+    now = _now()
+    return set(await db.scalars(
+        select(LearningCode.person_id)
+        .where(LearningCode.initiative_id == initiative_id, LearningCode.revoked_at.is_(None),
+               (LearningCode.expires_at.is_(None)) | (LearningCode.expires_at > now),
+               select(LearningEmailLog.id)
+               .where(LearningEmailLog.kind == "invite",
+                      LearningEmailLog.code_id == LearningCode.id)
+               .exists())))
+
+
+async def lock_schedule(db: AsyncSession, initiative_id: uuid.UUID) -> LearningInviteSchedule:
+    """The schedule row (created if missing), locked FOR UPDATE until the
+    transaction ends: a manual Send now and the scheduled send serialize."""
+    await schedule_for(db, initiative_id, create=True)
+    return await db.scalar(
+        select(LearningInviteSchedule)
+        .where(LearningInviteSchedule.initiative_id == initiative_id)
+        .with_for_update()
+        .execution_options(populate_existing=True))
+
+
 async def send_initiative(db: AsyncSession, initiative_id: uuid.UUID,
                           actor_id: uuid.UUID | None, *,
                           person_ids: list[uuid.UUID] | None = None) -> dict:
-    """Send invites now: to everyone with open assignments on the
-    initiative, or only to `person_ids` (Resend). A listed person with
-    nothing open is `skipped_complete`. The full send stamps the schedule's
-    `sent_at` the first time (from then on, late adds are invited as they
-    join); a Resend doesn't."""
+    """Send invites now. The full send (Send now, and the scheduled send)
+    covers everyone with open assignments who hasn't been invited yet:
+    someone already holding a working, emailed code keeps it (and their learn
+    session) and counts as `already_invited`. It locks the schedule row and
+    stamps its `sent_at` the first time (from then on, late adds are invited
+    as they join).
+
+    `person_ids` is Resend: those people get a fresh code whatever they
+    hold, and `sent_at` isn't touched. A listed person with nothing open is
+    `skipped_complete`."""
+    counts = {"sent": 0, "no_email": 0, "skipped_complete": 0, "already_invited": 0}
+    schedule = await lock_schedule(db, initiative_id) if person_ids is None else None
     open_ids = await open_people(db, initiative_id)
-    targets = open_ids if person_ids is None else list(dict.fromkeys(person_ids))
+    if person_ids is None:
+        invited = await invited_people(db, initiative_id)
+        targets = [p for p in open_ids if p not in invited]
+        counts["already_invited"] = len(open_ids) - len(targets)
+    else:
+        targets = list(dict.fromkeys(person_ids))
     open_set = set(open_ids)
-    counts = {"sent": 0, "no_email": 0, "skipped_complete": 0}
     for person_id in targets:
         if person_id not in open_set:
             counts["skipped_complete"] += 1
@@ -221,11 +247,9 @@ async def send_initiative(db: AsyncSession, initiative_id: uuid.UUID,
             counts["sent"] += 1
         else:
             counts["no_email"] += 1
-    if person_ids is None:
-        schedule = await schedule_for(db, initiative_id, create=True)
-        if schedule.sent_at is None:
-            schedule.sent_at = _now()
-            schedule.sent_by = actor_id
+    if schedule is not None and schedule.sent_at is None:
+        schedule.sent_at = _now()
+        schedule.sent_by = actor_id
     audit(db, actor_id=actor_id, entity_type="learning_invite", entity_id=str(initiative_id),
           action="learning_invites_send",
           changes={**counts, "resend": person_ids is not None})

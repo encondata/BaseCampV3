@@ -11,11 +11,14 @@
   `r<offset>` (learning_email_log);
 - raises the overdue notice (inbox, and email through the notification
   rules) to every learning manager once per initiative per local day while
-  an open assignment is past its due date, until the initiative ends (or
-  starts, with no end date).
+  an open assignment is past its due date, once its invites have gone out,
+  until the initiative ends (or starts, with no end date).
 
-Every initiative is handled in its own session and transaction, so one
-failure is logged and counted (`errors`) without stopping the rest."""
+Each step is narrowed with a query first (codes still owed a reminder;
+today's overdue notice already raised), so a sweep every minute stays
+cheap. Every initiative is handled in its own session and transaction, so
+one failure is counted (`errors`) and logged once per outage without
+stopping the rest."""
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -28,7 +31,12 @@ from serversherpa.learning import emails, invites
 from serversherpa.learning.access import manager_ids
 from serversherpa.learning.assign import OPEN_STATUSES, _end_day
 from serversherpa.learning.codes import initiative_zone
-from serversherpa.learning.models import LearningAssignment, LearningInviteSchedule
+from serversherpa.learning.models import (
+    LearningAssignment,
+    LearningCode,
+    LearningEmailLog,
+    LearningInviteSchedule,
+)
 from serversherpa.notifications.inbox import notify
 from serversherpa.services.timezone import stored_day
 
@@ -45,7 +53,8 @@ def _now() -> datetime:
 
 async def _open_initiatives(db: AsyncSession, since: datetime) -> list[uuid.UUID]:
     """Initiatives with open assignments that start on or after `since`
-    (a day's slack either side of every zone is the caller's)."""
+    (the caller leaves enough slack for every zone; the per-initiative
+    checks read the exact local day)."""
     return list(await db.scalars(
         select(Initiative.id)
         .where(Initiative.scheduled_start >= since,
@@ -84,17 +93,43 @@ async def _reminders_one(db: AsyncSession, initiative_id: uuid.UUID, now: dateti
     if not passed:
         return 0
     offset = min(passed)
+    stage = f"r{offset}"
     reminder_at = invites.local_at(start - timedelta(days=offset), schedule.send_time, zone)
+    # one query narrows it to the codes still owed this reminder: working,
+    # older than the reminder time, on someone with open items, not yet sent
+    already = (select(LearningEmailLog.id)
+               .where(LearningEmailLog.kind == "reminder",
+                      LearningEmailLog.code_id == LearningCode.id,
+                      LearningEmailLog.stage == stage)
+               .exists())
+    owed = list(await db.scalars(
+        select(LearningCode)
+        .where(LearningCode.initiative_id == initiative_id,
+               LearningCode.revoked_at.is_(None),
+               (LearningCode.expires_at.is_(None)) | (LearningCode.expires_at > now),
+               LearningCode.created_at < reminder_at,
+               LearningCode.person_id.in_(select(LearningAssignment.person_id).where(
+                   LearningAssignment.initiative_id == initiative_id,
+                   LearningAssignment.status.in_(OPEN_STATUSES))),
+               ~already)
+        .order_by(LearningCode.created_at, LearningCode.id)))
     sent = 0
-    for person_id in await invites.open_people(db, initiative_id):
-        code = await emails.active_code(db, person_id, initiative_id)
-        if code is None or code.created_at >= reminder_at:
-            continue
-        person = await db.get(Person, person_id)
-        due = await invites.due_on(db, person_id, initiative_id)
-        if await emails.send_reminder(db, person, code, initiative, due, f"r{offset}"):
+    for code in owed:
+        person = await db.get(Person, code.person_id)
+        due = await invites.due_on(db, code.person_id, initiative_id)
+        if await emails.send_reminder(db, person, code, initiative, due, stage):
             sent += 1
     return sent
+
+
+async def _invites_went_out(db: AsyncSession, initiative_id: uuid.UUID) -> bool:
+    sent_at = await db.scalar(select(LearningInviteSchedule.sent_at).where(
+        LearningInviteSchedule.initiative_id == initiative_id))
+    if sent_at is not None:
+        return True
+    return await db.scalar(select(LearningEmailLog.id).where(
+        LearningEmailLog.kind == "invite",
+        LearningEmailLog.initiative_id == initiative_id).limit(1)) is not None
 
 
 async def _overdue_one(db: AsyncSession, initiative_id: uuid.UUID, now: datetime) -> int:
@@ -103,8 +138,16 @@ async def _overdue_one(db: AsyncSession, initiative_id: uuid.UUID, now: datetime
         return 0
     today = now.astimezone(await initiative_zone(db, initiative)).date()
     last_day = _end_day(initiative) or stored_day(initiative.scheduled_start)
-    if today > last_day:
+    if today > last_day or not await _invites_went_out(db, initiative_id):
         return 0
+    # the stage carries the initiative too: the log's unique index has no
+    # initiative column, and each initiative gets its own notice
+    stage = f"overdue:{today.isoformat()}:{initiative_id}"
+    noticed = await db.scalar(select(LearningEmailLog.id).where(
+        LearningEmailLog.kind == "reminder", LearningEmailLog.initiative_id == initiative_id,
+        LearningEmailLog.stage == stage).limit(1))
+    if noticed is not None:
+        return 0                        # today's notice went out: skip the manager lookup
     overdue = await db.scalar(
         select(func.count(func.distinct(LearningAssignment.person_id)))
         .where(LearningAssignment.initiative_id == initiative_id,
@@ -116,10 +159,8 @@ async def _overdue_one(db: AsyncSession, initiative_id: uuid.UUID, now: datetime
     title = f"{overdue} {noun} overdue on learning for {initiative.name}"
     raised = 0
     for manager_id in await manager_ids(db):
-        # the stage carries the initiative too: the log's unique index has
-        # no initiative column, and each initiative gets its own notice
         log = await emails.log_once(db, "reminder", manager_id, initiative_id=initiative_id,
-                                stage=f"overdue:{today.isoformat()}:{initiative_id}")
+                                    stage=stage)
         if log is None:
             continue
         await notify(db, manager_id, KIND, title,
@@ -132,6 +173,12 @@ async def _overdue_one(db: AsyncSession, initiative_id: uuid.UUID, now: datetime
     return 1 if raised else 0
 
 
+# (step label, initiative id) pairs whose last run failed: logged once per
+# outage. Only the exception's class is logged — its text can carry SQL
+# parameters (rendered email bodies, codes).
+_failing: set[tuple[str, uuid.UUID]] = set()
+
+
 async def _each(maker, label: str, ids: list[uuid.UUID], step, now: datetime,
                 out: dict, key: str) -> None:
     for initiative_id in ids:
@@ -139,10 +186,14 @@ async def _each(maker, label: str, ids: list[uuid.UUID], step, now: datetime,
             async with maker() as db:
                 out[key] += await step(db, initiative_id, now)
                 await db.commit()
-        except Exception:
+        except Exception as exc:
             out["errors"] += 1
-            logger.warning("learning %s failed for initiative %s", label, initiative_id,
-                           exc_info=True)
+            if (label, initiative_id) not in _failing:
+                logger.warning("learning %s failed for initiative %s: %s", label,
+                               initiative_id, type(exc).__name__)
+            _failing.add((label, initiative_id))
+        else:
+            _failing.discard((label, initiative_id))
 
 
 async def run_learning_once(maker) -> dict:
@@ -155,9 +206,9 @@ async def run_learning_once(maker) -> dict:
             select(LearningInviteSchedule.initiative_id)
             .where(LearningInviteSchedule.mode == "scheduled",
                    LearningInviteSchedule.sent_at.is_(None))))
-        # a day either side covers every zone; the per-initiative checks
-        # read the exact local day
-        upcoming = await _open_initiatives(db, now - timedelta(days=1))
+        # start days are midnight UTC; two days back still reaches a start
+        # day that is today in the farthest-west zone at a late send time
+        upcoming = await _open_initiatives(db, now - timedelta(days=2))
         with_due = list(await db.scalars(
             select(LearningAssignment.initiative_id).distinct()
             .where(LearningAssignment.status.in_(OPEN_STATUSES),

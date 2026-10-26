@@ -2537,10 +2537,17 @@ _HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _LEARNING_NULLABLE = ("general_code_days", "default_validity_days", "retention_days")
 
 
+# the learning email kinds whose subject and intro settings can override
+# (learning/emails.py TEMPLATES); a subject is one header line, capped at
+# learning/emails.SUBJECT_MAX
+LEARNING_EMAIL_KINDS = ("invite", "reminder", "complete", "new_version", "link")
+LEARNING_SUBJECT_MAX = 200
+
+
 class LearningEmailText(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    subject: str
+    subject: str = Field(max_length=LEARNING_SUBJECT_MAX)
     intro: str
 
 
@@ -2602,6 +2609,9 @@ class LearningSettingsIn(BaseModel):
                 raise ValueError("languages must be unique and within en, ja, ko, he")
             if "en" not in langs:
                 raise ValueError("languages must include en")
+        if not set(self.email_text or {}) <= set(LEARNING_EMAIL_KINDS):
+            raise ValueError("email_text kinds must be within "
+                             + ", ".join(LEARNING_EMAIL_KINDS))
         for by_lang in (self.email_text or {}).values():
             if not set(by_lang) <= set(LEARNING_LANGUAGES):
                 raise ValueError("email_text languages must be within en, ja, ko, he")

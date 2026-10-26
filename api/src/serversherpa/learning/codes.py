@@ -16,20 +16,21 @@ import secrets
 import unicodedata
 import uuid
 from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.config import get_settings
-from serversherpa.db.models import Initiative
+from serversherpa.db.models import Initiative, Site
 from serversherpa.learning.assign import _end_day
 from serversherpa.learning.models import LearningCode, LearningSession
 from serversherpa.learning.settings import load_settings
 from serversherpa.services.audit import audit
 from serversherpa.services.kiosk_pairing import CODE_ALPHABET, normalize_code
 from serversherpa.services.password_reset import hash_token
-from serversherpa.services.timeclock import site_zone
+from serversherpa.services.timeclock import site_zone, zone_named
 
 CODE_LENGTH = 6
 LINK_TOKEN_BYTES = 32
@@ -82,12 +83,27 @@ def last_name_matches(stored: str, typed: str) -> bool:
     return same and bool(expected)
 
 
+def initiative_site_id(initiative: Initiative) -> uuid.UUID | None:
+    """The site whose zone an initiative's local times are read in: its own
+    site, else its destination, else its origin."""
+    return next((s for s in (initiative.site_id, initiative.destination_site_id,
+                             initiative.origin_site_id) if s is not None), None)
+
+
 async def initiative_zone(db: AsyncSession, initiative: Initiative):
-    """The zone an initiative's local times are read in: its own site, else
-    its destination, else its origin; UTC when none has a known zone."""
-    site_id = next((s for s in (initiative.site_id, initiative.destination_site_id,
-                                initiative.origin_site_id) if s is not None), None)
-    return await site_zone(db, site_id)
+    """The zone an initiative's local times are read in (`initiative_site_id`'s
+    zone); UTC when that site has no known zone."""
+    return await site_zone(db, initiative_site_id(initiative))
+
+
+async def initiative_zones(db: AsyncSession,
+                           initiatives: list[Initiative]) -> dict[uuid.UUID, ZoneInfo]:
+    """`initiative_zone` for many initiatives in one query."""
+    site_ids = {initiative_site_id(i) for i in initiatives} - {None}
+    names = dict((await db.execute(select(Site.id, Site.timezone).where(
+        Site.id.in_(site_ids)))).all()) if site_ids else {}
+    return {i.id: zone_named(names.get(initiative_site_id(i))) or ZoneInfo("UTC")
+            for i in initiatives}
 
 
 async def _expires_at(db: AsyncSession, initiative_id: uuid.UUID | None,

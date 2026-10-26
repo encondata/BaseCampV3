@@ -455,6 +455,8 @@ class SendInvitesOut(BaseModel):
     sent: int
     no_email: int
     skipped_complete: int
+    # a full send leaves people with a working, emailed code alone
+    already_invited: int
 
 
 RosterStatus = Literal["complete", "in_progress", "overdue", "not_opened", "no_email"]

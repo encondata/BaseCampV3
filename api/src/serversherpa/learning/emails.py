@@ -6,15 +6,16 @@ Every send writes its `learning_email_log` row first. The table's unique
 index (kind, person, code or none, stage) is the dedupe: a repeat inserts
 nothing (ON CONFLICT DO NOTHING, so the caller's transaction survives) and
 the function returns None without queueing anything. None also means the
-person has no email (contact email first, then the login email, as
-notifications/email.py reads them).
+person has no email we may use (contact email first, then the login email,
+as notifications/email.py reads them; nobody archived or disabled).
 
 Subject and intro come from the learning settings' `email_text[kind][lang]`
 (then `[kind]["en"]`) when set, otherwise from the template. `lang` is the
 language of the person's latest sign-off, else English.
 
-Raw codes and link tokens only ever exist in the clear while an email is
-rendered. Nothing here commits."""
+Raw codes and link tokens are never stored on the code row (only the
+fingerprint and the link hash), but like password reset links they are
+in the rendered `email_outbox` bodies. Nothing here commits."""
 import base64
 import io
 import secrets
@@ -27,6 +28,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from serversherpa.api.schemas import LEARNING_SUBJECT_MAX
 from serversherpa.config import learn_url
 from serversherpa.db.models import EmailOutbox, Initiative, Person
 from serversherpa.learning import codes
@@ -53,8 +55,8 @@ TEMPLATES = {
     "link": "learning_link",
 }
 # an edited subject is one header line: CR/LF collapse to spaces, and it is
-# capped at the library's title length
-SUBJECT_MAX = 200
+# capped (the settings schema enforces the same cap on save)
+SUBJECT_MAX = LEARNING_SUBJECT_MAX
 QR_CID = "qr"
 
 
@@ -85,7 +87,9 @@ def _clean_subject(subject: str) -> str:
 
 async def address_for(db: AsyncSession, person_id: uuid.UUID) -> str | None:
     contact = await load_contact(db, person_id)
-    return contact.address if contact is not None else None
+    if contact is None or not contact.active:
+        return None
+    return contact.address
 
 
 async def preferred_language(db: AsyncSession, person_id: uuid.UUID) -> str:

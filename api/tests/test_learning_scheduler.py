@@ -3,8 +3,9 @@ invites at the site's local send time, reminders once per offset, the
 overdue notice once per initiative per local day. Plus the initiative
 Learning manager API built on the same pieces: summary, schedule, roster,
 regenerate / revoke, the code sheet PDF and the timeline's send marker."""
+import logging
 import uuid
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -12,7 +13,7 @@ from sqlalchemy import select, update
 
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import EmailOutbox, Initiative, Notification, Site
-from serversherpa.learning import scheduler
+from serversherpa.learning import invites, scheduler
 from serversherpa.learning.models import (
     LearningAssignment,
     LearningCode,
@@ -160,14 +161,31 @@ async def test_reminders_skip_a_missed_stage_and_never_after_start(
     assert (await scheduler.run_learning_once(get_sessionmaker()))["reminders"] == 0
 
 
+async def test_start_day_reminder_late_in_a_western_zone(client, db, seeded_user,
+                                                         monkeypatch):
+    start = TODAY + timedelta(days=10)
+    hdrs, move, _ = await _setup(db, client, start=start, zone="America/Los_Angeles")
+    await client.put(f"/learning/initiatives/{move.id}/schedule", headers=hdrs,
+                     json={"reminder_offsets": [0], "send_time": "23:00"})
+    await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs, json={})
+    # 23:01 on the start day in Los Angeles is the next morning in UTC, more
+    # than a day after the start's midnight-UTC value
+    at = datetime.combine(start, time(23, 1), tzinfo=ZoneInfo("America/Los_Angeles"))
+    _clock(monkeypatch, at)
+    assert (await scheduler.run_learning_once(get_sessionmaker()))["reminders"] == 1
+
+
 async def test_overdue_notice_once_per_day(client, db, seeded_user, monkeypatch):
     start = TODAY + timedelta(days=3)
-    _, move, _ = await _setup(db, client, start=start, end=start + timedelta(days=5))
+    hdrs, move, _ = await _setup(db, client, start=start, end=start + timedelta(days=5))
     await db.execute(update(LearningAssignment).values(due_on=TODAY - timedelta(days=1)))
     await db.commit()
 
     now = datetime.combine(TODAY, time(12), tzinfo=UTC)
     _clock(monkeypatch, now)
+    # nothing is overdue on training nobody was invited to yet
+    assert (await scheduler.run_learning_once(get_sessionmaker()))["overdue"] == 0
+    await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs, json={})
     first = await scheduler.run_learning_once(get_sessionmaker())
     assert first["overdue"] == 1
     assert (await scheduler.run_learning_once(get_sessionmaker()))["overdue"] == 0
@@ -188,7 +206,8 @@ async def test_overdue_notice_once_per_day(client, db, seeded_user, monkeypatch)
     assert (await scheduler.run_learning_once(get_sessionmaker()))["overdue"] == 0
 
 
-async def test_sweep_survives_an_initiative_error(client, db, seeded_user, monkeypatch):
+async def test_sweep_survives_an_initiative_error(client, db, seeded_user, monkeypatch,
+                                                  caplog):
     start = TODAY + timedelta(days=3)
     await _setup(db, client, start=start)
     await db.execute(update(LearningAssignment).values(due_on=TODAY - timedelta(days=1)))
@@ -198,8 +217,33 @@ async def test_sweep_survives_an_initiative_error(client, db, seeded_user, monke
         raise RuntimeError("db blip")
 
     monkeypatch.setattr(scheduler, "_overdue_one", boom)
-    out = await scheduler.run_learning_once(get_sessionmaker())
-    assert out["overdue"] == 0 and out["errors"] == 1
+    caplog.set_level(logging.WARNING, logger="serversherpa.learning.scheduler")
+    for _ in range(2):
+        out = await scheduler.run_learning_once(get_sessionmaker())
+        assert out["overdue"] == 0 and out["errors"] == 1
+    # once per outage, the class only (a DB error's text can carry parameters)
+    assert caplog.text.count("overdue notice failed") == 1
+    assert "RuntimeError" in caplog.text and "db blip" not in caplog.text
+
+
+async def test_scheduled_send_time_follows_dst(db):
+    """America/Chicago leaves daylight time on 2026-11-01: 08:00 local is
+    13:00 UTC the week before and 14:00 UTC after."""
+    before = await _move(db, start=date(2026, 11, 5), zone="America/Chicago")
+    after = await _move(db, start=date(2026, 11, 10), zone="America/Chicago")
+    for move in (before, after):
+        db.add(LearningInviteSchedule(initiative_id=move.id, mode="scheduled",
+                                      send_offset_days=7, send_time=time(8, 0)))
+    await db.commit()
+    schedule = await db.get(LearningInviteSchedule, before.id)
+    assert (await invites.send_at(db, before, schedule)).astimezone(UTC) == datetime(
+        2026, 10, 29, 13, 0, tzinfo=UTC)
+    schedule = await db.get(LearningInviteSchedule, after.id)
+    assert (await invites.send_at(db, after, schedule)).astimezone(UTC) == datetime(
+        2026, 11, 3, 14, 0, tzinfo=UTC)
+    markers = await invites.send_markers(db, [before, after])
+    assert markers[before.id].astimezone(UTC).hour == 13
+    assert markers[after.id].astimezone(UTC).hour == 14
 
 
 # ── the manager API ──────────────────────────────────────────────────
