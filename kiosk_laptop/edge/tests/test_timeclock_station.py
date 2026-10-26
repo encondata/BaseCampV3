@@ -457,3 +457,67 @@ async def test_station_key_never_logged_on_timeclock_paths(app, client, cloud, c
     await app.state.syncer.run()
     assert caplog.records and RAW not in caplog.text
     assert RAW not in json.dumps(app.state.syncer.meta())
+
+
+async def test_edge_forwards_learning_routes(app, client, cloud, caplog):
+    """"Email me the link" and the admin override forward like clock-in: the
+    laptop's serial (never the browser's), the person, `tz`, and the
+    override's own fields; clock-in carries `learning_override_id`. The
+    admin's password is never logged."""
+    caplog.set_level(logging.DEBUG)
+    timeclock_setup(app)
+    headers = display(app)
+    serial = app.state.identity.serial
+    oid = str(uuid.uuid4())
+    password = "Admin-Station-Pass9!"
+    link = cloud.post("/kiosk/station/timeclock/learning-link").respond(
+        200, json={"sent": True})
+    override = cloud.post("/kiosk/station/timeclock/learning-override").mock(side_effect=[
+        httpx.Response(200, json={"override_id": oid}),
+        httpx.Response(401, json={"detail": {"code": "totp_required"}})])
+    cin = cloud.post("/kiosk/station/timeclock/clock-in").respond(200, json=STATUS)
+
+    r = await client.post("/edge/timeclock/learning-link", headers=headers,
+                          json={"person_id": PERSON, "serial": "spoofed", "extra": 1})
+    assert r.status_code == 200 and r.json() == {"sent": True}
+    sent = link.calls[0].request
+    assert sent.headers["authorization"] == f"Station {RAW}"
+    assert json.loads(sent.content) == {"serial": serial, "person_id": PERSON}
+
+    body = {"person_id": PERSON, "admin_email": "ada@example.com", "admin_password": password,
+            "totp_code": "123456", "reason": "other", "reason_text": "No phone signal",
+            "scope": "day", "tz": "America/Chicago", "serial": "spoofed", "junk": "x"}
+    r = await client.post("/edge/timeclock/learning-override", headers=headers, json=body)
+    assert r.status_code == 200 and r.json() == {"override_id": oid}
+    sent = override.calls[0].request
+    assert sent.headers["authorization"] == f"Station {RAW}"
+    assert json.loads(sent.content) == {
+        "serial": serial, "person_id": PERSON, "tz": "America/Chicago",
+        "admin_email": "ada@example.com", "admin_password": password, "totp_code": "123456",
+        "reason": "other", "reason_text": "No phone signal", "scope": "day"}
+    # the portal's refusal comes back as it is
+    r = await client.post("/edge/timeclock/learning-override", headers=headers,
+                          json={"person_id": PERSON, "admin_email": "ada@example.com",
+                                "admin_password": password, "reason": "no_phone",
+                                "scope": "punch"})
+    assert r.status_code == 401 and r.json()["detail"]["code"] == "totp_required"
+    assert station_key.has_key(app.state.store)       # about the admin, not the key
+    assert json.loads(override.calls[1].request.content) == {
+        "serial": serial, "person_id": PERSON, "admin_email": "ada@example.com",
+        "admin_password": password, "reason": "no_phone", "scope": "punch"}
+
+    r = await client.post("/edge/timeclock/clock-in", headers=headers,
+                          json={"person_id": PERSON, "learning_override_id": oid})
+    assert r.status_code == 200
+    assert json.loads(cin.calls[-1].request.content) == {
+        "serial": serial, "person_id": PERSON, "learning_override_id": oid}
+
+    # an armed display only, and a bad person never leaves the laptop
+    for path in ("learning-link", "learning-override"):
+        r = await client.post(f"/edge/timeclock/{path}", json={"person_id": PERSON})
+        assert r.status_code == 403 and r.json()["detail"]["code"] == "not_timeclock_display"
+        r = await client.post(f"/edge/timeclock/{path}", headers=headers,
+                              json={"person_id": "x"})
+        assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_person"
+    assert link.call_count == 1 and override.call_count == 2
+    assert password not in caplog.text and RAW not in caplog.text

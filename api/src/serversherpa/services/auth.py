@@ -53,7 +53,7 @@ class LoginChallenge:
     backup_codes_remaining: int | None
 
 
-async def _load_account(db: AsyncSession, email: str) -> UserAccount | None:
+async def load_account(db: AsyncSession, email: str) -> UserAccount | None:
     return await db.scalar(
         select(UserAccount)
         .options(joinedload(UserAccount.person))
@@ -61,7 +61,18 @@ async def _load_account(db: AsyncSession, email: str) -> UserAccount | None:
     )
 
 
-def _check_account_usable(account: UserAccount) -> None:
+def count_failed_login(account: UserAccount, now: datetime) -> None:
+    """One wrong password: N strikes (SS_MAX_FAILED_LOGINS) lock the account
+    for SS_LOCKOUT_SECONDS and restart the count. Not committed."""
+    settings = get_settings()
+    account.failed_login_count += 1
+    account.updated_at = now
+    if account.failed_login_count >= settings.max_failed_logins:
+        account.locked_until = now + timedelta(seconds=settings.lockout_seconds)
+        account.failed_login_count = 0
+
+
+def check_account_usable(account: UserAccount) -> None:
     if account.disabled_at is not None or account.person.archived_at is not None:
         raise AuthError("account_disabled")
 
@@ -75,7 +86,7 @@ async def login(
     pepper = settings.password_pepper.get_secret_value()
     now = datetime.now(UTC)
 
-    account = await _load_account(db, email)
+    account = await load_account(db, email)
     if account is None or account.password_hash is None:
         # burn the same time as a real verification (no enumeration oracle)
         verify_password(DUMMY_HASH, password, pepper=pepper)
@@ -85,11 +96,7 @@ async def login(
         raise AuthError("invalid_credentials")
 
     if not verify_password(account.password_hash, password, pepper=pepper):
-        account.failed_login_count += 1
-        account.updated_at = now
-        if account.failed_login_count >= settings.max_failed_logins:
-            account.locked_until = now + timedelta(seconds=settings.lockout_seconds)
-            account.failed_login_count = 0
+        count_failed_login(account, now)
         audit(db, actor_id=None, entity_type="auth", entity_id=email,
               action="login_failed", ip=ip)
         await db.commit()
@@ -101,7 +108,7 @@ async def login(
     # other without ever knowing the password (an enumeration oracle), so
     # these checks stay gated behind a successful verification: only the
     # account's own owner, who has the right password, learns its status.
-    _check_account_usable(account)
+    check_account_usable(account)
 
     if account.locked_until is not None and account.locked_until > now:
         audit(db, actor_id=None, entity_type="auth", entity_id=email,
@@ -161,7 +168,7 @@ async def start_session(
     are — a password login, or a kiosk pairing they approved on their
     phone (audit_action="login_pair"). Resets lockout state, stamps the
     last-login telemetry, audits, commits. `account.person` must be
-    loaded (see _load_account).
+    loaded (see load_account).
 
     `client` ("portal" | "kiosk") is recorded on the session row and
     every token rotated from it. `initiative_id` locks the session to one
@@ -278,7 +285,7 @@ async def refresh(
         .where(UserAccount.person_id == session.person_id)
     )
     assert account is not None  # FK guarantees
-    _check_account_usable(account)
+    check_account_usable(account)
 
     new_token = generate_refresh_token()
     new_id = uuid.uuid4()

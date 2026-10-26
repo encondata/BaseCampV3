@@ -7,10 +7,13 @@ clock (never the key or the serial). `POST /arm`, as a signed-in person
 (`edge.timeclock`), good until the key is dropped or replaced; a Time Clock
 setup still waiting for its key is 409 `station_key_missing`. Everything else
 answers only an armed display (403 `not_timeclock_display`): the cached
-people list, and a person's status, clock in and clock out forwarded to
-the portal's `/kiosk/station/timeclock/*` under the station key with the
-laptop's serial (plus the browser's own zone, `tz`, when it is a short
-string: the portal's "today" when the site has no zone). The portal's
+people list, and a person's status, clock in, clock out, "Email me the
+link" and the admin learning override forwarded to the portal's
+`/kiosk/station/timeclock/*` under the station key with the laptop's
+serial (plus the browser's own zone, `tz`, when it is a short string: the
+portal's "today" when the site has no zone). Clock-in also carries
+`learning_override_id`, and the override its own fields (the admin's
+credentials among them: forwarded, never logged or stored). The portal's
 status and JSON body come back as they are, so the browser sees its
 `{"detail": {"code": ...}}`; no key is 409 `station_not_ready`, an
 unreachable portal 503 `edge_offline`."""
@@ -33,6 +36,12 @@ router = APIRouter(prefix="/edge/timeclock")
 STATUS_PATH = "/kiosk/station/timeclock/{person_id}"
 CLOCK_IN_PATH = "/kiosk/station/timeclock/clock-in"
 CLOCK_OUT_PATH = "/kiosk/station/timeclock/clock-out"
+LEARNING_LINK_PATH = "/kiosk/station/timeclock/learning-link"
+LEARNING_OVERRIDE_PATH = "/kiosk/station/timeclock/learning-override"
+# the override's own fields, passed through as they are (the portal
+# validates them); serial, person and tz are built like a punch's
+OVERRIDE_FIELDS = ("admin_email", "admin_password", "totp_code", "reason", "reason_text",
+                   "scope")
 
 
 def require_display(request: Request) -> None:
@@ -112,15 +121,17 @@ def _tz(value) -> str | None:
     return None
 
 
-async def _punch_body(request: Request) -> dict:
-    """The portal's punch body: the laptop's serial, the person, and `tz`
-    when the browser sent a usable one."""
+async def _json_body(request: Request) -> dict:
     try:
         body = json.loads(await request.body())
     except ValueError:
         body = None
-    if not isinstance(body, dict):
-        body = {}
+    return body if isinstance(body, dict) else {}
+
+
+def _punch_body(request: Request, body: dict) -> dict:
+    """The portal's punch body: the laptop's serial, the person, and `tz`
+    when the browser sent a usable one."""
     out = {"serial": request.app.state.identity.serial,
            "person_id": _person(body.get("person_id"))}
     tz = _tz(body.get("tz"))
@@ -154,9 +165,31 @@ async def status(request: Request, person_id: str, tz: str | None = None) -> Res
 
 @router.post("/clock-in", dependencies=[Depends(require_display)])
 async def clock_in(request: Request) -> Response:
-    return await _forward(request, "POST", CLOCK_IN_PATH, json=await _punch_body(request))
+    body = await _json_body(request)
+    out = _punch_body(request, body)
+    if body.get("learning_override_id") is not None:
+        out["learning_override_id"] = body["learning_override_id"]
+    return await _forward(request, "POST", CLOCK_IN_PATH, json=out)
 
 
 @router.post("/clock-out", dependencies=[Depends(require_display)])
 async def clock_out(request: Request) -> Response:
-    return await _forward(request, "POST", CLOCK_OUT_PATH, json=await _punch_body(request))
+    body = _punch_body(request, await _json_body(request))
+    return await _forward(request, "POST", CLOCK_OUT_PATH, json=body)
+
+
+@router.post("/learning-link", dependencies=[Depends(require_display)])
+async def learning_link(request: Request) -> Response:
+    """"Email me the link": the laptop's serial and the person only."""
+    body = _punch_body(request, await _json_body(request))
+    body.pop("tz", None)
+    return await _forward(request, "POST", LEARNING_LINK_PATH, json=body)
+
+
+@router.post("/learning-override", dependencies=[Depends(require_display)])
+async def learning_override(request: Request) -> Response:
+    """An admin's override at the station, checked by the portal."""
+    body = await _json_body(request)
+    out = _punch_body(request, body)
+    out.update({k: body[k] for k in OVERRIDE_FIELDS if body.get(k) is not None})
+    return await _forward(request, "POST", LEARNING_OVERRIDE_PATH, json=out)

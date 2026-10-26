@@ -3765,6 +3765,23 @@ class KioskTimeclockTodayEntry(BaseModel):
     minutes: int
 
 
+class KioskLearningItem(BaseModel):
+    """One document the worker still has to sign: `required` by the move
+    (or the general set), or an `extra` a manager added by hand."""
+
+    title: str
+    kind: Literal["required", "extra"]
+
+
+class KioskLearningBlock(BaseModel):
+    """What the worker still owes for the station's move (the general set
+    when it has none). `link_email`: they have an address "Email me the
+    link" can reach."""
+
+    outstanding: list[KioskLearningItem]
+    link_email: bool
+
+
 class KioskTimeclockStatusOut(BaseModel):
     person: KioskTimeclockPerson
     clocked_in: bool
@@ -3774,6 +3791,10 @@ class KioskTimeclockStatusOut(BaseModel):
     # kiosk's site (UTC without one), oldest punch first
     today_minutes: int = 0
     today_entries: list[KioskTimeclockTodayEntry] = []
+    # on the status reads only (null on punch replies, and whenever nothing
+    # is outstanding or a "day" override covers today): the kiosk warns
+    # before a clock-in, the server never refuses one
+    learning: KioskLearningBlock | None = None
 
 
 # ── kiosk containers (pack / unpack) ──
@@ -4060,6 +4081,9 @@ class KioskClockInIn(BaseModel):
     # The kiosk's own IANA zone: "today" falls back to it when the site
     # has none (see `timeclock.site_zone`).
     tz: str | None = Field(None, max_length=64)
+    # the admin override this punch was let through on (learning-override):
+    # that person's, made on this kiosk, today, not yet used
+    learning_override_id: uuid.UUID | None = None
 
 
 class KioskClockOutIn(BaseModel):
@@ -4080,6 +4104,42 @@ class KioskStationClockIn(BaseModel):
     serial: str = Field(min_length=1, max_length=120)
     person_id: uuid.UUID
     tz: str | None = Field(None, max_length=64)   # as KioskClockInIn
+    # clock-in only, as KioskClockInIn (clock-out ignores it)
+    learning_override_id: uuid.UUID | None = None
+
+
+class KioskLearningLinkIn(BaseModel):
+    """"Email me the link" at the time clock."""
+
+    serial: str = Field(min_length=1, max_length=120)
+    person_id: uuid.UUID
+
+
+class KioskLearningLinkOut(BaseModel):
+    # false: nothing outstanding, no address, or one already sent this minute
+    sent: bool
+
+
+class KioskLearningOverrideIn(BaseModel):
+    """An admin (rank 60+) lets a worker with unsigned learning punch
+    anyway. The admin's credentials are checked like /auth/login's and no
+    session is opened. `scope` "day" also stops the warning for that person
+    at that site for the rest of the local day; `tz` is the kiosk's own
+    zone, as on the punches. `other` needs `reason_text`."""
+
+    serial: str = Field(min_length=1, max_length=120)
+    person_id: uuid.UUID
+    admin_email: EmailStr
+    admin_password: str = Field(min_length=1, max_length=1024)
+    totp_code: str | None = Field(None, max_length=64)
+    reason: Literal["signing_on_break", "signed_on_paper", "no_phone", "other"]
+    reason_text: str | None = Field(None, max_length=500)
+    scope: Literal["punch", "day"]
+    tz: str | None = Field(None, max_length=64)
+
+
+class KioskLearningOverrideOut(BaseModel):
+    override_id: uuid.UUID
 
 
 # ── kiosk rolodex ──
