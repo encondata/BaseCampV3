@@ -163,3 +163,138 @@ class WikiPageOption(BaseModel):
     title: str
     path: list[str]                     # ancestor titles, root first
     published_version_no: int | None
+
+
+# ── packets ──────────────────────────────────────────────────────────
+
+# '#rrggbb', as initiative colors
+HexColor = Annotated[str, StringConstraints(pattern=r"^#[0-9a-fA-F]{6}$")]
+IconName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=40)]
+
+_PACKET_NOT_NULL = ("name", "enforce_order")
+
+
+class PacketCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: Title
+    description: Note | None = None
+    enforce_order: bool = False
+    due_offset_days: int | None = Field(default=None, ge=0)   # null = the initiative schedule
+    icon: IconName | None = None
+    color: HexColor | None = None
+    items: list[uuid.UUID] = []                               # document ids, in order
+
+
+class PacketPatchIn(BaseModel):
+    """Only the keys sent change; `items`, when sent, replaces the list."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: Title | None = None
+    description: Note | None = None
+    enforce_order: bool | None = None
+    due_offset_days: int | None = Field(default=None, ge=0)
+    icon: IconName | None = None
+    color: HexColor | None = None
+    items: list[uuid.UUID] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_nulls(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            for key in (*_PACKET_NOT_NULL, "items"):
+                if key in data and data[key] is None:
+                    raise ValueError(f"{key} can't be cleared.")
+        return data
+
+
+class PacketItemOut(BaseModel):
+    document_id: uuid.UUID
+    title: str
+    current_version_no: int | None
+    archived: bool
+
+
+class PacketListItem(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: str | None
+    enforce_order: bool
+    due_offset_days: int | None
+    icon: str | None
+    color: str | None
+    item_count: int
+    rule_count: int
+    archived_at: datetime | None
+
+
+class PacketOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: str | None
+    enforce_order: bool
+    due_offset_days: int | None
+    icon: str | None
+    color: str | None
+    items: list[PacketItemOut]
+    archived_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+# ── assignment rules ─────────────────────────────────────────────────
+
+
+class ConditionIn(BaseModel):
+    """`field` is checked by the rules service (422 `bad_rule_field`), not
+    here, so the error code is the API's own."""
+    model_config = ConfigDict(extra="forbid")
+
+    field: str
+    values: list[str] = []
+
+
+class RuleCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: Title
+    packet_id: uuid.UUID
+    conditions: list[ConditionIn]
+    enabled: bool = True
+
+
+class RulePatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: Title | None = None
+    packet_id: uuid.UUID | None = None
+    conditions: list[ConditionIn] | None = None
+    enabled: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_nulls(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            for key in ("name", "packet_id", "conditions", "enabled"):
+                if key in data and data[key] is None:
+                    raise ValueError(f"{key} can't be cleared.")
+        return data
+
+
+class RuleReorderIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[uuid.UUID]
+
+
+class RuleOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    packet_id: uuid.UUID
+    packet_name: str
+    packet_archived: bool
+    conditions: list[ConditionIn]
+    position: float
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
