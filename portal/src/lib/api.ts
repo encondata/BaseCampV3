@@ -54,7 +54,7 @@ export type NotificationSound = 'none' | 'chime' | 'ping' | 'pop' | 'bell';
 /** How one notification category reaches the person: inbox + email, inbox
  *  only, or nothing. Mirrors notifications/kinds.py CATEGORIES. */
 export type DeliveryChoice = 'email' | 'inbox' | 'off';
-export type NotificationCategory = 'approvals' | 'reports' | 'wiki' | 'security';
+export type NotificationCategory = 'approvals' | 'reports' | 'wiki' | 'learning' | 'security';
 
 export interface NotifPrefs {
   sound: NotificationSound; // in-app sound for new inbox items

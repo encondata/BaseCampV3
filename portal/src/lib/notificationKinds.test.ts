@@ -4,11 +4,12 @@ import {
   DELIVERY_CHOICES, NOTIFICATION_CATEGORIES, categoryLabel, categoryLabels, emailGroupsFor,
 } from './notificationKinds';
 
-it('lists the four categories in spec order with their labels', () => {
+it('lists the five categories in spec order with their labels', () => {
   expect(NOTIFICATION_CATEGORIES).toEqual([
     { key: 'approvals', label: 'Approvals & requests' },
     { key: 'reports', label: 'Reports & labels' },
     { key: 'wiki', label: 'Wiki' },
+    { key: 'learning', label: 'Learning' },
     { key: 'security', label: 'Account security' },
   ]);
 });

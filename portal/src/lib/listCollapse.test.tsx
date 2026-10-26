@@ -22,7 +22,7 @@ const base = (over: Partial<UiPreferences> = {}): UiPreferences => ({
   accent: 'amber', theme: 'light', density: 'comfortable', list_size: 'default',
   motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default',
   list_view: 'expanded',
-  notif: { sound: 'chime', categories: { approvals: 'email', reports: 'email', wiki: 'email', security: 'email' } },
+  notif: { sound: 'chime', categories: { approvals: 'email', reports: 'email', wiki: 'email', learning: 'email', security: 'email' } },
   list_prefs: {},
   ...over,
 });

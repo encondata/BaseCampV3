@@ -9,7 +9,7 @@ PREFS = {
     "list_size": "default",
     "motion": False,
     "notif": {"categories": {"approvals": "email", "reports": "inbox", "wiki": "off",
-                             "security": "email"}, "sound": "ping"},
+                             "learning": "email", "security": "email"}, "sound": "ping"},
     "list_prefs": {
         "sites": {
             "visible": ["name", "status", "city"],
@@ -38,7 +38,8 @@ async def test_login_returns_default_preferences(client, seeded_user):
         "list_size": "default",
         "motion": True,
         "notif": {"categories": {"approvals": "email", "reports": "email",
-                                 "wiki": "email", "security": "email"}, "sound": "chime"},
+                                 "wiki": "email", "learning": "email", "security": "email"},
+                 "sound": "chime"},
         "list_prefs": {},
         "nav_mode": "expanded",
         "nav_bg": "default",
@@ -197,7 +198,8 @@ async def test_old_notif_blob_still_parses_and_defaults_categories():
     prefs = UiPreferences.model_validate(old)
     assert prefs.notif.sound == "pop"
     assert prefs.notif.categories == {
-        "approvals": "email", "reports": "email", "wiki": "email", "security": "email"}
+        "approvals": "email", "reports": "email", "wiki": "email", "learning": "email",
+        "security": "email"}
     assert "critical" not in prefs.notif.model_dump()
 
 
@@ -206,14 +208,16 @@ async def test_partial_categories_fill_missing_and_drop_unknown():
 
     prefs = NotifPrefs.model_validate({"categories": {"wiki": "off", "bogus": "inbox"}})
     assert prefs.categories == {
-        "approvals": "email", "reports": "email", "wiki": "off", "security": "email"}
+        "approvals": "email", "reports": "email", "wiki": "off", "learning": "email",
+        "security": "email"}
 
 
 async def test_default_notif_categories_are_all_email():
     from serversherpa.api.schemas import UiPreferences
 
     assert UiPreferences().notif.categories == {
-        "approvals": "email", "reports": "email", "wiki": "email", "security": "email"}
+        "approvals": "email", "reports": "email", "wiki": "email", "learning": "email",
+        "security": "email"}
 
 
 async def test_list_view_rejects_unknown_value(client, seeded_user):

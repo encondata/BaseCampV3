@@ -25,7 +25,7 @@ vi.mock('../../auth/AuthContext', () => ({
       list_view: 'expanded',
       notif: {
         sound: 'chime',
-        categories: { approvals: 'email', reports: 'inbox', wiki: 'email', security: 'email' },
+        categories: { approvals: 'email', reports: 'inbox', wiki: 'email', learning: 'email', security: 'email' },
       },
       list_prefs: {},
     } satisfies UiPreferences,
@@ -94,7 +94,7 @@ it('replaces the four old switches with a per-category delivery table', async ()
     expect(screen.queryByText(label)).toBeNull();
   }
   const table = screen.getByRole('table', { name: 'Notification delivery' });
-  for (const label of ['Approvals & requests', 'Reports & labels', 'Wiki', 'Account security']) {
+  for (const label of ['Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Account security']) {
     expect(within(table).getByText(label)).toBeTruthy();
   }
   expect(screen.getByText(/Emails go to your contact email\. Your groups decide which categories can email you and when; here you can turn them down\./)).toBeTruthy();
@@ -121,7 +121,7 @@ it('choosing a delivery saves the merged notif.categories object', async () => {
   const sent = auth.updatePreferences.mock.calls[0][0];
   expect(sent.notif).toEqual({
     sound: 'chime',
-    categories: { approvals: 'email', reports: 'inbox', wiki: 'off', security: 'email' },
+    categories: { approvals: 'email', reports: 'inbox', wiki: 'off', learning: 'email', security: 'email' },
   });
   expect(sent.accent).toBe('amber');
   await waitFor(() => expect(screen.getByText('saved')).toBeTruthy());

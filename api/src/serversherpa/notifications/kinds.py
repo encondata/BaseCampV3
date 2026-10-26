@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class KindInfo:
-    category: str          # "approvals" | "reports" | "wiki" | "security"
+    category: str          # "approvals" | "reports" | "wiki" | "learning" | "security"
     label: str             # "Report ready"
     brief: bool = False    # email carries title + link only, never the body
     email: bool = True     # False = never emailed
@@ -23,6 +23,7 @@ CATEGORIES: dict[str, str] = {
     "approvals": "Approvals & requests",
     "reports": "Reports & labels",
     "wiki": "Wiki",
+    "learning": "Learning",
     "security": "Account security",
 }
 
@@ -48,6 +49,10 @@ KINDS: dict[str, KindInfo] = {
     "wiki_review_due": KindInfo("wiki", "Review due"),
     "wiki_export_ready": KindInfo("wiki", "Export ready"),
     "wiki_export_failed": KindInfo("wiki", "Export failed"),
+    "learning_complete": KindInfo("learning", "Learning complete"),
+    "learning_overdue": KindInfo("learning", "Learning overdue"),
+    # A worker used every quiz attempt; a lead follows up in person.
+    "learning_quiz_locked": KindInfo("learning", "Quiz locked", email=False),
     "password_expiring": KindInfo("security", "Password expiring",
                                    owner_always=True, urgent=True),
     "totp_enrolled": KindInfo("security", "Two-factor authentication enrolled",

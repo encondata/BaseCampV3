@@ -20,7 +20,7 @@ export const DEFAULT_PREFERENCES: UiPreferences = {
   list_view: 'expanded',
   notif: {
     sound: 'chime',
-    categories: { approvals: 'email', reports: 'email', wiki: 'email', security: 'email' },
+    categories: { approvals: 'email', reports: 'email', wiki: 'email', learning: 'email', security: 'email' },
   },
   list_prefs: {},
 };

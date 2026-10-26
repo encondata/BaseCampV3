@@ -198,7 +198,7 @@ it('settings modal Categories toggles save as the categories patch', async () =>
 
   const cats = within(dialog).getByRole('group', { name: 'Categories' });
   expect(within(cats).getAllByRole('button').map((b) => b.textContent)).toEqual([
-    'Approvals & requests', 'Reports & labels', 'Wiki', 'Account security',
+    'Approvals & requests', 'Reports & labels', 'Wiki', 'Learning', 'Account security',
   ]);
   expect(within(cats).getByRole('button', { name: 'Approvals & requests' }).getAttribute('aria-pressed')).toBe('true');
   expect(within(cats).getByRole('button', { name: 'Wiki' }).getAttribute('aria-pressed')).toBe('false');

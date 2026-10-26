@@ -102,14 +102,16 @@ async def render_version_html(content_json: dict) -> tuple[str, list[uuid.UUID]]
             image_asset_ids(doc))
 
 
-async def html_with_images(db: AsyncSession, version: LearningDocumentVersion) -> str:
-    """The version's stored HTML with a presigned source on each image
-    whose id the version recorded at publish. Any other image, and one
-    whose asset is deleted or gone (a purged page's), keeps only its alt
-    text."""
+async def html_with_images(db: AsyncSession, version: LearningDocumentVersion,
+                           content_html: str | None = None) -> str:
+    """The version's stored HTML (or `content_html`, a translation of it)
+    with a presigned source on each image whose id the version recorded at
+    publish. Any other image, and one whose asset is deleted or gone (a
+    purged page's), keeps only its alt text."""
+    content_html = version.content_html if content_html is None else content_html
     ids = list(version.image_asset_ids or [])
     if not ids:
-        return version.content_html
+        return content_html
     assets = (await db.scalars(
         select(WikiPageAsset).where(WikiPageAsset.id.in_(ids),
                                     WikiPageAsset.deleted_at.is_(None)))).all()
@@ -125,4 +127,4 @@ async def html_with_images(db: AsyncSession, version: LearningDocumentVersion) -
             return match.group(0)
         return f'{match.group(1)} src="{html.escape(url, quote=True)}"'
 
-    return _STORED_IMAGE.sub(image, version.content_html)
+    return _STORED_IMAGE.sub(image, content_html)

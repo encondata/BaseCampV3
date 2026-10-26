@@ -508,3 +508,91 @@ class LearnMeOut(BaseModel):
     person_id: uuid.UUID
     first_name: str
     via: Literal["code", "account"]
+
+
+# ── my training (/learn/training, /learn/assignments) ────────────────
+
+# a language tag as translations store it ("ja", "pt-BR")
+LANG_PATTERN = r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?$"
+Lang = Annotated[str, StringConstraints(strip_whitespace=True, pattern=LANG_PATTERN)]
+
+
+class TrainingInitiativeOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    start: date | None
+
+
+class TrainingItemOut(BaseModel):
+    assignment_id: uuid.UUID
+    title: str
+    status: Literal["assigned", "opened", "signed"]
+    minutes: int
+    has_quiz: bool
+    locked: bool
+    signed_at: datetime | None
+
+
+class TrainingGroupOut(BaseModel):
+    initiative: TrainingInitiativeOut | None
+    due_on: date | None
+    items: list[TrainingItemOut]
+
+
+class TrainingOut(BaseModel):
+    groups: list[TrainingGroupOut]
+    complete: bool
+    badge_uid: str | None       # the time clock QR value, only when complete
+
+
+class AssignmentReadOut(BaseModel):
+    title: str
+    html: str
+    language: str
+    fallback: bool
+    version_no: int
+    change_note: str | None
+    sign_style: SignStyle
+    require_scroll: bool
+    min_read_seconds: int | None
+    has_quiz: bool
+    quiz_passed: bool
+
+
+class QuizChoiceOut(BaseModel):
+    id: str
+    text: str
+
+
+class QuizQuestionOut(BaseModel):
+    id: uuid.UUID
+    prompt: str
+    choices: list[QuizChoiceOut]
+    multiple: bool
+
+
+class QuizAnswersIn(BaseModel):
+    answers: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class QuizResultOut(BaseModel):
+    score_percent: int
+    passed: bool
+    attempts_left: int | None   # null when attempts aren't limited
+    locked: bool
+
+
+class SignIn(BaseModel):
+    # agreed/typed_name/signature are checked in the service so each refusal
+    # has its own code (must_agree, name_required, signature_required)
+    agreed: bool = False
+    typed_name: str | None = Field(default=None, max_length=200)
+    signature_png_b64: str | None = None
+    language: Lang = "en"
+    scrolled_to_end: bool = False
+
+
+class SignOut(BaseModel):
+    signoff_id: uuid.UUID
+    signed_at: datetime
+    complete: bool
