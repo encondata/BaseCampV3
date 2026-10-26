@@ -230,7 +230,7 @@ class LearningAssignment(Base):
     __table_args__ = (
         Index("learning_assignments_open_uniq", "person_id",
               text(f"coalesce(initiative_id, {_ZERO})"), "document_id", unique=True,
-              postgresql_where=text("status <> 'cancelled'")),
+              postgresql_where=text("status IN ('assigned', 'opened')")),
     )
 
 

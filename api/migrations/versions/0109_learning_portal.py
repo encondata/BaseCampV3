@@ -236,7 +236,7 @@ DDL = (
     (
         "CREATE UNIQUE INDEX learning_assignments_open_uniq ON learning_assignments "
         f"(person_id, coalesce(initiative_id, {ZERO}), document_id) "
-        "WHERE status <> 'cancelled'"
+        "WHERE status IN ('assigned', 'opened')"
     ),
     "CREATE INDEX learning_assignments_initiative_idx ON learning_assignments (initiative_id)",
     "CREATE INDEX learning_assignments_document_idx ON learning_assignments (document_id)",

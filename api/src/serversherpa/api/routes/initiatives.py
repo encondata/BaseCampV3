@@ -581,10 +581,16 @@ async def add_initiative_person(
         await learning_assign.assign_on_add(db, initiative_id, data["person_id"],
                                             actor.person.id)
         await db.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         # lost the check-then-insert race against a concurrent add of the
-        # same (initiative, person) pair — initiative_people_uniq fired
+        # same (initiative, person) pair — initiative_people_uniq fired.
+        # Any other violation is a different bug and must not read as a
+        # friendly duplicate (the constraint name is on asyncpg's own
+        # exception, chained onto SQLAlchemy's DBAPI wrapper).
         await db.rollback()
+        asyncpg_exc = exc.orig.__cause__ if exc.orig is not None else None
+        if getattr(asyncpg_exc, "constraint_name", None) != "initiative_people_uniq":
+            raise
         raise _err(409, "duplicate_person") from None
     return await _people_rows(db, initiative_id, actor)
 

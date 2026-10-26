@@ -4,7 +4,9 @@ both people paths (single + bulk), the dry run and manual assignment."""
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import func, select
+import pytest
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 
 from serversherpa.db.models import Initiative, InitiativePerson, Person
 from serversherpa.learning import assign
@@ -257,6 +259,24 @@ async def test_new_version_requires_resign_at_next_initiative(db, seeded_user):
         ("assign", "new_version", v2.id)]
 
 
+async def test_signoff_must_cover_the_initiative_start(db, seeded_user):
+    doc = await _doc(db, "Badge rules", validity_days=10)
+    await _packet(db, [doc])
+    worker = await _worker(db)
+    await _signoff(db, worker, doc, doc.current_version_id, days_ago=5)
+    move = await _initiative(db, start=TODAY + timedelta(days=14))
+
+    # valid today, lapsed by the start: assigned
+    assert await assign.signoff_valid(db, worker.id, doc, initiative_id=move.id,
+                                      on=TODAY) == (True, f"valid_until:{TODAY + timedelta(days=5)}")
+    assert [(i.action, i.reason) for i in await assign.plan_for(db, worker.id, move.id)] == [
+        ("assign", "expired")]
+    # an initiative already under way is checked on today
+    underway = await _initiative(db, "Under way", start=TODAY - timedelta(days=2))
+    assert [(i.action, i.reason) for i in await assign.plan_for(db, worker.id, underway.id)] == [
+        ("skip", f"valid_until:{TODAY + timedelta(days=5)}")]
+
+
 # ── the add / remove hooks ───────────────────────────────────────────
 
 
@@ -291,6 +311,24 @@ async def test_single_add_creates_assignments_in_same_transaction(
     assert [(a.document_id, a.initiative_id) for a in rows] == [(doc.id, move.id)]
 
 
+async def test_single_add_other_integrity_errors_are_not_duplicates(
+        client, db, seeded_user, monkeypatch):
+    hdrs = await _manager(db, client)
+    move = await _initiative(db)
+    worker = await _worker(db)
+
+    async def bad_insert(db, *args, **kwargs):     # a foreign-key violation
+        await db.execute(text(
+            "INSERT INTO learning_codes (person_id, fingerprint, link_token_hash) "
+            "VALUES (gen_random_uuid(), 'x', 'y')"))
+
+    monkeypatch.setattr(assign, "assign_on_add", bad_insert)
+    with pytest.raises(IntegrityError):
+        await client.post(f"/initiatives/{move.id}/people", headers=hdrs,
+                          json={"person_id": str(worker.id)})
+    assert await db.scalar(select(func.count()).select_from(InitiativePerson)) == 0
+
+
 async def test_bulk_add_creates_assignments(db, seeded_user):
     doc_a, doc_b = await _doc(db, "Site safety"), await _doc(db, "Dress code")
     await _packet(db, [doc_a, doc_b])
@@ -310,6 +348,24 @@ async def test_bulk_add_creates_assignments(db, seeded_user):
     ben_rows = await _assignments(db, ben.id, initiative_id=move.id)
     assert {a.document_id for a in ben_rows} == {doc_a.id, doc_b.id}
     assert all(a.created_by == seeded_user.id for a in ana_rows + ben_rows)
+
+
+async def test_bulk_add_rolls_back_with_the_engine(db, seeded_user, monkeypatch):
+    doc = await _doc(db, "Site safety")
+    await _packet(db, [doc])
+    move = await _initiative(db)
+    await mk_worker(db, "Ana", "Lopez")
+    await mk_worker(db, "Ben", "Brown")
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("engine down")
+
+    monkeypatch.setattr(assign, "apply_plan", broken)
+    with pytest.raises(RuntimeError):
+        await bulk_commit(db, seeded_user, move, [{"worker": "Ana Lopez"}, {"worker": "Ben Brown"}])
+    await db.rollback()             # what the request session does on the way out
+    assert await db.scalar(select(func.count()).select_from(InitiativePerson)) == 0
+    assert await _assignments(db) == []
 
 
 async def test_add_twice_bulk_then_single_no_duplicates(client, db, seeded_user):
@@ -522,6 +578,37 @@ async def test_manual_assign_on_initiative_needs_membership(client, db, seeded_u
     [row] = await _assignments(db)
     assert (row.person_id, row.initiative_id, row.source) == (member.id, move.id, "manual")
     assert row.due_on == TODAY + timedelta(days=14) - timedelta(days=2)
+
+
+async def test_push_version_after_a_general_signoff(client, db, seeded_user):
+    """A signed general assignment doesn't block the next version."""
+    hdrs = await _manager(db, client)
+    doc = await _doc(db, "Tool policy")
+    worker = await _worker(db)
+    resp = await client.post("/learning/assign", headers=hdrs, json={
+        "person_ids": [str(worker.id)], "initiative_id": None, "document_ids": [str(doc.id)]})
+    assert resp.json()["totals"]["to_assign"] == 1
+    [first] = await _assignments(db, worker.id)
+    await _signoff(db, worker, doc, first.version_id)
+    first.status, first.signed_at = "signed", datetime.now(UTC)
+    await db.commit()
+    v2 = await _publish(db, doc)
+
+    resp = await client.post(f"/learning/documents/{doc.id}/push-version", headers=hdrs,
+                             json={"person_ids": [str(worker.id)]})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["totals"]["to_assign"] == 1
+    rows = await _assignments(db, worker.id)
+    assert len(rows) == 2
+    [new] = [a for a in rows if a.id != first.id]
+    assert (new.source, new.version_id, new.initiative_id, new.status) == (
+        "new_version", v2.id, None, "assigned")
+    # pushing again while it's open adds nothing
+    resp = await client.post(f"/learning/documents/{doc.id}/push-version", headers=hdrs,
+                             json={"person_ids": [str(worker.id)]})
+    assert resp.json()["rows"][0]["skipped"] == [
+        {"title": "Tool policy", "reason": "already_assigned"}]
+    assert len(await _assignments(db, worker.id)) == 2
 
 
 async def test_push_version_outside_an_initiative(client, db, seeded_user):

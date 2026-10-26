@@ -75,7 +75,9 @@ async def test_document_defaults_and_checks(db):
     await db.rollback()
 
 
-async def test_assignment_unique_ignores_cancelled(db):
+async def test_assignment_unique_only_while_open(db):
+    """Two open (assigned/opened) rows for one key conflict; a signed or a
+    cancelled one beside an open one doesn't."""
     person = await _person(db)
     init = await _initiative(db)
     doc, ver = await _document(db)
@@ -88,6 +90,7 @@ async def test_assignment_unique_ignores_cancelled(db):
     init = await _initiative(db)
     doc, ver = await _document(db)
     await _assign(db, person, doc, ver, init, status="cancelled")
+    await _assign(db, person, doc, ver, init, status="signed")
     await _assign(db, person, doc, ver, init)
     await db.commit()
 

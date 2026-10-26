@@ -72,27 +72,45 @@ class PlannedItem:
 # ── due / valid ──────────────────────────────────────────────────────
 
 
-def _end_day(initiative: Initiative) -> date | None:
-    end = initiative.scheduled_end or initiative.real_end_at
+def _end_day(initiative: Initiative | None) -> date | None:
+    end = (initiative.scheduled_end or initiative.real_end_at) if initiative else None
     return stored_day(end) if end is not None else None
 
 
-async def signoff_valid(db: AsyncSession, person_id: uuid.UUID, document: LearningDocument, *,
-                        initiative_id: uuid.UUID | None, on: date) -> tuple[bool, str]:
-    """(valid, reason) for `person_id`'s sign-off on `document`, checked on
-    day `on` for `initiative_id` (None = outside an initiative). Reasons:
-    `valid_until:<iso day or "never">`, `never_signed`, `expired`,
-    `new_version`, `every_initiative`."""
-    signoffs = list(await db.scalars(
+def check_day(initiative: Initiative | None) -> date:
+    """The day a sign-off must be valid on: the initiative's start when that's
+    still ahead (a worker has to be covered when it begins), else today."""
+    on = today()
+    if initiative is not None and initiative.scheduled_start is not None:
+        on = max(on, stored_day(initiative.scheduled_start))
+    return on
+
+
+async def _signoffs(db: AsyncSession, person_id: uuid.UUID,
+                    document_ids: set[uuid.UUID]) -> dict[uuid.UUID, list[LearningSignoff]]:
+    """The person's sign-offs on `document_ids` in one query, newest first
+    per document."""
+    if not document_ids:
+        return {}
+    by_doc: dict[uuid.UUID, list[LearningSignoff]] = defaultdict(list)
+    for signoff in await db.scalars(
         select(LearningSignoff)
         .where(LearningSignoff.person_id == person_id,
-               LearningSignoff.document_id == document.id)
-        .order_by(LearningSignoff.signed_at.desc(), LearningSignoff.created_at.desc())))
+               LearningSignoff.document_id.in_(document_ids))
+        .order_by(LearningSignoff.signed_at.desc(), LearningSignoff.created_at.desc())):
+        by_doc[signoff.document_id].append(signoff)
+    return by_doc
+
+
+def _judge(document: LearningDocument, signoffs: list[LearningSignoff], *,
+           initiative_id: uuid.UUID | None, initiative: Initiative | None,
+           on: date) -> tuple[bool, str]:
+    """`signoff_valid` on preloaded rows: `signoffs` newest first,
+    `initiative` the row for `initiative_id` (for its end day)."""
     if initiative_id is not None and any(s.initiative_id == initiative_id for s in signoffs):
         # signed for this initiative: good through its end, whatever the
         # document's own validity or a newer version say
-        initiative = await db.get(Initiative, initiative_id)
-        end = _end_day(initiative) if initiative is not None else None
+        end = _end_day(initiative)
         if end is None:
             return True, f"valid_until:{NEVER}"
         if on <= end:
@@ -112,16 +130,29 @@ async def signoff_valid(db: AsyncSession, person_id: uuid.UUID, document: Learni
     return False, "expired"
 
 
+async def signoff_valid(db: AsyncSession, person_id: uuid.UUID, document: LearningDocument, *,
+                        initiative_id: uuid.UUID | None, on: date) -> tuple[bool, str]:
+    """(valid, reason) for `person_id`'s sign-off on `document`, checked on
+    day `on` for `initiative_id` (None = outside an initiative). Reasons:
+    `valid_until:<iso day or "never">`, `never_signed`, `expired`,
+    `new_version`, `every_initiative`."""
+    signoffs = (await _signoffs(db, person_id, {document.id})).get(document.id, [])
+    initiative = await db.get(Initiative, initiative_id) if initiative_id else None
+    return _judge(document, signoffs, initiative_id=initiative_id, initiative=initiative,
+                  on=on)
+
+
 async def _open_documents(db: AsyncSession, person_id: uuid.UUID,
                           initiative_id: uuid.UUID | None) -> set[uuid.UUID]:
-    """Documents with a live (non-cancelled) assignment for this key; the
-    partial unique index allows only one, signed ones included."""
+    """Documents with an open (assigned/opened) assignment for this key; the
+    partial unique index allows only one. Signed and cancelled rows don't
+    count, so a new version can be required again."""
     scope = (LearningAssignment.initiative_id.is_(None) if initiative_id is None
              else LearningAssignment.initiative_id == initiative_id)
     return set(await db.scalars(
         select(LearningAssignment.document_id)
         .where(LearningAssignment.person_id == person_id, scope,
-               LearningAssignment.status != "cancelled")))
+               LearningAssignment.status.in_(OPEN_STATUSES))))
 
 
 def _unassignable(doc: LearningDocument) -> str | None:
@@ -137,7 +168,8 @@ async def plan_for(db: AsyncSession, person_id: uuid.UUID,
     """What the rules give `person_id` for `initiative_id` (None = the
     general set), one item per document in rule then packet order. Already
     assigned, archived and unpublished documents are skipped with that
-    reason; the rest follow `signoff_valid`."""
+    reason; the rest are judged as `signoff_valid` does, on `check_day`.
+    The person's sign-offs are loaded in one query."""
     ctx = await rules.build_context(db, person_id, initiative_id)
     matched = await rules.matching_packets(db, ctx)
     if not matched:
@@ -150,8 +182,11 @@ async def plan_for(db: AsyncSession, person_id: uuid.UUID,
         .order_by(LearningPacketItem.position, LearningPacketItem.created_at))).all():
         docs_by_packet[packet_id].append(doc)
 
+    initiative = await db.get(Initiative, initiative_id) if initiative_id else None
+    on = check_day(initiative)
     open_docs = await _open_documents(db, person_id, initiative_id)
-    on = today()
+    signoffs = await _signoffs(db, person_id,
+                               {d.id for docs in docs_by_packet.values() for d in docs})
     seen: set[uuid.UUID] = set()
     plan: list[PlannedItem] = []
     for rule, packet in matched:
@@ -161,8 +196,9 @@ async def plan_for(db: AsyncSession, person_id: uuid.UUID,
             seen.add(doc.id)
             reason = _unassignable(doc) or ("already_assigned" if doc.id in open_docs else None)
             if reason is None:
-                valid, reason = await signoff_valid(db, person_id, doc,
-                                                    initiative_id=initiative_id, on=on)
+                valid, reason = _judge(doc, signoffs.get(doc.id, []),
+                                       initiative_id=initiative_id, initiative=initiative,
+                                       on=on)
                 action = "skip" if valid else "assign"
             else:
                 action = "skip"
@@ -175,41 +211,57 @@ async def plan_for(db: AsyncSession, person_id: uuid.UUID,
 # ── writing ──────────────────────────────────────────────────────────
 
 
-async def _due_days(db: AsyncSession, initiative_id: uuid.UUID | None,
-                    packet_ids: set[uuid.UUID]):
-    """A `packet_id -> due_on` function: the packet's `due_offset_days`, or
-    the initiative schedule's, or the settings' default, counted back from
-    the initiative's start. No initiative or no start = no due date."""
-    initiative = await db.get(Initiative, initiative_id) if initiative_id else None
-    if initiative is None or initiative.scheduled_start is None:
-        return lambda packet_id: None
-    start = stored_day(initiative.scheduled_start)
-    schedule = await db.get(LearningInviteSchedule, initiative_id)
-    default = (schedule.due_offset_days if schedule is not None
-               else (await load_settings(db)).due_offset_days)
-    offsets = dict((await db.execute(
-        select(LearningPacket.id, LearningPacket.due_offset_days)
-        .where(LearningPacket.id.in_(packet_ids)))).all()) if packet_ids else {}
+class DueDates:
+    """`packet_id -> due_on`: the packet's `due_offset_days`, or the
+    initiative schedule's, or the settings' default, counted back from the
+    initiative's start; no initiative or no start = no due date. Built once
+    (`load`) per initiative and shared across people; packet offsets are
+    fetched as new packets turn up (`prime`)."""
 
-    def due(packet_id: uuid.UUID | None) -> date:
-        offset = offsets.get(packet_id)
-        return start - timedelta(days=default if offset is None else offset)
+    def __init__(self, start: date | None, default: int) -> None:
+        self.start, self.default = start, default
+        self.offsets: dict[uuid.UUID, int | None] = {}
 
-    return due
+    @classmethod
+    async def load(cls, db: AsyncSession, initiative_id: uuid.UUID | None) -> "DueDates":
+        initiative = await db.get(Initiative, initiative_id) if initiative_id else None
+        if initiative is None or initiative.scheduled_start is None:
+            return cls(None, 0)
+        schedule = await db.get(LearningInviteSchedule, initiative_id)
+        default = (schedule.due_offset_days if schedule is not None
+                   else (await load_settings(db)).due_offset_days)
+        return cls(stored_day(initiative.scheduled_start), default)
+
+    async def prime(self, db: AsyncSession, packet_ids: set[uuid.UUID]) -> None:
+        missing = packet_ids - self.offsets.keys()
+        if self.start is not None and missing:
+            self.offsets.update((await db.execute(
+                select(LearningPacket.id, LearningPacket.due_offset_days)
+                .where(LearningPacket.id.in_(missing)))).all())
+
+    def __call__(self, packet_id: uuid.UUID | None) -> date | None:
+        if self.start is None:
+            return None
+        offset = self.offsets.get(packet_id) if packet_id else None
+        return self.start - timedelta(days=self.default if offset is None else offset)
 
 
 async def apply_plan(db: AsyncSession, person_id: uuid.UUID, initiative_id: uuid.UUID | None,
                      items: list[PlannedItem], *, actor_id: uuid.UUID | None,
-                     source: str = "rule") -> list[LearningAssignment]:
+                     source: str = "rule", due: DueDates | None = None,
+                     ) -> list[LearningAssignment]:
     """Create an assignment for each "assign" item and return the new rows.
-    Idempotent: a document with a live assignment for the same key is
+    Idempotent: a document with an open assignment for the same key is
     skipped, and the insert itself does nothing on a unique conflict, so a
-    concurrent add can't fail the transaction it runs in."""
+    concurrent add can't fail the transaction it runs in. Pass `due` (from
+    `DueDates.load`) to share one across many people of the same initiative."""
     todo = [i for i in items if i.action == "assign" and i.version_id is not None]
     if not todo:
         return []
     open_docs = await _open_documents(db, person_id, initiative_id)
-    due = await _due_days(db, initiative_id, {i.packet_id for i in todo if i.packet_id})
+    if due is None:
+        due = await DueDates.load(db, initiative_id)
+    await due.prime(db, {i.packet_id for i in todo if i.packet_id})
     created: list[LearningAssignment] = []
     for item in todo:
         if item.document_id in open_docs:
@@ -300,11 +352,12 @@ async def dry_run(db: AsyncSession, initiative_id: uuid.UUID, *, apply: bool,
         .join(InitiativePerson, InitiativePerson.person_id == Person.id)
         .where(InitiativePerson.initiative_id == initiative_id)
         .order_by(natural(Person.last_name), natural(Person.first_name), Person.id)))
+    due = await DueDates.load(db, initiative_id) if apply else None
     rows = []
     for person in people:
         plan = await plan_for(db, person.id, initiative_id)
         if apply:
-            await apply_plan(db, person.id, initiative_id, plan, actor_id=actor_id)
+            await apply_plan(db, person.id, initiative_id, plan, actor_id=actor_id, due=due)
         rows.append(_summary_row(person, plan))
     return _summary(rows)
 
@@ -323,7 +376,7 @@ async def assign_manual(db: AsyncSession, *, actor_id: uuid.UUID | None,
                         document_ids: list[uuid.UUID]) -> dict:
     """Hand documents to people by name ("Assign extras", on-site days):
     a packet's documents in order, then any listed ones, each once. No
-    sign-off check — the manager asked for it; a live assignment for the
+    sign-off check — the manager asked for it; an open assignment for the
     same key, or a person not on the initiative, is skipped."""
     people = await _people(db, person_ids)
     if initiative_id is not None and await db.get(Initiative, initiative_id) is None:
@@ -354,6 +407,7 @@ async def assign_manual(db: AsyncSession, *, actor_id: uuid.UUID | None,
     members = set(await db.scalars(
         select(InitiativePerson.person_id).where(
             InitiativePerson.initiative_id == initiative_id))) if initiative_id else set()
+    due = await DueDates.load(db, initiative_id)
     rows = []
     for person in people:
         outsider = initiative_id is not None and person.id not in members
@@ -367,7 +421,7 @@ async def assign_manual(db: AsyncSession, *, actor_id: uuid.UUID | None,
                 rule_id=None, action="skip" if reason else "assign",
                 reason=reason or "manual", title=doc.title))
         await apply_plan(db, person.id, initiative_id, plan, actor_id=actor_id,
-                         source="manual")
+                         source="manual", due=due)
         rows.append(_summary_row(person, plan))
     return _summary(rows)
 
@@ -376,26 +430,24 @@ async def push_version(db: AsyncSession, document: LearningDocument, *,
                        actor_id: uuid.UUID | None, person_ids: list[uuid.UUID]) -> dict:
     """Require the current version of `document` from people on site outside
     an initiative: a `new_version` assignment with no initiative. Someone
-    whose latest sign-off is already this version, or who has a live
+    whose latest sign-off is already this version, or who has an open
     general assignment for the document, is skipped."""
     if document.archived_at is not None:
         raise _err(409, "archived", "This document is archived.")
     if document.current_version_id is None:
         raise _err(409, "not_published", "Publish the document first.")
+    due = DueDates(None, 0)                 # no initiative, no due date
     rows = []
     for person in await _people(db, person_ids):
-        latest = await db.scalar(
-            select(LearningSignoff.version_id)
-            .where(LearningSignoff.person_id == person.id,
-                   LearningSignoff.document_id == document.id)
-            .order_by(LearningSignoff.signed_at.desc(), LearningSignoff.created_at.desc())
-            .limit(1))
+        signoffs = (await _signoffs(db, person.id, {document.id})).get(document.id)
+        latest = signoffs[0].version_id if signoffs else None
         reason = ("already_signed" if latest == document.current_version_id
                   else "already_assigned" if document.id in await _open_documents(
                       db, person.id, None) else None)
         plan = [PlannedItem(document_id=document.id, version_id=document.current_version_id,
                             packet_id=None, rule_id=None, action="skip" if reason else "assign",
                             reason=reason or "new_version", title=document.title)]
-        await apply_plan(db, person.id, None, plan, actor_id=actor_id, source="new_version")
+        await apply_plan(db, person.id, None, plan, actor_id=actor_id, source="new_version",
+                         due=due)
         rows.append(_summary_row(person, plan))
     return _summary(rows)
