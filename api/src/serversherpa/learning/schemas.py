@@ -596,3 +596,120 @@ class SignOut(BaseModel):
     signoff_id: uuid.UUID
     signed_at: datetime
     complete: bool
+
+
+# ── translations ─────────────────────────────────────────────────────
+
+# a translated page is bounded like any request body, not by a policy
+TRANSLATION_HTML_MAX = 2_000_000
+TranslationStatus = Literal["draft", "in_review", "published", "out_of_date", "missing"]
+
+
+class TranslationSaveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: Title
+    content_html: Annotated[str, StringConstraints(min_length=1, max_length=TRANSLATION_HTML_MAX)]
+
+
+class TranslationStatusOut(BaseModel):
+    language: str
+    status: TranslationStatus
+    version_no: int | None
+    updated_at: datetime | None
+    reviewed_by: PersonRef | None
+
+
+class TranslationOut(BaseModel):
+    """One language's newest translation, in full (for the editor)."""
+    language: str
+    status: TranslationStatus
+    version_no: int
+    current_version_no: int | None
+    title: str
+    content_html: str
+    source: Literal["claude", "manual"]
+    updated_at: datetime
+    updated_by: PersonRef | None
+    reviewed_by: PersonRef | None
+    reviewed_at: datetime | None
+
+
+# ── quiz questions ───────────────────────────────────────────────────
+
+ChoiceId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
+ChoiceText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
+                                              max_length=1000)]
+QuestionPrompt = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
+                                                  max_length=2000)]
+
+
+class ChoiceIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: ChoiceId | None = None          # new choices get one
+    text: ChoiceText
+
+
+class ChoiceOut(BaseModel):
+    id: str
+    text: str
+
+
+class QuestionTranslationIn(BaseModel):
+    """A question in one language: any of the prompt and the choices'
+    texts (by choice id); what's missing falls back to English."""
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: QuestionPrompt | None = None
+    choices: dict[ChoiceId, ChoiceText] = Field(default_factory=dict)
+
+
+class QuestionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: QuestionPrompt
+    choices: list[ChoiceIn]
+    correct_choice_ids: list[ChoiceId]
+    translations: dict[Lang, QuestionTranslationIn] = Field(default_factory=dict)
+
+
+class QuestionPatchIn(BaseModel):
+    """Only the keys sent change; the merged question is then checked."""
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: QuestionPrompt | None = None
+    choices: list[ChoiceIn] | None = None
+    correct_choice_ids: list[ChoiceId] | None = None
+    translations: dict[Lang, QuestionTranslationIn] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_nulls(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            for key, value in data.items():
+                if value is None:
+                    raise ValueError(f"{key} can't be cleared.")
+        return data
+
+
+class QuestionReorderIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[uuid.UUID]
+
+
+class QuestionOut(BaseModel):
+    id: uuid.UUID
+    document_id: uuid.UUID
+    prompt: str
+    choices: list[ChoiceOut]
+    correct_choice_ids: list[str]
+    translations: dict[str, Any]
+    position: float
+    created_at: datetime
+
+
+class UnlockQuizOut(BaseModel):
+    assignment_id: uuid.UUID
+    quiz_unlocked_at: datetime

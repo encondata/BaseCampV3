@@ -224,6 +224,8 @@ class LearningAssignment(Base):
     signed_at: Mapped[datetime | None]
     signoff_id: Mapped[uuid.UUID | None]
     quiz_locked_at: Mapped[datetime | None]
+    # the latest manager unlock: attempts before it no longer count toward the limit
+    quiz_unlocked_at: Mapped[datetime | None]
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     created_at: Mapped[datetime] = _now()
 

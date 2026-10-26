@@ -28,6 +28,7 @@ dependencies = [
     "pdf417gen>=0.7",
     "fonttools>=4.50",       # label font metrics (labels/font_metrics.py)
     "pillow>=11.3",            # ID badge images (labels/image_prep.py, imported lazily; never on the laptop edge)
+    "nh3>=0.3",                # learning translation HTML sanitizer (learning/translate.py)
     "segno>=1.6",              # the learning completion email's time clock QR (learning/emails.py)
 ]
 
