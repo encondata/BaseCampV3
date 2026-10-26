@@ -3,21 +3,26 @@
  *  are graded together after the last one; the result screen shows the
  *  score. A pass goes back to the document to sign; a fail offers another
  *  try while there are tries left, and says the lead has been told once
- *  there are none. */
+ *  there are none. Every screen has a way back to read the document again. */
 import { useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 
 import { ApiError } from '@portal/lib/api';
 
 import LoadState from '../components/LoadState';
 import ProgressBar from '../components/ProgressBar';
 import { errorKey } from '../lib/errors';
+import { isUuid } from '../lib/ids';
 import type { MessageKey } from '../i18n/en';
 import { getLang, t, useLang } from '../lib/i18n';
 import {
   getQuiz, getTraining, submitQuiz, type QuizQuestion, type QuizResult,
 } from '../lib/training';
 import { useLoad } from '../lib/useLoad';
+
+function ReadAgain({ id }: { id: string }) {
+  return <Link className="learn-link" to={`/training/${encodeURIComponent(id)}`}>{t('quiz.readAgain')}</Link>;
+}
 
 /** The title for the header, from the training list (blank if it won't load). */
 async function titleOf(id: string): Promise<string> {
@@ -88,12 +93,13 @@ function Questions({ id, title, questions, onResult }: {
         ))}
       </fieldset>
 
-      <p className={`learn-reason ${error ? 'show' : ''}`} role={error ? 'alert' : undefined}>
+      <p className={`learn-reason ${error ? 'show' : ''}`} role="status" aria-live="polite">
         {error ? t(error) : ''}
       </p>
       <button type="button" className="learn-cta" disabled={!picked.length || busy} onClick={next}>
         {busy ? t('quiz.checking') : last ? t('quiz.finish') : t('quiz.check')}
       </button>
+      <ReadAgain id={id} />
     </>
   );
 }
@@ -109,7 +115,7 @@ function Result({ id, result, onRetry }: { id: string; result: QuizResult; onRet
       {result.passed ? (
         <>
           <p className="learn-sub">{t('quiz.passed')}</p>
-          <button type="button" className="learn-cta" onClick={() => navigate(`/training/${id}`, { replace: true })}>
+          <button type="button" className="learn-cta" onClick={() => navigate(`/training/${encodeURIComponent(id)}`, { replace: true })}>
             {t('quiz.continue')}
           </button>
         </>
@@ -117,6 +123,7 @@ function Result({ id, result, onRetry }: { id: string; result: QuizResult; onRet
         <>
           <p className="learn-sub" role="alert">{t('quiz.locked')}</p>
           <Link className="learn-cta" to="/training">{t('quiz.back')}</Link>
+          <ReadAgain id={id} />
         </>
       ) : (
         <>
@@ -128,16 +135,16 @@ function Result({ id, result, onRetry }: { id: string; result: QuizResult; onRet
             )}
           </p>
           <button type="button" className="learn-cta" onClick={onRetry}>{t('quiz.tryAgain')}</button>
+          <ReadAgain id={id} />
         </>
       )}
     </div>
   );
 }
 
-export default function Quiz() {
+function QuizPage({ id }: { id: string }) {
   useLang();
   const lang = getLang();
-  const { id = '' } = useParams();
   // each try reads a fresh draw of the questions
   const [round, setRound] = useState(0);
   const [result, setResult] = useState<QuizResult | null>(null);
@@ -157,4 +164,10 @@ export default function Quiz() {
       )}
     </main>
   );
+}
+
+export default function Quiz() {
+  const { id = '' } = useParams();
+  // the id is typed into the address bar: only a real one goes into a path
+  return isUuid(id) ? <QuizPage id={id} /> : <Navigate to="/training" replace />;
 }

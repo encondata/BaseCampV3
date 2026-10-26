@@ -63,4 +63,16 @@ describe('Done', () => {
     renderDone();
     expect(await screen.findByText('training page')).toBeTruthy();
   });
+
+  it('says so when the QR cannot be drawn, and offers no download', async () => {
+    vi.mocked(qrDataUrl).mockImplementationOnce(() => { throw new Error('no canvas'); });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(200, {
+      groups: [{ initiative: null, due_on: null, items: [signed(1)] }], complete: true, badge_uid: 'badge-123',
+    })));
+    renderDone();
+    expect((await screen.findByRole('alert')).textContent)
+      .toBe("We couldn't draw your time clock code. Reload this page to try again.");
+    expect(screen.queryByRole('img', { name: 'Your time clock QR code' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Save to phone' })).toBeNull();
+  });
 });

@@ -68,6 +68,7 @@ export const ja: Dictionary = {
   'reader.drawSignature': '署名を書いてください',
   'reader.clear': '消去',
   'reader.sign': '署名して次へ',
+  'reader.takeQuiz': 'クイズを受ける',
   'reader.signing': '署名中…',
 
   'sign.mustAgree': '読んで同意したことを示すため、チェックボックスをオンにしてください。',
@@ -92,6 +93,7 @@ export const ja: Dictionary = {
   'quiz.oneTryLeft': '残り 1 回',
   'quiz.tryAgain': 'もう一度挑戦',
   'quiz.locked': '挑戦できる回数を使い切りました。リーダーに通知しました。',
+  'quiz.readAgain': '資料をもう一度読む',
   'quiz.back': '研修一覧に戻る',
 
   'done.title': '準備完了です、{name} さん',
@@ -101,6 +103,7 @@ export const ja: Dictionary = {
   'done.hint': 'タイムクロック用コードです。出勤時にステーションでスキャンしてください。',
   'done.save': 'スマートフォンに保存',
   'done.note': 'メールにも送信しました。出勤の打刻に使えるため、他人に共有しないでください。',
+  'done.qrFailed': 'タイムクロック用コードを表示できませんでした。ページを再読み込みしてください。',
   'done.back': '研修一覧に戻る',
 
   'crash.title': '問題が発生しました',

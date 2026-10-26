@@ -96,17 +96,19 @@ function post<T>(path: string, body: unknown): Promise<T> {
 }
 
 const lang = (l: string) => `?lang=${encodeURIComponent(l)}`;
+/** An id as one path segment, whatever it holds. */
+const seg = (id: string) => encodeURIComponent(id);
 
 export const getTraining = () => call<Training>('/learn/training');
 
 export const getAssignment = (id: string, l: string) =>
-  call<AssignmentRead>(`/learn/assignments/${id}${lang(l)}`);
+  call<AssignmentRead>(`/learn/assignments/${seg(id)}${lang(l)}`);
 
 export const getQuiz = (id: string, l: string) =>
-  call<QuizQuestion[]>(`/learn/assignments/${id}/quiz${lang(l)}`);
+  call<QuizQuestion[]>(`/learn/assignments/${seg(id)}/quiz${lang(l)}`);
 
 export const submitQuiz = (id: string, answers: Record<string, string[]>) =>
-  post<QuizResult>(`/learn/assignments/${id}/quiz`, { answers });
+  post<QuizResult>(`/learn/assignments/${seg(id)}/quiz`, { answers });
 
 export const signAssignment = (id: string, body: SignBody) =>
-  post<SignResult>(`/learn/assignments/${id}/sign`, body);
+  post<SignResult>(`/learn/assignments/${seg(id)}/sign`, body);

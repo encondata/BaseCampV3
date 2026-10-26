@@ -68,6 +68,7 @@ export const en = {
   'reader.drawSignature': 'Draw your signature',
   'reader.clear': 'Clear',
   'reader.sign': 'Sign and continue',
+  'reader.takeQuiz': 'Take the quiz',
   'reader.signing': 'Signing…',
 
   'sign.mustAgree': "Tick the box to say you've read it and agree.",
@@ -92,6 +93,7 @@ export const en = {
   'quiz.oneTryLeft': '1 try left',
   'quiz.tryAgain': 'Try again',
   'quiz.locked': "You've used all your tries. Your lead has been notified.",
+  'quiz.readAgain': 'Read the document again',
   'quiz.back': 'Back to my training',
 
   'done.title': "You're all set, {name}",
@@ -101,6 +103,7 @@ export const en = {
   'done.hint': 'Your time clock code. Scan it at the station when you clock in.',
   'done.save': 'Save to phone',
   'done.note': "We also emailed it to you. Don't share it: it clocks you in.",
+  'done.qrFailed': "We couldn't draw your time clock code. Reload this page to try again.",
   'done.back': 'Back to my training',
 
   'crash.title': 'Something went wrong',

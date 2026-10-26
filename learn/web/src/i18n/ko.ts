@@ -68,6 +68,7 @@ export const ko: Dictionary = {
   'reader.drawSignature': '서명을 그려 주세요',
   'reader.clear': '지우기',
   'reader.sign': '서명하고 계속',
+  'reader.takeQuiz': '퀴즈 풀기',
   'reader.signing': '서명하는 중…',
 
   'sign.mustAgree': '읽고 동의했다는 뜻으로 확인란을 선택하세요.',
@@ -92,6 +93,7 @@ export const ko: Dictionary = {
   'quiz.oneTryLeft': '1번 남음',
   'quiz.tryAgain': '다시 시도',
   'quiz.locked': '시도 횟수를 모두 사용했습니다. 팀 리더에게 알렸습니다.',
+  'quiz.readAgain': '문서 다시 읽기',
   'quiz.back': '내 교육으로 돌아가기',
 
   'done.title': '준비가 끝났습니다, {name} 님',
@@ -101,6 +103,7 @@ export const ko: Dictionary = {
   'done.hint': '타임클록 코드입니다. 출근할 때 스테이션에서 스캔하세요.',
   'done.save': '휴대폰에 저장',
   'done.note': '이메일로도 보냈습니다. 출근 처리에 쓰이므로 다른 사람과 공유하지 마세요.',
+  'done.qrFailed': '타임클록 코드를 표시하지 못했습니다. 페이지를 새로 고쳐 다시 시도하세요.',
   'done.back': '내 교육으로 돌아가기',
 
   'crash.title': '문제가 발생했습니다',

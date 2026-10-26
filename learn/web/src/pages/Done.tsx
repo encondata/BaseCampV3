@@ -38,7 +38,9 @@ export default function Done() {
           <h1 className="learn-hi">{first ? t('done.title', { name: first }) : t('done.titleNoName')}</h1>
           <p className="learn-sub">{t('done.sub', { n: total })}</p>
 
-          {qr && <img className="learn-qr" src={qr} alt={t('done.qrAlt')} />}
+          {qr
+            ? <img className="learn-qr" src={qr} alt={t('done.qrAlt')} />
+            : <p className="learn-reason show" role="alert">{t('done.qrFailed')}</p>}
           <p className="learn-sub">{t('done.hint')}</p>
           {qr && <a className="learn-cta" href={qr} download={QR_FILE}>{t('done.save')}</a>}
           <p className="learn-fine">{t('done.note')}</p>

@@ -9,6 +9,7 @@ import { setToken } from '../lib/session';
 import type { AssignmentRead } from '../lib/training';
 import Reader from './Reader';
 
+const ID = '0b6e5a2c-4f1d-4d57-9a0e-3c1f2a7b8d44';
 const LATER = new Date(Date.now() + 3_600_000).toISOString();
 
 function json(status: number, body: unknown): Response {
@@ -23,7 +24,7 @@ const DOC: AssignmentRead = {
 
 const TRAINING = {
   groups: [{ initiative: null, due_on: null, items: [1, 2, 3, 4, 5].map((n) => ({
-    assignment_id: n === 4 ? 'a-4' : `a-${n}`, title: `Doc ${n}`, status: 'assigned', minutes: 4,
+    assignment_id: n === 4 ? ID : `a-${n}`, title: `Doc ${n}`, status: 'assigned', minutes: 4,
     has_quiz: false, locked: false, signed_at: null })) }],
   complete: false, badge_uid: null,
 };
@@ -49,7 +50,7 @@ const signBody = (m: ReturnType<typeof api>) => JSON.parse(String(signCalls(m)[0
 
 function renderReader() {
   return render(
-    <MemoryRouter initialEntries={['/training/a-4']}>
+    <MemoryRouter initialEntries={[`/training/${ID}`]}>
       <Routes>
         <Route path="/training/:id" element={<Reader />} />
         <Route path="/training/:id/quiz" element={<p>quiz page</p>} />
@@ -90,7 +91,7 @@ describe('Reader', () => {
     const body = await screen.findByRole('region', { name: 'טקסט המסמך' });
     expect(body.getAttribute('dir')).toBe('rtl');
     expect(body.getAttribute('lang')).toBe('he');
-    expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith('/learn/assignments/a-4?lang=he'))).toBe(true);
+    expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith(`/learn/assignments/${ID}?lang=he`))).toBe(true);
   });
 
   it('shows the not-translated and what-changed notices', async () => {
@@ -101,10 +102,15 @@ describe('Reader', () => {
     expect(screen.getByText('What changed: Dock hours moved to 7 AM.')).toBeTruthy();
   });
 
-  it('goes to the quiz first when the document has one that is not passed', async () => {
+  it('shows the document first, and "Take the quiz" in place of the signature while the quiz is open', async () => {
     api({ has_quiz: true, quiz_passed: false });
     renderReader();
-    expect(await screen.findByText('quiz page')).toBeTruthy();
+    expect(await screen.findByText('Badges')).toBeTruthy();
+    const quiz = screen.getByRole('link', { name: 'Take the quiz' });
+    expect(quiz.getAttribute('href')).toBe(`/training/${ID}/quiz`);
+    expect(screen.queryByRole('button', { name: 'Sign and continue' })).toBeNull();
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.queryByLabelText('Type your full name to sign')).toBeNull();
   });
 
   it('shows the sign step once the quiz is passed', async () => {
@@ -122,15 +128,15 @@ describe('Reader', () => {
     expect((sign as HTMLButtonElement).disabled).toBe(false);
 
     await user.click(sign);
-    expect(screen.getByRole('alert').textContent).toBe("Tick the box to say you've read it and agree.");
+    expect(screen.getByRole('status').textContent).toBe("Tick the box to say you've read it and agree.");
 
     await user.click(screen.getByRole('checkbox', { name: "I've read Acme site rules and agree to follow it." }));
     await user.click(sign);
-    expect(screen.getByRole('alert').textContent).toBe('Type your full name to sign.');
+    expect(screen.getByRole('status').textContent).toBe('Type your full name to sign.');
 
     await user.type(screen.getByLabelText('Type your full name to sign'), 'Kenji Watanabe');
     await user.click(sign);
-    expect(screen.getByRole('alert').textContent).toBe('Scroll to the end of the document first.');
+    expect(screen.getByRole('status').textContent).toBe('Scroll to the end of the document first.');
     expect(screen.queryByText(/^Read to the end/)).toBeNull();
     expect(signCalls(fetchMock)).toHaveLength(0);
 
@@ -141,7 +147,7 @@ describe('Reader', () => {
     expect(signBody(fetchMock)).toEqual({
       agreed: true, typed_name: 'Kenji Watanabe', language: 'en', scrolled_to_end: true,
     });
-    expect(String(signCalls(fetchMock)[0][0])).toBe('http://localhost:8000/learn/assignments/a-4/sign');
+    expect(String(signCalls(fetchMock)[0][0])).toBe(`http://localhost:8000/learn/assignments/${ID}/sign`);
   });
 
   it('holds the signature until the minimum reading time has passed', async () => {
@@ -154,7 +160,7 @@ describe('Reader', () => {
 
     await act(async () => { vi.advanceTimersByTime(30_000); });
     fireEvent.click(sign);
-    expect(screen.getByRole('alert').textContent).toBe('Keep reading: you can sign in 1:00.');
+    expect(screen.getByRole('status').textContent).toBe('Keep reading: you can sign in 1:00.');
     expect(signCalls(fetchMock)).toHaveLength(0);
 
     await act(async () => { vi.advanceTimersByTime(60_000); });
@@ -176,7 +182,7 @@ describe('Reader', () => {
     fireEvent.click(screen.getByRole('checkbox'));
 
     fireEvent.click(sign);
-    expect(screen.getByRole('alert').textContent).toBe('Draw your signature to sign.');
+    expect(screen.getByRole('status').textContent).toBe('Draw your signature to sign.');
 
     const pad = screen.getByLabelText('Draw your signature');
     fireEvent.pointerDown(pad, { clientX: 10, clientY: 10, pointerId: 1 });
@@ -201,7 +207,7 @@ describe('Reader', () => {
     await user.click(await screen.findByRole('button', { name: 'Clear' }));
     await user.click(screen.getByRole('checkbox'));
     await user.click(screen.getByRole('button', { name: 'Sign and continue' }));
-    expect(screen.getByRole('alert').textContent).toBe('Draw your signature to sign.');
+    expect(screen.getByRole('status').textContent).toBe('Draw your signature to sign.');
   });
 
   it('a checkbox document needs only the box', async () => {
@@ -223,7 +229,7 @@ describe('Reader', () => {
     fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.change(screen.getByLabelText('Type your full name to sign'), { target: { value: 'Kenji Watanabe' } });
     fireEvent.click(screen.getByRole('button', { name: 'Sign and continue' }));
-    expect((await screen.findByRole('alert')).textContent).toBe('Keep reading: you can sign in 1:15.');
+    expect(await screen.findByText('Keep reading: you can sign in 1:15.')).toBeTruthy();
   });
 
   it('says the document is locked when it is', async () => {
@@ -232,5 +238,59 @@ describe('Reader', () => {
     renderReader();
     expect(await screen.findByText(/This document is locked right now/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+
+  it('is not marked as read to the end when the text grows after it first fit', async () => {
+    const height = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(50);
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(100);
+    api({ html: '<p>Short.</p><img alt="map" src="/map.png">' });
+    renderReader();
+    const sign = await screen.findByRole('button', { name: 'Sign and continue' });
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.change(screen.getByLabelText('Type your full name to sign'), { target: { value: 'Kenji' } });
+    // the image arrives and the text is suddenly taller than the box
+    height.mockReturnValue(1000);
+    fireEvent.load(screen.getByRole('img', { name: 'map' }));
+    fireEvent.click(sign);
+    expect(screen.getByRole('status').textContent).toBe('Scroll to the end of the document first.');
+  });
+
+  it('measures again when the box or its text is resized', async () => {
+    const watchers: (() => void)[] = [];
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: () => void) { watchers.push(cb); }
+      observe() {}
+      disconnect() {}
+    });
+    const height = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(50);
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(100);
+    api();
+    renderReader();
+    const sign = await screen.findByRole('button', { name: 'Sign and continue' });
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.change(screen.getByLabelText('Type your full name to sign'), { target: { value: 'Kenji' } });
+    height.mockReturnValue(1000);
+    act(() => { watchers.forEach((w) => w()); });
+    fireEvent.click(sign);
+    expect(screen.getByRole('status').textContent).toBe('Scroll to the end of the document first.');
+  });
+
+  it.each([
+    ['a path with dots', '..%2F..%2Fauth%2Flogout'],
+    ['a nested path', 'x%2F..%2F..%2Fpeople'],
+    ['a query', 'a-4%3Fx%3D1'],
+  ])('never sends %s from the address to the server', (_what, raw) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    render(
+      <MemoryRouter initialEntries={[`/training/${raw}`]}>
+        <Routes>
+          <Route path="/training/:id" element={<Reader />} />
+          <Route path="/training" element={<p>training page</p>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('training page')).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

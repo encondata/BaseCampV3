@@ -5,8 +5,9 @@
  *
  *  The button always works: tapping it before the sign-off is ready says
  *  why (agree, name or drawing, scroll, time left) instead of sitting
- *  disabled. The server checks the same rules and has the last word. A
- *  document with a quiz opens the quiz first and comes back here, with the
+ *  disabled. The server checks the same rules and has the last word. The
+ *  order is read, quiz, sign: a document with a quiz that isn't passed yet
+ *  swaps the signature for "Take the quiz", and the worker comes back here,
  *  quiz passed, to sign. */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
@@ -18,6 +19,7 @@ import SignaturePad from '../components/SignaturePad';
 import type { MessageKey } from '../i18n/en';
 import { errorKey } from '../lib/errors';
 import { mmss } from '../lib/format';
+import { isUuid } from '../lib/ids';
 import { getLang, t, useLang } from '../lib/i18n';
 import { getAssignment, getTraining, signAssignment, type AssignmentRead } from '../lib/training';
 import { useLoad } from '../lib/useLoad';
@@ -45,7 +47,11 @@ function ReaderBody({ id, doc, place }: {
   const box = useRef<HTMLDivElement>(null);
   const started = useRef(Date.now());
   const [now, setNow] = useState(Date.now());
-  const [scrolled, setScrolled] = useState(false);
+  // the worker scrolled to the bottom (stays true), or the text fits the
+  // box and there is nothing to scroll (re-checked as images load)
+  const [reached, setReached] = useState(false);
+  const [fits, setFits] = useState(false);
+  const scrolled = reached || fits;
   // the server's own clock said "not yet": hold off until then
   const [holdUntil, setHoldUntil] = useState(0);
   const [agreed, setAgreed] = useState(false);
@@ -54,13 +60,27 @@ function ReaderBody({ id, doc, place }: {
   const [reason, setReason] = useState<Reason | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const checkFit = () => {
+    const el = box.current;
+    if (el) setFits(el.scrollHeight <= el.clientHeight + 8);
+  };
   const checkEnd = () => {
     const el = box.current;
-    // a document that fits without scrolling is already at its end
-    if (el && el.scrollTop + el.clientHeight >= el.scrollHeight - 8) setScrolled(true);
+    if (el && el.scrollTop + el.clientHeight >= el.scrollHeight - 8) setReached(true);
   };
-  useLayoutEffect(checkEnd, [doc.html]);
+  useLayoutEffect(checkFit, [doc.html]);
+  // text that grows after the first paint (images arriving, the window
+  // turning) is measured again
+  useEffect(() => {
+    const el = box.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const watch = new ResizeObserver(checkFit);
+    watch.observe(el);
+    if (el.firstElementChild) watch.observe(el.firstElementChild);
+    return () => watch.disconnect();
+  }, [doc.html]);
 
+  const needsQuiz = doc.has_quiz && !doc.quiz_passed;
   const minSeconds = doc.min_read_seconds ?? 0;
   const elapsed = Math.floor((now - started.current) / 1000);
   const left = Math.max(0, minSeconds - elapsed, Math.ceil((holdUntil - now) / 1000));
@@ -138,11 +158,12 @@ function ReaderBody({ id, doc, place }: {
       {doc.change_note && <p className="learn-banner">{t('reader.changed', { note: doc.change_note })}</p>}
 
       <div ref={box} className="learn-doc" role="region" aria-label={t('reader.body')} tabIndex={0}
-           lang={doc.language} dir={rtl ? 'rtl' : 'ltr'} onScroll={checkEnd}
-           // the server sanitizes the HTML and snapshots the version
-           dangerouslySetInnerHTML={{ __html: doc.html }} />
+           lang={doc.language} dir={rtl ? 'rtl' : 'ltr'} onScroll={checkEnd} onLoadCapture={checkFit}>
+        {/* the server sanitizes the HTML and snapshots the version */}
+        <div dangerouslySetInnerHTML={{ __html: doc.html }} />
+      </div>
 
-      {(doc.require_scroll || minSeconds > 0) && scrolled && left <= 0 && (
+      {!needsQuiz && (doc.require_scroll || minSeconds > 0) && scrolled && left <= 0 && (
         <p className="learn-readdone">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
                strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="m8 12.5 3 3 5-6" /></svg>
@@ -150,46 +171,48 @@ function ReaderBody({ id, doc, place }: {
         </p>
       )}
 
-      <label className="learn-agree">
-        <input type="checkbox" checked={agreed} disabled={busy}
-               onChange={(e) => { setAgreed(e.target.checked); setReason(null); }} />
-        <span>{t('reader.agree', { title: doc.title })}</span>
-      </label>
+      {needsQuiz ? (
+        <Link className="learn-cta" to={`/training/${encodeURIComponent(id)}/quiz`}>{t('reader.takeQuiz')}</Link>
+      ) : (
+        <>
+          <label className="learn-agree">
+            <input type="checkbox" checked={agreed} disabled={busy}
+                   onChange={(e) => { setAgreed(e.target.checked); setReason(null); }} />
+            <span>{t('reader.agree', { title: doc.title })}</span>
+          </label>
 
-      {doc.sign_style === 'typed_name' && (
-        <div className="learn-field">
-          <label htmlFor="learn-sign-name">{t('reader.typeName')}</label>
-          <input id="learn-sign-name" className="learn-sig" type="text" autoComplete="name" value={name}
-                 disabled={busy} onChange={(e) => { setName(e.target.value); setReason(null); }} />
-        </div>
-      )}
-      {doc.sign_style === 'drawn_signature' && (
-        <div className="learn-field">
-          <span className="learn-fieldlabel">{t('reader.drawSignature')}</span>
-          <SignaturePad onChange={(png) => { setDrawn(png); setReason(null); }} />
-        </div>
-      )}
+          {doc.sign_style === 'typed_name' && (
+            <div className="learn-field">
+              <label htmlFor="learn-sign-name">{t('reader.typeName')}</label>
+              <input id="learn-sign-name" className="learn-sig" type="text" autoComplete="name" value={name}
+                     disabled={busy} onChange={(e) => { setName(e.target.value); setReason(null); }} />
+            </div>
+          )}
+          {doc.sign_style === 'drawn_signature' && (
+            <div className="learn-field">
+              <span className="learn-fieldlabel">{t('reader.drawSignature')}</span>
+              <SignaturePad onChange={(png) => { setDrawn(png); setReason(null); }} />
+            </div>
+          )}
 
-      <p className={`learn-reason ${reason ? 'show' : ''}`} role={reason ? 'alert' : undefined}>
-        {reason ? t(reason.key, reason.vars) : ''}
-      </p>
-      <button type="button" className="learn-cta" onClick={sign} disabled={busy}>
-        {busy ? t('reader.signing') : t('reader.sign')}
-      </button>
+          {/* always mounted, so a screen reader hears the text when it changes */}
+          <p className={`learn-reason ${reason ? 'show' : ''}`} role="status" aria-live="polite">
+            {reason ? t(reason.key, reason.vars) : ''}
+          </p>
+          <button type="button" className="learn-cta" onClick={sign} disabled={busy}>
+            {busy ? t('reader.signing') : t('reader.sign')}
+          </button>
+        </>
+      )}
     </>
   );
 }
 
-export default function Reader() {
+function ReaderPage({ id }: { id: string }) {
   useLang();
   const lang = getLang();
-  const { id = '' } = useParams();
   const doc = useLoad(() => getAssignment(id, lang), [id, lang]);
   const place = useLoad(() => position(id), [id]);
-
-  if (doc.data?.has_quiz && !doc.data.quiz_passed) {
-    return <Navigate to={`/training/${id}/quiz`} replace />;
-  }
   return (
     <main className="learn-page learn-reader">
       {doc.data
@@ -197,4 +220,10 @@ export default function Reader() {
         : <LoadState error={doc.error} onRetry={doc.reload} />}
     </main>
   );
+}
+
+export default function Reader() {
+  const { id = '' } = useParams();
+  // the id is typed into the address bar: only a real one goes into a path
+  return isUuid(id) ? <ReaderPage id={id} /> : <Navigate to="/training" replace />;
 }

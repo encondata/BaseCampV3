@@ -8,6 +8,7 @@ import { setLang } from '../lib/i18n';
 import { setToken } from '../lib/session';
 import Quiz from './Quiz';
 
+const ID = '5d1c9b3e-7a42-4e08-b6f1-90c2d4e8a119';
 const LATER = new Date(Date.now() + 3_600_000).toISOString();
 
 function json(status: number, body: unknown): Response {
@@ -27,7 +28,7 @@ function api(grade: unknown | ((n: number) => unknown)) {
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith('/learn/training')) {
       return json(200, { groups: [{ initiative: null, due_on: null, items: [{
-        assignment_id: 'a-9', title: 'Acme NDA', status: 'opened', minutes: 3, has_quiz: true,
+        assignment_id: ID, title: 'Acme NDA', status: 'opened', minutes: 3, has_quiz: true,
         locked: false, signed_at: null }] }], complete: false, badge_uid: null });
     }
     if (init?.method === 'POST') {
@@ -43,7 +44,7 @@ function api(grade: unknown | ((n: number) => unknown)) {
 
 function renderQuiz() {
   return render(
-    <MemoryRouter initialEntries={['/training/a-9/quiz']}>
+    <MemoryRouter initialEntries={[`/training/${ID}/quiz`]}>
       <Routes>
         <Route path="/training/:id/quiz" element={<Quiz />} />
         <Route path="/training/:id" element={<p>reader page</p>} />
@@ -76,6 +77,8 @@ describe('Quiz', () => {
     expect(await screen.findByText('Question 1 of 2')).toBeTruthy();
     expect(screen.getByText('Acme NDA · quiz')).toBeTruthy();
     expect(screen.getByText('Choose one answer.')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Read the document again' }).getAttribute('href'))
+      .toBe(`/training/${ID}`);
     const check = screen.getByRole('button', { name: 'Check answer' }) as HTMLButtonElement;
     expect(check.disabled).toBe(true);
 
@@ -91,7 +94,7 @@ describe('Quiz', () => {
 
     expect(await screen.findByText('You scored 100%')).toBeTruthy();
     expect(posted(fetchMock)).toEqual([[
-      'http://localhost:8000/learn/assignments/a-9/quiz',
+      `http://localhost:8000/learn/assignments/${ID}/quiz`,
       { answers: { q1: ['c2'], q2: ['d1', 'd3'] } },
     ]]);
 
@@ -106,6 +109,8 @@ describe('Quiz', () => {
     await answerBoth(user);
     expect(await screen.findByText('You scored 50%')).toBeTruthy();
     expect(screen.getByText(/That's not a pass yet\. 1 try left/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Read the document again' }).getAttribute('href'))
+      .toBe(`/training/${ID}`);
     const gets = () => fetchMock.mock.calls.filter(([u, i]) => u.includes('/quiz') && !i?.method).length;
     expect(gets()).toBe(1);
     await user.click(screen.getByRole('button', { name: 'Try again' }));
@@ -120,6 +125,8 @@ describe('Quiz', () => {
     await answerBoth(user);
     expect(await screen.findByText("You've used all your tries. Your lead has been notified.")).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(screen.getByRole('link', { name: 'Read the document again' }).getAttribute('href'))
+      .toBe(`/training/${ID}`);
     expect(screen.getByRole('link', { name: 'Back to my training' }).getAttribute('href')).toBe('/training');
   });
 
@@ -132,4 +139,20 @@ describe('Quiz', () => {
     await waitFor(() => expect((screen.getByRole('button', { name: 'See my score' }) as HTMLButtonElement).disabled).toBe(false));
     expect((screen.getByRole('checkbox', { name: 'Badge on show' }) as HTMLInputElement).checked).toBe(true);
   });
+
+  it.each([['a path with dots', '..%2F..%2Fauth%2Flogout'], ['a nested path', 'x%2F..%2F..%2Fpeople']])(
+    'never sends %s from the address to the server', (_what, raw) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+      render(
+        <MemoryRouter initialEntries={[`/training/${raw}/quiz`]}>
+          <Routes>
+            <Route path="/training/:id/quiz" element={<Quiz />} />
+            <Route path="/training" element={<p>training page</p>} />
+          </Routes>
+        </MemoryRouter>,
+      );
+      expect(screen.getByText('training page')).toBeTruthy();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
 });

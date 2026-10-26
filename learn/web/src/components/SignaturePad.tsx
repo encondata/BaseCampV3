@@ -29,9 +29,17 @@ export default function SignaturePad({ onChange }: { onChange: (png: string | nu
     ctx.strokeStyle = INK;
   }, []);
 
+  /** Where the pointer is on the drawing surface. The backing store was
+   *  sized once, so when the box is resized or the phone turns the canvas
+   *  is stretched; the pointer is scaled back to the surface's own units
+   *  (the strokes drawn so far keep their proportions). */
   const point = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const box = e.currentTarget.getBoundingClientRect();
-    return { x: e.clientX - box.left, y: e.clientY - box.top };
+    const el = e.currentTarget;
+    const box = el.getBoundingClientRect();
+    const ratio = window.devicePixelRatio || 1;
+    const sx = box.width ? el.width / ratio / box.width : 1;
+    const sy = box.height ? el.height / ratio / box.height : 1;
+    return { x: (e.clientX - box.left) * sx, y: (e.clientY - box.top) * sy };
   };
 
   const down = (e: React.PointerEvent<HTMLCanvasElement>) => {

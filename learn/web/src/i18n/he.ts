@@ -69,6 +69,7 @@ export const he: Dictionary = {
   'reader.drawSignature': 'ציירו את החתימה שלכם',
   'reader.clear': 'ניקוי',
   'reader.sign': 'חתימה והמשך',
+  'reader.takeQuiz': 'למעבר לחידון',
   'reader.signing': 'חותם…',
 
   'sign.mustAgree': 'סמנו את התיבה כדי לאשר שקראתם ואתם מסכימים.',
@@ -93,6 +94,7 @@ export const he: Dictionary = {
   'quiz.oneTryLeft': 'נותר ניסיון אחד',
   'quiz.tryAgain': 'ניסיון נוסף',
   'quiz.locked': 'ניצלתם את כל הניסיונות. המנהל שלכם קיבל הודעה.',
+  'quiz.readAgain': 'קריאה חוזרת של המסמך',
   'quiz.back': 'חזרה להדרכה שלי',
 
   'done.title': 'הכול מוכן, {name}',
@@ -102,6 +104,7 @@ export const he: Dictionary = {
   'done.hint': 'קוד שעון הנוכחות שלכם. סרקו אותו בעמדה כשאתם נכנסים למשמרת.',
   'done.save': 'שמירה בטלפון',
   'done.note': 'שלחנו אותו גם באימייל. אל תשתפו אותו: הוא רושם אתכם בכניסה.',
+  'done.qrFailed': 'לא הצלחנו להציג את קוד שעון הנוכחות. טענו את הדף מחדש ונסו שוב.',
   'done.back': 'חזרה להדרכה שלי',
 
   'crash.title': 'משהו השתבש',

@@ -129,7 +129,9 @@ body { background: #FFF9F2; }
 .learn-cta:disabled { opacity: .6; cursor: default }
 .learn-cta:focus-visible, .learn-link:focus-visible, .learn-task .row:focus-visible { outline: 3px solid var(--l-ink); outline-offset: 2px }
 .learn-link {
-  border: 0; background: transparent; padding: 0; cursor: pointer; font: inherit; font-size: 13px;
+  /* a 44px-tall target for a thumb, though the text is small */
+  display: inline-flex; align-items: center; justify-content: center; min-block-size: 44px; min-inline-size: 44px;
+  border: 0; background: transparent; padding: 0 8px; cursor: pointer; font: inherit; font-size: 13px;
   color: #B45309; text-decoration: none; align-self: center;
 }
 .learn-page .learn-langs {
@@ -145,7 +147,7 @@ body { background: #FFF9F2; }
 
 /* reader and quiz */
 .learn-readhead { display: flex; align-items: center; gap: 10px }
-.learn-backlink { display: grid; place-items: center; inline-size: 36px; block-size: 36px; color: var(--l-ink); flex: none }
+.learn-backlink { display: grid; place-items: center; inline-size: 44px; block-size: 44px; color: var(--l-ink); flex: none }
 .learn-backlink svg { inline-size: 20px; block-size: 20px }
 [dir='rtl'] .learn-backlink svg { transform: scaleX(-1) }
 .learn-doctitle { margin: 0; font-size: 17px; font-weight: 500; line-height: 1.3 }
@@ -159,7 +161,7 @@ body { background: #FFF9F2; }
   font-size: 14px; line-height: 1.65; color: #434b57;
 }
 .learn-doc h1, .learn-doc h2, .learn-doc h3, .learn-doc h4 { font-size: 15px; font-weight: 500; margin: 14px 0 4px; color: var(--l-ink) }
-.learn-doc > :first-child { margin-block-start: 0 }
+.learn-doc > div > :first-child { margin-block-start: 0 }
 .learn-doc img { max-inline-size: 100%; block-size: auto }
 .learn-doc table { border-collapse: collapse; max-inline-size: 100% }
 .learn-doc th, .learn-doc td { border: 1px solid var(--l-line); padding: 4px 8px }
@@ -171,7 +173,7 @@ body { background: #FFF9F2; }
 .learn-field label, .learn-fieldlabel { font-size: 12px; color: var(--l-mute) }
 .learn-sig {
   box-sizing: border-box; inline-size: 100%; padding: 11px 12px; border: 1.5px solid var(--l-line);
-  border-radius: 10px; background: #fff; font-family: 'Caveat', cursive; font-size: 24px; color: #1f3a8a;
+  border-radius: 10px; background: #fff; font-family: 'Geologica', sans-serif; font-style: italic; font-size: 22px; color: #1f3a8a;
 }
 .learn-sig:focus { outline: none; border-color: var(--l-orange); box-shadow: 0 0 0 3px var(--l-orange-bg) }
 .learn-sigpad { display: flex; flex-direction: column; gap: 6px }
