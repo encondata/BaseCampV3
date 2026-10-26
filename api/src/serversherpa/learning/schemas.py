@@ -1,0 +1,165 @@
+"""Pydantic schemas for the learning API (every learning route's bodies and
+responses live here)."""
+
+import uuid
+from datetime import datetime
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+
+ResignRule = Literal["every_initiative", "expired_or_new_version"]
+SignStyle = Literal["checkbox", "typed_name", "drawn_signature"]
+QuizFailAction = Literal["retry", "lock"]
+
+# the wiki's own limits: a node title, a publish note
+Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+Note = Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)]
+
+# settings that can't be cleared (NOT NULL columns)
+_NOT_NULL = ("title", "wiki_node_id", "resign_rule", "sign_style", "require_scroll",
+             "quiz_enabled", "quiz_fail_action")
+
+
+# ── documents ────────────────────────────────────────────────────────
+
+
+class DocumentSettings(BaseModel):
+    """A document's reading and sign-off settings, checked as a whole: a
+    quiz needs a pass mark, and locking after failures needs an attempt
+    limit. Quiz fields are kept (and ignored) while the quiz is off."""
+    model_config = ConfigDict(extra="forbid")
+
+    summary: Note | None = None
+    validity_days: int | None = Field(default=None, ge=1)     # null = never expires
+    resign_rule: ResignRule = "expired_or_new_version"
+    sign_style: SignStyle = "typed_name"
+    require_scroll: bool = True
+    min_read_seconds: int | None = Field(default=None, ge=1)
+    quiz_enabled: bool = False
+    quiz_pass_percent: int | None = Field(default=None, ge=1, le=100)
+    quiz_max_attempts: int | None = Field(default=None, ge=1)
+    quiz_fail_action: QuizFailAction = "retry"
+
+    @model_validator(mode="after")
+    def _quiz(self):
+        if self.quiz_enabled and self.quiz_pass_percent is None:
+            raise ValueError("A quiz needs a pass mark (quiz_pass_percent).")
+        if (self.quiz_enabled and self.quiz_fail_action == "lock"
+                and self.quiz_max_attempts is None):
+            raise ValueError("Locking after failed attempts needs quiz_max_attempts.")
+        return self
+
+
+SETTING_FIELDS = tuple(DocumentSettings.model_fields)
+
+
+class DocumentCreateIn(DocumentSettings):
+    title: Title
+    wiki_node_id: uuid.UUID
+
+
+class DocumentPatchIn(BaseModel):
+    """Only the keys sent change; the merged settings are then checked as
+    `DocumentSettings`. Null clears the nullable settings only."""
+    model_config = ConfigDict(extra="forbid")
+
+    title: Title | None = None
+    wiki_node_id: uuid.UUID | None = None
+    summary: Note | None = None
+    validity_days: int | None = Field(default=None, ge=1)
+    resign_rule: ResignRule | None = None
+    sign_style: SignStyle | None = None
+    require_scroll: bool | None = None
+    min_read_seconds: int | None = Field(default=None, ge=1)
+    quiz_enabled: bool | None = None
+    quiz_pass_percent: int | None = Field(default=None, ge=1, le=100)
+    quiz_max_attempts: int | None = Field(default=None, ge=1)
+    quiz_fail_action: QuizFailAction | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_nulls(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            for key in _NOT_NULL:
+                if key in data and data[key] is None:
+                    raise ValueError(f"{key} can't be cleared.")
+        return data
+
+
+class PublishIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    change_note: Note | None = None
+
+
+class PersonRef(BaseModel):
+    id: uuid.UUID
+    name: str
+
+
+class WikiPageRef(BaseModel):
+    id: uuid.UUID
+    title: str
+    published_version_no: int | None
+
+
+class VersionSummary(BaseModel):
+    id: uuid.UUID
+    version_no: int
+    wiki_version_no: int | None
+    title: str
+    change_note: str | None
+    published_at: datetime
+    published_by: PersonRef | None
+
+
+class VersionOut(VersionSummary):
+    html: str
+
+
+class DocumentOut(BaseModel):
+    id: uuid.UUID
+    title: str
+    summary: str | None
+    validity_days: int | None
+    resign_rule: str
+    sign_style: str
+    require_scroll: bool
+    min_read_seconds: int | None
+    quiz_enabled: bool
+    quiz_pass_percent: int | None
+    quiz_max_attempts: int | None
+    quiz_fail_action: str
+    wiki_node_id: uuid.UUID | None
+    # the linked wiki page, null once it's trashed, purged or moved out
+    wiki_page: WikiPageRef | None
+    # the wiki page has a published version newer than the current snapshot
+    has_wiki_changes: bool
+    current_version_id: uuid.UUID | None
+    current_version_no: int | None
+    current_html: str | None
+    versions: list[VersionSummary]
+    archived_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class DocumentListItem(BaseModel):
+    id: uuid.UUID
+    title: str
+    current_version_no: int | None
+    published_at: datetime | None
+    packets: list[str]
+    signoff_count: int
+    # language → its newest translation's status, or "out_of_date" when
+    # that translation is of an older version than the current one
+    languages: dict[str, str]
+    archived_at: datetime | None
+
+
+class WikiPageOption(BaseModel):
+    """A page in the learning space, for the "link a page" picker."""
+    id: uuid.UUID
+    title: str
+    path: list[str]                     # ancestor titles, root first
+    published_version_no: int | None
