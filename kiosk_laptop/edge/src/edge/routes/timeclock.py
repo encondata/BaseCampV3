@@ -12,8 +12,10 @@ link" and the admin learning override forwarded to the portal's
 `/kiosk/station/timeclock/*` under the station key with the laptop's
 serial (plus the browser's own zone, `tz`, when it is a short string: the
 portal's "today" when the site has no zone). Clock-in also carries
-`learning_override_id`, and the override its own fields (the admin's
-credentials among them: forwarded, never logged or stored). The portal's
+`learning_override_id` when it is a UUID (anything else is dropped: the
+punch goes ahead either way), and the override its own fields (the admin's
+credentials among them: forwarded, never logged or stored; the portal
+refuses them with 403s, never a 401, which would drop the key). The portal's
 status and JSON body come back as they are, so the browser sees its
 `{"detail": {"code": ...}}`; no key is 409 `station_not_ready`, an
 unreachable portal 503 `edge_offline`."""
@@ -129,6 +131,17 @@ async def _json_body(request: Request) -> dict:
     return body if isinstance(body, dict) else {}
 
 
+def _override_id(value) -> str | None:
+    """A learning override id when it is a UUID, else None: an odd value is
+    dropped, never a reason to refuse the punch."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        return None
+
+
 def _punch_body(request: Request, body: dict) -> dict:
     """The portal's punch body: the laptop's serial, the person, and `tz`
     when the browser sent a usable one."""
@@ -167,8 +180,9 @@ async def status(request: Request, person_id: str, tz: str | None = None) -> Res
 async def clock_in(request: Request) -> Response:
     body = await _json_body(request)
     out = _punch_body(request, body)
-    if body.get("learning_override_id") is not None:
-        out["learning_override_id"] = body["learning_override_id"]
+    override_id = _override_id(body.get("learning_override_id"))
+    if override_id is not None:
+        out["learning_override_id"] = override_id
     return await _forward(request, "POST", CLOCK_IN_PATH, json=out)
 
 
@@ -180,9 +194,9 @@ async def clock_out(request: Request) -> Response:
 
 @router.post("/learning-link", dependencies=[Depends(require_display)])
 async def learning_link(request: Request) -> Response:
-    """"Email me the link": the laptop's serial and the person only."""
+    """"Email me the link": the laptop's serial, the person and `tz` (the
+    local day a "day" override covers)."""
     body = _punch_body(request, await _json_body(request))
-    body.pop("tz", None)
     return await _forward(request, "POST", LEARNING_LINK_PATH, json=body)
 
 

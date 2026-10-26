@@ -41,11 +41,6 @@ log = logging.getLogger("edge.rfid.station_key")
 ISSUE_PATH = "/kiosk/station-key"
 RETRY_S = 60.0
 NOT_REGISTERED = "kiosk_not_registered"
-# 401s a station route gives about an admin's credentials (the time clock's
-# learning override), never about the key: they pass through, key kept
-ADMIN_CREDENTIAL_CODES = frozenset({
-    "invalid_credentials", "account_disabled", "totp_required", "totp_invalid",
-    "totp_enroll_required", "totp_not_enrolled"})
 EVENT_KIND = "station"
 PAUSED_TITLE = "Uploads paused"
 PAUSED_DETAIL = ("This laptop's kiosk registration has expired. "
@@ -267,9 +262,7 @@ async def request_as_station(upstream: Upstream, method: str, path: str,
     heartbeat reply would, but only when it dropped the key that was sent:
     a stale refusal never wipes a newer setup and key. A 403
     `kiosk_not_registered` keeps the key and pauses (one event per
-    transition); a 200 resumes. A 401 whose code is in
-    ADMIN_CREDENTIAL_CODES is the learning override refusing an admin's
-    credentials, not the key: it passes through and the key is kept."""
+    transition); a 200 resumes."""
     row = upstream.store.one("SELECT key_enc FROM station_key WHERE id = 1")
     raw = load_key(upstream.store, upstream.keys)
     if raw is None or row is None:
@@ -277,7 +270,7 @@ async def request_as_station(upstream: Upstream, method: str, path: str,
     headers = dict(kw.pop("headers", None) or {})
     headers["Authorization"] = f"Station {raw}"
     resp = await upstream.request(method, path, headers=headers, **kw)
-    if resp.status_code == 401 and _code(resp) not in ADMIN_CREDENTIAL_CODES:
+    if resp.status_code == 401:
         dropped = upstream.store.run("DELETE FROM station_key WHERE key_enc = ?",
                                      (row["key_enc"],))
         if not dropped:  # a newer key (a new setup) arrived meanwhile: this refusal is stale

@@ -4082,8 +4082,10 @@ class KioskClockInIn(BaseModel):
     # has none (see `timeclock.site_zone`).
     tz: str | None = Field(None, max_length=64)
     # the admin override this punch was let through on (learning-override):
-    # that person's, made on this kiosk, today, not yet used
-    learning_override_id: uuid.UUID | None = None
+    # that person's, made on this kiosk, today, not yet used. A plain
+    # string: anything else (malformed, someone else's, used) never
+    # refuses the punch, it is only recorded on the audit
+    learning_override_id: str | None = None
 
 
 class KioskClockOutIn(BaseModel):
@@ -4105,18 +4107,21 @@ class KioskStationClockIn(BaseModel):
     person_id: uuid.UUID
     tz: str | None = Field(None, max_length=64)   # as KioskClockInIn
     # clock-in only, as KioskClockInIn (clock-out ignores it)
-    learning_override_id: uuid.UUID | None = None
+    learning_override_id: str | None = None
 
 
 class KioskLearningLinkIn(BaseModel):
-    """"Email me the link" at the time clock."""
+    """"Email me the link" at the time clock. `tz` as on the punches (the
+    local day a "day" override covers)."""
 
     serial: str = Field(min_length=1, max_length=120)
     person_id: uuid.UUID
+    tz: str | None = Field(None, max_length=64)
 
 
 class KioskLearningLinkOut(BaseModel):
-    # false: nothing outstanding, no address, or one already sent this minute
+    # false: nothing the station would warn about, no address, or one
+    # already sent this minute
     sent: bool
 
 

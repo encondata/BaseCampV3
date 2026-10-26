@@ -29,7 +29,7 @@ from serversherpa.api.deps import (
     rate_limit_ip, require_permission, session_started_at, station_device,
 )
 from serversherpa.api.routes.auth import (
-    _scope_out, person_out, session_response, totp_status_out,
+    RESET_WINDOW_SECONDS, _scope_out, person_out, session_response, totp_status_out,
 )
 from serversherpa.api.routes.labels import vocab_usage as _vocab_usage
 from serversherpa.api.schemas import (
@@ -86,7 +86,6 @@ from serversherpa.labels.template_fonts import design_fonts, fonts_used
 from serversherpa.learning import timeclock as learning_timeclock
 from serversherpa.learning.models import LearningOverride
 from serversherpa.services import auth as auth_service
-from serversherpa.services.auth import AuthError
 from serversherpa.services import biometric
 from serversherpa.services import kiosk_config
 from serversherpa.services import kiosk_pairing as pairing
@@ -101,6 +100,7 @@ from serversherpa.services.kiosk_registration import (  # noqa: F401 (re-exporte
 )
 from serversherpa.services.password_policy import load_policy
 from serversherpa.services.storage import delete_object, get_object, presign_get, put_object
+from serversherpa.wiki.share_links import IpRateLimiter
 
 router = APIRouter(prefix="/kiosk", tags=["kiosk"])
 logger = logging.getLogger("serversherpa.api.routes.kiosk")
@@ -2404,21 +2404,29 @@ async def _learning_out(
     return KioskLearningBlock(**block) if block else None
 
 
+# the most of a rejected override id the clock-in audit keeps
+_REJECTED_ID_MAX = 64
+
+
 async def _claim_override(
-    db: AsyncSession, override_id: uuid.UUID | None, person: Person, device: Device,
-    tz: ZoneInfo,
-) -> LearningOverride | None:
-    """The learning override a clock-in names (none named: None): that
-    person's, made on this kiosk, today in `tz`, not used by another punch,
-    else 422 `bad_learning_override` before anything is punched."""
-    if override_id is None:
-        return None
+    db: AsyncSession, raw_id: str | None, person: Person, device: Device, tz: ZoneInfo,
+) -> tuple[LearningOverride | None, str | None]:
+    """The learning override a clock-in names, as (row, rejected id). The
+    row when it is that person's, made on this kiosk, today in `tz` and not
+    used by another punch; otherwise the punch still goes ahead (the time
+    clock never refuses one on learning) and the id comes back to be
+    recorded as `learning_override_rejected`. Nothing named: (None, None)."""
+    if raw_id is None:
+        return None, None
+    rejected = raw_id[:_REJECTED_ID_MAX]
+    try:
+        override_id = uuid.UUID(raw_id)
+    except ValueError:
+        return None, rejected
     row = await learning_timeclock.claim_override(
         db, override_id, person_id=person.id, device_id=device.id,
         today=datetime.now(tz).date())
-    if row is None:
-        raise _err(422, "bad_learning_override")
-    return row
+    return (row, None) if row is not None else (None, rejected)
 
 
 async def _open_shift(
@@ -2426,11 +2434,13 @@ async def _open_shift(
     actor_id: uuid.UUID | None, initiative_id: uuid.UUID | None,
     site_id: uuid.UUID | None, via: str,
     learning_override: LearningOverride | None = None,
+    learning_override_rejected: str | None = None,
 ) -> TimeEntry:
     """Open `person`'s shift on `device`, stamped now, and audit it
     (`kiosk_clock_in`, `via` "session" or "station_key"). 409
     `already_clocked_in` carries the open entry's id. A claimed
-    `learning_override` is linked to the new entry. Not committed."""
+    `learning_override` is linked to the new entry; an id that wasn't
+    (`learning_override_rejected`) is only recorded. Not committed."""
     open_entry = await timeclock.open_entry_for(db, person.id)
     if open_entry is not None:
         raise _err(409, "already_clocked_in", entry_id=str(open_entry.id))
@@ -2455,6 +2465,8 @@ async def _open_shift(
     if learning_override is not None:
         learning_override.time_entry_id = entry.id
         changes["learning_override_id"] = str(learning_override.id)
+    if learning_override_rejected is not None:
+        changes["learning_override_rejected"] = learning_override_rejected
     audit(db, actor_id=actor_id, entity_type="time_entry",
           entity_id=str(entry.id), action="kiosk_clock_in", changes=changes)
     return entry
@@ -2509,7 +2521,9 @@ async def timeclock_status(
     entry = await timeclock.open_entry_for(db, person.id)
     last_entry = (None if entry is not None
                   else await timeclock.last_closed_entry_for(db, person.id))
-    # learning: the kiosk's move, else the session's own (a move password)
+    # learning: the kiosk's move. With no kiosk known (no serial, or not a
+    # kiosk) it falls back to the session's move lock (a move-password
+    # sign-in), and to the general set (no move) for a person session
     learning = await _learning_out(
         db, person.id,
         device.current_initiative_id if device else actor.session.initiative_id,
@@ -2543,10 +2557,12 @@ async def timeclock_clock_in(
     if initiative_id is not None and await db.get(Initiative, initiative_id) is None:
         raise _err(422, "bad_initiative")
     zone = await timeclock.site_zone(db, device.site_id, body.tz)
-    override = await _claim_override(db, body.learning_override_id, person, device, zone)
+    override, rejected = await _claim_override(
+        db, body.learning_override_id, person, device, zone)
     entry = await _open_shift(db, device, person, actor_id=actor.person.id,
                               initiative_id=initiative_id, site_id=site_id,
-                              via="session", learning_override=override)
+                              via="session", learning_override=override,
+                              learning_override_rejected=rejected)
     await db.commit()
     return await _status_out(db, person, entry, tz=zone)
 
@@ -2618,11 +2634,13 @@ async def station_timeclock_clock_in(
     await enforce_read_only_config(db, request)
     person = await _timeclock_person(db, body.person_id)
     zone = await timeclock.site_zone(db, device.site_id, body.tz)
-    override = await _claim_override(db, body.learning_override_id, person, device, zone)
+    override, rejected = await _claim_override(
+        db, body.learning_override_id, person, device, zone)
     entry = await _open_shift(db, device, person, actor_id=None,
                               initiative_id=device.current_initiative_id,
                               site_id=device.site_id, via="station_key",
-                              learning_override=override)
+                              learning_override=override,
+                              learning_override_rejected=rejected)
     await db.commit()
     return await _status_out(db, person, entry, tz=zone)
 
@@ -2654,15 +2672,34 @@ async def station_timeclock_clock_out(
 # primitives, no session) and the clock-in names the override it got.
 # Each comes as a station-key route and a session twin for a signed-in
 # kiosk, both on the kiosk's own move and site.
+#
+# Abuse caps: /auth/login itself has no rate limiter, so these reuse the
+# per-process IpRateLimiter with the guessed-secret limit and window of
+# routes/auth.py's password-reset checks (password_reset_confirm_rate_limit
+# per RESET_WINDOW_SECONDS). The override counts refused guesses (a wrong
+# password or code), per kiosk device and per client address, so a busy
+# station's real overrides are never capped; "Email me the link" counts
+# every request per kiosk device. Over the cap: 429 `rate_limited`.
+override_limiter = IpRateLimiter(
+    limit=get_settings().password_reset_confirm_rate_limit, window_seconds=RESET_WINDOW_SECONDS)
+learning_link_limiter = IpRateLimiter(
+    limit=get_settings().password_reset_confirm_rate_limit, window_seconds=RESET_WINDOW_SECONDS)
+# refusals that are a guess at the admin's secrets
+_GUESS_CODES = frozenset({learning_timeclock.CREDENTIALS_INVALID, "totp_invalid"})
 
-# AuthError code -> HTTP status, as /auth/login's; everything else is 401
-_OVERRIDE_STATUS = {"account_locked": 423, "totp_seed_unreadable": 409}
+
+def _device_bucket(device: Device) -> str:
+    return f"device:{device.id}"
 
 
-async def _learning_link(db: AsyncSession, device: Device,
-                         person_id: uuid.UUID) -> KioskLearningLinkOut:
-    person = await _timeclock_person(db, person_id)
-    sent = await learning_timeclock.send_link(db, person.id, device.current_initiative_id)
+async def _learning_link(db: AsyncSession, device: Device, body: KioskLearningLinkIn,
+                         ) -> KioskLearningLinkOut:
+    person = await _timeclock_person(db, body.person_id)
+    if not learning_link_limiter.hit(_device_bucket(device)):
+        raise _err(429, "rate_limited")
+    zone = await timeclock.site_zone(db, device.site_id, body.tz)
+    sent = await learning_timeclock.send_link(
+        db, person.id, device.current_initiative_id, device.site_id, datetime.now(zone).date())
     await db.commit()
     return KioskLearningLinkOut(sent=sent)
 
@@ -2672,25 +2709,35 @@ async def _learning_override(
     via: str, operator_id: uuid.UUID | None = None,
 ) -> KioskLearningOverrideOut:
     """422 `reason_text_required` (checked before the credentials, so a bad
-    form is never a lockout strike); the admin's AuthError as /auth/login
-    answers it (401, 423 `account_locked`), plus 401 `totp_required` when
-    the account has 2FA and no code came; 403 `override_rank`. A refusal
-    commits first so the lockout count and its audit stick."""
+    form is never a lockout strike); 429 `rate_limited` over the guess cap
+    (checked before them too); then 403 for every refusal of the admin:
+    `override_credentials_invalid` (wrong email or password, a disabled or
+    locked account, all alike), `totp_required` (2FA on, no code),
+    `totp_invalid`, `totp_enroll_required`, `override_rank`; 409
+    `totp_seed_unreadable` is the server's own fault. Never 401: a station
+    401 means a revoked key to the laptop edge, and an ended session to
+    the kiosk app. A refusal commits first so the lockout count and its
+    audit stick."""
     person = await _timeclock_person(db, body.person_id)
     reason_text = (body.reason_text or "").strip() or None
     if body.reason == "other" and reason_text is None:
         raise _err(422, "reason_text_required")
+    raw_ip = rate_limit_ip(request)
+    buckets = (_device_bucket(device), raw_ip)
+    if any(override_limiter.exhausted(b) for b in buckets):
+        raise _err(429, "rate_limited")
     ip = client_ip(request)
     try:
         admin = await learning_timeclock.verify_admin(
             db, email=body.admin_email, password=body.admin_password,
             totp_code=body.totp_code, serial=device.serial, ip=ip)
-    except AuthError as exc:
-        await db.commit()
-        raise _err(_OVERRIDE_STATUS.get(exc.code, 401), exc.code) from None
     except learning_timeclock.OverrideRefused as exc:
         await db.commit()
-        raise _err(403, exc.code) from None
+        if exc.code in _GUESS_CODES:
+            for bucket in buckets:
+                override_limiter.hit(bucket)
+        status = 409 if exc.code == "totp_seed_unreadable" else 403
+        raise _err(status, exc.code) from None
     zone = await timeclock.site_zone(db, device.site_id, body.tz)
     row = await learning_timeclock.create_override(
         db, person_id=person.id, admin_id=admin.person_id, device=device,
@@ -2706,11 +2753,12 @@ async def station_learning_link(
 ) -> KioskLearningLinkOut:
     """"Email me the link" at a Time Clock station: a fresh one-click link
     for the station's move (the general set without one). `sent` is false
-    when nothing is open, the person has no usable address, or one already
-    went out this minute."""
+    when the station would not warn this person (nothing outstanding, or a
+    "day" override today), they have no usable address, or one already
+    went out this minute. 429 `rate_limited` over the per-kiosk cap."""
     device = await _timeclock_station(request, db, body.serial)
     await enforce_read_only_config(db, request)
-    return await _learning_link(db, device, body.person_id)
+    return await _learning_link(db, device, body)
 
 
 @router.post("/station/timeclock/learning-override", response_model=KioskLearningOverrideOut)
@@ -2733,7 +2781,7 @@ async def timeclock_learning_link(
     """Session twin of the station's learning-link, on the kiosk's move."""
     device = await _kiosk_device(db, body.serial)
     _require_move(actor, device.current_initiative_id)
-    return await _learning_link(db, device, body.person_id)
+    return await _learning_link(db, device, body)
 
 
 @router.post("/timeclock/learning-override", response_model=KioskLearningOverrideOut)

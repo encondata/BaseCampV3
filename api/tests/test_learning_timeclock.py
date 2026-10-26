@@ -7,8 +7,9 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
+from serversherpa.api.routes import kiosk as kiosk_routes
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
     AuditLog,
@@ -18,7 +19,6 @@ from serversherpa.db.models import (
     Person,
     PersonRole,
     Site,
-    TimeEntry,
     UserAccount,
 )
 from serversherpa.learning import emails
@@ -34,6 +34,7 @@ from tests.test_sites_api import login
 from tests.test_totp_api import _enroll_direct, _next_code, _security
 
 ADMIN_PW = "Admin-Station-Pass9!"
+BAD = "override_credentials_invalid"
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -189,6 +190,27 @@ async def test_status_never_500_without_learning_rows(client, db, seeded_user, m
     assert r.json()["clocked_in"] is True
 
 
+async def test_status_survives_a_sql_error_in_learning(client, db, seeded_user, monkeypatch):
+    """A real database error inside `outstanding()` rolls back only the
+    savepoint: the rest of the status read (today's hours) still runs on
+    the same session."""
+    _, init, key = await _timeclock_station(db)
+    pid = await _owing(db, init)
+
+    async def broken(db, *args, **kwargs):
+        await db.execute(text("SELECT * FROM no_such_learning_table"))
+
+    monkeypatch.setattr(learning_timeclock, "day_override_covers", broken)
+    r = await _status(client, key, pid)
+    assert r.status_code == 200, r.text
+    assert r.json()["learning"] is None
+    assert r.json()["today_minutes"] == 0
+    hdrs = await login(client)
+    r = await client.get(f"/kiosk/timeclock/{pid}", headers=hdrs, params={"serial": SERIAL})
+    assert r.status_code == 200, r.text
+    assert r.json()["learning"] is None
+
+
 async def test_status_session_twin_lists_learning(client, db, seeded_user):
     _, init, _ = await _timeclock_station(db)
     pid = await _owing(db, init)
@@ -268,36 +290,68 @@ async def test_override_writes_row_and_audit_without_a_session(client, db, seede
     assert await _sessions(db, admin_id) == 0
 
 
-async def test_override_bad_password_401_counts_lockout(client, db, seeded_user):
+async def test_override_bad_password_403_counts_lockout(client, db, seeded_user):
     _, init, key = await _timeclock_station(db)
     pid = await _owing(db, init)
     admin_id, email = await _account(db)
 
-    r = await _override(client, key, pid, "nobody@test.example.com")
-    assert r.status_code == 401 and r.json()["detail"]["code"] == "invalid_credentials"
+    def refused(r):
+        return r.status_code == 403 and r.json()["detail"]["code"] == BAD
 
-    r = await _override(client, key, pid, email, "wrong-password")
-    assert r.status_code == 401 and r.json()["detail"]["code"] == "invalid_credentials"
+    assert refused(await _override(client, key, pid, "nobody@test.example.com"))
+    assert refused(await _override(client, key, pid, email, "wrong-password"))
     assert (await _account_row(db, admin_id)).failed_login_count == 1
 
     for _ in range(get_settings().max_failed_logins - 1):
-        r = await _override(client, key, pid, email, "wrong-password")
-        assert r.status_code == 401
+        assert refused(await _override(client, key, pid, email, "wrong-password"))
     account = await _account_row(db, admin_id)
-    assert account.locked_until is not None and account.locked_until > datetime.now(UTC)
-    # locked: even the right password is refused
-    r = await _override(client, key, pid, email)
-    assert r.status_code == 423 and r.json()["detail"]["code"] == "account_locked"
+    locked_until = account.locked_until
+    assert locked_until is not None and locked_until > datetime.now(UTC)
+    # locked: the right password answers exactly like a wrong one, and is
+    # never another strike
+    assert refused(await _override(client, key, pid, email))
+    assert refused(await _override(client, key, pid, email, "wrong-password"))
+    account = await _account_row(db, admin_id)
+    assert (account.failed_login_count, account.locked_until) == (0, locked_until)
     assert await _overrides(db) == []
     assert await _sessions(db, admin_id) == 0
 
-    # a disabled account fails too
+    # a disabled account answers the same
     other_id, other = await _account(db)
     (await _account_row(db, other_id)).disabled_at = datetime.now(UTC)
     await db.commit()
-    r = await _override(client, key, pid, other)
-    assert r.status_code == 401 and r.json()["detail"]["code"] == "account_disabled"
+    assert refused(await _override(client, key, pid, other))
     assert await _overrides(db) == []
+
+
+async def test_override_guesses_rate_limited(client, db, seeded_user, monkeypatch):
+    """Refused guesses are capped per kiosk device and per client address
+    (429 `rate_limited`, before any check); a real override never counts."""
+    device, init, key = await _timeclock_station(db)
+    pid = await _owing(db, init)
+    admin_id, email = await _account(db)
+    monkeypatch.setattr(kiosk_routes.override_limiter, "limit", 2)
+
+    assert (await _override(client, key, pid, email)).status_code == 200      # not counted
+    for _ in range(2):
+        assert (await _override(client, key, pid, email, "wrong")).status_code == 403
+    r = await _override(client, key, pid, email)
+    assert r.status_code == 429 and r.json()["detail"]["code"] == "rate_limited"
+    # refused before the password check: no strike past the two
+    assert (await _account_row(db, admin_id)).failed_login_count == 2
+
+    # the device's bucket alone: another address at this kiosk is still capped
+    kiosk_routes.override_limiter.reset()
+    for _ in range(2):
+        kiosk_routes.override_limiter.hit(f"device:{device.id}")
+    r = await _override(client, key, pid, email)
+    assert r.status_code == 429
+    # the address alone
+    kiosk_routes.override_limiter.reset()
+    for _ in range(2):
+        kiosk_routes.override_limiter.hit("127.0.0.1")
+    r = await _override(client, key, pid, email)
+    assert r.status_code == 429
 
 
 async def test_override_rank_403(client, db, seeded_user):
@@ -318,14 +372,14 @@ async def test_override_totp_required(client, db, seeded_user):
     secret, _ = await _enroll_direct(db, admin_id)
 
     r = await _override(client, key, pid, email)
-    assert r.status_code == 401 and r.json()["detail"]["code"] == "totp_required"
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "totp_required"
     assert (await _account_row(db, admin_id)).failed_login_count == 0
     # a wrong password never learns that 2FA is on
     r = await _override(client, key, pid, email, "wrong-password")
-    assert r.json()["detail"]["code"] == "invalid_credentials"
+    assert r.status_code == 403 and r.json()["detail"]["code"] == BAD
 
     r = await _override(client, key, pid, email, totp_code="000000")
-    assert r.status_code == 401 and r.json()["detail"]["code"] == "totp_invalid"
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "totp_invalid"
 
     code = _next_code(secret)
     r = await _override(client, key, pid, email, totp_code=code)
@@ -334,17 +388,24 @@ async def test_override_totp_required(client, db, seeded_user):
     assert account.failed_login_count == 0
     # the replay guard: the same code twice is refused
     r = await _override(client, key, pid, email, totp_code=code)
-    assert r.status_code == 401 and r.json()["detail"]["code"] == "totp_invalid"
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "totp_invalid"
     assert len(await _overrides(db)) == 1
     assert await _sessions(db, admin_id) == 0
+
+    # required by policy but never enrolled: the station can't enroll them
+    other_id, other = await _account(db)
+    (await _account_row(db, other_id)).totp_required = True
+    await db.commit()
+    r = await _override(client, key, pid, other)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "totp_enroll_required"
 
 
 async def test_override_other_needs_text(client, db, seeded_user):
     _, init, key = await _timeclock_station(db)
     pid = await _owing(db, init)
     admin_id, email = await _account(db)
-    for text in (None, "", "   "):
-        extra = {"reason": "other"} if text is None else {"reason": "other", "reason_text": text}
+    for note in (None, "", "   "):
+        extra = {"reason": "other"} if note is None else {"reason": "other", "reason_text": note}
         # checked before the credentials: no lockout strike for a bad form
         r = await _override(client, key, pid, email, "wrong-password", **extra)
         assert r.status_code == 422 and r.json()["detail"]["code"] == "reason_text_required"
@@ -369,34 +430,55 @@ async def test_clock_in_links_override(client, db, seeded_user):
                                  json={"serial": SERIAL, "person_id": str(person_id),
                                        "learning_override_id": oid})
 
-    # someone else's override is refused, and nothing is punched
+    async def clock_out(person_id):
+        r = await client.post("/kiosk/station/timeclock/clock-out", headers=_auth(key),
+                              json={"serial": SERIAL, "person_id": str(person_id)})
+        assert r.status_code == 200, r.text
+
+    async def punch_audit(entry_id):
+        return await db.scalar(select(AuditLog).where(
+            AuditLog.action == "kiosk_clock_in", AuditLog.entity_id == entry_id)
+            .execution_options(populate_existing=True))
+
+    async def rejected_punch(person_id, oid):
+        """The punch goes ahead; the id is only recorded."""
+        r = await clock_in(person_id, oid)
+        assert r.status_code == 200, r.text
+        log = await punch_audit(r.json()["entry"]["id"])
+        assert log.changes["learning_override_rejected"] == oid
+        assert "learning_override_id" not in log.changes
+        await clock_out(person_id)
+
+    # someone else's override, an unknown id, a malformed one
     stranger = await _worker(db, "Sam", "Stranger", None)
-    r = await clock_in(stranger.id, override_id)
-    assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_learning_override"
-    assert await db.scalar(select(TimeEntry).where(TimeEntry.person_id == stranger.id)) is None
-    r = await clock_in(pid, str(uuid.uuid4()))
-    assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_learning_override"
-
-    r = await clock_in(pid, override_id)
-    assert r.status_code == 200, r.text
-    entry_id = uuid.UUID(r.json()["entry"]["id"])
+    await rejected_punch(stranger.id, override_id)
+    await rejected_punch(pid, str(uuid.uuid4()))
+    await rejected_punch(pid, "not-a-uuid")
     [row] = await _overrides(db)
-    assert row.time_entry_id == entry_id
+    assert row.time_entry_id is None
 
-    # one punch per override
-    r = await client.post("/kiosk/station/timeclock/clock-out", headers=_auth(key),
-                          json={"serial": SERIAL, "person_id": str(pid)})
-    assert r.status_code == 200, r.text
     r = await clock_in(pid, override_id)
-    assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_learning_override"
+    assert r.status_code == 200, r.text
+    entry_id = r.json()["entry"]["id"]
+    [row] = await _overrides(db)
+    assert str(row.time_entry_id) == entry_id
+    log = await punch_audit(entry_id)
+    assert log.changes["learning_override_id"] == override_id
+    assert "learning_override_rejected" not in log.changes
+    await clock_out(pid)
 
-    # an override from another day is refused
+    # one punch per override: a reuse punches, unlinked
+    await rejected_punch(pid, override_id)
+    [row] = await _overrides(db)
+    assert str(row.time_entry_id) == entry_id
+
+    # an override from another day
     other_id = (await _override(client, key, pid, email)).json()["override_id"]
     stale = await db.get(LearningOverride, uuid.UUID(other_id))
     stale.local_day = stale.local_day - timedelta(days=1)
     await db.commit()
-    r = await clock_in(pid, other_id)
-    assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_learning_override"
+    await rejected_punch(pid, other_id)
+    assert (await db.get(LearningOverride, uuid.UUID(other_id))).time_entry_id is None
 
 
 async def test_session_twins_override_and_link(client, db, seeded_user):
@@ -429,9 +511,9 @@ async def test_learning_link_rate_limited(client, db, seeded_user, monkeypatch):
     fixed = datetime.now(UTC).replace(second=5, microsecond=0)
     monkeypatch.setattr(emails, "_now", lambda: fixed)
 
-    async def link(person_id):
+    async def link(person_id, **extra):
         return await client.post("/kiosk/station/timeclock/learning-link", headers=_auth(key),
-                                 json={"serial": SERIAL, "person_id": str(person_id)})
+                                 json={"serial": SERIAL, "person_id": str(person_id), **extra})
 
     r = await link(pid)
     assert r.status_code == 200 and r.json() == {"sent": True}
@@ -449,3 +531,33 @@ async def test_learning_link_rate_limited(client, db, seeded_user, monkeypatch):
     ned = await _worker(db, "Ned", "Nomail", None)
     await _assign(db, ned.id, await _doc(db, "Dress code"), init)
     assert (await link(ned.id)).json() == {"sent": False}
+
+
+async def test_learning_link_only_when_the_station_would_warn(client, db, seeded_user,
+                                                              monkeypatch):
+    """Only open items in the station's scope count: another move's or a
+    "day" override's covered person gets nothing; and the per-kiosk cap."""
+    _, init, key = await _timeclock_station(db)
+    other = await _initiative(db, "Some other move")
+    elsewhere = await _worker(db, "Otto", "Other", "otto@test.example.com")
+    await _assign(db, elsewhere.id, await _doc(db, "Other move rules"), other)
+    pid = await _owing(db, init)
+    _, email = await _account(db)
+
+    async def link(person_id, **extra):
+        return await client.post("/kiosk/station/timeclock/learning-link", headers=_auth(key),
+                                 json={"serial": SERIAL, "person_id": str(person_id), **extra})
+
+    assert (await link(elsewhere.id)).json() == {"sent": False}
+    zone = _just_past_midnight_zone()
+    r = await _override(client, key, pid, email, scope="day", tz=zone)
+    assert r.status_code == 200, r.text
+    assert (await link(pid, tz=zone)).json() == {"sent": False}
+    mails = await db.scalar(select(func.count()).select_from(EmailOutbox))
+    assert mails == 0
+
+    # two requests so far; the third is the last under a cap of three
+    monkeypatch.setattr(kiosk_routes.learning_link_limiter, "limit", 3)
+    assert (await link(pid)).status_code == 200
+    r = await link(pid)
+    assert r.status_code == 429 and r.json()["detail"]["code"] == "rate_limited"

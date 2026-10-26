@@ -424,6 +424,9 @@ async def clean_db():
     reset_confirm_limiter.reset()
     from serversherpa.api.routes.kiosk_biometric import challenge_limiter
     challenge_limiter.reset()
+    from serversherpa.api.routes.kiosk import learning_link_limiter, override_limiter
+    override_limiter.reset()
+    learning_link_limiter.reset()
     yield
     await dispose_engine()
 

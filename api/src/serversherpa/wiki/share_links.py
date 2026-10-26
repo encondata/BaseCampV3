@@ -143,6 +143,15 @@ class IpRateLimiter:
             self._hits[key] = (start, count + 1)
             return True
 
+    def exhausted(self, address: str, now: float | None = None) -> bool:
+        """True when `address` has no hits left in its current window,
+        without counting one (for limits that count only failures)."""
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            entry = self._hits.get(bucket_for(address))
+            return (entry is not None and now - entry[0] < self.window
+                    and entry[1] >= self.limit)
+
     def reset(self) -> None:
         with self._lock:
             self._hits.clear()
