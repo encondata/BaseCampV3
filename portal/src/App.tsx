@@ -33,6 +33,8 @@ import GenerateLabels from './pages/GenerateLabels';
 import Home from './pages/Home';
 import ImportMoveAssets from './pages/ImportMoveAssets';
 import Initiatives from './pages/Initiatives';
+import LearningDashboard from './pages/learning/LearningDashboard';
+import Placeholder from './pages/Placeholder';
 import InitiativeDetailPage from './pages/InitiativeDetail';
 import InitiativeTimeline from './pages/InitiativeTimeline';
 import KioskDevices from './pages/KioskDevices';
@@ -164,6 +166,33 @@ export default function App() {
                 } />
                 <Route path="/people/external" element={<ProtectedRoute resource="users"><External /></ProtectedRoute>} />
                 <Route path="/people/time" element={<ProtectedRoute resource="dashboard"><TimeManagement /></ProtectedRoute>} />
+                <Route path="/learning" element={
+                  <ProtectedRoute learningManager><LearningDashboard /></ProtectedRoute>
+                } />
+                <Route path="/learning/library" element={
+                  <ProtectedRoute learningManager>
+                    <Placeholder eyebrow="Learning" title="Library"
+                                 hint="Learning documents, their versions, quizzes and translations." />
+                  </ProtectedRoute>
+                } />
+                <Route path="/learning/packets" element={
+                  <ProtectedRoute learningManager>
+                    <Placeholder eyebrow="Learning" title="Packets"
+                                 hint="Ordered sets of documents handed out together." />
+                  </ProtectedRoute>
+                } />
+                <Route path="/learning/rules" element={
+                  <ProtectedRoute learningManager>
+                    <Placeholder eyebrow="Learning" title="Assignment rules"
+                                 hint="Who gets which packet, in order." />
+                  </ProtectedRoute>
+                } />
+                <Route path="/learning/settings" element={
+                  <ProtectedRoute learningManager>
+                    <Placeholder eyebrow="Learning" title="Learning settings"
+                                 hint="Code policy, defaults, email text and retention." />
+                  </ProtectedRoute>
+                } />
                 <Route path="/stakeholders/clients" element={<ProtectedRoute resource="clients"><Clients /></ProtectedRoute>} />
                 <Route path="/stakeholders/clients/:id" element={
                   <ProtectedRoute resource="clients"><StakeholderDetail kind="client" /></ProtectedRoute>

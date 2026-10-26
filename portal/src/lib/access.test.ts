@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  ACTIONS, ROUTE_RESOURCE, canTouchRank, computeCan, grantableRoles,
+  ACTIONS, ROUTE_RESOURCE, canManageLearning, canTouchRank, computeCan, grantableRoles,
   rolesPayloadForGlobalChange, type PermMap,
 } from './access';
 
@@ -96,5 +96,37 @@ describe('route map', () => {
     expect(ROUTE_RESOURCE['/access']).toBe('access');
     expect(ROUTE_RESOURCE['/']).toBe('dashboard');
     expect(ACTIONS).toEqual(['view', 'add', 'change', 'delete']);
+  });
+});
+
+describe('canManageLearning (mirrors the API is_manager)', () => {
+  const holds = (...pairs: string[]) => (resource: string, action: string = 'view') =>
+    pairs.includes(`${resource}:${action}`);
+
+  it('a learning permission is enough, for the action asked', () => {
+    const access = { can: holds('learning:view', 'learning:change'), isGlobal: false };
+    expect(canManageLearning(access)).toBe(true);
+    expect(canManageLearning(access, 'change')).toBe(true);
+    expect(canManageLearning(access, 'delete')).toBe(false);
+  });
+
+  it('wiki:delete counts only through a global role, for every action', () => {
+    const wiki = holds('wiki:delete', 'wiki:view');
+    for (const action of ACTIONS) {
+      expect(canManageLearning({ can: wiki, isGlobal: true }, action)).toBe(true);
+      expect(canManageLearning({ can: wiki, isGlobal: false }, action)).toBe(false);
+    }
+  });
+
+  it('wiki:change alone is not management', () => {
+    expect(canManageLearning({ can: holds('wiki:change'), isGlobal: true })).toBe(false);
+  });
+
+  it('a worker with nothing is not a manager', () => {
+    expect(canManageLearning({ can: holds(), isGlobal: false })).toBe(false);
+  });
+
+  it('maps /learning to the learning resource', () => {
+    expect(ROUTE_RESOURCE['/learning']).toBe('learning');
   });
 });

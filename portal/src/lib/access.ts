@@ -38,6 +38,7 @@ export const ROUTE_RESOURCE: Record<string, string> = {
   '/hardware/routers': 'scanning_hardware',
   '/settings': 'settings',
   '/system/notifications': 'notifications',
+  '/learning': 'learning',
   '/access': 'access',
   '/assets/models': 'asset_models',
   '/admin/status-rules': 'status_rules',
@@ -51,6 +52,22 @@ export function computeCan(
   perms: PermMap | null, resource: string, action: Action,
 ): boolean {
   return perms?.[resource]?.[action] === true;
+}
+
+/** The slice of the auth context canManageLearning reads. `isGlobal` is
+ *  `scope.global` (a role anchored to everything, not one client/partner). */
+export interface LearningAccess {
+  can: (resource: string, action: Action) => boolean;
+  isGlobal: boolean;
+}
+
+/** Who manages learning — the API's learning.access.is_manager, exactly:
+ *  `learning:<action>`, or a GLOBAL role holding `wiki:delete` (whoever
+ *  manages the wiki manages learning; a client- or partner-anchored role
+ *  with wiki:delete does not count). The server is the authority. */
+export function canManageLearning(access: LearningAccess, action: Action = 'view'): boolean {
+  return access.can('learning', action)
+    || (access.isGlobal && access.can('wiki', 'delete'));
 }
 
 /** Strictly-below management; top rank (100) may also manage peers. */

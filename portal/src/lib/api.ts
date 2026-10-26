@@ -211,7 +211,7 @@ export class ApiError extends Error {
   }
 }
 
-async function errorFrom(resp: Response): Promise<ApiError> {
+export async function errorFrom(resp: Response): Promise<ApiError> {
   let code = 'unknown_error';
   let detail: unknown;
   try {
@@ -1471,7 +1471,7 @@ export async function commitSiteBulk(
 }
 
 /** GET an attachment and hand it to the browser as a download. */
-async function downloadAttachment(path: string, filename: string): Promise<void> {
+export async function downloadAttachment(path: string, filename: string): Promise<void> {
   const resp = await apiFetch(path);
   if (!resp.ok) throw await errorFrom(resp);
   const blob = await resp.blob();
