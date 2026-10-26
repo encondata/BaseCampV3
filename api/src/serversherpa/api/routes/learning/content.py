@@ -131,9 +131,13 @@ async def draft_translation(
 ) -> TranslationOut:
     document = await _document(db, document_id)
     await translate.require_language(db, language)
+    actor_id = actor.person.id
+    version_id, source_html, source_title = await translate.draft_source(db, document, language)
+    # reads are done: end the transaction so the connection isn't held open
+    # through the Claude call (nothing was written; loaded objects stay usable)
+    await db.commit()
     try:
-        row = await translate.draft_with_claude(db, document, language,
-                                                actor_id=actor.person.id)
+        title, html = await translate.draft(source_html, source_title, language)
     except translate.TranslationUnavailable:
         raise HTTPException(status_code=503, detail={
             "code": "translation_unavailable",
@@ -142,6 +146,8 @@ async def draft_translation(
         raise HTTPException(status_code=502, detail={
             "code": "translation_failed",
             "message": "Claude couldn't translate this document. Try again."})
+    row = await translate.store_draft(db, document, language, version_id=version_id,
+                                      title=title, content_html=html, actor_id=actor_id)
     await db.commit()
     return await _translation_out(db, document, row, await translate.current_version(db, document))
 
@@ -274,4 +280,4 @@ async def unlock_quiz(
     await quiz.unlock(db, assignment, actor_id=actor.person.id)
     await db.commit()
     return UnlockQuizOut(assignment_id=assignment.id,
-                         quiz_unlocked_at=assignment.quiz_unlocked_at)
+                         attempts_forgiven=assignment.quiz_attempts_forgiven)

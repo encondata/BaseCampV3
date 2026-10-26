@@ -225,7 +225,7 @@ DDL = (
         signed_at timestamptz,
         signoff_id uuid,
         quiz_locked_at timestamptz,
-        quiz_unlocked_at timestamptz,
+        quiz_attempts_forgiven integer NOT NULL DEFAULT 0,
         created_by uuid REFERENCES people(id),
         created_at timestamptz NOT NULL DEFAULT now(),
         CONSTRAINT learning_assignments_source_check

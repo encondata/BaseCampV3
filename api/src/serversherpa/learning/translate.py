@@ -107,6 +107,22 @@ _CODE_CLASS = re.compile(r"^language-[\w+#.-]{1,40}$")
 _ALIGNMENTS = {"left", "right", "center", "justify"}
 _TASK_TYPES = {"taskList", "taskItem"}
 _CELL_COLWIDTH = re.compile(r"^\d{1,5}(,\d{1,5})*$")
+_LENGTH = re.compile(r"^\d{1,5}(\.\d{1,3})?(px|%)$")
+_LENGTH_PROPERTIES = {"width", "min-width", "max-width"}
+
+
+def _style(value: str) -> str | None:
+    """Only `text-align: left|right|center|justify` and px or % lengths for
+    width, min-width and max-width survive; any other declaration, or a
+    value of any other shape (url(), expression(), calc(), …), is dropped."""
+    kept = []
+    for declaration in value.split(";"):
+        name, _, raw = declaration.partition(":")
+        name, raw = name.strip().lower(), raw.strip().lower()
+        if ((name == "text-align" and raw in _ALIGNMENTS)
+                or (name in _LENGTH_PROPERTIES and _LENGTH.match(raw))):
+            kept.append(f"{name}:{raw}")
+    return ";".join(kept) or None
 
 
 def _attribute_filter(tag: str, attr: str, value: str) -> str | None:
@@ -123,6 +139,8 @@ def _attribute_filter(tag: str, attr: str, value: str) -> str | None:
             kept = [c for c in value.split() if c in _SPAN_CLASSES]
             return " ".join(kept) or None
         return value if _CODE_CLASS.match(value.strip()) else None
+    if attr == "style":
+        return _style(value)
     if attr == "data-text-align":
         return value if value in _ALIGNMENTS else None
     if attr in ("data-details-content", "data-mention"):
@@ -158,10 +176,13 @@ def sanitize(html: str) -> str:
 
 
 def sanitize_title(title: str) -> str:
-    """A title is plain text: markup (and a script or style element's
-    content) is removed, and what's left is trimmed."""
-    return htmllib.unescape(nh3.clean(
-        title, tags=set(), clean_content_tags={"script", "style"})).strip()
+    """A title is plain text, stored as such (consumers escape it on
+    display): tags (and a script or style element's content) are removed,
+    entities are decoded, and any `<` or `>` left, such as an entity-encoded
+    tag decoded back to one, is dropped, so no markup can come out of it."""
+    text = htmllib.unescape(nh3.clean(
+        title, tags=set(), clean_content_tags={"script", "style"}))
+    return " ".join(text.replace("<", "").replace(">", "").split())
 
 
 # ── Claude ───────────────────────────────────────────────────────────
@@ -342,12 +363,14 @@ async def save(db: AsyncSession, document: LearningDocument, language: str, *, t
     return row
 
 
-async def draft_with_claude(db: AsyncSession, document: LearningDocument, language: str, *,
-                            actor_id: uuid.UUID) -> LearningTranslation:
-    """Have Claude translate the current version; saved as a Claude-sourced
-    draft. Refused (409 `translation_exists`) when the language already has
-    a translation of this version in review or published — edit it by hand
-    (which makes it a draft) rather than overwrite reviewed work by accident."""
+async def draft_source(db: AsyncSession, document: LearningDocument,
+                       language: str) -> tuple[uuid.UUID, str, str]:
+    """What a Claude draft translates: `(version id, html, title)` of the
+    current version. Refused (409 `translation_exists`) when the language
+    already has a translation of this version in review or published — edit
+    it by hand (which makes it a draft) rather than overwrite reviewed work
+    by accident. Reads only: the route ends its transaction before the
+    (slow) Claude call and calls `store_draft` after it."""
     version = await current_version(db, document)
     existing = await db.scalar(select(LearningTranslation).where(
         LearningTranslation.version_id == version.id,
@@ -355,16 +378,23 @@ async def draft_with_claude(db: AsyncSession, document: LearningDocument, langua
     if existing is not None and existing.status != "draft":
         raise _err(409, "translation_exists",
                    "This language already has a translation in review or published.")
-    title, html = await draft(version.content_html, version.title, language)
-    # the call takes a while: re-check nothing moved under it
+    return version.id, version.content_html, version.title
+
+
+async def store_draft(db: AsyncSession, document: LearningDocument, language: str, *,
+                      version_id: uuid.UUID, title: str, content_html: str,
+                      actor_id: uuid.UUID) -> LearningTranslation:
+    """Save Claude's answer as a Claude-sourced draft, after re-checking that
+    nothing moved during the call (409 `version_changed`, or
+    `translation_exists` if someone sent the language to review meanwhile)."""
     await db.refresh(document)
-    if document.current_version_id != version.id:
+    if document.current_version_id != version_id:
         raise _err(409, "version_changed", "A new version was published meanwhile.")
     locked = await _locked_current(db, document, language)
     if locked is not None and locked.status != "draft":
         raise _err(409, "translation_exists",
                    "This language already has a translation in review or published.")
-    return await save(db, document, language, title=title, content_html=html,
+    return await save(db, document, language, title=title, content_html=content_html,
                       source="claude", actor_id=actor_id)
 
 

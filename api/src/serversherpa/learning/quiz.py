@@ -14,9 +14,10 @@ attempt that reaches `quiz_max_attempts` locks the assignment
 "retry" there's no limit. A passed quiz never locks.
 
 A manager can unlock a locked assignment (`unlock`): the lock clears and
-`quiz_unlocked_at` records when, and only attempts made after it count
-toward the limit, so the worker gets a fresh set of attempts. Their earlier
-attempts stay on record.
+`quiz_attempts_forgiven` becomes the number of attempts made so far, and
+only the attempts beyond it count toward the limit, so the worker gets a
+fresh set of attempts (an exact count, no clocks). Their earlier attempts
+stay on record.
 
 The pool is edited here too (`create_question` and friends); a removed
 question is archived, never deleted, because past attempts' answers are
@@ -142,16 +143,18 @@ async def attempt(db: AsyncSession, assignment: LearningAssignment, document: Le
     limit = _attempt_limit(document)
     attempts_left = None
     if limit is not None:
-        counted = [LearningQuizAttempt.assignment_id == assignment.id]
-        if assignment.quiz_unlocked_at is not None:         # earlier attempts are forgiven
-            counted.append(LearningQuizAttempt.created_at > assignment.quiz_unlocked_at)
-        used = await db.scalar(
-            sa.select(sa.func.count()).select_from(LearningQuizAttempt).where(*counted)) or 0
+        used = (await _attempt_count(db, assignment.id)) - assignment.quiz_attempts_forgiven
         attempts_left = max(limit - used, 0)
         if not ok and attempts_left == 0 and await passed(db, assignment.id) is None:
             await _lock(db, assignment, document, limit)
     return {"score_percent": score, "passed": ok, "attempts_left": attempts_left,
             "locked": assignment.quiz_locked_at is not None}
+
+
+async def _attempt_count(db: AsyncSession, assignment_id: uuid.UUID) -> int:
+    return await db.scalar(
+        sa.select(sa.func.count()).select_from(LearningQuizAttempt)
+        .where(LearningQuizAttempt.assignment_id == assignment_id)) or 0
 
 
 async def _lock(db: AsyncSession, assignment: LearningAssignment, document: LearningDocument,
@@ -183,11 +186,13 @@ async def unlock(db: AsyncSession, assignment: LearningAssignment, *,
     if assignment.quiz_locked_at is None:
         raise _err(409, "not_locked", "This assignment's quiz isn't locked.")
     assignment.quiz_locked_at = None
-    assignment.quiz_unlocked_at = datetime.now(UTC)
+    forgiven = await _attempt_count(db, assignment.id)     # every attempt so far, cumulative
+    assignment.quiz_attempts_forgiven = forgiven
     audit(db, actor_id=actor_id, entity_type="learning_assignment",
           entity_id=str(assignment.id), action="learning_quiz_unlock",
           changes={"person_id": str(assignment.person_id),
-                   "document_id": str(assignment.document_id)})
+                   "document_id": str(assignment.document_id),
+                   "attempts_forgiven": forgiven})
 
 
 # ── editing the question pool ────────────────────────────────────────
@@ -294,7 +299,7 @@ async def update_question(db: AsyncSession, question: LearningQuizQuestion, *,
     check_question(choices, correct, translations, languages)
     before = {"prompt": question.prompt, "choices": question.choices,
               "correct_choice_ids": list(question.correct_choice_ids or []),
-              "translations": question.translations}
+              "translations": _translations(question.translations or {})}
     question.prompt = prompt
     question.choices = choices
     question.correct_choice_ids = list(correct)

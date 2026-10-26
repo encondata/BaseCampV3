@@ -712,4 +712,4 @@ class QuestionOut(BaseModel):
 
 class UnlockQuizOut(BaseModel):
     assignment_id: uuid.UUID
-    quiz_unlocked_at: datetime
+    attempts_forgiven: int

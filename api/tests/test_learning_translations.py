@@ -473,9 +473,10 @@ async def test_unlock_quiz_forgives_attempts(client, db, seeded_user):
     assert r.status_code == 200, r.text
     assert r.json()["assignment_id"] == str(row.id)
     fresh = await _fresh(db, row)
-    assert fresh.quiz_locked_at is None and fresh.quiz_unlocked_at is not None
+    assert fresh.quiz_locked_at is None and fresh.quiz_attempts_forgiven == 2
+    assert r.json()["attempts_forgiven"] == 2
     audit_row = await db.scalar(select(AuditLog).where(AuditLog.action == "learning_quiz_unlock"))
-    assert audit_row.entity_id == str(row.id)
+    assert audit_row.entity_id == str(row.id) and audit_row.changes["attempts_forgiven"] == 2
     assert audit_row.actor_person_id is not None
 
     # a fresh set of attempts: one failure doesn't re-lock, the second does
@@ -487,7 +488,118 @@ async def test_unlock_quiz_forgives_attempts(client, db, seeded_user):
     # earlier attempts stay on record
     assert len(list(await db.scalars(select(LearningQuizAttempt)))) == 4
 
+    # a second unlock forgives cumulatively (all 4 so far), not just the last lock's
+    r = await client.post(unlock, headers=hdrs)
+    assert r.status_code == 200 and r.json()["attempts_forgiven"] == 4
+    r = await client.post(quiz_url, headers=whdrs, json=wrong)
+    assert r.json() == {"score_percent": 0, "passed": False, "attempts_left": 1, "locked": False}
+    # a passing attempt after an unlock still passes and never locks
+    right = {"answers": {str(q.id): ["b"]}}
+    r = await client.post(quiz_url, headers=whdrs, json=right)
+    assert r.json()["passed"] is True and r.json()["locked"] is False
+
     # and unlocking needs the manager
     assert (await client.post(unlock, headers=whdrs)).status_code in (401, 403)
     assert (await client.post(f"/learning/assignments/{uuid.uuid4()}/unlock-quiz",
                               headers=hdrs)).status_code == 404
+
+
+# ── plain-text titles ────────────────────────────────────────────────
+
+
+async def test_titles_are_plain_text(client, db, seeded_user):
+    hdrs = await _manager(db, client)
+    doc = await _published_doc(db)
+    cases = {
+        # entity-encoded markup must not come back as live markup
+        "&lt;img src=x onerror=alert(1)&gt;Safety": "img src=x onerror=alert(1)Safety",
+        "<img src=x onerror=alert(1)>Safety": "Safety",
+        "<b>Sa</b>fety<script>1</script>": "Safety",
+        "A &amp; B &lt; C": "A & B  C".replace("  ", " "),
+        "  Plain   title ": "Plain title",
+    }
+    for given, expected in cases.items():
+        r = await _save(client, hdrs, doc, title=given)
+        assert r.status_code == 200, (given, r.text)
+        assert r.json()["title"] == expected, given
+        assert "<" not in r.json()["title"] and ">" not in r.json()["title"]
+        row = await db.scalar(select(LearningTranslation.title))
+        assert row == expected
+    # nothing left once markup is gone
+    r = await _save(client, hdrs, doc, title="<script>x</script>&lt;&gt;")
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "title_required"
+
+
+async def test_claude_title_is_plain_text(client, db, seeded_user, claude):
+    hdrs = await _manager(db, client)
+    doc = await _published_doc(db)
+    claude.answer = {"title": "&lt;img src=x onerror=alert(1)&gt;安全",
+                     "content_html": "<p>x</p>"}
+    r = await client.post(_url(doc, tail="/draft"), headers=hdrs)
+    assert r.status_code == 200 and r.json()["title"] == "img src=x onerror=alert(1)安全"
+
+
+# ── style values and obfuscated links ────────────────────────────────
+
+
+async def test_style_values_and_obfuscated_hrefs(client, db, seeded_user):
+    sanitize = translate.sanitize
+    for bad in ("width:url(https://evil.example/x)", "width: expression(alert(1))",
+                "width:calc(100% - 1px)", "width:100px url(x)", "width: 1e3px",
+                "text-align: center url(x)", "text-align:inherit", "max-width:100",
+                "width:-5px", "background:url(x)", "position:fixed"):
+        out = sanitize(f'<p style="{bad}">x</p><img style="{bad}" alt="a">')
+        assert "style" not in out and "url(" not in out and "expression" not in out, bad
+    # the valid ones survive, mixed with dropped ones
+    out = sanitize('<img alt="a" style="width: 300px; background: red; max-width:100%">')
+    assert 'style="width:300px;max-width:100%"' in out
+    assert 'style="text-align:center"' in sanitize('<p style="TEXT-ALIGN: Center">x</p>')
+    assert 'style="min-width:50.5px"' in sanitize('<table style="min-width:50.5px"></table>')
+
+    for href in ("javascript:alert(1)", "  javascript:alert(1)", "JaVaScRiPt:alert(1)",
+                 "&#106;avascript:alert(1)", "&#x6A;avascript:alert(1)",
+                 "jav&#x09;ascript:alert(1)", "jav&#x0A;ascript:alert(1)",
+                 "java\tscript:alert(1)", "java\nscript:alert(1)", "&#0000106avascript:alert(1)",
+                 "data:text/html,<script>alert(1)</script>", "vbscript:x", "//evil.example",
+                 "/n/123", "x.html", "ht\ttps://x.example"):
+        out = sanitize(f'<a href="{href}">x</a>')
+        assert "href" not in out, (href, out)
+        assert "javascript" not in out.lower().replace("&", "")
+    for href in ("https://ok.example.com/a?b=1", "mailto:a@example.com", "tel:+15551234"):
+        assert f'href="{href}"' in sanitize(f'<a href="{href}">x</a>')
+
+
+# ── the draft path and the audit diff ────────────────────────────────
+
+
+async def test_draft_releases_the_transaction_before_claude(client, db, seeded_user,
+                                                            monkeypatch):
+    from sqlalchemy import text
+    hdrs = await _manager(db, client)
+    doc = await _published_doc(db)
+    seen = {}
+
+    async def fake_draft(html, title, lang):
+        seen["idle_in_transaction"] = await db.scalar(text(
+            "select count(*) from pg_stat_activity where datname = current_database() "
+            "and state like 'idle in transaction%' and pid <> pg_backend_pid()"))
+        return "安全", "<p>x</p>"
+
+    monkeypatch.setattr(translate, "draft", fake_draft)
+    r = await client.post(_url(doc, tail="/draft"), headers=hdrs)
+    assert r.status_code == 200, r.text
+    assert seen["idle_in_transaction"] == 0
+
+
+async def test_question_audit_diff_ignores_untouched_fields(client, db, seeded_user):
+    hdrs = await _manager(db, client)
+    doc = await _doc(db, "NDA")
+    q = await _question(db, doc, "Share photos?", [("a", "Yes"), ("b", "No")], ["b"])
+    q.translations = None                  # a legacy null, as an untouched field
+    await db.commit()
+    r = await client.patch(f"/learning/questions/{q.id}", headers=hdrs,
+                           json={"prompt": "Post photos?"})
+    assert r.status_code == 200, r.text
+    row = await db.scalar(select(AuditLog).where(
+        AuditLog.action == "learning_quiz_question_update"))
+    assert row.changes["fields"] == ["prompt"]
