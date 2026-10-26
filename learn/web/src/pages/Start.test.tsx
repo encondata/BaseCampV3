@@ -63,6 +63,40 @@ describe('Start (the invite link)', () => {
     expect(getToken()).toBeNull();
   });
 
+  it.each([
+    ['the server cannot be reached', () => Promise.reject(new TypeError('offline')),
+      "We couldn't reach the server. Open the link from your email again once you're back online."],
+    ['it has been tried too often', () => Promise.resolve(json(429, { detail: { code: 'rate_limited' } })),
+      'Too many tries. Wait a few minutes, then open the link from your email again.'],
+    ['it fails for another reason', () => Promise.resolve(json(500, {})),
+      'Something went wrong signing you in. Open the link from your email again, or enter your code.'],
+  ])('tells the worker to open the email link again when %s (the token is already gone)', async (_why, reply, copy) => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(reply));
+    renderAt('#t=link-abc');
+    expect(await screen.findByText(copy)).toBeTruthy();
+    // no retry that could only fail: the address holds no token any more
+    expect(screen.queryByText(/try again/i)).toBeNull();
+    expect(screen.getByTestId('where').textContent).toBe('/start');
+    expect(getToken()).toBeNull();
+  });
+
+  it('never puts the learn token (or the link token) in localStorage', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(200, {
+      token: 'learn-tok-secret', expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      person: { first_name: 'Kenji' },
+    })));
+    localStorage.clear();
+    renderAt('#t=link-secret-123');
+    expect(await screen.findByText('training page')).toBeTruthy();
+    expect(getToken()).toBe('learn-tok-secret');
+    const everything = JSON.stringify(Object.fromEntries(
+      Array.from({ length: localStorage.length }, (_, i) => [localStorage.key(i), localStorage.getItem(localStorage.key(i)!)])));
+    expect(everything).not.toContain('learn-tok-secret');
+    expect(everything).not.toContain('link-secret-123');
+    // it lives in sessionStorage only
+    expect(sessionStorage.getItem('ss.learn.token')).toContain('learn-tok-secret');
+  });
+
   it('goes straight to the code form when there is no token', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);

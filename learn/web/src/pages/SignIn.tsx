@@ -12,45 +12,18 @@ import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '@portal/auth/AuthContext';
 import LoginScene from '@portal/components/login/LoginScene';
 import { IconArrow } from '@portal/components/login/loginIcons';
-import { ApiError } from '@portal/lib/api';
 import '@portal/styles/auth-theme.css';
 import '@portal/styles/login-light.css';
 
 import CodeBoxes, { CODE_LENGTH } from '../components/CodeBoxes';
+import LanguageLinks from '../components/LanguageLinks';
 import { normalizeCode, signInWithCode } from '../lib/api';
-import { LANGS, setLang, t, useLang } from '../lib/i18n';
+import { errorKey } from '../lib/errors';
+import { t, useLang } from '../lib/i18n';
 import { getToken, setToken } from '../lib/session';
 import type { MessageKey } from '../i18n/en';
 
 const AccountSignIn = lazy(() => import('../components/AccountSignIn'));
-
-const ERRORS: Record<string, MessageKey> = {
-  learn_code_invalid: 'error.learn_code_invalid',
-  rate_limited: 'error.rate_limited',
-  network: 'error.network',
-};
-
-export function errorKey(err: unknown): MessageKey {
-  const code = err instanceof ApiError ? err.code : 'unknown';
-  return ERRORS[code] ?? 'error.unknown';
-}
-
-export function LanguageLinks() {
-  const lang = useLang();
-  return (
-    <nav className="learn-langs" aria-label={t('signin.language')}>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
-        <circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z" />
-      </svg>
-      {LANGS.map((l) => (
-        <button key={l.code} type="button" lang={l.code} aria-pressed={l.code === lang}
-                className={l.code === lang ? 'on' : ''} onClick={() => setLang(l.code)}>
-          {l.name}
-        </button>
-      ))}
-    </nav>
-  );
-}
 
 export default function SignIn() {
   useLang();
@@ -86,7 +59,7 @@ export default function SignIn() {
     setError(null);
     try {
       const session = await signInWithCode(code, lastName);
-      setToken(session.token, session.expires_at);
+      setToken(session.token, session.expires_at, session.person.first_name);
       navigate('/training', { replace: true });
     } catch (err) {
       setError(errorKey(err));

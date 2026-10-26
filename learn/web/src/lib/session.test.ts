@@ -9,7 +9,7 @@ vi.mock('@portal/lib/api', async (importOriginal) => ({
 import { apiFetch } from '@portal/lib/api';
 
 import {
-  TOKEN_KEY, clearToken, getToken, learnFetch, learnSignOut, setSignedOutHandler, setToken,
+  TOKEN_KEY, clearToken, getFirstName, getToken, learnFetch, learnSignOut, setSignedOutHandler, setToken,
 } from './session';
 
 const LATER = new Date(Date.now() + 3_600_000).toISOString();
@@ -43,6 +43,16 @@ describe('learn session token', () => {
     clearToken();
     expect(getToken()).toBeNull();
     expect(sessionStorage.getItem(TOKEN_KEY)).toBeNull();
+  });
+
+  it('keeps the first name for the greeting, in sessionStorage only', () => {
+    expect(getFirstName()).toBe('');
+    setToken('tok-1', LATER, 'Kenji');
+    expect(getFirstName()).toBe('Kenji');
+    expect(getToken()).toBe('tok-1');
+    expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
+    clearToken();
+    expect(getFirstName()).toBe('');
   });
 
   it('drops a token once it has expired', () => {

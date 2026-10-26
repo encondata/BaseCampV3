@@ -17,23 +17,34 @@ import { learnApiUrl } from './api';
 
 export const TOKEN_KEY = 'ss.learn.token';
 
-interface Stored { t: string; exp: string }
+interface Stored { t: string; exp: string; n?: string }
 
-export function getToken(): string | null {
+function readStored(): Stored | null {
   let raw: string | null;
   try { raw = sessionStorage.getItem(TOKEN_KEY); } catch { return null; }
   if (!raw) return null;
   try {
-    const { t, exp } = JSON.parse(raw) as Stored;
-    if (typeof t === 'string' && t && !(Date.parse(exp) <= Date.now())) return t;
+    const stored = JSON.parse(raw) as Stored;
+    if (typeof stored.t === 'string' && stored.t && !(Date.parse(stored.exp) <= Date.now())) return stored;
   } catch { /* damaged value: treated as signed out */ }
   clearToken();
   return null;
 }
 
-export function setToken(t: string, expiresAt: string): void {
+export function getToken(): string | null {
+  return readStored()?.t ?? null;
+}
+
+/** The first name the sign-in answered with, for the greeting. */
+export function getFirstName(): string {
+  const n = readStored()?.n;
+  return typeof n === 'string' ? n : '';
+}
+
+export function setToken(t: string, expiresAt: string, firstName?: string): void {
   try {
-    sessionStorage.setItem(TOKEN_KEY, JSON.stringify({ t, exp: expiresAt } satisfies Stored));
+    sessionStorage.setItem(TOKEN_KEY, JSON.stringify(
+      { t, exp: expiresAt, ...(firstName ? { n: firstName } : {}) } satisfies Stored));
   } catch { /* storage blocked: the session lasts as long as this page */ }
 }
 
