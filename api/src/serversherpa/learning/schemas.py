@@ -358,3 +358,31 @@ class AssignSummaryOut(BaseModel):
     pushed versions all return."""
     rows: list[AssignSummaryRow]
     totals: AssignTotals
+
+
+# ── worker sign-in (/learn/auth) ─────────────────────────────────────
+
+
+class LearnCodeIn(BaseModel):
+    code: str = Field(min_length=1, max_length=32)
+    last_name: str = Field(min_length=1, max_length=200)
+
+
+class LearnLinkIn(BaseModel):
+    token: str = Field(min_length=1, max_length=200)
+
+
+class LearnPersonOut(BaseModel):
+    first_name: str
+
+
+class LearnSessionOut(BaseModel):
+    token: str
+    expires_at: datetime
+    person: LearnPersonOut
+
+
+class LearnMeOut(BaseModel):
+    person_id: uuid.UUID
+    first_name: str
+    via: Literal["code", "account"]
