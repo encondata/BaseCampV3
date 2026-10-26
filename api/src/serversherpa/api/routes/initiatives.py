@@ -36,6 +36,7 @@ from serversherpa.db.ordering import natural
 from serversherpa.imports.parsing import (
     MAX_BYTES, build_template_csv, build_template_xlsx, template_columns,
 )
+from serversherpa.learning import assign as learning_assign
 from serversherpa.people import team_bulk
 from serversherpa.racks.recheck import recheck_placement
 from serversherpa.scans.manual import record_status_edit, stamp_rule_failure
@@ -574,6 +575,11 @@ async def add_initiative_person(
           changes={"person_id": {"from": None,
                                  "to": str(data["person_id"])}})
     try:
+        # flush first so the learning rules see the new row (its work
+        # type); the assignments commit or roll back with the add
+        await db.flush()
+        await learning_assign.assign_on_add(db, initiative_id, data["person_id"],
+                                            actor.person.id)
         await db.commit()
     except IntegrityError:
         # lost the check-then-insert race against a concurrent add of the
@@ -738,6 +744,7 @@ async def remove_initiative_person(
     initiative_id = assoc.initiative_id
     person_id = assoc.person_id
     await db.delete(assoc)
+    await learning_assign.cancel_for_removed(db, initiative_id, person_id)
     audit(db, actor_id=actor.person.id, entity_type="initiative",
           entity_id=str(initiative_id), action="person_remove",
           changes={"person_id": {"from": str(person_id), "to": None}})

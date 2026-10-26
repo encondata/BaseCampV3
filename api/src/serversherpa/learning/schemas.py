@@ -298,3 +298,63 @@ class RuleOut(BaseModel):
     enabled: bool
     created_at: datetime
     updated_at: datetime
+
+
+# ── assignments ──────────────────────────────────────────────────────
+
+
+class DryRunIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    apply: bool = False
+
+
+class AssignIn(BaseModel):
+    """Manual assignment: a packet, listed documents, or both."""
+    model_config = ConfigDict(extra="forbid")
+
+    person_ids: list[uuid.UUID] = Field(min_length=1)
+    initiative_id: uuid.UUID | None = None
+    packet_id: uuid.UUID | None = None
+    document_ids: list[uuid.UUID] = []
+
+    @model_validator(mode="after")
+    def _something(self) -> "AssignIn":
+        if self.packet_id is None and not self.document_ids:
+            raise ValueError("Pick a packet or at least one document.")
+        return self
+
+
+class PushVersionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    person_ids: list[uuid.UUID] = Field(min_length=1)
+
+
+class SkippedItem(BaseModel):
+    title: str
+    reason: str
+
+
+class AssignSummaryRow(BaseModel):
+    person_id: uuid.UUID
+    name: str
+    will_get: list[str]
+    # one reason per `will_get` entry
+    why: list[str]
+    skipped: list[SkippedItem]
+    no_email: bool
+
+
+class AssignTotals(BaseModel):
+    checked: int
+    to_assign: int
+    skipped: int
+    no_email: int
+
+
+class AssignSummaryOut(BaseModel):
+    """The per-person review summary the dry run, manual assignment and
+    pushed versions all return."""
+    rows: list[AssignSummaryRow]
+    totals: AssignTotals
