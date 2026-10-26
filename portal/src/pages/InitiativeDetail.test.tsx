@@ -179,9 +179,9 @@ afterEach(() => {
 
 const { default: InitiativeDetail } = await import('./InitiativeDetail');
 
-function renderPage() {
+function renderPage(tab?: string) {
   return render(
-    <MemoryRouter initialEntries={['/initiatives/i1']}>
+    <MemoryRouter initialEntries={[`/initiatives/i1${tab ? `?tab=${tab}` : ''}`]}>
       <Routes>
         <Route path="/initiatives/:id" element={<InitiativeDetail />} />
       </Routes>
@@ -197,37 +197,40 @@ const personRow = async () =>
 
 /* ── assets list ─────────────────────────────────────────────────── */
 
-const assetsPanelHead = async () =>
-  (await screen.findByRole('button', { name: /^Assets/ }));
-
-it('assets panel: starts open with List view = expanded, and the chevron saves the state', async () => {
+it('tabs: opens on Overview, and a tab click shows that section and records it in the URL', async () => {
   const user = userEvent.setup();
   renderPage();
-  const head = await assetsPanelHead();
-  expect(head.getAttribute('aria-expanded')).toBe('true');
+  const overview = await screen.findByRole('tab', { name: 'Overview' });
+  expect(overview.getAttribute('aria-selected')).toBe('true');
+  expect(screen.getByText('Linked initiatives')).not.toBeNull();
+  expect(screen.queryByText('switch-01')).toBeNull();
+  await user.click(screen.getByRole('tab', { name: /^Assets/ }));
   expect(await screen.findByText('switch-01')).not.toBeNull();
-  await user.click(head);
-  expect(head.getAttribute('aria-expanded')).toBe('false');
-  expect(updatePreferences).toHaveBeenCalledWith(expect.objectContaining({
-    list_prefs: expect.objectContaining({ open_state: { 'initiative-assets': false } }),
-  }));
+  expect(screen.queryByText('Linked initiatives')).toBeNull();
+  expect(screen.getByRole('tab', { name: /^Assets/ }).getAttribute('aria-selected')).toBe('true');
 });
 
-it('assets panel: starts collapsed with List view = collapsed', async () => {
-  prefs.list_view = 'collapsed';
-  renderPage();
-  expect((await assetsPanelHead()).getAttribute('aria-expanded')).toBe('false');
+it('tabs: ?tab= deep-links to a tab, and Learning is a placeholder', async () => {
+  renderPage('learning');
+  expect((await screen.findByRole('tab', { name: 'Learning' })).getAttribute('aria-selected')).toBe('true');
+  expect(screen.getByText(/Coming soon/)).not.toBeNull();
 });
 
-it('assets panel: Remember last restores the saved state', async () => {
-  prefs.list_view = 'last';
-  prefs.list_prefs = { open_state: { 'initiative-assets': false } };
-  renderPage();
-  expect((await assetsPanelHead()).getAttribute('aria-expanded')).toBe('false');
+it('tabs: Full Picture shows the overview and the assets list together', async () => {
+  renderPage('full');
+  expect((await screen.findByRole('tab', { name: 'Full Picture' })).getAttribute('aria-selected')).toBe('true');
+  expect(await screen.findByText('switch-01')).not.toBeNull();
+  expect(screen.getByText('Linked initiatives')).not.toBeNull();
+  expect(screen.queryByText('Ada Lovelace')).toBeNull();
+});
+
+it('tabs: an unknown ?tab= falls back to Overview', async () => {
+  renderPage('nope');
+  expect((await screen.findByRole('tab', { name: 'Overview' })).getAttribute('aria-selected')).toBe('true');
 });
 
 it('assets row: one Actions trigger replaces the inline Edit/Remove buttons', async () => {
-  renderPage();
+  renderPage('assets');
 
   const row = await assetRow();
   expect(within(row).getByRole('button', { name: /Actions/ })).not.toBeNull();
@@ -237,7 +240,7 @@ it('assets row: one Actions trigger replaces the inline Edit/Remove buttons', as
 
 it('assets row: Actions → Edit opens the asset edit dialog', async () => {
   const user = userEvent.setup();
-  renderPage();
+  renderPage('assets');
 
   const row = await assetRow();
   await user.click(within(row).getByRole('button', { name: /Actions/ }));
@@ -251,7 +254,7 @@ it('assets row: Actions → Remove still confirms, and a declined confirm remove
      const confirmSpy = vi.fn(() => false);
      vi.stubGlobal('confirm', confirmSpy);
      const user = userEvent.setup();
-     renderPage();
+     renderPage('assets');
 
      const row = await assetRow();
      await user.click(within(row).getByRole('button', { name: /Actions/ }));
@@ -265,7 +268,7 @@ it('assets row: Actions → Remove still confirms, and a declined confirm remove
 it('assets row: Actions → Remove, confirmed, removes the asset', async () => {
   vi.stubGlobal('confirm', vi.fn(() => true));
   const user = userEvent.setup();
-  renderPage();
+  renderPage('assets');
 
   const row = await assetRow();
   await user.click(within(row).getByRole('button', { name: /Actions/ }));
@@ -278,7 +281,7 @@ it('assets toolbar: Re-check placement calls the endpoint and refetches the rost
   api.recheckInitiativePlacement.mockResolvedValue(
     { checked: 46, collisions: 0, orphans: 1, cleared: 41 });
   const user = userEvent.setup();
-  renderPage();
+  renderPage('assets');
   await assetRow();
   const before = api.listInitiativeAssets.mock.calls.length;
 
@@ -290,7 +293,7 @@ it('assets toolbar: Re-check placement calls the endpoint and refetches the rost
 
 it('assets toolbar: Re-check placement is hidden without change permission', async () => {
   auth.can = (resource, action) => !(resource === 'initiatives' && action === 'change');
-  renderPage();
+  renderPage('assets');
   await assetRow();
   expect(screen.queryByRole('button', { name: 'Re-check placement' })).toBeNull();
   auth.can = () => true;
@@ -301,7 +304,7 @@ it('assets row: items are disabled, not dropped, while the row is in flight', as
   // Never settles: the page stays assetsBusy for the rest of the test.
   api.removeInitiativeAsset.mockReturnValue(new Promise(() => {}));
   const user = userEvent.setup();
-  renderPage();
+  renderPage('assets');
 
   const row = await assetRow();
   await user.click(within(row).getByRole('button', { name: /Actions/ }));
@@ -319,7 +322,7 @@ it('assets row: items are disabled, not dropped, while the row is in flight', as
 
 it('assets list: the action track is trigger-sized, and the chevron column survives',
    async () => {
-     renderPage();
+     renderPage('assets');
 
      const row = await assetRow();
      const main = row.querySelector('.row-main') as HTMLElement;
@@ -328,7 +331,7 @@ it('assets list: the action track is trigger-sized, and the chevron column survi
    });
 
 it('assets list: columns carry px floors, header and rows share one template and minimum width, and the card scrolls sideways', async () => {
-  renderPage();
+  renderPage('assets');
 
   const row = await assetRow();
   const card = row.closest('.dir-list') as HTMLElement;
@@ -350,7 +353,7 @@ it('assets list: columns carry px floors, header and rows share one template and
 it('assets list: edit mode drops the row minimum since the card is no longer a scroll container', async () => {
   auth.maxRank = ADMIN_RANK;
   const user = userEvent.setup();
-  renderPage();
+  renderPage('assets');
 
   const row = await assetRow();
   const card = row.closest('.dir-list') as HTMLElement;
@@ -364,7 +367,7 @@ it('assets list: edit mode drops the row minimum since the card is no longer a s
 });
 
 it('assets list: single-line values truncate with the full text on hover', async () => {
-  renderPage();
+  renderPage('assets');
 
   const row = await assetRow();
   const name = within(row).getByText('switch-01');
@@ -377,7 +380,7 @@ it('assets list: single-line values truncate with the full text on hover', async
 });
 
 it('assets list: the header renders through ColHead (long label, hidden short-label measure for wordy columns)', async () => {
-  renderPage();
+  renderPage('assets');
 
   const row = await assetRow();
   const head = (row.closest('.dir-list') as HTMLElement).querySelector('.list-head') as HTMLElement;
@@ -391,7 +394,7 @@ it('assets list: the header renders through ColHead (long label, hidden short-la
 /* ── people list ─────────────────────────────────────────────────── */
 
 it('people row: one Actions trigger replaces the inline Edit/Remove buttons', async () => {
-  renderPage();
+  renderPage('people');
 
   const row = await personRow();
   expect(within(row).getByRole('button', { name: /Actions/ })).not.toBeNull();
@@ -400,7 +403,7 @@ it('people row: one Actions trigger replaces the inline Edit/Remove buttons', as
 });
 
 it('people list: floors, shared template + minimum width, and the sideways-scroll card', async () => {
-  renderPage();
+  renderPage('people');
 
   const row = await personRow();
   const card = row.closest('.dir-list') as HTMLElement;
@@ -415,7 +418,7 @@ it('people list: floors, shared template + minimum width, and the sideways-scrol
 
 it('people row: Actions → Edit opens the person edit dialog', async () => {
   const user = userEvent.setup();
-  renderPage();
+  renderPage('people');
 
   const row = await personRow();
   await user.click(within(row).getByRole('button', { name: /Actions/ }));
@@ -428,7 +431,7 @@ it('people row: Actions → Remove confirms first, then removes', async () => {
   const confirmSpy = vi.fn(() => false);
   vi.stubGlobal('confirm', confirmSpy);
   const user = userEvent.setup();
-  renderPage();
+  renderPage('people');
 
   const row = await personRow();
   await user.click(within(row).getByRole('button', { name: /Actions/ }));
@@ -445,7 +448,7 @@ it('people row: Actions → Remove confirms first, then removes', async () => {
 });
 
 it('people list: the action track is trigger-sized', async () => {
-  renderPage();
+  renderPage('people');
 
   const row = await personRow();
   const main = row.querySelector('.row-main') as HTMLElement;
@@ -458,10 +461,11 @@ it('people list: the action track is trigger-sized', async () => {
 it('without initiatives:change there is no Actions trigger on either list', async () => {
   auth.can = (resource: string, action: string) =>
     !(resource === 'initiatives' && action === 'change');
-  renderPage();
+  renderPage('assets');
 
   const arow = await assetRow();
   expect(within(arow).queryByRole('button', { name: /Actions/ })).toBeNull();
+  await userEvent.setup().click(screen.getByRole('tab', { name: /^People/ }));
   const prow = await personRow();
   expect(within(prow).queryByRole('button', { name: /Actions/ })).toBeNull();
 });
@@ -478,7 +482,7 @@ it('people list: Edit table shows for super admin (80) without god mode and edit
     sort_order: 1, is_active: true, usage_count: null,
   }]);
   const user = userEvent.setup();
-  renderPage();
+  renderPage('people');
   await user.click(within(await peopleToolbar()).getByRole('button', { name: 'Edit table' }));
   const row = await personRow();
   expect(row.closest('.dir-list')!.classList.contains('editing')).toBe(true);
@@ -491,27 +495,27 @@ it('people list: Edit table shows for super admin (80) without god mode and edit
 
 it('people list: Edit table shows for developer (100)', async () => {
   auth.maxRank = 100;
-  renderPage();
+  renderPage('people');
   expect(within(await peopleToolbar()).getByRole('button', { name: 'Edit table' })).not.toBeNull();
 });
 
 it('people list: the Edit table toggle carries the neutral tooltip, not the god-mode one', async () => {
   auth.maxRank = 80;
-  renderPage();
+  renderPage('people');
   const toggle = within(await peopleToolbar()).getByRole('button', { name: 'Edit table' });
   expect(toggle.getAttribute('title')).toBe('Edit table directly');
 });
 
 it('people list: Edit table is hidden for admin (60)', async () => {
   auth.maxRank = 60;
-  renderPage();
+  renderPage('people');
   expect(within(await peopleToolbar()).queryByRole('button', { name: 'Edit table' })).toBeNull();
 });
 
 it('people list: Edit table is hidden without change permission', async () => {
   auth.maxRank = 100;
   auth.can = (resource, action) => !(resource === 'initiatives' && action === 'change');
-  renderPage();
+  renderPage('people');
   expect(within(await peopleToolbar()).queryByRole('button', { name: 'Edit table' })).toBeNull();
 });
 
@@ -541,7 +545,7 @@ it('a project has no kiosk password line, even for admins', async () => {
 
 it('non-admins do not see the kiosk password line', async () => {
   renderPage();
-  await screen.findByText('switch-01');
+  await screen.findByRole('tab', { name: 'Overview' });
   expect(screen.queryByText('Kiosk password')).toBeNull();
 });
 
@@ -555,7 +559,7 @@ it('assets list: the Location cell links to the container and truck', async () =
     ...ASSET,
     asset: { ...ASSET.asset, container_id: 'c1', container_name: 'ATL1-W1M-DC-01', truck_id: 't1', truck_name: 'ATL1-T01' },
   }]);
-  renderPage();
+  renderPage('assets');
   const row = await assetRow();
   expect(within(row).getByRole('link', { name: 'ATL1-W1M-DC-01' }).getAttribute('href'))
     .toBe('/logistics/containers?open=c1');

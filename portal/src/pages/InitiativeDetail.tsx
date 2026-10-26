@@ -12,11 +12,10 @@ import {
   useCallback, useEffect, useMemo, useRef, useState,
   type FormEvent, type MouseEvent as ReactMouseEvent,
 } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import AssetLocation from '../components/assets/AssetLocation';
-import CollapsePanel from '../components/CollapsePanel';
 import ComboBox, { type ComboOption } from '../components/ComboBox';
 import AssetEditDialog from '../components/initiatives/AssetEditDialog';
 import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
@@ -63,7 +62,6 @@ import {
 import { ADMIN_RANK, SUPER_ADMIN_RANK } from '../lib/access';
 import { statusChip as chip } from '../lib/chips';
 import { relativeTime } from '../lib/format';
-import { useListCollapse } from '../lib/listCollapse';
 import {
   INITIATIVE_ERRORS, MOVE_ASSET_COLUMNS, MOVE_ASSET_EDIT_FIELDS, MOVE_ASSET_ERRORS,
   initiativeCellText, moveAssetCellText, moveAssetProgress, moveAssetStatusBreakdown,
@@ -92,11 +90,26 @@ import { useToast } from '../lib/notificationsContext';
 import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/profile.css';
+import '../styles/system.css'; /* .sysconf-tabbar */
 
 /** real_start_at/real_end_at are date-only fields stored as midnight UTC
  *  — slicing the ISO string (rather than toLocaleDateString) avoids the
  *  day-west-of-UTC shift documented on lib/initiatives.ts's dateOnly. */
 const dateOnly = (iso: string | null) => (iso ? iso.slice(0, 10) : null);
+
+/** Detail page tabs, in display order. Full Picture shows the Overview
+ *  and Assets sections together on one page. Learning is a placeholder
+ *  until the learning portal is built. */
+const DETAIL_TABS = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'full', label: 'Full Picture' },
+  { key: 'assets', label: 'Assets' },
+  { key: 'people', label: 'People' },
+  { key: 'time', label: 'Time' },
+  { key: 'notes', label: 'Notes and files' },
+  { key: 'learning', label: 'Learning' },
+] as const;
+type DetailTab = typeof DETAIL_TABS[number]['key'];
 
 /* ── People section — standard list machinery (mirrors Initiatives.tsx's
       COLUMNS/sortValueFor pattern; see lib/columnMenu.tsx + lib/listTools.tsx
@@ -289,7 +302,21 @@ export default function InitiativeDetail() {
   // section's peopleEditing, gated on maxRank/canChange rather than godMode.
   const [assetsEditing, setAssetsEditing] = useState(false);
   const assetsEditGate = maxRank >= ADMIN_RANK && canChange;
-  const assetsPanel = useListCollapse('initiative-assets');
+  // Page tabs, kept in ?tab= so a refresh or a shared link lands on the
+  // same tab. Anything unknown falls back to Overview.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get('tab');
+  const tab: DetailTab = DETAIL_TABS.some((t) => t.key === tabParam)
+    ? tabParam as DetailTab : 'overview';
+  const selectTab = (next: DetailTab) => {
+    setSearchParams((prev) => {
+      const p = new URLSearchParams(prev);
+      if (next === 'overview') p.delete('tab'); else p.set('tab', next);
+      return p;
+    }, { replace: true });
+  };
+  const showOverview = tab === 'overview' || tab === 'full';
+  const showAssets = tab === 'assets' || tab === 'full';
   // Rack elevation modal (Task 6) — opened from a Source/Destination Rack
   // cell button in read-only display mode; null when closed.
   const [rackView, setRackView] = useState<
@@ -697,7 +724,23 @@ export default function InitiativeDetail() {
         )}
       </div>
 
-      <div className={`detail-grid idet-grid${isMove && assets.length > 0 ? ' idet-grid-3col' : ''}`}>
+      <div className="sysconf-tabbar idet-tabbar" role="tablist">
+        {DETAIL_TABS.map((t) => {
+          const count = t.key === 'assets' && isMove ? assets.length
+            : t.key === 'people' ? initiative.people.length : null;
+          return (
+            <button key={t.key} type="button" role="tab" aria-selected={tab === t.key}
+                    className={`sysconf-tab${tab === t.key ? ' active' : ''}`}
+                    onClick={() => selectTab(t.key)}>
+              {t.label}
+              {count != null && <span className="idet-tab-count">{count}</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className={`detail-grid idet-grid${showOverview && isMove && assets.length > 0 ? ' idet-grid-3col' : ''}`}>
+        {showOverview && (<>
         <div className="init-panel"
              style={!isMove ? { gridColumn: '1 / -1' } : undefined}>
           <p className="eyebrow-sm">Overview</p>
@@ -762,10 +805,11 @@ export default function InitiativeDetail() {
             </dl>
           </div>
         )}
+        </>)}
 
+        {showAssets && (
         <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
-          <CollapsePanel title={`Assets${isMove ? ` — ${assets.length}` : ''}`}
-                         open={assetsPanel.open} onToggle={assetsPanel.setOpen}>
+          <p className="eyebrow-sm">Assets{isMove ? ` — ${assets.length}` : ''}</p>
           {!isMove && <p className="page-hint">Asset tracking lands here next.</p>}
           {isMove && assetsError && (
             <div className="dir-empty" style={{ marginBottom: 12 }}>
@@ -850,11 +894,7 @@ export default function InitiativeDetail() {
                   </div>
                 )}
 
-                {/* Remounted on open/close: VirtualRows measures its offset in a
-                    layout effect, which reads zeros while the panel body is
-                    hidden, so a list that mounted (or last measured) collapsed
-                    would window against a wrong scroll margin. */}
-                <VirtualRows key={assetsPanel.open ? 'open' : 'closed'} rows={visibleAssets}
+                <VirtualRows rows={visibleAssets}
                   renderRow={(a, vp) => {
                     const open = openAssetId === a.id;
                     return (
@@ -914,9 +954,10 @@ export default function InitiativeDetail() {
               {assetsActionError && <span className="pf-error">{assetsActionError}</span>}
             </>
           )}
-          </CollapsePanel>
         </div>
+        )}
 
+        {showOverview && (
         <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
           <p className="eyebrow-sm">Linked initiatives</p>
           {initiative.links_children.length === 0
@@ -997,12 +1038,16 @@ export default function InitiativeDetail() {
           )}
           {linksError && <span className="pf-error">{linksError}</span>}
         </div>
+        )}
 
+        {tab === 'notes' && (
         <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
           <NotesFilesPanel entityType="initiative" entityId={initiative.id}
                            canWrite={canChange} />
         </div>
+        )}
 
+        {tab === 'people' && (
         <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
           <p className="eyebrow-sm">People — {initiative.people.length}</p>
           {initiative.people.length === 0
@@ -1130,7 +1175,9 @@ export default function InitiativeDetail() {
           )}
           {peopleError && <span className="pf-error">{peopleError}</span>}
         </div>
+        )}
 
+        {tab === 'time' && (
         <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
           <p className="eyebrow-sm">Time tracking</p>
           {!timeLoaded ? (
@@ -1192,6 +1239,17 @@ export default function InitiativeDetail() {
             </div>
           )}
         </div>
+        )}
+
+        {tab === 'learning' && (
+          <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
+            <p className="eyebrow-sm">Learning</p>
+            <p className="page-hint">
+              Coming soon: the documents workers on this initiative must
+              review and sign, plus invites, reminders and sign-off status.
+            </p>
+          </div>
+        )}
       </div>
 
       {editing && (

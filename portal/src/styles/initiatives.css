@@ -929,3 +929,19 @@
   min-width: 498px; /* floors + 4 × 12px gaps; the .mini-list.list-scroll card scrolls below it */
 }
 .scan-history .scan-when { white-space: nowrap; }
+
+/* ── detail page tabs — the shared .sysconf-tabbar, with a count pill
+   on Assets and People. Scrolls sideways on narrow screens. ── */
+.idet-tabbar { overflow-x: auto; scrollbar-width: none; }
+.idet-tabbar .sysconf-tab { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.idet-tab-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--paper-2);
+  color: var(--text-mute);
+}
+.sysconf-tab.active .idet-tab-count { background: rgba(var(--accent-rgb), 0.14); color: var(--text-dark); }
