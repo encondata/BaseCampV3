@@ -4082,10 +4082,10 @@ class KioskClockInIn(BaseModel):
     # has none (see `timeclock.site_zone`).
     tz: str | None = Field(None, max_length=64)
     # the admin override this punch was let through on (learning-override):
-    # that person's, made on this kiosk, today, not yet used. A plain
-    # string: anything else (malformed, someone else's, used) never
-    # refuses the punch, it is only recorded on the audit
-    learning_override_id: str | None = None
+    # that person's, made on this kiosk, today, not yet used. Any JSON
+    # value: anything else (malformed, not a string, someone else's,
+    # used) never refuses the punch, it is only recorded on the audit
+    learning_override_id: Any = None
 
 
 class KioskClockOutIn(BaseModel):
@@ -4107,7 +4107,7 @@ class KioskStationClockIn(BaseModel):
     person_id: uuid.UUID
     tz: str | None = Field(None, max_length=64)   # as KioskClockInIn
     # clock-in only, as KioskClockInIn (clock-out ignores it)
-    learning_override_id: str | None = None
+    learning_override_id: Any = None
 
 
 class KioskLearningLinkIn(BaseModel):

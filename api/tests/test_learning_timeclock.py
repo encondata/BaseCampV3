@@ -3,6 +3,7 @@
 "Email me the link", the admin override (an admin's email + password + 2FA
 checked at the shared station without opening a session) and the punch it
 links to. Punches are never blocked on learning."""
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -354,6 +355,41 @@ async def test_override_guesses_rate_limited(client, db, seeded_user, monkeypatc
     assert r.status_code == 429
 
 
+async def test_override_concurrent_guesses_reserve_slots(client, db, seeded_user,
+                                                         monkeypatch):
+    """Slots are reserved before the credentials are checked, so N wrong
+    guesses at once let exactly `limit` through to verify_admin; a success
+    gives its slot back."""
+    _, init, key = await _timeclock_station(db)
+    pid = await _owing(db, init)
+    _, email = await _account(db)
+    limiter = kiosk_routes.override_limiter
+    monkeypatch.setattr(limiter, "limit", 2)
+    calls = 0
+    real = learning_timeclock.verify_admin
+
+    async def counting(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)          # let the others pile up meanwhile
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(learning_timeclock, "verify_admin", counting)
+    results = await asyncio.gather(*[_override(client, key, pid, email, "wrong")
+                                     for _ in range(5)])
+    codes = sorted(r.status_code for r in results)
+    assert codes == [403, 403, 429, 429, 429]
+    assert calls == 2
+
+    # a success never keeps its slot
+    limiter.reset()
+    monkeypatch.setattr(limiter, "limit", 1)
+    for _ in range(3):
+        assert (await _override(client, key, pid, email)).status_code == 200
+    assert (await _override(client, key, pid, email, "wrong")).status_code == 403
+    assert (await _override(client, key, pid, email)).status_code == 429
+
+
 async def test_override_rank_403(client, db, seeded_user):
     _, init, key = await _timeclock_station(db)
     pid = await _owing(db, init)
@@ -445,7 +481,7 @@ async def test_clock_in_links_override(client, db, seeded_user):
         r = await clock_in(person_id, oid)
         assert r.status_code == 200, r.text
         log = await punch_audit(r.json()["entry"]["id"])
-        assert log.changes["learning_override_rejected"] == oid
+        assert log.changes["learning_override_rejected"] == str(oid)
         assert "learning_override_id" not in log.changes
         await clock_out(person_id)
 
@@ -454,6 +490,7 @@ async def test_clock_in_links_override(client, db, seeded_user):
     await rejected_punch(stranger.id, override_id)
     await rejected_punch(pid, str(uuid.uuid4()))
     await rejected_punch(pid, "not-a-uuid")
+    await rejected_punch(pid, 5)                        # not even a string: never a 422
     [row] = await _overrides(db)
     assert row.time_entry_id is None
 
@@ -533,10 +570,9 @@ async def test_learning_link_rate_limited(client, db, seeded_user, monkeypatch):
     assert (await link(ned.id)).json() == {"sent": False}
 
 
-async def test_learning_link_only_when_the_station_would_warn(client, db, seeded_user,
-                                                              monkeypatch):
+async def test_learning_link_only_when_the_station_would_warn(client, db, seeded_user):
     """Only open items in the station's scope count: another move's or a
-    "day" override's covered person gets nothing; and the per-kiosk cap."""
+    "day" override's covered person gets nothing."""
     _, init, key = await _timeclock_station(db)
     other = await _initiative(db, "Some other move")
     elsewhere = await _worker(db, "Otto", "Other", "otto@test.example.com")
@@ -556,8 +592,29 @@ async def test_learning_link_only_when_the_station_would_warn(client, db, seeded
     mails = await db.scalar(select(func.count()).select_from(EmailOutbox))
     assert mails == 0
 
-    # two requests so far; the third is the last under a cap of three
-    monkeypatch.setattr(kiosk_routes.learning_link_limiter, "limit", 3)
-    assert (await link(pid)).status_code == 200
+
+async def test_learning_link_cap_counts_only_sends(client, db, seeded_user, monkeypatch):
+    """A shift change of people with nothing outstanding never trips the
+    per-kiosk cap; only emails actually sent count."""
+    _, init, key = await _timeclock_station(db)
+    pid = await _owing(db, init)
+    fixed = datetime.now(UTC).replace(second=5, microsecond=0)
+    monkeypatch.setattr(emails, "_now", lambda: fixed)
+    monkeypatch.setattr(kiosk_routes.learning_link_limiter, "limit", 2)
+
+    async def link(person_id):
+        return await client.post("/kiosk/station/timeclock/learning-link", headers=_auth(key),
+                                 json={"serial": SERIAL, "person_id": str(person_id)})
+
+    idle = await _worker(db, "Ivy", "Idle", "ivy@test.example.com")
+    for _ in range(3):
+        r = await link(idle.id)
+        assert r.status_code == 200 and r.json() == {"sent": False}
+    assert (await link(pid)).json() == {"sent": True}                 # 1 of 2
+    # the same minute again: nothing sent, so nothing counted
+    assert (await link(pid)).json() == {"sent": False}
+    monkeypatch.setattr(emails, "_now", lambda: fixed + timedelta(minutes=1))
+    assert (await link(pid)).json() == {"sent": True}                 # 2 of 2
+    monkeypatch.setattr(emails, "_now", lambda: fixed + timedelta(minutes=2))
     r = await link(pid)
     assert r.status_code == 429 and r.json()["detail"]["code"] == "rate_limited"

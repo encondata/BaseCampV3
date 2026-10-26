@@ -143,14 +143,14 @@ class IpRateLimiter:
             self._hits[key] = (start, count + 1)
             return True
 
-    def exhausted(self, address: str, now: float | None = None) -> bool:
-        """True when `address` has no hits left in its current window,
-        without counting one (for limits that count only failures)."""
-        now = time.monotonic() if now is None else now
+    def release(self, address: str) -> None:
+        """Give back one hit `address` took in its current window: a slot
+        reserved up front whose request turned out not to count."""
+        key = bucket_for(address)
         with self._lock:
-            entry = self._hits.get(bucket_for(address))
-            return (entry is not None and now - entry[0] < self.window
-                    and entry[1] >= self.limit)
+            entry = self._hits.get(key)
+            if entry is not None and entry[1] > 0:
+                self._hits[key] = (entry[0], entry[1] - 1)
 
     def reset(self) -> None:
         with self._lock:

@@ -2409,7 +2409,7 @@ _REJECTED_ID_MAX = 64
 
 
 async def _claim_override(
-    db: AsyncSession, raw_id: str | None, person: Person, device: Device, tz: ZoneInfo,
+    db: AsyncSession, raw_id: object, person: Person, device: Device, tz: ZoneInfo,
 ) -> tuple[LearningOverride | None, str | None]:
     """The learning override a clock-in names, as (row, rejected id). The
     row when it is that person's, made on this kiosk, today in `tz` and not
@@ -2418,10 +2418,12 @@ async def _claim_override(
     recorded as `learning_override_rejected`. Nothing named: (None, None)."""
     if raw_id is None:
         return None, None
-    rejected = raw_id[:_REJECTED_ID_MAX]
+    rejected = str(raw_id)[:_REJECTED_ID_MAX]
     try:
-        override_id = uuid.UUID(raw_id)
+        override_id = uuid.UUID(raw_id) if isinstance(raw_id, str) else None
     except ValueError:
+        override_id = None
+    if override_id is None:
         return None, rejected
     row = await learning_timeclock.claim_override(
         db, override_id, person_id=person.id, device_id=device.id,
@@ -2676,10 +2678,13 @@ async def station_timeclock_clock_out(
 # Abuse caps: /auth/login itself has no rate limiter, so these reuse the
 # per-process IpRateLimiter with the guessed-secret limit and window of
 # routes/auth.py's password-reset checks (password_reset_confirm_rate_limit
-# per RESET_WINDOW_SECONDS). The override counts refused guesses (a wrong
-# password or code), per kiosk device and per client address, so a busy
-# station's real overrides are never capped; "Email me the link" counts
-# every request per kiosk device. Over the cap: 429 `rate_limited`.
+# per RESET_WINDOW_SECONDS). Each request reserves its slot before any
+# work (so concurrent requests can't all slip past the check) and gives it
+# back when it turns out not to count. The override counts refused guesses
+# (a wrong password or code), per kiosk device and per client address, so
+# a busy station's real overrides are never capped; "Email me the link"
+# counts the emails it sends, per kiosk device, so a shift of people with
+# nothing outstanding never trips it. Over the cap: 429 `rate_limited`.
 override_limiter = IpRateLimiter(
     limit=get_settings().password_reset_confirm_rate_limit, window_seconds=RESET_WINDOW_SECONDS)
 learning_link_limiter = IpRateLimiter(
@@ -2692,15 +2697,37 @@ def _device_bucket(device: Device) -> str:
     return f"device:{device.id}"
 
 
+def _reserve(limiter: IpRateLimiter, buckets: tuple[str, ...]) -> None:
+    """Take one slot in every bucket, or none (429 `rate_limited`)."""
+    taken: list[str] = []
+    for bucket in buckets:
+        if not limiter.hit(bucket):
+            for done in taken:
+                limiter.release(done)
+            raise _err(429, "rate_limited")
+        taken.append(bucket)
+
+
+def _release(limiter: IpRateLimiter, buckets: tuple[str, ...]) -> None:
+    for bucket in buckets:
+        limiter.release(bucket)
+
+
 async def _learning_link(db: AsyncSession, device: Device, body: KioskLearningLinkIn,
                          ) -> KioskLearningLinkOut:
     person = await _timeclock_person(db, body.person_id)
-    if not learning_link_limiter.hit(_device_bucket(device)):
-        raise _err(429, "rate_limited")
-    zone = await timeclock.site_zone(db, device.site_id, body.tz)
-    sent = await learning_timeclock.send_link(
-        db, person.id, device.current_initiative_id, device.site_id, datetime.now(zone).date())
-    await db.commit()
+    buckets = (_device_bucket(device),)
+    _reserve(learning_link_limiter, buckets)
+    sent = False
+    try:
+        zone = await timeclock.site_zone(db, device.site_id, body.tz)
+        sent = await learning_timeclock.send_link(
+            db, person.id, device.current_initiative_id, device.site_id,
+            datetime.now(zone).date())
+        await db.commit()
+    finally:
+        if not sent:              # only an email sent counts toward the cap
+            _release(learning_link_limiter, buckets)
     return KioskLearningLinkOut(sent=sent)
 
 
@@ -2710,7 +2737,7 @@ async def _learning_override(
 ) -> KioskLearningOverrideOut:
     """422 `reason_text_required` (checked before the credentials, so a bad
     form is never a lockout strike); 429 `rate_limited` over the guess cap
-    (checked before them too); then 403 for every refusal of the admin:
+    (a slot is reserved before them too); then 403 for every refusal of the admin:
     `override_credentials_invalid` (wrong email or password, a disabled or
     locked account, all alike), `totp_required` (2FA on, no code),
     `totp_invalid`, `totp_enroll_required`, `override_rank`; 409
@@ -2722,22 +2749,22 @@ async def _learning_override(
     reason_text = (body.reason_text or "").strip() or None
     if body.reason == "other" and reason_text is None:
         raise _err(422, "reason_text_required")
-    raw_ip = rate_limit_ip(request)
-    buckets = (_device_bucket(device), raw_ip)
-    if any(override_limiter.exhausted(b) for b in buckets):
-        raise _err(429, "rate_limited")
+    buckets = (_device_bucket(device), rate_limit_ip(request))
+    _reserve(override_limiter, buckets)
     ip = client_ip(request)
+    guessed = False
     try:
         admin = await learning_timeclock.verify_admin(
             db, email=body.admin_email, password=body.admin_password,
             totp_code=body.totp_code, serial=device.serial, ip=ip)
     except learning_timeclock.OverrideRefused as exc:
+        guessed = exc.code in _GUESS_CODES
         await db.commit()
-        if exc.code in _GUESS_CODES:
-            for bucket in buckets:
-                override_limiter.hit(bucket)
         status = 409 if exc.code == "totp_seed_unreadable" else 403
         raise _err(status, exc.code) from None
+    finally:
+        if not guessed:           # only a refused guess keeps its slot
+            _release(override_limiter, buckets)
     zone = await timeclock.site_zone(db, device.site_id, body.tz)
     row = await learning_timeclock.create_override(
         db, person_id=person.id, admin_id=admin.person_id, device=device,
