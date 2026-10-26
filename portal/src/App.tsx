@@ -34,6 +34,8 @@ import Home from './pages/Home';
 import ImportMoveAssets from './pages/ImportMoveAssets';
 import Initiatives from './pages/Initiatives';
 import LearningDashboard from './pages/learning/LearningDashboard';
+import LearningDocument from './pages/learning/LearningDocument';
+import LearningLibrary from './pages/learning/LearningLibrary';
 import Placeholder from './pages/Placeholder';
 import InitiativeDetailPage from './pages/InitiativeDetail';
 import InitiativeTimeline from './pages/InitiativeTimeline';
@@ -170,10 +172,10 @@ export default function App() {
                   <ProtectedRoute learningManager><LearningDashboard /></ProtectedRoute>
                 } />
                 <Route path="/learning/library" element={
-                  <ProtectedRoute learningManager>
-                    <Placeholder eyebrow="Learning" title="Library"
-                                 hint="Learning documents, their versions, quizzes and translations." />
-                  </ProtectedRoute>
+                  <ProtectedRoute learningManager><LearningLibrary /></ProtectedRoute>
+                } />
+                <Route path="/learning/library/:documentId" element={
+                  <ProtectedRoute learningManager><LearningDocument /></ProtectedRoute>
                 } />
                 <Route path="/learning/packets" element={
                   <ProtectedRoute learningManager>

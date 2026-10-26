@@ -55,6 +55,8 @@ const CASES: [string, () => Promise<unknown>, string, string, string, unknown][]
   ['publishDocument', () => L.publishLearningDocument(ID, 'Fixed typos'), 'POST', `/learning/documents/${ID}/publish`, '', { change_note: 'Fixed typos' }],
   ['publishDocument no note', () => L.publishLearningDocument(ID), 'POST', `/learning/documents/${ID}/publish`, '', {}],
   ['getVersion', () => L.getLearningVersion(ID, 'v1'), 'GET', `/learning/documents/${ID}/versions/v1`, '', undefined],
+  ['signoffs', () => L.listDocumentSignoffs(ID), 'GET', `/learning/documents/${ID}/signoffs`, '', undefined],
+  ['signoffs paged', () => L.listDocumentSignoffs(ID, { limit: 50, offset: 100, versionId: 'v1' }), 'GET', `/learning/documents/${ID}/signoffs`, 'limit=50&offset=100&version_id=v1', undefined],
   ['archiveDocument', () => L.archiveLearningDocument(ID), 'DELETE', `/learning/documents/${ID}`, '', undefined],
   ['wikiPages', () => L.listLearningWikiPages(), 'GET', '/learning/wiki-pages', '', undefined],
   ['listPackets', () => L.listLearningPackets(), 'GET', '/learning/packets', '', undefined],

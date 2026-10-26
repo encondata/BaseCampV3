@@ -146,6 +146,30 @@ export const getLearningVersion = (documentId: string, versionId: string) =>
 export const archiveLearningDocument = (id: string) =>
   send<void>(`/learning/documents/${seg(id)}`, 'DELETE');
 
+export interface DocumentSignoff {
+  id: string; person: PersonRef; version_no: number; language: string; signed_at: string;
+  read_seconds: number; quiz_score: number | null;
+  initiative_id: string | null; initiative: string | null;
+}
+
+export interface DocumentSignoffPage {
+  /** Rows matching the version filter. */
+  total: number;
+  /** Version id → its sign-off count (the whole document, never filtered). */
+  version_counts: Record<string, number>;
+  items: DocumentSignoff[];
+}
+
+/** A page of a document's sign-offs, newest first (offset paging). */
+export const listDocumentSignoffs = (
+  documentId: string,
+  opts: { limit?: number; offset?: number; versionId?: string } = {},
+) => get<DocumentSignoffPage>(withQuery(`/learning/documents/${seg(documentId)}/signoffs`, {
+  limit: opts.limit === undefined ? undefined : String(opts.limit),
+  offset: opts.offset === undefined ? undefined : String(opts.offset),
+  version_id: opts.versionId,
+}));
+
 export const listLearningWikiPages = () => get<WikiPageOption[]>('/learning/wiki-pages');
 
 // ── packets ──────────────────────────────────────────────────────────

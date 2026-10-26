@@ -67,3 +67,236 @@
 
 .lrn-error { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .lrn-note { margin: 8px 0 0; color: var(--c-red); }
+
+/* ============================================================
+   Library and Document pages (/learning/library/*).
+   Layout, colors and sizes only: list typography stays with the
+   directory.css primitives the lists render through.
+   ============================================================ */
+
+.lrn-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lrn-head-actions .btn-ghost { text-decoration: none; }
+.dir-head .eyebrow a { color: inherit; text-decoration: none; }
+.dir-head .eyebrow a:hover { text-decoration: underline; }
+
+.lrn-tabs { margin: 4px 0 18px; }
+
+.lrn-banner {
+  margin: 0 0 14px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--c-amber-bd);
+  background: var(--c-amber-bg);
+  color: var(--c-amber);
+  font-size: 12.5px;
+}
+
+/* ── Content and rules: two columns ───────────────────────── */
+
+.lrn-docgrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(300px, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+@media (max-width: 960px) { .lrn-docgrid { grid-template-columns: 1fr; } }
+
+.lrn-card {
+  background: var(--surface, #fff);
+  border: 1px solid var(--paper-line);
+  border-radius: 14px;
+  padding: 18px 20px;
+}
+.lrn-paper-title { margin: 6px 0 4px; font-size: 20px; font-weight: 500; color: var(--text-dark); }
+
+/* The server-sanitized HTML of a version or translation. */
+.lrn-prose {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text-dark);
+  overflow-wrap: anywhere;
+}
+.lrn-prose h1, .lrn-prose h2, .lrn-prose h3, .lrn-prose h4 {
+  font-size: 15px;
+  font-weight: 500;
+  margin: 16px 0 4px;
+}
+.lrn-prose > :first-child { margin-top: 0; }
+.lrn-prose img { max-width: 100%; height: auto; border-radius: 8px; }
+.lrn-prose table { border-collapse: collapse; max-width: 100%; }
+.lrn-prose th, .lrn-prose td { border: 1px solid var(--paper-line); padding: 4px 8px; }
+.lrn-prose ul, .lrn-prose ol { padding-left: 22px; }
+
+/* ── rules panel ──────────────────────────────────────────── */
+
+.lrn-rules { display: flex; flex-direction: column; gap: 18px; }
+.lrn-set { display: flex; flex-direction: column; gap: 8px; }
+.lrn-set + .lrn-set { padding-top: 16px; border-top: 1px solid var(--paper-line); }
+.lrn-lbl {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-dark);
+}
+.lrn-hint { margin: 0; font-size: 12px; font-weight: 300; color: var(--text-mute); }
+.lrn-val { margin: 0; font-size: 13.5px; color: var(--text-dark); }
+.lrn-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--amber);
+  cursor: pointer;
+}
+.lrn-link:hover { text-decoration: underline; }
+
+.lrn-validity { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lrn-rules select,
+.lrn-modal select,
+.lrn-filter select {
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  color: var(--text-dark);
+  background: var(--surface-2, #f5f7fa);
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  padding: 8px 10px;
+}
+.lrn-num {
+  width: 96px;
+  box-sizing: border-box;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  color: var(--text-dark);
+  background: var(--surface-2, #f5f7fa);
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  padding: 8px 10px;
+}
+.lrn-num:focus, .lrn-rules select:focus {
+  outline: none;
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
+}
+.lrn-unit { font-size: 12px; color: var(--text-mute); }
+
+/* The re-sign rule: two option cards (radio group). */
+.lrn-opts { display: flex; flex-direction: column; gap: 8px; }
+.lrn-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 11px 12px;
+  border: 1px solid var(--paper-line);
+  border-radius: 11px;
+  background: var(--surface, #fff);
+  color: var(--text-dark);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.lrn-opt:hover { border-color: var(--amber); }
+.lrn-opt.on { border-color: var(--amber); background: rgba(var(--accent-rgb), 0.07); }
+.lrn-radio {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-mute);
+  box-sizing: border-box;
+}
+.lrn-opt.on .lrn-radio { border-color: var(--amber); box-shadow: inset 0 0 0 3px var(--surface, #fff); background: var(--amber); }
+.lrn-opt-text { display: flex; flex-direction: column; gap: 2px; }
+.lrn-opt-t { font-size: 13.5px; font-weight: 500; }
+.lrn-opt-s { font-size: 12px; font-weight: 300; color: var(--text-mute); }
+
+.lrn-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13.5px;
+  color: var(--text-dark);
+}
+.lrn-toggle-end { display: inline-flex; align-items: center; gap: 8px; }
+.lrn-toggle-end .lrn-num { width: 72px; }
+
+.lrn-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13.5px;
+  color: var(--text-dark);
+}
+.lrn-ver { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; color: var(--text-dark); }
+.lrn-vn {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--amber);
+  background: rgba(var(--accent-rgb), 0.12);
+  border-radius: 6px;
+  padding: 2px 7px;
+}
+
+/* ── tabs: Quiz, Translations, Versions, Sign-offs ────────── */
+
+.lrn-tab { display: flex; flex-direction: column; gap: 14px; }
+.lrn-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.lrn-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lrn-quiz-fields { display: flex; flex-wrap: wrap; gap: 18px 28px; align-items: flex-end; }
+.lrn-quiz-fields > div { display: flex; flex-direction: column; gap: 6px; }
+.lrn-filter { display: inline-flex; align-items: center; gap: 8px; }
+.lrn-version-title { margin: 4px 0 10px; font-size: 17px; font-weight: 500; color: var(--text-dark); }
+
+/* ── dialogs ──────────────────────────────────────────────── */
+
+.modal-card.reports-modal-card.rgm-card.lrn-modal { width: min(560px, 96vw); max-width: 96vw; }
+.modal-card.reports-modal-card.rgm-card.lrn-modal.lrn-modal-wide { width: min(920px, 96vw); }
+.modal-card.reports-modal-card.rgm-card.lrn-modal.lrn-preview-card { width: min(480px, 96vw); }
+.lrn-modal .pf-form textarea { width: 100%; box-sizing: border-box; }
+.lrn-note-mute { margin: 10px 0 0; font-size: 12.5px; color: var(--text-mute); }
+
+.lrn-choices { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 10px; }
+.lrn-choice { display: flex; align-items: center; gap: 10px; }
+.lrn-choice > input { flex: 1 1 auto; min-width: 0; }
+.lrn-correct { display: inline-flex; align-items: center; gap: 6px; margin: 0; flex: 0 0 auto; }
+.lrn-correct input { width: auto; }
+.pf-form .lrn-correct { margin-bottom: 0; }
+
+/* translation editor: HTML box beside a live preview */
+.lrn-edit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 760px) { .lrn-edit { grid-template-columns: 1fr; } }
+.lrn-html { font-family: var(--font-mono); font-size: 12px; resize: vertical; }
+.lrn-edit-preview { display: flex; flex-direction: column; gap: 6px; }
+.lrn-frame {
+  width: 100%;
+  height: 360px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+/* Preview as worker: a phone-width frame */
+.lrn-phone {
+  width: 100%;
+  max-width: 375px;
+  margin: 14px auto 0;
+  box-sizing: border-box;
+  max-height: 62vh;
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid var(--paper-line);
+  border-radius: 22px;
+  background: #fff;
+  box-shadow: 0 6px 24px rgba(27, 33, 41, 0.1);
+}
+.lrn-phone-title { font-size: 17px; font-weight: 500; margin-bottom: 8px; color: var(--text-dark); }
