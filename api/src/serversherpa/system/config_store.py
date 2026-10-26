@@ -61,6 +61,22 @@ DEFAULTS: dict[str, dict] = {
     # The company staff ID badges name and show (labels/people_badge.py):
     # company_logo_key is a stored object (the cleanup sweep keeps it).
     "branding": {"company_name": DEFAULT_COMPANY_NAME, "company_logo_key": None},
+    # Learning portal policy (learning/settings.py). A null number means the
+    # rule is off: general codes never expire, documents stay valid, nothing
+    # is purged. email_text overrides the built-in invite/reminder/due copy:
+    # {template: {lang: {"subject": str, "intro": str}}}.
+    "learning": {
+        "code_max_failures": 10, "code_lockout_seconds": 900,
+        "ip_limit": 30, "ip_window_seconds": 300, "global_limit": 300,
+        "general_code_days": None,
+        "default_validity_days": None,
+        "invite_offset_days": 7, "invite_time": "08:00",
+        "reminder_offsets": [5, 3], "due_offset_days": 2,
+        "retention_days": None,
+        "brand_line": "",
+        "email_text": {},
+        "languages": ["en", "ja", "ko", "he"],
+    },
 }
 
 

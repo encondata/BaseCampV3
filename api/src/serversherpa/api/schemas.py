@@ -17,6 +17,7 @@ from pydantic import (
     Field,
     StringConstraints,
     field_validator,
+    model_validator,
 )
 
 from serversherpa.notifications.kinds import CATEGORY_KEYS
@@ -2526,6 +2527,83 @@ class SecurityConfigIn(BaseModel):
     password_expiry_enabled: bool | None = None
     password_expiry_days: int | None = None
     password_history_count: int | None = None
+
+
+LEARNING_LANGUAGES = ("en", "ja", "ko", "he")
+_HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+# settings that may be cleared back to null (null = the rule is off)
+_LEARNING_NULLABLE = ("general_code_days", "default_validity_days", "retention_days")
+
+
+class LearningEmailText(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str
+    intro: str
+
+
+class LearningSettingsOut(BaseModel):
+    code_max_failures: int
+    code_lockout_seconds: int
+    ip_limit: int
+    ip_window_seconds: int
+    global_limit: int
+    general_code_days: int | None
+    default_validity_days: int | None
+    invite_offset_days: int
+    invite_time: str
+    reminder_offsets: list[int]
+    due_offset_days: int
+    retention_days: int | None
+    brand_line: str
+    email_text: dict[str, dict[str, LearningEmailText]]
+    languages: list[str]
+
+
+class LearningSettingsIn(BaseModel):
+    """Partial update — only sent fields change. general_code_days,
+    default_validity_days and retention_days accept an explicit null (the
+    rule is off); every other field rejects null. `languages` must include
+    "en" and stay within the four supported languages."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code_max_failures: int | None = Field(default=None, ge=1)
+    code_lockout_seconds: int | None = Field(default=None, ge=1)
+    ip_limit: int | None = Field(default=None, ge=1)
+    ip_window_seconds: int | None = Field(default=None, ge=1)
+    global_limit: int | None = Field(default=None, ge=1)
+    general_code_days: int | None = Field(default=None, ge=1)
+    default_validity_days: int | None = Field(default=None, ge=1)
+    invite_offset_days: int | None = Field(default=None, ge=1)
+    invite_time: str | None = None
+    reminder_offsets: list[Annotated[int, Field(ge=0, le=365)]] | None = None
+    due_offset_days: int | None = Field(default=None, ge=1)
+    retention_days: int | None = Field(default=None, ge=1)
+    brand_line: str | None = None
+    email_text: dict[str, dict[str, LearningEmailText]] | None = None
+    languages: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _check(self):
+        for key in self.model_fields_set:
+            if getattr(self, key) is None and key not in _LEARNING_NULLABLE:
+                raise ValueError(f"{key} cannot be null")
+        if self.invite_time is not None and not _HHMM.match(self.invite_time):
+            raise ValueError("invite_time must be HH:MM")
+        offsets = self.reminder_offsets
+        if offsets is not None and len(set(offsets)) != len(offsets):
+            raise ValueError("reminder_offsets must be unique")
+        langs = self.languages
+        if langs is not None:
+            if len(set(langs)) != len(langs) or not set(langs) <= set(LEARNING_LANGUAGES):
+                raise ValueError("languages must be unique and within en, ja, ko, he")
+            if "en" not in langs:
+                raise ValueError("languages must include en")
+        for by_lang in (self.email_text or {}).values():
+            if not set(by_lang) <= set(LEARNING_LANGUAGES):
+                raise ValueError("email_text languages must be within en, ja, ko, he")
+        return self
 
 
 class AiLookupConfigOut(BaseModel):
