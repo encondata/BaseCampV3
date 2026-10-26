@@ -1,0 +1,32 @@
+# Static SPA (the kiosk's runtime-config pattern with the portal's
+# caching). config.js is rewritten at container start, so it is never
+# cached. Vite's /assets/* names carry a content hash, so existing files
+# there are cached forever; a missing one is a real 404 (never the
+# index.html fallback, which would be cached as a broken bundle). Every
+# other path falls back to index.html, which is never cached so a
+# redeploy is picked up immediately. The invite link's token rides in the
+# URL fragment, which never reaches this server; no-referrer keeps the
+# page's address out of every request it makes.
+:8080 {
+	root * /srv
+	encode gzip
+	header {
+		X-Frame-Options DENY
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+	}
+	handle /config.js {
+		header Cache-Control "no-store"
+		file_server
+	}
+	handle /assets/* {
+		@found file {path}
+		header @found Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+	handle {
+		header Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}

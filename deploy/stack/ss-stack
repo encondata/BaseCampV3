@@ -25,7 +25,7 @@
 # With STACK_DB_PUBLISH=1 (a LAN Blue/Green data VM) the db stack listens on
 # the LAN for STACK_DB_ALLOW's addresses only (pg_hba.conf, written here).
 # STACK_DB_SSLMODE=disable: the external database is a LAN data VM (no TLS).
-# STACK_APPS lists the optional apps that run (wiki, kiosk, status, mailpit;
+# STACK_APPS lists the optional apps that run (wiki, kiosk, learn, status, mailpit;
 # "none" for none); without it every app runs. API and portal always run.
 # Sirdar's deploy pipeline runs exactly these commands over SSH.
 set -euo pipefail
@@ -78,13 +78,13 @@ check_apps() {
   apps=$(env_value STACK_APPS)
   [[ -z $apps || $apps == none ]] && return 0
   [[ $apps =~ ^[^,]+(,[^,]+)*$ ]] \
-    || die "STACK_APPS must list wiki, kiosk, status or mailpit, comma-separated with no spaces (or none)"
+    || die "STACK_APPS must list wiki, kiosk, learn, status or mailpit, comma-separated with no spaces (or none)"
   IFS=, read -ra list <<<"$apps"
   for app in "${list[@]}"; do
     case $app in
-      wiki|kiosk|status|mailpit) ;;
+      wiki|kiosk|learn|status|mailpit) ;;
       none) die "STACK_APPS: none can't be combined with other apps" ;;
-      *) die "STACK_APPS has '$app', not one of wiki, kiosk, status, mailpit (lowercase, no spaces)" ;;
+      *) die "STACK_APPS has '$app', not one of wiki, kiosk, learn, status, mailpit (lowercase, no spaces)" ;;
     esac
   done
 }
@@ -343,6 +343,7 @@ case $cmd in
     web_off=()
     app_on kiosk || web_off+=(--scale kiosk=0)
     app_on wiki || web_off+=(--scale wiki=0)
+    app_on learn || web_off+=(--scale learn=0)
     dc web up -d "${WAIT[@]}" ${web_off[@]+"${web_off[@]}"}
     if app_on status; then
       # The status page leaves out an app that is off (an empty URL); one

@@ -555,7 +555,7 @@ def test_apps_that_are_off_dont_run(env_dir: Path, fake: dict[str, str]) -> None
     c = calls(fake)
     assert dc(env_dir, "storage", f"{WAIT} --scale mailpit=0") in c
     assert dc(env_dir, "api", f"{WAIT} --scale wiki-worker=0 --scale wiki-export-worker=0") in c
-    assert dc(env_dir, "web", f"{WAIT} --scale wiki=0") in c
+    assert dc(env_dir, "web", f"{WAIT} --scale wiki=0 --scale learn=0") in c
     assert dc(env_dir, "status", "down") in c
     assert dc(env_dir, "status", WAIT) not in c
 
@@ -564,7 +564,7 @@ def test_none_runs_only_the_api_and_the_portal(env_dir: Path, fake: dict[str, st
     _apps(env_dir, SMTP + "STACK_APPS=none\n")
     assert run(fake, "up", str(env_dir)).returncode == 0
     c = calls(fake)
-    assert dc(env_dir, "web", f"{WAIT} --scale kiosk=0 --scale wiki=0") in c
+    assert dc(env_dir, "web", f"{WAIT} --scale kiosk=0 --scale wiki=0 --scale learn=0") in c
     assert dc(env_dir, "status", "down") in c
 
 
@@ -594,7 +594,7 @@ def test_the_status_page_checks_only_the_apps_that_run(env_dir: Path, fake: dict
 
 def test_every_app_runs_when_the_key_is_absent_or_lists_them_all(env_dir: Path,
                                                                  fake: dict[str, str]) -> None:
-    _apps(env_dir, "STACK_APPS=wiki,kiosk,status,mailpit\n")
+    _apps(env_dir, "STACK_APPS=wiki,kiosk,learn,status,mailpit\n")
     assert run(fake, "up", str(env_dir)).returncode == 0
     c = calls(fake)
     for stack in ("storage", "api", "web", "status"):
@@ -618,6 +618,12 @@ def test_data_without_mailpit_starts_only_seaweedfs_storage(env_dir: Path,
                            dc(env_dir, "storage", f"{WAIT} --scale mailpit=0")]
 
 
+def test_the_learn_site_runs_when_listed(env_dir: Path, fake: dict[str, str]) -> None:
+    _apps(env_dir, SMTP + "STACK_APPS=learn\n")
+    assert run(fake, "up", str(env_dir)).returncode == 0
+    assert dc(env_dir, "web", f"{WAIT} --scale kiosk=0 --scale wiki=0") in calls(fake)
+
+
 def test_a_data_vm_ignores_stack_apps(env_dir: Path, fake: dict[str, str]) -> None:
     _apps(env_dir, LAN_DATA + "STACK_APPS=none\n")
     assert run(fake, "data", str(env_dir)).returncode == 0
@@ -627,7 +633,7 @@ def test_a_data_vm_ignores_stack_apps(env_dir: Path, fake: dict[str, str]) -> No
 
 
 @pytest.mark.parametrize("apps", [
-    "wiki, kiosk", " wiki", "kiosk ", "Wiki", "KIOSK,status", "wiki,blog", "portal",
+    "wiki, kiosk", " wiki", "kiosk ", "Wiki", "KIOSK,status", "wiki,blog", "portal", "Learn",
     "wiki,", ",wiki", "wiki,,kiosk", "none,wiki", "\"wiki kiosk\""])
 @pytest.mark.parametrize("command", ["up", "data"])
 def test_a_bad_app_list_is_refused(env_dir: Path, fake: dict[str, str], apps: str,

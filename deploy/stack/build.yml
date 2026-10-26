@@ -29,6 +29,11 @@ services:
     build:
       context: ${STACK_REPO_DIR}
       dockerfile: wiki/Dockerfile
+  learn:
+    image: ${STACK_LEARN_IMAGE:-serversherpa-learn}:${STACK_IMAGE_TAG}
+    build:
+      context: ${STACK_REPO_DIR}
+      dockerfile: learn/Dockerfile
   status:
     image: ${STACK_STATUS_IMAGE:-serversherpa-status}:${STACK_IMAGE_TAG}
     build:

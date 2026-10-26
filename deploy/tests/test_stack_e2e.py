@@ -34,11 +34,11 @@ pytestmark = [
     pytest.mark.skipif(OPTED_IN and not docker_daemon_ok(), reason="Docker daemon not available"),
 ]
 
-PORTS = {"API": 18000, "PORTAL": 18091, "KIOSK": 18090, "WIKI": 18096,
+PORTS = {"API": 18000, "PORTAL": 18091, "KIOSK": 18090, "WIKI": 18096, "LEARN": 18092,
          "SPACES": 19000, "STATUS": 18095, "MAILPIT": 18025}
 # which stack and Compose service answers on each published port
 OWNERS = {"API": ("api", "api"), "PORTAL": ("web", "portal"), "KIOSK": ("web", "kiosk"),
-          "WIKI": ("web", "wiki"), "SPACES": ("storage", "seaweedfs"),
+          "WIKI": ("web", "wiki"), "LEARN": ("web", "learn"), "SPACES": ("storage", "seaweedfs"),
           "STATUS": ("status", "status"), "MAILPIT": ("storage", "mailpit")}
 SERVICES = {"api", "import-worker", "log-service", "notification-worker",
             "scan-matching-worker", "report-worker", "label-worker",
@@ -102,7 +102,7 @@ def env_dir(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
 
 
 @pytest.mark.parametrize("name,path", [
-    ("API", "/healthz"), ("PORTAL", "/"), ("KIOSK", "/"), ("WIKI", "/healthz"),
+    ("API", "/healthz"), ("PORTAL", "/"), ("KIOSK", "/"), ("WIKI", "/healthz"), ("LEARN", "/"),
     ("SPACES", "/healthz"), ("STATUS", "/healthz"), ("MAILPIT", "/"),
 ])
 def test_every_service_answers(env_dir: Path, name: str, path: str) -> None:

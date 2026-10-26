@@ -1,0 +1,85 @@
+/* ============================================================
+   learn.css — the learn site's own rules. The sign-in page is the
+   shared light scene (auth-theme.css + login-light.css); only what the
+   learn form adds lives here, scoped to .login-shell.login-light so it
+   can't leak. Logical properties throughout: Hebrew runs right to left.
+   ============================================================ */
+
+/* base.css paints the body dark for the portal; the learn site is light */
+body { background: #FFF9F2; }
+
+/* ---------- the six code boxes ---------- */
+.login-shell.login-light .learn-code {
+  display: flex; gap: 8px; justify-content: space-between;
+  margin: 26px 0 22px;
+}
+.login-shell.login-light .learn-code input {
+  inline-size: 100%; max-inline-size: 56px; min-inline-size: 0; block-size: 60px;
+  text-align: center; text-transform: uppercase;
+  font-family: var(--font-mono); font-size: 24px; color: var(--lx-ink);
+  background: #fff; border: 1px solid var(--lx-line); border-radius: 10px;
+  outline: none; caret-color: var(--lx-orange);
+  transition: border-color .2s, box-shadow .2s;
+}
+.login-shell.login-light .learn-code input:focus {
+  border-color: var(--lx-orange); box-shadow: 0 0 0 4px #ff6a0024;
+}
+.login-shell.login-light .learn-code input.filled { border-color: #94A3B8 }
+.login-shell.login-light .learn-code.bad input { border-color: #e5484d; box-shadow: 0 0 0 4px #e5484d1a }
+.login-shell.login-light .learn-code input:disabled { opacity: .6 }
+
+/* Continue's arrow points the way the text reads (and nudges that way on hover) */
+[dir='rtl'] .login-shell.login-light.learn-signin .btn .arrow { transform: scaleX(-1) }
+[dir='rtl'] .login-shell.login-light.learn-signin .btn:hover .arrow { transform: scaleX(-1) translate(4px) }
+
+/* ---------- language links ---------- */
+.login-shell.login-light .learn-langs {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: 6px 14px; margin-block-start: 26px;
+  color: var(--lx-slate); font-size: 14px;
+}
+.login-shell.login-light .learn-langs svg { inline-size: 16px; block-size: 16px; flex: none }
+.login-shell.login-light .learn-langs button {
+  border: 0; background: transparent; padding: 2px 0; cursor: pointer;
+  font: inherit; color: inherit;
+  border-block-end: 1px solid transparent;
+  transition: color .2s, border-color .2s;
+}
+.login-shell.login-light .learn-langs button:hover { color: var(--lx-ink) }
+.login-shell.login-light .learn-langs button.on { color: var(--lx-ink); border-block-end-color: var(--lx-orange) }
+
+/* ---------- back to the code form (inside the portal sign-in's notice) ---------- */
+.login-shell.login-light .learn-back {
+  border: 0; background: transparent; padding: 0; cursor: pointer;
+  font: inherit; color: var(--lx-ink);
+  border-block-end: 1px solid var(--lx-orange);
+}
+
+/* ---------- the invite link's holding card ---------- */
+/* auth-theme.css lays .login-shell out as a two-column (narrow: two-row)
+   grid; this page is one centered card */
+.login-shell.login-light.learn-start {
+  display: grid; grid-template: 1fr / 1fr; place-items: center; padding: 16px;
+}
+.login-shell.login-light .learn-start-card {
+  inline-size: 100%; max-inline-size: 418px; padding: 28px;
+  background: #fff; border: 1px solid var(--lx-line); border-radius: 16px;
+  box-shadow: 0 18px 40px -24px rgba(15, 23, 42, .25);
+}
+.login-shell.login-light .learn-start-msg { margin: 14px 0 0; font-size: 16px; line-height: 1.5 }
+.login-shell.login-light .learn-start-btn { margin-block-start: 22px; text-decoration: none }
+
+/* ---------- signed-in pages and the error screen ---------- */
+.learn-page, .learn-crash {
+  max-inline-size: 640px; margin: 0 auto; padding: 24px 16px;
+  color: #0F172A; font-family: 'Geologica', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+.learn-page .eyebrow, .learn-crash .eyebrow {
+  font-family: 'Fragment Mono', monospace; font-size: 12px; letter-spacing: .12em;
+  text-transform: uppercase; color: #64748B;
+}
+.learn-crash pre { white-space: pre-wrap; font-size: 12px; color: #64748B }
+.learn-crash button {
+  padding: 10px 18px; border: 0; border-radius: 10px; cursor: pointer;
+  background: #0F172A; color: #fff; font: inherit;
+}
