@@ -8,6 +8,14 @@ trashed page or a purged one (whose wiki history goes with it) never
 changes or breaks what a worker reads and signs. `wiki_node_id` is set to
 null by the database when the wiki purges the page.
 
+The wiki's own visibility rules hold for the manager linking or
+publishing a page: a private page (or one under a private folder) is
+never linked or published, and the manager needs at least view on the
+page (`AccessIndex.level_for_node`, as the wiki routes check it). The
+"link a page" picker lists only pages that pass both. A caller without
+an `AuthContext` (the seed CLI) skips the access check, not the private
+rule.
+
 Services never commit; each mutation adds a `learning_document_*` audit
 row to the session."""
 import uuid
@@ -18,7 +26,14 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import WikiNode, WikiPage, WikiPageVersion, WikiSpace
+from serversherpa.api.deps import AuthContext
+from serversherpa.db.models import (
+    WikiNode,
+    WikiPage,
+    WikiPageAsset,
+    WikiPageVersion,
+    WikiSpace,
+)
 from serversherpa.db.ordering import natural
 from serversherpa.learning import LEARNING_SPACE_KEY
 from serversherpa.learning.models import (
@@ -33,6 +48,7 @@ from serversherpa.learning.render import render_version_html
 from serversherpa.learning.settings import load_settings
 from serversherpa.services.audit import audit, diff
 from serversherpa.wiki.content import EMPTY_DOC
+from serversherpa.wiki.permissions import ANONYMOUS, AccessIndex, principal_for, viewable_nodes
 
 ENTITY = "learning_document"
 
@@ -48,18 +64,38 @@ def _now() -> datetime:
 # ── the wiki side ────────────────────────────────────────────────────
 
 
-async def learning_page(db: AsyncSession, node_id: uuid.UUID | None) -> WikiNode:
-    """The live page node `node_id` in the learning space, else 422
-    `not_learning_page`."""
-    node = None
-    if node_id is not None:
-        node = await db.scalar(
-            select(WikiNode).join(WikiSpace, WikiSpace.id == WikiNode.space_id)
-            .where(WikiNode.id == node_id, WikiNode.kind == "page",
-                   WikiNode.deleted_at.is_(None), WikiSpace.key == LEARNING_SPACE_KEY))
+async def _access_index(db: AsyncSession, actor: AuthContext | None) -> AccessIndex:
+    principal = await principal_for(db, actor) if actor is not None else ANONYMOUS
+    return AccessIndex(db, principal)
+
+
+async def _learning_node(db: AsyncSession, node_id: uuid.UUID | None) -> WikiNode | None:
+    """The live page node `node_id` in the learning space, or None."""
+    if node_id is None:
+        return None
+    return await db.scalar(
+        select(WikiNode).join(WikiSpace, WikiSpace.id == WikiNode.space_id)
+        .where(WikiNode.id == node_id, WikiNode.kind == "page",
+               WikiNode.deleted_at.is_(None), WikiSpace.key == LEARNING_SPACE_KEY))
+
+
+async def learning_page(db: AsyncSession, node_id: uuid.UUID | None, *,
+                        actor: AuthContext | None) -> WikiNode:
+    """The page `node_id`, if a learning document may link it for `actor`:
+    a live page in the learning space (else 422 `not_learning_page`),
+    neither it nor an ancestor private (else 422 `private_page`), and —
+    with an actor — at least view on it for them (else 403
+    `wiki_forbidden`)."""
+    node = await _learning_node(db, node_id)
     if node is None:
         raise _err(422, "not_learning_page",
                    "Pick a page in the Learning library of the wiki.")
+    ix = await _access_index(db, actor)
+    if await ix.is_private(node):
+        raise _err(422, "private_page",
+                   "This wiki page is private. Private pages can't be learning documents.")
+    if actor is not None and await ix.level_for_node(node) is None:
+        raise _err(403, "wiki_forbidden", "You don't have access to this wiki page.")
     return node
 
 
@@ -74,19 +110,19 @@ async def published_wiki_version(db: AsyncSession, node_id: uuid.UUID) -> WikiPa
 async def linked_page(db: AsyncSession, document: LearningDocument,
                       ) -> tuple[WikiNode, WikiPageVersion | None] | None:
     """The document's wiki page and its published version, or None once
-    the page is purged, trashed or no longer in the learning space."""
-    if document.wiki_node_id is None:
-        return None
-    try:
-        node = await learning_page(db, document.wiki_node_id)
-    except HTTPException:
+    the page is purged, trashed, made private or no longer in the
+    learning space."""
+    node = await _learning_node(db, document.wiki_node_id)
+    if node is None or await AccessIndex(db, ANONYMOUS).is_private(node):
         return None
     return node, await published_wiki_version(db, node.id)
 
 
-async def wiki_pages(db: AsyncSession) -> list[dict]:
-    """Every live page in the learning space with its ancestors' titles
-    and its published version number, for the "link a page" picker."""
+async def wiki_pages(db: AsyncSession, *, actor: AuthContext) -> list[dict]:
+    """The live, non-private pages in the learning space that `actor` can
+    view (`viewable_nodes`, the wiki listings' rule), with their
+    ancestors' titles and published version number, for the "link a
+    page" picker."""
     rows = (await db.execute(
         select(WikiNode, WikiPageVersion.version_no)
         .join(WikiSpace, WikiSpace.id == WikiNode.space_id)
@@ -95,6 +131,10 @@ async def wiki_pages(db: AsyncSession) -> list[dict]:
         .where(WikiSpace.key == LEARNING_SPACE_KEY, WikiNode.kind == "page",
                WikiNode.deleted_at.is_(None))
         .order_by(natural(WikiNode.title)))).all()
+    ix = await _access_index(db, actor)
+    shown, _ = await viewable_nodes(db, ix, [node for node, _ in rows])
+    public = {n.id for n in shown if not await ix.is_private(n)}
+    rows = [(node, no) for node, no in rows if node.id in public]
     ancestor_ids = {a for node, _ in rows for a in node.path or []}
     titles = dict((await db.execute(
         select(WikiNode.id, WikiNode.title).where(WikiNode.id.in_(ancestor_ids)))).all()
@@ -108,11 +148,12 @@ async def wiki_pages(db: AsyncSession) -> list[dict]:
 
 
 async def create_document(db: AsyncSession, *, actor_id: uuid.UUID | None, title: str,
-                          wiki_node_id: uuid.UUID, **settings: Any) -> LearningDocument:
-    """A new document linked to a learning-space page (422
-    `not_learning_page` otherwise). It has no version until published.
-    Validity defaults to the learning settings' default_validity_days."""
-    await learning_page(db, wiki_node_id)
+                          wiki_node_id: uuid.UUID, actor: AuthContext | None = None,
+                          **settings: Any) -> LearningDocument:
+    """A new document linked to a learning-space page (`learning_page`'s
+    checks). It has no version until published. Validity defaults to the
+    learning settings' default_validity_days."""
+    await learning_page(db, wiki_node_id, actor=actor)
     if "validity_days" not in settings:
         settings["validity_days"] = (await load_settings(db)).default_validity_days
     document = LearningDocument(title=title, wiki_node_id=wiki_node_id,
@@ -127,11 +168,12 @@ async def create_document(db: AsyncSession, *, actor_id: uuid.UUID | None, title
 
 
 async def update_document(db: AsyncSession, document: LearningDocument, *,
-                          actor_id: uuid.UUID | None, changes: dict[str, Any]) -> None:
-    """Apply already-validated setting `changes` (a re-link is checked
-    against the learning space too)."""
+                          actor_id: uuid.UUID | None, changes: dict[str, Any],
+                          actor: AuthContext | None = None) -> None:
+    """Apply already-validated setting `changes` (a re-link gets
+    `learning_page`'s checks too)."""
     if changes.get("wiki_node_id") not in (None, document.wiki_node_id):
-        await learning_page(db, changes["wiki_node_id"])
+        await learning_page(db, changes["wiki_node_id"], actor=actor)
     before = {key: getattr(document, key) for key in changes}
     for key, value in changes.items():
         setattr(document, key, value)
@@ -151,47 +193,71 @@ async def archive_document(db: AsyncSession, document: LearningDocument, *,
           action="learning_document_archive")
 
 
+async def _refuse_unless_newer(db: AsyncSession, document: LearningDocument,
+                               wiki_version: WikiPageVersion) -> None:
+    """409 when the document can't take `wiki_version` as its next
+    snapshot: `archived`; `no_changes` when it is the current snapshot;
+    `stale_wiki_version` when the current snapshot is of a later version
+    of the same page (two publishes raced and this one read the page
+    first)."""
+    if document.archived_at is not None:
+        raise _err(409, "archived", "This document is archived.")
+    if document.current_version_id is None:
+        return
+    current = await db.get(LearningDocumentVersion, document.current_version_id)
+    if current is None or current.wiki_version_id is None:
+        return
+    if current.wiki_version_id == wiki_version.id:
+        raise _err(409, "no_changes", "The wiki page hasn't changed since the last version.")
+    # only comparable within one page (a re-link starts a new numbering)
+    snapped = await db.get(WikiPageVersion, current.wiki_version_id)
+    if (snapped is not None and snapped.node_id == wiki_version.node_id
+            and wiki_version.version_no <= snapped.version_no):
+        raise _err(409, "stale_wiki_version",
+                   "A newer version of the wiki page is already published here.")
+
+
 async def publish_version(db: AsyncSession, document: LearningDocument, *,
-                          actor_id: uuid.UUID | None,
-                          change_note: str | None) -> LearningDocumentVersion:
+                          actor_id: uuid.UUID | None, change_note: str | None,
+                          actor: AuthContext | None = None) -> LearningDocumentVersion:
     """Snapshot the wiki page's current published version as the
     document's next version and make it current.
 
-    404 `wiki_page_missing` once the page is purged, 422
-    `not_learning_page` when it's trashed or moved out of the learning
-    space, 404 `wiki_not_published` when it has never been published, 409
-    `no_changes` when that version is already the current snapshot, and
-    LearningRenderUnavailable when it can't be rendered. Rendering happens
-    before the document row is locked, so a slow render server holds no
-    lock; the checks are repeated under the lock. An archived document
-    can't be published (409 `archived`)."""
+    404 `wiki_page_missing` once the page is purged; `learning_page`'s
+    refusals (trashed or moved out, private, no wiki access for `actor`);
+    404 `wiki_not_published` when it has never been published; 409
+    `archived` / `no_changes` / `stale_wiki_version`
+    (`_refuse_unless_newer`); LearningRenderRejected or
+    LearningRenderUnavailable when it can't be rendered.
+
+    Rendering happens before the document row is locked, so a slow render
+    server holds no lock; the 409 checks are repeated under the lock.
+    Only images that are the snapshotted page's own assets are recorded
+    (the share-link rule), so a page can't embed — and expose — another
+    page's image."""
     if document.archived_at is not None:
         raise _err(409, "archived", "This document is archived.")
     if document.wiki_node_id is None:
         raise _err(404, "wiki_page_missing",
                    "The linked wiki page no longer exists. Link another page first.")
-    node = await learning_page(db, document.wiki_node_id)
+    node = await learning_page(db, document.wiki_node_id, actor=actor)
     wiki_version = await published_wiki_version(db, node.id)
     if wiki_version is None:
         raise _err(404, "wiki_not_published",
                    "Publish the wiki page first, then publish it here.")
+    await _refuse_unless_newer(db, document, wiki_version)
 
-    async def unchanged() -> bool:
-        if document.current_version_id is None:
-            return False
-        current = await db.get(LearningDocumentVersion, document.current_version_id)
-        return current is not None and current.wiki_version_id == wiki_version.id
-
-    if await unchanged():
-        raise _err(409, "no_changes", "The wiki page hasn't changed since the last version.")
     content = wiki_version.content_json or EMPTY_DOC
     content_html, image_ids = await render_version_html(content)
+    if image_ids:
+        own = set((await db.scalars(select(WikiPageAsset.id).where(
+            WikiPageAsset.id.in_(image_ids), WikiPageAsset.node_id == node.id))).all())
+        image_ids = [i for i in image_ids if i in own]
 
     document = await db.scalar(
         select(LearningDocument).where(LearningDocument.id == document.id)
         .with_for_update().execution_options(populate_existing=True))
-    if await unchanged():
-        raise _err(409, "no_changes", "The wiki page hasn't changed since the last version.")
+    await _refuse_unless_newer(db, document, wiki_version)
     last = await db.scalar(select(func.max(LearningDocumentVersion.version_no))
                            .where(LearningDocumentVersion.document_id == document.id))
     version = LearningDocumentVersion(

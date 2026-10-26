@@ -1,7 +1,9 @@
 """Library routes: learning documents, publishing versions (wiki
 snapshots), reading a version's HTML, and the learning-space page picker.
 Reads need `learning:view`; create `add`; settings and publish `change`;
-archive `delete` (`require_manager`, so wiki administrators too)."""
+archive `delete` (`require_manager`, so wiki administrators too). Linking
+and publishing a page also need the actor's view access on it in the wiki
+(`library.learning_page`)."""
 import uuid
 
 from fastapi import APIRouter, HTTPException, Response
@@ -14,7 +16,11 @@ from serversherpa.db.models import Person
 from serversherpa.learning import library
 from serversherpa.learning.access import require_manager
 from serversherpa.learning.models import LearningDocument, LearningDocumentVersion
-from serversherpa.learning.render import LearningRenderUnavailable, html_with_images
+from serversherpa.learning.render import (
+    LearningRenderRejected,
+    LearningRenderUnavailable,
+    html_with_images,
+)
 from serversherpa.learning.schemas import (
     SETTING_FIELDS,
     DocumentCreateIn,
@@ -112,7 +118,7 @@ async def create_document(
     settings = body.model_dump(include=set(SETTING_FIELDS), exclude_unset=True)
     document = await library.create_document(
         db, actor_id=actor.person.id, title=body.title, wiki_node_id=body.wiki_node_id,
-        **settings)
+        actor=actor, **settings)
     await db.commit()
     await db.refresh(document)
     return await _document_out(db, document)
@@ -143,7 +149,8 @@ async def patch_document(
         DocumentSettings.model_validate(merged)
     except ValidationError as exc:
         raise RequestValidationError(exc.errors(include_url=False, include_context=False))
-    await library.update_document(db, document, actor_id=actor.person.id, changes=changes)
+    await library.update_document(db, document, actor_id=actor.person.id, changes=changes,
+                                  actor=actor)
     await db.commit()
     await db.refresh(document)
     return await _document_out(db, document)
@@ -159,7 +166,12 @@ async def publish_document(
     document = await _document(db, document_id)
     try:
         version = await library.publish_version(
-            db, document, actor_id=actor.person.id, change_note=body.change_note)
+            db, document, actor_id=actor.person.id, change_note=body.change_note,
+            actor=actor)
+    except LearningRenderRejected:
+        raise HTTPException(status_code=422, detail={
+            "code": "render_rejected",
+            "message": "The wiki couldn't render this page's content. Check the page in the wiki."})
     except LearningRenderUnavailable:
         raise HTTPException(status_code=503, detail={
             "code": "render_unavailable",
@@ -199,4 +211,4 @@ async def wiki_pages(
     db: DbSession,
     actor: AuthContext = require_manager("view"),
 ) -> list[WikiPageOption]:
-    return [WikiPageOption(**row) for row in await library.wiki_pages(db)]
+    return [WikiPageOption(**row) for row in await library.wiki_pages(db, actor=actor)]

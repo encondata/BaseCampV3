@@ -18,6 +18,9 @@ from sqlalchemy import delete, func, select
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
     AuditLog,
+    PersonRole,
+    UserAccount,
+    WikiGrant,
     WikiNode,
     WikiPage,
     WikiPageAsset,
@@ -138,6 +141,29 @@ async def _publish_wiki(db, node, content, title=None):
 
 async def _manager(db, client):
     return await _make(db, client, "admin", f"lib-{uuid.uuid4().hex[:8]}@test.example.com")
+
+
+async def _wiki_reader(db, client, email):
+    """A learning admin who is also staff (wiki:view): their wiki access
+    comes from the learning space's grants alone."""
+    hdrs = await _make(db, client, "staff", email)
+    person_id = await db.scalar(select(UserAccount.person_id).where(UserAccount.email == email))
+    db.add(PersonRole(person_id=person_id, role="learning_admin"))
+    await db.commit()
+    return hdrs
+
+
+async def _grant_internal(db, space, node=None):
+    grant = WikiGrant(space_id=space.id, node_id=node.id if node else None,
+                      principal_type="internal", level="view")
+    db.add(grant)
+    await db.commit()
+    return grant
+
+
+def _asset(page, name="boots.png"):
+    return WikiPageAsset(node_id=page.id, storage_key=f"wiki/assets/{uuid.uuid4()}/{name}",
+                         filename=name, content_type="image/png", size_bytes=10)
 
 
 async def _create(client, hdrs, node, title="Dress code", expect=201, **extra):
@@ -444,3 +470,150 @@ async def test_non_manager_forbidden(client, db, seeded_user, renderer):
         assert resp.status_code == 403, (method, url)
     assert await _actions(db, doc["id"]) == [
         "learning_document_create", "learning_document_publish"]
+
+
+async def test_private_pages_are_refused_and_hidden(client, db, seeded_user, renderer):
+    hdrs = await _manager(db, client)
+    space = await _space(db)
+    secret = await _node(db, space, "Secret folder", kind="folder")
+    secret.is_private = True
+    under = await _node(db, space, "Under secret", parent=secret)
+    own = await _node(db, space, "Private page")
+    own.is_private = True
+    shared = await _node(db, space, "Dress code")
+    await db.commit()
+    for node in (under, own, shared):
+        await _publish_wiki(db, node, _doc("Text."))
+
+    for node in (under, own):
+        resp = await client.post("/learning/documents", headers=hdrs, json={
+            "title": "X", "wiki_node_id": str(node.id)})
+        assert resp.status_code == 422 and resp.json()["detail"]["code"] == "private_page"
+    titles = [p["title"] for p in (await client.get("/learning/wiki-pages",
+                                                    headers=hdrs)).json()]
+    assert titles == ["Dress code"]
+
+    # a page made private after linking: no longer shown, never published
+    doc = await _create(client, hdrs, shared)
+    shared.is_private = True
+    await db.commit()
+    resp = await client.post(f"/learning/documents/{doc['id']}/publish", headers=hdrs, json={})
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "private_page"
+    detail = (await client.get(f"/learning/documents/{doc['id']}", headers=hdrs)).json()
+    assert detail["wiki_page"] is None
+    assert len(renderer.requests) == 0
+
+
+async def test_wiki_access_needed_to_link_and_publish(client, db, seeded_user, renderer):
+    space = await _space(db)
+    page = await _node(db, space, "Dress code")
+    await _publish_wiki(db, page, _doc("Wear boots."))
+    hdrs = await _wiki_reader(db, client, "lib-reader@test.example.com")
+
+    # no grant on the learning space: the page is not theirs to see
+    resp = await client.post("/learning/documents", headers=hdrs, json={
+        "title": "X", "wiki_node_id": str(page.id)})
+    assert resp.status_code == 403 and resp.json()["detail"]["code"] == "wiki_forbidden"
+    assert (await client.get("/learning/wiki-pages", headers=hdrs)).json() == []
+
+    grant = await _grant_internal(db, space)
+    assert [p["title"] for p in (await client.get("/learning/wiki-pages",
+                                                  headers=hdrs)).json()] == ["Dress code"]
+    doc = await _create(client, hdrs, page)
+    await db.delete(grant)
+    await db.commit()
+    resp = await client.post(f"/learning/documents/{doc['id']}/publish", headers=hdrs, json={})
+    assert resp.status_code == 403 and resp.json()["detail"]["code"] == "wiki_forbidden"
+    assert len(renderer.requests) == 0
+
+
+async def test_patch_relinks_to_another_page(client, db, seeded_user, renderer):
+    space = await _space(db)
+    first = await _node(db, space, "Dress code")
+    second = await _node(db, space, "Footwear")
+    hidden = await _node(db, space, "Managers only")
+    hidden.inherit_permissions = False          # no grants of its own: nobody inherits
+    private = await _node(db, space, "Private page")
+    private.is_private = True
+    await db.commit()
+    await _grant_internal(db, space)
+    hdrs = await _wiki_reader(db, client, "lib-relink@test.example.com")
+    doc = await _create(client, hdrs, first)
+    url = f"/learning/documents/{doc['id']}"
+
+    resp = await client.patch(url, headers=hdrs, json={"wiki_node_id": str(second.id)})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["wiki_node_id"] == str(second.id)
+    assert resp.json()["wiki_page"]["title"] == "Footwear"
+    resp = await client.patch(url, headers=hdrs, json={"wiki_node_id": str(private.id)})
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "private_page"
+    resp = await client.patch(url, headers=hdrs, json={"wiki_node_id": str(hidden.id)})
+    assert resp.status_code == 403 and resp.json()["detail"]["code"] == "wiki_forbidden"
+    other = await _space(db, key="ops-guides", name="Ops guides")
+    elsewhere = await _node(db, other, "Ops page")
+    resp = await client.patch(url, headers=hdrs, json={"wiki_node_id": str(elsewhere.id)})
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "not_learning_page"
+    stored = await db.get(LearningDocument, uuid.UUID(doc["id"]))
+    await db.refresh(stored)
+    assert stored.wiki_node_id == second.id
+
+
+async def test_images_limited_to_the_pages_own_live_assets(client, db, seeded_user, renderer):
+    hdrs = await _manager(db, client)
+    space = await _space(db)
+    page = await _node(db, space, "Dress code")
+    neighbor = await _node(db, space, "Neighbor")
+    own, foreign, gone = _asset(page), _asset(neighbor, "secret.png"), _asset(page, "old.png")
+    db.add_all([own, foreign, gone])
+    await db.flush()
+    gone.deleted_at = func.now()
+    await db.commit()
+    await _publish_wiki(db, page, _doc("Boots.", _image(own.id), _image(foreign.id),
+                                       _image(gone.id)))
+    doc = await _create(client, hdrs, page)
+    version = await _publish(client, hdrs, doc["id"])
+
+    row = await db.get(LearningDocumentVersion, uuid.UUID(version["id"]))
+    assert row.image_asset_ids == [own.id, gone.id]       # another page's asset is dropped
+    out = version["html"]
+    assert f'<figure data-wiki-image="{own.id}"><img src="' in out
+    assert f'<figure data-wiki-image="{foreign.id}"><img alt=' in out
+    assert f'<figure data-wiki-image="{gone.id}"><img alt=' in out
+    assert "secret.png" not in out and "old.png" not in out
+
+
+async def test_older_wiki_version_is_stale(client, db, seeded_user, renderer):
+    hdrs = await _manager(db, client)
+    space = await _space(db)
+    page = await _node(db, space, "Dress code")
+    wiki_v1 = await _publish_wiki(db, page, _doc("Wear boots."))
+    await _publish_wiki(db, page, _doc("Wear steel-toe boots."))
+    doc = await _create(client, hdrs, page)
+    assert (await _publish(client, hdrs, doc["id"]))["wiki_version_no"] == 2
+
+    # a publish that read the page before a newer snapshot landed
+    (await db.get(WikiPage, page.id)).published_version_id = wiki_v1.id
+    await db.commit()
+    resp = await client.post(f"/learning/documents/{doc['id']}/publish", headers=hdrs, json={})
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "stale_wiki_version"
+
+    # a re-linked page numbers its versions afresh: its version 1 is new here
+    other = await _node(db, space, "Footwear")
+    await _publish_wiki(db, other, _doc("Sandals."))
+    resp = await client.patch(f"/learning/documents/{doc['id']}", headers=hdrs,
+                              json={"wiki_node_id": str(other.id)})
+    assert resp.status_code == 200, resp.text
+    v2 = await _publish(client, hdrs, doc["id"])
+    assert v2["version_no"] == 2 and v2["wiki_version_no"] == 1
+
+
+async def test_render_rejected_is_422(client, db, seeded_user, renderer):
+    hdrs = await _manager(db, client)
+    space = await _space(db)
+    page = await _node(db, space, "Dress code")
+    await _publish_wiki(db, page, _doc("Wear boots."))
+    doc = await _create(client, hdrs, page)
+    renderer.status = 422
+    resp = await client.post(f"/learning/documents/{doc['id']}/publish", headers=hdrs, json={})
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "render_rejected"
+    assert await db.scalar(select(func.count()).select_from(LearningDocumentVersion)) == 0

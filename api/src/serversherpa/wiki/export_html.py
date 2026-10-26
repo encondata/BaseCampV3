@@ -57,7 +57,12 @@ _RENDERED_DETAILS = re.compile(r"<details(?=[ >])")
 
 class RenderError(Exception):
     """The wiki server couldn't render a page (down, refused, or bad
-    output) — worth another try."""
+    output) — worth another try. `status` is the server's HTTP status
+    when it answered with one (None when it couldn't be reached)."""
+
+    def __init__(self, message: str, *, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 def render_client() -> httpx.AsyncClient:
@@ -75,7 +80,8 @@ async def render_fragment(client: httpx.AsyncClient, doc: dict) -> str:
     except httpx.HTTPError as exc:
         raise RenderError(f"the wiki server could not be reached: {exc}") from exc
     if resp.status_code != 200:
-        raise RenderError(f"the wiki server answered {resp.status_code}: {resp.text[:300]}")
+        raise RenderError(f"the wiki server answered {resp.status_code}: {resp.text[:300]}",
+                          status=resp.status_code)
     try:
         fragment = resp.json()["html"]
     except (ValueError, KeyError, TypeError) as exc:

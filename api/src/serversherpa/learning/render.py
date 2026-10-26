@@ -7,9 +7,15 @@ the render server or the wiki page. The content is first made safe for
 readers outside the wiki (`public_doc`, the share-link rule): links to and
 embeds of other wiki nodes become plain text, and mentions lose their ids.
 
+`finish_fragment` opens every `<details>` section. That is kept on
+purpose: a worker signs off on the whole text, so nothing they sign may
+sit folded away.
+
 Images are stored without a source — the document only holds asset ids —
 and `html_with_images` gives each one a presigned URL when someone reads
-the version, the same way `POST /wiki/assets/urls` does."""
+the version, the same way `POST /wiki/assets/urls` does. Only the ids the
+version recorded at publish are served: assets of the snapshotted page
+itself (the share-link rule, `library.publish_version`)."""
 import html
 import re
 import uuid
@@ -19,8 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.routes.wiki.files import presign_view
-from serversherpa.db.models import WikiNode, WikiPageAsset, WikiSpace
-from serversherpa.learning import LEARNING_SPACE_KEY
+from serversherpa.db.models import WikiPageAsset
 from serversherpa.learning.models import LearningDocumentVersion
 from serversherpa.wiki import export_html
 from serversherpa.wiki.content import (
@@ -38,8 +43,13 @@ _STORED_IMAGE = re.compile(
 
 
 class LearningRenderUnavailable(Exception):
-    """The wiki render server couldn't render the page (down, refused, or
-    bad output)."""
+    """The wiki render server couldn't be reached, failed (5xx) or sent
+    bad output — worth another try."""
+
+
+class LearningRenderRejected(Exception):
+    """The wiki render server refused the page's content (a 4xx, e.g.
+    422 `bad_doc`) — trying again won't help."""
 
 
 def image_asset_ids(doc: Any) -> list[uuid.UUID]:
@@ -72,8 +82,10 @@ def _link_href(href: str) -> str | None:
 
 
 async def render_version_html(content_json: dict) -> tuple[str, list[uuid.UUID]]:
-    """The page content as stored HTML, and the image asset ids in it.
-    Raises LearningRenderUnavailable when the render server can't help."""
+    """The page content as stored HTML (details sections open, see the
+    module docstring), and the image asset ids in it. Raises
+    LearningRenderRejected when the render server refuses the content,
+    LearningRenderUnavailable when it can't help otherwise."""
     # no self id: a link to the page itself reads as any other linked page
     safe = public_doc(content_json or EMPTY_DOC, node_id="", title="")
     doc, hrefs = export_html.prepare_doc(
@@ -83,24 +95,24 @@ async def render_version_html(content_json: dict) -> tuple[str, list[uuid.UUID]]
         async with export_html.render_client() as client:
             fragment = await export_html.render_fragment(client, doc)
     except export_html.RenderError as exc:
+        if exc.status is not None and 400 <= exc.status < 500:
+            raise LearningRenderRejected(str(exc)) from exc
         raise LearningRenderUnavailable(str(exc)) from exc
     return (export_html.finish_fragment(fragment, hrefs=hrefs, images={}),
             image_asset_ids(doc))
 
 
 async def html_with_images(db: AsyncSession, version: LearningDocumentVersion) -> str:
-    """The version's stored HTML with a presigned source on each image.
-    Only assets of pages in the learning space are served; an image whose
-    asset is gone (a purged page's) keeps only its alt text."""
+    """The version's stored HTML with a presigned source on each image
+    whose id the version recorded at publish. Any other image, and one
+    whose asset is deleted or gone (a purged page's), keeps only its alt
+    text."""
     ids = list(version.image_asset_ids or [])
     if not ids:
         return version.content_html
     assets = (await db.scalars(
-        select(WikiPageAsset)
-        .join(WikiNode, WikiNode.id == WikiPageAsset.node_id)
-        .join(WikiSpace, WikiSpace.id == WikiNode.space_id)
-        .where(WikiPageAsset.id.in_(ids), WikiPageAsset.deleted_at.is_(None),
-               WikiSpace.key == LEARNING_SPACE_KEY))).all()
+        select(WikiPageAsset).where(WikiPageAsset.id.in_(ids),
+                                    WikiPageAsset.deleted_at.is_(None)))).all()
     urls: dict[str, str] = {}
     for asset in assets:
         url = presign_view(asset.storage_key, asset.filename, asset.content_type)
