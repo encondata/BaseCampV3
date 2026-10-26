@@ -1,0 +1,692 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Learning portal mockups</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geologica:wght@300;400;500;600&family=Fragment+Mono&family=Caveat:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<style>
+:root{
+  --ink:#0c1117;--ink-2:#121925;--ink-line:#243140;--snow:#e8edf4;
+  --paper:#fbfcfd;--paper-2:#f1f4f7;--line:#e4e8ee;--surface:#fff;
+  --text:#1b2129;--mute:#667085;--faint:#98a2b3;
+  --accent:#ffa12e;--accent-soft:#ffc06b;--accent-bg:rgba(255,161,46,.12);--accent-bd:rgba(255,161,46,.35);
+  --green:#12a150;--green-bg:rgba(18,161,80,.10);--green-bd:rgba(18,161,80,.28);
+  --amber:#b86e00;--amber-bg:rgba(255,161,46,.13);--amber-bd:rgba(255,161,46,.35);
+  --red:#d92d3f;--red-bg:rgba(217,45,63,.09);--red-bd:rgba(217,45,63,.28);
+  --blue:#0b84c6;--blue-bg:rgba(11,132,198,.09);--blue-bd:rgba(11,132,198,.25);
+  --violet:#7c5ce0;--violet-bg:rgba(124,92,224,.10);--violet-bd:rgba(124,92,224,.28);
+  --slate:#667085;--slate-bg:rgba(102,112,133,.10);--slate-bd:rgba(102,112,133,.25);
+  --r:10px;--r-lg:14px;
+  --font:'Geologica',system-ui,sans-serif;--mono:'Fragment Mono',ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:#dfe4ea;color:var(--text);font-family:var(--font);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+button{font-family:inherit;font-size:13px;cursor:pointer}
+.mono{font-family:var(--mono)}
+.switcher{position:sticky;top:0;z-index:50;background:var(--ink);color:var(--snow);display:flex;align-items:center;gap:6px;padding:10px 20px;border-bottom:1px solid var(--ink-line);flex-wrap:wrap}
+.switcher .brand{font-weight:500;margin-right:14px;display:flex;align-items:center;gap:8px;color:#fff}
+.switcher .brand i{color:var(--accent);font-size:20px}
+.switcher button{background:transparent;border:1px solid transparent;color:#aab6c6;padding:6px 12px;border-radius:999px}
+.switcher button:hover{color:#fff;background:rgba(255,255,255,.06)}
+.switcher button.on{background:var(--accent);color:#1a1205;font-weight:500}
+.switcher .note{margin-left:auto;font-size:12px;color:#7d8a9c}
+.view{display:none;padding:24px}
+.view.on{display:block}
+.caption{max-width:1320px;margin:0 auto 12px;font-size:13px;color:#4b5565;display:flex;gap:8px;align-items:center}
+.caption b{font-weight:500;color:var(--text)}
+
+/* app shell */
+.shell{max-width:1320px;margin:0 auto;display:grid;grid-template-columns:232px minmax(0,1fr);min-height:860px;border-radius:16px;overflow:hidden;box-shadow:0 20px 50px -20px rgba(12,17,23,.35),0 0 0 1px rgba(12,17,23,.08);background:var(--paper)}
+.nav{background:var(--ink);color:#aab6c6;padding:16px 12px;display:flex;flex-direction:column;gap:2px}
+.nav .logo{display:flex;align-items:center;gap:10px;color:#fff;font-weight:500;padding:4px 8px 18px;font-size:15px}
+.nav .logo .mk{width:30px;height:30px;border-radius:9px;background:var(--accent);display:grid;place-items:center;color:#1a1205;font-size:18px}
+.nav .sec{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#5d6b7e;padding:14px 10px 6px}
+.nav a{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;color:#aab6c6;text-decoration:none;font-size:13.5px}
+.nav a i{font-size:18px;color:#6f7d90}
+.nav a:hover{background:rgba(255,255,255,.04)}
+.nav a.on{background:rgba(255,161,46,.12);color:#fff}
+.nav a.on i{color:var(--accent)}
+.nav a .new{margin-left:auto;font-size:10px;background:var(--accent);color:#1a1205;border-radius:999px;padding:1px 7px;font-weight:500}
+.nav .me{margin-top:auto;display:flex;align-items:center;gap:10px;padding:10px;border-top:1px solid var(--ink-line)}
+.av{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:500;flex:none}
+.main{padding:22px 28px 40px;min-width:0}
+.crumbs{font-size:12.5px;color:var(--mute);display:flex;gap:6px;align-items:center}
+.crumbs i{font-size:14px;color:var(--faint)}
+.head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin:10px 0 16px}
+.head h1{font-size:24px;font-weight:500;margin:0;display:flex;align-items:center;gap:10px;letter-spacing:-.01em}
+.dot{width:12px;height:12px;border-radius:50%;display:inline-block}
+.sub{color:var(--mute);font-size:13px;margin-top:3px;display:flex;gap:14px;flex-wrap:wrap}
+.sub span{display:flex;align-items:center;gap:5px}
+.btn{border:1px solid var(--line);background:var(--surface);color:var(--text);border-radius:9px;padding:7px 13px;display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.btn:hover{border-color:#cfd6df}
+.btn i{font-size:16px;color:var(--mute)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#1a1205;font-weight:500}
+.btn.pri i{color:#1a1205}
+.btn.sm{padding:4px 9px;font-size:12px;border-radius:7px}
+.btn.ghost{border-color:transparent;background:transparent}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:20px}
+.tabs a{padding:9px 14px;font-size:13.5px;color:var(--mute);text-decoration:none;border-bottom:2px solid transparent;margin-bottom:-1px;display:flex;gap:7px;align-items:center}
+.tabs a.on{color:var(--text);border-color:var(--accent);font-weight:500}
+.tabs a .ct{font-size:11px;background:var(--paper-2);border-radius:999px;padding:0 7px;color:var(--mute)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg)}
+.card-h{display:flex;align-items:center;justify-content:space-between;padding:14px 18px 10px;gap:10px}
+.card-h h3{margin:0;font-size:14.5px;font-weight:500;display:flex;align-items:center;gap:8px}
+.card-h h3 i{color:var(--mute);font-size:18px}
+.card-b{padding:4px 18px 16px}
+.eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);font-weight:500}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:2px 9px;border-radius:999px;border:1px solid var(--slate-bd);background:var(--slate-bg);color:var(--slate);white-space:nowrap;line-height:18px}
+.chip i{font-size:13px}
+.chip.g{border-color:var(--green-bd);background:var(--green-bg);color:var(--green)}
+.chip.a{border-color:var(--amber-bd);background:var(--amber-bg);color:var(--amber)}
+.chip.r{border-color:var(--red-bd);background:var(--red-bg);color:var(--red)}
+.chip.b{border-color:var(--blue-bd);background:var(--blue-bg);color:var(--blue)}
+.chip.v{border-color:var(--violet-bd);background:var(--violet-bg);color:var(--violet)}
+.stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:14px 16px}
+.stat .k{font-size:12px;color:var(--mute);display:flex;align-items:center;gap:6px}
+.stat .v{font-size:28px;font-weight:500;letter-spacing:-.02em;margin-top:2px}
+.stat .d{font-size:12px;color:var(--faint)}
+.funnel{height:8px;border-radius:999px;background:var(--paper-2);overflow:hidden;display:flex;margin-top:10px}
+.grid2{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:16px;margin-bottom:16px}
+.tl{position:relative;margin:18px 4px 6px;height:74px}
+.tl .rail{position:absolute;left:0;right:0;top:22px;height:2px;background:var(--line)}
+.tl .range{position:absolute;top:19px;height:8px;border-radius:999px;background:var(--accent-bg);border:1px solid var(--accent-bd)}
+.tl .ev{position:absolute;top:0;transform:translateX(-50%);text-align:center;font-size:11.5px;color:var(--mute);width:96px}
+.tl .ev .pin{width:16px;height:16px;border-radius:50%;margin:15px auto 6px;border:2px solid var(--surface);box-shadow:0 0 0 1px var(--line)}
+.tl .ev b{display:block;color:var(--text);font-weight:500;font-size:12px}
+.kv{display:grid;grid-template-columns:120px minmax(0,1fr);gap:8px 12px;font-size:13px;margin-top:6px}
+.kv dt{color:var(--mute)}
+.kv dd{margin:0}
+.pk{display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1px solid var(--line)}
+.pk:first-child{border-top:0}
+.pk .ic{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-size:18px;flex:none}
+.pk .t{font-weight:500;font-size:13.5px}
+.pk .s{font-size:12px;color:var(--mute)}
+.pk .r{margin-left:auto;display:flex;gap:6px;align-items:center}
+.toolbar{display:flex;gap:8px;align-items:center;padding:0 18px 12px;flex-wrap:wrap}
+.search{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:9px;padding:6px 10px;color:var(--faint);min-width:240px;background:var(--paper)}
+.seg{display:inline-flex;background:var(--paper-2);border-radius:9px;padding:3px;gap:2px}
+.seg span{padding:4px 11px;border-radius:7px;font-size:12.5px;color:var(--mute);white-space:nowrap}
+.seg span.on{background:var(--surface);color:var(--text);box-shadow:0 1px 2px rgba(12,17,23,.08);font-weight:500}
+table.list{width:100%;border-collapse:collapse;font-size:13px}
+table.list th{text-align:left;font-weight:500;font-size:11.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.06em;padding:8px 12px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--paper)}
+table.list td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+table.list tr:last-child td{border-bottom:0}
+table.list tr:hover td{background:#fcfaf6}
+.who{display:flex;align-items:center;gap:10px}
+.who .n{font-weight:500}
+.who .e{font-size:12px;color:var(--mute)}
+.prog{display:flex;align-items:center;gap:10px}
+.bar{flex:1;height:6px;border-radius:999px;background:var(--paper-2);overflow:hidden;min-width:80px}
+.bar span{display:block;height:100%;border-radius:999px;background:var(--accent)}
+.bar.done span{background:var(--green)}
+.muted{color:var(--mute)}
+.faint{color:var(--faint)}
+.lang{font-size:11px;border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:var(--mute)}
+
+/* doc settings */
+.docgrid{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:16px}
+.paper-doc{padding:28px 36px;font-size:14px;line-height:1.75;color:#343c48}
+.paper-doc h2{font-size:20px;font-weight:500;color:var(--text);margin:0 0 4px}
+.paper-doc h4{font-size:14.5px;font-weight:500;color:var(--text);margin:20px 0 4px}
+.paper-doc ul{padding-left:18px;margin:6px 0}
+.ph-img{height:150px;border-radius:12px;background:linear-gradient(135deg,#e9edf2,#f6f8fa);border:1px dashed #cfd6df;display:grid;place-items:center;color:var(--faint);font-size:13px;margin:16px 0}
+.set{padding:14px 18px;border-top:1px solid var(--line)}
+.set:first-child{border-top:0}
+.set .lbl{font-size:12.5px;font-weight:500;margin-bottom:7px;display:flex;justify-content:space-between;align-items:center}
+.set .hint{font-size:12px;color:var(--mute);margin-top:6px}
+.sel{border:1px solid var(--line);border-radius:9px;padding:7px 11px;display:flex;justify-content:space-between;align-items:center;background:var(--surface)}
+.opt{display:flex;gap:10px;align-items:flex-start;padding:9px 11px;border:1px solid var(--line);border-radius:10px;margin-top:6px}
+.opt.on{border-color:var(--accent);background:var(--accent-bg)}
+.radio{width:16px;height:16px;border-radius:50%;border:1.5px solid #c3cad4;flex:none;margin-top:2px}
+.opt.on .radio{border:5px solid var(--accent)}
+.opt .t{font-size:13px;font-weight:500}
+.opt .s{font-size:12px;color:var(--mute)}
+.tog{width:34px;height:20px;border-radius:999px;background:#d0d6de;position:relative;flex:none}
+.tog::after{content:'';position:absolute;width:16px;height:16px;border-radius:50%;background:#fff;top:2px;left:2px;box-shadow:0 1px 2px rgba(0,0,0,.2)}
+.tog.on{background:var(--accent)}
+.tog.on::after{left:16px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;font-size:13px}
+.ver{display:flex;gap:10px;padding:8px 0;font-size:12.5px;border-top:1px dashed var(--line)}
+.ver:first-of-type{border-top:0}
+.ver .vn{font-family:var(--mono);font-size:12px;background:var(--paper-2);border-radius:6px;padding:1px 7px;height:fit-content}
+
+/* rules */
+.rule{display:flex;gap:14px;align-items:center;padding:13px 18px;border-top:1px solid var(--line)}
+.rule .cond{display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:13px}
+.tok{font-size:12.5px;background:var(--paper-2);border:1px solid var(--line);border-radius:7px;padding:2px 8px}
+.tok.k{background:var(--blue-bg);border-color:var(--blue-bd);color:var(--blue)}
+.arrow{color:var(--faint)}
+.drag{color:#c3cad4;font-size:18px}
+.sumrow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;padding:0 18px 14px}
+.sum{border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.sum .v{font-size:20px;font-weight:500}
+.sum .k{font-size:12px;color:var(--mute)}
+
+/* dashboard */
+.heat{display:grid;grid-template-columns:170px repeat(7,minmax(0,1fr));gap:4px;font-size:12px;align-items:center}
+.heat .hd{color:var(--faint);font-size:11px;text-align:center;line-height:1.2}
+.cell{height:26px;border-radius:6px;display:grid;place-items:center;font-size:12px}
+.c-ok{background:var(--green-bg);color:var(--green)}
+.c-exp{background:var(--amber-bg);color:var(--amber)}
+.c-no{background:var(--red-bg);color:var(--red)}
+.c-na{background:var(--paper-2);color:#c3cad4}
+.risk{display:flex;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+.risk:first-child{border-top:0}
+.ring{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:500;flex:none}
+
+/* learn site phones */
+.stage{max-width:1320px;margin:0 auto;display:flex;gap:28px;flex-wrap:wrap;justify-content:center;padding:10px 0 30px}
+.phone-wrap{display:flex;flex-direction:column;align-items:center;gap:12px}
+.phone-wrap .lab{font-size:13px;color:#4b5565;display:flex;gap:8px;align-items:center}
+.phone-wrap .lab .n{width:22px;height:22px;border-radius:50%;background:var(--ink);color:#fff;display:grid;place-items:center;font-size:11.5px}
+.phone{width:300px;height:620px;border-radius:44px;background:#0c1117;padding:10px;box-shadow:0 30px 60px -25px rgba(12,17,23,.55),0 0 0 1px #2a3442 inset}
+.screen{width:100%;height:100%;border-radius:35px;overflow:hidden;background:var(--paper);position:relative;display:flex;flex-direction:column}
+.notch{position:absolute;top:8px;left:50%;transform:translateX(-50%);width:90px;height:24px;background:#0c1117;border-radius:999px;z-index:3}
+.sb{height:40px;display:flex;justify-content:space-between;align-items:flex-end;padding:0 24px 4px;font-size:12px;font-weight:500;flex:none}
+.sb i{font-size:14px}
+.pad{padding:12px 20px;display:flex;flex-direction:column;gap:12px;flex:1;min-height:0}
+.lhead{display:flex;align-items:center;gap:8px;font-weight:500;font-size:14px}
+.lhead .mk{width:26px;height:26px;border-radius:8px;background:var(--accent);display:grid;place-items:center;color:#1a1205;font-size:15px}
+.hero{height:150px;position:relative;flex:none;background:linear-gradient(#ffe7c4,#fff4e3 60%,var(--paper));overflow:hidden}
+.hero svg{position:absolute;bottom:0;left:0;width:100%}
+.codebox{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
+.codebox div{height:46px;border-radius:10px;border:1.5px solid var(--line);background:var(--surface);display:grid;place-items:center;font-family:var(--mono);font-size:20px}
+.codebox div.f{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
+.field{border:1.5px solid var(--line);border-radius:10px;padding:11px 12px;background:var(--surface);font-size:14px}
+.flabel{font-size:12px;color:var(--mute);margin-bottom:-6px}
+.cta{background:var(--accent);color:#1a1205;border-radius:12px;padding:13px;text-align:center;font-weight:500;font-size:14.5px}
+.link{color:#b86e00;text-align:center;font-size:13px;font-weight:500}
+.tiny{font-size:11.5px;color:var(--faint);text-align:center}
+.task{display:flex;align-items:center;gap:12px;padding:12px;border-radius:12px;background:var(--surface);border:1px solid var(--line)}
+.task .ck{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:15px;flex:none}
+.task .t{font-size:13.5px;font-weight:500}
+.task .s{font-size:11.5px;color:var(--mute)}
+.task.done .t{color:var(--mute)}
+.task.next{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
+.pbar{height:8px;border-radius:999px;background:var(--paper-2);overflow:hidden}
+.pbar span{display:block;height:100%;background:var(--accent);border-radius:999px}
+.reader{flex:1;min-height:0;overflow:hidden;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px;font-size:12.5px;line-height:1.65;color:#434b57;position:relative}
+.reader h5{font-size:14px;margin:0 0 4px;color:var(--text);font-weight:500}
+.reader::after{content:'';position:absolute;left:0;right:0;bottom:0;height:50px;background:linear-gradient(transparent,#fff)}
+.chk{display:flex;gap:10px;align-items:flex-start;font-size:12.5px}
+.chk .b{width:20px;height:20px;border-radius:6px;background:var(--accent);display:grid;place-items:center;color:#1a1205;font-size:14px;flex:none}
+.sig{font-family:'Caveat',cursive;font-size:24px;color:#1f3a8a}
+.q{padding:12px;border-radius:12px;border:1.5px solid var(--line);background:var(--surface);font-size:13px;display:flex;gap:10px;align-items:center}
+.q.sel{border-color:var(--accent);background:#fff8ee}
+.q .o{width:18px;height:18px;border-radius:50%;border:1.5px solid #c3cad4;flex:none}
+.q.sel .o{border:5px solid var(--accent)}
+.qr{width:150px;height:150px;margin:0 auto;border-radius:14px;background:#fff;border:1px solid var(--line);padding:12px}
+.confetti{display:grid;place-items:center;width:64px;height:64px;border-radius:50%;background:var(--green-bg);color:var(--green);font-size:32px;margin:6px auto 0}
+
+/* time clock */
+.station{max-width:1100px;margin:0 auto;height:700px;border-radius:26px;background:#0b0f17;padding:16px;box-shadow:0 30px 70px -25px rgba(0,0,0,.6),0 0 0 1px #263142 inset}
+.st-screen{height:100%;border-radius:16px;background:radial-gradient(1200px 500px at 50% -10%,#1b2433,#0e131c);position:relative;overflow:hidden;color:var(--snow);display:flex;flex-direction:column}
+.st-top{display:flex;justify-content:space-between;align-items:center;padding:18px 26px;color:#8a97aa;font-size:14px}
+.st-top b{color:#fff;font-weight:500}
+.st-clock{text-align:center;margin-top:24px}
+.st-clock .t{font-size:84px;font-weight:300;letter-spacing:-.03em;color:#fff;line-height:1}
+.st-clock .d{color:#8a97aa;margin-top:8px}
+.st-scan{margin:36px auto 0;width:220px;height:150px;border-radius:18px;border:2px dashed #2f3b4d;display:grid;place-items:center;color:#5d6b7e;text-align:center;font-size:14px}
+.overlay{position:absolute;inset:0;background:rgba(5,8,12,.62);display:grid;place-items:center}
+.alert{width:min(600px,92%);background:#141b27;border:1px solid #2b3647;border-radius:22px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.5)}
+.alert .band{height:6px;background:var(--accent)}
+.alert .bd{padding:24px 28px}
+.alert .top{display:flex;gap:16px;align-items:center}
+.alert .ph{width:64px;height:64px;border-radius:16px;background:#2a3445;display:grid;place-items:center;font-size:22px;color:#fff;font-weight:500}
+.alert h2{margin:0;font-size:22px;font-weight:500;color:#fff}
+.alert .m{color:#8a97aa;font-size:14px}
+.warnbox{margin:20px 0 14px;border:1px solid rgba(255,161,46,.35);background:rgba(255,161,46,.08);border-radius:14px;padding:14px 16px}
+.warnbox .h{display:flex;gap:8px;align-items:center;color:var(--accent-soft);font-weight:500;font-size:14px}
+.warnbox ul{margin:10px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
+.warnbox li{display:flex;justify-content:space-between;font-size:14px;color:#dbe2ec}
+.warnbox li span{color:#8a97aa;font-size:13px}
+.st-btns{display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:10px;margin-top:18px}
+.sbtn{border-radius:14px;padding:14px;font-size:14.5px;text-align:center;border:1px solid #2f3b4d;color:#dbe2ec;background:#1a2231;display:flex;gap:8px;align-items:center;justify-content:center}
+.sbtn.pri{background:var(--accent);border-color:var(--accent);color:#1a1205;font-weight:500}
+.ovr{width:min(440px,92%);background:#141b27;border:1px solid #2b3647;border-radius:22px;padding:24px;box-shadow:0 30px 80px rgba(0,0,0,.5);color:var(--snow)}
+.ovr h3{margin:0 0 4px;font-size:18px;font-weight:500;color:#fff}
+.dfield{background:#0e131c;border:1px solid #2f3b4d;border-radius:12px;padding:12px 14px;color:#dbe2ec;font-size:14px;margin-top:6px}
+.dlabel{font-size:12.5px;color:#8a97aa;margin-top:14px}
+.reasons{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.reasons span{border:1px solid #2f3b4d;border-radius:999px;padding:5px 11px;font-size:12.5px;color:#aab6c6}
+.reasons span.on{border-color:var(--accent);color:var(--accent-soft);background:rgba(255,161,46,.08)}
+.split{max-width:1320px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:24px;align-items:start}
+.st-mini{border-radius:22px;background:#0b0f17;padding:12px;box-shadow:0 20px 50px -20px rgba(0,0,0,.5)}
+.st-mini .st-screen{height:auto;padding:28px 0;display:grid;place-items:center}
+@media (max-width:1200px){.split{grid-template-columns:1fr}}
+.notes{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:18px 20px;margin-top:18px;font-size:13px;color:#434b57}
+.notes h4{margin:0 0 8px;font-size:13.5px;font-weight:500;color:var(--text)}
+.notes ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:5px}
+</style>
+</head>
+<body>
+
+<div class="switcher">
+  <div class="brand"><i class="ti ti-school"></i>Learning portal mockups</div>
+  <button data-v="v1" class="on">Initiative › Learning</button>
+  <button data-v="v2">Document settings</button>
+  <button data-v="v3">Assignment rules</button>
+  <button data-v="v4">Learning dashboard</button>
+  <button data-v="v5">Worker learn site</button>
+  <button data-v="v6">Time clock</button>
+  <span class="note">Mockup only · sample data</span>
+</div>
+
+<!-- shared nav template -->
+<template id="nav">
+  <nav class="nav">
+    <div class="logo"><div class="mk"><i class="ti ti-mountain"></i></div>ServerSherpa</div>
+    <a><i class="ti ti-layout-dashboard"></i>Dashboards</a>
+    <a data-k="init"><i class="ti ti-flag-3"></i>Initiatives</a>
+    <a><i class="ti ti-server-2"></i>Assets</a>
+    <a><i class="ti ti-building"></i>Sites</a>
+    <a><i class="ti ti-users"></i>People</a>
+    <a><i class="ti ti-clock-hour-4"></i>Time</a>
+    <a data-k="learn"><i class="ti ti-school"></i>Learning<span class="new">New</span></a>
+    <a><i class="ti ti-file-analytics"></i>Reports</a>
+    <div class="sec">Bulk actions</div>
+    <a><i class="ti ti-stack-2"></i>Bulk actions</a>
+    <div class="sec">Admin</div>
+    <a><i class="ti ti-shield-lock"></i>Access</a>
+    <a><i class="ti ti-settings"></i>System settings</a>
+    <div class="me"><div class="av" style="background:#2a3445;color:#fff">JH</div><div><div style="color:#fff;font-size:13px">Jimmy Henderson</div><div style="font-size:11.5px;color:#5d6b7e">Developer</div></div></div>
+  </nav>
+</template>
+
+<!-- V1 initiative learning tab -->
+<section class="view on" id="v1">
+  <div class="caption"><b>Portal › Initiative › Learning tab.</b> Invites, reminders and assigned packets for one move, plus the worker roster.</div>
+  <div class="shell" data-nav="init">
+    <div class="navslot"></div>
+    <main class="main">
+      <div class="crumbs">Initiatives <i class="ti ti-chevron-right"></i> Acme DFW data center move</div>
+      <div class="head">
+        <div>
+          <h1><span class="dot" style="background:#7c5ce0"></span>Acme DFW data center move</h1>
+          <div class="sub"><span><i class="ti ti-calendar"></i>Nov 10 – Nov 21, 2026</span><span><i class="ti ti-map-pin"></i>Acme DFW-3, Garland TX</span><span><i class="ti ti-users"></i>42 workers</span></div>
+        </div>
+        <div style="display:flex;gap:8px"><button class="btn"><i class="ti ti-file-export"></i>Compliance report</button><button class="btn pri"><i class="ti ti-send"></i>Send invites now</button></div>
+      </div>
+      <div class="tabs">
+        <a>Overview</a><a>People <span class="ct">42</span></a><a>Assets <span class="ct">1,284</span></a><a>Timeline</a><a class="on"><i class="ti ti-school" style="color:var(--accent)"></i>Learning</a><a>Notes and files</a>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><div class="k"><i class="ti ti-mail"></i>Invited</div><div class="v">42</div><div class="d">Sent Nov 3, 8:00 AM</div></div>
+        <div class="stat"><div class="k"><i class="ti ti-eye"></i>Opened</div><div class="v">38</div><div class="d">90%</div></div>
+        <div class="stat"><div class="k"><i class="ti ti-progress"></i>In progress</div><div class="v">9</div><div class="d">Avg 3 of 5 done</div></div>
+        <div class="stat"><div class="k"><i class="ti ti-circle-check" style="color:var(--green)"></i>Complete</div><div class="v" style="color:var(--green)">27</div><div class="d">64% · QR sent to all</div></div>
+        <div class="stat" style="border-color:var(--red-bd)"><div class="k"><i class="ti ti-alert-circle" style="color:var(--red)"></i>Overdue</div><div class="v" style="color:var(--red)">4</div><div class="d">Due Nov 8</div></div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <div class="card-h"><h3><i class="ti ti-calendar-event"></i>Invites and reminders</h3><button class="btn sm"><i class="ti ti-pencil"></i>Edit schedule</button></div>
+          <div class="card-b">
+            <div class="tl">
+              <div class="rail"></div>
+              <div class="range" style="left:76%;right:0"></div>
+              <div class="ev" style="left:4%"><div class="pin" style="background:var(--green)"></div><b>Nov 3</b>Invites sent</div>
+              <div class="ev" style="left:28%"><div class="pin" style="background:var(--green)"></div><b>Nov 5</b>Reminder</div>
+              <div class="ev" style="left:47%"><div class="pin" style="background:var(--accent)"></div><b>Nov 7</b>Reminder</div>
+              <div class="ev" style="left:62%"><div class="pin" style="background:var(--red)"></div><b>Nov 8</b>Due</div>
+              <div class="ev" style="left:80%"><div class="pin" style="background:#7c5ce0"></div><b>Nov 10</b>Move starts</div>
+            </div>
+            <dl class="kv">
+              <dt>Invites</dt><dd>7 days before start, 8:00 AM site time <span class="chip g" style="margin-left:6px"><i class="ti ti-check"></i>Sent</span></dd>
+              <dt>Reminders</dt><dd>5 and 3 days before start · only to people not finished</dd>
+              <dt>Due</dt><dd>2 days before start</dd>
+              <dt>Codes expire</dt><dd>Nov 21 (initiative end) · <span class="muted">company default</span></dd>
+              <dt>Late adds</dt><dd>Invite automatically when added to the initiative</dd>
+            </dl>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><h3><i class="ti ti-books"></i>What this move requires</h3><button class="btn sm"><i class="ti ti-eye"></i>Preview rules</button></div>
+          <div class="card-b">
+            <div class="pk"><div class="ic" style="background:var(--blue-bg);color:var(--blue)"><i class="ti ti-stack-2"></i></div><div><div class="t">Standard onboarding</div><div class="s">Dress code · Confidentiality · Work expectations</div></div><div class="r"><span class="chip">All workers</span></div></div>
+            <div class="pk"><div class="ic" style="background:var(--violet-bg);color:var(--violet)"><i class="ti ti-building-skyscraper"></i></div><div><div class="t">Acme site rules</div><div class="s">Site rules · Acme NDA (quiz)</div></div><div class="r"><span class="chip v">Every initiative</span></div></div>
+            <div class="pk"><div class="ic" style="background:var(--amber-bg);color:var(--amber)"><i class="ti ti-forklift"></i></div><div><div class="t">Forklift safety</div><div class="s">Extra · 3 people</div></div><div class="r"><button class="btn sm ghost"><i class="ti ti-user-plus"></i>Assign</button></div></div>
+            <div style="margin-top:6px;font-size:12px" class="muted"><i class="ti ti-info-circle"></i> From rules: <span class="tok">Everyone</span> and <span class="tok">Client is Acme</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><h3><i class="ti ti-users"></i>Workers</h3><div class="seg"><span class="on">All 42</span><span>Overdue 4</span><span>In progress 9</span><span>Not opened 4</span><span>Complete 27</span></div></div>
+        <div class="toolbar"><div class="search"><i class="ti ti-search"></i>Search workers</div><button class="btn sm"><i class="ti ti-mail-forward"></i>Resend to selected</button><button class="btn sm"><i class="ti ti-refresh"></i>Regenerate code</button></div>
+        <table class="list">
+          <thead><tr><th style="width:28%">Worker</th><th>Partner</th><th>Language</th><th style="width:22%">Progress</th><th>Status</th><th>Last activity</th><th></th></tr></thead>
+          <tbody>
+            <tr><td><div class="who"><div class="av" style="background:var(--green-bg);color:var(--green)">MS</div><div><div class="n">Maria Santos</div><div class="e">maria.santos@mail.com</div></div></div></td><td>Encon</td><td><span class="lang">EN</span></td><td><div class="prog"><div class="bar done"><span style="width:100%"></span></div><span class="mono faint">5/5</span></div></td><td><span class="chip g"><i class="ti ti-circle-check"></i>Complete</span></td><td class="muted">Nov 4 · QR sent</td><td><button class="btn sm ghost"><i class="ti ti-dots"></i></button></td></tr>
+            <tr><td><div class="who"><div class="av" style="background:var(--amber-bg);color:var(--amber)">KW</div><div><div class="n">Kenji Watanabe</div><div class="e">k.watanabe@mail.jp</div></div></div></td><td>Tekno Staff</td><td><span class="lang">日本語</span></td><td><div class="prog"><div class="bar"><span style="width:60%"></span></div><span class="mono faint">3/5</span></div></td><td><span class="chip a"><i class="ti ti-progress"></i>In progress</span></td><td class="muted">12 min ago</td><td><button class="btn sm ghost"><i class="ti ti-dots"></i></button></td></tr>
+            <tr><td><div class="who"><div class="av" style="background:var(--red-bg);color:var(--red)">DH</div><div><div class="n">Derek Hill</div><div class="e">dhill@mail.com</div></div></div></td><td>Encon</td><td><span class="lang">EN</span></td><td><div class="prog"><div class="bar"><span style="width:20%"></span></div><span class="mono faint">1/5</span></div></td><td><span class="chip r"><i class="ti ti-alert-circle"></i>Overdue</span></td><td class="muted">Nov 4</td><td><button class="btn sm"><i class="ti ti-mail-forward"></i>Resend</button></td></tr>
+            <tr><td><div class="who"><div class="av" style="background:var(--slate-bg);color:var(--slate)">PN</div><div><div class="n">Priya Nair</div><div class="e">priya.n@mail.in</div></div></div></td><td>Tekno Staff</td><td><span class="lang">EN</span></td><td><div class="prog"><div class="bar"><span style="width:0"></span></div><span class="mono faint">0/5</span></div></td><td><span class="chip r"><i class="ti ti-mail-off"></i>Not opened</span></td><td class="muted">Invite Nov 3</td><td><button class="btn sm"><i class="ti ti-mail-forward"></i>Resend</button></td></tr>
+            <tr><td><div class="who"><div class="av" style="background:var(--green-bg);color:var(--green)">JP</div><div><div class="n">Ji-woo Park</div><div class="e">jiwoo.park@mail.kr</div></div></div></td><td>Encon</td><td><span class="lang">한국어</span></td><td><div class="prog"><div class="bar done"><span style="width:100%"></span></div><span class="mono faint">5/5</span></div></td><td><span class="chip g"><i class="ti ti-circle-check"></i>Complete</span></td><td class="muted">Nov 5 · QR sent</td><td><button class="btn sm ghost"><i class="ti ti-dots"></i></button></td></tr>
+            <tr><td><div class="who"><div class="av" style="background:var(--blue-bg);color:var(--blue)">TB</div><div><div class="n">Tom Becker</div><div class="e">Has an account</div></div></div></td><td>Encon</td><td><span class="lang">EN</span></td><td><div class="prog"><div class="bar done"><span style="width:100%"></span></div><span class="mono faint">2/2</span></div></td><td><span class="chip g"><i class="ti ti-circle-check"></i>Complete</span></td><td class="muted">Standard still valid</td><td><button class="btn sm ghost"><i class="ti ti-dots"></i></button></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
+  </div>
+</section>
+
+<!-- V2 document settings -->
+<section class="view" id="v2">
+  <div class="caption"><b>Portal › Learning › Library › Document.</b> The content comes from the wiki. Every rule for this document is set here.</div>
+  <div class="shell" data-nav="learn">
+    <div class="navslot"></div>
+    <main class="main">
+      <div class="crumbs">Learning <i class="ti ti-chevron-right"></i> Library <i class="ti ti-chevron-right"></i> Dress code</div>
+      <div class="head">
+        <div><h1>Dress code <span class="chip g"><i class="ti ti-circle-check"></i>v4 published</span></h1><div class="sub"><span><i class="ti ti-clock"></i>4 min read</span><span><i class="ti ti-stack-2"></i>In Standard onboarding</span><span><i class="ti ti-users"></i>312 current sign-offs</span></div></div>
+        <div style="display:flex;gap:8px"><button class="btn"><i class="ti ti-device-mobile"></i>Preview as worker</button><button class="btn"><i class="ti ti-pencil"></i>Edit in wiki</button><button class="btn pri"><i class="ti ti-upload"></i>Publish v5</button></div>
+      </div>
+      <div class="tabs"><a class="on">Content and rules</a><a>Quiz</a><a>Translations <span class="ct">3</span></a><a>Versions <span class="ct">4</span></a><a>Sign-offs <span class="ct">312</span></a></div>
+      <div class="docgrid">
+        <div class="card">
+          <div class="paper-doc">
+            <div class="eyebrow">Standard onboarding · 1 of 3</div>
+            <h2 style="margin-top:6px">Dress code</h2>
+            <p class="muted" style="margin:0 0 10px">What to wear on every client site, and why it matters.</p>
+            <div class="ph-img"><span><i class="ti ti-photo"></i> Photo: correct site attire</span></div>
+            <h4>Every day on site</h4>
+            <ul><li>Company shirt, tucked in, with your badge visible above the waist.</li><li>Long pants. No shorts, leggings or ripped denim.</li><li>Closed-toe safety shoes. Steel toe where the site requires it.</li></ul>
+            <h4>Data hall floor</h4>
+            <ul><li>No loose jewelry, lanyards that hang below the chest, or untied long hair.</li><li>ESD wrist strap when you handle open equipment.</li></ul>
+            <h4>Client-specific rules</h4>
+            <p style="margin:4px 0">Some clients add their own rules. You'll see them in that client's site rules packet.</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="set"><div class="lbl">Valid for</div><div class="sel">1 year <i class="ti ti-chevron-down faint"></i></div><div class="hint">A sign-off stays valid until the end of any initiative it covers.</div></div>
+          <div class="set"><div class="lbl">When someone joins a new initiative</div>
+            <div class="opt"><div class="radio"></div><div><div class="t">Sign again every initiative</div><div class="s">Best for client NDAs and site rules</div></div></div>
+            <div class="opt on"><div class="radio"></div><div><div class="t">Only if expired or there's a new version</div><div class="s">Best for company-wide policies</div></div></div>
+          </div>
+          <div class="set"><div class="lbl">How they sign</div><div class="seg"><span>Checkbox</span><span class="on">Typed name</span><span>Drawn signature</span></div></div>
+          <div class="set"><div class="lbl">Reading rules</div>
+            <div class="row">Must scroll to the end <div class="tog on"></div></div>
+            <div class="row">Minimum reading time <span style="display:flex;gap:8px;align-items:center"><span class="tok">60 sec</span><div class="tog on"></div></span></div>
+            <div class="row">Quiz after reading <div class="tog"></div></div>
+          </div>
+          <div class="set"><div class="lbl">Translations <a style="font-size:12px;color:#b86e00;font-weight:500">Manage</a></div>
+            <div class="row"><span>日本語 Japanese</span><span class="chip g">Published v4</span></div>
+            <div class="row"><span>한국어 Korean</span><span class="chip a">In review</span></div>
+            <div class="row"><span>עברית Hebrew</span><span class="chip r">Out of date (v3)</span></div>
+          </div>
+          <div class="set"><div class="lbl">Recent versions</div>
+            <div class="ver"><span class="vn">v4</span><div><div>Added ESD wrist strap rule</div><div class="faint">Oct 12 · Jimmy Henderson · 312 signed</div></div></div>
+            <div class="ver"><span class="vn">v3</span><div><div>Safety shoe wording</div><div class="faint">Jun 2 · Laura Chen · retired</div></div></div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</section>
+
+<!-- V3 rules -->
+<section class="view" id="v3">
+  <div class="caption"><b>Portal › Learning › Assignment rules.</b> Who gets which packet, with a dry run before anything is sent.</div>
+  <div class="shell" data-nav="learn">
+    <div class="navslot"></div>
+    <main class="main">
+      <div class="crumbs">Learning <i class="ti ti-chevron-right"></i> Assignment rules</div>
+      <div class="head"><div><h1>Assignment rules</h1><div class="sub"><span>Rules run when someone is added to an initiative, and when you assign by hand.</span></div></div><div style="display:flex;gap:8px"><button class="btn"><i class="ti ti-player-play"></i>Dry run</button><button class="btn pri"><i class="ti ti-plus"></i>New rule</button></div></div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-h"><h3><i class="ti ti-route"></i>Rules</h3><span class="muted" style="font-size:12px">Drag to reorder</span></div>
+        <div class="rule"><i class="ti ti-grip-vertical drag"></i><div class="cond"><span class="tok k">Everyone</span><i class="ti ti-arrow-right arrow"></i><span class="tok">Standard onboarding</span></div><span class="chip g" style="margin-left:auto">On</span><button class="btn sm ghost"><i class="ti ti-dots"></i></button></div>
+        <div class="rule"><i class="ti ti-grip-vertical drag"></i><div class="cond">When <span class="tok k">Client</span> is <span class="tok">Acme Corp</span><i class="ti ti-arrow-right arrow"></i><span class="tok">Acme site rules</span></div><span class="chip g" style="margin-left:auto">On</span><button class="btn sm ghost"><i class="ti ti-dots"></i></button></div>
+        <div class="rule"><i class="ti ti-grip-vertical drag"></i><div class="cond">When <span class="tok k">Worker role</span> is <span class="tok">Forklift operator</span><i class="ti ti-arrow-right arrow"></i><span class="tok">Forklift safety</span></div><span class="chip g" style="margin-left:auto">On</span><button class="btn sm ghost"><i class="ti ti-dots"></i></button></div>
+        <div class="rule"><i class="ti ti-grip-vertical drag"></i><div class="cond">When <span class="tok k">Site</span> is in <span class="tok">Singapore</span> and <span class="tok k">Partner</span> is <span class="tok">any</span><i class="ti ti-arrow-right arrow"></i><span class="tok">SG data protection notice</span></div><span class="chip" style="margin-left:auto">Off</span><button class="btn sm ghost"><i class="ti ti-dots"></i></button></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h3><i class="ti ti-player-play"></i>Dry run · Acme DFW data center move</h3><span class="muted" style="font-size:12px">Nothing is sent until you confirm</span></div>
+        <div class="sumrow">
+          <div class="sum"><div class="v">42</div><div class="k">Workers checked</div></div>
+          <div class="sum"><div class="v" style="color:var(--blue)">96</div><div class="k">Documents to assign</div></div>
+          <div class="sum"><div class="v" style="color:var(--green)">38</div><div class="k">Already valid, skipped</div></div>
+          <div class="sum"><div class="v" style="color:var(--amber)">2</div><div class="k">No email on file</div></div>
+        </div>
+        <table class="list">
+          <thead><tr><th>Worker</th><th>Will get</th><th>Why</th><th>Skipped</th></tr></thead>
+          <tbody>
+            <tr><td><b style="font-weight:500">Tom Becker</b></td><td>Site rules, Acme NDA</td><td class="muted">Client is Acme (every initiative)</td><td class="muted">Standard: valid until Mar 2027</td></tr>
+            <tr><td><b style="font-weight:500">Kenji Watanabe</b></td><td>Standard (3), Site rules, Acme NDA</td><td class="muted">New worker · Client is Acme</td><td class="faint">None</td></tr>
+            <tr><td><b style="font-weight:500">Carlos Reyes</b></td><td>Dress code v4, Site rules, Acme NDA, Forklift safety</td><td class="muted">New version of Dress code · Forklift operator</td><td class="muted">Confidentiality, Work expectations</td></tr>
+            <tr><td><b style="font-weight:500">Ana Lim</b></td><td>Standard (3), Site rules, Acme NDA</td><td class="muted">New worker</td><td><span class="chip a"><i class="ti ti-mail-off"></i>No email: print code</span></td></tr>
+          </tbody>
+        </table>
+        <div style="display:flex;justify-content:flex-end;gap:8px;padding:14px 18px;border-top:1px solid var(--line)"><button class="btn">Download summary</button><button class="btn pri"><i class="ti ti-check"></i>Assign and schedule invites</button></div>
+      </div>
+    </main>
+  </div>
+</section>
+
+<!-- V4 dashboard -->
+<section class="view" id="v4">
+  <div class="caption"><b>Portal › Learning › Dashboard.</b> Completion across every move, initiatives at risk, upcoming expirations and a compliance grid.</div>
+  <div class="shell" data-nav="learn">
+    <div class="navslot"></div>
+    <main class="main">
+      <div class="crumbs">Learning <i class="ti ti-chevron-right"></i> Dashboard</div>
+      <div class="head"><div><h1>Learning</h1><div class="sub"><span>All initiatives · last 30 days</span></div></div><div style="display:flex;gap:8px"><div class="seg"><span>7 days</span><span class="on">30 days</span><span>Quarter</span></div><button class="btn"><i class="ti ti-file-export"></i>Export</button></div></div>
+      <div class="stats" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+        <div class="stat"><div class="k">Workers assigned</div><div class="v">186</div><div class="funnel"><span style="width:100%;background:#cfd6df"></span></div><div class="d" style="margin-top:6px">5 active initiatives</div></div>
+        <div class="stat"><div class="k">Opened invite</div><div class="v">171</div><div class="funnel"><span style="width:92%;background:var(--blue)"></span></div><div class="d" style="margin-top:6px">92% · median 6 h after send</div></div>
+        <div class="stat"><div class="k">Fully signed off</div><div class="v" style="color:var(--green)">139</div><div class="funnel"><span style="width:75%;background:var(--green)"></span></div><div class="d" style="margin-top:6px">75% · median 22 min to finish</div></div>
+        <div class="stat"><div class="k">Time clock overrides</div><div class="v" style="color:var(--amber)">7</div><div class="funnel"><span style="width:4%;background:var(--accent)"></span></div><div class="d" style="margin-top:6px">By 3 admins · see log</div></div>
+      </div>
+      <div class="grid2" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)">
+        <div class="card"><div class="card-h"><h3><i class="ti ti-alert-triangle"></i>Initiatives at risk</h3></div><div class="card-b">
+          <div class="risk"><div class="ring" style="background:conic-gradient(var(--red) 0 58%,var(--paper-2) 0);"><span style="background:#fff;width:34px;height:34px;border-radius:50%;display:grid;place-items:center">58%</span></div><div><div style="font-weight:500">Meridian SIN-2 refresh</div><div class="muted" style="font-size:12px">Starts in 3 days · 11 not finished · 2 no email</div></div><button class="btn sm" style="margin-left:auto">Remind 11</button></div>
+          <div class="risk"><div class="ring" style="background:conic-gradient(var(--accent) 0 64%,var(--paper-2) 0);"><span style="background:#fff;width:34px;height:34px;border-radius:50%;display:grid;place-items:center">64%</span></div><div><div style="font-weight:500">Acme DFW data center move</div><div class="muted" style="font-size:12px">Starts in 5 days · 4 overdue</div></div><button class="btn sm" style="margin-left:auto">Open</button></div>
+          <div class="risk"><div class="ring" style="background:conic-gradient(var(--green) 0 96%,var(--paper-2) 0);"><span style="background:#fff;width:34px;height:34px;border-radius:50%;display:grid;place-items:center">96%</span></div><div><div style="font-weight:500">Kioxia Tokyo decommission</div><div class="muted" style="font-size:12px">Starts in 12 days · on track</div></div><button class="btn sm" style="margin-left:auto">Open</button></div>
+        </div></div>
+        <div class="card"><div class="card-h"><h3><i class="ti ti-hourglass"></i>Expiring in the next 30 days</h3></div><div class="card-b">
+          <table class="list"><tbody>
+            <tr><td>Confidentiality</td><td class="muted">23 workers</td><td><span class="chip a">Nov 1 – Nov 30</span></td></tr>
+            <tr><td>Forklift safety</td><td class="muted">6 workers</td><td><span class="chip a">Nov 14</span></td></tr>
+            <tr><td>Hebrew translation, Dress code</td><td class="muted">Out of date</td><td><span class="chip r">Needs review</span></td></tr>
+            <tr><td>Acme NDA, question 4</td><td class="muted">41% miss it</td><td><span class="chip v">Rewrite?</span></td></tr>
+          </tbody></table>
+        </div></div>
+      </div>
+      <div class="card"><div class="card-h"><h3><i class="ti ti-grid-dots"></i>Compliance grid · Acme DFW data center move</h3><div style="display:flex;gap:6px"><span class="chip g">Valid</span><span class="chip a">Expires during move</span><span class="chip r">Missing</span><span class="chip">Not required</span></div></div>
+        <div class="card-b"><div class="heat">
+          <div></div><div class="hd">Dress code</div><div class="hd">Confid.</div><div class="hd">Work exp.</div><div class="hd">Site rules</div><div class="hd">Acme NDA</div><div class="hd">Forklift</div><div class="hd">SG notice</div>
+          <div>Maria Santos</div><div class="cell c-ok"><i class="ti ti-check"></i></div><div class="cell c-ok"><i class="ti ti-check"></i></div><div class="cell c-ok"><i class="ti ti-check"></i></div><div class="cell c-ok"><i class="ti ti-check"></i></div><div class="cell c-ok">92%</div><div class="cell c-na">–</div><div class="cell c-na">–</div>
+          <div>Kenji Watanabe</div><div class="cell c-ok"><i class="ti ti-check"></i></div><div class="cell c-ok"><i class="ti ti-check"></i></div><div class="cell c-ok"><i class="ti ti-check"></i></div><div class="cell c-no"><i class="ti ti-x"></i></div><div class="cell c-no"><i class="ti ti-x"></i></div><div class="cell c-na">–</div><div class="cell c-na">–</div>
+          <div>Derek Hill</div><div class="cell c-ok"><i class="ti ti-check"></i></div><div class="cell c-no"><i class="ti ti-x"></i></div><div class="cell c-no"><i class="ti ti-x"></i></div><div class="cell c-no"><i class="ti ti-x"></i></div><div class="cell c-no"><i class="ti ti-x"></i></div><div class="cell c-no"><i class="ti ti-x"></i></div><div class="cell c-na">–</div>
+          <div>Carlos Reyes</div><div class="cell c-no">v3</div><div class="cell c-exp">Nov 14</div><div class="cell c-ok"><i class="ti ti-check"></i></div><div class="cell c-ok"><i class="ti ti-check"></i></div><div class="cell c-ok">100%</div><div class="cell c-ok"><i class="ti ti-check"></i></div><div class="cell c-na">–</div>
+          <div>Tom Becker</div><div class="cell c-ok"><i class="ti ti-check"></i></div><div class="cell c-ok"><i class="ti ti-check"></i></div><div class="cell c-ok"><i class="ti ti-check"></i></div><div class="cell c-ok"><i class="ti ti-check"></i></div><div class="cell c-ok">88%</div><div class="cell c-na">–</div><div class="cell c-na">–</div>
+        </div></div>
+      </div>
+    </main>
+  </div>
+</section>
+
+<!-- V5 worker learn site -->
+<section class="view" id="v5">
+  <div class="caption" style="justify-content:center"><b>learn.serversherpa.com on a phone.</b> From the invite email to the QR code.</div>
+  <div class="stage">
+    <div class="phone-wrap"><div class="phone"><div class="screen"><div class="notch"></div>
+      <div class="sb"><span>9:41</span><span><i class="ti ti-antenna-bars-5"></i> <i class="ti ti-wifi"></i> <i class="ti ti-battery-3"></i></span></div>
+      <div style="padding:10px 18px;flex:1;display:flex;flex-direction:column;gap:10px;background:#eef1f5">
+        <div style="font-size:11px;color:var(--mute)">Inbox</div>
+        <div style="background:#fff;border-radius:16px;overflow:hidden;border:1px solid var(--line)">
+          <div style="background:var(--ink);padding:14px 16px;color:#fff;display:flex;gap:8px;align-items:center;font-weight:500"><span class="lhead"><span class="mk"><i class="ti ti-mountain"></i></span></span>ServerSherpa Learn</div>
+          <div style="padding:16px;font-size:13px;line-height:1.6;color:#434b57">
+            <div style="font-size:16px;color:var(--text);font-weight:500;margin-bottom:6px">Welcome to the Acme DFW move, Kenji</div>
+            Before your first shift on <b style="font-weight:500">Nov 10</b>, review and sign 5 short documents. It takes about 20 minutes.
+            <div class="cta" style="margin:14px 0 10px">Start my training</div>
+            <div style="font-size:12px;color:var(--mute)">Or go to <span style="color:#b86e00">learn.serversherpa.com</span> and enter:</div>
+            <div class="mono" style="font-size:22px;letter-spacing:.2em;margin:6px 0;color:var(--text)">K7Q M2X</div>
+            <div style="font-size:12px;color:var(--mute)">Due Nov 8 · Code works until Nov 21</div>
+          </div>
+        </div>
+      </div>
+    </div></div><div class="lab"><span class="n">1</span>Invite email</div></div>
+
+    <div class="phone-wrap"><div class="phone"><div class="screen"><div class="notch"></div>
+      <div class="hero"><div class="sb" style="position:relative;z-index:2"><span>9:41</span><span><i class="ti ti-wifi"></i> <i class="ti ti-battery-3"></i></span></div>
+        <svg viewBox="0 0 300 90" preserveAspectRatio="none" height="90"><path d="M0 90 L0 55 L40 30 L70 48 L110 12 L150 50 L180 34 L220 58 L260 26 L300 46 L300 90Z" fill="#ffd59a"/><path d="M0 90 L0 70 L50 52 L90 66 L130 44 L170 68 L210 54 L250 72 L300 60 L300 90Z" fill="#ffb64f"/><path d="M110 12 L122 24 L114 22 L104 26Z" fill="#fff"/></svg>
+      </div>
+      <div class="pad" style="padding-top:4px">
+        <div class="lhead"><span class="mk"><i class="ti ti-mountain"></i></span>ServerSherpa Learn</div>
+        <div><div style="font-size:20px;font-weight:500;letter-spacing:-.01em">Enter your learning code</div><div style="font-size:12.5px;color:var(--mute)">It's in your invite email.</div></div>
+        <div class="codebox"><div>K</div><div>7</div><div>Q</div><div>M</div><div>2</div><div class="f">X</div></div>
+        <div class="flabel">Last name</div>
+        <div class="field">Watanabe</div>
+        <div class="cta">Continue</div>
+        <div style="flex:1"></div>
+        <div style="display:flex;align-items:center;gap:10px;color:var(--faint);font-size:12px"><span style="flex:1;height:1px;background:var(--line)"></span>or<span style="flex:1;height:1px;background:var(--line)"></span></div>
+        <div class="link">Sign in with an account</div>
+        <div class="tiny"><i class="ti ti-world"></i> English · 日本語 · 한국어 · עברית</div>
+      </div>
+    </div></div><div class="lab"><span class="n">2</span>Sign in</div></div>
+
+    <div class="phone-wrap"><div class="phone"><div class="screen"><div class="notch"></div>
+      <div class="sb"><span>9:43</span><span><i class="ti ti-wifi"></i> <i class="ti ti-battery-3"></i></span></div>
+      <div class="pad">
+        <div style="display:flex;justify-content:space-between;align-items:center"><div class="lhead"><span class="mk"><i class="ti ti-mountain"></i></span>Learn</div><span class="lang">日本語</span></div>
+        <div><div class="eyebrow">Acme DFW data center move</div><div style="font-size:20px;font-weight:500;margin-top:2px">Hi Kenji</div><div style="font-size:12.5px;color:var(--mute)">3 of 5 done · due Fri, Nov 8</div></div>
+        <div class="pbar"><span style="width:60%"></span></div>
+        <div class="task done"><div class="ck" style="background:var(--green-bg);color:var(--green)"><i class="ti ti-check"></i></div><div><div class="t">Dress code</div><div class="s">Signed Nov 4</div></div></div>
+        <div class="task done"><div class="ck" style="background:var(--green-bg);color:var(--green)"><i class="ti ti-check"></i></div><div><div class="t">Confidentiality</div><div class="s">Signed Nov 4</div></div></div>
+        <div class="task done"><div class="ck" style="background:var(--green-bg);color:var(--green)"><i class="ti ti-check"></i></div><div><div class="t">Work expectations</div><div class="s">Signed Nov 4</div></div></div>
+        <div class="task next"><div class="ck" style="background:var(--accent);color:#1a1205"><i class="ti ti-player-play"></i></div><div><div class="t">Acme site rules</div><div class="s">4 min read</div></div><i class="ti ti-chevron-right faint" style="margin-left:auto"></i></div>
+        <div class="task"><div class="ck" style="border:1.5px solid var(--line);color:var(--faint)"><i class="ti ti-lock"></i></div><div><div class="t">Acme NDA</div><div class="s">3 min · short quiz</div></div></div>
+      </div>
+    </div></div><div class="lab"><span class="n">3</span>My training</div></div>
+
+    <div class="phone-wrap"><div class="phone"><div class="screen"><div class="notch"></div>
+      <div class="sb"><span>9:47</span><span><i class="ti ti-wifi"></i> <i class="ti ti-battery-3"></i></span></div>
+      <div class="pad">
+        <div style="display:flex;align-items:center;gap:10px"><i class="ti ti-arrow-left" style="font-size:20px"></i><div><div class="eyebrow">4 of 5 · v2</div><div style="font-weight:500">Acme site rules</div></div></div>
+        <div class="reader">
+          <h5>Badges and escorts</h5>
+          Wear your Acme badge where it can be seen at all times on the data hall floor. Visitors must be escorted by an Acme employee.
+          <h5 style="margin-top:10px">Photos</h5>
+          No photos or video inside the data hall, including of rack labels and screens, unless your lead asks for one for the move record.
+          <h5 style="margin-top:10px">Loading dock</h5>
+          Trucks are only unloaded between 7:00 AM and 6:00 PM...
+        </div>
+        <div style="font-size:11.5px;color:var(--green);display:flex;gap:6px;align-items:center"><i class="ti ti-circle-check"></i>Read to the end · 4:12</div>
+        <div class="chk"><div class="b"><i class="ti ti-check"></i></div>I've read the Acme site rules and agree to follow them.</div>
+        <div><div class="flabel" style="margin-bottom:4px">Type your full name to sign</div><div class="field sig">Kenji Watanabe</div></div>
+        <div class="cta">Sign and continue</div>
+      </div>
+    </div></div><div class="lab"><span class="n">4</span>Read and sign</div></div>
+
+    <div class="phone-wrap"><div class="phone"><div class="screen"><div class="notch"></div>
+      <div class="sb"><span>9:51</span><span><i class="ti ti-wifi"></i> <i class="ti ti-battery-3"></i></span></div>
+      <div class="pad">
+        <div style="display:flex;align-items:center;gap:10px"><i class="ti ti-arrow-left" style="font-size:20px"></i><div><div class="eyebrow">Acme NDA · quiz</div><div style="font-weight:500">Question 2 of 4</div></div></div>
+        <div class="pbar"><span style="width:50%"></span></div>
+        <div style="font-size:16px;font-weight:500;line-height:1.4;margin-top:6px">A friend asks which company's equipment you're moving this week. What can you say?</div>
+        <div class="q"><div class="o"></div>The client's name, but nothing else</div>
+        <div class="q sel"><div class="o"></div>Only that you're working on a data center move</div>
+        <div class="q"><div class="o"></div>Anything, as long as it's not posted online</div>
+        <div style="flex:1"></div>
+        <div style="font-size:11.5px;color:var(--mute);text-align:center">Pass mark 75% · 2 tries left</div>
+        <div class="cta">Check answer</div>
+      </div>
+    </div></div><div class="lab"><span class="n">5</span>Quiz</div></div>
+
+    <div class="phone-wrap"><div class="phone"><div class="screen"><div class="notch"></div>
+      <div class="sb"><span>9:54</span><span><i class="ti ti-wifi"></i> <i class="ti ti-battery-3"></i></span></div>
+      <div class="pad" style="text-align:center">
+        <div class="confetti"><i class="ti ti-rosette-discount-check"></i></div>
+        <div><div style="font-size:21px;font-weight:500">You're all set, Kenji</div><div style="font-size:12.5px;color:var(--mute);margin-top:2px">All 5 signed for the Acme DFW move.</div></div>
+        <div class="qr"><svg viewBox="0 0 29 29" width="100%" height="100%" shape-rendering="crispEdges"><g fill="#0c1117" id="qrg"></g></svg></div>
+        <div style="font-size:12.5px;color:var(--mute)">Your time clock code. Scan it at the station when you clock in.</div>
+        <div class="cta"><i class="ti ti-wallet"></i> Save to phone</div>
+        <div style="font-size:11.5px;color:var(--faint)">We also emailed it to you. Don't share it: it clocks you in.</div>
+      </div>
+    </div></div><div class="lab"><span class="n">6</span>Done, with time clock QR</div></div>
+  </div>
+</section>
+
+<!-- V6 time clock -->
+<section class="view" id="v6">
+  <div class="caption"><b>Time clock station: the soft gate.</b> The scan isn't blocked, but outstanding items show up, and only an admin or above can override.</div>
+  <div class="split">
+    <div class="station"><div class="st-screen">
+      <div class="st-top"><span><b>Time Clock</b> · Acme DFW data center move</span><span><i class="ti ti-wifi"></i> Online</span></div>
+      <div class="st-clock"><div class="t">6:58</div><div class="d">Monday, November 10</div></div>
+      <div class="st-scan"><div><i class="ti ti-qrcode" style="font-size:36px"></i><br>Scan your QR code</div></div>
+      <div class="overlay">
+        <div class="alert"><div class="band"></div><div class="bd">
+          <div class="top"><div class="ph">DH</div><div><h2>Derek Hill</h2><div class="m">Clocking in · 6:58 AM · Encon</div></div></div>
+          <div class="warnbox">
+            <div class="h"><i class="ti ti-alert-triangle"></i>2 required items aren't signed yet</div>
+            <ul><li>Acme NDA <span>Required for this move</span></li><li>Forklift safety <span>Extra, assigned Nov 3</span></li></ul>
+          </div>
+          <div style="color:#8a97aa;font-size:13px">You can finish them on your phone in about 8 minutes.</div>
+          <div class="st-btns">
+            <div class="sbtn"><i class="ti ti-mail"></i>Email me the link</div>
+            <div class="sbtn"><i class="ti ti-x"></i>Cancel punch</div>
+            <div class="sbtn pri"><i class="ti ti-shield-check"></i>Admin override</div>
+          </div>
+        </div></div>
+      </div>
+    </div></div>
+    <div>
+      <div class="st-mini"><div class="st-screen">
+        <div class="ovr">
+          <h3>Admin override</h3>
+          <div style="font-size:13px;color:#8a97aa">Clocks Derek in. The override is recorded on his history and the compliance report.</div>
+          <div class="dlabel">Admin</div>
+          <div class="dfield" style="display:flex;justify-content:space-between">Laura Chen <span style="color:var(--accent-soft);font-size:12.5px">Site lead · Admin</span></div>
+          <div class="dlabel">PIN or face sign-in</div>
+          <div class="dfield mono" style="letter-spacing:.4em">••••••</div>
+          <div class="dlabel">Reason</div>
+          <div class="reasons"><span class="on">Signing on break</span><span>Signed on paper</span><span>No phone</span><span>Other</span></div>
+          <div class="dlabel">Covers</div>
+          <div class="reasons"><span class="on">This punch only</span><span>Rest of today</span></div>
+          <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:10px;margin-top:20px"><div class="sbtn">Back</div><div class="sbtn pri">Override and clock in</div></div>
+        </div>
+      </div></div>
+      <div class="notes">
+        <h4>Behavior</h4>
+        <ul>
+          <li>The check runs against the initiative the station is set to.</li>
+          <li>The laptop time clock uses a synced compliance snapshot, so the warning still works offline.</li>
+          <li>Overrides need admin rank or above and a reason. Whether one covers a single punch or the rest of the day is still an open question.</li>
+          <li>"Email me the link" sends the one-click link again. SMS comes later.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+document.querySelectorAll('.shell').forEach(s=>{
+  const n=document.getElementById('nav').content.cloneNode(true);
+  const k=s.dataset.nav;n.querySelectorAll('a[data-k]').forEach(a=>{if(a.dataset.k===k)a.classList.add('on')});
+  s.querySelector('.navslot').replaceWith(n);
+});
+document.querySelectorAll('.switcher button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.switcher button').forEach(x=>x.classList.toggle('on',x===b));
+  document.querySelectorAll('.view').forEach(v=>v.classList.toggle('on',v.id===b.dataset.v));
+  history.replaceState(null,'','#'+b.dataset.v);window.scrollTo(0,0);
+});
+const h=location.hash.slice(1);if(h){const b=document.querySelector('.switcher button[data-v="'+h+'"]');if(b)b.click();}
+(function(){
+  const g=document.getElementById('qrg');let s=7,cells='';
+  const finder=(x,y)=>{cells+=`<rect x="${x}" y="${y}" width="7" height="7"/><rect x="${x+1}" y="${y+1}" width="5" height="5" fill="#fff"/><rect x="${x+2}" y="${y+2}" width="3" height="3"/>`};
+  finder(0,0);finder(22,0);finder(0,22);
+  for(let y=0;y<29;y++)for(let x=0;x<29;x++){
+    if((x<8&&y<8)||(x>20&&y<8)||(x<8&&y>20))continue;
+    s=(s*9301+49297)%233280;if(s/233280>0.52)cells+=`<rect x="${x}" y="${y}" width="1" height="1"/>`;
+  }
+  g.innerHTML=cells;
+})();
+</script>
+</body>
+</html>
