@@ -1,5 +1,6 @@
-"""Who manages learning: anyone holding `learning:<action>`, or a global
-wiki:delete (whoever manages the wiki). Every learning route and service
+"""Who manages learning: anyone holding `learning:<action>`, or a global-
+anchored wiki:delete (whoever manages the wiki; a client/partner-scoped
+role holding wiki:delete does not count). Every learning route and service
 gates on these two helpers and nothing else."""
 
 from fastapi import Depends, HTTPException
@@ -9,7 +10,8 @@ from serversherpa.api.deps import AuthContext, CurrentUser
 
 
 def is_manager(access: AccessInfo, action: str = "view") -> bool:
-    return access.can("learning", action) or access.can("wiki", "delete")
+    return access.can("learning", action) or (
+        access.is_global and access.can("wiki", "delete"))
 
 
 def require_manager(action: str):

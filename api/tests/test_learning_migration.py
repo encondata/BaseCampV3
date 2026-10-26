@@ -207,3 +207,12 @@ async def test_require_manager_returns_context_or_403(db):
         await guard(Ctx(await _access_for(db, "worker")))
     assert exc.value.status_code == 403
     assert exc.value.detail == {"code": "forbidden"}
+
+
+def test_wiki_delete_fallback_requires_a_global_anchor():
+    from serversherpa.access.resolver import AccessInfo
+    from serversherpa.learning.access import is_manager
+
+    perms = {"wiki": {"delete": True}}
+    assert is_manager(AccessInfo(perms=perms, is_global=False)) is False
+    assert is_manager(AccessInfo(perms=perms, is_global=True)) is True
