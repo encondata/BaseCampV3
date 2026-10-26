@@ -6,11 +6,11 @@ Abuse limits follow the kiosk move-login pattern (routes/kiosk.py): every
 failure writes a `learning_code_failed` audit row keyed on
 LEARN_CODE_AUDIT_ID, and a caller's rate_limit_ip bucket (or everyone
 together) over the cap waits out the window. A code also locks itself
-after `code_max_failures` wrong last names. While locked, only the right
-code AND the right last name hear 423 (the worker learns to wait); a wrong
-name gets the same 401 as an unknown code, so a random guess can't learn
-that a locked code exists. A wrong code and a wrong last name get the same
-401. All numbers are learning settings."""
+after `code_max_failures` wrong last names. Every answer to a failed
+attempt is the same 401: a wrong code, a wrong last name, and any attempt
+on a locked code, whatever name it sends. So a guess can't learn that a
+code exists, and a locked code can't be used to keep testing names. All
+numbers are learning settings."""
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request
@@ -74,7 +74,6 @@ async def learn_login_capped(db: AsyncSession, settings: LearningSettings, bucke
 
 
 async def _failed(db: AsyncSession, ip: str | None, bucket: str, reason: str, *,
-                  status: int = 401, code: str = "learn_code_invalid",
                   row: LearningCode | None = None) -> HTTPException:
     """Record the failure (and any lockout change on `row`) and commit, since
     the raised error rolls the request back. The answer never says which
@@ -85,7 +84,7 @@ async def _failed(db: AsyncSession, ip: str | None, bucket: str, reason: str, *,
     audit(db, actor_id=None, entity_type="auth", entity_id=LEARN_CODE_AUDIT_ID,
           action=FAILED_ACTION, changes=changes, ip=ip)
     await db.commit()
-    return _err(status, code)
+    return _err(401, "learn_code_invalid")
 
 
 def _usable(row: LearningCode, person: Person, now: datetime) -> bool:
@@ -129,18 +128,16 @@ async def code_sign_in(body: LearnCodeIn, request: Request, db: DbSession) -> Le
                    LearningCode.revoked_at.is_(None))
             .with_for_update(of=LearningCode))).first()
     row, person = found if found is not None else (None, None)
+    # compared for every attempt (an unknown code against ""), so no path
+    # skips the work; a locked code never looks at the result
     stored_name = person.last_name if person is not None else ""
     name_ok = codes.last_name_matches(stored_name, body.last_name)
     if row is None or not _usable(row, person, now):
         reason = "unknown_code" if row is None else "code_unusable"
         raise await _failed(db, ip, bucket, reason, row=row)
     if row.locked_until is not None and row.locked_until > now:
-        # still no session either way; a wrong name neither extends the lock
-        # nor reveals it
-        if name_ok:
-            raise await _failed(db, ip, bucket, "code_locked", status=423,
-                                code="learn_code_locked", row=row)
-        raise await _failed(db, ip, bucket, "code_locked_wrong_last_name", row=row)
+        # the same 401 whatever the name; no lock extension, no session
+        raise await _failed(db, ip, bucket, "code_locked", row=row)
     if not name_ok:
         row.failed_count += 1
         if row.failed_count >= settings.code_max_failures:

@@ -103,17 +103,16 @@ async def test_lockout_after_max_failures_refuses_correct_name(client, db, monke
     assert row.locked_until is not None
     assert row.locked_until > datetime.now(UTC) + timedelta(seconds=890)
     locked_until = row.locked_until
-    # locked + the right name: 423, so the worker knows to wait (no session)
-    r = await _code_login(client, last_name="nunez")
-    assert r.status_code == 423 and r.json()["detail"]["code"] == "learn_code_locked"
-    # locked + a wrong name: the same 401 as an unknown code (no existence
-    # oracle), audited, and the lock isn't extended
+    # locked: the right name and a wrong one get the same 401 as an unknown
+    # code (no name oracle, no existence oracle); audited, lock not extended
     before = await _failures(db)
-    r = await _code_login(client, last_name="Smith")
-    assert r.status_code == 401 and r.json()["detail"] == {"code": "learn_code_invalid"}
+    right = await _code_login(client, last_name="nunez")
+    wrong = await _code_login(client, last_name="Smith")
     unknown = await _code_login(client, code="ZZZZZZ", last_name="Smith")
-    assert unknown.status_code == 401 and unknown.json() == r.json()
-    assert await _failures(db) == before + 2
+    for r in (right, wrong, unknown):
+        assert r.status_code == 401
+        assert r.json() == {"detail": {"code": "learn_code_invalid"}}
+    assert await _failures(db) == before + 3
     await db.refresh(row)
     assert row.locked_until == locked_until and row.failed_count == 0
     assert await db.scalar(select(func.count()).select_from(LearningSession)) == 0
@@ -239,7 +238,7 @@ async def test_locked_code_counts_against_the_ip_cap(client, db, monkeypatch):
     for _ in range(2):
         await _code_login(client, last_name="Smith", ip="203.0.113.7")
     for _ in range(2):
-        assert (await _code_login(client, ip="203.0.113.7")).status_code == 423
+        assert (await _code_login(client, ip="203.0.113.7")).status_code == 401
     assert (await _code_login(client, ip="203.0.113.7")).status_code == 429
     stored = await db.get(LearningCode, row.id)
     await db.refresh(stored)
