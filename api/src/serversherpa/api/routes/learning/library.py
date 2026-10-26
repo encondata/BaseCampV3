@@ -6,7 +6,7 @@ and publishing a page also need the actor's view access on it in the wiki
 (`library.learning_page`)."""
 import uuid
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -28,6 +28,7 @@ from serversherpa.learning.schemas import (
     DocumentOut,
     DocumentPatchIn,
     DocumentSettings,
+    DocumentSignoffsOut,
     PersonRef,
     PublishIn,
     VersionOut,
@@ -192,6 +193,20 @@ async def get_version(
     if version is None or version.document_id != document_id:
         raise _not_found()
     return await _version_out(db, version)
+
+
+@router.get("/documents/{document_id}/signoffs", response_model=DocumentSignoffsOut)
+async def list_signoffs(
+    document_id: uuid.UUID,
+    db: DbSession,
+    version_id: uuid.UUID | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    actor: AuthContext = require_manager("view"),
+) -> dict:
+    await _document(db, document_id)
+    return await library.list_signoffs(db, document_id, version_id=version_id,
+                                       limit=limit, offset=offset)
 
 
 @router.delete("/documents/{document_id}", status_code=204)

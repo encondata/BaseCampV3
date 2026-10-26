@@ -617,3 +617,53 @@ async def test_render_rejected_is_422(client, db, seeded_user, renderer):
     resp = await client.post(f"/learning/documents/{doc['id']}/publish", headers=hdrs, json={})
     assert resp.status_code == 422 and resp.json()["detail"]["code"] == "render_rejected"
     assert await db.scalar(select(func.count()).select_from(LearningDocumentVersion)) == 0
+
+
+async def test_signoffs_list_pages_and_counts(client, db, seeded_user, renderer):
+    from datetime import UTC, datetime, timedelta
+
+    from serversherpa.db.models import Person
+    from serversherpa.learning.models import LearningSignoff
+
+    hdrs = await _manager(db, client)
+    space = await _space(db)
+    page = await _node(db, space, "Dress code")
+    await _publish_wiki(db, page, _doc("Wear boots."))
+    doc = await _create(client, hdrs, page)
+    v1 = await _publish(client, hdrs, doc["id"], "First")
+    await _publish_wiki(db, page, _doc("Wear boots and a hat."))
+    v2 = await _publish(client, hdrs, doc["id"], "Second")
+    url = f"/learning/documents/{doc['id']}/signoffs"
+
+    empty = (await client.get(url, headers=hdrs)).json()
+    assert empty == {"total": 0, "version_counts": {}, "items": []}
+
+    now = datetime.now(UTC)
+    for i, (version, name) in enumerate([(v1, "Ann"), (v1, "Bob"), (v2, "Cy")]):
+        person = Person(first_name=name, last_name="W")
+        db.add(person)
+        await db.flush()
+        db.add(LearningSignoff(
+            person_id=person.id, document_id=uuid.UUID(doc["id"]),
+            version_id=uuid.UUID(version["id"]), language="en", typed_name=name,
+            signature_png=b"png", read_seconds=40 + i, scrolled_to_end=True,
+            quiz_score=None, signed_at=now - timedelta(days=3 - i)))
+    await db.commit()
+
+    body = (await client.get(url, headers=hdrs)).json()
+    assert body["total"] == 3
+    assert body["version_counts"] == {v1["id"]: 2, v2["id"]: 1}
+    assert [(r["person"]["name"], r["version_no"]) for r in body["items"]] == [
+        ("Cy W", 2), ("Bob W", 1), ("Ann W", 1)]
+    assert "signature_png" not in body["items"][0] and "typed_name" not in body["items"][0]
+    assert body["items"][0]["read_seconds"] == 42 and body["items"][0]["initiative"] is None
+
+    page2 = (await client.get(url + "?limit=2&offset=2", headers=hdrs)).json()
+    assert page2["total"] == 3 and [r["person"]["name"] for r in page2["items"]] == ["Ann W"]
+    one = (await client.get(url + f"?version_id={v1['id']}", headers=hdrs)).json()
+    assert one["total"] == 2 and len(one["items"]) == 2
+    assert one["version_counts"] == {v1["id"]: 2, v2["id"]: 1}
+
+    assert (await client.get(url + "?limit=0", headers=hdrs)).status_code == 422
+    missing = f"/learning/documents/{uuid.uuid4()}/signoffs"
+    assert (await client.get(missing, headers=hdrs)).status_code == 404

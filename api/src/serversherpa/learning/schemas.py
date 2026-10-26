@@ -118,6 +118,26 @@ class VersionOut(VersionSummary):
     html: str
 
 
+class DocumentSignoffOut(BaseModel):
+    id: uuid.UUID
+    person: PersonRef
+    version_no: int
+    language: str
+    signed_at: datetime
+    read_seconds: int
+    quiz_score: int | None
+    initiative_id: uuid.UUID | None
+    initiative: str | None
+
+
+class DocumentSignoffsOut(BaseModel):
+    """One page of a document's sign-offs (newest first) with the totals the
+    Versions tab shows: `total` for the filter, and a count per version id."""
+    total: int
+    version_counts: dict[str, int]
+    items: list[DocumentSignoffOut]
+
+
 class DocumentOut(BaseModel):
     id: uuid.UUID
     title: str

@@ -28,6 +28,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.deps import AuthContext
 from serversherpa.db.models import (
+    Initiative,
+    Person,
     WikiNode,
     WikiPage,
     WikiPageAsset,
@@ -327,3 +329,37 @@ async def list_documents(db: AsyncSession, *, include_archived: bool = False) ->
              "signoff_count": signoffs.get(doc.id, 0),
              "languages": languages.get(doc.id, {}),
              "archived_at": doc.archived_at} for doc, version in rows]
+
+
+async def list_signoffs(db: AsyncSession, document_id: uuid.UUID, *,
+                        version_id: uuid.UUID | None = None,
+                        limit: int = 50, offset: int = 0) -> dict:
+    """A document's sign-offs, newest first: one page, the filtered total and
+    the count per version. Never reads the signature images."""
+    counts = {str(vid): n for vid, n in (await db.execute(
+        select(LearningSignoff.version_id, func.count())
+        .where(LearningSignoff.document_id == document_id)
+        .group_by(LearningSignoff.version_id))).all()}
+    total = (counts.get(str(version_id), 0) if version_id is not None
+             else sum(counts.values()))
+    query = (select(LearningSignoff.id, LearningSignoff.language, LearningSignoff.signed_at,
+                    LearningSignoff.read_seconds, LearningSignoff.quiz_score,
+                    LearningSignoff.initiative_id,
+                    LearningDocumentVersion.version_no, Person, Initiative.name)
+             .join(LearningDocumentVersion,
+                   LearningDocumentVersion.id == LearningSignoff.version_id)
+             .join(Person, Person.id == LearningSignoff.person_id)
+             .outerjoin(Initiative, Initiative.id == LearningSignoff.initiative_id)
+             .where(LearningSignoff.document_id == document_id)
+             .order_by(LearningSignoff.signed_at.desc(), LearningSignoff.id)
+             .limit(limit).offset(offset))
+    if version_id is not None:
+        query = query.where(LearningSignoff.version_id == version_id)
+    items = [{
+        "id": sid, "person": {"id": person.id, "name": person.display_name},
+        "version_no": version_no, "language": language, "signed_at": signed_at,
+        "read_seconds": read_seconds, "quiz_score": quiz_score,
+        "initiative_id": initiative_id, "initiative": initiative_name}
+        for (sid, language, signed_at, read_seconds, quiz_score, initiative_id,
+             version_no, person, initiative_name) in (await db.execute(query)).all()]
+    return {"total": total, "version_counts": counts, "items": items}
