@@ -72,7 +72,7 @@ async def _deliver(row: EmailOutbox, send) -> None:
     row.attempts += 1
     try:
         await send(to=row.to_address, subject=row.subject,
-                   html=row.html_body, text=row.text_body)
+                   html=row.html_body, text=row.text_body, attachments=row.attachments)
     except Exception as exc:
         row.last_error = f"{type(exc).__name__}: {exc}"[:ERROR_MAX]
         code = getattr(exc, "smtp_code", None)

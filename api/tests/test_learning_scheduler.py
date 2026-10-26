@@ -1,0 +1,365 @@
+"""The learning sweep (notification-worker's run_learning_once): scheduled
+invites at the site's local send time, reminders once per offset, the
+overdue notice once per initiative per local day. Plus the initiative
+Learning manager API built on the same pieces: summary, schedule, roster,
+regenerate / revoke, the code sheet PDF and the timeline's send marker."""
+import uuid
+from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
+
+import pytest
+from sqlalchemy import select, update
+
+from serversherpa.db.engine import get_sessionmaker
+from serversherpa.db.models import EmailOutbox, Initiative, Notification, Site
+from serversherpa.learning import scheduler
+from serversherpa.learning.models import (
+    LearningAssignment,
+    LearningCode,
+    LearningEmailLog,
+    LearningInviteSchedule,
+)
+from tests.test_learning_assign import TODAY, _doc, _manager, _midnight, _packet, _worker
+from tests.test_sites_api import login
+
+TOKYO = ZoneInfo("Asia/Tokyo")
+
+
+async def _move(db, *, start, zone=None, end=None, name="Move"):
+    site = None
+    if zone is not None:
+        site = Site(name=f"Site {uuid.uuid4().hex[:6]}", timezone=zone)
+        db.add(site)
+        await db.flush()
+    move = Initiative(name=name, initiative_type="move", site_id=site.id if site else None,
+                      scheduled_start=_midnight(start),
+                      scheduled_end=_midnight(end) if end else None)
+    db.add(move)
+    await db.commit()
+    return move
+
+
+async def _add(db, client, hdrs, move, person):
+    resp = await client.post(f"/initiatives/{move.id}/people", headers=hdrs,
+                             json={"person_id": str(person.id)})
+    assert resp.status_code == 201, resp.text
+
+
+async def _outbox(db, template=None):
+    stmt = select(EmailOutbox).order_by(EmailOutbox.created_at).execution_options(
+        populate_existing=True)
+    if template:
+        stmt = stmt.where(EmailOutbox.template == template)
+    return list(await db.scalars(stmt))
+
+
+def _clock(monkeypatch, at: datetime):
+    monkeypatch.setattr(scheduler, "_now", lambda: at)
+
+
+async def _setup(db, client, *, start, zone=None, people=1, end=None):
+    hdrs = await _manager(db, client)
+    doc = await _doc(db, "Site safety")
+    await _packet(db, [doc])
+    move = await _move(db, start=start, zone=zone, end=end)
+    workers = []
+    for i in range(people):
+        w = await _worker(db, f"W{i}", f"Worker{i}", f"w{i}-{uuid.uuid4().hex[:6]}@test.example.com")
+        await _add(db, client, hdrs, move, w)
+        workers.append(w)
+    return hdrs, move, workers
+
+
+# ── the sweep ────────────────────────────────────────────────────────
+
+
+async def test_scheduled_send_fires_once_at_site_time(client, db, seeded_user, monkeypatch):
+    start = TODAY + timedelta(days=14)
+    hdrs, move, [worker] = await _setup(db, client, start=start, zone="Asia/Tokyo")
+    resp = await client.put(f"/learning/initiatives/{move.id}/schedule", headers=hdrs, json={
+        "mode": "scheduled", "send_offset_days": 7, "send_time": "08:00",
+        "reminder_offsets": [5, 3], "due_offset_days": 2, "late_adds": True})
+    assert resp.status_code == 200, resp.text
+    send_at = datetime.combine(start - timedelta(days=7), time(8, 0), tzinfo=TOKYO)
+    assert datetime.fromisoformat(resp.json()["send_at"]) == send_at
+
+    _clock(monkeypatch, send_at - timedelta(minutes=1))
+    assert (await scheduler.run_learning_once(get_sessionmaker()))["invites"] == 0
+    assert await _outbox(db, "learning_invite") == []
+
+    _clock(monkeypatch, send_at + timedelta(seconds=1))
+    assert (await scheduler.run_learning_once(get_sessionmaker()))["invites"] == 1
+    assert (await scheduler.run_learning_once(get_sessionmaker()))["invites"] == 0
+    [mail] = await _outbox(db, "learning_invite")
+    assert mail.person_id == worker.id
+    schedule = await db.get(LearningInviteSchedule, move.id)
+    await db.refresh(schedule)
+    assert schedule.sent_at is not None
+
+
+async def test_manual_mode_never_sends_on_its_own(client, db, seeded_user, monkeypatch):
+    start = TODAY + timedelta(days=14)
+    _, move, _ = await _setup(db, client, start=start)
+    db.add(LearningInviteSchedule(initiative_id=move.id, mode="manual"))
+    await db.commit()
+    _clock(monkeypatch, datetime.now(UTC) + timedelta(days=13))
+    assert (await scheduler.run_learning_once(get_sessionmaker()))["invites"] == 0
+
+
+async def test_reminders_per_offset_once(client, db, seeded_user, monkeypatch):
+    start = TODAY + timedelta(days=14)
+    hdrs, move, workers = await _setup(db, client, start=start, people=2)
+    resp = await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs, json={})
+    assert resp.json()["sent"] == 2
+    # one of them finishes: reminders only go to people with open items
+    await db.execute(update(LearningAssignment)
+                     .where(LearningAssignment.person_id == workers[1].id)
+                     .values(status="signed", signed_at=datetime.now(UTC)))
+    await db.commit()
+
+    def at(offset):
+        return datetime.combine(start - timedelta(days=offset), time(8, 0), tzinfo=UTC)
+
+    _clock(monkeypatch, at(5) - timedelta(minutes=1))
+    assert (await scheduler.run_learning_once(get_sessionmaker()))["reminders"] == 0
+    _clock(monkeypatch, at(5) + timedelta(minutes=1))
+    assert (await scheduler.run_learning_once(get_sessionmaker()))["reminders"] == 1
+    assert (await scheduler.run_learning_once(get_sessionmaker()))["reminders"] == 0
+    _clock(monkeypatch, at(3) + timedelta(hours=2))
+    assert (await scheduler.run_learning_once(get_sessionmaker()))["reminders"] == 1
+    assert (await scheduler.run_learning_once(get_sessionmaker()))["reminders"] == 0
+
+    mails = await _outbox(db, "learning_reminder")
+    assert [m.person_id for m in mails] == [workers[0].id, workers[0].id]
+    stages = sorted(log.stage for log in await db.scalars(
+        select(LearningEmailLog).where(LearningEmailLog.kind == "reminder")))
+    assert stages == ["r3", "r5"]
+
+
+async def test_reminders_skip_a_missed_stage_and_never_after_start(
+        client, db, seeded_user, monkeypatch):
+    start = TODAY + timedelta(days=14)
+    hdrs, move, [worker] = await _setup(db, client, start=start)
+    await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs, json={})
+    # the worker was down through both reminder times: only the latest goes
+    _clock(monkeypatch, datetime.combine(start - timedelta(days=1), time(9), tzinfo=UTC))
+    assert (await scheduler.run_learning_once(get_sessionmaker()))["reminders"] == 1
+    [log] = list(await db.scalars(select(LearningEmailLog).where(
+        LearningEmailLog.kind == "reminder", LearningEmailLog.person_id == worker.id)))
+    assert log.stage == "r3"
+    # someone invited after the last reminder time gets no instant reminder
+    late = await _worker(db, "Lee", "Late", "lee@test.example.com")
+    await _add(db, client, hdrs, move, late)     # a late add: invited right away
+    await db.execute(update(LearningCode).where(LearningCode.person_id == late.id).values(
+        created_at=datetime.combine(start - timedelta(days=3), time(10), tzinfo=UTC)))
+    await db.commit()
+    assert len(await _outbox(db, "learning_invite")) == 2
+    assert (await scheduler.run_learning_once(get_sessionmaker()))["reminders"] == 0
+    # and nothing at all once the initiative has started
+    _clock(monkeypatch, datetime.combine(start + timedelta(days=2), time(9), tzinfo=UTC))
+    assert (await scheduler.run_learning_once(get_sessionmaker()))["reminders"] == 0
+
+
+async def test_overdue_notice_once_per_day(client, db, seeded_user, monkeypatch):
+    start = TODAY + timedelta(days=3)
+    _, move, _ = await _setup(db, client, start=start, end=start + timedelta(days=5))
+    await db.execute(update(LearningAssignment).values(due_on=TODAY - timedelta(days=1)))
+    await db.commit()
+
+    now = datetime.combine(TODAY, time(12), tzinfo=UTC)
+    _clock(monkeypatch, now)
+    first = await scheduler.run_learning_once(get_sessionmaker())
+    assert first["overdue"] == 1
+    assert (await scheduler.run_learning_once(get_sessionmaker()))["overdue"] == 0
+    notes = list(await db.scalars(select(Notification).where(
+        Notification.kind == scheduler.KIND)))
+    assert len(notes) == 1
+    assert notes[0].link == f"/initiatives/{move.id}?tab=learning"
+    assert "1" in notes[0].title and "Move" in notes[0].title
+    # the staff user isn't a learning manager
+    assert notes[0].person_id != seeded_user.id
+
+    _clock(monkeypatch, now + timedelta(days=1))
+    assert (await scheduler.run_learning_once(get_sessionmaker()))["overdue"] == 1
+    # nothing open → no notice
+    await db.execute(update(LearningAssignment).values(status="signed"))
+    await db.commit()
+    _clock(monkeypatch, now + timedelta(days=2))
+    assert (await scheduler.run_learning_once(get_sessionmaker()))["overdue"] == 0
+
+
+async def test_sweep_survives_an_initiative_error(client, db, seeded_user, monkeypatch):
+    start = TODAY + timedelta(days=3)
+    await _setup(db, client, start=start)
+    await db.execute(update(LearningAssignment).values(due_on=TODAY - timedelta(days=1)))
+    await db.commit()
+
+    async def boom(*a, **kw):
+        raise RuntimeError("db blip")
+
+    monkeypatch.setattr(scheduler, "_overdue_one", boom)
+    out = await scheduler.run_learning_once(get_sessionmaker())
+    assert out["overdue"] == 0 and out["errors"] == 1
+
+
+# ── the manager API ──────────────────────────────────────────────────
+
+
+async def test_roster_statuses(client, db, seeded_user):
+    start = TODAY + timedelta(days=10)
+    hdrs = await _manager(db, client)
+    docs = [await _doc(db, "Site safety"), await _doc(db, "Dress code")]
+    await _packet(db, docs)
+    move = await _move(db, start=start)
+    names = ["Cathy", "Ivan", "Olga", "Nora", "Ned"]
+    people = {}
+    for name in names:
+        email = None if name == "Ned" else f"{name.lower()}@test.example.com"
+        people[name] = await _worker(db, name, "Tester", email)
+        await _add(db, client, hdrs, move, people[name])
+    now = datetime.now(UTC)
+
+    def where(name):
+        return LearningAssignment.person_id == people[name].id
+
+    await db.execute(update(LearningAssignment).where(where("Cathy"))
+                     .values(status="signed", opened_at=now, signed_at=now))
+    first = (await db.scalars(select(LearningAssignment).where(where("Ivan"))
+                              .order_by(LearningAssignment.created_at))).first()
+    first.status, first.opened_at = "opened", now
+    await db.execute(update(LearningAssignment).where(where("Olga"))
+                     .values(due_on=TODAY - timedelta(days=1)))
+    await db.commit()
+
+    resp = await client.get(f"/learning/initiatives/{move.id}/roster", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    rows = {r["name"].split()[0]: r for r in resp.json()}
+    assert {k: r["status"] for k, r in rows.items()} == {
+        "Cathy": "complete", "Ivan": "in_progress", "Olga": "overdue",
+        "Nora": "not_opened", "Ned": "no_email"}
+    assert (rows["Cathy"]["done"], rows["Cathy"]["total"]) == (2, 2)
+    assert (rows["Ivan"]["done"], rows["Ivan"]["total"]) == (0, 2)
+    assert rows["Nora"]["email"] == "nora@test.example.com" and rows["Ned"]["email"] is None
+    assert rows["Cathy"]["last_activity"] is not None and rows["Nora"]["last_activity"] is None
+    assert rows["Nora"]["language"] == "en"
+
+    resp = await client.get(f"/learning/initiatives/{move.id}/roster?status=overdue",
+                            headers=hdrs)
+    assert [r["name"] for r in resp.json()] == ["Olga Tester"]
+
+    resp = await client.get(f"/learning/initiatives/{move.id}", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["stats"] == {"invited": 0, "opened": 2, "in_progress": 1, "complete": 1,
+                             "overdue": 1}
+    assert body["schedule"]["mode"] == "manual" and body["schedule"]["sent_at"] is None
+    assert body["schedule"]["reminder_offsets"] == [5, 3]
+    assert [p["packet"]["name"] for p in body["packets"]] == ["Standard onboarding"]
+    assert body["packets"][0]["rule_name"] == "Standard onboarding"
+    assert body["packets"][0]["every_initiative"] is False
+    assert body["extras"] == []
+    kinds = [t["kind"] for t in body["timeline"]]
+    assert kinds == ["invite", "reminder", "reminder", "due", "start"]
+
+    # staff may look (learning:view) but not change the schedule or send
+    staff = await login(client)
+    assert (await client.get(f"/learning/initiatives/{move.id}/roster",
+                             headers=staff)).status_code == 200
+    assert (await client.put(f"/learning/initiatives/{move.id}/schedule", headers=staff,
+                             json={"mode": "scheduled"})).status_code == 403
+    assert (await client.post(f"/learning/initiatives/{move.id}/send", headers=staff,
+                              json={})).status_code == 403
+
+
+async def test_schedule_put_validates_and_marks_the_timeline(client, db, seeded_user):
+    start = TODAY + timedelta(days=14)
+    hdrs, move, _ = await _setup(db, client, start=start, people=0)
+    for bad in ({"send_time": "8am"}, {"reminder_offsets": [3, 3]},
+                {"send_offset_days": 0}, {"mode": "sometimes"}, {"late_adds": None}):
+        resp = await client.put(f"/learning/initiatives/{move.id}/schedule", headers=hdrs,
+                                json=bad)
+        assert resp.status_code == 422, bad
+
+    resp = await client.get("/initiatives", headers=hdrs)
+    [item] = [i for i in resp.json() if i["id"] == str(move.id)]
+    assert item["learning_send_at"] is None
+
+    resp = await client.put(f"/learning/initiatives/{move.id}/schedule", headers=hdrs,
+                            json={"mode": "scheduled", "send_time": "09:30"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["send_time"] == "09:30" and resp.json()["send_offset_days"] == 7
+    expected = datetime.combine(start - timedelta(days=7), time(9, 30), tzinfo=UTC)
+    resp = await client.get("/initiatives", headers=hdrs)
+    [item] = [i for i in resp.json() if i["id"] == str(move.id)]
+    assert datetime.fromisoformat(item["learning_send_at"]) == expected
+    resp = await client.get(f"/initiatives/{move.id}", headers=hdrs)
+    assert datetime.fromisoformat(resp.json()["learning_send_at"]) == expected
+
+
+async def test_regenerate_revokes_old_code(client, db, seeded_user):
+    start = TODAY + timedelta(days=14)
+    hdrs, move, [worker] = await _setup(db, client, start=start)
+    await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs, json={})
+    [old] = list(await db.scalars(select(LearningCode).where(
+        LearningCode.person_id == worker.id)))
+
+    resp = await client.post(
+        f"/learning/initiatives/{move.id}/people/{worker.id}/regenerate", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"sent": True}
+    codes = list(await db.scalars(select(LearningCode).where(
+        LearningCode.person_id == worker.id).execution_options(populate_existing=True)))
+    assert len(codes) == 2
+    assert {c.id for c in codes if c.revoked_at is None} != {old.id}
+    assert len([c for c in codes if c.revoked_at is None]) == 1
+    assert len(await _outbox(db, "learning_invite")) == 2
+
+    resp = await client.post(
+        f"/learning/initiatives/{move.id}/people/{worker.id}/revoke", headers=hdrs)
+    assert resp.status_code == 200 and resp.json() == {"revoked": 1}
+    assert await db.scalar(select(LearningCode).where(
+        LearningCode.person_id == worker.id, LearningCode.revoked_at.is_(None))
+        .execution_options(populate_existing=True)) is None
+
+    # someone not on the initiative
+    stranger = await _worker(db, "Sam", "Stranger", "sam@test.example.com")
+    resp = await client.post(
+        f"/learning/initiatives/{move.id}/people/{stranger.id}/regenerate", headers=hdrs)
+    assert resp.status_code == 404
+
+
+async def test_code_sheet_pdf_returns_pdf(client, db, seeded_user):
+    pytest.importorskip("weasyprint")
+    start = TODAY + timedelta(days=14)
+    hdrs = await _manager(db, client)
+    doc = await _doc(db, "Site safety")
+    await _packet(db, [doc])
+    move = await _move(db, start=start)
+    ned = await _worker(db, "Ned", "Nomail", None)
+    wanda = await _worker(db, "Wanda", "Worker", "wanda@test.example.com")
+    for person in (ned, wanda):
+        await _add(db, client, hdrs, move, person)
+
+    resp = await client.get(f"/learning/initiatives/{move.id}/code-sheet.pdf", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] == "application/pdf"
+    assert resp.content.startswith(b"%PDF")
+    issued = list(await db.scalars(select(LearningCode.person_id)))
+    assert issued == [ned.id]
+
+    resp = await client.get(f"/learning/initiatives/{move.id}/code-sheet.pdf?all=1",
+                            headers=hdrs)
+    assert resp.status_code == 200
+    rows = list(await db.scalars(select(LearningCode).execution_options(
+        populate_existing=True)))
+    active = {r.person_id for r in rows if r.revoked_at is None}
+    assert active == {ned.id, wanda.id} and len(rows) == 3
+
+
+def test_sheet_html_lists_codes_and_the_replace_note():
+    from serversherpa.learning import invites
+
+    html = invites.code_sheet_html("Acme move", [("Ned Nomail", "K7QM2X")],
+                                   learn_origin="https://learn.example.com")
+    assert "Ned Nomail" in html and "K7Q M2X" in html
+    assert "replace earlier ones" in html

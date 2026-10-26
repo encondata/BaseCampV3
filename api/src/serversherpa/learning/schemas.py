@@ -1,8 +1,9 @@
 """Pydantic schemas for the learning API (every learning route's bodies and
 responses live here)."""
 
+import re
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
@@ -358,6 +359,125 @@ class AssignSummaryOut(BaseModel):
     pushed versions all return."""
     rows: list[AssignSummaryRow]
     totals: AssignTotals
+
+
+# ── initiative learning: schedule, invites, roster ───────────────────
+
+_HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+class ScheduleIn(BaseModel):
+    """Partial update of an initiative's invite schedule, checked like the
+    learning settings' defaults: no nulls, HH:MM, unique reminder days."""
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["manual", "scheduled"] | None = None
+    send_offset_days: int | None = Field(default=None, ge=1)
+    send_time: str | None = None
+    reminder_offsets: list[Annotated[int, Field(ge=0, le=365)]] | None = None
+    due_offset_days: int | None = Field(default=None, ge=1)
+    late_adds: bool | None = None
+
+    @model_validator(mode="after")
+    def _check(self) -> "ScheduleIn":
+        for key in self.model_fields_set:
+            if getattr(self, key) is None:
+                raise ValueError(f"{key} cannot be null")
+        if self.send_time is not None and not _HHMM.match(self.send_time):
+            raise ValueError("send_time must be HH:MM")
+        offsets = self.reminder_offsets
+        if offsets is not None and len(set(offsets)) != len(offsets):
+            raise ValueError("reminder_offsets must be unique")
+        return self
+
+
+class ScheduleOut(BaseModel):
+    mode: Literal["manual", "scheduled"]
+    send_offset_days: int
+    send_time: str
+    reminder_offsets: list[int]
+    due_offset_days: int
+    late_adds: bool
+    sent_at: datetime | None
+    # when a scheduled send will go out (or would, for a manual schedule)
+    send_at: datetime | None
+    codes_expire_on: date | None
+    # no schedule saved yet: these are the learning settings' defaults
+    is_default: bool
+
+
+class LearningStatsOut(BaseModel):
+    invited: int
+    opened: int
+    in_progress: int
+    complete: int
+    overdue: int
+
+
+class PacketBrief(BaseModel):
+    id: uuid.UUID
+    name: str
+    documents: list[str]
+
+
+class RequiredPacketOut(BaseModel):
+    packet: PacketBrief
+    rule_name: str | None
+    every_initiative: bool
+
+
+class ExtraOut(BaseModel):
+    title: str
+    people: int
+
+
+class TimelineEventOut(BaseModel):
+    date: date
+    kind: Literal["invite", "reminder", "due", "start"]
+
+
+class InitiativeLearningOut(BaseModel):
+    stats: LearningStatsOut
+    schedule: ScheduleOut
+    packets: list[RequiredPacketOut]
+    extras: list[ExtraOut]
+    timeline: list[TimelineEventOut]
+
+
+class SendInvitesIn(BaseModel):
+    """No `person_ids`: everyone with open assignments. With them: Resend."""
+    model_config = ConfigDict(extra="forbid")
+
+    person_ids: list[uuid.UUID] | None = Field(default=None, min_length=1)
+
+
+class SendInvitesOut(BaseModel):
+    sent: int
+    no_email: int
+    skipped_complete: int
+
+
+RosterStatus = Literal["complete", "in_progress", "overdue", "not_opened", "no_email"]
+
+
+class RosterRowOut(BaseModel):
+    person_id: uuid.UUID
+    name: str
+    email: str | None
+    partner: str | None
+    language: str
+    done: int
+    total: int
+    status: RosterStatus
+    last_activity: datetime | None
+
+
+class RegenerateOut(BaseModel):
+    sent: bool
+
+
+class RevokeCodesOut(BaseModel):
+    revoked: int
 
 
 # ── worker sign-in (/learn/auth) ─────────────────────────────────────

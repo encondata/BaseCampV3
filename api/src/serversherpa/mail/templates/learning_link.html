@@ -1,0 +1,13 @@
+{% extends "_base.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">Hi {{ name }},</p>
+{% if intro_override %}
+<p style="margin:0 0 24px;white-space:pre-line;">{{ intro_override }}</p>
+{% else %}
+<p style="margin:0 0 24px;">Here's your link to finish your training{% if initiative_name %} for {{ initiative_name }}{% endif %}. It replaces the one in earlier emails.</p>
+{% endif %}
+<p style="margin:0 0 24px;"><a href="{{ link }}" style="display:inline-block;background:#ffa12e;color:#0c1117;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:8px;">Open my training</a></p>
+<p style="margin:0 0 8px;font-size:13px;color:#667085;">If the button doesn't work, paste this address into your browser:</p>
+<p style="margin:0 0 24px;font-size:13px;word-break:break-all;"><a href="{{ link }}" style="color:#1b2129;">{{ link }}</a></p>
+<p style="margin:0;font-size:13px;color:#667085;">If you didn't ask for this, you can ignore this email.</p>
+{% endblock %}

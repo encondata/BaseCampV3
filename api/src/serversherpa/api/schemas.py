@@ -2144,6 +2144,8 @@ class InitiativeItem(BaseModel):
     archived_at: datetime | None = None
     created_at: datetime
     kiosk_password_set: bool = False
+    # the learning invites' send time (sent, or scheduled): the timeline marker
+    learning_send_at: datetime | None = None
 
 
 class InitiativePersonRow(BaseModel):

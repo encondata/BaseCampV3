@@ -1,0 +1,7 @@
+Hi {{ name }},
+
+{% if intro_override %}{{ intro_override }}{% else %}Here's your link to finish your training{% if initiative_name %} for {{ initiative_name }}{% endif %}. It replaces the one in earlier emails.{% endif %}
+
+{{ link }}
+
+If you didn't ask for this, you can ignore this email.

@@ -28,6 +28,7 @@ dependencies = [
     "pdf417gen>=0.7",
     "fonttools>=4.50",       # label font metrics (labels/font_metrics.py)
     "pillow>=11.3",            # ID badge images (labels/image_prep.py, imported lazily; never on the laptop edge)
+    "segno>=1.6",              # the learning completion email's time clock QR (learning/emails.py)
 ]
 
 [project.optional-dependencies]
@@ -48,6 +49,7 @@ where = ["src"]
 "serversherpa.reports.move_scan_history" = ["templates/*.html"]
 "serversherpa.wiki" = ["assets/*.png"]
 "serversherpa.mail" = ["templates/*"]
+"serversherpa.learning" = ["templates/*.html"]
 # vegas_v2.json is the Vegas Destination design seed-label-templates loads
 "serversherpa.labels" = ["fixtures/*.json"]
 # the pinned Google hardware attestation roots (security/key_attestation.py)

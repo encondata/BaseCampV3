@@ -37,6 +37,7 @@ from serversherpa.imports.parsing import (
     MAX_BYTES, build_template_csv, build_template_xlsx, template_columns,
 )
 from serversherpa.learning import assign as learning_assign
+from serversherpa.learning.invites import send_markers as learning_send_markers
 from serversherpa.people import team_bulk
 from serversherpa.racks.recheck import recheck_placement
 from serversherpa.scans.manual import record_status_edit, stamp_rule_failure
@@ -181,12 +182,15 @@ async def _context(db: DbSession, initiatives: list[Initiative],
     for child_id, parent_id, role in (
             (await db.execute(parent_q)).all() if ids else []):
         parent_of.setdefault(child_id, (parent_id, role))
-    return vocab, sites, clients, partners, people_counts, link_counts, parent_of
+    # the timeline's learning marker: when invites went out / will go out
+    learning_send = await learning_send_markers(db, initiatives)
+    return (vocab, sites, clients, partners, people_counts, link_counts, parent_of,
+            learning_send)
 
 
 def _item(i: Initiative, vocab: dict, sites: dict, clients: dict,
           partners: dict, people_counts: dict, link_counts: dict,
-          parent_of: dict) -> dict:
+          parent_of: dict, learning_send: dict) -> dict:
     s_label, s_color = vocab["initiative"].get(
         i.status, (i.status, "#51606f"))
     t_label, t_color = vocab["initiative_type"].get(
@@ -231,6 +235,7 @@ def _item(i: Initiative, vocab: dict, sites: dict, clients: dict,
         "parent_role": parent_of.get(i.id, (None, None))[1],
         "archived_at": i.archived_at, "created_at": i.created_at,
         "kiosk_password_set": i.kiosk_password_fp is not None,
+        "learning_send_at": learning_send.get(i.id),
     }
 
 

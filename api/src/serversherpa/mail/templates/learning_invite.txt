@@ -1,0 +1,16 @@
+{% if initiative_name %}Welcome to {{ initiative_name }}, {{ name }}{% else %}Hi {{ name }}{% endif %}
+
+{% if intro_override %}{{ intro_override }}{% else %}{% if start_on %}Before your first shift on {{ start_on }}, review{% else %}Please review{% endif %} and sign {{ documents }} short document{{ "" if documents == 1 else "s" }}.{% endif %}
+
+Start your training:
+
+{{ link }}
+
+Or go to {{ learn_origin }}, enter this code and your last name:
+
+{{ code }}
+{% if due_on %}
+Due {{ due_on }}.{% endif %}{% if expires_on %}
+The code works until {{ expires_on }}.{% endif %}
+
+Keep this email to yourself: the code and the link open your training.

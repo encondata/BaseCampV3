@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Learning codes: {{ initiative_name }}</title>
+<style>
+  @page {
+    size: Letter portrait;
+    margin: 16mm 16mm 20mm 16mm;
+    @bottom-left {
+      content: "Page " counter(page) " of " counter(pages);
+      font: 8pt Helvetica, Arial, sans-serif; color: #666;
+    }
+    @bottom-right {
+      content: "Generated {{ generated }}";
+      font: 8pt Helvetica, Arial, sans-serif; color: #666;
+    }
+  }
+  body { font: 10pt/1.4 Helvetica, Arial, sans-serif; color: #111; }
+  h1 { font-size: 18pt; margin: 0 0 1mm; }
+  .sub { color: #444; margin: 0 0 4mm; }
+  .note { border: 0.75pt solid #d97a06; background: #fff7ec; border-radius: 2mm;
+          padding: 2.5mm 3.5mm; margin: 0 0 6mm; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { padding: 3mm 2mm; text-align: left; vertical-align: middle; }
+  th { font-size: 8pt; text-transform: uppercase; letter-spacing: 0.3pt; color: #555;
+       border-bottom: 0.75pt solid #111; }
+  td { border-bottom: 0.5pt dashed #bbb; }
+  td.code { font: 16pt Menlo, Consolas, monospace; letter-spacing: 2pt; white-space: nowrap; }
+  tr { page-break-inside: avoid; }
+  .empty { color: #444; font-style: italic; margin-top: 6mm; }
+</style>
+</head>
+<body>
+<h1>Learning codes</h1>
+<p class="sub">{{ initiative_name }}</p>
+<div class="note">
+  Go to <b>{{ learn_origin }}</b>, enter your code and your last name, then read and sign each document.
+  Codes on this sheet replace earlier ones: any code printed or emailed before this sheet no longer works.
+  Cut along the dashed lines and hand each person only their own code.
+</div>
+{% if rows %}
+<table>
+  <thead><tr><th>Name</th><th>Learning code</th></tr></thead>
+  <tbody>
+  {% for row in rows %}
+    <tr><td>{{ row.name }}</td><td class="code">{{ row.code }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">Nobody on this initiative needs a printed code.</p>
+{% endif %}
+</body>
+</html>

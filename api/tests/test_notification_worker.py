@@ -113,6 +113,44 @@ async def test_run_forever_runs_the_reminder_sweep(db, caplog, monkeypatch):
     assert len(calls) == 1   # once on the first loop; the next is an hour away
 
 
+async def test_run_forever_runs_the_learning_sweep(db, monkeypatch):
+    from serversherpa.notifications import worker as worker_mod
+
+    calls = []
+
+    async def fake_learning(maker):
+        calls.append(maker)
+        return {"invites": 0, "reminders": 0, "overdue": 0, "errors": 0}
+
+    monkeypatch.setattr(worker_mod, "run_learning_once", fake_learning)
+    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    try:
+        await asyncio.sleep(0.3)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert len(calls) == 1   # once on the first loop; the next is a minute away
+
+
+async def test_learning_sweep_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
+    from serversherpa.notifications import worker as worker_mod
+
+    async def boom(maker):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(worker_mod, "run_learning_once", boom)
+    monkeypatch.setattr(worker_mod, "LEARNING_INTERVAL_SECONDS", 0)
+    caplog.set_level(logging.WARNING, logger="serversherpa.notifications.worker")
+    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    try:
+        await asyncio.sleep(0.3)
+        assert not task.done()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert caplog.text.count("could not run the learning sweep") == 1   # once per outage
+
+
 async def test_run_forever_delivers_the_outbox(db, monkeypatch):
     from serversherpa.notifications import worker as worker_mod
 

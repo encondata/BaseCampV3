@@ -1,0 +1,9 @@
+Hi {{ name }},
+
+{% if intro_override %}{{ intro_override }}{% else %}{{ title }} has a new version. Please read it and sign again.{% endif %}
+{% if change_note %}
+What changed: {{ change_note }}
+{% endif %}
+Review and sign:
+
+{{ link }}

@@ -1,0 +1,13 @@
+{% extends "_base.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">Hi {{ name }},</p>
+{% if intro_override %}
+<p style="margin:0 0 24px;white-space:pre-line;">{{ intro_override }}</p>
+{% else %}
+<p style="margin:0 0 24px;">You still have {{ remaining }} document{{ "" if remaining == 1 else "s" }} to review and sign{% if initiative_name %} for {{ initiative_name }}{% endif %}{% if start_on %}, which starts {{ start_on }}{% endif %}.</p>
+{% endif %}
+<p style="margin:0 0 24px;"><a href="{{ link }}" style="display:inline-block;background:#ffa12e;color:#0c1117;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:8px;">Continue my training</a></p>
+{% if due_on %}<p style="margin:0 0 24px;font-size:13px;color:#667085;">Due {{ due_on }}</p>{% endif %}
+<p style="margin:0 0 8px;font-size:13px;color:#667085;">You can also go to <a href="{{ learn_origin }}" style="color:#1b2129;">{{ learn_host }}</a> and enter the code from your invite with your last name. This button replaces the one in earlier emails.</p>
+<p style="margin:0 0 24px;font-size:13px;word-break:break-all;"><a href="{{ link }}" style="color:#1b2129;">{{ link }}</a></p>
+{% endblock %}
