@@ -111,6 +111,11 @@ _RESOURCES = [
     # kind needs to clear this hard gate.
     Resource("wiki", "Wiki",
              visible_to=frozenset({"global", "client", "partner", "self"})),
+    # The learning portal's manager surface (documents, packets, rules,
+    # sign-offs). Managers are learning:<action> OR global wiki:delete —
+    # see learning/access.py. Workers sign through access codes, not roles.
+    Resource("learning", "Learning", routes=("/learning",),
+             visible_to=frozenset({"global"})),
 ]
 
 REGISTRY: dict[str, Resource] = {r.id: r for r in _RESOURCES}
