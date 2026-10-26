@@ -95,7 +95,7 @@ async def learn_actor(request: Request, db: DbSession) -> LearnActor:
         # them like the portal does)
         user = await authenticate_request(db, request, raw)
         return LearnActor(person_id=user.person.id, session=None, user=user)
-    if scheme != SCHEME or not raw:
+    if scheme.lower() != SCHEME.lower() or not raw:
         raise learn_auth_required()
     session = await find(db, raw)
     if session is None:

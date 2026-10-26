@@ -2,6 +2,7 @@
 one-click link, mints a learn session (`Authorization: Learn <token>`) that
 only /learn routes accept. Failures lock the code and count against per-IP
 and global caps (the move-login pattern)."""
+import asyncio
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
@@ -101,10 +102,20 @@ async def test_lockout_after_max_failures_refuses_correct_name(client, db, monke
     await db.refresh(row)
     assert row.locked_until is not None
     assert row.locked_until > datetime.now(UTC) + timedelta(seconds=890)
-    # locked: the right name gets the same 423 as a wrong one (no name oracle)
-    for name in ("nunez", "Smith"):
-        r = await _code_login(client, last_name=name)
-        assert r.status_code == 423 and r.json()["detail"]["code"] == "learn_code_locked"
+    locked_until = row.locked_until
+    # locked + the right name: 423, so the worker knows to wait (no session)
+    r = await _code_login(client, last_name="nunez")
+    assert r.status_code == 423 and r.json()["detail"]["code"] == "learn_code_locked"
+    # locked + a wrong name: the same 401 as an unknown code (no existence
+    # oracle), audited, and the lock isn't extended
+    before = await _failures(db)
+    r = await _code_login(client, last_name="Smith")
+    assert r.status_code == 401 and r.json()["detail"] == {"code": "learn_code_invalid"}
+    unknown = await _code_login(client, code="ZZZZZZ", last_name="Smith")
+    assert unknown.status_code == 401 and unknown.json() == r.json()
+    assert await _failures(db) == before + 2
+    await db.refresh(row)
+    assert row.locked_until == locked_until and row.failed_count == 0
     assert await db.scalar(select(func.count()).select_from(LearningSession)) == 0
     # once the lock lapses, the right name works again
     row.locked_until = datetime.now(UTC) - timedelta(seconds=1)
@@ -233,3 +244,31 @@ async def test_locked_code_counts_against_the_ip_cap(client, db, monkeypatch):
     stored = await db.get(LearningCode, row.id)
     await db.refresh(stored)
     assert stored.failed_count == 0           # reset when the lock was set; locked tries don't add
+
+
+async def test_caps_hold_under_concurrent_attempts(client, db, monkeypatch):
+    await _settings(db, ip_limit=3)
+    await _setup(db, monkeypatch)
+    results = await asyncio.gather(*(
+        _code_login(client, code="ZZZZZZ", ip="203.0.113.8") for _ in range(10)))
+    statuses = sorted(r.status_code for r in results)
+    assert statuses == [401] * 3 + [429] * 7
+
+
+async def test_learn_scheme_is_case_insensitive(client, db, monkeypatch):
+    await _setup(db, monkeypatch)
+    token = (await _code_login(client)).json()["token"]
+    for scheme in ("learn", "LEARN"):
+        r = await client.get("/learn/auth/me", headers={"Authorization": f"{scheme} {token}"})
+        assert r.status_code == 200, r.text
+
+
+async def test_session_ip_is_the_rate_limit_address(client, db, monkeypatch):
+    await _setup(db, monkeypatch)
+    # the leftmost X-Forwarded-For entry is whatever the caller typed; the
+    # proxy appends the real one
+    r = await client.post("/learn/auth/code", json={"code": CODE, "last_name": "nunez"},
+                          headers={"X-Forwarded-For": "6.6.6.6, 203.0.113.9"})
+    session = await db.scalar(select(LearningSession).where(
+        LearningSession.token_hash == hash_token(r.json()["token"])))
+    assert session.ip == "203.0.113.9"

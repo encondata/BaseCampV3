@@ -6,17 +6,18 @@ Abuse limits follow the kiosk move-login pattern (routes/kiosk.py): every
 failure writes a `learning_code_failed` audit row keyed on
 LEARN_CODE_AUDIT_ID, and a caller's rate_limit_ip bucket (or everyone
 together) over the cap waits out the window. A code also locks itself
-after `code_max_failures` wrong last names; while locked it answers 423
-whatever name is sent, so the lock can't be used to test names. A wrong
-code and a wrong last name get the same 401. All numbers are learning
-settings."""
+after `code_max_failures` wrong last names. While locked, only the right
+code AND the right last name hear 423 (the worker learns to wait); a wrong
+name gets the same 401 as an unknown code, so a random guess can't learn
+that a locked code exists. A wrong code and a wrong last name get the same
+401. All numbers are learning settings."""
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.api.deps import DbSession, client_ip, rate_limit_ip
+from serversherpa.api.deps import DbSession, rate_limit_ip
 from serversherpa.api.routes.kiosk import _inet_or_none, move_login_bucket
 from serversherpa.db.models import AuditLog, Person
 from serversherpa.learning import codes, sessions
@@ -37,6 +38,7 @@ router = APIRouter(prefix="/auth")
 
 LEARN_CODE_AUDIT_ID = "learn-code"
 FAILED_ACTION = "learning_code_failed"
+GLOBAL_LOCK_KEY = "learn-code-global"
 
 
 def _err(status: int, code: str) -> HTTPException:
@@ -47,6 +49,16 @@ def _window(settings: LearningSettings):
     since = datetime.now(UTC) - timedelta(seconds=settings.ip_window_seconds)
     return (AuditLog.entity_type == "auth", AuditLog.entity_id == LEARN_CODE_AUDIT_ID,
             AuditLog.action == FAILED_ACTION, AuditLog.at >= since)
+
+
+async def _serialize(db: AsyncSession, bucket: str) -> None:
+    """Hold the cap check and the failure it records in one critical
+    section: without it, concurrent attempts all read the count before any
+    of them writes, and a burst slips past the cap. Transaction-scoped
+    advisory locks, always global first and then the bucket (one order, so
+    no deadlock); the commit or rollback that ends the request frees them."""
+    for key in (GLOBAL_LOCK_KEY, f"learn-code-ip:{bucket}"):
+        await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": key})
 
 
 async def learn_login_capped(db: AsyncSession, settings: LearningSettings, bucket: str) -> bool:
@@ -82,9 +94,11 @@ def _usable(row: LearningCode, person: Person, now: datetime) -> bool:
 
 
 async def _sign_in(db: AsyncSession, request: Request, row: LearningCode, person: Person,
-                   ip: str | None, via: str, now: datetime) -> LearnSessionOut:
+                   raw_ip: str, ip: str | None, via: str, now: datetime) -> LearnSessionOut:
     row.last_used_at = now
-    token = await sessions.start(db, code=row, person_id=person.id, ip=client_ip(request),
+    # the address the caps key on (rate_limit_ip), not the spoofable leftmost
+    # X-Forwarded-For entry
+    token = await sessions.start(db, code=row, person_id=person.id, ip=raw_ip,
                                  user_agent=request.headers.get("user-agent"))
     session = await sessions.find(db, token)
     audit(db, actor_id=person.id, entity_type="learning_code", entity_id=str(row.id),
@@ -100,6 +114,7 @@ async def code_sign_in(body: LearnCodeIn, request: Request, db: DbSession) -> Le
     raw_ip = rate_limit_ip(request)
     ip = _inet_or_none(raw_ip)
     bucket = move_login_bucket(raw_ip)
+    await _serialize(db, bucket)
     if await learn_login_capped(db, settings, bucket):
         raise _err(429, "rate_limited")
     now = datetime.now(UTC)
@@ -120,8 +135,12 @@ async def code_sign_in(body: LearnCodeIn, request: Request, db: DbSession) -> Le
         reason = "unknown_code" if row is None else "code_unusable"
         raise await _failed(db, ip, bucket, reason, row=row)
     if row.locked_until is not None and row.locked_until > now:
-        raise await _failed(db, ip, bucket, "code_locked", status=423,
-                            code="learn_code_locked", row=row)
+        # still no session either way; a wrong name neither extends the lock
+        # nor reveals it
+        if name_ok:
+            raise await _failed(db, ip, bucket, "code_locked", status=423,
+                                code="learn_code_locked", row=row)
+        raise await _failed(db, ip, bucket, "code_locked_wrong_last_name", row=row)
     if not name_ok:
         row.failed_count += 1
         if row.failed_count >= settings.code_max_failures:
@@ -130,7 +149,7 @@ async def code_sign_in(body: LearnCodeIn, request: Request, db: DbSession) -> Le
         raise await _failed(db, ip, bucket, "wrong_last_name", row=row)
     row.failed_count = 0
     row.locked_until = None
-    return await _sign_in(db, request, row, person, ip, "code", now)
+    return await _sign_in(db, request, row, person, raw_ip, ip, "code", now)
 
 
 @router.post("/link", response_model=LearnSessionOut)
@@ -141,6 +160,7 @@ async def link_sign_in(body: LearnLinkIn, request: Request, db: DbSession) -> Le
     raw_ip = rate_limit_ip(request)
     ip = _inet_or_none(raw_ip)
     bucket = move_login_bucket(raw_ip)
+    await _serialize(db, bucket)
     if await learn_login_capped(db, settings, bucket):
         raise _err(429, "rate_limited")
     now = datetime.now(UTC)
@@ -153,7 +173,7 @@ async def link_sign_in(body: LearnLinkIn, request: Request, db: DbSession) -> Le
         raise await _failed(db, ip, bucket, "invalid_link",
                             row=found[0] if found is not None else None)
     row, person = found
-    return await _sign_in(db, request, row, person, ip, "link", now)
+    return await _sign_in(db, request, row, person, raw_ip, ip, "link", now)
 
 
 @router.post("/logout", status_code=204)
