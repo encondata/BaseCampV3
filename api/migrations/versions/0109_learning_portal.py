@@ -396,6 +396,10 @@ def upgrade() -> None:
     conn.execute(sa.text(
         "INSERT INTO role_permissions (role, resource, action) "
         "VALUES ('staff', 'learning', 'view') ON CONFLICT DO NOTHING"))
+    # learning admins author the policy pages in the wiki's Learning space
+    conn.execute(sa.text(
+        "INSERT INTO role_permissions (role, resource, action) "
+        "VALUES ('learning_admin', 'wiki', 'view') ON CONFLICT DO NOTHING"))
 
     conn.execute(sa.text(INSERT_DEFINITION_SQL), {
         "name": REPORT_DEFINITION_NAME, "description": REPORT_DESCRIPTION,
@@ -409,6 +413,8 @@ def downgrade() -> None:
         "DELETE FROM report_runs WHERE report_type = :report_type"), {"report_type": REPORT_TYPE})
     conn.execute(sa.text(DELETE_DEFINITION_SQL), {"report_type": REPORT_TYPE})
     conn.execute(sa.text("DELETE FROM role_permissions WHERE resource = 'learning'"))
+    conn.execute(sa.text(
+        "DELETE FROM role_permissions WHERE role = 'learning_admin' AND resource = 'wiki'"))
     conn.execute(sa.text("DELETE FROM person_roles WHERE role = 'learning_admin'"))
     conn.execute(sa.text("DELETE FROM roles WHERE name = 'learning_admin'"))
 

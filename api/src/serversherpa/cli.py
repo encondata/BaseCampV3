@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from serversherpa.db.engine import dispose_engine, get_sessionmaker, set_application_name
 from serversherpa.db.models import SystemConfig, UserAccount
@@ -259,6 +259,69 @@ def seed_demo_warehouse() -> None:
         await dispose_engine()
 
     asyncio.run(_run())
+
+
+EXIT_RENDER_DOWN = 1
+
+
+@app.command()
+def learning_seed(
+    actor_email: str | None = typer.Option(
+        None, "--actor-email", help="Login email of the person who owns the new space and "
+                                    "pages (default: nobody)"),
+) -> None:
+    """Create the wiki Learning space with sample policy pages, their
+    learning documents (published as v1), packets and the Everyone rule.
+    Idempotent: run it again and nothing is added. Needs the wiki render
+    server to publish the documents."""
+    _name_connections("learning-seed")
+
+    async def _run() -> int:
+        from serversherpa.learning.render import (
+            LearningRenderRejected,
+            LearningRenderUnavailable,
+        )
+        from serversherpa.learning.seed import check_render_server, seed
+
+        try:
+            try:
+                await check_render_server()
+            except (LearningRenderUnavailable, LearningRenderRejected) as exc:
+                typer.secho(
+                    "The wiki render server isn't answering, so the sample documents can't be "
+                    f"published: {exc}\nStart the wiki server (it renders each document once "
+                    "when it is published), then run this again. Nothing was changed.",
+                    fg="red", err=True)
+                return EXIT_RENDER_DOWN
+            async with get_sessionmaker()() as db:
+                actor_id = None
+                if actor_email is not None:
+                    actor_id = await db.scalar(select(UserAccount.person_id).where(
+                        func.lower(UserAccount.email) == actor_email.strip().lower()))
+                    if actor_id is None:
+                        typer.secho(f"No account for {actor_email}.", fg="red", err=True)
+                        return EXIT_USAGE
+                try:
+                    result = await seed(db, actor_id=actor_id)
+                except (LearningRenderUnavailable, LearningRenderRejected) as exc:
+                    await db.rollback()
+                    typer.secho(f"The wiki render server failed part-way: {exc}\n"
+                                "Nothing was changed.", fg="red", err=True)
+                    return EXIT_RENDER_DOWN
+                await db.commit()
+            if result.total == 0:
+                typer.secho("The Learning space is already set up. Nothing to add.",
+                            fg="yellow")
+            else:
+                typer.secho("Added: " + ", ".join(
+                    f"{n} {kind}" for kind, n in result.created.items()), fg="green")
+            return 0
+        finally:
+            await dispose_engine()
+
+    code = asyncio.run(_run())
+    if code:
+        raise typer.Exit(code=code)
 
 
 @app.command()

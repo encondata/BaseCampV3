@@ -156,6 +156,11 @@ async def test_learning_admin_role_and_grants(db):
         assert await actions(role) == full, role
     assert await actions("staff") == {"view"}
     assert await actions("worker") == set()
+    # learning admins read and author the wiki's Learning space
+    wiki = {r[0] for r in (await db.execute(text(
+        "SELECT action FROM role_permissions "
+        "WHERE role = 'learning_admin' AND resource = 'wiki'"))).all()}
+    assert wiki == {"view"}
 
 
 async def test_notification_category_learning_allowed(db):

@@ -51,7 +51,7 @@ DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
               "status_rules": ("view",), "scanning_hardware": ("view",),
               "labels": ("view",), "reports": ("view", "add"), "time": ("view",),
               "kiosk": ("view",), "wiki": WIKI_ADD, "learning": ("view",)},
-    "learning_admin": {"learning": FULL},
+    "learning_admin": {"learning": FULL, "wiki": WIKI_VIEW},
     "client_owner":  {"dashboard": ("view",), "clients": ("view", "change"),
                       "attachments": ("view",), "assets": ("view",),
                       "initiatives": ("view",), "wiki": WIKI_VIEW},

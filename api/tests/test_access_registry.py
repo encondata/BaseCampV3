@@ -26,3 +26,10 @@ def test_route_map():
     assert ROUTE_RESOURCE["/sites"] == "sites"
     assert ROUTE_RESOURCE["/learning"] == "learning"
     assert ROUTE_RESOURCE["/admin/scans"] == "scans"
+
+
+def test_learning_admin_default_grants():
+    from serversherpa.access.defaults import DEFAULT_GRANTS
+
+    assert DEFAULT_GRANTS["learning_admin"] == {
+        "learning": ("view", "add", "change", "delete"), "wiki": ("view",)}
