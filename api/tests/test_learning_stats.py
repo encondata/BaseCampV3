@@ -6,7 +6,11 @@ import io
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
+from fastapi import HTTPException
 from PIL import Image
+
+from sqlalchemy import select
 
 from serversherpa.db.models import (
     InitiativePerson,
@@ -15,7 +19,7 @@ from serversherpa.db.models import (
     PersonRole,
     WorkerProfile,
 )
-from serversherpa.learning import certificate
+from serversherpa.learning import assign, certificate, stats
 from serversherpa.learning.models import (
     LearningAssignment,
     LearningEmailLog,
@@ -25,6 +29,7 @@ from serversherpa.learning.models import (
     LearningSignoff,
     LearningTranslation,
 )
+from serversherpa.reports import learning_compliance
 from tests.test_learning_assign import (
     TODAY,
     _doc,
@@ -360,8 +365,18 @@ async def test_history_scoped(client, db, seeded_user):
     db.add(PersonRole(person_id=contact.id, role="vendor_admin", partner_id=mine.id))
     await db.commit()
     vendor = await make_login(db, client, contact, "vic@test.example.com")
-    assert (await client.get(f"/learning/people/{worker.id}/history",
-                             headers=vendor)).status_code == 200
+    seen = await client.get(f"/learning/people/{worker.id}/history", headers=vendor)
+    assert seen.status_code == 200
+    # a partner contact can't see initiatives: ids stay, names don't
+    assert seen.json()["signoffs"][0]["initiative_id"] == str(move.id)
+    for key in ("signoffs", "overrides", "open_assignments"):
+        rows = seen.json()[key]
+        assert rows and all(r["initiative"] is None and r["initiative_id"] for r in rows)
+    assert body["signoffs"][0]["initiative"] == "Acme move"
+    # the certificate (typed names, signatures) is for learning managers only
+    forbidden = await client.get(f"/learning/people/{worker.id}/certificate.pdf",
+                                 headers=vendor)
+    assert forbidden.status_code == 403
     assert (await client.get(f"/learning/people/{stranger.id}/history",
                              headers=vendor)).status_code == 404
     # someone with neither learning nor workers view is refused
@@ -371,6 +386,12 @@ async def test_history_scoped(client, db, seeded_user):
     nobody = await make_login(db, client, viewer, "cat@test.example.com")
     assert (await client.get(f"/learning/people/{worker.id}/history",
                              headers=nobody)).status_code == 403
+    assert (await client.get(f"/learning/people/{worker.id}/certificate.pdf",
+                             headers=nobody)).status_code == 403
+    # a worker with an account reads their own history
+    own = await make_login(db, client, worker, "hal@test.example.com")
+    assert (await client.get(f"/learning/people/{worker.id}/history",
+                             headers=own)).status_code == 200
     # managers get a 404 for a person who doesn't exist
     assert (await client.get(f"/learning/people/{uuid.uuid4()}/history",
                              headers=hdrs)).status_code == 404
@@ -416,8 +437,145 @@ async def test_certificate_pdf(client, db, seeded_user):
                              headers=hdrs)).status_code == 404
 
 
+async def test_certificate_initiative_must_be_on_the_persons_record(client, db, seeded_user):
+    hdrs = await _manager(db, client)
+    worker = await _worker(db, "Cora", "Certified", "cora@test.example.com")
+    dress = await _doc(db, "Dress code")
+    mine = await _initiative(db, "Mine")
+    assigned = await _initiative(db, "Only assigned")
+    secret = await _initiative(db, "Someone else's secret move")
+    await _sign(db, worker, dress, initiative=mine)
+    await _assignment(db, worker, dress, assigned)
+    path = f"/learning/people/{worker.id}/certificate.pdf"
+    for ok in (mine, assigned):
+        resp = await client.get(path, headers=hdrs, params={"initiative_id": str(ok.id)})
+        assert resp.status_code == 200, resp.text
+    for bad in (secret.id, uuid.uuid4()):
+        resp = await client.get(path, headers=hdrs, params={"initiative_id": str(bad)})
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["code"] == "initiative_not_found"
+    with pytest.raises(HTTPException):
+        await certificate.certificate_html(db, worker.id, initiative_id=secret.id)
+
+
 async def test_certificate_without_signoffs_still_renders(client, db, seeded_user):
     hdrs = await _manager(db, client)
     worker = await _worker(db, "Nia", "Nothing", "nia@test.example.com")
     resp = await client.get(f"/learning/people/{worker.id}/certificate.pdf", headers=hdrs)
     assert resp.status_code == 200 and resp.content.startswith(b"%PDF")
+
+
+# ── lean queries ─────────────────────────────────────────────────────
+
+
+async def _roster_of(db, count, prefix):
+    dress = await _doc(db, f"{prefix} dress", validity_days=365)
+    nda = await _doc(db, f"{prefix} NDA")
+    partner = Partner(name=f"{prefix} partner")
+    db.add(partner)
+    await db.commit()
+    move = await _initiative(db, f"{prefix} move", start=TODAY + timedelta(days=5),
+                             end=TODAY + timedelta(days=60))
+    await _packet(db, [dress, nda], name=f"{prefix} packet")
+    for i in range(count):
+        person = await _person(db, f"{prefix}{i}", "Roster", f"{prefix}{i}@test.example.com")
+        db.add(WorkerProfile(person_id=person.id, status="active", partner_id=partner.id))
+        db.add(InitiativePerson(initiative_id=move.id, person_id=person.id,
+                                work_type="lead" if i % 2 else "tech"))
+        await db.commit()
+        if i % 2:
+            await _sign(db, person, dress, days_ago=10, signature=_png())
+    return move
+
+
+async def _statements(db, work):
+    from sqlalchemy import event
+    seen: list[str] = []
+
+    def count(conn, cursor, statement, *args):
+        seen.append(statement)
+
+    engine = db.bind.sync_engine
+    event.listen(engine, "before_cursor_execute", count)
+    try:
+        await work()
+    finally:
+        event.remove(engine, "before_cursor_execute", count)
+    return seen
+
+
+async def test_grid_query_count_does_not_grow_with_the_roster(db, seeded_user):
+    small = await _roster_of(db, 3, "S")
+    large = await _roster_of(db, 10, "L")
+    first = await _statements(db, lambda: stats.grid(db, small))
+    second = await _statements(db, lambda: stats.grid(db, large))
+    assert len(first) == len(second)
+    # and the signature image is never read
+    assert not any("signature_png" in q for q in first + second)
+    assert len((await stats.grid(db, large))["rows"]) == 10
+
+
+async def test_dashboard_and_history_never_read_signature_images(db, seeded_user):
+    move = await _roster_of(db, 4, "D")
+    person = await db.scalar(select(Person).where(Person.first_name == "D1"))
+
+    async def work():
+        await stats.dashboard(db, 30)
+        await stats.history(db, person)
+        await learning_compliance.gather.gather(db, move.id)
+        await learning_compliance.gather.gather(db, None)
+
+    statements = await _statements(db, work)
+    assert statements and not any("signature_png" in q for q in statements)
+
+
+async def test_plan_many_matches_plan_for(db, seeded_user):
+    move = await _roster_of(db, 5, "P")
+    ids = list(await db.scalars(select(InitiativePerson.person_id).where(
+        InitiativePerson.initiative_id == move.id)))
+    many = await assign.plan_many(db, ids, move.id)
+    for pid in ids:
+        assert many[pid] == await assign.plan_for(db, pid, move.id)
+    assert any(item.action == "skip" for items in many.values() for item in items)
+    assert any(item.action == "assign" for items in many.values() for item in items)
+
+
+# ── windows ──────────────────────────────────────────────────────────
+
+
+async def test_at_risk_window_edges(client, db, seeded_user):
+    hdrs = await _manager(db, client)
+    doc = await _doc(db, "Site safety")
+    worker = await _person(db, "Ann", "A", "a@test.example.com")
+    names = {}
+    for label, offset in (("Yesterday", -1), ("Today", 0), ("Day 30", 30), ("Day 31", 31)):
+        move = await _initiative(db, label, start=TODAY + timedelta(days=offset))
+        names[label] = move
+        await _assignment(db, worker, doc, move)
+    body = (await client.get("/learning/dashboard", headers=hdrs)).json()
+    assert sorted(r["name"] for r in body["at_risk"]) == ["Day 30", "Today"]
+    assert {r["name"]: r["starts_in_days"] for r in body["at_risk"]} == {
+        "Today": 0, "Day 30": 30}
+
+
+async def test_hard_questions_only_count_attempts_in_the_window(client, db, seeded_user):
+    hdrs = await _manager(db, client)
+    doc = await _doc(db, "Acme NDA")
+    question = LearningQuizQuestion(
+        document_id=doc.id, prompt="Hard?", position=1, correct_choice_ids=["a"],
+        choices=[{"id": "a", "text": "A"}, {"id": "b", "text": "B"}])
+    db.add(question)
+    await db.commit()
+    worker = await _person(db, "Ann", "A", "a@test.example.com")
+    assignment = await _assignment(db, worker, doc)
+    for i in range(12):
+        db.add(LearningQuizAttempt(
+            assignment_id=assignment.id, score_percent=0, passed=False,
+            answers={str(question.id): ["b"]}, created_at=NOW - timedelta(days=20 + i * 5)))
+    await db.commit()
+    # 12 misses overall; only the first 2 fall inside 30 days, the first 5 inside 60
+    def hard(days):
+        return client.get("/learning/dashboard", headers=hdrs, params={"days": days})
+
+    assert (await hard(30)).json()["hard_questions"] == []
+    assert (await hard(90)).json()["hard_questions"][0]["miss_percent"] == 100

@@ -22,6 +22,7 @@ from typing import Literal
 
 from fastapi import HTTPException
 from sqlalchemy import select, update
+from sqlalchemy.orm import defer
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -92,14 +93,27 @@ async def _signoffs(db: AsyncSession, person_id: uuid.UUID,
     per document."""
     if not document_ids:
         return {}
-    by_doc: dict[uuid.UUID, list[LearningSignoff]] = defaultdict(list)
+    many = await signoffs_many(db, [person_id], document_ids)
+    return {doc_id: rows for (_, doc_id), rows in many.items()}
+
+
+async def signoffs_many(db: AsyncSession, person_ids: list[uuid.UUID],
+                        document_ids: set[uuid.UUID],
+                        ) -> dict[tuple[uuid.UUID, uuid.UUID], list[LearningSignoff]]:
+    """`(person_id, document_id) -> sign-offs`, newest first, for many people
+    in one query. The signature image is never loaded: nothing here renders
+    it."""
+    by_key: dict[tuple[uuid.UUID, uuid.UUID], list[LearningSignoff]] = defaultdict(list)
+    if not person_ids or not document_ids:
+        return by_key
     for signoff in await db.scalars(
         select(LearningSignoff)
-        .where(LearningSignoff.person_id == person_id,
+        .options(defer(LearningSignoff.signature_png))
+        .where(LearningSignoff.person_id.in_(person_ids),
                LearningSignoff.document_id.in_(document_ids))
         .order_by(LearningSignoff.signed_at.desc(), LearningSignoff.created_at.desc())):
-        by_doc[signoff.document_id].append(signoff)
-    return by_doc
+        by_key[(signoff.person_id, signoff.document_id)].append(signoff)
+    return by_key
 
 
 def _judge(document: LearningDocument, signoffs: list[LearningSignoff], *,
@@ -147,12 +161,22 @@ async def _open_documents(db: AsyncSession, person_id: uuid.UUID,
     """Documents with an open (assigned/opened) assignment for this key; the
     partial unique index allows only one. Signed and cancelled rows don't
     count, so a new version can be required again."""
+    return (await _open_documents_many(db, [person_id], initiative_id))[person_id]
+
+
+async def _open_documents_many(db: AsyncSession, person_ids: list[uuid.UUID],
+                               initiative_id: uuid.UUID | None,
+                               ) -> dict[uuid.UUID, set[uuid.UUID]]:
     scope = (LearningAssignment.initiative_id.is_(None) if initiative_id is None
              else LearningAssignment.initiative_id == initiative_id)
-    return set(await db.scalars(
-        select(LearningAssignment.document_id)
-        .where(LearningAssignment.person_id == person_id, scope,
-               LearningAssignment.status.in_(OPEN_STATUSES))))
+    out: dict[uuid.UUID, set[uuid.UUID]] = {pid: set() for pid in person_ids}
+    if person_ids:
+        for person_id, document_id in (await db.execute(
+            select(LearningAssignment.person_id, LearningAssignment.document_id)
+            .where(LearningAssignment.person_id.in_(person_ids), scope,
+                   LearningAssignment.status.in_(OPEN_STATUSES)))).all():
+            out[person_id].add(document_id)
+    return out
 
 
 def _unassignable(doc: LearningDocument) -> str | None:
@@ -170,42 +194,57 @@ async def plan_for(db: AsyncSession, person_id: uuid.UUID,
     assigned, archived and unpublished documents are skipped with that
     reason; the rest are judged as `signoff_valid` does, on `check_day`.
     The person's sign-offs are loaded in one query."""
-    ctx = await rules.build_context(db, person_id, initiative_id)
-    matched = await rules.matching_packets(db, ctx)
-    if not matched:
-        return []
+    return (await plan_many(db, [person_id], initiative_id))[person_id]
+
+
+async def plan_many(db: AsyncSession, person_ids: list[uuid.UUID],
+                    initiative_id: uuid.UUID | None) -> dict[uuid.UUID, list[PlannedItem]]:
+    """`plan_for` for many people of one initiative in a fixed number of
+    queries (rules, packets and documents are read once; partners, work
+    types, open assignments and sign-offs for everyone at once)."""
+    plans: dict[uuid.UUID, list[PlannedItem]] = {pid: [] for pid in person_ids}
+    if not person_ids:
+        return plans
+    ctxs = await rules.build_contexts(db, person_ids, initiative_id)
+    all_rules = await rules.enabled_rules(db)
+    matched = {pid: rules.matching_in(all_rules, ctxs[pid]) for pid in person_ids}
+    packet_ids = {p.id for pairs in matched.values() for _, p in pairs}
+    if not packet_ids:
+        return plans
     docs_by_packet: dict[uuid.UUID, list[LearningDocument]] = defaultdict(list)
     for packet_id, doc in (await db.execute(
         select(LearningPacketItem.packet_id, LearningDocument)
         .join(LearningDocument, LearningDocument.id == LearningPacketItem.document_id)
-        .where(LearningPacketItem.packet_id.in_({p.id for _, p in matched}))
+        .where(LearningPacketItem.packet_id.in_(packet_ids))
         .order_by(LearningPacketItem.position, LearningPacketItem.created_at))).all():
         docs_by_packet[packet_id].append(doc)
 
     initiative = await db.get(Initiative, initiative_id) if initiative_id else None
     on = check_day(initiative)
-    open_docs = await _open_documents(db, person_id, initiative_id)
-    signoffs = await _signoffs(db, person_id,
-                               {d.id for docs in docs_by_packet.values() for d in docs})
-    seen: set[uuid.UUID] = set()
-    plan: list[PlannedItem] = []
-    for rule, packet in matched:
-        for doc in docs_by_packet[packet.id]:
-            if doc.id in seen:
-                continue
-            seen.add(doc.id)
-            reason = _unassignable(doc) or ("already_assigned" if doc.id in open_docs else None)
-            if reason is None:
-                valid, reason = _judge(doc, signoffs.get(doc.id, []),
-                                       initiative_id=initiative_id, initiative=initiative,
-                                       on=on)
-                action = "skip" if valid else "assign"
-            else:
-                action = "skip"
-            plan.append(PlannedItem(document_id=doc.id, version_id=doc.current_version_id,
-                                    packet_id=packet.id, rule_id=rule.id, action=action,
-                                    reason=reason, title=doc.title))
-    return plan
+    open_docs = await _open_documents_many(db, person_ids, initiative_id)
+    signoffs = await signoffs_many(
+        db, person_ids, {d.id for docs in docs_by_packet.values() for d in docs})
+    for pid in person_ids:
+        seen: set[uuid.UUID] = set()
+        for rule, packet in matched[pid]:
+            for doc in docs_by_packet[packet.id]:
+                if doc.id in seen:
+                    continue
+                seen.add(doc.id)
+                reason = _unassignable(doc) or (
+                    "already_assigned" if doc.id in open_docs[pid] else None)
+                if reason is None:
+                    valid, reason = _judge(doc, signoffs.get((pid, doc.id), []),
+                                           initiative_id=initiative_id, initiative=initiative,
+                                           on=on)
+                    action = "skip" if valid else "assign"
+                else:
+                    action = "skip"
+                plans[pid].append(PlannedItem(
+                    document_id=doc.id, version_id=doc.current_version_id,
+                    packet_id=packet.id, rule_id=rule.id, action=action, reason=reason,
+                    title=doc.title))
+    return plans
 
 
 # ── writing ──────────────────────────────────────────────────────────

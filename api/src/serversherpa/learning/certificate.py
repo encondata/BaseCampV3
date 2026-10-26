@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.db.models import Initiative, Person
 from serversherpa.learning.emails import day_text
 from serversherpa.learning.models import (
+    LearningAssignment,
     LearningDocument,
     LearningDocumentVersion,
     LearningSignoff,
@@ -43,8 +44,17 @@ async def certificate_html(db: AsyncSession, person_id: uuid.UUID, *,
         raise _not_found("person_not_found")
     initiative = None
     if initiative_id is not None:
+        # only an initiative this person actually has learning on: the id
+        # alone must not let anyone confirm or read another initiative's name
         initiative = await db.get(Initiative, initiative_id)
-        if initiative is None:
+        on_record = initiative is not None and (
+            await db.scalar(select(LearningSignoff.id).where(
+                LearningSignoff.person_id == person_id,
+                LearningSignoff.initiative_id == initiative_id).limit(1)) is not None
+            or await db.scalar(select(LearningAssignment.id).where(
+                LearningAssignment.person_id == person_id,
+                LearningAssignment.initiative_id == initiative_id).limit(1)) is not None)
+        if not on_record:
             raise _not_found("initiative_not_found")
     query = (select(LearningSignoff, LearningDocument.title, LearningDocumentVersion.version_no,
                     Initiative.name)

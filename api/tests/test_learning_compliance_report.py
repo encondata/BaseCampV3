@@ -279,6 +279,8 @@ async def test_create_run_without_initiative_for_managers_only(client, db, seede
     listed = (await client.get("/reports/runs", headers=sue)).json()
     assert all(r["report_type"] != "learning_compliance" for r in listed)
     assert (await client.get(f"/reports/runs/{run_id}", headers=sue)).status_code == 404
+    assert (await client.get(f"/reports/runs/{run_id}/download",
+                             headers=sue)).status_code == 404
 
 
 # ── the worker ───────────────────────────────────────────────────────

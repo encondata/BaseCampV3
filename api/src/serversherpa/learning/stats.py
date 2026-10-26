@@ -16,6 +16,7 @@ from statistics import median
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from serversherpa.db.models import Initiative, InitiativePerson, Person, UserAccount
 from serversherpa.db.ordering import natural
@@ -152,10 +153,9 @@ async def evaluate(db: AsyncSession, initiative: Initiative | None) -> Evaluatio
                    LearningAssignment.status != "cancelled"))).all():
             required[person_id].add(document_id)
     if initiative is not None:
-        for pid in ids:
-            for item in await assign.plan_for(db, pid, initiative_id):
-                if item.reason not in ("archived", "not_published"):
-                    required[pid].add(item.document_id)
+        for pid, items in (await assign.plan_many(db, ids, initiative_id)).items():
+            required[pid].update(i.document_id for i in items
+                                 if i.reason not in ("archived", "not_published"))
 
     document_ids = set().union(*required.values()) if required else set()
     documents = sorted(
@@ -164,14 +164,7 @@ async def evaluate(db: AsyncSession, initiative: Initiative | None) -> Evaluatio
         key=lambda d: (d.title.casefold(), d.id))
     by_doc = {d.id: d for d in documents}
 
-    signoffs: dict[tuple[uuid.UUID, uuid.UUID], list[LearningSignoff]] = defaultdict(list)
-    if document_ids:
-        for s in await db.scalars(
-            select(LearningSignoff)
-            .where(LearningSignoff.person_id.in_(ids),
-                   LearningSignoff.document_id.in_(document_ids))
-            .order_by(LearningSignoff.signed_at.desc(), LearningSignoff.created_at.desc())):
-            signoffs[(s.person_id, s.document_id)].append(s)
+    signoffs = await assign.signoffs_many(db, ids, document_ids)
     version_ids = {s.version_id for rows in signoffs.values() for s in rows}
     version_no = dict((await db.execute(
         select(LearningDocumentVersion.id, LearningDocumentVersion.version_no)
@@ -273,13 +266,17 @@ async def _at_risk(db: AsyncSession, today: date) -> list[dict]:
     """Active initiatives starting within 30 days that still have open
     assignments, least complete first."""
     first = datetime(today.year, today.month, today.day, tzinfo=UTC)
-    initiatives = list(await db.scalars(
+    # a day of slack either side for the SQL cut; the exact 0..30 window is
+    # read below with stored_day, as everywhere else
+    candidates = list(await db.scalars(
         select(Initiative).where(
             Initiative.archived_at.is_(None), Initiative.status.not_in(INACTIVE_STATUSES),
-            Initiative.scheduled_start >= first,
-            Initiative.scheduled_start < first + timedelta(days=AT_RISK_DAYS + 1),
+            Initiative.scheduled_start >= first - timedelta(days=1),
+            Initiative.scheduled_start < first + timedelta(days=AT_RISK_DAYS + 2),
             Initiative.id.in_(select(LearningAssignment.initiative_id).where(
                 LearningAssignment.status.in_(OPEN_STATUSES))))))
+    initiatives = [i for i in candidates
+                   if 0 <= (stored_day(i.scheduled_start) - today).days <= AT_RISK_DAYS]
     if not initiatives:
         return []
     total: dict[uuid.UUID, int] = defaultdict(int)
@@ -314,6 +311,7 @@ async def _expiring(db: AsyncSession, today: date) -> list[dict]:
     """Documents with sign-offs (the current version's, each person's
     latest) that run out within 30 days: who, and the first day."""
     latest = (select(LearningSignoff, LearningDocument)
+              .options(defer(LearningSignoff.signature_png))
               .join(LearningDocument, LearningDocument.id == LearningSignoff.document_id)
               .join(Person, Person.id == LearningSignoff.person_id)
               .where(LearningDocument.archived_at.is_(None),
@@ -365,9 +363,10 @@ async def _translation_issues(db: AsyncSession) -> list[dict]:
     return issues
 
 
-async def _hard_questions(db: AsyncSession) -> list[dict]:
-    """Active questions that at least 10 attempts saw and more than 40 % of
-    them got wrong, worst first."""
+async def _hard_questions(db: AsyncSession, since: datetime) -> list[dict]:
+    """Active questions that at least 10 attempts since `since` saw and more
+    than 40 % of them got wrong, worst first. A miss is judged against the
+    question's current correct answers."""
     questions = {q.id: (q, title) for q, title in (await db.execute(
         select(LearningQuizQuestion, LearningDocument.title)
         .join(LearningDocument, LearningDocument.id == LearningQuizQuestion.document_id)
@@ -383,7 +382,8 @@ async def _hard_questions(db: AsyncSession) -> list[dict]:
     for document_id, answers in (await db.execute(
         select(LearningAssignment.document_id, LearningQuizAttempt.answers)
         .join(LearningAssignment, LearningAssignment.id == LearningQuizAttempt.assignment_id)
-        .where(LearningAssignment.document_id.in_(by_doc)))).all():
+        .where(LearningAssignment.document_id.in_(by_doc),
+               LearningQuizAttempt.created_at >= since))).all():
         for question_id in by_doc[document_id]:
             key = str(question_id)
             if key not in answers:
@@ -409,21 +409,24 @@ async def dashboard(db: AsyncSession, days: int, *, now: datetime | None = None)
             "at_risk": await _at_risk(db, now.astimezone(UTC).date()),
             "expiring": await _expiring(db, now.astimezone(UTC).date()),
             "translation_issues": await _translation_issues(db),
-            "hard_questions": await _hard_questions(db)}
+            "hard_questions": await _hard_questions(db, since)}
 
 
 # ── a person's history ───────────────────────────────────────────────
 
 
-async def history(db: AsyncSession, person: Person) -> dict:
+async def history(db: AsyncSession, person: Person, *, initiative_names: bool = True) -> dict:
     """Every sign-off (never the signature image), quiz attempt and
-    override of one person, newest first, and what is still open."""
+    override of one person, newest first, and what is still open.
+    `initiative_names=False` leaves the initiative ids but not their names
+    (for readers who can't see initiatives)."""
     signoffs = [{
         "id": s.id, "document_id": s.document_id, "document": title, "version": number,
         "language": s.language, "signed_at": s.signed_at, "read_seconds": s.read_seconds,
         "quiz_score": s.quiz_score, "initiative_id": s.initiative_id}
         for s, title, number in (await db.execute(
             select(LearningSignoff, LearningDocument.title, LearningDocumentVersion.version_no)
+            .options(defer(LearningSignoff.signature_png))
             .join(LearningDocument, LearningDocument.id == LearningSignoff.document_id)
             .join(LearningDocumentVersion,
                   LearningDocumentVersion.id == LearningSignoff.version_id)
@@ -467,7 +470,7 @@ async def history(db: AsyncSession, person: Person) -> dict:
     wanted = {r["initiative_id"] for key in ("signoffs", "quiz_attempts", "overrides",
                                              "open_assignments") for r in out[key]} - {None}
     names = dict((await db.execute(select(Initiative.id, Initiative.name).where(
-        Initiative.id.in_(wanted)))).all()) if wanted else {}
+        Initiative.id.in_(wanted)))).all()) if wanted and initiative_names else {}
     for key in ("signoffs", "quiz_attempts", "overrides", "open_assignments"):
         for row in out[key]:
             row["initiative"] = names.get(row["initiative_id"])

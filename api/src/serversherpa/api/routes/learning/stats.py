@@ -2,9 +2,11 @@
 learning history and their sign-off certificate PDF.
 
 The dashboard and grid are for learning managers (`require_manager`). A
-person's history and certificate also open to someone with `workers:view`
-over that worker (the worker detail's Learning history panel): a worker
-outside their scope is a 404, never a 403."""
+person's history also opens to someone with `workers:view` over that worker
+(the worker detail's Learning history panel; a worker outside their scope is
+a 404, never a 403), without initiative names unless they can view
+initiatives. The certificate (typed names, drawn signatures) is for
+learning managers only."""
 import re
 import uuid
 
@@ -72,7 +74,9 @@ async def person_history(
     actor: CurrentUser,
 ) -> dict:
     person = await _readable_person(db, actor, person_id)
-    return await stats.history(db, person)
+    # a workers:view reader may not be allowed to see initiatives at all
+    names = is_manager(actor.access, "view") or actor.access.can("initiatives", "view")
+    return await stats.history(db, person, initiative_names=names)
 
 
 @router.get("/people/{person_id}/certificate.pdf")
@@ -82,7 +86,12 @@ async def person_certificate(
     actor: CurrentUser,
     initiative_id: uuid.UUID | None = None,
 ) -> Response:
-    person = await _readable_person(db, actor, person_id)
+    # typed names and drawn signatures: learning managers only
+    if not is_manager(actor.access, "view"):
+        raise HTTPException(status_code=403, detail={"code": "forbidden"})
+    person = await db.get(Person, person_id)
+    if person is None:
+        raise _not_found("person_not_found")
     pdf = await certificate.certificate_pdf(db, person_id, initiative_id=initiative_id)
     slug = re.sub(r"[^A-Za-z0-9]+", "-", person.display_name).strip("-").lower() or "worker"
     return Response(content=pdf, media_type="application/pdf", headers={

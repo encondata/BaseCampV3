@@ -60,24 +60,41 @@ class RuleContext:
 
 async def build_context(db: AsyncSession, person_id: uuid.UUID,
                         initiative_id: uuid.UUID | None) -> RuleContext:
-    ctx = RuleContext(person_id=person_id, initiative_id=initiative_id)
-    ctx.partner_id = await db.scalar(
-        select(WorkerProfile.partner_id).where(WorkerProfile.person_id == person_id))
+    return (await build_contexts(db, [person_id], initiative_id))[person_id]
+
+
+async def build_contexts(db: AsyncSession, person_ids: list[uuid.UUID],
+                         initiative_id: uuid.UUID | None) -> dict[uuid.UUID, RuleContext]:
+    """`build_context` for many people of the same initiative in a fixed
+    number of queries: the initiative's facts are read once, the partner
+    and work type of everyone at once."""
+    ctxs = {pid: RuleContext(person_id=pid, initiative_id=initiative_id) for pid in person_ids}
+    if not ctxs:
+        return ctxs
+    for person_id, partner_id in (await db.execute(
+        select(WorkerProfile.person_id, WorkerProfile.partner_id)
+        .where(WorkerProfile.person_id.in_(ctxs)))).all():
+        ctxs[person_id].partner_id = partner_id
     initiative = await db.get(Initiative, initiative_id) if initiative_id else None
     if initiative is None:
-        return ctx
-    ctx.client_id = initiative.client_id
-    ctx.site_ids = {s for s in (initiative.origin_site_id, initiative.destination_site_id,
-                                initiative.site_id) if s is not None}
-    if ctx.site_ids:
-        ctx.site_countries = {c.upper() for c in await db.scalars(
-            select(Site.country).where(Site.id.in_(ctx.site_ids)))}
-    ctx.work_type = await db.scalar(
-        select(InitiativePerson.work_type)
+        return ctxs
+    site_ids = {s for s in (initiative.origin_site_id, initiative.destination_site_id,
+                            initiative.site_id) if s is not None}
+    countries = ({c.upper() for c in await db.scalars(
+        select(Site.country).where(Site.id.in_(site_ids)))} if site_ids else set())
+    work_types: dict[uuid.UUID, str | None] = {}
+    for person_id, work_type in (await db.execute(
+        select(InitiativePerson.person_id, InitiativePerson.work_type)
         .where(InitiativePerson.initiative_id == initiative.id,
-               InitiativePerson.person_id == person_id)
-        .order_by(InitiativePerson.created_at).limit(1))
-    return ctx
+               InitiativePerson.person_id.in_(ctxs))
+        .order_by(InitiativePerson.created_at))).all():
+        work_types.setdefault(person_id, work_type)     # the earliest row wins
+    for person_id, ctx in ctxs.items():
+        ctx.client_id = initiative.client_id
+        ctx.site_ids = set(site_ids)
+        ctx.site_countries = set(countries)
+        ctx.work_type = work_types.get(person_id)
+    return ctxs
 
 
 def _condition_holds(cond: dict, ctx: RuleContext) -> bool:
@@ -109,16 +126,27 @@ def matches(rule: LearningRule, ctx: RuleContext) -> bool:
     return bool(conditions) and all(_condition_holds(c, ctx) for c in conditions)
 
 
-async def matching_packets(db: AsyncSession, ctx: RuleContext,
-                           ) -> list[tuple[LearningRule, LearningPacket]]:
-    """The enabled rules that match `ctx`, in position order, with their
-    packets; rules whose packet is archived are skipped."""
+async def enabled_rules(db: AsyncSession) -> list[tuple[LearningRule, LearningPacket]]:
+    """Every enabled rule with its (unarchived) packet, in position order."""
     rows = (await db.execute(
         select(LearningRule, LearningPacket)
         .join(LearningPacket, LearningPacket.id == LearningRule.packet_id)
         .where(LearningRule.enabled.is_(True), LearningPacket.archived_at.is_(None))
         .order_by(LearningRule.position, LearningRule.created_at))).all()
+    return [(rule, packet) for rule, packet in rows]
+
+
+def matching_in(rows: list[tuple[LearningRule, LearningPacket]], ctx: RuleContext,
+                ) -> list[tuple[LearningRule, LearningPacket]]:
+    """`matching_packets` over rules `enabled_rules` already loaded."""
     return [(rule, packet) for rule, packet in rows if matches(rule, ctx)]
+
+
+async def matching_packets(db: AsyncSession, ctx: RuleContext,
+                           ) -> list[tuple[LearningRule, LearningPacket]]:
+    """The enabled rules that match `ctx`, in position order, with their
+    packets; rules whose packet is archived are skipped."""
+    return matching_in(await enabled_rules(db), ctx)
 
 
 # ── conditions ───────────────────────────────────────────────────────
