@@ -1,0 +1,66 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Sign-off certificate: {{ name }}</title>
+<style>
+  @page {
+    size: Letter portrait;
+    margin: 16mm 16mm 20mm 16mm;
+    @bottom-left {
+      content: "Page " counter(page) " of " counter(pages);
+      font: 8pt Helvetica, Arial, sans-serif; color: #666;
+    }
+    @bottom-right {
+      content: "Generated {{ generated }}";
+      font: 8pt Helvetica, Arial, sans-serif; color: #666;
+    }
+  }
+  body { font: 10pt/1.4 Helvetica, Arial, sans-serif; color: #111; }
+  .brand { font-size: 8pt; text-transform: uppercase; letter-spacing: 0.5pt; color: #666; margin: 0 0 2mm; }
+  h1 { font-size: 20pt; margin: 0 0 1mm; }
+  .sub { color: #444; margin: 0 0 4mm; }
+  .statement { border: 0.75pt solid #ccc; border-radius: 2mm; padding: 3mm 4mm; margin: 0 0 6mm; }
+  table { border-collapse: collapse; width: 100%; font-size: 9pt; }
+  th, td { padding: 2mm 1.6mm; text-align: left; vertical-align: middle; }
+  th { font-size: 7.5pt; text-transform: uppercase; letter-spacing: 0.3pt; color: #555;
+       border-bottom: 0.75pt solid #111; }
+  td { border-bottom: 0.5pt solid #ddd; }
+  td.nw { white-space: nowrap; }
+  tr { page-break-inside: avoid; }
+  thead { display: table-header-group; }
+  .sig { height: 9mm; max-width: 38mm; }
+  .typed { font-style: italic; }
+  .muted { color: #666; }
+  .empty { color: #444; font-style: italic; margin-top: 6mm; }
+</style>
+</head>
+<body>
+{% if brand %}<p class="brand">{{ brand }}</p>{% endif %}
+<h1>Sign-off certificate</h1>
+<p class="sub">{{ name }}{% if scope %} &middot; {{ scope }}{% endif %}</p>
+<div class="statement">
+  This lists every learning document {{ name }} reviewed and signed{% if scope %} for {{ scope }}{% endif %},
+  with the version signed and when. Times are UTC.
+</div>
+{% if rows %}
+<table>
+  <thead><tr><th>Document</th><th>Version</th><th>Language</th><th>Signed</th><th>Signature</th>{% if show_initiative %}<th>Initiative</th>{% endif %}</tr></thead>
+  <tbody>
+  {% for row in rows %}
+    <tr>
+      <td>{{ row.document }}{% if row.quiz_score is not none %}<div class="muted">Quiz {{ row.quiz_score }}%</div>{% endif %}</td>
+      <td class="nw">v{{ row.version }}</td>
+      <td class="nw">{{ row.language }}</td>
+      <td class="nw">{{ row.signed_at }}</td>
+      <td>{% if row.signature %}<img class="sig" src="{{ row.signature }}" alt="Drawn signature">{% elif row.typed_name %}<span class="typed">{{ row.typed_name }}</span>{% else %}<span class="muted">Accepted</span>{% endif %}</td>
+      {% if show_initiative %}<td>{{ row.initiative or "General" }}</td>{% endif %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No sign-offs on record{% if scope %} for {{ scope }}{% endif %}.</p>
+{% endif %}
+</body>
+</html>

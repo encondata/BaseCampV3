@@ -21,6 +21,8 @@ from serversherpa.db.models import (
     Initiative, Partner, Person, ReportDefinition, ReportRun,
 )
 from serversherpa.db.ordering import natural
+from serversherpa.learning.access import is_manager
+from serversherpa.reports import learning_compliance as learning_report
 from serversherpa.reports import timesheet as timesheet_report
 from serversherpa.reports.move_scan_history.gather import gather as gather_scan_history
 from serversherpa.reports.registry import OptionsError, get_module
@@ -198,6 +200,9 @@ def _visible_runs(actor: AuthContext):
         # hours are time data: a timesheet run is invisible (list, get,
         # download) to anyone who can't see the Timesheet screen
         q = q.where(ReportRun.report_type != timesheet_report.report_type)
+    if not is_manager(actor.access, "view"):
+        # who has signed what is for learning managers
+        q = q.where(ReportRun.report_type != learning_report.report_type)
     return q
 
 
@@ -208,6 +213,20 @@ async def _visible_run(db: DbSession, run_id: uuid.UUID, actor: AuthContext) -> 
     return _run_out(*row)
 
 
+def _learning_initiative(report_type: str, body: ReportRunCreateIn) -> uuid.UUID | None:
+    """The Learning compliance run's initiative: the request's, or the
+    `initiative_id` option when the request has none. Both given must agree
+    (the run's column is the source of truth, so it can't contradict its
+    options)."""
+    options = _validated_options(report_type, body.options, run=True)
+    from_options = uuid.UUID(options["initiative_id"]) if "initiative_id" in options else None
+    if (body.initiative_id is not None and from_options is not None
+            and body.initiative_id != from_options):
+        raise _err(422, "invalid_options",
+                   problems=["option 'initiative_id' disagrees with the run's initiative"])
+    return body.initiative_id or from_options
+
+
 @router.post("/runs", response_model=ReportRunOut, status_code=201)
 async def create_run(
     body: ReportRunCreateIn, db: DbSession,
@@ -216,15 +235,22 @@ async def create_run(
     d = await _definition(db, body.definition_id)
     if d.report_type == timesheet_report.report_type and not actor.access.can("time", "view"):
         raise _err(403, "time_view_required")
+    initiative_id = body.initiative_id
+    if d.report_type == learning_report.report_type:
+        if not is_manager(actor.access, "view"):
+            raise _err(403, "learning_view_required")
+        initiative_id = _learning_initiative(d.report_type, body)
     ini: Initiative | None = None
-    if body.initiative_id is None:
-        # Site & Move Survey (partner + manually chosen sites) and the
-        # Timesheet (the job is an optional filter) can run with no
-        # initiative at all — every other type still needs one to report on.
-        if d.report_type not in ("site_move_survey", timesheet_report.report_type):
+    if initiative_id is None:
+        # Site & Move Survey (partner + manually chosen sites), the
+        # Timesheet (the job is an optional filter) and Learning compliance
+        # (no initiative = everyone) can run with no initiative at all —
+        # every other type still needs one to report on.
+        if d.report_type not in ("site_move_survey", timesheet_report.report_type,
+                                 learning_report.report_type):
             raise _err(422, "initiative_required")
     else:
-        ini = await db.get(Initiative, body.initiative_id)
+        ini = await db.get(Initiative, initiative_id)
         cond = scope_conditions("initiatives", actor.access, actor.person.id)
         if ini is None or ini.archived_at is not None or (
                 cond is not None and await db.scalar(

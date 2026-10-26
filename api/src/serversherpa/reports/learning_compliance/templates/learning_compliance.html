@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{{ title }}</title>
+<style>
+  @page {
+    size: Letter landscape;
+    margin: 14mm 14mm 30mm 14mm;
+    @bottom-left {
+      content: "Page " counter(page) " of " counter(pages);
+      font: 8pt Helvetica, Arial, sans-serif; color: #666;
+    }
+    @bottom-center {
+      content: "Generated: {{ stamp|cssstr }}  \00B7  Document Tracking ID: {{ tracking_id|cssstr }}";
+      font: 8pt Helvetica, Arial, sans-serif; color: #666;
+    }
+    @bottom-right {
+      content: url("{{ barcode_data_uri|cssstr }}");
+      width: 55mm; height: 15mm;
+    }
+  }
+  body { font: 10pt/1.35 Helvetica, Arial, sans-serif; color: #111; }
+  h1 { font-size: 20pt; font-weight: bold; text-align: center; margin: 0 0 2mm; }
+  .title-rule { border: none; border-top: 0.75pt solid #111; margin: 0 0 6mm; }
+  .info { font-size: 9pt; margin: 0 0 1mm 5mm; }
+  .tiles { margin: 4mm 0 4mm; }
+  .tile { display: inline-block; width: 38mm; margin: 0 3mm 2mm 0; padding: 2mm 3mm;
+          border: 0.75pt solid #ccc; border-radius: 1.5mm; }
+  .tile .k { font-size: 7pt; color: #555; text-transform: uppercase; letter-spacing: 0.3pt; }
+  .tile .v { font-size: 14pt; font-weight: bold; }
+  table { border-collapse: collapse; table-layout: fixed; width: 100%; margin-bottom: 4mm; font-size: 8pt; }
+  th, td { padding: 1.2mm 1.6mm; text-align: left; vertical-align: top; overflow-wrap: break-word; }
+  th { font-weight: bold; border-bottom: 0.75pt solid #111; }
+  td.num, th.num { text-align: right; }
+  td.nw { white-space: nowrap; }
+  thead { display: table-header-group; }
+  tbody tr:nth-child(even) { background: #f7f7f7; }
+  tr { page-break-inside: avoid; }
+  .chip { display: inline-block; padding: 0.3mm 1.6mm; border-radius: 2mm; font-size: 7pt;
+          white-space: nowrap; border: 0.5pt solid; }
+  .chip.valid          { color: #166534; background: #dcfce7; border-color: #86efac; }
+  .chip.expires_during { color: #92400e; background: #fef3c7; border-color: #fcd34d; }
+  .chip.missing        { color: #991b1b; background: #fee2e2; border-color: #fca5a5; }
+  .empty-row { color: #333; }
+</style>
+</head>
+<body>
+
+<h1>{{ title }}</h1>
+<hr class="title-rule">
+
+<div class="info">Scope: {{ scope }}</div>
+<div class="info">Signed times are UTC.</div>
+
+<div class="tiles">
+  {% for label, value in tiles %}<div class="tile"><div class="k">{{ label }}</div><div class="v">{{ value }}</div></div>{% endfor %}
+
+</div>
+
+{% if rows %}
+<table>
+  <colgroup>
+    {% if everyone %}
+    <col style="width: 15%"><col style="width: 17%"><col style="width: 13%"><col style="width: 14%"><col style="width: 6%"><col style="width: 6%"><col style="width: 13%"><col style="width: 9%"><col style="width: 7%">
+    {% else %}
+    <col style="width: 20%"><col style="width: 22%"><col style="width: 15%"><col style="width: 7%"><col style="width: 7%"><col style="width: 14%"><col style="width: 10%"><col style="width: 5%">
+    {% endif %}
+  </colgroup>
+  <thead><tr><th>Person</th><th>Document</th>{% if everyone %}<th>Initiative</th>{% endif %}<th>Status</th><th>Version</th><th>Language</th><th>Signed at</th><th>Expires on</th><th class="num">Overrides</th></tr></thead>
+  <tbody>
+    {% for r in rows %}
+    <tr><td>{{ r.person }}</td><td>{{ r.document }}</td>{% if everyone %}<td>{{ r.initiative }}</td>{% endif %}
+      <td><span class="chip {{ r.state }}">{{ r.status }}</span></td>
+      <td class="nw">{{ r.version }}</td><td class="nw">{{ r.language }}</td><td class="nw">{{ r.signed_at }}</td><td class="nw">{{ r.expires_on }}</td><td class="num">{{ r.overrides }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-row">Nobody has a required learning document in this scope.</p>
+{% endif %}
+
+</body>
+</html>

@@ -44,6 +44,8 @@ logger = logging.getLogger("serversherpa.reports.worker")
 RUN_TIMEOUT_SECONDS = 300.0
 STALE_SWEEP_SECONDS = 60
 ERROR_MAX = 2000
+# reports whose file stays on the run: their data is gated, Files are not
+NOT_ATTACHED = ("timesheet", "learning_compliance")
 
 
 def _finish(run: ReportRun, status: str, error: str | None = None) -> None:
@@ -113,6 +115,8 @@ async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
             initiative_name = partner.name
     if run.report_type == "timesheet":
         initiative_name = await _timesheet_inbox_body(db, run, initiative)
+    elif run.report_type == "learning_compliance" and initiative is None:
+        initiative_name = "All initiatives"
     error: str | None = None
     try:
         module = get_module(run.report_type)
@@ -121,12 +125,14 @@ async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
         ext = PurePosixPath(result.filename).suffix or ".bin"
         key = f"reports/{run.initiative_id or 'standalone'}/{run_id}{ext}"
         await put_object(key, result.content, result.content_type)
-        if run.initiative_id is not None and run.report_type != "timesheet":
+        if run.initiative_id is not None and run.report_type not in NOT_ATTACHED:
             # no initiative to attach to when the survey was generated for
             # a partner + manually-chosen sites — see the module docstring.
             # A timesheet is never attached: Files are readable with
             # attachments:view, which would expose hours to people without
             # time:view. Its file lives only on the run (History download).
+            # The learning compliance report is the same: who signed what
+            # is for learning managers, not for everyone who can read Files.
             # Report files may hold internal data, so they
             # start staff-only (`internal`); staff can switch one to
             # Everyone in the Notes & files panel.

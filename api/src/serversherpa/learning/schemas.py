@@ -713,3 +713,140 @@ class QuestionOut(BaseModel):
 class UnlockQuizOut(BaseModel):
     assignment_id: uuid.UUID
     attempts_forgiven: int
+
+
+# ── dashboard, compliance grid, person history ───────────────────────
+
+
+class FunnelOut(BaseModel):
+    assigned: int
+    opened: int
+    complete: int
+    median_open_hours: float | None
+    median_finish_minutes: float | None
+
+
+class OverridesOut(BaseModel):
+    count: int
+    admins: int
+
+
+class AtRiskOut(BaseModel):
+    initiative_id: uuid.UUID
+    name: str
+    starts_in_days: int
+    percent: int
+    not_finished: int
+    no_email: int
+
+
+class ExpiringOut(BaseModel):
+    document_id: uuid.UUID
+    title: str
+    people: int
+    first_date: date
+
+
+class TranslationIssueOut(BaseModel):
+    document_id: uuid.UUID
+    title: str
+    language: str
+
+
+class HardQuestionOut(BaseModel):
+    question_id: uuid.UUID
+    document_title: str
+    miss_percent: int
+
+
+class DashboardOut(BaseModel):
+    funnel: FunnelOut
+    overrides: OverridesOut
+    at_risk: list[AtRiskOut]
+    expiring: list[ExpiringOut]
+    translation_issues: list[TranslationIssueOut]
+    hard_questions: list[HardQuestionOut]
+
+
+GridState = Literal["valid", "expires_during", "missing", "not_required"]
+
+
+class GridDocumentOut(BaseModel):
+    id: uuid.UUID
+    title: str
+
+
+class GridCellOut(BaseModel):
+    state: GridState
+    label: str
+
+
+class GridRowOut(BaseModel):
+    person_id: uuid.UUID
+    name: str
+    cells: dict[uuid.UUID, GridCellOut]
+
+
+class GridOut(BaseModel):
+    documents: list[GridDocumentOut]
+    rows: list[GridRowOut]
+
+
+class HistoryPersonOut(BaseModel):
+    id: uuid.UUID
+    name: str
+
+
+class HistorySignoffOut(BaseModel):
+    id: uuid.UUID
+    document_id: uuid.UUID
+    document: str
+    version: int
+    language: str
+    signed_at: datetime
+    read_seconds: int
+    quiz_score: int | None
+    initiative_id: uuid.UUID | None
+    initiative: str | None
+
+
+class HistoryAttemptOut(BaseModel):
+    id: uuid.UUID
+    document_id: uuid.UUID
+    document: str
+    score_percent: int
+    passed: bool
+    created_at: datetime
+    initiative_id: uuid.UUID | None
+    initiative: str | None
+
+
+class HistoryOverrideOut(BaseModel):
+    id: uuid.UUID
+    created_at: datetime
+    reason: str
+    reason_text: str | None
+    scope: str
+    local_day: date
+    admin: str | None
+    initiative_id: uuid.UUID | None
+    initiative: str | None
+
+
+class HistoryAssignmentOut(BaseModel):
+    id: uuid.UUID
+    document_id: uuid.UUID
+    document: str
+    status: str
+    source: str
+    due_on: date | None
+    initiative_id: uuid.UUID | None
+    initiative: str | None
+
+
+class HistoryOut(BaseModel):
+    person: HistoryPersonOut
+    signoffs: list[HistorySignoffOut]
+    quiz_attempts: list[HistoryAttemptOut]
+    overrides: list[HistoryOverrideOut]
+    open_assignments: list[HistoryAssignmentOut]

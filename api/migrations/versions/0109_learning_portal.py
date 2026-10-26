@@ -3,7 +3,8 @@ packets and assignment rules, access codes and sessions, assignments and
 sign-offs, invite schedules, email log and time-clock overrides; the
 learning_admin role and the `learning` permission resource; worker
 certifications and the mail outbox learn where a row came from / carry
-attachments; notification groups accept the 'learning' category.
+attachments; notification groups accept the 'learning' category; the
+"Learning compliance" system report definition.
 
 Design: docs/superpowers/specs/2026-10-25-learning-portal-design.md
 
@@ -26,6 +27,24 @@ ZERO = "'00000000-0000-0000-0000-000000000000'::uuid"
 
 FULL = ("view", "add", "change", "delete")
 FULL_ROLES = ("developer", "founder", "super_admin", "admin", "learning_admin")
+
+# The Learning compliance system report definition, seeded the way 0090
+# seeded the Timesheet. A module-level constant so the test suite can run
+# this exact statement directly (see tests/test_learning_compliance_report.py).
+REPORT_DEFINITION_NAME = "Learning compliance"
+REPORT_TYPE = "learning_compliance"
+REPORT_DEFAULT_OPTIONS = '{"default_format": "xlsx"}'
+REPORT_DESCRIPTION = (
+    "Who has signed which learning document, one row per person and required "
+    "document, for one initiative or everyone, as Excel or PDF."
+)
+INSERT_DEFINITION_SQL = (
+    "INSERT INTO report_definitions (name, description, report_type, options, is_system) "
+    # CAST(... AS jsonb), not `:options::jsonb` — see 0054.
+    "VALUES (:name, :description, :report_type, CAST(:options AS jsonb), true) "
+    "ON CONFLICT (name) WHERE archived_at IS NULL DO NOTHING"
+)
+DELETE_DEFINITION_SQL = "DELETE FROM report_definitions WHERE report_type = :report_type"
 
 OLD_CATEGORIES = "categories <@ ARRAY['approvals','reports','wiki','security']::text[]"
 NEW_CATEGORIES = ("categories <@ ARRAY['approvals','reports','wiki','security',"
@@ -378,9 +397,17 @@ def upgrade() -> None:
         "INSERT INTO role_permissions (role, resource, action) "
         "VALUES ('staff', 'learning', 'view') ON CONFLICT DO NOTHING"))
 
+    conn.execute(sa.text(INSERT_DEFINITION_SQL), {
+        "name": REPORT_DEFINITION_NAME, "description": REPORT_DESCRIPTION,
+        "report_type": REPORT_TYPE, "options": REPORT_DEFAULT_OPTIONS})
+
 
 def downgrade() -> None:
     conn = op.get_bind()
+    # report_runs reference the definition: its runs go with it
+    conn.execute(sa.text(
+        "DELETE FROM report_runs WHERE report_type = :report_type"), {"report_type": REPORT_TYPE})
+    conn.execute(sa.text(DELETE_DEFINITION_SQL), {"report_type": REPORT_TYPE})
     conn.execute(sa.text("DELETE FROM role_permissions WHERE resource = 'learning'"))
     conn.execute(sa.text("DELETE FROM person_roles WHERE role = 'learning_admin'"))
     conn.execute(sa.text("DELETE FROM roles WHERE name = 'learning_admin'"))
