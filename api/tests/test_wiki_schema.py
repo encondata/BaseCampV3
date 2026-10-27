@@ -19,6 +19,7 @@ ALL_ROLES = {
     "developer", "founder", "super_admin", "admin", "staff",
     "client_owner", "client_admin", "client_viewer",
     "vendor_owner", "vendor_admin", "vendor_viewer", "worker", "external",
+    "learning_admin",
 }
 
 
