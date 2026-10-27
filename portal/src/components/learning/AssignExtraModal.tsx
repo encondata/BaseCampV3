@@ -103,7 +103,7 @@ export default function AssignExtraModal({ initiativeId, people, onClose, onAssi
 
   return (
     <LearningModal eyebrow="Learning" title="Assign an extra" wide={done !== null}
-                   description="Hand a packet or documents to people on this initiative, on top of what the rules assign."
+                   description="Hand a packet or documents to people on this initiative, on top of what the rules assign. Someone who already finished this initiative signs the extras without a second completion email."
                    onClose={onClose} busy={saving}
                    footer={done ? (
                      <button type="button" className="btn-solid" onClick={onClose}>Close</button>

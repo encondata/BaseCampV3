@@ -359,6 +359,19 @@ export const sendInitiativeInvites = (initiativeId: string, personIds?: string[]
   send<SendInvitesResult>(`/learning/initiatives/${seg(initiativeId)}/send`, 'POST',
     personIds === undefined ? {} : { person_ids: personIds });
 
+export interface RemindResult {
+  sent: number; no_email: number;
+  /** No working code: a reminder doesn't invite them (Send now / Resend do). */
+  no_code: number; skipped_complete: number;
+}
+
+/** The reminder email now, for the people's current codes (a new link, the
+ *  same code: nobody is signed out). No `personIds`: everyone with open
+ *  assignments. */
+export const remindInitiative = (initiativeId: string, personIds?: string[]) =>
+  send<RemindResult>(`/learning/initiatives/${seg(initiativeId)}/remind`, 'POST',
+    personIds === undefined ? {} : { person_ids: personIds });
+
 export const listInitiativeRoster = (initiativeId: string, status?: RosterStatus) =>
   get<RosterRow[]>(withQuery(`/learning/initiatives/${seg(initiativeId)}/roster`, { status }));
 
@@ -374,12 +387,12 @@ export const revokeLearningCodes = (initiativeId: string, personId: string) =>
 
 /** Fresh codes, printed, for people with open assignments and no email (with
  *  `everyone`, all of them with open assignments). Each replaces the
- *  person's earlier code. */
+ *  person's earlier code, so it is a POST. */
 export const downloadCodeSheet = (initiativeId: string, everyone = false) =>
   downloadAttachment(
     withQuery(`/learning/initiatives/${seg(initiativeId)}/code-sheet.pdf`,
       { all: everyone ? '1' : undefined }),
-    'learning-codes.pdf');
+    'learning-codes.pdf', { method: 'POST' });
 
 export const getInitiativeGrid = (initiativeId: string) =>
   get<ComplianceGrid>(`/learning/initiatives/${seg(initiativeId)}/grid`);

@@ -1471,8 +1471,10 @@ export async function commitSiteBulk(
 }
 
 /** GET an attachment and hand it to the browser as a download. */
-export async function downloadAttachment(path: string, filename: string): Promise<void> {
-  const resp = await apiFetch(path);
+export async function downloadAttachment(
+  path: string, filename: string, init: RequestInit = {},
+): Promise<void> {
+  const resp = await apiFetch(path, init);
   if (!resp.ok) throw await errorFrom(resp);
   const blob = await resp.blob();
   const url = URL.createObjectURL(blob);

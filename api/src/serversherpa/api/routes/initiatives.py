@@ -37,6 +37,7 @@ from serversherpa.imports.parsing import (
     MAX_BYTES, build_template_csv, build_template_xlsx, template_columns,
 )
 from serversherpa.learning import assign as learning_assign
+from serversherpa.learning import codes as learning_codes
 from serversherpa.learning.invites import send_markers as learning_send_markers
 from serversherpa.people import team_bulk
 from serversherpa.racks.recheck import recheck_placement
@@ -459,6 +460,10 @@ async def update_initiative(
         if "status" in changes \
                 and initiative.status in move_password_service.MOVE_LOGIN_BLOCKED_STATUSES:
             await move_password_service.revoke_move_sessions(db, initiative.id)
+        # learning codes last through the initiative's last day
+        if learning_codes.EXPIRY_FIELDS & changes.keys():
+            await db.flush()
+            await learning_codes.refresh_expiry(db, initiative)
         await db.commit()
     except IntegrityError as exc:
         # a racing save took the same code, or a racing admin the same

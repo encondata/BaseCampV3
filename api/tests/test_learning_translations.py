@@ -569,6 +569,18 @@ async def test_style_values_and_obfuscated_hrefs(client, db, seeded_user):
         assert f'href="{href}"' in sanitize(f'<a href="{href}">x</a>')
 
 
+def test_link_attributes_stay_closed_if_the_allowlist_grows(monkeypatch):
+    """A link keeps href, target and the rel nh3 adds; anything else added to
+    ATTRIBUTES["a"] later is still dropped by the filter."""
+    widened = {**translate.ATTRIBUTES, "a": {"href", "target", "onclick", "title", "style"}}
+    monkeypatch.setattr(translate, "ATTRIBUTES", widened)
+    out = translate.sanitize('<a href="https://ok.example" target="_blank" onclick="x()" '
+                             'title="t" style="color:red">x</a>')
+    assert 'href="https://ok.example"' in out and 'target="_blank"' in out
+    assert 'rel="noopener noreferrer"' in out
+    assert "onclick" not in out and "title" not in out and "style" not in out
+
+
 # ── the draft path and the audit diff ────────────────────────────────
 
 

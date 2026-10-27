@@ -70,6 +70,7 @@ export const ko: Dictionary = {
   'reader.sign': '서명하고 계속',
   'reader.takeQuiz': '퀴즈 풀기',
   'reader.signing': '서명하는 중…',
+  'reader.versionChanged': '이 문서가 방금 업데이트되었습니다. 새 버전을 읽은 후 서명해 주세요.',
 
   'sign.mustAgree': '읽고 동의했다는 뜻으로 확인란을 선택하세요.',
   'sign.nameRequired': '서명하려면 전체 이름을 입력하세요.',

@@ -259,6 +259,9 @@ DDL = (
         "WHERE status IN ('assigned', 'opened')"
     ),
     "CREATE INDEX learning_assignments_initiative_idx ON learning_assignments (initiative_id)",
+    # a person's own rows (signed ones too): their training list, the
+    # completion check, the time clock's open items, the dashboard funnel
+    "CREATE INDEX learning_assignments_person_idx ON learning_assignments (person_id)",
     "CREATE INDEX learning_assignments_document_idx ON learning_assignments (document_id)",
     # A sign-off is a legal record: it keeps its person/document/version even
     # if the assignment or initiative it came from is later deleted.
@@ -336,6 +339,8 @@ DDL = (
         "CREATE UNIQUE INDEX learning_email_log_dedupe_uniq ON learning_email_log "
         f"(kind, person_id, coalesce(code_id, {ZERO}), stage)"
     ),
+    # who was invited / today's overdue notice, per initiative
+    "CREATE INDEX learning_email_log_initiative_idx ON learning_email_log (initiative_id)",
     """
     CREATE TABLE learning_overrides (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

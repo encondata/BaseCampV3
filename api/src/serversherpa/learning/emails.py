@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.schemas import LEARNING_SUBJECT_MAX
 from serversherpa.config import learn_url
-from serversherpa.db.models import EmailOutbox, Initiative, Person
+from serversherpa.db.models import EmailOutbox, Initiative, Person, UserAccount
 from serversherpa.learning import codes
 from serversherpa.learning.assign import OPEN_STATUSES
 from serversherpa.learning.models import (
@@ -90,6 +90,19 @@ async def address_for(db: AsyncSession, person_id: uuid.UUID) -> str | None:
     if contact is None or not contact.active:
         return None
     return contact.address
+
+
+# `address_for` on rows a list query already loaded (outer-joined to
+# user_accounts): select these columns and pass them to `listed_address`,
+# so a roster's "no email" is exactly a send's
+ADDRESS_COLUMNS = (Person.email, UserAccount.email, Person.archived_at, UserAccount.disabled_at)
+
+
+def listed_address(person_email: str | None, account_email: str | None,
+                   archived_at: datetime | None, disabled_at: datetime | None) -> str | None:
+    if archived_at is not None or disabled_at is not None:
+        return None
+    return person_email or account_email or None
 
 
 async def preferred_language(db: AsyncSession, person_id: uuid.UUID) -> str:

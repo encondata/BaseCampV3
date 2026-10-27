@@ -70,6 +70,7 @@ export const en = {
   'reader.sign': 'Sign and continue',
   'reader.takeQuiz': 'Take the quiz',
   'reader.signing': 'Signing…',
+  'reader.versionChanged': 'This document was just updated. Read the new version, then sign.',
 
   'sign.mustAgree': "Tick the box to say you've read it and agree.",
   'sign.nameRequired': 'Type your full name to sign.',

@@ -56,7 +56,15 @@ async def _serialize(db: AsyncSession, bucket: str) -> None:
     section: without it, concurrent attempts all read the count before any
     of them writes, and a burst slips past the cap. Transaction-scoped
     advisory locks, always global first and then the bucket (one order, so
-    no deadlock); the commit or rollback that ends the request frees them."""
+    no deadlock); the commit or rollback that ends the request frees them.
+
+    The global lock makes sign-in decisions one at a time across the
+    deployment, so the critical section is kept to the round trips the
+    decision needs: two counts, the code lookup, then either the failure
+    row or the session insert and audit, and the commit (no read-backs).
+    Throughput is about one sign-in per those round trips; revisit this
+    (a counter row for the global cap) if sign-ins ever come in thousands
+    at once rather than an 08:00 rush of a few hundred."""
     for key in (GLOBAL_LOCK_KEY, f"learn-code-ip:{bucket}"):
         await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": key})
 
@@ -97,9 +105,9 @@ async def _sign_in(db: AsyncSession, request: Request, row: LearningCode, person
     row.last_used_at = now
     # the address the caps key on (rate_limit_ip), not the spoofable leftmost
     # X-Forwarded-For entry
-    token = await sessions.start(db, code=row, person_id=person.id, ip=raw_ip,
-                                 user_agent=request.headers.get("user-agent"))
-    session = await sessions.find(db, token)
+    token, session = await sessions.start_session(
+        db, code=row, person_id=person.id, ip=raw_ip,
+        user_agent=request.headers.get("user-agent"))
     audit(db, actor_id=person.id, entity_type="learning_code", entity_id=str(row.id),
           action="sign_in", changes={"via": via}, ip=ip)
     await db.commit()

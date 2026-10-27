@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import EmailOutbox, Initiative, Notification, Site
@@ -22,6 +22,7 @@ from serversherpa.learning.models import (
 )
 from tests.test_learning_assign import TODAY, _doc, _manager, _midnight, _packet, _worker
 from tests.test_sites_api import login
+from tests.test_status_values_write import _make
 
 TOKYO = ZoneInfo("Asia/Tokyo")
 
@@ -206,6 +207,40 @@ async def test_overdue_notice_once_per_day(client, db, seeded_user, monkeypatch)
     assert (await scheduler.run_learning_once(get_sessionmaker()))["overdue"] == 0
 
 
+@pytest.mark.parametrize("over", ["cancelled", "completed", "archived"])
+async def test_sweep_leaves_over_and_archived_initiatives_alone(
+        client, db, seeded_user, monkeypatch, over):
+    start = TODAY + timedelta(days=14)
+    hdrs, move, _ = await _setup(db, client, start=start, end=start + timedelta(days=5))
+    resp = await client.put(f"/learning/initiatives/{move.id}/schedule", headers=hdrs, json={
+        "mode": "scheduled", "send_offset_days": 7, "send_time": "08:00",
+        "reminder_offsets": [5, 3], "due_offset_days": 2, "late_adds": True})
+    assert resp.status_code == 200, resp.text
+    # a second move, sent by hand, owed a reminder and overdue
+    hdrs, sent, _ = await _setup(db, client, start=start, end=start + timedelta(days=5))
+    await client.post(f"/learning/initiatives/{sent.id}/send", headers=hdrs, json={})
+    await db.execute(update(LearningAssignment).values(due_on=TODAY - timedelta(days=1)))
+    for target in (move, sent):
+        values = ({"archived_at": datetime.now(UTC)} if over == "archived"
+                  else {"status": over})
+        await db.execute(update(Initiative).where(Initiative.id == target.id).values(**values))
+    await db.commit()
+    before = len(await _outbox(db))
+    # past the scheduled send and the r5 reminder; the assignments are overdue
+    _clock(monkeypatch, datetime.combine(start - timedelta(days=5), time(9), tzinfo=UTC))
+    out = await scheduler.run_learning_once(get_sessionmaker())
+    assert out == {"invites": 0, "reminders": 0, "overdue": 0, "errors": 0}
+    assert len(await _outbox(db)) == before
+    assert list(await db.scalars(select(Notification).where(
+        Notification.kind == scheduler.KIND))) == []
+    # the per-initiative steps check again on their own
+    async with get_sessionmaker()() as fresh:
+        now = datetime.combine(start - timedelta(days=5), time(9), tzinfo=UTC)
+        assert await scheduler._scheduled_one(fresh, move.id, now) == 0
+        assert await scheduler._reminders_one(fresh, sent.id, now) == 0
+        assert await scheduler._overdue_one(fresh, sent.id, now) == 0
+
+
 async def test_sweep_survives_an_initiative_error(client, db, seeded_user, monkeypatch,
                                                   caplog):
     start = TODAY + timedelta(days=3)
@@ -315,6 +350,25 @@ async def test_roster_statuses(client, db, seeded_user):
                               json={})).status_code == 403
 
 
+async def test_roster_and_sends_agree_on_a_disabled_account(client, db, seeded_user):
+    """The roster's email is the address a send would use: a person whose
+    only email is a disabled login's is "no email" on both."""
+    from serversherpa.db.models import UserAccount
+
+    start = TODAY + timedelta(days=10)
+    hdrs, move, _ = await _setup(db, client, start=start, people=0)
+    dana = await _worker(db, "Dana", "Disabled", None)
+    db.add(UserAccount(person_id=dana.id, email="dana@test.example.com",
+                       disabled_at=datetime.now(UTC)))
+    await db.commit()
+    await _add(db, client, hdrs, move, dana)
+    [row] = (await client.get(f"/learning/initiatives/{move.id}/roster", headers=hdrs)).json()
+    assert row["email"] is None and row["status"] == "no_email"
+    sent = (await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs,
+                              json={})).json()
+    assert sent["no_email"] == 1 and sent["sent"] == 0
+
+
 async def test_schedule_put_validates_and_marks_the_timeline(client, db, seeded_user):
     start = TODAY + timedelta(days=14)
     hdrs, move, _ = await _setup(db, client, start=start, people=0)
@@ -372,6 +426,88 @@ async def test_regenerate_revokes_old_code(client, db, seeded_user):
     assert resp.status_code == 404
 
 
+async def test_manual_reminder_keeps_codes_and_sessions(client, db, seeded_user,
+                                                       monkeypatch):
+    from serversherpa.learning import sessions
+    from serversherpa.learning.models import LearningSession
+
+    start = TODAY + timedelta(days=14)
+    hdrs, move, workers = await _setup(db, client, start=start, people=3)
+    sent, done, nocode = workers
+    await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs, json={})
+    ned = await _worker(db, "Ned", "Nomail", None)
+    await _add(db, client, hdrs, move, ned)
+    await db.execute(update(LearningAssignment)
+                     .where(LearningAssignment.person_id == done.id)
+                     .values(status="signed", signed_at=datetime.now(UTC)))
+    await db.execute(update(LearningCode).where(LearningCode.person_id == nocode.id)
+                     .values(revoked_at=datetime.now(UTC)))
+    code = await db.scalar(select(LearningCode).where(LearningCode.person_id == sent.id))
+    old_link = code.link_token_hash
+    raw = await sessions.start(db, code=code, person_id=sent.id, ip=None, user_agent=None)
+    await db.commit()
+    codes_before = await db.scalar(select(func.count()).select_from(LearningCode))
+    invites_before = len(await _outbox(db, "learning_invite"))
+
+    resp = await client.post(f"/learning/initiatives/{move.id}/remind", headers=hdrs, json={})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"sent": 1, "no_email": 1, "no_code": 1, "skipped_complete": 0}
+    [mail] = await _outbox(db, "learning_reminder")
+    assert mail.person_id == sent.id
+    # no code issued or revoked, no invite, the learn session still works
+    assert await db.scalar(select(func.count()).select_from(LearningCode)) == codes_before
+    assert len(await _outbox(db, "learning_invite")) == invites_before
+    await db.refresh(code)
+    assert code.revoked_at is None and code.link_token_hash != old_link
+    assert await sessions.find(db, raw) is not None
+    assert await db.scalar(select(func.count()).select_from(LearningSession).where(
+        LearningSession.revoked_at.is_not(None))) == 0
+    [log] = list(await db.scalars(select(LearningEmailLog).where(
+        LearningEmailLog.kind == "reminder")))
+    assert log.stage.startswith("manual:")
+
+    # listed people only; a double submit in the same minute sends once
+    frozen = (datetime.now(UTC) + timedelta(minutes=2)).replace(second=30)
+    monkeypatch.setattr(invites, "_now", lambda: frozen)
+    body = {"person_ids": [str(sent.id), str(done.id)]}
+    first = await client.post(f"/learning/initiatives/{move.id}/remind", headers=hdrs,
+                              json=body)
+    assert first.json() == {"sent": 1, "no_email": 0, "no_code": 0, "skipped_complete": 1}
+    again = await client.post(f"/learning/initiatives/{move.id}/remind", headers=hdrs,
+                              json=body)
+    assert again.json()["sent"] == 0
+
+    # view-only managers can't send
+    viewer = await _make(db, client, "staff", f"st-{uuid.uuid4().hex[:8]}@test.example.com")
+    resp = await client.post(f"/learning/initiatives/{move.id}/remind", headers=viewer,
+                             json={})
+    assert resp.status_code == 403
+
+
+async def test_moving_the_end_day_moves_code_expiry(client, db, seeded_user):
+    start = TODAY + timedelta(days=14)
+    end = start + timedelta(days=3)
+    hdrs, move, [worker] = await _setup(db, client, start=start, zone="Asia/Tokyo", end=end)
+    await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs, json={})
+
+    async def expiry():
+        return await db.scalar(select(LearningCode.expires_at).where(
+            LearningCode.person_id == worker.id, LearningCode.revoked_at.is_(None))
+            .execution_options(populate_existing=True))
+
+    assert await expiry() == datetime.combine(end, time(23, 59), tzinfo=TOKYO)
+    later = end + timedelta(days=10)
+    resp = await client.patch(f"/initiatives/{move.id}", headers=hdrs,
+                              json={"scheduled_end": _midnight(later).isoformat()})
+    assert resp.status_code == 200, resp.text
+    assert await expiry() == datetime.combine(later, time(23, 59), tzinfo=TOKYO)
+    # an edit that leaves the dates alone leaves the codes alone
+    resp = await client.patch(f"/initiatives/{move.id}", headers=hdrs,
+                              json={"description": "Updated"})
+    assert resp.status_code == 200, resp.text
+    assert await expiry() == datetime.combine(later, time(23, 59), tzinfo=TOKYO)
+
+
 async def test_code_sheet_pdf_returns_pdf(client, db, seeded_user):
     pytest.importorskip("weasyprint")
     start = TODAY + timedelta(days=14)
@@ -384,15 +520,19 @@ async def test_code_sheet_pdf_returns_pdf(client, db, seeded_user):
     for person in (ned, wanda):
         await _add(db, client, hdrs, move, person)
 
+    # a GET never issues codes (it would revoke them as a side effect)
     resp = await client.get(f"/learning/initiatives/{move.id}/code-sheet.pdf", headers=hdrs)
+    assert resp.status_code == 405
+    assert list(await db.scalars(select(LearningCode.person_id))) == []
+    resp = await client.post(f"/learning/initiatives/{move.id}/code-sheet.pdf", headers=hdrs)
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"] == "application/pdf"
     assert resp.content.startswith(b"%PDF")
     issued = list(await db.scalars(select(LearningCode.person_id)))
     assert issued == [ned.id]
 
-    resp = await client.get(f"/learning/initiatives/{move.id}/code-sheet.pdf?all=1",
-                            headers=hdrs)
+    resp = await client.post(f"/learning/initiatives/{move.id}/code-sheet.pdf?all=1",
+                             headers=hdrs)
     assert resp.status_code == 200
     rows = list(await db.scalars(select(LearningCode).execution_options(
         populate_existing=True)))

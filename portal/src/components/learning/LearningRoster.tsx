@@ -2,8 +2,9 @@
  * The workers roster on an initiative's Learning tab: a status filter
  * (All / Overdue / In progress / Not opened / Complete) with counts, a
  * search, and one house-list row per person — progress, status, last
- * activity — with a row menu (Resend, Regenerate code, Revoke, View
- * history) and tick boxes for "Resend to selected". The tab owns the data
+ * activity — with a row menu (Send reminder, Resend, Regenerate code,
+ * Revoke, View history) and tick boxes for "Remind selected" and "Resend
+ * to selected". The tab owns the data
  * and the calls; this renders them. Anyone without learning:change sees
  * the list read-only (no ticks, no mutating menu items).
  */
@@ -47,7 +48,7 @@ const ACTIONS = '88px';
 export default function LearningRoster({
   rows, counts, filter, onFilter, loading, failed, onRetry,
   canChange, canViewWorker, busyId,
-  onResend, onResendSelected, onRegenerate, onRevoke, onHistory,
+  onRemind, onResend, onResendSelected, onRegenerate, onRevoke, onHistory,
 }: {
   /** The rows for the current filter; null until the first load. */
   rows: RosterRow[] | null;
@@ -62,6 +63,9 @@ export default function LearningRoster({
   canViewWorker: boolean;
   /** The person whose action is in flight. */
   busyId: string | null;
+  /** Send reminder: one person (row menu) or the ticked people (the tab
+   *  confirms first). */
+  onRemind: (personIds: string[]) => void;
   /** One person's Resend (row menu). */
   onResend: (personIds: string[]) => void;
   /** The ticked people (the tab confirms first). */
@@ -104,6 +108,9 @@ export default function LearningRoster({
     const busy = busyId === r.person_id;
     return [
       ...(canChange ? [
+        ...(r.status === 'complete' ? [] : [
+          { key: 'remind', label: 'Send reminder', disabled: busy, onSelect: () => onRemind([r.person_id]) },
+        ]),
         { key: 'resend', label: 'Resend', disabled: busy, onSelect: () => onResend([r.person_id]) },
         { key: 'regen', label: 'Regenerate code', disabled: busy, onSelect: () => onRegenerate(r) },
         { key: 'revoke', label: 'Revoke', destructive: true, disabled: busy, onSelect: () => onRevoke(r) },
@@ -135,6 +142,12 @@ export default function LearningRoster({
                    onChange={(e) => setQuery(e.target.value)} />
           </div>
           {rows && <span className="result-count">{visible.length} of {rows.length} shown</span>}
+          {canChange && (
+            <button type="button" className="mini-btn" disabled={selected.length === 0 || busyId !== null}
+                    onClick={() => onRemind(selected)}>
+              {selected.length > 0 ? `Remind selected (${selected.length})` : 'Remind selected'}
+            </button>
+          )}
           {canChange && (
             <button type="button" className="mini-btn" disabled={selected.length === 0 || busyId !== null}
                     onClick={() => onResendSelected(selected)}>

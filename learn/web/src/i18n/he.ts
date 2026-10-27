@@ -71,6 +71,7 @@ export const he: Dictionary = {
   'reader.sign': 'חתימה והמשך',
   'reader.takeQuiz': 'למעבר לחידון',
   'reader.signing': 'חותם…',
+  'reader.versionChanged': 'המסמך עודכן זה עתה. קראו את הגרסה החדשה ואז חתמו.',
 
   'sign.mustAgree': 'סמנו את התיבה כדי לאשר שקראתם ואתם מסכימים.',
   'sign.nameRequired': 'הקלידו את שמכם המלא כדי לחתום.',

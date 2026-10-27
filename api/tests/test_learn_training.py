@@ -268,6 +268,26 @@ async def test_sign_styles_store_name_and_signature(client, db, seeded_user):
     assert again.status_code == 409 and again.json()["detail"]["code"] == "already_signed"
 
 
+async def test_sign_refuses_a_version_published_after_it_was_shown(client, db, seeded_user):
+    doc = await _plain_doc(db)
+    wanda, hdrs = await _learner(db)
+    row = await _assign(db, wanda, doc, opened_ago=30)
+    shown = (await client.get(f"/learn/assignments/{row.id}", headers=hdrs)).json()
+    assert shown["version_no"] == 1
+    await _publish(db, doc)                       # v2 goes live while Wanda reads v1
+    r = await client.post(f"/learn/assignments/{row.id}/sign", headers=hdrs,
+                          json={**SIGN, "version_no": 1})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "version_changed"
+    assert await db.scalar(select(LearningSignoff.id)) is None
+    assert (await _fresh(db, row)).status == "opened"
+    # signing the version now shown records that one
+    r = await client.post(f"/learn/assignments/{row.id}/sign", headers=hdrs,
+                          json={**SIGN, "version_no": 2})
+    assert r.status_code == 200, r.text
+    signoff = await db.scalar(select(LearningSignoff))
+    assert signoff.version_id == doc.current_version_id
+
+
 async def test_min_read_time_enforced_server_side(client, db, seeded_user):
     doc = await _plain_doc(db, min_read_seconds=120)
     wanda, hdrs = await _learner(db)

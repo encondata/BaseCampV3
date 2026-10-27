@@ -41,7 +41,17 @@ SCHEME = "Learn"
 async def start(db: AsyncSession, *, code: LearningCode | None, person_id: uuid.UUID,
                 ip: str | None, user_agent: str | None) -> str:
     """A new learn session for `person_id`, started from `code`. Returns the
-    raw token, shown once to the caller; `find` reads the row back."""
+    raw token, shown once to the caller; `find` reads the row back (or
+    `start_session` hands back the row itself)."""
+    return (await start_session(db, code=code, person_id=person_id, ip=ip,
+                                user_agent=user_agent))[0]
+
+
+async def start_session(db: AsyncSession, *, code: LearningCode | None, person_id: uuid.UUID,
+                        ip: str | None, user_agent: str | None
+                        ) -> tuple[str, LearningSession]:
+    """`start`, returning (raw token, the new row): sign-in answers with its
+    expiry without reading it back."""
     now = datetime.now(UTC)
     expires_at = now + timedelta(seconds=get_settings().session_ttl_seconds)
     if code is not None and code.expires_at is not None:
@@ -52,7 +62,7 @@ async def start(db: AsyncSession, *, code: LearningCode | None, person_id: uuid.
                               ip=ip, user_agent=(user_agent or "")[:500] or None)
     db.add(session)
     await db.flush()
-    return raw
+    return raw, session
 
 
 async def find(db: AsyncSession, raw: str) -> LearningSession | None:

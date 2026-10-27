@@ -1,6 +1,8 @@
 /**
  * Learning dashboard (/learning): completion across every move, initiatives
- * at risk (with a Remind button), what expires in the next 30 days, and the
+ * at risk (with a Remind button for learning:change, which confirms and
+ * sends the reminder email: codes and sessions are kept), what expires in
+ * the next 30 days, and the
  * Export button for the compliance report. One fetch per range (7 / 30 / 90
  * days); a stale response never overwrites a newer one.
  */
@@ -8,10 +10,13 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 
+import ConfirmNewCodesModal from '../../components/learning/ConfirmNewCodesModal';
+import { REMIND_NOTE, remindText } from '../../components/learning/initiativeLearning';
+import { useLearningAccess } from '../../components/learning/useLearningAccess';
 import { useToast } from '../../lib/notificationsContext';
 import {
   exportLearningCompliance, formatMedianHours, getLearningDashboard,
-  languageName, listInitiativeRoster, sendInitiativeInvites, startsInText,
+  languageName, remindInitiative, startsInText,
   type DashboardDays, type LearningDashboard as Dashboard,
 } from '../../lib/learning';
 import { parseApiDay } from '../../lib/timeline';
@@ -50,12 +55,12 @@ function Tile({ label, value, valueClass, bar, barColor, sub }: {
 
 export default function LearningDashboard() {
   const toast = useToast();
+  const canChange = useLearningAccess()('change');
   const [days, setDays] = useState<DashboardDays>(30);
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
-  const [reminding, setReminding] = useState<string | null>(null);
-  const [remindError, setRemindError] = useState<string | null>(null);
+  const [reminding, setReminding] = useState<{ id: string; name: string; count: number } | null>(null);
   const requestId = useRef(0);
 
   const load = useCallback(async (range: DashboardDays) => {
@@ -91,28 +96,14 @@ export default function LearningDashboard() {
     }
   };
 
-  /** Everyone unfinished with an email gets a reminder (a Resend: a fresh
-   *  code with the invite). The roster says who that is. */
+  /** The reminder email to everyone unfinished on the initiative (the API
+   *  picks them; nobody's code changes). Throws on failure: the confirm
+   *  dialog shows it and stays open. */
   const remind = async (initiativeId: string, name: string) => {
-    setReminding(initiativeId);
-    setRemindError(null);
-    try {
-      const roster = await listInitiativeRoster(initiativeId);
-      const ids = roster
-        .filter((r) => r.status !== 'complete' && r.status !== 'no_email')
-        .map((r) => r.person_id);
-      if (ids.length === 0) {
-        toast(`Nobody left to remind on ${name}`);
-      } else {
-        const result = await sendInitiativeInvites(initiativeId, ids);
-        toast(`Reminded ${plural(result.sent, 'person', 'people')} on ${name}`);
-        void load(days);
-      }
-    } catch (err) {
-      setRemindError(`Couldn't send reminders for ${name}: ${errorText(err)}`);
-    } finally {
-      setReminding(null);
-    }
+    const result = await remindInitiative(initiativeId);
+    toast(`${remindText(result)} on ${name}`);
+    setReminding(null);
+    void load(days);
   };
 
   const range = RANGES.find((r) => r.days === days)!;
@@ -204,10 +195,11 @@ export default function LearningDashboard() {
                         <Link className="cell-top" to={`/initiatives/${i.initiative_id}`}>{i.name}</Link>
                         <span className="cell-sub">{facts.join(' · ')}</span>
                       </div>
-                      {toRemind > 0 ? (
+                      {toRemind > 0 && canChange ? (
                         <button type="button" className="mini-btn accent"
-                                disabled={reminding !== null}
-                                onClick={() => void remind(i.initiative_id, i.name)}>
+                                onClick={() => setReminding({
+                                  id: i.initiative_id, name: i.name, count: toRemind,
+                                })}>
                           Remind {toRemind}
                         </button>
                       ) : (
@@ -218,7 +210,6 @@ export default function LearningDashboard() {
                 })}
               </div>
             )}
-            {remindError && <p className="lrn-note" role="alert">{remindError}</p>}
           </section>
 
           <section className="dash-panel dash-span-6 dash-rise" aria-label="Expiring in the next 30 days">
@@ -254,6 +245,14 @@ export default function LearningDashboard() {
             )}
           </section>
         </div>
+      )}
+
+      {reminding && (
+        <ConfirmNewCodesModal title="Send reminders" confirmLabel="Send reminders"
+                              onClose={() => setReminding(null)}
+                              description={`${plural(reminding.count, 'person', 'people')} on ${reminding.name} ${reminding.count === 1 ? 'has' : 'have'} training to finish.`}
+                              note={REMIND_NOTE}
+                              run={() => remind(reminding.id, reminding.name)} />
       )}
     </div>
   );

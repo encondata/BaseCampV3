@@ -23,7 +23,7 @@ from serversherpa.db.models import (
     WorkerProfile,
 )
 from serversherpa.db.ordering import natural
-from serversherpa.learning import codes
+from serversherpa.learning import codes, emails
 from serversherpa.learning.assign import OPEN_STATUSES, _end_day
 from serversherpa.learning.invites import schedule_for, send_at
 from serversherpa.learning.models import (
@@ -68,14 +68,14 @@ async def local_today(db: AsyncSession, initiative: Initiative, now: datetime) -
 async def roster(db: AsyncSession, initiative: Initiative, *, now: datetime) -> list[RosterRow]:
     """One row per person on the initiative, by name."""
     people = (await db.execute(
-        select(Person, UserAccount.email, Partner.name)
+        select(Person, Partner.name, *emails.ADDRESS_COLUMNS)
         .outerjoin(UserAccount, UserAccount.person_id == Person.id)
         .outerjoin(WorkerProfile, WorkerProfile.person_id == Person.id)
         .outerjoin(Partner, Partner.id == WorkerProfile.partner_id)
         .where(Person.id.in_(select(InitiativePerson.person_id).where(
             InitiativePerson.initiative_id == initiative.id)))
         .order_by(natural(Person.last_name), natural(Person.first_name), Person.id))).all()
-    ids = [p.id for p, _, _ in people]
+    ids = [p.id for p, *_ in people]
     if not ids:
         return []
     languages: dict[uuid.UUID, str] = {}
@@ -86,10 +86,12 @@ async def roster(db: AsyncSession, initiative: Initiative, *, now: datetime) -> 
                   LearningSignoff.created_at.desc())
         .distinct(LearningSignoff.person_id))).all():
         languages[person_id] = lang
+    # the address a send would use (none for a disabled account), so the
+    # roster's "no email" matches the send counts
     rows = {p.id: RosterRow(person_id=p.id, name=p.display_name,
-                            email=p.email or account_email or None, partner=partner,
+                            email=emails.listed_address(*address), partner=partner,
                             language=languages.get(p.id, "en"))
-            for p, account_email, partner in people}
+            for p, partner, *address in people}
     for a in await db.scalars(
         select(LearningAssignment).where(LearningAssignment.initiative_id == initiative.id,
                                          LearningAssignment.person_id.in_(ids),

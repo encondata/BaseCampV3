@@ -4,7 +4,7 @@
  * wording for the tab's calls.
  */
 
-import type { RosterStatus } from '../../lib/learning';
+import type { RemindResult, RosterStatus } from '../../lib/learning';
 import { apiErrorText } from '../../lib/learningDoc';
 import { parseApiDay } from '../../lib/timeline';
 
@@ -74,3 +74,17 @@ export function tabErrorText(err: unknown, fallback?: string): string {
   if (err instanceof Error && TAB_ERRORS[err.message]) return TAB_ERRORS[err.message];
   return apiErrorText(err, TAB_ERRORS, fallback);
 }
+
+/** "Reminded 3 people · 1 without email · 2 without a working code". */
+export function remindText(r: RemindResult): string {
+  const parts = [`Reminded ${plural(r.sent, 'person', 'people')}`];
+  if (r.no_email > 0) parts.push(`${r.no_email} without email`);
+  if (r.no_code > 0) parts.push(`${r.no_code} without a working code`);
+  if (r.skipped_complete > 0) parts.push(`${r.skipped_complete} already complete`);
+  return parts.join(' · ');
+}
+
+/** The Send reminder dialogs' note: what a reminder does and doesn't do. */
+export const REMIND_NOTE = 'Each gets the reminder email with a new link for the code they already '
+  + 'have. Their codes keep working and nobody is signed out. Anyone without a working code '
+  + 'isn’t invited; use Resend for them.';

@@ -19,7 +19,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../auth/AuthContext';
 import {
   exportLearningCompliance, getInitiativeLearning, listInitiativeRoster, regenerateLearningCode,
-  sendInitiativeInvites,
+  remindInitiative, sendInitiativeInvites,
   type InitiativeLearning, type RosterRow, type RosterStatus, type SendInvitesResult,
 } from '../../lib/learning';
 import { useToast } from '../../lib/notificationsContext';
@@ -29,7 +29,8 @@ import ConfirmNewCodesModal from './ConfirmNewCodesModal';
 import ComplianceGrid from './ComplianceGrid';
 import DryRunPanel from './DryRunPanel';
 import {
-  dayLabel, dayLabelYear, instantLabel, joinNumbers, plural, tabErrorText, timeLabel,
+  dayLabel, dayLabelYear, instantLabel, joinNumbers, plural, REMIND_NOTE, remindText,
+  tabErrorText, timeLabel,
 } from './initiativeLearning';
 import LearningModal from './LearningModal';
 import LearningRoster, { type RosterFilter } from './LearningRoster';
@@ -82,7 +83,8 @@ export default function InitiativeLearningTab({ initiativeId }: { initiativeId: 
   const [reporting, setReporting] = useState(false);
 
   type Dialog = 'send' | 'schedule' | 'sheet' | 'preview' | 'assign'
-    | { revoke: RosterRow } | { regenerate: RosterRow } | { resend: RosterRow[] } | null;
+    | { revoke: RosterRow } | { regenerate: RosterRow } | { resend: RosterRow[] }
+    | { remind: RosterRow[] } | null;
   const [dialog, setDialog] = useState<Dialog>(null);
   const closeDialog = () => setDialog(null);
 
@@ -144,6 +146,13 @@ export default function InitiativeLearningTab({ initiativeId }: { initiativeId: 
   const resendSelected = async (people: RosterRow[]) => {
     const result = await sendInitiativeInvites(initiativeId, people.map((p) => p.person_id));
     toast(sendText(result));
+    closeDialog();
+    refresh();
+  };
+
+  /** The reminder email (same code, a new link). Throws on failure. */
+  const remindSelected = async (people: RosterRow[]) => {
+    toast(remindText(await remindInitiative(initiativeId, people.map((p) => p.person_id))));
     closeDialog();
     refresh();
   };
@@ -288,6 +297,9 @@ export default function InitiativeLearningTab({ initiativeId }: { initiativeId: 
       <LearningRoster rows={rows} counts={counts} filter={filter} onFilter={setFilter}
                       loading={filterLoading} failed={rosterFailed} onRetry={refresh}
                       canChange={canChange} canViewWorker={canViewWorker} busyId={null}
+                      onRemind={(ids) => setDialog({
+                        remind: (everyone ?? []).filter((r) => ids.includes(r.person_id)),
+                      })}
                       onResend={(ids) => setDialog({
                         resend: (everyone ?? []).filter((r) => ids.includes(r.person_id)),
                       })}
@@ -337,6 +349,14 @@ export default function InitiativeLearningTab({ initiativeId }: { initiativeId: 
                               description={`${dialog.regenerate.name} gets a new code and link by email.`}
                               note="Their old code and email link stop working, and any training session they have open ends."
                               run={() => regenerate(dialog.regenerate)} />
+      )}
+      {typeof dialog === 'object' && dialog !== null && 'remind' in dialog && (
+        <ConfirmNewCodesModal title="Send reminder" confirmLabel="Send reminder" onClose={closeDialog}
+                              description={dialog.remind.length === 1
+                                ? `${dialog.remind[0].name} gets a reminder to finish their training.`
+                                : `${plural(dialog.remind.length, 'person', 'people')} will each get a reminder to finish their training.`}
+                              note={REMIND_NOTE}
+                              run={() => remindSelected(dialog.remind)} />
       )}
       {typeof dialog === 'object' && dialog !== null && 'resend' in dialog && (
         dialog.resend.length === 1 ? (

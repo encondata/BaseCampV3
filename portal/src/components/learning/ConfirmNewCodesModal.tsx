@@ -3,7 +3,8 @@
  * selected): each person gets a new emailed code and link, and the old
  * ones stop working, so anyone partway through their training is signed
  * out. `run` does the call and throws on failure (shown here, dialog stays
- * open). Needs learning:change.
+ * open). Needs learning:change. Send reminder uses the same confirm with
+ * its own note (a reminder keeps the code).
  */
 
 import { useState } from 'react';

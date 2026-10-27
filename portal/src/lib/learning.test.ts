@@ -75,6 +75,8 @@ const CASES: [string, () => Promise<unknown>, string, string, string, unknown][]
   ['putSchedule', () => L.putInitiativeSchedule('i1', { mode: 'scheduled', send_time: '08:00' }), 'PUT', '/learning/initiatives/i1/schedule', '', { mode: 'scheduled', send_time: '08:00' }],
   ['sendInvites all', () => L.sendInitiativeInvites('i1'), 'POST', '/learning/initiatives/i1/send', '', {}],
   ['sendInvites some', () => L.sendInitiativeInvites('i1', ['a', 'b']), 'POST', '/learning/initiatives/i1/send', '', { person_ids: ['a', 'b'] }],
+  ['remind all', () => L.remindInitiative('i1'), 'POST', '/learning/initiatives/i1/remind', '', {}],
+  ['remind some', () => L.remindInitiative('i1', ['a']), 'POST', '/learning/initiatives/i1/remind', '', { person_ids: ['a'] }],
   ['roster', () => L.listInitiativeRoster('i1'), 'GET', '/learning/initiatives/i1/roster', '', undefined],
   ['roster filtered', () => L.listInitiativeRoster('i1', 'overdue'), 'GET', '/learning/initiatives/i1/roster', 'status=overdue', undefined],
   ['dryRun', () => L.dryRunInitiative('i1'), 'POST', '/learning/initiatives/i1/dry-run', '', { apply: false }],
@@ -139,6 +141,8 @@ it('downloads the code sheet, with the all flag', async () => {
   await L.downloadCodeSheet('i1', true);
   await L.downloadCodeSheet('i1');
   expect(calls[0].path).toBe('/learning/initiatives/i1/code-sheet.pdf');
+  // it issues codes: never a GET
+  expect(calls[0].method).toBe('POST');
   expect(calls[0].query.get('all')).toBe('1');
   expect(calls[1].query.has('all')).toBe(false);
   expect(click).toHaveBeenCalledTimes(2);

@@ -65,6 +65,7 @@ const GROUPS: GroupSpec[] = [
       { key: 'sessions', label: 'Expired sessions' },
       { key: 'reset_links', label: 'Used or expired password-reset links' },
       { key: 'trusted_browsers', label: 'Expired or revoked trusted browsers' },
+      { key: 'learn_sessions', label: 'Expired or revoked learn sessions' },
     ],
   },
   {

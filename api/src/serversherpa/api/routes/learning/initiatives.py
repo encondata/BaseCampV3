@@ -1,7 +1,7 @@
 """Initiative learning routes: the per-initiative dry run (and its apply),
 manual assignment, pushing a document's new version to people outside an
 initiative, and the initiative's Learning tab — summary, invite schedule,
-Send now / Resend, the roster, Regenerate / Revoke a person's code and the
+Send now / Resend, Send reminder, the roster, Regenerate / Revoke a person's code and the
 printable code sheet.
 
 Reads need `learning:view`; a dry run applies with `add`; manual
@@ -25,6 +25,8 @@ from serversherpa.learning.schemas import (
     InitiativeLearningOut,
     PushVersionIn,
     RegenerateOut,
+    RemindIn,
+    RemindOut,
     RevokeCodesOut,
     RosterRowOut,
     RosterStatus,
@@ -148,6 +150,20 @@ async def send_invites(
     return out
 
 
+@router.post("/initiatives/{initiative_id}/remind", response_model=RemindOut)
+async def send_reminders(
+    initiative_id: uuid.UUID,
+    body: RemindIn,
+    db: DbSession,
+    actor: AuthContext = require_manager("change"),
+) -> dict:
+    await _initiative(db, initiative_id)
+    out = await invites.remind_initiative(db, initiative_id, actor.person.id,
+                                          person_ids=body.person_ids)
+    await db.commit()
+    return out
+
+
 @router.get("/initiatives/{initiative_id}/roster", response_model=list[RosterRowOut])
 async def roster(
     initiative_id: uuid.UUID,
@@ -197,7 +213,7 @@ async def revoke_codes(
     return {"revoked": revoked}
 
 
-@router.get("/initiatives/{initiative_id}/code-sheet.pdf")
+@router.post("/initiatives/{initiative_id}/code-sheet.pdf")
 async def code_sheet(
     initiative_id: uuid.UUID,
     db: DbSession,
@@ -206,8 +222,9 @@ async def code_sheet(
 ) -> Response:
     """Fresh codes for the people with open assignments and no email (with
     `all=1`, everyone with open assignments), printed. Each replaces the
-    person's earlier code; the sheet says so. Rendered before the commit,
-    so a failed render issues nothing."""
+    person's earlier code; the sheet says so. A POST: it revokes codes, so
+    a link preview, history or a retried download must never reach it.
+    Rendered before the commit, so a failed render issues nothing."""
     initiative = await _initiative(db, initiative_id)
     rows = await invites.issue_sheet_codes(db, initiative_id, everyone=everyone,
                                            actor_id=actor.person.id)

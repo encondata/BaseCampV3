@@ -2697,27 +2697,32 @@ def _device_bucket(device: Device) -> str:
     return f"device:{device.id}"
 
 
-def _reserve(limiter: IpRateLimiter, buckets: tuple[str, ...]) -> None:
+# (bucket, start of the window its slot was taken in)
+Slots = list[tuple[str, float]]
+
+
+def _reserve(limiter: IpRateLimiter, buckets: tuple[str, ...]) -> Slots:
     """Take one slot in every bucket, or none (429 `rate_limited`)."""
-    taken: list[str] = []
+    taken: Slots = []
     for bucket in buckets:
-        if not limiter.hit(bucket):
-            for done in taken:
-                limiter.release(done)
+        window = limiter.reserve(bucket)
+        if window is None:
+            _release(limiter, taken)
             raise _err(429, "rate_limited")
-        taken.append(bucket)
+        taken.append((bucket, window))
+    return taken
 
 
-def _release(limiter: IpRateLimiter, buckets: tuple[str, ...]) -> None:
-    for bucket in buckets:
-        limiter.release(bucket)
+def _release(limiter: IpRateLimiter, slots: Slots) -> None:
+    """Give the slots back, each only to the window it was taken in."""
+    for bucket, window in slots:
+        limiter.release(bucket, window)
 
 
 async def _learning_link(db: AsyncSession, device: Device, body: KioskLearningLinkIn,
                          ) -> KioskLearningLinkOut:
     person = await _timeclock_person(db, body.person_id)
-    buckets = (_device_bucket(device),)
-    _reserve(learning_link_limiter, buckets)
+    slots = _reserve(learning_link_limiter, (_device_bucket(device),))
     sent = False
     try:
         zone = await timeclock.site_zone(db, device.site_id, body.tz)
@@ -2727,7 +2732,7 @@ async def _learning_link(db: AsyncSession, device: Device, body: KioskLearningLi
         await db.commit()
     finally:
         if not sent:              # only an email sent counts toward the cap
-            _release(learning_link_limiter, buckets)
+            _release(learning_link_limiter, slots)
     return KioskLearningLinkOut(sent=sent)
 
 
@@ -2749,8 +2754,7 @@ async def _learning_override(
     reason_text = (body.reason_text or "").strip() or None
     if body.reason == "other" and reason_text is None:
         raise _err(422, "reason_text_required")
-    buckets = (_device_bucket(device), rate_limit_ip(request))
-    _reserve(override_limiter, buckets)
+    slots = _reserve(override_limiter, (_device_bucket(device), rate_limit_ip(request)))
     ip = client_ip(request)
     guessed = False
     try:
@@ -2764,7 +2768,7 @@ async def _learning_override(
         raise _err(status, exc.code) from None
     finally:
         if not guessed:           # only a refused guess keeps its slot
-            _release(override_limiter, buckets)
+            _release(override_limiter, slots)
     zone = await timeclock.site_zone(db, device.site_id, body.tz)
     row = await learning_timeclock.create_override(
         db, person_id=person.id, admin_id=admin.person_id, device=device,

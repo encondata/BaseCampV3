@@ -37,6 +37,10 @@ it('has the admin fields, the reasons and the scopes, with the mockup defaults',
   expect(screen.getByRole('heading', { name: 'Clock Derek in' })).toBeTruthy();
   expect(screen.getByLabelText('Admin email')).toBeTruthy();
   expect((screen.getByLabelText('Password') as HTMLInputElement).type).toBe('password');
+  // a shared station: no browser offer to save the admin's password
+  // (Chrome ignores "off" on a password field)
+  expect(screen.getByLabelText('Password').getAttribute('autocomplete')).toBe('new-password');
+  expect(screen.getByLabelText('Admin email').getAttribute('autocomplete')).toBe('off');
   expect(screen.queryByLabelText('2FA code')).toBeNull();
   const reasons = screen.getAllByRole('radio').map((r) => r.textContent);
   expect(reasons).toEqual([

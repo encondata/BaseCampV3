@@ -3,8 +3,8 @@
  * An initiative's Learning tab: stat tiles, the invites and reminders card
  * (mini timeline, key/values, Edit schedule), what the initiative requires
  * (packets, extras, Assign, Preview rules), the workers roster (filters,
- * search, per-row Resend / Regenerate / Revoke / View history, Resend to
- * selected), Send invites now, the code sheet, the compliance report and the
+ * search, per-row Send reminder / Resend / Regenerate / Revoke / View
+ * history, Remind selected, Resend to selected), Send invites now, the code sheet, the compliance report and the
  * compliance grid. Each mutation control follows its own API action.
  */
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
@@ -40,6 +40,7 @@ const api = vi.hoisted(() => ({
   getInitiativeLearning: vi.fn(),
   putInitiativeSchedule: vi.fn(),
   sendInitiativeInvites: vi.fn(),
+  remindInitiative: vi.fn(),
   listInitiativeRoster: vi.fn(),
   regenerateLearningCode: vi.fn(),
   revokeLearningCodes: vi.fn(),
@@ -135,6 +136,7 @@ beforeEach(() => {
   api.getInitiativeGrid.mockResolvedValue(GRID);
   api.sendInitiativeInvites.mockResolvedValue(
     { sent: 2, no_email: 1, skipped_complete: 1, already_invited: 0 });
+  api.remindInitiative.mockResolvedValue({ sent: 1, no_email: 0, no_code: 1, skipped_complete: 0 });
   api.putInitiativeSchedule.mockImplementation(async (_id: string, body: object) => ({ ...SCHEDULE, ...body }));
   api.regenerateLearningCode.mockResolvedValue({ sent: true });
   api.revokeLearningCodes.mockResolvedValue({ revoked: 2 });
@@ -286,6 +288,38 @@ it('Resend to selected with one person ticked still confirms', async () => {
   await user.click(screen.getByRole('button', { name: 'Resend to selected (1)' }));
   expect(await screen.findByRole('dialog', { name: 'Resend invite' })).toBeTruthy();
   expect(api.sendInitiativeInvites).not.toHaveBeenCalled();
+});
+
+it('Send reminder on a row confirms, then sends the reminder (no new code)', async () => {
+  const user = userEvent.setup();
+  renderTab();
+  await rosterName('Derek Hill');
+  await rowMenu('Derek Hill', 'Send reminder');
+  const dialog = await screen.findByRole('dialog', { name: 'Send reminder' });
+  expect(within(dialog).getByText(/Derek Hill gets a reminder/)).toBeTruthy();
+  expect(within(dialog).getByText(/codes keep working and nobody is signed out/)).toBeTruthy();
+  expect(api.remindInitiative).not.toHaveBeenCalled();
+  await user.click(within(dialog).getByRole('button', { name: 'Send reminder' }));
+  await waitFor(() => expect(api.remindInitiative).toHaveBeenCalledWith('i1', ['p2']));
+  expect(api.sendInitiativeInvites).not.toHaveBeenCalled();
+  await waitFor(() => expect(toast).toHaveBeenCalledWith('Reminded 1 person · 1 without a working code'));
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Send reminder' })).toBeNull());
+});
+
+it('a complete worker has no Send reminder; Remind selected confirms the ticked people', async () => {
+  const user = userEvent.setup();
+  renderTab();
+  await rosterName('Maria Santos');
+  await user.click(within(workerRow('Maria Santos')).getByRole('button', { name: /actions/i }));
+  expect(screen.queryByRole('menuitem', { name: 'Send reminder' })).toBeNull();
+  await user.keyboard('{Escape}');
+  await user.click(screen.getByRole('checkbox', { name: 'Select Derek Hill' }));
+  await user.click(screen.getByRole('checkbox', { name: 'Select Priya Nair' }));
+  await user.click(screen.getByRole('button', { name: 'Remind selected (2)' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Send reminder' });
+  expect(within(dialog).getByText(/2 people will each get a reminder/)).toBeTruthy();
+  await user.click(within(dialog).getByRole('button', { name: 'Send reminder' }));
+  await waitFor(() => expect(api.remindInitiative).toHaveBeenCalledWith('i1', ['p2', 'p3']));
 });
 
 it('Regenerate code names the person, confirms, then posts', async () => {
@@ -468,6 +502,7 @@ it('a view-only manager sees the data but none of the mutation controls', async 
   expect(screen.queryByRole('button', { name: 'Print code sheet' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Assign' })).toBeNull();
   expect(screen.queryByRole('button', { name: /Resend to selected/ })).toBeNull();
+  expect(screen.queryByRole('button', { name: /Remind selected/ })).toBeNull();
   expect(screen.queryByRole('checkbox', { name: 'Select Derek Hill' })).toBeNull();
   // the report needs reports:add, not a learning action; View history still works
   expect(screen.getByRole('button', { name: 'Compliance report' })).toBeTruthy();
@@ -475,6 +510,7 @@ it('a view-only manager sees the data but none of the mutation controls', async 
   const user = userEvent.setup();
   await user.click(within(workerRow('Derek Hill')).getByRole('button', { name: /actions/i }));
   expect(screen.queryByRole('menuitem', { name: 'Resend' })).toBeNull();
+  expect(screen.queryByRole('menuitem', { name: 'Send reminder' })).toBeNull();
   expect(screen.getByRole('menuitem', { name: 'View history' })).toBeTruthy();
 });
 

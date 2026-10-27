@@ -1,21 +1,27 @@
 // @vitest-environment jsdom
 /**
  * /learning — the learning dashboard: tiles from the API, the range switch
- * refetching, Remind sending to the unfinished people with an email, and
- * Export queueing the compliance report for everyone.
+ * refetching, Remind (learning:change only) confirming and then sending the
+ * reminder email (never a Resend), and Export queueing the compliance
+ * report for everyone.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { LearningDashboard as Dash, RosterRow } from '../../lib/learning';
+import type { LearningDashboard as Dash } from '../../lib/learning';
 
 const toast = vi.hoisted(() => vi.fn());
 vi.mock('../../lib/notificationsContext', () => ({ useToast: () => toast }));
 
+const allowed = vi.hoisted(() => ({ actions: new Set(['view', 'change']) }));
+vi.mock('../../components/learning/useLearningAccess', () => ({
+  useLearningAccess: () => (action: string) => allowed.actions.has(action),
+}));
+
 const api = vi.hoisted(() => ({
   getLearningDashboard: vi.fn(),
-  listInitiativeRoster: vi.fn(),
+  remindInitiative: vi.fn(),
   sendInitiativeInvites: vi.fn(),
   exportLearningCompliance: vi.fn(),
 }));
@@ -41,20 +47,16 @@ const DASH: Dash = {
   hard_questions: [{ question_id: 'q1', document_title: 'Acme NDA', miss_percent: 41 }],
 };
 
-const roster = (over: Partial<RosterRow> & { person_id: string }): RosterRow => ({
-  name: over.person_id, email: 'x@example.com', partner: null, language: 'en',
-  done: 0, total: 2, status: 'not_opened', last_activity: null, ...over,
-});
-
 function renderPage() {
   return render(<MemoryRouter><LearningDashboard /></MemoryRouter>);
 }
 
 beforeEach(() => {
   api.getLearningDashboard.mockReset().mockResolvedValue(DASH);
-  api.listInitiativeRoster.mockReset().mockResolvedValue([]);
-  api.sendInitiativeInvites.mockReset().mockResolvedValue(
-    { sent: 9, no_email: 2, skipped_complete: 0, already_invited: 0 });
+  api.remindInitiative.mockReset().mockResolvedValue(
+    { sent: 8, no_email: 2, no_code: 1, skipped_complete: 0 });
+  api.sendInitiativeInvites.mockReset();
+  allowed.actions = new Set(['view', 'change']);
   api.exportLearningCompliance.mockReset().mockResolvedValue({ id: 'run-1' });
   toast.mockReset();
 });
@@ -106,36 +108,47 @@ it('refetches when the range changes', async () => {
   expect(screen.getByRole('tab', { name: 'Quarter', selected: true })).toBeTruthy();
 });
 
-it('Remind sends to the unfinished people who have an email, then refreshes', async () => {
-  api.listInitiativeRoster.mockResolvedValue([
-    roster({ person_id: 'a', status: 'overdue' }),
-    roster({ person_id: 'b', status: 'in_progress' }),
-    roster({ person_id: 'c', status: 'not_opened' }),
-    roster({ person_id: 'd', status: 'complete' }),
-    roster({ person_id: 'e', status: 'no_email', email: null }),
-  ]);
+it('Remind confirms first, then sends the reminder (no new codes) and refreshes', async () => {
   renderPage();
   fireEvent.click(await screen.findByRole('button', { name: 'Remind 9' }));
-  await waitFor(() => expect(api.sendInitiativeInvites).toHaveBeenCalledWith('i1', ['a', 'b', 'c']));
-  expect(api.listInitiativeRoster).toHaveBeenCalledWith('i1');
-  expect(toast).toHaveBeenCalledWith('Reminded 9 people on Meridian SIN-2 refresh');
+  const dialog = await screen.findByRole('dialog', { name: 'Send reminders' });
+  expect(within(dialog).getByText('9 people on Meridian SIN-2 refresh have training to finish.')).toBeTruthy();
+  expect(within(dialog).getByText(/codes keep working and nobody is signed out/)).toBeTruthy();
+  expect(api.remindInitiative).not.toHaveBeenCalled();
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Send reminders' }));
+  await waitFor(() => expect(api.remindInitiative).toHaveBeenCalledWith('i1'));
+  expect(api.sendInitiativeInvites).not.toHaveBeenCalled();
+  expect(toast).toHaveBeenCalledWith(
+    'Reminded 8 people · 2 without email · 1 without a working code on Meridian SIN-2 refresh');
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   await waitFor(() => expect(api.getLearningDashboard).toHaveBeenCalledTimes(2));
 });
 
-it('Remind says so when nobody with an email is unfinished', async () => {
-  api.listInitiativeRoster.mockResolvedValue([roster({ person_id: 'd', status: 'complete' })]);
+it('Cancel in the Remind dialog sends nothing', async () => {
   renderPage();
   fireEvent.click(await screen.findByRole('button', { name: 'Remind 9' }));
-  await waitFor(() => expect(toast).toHaveBeenCalledWith('Nobody left to remind on Meridian SIN-2 refresh'));
-  expect(api.sendInitiativeInvites).not.toHaveBeenCalled();
+  const dialog = await screen.findByRole('dialog', { name: 'Send reminders' });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(api.remindInitiative).not.toHaveBeenCalled();
 });
 
-it('shows the API error when a reminder fails', async () => {
-  api.listInitiativeRoster.mockResolvedValue([roster({ person_id: 'a', status: 'overdue' })]);
-  api.sendInitiativeInvites.mockRejectedValue(new Error('boom'));
+it('shows the API error in the dialog when a reminder fails', async () => {
+  api.remindInitiative.mockRejectedValue(new Error('boom'));
   renderPage();
   fireEvent.click(await screen.findByRole('button', { name: 'Remind 9' }));
-  expect(await screen.findByRole('alert')).toBeTruthy();
+  const dialog = await screen.findByRole('dialog', { name: 'Send reminders' });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Send reminders' }));
+  expect(await within(dialog).findByRole('alert')).toBeTruthy();
+  expect(screen.getByRole('dialog', { name: 'Send reminders' })).toBeTruthy();
+});
+
+it('a view-only manager gets Open instead of Remind', async () => {
+  allowed.actions = new Set(['view']);
+  renderPage();
+  const card = (await screen.findByText('Meridian SIN-2 refresh')).closest('.lrn-risk') as HTMLElement;
+  expect(within(card).queryByRole('button', { name: /Remind/ })).toBeNull();
+  expect(within(card).getByRole('link', { name: 'Open' }).getAttribute('href')).toBe('/initiatives/i1');
 });
 
 it('Export queues the compliance report for everyone', async () => {

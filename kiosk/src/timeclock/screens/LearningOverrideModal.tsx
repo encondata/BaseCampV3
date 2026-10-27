@@ -144,8 +144,10 @@ export default function LearningOverrideModal({
           </label>
           <label className="tcx-field">
             <span className="tcx-field-label">Password</span>
+            {/* "new-password", not "off" (which Chrome ignores on a password
+                field): no "Save password?" offer on a shared station */}
             <input
-              className="tcx-input" type="password" autoComplete="off"
+              className="tcx-input" type="password" autoComplete="new-password"
               value={password} disabled={sending} onChange={(e) => setPassword(e.target.value)}
             />
           </label>

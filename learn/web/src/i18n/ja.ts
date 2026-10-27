@@ -70,6 +70,7 @@ export const ja: Dictionary = {
   'reader.sign': '署名して次へ',
   'reader.takeQuiz': 'クイズを受ける',
   'reader.signing': '署名中…',
+  'reader.versionChanged': 'この文書は更新されたばかりです。新しい版を読んでから署名してください。',
 
   'sign.mustAgree': '読んで同意したことを示すため、チェックボックスをオンにしてください。',
   'sign.nameRequired': '署名するため、氏名をフルネームで入力してください。',

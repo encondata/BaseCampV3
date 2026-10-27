@@ -119,6 +119,43 @@ describe('Reader', () => {
     expect(await screen.findByLabelText('Type your full name to sign')).toBeTruthy();
   });
 
+  it('back from a passed quiz, the scroll and reading-time gates are already met', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    overflow();
+    const fetchMock = api({ has_quiz: true, quiz_passed: true, min_read_seconds: 180 });
+    renderReader();
+    const sign = await screen.findByRole('button', { name: 'Sign and continue' });
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.change(screen.getByLabelText('Type your full name to sign'), { target: { value: 'Kenji Watanabe' } });
+    // no scrolling, no waiting: the reading came before the quiz
+    fireEvent.click(sign);
+    expect(await screen.findByText('training page')).toBeTruthy();
+    expect(signBody(fetchMock)).toMatchObject({ scrolled_to_end: true, version_no: 2 });
+  });
+
+  it('a version published while reading: the server refuses and the new one loads', async () => {
+    let version = 2;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/learn/training')) return json(200, TRAINING);
+      if (init?.method === 'POST') {
+        version = 3;
+        return json(409, { detail: { code: 'version_changed' } });
+      }
+      return json(200, { ...DOC, require_scroll: false, version_no: version,
+        html: version === 3 ? '<p>New rules.</p>' : DOC.html });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderReader();
+    const sign = await screen.findByRole('button', { name: 'Sign and continue' });
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.change(screen.getByLabelText('Type your full name to sign'), { target: { value: 'Kenji Watanabe' } });
+    fireEvent.click(sign);
+    expect(await screen.findByText('New rules.')).toBeTruthy();
+    expect(screen.getByText('This document was just updated. Read the new version, then sign.')).toBeTruthy();
+    // a fresh start on the new version: nothing ticked
+    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+  });
+
   it('explains what is missing before it calls the server, in the server\'s order', async () => {
     overflow();
     const fetchMock = api();
@@ -145,7 +182,7 @@ describe('Reader', () => {
     await user.click(sign);
     expect(await screen.findByText('training page')).toBeTruthy();
     expect(signBody(fetchMock)).toEqual({
-      agreed: true, typed_name: 'Kenji Watanabe', language: 'en', scrolled_to_end: true,
+      agreed: true, typed_name: 'Kenji Watanabe', language: 'en', scrolled_to_end: true, version_no: 2,
     });
     expect(String(signCalls(fetchMock)[0][0])).toBe(`http://localhost:8000/learn/assignments/${ID}/sign`);
   });
@@ -193,7 +230,7 @@ describe('Reader', () => {
     fireEvent.click(sign);
     expect(await screen.findByText('training page')).toBeTruthy();
     expect(signBody(fetchMock)).toEqual({
-      agreed: true, signature_png_b64: 'iVBORw0KGgoAAAA=', language: 'en', scrolled_to_end: true,
+      agreed: true, signature_png_b64: 'iVBORw0KGgoAAAA=', language: 'en', scrolled_to_end: true, version_no: 2,
     });
 
     cleanup();
@@ -219,7 +256,7 @@ describe('Reader', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sign and continue' }));
     // everything signed: on to the time clock code
     expect(await screen.findByText('done page')).toBeTruthy();
-    expect(signBody(fetchMock)).toEqual({ agreed: true, language: 'en', scrolled_to_end: true });
+    expect(signBody(fetchMock)).toEqual({ agreed: true, language: 'en', scrolled_to_end: true, version_no: 2 });
   });
 
   it('turns the server refusals into friendly lines', async () => {

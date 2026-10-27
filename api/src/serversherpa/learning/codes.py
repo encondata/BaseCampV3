@@ -118,6 +118,25 @@ async def _expires_at(db: AsyncSession, initiative_id: uuid.UUID | None,
     return datetime.combine(end, EXPIRES_AT, tzinfo=await initiative_zone(db, initiative))
 
 
+# the initiative fields a code's expiry is computed from (the end day, and
+# the sites whose zone it is read in)
+EXPIRY_FIELDS = frozenset({"scheduled_end", "real_end_at", "site_id", "destination_site_id",
+                           "origin_site_id"})
+
+
+async def refresh_expiry(db: AsyncSession, initiative: Initiative) -> int:
+    """Re-stamp the initiative's unrevoked codes with the expiry its dates
+    give now, so moving the end day later doesn't leave codes that stop
+    early (and moving it sooner ends them sooner). Returns how many changed."""
+    expires_at = await _expires_at(db, initiative.id, datetime.now(UTC))
+    result = await db.execute(
+        update(LearningCode)
+        .where(LearningCode.initiative_id == initiative.id, LearningCode.revoked_at.is_(None),
+               LearningCode.expires_at.is_distinct_from(expires_at))
+        .values(expires_at=expires_at))
+    return result.rowcount or 0
+
+
 def _same_key(person_id: uuid.UUID, initiative_id: uuid.UUID | None):
     initiative = (LearningCode.initiative_id.is_(None) if initiative_id is None
                   else LearningCode.initiative_id == initiative_id)

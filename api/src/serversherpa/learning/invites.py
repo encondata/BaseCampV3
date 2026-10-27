@@ -1,7 +1,7 @@
 """Invites: the per-initiative schedule (manual or a scheduled send, the
 reminder days, the due offset, late adds), sending invites now or on
-schedule, late adds, resend / regenerate / revoke, and the printable code
-sheet for people without email.
+schedule, late adds, resend / regenerate / revoke, a manager's reminder
+now, and the printable code sheet for people without email.
 
 An invite is always a fresh code: the raw code is never stored, so it can
 only be emailed (or printed) the moment it is issued, and issuing revokes
@@ -253,6 +253,43 @@ async def send_initiative(db: AsyncSession, initiative_id: uuid.UUID,
     audit(db, actor_id=actor_id, entity_type="learning_invite", entity_id=str(initiative_id),
           action="learning_invites_send",
           changes={**counts, "resend": person_ids is not None})
+    await db.flush()
+    return counts
+
+
+async def remind_initiative(db: AsyncSession, initiative_id: uuid.UUID,
+                            actor_id: uuid.UUID | None, *,
+                            person_ids: list[uuid.UUID] | None = None) -> dict:
+    """A manager's reminder now: the reminder email (a new one-click link for
+    the code the person already holds) to everyone with open assignments, or
+    to the listed people. It never issues or revokes a code and never ends a
+    learn session. Someone without a working code is counted `no_code`, not
+    invited (Send now / Resend do that); without email, `no_email`; a listed
+    person with nothing open, `skipped_complete`. The stage is the ISO minute,
+    so a double submit sends once."""
+    counts = {"sent": 0, "no_email": 0, "no_code": 0, "skipped_complete": 0}
+    initiative = await db.get(Initiative, initiative_id)
+    open_ids = await open_people(db, initiative_id)
+    targets = open_ids if person_ids is None else list(dict.fromkeys(person_ids))
+    open_set = set(open_ids)
+    stage = f"manual:{_now().replace(second=0, microsecond=0).isoformat()}"
+    for person_id in targets:
+        if person_id not in open_set:
+            counts["skipped_complete"] += 1
+            continue
+        person = await db.get(Person, person_id)
+        if person is None or not await emails.address_for(db, person_id):
+            counts["no_email"] += 1
+            continue
+        code_row = await emails.active_code(db, person_id, initiative_id)
+        if code_row is None:
+            counts["no_code"] += 1
+            continue
+        if await emails.send_reminder(db, person, code_row, initiative,
+                                      await due_on(db, person_id, initiative_id), stage):
+            counts["sent"] += 1
+    audit(db, actor_id=actor_id, entity_type="learning_invite", entity_id=str(initiative_id),
+          action="learning_reminders_send", changes=counts)
     await db.flush()
     return counts
 

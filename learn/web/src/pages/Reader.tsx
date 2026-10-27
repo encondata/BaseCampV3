@@ -8,7 +8,11 @@
  *  disabled. The server checks the same rules and has the last word. The
  *  order is read, quiz, sign: a document with a quiz that isn't passed yet
  *  swaps the signature for "Take the quiz", and the worker comes back here,
- *  quiz passed, to sign. */
+ *  quiz passed, to sign — already read, so the scroll and reading-time
+ *  gates don't start over (the server still counts from when it was
+ *  opened). The sign-off names the version shown; if a newer one was
+ *  published meanwhile the server refuses (409 `version_changed`) and the
+ *  page loads the new version to read. */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 
@@ -40,8 +44,9 @@ async function position(id: string): Promise<{ k: number; n: number } | null> {
   return null;
 }
 
-function ReaderBody({ id, doc, place }: {
+function ReaderBody({ id, doc, place, onVersionChanged }: {
   id: string; doc: AssignmentRead; place: { k: number; n: number } | null;
+  onVersionChanged: () => void;
 }) {
   const navigate = useNavigate();
   const box = useRef<HTMLDivElement>(null);
@@ -51,7 +56,9 @@ function ReaderBody({ id, doc, place }: {
   // box and there is nothing to scroll (re-checked as images load)
   const [reached, setReached] = useState(false);
   const [fits, setFits] = useState(false);
-  const scrolled = reached || fits;
+  // back from a passed quiz: the reading happened before it
+  const alreadyRead = doc.has_quiz && doc.quiz_passed;
+  const scrolled = reached || fits || alreadyRead;
   // the server's own clock said "not yet": hold off until then
   const [holdUntil, setHoldUntil] = useState(0);
   const [agreed, setAgreed] = useState(false);
@@ -81,7 +88,7 @@ function ReaderBody({ id, doc, place }: {
   }, [doc.html]);
 
   const needsQuiz = doc.has_quiz && !doc.quiz_passed;
-  const minSeconds = doc.min_read_seconds ?? 0;
+  const minSeconds = alreadyRead ? 0 : doc.min_read_seconds ?? 0;
   const elapsed = Math.floor((now - started.current) / 1000);
   const left = Math.max(0, minSeconds - elapsed, Math.ceil((holdUntil - now) / 1000));
   const ready = scrolled && left <= 0;
@@ -114,6 +121,7 @@ function ReaderBody({ id, doc, place }: {
         ...(draws && drawn ? { signature_png_b64: drawn } : {}),
         language: doc.language,
         scrolled_to_end: scrolled,
+        version_no: doc.version_no,
       });
       navigate(out.complete ? '/done' : '/training', { replace: true });
     } catch (err) {
@@ -121,6 +129,7 @@ function ReaderBody({ id, doc, place }: {
       const code = err instanceof ApiError ? err.code : '';
       if (code === 'already_signed') { navigate('/training', { replace: true }); return; }
       if (code === 'quiz_required') { navigate(`/training/${id}/quiz`, { replace: true }); return; }
+      if (code === 'version_changed') { onVersionChanged(); return; }
       if (code === 'scroll_required') { setReason({ key: 'sign.scrollRequired' }); return; }
       if (code === 'read_time') {
         const left = (err as ApiError).detail as { seconds_left?: unknown } | undefined;
@@ -163,7 +172,7 @@ function ReaderBody({ id, doc, place }: {
         <div dangerouslySetInnerHTML={{ __html: doc.html }} />
       </div>
 
-      {!needsQuiz && (doc.require_scroll || minSeconds > 0) && scrolled && left <= 0 && (
+      {!needsQuiz && !alreadyRead && (doc.require_scroll || minSeconds > 0) && scrolled && left <= 0 && (
         <p className="learn-readdone">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
                strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="m8 12.5 3 3 5-6" /></svg>
@@ -213,10 +222,15 @@ function ReaderPage({ id }: { id: string }) {
   const lang = getLang();
   const doc = useLoad(() => getAssignment(id, lang), [id, lang]);
   const place = useLoad(() => position(id), [id]);
+  // a newer version was published while the worker read the last one
+  const [changed, setChanged] = useState(false);
   return (
     <main className="learn-page learn-reader">
+      {changed && <p className="learn-banner" role="status">{t('reader.versionChanged')}</p>}
       {doc.data
-        ? <ReaderBody key={`${id}:${doc.data.language}`} id={id} doc={doc.data} place={place.data} />
+        ? <ReaderBody key={`${id}:${doc.data.language}:${doc.data.version_no}`} id={id} doc={doc.data}
+                      place={place.data}
+                      onVersionChanged={() => { setChanged(true); doc.reload(); }} />
         : <LoadState error={doc.error} onRetry={doc.reload} />}
     </main>
   );

@@ -82,7 +82,8 @@ async def sign_assignment(assignment_id: uuid.UUID, body: SignIn, request: Reque
     out = await worker.sign(
         db, actor.person_id, assignment_id, agreed=body.agreed, typed_name=body.typed_name,
         signature_png_b64=body.signature_png_b64, language=body.language,
-        scrolled_to_end=body.scrolled_to_end, ip=_inet_or_none(rate_limit_ip(request)),
+        scrolled_to_end=body.scrolled_to_end, shown_version_no=body.version_no,
+        ip=_inet_or_none(rate_limit_ip(request)),
         user_agent=request.headers.get("user-agent"))
     await db.commit()
     return out

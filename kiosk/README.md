@@ -49,3 +49,14 @@ and React-free helpers from `portal/src` (see `vite.config.ts` and the
 
 Every signed-in kiosk heartbeats to `/kiosk/heartbeat` once a minute and
 appears on the portal's Kiosk Devices page. Register/Renew stays there.
+
+## Time clock learning check
+
+Before a punch, the time clock asks the API whether the person still has
+learning to sign (`learning` on the status answer) and warns them, with
+"Email me the link" and an admin override; it never refuses the punch.
+Which training it checks: a kiosk the API knows by its serial checks that
+device's current move (the general set when it has none). Without a known
+serial it falls back to the session's move lock (a move-password sign-in);
+an unlocked person session (email and password, or Link with phone) checks
+the general set only, so it won't warn about a move's training.

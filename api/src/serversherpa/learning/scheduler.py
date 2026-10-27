@@ -14,6 +14,10 @@
   an open assignment is past its due date, once its invites have gone out,
   until the initiative ends (or starts, with no end date).
 
+None of it runs for an initiative that is archived or over (completed or
+cancelled): the sweeps' queries leave them out, and each step checks
+again in its own transaction.
+
 Each step is narrowed with a query first (codes still owed a reminder;
 today's overdue notice already raised), so a sweep every minute stays
 cheap. Every initiative is handled in its own session and transaction, so
@@ -37,6 +41,7 @@ from serversherpa.learning.models import (
     LearningEmailLog,
     LearningInviteSchedule,
 )
+from serversherpa.learning.stats import INACTIVE_STATUSES
 from serversherpa.notifications.inbox import notify
 from serversherpa.services.timezone import stored_day
 
@@ -51,13 +56,24 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+# the SQL side of `_live`: initiatives still worth mailing about
+_LIVE = (Initiative.archived_at.is_(None), Initiative.status.not_in(INACTIVE_STATUSES))
+
+
+def _live(initiative: Initiative | None) -> bool:
+    """Not archived and not over: cancelled, completed or archived
+    initiatives get no invites, reminders or overdue notices."""
+    return (initiative is not None and initiative.archived_at is None
+            and initiative.status not in INACTIVE_STATUSES)
+
+
 async def _open_initiatives(db: AsyncSession, since: datetime) -> list[uuid.UUID]:
     """Initiatives with open assignments that start on or after `since`
     (the caller leaves enough slack for every zone; the per-initiative
     checks read the exact local day)."""
     return list(await db.scalars(
         select(Initiative.id)
-        .where(Initiative.scheduled_start >= since,
+        .where(Initiative.scheduled_start >= since, *_LIVE,
                Initiative.id.in_(select(LearningAssignment.initiative_id).where(
                    LearningAssignment.status.in_(OPEN_STATUSES))))
         .order_by(Initiative.scheduled_start, Initiative.id)))
@@ -73,6 +89,8 @@ async def _scheduled_one(db: AsyncSession, initiative_id: uuid.UUID, now: dateti
     if schedule is None:
         return 0
     initiative = await db.get(Initiative, initiative_id)
+    if not _live(initiative):
+        return 0
     at = await invites.send_at(db, initiative, schedule)
     if at is None or at > now:
         return 0
@@ -81,7 +99,7 @@ async def _scheduled_one(db: AsyncSession, initiative_id: uuid.UUID, now: dateti
 
 async def _reminders_one(db: AsyncSession, initiative_id: uuid.UUID, now: datetime) -> int:
     initiative = await db.get(Initiative, initiative_id)
-    if initiative is None or initiative.scheduled_start is None:
+    if not _live(initiative) or initiative.scheduled_start is None:
         return 0
     schedule = await invites.schedule_for(db, initiative_id)
     zone = await initiative_zone(db, initiative)
@@ -134,7 +152,7 @@ async def _invites_went_out(db: AsyncSession, initiative_id: uuid.UUID) -> bool:
 
 async def _overdue_one(db: AsyncSession, initiative_id: uuid.UUID, now: datetime) -> int:
     initiative = await db.get(Initiative, initiative_id)
-    if initiative is None or initiative.scheduled_start is None:
+    if not _live(initiative) or initiative.scheduled_start is None:
         return 0
     today = now.astimezone(await initiative_zone(db, initiative)).date()
     last_day = _end_day(initiative) or stored_day(initiative.scheduled_start)
@@ -204,14 +222,16 @@ async def run_learning_once(maker) -> dict:
     async with maker() as db:
         scheduled = list(await db.scalars(
             select(LearningInviteSchedule.initiative_id)
+            .join(Initiative, Initiative.id == LearningInviteSchedule.initiative_id)
             .where(LearningInviteSchedule.mode == "scheduled",
-                   LearningInviteSchedule.sent_at.is_(None))))
+                   LearningInviteSchedule.sent_at.is_(None), *_LIVE)))
         # start days are midnight UTC; two days back still reaches a start
         # day that is today in the farthest-west zone at a late send time
         upcoming = await _open_initiatives(db, now - timedelta(days=2))
         with_due = list(await db.scalars(
             select(LearningAssignment.initiative_id).distinct()
-            .where(LearningAssignment.status.in_(OPEN_STATUSES),
+            .join(Initiative, Initiative.id == LearningAssignment.initiative_id)
+            .where(LearningAssignment.status.in_(OPEN_STATUSES), *_LIVE,
                    LearningAssignment.initiative_id.is_not(None),
                    LearningAssignment.due_on < (now + timedelta(days=1)).date())))
     await _each(maker, "scheduled send", scheduled, _scheduled_one, now, out, "invites")

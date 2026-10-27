@@ -314,10 +314,12 @@ def _signature(raw: str | None) -> bytes:
 async def sign(db: AsyncSession, person_id: uuid.UUID, assignment_id: uuid.UUID, *,
                agreed: bool, typed_name: str | None, signature_png_b64: str | None,
                language: str, scrolled_to_end: bool, ip: str | None,
-               user_agent: str | None) -> dict:
+               user_agent: str | None, shown_version_no: int | None = None) -> dict:
     """Sign the assignment at the version shown, then run the completion
-    check. Refusals, in order: 404, 409 `already_signed` / `locked`, then
-    422 `must_agree`, `name_required`, `signature_required` /
+    check. `shown_version_no` is the version the Reader was given: when a
+    newer one was published since, the worker didn't read what they would
+    sign. Refusals, in order: 404, 409 `already_signed` / `locked` /
+    `version_changed`, then 422 `must_agree`, `name_required`, `signature_required` /
     `signature_invalid`, `scroll_required`, `quiz_required`, `read_time`."""
     found = await own_assignment(db, person_id, assignment_id)
     # one sign-off at a time per person and scope (see completion.lock)
@@ -327,6 +329,9 @@ async def sign(db: AsyncSession, person_id: uuid.UUID, assignment_id: uuid.UUID,
         raise _err(409, "already_signed")
     await require_unlocked(db, assignment)
     document = await db.get(LearningDocument, assignment.document_id)
+    version = await _shown_version(db, assignment, document)
+    if shown_version_no is not None and version.version_no != shown_version_no:
+        raise _err(409, "version_changed")
 
     if not agreed:
         raise _err(422, "must_agree")
@@ -349,7 +354,6 @@ async def sign(db: AsyncSession, person_id: uuid.UUID, assignment_id: uuid.UUID,
         raise _err(422, "read_time",
                    seconds_left=math.ceil(document.min_read_seconds - elapsed))
 
-    version = await _shown_version(db, assignment, document)
     # the language read: English unless that translation is published
     if await published_translation(db, version.id, language) is None:
         language = ENGLISH

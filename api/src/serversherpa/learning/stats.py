@@ -22,7 +22,7 @@ from serversherpa.db.models import Initiative, InitiativePerson, Person, UserAcc
 from serversherpa.db.ordering import natural
 from serversherpa.learning import assign, translate
 from serversherpa.learning.assign import NEVER, OPEN_STATUSES
-from serversherpa.learning.emails import day_text
+from serversherpa.learning.emails import ADDRESS_COLUMNS, day_text, listed_address
 from serversherpa.learning.models import (
     LearningAssignment,
     LearningDocument,
@@ -293,10 +293,10 @@ async def _at_risk(db: AsyncSession, today: date) -> list[dict]:
         else:
             unfinished[initiative_id].add(person_id)
     everyone = set().union(*unfinished.values())
-    with_email = {pid for pid, email, account in (await db.execute(
-        select(Person.id, Person.email, UserAccount.email)
+    with_email = {pid for pid, *address in (await db.execute(
+        select(Person.id, *ADDRESS_COLUMNS)
         .outerjoin(UserAccount, UserAccount.person_id == Person.id)
-        .where(Person.id.in_(everyone)))).all() if email or account}
+        .where(Person.id.in_(everyone)))).all() if listed_address(*address)}
     rows = [{"initiative_id": i.id, "name": i.name,
              "starts_in_days": (stored_day(i.scheduled_start) - today).days,
              "percent": _percent(signed[i.id], total[i.id]),

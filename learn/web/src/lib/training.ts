@@ -61,6 +61,8 @@ export interface SignBody {
   signature_png_b64?: string;
   language: string;
   scrolled_to_end: boolean;
+  /** The version shown; a newer one published meanwhile is a 409. */
+  version_no?: number;
 }
 
 export interface SignResult {

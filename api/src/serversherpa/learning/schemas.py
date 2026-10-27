@@ -479,6 +479,21 @@ class SendInvitesOut(BaseModel):
     already_invited: int
 
 
+class RemindIn(BaseModel):
+    """No `person_ids`: everyone with open assignments."""
+    model_config = ConfigDict(extra="forbid")
+
+    person_ids: list[uuid.UUID] | None = Field(default=None, min_length=1)
+
+
+class RemindOut(BaseModel):
+    sent: int
+    no_email: int
+    # no working code: Send now / Resend invites them, a reminder doesn't
+    no_code: int
+    skipped_complete: int
+
+
 RosterStatus = Literal["complete", "in_progress", "overdue", "not_opened", "no_email"]
 
 
@@ -610,6 +625,9 @@ class SignIn(BaseModel):
     signature_png_b64: str | None = None
     language: Lang = "en"
     scrolled_to_end: bool = False
+    # the version the Reader showed; a newer one published since is a 409
+    # `version_changed` (left out: the current version, as before)
+    version_no: int | None = Field(default=None, ge=1)
 
 
 class SignOut(BaseModel):

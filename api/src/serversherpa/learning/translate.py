@@ -133,7 +133,9 @@ def _attribute_filter(tag: str, attr: str, value: str) -> str | None:
             return value if _READER_HREF.match(value.strip()) else None
         if attr == "target":
             return value if value == "_blank" else None
-        return value                                    # the rel nh3 adds
+        if attr == "rel":                               # the rel nh3 adds itself
+            return value
+        return None             # nothing else, even if ATTRIBUTES["a"] grows
     if attr == "class":
         if tag == "span":
             kept = [c for c in value.split() if c in _SPAN_CLASSES]
