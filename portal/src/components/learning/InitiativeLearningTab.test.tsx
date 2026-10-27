@@ -244,12 +244,19 @@ it('searches the roster by name, email or partner', async () => {
   expect(screen.getByText('Derek Hill', NAME)).toBeTruthy();
 });
 
-it('Resend on a row posts person_ids', async () => {
+it('Resend on a row names the person, confirms, then posts person_ids', async () => {
+  const user = userEvent.setup();
   renderTab();
   await rosterName('Derek Hill');
   await rowMenu('Derek Hill', 'Resend');
+  const dialog = await screen.findByRole('dialog', { name: 'Resend invite' });
+  expect(within(dialog).getByText(/Derek Hill gets a new code/)).toBeTruthy();
+  expect(within(dialog).getByText(/old code and email link stop working/)).toBeTruthy();
+  expect(api.sendInitiativeInvites).not.toHaveBeenCalled();
+  await user.click(within(dialog).getByRole('button', { name: 'Resend' }));
   await waitFor(() => expect(api.sendInitiativeInvites).toHaveBeenCalledWith('i1', ['p2']));
   await waitFor(() => expect(toast).toHaveBeenCalled());
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Resend invite' })).toBeNull());
 });
 
 it('Resend to selected confirms first, then posts every ticked person', async () => {
@@ -277,7 +284,7 @@ it('Resend to selected with one person ticked still confirms', async () => {
   await rosterName('Derek Hill');
   await user.click(screen.getByRole('checkbox', { name: 'Select Derek Hill' }));
   await user.click(screen.getByRole('button', { name: 'Resend to selected (1)' }));
-  expect(await screen.findByRole('dialog', { name: 'Resend to selected' })).toBeTruthy();
+  expect(await screen.findByRole('dialog', { name: 'Resend invite' })).toBeTruthy();
   expect(api.sendInitiativeInvites).not.toHaveBeenCalled();
 });
 
@@ -496,6 +503,8 @@ it('says so when a refresh after a change fails, and keeps the numbers', async (
   await rosterName('Derek Hill');
   api.getInitiativeLearning.mockRejectedValueOnce(new ApiError(500, 'boom', {}));
   await rowMenu('Derek Hill', 'Resend');
+  await userEvent.setup().click(within(await screen.findByRole('dialog', { name: 'Resend invite' }))
+    .getByRole('button', { name: 'Resend' }));
   await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.stringMatching(/Couldn’t refresh/)));
   expect(screen.getByRole('group', { name: 'Learning progress' })).toBeTruthy();
 });

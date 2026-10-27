@@ -79,7 +79,6 @@ export default function InitiativeLearningTab({ initiativeId }: { initiativeId: 
   const [filtered, setFiltered] = useState<RosterRow[] | null>(null);
   const [filterLoading, setFilterLoading] = useState(false);
   const [rosterFailed, setRosterFailed] = useState(false);
-  const [busyId, setBusyId] = useState<string | null>(null);
   const [reporting, setReporting] = useState(false);
 
   type Dialog = 'send' | 'schedule' | 'sheet' | 'preview' | 'assign'
@@ -133,18 +132,6 @@ export default function InitiativeLearningTab({ initiativeId }: { initiativeId: 
 
   const rows = filter === 'all' ? everyone : filtered;
   const counts = everyone ? countsOf(everyone) : EMPTY_COUNTS;
-
-  const resend = async (personIds: string[]) => {
-    setBusyId(personIds.length === 1 ? personIds[0] : '*');
-    try {
-      toast(sendText(await sendInitiativeInvites(initiativeId, personIds)));
-      refresh();
-    } catch (e) {
-      toast(`Couldn’t resend: ${tabErrorText(e)}`);
-    } finally {
-      setBusyId(null);
-    }
-  };
 
   /** Throws on failure: the confirm dialog shows it and stays open. */
   const regenerate = async (row: RosterRow) => {
@@ -300,8 +287,10 @@ export default function InitiativeLearningTab({ initiativeId }: { initiativeId: 
 
       <LearningRoster rows={rows} counts={counts} filter={filter} onFilter={setFilter}
                       loading={filterLoading} failed={rosterFailed} onRetry={refresh}
-                      canChange={canChange} canViewWorker={canViewWorker} busyId={busyId}
-                      onResend={(ids) => void resend(ids)}
+                      canChange={canChange} canViewWorker={canViewWorker} busyId={null}
+                      onResend={(ids) => setDialog({
+                        resend: (everyone ?? []).filter((r) => ids.includes(r.person_id)),
+                      })}
                       onResendSelected={(ids) => setDialog({
                         resend: (everyone ?? []).filter((r) => ids.includes(r.person_id)),
                       })}
@@ -350,10 +339,17 @@ export default function InitiativeLearningTab({ initiativeId }: { initiativeId: 
                               run={() => regenerate(dialog.regenerate)} />
       )}
       {typeof dialog === 'object' && dialog !== null && 'resend' in dialog && (
-        <ConfirmNewCodesModal title="Resend to selected" confirmLabel="Resend"  onClose={closeDialog}
-                              description={`${plural(dialog.resend.length, 'person', 'people')} will each get a new code and link by email.`}
-                              note="Their old codes and email links stop working, and any training session they have open ends."
-                              run={() => resendSelected(dialog.resend)} />
+        dialog.resend.length === 1 ? (
+          <ConfirmNewCodesModal title="Resend invite" confirmLabel="Resend" onClose={closeDialog}
+                                description={`${dialog.resend[0].name} gets a new code and link by email.`}
+                                note="Their old code and email link stop working, and any training session they have open ends."
+                                run={() => resendSelected(dialog.resend)} />
+        ) : (
+          <ConfirmNewCodesModal title="Resend to selected" confirmLabel="Resend" onClose={closeDialog}
+                                description={`${plural(dialog.resend.length, 'person', 'people')} will each get a new code and link by email.`}
+                                note="Their old codes and email links stop working, and any training session they have open ends."
+                                run={() => resendSelected(dialog.resend)} />
+        )
       )}
     </div>
   );
