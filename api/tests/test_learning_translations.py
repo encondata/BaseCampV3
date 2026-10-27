@@ -349,8 +349,7 @@ async def test_question_validation(client, db, seeded_user):
     doc = await _doc(db, "NDA")
     url = f"/learning/documents/{doc.id}/questions"
     bad = {
-        "too_few_choices": {**GOOD, "choices": [{"id": "a", "text": "Yes"}],
-                            "correct_choice_ids": ["a"]},
+        "too_few_choices": {**GOOD, "choices": [], "correct_choice_ids": []},
         "no_correct_choice": {**GOOD, "correct_choice_ids": []},
         "unknown_correct_choice": {**GOOD, "correct_choice_ids": ["z"]},
         "duplicate_choice": {**GOOD, "choices": [{"id": "a", "text": "Yes"},
@@ -385,8 +384,11 @@ async def test_question_validation(client, db, seeded_user):
     qurl = f"/learning/questions/{q['id']}"
     r = await client.patch(qurl, headers=hdrs, json={"correct_choice_ids": ["nope"]})
     assert r.status_code == 422 and r.json()["detail"]["code"] == "unknown_correct_choice"
-    r = await client.patch(qurl, headers=hdrs, json={"choices": [{"id": "a", "text": "Yes"}]})
+    r = await client.patch(qurl, headers=hdrs, json={"choices": []})
     assert r.status_code == 422 and r.json()["detail"]["code"] == "too_few_choices"
+    # a lone choice is only refused while the correct id points elsewhere
+    r = await client.patch(qurl, headers=hdrs, json={"choices": [{"id": "a", "text": "Yes"}]})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "unknown_correct_choice"
     r = await client.patch(qurl, headers=hdrs, json={"prompt": None})
     assert r.status_code == 422
     # dropping a choice drops its translated text with it
@@ -407,6 +409,29 @@ async def test_question_validation(client, db, seeded_user):
     assert r.status_code == 200, r.text
     made = [c["id"] for c in r.json()["choices"]]
     assert made[0] == "b" and len(made[1]) == 8 and made[1] != "c"
+
+
+async def test_single_answer_question(client, db, seeded_user):
+    """An acknowledgment: one choice, and it is the correct one."""
+    hdrs = await _manager(db, client)
+    doc = await _doc(db, "NDA")
+    url = f"/learning/documents/{doc.id}/questions"
+    ack = {"prompt": "I have read this.", "choices": [{"id": "y", "text": "Yes"}],
+           "correct_choice_ids": ["y"]}
+    r = await client.post(url, headers=hdrs, json=ack)
+    assert r.status_code == 201, r.text
+    assert r.json()["correct_choice_ids"] == ["y"] and len(r.json()["choices"]) == 1
+    qurl = f"/learning/questions/{r.json()['id']}"
+    r = await client.patch(qurl, headers=hdrs, json={"prompt": "I have read and understand this."})
+    assert r.status_code == 200, r.text
+    # patching down to one choice works once the correct id is that choice
+    r = await client.patch(qurl, headers=hdrs, json={
+        "choices": [{"id": "y", "text": "Yes, I do"}], "correct_choice_ids": ["y"]})
+    assert r.status_code == 200, r.text
+    assert len(r.json()["choices"]) == 1
+    # no choices at all is still refused
+    r = await client.post(url, headers=hdrs, json={**ack, "choices": [], "correct_choice_ids": []})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "too_few_choices"
 
 
 async def test_question_list_reorder_delete(client, db, seeded_user):

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * The Quiz tab: the question pool (add / edit / delete / reorder) with the
- * question rules checked before anything is sent (at least two choices, at
+ * question rules checked before anything is sent (at least one choice, at
  * least one marked correct), and the pass mark, attempts and failure action
  * that autosave through the document PATCH. Create/edit/delete/reorder follow
  * the API's learning:add / change / delete.
@@ -79,7 +79,7 @@ it('lists the questions with their choice and correct-answer counts', async () =
   expect(api.listQuestions).toHaveBeenCalledWith('d1');
 });
 
-it('Add question refuses fewer than two choices and no correct answer, then saves', async () => {
+it('Add question refuses no choices and no correct answer, then saves two choices', async () => {
   const user = userEvent.setup();
   renderEditor();
   await screen.findByText('Who can you tell?');
@@ -87,12 +87,12 @@ it('Add question refuses fewer than two choices and no correct answer, then save
   const dialog = await screen.findByRole('dialog', { name: /new question/i });
 
   await user.type(within(dialog).getByLabelText('Question'), 'Who may you tell?');
-  await user.type(within(dialog).getByLabelText('Choice 1'), 'Nobody');
-  // one filled choice (the second is blank): not enough
+  // every choice blank: not enough
   await user.click(within(dialog).getByRole('button', { name: 'Add question' }));
-  expect(within(dialog).getByText('A question needs at least two choices.')).toBeTruthy();
+  expect(within(dialog).getByText('A question needs at least one choice.')).toBeTruthy();
   expect(api.createQuestion).not.toHaveBeenCalled();
 
+  await user.type(within(dialog).getByLabelText('Choice 1'), 'Nobody');
   await user.type(within(dialog).getByLabelText('Choice 2'), 'Anyone');
   await user.click(within(dialog).getByRole('button', { name: 'Add question' }));
   expect(within(dialog).getByText('Mark at least one choice as correct.')).toBeTruthy();
@@ -107,6 +107,28 @@ it('Add question refuses fewer than two choices and no correct answer, then save
   expect(body.choices.map((c: { text: string }) => c.text)).toEqual(['Nobody', 'Anyone']);
   // new choices carry ids so the correct one can be named
   expect(body.choices[0].id).toBeTruthy();
+  expect(body.correct_choice_ids).toEqual([body.choices[0].id]);
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+});
+
+it('saves a single-answer question (an acknowledgment with one choice)', async () => {
+  const user = userEvent.setup();
+  renderEditor();
+  await screen.findByText('Who can you tell?');
+  await user.click(screen.getByRole('button', { name: 'Add question' }));
+  const dialog = await screen.findByRole('dialog', { name: /new question/i });
+
+  await user.type(within(dialog).getByLabelText('Question'), 'I have read and understand this document.');
+  await user.type(within(dialog).getByLabelText('Choice 1'), 'Yes');   // choice 2 stays blank
+  await user.click(within(dialog).getByRole('button', { name: 'Add question' }));
+  expect(within(dialog).getByText('Mark at least one choice as correct.')).toBeTruthy();
+  expect(api.createQuestion).not.toHaveBeenCalled();
+
+  await user.click(within(dialog).getByRole('checkbox', { name: 'Choice 1 is correct' }));
+  await user.click(within(dialog).getByRole('button', { name: 'Add question' }));
+  await waitFor(() => expect(api.createQuestion).toHaveBeenCalledTimes(1));
+  const body = api.createQuestion.mock.calls[0][1];
+  expect(body.choices.map((c: { text: string }) => c.text)).toEqual(['Yes']);
   expect(body.correct_choice_ids).toEqual([body.choices[0].id]);
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 });

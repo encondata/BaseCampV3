@@ -23,7 +23,7 @@ const QUESTIONS = [
 ];
 
 /** The quiz GET, the quiz POST (answered with `grade`) and the training list. */
-function api(grade: unknown | ((n: number) => unknown)) {
+function api(grade: unknown | ((n: number) => unknown), questions: unknown = QUESTIONS) {
   let posts = 0;
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith('/learn/training')) {
@@ -36,7 +36,7 @@ function api(grade: unknown | ((n: number) => unknown)) {
       const out = typeof grade === 'function' ? (grade as (n: number) => unknown)(posts) : grade;
       return out instanceof Response ? out : json(200, out);
     }
-    return json(200, QUESTIONS);
+    return json(200, questions);
   });
   vi.stubGlobal('fetch', fetchMock);
   return fetchMock;
@@ -100,6 +100,28 @@ describe('Quiz', () => {
 
     await user.click(screen.getByRole('button', { name: 'Continue to sign' }));
     expect(await screen.findByText('reader page')).toBeTruthy();
+  });
+
+  it('a single-choice question (an acknowledgment) can be answered and submitted', async () => {
+    const fetchMock = api({ score_percent: 100, passed: true, attempts_left: 2, locked: false }, [
+      { id: 'q1', prompt: 'I have read and understand this document.', multiple: false,
+        choices: [{ id: 'y', text: 'Yes' }] },
+    ]);
+    const user = userEvent.setup();
+    renderQuiz();
+    expect(await screen.findByText('Question 1 of 1')).toBeTruthy();
+    expect(screen.getByText('Choose one answer.')).toBeTruthy();
+    expect(screen.getAllByRole('radio')).toHaveLength(1);
+    const finish = screen.getByRole('button', { name: 'See my score' }) as HTMLButtonElement;
+    expect(finish.disabled).toBe(true);
+    await user.click(screen.getByRole('radio', { name: 'Yes' }));
+    expect(finish.disabled).toBe(false);
+    await user.click(finish);
+    expect(await screen.findByText('You scored 100%')).toBeTruthy();
+    expect(posted(fetchMock)).toEqual([[
+      `http://localhost:8000/learn/assignments/${ID}/quiz`,
+      { answers: { q1: ['y'] } },
+    ]]);
   });
 
   it('a failed try shows the tries left and offers another with fresh questions', async () => {

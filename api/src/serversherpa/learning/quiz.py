@@ -206,12 +206,13 @@ def _err(status: int, code: str, message: str) -> HTTPException:
 
 def check_question(choices: list[dict], correct: list[str], translations: dict,
                    languages: list[str]) -> None:
-    """422 unless the question reads: at least two choices with distinct
+    """422 unless the question reads: at least one choice (a lone "Yes"
+    acknowledgment is fine) with distinct
     ids, at least one correct id and every correct id a choice, and
     translations only into the configured languages (never English) naming
     only the question's own choice ids."""
-    if len(choices) < 2:
-        raise _err(422, "too_few_choices", "A question needs at least two choices.")
+    if len(choices) < 1:
+        raise _err(422, "too_few_choices", "A question needs at least one choice.")
     ids = [str(c["id"]) for c in choices]
     if len(set(ids)) != len(ids):
         raise _err(422, "duplicate_choice", "Two choices share an id.")

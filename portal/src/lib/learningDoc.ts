@@ -113,7 +113,7 @@ export const PUBLISH_ERRORS: Record<string, string> = {
 };
 
 export const QUESTION_ERRORS: Record<string, string> = {
-  too_few_choices: 'A question needs at least two choices.',
+  too_few_choices: 'A question needs at least one choice.',
   no_correct_choice: 'Mark at least one choice as correct.',
   duplicate_choice: 'Two choices share an id.',
   duplicate_correct: 'A correct choice is listed twice.',

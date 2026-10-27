@@ -1,7 +1,7 @@
 /**
- * Add or edit a quiz question: the prompt, two or more choices, and which
+ * Add or edit a quiz question: the prompt, one or more choices, and which
  * choices are correct (more than one may be). The rules are checked here
- * before anything is sent — a question needs at least two filled choices and
+ * before anything is sent — a question needs at least one filled choice and
  * at least one marked correct — and the API's own refusals read in plain
  * language. New choices get a client-made id (the server keeps ids it is
  * sent), so the correct ones can be named in the same request. Editing
@@ -42,7 +42,7 @@ export default function QuestionModal({ documentId, question, onClose, onSaved }
   const save = async () => {
     const filled = choices.filter((c) => c.text.trim());
     if (!prompt.trim()) { setError('Write the question.'); return; }
-    if (filled.length < 2) { setError(QUESTION_ERRORS.too_few_choices); return; }
+    if (filled.length < 1) { setError(QUESTION_ERRORS.too_few_choices); return; }
     const correct = filled.filter((c) => c.correct).map((c) => c.id);
     if (correct.length === 0) { setError(QUESTION_ERRORS.no_correct_choice); return; }
 
@@ -75,7 +75,7 @@ export default function QuestionModal({ documentId, question, onClose, onSaved }
 
   return (
     <LearningModal eyebrow="Quiz" title={question ? 'Edit question' : 'New question'}
-                   description="Workers answer after reading. Mark every correct choice; they must pick exactly those."
+                   description="Workers answer after reading. Mark every correct choice; they must pick exactly those. One choice is fine for an acknowledgment, such as Yes."
                    onClose={onClose} busy={saving} wide
                    footer={(
                      <>
@@ -105,7 +105,7 @@ export default function QuestionModal({ documentId, question, onClose, onSaved }
                 </label>
                 <input value={c.text} maxLength={1000} disabled={saving} aria-label={`Choice ${i + 1}`}
                        onChange={(e) => edit(c.id, { text: e.target.value })} />
-                {choices.length > 2 && (
+                {choices.length > 1 && (
                   <button type="button" className="mini-btn" disabled={saving}
                           aria-label={`Remove choice ${i + 1}`}
                           onClick={() => { setError(''); setChoices((l) => l.filter((x) => x.id !== c.id)); }}>
