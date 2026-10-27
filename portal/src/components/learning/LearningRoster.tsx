@@ -47,7 +47,7 @@ const ACTIONS = '88px';
 export default function LearningRoster({
   rows, counts, filter, onFilter, loading, failed, onRetry,
   canChange, canViewWorker, busyId,
-  onResend, onRegenerate, onRevoke, onHistory,
+  onResend, onResendSelected, onRegenerate, onRevoke, onHistory,
 }: {
   /** The rows for the current filter; null until the first load. */
   rows: RosterRow[] | null;
@@ -62,7 +62,10 @@ export default function LearningRoster({
   canViewWorker: boolean;
   /** The person whose action is in flight. */
   busyId: string | null;
+  /** One person's Resend (row menu). */
   onResend: (personIds: string[]) => void;
+  /** The ticked people (the tab confirms first). */
+  onResendSelected: (personIds: string[]) => void;
   onRegenerate: (row: RosterRow) => void;
   onRevoke: (row: RosterRow) => void;
   onHistory: (row: RosterRow) => void;
@@ -134,7 +137,7 @@ export default function LearningRoster({
           {rows && <span className="result-count">{visible.length} of {rows.length} shown</span>}
           {canChange && (
             <button type="button" className="mini-btn" disabled={selected.length === 0 || busyId !== null}
-                    onClick={() => onResend(selected)}>
+                    onClick={() => onResendSelected(selected)}>
               {selected.length > 0 ? `Resend to selected (${selected.length})` : 'Resend to selected'}
             </button>
           )}

@@ -25,6 +25,7 @@ import {
 import { useToast } from '../../lib/notificationsContext';
 import AssignExtraModal from './AssignExtraModal';
 import CodeSheetModal from './CodeSheetModal';
+import ConfirmNewCodesModal from './ConfirmNewCodesModal';
 import ComplianceGrid from './ComplianceGrid';
 import DryRunPanel from './DryRunPanel';
 import {
@@ -81,19 +82,41 @@ export default function InitiativeLearningTab({ initiativeId }: { initiativeId: 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [reporting, setReporting] = useState(false);
 
-  type Dialog = 'send' | 'schedule' | 'sheet' | 'preview' | 'assign' | { revoke: RosterRow } | null;
+  type Dialog = 'send' | 'schedule' | 'sheet' | 'preview' | 'assign'
+    | { revoke: RosterRow } | { regenerate: RosterRow } | { resend: RosterRow[] } | null;
   const [dialog, setDialog] = useState<Dialog>(null);
+  const closeDialog = () => setDialog(null);
 
-  // the summary and the unfiltered roster (counts, who a send reaches)
+  // another initiative: drop everything of the last one so it never flashes
+  const dataRef = useRef<InitiativeLearning | null>(null);
+  dataRef.current = data;
+  useEffect(() => {
+    dataRef.current = null;
+    setData(null);
+    setEveryone(null);
+    setFiltered(null);
+    setFilter('all');
+    setLoadError('');
+    setRosterFailed(false);
+    setDialog(null);
+  }, [initiativeId]);
+
+  // the summary and the unfiltered roster (counts, who a send reaches); a
+  // refresh that fails after the tab loaded keeps the numbers on screen and says so
   const summarySeq = useRef(0);
   useEffect(() => {
     const mine = ++summarySeq.current;
     getInitiativeLearning(initiativeId)
       .then((d) => { if (summarySeq.current === mine) { setData(d); setLoadError(''); } })
-      .catch((e) => { if (summarySeq.current === mine) setLoadError(tabErrorText(e)); });
+      .catch((e) => {
+        if (summarySeq.current !== mine) return;
+        if (dataRef.current !== null) toast(`Couldn’t refresh the numbers: ${tabErrorText(e)}`);
+        else setLoadError(tabErrorText(e));
+      });
     listInitiativeRoster(initiativeId, undefined)
       .then((rows) => { if (summarySeq.current === mine) { setEveryone(rows); setRosterFailed(false); } })
       .catch(() => { if (summarySeq.current === mine) setRosterFailed(true); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initiativeId, version]);
 
   // a status filter asks the server for just those rows
@@ -123,17 +146,19 @@ export default function InitiativeLearningTab({ initiativeId }: { initiativeId: 
     }
   };
 
+  /** Throws on failure: the confirm dialog shows it and stays open. */
   const regenerate = async (row: RosterRow) => {
-    setBusyId(row.person_id);
-    try {
-      await regenerateLearningCode(initiativeId, row.person_id);
-      toast(`Sent ${row.name} a new code`);
-      refresh();
-    } catch (e) {
-      toast(tabErrorText(e));
-    } finally {
-      setBusyId(null);
-    }
+    await regenerateLearningCode(initiativeId, row.person_id);
+    toast(`Sent ${row.name} a new code`);
+    closeDialog();
+    refresh();
+  };
+
+  const resendSelected = async (people: RosterRow[]) => {
+    const result = await sendInitiativeInvites(initiativeId, people.map((p) => p.person_id));
+    toast(sendText(result));
+    closeDialog();
+    refresh();
   };
 
   const runReport = async () => {
@@ -184,8 +209,6 @@ export default function InitiativeLearningTab({ initiativeId }: { initiativeId: 
   const reminderText = schedule.reminder_offsets.length === 0
     ? 'None'
     : `${joinNumbers(schedule.reminder_offsets)} ${schedule.reminder_offsets.length === 1 && schedule.reminder_offsets[0] === 1 ? 'day' : 'days'} before start`;
-
-  const closeDialog = () => setDialog(null);
 
   return (
     <div className="lrn-initab">
@@ -278,7 +301,11 @@ export default function InitiativeLearningTab({ initiativeId }: { initiativeId: 
       <LearningRoster rows={rows} counts={counts} filter={filter} onFilter={setFilter}
                       loading={filterLoading} failed={rosterFailed} onRetry={refresh}
                       canChange={canChange} canViewWorker={canViewWorker} busyId={busyId}
-                      onResend={(ids) => void resend(ids)} onRegenerate={(r) => void regenerate(r)}
+                      onResend={(ids) => void resend(ids)}
+                      onResendSelected={(ids) => setDialog({
+                        resend: (everyone ?? []).filter((r) => ids.includes(r.person_id)),
+                      })}
+                      onRegenerate={(r) => setDialog({ regenerate: r })}
                       onRevoke={(r) => setDialog({ revoke: r })}
                       onHistory={(r) => navigate(`/people/workers/${r.person_id}`)} />
 
@@ -307,7 +334,7 @@ export default function InitiativeLearningTab({ initiativeId }: { initiativeId: 
         <AssignExtraModal initiativeId={initiativeId} people={everyone ?? []} onClose={closeDialog}
                           onAssigned={refresh} />
       )}
-      {typeof dialog === 'object' && dialog !== null && (
+      {typeof dialog === 'object' && dialog !== null && 'revoke' in dialog && (
         <RevokeCodesModal initiativeId={initiativeId} personId={dialog.revoke.person_id}
                           name={dialog.revoke.name} onClose={closeDialog}
                           onRevoked={(n) => {
@@ -315,6 +342,18 @@ export default function InitiativeLearningTab({ initiativeId }: { initiativeId: 
                             toast(`Revoked ${plural(n, 'code')} for ${dialog.revoke.name}`);
                             refresh();
                           }} />
+      )}
+      {typeof dialog === 'object' && dialog !== null && 'regenerate' in dialog && (
+        <ConfirmNewCodesModal title="Regenerate code" confirmLabel="Regenerate code" onClose={closeDialog}
+                              description={`${dialog.regenerate.name} gets a new code and link by email.`}
+                              note="Their old code and email link stop working, and any training session they have open ends."
+                              run={() => regenerate(dialog.regenerate)} />
+      )}
+      {typeof dialog === 'object' && dialog !== null && 'resend' in dialog && (
+        <ConfirmNewCodesModal title="Resend to selected" confirmLabel="Resend"  onClose={closeDialog}
+                              description={`${plural(dialog.resend.length, 'person', 'people')} will each get a new code and link by email.`}
+                              note="Their old codes and email links stop working, and any training session they have open ends."
+                              run={() => resendSelected(dialog.resend)} />
       )}
     </div>
   );

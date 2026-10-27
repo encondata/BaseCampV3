@@ -204,7 +204,7 @@ it('Send invites now confirms with the counts, posts, then shows what happened',
 
   const dialog = await screen.findByRole('dialog', { name: /Send invites/ });
   // 4 on the roster: 1 complete (skipped), 1 without email, 2 to invite
-  expect(within(dialog).getByText(/2 people will get an invite/)).toBeTruthy();
+  expect(within(dialog).getByText(/Up to 2 people will get an invite\. People already invited keep their current code/)).toBeTruthy();
   expect(within(dialog).getByText(/1 has no email/)).toBeTruthy();
   expect(within(dialog).getByText(/1 is already complete/)).toBeTruthy();
   expect(api.sendInitiativeInvites).not.toHaveBeenCalled();
@@ -252,7 +252,7 @@ it('Resend on a row posts person_ids', async () => {
   await waitFor(() => expect(toast).toHaveBeenCalled());
 });
 
-it('Resend to selected posts every ticked person', async () => {
+it('Resend to selected confirms first, then posts every ticked person', async () => {
   const user = userEvent.setup();
   renderTab();
   await rosterName('Derek Hill');
@@ -262,20 +262,51 @@ it('Resend to selected posts every ticked person', async () => {
   await user.click(screen.getByRole('checkbox', { name: 'Select Priya Nair' }));
   expect(screen.getByRole('button', { name: 'Resend to selected (2)' })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Resend to selected (2)' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Resend to selected' });
+  expect(within(dialog).getByText(/2 people will each get a new code/)).toBeTruthy();
+  expect(within(dialog).getByText(/old codes and email links stop working/)).toBeTruthy();
+  expect(api.sendInitiativeInvites).not.toHaveBeenCalled();
+  await user.click(within(dialog).getByRole('button', { name: 'Resend' }));
   await waitFor(() => expect(api.sendInitiativeInvites).toHaveBeenCalledWith('i1', ['p2', 'p3']));
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Resend to selected' })).toBeNull());
 });
 
-it('Regenerate code posts for that person, and a missing email points to the code sheet', async () => {
+it('Resend to selected with one person ticked still confirms', async () => {
+  const user = userEvent.setup();
+  renderTab();
+  await rosterName('Derek Hill');
+  await user.click(screen.getByRole('checkbox', { name: 'Select Derek Hill' }));
+  await user.click(screen.getByRole('button', { name: 'Resend to selected (1)' }));
+  expect(await screen.findByRole('dialog', { name: 'Resend to selected' })).toBeTruthy();
+  expect(api.sendInitiativeInvites).not.toHaveBeenCalled();
+});
+
+it('Regenerate code names the person, confirms, then posts', async () => {
+  const user = userEvent.setup();
   renderTab();
   await rosterName('Derek Hill');
   await rowMenu('Derek Hill', 'Regenerate code');
+  const dialog = await screen.findByRole('dialog', { name: 'Regenerate code' });
+  expect(within(dialog).getByText(/Derek Hill gets a new code/)).toBeTruthy();
+  expect(within(dialog).getByText(/old code and email link stop working/)).toBeTruthy();
+  expect(within(dialog).getByText(/session they have open ends/)).toBeTruthy();
+  expect(api.regenerateLearningCode).not.toHaveBeenCalled();
+  await user.click(within(dialog).getByRole('button', { name: 'Regenerate code' }));
   await waitFor(() => expect(api.regenerateLearningCode).toHaveBeenCalledWith('i1', 'p2'));
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Regenerate code' })).toBeNull());
+});
 
+it('a person with no email gets the code-sheet message in the confirm dialog, which stays open', async () => {
+  const user = userEvent.setup();
+  renderTab();
+  await rosterName('Ana Lim');
   api.regenerateLearningCode.mockRejectedValueOnce(new ApiError(422, 'no_email', {
     code: 'no_email', message: 'This person has no email. Print a code sheet for them instead.' }));
   await rowMenu('Ana Lim', 'Regenerate code');
-  await waitFor(() => expect(toast).toHaveBeenLastCalledWith(
-    expect.stringMatching(/no email/i)));
+  const dialog = await screen.findByRole('dialog', { name: 'Regenerate code' });
+  await user.click(within(dialog).getByRole('button', { name: 'Regenerate code' }));
+  expect(await within(dialog).findByRole('alert')).toBeTruthy();
+  expect(within(dialog).getByRole('alert').textContent).toMatch(/no email/i);
 });
 
 it('Revoke asks first, then revokes that person’s codes', async () => {
@@ -457,5 +488,26 @@ it('says so when the tab can’t load, and tries again', async () => {
   renderTab();
   expect(await screen.findByRole('alert')).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Try again' }));
+  expect(await screen.findByRole('group', { name: 'Learning progress' })).toBeTruthy();
+});
+
+it('says so when a refresh after a change fails, and keeps the numbers', async () => {
+  renderTab();
+  await rosterName('Derek Hill');
+  api.getInitiativeLearning.mockRejectedValueOnce(new ApiError(500, 'boom', {}));
+  await rowMenu('Derek Hill', 'Resend');
+  await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.stringMatching(/Couldn’t refresh/)));
+  expect(screen.getByRole('group', { name: 'Learning progress' })).toBeTruthy();
+});
+
+it('shows the new initiative’s own data after the id changes, never the last one’s', async () => {
+  const { rerender } = render(
+    <MemoryRouter><InitiativeLearningTab initiativeId="i1" /></MemoryRouter>);
+  await screen.findByRole('group', { name: 'Learning progress' });
+  let release: (v: InitiativeLearning) => void = () => {};
+  api.getInitiativeLearning.mockReturnValueOnce(new Promise((r) => { release = r; }));
+  rerender(<MemoryRouter><InitiativeLearningTab initiativeId="i2" /></MemoryRouter>);
+  await waitFor(() => expect(screen.queryByRole('group', { name: 'Learning progress' })).toBeNull());
+  release(SUMMARY);
   expect(await screen.findByRole('group', { name: 'Learning progress' })).toBeTruthy();
 });

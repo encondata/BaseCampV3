@@ -76,14 +76,13 @@ export default function SendInvitesModal({ initiativeId, roster, onClose, onSent
       {!result && counts === null && <p className="page-hint">Counting…</p>}
       {!result && counts !== null && (
         <ul className="lrn-send-counts">
-          <li>{`${plural(counts.toInvite, 'person', 'people')} will get an invite.`}</li>
+          <li>{`Up to ${plural(counts.toInvite, 'person', 'people')} will get an invite. People already invited keep their current code.`}</li>
           {counts.noEmail > 0 && (
             <li>{`${counts.noEmail} ${counts.noEmail === 1 ? 'has' : 'have'} no email: print them a code sheet.`}</li>
           )}
           {counts.complete > 0 && (
             <li>{`${counts.complete} ${counts.complete === 1 ? 'is' : 'are'} already complete and will be skipped.`}</li>
           )}
-          <li className="lrn-hint">People who already have a working, emailed code are left alone.</li>
         </ul>
       )}
       {result && (
