@@ -16,9 +16,17 @@ const FRAME_CSS = 'body{margin:0;padding:12px;font:14px/1.6 system-ui,sans-serif
   + 'h1,h2,h3,h4{font-size:15px;margin:12px 0 4px}img{max-width:100%;height:auto}'
   + 'table{border-collapse:collapse}th,td{border:1px solid #d9dde2;padding:4px 8px}';
 
-/** The frame's document. Escaping is not needed: the frame is sandboxed. */
+const CSP = "default-src 'none'; img-src https: data:; style-src 'unsafe-inline'";
+
+const escapeAttr = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+/** The frame's document. The body is the user's raw HTML: the frame is
+ *  sandboxed (no scripts) and a CSP meta stops it loading anything but
+ *  https/data images and its own inline style. */
 export function previewDocument(html: string, language: string): string {
-  return `<!doctype html><html lang="${language}" dir="${textDir(language)}"><head><meta charset="utf-8">`
+  return `<!doctype html><html lang="${escapeAttr(language)}" dir="${textDir(language)}"><head>`
+    + `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${CSP}">`
     + `<style>${FRAME_CSS}</style></head><body>${html}</body></html>`;
 }
 

@@ -640,7 +640,8 @@ async def test_signoffs_list_pages_and_counts(client, db, seeded_user, renderer)
 
     now = datetime.now(UTC)
     for i, (version, name) in enumerate([(v1, "Ann"), (v1, "Bob"), (v2, "Cy")]):
-        person = Person(first_name=name, last_name="W")
+        person = Person(first_name=name, last_name="W",
+                        preferred_name="Cyrus" if name == "Cy" else None)
         db.add(person)
         await db.flush()
         db.add(LearningSignoff(
@@ -654,7 +655,7 @@ async def test_signoffs_list_pages_and_counts(client, db, seeded_user, renderer)
     assert body["total"] == 3
     assert body["version_counts"] == {v1["id"]: 2, v2["id"]: 1}
     assert [(r["person"]["name"], r["version_no"]) for r in body["items"]] == [
-        ("Cy W", 2), ("Bob W", 1), ("Ann W", 1)]
+        ("Cyrus W", 2), ("Bob W", 1), ("Ann W", 1)]
     assert "signature_png" not in body["items"][0] and "typed_name" not in body["items"][0]
     assert body["items"][0]["read_seconds"] == 42 and body["items"][0]["initiative"] is None
 

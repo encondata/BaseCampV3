@@ -50,7 +50,12 @@ export default function SignoffsPanel({ documentId, versions }: {
       return { rows: page.items, total: page.total, next_cursor: next < page.total && page.items.length > 0 ? String(next) : null };
     },
   });
-  const failed = list.error !== null && list.rows.length === 0;
+  // Offset paging can repeat a row when a sign-off lands between pages.
+  const rows = useMemo(() => {
+    const seen = new Set<string>();
+    return list.rows.filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)));
+  }, [list.rows]);
+  const failed = list.error !== null && rows.length === 0;
 
   const columns: LearningColumn<DocumentSignoff>[] = [
     { def: SIGNOFF_COLUMNS.worker, cell: (s) => <span className="cell-top cell-line">{s.person.name}</span> },
@@ -74,8 +79,8 @@ export default function SignoffsPanel({ documentId, versions }: {
             </select>
           </label>
           <span className="result-count" aria-live="polite">
-            {failed ? '' : list.loading && list.rows.length === 0 ? 'Loading…'
-              : `${list.rows.length.toLocaleString()} of ${list.total.toLocaleString()} shown`}
+            {failed ? '' : list.loading && rows.length === 0 ? 'Loading…'
+              : `${rows.length.toLocaleString()} of ${list.total.toLocaleString()} shown`}
           </span>
         </div>
       </div>
@@ -90,9 +95,9 @@ export default function SignoffsPanel({ documentId, versions }: {
       )}
       {!failed && (
         <>
-          <LearningList columns={columns} rows={list.rows} rowKey={(s) => s.id} ariaLabel="Sign-offs"
+          <LearningList columns={columns} rows={rows} rowKey={(s) => s.id} ariaLabel="Sign-offs"
                         empty={list.loading ? null : <><b>No sign-offs yet</b>They appear here as workers sign.</>} />
-          {list.error && list.rows.length > 0 && (
+          {list.error && rows.length > 0 && (
             <div className="audit-more">
               <span className="set-note">{list.error}</span>
               <button type="button" className="mini-btn" onClick={list.retry}>Retry</button>

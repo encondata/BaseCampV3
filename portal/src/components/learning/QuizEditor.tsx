@@ -15,6 +15,7 @@ import {
 import { apiErrorText, positiveInt } from '../../lib/learningDoc';
 import LearningList, { type LearningColumn } from './LearningList';
 import QuestionModal from './QuestionModal';
+import { usePendingSettings } from './usePendingSettings';
 import { useLearningAccess } from './useLearningAccess';
 
 export const QUESTION_COLUMNS = {
@@ -47,7 +48,7 @@ export default function QuizEditor({ doc, onSave }: {
   useEffect(() => { setQuestions(null); load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [doc.id]);
 
   // ── settings ──────────────────────────────────────────────────────
-  const [pending, setPending] = useState<Partial<DocumentSettings>>({});
+  const { pending, apply } = usePendingSettings(onSave);
   const shown: DocumentSettings = { ...doc, ...pending };
   const [passText, setPassText] = useState(doc.quiz_pass_percent === null ? '' : String(doc.quiz_pass_percent));
   const [attemptsText, setAttemptsText] = useState(doc.quiz_max_attempts === null ? '' : String(doc.quiz_max_attempts));
@@ -55,22 +56,13 @@ export default function QuizEditor({ doc, onSave }: {
   useEffect(() => { setPassText(doc.quiz_pass_percent === null ? '' : String(doc.quiz_pass_percent)); }, [doc.quiz_pass_percent]);
   useEffect(() => { setAttemptsText(doc.quiz_max_attempts === null ? '' : String(doc.quiz_max_attempts)); }, [doc.quiz_max_attempts]);
 
-  const apply = async (patch: Partial<DocumentSettings>) => {
-    setPending((p) => ({ ...p, ...patch }));
-    const ok = await onSave(patch);
-    setPending((p) => {
-      const next = { ...p };
-      (Object.keys(patch) as (keyof DocumentSettings)[]).forEach((k) => { delete next[k]; });
-      return next;
-    });
-    return ok;
-  };
-
   const lockNeedsAttempts = (action: QuizFailAction, attempts: number | null) =>
     shown.quiz_enabled && action === 'lock' && attempts === null;
   const needAttemptsText = 'Set how many attempts are allowed before the quiz locks.';
 
   const commitPass = () => {
+    // leaving a box that was never typed in says nothing
+    if (passText === (doc.quiz_pass_percent === null ? '' : String(doc.quiz_pass_percent))) return;
     const n = positiveInt(passText);
     if (n === null || n > 100) { setSettingError('Enter a pass mark between 1 and 100.'); return; }
     setSettingError('');

@@ -260,3 +260,11 @@ it('says when the quiz is switched off for the document', async () => {
   renderEditor({ ...DOC, quiz_enabled: false });
   expect(await screen.findByText(/the quiz is off for this document/i)).toBeTruthy();
 });
+
+it('leaving the pass mark box untouched shows no error', async () => {
+  renderEditor({ ...DOC, quiz_pass_percent: null });
+  await screen.findByText('Who can you tell?');
+  fireEvent.blur(screen.getByLabelText('Pass mark (percent)'));
+  expect(screen.queryByText(/between 1 and 100/i)).toBeNull();
+  expect(onSave).not.toHaveBeenCalled();
+});

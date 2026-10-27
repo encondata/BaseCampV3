@@ -36,6 +36,9 @@ export const TRANSLATION_COLUMNS = {
   actions: { key: 'actions', label: 'Actions', width: '2.6fr', default: true, min: 300 },
 };
 
+/** A language's in-review translation as of its last edit: a new edit is a new key. */
+const reviewKey = (r: TranslationStatusRow) => `${r.language}:${r.updated_at}`;
+
 export default function TranslationsPanel({ documentId, currentVersionNo, rows, onReload }: {
   documentId: string;
   /** Null while the document has no published version. */
@@ -61,11 +64,11 @@ export default function TranslationsPanel({ documentId, currentVersionNo, rows, 
   useEffect(() => {
     if (!canChange) return;
     rows.filter((r) => r.status === 'in_review').forEach((r) => {
-      const key = `${r.language}:${r.updated_at}`;
+      const key = reviewKey(r);
       if (asked.current.has(key)) return;
       asked.current.add(key);
       getTranslation(documentId, r.language)
-        .then((t) => setReviewable((m) => ({ ...m, [r.language]: t })))
+        .then((t) => setReviewable((m) => ({ ...m, [key]: t })))
         .catch(() => { /* no Approve button without knowing the editor */ });
     });
   }, [rows, documentId, canChange]);
@@ -81,8 +84,6 @@ export default function TranslationsPanel({ documentId, currentVersionNo, rows, 
       toast(what === 'draft' ? `Drafted the ${name} translation`
         : what === 'submit' ? `Sent the ${name} translation for review`
           : `Approved the ${name} translation`);
-      setReviewable((m) => { const n = { ...m }; delete n[row.language]; return n; });
-      asked.current.clear();
       onReload();
     } catch (e) {
       setError(apiErrorText(e, TRANSLATION_ERRORS));
@@ -94,7 +95,7 @@ export default function TranslationsPanel({ documentId, currentVersionNo, rows, 
   const actions = (row: TranslationStatusRow) => {
     if (!canChange || !published) return null;
     const disabled = busy !== null;
-    const detail = reviewable[row.language];
+    const detail = reviewable[reviewKey(row)];
     const lastEditor = detail?.updated_by?.id !== undefined && detail.updated_by.id === person?.id;
     return (
       <div className="lrn-actions">
@@ -170,7 +171,6 @@ export default function TranslationsPanel({ documentId, currentVersionNo, rows, 
                               onSaved={() => {
                                 toast(`Saved the ${languageName(editing.language)} translation`);
                                 setEditing(null);
-                                asked.current.clear();
                                 onReload();
                               }} />
       )}

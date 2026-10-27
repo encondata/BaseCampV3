@@ -170,6 +170,7 @@ it('Edit opens a title, an HTML box and a live preview, and saves both', async (
   expect(frame.getAttribute('sandbox')).toBe('');
   expect(frame.getAttribute('srcdoc')).toContain('<p>작업복</p>');
   expect(frame.getAttribute('srcdoc')).toContain('dir="ltr"');
+  expect(frame.getAttribute('srcdoc')).toContain("default-src 'none'; img-src https: data:; style-src 'unsafe-inline'");
 
   await user.click(within(dialog).getByRole('button', { name: 'Save translation' }));
   await waitFor(() => expect(api.saveTranslation).toHaveBeenCalledWith(
@@ -227,4 +228,21 @@ it('an unpublished document says to publish first and offers no actions', async 
 it('with no languages configured it says so', () => {
   renderPanel([]);
   expect(screen.getByText(/no languages are set up/i)).toBeTruthy();
+});
+
+it('a new edit to an in-review translation is looked at again (keyed by language and edit time)', async () => {
+  const { rerender } = renderPanel();
+  await within(rowOf('Korean')).findByRole('button', { name: 'Approve' });
+  expect(api.getTranslation).toHaveBeenCalledTimes(1);
+  api.getTranslation.mockImplementation(async (_d: string, lang: string) =>
+    tr(lang, { updated_by: { id: 'me', name: 'Me' } }));
+  rerender(<TranslationsPanel documentId="d1" currentVersionNo={4} onReload={onReload}
+                              rows={ROWS.map((r) => (r.language === 'ko' ? { ...r, updated_at: '2026-10-14T00:00:00Z' } : r))} />);
+  expect(await within(rowOf('Korean')).findByText(/someone else has to approve/i)).toBeTruthy();
+  expect(within(rowOf('Korean')).queryByRole('button', { name: 'Approve' })).toBeNull();
+});
+
+it('the preview frame escapes the language attribute', async () => {
+  const { previewDocument } = await import('./TranslationEditModal');
+  expect(previewDocument('<p>x</p>', 'en"><script>')).toContain('lang="en&quot;&gt;&lt;script&gt;"');
 });

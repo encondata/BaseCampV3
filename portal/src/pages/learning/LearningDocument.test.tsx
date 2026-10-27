@@ -355,3 +355,111 @@ it('a missing document says so', async () => {
   renderPage();
   expect(await screen.findByText(/document not found/i)).toBeTruthy();
 });
+
+const deferred = <T,>() => {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+};
+
+it('rapid edits are sent one PATCH at a time and the UI ends on the last choice', async () => {
+  const first = deferred<Doc>();
+  const second = deferred<Doc>();
+  api.patchLearningDocument
+    .mockReset()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise);
+  renderPage();
+  await ready();
+  const select = screen.getByLabelText('Valid for') as HTMLSelectElement;
+  fireEvent.change(select, { target: { value: '182' } });
+  fireEvent.change(select, { target: { value: '90' } });
+  expect(select.value).toBe('90');
+  // the second goes out only after the first has come back
+  await waitFor(() => expect(api.patchLearningDocument).toHaveBeenCalledTimes(1));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(api.patchLearningDocument).toHaveBeenCalledTimes(1);
+  first.resolve({ ...DOC, validity_days: 182 });
+  await waitFor(() => expect(api.patchLearningDocument).toHaveBeenCalledTimes(2));
+  expect(api.patchLearningDocument.mock.calls.map((c) => c[1])).toEqual([
+    { validity_days: 182 }, { validity_days: 90 }]);
+  // between the two responses the control still shows the newer choice
+  expect(select.value).toBe('90');
+  second.resolve({ ...DOC, validity_days: 90 });
+  await waitFor(() => expect(toast).toHaveBeenCalledTimes(2));
+  expect(select.value).toBe('90');
+});
+
+it('a failed earlier save does not snap the control back over a newer pending choice', async () => {
+  const first = deferred<Doc>();
+  const second = deferred<Doc>();
+  api.patchLearningDocument
+    .mockReset()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise);
+  renderPage();
+  await ready();
+  const select = screen.getByLabelText('Valid for') as HTMLSelectElement;
+  fireEvent.change(select, { target: { value: '30' } });
+  fireEvent.change(select, { target: { value: '90' } });
+  first.reject(new ApiError(500, 'boom'));
+  await waitFor(() => expect(api.patchLearningDocument).toHaveBeenCalledTimes(2));
+  expect(select.value).toBe('90');
+  second.resolve({ ...DOC, validity_days: 90 });
+  await waitFor(() => expect(select.value).toBe('90'));
+});
+
+it('toggling the quiz on then off quickly ends off', async () => {
+  const first = deferred<Doc>();
+  const second = deferred<Doc>();
+  api.getLearningDocument.mockResolvedValue({ ...DOC, quiz_pass_percent: 80 });
+  api.patchLearningDocument
+    .mockReset()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise);
+  renderPage();
+  await ready();
+  const box = screen.getByRole('checkbox', { name: 'Quiz after reading' }) as HTMLInputElement;
+  fireEvent.click(box);
+  fireEvent.click(box);
+  expect(box.checked).toBe(false);
+  first.resolve({ ...DOC, quiz_pass_percent: 80, quiz_enabled: true });
+  await waitFor(() => expect(api.patchLearningDocument).toHaveBeenCalledTimes(2));
+  expect(box.checked).toBe(false);
+  second.resolve({ ...DOC, quiz_pass_percent: 80, quiz_enabled: false });
+  await waitFor(() => expect(toast).toHaveBeenCalledTimes(2));
+  expect(box.checked).toBe(false);
+  expect(api.patchLearningDocument.mock.calls.map((c) => c[1])).toEqual([
+    { quiz_enabled: true }, { quiz_enabled: false }]);
+});
+
+it('leaving Custom days untouched shows no error', async () => {
+  renderPage();
+  await ready();
+  fireEvent.change(screen.getByLabelText('Valid for'), { target: { value: 'never' } });
+  await waitFor(() => expect(api.patchLearningDocument).toHaveBeenCalled());
+  fireEvent.change(screen.getByLabelText('Valid for'), { target: { value: 'custom' } });
+  fireEvent.blur(screen.getByLabelText('Custom validity in days'));
+  expect(screen.queryByText(/whole number of days/i)).toBeNull();
+});
+
+it('Sign-offs drops a row repeated across pages', async () => {
+  const item = (n: number) => ({
+    id: `s${n}`, person: { id: `p${n}`, name: `Worker ${n}` }, version_no: 4, language: 'en',
+    signed_at: '2026-10-20T15:00:00Z', read_seconds: 75, quiz_score: null,
+    initiative_id: null, initiative: null,
+  });
+  api.listDocumentSignoffs.mockImplementation(async (_id: string, opts: { offset?: number } = {}) => ({
+    total: 3, version_counts: { v4: 3 },
+    items: (opts.offset ?? 0) === 0 ? [item(1), item(2)] : [item(2), item(3)],
+  }));
+  const user = userEvent.setup();
+  renderPage('/learning/library/d1?tab=signoffs');
+  await ready();
+  await screen.findByText('Worker 1');
+  await user.click(screen.getByRole('button', { name: 'Load more' }));
+  await screen.findByText('Worker 3');
+  expect(screen.getAllByText('Worker 2').length).toBe(1);
+  expect(screen.getByText('3 of 3 shown')).toBeTruthy();
+});

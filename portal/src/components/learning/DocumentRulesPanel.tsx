@@ -21,6 +21,7 @@ import {
   validityChoice, validityText, VALIDITY_OPTIONS, type ValidityChoice,
 } from '../../lib/learningDoc';
 import { Switch } from '../Switch';
+import { usePendingSettings } from './usePendingSettings';
 import '../../styles/learning.css';
 
 export type DocTab = 'content' | 'quiz' | 'translations' | 'versions' | 'signoffs';
@@ -37,20 +38,8 @@ export default function DocumentRulesPanel({
   signoffCounts: Record<string, number> | null;
   onOpenTab: (tab: DocTab) => void;
 }) {
-  // What the user just chose, until the save lands (or fails and it goes).
-  const [pending, setPending] = useState<Partial<DocumentSettings>>({});
+  const { pending, apply } = usePendingSettings(onSave);
   const shown: DocumentSettings = { ...doc, ...pending };
-
-  const apply = async (patch: Partial<DocumentSettings>) => {
-    setPending((p) => ({ ...p, ...patch }));
-    const ok = await onSave(patch);
-    setPending((p) => {
-      const next = { ...p };
-      (Object.keys(patch) as (keyof DocumentSettings)[]).forEach((k) => { delete next[k]; });
-      return next;
-    });
-    return ok;
-  };
 
   // Custom days
   const [customOpen, setCustomOpen] = useState(false);
@@ -69,6 +58,8 @@ export default function DocumentRulesPanel({
     if (days !== shown.validity_days) void apply({ validity_days: days });
   };
   const commitDays = () => {
+    // leaving a box that was never typed in says nothing
+    if (daysText === (doc.validity_days === null ? '' : String(doc.validity_days))) return;
     const n = positiveInt(daysText);
     if (n === null) { setDaysError('Enter a whole number of days, 1 or more.'); return; }
     setDaysError('');
@@ -91,6 +82,7 @@ export default function DocumentRulesPanel({
     if (shown.min_read_seconds !== null) void apply({ min_read_seconds: null });
   };
   const commitSeconds = () => {
+    if (secondsText === (doc.min_read_seconds === null ? '' : String(doc.min_read_seconds))) return;
     const n = positiveInt(secondsText);
     if (n === null) { setSecondsError('Enter a whole number of seconds, 1 or more.'); return; }
     setSecondsError('');

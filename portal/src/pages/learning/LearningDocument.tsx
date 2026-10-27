@@ -96,16 +96,24 @@ export default function LearningDocument() {
     reloadSignoffs();
   }, [load, reloadTranslations, reloadSignoffs]);
 
+  // Saves go out one PATCH at a time, so the server applies them (and the page
+  // takes their responses) in the order they were made.
+  const saveChain = useRef<Promise<unknown>>(Promise.resolve());
+
   /** One autosave. Resolves false when it failed, so the panel puts the old value back. */
-  const save = useCallback(async (patch: DocumentPatch): Promise<boolean> => {
-    try {
-      setDoc(await patchLearningDocument(documentId, patch));
-      toast('Saved');
-      return true;
-    } catch (e) {
-      toast(`Couldn’t save: ${apiErrorText(e)}`);
-      return false;
-    }
+  const save = useCallback((patch: DocumentPatch): Promise<boolean> => {
+    const run = saveChain.current.then(async (): Promise<boolean> => {
+      try {
+        setDoc(await patchLearningDocument(documentId, patch));
+        toast('Saved');
+        return true;
+      } catch (e) {
+        toast(`Couldn\u2019t save: ${apiErrorText(e)}`);
+        return false;
+      }
+    });
+    saveChain.current = run;
+    return run;
   }, [documentId, toast]);
 
   const archive = async () => {
