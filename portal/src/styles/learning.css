@@ -473,3 +473,32 @@
 .lrn-time { width: 130px; }
 .lrn-send-counts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .lrn-modal .lrn-dryrun { margin-top: 0; padding: 0; border: 0; background: none; }
+
+/* Learning settings: stacked panels, a save bar, and the selects/textarea
+   that .pf-form (inputs only) doesn't style */
+.lrn-settings form { display: flex; flex-direction: column; gap: 18px; }
+.lrn-settings .panel + .panel { margin-top: 0; }
+.lrn-settings .pf-form select,
+.lrn-settings .pf-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  color: var(--text-dark);
+  background: var(--surface-2, #f5f7fa);
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  padding: 10px 12px;
+  outline: none;
+}
+.lrn-settings .pf-form textarea { resize: vertical; }
+.lrn-settings .pf-form select:focus,
+.lrn-settings .pf-form textarea:focus {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
+  background: var(--surface, #fff);
+}
+.lrn-settings .pf-form .lrn-hint { margin-top: 6px; }
+.lrn-settings .init-check input { width: auto; }
+.lrn-settings-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+@media (max-width: 760px) { .lrn-settings .pf-form { grid-template-columns: 1fr; } }

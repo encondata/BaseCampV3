@@ -294,3 +294,36 @@ it('a Timesheet passes timesheetInitial through to the options', async () => {
   expect((screen.getByLabelText('To') as HTMLInputElement).value).toBe('2026-09-15');
   expect(screen.getByRole('checkbox', { name: /^Rejected/ }).getAttribute('aria-checked')).toBe('true');
 });
+
+const LC_DEF: ReportDefinition = {
+  id: 'd11', name: 'Learning compliance', description: 'Who signed what.',
+  report_type: 'learning_compliance', is_system: true, updated_at: '2026-10-26T00:00:00Z',
+  options: { default_format: 'xlsx' },
+};
+
+it('Learning compliance skips the pick step and opens on its options', async () => {
+  render(<GenerateReportModal definition={LC_DEF} onClose={() => {}} />);
+  expect(await screen.findByRole('button', { name: 'Generate Report' })).toBeTruthy();
+  expect(screen.queryByText('Selected initiative')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Next' })).toBeNull();
+});
+
+it('a Learning compliance run posts the initiative, format and notify, never the Files note', async () => {
+  const user = userEvent.setup();
+  api.createReportRun.mockResolvedValue(run({
+    id: 'r11', definition_id: 'd11', report_type: 'learning_compliance', initiative_id: null,
+    status: 'completed', filename: 'Learning compliance.xlsx',
+  }));
+  api.getReportRun.mockResolvedValue(run({
+    id: 'r11', definition_id: 'd11', report_type: 'learning_compliance', initiative_id: null,
+    status: 'completed', filename: 'Learning compliance.xlsx',
+  }));
+  render(<GenerateReportModal definition={LC_DEF} onClose={() => {}} />);
+  await user.click(await screen.findByRole('button', { name: 'Generate Report' }));
+  expect(api.createReportRun).toHaveBeenCalledWith({
+    definition_id: 'd11', initiative_id: null, options: { initiative_id: null, format: 'xlsx' },
+    notify: false,
+  });
+  await screen.findByText('Learning compliance.xlsx');
+  expect(screen.queryByText(/saved to the initiative/)).toBeNull();
+});

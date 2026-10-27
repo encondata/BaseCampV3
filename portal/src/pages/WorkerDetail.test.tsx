@@ -37,6 +37,11 @@ vi.mock('../lib/api', async (importActual) => ({
 vi.mock('../components/AvatarUpload', () => ({ default: () => null }));
 vi.mock('../components/workers/CertsPanel', () => ({ default: () => null }));
 vi.mock('../components/NotesFilesPanel', () => ({ default: () => null }));
+vi.mock('../components/learning/LearningHistoryPanel', () => ({
+  default: ({ personId, personName }: { personId: string; personName: string }) => (
+    <div data-testid="learning-history">{personId}:{personName}</div>
+  ),
+}));
 
 const badge = vi.hoisted(() => ({ printBadgeQr: vi.fn() }));
 vi.mock('../components/people/BadgeQr', () => badge);
@@ -122,4 +127,9 @@ it('hides Print QR when the API withholds the badge uid', async () => {
   renderPage();
   await screen.findByRole('heading', { level: 1, name: /Wes Worker/ });
   expect(screen.queryByRole('button', { name: 'Print QR' })).toBeNull();
+});
+
+it('shows the Learning history panel for the worker', async () => {
+  renderPage();
+  expect((await screen.findByTestId('learning-history')).textContent).toBe('w1:Wes Worker');
 });

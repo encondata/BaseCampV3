@@ -10,7 +10,7 @@ import { useMemo, useState } from 'react';
 import {
   languageName, listDocumentSignoffs, type DocumentSignoff, type VersionSummary,
 } from '../../lib/learning';
-import { dateTime } from '../../lib/learningDoc';
+import { dateTime, readTime } from '../../lib/learningDoc';
 import { usePagedList } from '../../lib/usePagedList';
 import LearningList, { type LearningColumn } from './LearningList';
 
@@ -25,14 +25,6 @@ export const SIGNOFF_COLUMNS = {
   quiz: { key: 'quiz', label: 'Quiz score', short: 'Quiz', width: '0.8fr', default: true, min: 80 },
   initiative: { key: 'initiative', label: 'Initiative', width: '1.4fr', default: true, min: 140 },
 };
-
-/** 75 → "1 min 15 s". */
-function readTime(seconds: number): string {
-  if (seconds < 60) return `${seconds} s`;
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return s ? `${m} min ${s} s` : `${m} min`;
-}
 
 export default function SignoffsPanel({ documentId, versions }: {
   documentId: string;

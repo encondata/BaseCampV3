@@ -1,9 +1,12 @@
 import { useEffect, useState, type FormEvent } from 'react';
 
 import { useAuth } from '../../auth/AuthContext';
+import { useLearningAccess } from '../learning/useLearningAccess';
 import { apiFetch } from '../../lib/api';
 import { longDateOf } from '../../lib/format';
+import { downloadCertificate } from '../../lib/learning';
 import { parseApiDay } from '../../lib/timeline';
+import '../../styles/learning.css';   // .lrn-link
 
 interface Cert {
   id: string;
@@ -11,6 +14,10 @@ interface Cert {
   issuer: string | null;
   issued_on: string | null;
   expires_on: string | null;
+  /** "manual", or "learning" when a learning sign-off wrote it. */
+  source: string;
+  /** The initiative the sign-off belonged to; null for the general set. */
+  learning_initiative_id: string | null;
 }
 
 function certState(c: Cert): { label: string; cls: string } | null {
@@ -25,17 +32,22 @@ function certState(c: Cert): { label: string; cls: string } | null {
   return null;
 }
 
-export default function CertsPanel({ personId, onChanged }: {
+export default function CertsPanel({ personId, personName = 'worker', onChanged }: {
   personId: string;
+  /** Names the downloaded certificate file. */
+  personName?: string;
   onChanged: () => void;
 }) {
   const { can } = useAuth();
+  // The certificate holds typed names and signatures: learning managers only.
+  const canCertificate = useLearningAccess()('view');
   const canAdd = can('workers', 'add');
   const canDelete = can('workers', 'delete');
   const [certs, setCerts] = useState<Cert[] | null>(null);
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ name: '', issuer: '', issued_on: '', expires_on: '' });
   const [busy, setBusy] = useState(false);
+  const [certError, setCertError] = useState('');
 
   const refresh = async () => {
     const resp = await apiFetch(`/workers/${personId}/certifications`);
@@ -72,6 +84,15 @@ export default function CertsPanel({ personId, onChanged }: {
     setBusy(false);
   };
 
+  const certificate = async (c: Cert) => {
+    setCertError('');
+    try {
+      await downloadCertificate(personId, personName, c.learning_initiative_id ?? undefined);
+    } catch {
+      setCertError("Couldn't download the certificate.");
+    }
+  };
+
   return (
     <>
       {certs === null && <p className="set-note" style={{ padding: 0 }}>Loading…</p>}
@@ -95,6 +116,14 @@ export default function CertsPanel({ personId, onChanged }: {
                 ].filter(Boolean).join(' · ')}
               </div>
             </div>
+            {c.source === 'learning' && (
+              <span className="chip c-blue"><span className="dot" />Learning</span>
+            )}
+            {c.source === 'learning' && canCertificate && (
+              <button type="button" className="lrn-link" onClick={() => void certificate(c)}>
+                Certificate
+              </button>
+            )}
             {state && (
               <span className={`chip ${state.cls}`}><span className="dot" />{state.label}</span>
             )}
@@ -105,6 +134,8 @@ export default function CertsPanel({ personId, onChanged }: {
           </div>
         );
       })}
+
+      {certError && <p className="pf-error" role="alert">{certError}</p>}
 
       {canAdd && !adding && (
         <div className="detail-actions">

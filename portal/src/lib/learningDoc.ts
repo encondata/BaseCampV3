@@ -129,6 +129,14 @@ export const dateTime = (iso: string): string =>
     month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
   });
 
+/** 75 → "1 min 15 s". */
+export function readTime(seconds: number): string {
+  if (seconds < 60) return `${seconds} s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return s ? `${m} min ${s} s` : `${m} min`;
+}
+
 /** An id for a quiz choice the server hasn't seen (it keeps ids we send). */
 export function newChoiceId(): string {
   const bytes = new Uint8Array(4);

@@ -38,7 +38,7 @@ import LearningDocument from './pages/learning/LearningDocument';
 import LearningLibrary from './pages/learning/LearningLibrary';
 import LearningPackets from './pages/learning/LearningPackets';
 import LearningRules from './pages/learning/LearningRules';
-import Placeholder from './pages/Placeholder';
+import LearningSettings from './pages/learning/LearningSettings';
 import InitiativeDetailPage from './pages/InitiativeDetail';
 import InitiativeTimeline from './pages/InitiativeTimeline';
 import KioskDevices from './pages/KioskDevices';
@@ -186,10 +186,7 @@ export default function App() {
                   <ProtectedRoute learningManager><LearningRules /></ProtectedRoute>
                 } />
                 <Route path="/learning/settings" element={
-                  <ProtectedRoute learningManager>
-                    <Placeholder eyebrow="Learning" title="Learning settings"
-                                 hint="Code policy, defaults, email text and retention." />
-                  </ProtectedRoute>
+                  <ProtectedRoute learningManager><LearningSettings /></ProtectedRoute>
                 } />
                 <Route path="/stakeholders/clients" element={<ProtectedRoute resource="clients"><Clients /></ProtectedRoute>} />
                 <Route path="/stakeholders/clients/:id" element={

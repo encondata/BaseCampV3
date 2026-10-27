@@ -33,6 +33,13 @@ export function timeLabel(hhmm: string): string {
   return `${hour}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
 }
 
+/** Reminder days the pickers offer (the API allows up to 365). */
+export const REMINDER_CHOICES = Array.from({ length: 61 }, (_, i) => i);
+
+/** Times of day, every 15 minutes. */
+export const TIME_CHOICES = Array.from({ length: 96 }, (_, i) =>
+  `${String(Math.floor(i / 4)).padStart(2, '0')}:${String((i % 4) * 15).padStart(2, '0')}`);
+
 /** "5 days before" / "1 day before" / "On the start day" (reminder offsets). */
 export const offsetLabel = (days: number): string =>
   (days === 0 ? 'On the start day' : `${plural(days, 'day')} before`);

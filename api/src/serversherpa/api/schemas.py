@@ -1133,6 +1133,9 @@ class CertItem(BaseModel):
     issuer: str | None
     issued_on: _date | None
     expires_on: _date | None
+    # "manual" (added by hand) or "learning" (written by a learning sign-off)
+    source: str
+    learning_initiative_id: uuid.UUID | None
 
 
 class CertCreateIn(BaseModel):

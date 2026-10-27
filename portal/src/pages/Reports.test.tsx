@@ -295,3 +295,45 @@ it('History "Load older" appends a page and disappears on a short one', async ()
   expect(api.listReportRuns).toHaveBeenLastCalledWith({ before: first[99].created_at, limit: 100 });
   expect(screen.queryByRole('button', { name: 'Load older' })).toBeNull();
 });
+
+const LEARNING_DEF: ReportDefinition = {
+  id: 'd11', name: 'Learning compliance', description: 'Who signed what.',
+  report_type: 'learning_compliance', options: { default_format: 'xlsx' },
+  is_system: true, updated_at: '2026-10-26T10:00:00Z',
+};
+
+it('labels a Learning compliance definition by its type', async () => {
+  api.listReportDefinitions.mockResolvedValue([...DEFS, LEARNING_DEF]);
+  renderPage();
+  const row = (await screen.findByText('Learning compliance', { selector: '.cell-primary' }))
+    .closest('.dir-row') as HTMLElement;
+  expect(within(row).getAllByText('Learning compliance')).toHaveLength(2);   // the name, then the type
+  expect(within(row).queryByText('learning_compliance')).toBeNull();
+});
+
+it('a Learning compliance definition has no Generate without learning access (other rows keep it)', async () => {
+  api.listReportDefinitions.mockResolvedValue([...DEFS, LEARNING_DEF]);
+  const menuOf = async (name: string) => {
+    const row = (await screen.findByText(name, { selector: '.cell-primary' }))
+      .closest('.dir-row') as HTMLElement;
+    return within(row).getByRole('button', { name: /actions/i });
+  };
+  const user = userEvent.setup();
+  auth.can = (r) => r !== 'learning' && r !== 'wiki';
+  renderPage();
+  await user.click(await menuOf('Learning compliance'));
+  expect(screen.queryByText('Generate')).toBeNull();
+  await user.keyboard('{Escape}');
+  await user.click(await menuOf('Move Report'));
+  expect(screen.getByText('Generate')).toBeTruthy();
+});
+
+it('a learning manager can Generate a Learning compliance definition', async () => {
+  api.listReportDefinitions.mockResolvedValue([...DEFS, LEARNING_DEF]);
+  const user = userEvent.setup();
+  renderPage();
+  const row = (await screen.findByText('Learning compliance', { selector: '.cell-primary' }))
+    .closest('.dir-row') as HTMLElement;
+  await user.click(within(row).getByRole('button', { name: /actions/i }));
+  expect(screen.getByText('Generate')).toBeTruthy();
+});

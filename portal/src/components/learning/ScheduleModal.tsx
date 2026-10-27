@@ -14,15 +14,10 @@ import { compareOrdinal } from '../../lib/naturalSort';
 import ChipPicker from '../ChipPicker';
 import ComboBox from '../ComboBox';
 import { Switch } from '../Switch';
-import { offsetLabel, tabErrorText, timeLabel } from './initiativeLearning';
+import {
+  offsetLabel, REMINDER_CHOICES, tabErrorText, TIME_CHOICES, timeLabel,
+} from './initiativeLearning';
 import LearningModal from './LearningModal';
-
-/** Reminder days the picker offers (the API allows up to 365). */
-const REMINDER_CHOICES = Array.from({ length: 61 }, (_, i) => i);
-
-/** Times of day, every 15 minutes. */
-const TIME_CHOICES = Array.from({ length: 96 }, (_, i) =>
-  `${String(Math.floor(i / 4)).padStart(2, '0')}:${String((i % 4) * 15).padStart(2, '0')}`);
 
 export default function ScheduleModal({ initiativeId, schedule, onClose, onSaved }: {
   initiativeId: string;

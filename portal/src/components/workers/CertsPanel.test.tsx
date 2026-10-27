@@ -10,13 +10,21 @@
  */
 
 import { cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 
+const auth = vi.hoisted(() => ({ manager: true }));
 vi.mock('../../auth/AuthContext', () => ({
-  useAuth: () => ({ can: () => true }),
+  useAuth: () => ({
+    can: (resource: string) => (auth.manager ? true : resource !== 'learning' && resource !== 'wiki'),
+  }),
 }));
 
 const api = vi.hoisted(() => ({ apiFetch: vi.fn() }));
+const learning = vi.hoisted(() => ({ downloadCertificate: vi.fn() }));
+vi.mock('../../lib/learning', async (importActual) => ({
+  ...(await importActual<typeof import('../../lib/learning')>()), ...learning,
+}));
 
 vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()),
@@ -28,6 +36,7 @@ const { default: CertsPanel } = await import('./CertsPanel');
 const jsonResponse = (body: unknown) => ({ ok: true, json: async () => body }) as unknown as Response;
 
 afterEach(() => {
+  auth.manager = true;
   cleanup();
   vi.clearAllMocks();
 });
@@ -73,4 +82,37 @@ it('classifies expiry against the local calendar day, not a UTC-midnight instant
     nowSpy.mockRestore();
     if (prevTz === undefined) delete process.env.TZ; else process.env.TZ = prevTz;
   }
+});
+
+const MIXED = [
+  { id: 'c1', name: 'OSHA 30', issuer: 'OSHA', issued_on: null, expires_on: null,
+    source: 'manual', learning_initiative_id: null },
+  { id: 'c2', name: 'Confidentiality', issuer: null, issued_on: '2026-10-20', expires_on: null,
+    source: 'learning', learning_initiative_id: 'i1' },
+  { id: 'c3', name: 'Forklift safety', issuer: null, issued_on: '2026-09-02', expires_on: null,
+    source: 'learning', learning_initiative_id: null },
+];
+
+it('marks learning certs with a Learning chip and links managers to the certificate', async () => {
+  const user = userEvent.setup();
+  api.apiFetch.mockResolvedValue(jsonResponse(MIXED));
+  render(<CertsPanel personId="p1" personName="Wes Worker" onChanged={() => {}} />);
+  await screen.findByText('Confidentiality');
+  expect(screen.getAllByText('Learning')).toHaveLength(2);
+  const links = screen.getAllByRole('button', { name: 'Certificate' });
+  expect(links).toHaveLength(2);                       // none on the manual cert
+
+  await user.click(links[0]);                          // Confidentiality, from initiative i1
+  expect(learning.downloadCertificate).toHaveBeenCalledWith('p1', 'Wes Worker', 'i1');
+  await user.click(links[1]);                          // Forklift safety, from the general set
+  expect(learning.downloadCertificate).toHaveBeenLastCalledWith('p1', 'Wes Worker', undefined);
+});
+
+it('shows the Learning chip but no certificate link to someone who is not a learning manager', async () => {
+  auth.manager = false;
+  api.apiFetch.mockResolvedValue(jsonResponse(MIXED));
+  render(<CertsPanel personId="p1" personName="Wes Worker" onChanged={() => {}} />);
+  await screen.findByText('Confidentiality');
+  expect(screen.getAllByText('Learning')).toHaveLength(2);
+  expect(screen.queryByRole('button', { name: 'Certificate' })).toBeNull();
 });
