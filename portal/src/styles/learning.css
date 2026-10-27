@@ -300,3 +300,109 @@
   box-shadow: 0 6px 24px rgba(27, 33, 41, 0.1);
 }
 .lrn-phone-title { font-size: 17px; font-weight: 500; margin-bottom: 8px; color: var(--text-dark); }
+
+/* ============================================================
+   Packets and Assignment rules (/learning/packets, /learning/rules).
+   Layout, colors and sizes only; list typography stays with the
+   directory.css primitives the lists render through.
+   ============================================================ */
+
+.lrn-order-hint { margin: 0 0 8px; }
+.lrn-and {
+  align-self: flex-start;
+  margin: 2px 0;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+
+/* ── packet editor: the ordered documents ─────────────────── */
+
+.lrn-pk-section { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+.lrn-kicker {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.lrn-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.lrn-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+}
+.lrn-item[draggable="true"] { cursor: grab; }
+.lrn-item.drag-src { opacity: 0.4; }
+.lrn-item.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.lrn-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.lrn-item-n { flex: 0 0 auto; min-width: 16px; text-align: right; color: var(--text-mute); font-family: var(--font-mono); font-size: 11.5px; }
+.lrn-item-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lrn-item .lrn-actions { flex: 0 0 auto; }
+.lrn-grip {
+  flex: 0 0 auto;
+  display: inline-block;
+  width: 12px;
+  color: var(--text-mute);
+  letter-spacing: -3px;
+  user-select: none;
+}
+.lrn-pk-add { max-width: 420px; }
+
+/* ── rule editor: the conditions ──────────────────────────── */
+
+.lrn-conds { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; align-items: flex-start; }
+.lrn-cond-block { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.lrn-cond-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.lrn-cond-values { max-width: 520px; }
+.lrn-rule-on { margin-top: 18px; max-width: 220px; }
+
+/* ── rule rows: "When <field> is <values> → packet" ───────── */
+
+.lrn-rule-list .dir-row.drag-src { opacity: 0.4; }
+.lrn-rule-list .dir-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.lrn-rule-list .dir-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.lrn-rule-list .dir-row[draggable="true"] { cursor: grab; }
+.lrn-rule-off .lrn-tok:not(.k) { opacity: 0.65; }
+.lrn-order-cell { display: flex; align-items: center; gap: 6px; }
+.lrn-order-cell .cell-sub { margin-top: 0; }
+.lrn-cond-text, .lrn-cond-part { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.lrn-cond-part { display: inline-flex; }
+.cell .lrn-cond-text .cell-sub { margin-top: 0; }
+.lrn-tok {
+  display: inline-block;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid var(--paper-line);
+  border-radius: 7px;
+  background: var(--surface-2, #f5f7fa);
+  color: var(--text-dark);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lrn-tok.k { background: var(--c-blue-bg); border-color: var(--c-blue-bd); color: var(--c-blue); }
+.lrn-arrow { color: var(--text-mute); }
+
+/* ── dry run ──────────────────────────────────────────────── */
+
+.lrn-dryrun { margin-top: 22px; display: flex; flex-direction: column; gap: 12px; }
+.lrn-dryrun-pick { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.lrn-dryrun-combo { flex: 1 1 280px; max-width: 420px; }
+.lrn-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 760px) { .lrn-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.lrn-tile { border: 1px solid var(--paper-line); border-radius: 12px; padding: 10px 12px; }
+.lrn-tile-v { font-size: 20px; font-weight: 500; color: var(--text-dark); }
+.lrn-tile-k { font-size: 12px; color: var(--text-mute); }
+.lrn-tile-v.lrn-blue { color: var(--c-blue); }
+.lrn-tile-v.lrn-green { color: var(--c-green); }
+.lrn-tile-v.lrn-amber { color: var(--c-amber); }
+.lrn-done { margin: 0; font-size: 13px; color: var(--c-green); }
+.lrn-dryrun-foot { display: flex; justify-content: flex-end; align-items: center; gap: 8px; flex-wrap: wrap; }

@@ -36,6 +36,8 @@ import Initiatives from './pages/Initiatives';
 import LearningDashboard from './pages/learning/LearningDashboard';
 import LearningDocument from './pages/learning/LearningDocument';
 import LearningLibrary from './pages/learning/LearningLibrary';
+import LearningPackets from './pages/learning/LearningPackets';
+import LearningRules from './pages/learning/LearningRules';
 import Placeholder from './pages/Placeholder';
 import InitiativeDetailPage from './pages/InitiativeDetail';
 import InitiativeTimeline from './pages/InitiativeTimeline';
@@ -178,16 +180,10 @@ export default function App() {
                   <ProtectedRoute learningManager><LearningDocument /></ProtectedRoute>
                 } />
                 <Route path="/learning/packets" element={
-                  <ProtectedRoute learningManager>
-                    <Placeholder eyebrow="Learning" title="Packets"
-                                 hint="Ordered sets of documents handed out together." />
-                  </ProtectedRoute>
+                  <ProtectedRoute learningManager><LearningPackets /></ProtectedRoute>
                 } />
                 <Route path="/learning/rules" element={
-                  <ProtectedRoute learningManager>
-                    <Placeholder eyebrow="Learning" title="Assignment rules"
-                                 hint="Who gets which packet, in order." />
-                  </ProtectedRoute>
+                  <ProtectedRoute learningManager><LearningRules /></ProtectedRoute>
                 } />
                 <Route path="/learning/settings" element={
                   <ProtectedRoute learningManager>
