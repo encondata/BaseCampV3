@@ -8,6 +8,7 @@ import { LIBRARY_COLUMNS } from '../../pages/learning/LearningLibrary';
 import { PACKET_COLUMNS } from '../../pages/learning/LearningPackets';
 import { RULE_COLUMNS } from '../../pages/learning/LearningRules';
 import { DRY_RUN_COLUMNS } from './DryRunPanel';
+import { ROSTER_COLUMNS } from './LearningRoster';
 import { QUESTION_COLUMNS } from './QuizEditor';
 import { SIGNOFF_COLUMNS } from './SignoffsPanel';
 import { TRANSLATION_COLUMNS } from './TranslationsPanel';
@@ -33,9 +34,14 @@ describe('Learning list columns', () => {
     expect(listGridStyle(defaults(RULE_COLUMNS), [ACTIONS_TRACK]).minWidth).toBeLessThanOrEqual(LIST_FIT.page);
   });
 
+  it('the initiative roster fits a card with its tick box and actions tracks', () => {
+    expect(listGridStyle(defaults(ROSTER_COLUMNS), ['32px', ACTIONS_TRACK]).minWidth)
+      .toBeLessThanOrEqual(LIST_FIT.dashPanel);
+  });
+
   it('every default column states its own px floor', () => {
     [LIBRARY_COLUMNS, QUESTION_COLUMNS, TRANSLATION_COLUMNS, VERSION_COLUMNS, SIGNOFF_COLUMNS,
-      PACKET_COLUMNS, RULE_COLUMNS, DRY_RUN_COLUMNS]
+      PACKET_COLUMNS, RULE_COLUMNS, DRY_RUN_COLUMNS, ROSTER_COLUMNS]
       .flatMap((c) => defaults(c)).forEach((c) => expect(c.min).toBeGreaterThan(0));
   });
 });

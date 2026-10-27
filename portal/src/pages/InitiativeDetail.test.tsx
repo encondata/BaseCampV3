@@ -87,6 +87,17 @@ vi.mock('../lib/api', async (importActual) => ({
   ...api,
 }));
 
+// the Learning tab's own calls (its behavior is covered by InitiativeLearningTab.test.tsx)
+const learning = vi.hoisted(() => ({
+  getInitiativeLearning: vi.fn(),
+  listInitiativeRoster: vi.fn(),
+  getInitiativeGrid: vi.fn(),
+}));
+vi.mock('../lib/learning', async (importActual) => ({
+  ...(await importActual<typeof import('../lib/learning')>()),
+  ...learning,
+}));
+
 const PERSON: InitiativePersonRow = {
   id: 'ip1', person_id: 'p1', person_name: 'Ada Lovelace',
   work_type: 'tech', work_type_label: 'Tech', work_type_color: '#178a4c',
@@ -170,6 +181,17 @@ beforeEach(() => {
   api.listAttachments.mockResolvedValue([]);
   api.removeInitiativeAsset.mockResolvedValue(undefined);
   api.removeInitiativePerson.mockResolvedValue(undefined);
+  learning.getInitiativeLearning.mockResolvedValue({
+    stats: { invited: 0, opened: 0, in_progress: 0, complete: 0, overdue: 0 },
+    schedule: {
+      mode: 'manual', send_offset_days: 7, send_time: '08:00', reminder_offsets: [5, 3],
+      due_offset_days: 2, late_adds: true, sent_at: null, send_at: null,
+      codes_expire_on: null, is_default: true,
+    },
+    packets: [], extras: [], timeline: [],
+  });
+  learning.listInitiativeRoster.mockResolvedValue([]);
+  learning.getInitiativeGrid.mockResolvedValue({ documents: [], rows: [] });
 });
 
 afterEach(() => {
@@ -210,10 +232,24 @@ it('tabs: opens on Overview, and a tab click shows that section and records it i
   expect(screen.getByRole('tab', { name: /^Assets/ }).getAttribute('aria-selected')).toBe('true');
 });
 
-it('tabs: ?tab= deep-links to a tab, and Learning is a placeholder', async () => {
+it('tabs: ?tab= deep-links to a tab, and the Learning tab renders the learning panel', async () => {
   renderPage('learning');
   expect((await screen.findByRole('tab', { name: 'Learning' })).getAttribute('aria-selected')).toBe('true');
-  expect(screen.getByText(/Coming soon/)).not.toBeNull();
+  expect(await screen.findByRole('group', { name: 'Learning progress' })).not.toBeNull();
+  expect(learning.getInitiativeLearning).toHaveBeenCalledWith('i1');
+  expect(screen.getByRole('region', { name: 'Invites and reminders' })).not.toBeNull();
+  expect(screen.queryByText(/Coming soon/)).toBeNull();
+});
+
+it('tabs: Learning is offered only to Learning managers', async () => {
+  // workers:view and initiatives:view alone read nothing the Learning API allows
+  auth.can = (resource: string) => resource !== 'learning' && resource !== 'wiki';
+  renderPage('learning');
+  await screen.findByRole('tab', { name: 'Overview' });
+  expect(screen.queryByRole('tab', { name: 'Learning' })).toBeNull();
+  // a deep link falls back to Overview
+  expect(screen.getByRole('tab', { name: 'Overview' }).getAttribute('aria-selected')).toBe('true');
+  expect(learning.getInitiativeLearning).not.toHaveBeenCalled();
 });
 
 it('tabs: Full Picture shows the overview and the assets list together', async () => {

@@ -204,6 +204,21 @@
   z-index: 1;
 }
 
+/* The learning invites' send time: a small diamond on the row's track, on
+   the day the invites go out (or went out). Sits above the bars. */
+.itl-learning-mark {
+  position: absolute;
+  top: 4px;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  transform: rotate(45deg);
+  background: var(--c-violet, #6d4fc4);
+  border: 1px solid var(--surface, #fff);
+  border-radius: 2px;
+  z-index: 2;
+}
+
 .itl-no-dates { padding-left: 6px; color: var(--text-mute); }
 
 /* ── month calendar ───────────────────────────────────────────────────

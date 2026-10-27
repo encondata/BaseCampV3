@@ -5,6 +5,10 @@
  * Nothing is sent by looking. Download summary writes the rows as CSV;
  * "Assign and schedule invites" runs the same call with apply=true and is
  * offered only to managers with learning:add (the API refuses it otherwise).
+ *
+ * With `initiativeId` the panel is pinned to that initiative (an initiative's
+ * Learning tab): no picker, it runs on open, and `onApplied` tells the host
+ * that assignments changed.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -35,12 +39,16 @@ const skippedText = (r: AssignSummaryRow) => r.skipped.map((s) => `${s.title}: $
 
 type Phase = 'idle' | 'running' | 'ready' | 'failed';
 
-export default function DryRunPanel() {
+export default function DryRunPanel({ initiativeId: pinned, onApplied }: {
+  initiativeId?: string;
+  onApplied?: () => void;
+} = {}) {
   const toast = useToast();
   const canApply = useLearningAccess()('add');
   const [initiatives, setInitiatives] = useState<InitiativeItem[] | null>(null);
   const [listFailed, setListFailed] = useState(false);
-  const [initiativeId, setInitiativeId] = useState('');
+  const [picked, setInitiativeId] = useState('');
+  const initiativeId = pinned ?? picked;
   const [phase, setPhase] = useState<Phase>('idle');
   const [summary, setSummary] = useState<AssignSummary | null>(null);
   const [applying, setApplying] = useState(false);
@@ -53,7 +61,7 @@ export default function DryRunPanel() {
     setListFailed(false);
     listInitiatives().then(setInitiatives).catch(() => { setListFailed(true); setInitiatives([]); });
   }, []);
-  useEffect(() => { loadInitiatives(); }, [loadInitiatives]);
+  useEffect(() => { if (pinned === undefined) loadInitiatives(); }, [loadInitiatives, pinned]);
 
   const options = useMemo(() => (initiatives ?? []).filter((i) => !i.archived_at)
     .sort((a, b) => naturalCompare(a.name, b.name))
@@ -69,6 +77,9 @@ export default function DryRunPanel() {
       .then((s) => { if (seq.current === mine) { setSummary(s); setPhase('ready'); } })
       .catch(() => { if (seq.current === mine) setPhase('failed'); });
   };
+
+  // pinned to an initiative: check it as soon as the panel opens
+  useEffect(() => { if (pinned !== undefined) run(pinned); }, [pinned]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const pick = (id: string) => {
     setInitiativeId(id);
@@ -89,6 +100,7 @@ export default function DryRunPanel() {
       setSummary(done);
       setApplied(text);
       toast(text);
+      onApplied?.();
     } catch (e) {
       if (seq.current === mine) setError(apiErrorText(e));
     } finally {
@@ -153,12 +165,16 @@ export default function DryRunPanel() {
         <span className="lrn-hint">Nothing is sent until you confirm</span>
       </div>
       <div className="lrn-dryrun-pick">
-        <label htmlFor="lrn-dryrun-initiative" className="lrn-lbl">Initiative</label>
-        <div className="lrn-dryrun-combo">
-          <ComboBox options={options} value={initiativeId} onChange={pick} clearable
-                    inputId="lrn-dryrun-initiative" ariaLabel="Initiative to check"
-                    placeholder={initiatives === null ? 'Loading…' : 'Type to search initiatives…'} />
-        </div>
+        {pinned === undefined && (
+          <>
+            <label htmlFor="lrn-dryrun-initiative" className="lrn-lbl">Initiative</label>
+            <div className="lrn-dryrun-combo">
+              <ComboBox options={options} value={initiativeId} onChange={pick} clearable
+                        inputId="lrn-dryrun-initiative" ariaLabel="Initiative to check"
+                        placeholder={initiatives === null ? 'Loading…' : 'Type to search initiatives…'} />
+            </div>
+          </>
+        )}
         {initiativeId && phase !== 'running' && (
           <button type="button" className="mini-btn" onClick={() => run(initiativeId)} disabled={applying}>
             Run again
@@ -171,7 +187,7 @@ export default function DryRunPanel() {
           <button type="button" className="mini-btn" onClick={loadInitiatives}>Try again</button>
         </p>
       )}
-      {!initiativeId && !listFailed && (
+      {!initiativeId && !listFailed && pinned === undefined && (
         <p className="lrn-hint">Pick an initiative to see who would get what, and why, under the rules above.</p>
       )}
       {phase === 'running' && <p className="page-hint">Checking the rules…</p>}

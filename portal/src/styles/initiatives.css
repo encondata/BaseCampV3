@@ -158,6 +158,8 @@
 /* the info cards stack to one column below the same width the
    row-detail's .detail-grid already collapses at (directory.css) */
 .idet-grid { margin-bottom: 20px; }
+/* the Learning tab spans the whole grid (its cards lay themselves out) */
+.idet-learning { grid-column: 1 / -1; min-width: 0; }
 
 /* ── top row: 3-across for Move initiatives with assets (Task: donut-
    task-3) — Overview | Assets-by-status donut | Move. `.idet-grid`

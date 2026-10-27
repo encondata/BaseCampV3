@@ -22,6 +22,8 @@ import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
 import RackViewModal from '../components/initiatives/RackViewModal';
 import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import InlineTextField from '../components/InlineTextField';
+import InitiativeLearningTab from '../components/learning/InitiativeLearningTab';
+import { useLearningAccess } from '../components/learning/useLearningAccess';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import ScanHistoryTable from '../components/scans/ScanHistoryTable';
 import {
@@ -98,8 +100,10 @@ import '../styles/system.css'; /* .sysconf-tabbar */
 const dateOnly = (iso: string | null) => (iso ? iso.slice(0, 10) : null);
 
 /** Detail page tabs, in display order. Full Picture shows the Overview
- *  and Assets sections together on one page. Learning is a placeholder
- *  until the learning portal is built. */
+ *  and Assets sections together on one page. Learning is offered only to
+ *  Learning managers: every call behind it is a manager call (the roster
+ *  and summary refuse anyone else), so there is nothing a plain
+ *  workers:view holder could read there. */
 const DETAIL_TABS = [
   { key: 'overview', label: 'Overview' },
   { key: 'full', label: 'Full Picture' },
@@ -306,7 +310,9 @@ export default function InitiativeDetail() {
   // same tab. Anything unknown falls back to Overview.
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get('tab');
-  const tab: DetailTab = DETAIL_TABS.some((t) => t.key === tabParam)
+  const canSeeLearning = useLearningAccess()('view');
+  const tabs = DETAIL_TABS.filter((t) => t.key !== 'learning' || canSeeLearning);
+  const tab: DetailTab = tabs.some((t) => t.key === tabParam)
     ? tabParam as DetailTab : 'overview';
   const selectTab = (next: DetailTab) => {
     setSearchParams((prev) => {
@@ -725,7 +731,7 @@ export default function InitiativeDetail() {
       </div>
 
       <div className="sysconf-tabbar idet-tabbar" role="tablist">
-        {DETAIL_TABS.map((t) => {
+        {tabs.map((t) => {
           const count = t.key === 'assets' && isMove ? assets.length
             : t.key === 'people' ? initiative.people.length : null;
           return (
@@ -1242,12 +1248,8 @@ export default function InitiativeDetail() {
         )}
 
         {tab === 'learning' && (
-          <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
-            <p className="eyebrow-sm">Learning</p>
-            <p className="page-hint">
-              Coming soon: the documents workers on this initiative must
-              review and sign, plus invites, reminders and sign-off status.
-            </p>
+          <div className="idet-learning">
+            <InitiativeLearningTab initiativeId={initiative.id} />
           </div>
         )}
       </div>

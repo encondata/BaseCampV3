@@ -172,6 +172,16 @@ it('exports the compliance report for everyone, notifying when ready', async () 
   });
 });
 
+it('exports the compliance report for one initiative', async () => {
+  const calls = mockFetch(({ path }) => (path === '/reports/definitions'
+    ? new Response(JSON.stringify([{ id: 'd-learn', report_type: 'learning_compliance' }]), { status: 200 })
+    : new Response(JSON.stringify({ id: 'run-2' }), { status: 201 })));
+  await L.exportLearningCompliance('i1');
+  expect(calls[1].body).toEqual({
+    definition_id: 'd-learn', initiative_id: 'i1', options: {}, notify: true,
+  });
+});
+
 it('reports a missing compliance definition', async () => {
   mockFetch(ok([]));
   await expect(L.exportLearningCompliance()).rejects.toThrow('learning_report_missing');

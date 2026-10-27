@@ -573,15 +573,16 @@ export const putLearningSettings = (patch: LearningSettingsPatch) =>
 
 // ── compliance report ────────────────────────────────────────────────
 
-/** Queues the Learning compliance report for everyone (the definition's
- *  default format) and asks to be notified when it's ready — the same flow
- *  as the Generate report modal. */
-export async function exportLearningCompliance(): Promise<ReportRun> {
+/** Queues the Learning compliance report (the definition's default format)
+ *  and asks to be notified when it's ready — the same flow as the Generate
+ *  report modal. Without an initiative it covers everyone; with one, just
+ *  that initiative's workers. */
+export async function exportLearningCompliance(initiativeId: string | null = null): Promise<ReportRun> {
   const definitions = await listReportDefinitions();
   const definition = definitions.find((d) => d.report_type === 'learning_compliance');
   if (!definition) throw new Error('learning_report_missing');
   return createReportRun({
-    definition_id: definition.id, initiative_id: null, options: {}, notify: true,
+    definition_id: definition.id, initiative_id: initiativeId, options: {}, notify: true,
   });
 }
 

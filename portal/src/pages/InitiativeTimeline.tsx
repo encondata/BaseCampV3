@@ -121,6 +121,25 @@ function pctForDate(date: Date, range: TimelineRange): number | null {
   return ((date.getTime() - range.start.getTime()) / total) * 100;
 }
 
+/** Where the learning invites go out (or went out), as a percent of the
+ *  range: the middle of that local day, so the marker sits on the day the
+ *  ruler names. Null when the initiative has none or it falls outside. */
+function learningMarkFor(iso: string | null | undefined, range: TimelineRange): number | null {
+  if (!iso) return null;
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return null;
+  const day = new Date(at.getFullYear(), at.getMonth(), at.getDate(), 12);
+  return pctForDate(day, range);
+}
+
+function learningMarkTitle(iso: string): string {
+  const at = new Date(iso);
+  const when = at.toLocaleString([], {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
+  return `Learning invites ${at.getTime() <= Date.now() ? 'sent' : 'go out'} ${when}`;
+}
+
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
@@ -543,7 +562,7 @@ function TimelineGrid({
 
         {top.map((drawn) => (
           <TimelineRow key={drawn.row.item.id} drawn={drawn} rightWidth={rightWidth}
-                       todayPct={todayPct} onToggle={onToggle} />
+                       todayPct={todayPct} range={range} onToggle={onToggle} />
         ))}
 
         {bottom.length > 0 && (
@@ -554,7 +573,7 @@ function TimelineGrid({
         )}
         {bottom.map((drawn) => (
           <TimelineRow key={drawn.row.item.id} drawn={drawn} rightWidth={rightWidth}
-                       todayPct={todayPct} onToggle={onToggle} />
+                       todayPct={todayPct} range={range} onToggle={onToggle} />
         ))}
       </div>
     </div>
@@ -566,13 +585,14 @@ function TimelineGrid({
  *  in the stylesheet serves every level — the `.cell-primary` idiom the
  *  list view uses. */
 function TimelineRow({
-  drawn, rightWidth, todayPct, onToggle,
+  drawn, rightWidth, todayPct, range, onToggle,
 }: {
-  drawn: DrawnRow; rightWidth: number; todayPct: number | null;
+  drawn: DrawnRow; rightWidth: number; todayPct: number | null; range: TimelineRange;
   onToggle: (id: string) => void;
 }) {
   const { row, kind, bar, realBar } = drawn;
   const item = row.item;
+  const markPct = learningMarkFor(item.learning_send_at, range);
   return (
     <div className={`itl-row ${row.isContext ? 'context' : ''}`}
          style={{ '--depth': row.depth } as CSSProperties}>
@@ -637,6 +657,10 @@ function TimelineRow({
                  left: `${realBar.left}%`, width: `${realBar.width}%`,
                  '--chip': chipColor(item),
                } as CSSProperties} />
+        )}
+        {markPct !== null && item.learning_send_at && (
+          <div className="itl-learning-mark" title={learningMarkTitle(item.learning_send_at)}
+               style={{ left: `${markPct}%` }} />
         )}
         {kind === 'none' && (
           <span className="cell-top itl-no-dates">No dates yet</span>

@@ -3397,6 +3397,9 @@ export interface InitiativeItem {
   code?: string | null;
   /** Sent on list rows and the detail alike, so the edit modal can offer Reveal from either page. */
   kiosk_password_set?: boolean;
+  /** When the learning invites go out (or went out): the timeline marker.
+   *  Null when none is scheduled or sent; optional so older fixtures still type-check. */
+  learning_send_at?: string | null;
   initiative_type: string; type_label: string; type_color: string;
   sub_type: string | null; sub_type_label: string | null;
   sub_type_color: string | null;
