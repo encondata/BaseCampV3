@@ -49,25 +49,27 @@ async def load_system(db: AsyncSession) -> dict:
     return await read_section(db, SECTION)
 
 
-def _pick(key: str, system: dict, overrides: dict):
+def _pick(key: str, system: dict, overrides: dict, defaults: dict):
     """The override when it has a value (False, 0 and [] are values), else
-    the system value, else the built-in default."""
+    the system value, else the built-in default. `defaults` is the dict that
+    level of the settings lives in: the whole section for a top-level key,
+    the group's own defaults for a key inside `completion` / `reminders`."""
     value = overrides.get(key)
     if value is not None:
         return value
     if system.get(key) is not None:
         return system[key]
-    return DEFAULTS[SECTION][key]
+    return defaults[key]
 
 
 def _group(name: str, system: dict, overrides: dict) -> dict:
     """One nested group (`completion`, `reminders`) merged key by key. A
-    system row that stores only part of a group still gets the built-in
-    default for the rest."""
+    system row that stores only part of a group, or stores a null for a
+    key, still gets the built-in default for it."""
     defaults = DEFAULTS[SECTION][name]
     sys_group = system.get(name) or {}
     ov_group = overrides.get(name) or {}
-    return {key: _pick(key, {**defaults, **sys_group}, ov_group) for key in defaults}
+    return {key: _pick(key, sys_group, ov_group, defaults) for key in defaults}
 
 
 def effective(system: dict, overrides: dict | None) -> PlanSettings:
@@ -76,14 +78,15 @@ def effective(system: dict, overrides: dict | None) -> PlanSettings:
     `reminders` on its own. An override of None, or a missing key, inherits;
     keys the settings do not know (such as `calendar`) are ignored."""
     ov = overrides or {}
+    base = DEFAULTS[SECTION]
     completion = _group("completion", system, ov)
     reminders = _group("reminders", system, ov)
     return PlanSettings(
-        honor_constraints=_pick("honor_constraints", system, ov),
-        critical_slack_days=float(_pick("critical_slack_days", system, ov)),
-        default_task_mode=_pick("default_task_mode", system, ov),
-        default_duration=_pick("default_duration", system, ov),
-        show_times=_pick("show_times", system, ov),
+        honor_constraints=_pick("honor_constraints", system, ov, base),
+        critical_slack_days=float(_pick("critical_slack_days", system, ov, base)),
+        default_task_mode=_pick("default_task_mode", system, ov, base),
+        default_duration=_pick("default_duration", system, ov, base),
+        show_times=_pick("show_times", system, ov, base),
         completion=Completion(**completion),
         reminders=Reminders(**{**reminders,
                                "offsets_days": tuple(reminders["offsets_days"])}),

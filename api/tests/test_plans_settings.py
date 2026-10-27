@@ -1,6 +1,10 @@
 """Project-plan settings: the system_config `project_plans` section and the
 effective (system + per-plan override) view the services read."""
 
+import dataclasses
+import json
+
+import pytest
 from sqlalchemy import text
 
 from serversherpa.plans.settings import (
@@ -64,12 +68,8 @@ async def test_defaults_effective(db):
 async def test_effective_is_frozen_and_tuple_valued(db):
     got = effective(await load_system(db), None)
     assert isinstance(got.reminders.offsets_days, tuple)
-    try:
+    with pytest.raises(dataclasses.FrozenInstanceError):
         got.honor_constraints = False  # type: ignore[misc]
-    except AttributeError:
-        pass
-    else:  # pragma: no cover - the dataclass must be frozen
-        raise AssertionError("PlanSettings is not frozen")
 
 
 async def test_override_one_reminder_key(db):
@@ -139,3 +139,39 @@ async def test_system_row_wins_over_defaults(db):
     assert got.completion == SPEC_DEFAULTS.completion
     # a plan override beats the system row
     assert effective(system, {"honor_constraints": True}).honor_constraints is True
+
+
+@pytest.mark.parametrize("stored", [
+    {"reminders": {"send_time": None}},
+    {"completion": {"subtasks": None}},
+    {"reminders": {"offsets_days": None, "enabled": None}},
+    {"reminders": None, "completion": None},
+])
+async def test_stored_nulls_inside_a_group_fall_back_to_defaults(db, stored):
+    """A system row with an explicit null inside a nested group inherits the
+    built-in default for that key instead of failing."""
+    await db.execute(
+        text("INSERT INTO system_config (section, data) VALUES "
+             "('project_plans', CAST(:data AS jsonb))"), {"data": json.dumps(stored)})
+    await db.commit()
+    got = effective(await load_system(db), None)
+    assert got == SPEC_DEFAULTS
+    assert got.reminders.send_time == "08:00"
+    assert got.completion.subtasks == "cascade"
+
+
+async def test_stored_null_in_a_group_keeps_the_other_stored_keys(db):
+    await db.execute(
+        text("INSERT INTO system_config (section, data) VALUES "
+             "('project_plans', CAST(:data AS jsonb))"),
+        {"data": json.dumps({"reminders": {"send_time": None, "overdue": "once"},
+                             "completion": {"subtasks": None, "predecessors": "warn"}})})
+    await db.commit()
+    got = effective(await load_system(db), None)
+    assert got.reminders.send_time == "08:00" and got.reminders.overdue == "once"
+    assert got.completion == Completion(subtasks="cascade", predecessors="warn")
+    # a plan override still wins over a stored value, and a null override inherits it
+    got = effective(await load_system(db), {"reminders": {"send_time": "09:30"},
+                                            "completion": {"subtasks": None}})
+    assert got.reminders.send_time == "09:30"
+    assert got.completion.subtasks == "cascade"
