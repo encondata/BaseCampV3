@@ -1,5 +1,7 @@
 {
+  "notes": "Shared by the API (pytest) and the portal (vitest); both parsers must agree on every row. Only ASCII whitespace (space, tab, CR, LF, FF, VT) is trimmed or allowed: a no-break space or any other Unicode space is invalid, so do not use String.trim() as is. The trimmed text is at most 64 characters and the number has at most 9 digits before the decimal point. Minutes are rounded half up on the magnitude, then the sign is applied (-2.5 minutes is -3, where Math.round gives -2). Display picks the singular label when the rounded number shown is exactly 1 and shows no sign when it rounds to 0. Row shapes: parse, lag, parse_alt and parse_default_h are [text, minutes, unit, elapsed]; format, format_lag and format_alt are [minutes, unit, elapsed, text].",
   "units": {"hours_per_day": 8, "hours_per_week": 40, "days_per_month": 20},
+  "units_alt": {"hours_per_day": 10, "hours_per_week": 50, "days_per_month": 22},
   "parse": [
     ["5d", 2400, "d", false],
     ["1d", 480, "d", false],
@@ -40,9 +42,20 @@
     ["3 ehrs", 180, "h", true],
     ["90 emins", 90, "m", true],
     ["2 ewks", 20160, "w", true],
-    ["1.5ed", 2160, "d", true]
+    ["1.5ed", 2160, "d", true],
+    ["\t5d\n", 2400, "d", false],
+    ["\u000b5d\f", 2400, "d", false],
+    ["999999999m", 999999999, "m", false],
+    ["0.0000000000000000000000000000000000000000000000000000000000001d", 0, "d", false]
   ],
-  "invalid": ["", "abc", "-1d", "5x", "1.2.3d", "d", "1e", "+1d", "   ", "1 d d", "1,5d", ".5d", "5.d"],
+  "invalid": [
+    "", "abc", "-1d", "5x", "1.2.3d", "d", "1e", "+1d", "   ", "1 d d", "1,5d", ".5d", "5.d",
+    "5 d",
+    "5d ",
+    " 5d",
+    "1234567890d",
+    "0.00000000000000000000000000000000000000000000000000000000000001d"
+  ],
   "lag": [
     ["+2d", 960, "d", false],
     ["2d", 960, "d", false],
@@ -53,8 +66,11 @@
     ["+30 min", 30, "m", false],
     ["-0.5d", -240, "d", false],
     ["+1 week", 2400, "w", false],
-    ["3", 1440, "d", false]
+    ["3", 1440, "d", false],
+    ["-0.5m", -1, "m", false],
+    ["-2.5m", -3, "m", false]
   ],
+  "invalid_lag": ["-", "+", "+-1d", "", "1e", "-1e", "- 2d", "5 d"],
   "format": [
     [2400, "d", false, "5 days"],
     [480, "d", false, "1 day"],
@@ -81,7 +97,11 @@
     [86400, "mo", true, "2 emons"],
     [90, "h", false, "1.5 hrs"],
     [0, "h", false, "0 hrs"],
-    [0, "d", true, "0 edays"]
+    [0, "d", true, "0 edays"],
+    [481, "d", false, "1 day"],
+    [479, "d", false, "1 day"],
+    [959, "d", false, "2 days"],
+    [1, "d", false, "0 days"]
   ],
   "format_lag": [
     [960, "d", false, "+2 days"],
@@ -92,6 +112,34 @@
     [1440, "d", true, "+1 eday"],
     [-1440, "d", true, "-1 eday"],
     [-120, "d", false, "-0.25 days"],
-    [0, "h", true, "0 ehrs"]
+    [0, "h", true, "0 ehrs"],
+    [1, "d", false, "0 days"],
+    [-1, "d", false, "0 days"],
+    [-479, "d", false, "-1 day"],
+    [481, "d", false, "+1 day"]
+  ],
+  "parse_alt": [
+    ["1d", 600, "d", false],
+    ["1w", 3000, "w", false],
+    ["1mo", 13200, "mo", false],
+    ["0.5d", 300, "d", false],
+    ["2 days", 1200, "d", false],
+    ["1ed", 1440, "d", true],
+    ["1ew", 10080, "w", true]
+  ],
+  "format_alt": [
+    [600, "d", false, "1 day"],
+    [3000, "w", false, "1 wk"],
+    [13200, "mo", false, "1 mon"],
+    [300, "d", false, "0.5 days"],
+    [1200, "d", false, "2 days"],
+    [1440, "d", true, "1 eday"]
+  ],
+  "parse_default_h": [
+    ["3", 180, "h", false],
+    ["0", 0, "h", false],
+    ["1.5", 90, "h", false],
+    ["3d", 1440, "d", false],
+    ["3ed", 4320, "d", true]
   ]
 }

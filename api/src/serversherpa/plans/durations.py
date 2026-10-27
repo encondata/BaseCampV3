@@ -37,12 +37,21 @@ _UNIT_WORDS = {
     **dict.fromkeys(("w", "wk", "wks", "week", "weeks"), "w"),
 }
 
-# The `mo...` spellings come before the `m...` ones so "mon" is a month, not
-# a minute followed by junk (the regex would backtrack to it anyway; the
-# order keeps the intent readable).
+# Input limits, shared with the portal parser through the vectors file.
+# Only ASCII whitespace is trimmed or allowed (NBSP and other Unicode spaces
+# are invalid), the trimmed text is at most MAX_TEXT_LENGTH characters, and
+# the number has at most MAX_INTEGER_DIGITS digits before the decimal point.
+_ASCII_WHITESPACE = " \t\n\r\f\v"
+MAX_TEXT_LENGTH = 64
+MAX_INTEGER_DIGITS = 9
+
+# Matched with fullmatch() on the trimmed text, so there is no leading or
+# trailing whitespace pattern to backtrack through. The `mo...` spellings
+# come before the `m...` ones so "mon" reads as a month; the regex would
+# backtrack to it anyway, the order keeps the intent readable.
 _PATTERN = re.compile(
-    r"^\s*([+-]?)(\d+(?:\.\d+)?)\s*(e?)"
-    r"(mo|mons?|months?|m|mins?|minutes?|h|hrs?|hours?|d|days?|w|wks?|weeks?)?\s*$",
+    r"([+-]?)(\d+(?:\.\d+)?)\s*(e?)"
+    r"(mo|mons?|months?|m|mins?|minutes?|h|hrs?|hours?|d|days?|w|wks?|weeks?)?",
     re.IGNORECASE | re.ASCII,
 )
 
@@ -65,15 +74,27 @@ class Units:
     @classmethod
     def from_calendar(cls, cal: dict) -> "Units":
         """Read `hours_per_day`, `hours_per_week` and `days_per_month` from a
-        plan calendar; a missing or null key keeps the Standard value."""
+        plan calendar; a missing or null key keeps the Standard value.
+        Minutes are rounded half up like parsed durations are. A value that
+        is not a positive number (or rounds to under a minute) raises a plain
+        ValueError: that is a bad calendar, not bad duration text, so it is
+        not a DurationError."""
 
-        def pick(key: str, default):
+        def minutes(key: str, default, per: int) -> int:
             value = cal.get(key)
-            return default if value is None else value
+            value = default if value is None else value
+            try:
+                exact = Fraction(str(value)) * per
+            except ValueError:
+                raise ValueError(f"{key} must be a number, got {value!r}") from None
+            result = _half_up(exact) if exact > 0 else 0
+            if result < 1:
+                raise ValueError(f"{key} must be positive, got {value!r}")
+            return result
 
-        per_day = round(pick("hours_per_day", 8) * 60)
-        per_week = round(pick("hours_per_week", 40) * 60)
-        per_month = round(pick("days_per_month", 20) * per_day)
+        per_day = minutes("hours_per_day", 8, 60)
+        per_week = minutes("hours_per_week", 40, 60)
+        per_month = minutes("days_per_month", 20, per_day)
         return cls(minutes_per_day=per_day, minutes_per_week=per_week,
                    minutes_per_month=per_month)
 
@@ -105,27 +126,38 @@ def _half_up(value: Fraction) -> int:
     return (value * 2 + 1) // 2
 
 
+def _bad(text) -> DurationError:
+    """An error that never echoes unbounded input."""
+    shown = text if isinstance(text, str) else f"<{type(text).__name__}>"
+    if len(shown) > 40:
+        shown = shown[:40] + "..."
+    return DurationError(f"not a duration: {shown!r}")
+
+
 def _parse(text: str, units: Units, default_unit: str, signed: bool) -> Duration:
     if default_unit not in UNITS:
         raise ValueError(f"unknown default unit {default_unit!r}")
-    match = _PATTERN.match(text) if isinstance(text, str) else None
+    if not isinstance(text, str):
+        raise _bad(text)
+    trimmed = text.strip(_ASCII_WHITESPACE)
+    if len(trimmed) > MAX_TEXT_LENGTH:
+        raise _bad(text)
+    match = _PATTERN.fullmatch(trimmed)
     if match is None:
-        raise DurationError(f"not a duration: {text!r}")
+        raise _bad(text)
     sign, number, elapsed_flag, word = match.groups()
     if sign and not signed:
-        raise DurationError(f"a duration cannot be signed: {text!r}")
+        raise _bad(text)
+    if len(number.partition(".")[0]) > MAX_INTEGER_DIGITS:
+        raise _bad(text)
     if word is None:
         if elapsed_flag:
             # "1e" names the elapsed prefix but no unit
-            raise DurationError(f"not a duration: {text!r}")
+            raise _bad(text)
         unit, elapsed = default_unit, False
     else:
         unit, elapsed = _UNIT_WORDS[word.lower()], bool(elapsed_flag)
-    try:
-        value = Fraction(number)
-    except ValueError:  # more digits than Python will convert
-        raise DurationError(f"not a duration: {text[:40]!r}") from None
-    minutes = _half_up(value * units.unit_minutes(unit, elapsed))
+    minutes = _half_up(Fraction(number) * units.unit_minutes(unit, elapsed))
     return Duration(-minutes if sign == "-" else minutes, unit, elapsed)
 
 
