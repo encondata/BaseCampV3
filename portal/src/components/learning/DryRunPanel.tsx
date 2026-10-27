@@ -22,6 +22,7 @@ import { exportCsv } from '../../lib/listTools';
 import { useToast } from '../../lib/notificationsContext';
 import { naturalCompare } from '../../lib/sites';
 import ComboBox from '../ComboBox';
+import { reasonText } from './dryRunCopy';
 import LearningList, { type LearningColumn } from './LearningList';
 import { useLearningAccess } from './useLearningAccess';
 
@@ -35,7 +36,8 @@ export { COLUMNS as DRY_RUN_COLUMNS };
 
 const plural = (n: number, one: string) => `${n.toLocaleString()} ${one}${n === 1 ? '' : 's'}`;
 const unique = (list: string[]) => Array.from(new Set(list));
-const skippedText = (r: AssignSummaryRow) => r.skipped.map((s) => `${s.title}: ${s.reason}`);
+const skippedText = (r: AssignSummaryRow) => r.skipped.map((s) => `${s.title}: ${reasonText(s.reason)}`);
+const whyText = (r: AssignSummaryRow) => unique(r.why.map(reasonText));
 
 type Phase = 'idle' | 'running' | 'ready' | 'failed';
 
@@ -97,10 +99,16 @@ export default function DryRunPanel({ initiativeId: pinned, onApplied }: {
       if (seq.current !== mine) return;
       const people = done.rows.filter((r) => r.will_get.length > 0).length;
       const text = `Assigned ${plural(done.totals.to_assign, 'document')} to ${plural(people, 'worker')}.`;
-      setSummary(done);
       setApplied(text);
       toast(text);
       onApplied?.();
+      // the preview above is the state before the assignment: check again
+      try {
+        const fresh = await dryRunInitiative(initiativeId, false);
+        if (seq.current === mine) setSummary(fresh);
+      } catch {
+        if (seq.current === mine) { setSummary(null); setPhase('failed'); }
+      }
     } catch (e) {
       if (seq.current === mine) setError(apiErrorText(e));
     } finally {
@@ -113,7 +121,7 @@ export default function DryRunPanel({ initiativeId: pinned, onApplied }: {
     exportCsv<AssignSummaryRow>('learning-dry-run', [
       ['Worker', (r) => r.name],
       ['Will get', (r) => r.will_get.join('; ')],
-      ['Why', (r) => unique(r.why).join('; ')],
+      ['Why', (r) => whyText(r).join('; ')],
       ['Skipped', (r) => skippedText(r).join('; ')],
       ['No email', (r) => (r.no_email ? 'Yes' : 'No')],
     ], summary.rows);
@@ -131,7 +139,7 @@ export default function DryRunPanel({ initiativeId: pinned, onApplied }: {
     {
       def: COLUMNS.why,
       cell: (r) => {
-        const text = r.will_get.length ? unique(r.why).join(' · ') : '—';
+        const text = r.will_get.length ? whyText(r).join(' · ') : '—';
         return <span className="cell-sub cell-line" title={text}>{text}</span>;
       },
     },

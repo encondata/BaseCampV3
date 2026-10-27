@@ -303,6 +303,8 @@ export interface ScheduleOut {
   /** When a scheduled send will go out (or would, for a manual schedule). */
   send_at: string | null;
   codes_expire_on: string | null;
+  /** The initiative's local end day is before today: no invites can be sent for it. */
+  ended: boolean;
   /** No schedule saved yet: these are the learning settings' defaults. */
   is_default: boolean;
 }
@@ -329,7 +331,8 @@ export interface SendInvitesResult {
   already_invited: number;
 }
 
-export type RosterStatus = 'complete' | 'in_progress' | 'overdue' | 'not_opened' | 'no_email';
+export type RosterStatus = 'nothing_assigned' | 'complete' | 'in_progress' | 'overdue' | 'not_opened'
+  | 'no_email';
 
 export interface RosterRow {
   person_id: string; name: string; email: string | null; partner: string | null;

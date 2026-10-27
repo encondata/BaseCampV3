@@ -55,6 +55,25 @@ describe('Done', () => {
     expect(screen.getByText("We also emailed it to you. Don't share it: it clocks you in.")).toBeTruthy();
   });
 
+  it('never says "All 0 signed": no count when no signed documents are listed', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(200, {
+      groups: [], complete: true, badge_uid: 'badge-123',
+    })));
+    renderDone();
+    expect(await screen.findByText("You're all set, Kenji")).toBeTruthy();
+    expect(screen.queryByText(/All \d+ signed/)).toBeNull();
+    expect(screen.getByRole('img', { name: 'Your time clock QR code' })).toBeTruthy();
+  });
+
+  it('counts the signed documents, not every listed item', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(200, {
+      groups: [{ initiative: null, due_on: null, items: [signed(1), signed(2), signed(3)] }],
+      complete: true, badge_uid: 'badge-123',
+    })));
+    renderDone();
+    expect(await screen.findByText('All 3 signed.')).toBeTruthy();
+  });
+
   it('sends a worker with work left back to the list', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(200, {
       groups: [{ initiative: null, due_on: null, items: [{ ...signed(1), status: 'assigned', signed_at: null }] }],

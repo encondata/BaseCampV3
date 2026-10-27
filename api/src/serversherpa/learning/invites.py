@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.db.models import Initiative, InitiativePerson, Person
 from serversherpa.db.ordering import natural
 from serversherpa.learning import codes, emails
-from serversherpa.learning.assign import OPEN_STATUSES
+from serversherpa.learning.assign import OPEN_STATUSES, _end_day
 from serversherpa.learning.models import (
     LearningAssignment,
     LearningCode,
@@ -156,6 +156,17 @@ async def save_schedule(db: AsyncSession, initiative: Initiative, changes: dict,
 
 
 # ── sending ──────────────────────────────────────────────────────────
+
+
+async def initiative_ended(db: AsyncSession, initiative: Initiative | None,
+                           now: datetime | None = None) -> bool:
+    """The initiative's end day (its site's local day) is before today. A
+    code issued for it would already be expired, so no invite goes out."""
+    end = _end_day(initiative)
+    if end is None:
+        return False
+    zone = await codes.initiative_zone(db, initiative)
+    return end < (now or _now()).astimezone(zone).date()
 
 
 async def open_people(db: AsyncSession, initiative_id: uuid.UUID) -> list[uuid.UUID]:

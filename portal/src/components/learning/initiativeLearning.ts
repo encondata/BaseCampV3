@@ -52,6 +52,7 @@ export function joinNumbers(values: number[]): string {
 }
 
 export const STATUS_CHIP: Record<RosterStatus, { label: string; cls: string }> = {
+  nothing_assigned: { label: 'Nothing assigned', cls: 'c-slate' },
   complete: { label: 'Complete', cls: 'c-green' },
   in_progress: { label: 'In progress', cls: 'c-amber' },
   overdue: { label: 'Overdue', cls: 'c-red' },
@@ -65,6 +66,7 @@ export const TAB_ERRORS: Record<string, string> = {
   learning_report_missing: 'The Learning compliance report isn’t set up. Ask an administrator.',
   learning_view_required: 'You need Learning access to run this report.',
   not_found: 'That person is no longer on this initiative.',
+  initiative_ended: 'This initiative has ended. Invites can’t be sent for it.',
 };
 
 /** Plain wording for a failed call: the tab's own code wording, then the

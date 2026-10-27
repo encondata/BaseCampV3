@@ -28,7 +28,10 @@ export default function Done() {
 
   if (data && !uid) return <Navigate to="/training" replace />;
   const first = getFirstName() || person?.first_name || '';
-  const total = data?.groups.reduce((n, g) => n + g.items.length, 0) ?? 0;
+  // the documents they signed (a finished initiative that is over drops out
+  // of the list, so this can be 0: then there is no count to show)
+  const total = data?.groups.reduce(
+    (n, g) => n + g.items.filter((i) => i.status === 'signed').length, 0) ?? 0;
 
   return (
     <main className="learn-page learn-done">
@@ -36,7 +39,7 @@ export default function Done() {
         <>
           <div className="learn-badge ok big" aria-hidden="true">✓</div>
           <h1 className="learn-hi">{first ? t('done.title', { name: first }) : t('done.titleNoName')}</h1>
-          <p className="learn-sub">{t('done.sub', { n: total })}</p>
+          {total > 0 && <p className="learn-sub">{t('done.sub', { n: total })}</p>}
 
           {qr
             ? <img className="learn-qr" src={qr} alt={t('done.qrAlt')} />

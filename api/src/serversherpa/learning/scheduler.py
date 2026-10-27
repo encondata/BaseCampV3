@@ -2,7 +2,8 @@
 (`run_learning_once`). Each pass:
 
 - sends scheduled invites whose send time (start − `send_offset_days` at
-  `send_time`, in the initiative's zone) has passed and haven't gone out;
+  `send_time`, in the initiative's zone) has passed and haven't gone out
+  (never for an initiative whose local end day has passed);
 - sends reminders to people with open assignments. Of the offsets whose
   time (start − offset at `send_time`) has passed, only the latest counts,
   only up to the start day, and only to someone whose code is older than
@@ -94,6 +95,8 @@ async def _scheduled_one(db: AsyncSession, initiative_id: uuid.UUID, now: dateti
     at = await invites.send_at(db, initiative, schedule)
     if at is None or at > now:
         return 0
+    if await invites.initiative_ended(db, initiative, now):
+        return 0                # its codes would already be expired: nothing to send
     return (await invites.send_initiative(db, initiative_id, None))["sent"]
 
 

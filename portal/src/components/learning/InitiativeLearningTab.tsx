@@ -41,7 +41,7 @@ import SendInvitesModal from './SendInvitesModal';
 import { useLearningAccess } from './useLearningAccess';
 
 const EMPTY_COUNTS: Record<RosterFilter, number> = {
-  all: 0, overdue: 0, in_progress: 0, not_opened: 0, complete: 0, no_email: 0,
+  all: 0, overdue: 0, in_progress: 0, not_opened: 0, complete: 0, nothing_assigned: 0, no_email: 0,
 };
 
 function countsOf(rows: RosterRow[]): Record<RosterFilter, number> {
@@ -214,13 +214,19 @@ export default function InitiativeLearningTab({ initiativeId }: { initiativeId: 
             Compliance report
           </button>
         )}
-        {canChange && (
+        {canChange && !schedule.ended && (
           <button type="button" className="btn-ghost" onClick={() => setDialog('sheet')}>Print code sheet</button>
         )}
-        {canChange && (
+        {canChange && !schedule.ended && (
           <button type="button" className="btn-solid" onClick={() => setDialog('send')}>Send invites now</button>
         )}
       </div>
+      {schedule.ended && (
+        <p className="lrn-hint lrn-ended-note" role="note">
+          This initiative ended on {schedule.codes_expire_on ? dayLabelYear(schedule.codes_expire_on) : 'its end date'}.
+          Invites can’t be sent for it.
+        </p>
+      )}
 
       <div className="lrn-tiles lrn-tiles-5" role="group" aria-label="Learning progress">
         {tiles.map((t) => (
@@ -297,6 +303,7 @@ export default function InitiativeLearningTab({ initiativeId }: { initiativeId: 
       <LearningRoster rows={rows} counts={counts} filter={filter} onFilter={setFilter}
                       loading={filterLoading} failed={rosterFailed} onRetry={refresh}
                       canChange={canChange} canViewWorker={canViewWorker} busyId={null}
+                      invitesEnded={schedule.ended}
                       onRemind={(ids) => setDialog({
                         remind: (everyone ?? []).filter((r) => ids.includes(r.person_id)),
                       })}

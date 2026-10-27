@@ -10,7 +10,7 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../../lib/api';
 import type {
@@ -62,7 +62,7 @@ const { default: InitiativeLearningTab } = await import('./InitiativeLearningTab
 const SCHEDULE: ScheduleOut = {
   mode: 'scheduled', send_offset_days: 7, send_time: '08:00', reminder_offsets: [5, 3],
   due_offset_days: 2, late_adds: true, sent_at: '2026-11-03T14:00:00Z',
-  send_at: '2026-11-03T14:00:00Z', codes_expire_on: '2026-11-21', is_default: false,
+  send_at: '2026-11-03T14:00:00Z', codes_expire_on: '2026-11-21', ended: false, is_default: false,
 };
 
 const SUMMARY: InitiativeLearning = {
@@ -235,6 +235,73 @@ it('the roster filter refetches with status=', async () => {
   await waitFor(() => expect(screen.queryByText('Maria Santos', NAME)).toBeNull());
   expect(screen.getByText('Derek Hill', NAME)).toBeTruthy();
   expect(screen.getByRole('tab', { name: /^Overdue/ }).getAttribute('aria-selected')).toBe('true');
+});
+
+it('a person with nothing assigned is its own status, not Complete 0/0', async () => {
+  const user = userEvent.setup();
+  const nina = row('p5', 'Nina Nothing', { status: 'nothing_assigned', total: 0, done: 0 });
+  api.listInitiativeRoster.mockImplementation(async (_id: string, status?: string) =>
+    [...ROSTER, nina].filter((r) => !status || r.status === status));
+  renderTab();
+  await rosterName('Nina Nothing');
+  const ninaRow = workerRow('Nina Nothing');
+  expect(within(ninaRow).getByText('Nothing assigned')).toBeTruthy();
+  expect(within(ninaRow).getByText('0/0')).toBeTruthy();
+  expect(within(ninaRow).queryByText('Complete')).toBeNull();
+  // the segment counts her apart from the one complete worker
+  expect(screen.getByRole('tab', { name: /^Complete 1$/ })).toBeTruthy();
+  expect(screen.getByRole('tab', { name: /^Nothing assigned 1$/ })).toBeTruthy();
+  await user.click(screen.getByRole('tab', { name: /^Nothing assigned/ }));
+  await waitFor(() => expect(api.listInitiativeRoster).toHaveBeenCalledWith('i1', 'nothing_assigned'));
+  // nothing is open for her, so there is no reminder to send
+  await user.click(within(workerRow('Nina Nothing')).getByRole('button', { name: /actions/i }));
+  expect(screen.queryByRole('menuitem', { name: 'Send reminder' })).toBeNull();
+});
+
+describe('an initiative that has ended', () => {
+  beforeEach(() => {
+    api.getInitiativeLearning.mockResolvedValue({
+      ...SUMMARY, schedule: { ...SCHEDULE, ended: true, codes_expire_on: '2026-11-21' } });
+  });
+
+  it('says so and offers no way to issue codes', async () => {
+    const user = userEvent.setup();
+    renderTab();
+    await screen.findByRole('group', { name: 'Learning progress' });
+    await rosterName('Maria Santos');
+    expect(screen.getByText(/This initiative ended on Nov 21, 2026\. Invites can.t be sent for it\./)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Send invites now' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Print code sheet' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Resend to selected/ })).toBeNull();
+    await user.click(within(workerRow('Derek Hill')).getByRole('button', { name: /actions/i }));
+    expect(screen.queryByRole('menuitem', { name: 'Resend' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Regenerate code' })).toBeNull();
+    // reminding and revoking stay
+    expect(screen.getByRole('menuitem', { name: 'Send reminder' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Revoke' })).toBeTruthy();
+  });
+
+  it('an initiative that has not ended shows no note and all the buttons', async () => {
+    api.getInitiativeLearning.mockResolvedValue(SUMMARY);
+    renderTab();
+    await screen.findByRole('group', { name: 'Learning progress' });
+    expect(screen.queryByText(/This initiative ended/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Send invites now' })).toBeTruthy();
+  });
+
+  it('maps a 409 initiative_ended from a send to plain words', async () => {
+    api.getInitiativeLearning.mockResolvedValue(SUMMARY);       // the page was loaded before it ended
+    api.sendInitiativeInvites.mockRejectedValue(
+      new ApiError(409, 'initiative_ended', { code: 'initiative_ended' }));
+    const user = userEvent.setup();
+    renderTab();
+    await screen.findByRole('group', { name: 'Learning progress' });
+    await rosterName('Maria Santos');
+    await user.click(screen.getByRole('button', { name: 'Send invites now' }));
+    const dialog = await screen.findByRole('dialog', { name: /Send invites/ });
+    await user.click(within(dialog).getByRole('button', { name: 'Send invites' }));
+    expect(await within(dialog).findByText(/This initiative has ended\. Invites can.t be sent for it\./)).toBeTruthy();
+  });
 });
 
 it('searches the roster by name, email or partner', async () => {

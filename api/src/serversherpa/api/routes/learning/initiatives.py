@@ -56,6 +56,15 @@ async def _member(db, initiative_id: uuid.UUID, person_id: uuid.UUID) -> None:
         raise _not_found()
 
 
+async def _open_for_invites(db, initiative: Initiative) -> None:
+    """409 `initiative_ended` when the initiative's local end day has passed:
+    a code issued now would already be expired."""
+    if await invites.initiative_ended(db, initiative):
+        raise HTTPException(status_code=409, detail={
+            "code": "initiative_ended",
+            "message": "This initiative has ended. Invites can't be sent for it."})
+
+
 @router.post("/initiatives/{initiative_id}/dry-run", response_model=AssignSummaryOut)
 async def dry_run(
     initiative_id: uuid.UUID,
@@ -143,7 +152,7 @@ async def send_invites(
     db: DbSession,
     actor: AuthContext = require_manager("change"),
 ) -> dict:
-    await _initiative(db, initiative_id)
+    await _open_for_invites(db, await _initiative(db, initiative_id))
     out = await invites.send_initiative(db, initiative_id, actor.person.id,
                                         person_ids=body.person_ids)
     await db.commit()
@@ -186,7 +195,7 @@ async def regenerate_code(
 ) -> dict:
     """A new code (the old one, its link and sessions stop working), emailed.
     Someone without email gets theirs from the code sheet instead."""
-    await _initiative(db, initiative_id)
+    await _open_for_invites(db, await _initiative(db, initiative_id))
     await _member(db, initiative_id, person_id)
     if not await emails.address_for(db, person_id):
         raise HTTPException(status_code=422, detail={
@@ -226,6 +235,7 @@ async def code_sheet(
     a link preview, history or a retried download must never reach it.
     Rendered before the commit, so a failed render issues nothing."""
     initiative = await _initiative(db, initiative_id)
+    await _open_for_invites(db, initiative)
     rows = await invites.issue_sheet_codes(db, initiative_id, everyone=everyone,
                                            actor_id=actor.person.id)
     pdf = await render_pdf_async(invites.code_sheet_html(

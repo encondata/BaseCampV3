@@ -1,6 +1,6 @@
 /**
  * The workers roster on an initiative's Learning tab: a status filter
- * (All / Overdue / In progress / Not opened / Complete) with counts, a
+ * (All / Overdue / In progress / Not opened / Complete / Nothing assigned) with counts, a
  * search, and one house-list row per person — progress, status, last
  * activity — with a row menu (Send reminder, Resend, Regenerate code,
  * Revoke, View history) and tick boxes for "Remind selected" and "Resend
@@ -30,6 +30,7 @@ const SEGMENTS: { key: RosterFilter; label: string }[] = [
   { key: 'in_progress', label: 'In progress' },
   { key: 'not_opened', label: 'Not opened' },
   { key: 'complete', label: 'Complete' },
+  { key: 'nothing_assigned', label: 'Nothing assigned' },
 ];
 
 const CHECKBOX_COL: ColumnDef = { key: 'select', label: '', width: '32px', default: true };
@@ -47,7 +48,7 @@ const ACTIONS = '88px';
 
 export default function LearningRoster({
   rows, counts, filter, onFilter, loading, failed, onRetry,
-  canChange, canViewWorker, busyId,
+  canChange, canViewWorker, busyId, invitesEnded = false,
   onRemind, onResend, onResendSelected, onRegenerate, onRevoke, onHistory,
 }: {
   /** The rows for the current filter; null until the first load. */
@@ -63,6 +64,8 @@ export default function LearningRoster({
   canViewWorker: boolean;
   /** The person whose action is in flight. */
   busyId: string | null;
+  /** The initiative has ended: no new codes (Resend, Regenerate) can be issued. */
+  invitesEnded?: boolean;
   /** Send reminder: one person (row menu) or the ticked people (the tab
    *  confirms first). */
   onRemind: (personIds: string[]) => void;
@@ -108,11 +111,13 @@ export default function LearningRoster({
     const busy = busyId === r.person_id;
     return [
       ...(canChange ? [
-        ...(r.status === 'complete' ? [] : [
+        ...(r.status === 'complete' || r.status === 'nothing_assigned' ? [] : [
           { key: 'remind', label: 'Send reminder', disabled: busy, onSelect: () => onRemind([r.person_id]) },
         ]),
-        { key: 'resend', label: 'Resend', disabled: busy, onSelect: () => onResend([r.person_id]) },
-        { key: 'regen', label: 'Regenerate code', disabled: busy, onSelect: () => onRegenerate(r) },
+        ...(invitesEnded ? [] : [
+          { key: 'resend', label: 'Resend', disabled: busy, onSelect: () => onResend([r.person_id]) },
+          { key: 'regen', label: 'Regenerate code', disabled: busy, onSelect: () => onRegenerate(r) },
+        ]),
         { key: 'revoke', label: 'Revoke', destructive: true, disabled: busy, onSelect: () => onRevoke(r) },
       ] : []),
       ...(canViewWorker ? [{ key: 'history', label: 'View history', onSelect: () => onHistory(r) }] : []),
@@ -148,7 +153,7 @@ export default function LearningRoster({
               {selected.length > 0 ? `Remind selected (${selected.length})` : 'Remind selected'}
             </button>
           )}
-          {canChange && (
+          {canChange && !invitesEnded && (
             <button type="button" className="mini-btn" disabled={selected.length === 0 || busyId !== null}
                     onClick={() => onResendSelected(selected)}>
               {selected.length > 0 ? `Resend to selected (${selected.length})` : 'Resend to selected'}

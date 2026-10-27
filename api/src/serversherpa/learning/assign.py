@@ -340,8 +340,10 @@ async def assign_on_add(db: AsyncSession, initiative_id: uuid.UUID, person_id: u
         return
     schedule = await db.get(LearningInviteSchedule, initiative_id)
     if schedule is not None and schedule.sent_at is not None and schedule.late_adds:
-        from serversherpa.learning.invites import send_invite_for
-        await send_invite_for(db, person_id, initiative_id, actor_id)
+        from serversherpa.learning.invites import initiative_ended, send_invite_for
+        # an ended initiative's codes would already be expired: no invite
+        if not await initiative_ended(db, await db.get(Initiative, initiative_id)):
+            await send_invite_for(db, person_id, initiative_id, actor_id)
 
 
 async def cancel_for_removed(db: AsyncSession, initiative_id: uuid.UUID,

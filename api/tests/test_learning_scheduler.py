@@ -350,6 +350,89 @@ async def test_roster_statuses(client, db, seeded_user):
                               json={})).status_code == 403
 
 
+async def test_person_with_nothing_assigned_is_not_complete(client, db, seeded_user):
+    """No assignments is `nothing_assigned`, never "Complete 0/0", and the
+    summary's complete count leaves them out."""
+    hdrs = await _manager(db, client)
+    move = await _move(db, start=TODAY + timedelta(days=10))      # no packets or rules
+    await _add(db, client, hdrs, move, await _worker(db, "Nina", "Nothing", "nina@test.example.com"))
+    [row] = (await client.get(f"/learning/initiatives/{move.id}/roster", headers=hdrs)).json()
+    assert (row["status"], row["done"], row["total"]) == ("nothing_assigned", 0, 0)
+    resp = await client.get(f"/learning/initiatives/{move.id}/roster?status=nothing_assigned",
+                            headers=hdrs)
+    assert [r["name"] for r in resp.json()] == ["Nina Nothing"]
+    assert (await client.get(f"/learning/initiatives/{move.id}/roster?status=complete",
+                             headers=hdrs)).json() == []
+    stats = (await client.get(f"/learning/initiatives/{move.id}", headers=hdrs)).json()["stats"]
+    assert stats["complete"] == 0
+
+
+async def _end(db, move, day):
+    move.scheduled_end = _midnight(day)
+    await db.commit()
+
+
+async def test_ended_initiative_refuses_manual_invites(client, db, seeded_user):
+    hdrs, move, [worker] = await _setup(db, client, start=TODAY + timedelta(days=3))
+    await _end(db, move, TODAY - timedelta(days=1))
+    base = f"/learning/initiatives/{move.id}"
+    for path, body in ((f"{base}/send", {}), (f"{base}/send", {"person_ids": [str(worker.id)]}),
+                       (f"{base}/people/{worker.id}/regenerate", None),
+                       (f"{base}/code-sheet.pdf", None)):
+        resp = await client.post(path, headers=hdrs, **({} if body is None else {"json": body}))
+        assert resp.status_code == 409, (path, resp.text)
+        assert resp.json()["detail"]["code"] == "initiative_ended"
+    assert await _outbox(db, "learning_invite") == []
+    assert list(await db.scalars(select(LearningCode))) == []
+    schedule = await db.get(LearningInviteSchedule, move.id)
+    assert schedule is None or schedule.sent_at is None
+    # the summary says so, and reminding stays allowed
+    summary = (await client.get(base, headers=hdrs)).json()
+    assert summary["schedule"]["ended"] is True
+    assert (await client.post(f"{base}/remind", headers=hdrs, json={})).status_code == 200
+    # the last day itself is still open
+    await _end(db, move, TODAY)
+    assert (await client.get(base, headers=hdrs)).json()["schedule"]["ended"] is False
+    assert (await client.post(f"{base}/send", headers=hdrs, json={})).status_code == 200
+
+
+async def test_ended_is_read_on_the_sites_local_day(db, seeded_user):
+    """End day Mar 10: at 16:00 UTC it is already Mar 11 in Tokyo."""
+    now = datetime(2026, 3, 10, 16, 0, tzinfo=UTC)
+    tokyo = await _move(db, start=date(2026, 3, 1), zone="Asia/Tokyo", end=date(2026, 3, 10))
+    utc = await _move(db, start=date(2026, 3, 1), end=date(2026, 3, 10))
+    open_ended = await _move(db, start=date(2026, 3, 1))
+    assert await invites.initiative_ended(db, tokyo, now) is True
+    assert await invites.initiative_ended(db, utc, now) is False
+    assert await invites.initiative_ended(db, open_ended, now) is False
+
+
+async def test_scheduled_send_skips_an_ended_initiative(client, db, seeded_user, monkeypatch):
+    _, move, _ = await _setup(db, client, start=TODAY - timedelta(days=2))
+    await _end(db, move, TODAY - timedelta(days=1))
+    db.add(LearningInviteSchedule(initiative_id=move.id, mode="scheduled"))
+    await db.commit()
+    _clock(monkeypatch, datetime.now(UTC))
+    out = await scheduler.run_learning_once(get_sessionmaker())
+    assert out["invites"] == 0 and out["errors"] == 0
+    assert await _outbox(db, "learning_invite") == []
+    assert list(await db.scalars(select(LearningCode))) == []
+
+
+async def test_late_add_on_an_ended_initiative_gets_no_invite(client, db, seeded_user):
+    hdrs, move, _ = await _setup(db, client, start=TODAY + timedelta(days=3))
+    assert (await client.post(f"/learning/initiatives/{move.id}/send", headers=hdrs,
+                              json={})).json()["sent"] == 1
+    await _end(db, move, TODAY - timedelta(days=1))
+    late = await _worker(db, "Larry", "Late", "larry@test.example.com")
+    await _add(db, client, hdrs, move, late)
+    assert await _outbox(db) and all(m.person_id != late.id for m in await _outbox(db))
+    assert list(await db.scalars(select(LearningCode).where(
+        LearningCode.person_id == late.id))) == []
+    assert (await db.scalar(select(func.count()).select_from(LearningAssignment).where(
+        LearningAssignment.person_id == late.id))) == 1          # still assigned
+
+
 async def test_roster_and_sends_agree_on_a_disabled_account(client, db, seeded_user):
     """The roster's email is the address a send would use: a person whose
     only email is a disabled login's is "no email" on both."""

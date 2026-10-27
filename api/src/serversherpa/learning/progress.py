@@ -2,7 +2,8 @@
 roster (progress and status per person), the stat tiles, what the move
 requires (packets from rules, extras), and the schedule's mini timeline.
 
-Roster status, first match wins: `complete` (nothing open), `overdue` (an
+Roster status, first match wins: `nothing_assigned` (no assignments at
+all: not complete), `complete` (nothing open), `overdue` (an
 open item's due date is before the initiative's local today), `in_progress`
 (something opened or signed), `no_email`, `not_opened`. Cancelled
 assignments (the person left and came back) are ignored. Read-only."""
@@ -25,7 +26,7 @@ from serversherpa.db.models import (
 from serversherpa.db.ordering import natural
 from serversherpa.learning import codes, emails
 from serversherpa.learning.assign import OPEN_STATUSES, _end_day
-from serversherpa.learning.invites import schedule_for, send_at
+from serversherpa.learning.invites import initiative_ended, schedule_for, send_at
 from serversherpa.learning.models import (
     LearningAssignment,
     LearningDocument,
@@ -38,7 +39,8 @@ from serversherpa.learning.models import (
 )
 from serversherpa.services.timezone import stored_day
 
-STATUSES = ("complete", "in_progress", "overdue", "not_opened", "no_email")
+STATUSES = ("nothing_assigned", "complete", "in_progress", "overdue", "not_opened",
+            "no_email")
 
 
 @dataclass
@@ -107,7 +109,9 @@ async def roster(db: AsyncSession, initiative: Initiative, *, now: datetime) -> 
         row.last_activity = max(stamps) if stamps else None
         row.opened = bool(stamps)
         open_items = [a for a in items if a.status in OPEN_STATUSES]
-        if not open_items:
+        if not items:
+            row.status = "nothing_assigned"
+        elif not open_items:
             row.status = "complete"
         elif any(a.due_on is not None and a.due_on < today for a in open_items):
             row.status = "overdue"
@@ -213,6 +217,7 @@ async def schedule_out(db: AsyncSession, initiative: Initiative,
         "sent_at": schedule.sent_at,
         "send_at": await send_at(db, initiative, schedule),
         "codes_expire_on": end,
+        "ended": await initiative_ended(db, initiative),
         "is_default": await db.get(LearningInviteSchedule, initiative.id) is None,
     }
 

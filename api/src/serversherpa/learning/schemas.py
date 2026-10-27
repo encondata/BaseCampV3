@@ -422,6 +422,8 @@ class ScheduleOut(BaseModel):
     # when a scheduled send will go out (or would, for a manual schedule)
     send_at: datetime | None
     codes_expire_on: date | None
+    # the initiative's local end day is before today: no invites go out
+    ended: bool
     # no schedule saved yet: these are the learning settings' defaults
     is_default: bool
 
@@ -494,7 +496,8 @@ class RemindOut(BaseModel):
     skipped_complete: int
 
 
-RosterStatus = Literal["complete", "in_progress", "overdue", "not_opened", "no_email"]
+RosterStatus = Literal["nothing_assigned", "complete", "in_progress", "overdue", "not_opened",
+                       "no_email"]
 
 
 class RosterRowOut(BaseModel):

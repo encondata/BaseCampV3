@@ -52,11 +52,11 @@ const SUMMARY: AssignSummary = {
   rows: [
     {
       person_id: 'p1', name: 'Tom Becker', will_get: ['Site rules', 'Acme NDA'],
-      why: ['Client is Acme', 'Client is Acme'],
-      skipped: [{ title: 'Standard', reason: 'valid until Mar 2027' }], no_email: false,
+      why: ['every_initiative', 'every_initiative'],
+      skipped: [{ title: 'Standard', reason: 'valid_until:2027-03-03' }], no_email: false,
     },
     {
-      person_id: 'p2', name: 'Ana Lim', will_get: ['Standard'], why: ['New worker'],
+      person_id: 'p2', name: 'Ana Lim', will_get: ['Standard'], why: ['never_signed'],
       skipped: [], no_email: true,
     },
   ],
@@ -102,8 +102,9 @@ it('shows the four tiles and the per-row table after picking an initiative', asy
   }
   const tom = (await screen.findByText('Tom Becker')).closest('.dir-row') as HTMLElement;
   expect(within(tom).getByText('Site rules, Acme NDA')).toBeTruthy();
-  expect(within(tom).getByText('Client is Acme')).toBeTruthy();         // one reason, not two
-  expect(within(tom).getByText('Standard: valid until Mar 2027')).toBeTruthy();
+  expect(within(tom).getByText('Signs again every initiative')).toBeTruthy();   // one reason, not two
+  expect(within(tom).getByText('Standard: Valid until Mar 3, 2027')).toBeTruthy();
+  expect(within(tom).queryByText(/every_initiative|valid_until/)).toBeNull();
   const ana = screen.getByText('Ana Lim').closest('.dir-row') as HTMLElement;
   expect(within(ana).getByText(/no email: print code/i)).toBeTruthy();
   expect(within(ana).getByText('None')).toBeTruthy();
@@ -122,23 +123,35 @@ it('Download summary writes the rows as CSV', async () => {
     (columns as [string, (r: unknown) => string][]).find(([h]) => h === head)![1](SUMMARY.rows[row]);
   expect(cell('Worker', 0)).toBe('Tom Becker');
   expect(cell('Will get', 0)).toBe('Site rules; Acme NDA');
-  expect(cell('Skipped', 0)).toBe('Standard: valid until Mar 2027');
+  expect(cell('Skipped', 0)).toBe('Standard: Valid until Mar 3, 2027');
+  expect(cell('Why', 0)).toBe('Signs again every initiative');
+  expect(cell('Why', 1)).toBe('Never signed');
   expect(cell('No email', 0)).toBe('No');
   expect(cell('No email', 1)).toBe('Yes');
 });
 
-it('Assign and schedule invites posts apply=true and shows what was assigned', async () => {
+it('Assign and schedule invites posts apply=true, then re-runs the preview', async () => {
   const user = userEvent.setup();
   await runFor();
   await screen.findByText('Tom Becker');
-  api.dryRunInitiative.mockResolvedValueOnce({
-    totals: { checked: 42, to_assign: 96, skipped: 38, no_email: 2 }, rows: SUMMARY.rows,
-  });
+  api.dryRunInitiative
+    .mockResolvedValueOnce({
+      totals: { checked: 42, to_assign: 96, skipped: 38, no_email: 2 }, rows: SUMMARY.rows,
+    })
+    .mockResolvedValueOnce({
+      totals: { checked: 42, to_assign: 0, skipped: 134, no_email: 2 },
+      rows: [{ person_id: 'p3', name: 'Zed Fresh', will_get: [], why: [],
+        skipped: [{ title: 'Standard', reason: 'already_assigned' }], no_email: false }],
+    });
   await user.click(screen.getByRole('button', { name: 'Assign and schedule invites' }));
-  await waitFor(() => expect(api.dryRunInitiative).toHaveBeenLastCalledWith('i1', true));
+  await waitFor(() => expect(api.dryRunInitiative).toHaveBeenLastCalledWith('i1', false));
+  expect(api.dryRunInitiative.mock.calls.map((c) => c[1])).toEqual([false, true, false]);
   expect(await screen.findByText(/assigned 96 documents/i)).toBeTruthy();
   expect(toast).toHaveBeenCalled();
-  // it has been done; the button waits until the dry run is run again
+  // the stale preview is gone: the table shows the state after the assignment
+  expect(await screen.findByText('Zed Fresh')).toBeTruthy();
+  expect(screen.queryByText('Tom Becker')).toBeNull();
+  expect(screen.getByText('Standard: Already assigned')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Assign and schedule invites' }).hasAttribute('disabled')).toBe(true);
 });
 
