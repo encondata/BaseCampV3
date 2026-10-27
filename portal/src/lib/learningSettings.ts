@@ -124,7 +124,10 @@ export function evaluate(draft: SettingsDraft, saved: LearningSettings): Evaluat
   if (draft.brand_line !== saved.brand_line) patch.brand_line = draft.brand_line;
 
   const languages = LEARNING_LANGUAGES.filter((l) => draft.languages.includes(l));
-  if (languages.join() !== saved.languages.join()) patch.languages = languages;
+  const savedLanguages = new Set(saved.languages);
+  if (languages.length !== savedLanguages.size || languages.some((l) => !savedLanguages.has(l))) {
+    patch.languages = languages;
+  }
 
   const email: EmailProblem[] = [];
   const pruned = pruneEmailText(draft.email_text);

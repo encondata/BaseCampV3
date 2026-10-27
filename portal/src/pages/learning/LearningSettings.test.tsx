@@ -151,7 +151,14 @@ it('allows no reminders at all', async () => {
   expect(api.putLearningSettings).toHaveBeenCalledWith({ reminder_offsets: [] });
 });
 
-it('does not call reordering the same reminder days a change', async () => {
+it('names the reminders group by its label', async () => {
+  renderPage();
+  await screen.findByLabelText('Branding line');
+  expect(screen.getByRole('group', { name: 'Reminders (days before the start)' })).toBeTruthy();
+});
+
+it('compares the offered languages as a set, not by order', async () => {
+  api.getLearningSettings.mockResolvedValue({ ...SETTINGS, languages: ['he', 'en', 'ko', 'ja'] });
   renderPage();
   await screen.findByLabelText('Branding line');
   expect((screen.getByRole('button', { name: 'Save changes' }) as HTMLButtonElement).disabled).toBe(true);
@@ -193,14 +200,17 @@ it('edits email text for a template and language', async () => {
 });
 
 it('picks the template and language being edited', async () => {
+  const user = userEvent.setup();
   api.getLearningSettings.mockResolvedValue({
     ...SETTINGS,
     email_text: { reminder: { ja: { subject: 'リマインダー', intro: 'お願いします' } } },
   });
   renderPage();
   await screen.findByLabelText('Branding line');
-  await userEvent.setup().selectOptions(screen.getByLabelText('Template'), 'reminder');
-  await userEvent.setup().selectOptions(screen.getByLabelText('Language'), 'ja');
+  await user.click(screen.getByRole('combobox', { name: 'Template' }));
+  await user.click(await screen.findByRole('button', { name: 'Reminder' }));
+  await user.click(screen.getByRole('combobox', { name: 'Language' }));
+  await user.click(await screen.findByRole('button', { name: 'Japanese' }));
   expect(value('Subject')).toBe('リマインダー');
   expect(value('Intro')).toBe('お願いします');
 });

@@ -31,12 +31,12 @@ import '../../styles/initiatives.css';   // .init-check pills (the languages)
 import '../../styles/learning.css';
 import '../../styles/profile.css';       // .panel, .pf-form
 
-function Field({ id, label, hint, error, full = false, children }: {
-  id?: string; label: string; hint?: ReactNode; error?: string; full?: boolean; children: ReactNode;
+function Field({ id, labelId, label, hint, error, full = false, children }: {
+  id?: string; labelId?: string; label: string; hint?: ReactNode; error?: string; full?: boolean; children: ReactNode;
 }) {
   return (
     <div className={full ? 'full' : undefined}>
-      <label htmlFor={id}>{label}</label>
+      <label id={labelId} htmlFor={id}>{label}</label>
       {children}
       {hint && <p className="lrn-hint">{hint}</p>}
       {error && <p className="pf-error" role="alert">{error}</p>}
@@ -187,11 +187,13 @@ export default function LearningSettings() {
                             options={timeValues.map((t) => ({ value: t, label: timeLabel(t) }))} />
                 </Field>
                 {number('due_offset_days', 'Due (days before the start)')}
-                <Field label="Reminders (days before the start)" full>
-                  <ChipPicker options={reminderOptions} selected={draft.reminder_offsets}
-                              onChange={(v) => patchDraft({ reminder_offsets: v })} disabled={locked}
-                              ariaLabel="Add a reminder day" placeholder="Add a reminder day…"
-                              note={draft.reminder_offsets.length === 0 ? 'No reminders.' : undefined} />
+                <Field label="Reminders (days before the start)" labelId="ls-reminders-label" full>
+                  <div role="group" aria-labelledby="ls-reminders-label">
+                    <ChipPicker options={reminderOptions} selected={draft.reminder_offsets}
+                                onChange={(v) => patchDraft({ reminder_offsets: v })} disabled={locked}
+                                ariaLabel="Add a reminder day" placeholder="Add a reminder day…"
+                                note={draft.reminder_offsets.length === 0 ? 'No reminders.' : undefined} />
+                  </div>
                 </Field>
               </div>
             </div>
@@ -202,14 +204,14 @@ export default function LearningSettings() {
             <div className="panel-body">
               <div className="pf-form">
                 <Field label="Template" id="ls-email-kind">
-                  <select id="ls-email-kind" value={kind} onChange={(e) => setKind(e.target.value)}>
-                    {EMAIL_KINDS.map((k) => <option key={k.key} value={k.key}>{k.label}</option>)}
-                  </select>
+                  <ComboBox inputId="ls-email-kind" ariaLabel="Template" value={kind}
+                            onChange={(v) => v && setKind(v)}
+                            options={EMAIL_KINDS.map((k) => ({ value: k.key, label: k.label }))} />
                 </Field>
                 <Field label="Language" id="ls-email-lang">
-                  <select id="ls-email-lang" value={lang} onChange={(e) => setLanguage(e.target.value)}>
-                    {languages.map((l) => <option key={l} value={l}>{languageName(l)}</option>)}
-                  </select>
+                  <ComboBox inputId="ls-email-lang" ariaLabel="Language" value={lang}
+                            onChange={(v) => v && setLanguage(v)}
+                            options={languages.map((l) => ({ value: l, label: languageName(l) }))} />
                 </Field>
                 <Field label="Subject" id="ls-email-subject" full error={subjectError}
                        hint="Leave the subject and intro blank to use the built-in text. A language with no text of its own uses the English text.">
