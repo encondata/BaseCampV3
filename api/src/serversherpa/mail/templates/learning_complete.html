@@ -1,0 +1,12 @@
+{% extends "_base.html" %}
+{% block content %}
+<p style="margin:0 0 16px;font-size:18px;font-weight:600;">You're all set, {{ name }}</p>
+{% if intro_override %}
+<p style="margin:0 0 24px;white-space:pre-line;">{{ intro_override }}</p>
+{% else %}
+<p style="margin:0 0 24px;">Everything is signed{% if initiative_name %} for {{ initiative_name }}{% endif %}. Thank you.</p>
+{% endif %}
+<p style="margin:0 0 16px;">This is your time clock code. Scan it at the station when you clock in.</p>
+<p style="margin:0 0 16px;text-align:center;"><img src="cid:qr" alt="Your time clock QR code" width="220" height="220" style="display:inline-block;width:220px;height:220px;border:1px solid #e4e7ec;border-radius:12px;"></p>
+<p style="margin:0;font-size:13px;color:#667085;">Don't share this code with anyone: it clocks you in.</p>
+{% endblock %}

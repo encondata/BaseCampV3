@@ -1,5 +1,7 @@
 """Workers: profiles, blacklist↔login coupling, certifications, levels."""
 
+import uuid
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -198,6 +200,32 @@ async def test_certifications_crud(client, seeded_user, db):
     listing = (await client.get(f"/workers/{worker.id}/certifications",
                                 headers=headers)).json()
     assert len(listing) == 1
+
+
+async def test_certifications_expose_source_and_learning_initiative(client, seeded_user, db):
+    """Manual certs read back as source "manual"; a cert written by a learning
+    sign-off carries source "learning" and the initiative it came from."""
+    from serversherpa.db.models import WorkerCertification
+
+    worker = await _mk_worker(db)
+    headers = await _headers(client)
+    created = (await client.post(f"/workers/{worker.id}/certifications", headers=headers,
+                                 json={"name": "OSHA 30"})).json()
+    assert created["source"] == "manual"
+    assert created["learning_initiative_id"] is None
+
+    initiative_id = uuid.uuid4()
+    db.add(WorkerCertification(person_id=worker.id, name="Forklift safety",
+                               source="learning", learning_initiative_id=initiative_id))
+    await db.commit()
+
+    listing = (await client.get(f"/workers/{worker.id}/certifications",
+                                headers=headers)).json()
+    by_name = {c["name"]: c for c in listing}
+    assert by_name["OSHA 30"]["source"] == "manual"
+    assert by_name["OSHA 30"]["learning_initiative_id"] is None
+    assert by_name["Forklift safety"]["source"] == "learning"
+    assert by_name["Forklift safety"]["learning_initiative_id"] == str(initiative_id)
 
 
 async def test_levels_seeded_and_staff_readonly(client, seeded_user, db):

@@ -17,6 +17,7 @@ from pydantic import (
     Field,
     StringConstraints,
     field_validator,
+    model_validator,
 )
 
 from serversherpa.notifications.kinds import CATEGORY_KEYS
@@ -1132,6 +1133,9 @@ class CertItem(BaseModel):
     issuer: str | None
     issued_on: _date | None
     expires_on: _date | None
+    # "manual" (added by hand) or "learning" (written by a learning sign-off)
+    source: str
+    learning_initiative_id: uuid.UUID | None
 
 
 class CertCreateIn(BaseModel):
@@ -2143,6 +2147,8 @@ class InitiativeItem(BaseModel):
     archived_at: datetime | None = None
     created_at: datetime
     kiosk_password_set: bool = False
+    # the learning invites' send time (sent, or scheduled): the timeline marker
+    learning_send_at: datetime | None = None
 
 
 class InitiativePersonRow(BaseModel):
@@ -2526,6 +2532,93 @@ class SecurityConfigIn(BaseModel):
     password_expiry_enabled: bool | None = None
     password_expiry_days: int | None = None
     password_history_count: int | None = None
+
+
+LEARNING_LANGUAGES = ("en", "ja", "ko", "he")
+_HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+# settings that may be cleared back to null (null = the rule is off)
+_LEARNING_NULLABLE = ("general_code_days", "default_validity_days", "retention_days")
+
+
+# the learning email kinds whose subject and intro settings can override
+# (learning/emails.py TEMPLATES); a subject is one header line, capped at
+# learning/emails.SUBJECT_MAX
+LEARNING_EMAIL_KINDS = ("invite", "reminder", "complete", "new_version", "link")
+LEARNING_SUBJECT_MAX = 200
+
+
+class LearningEmailText(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str = Field(max_length=LEARNING_SUBJECT_MAX)
+    intro: str
+
+
+class LearningSettingsOut(BaseModel):
+    code_max_failures: int
+    code_lockout_seconds: int
+    ip_limit: int
+    ip_window_seconds: int
+    global_limit: int
+    general_code_days: int | None
+    default_validity_days: int | None
+    invite_offset_days: int
+    invite_time: str
+    reminder_offsets: list[int]
+    due_offset_days: int
+    retention_days: int | None
+    brand_line: str
+    email_text: dict[str, dict[str, LearningEmailText]]
+    languages: list[str]
+
+
+class LearningSettingsIn(BaseModel):
+    """Partial update — only sent fields change. general_code_days,
+    default_validity_days and retention_days accept an explicit null (the
+    rule is off); every other field rejects null. `languages` must include
+    "en" and stay within the four supported languages."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code_max_failures: int | None = Field(default=None, ge=1)
+    code_lockout_seconds: int | None = Field(default=None, ge=1)
+    ip_limit: int | None = Field(default=None, ge=1)
+    ip_window_seconds: int | None = Field(default=None, ge=1)
+    global_limit: int | None = Field(default=None, ge=1)
+    general_code_days: int | None = Field(default=None, ge=1)
+    default_validity_days: int | None = Field(default=None, ge=1)
+    invite_offset_days: int | None = Field(default=None, ge=1)
+    invite_time: str | None = None
+    reminder_offsets: list[Annotated[int, Field(ge=0, le=365)]] | None = None
+    due_offset_days: int | None = Field(default=None, ge=1)
+    retention_days: int | None = Field(default=None, ge=1)
+    brand_line: str | None = None
+    email_text: dict[str, dict[str, LearningEmailText]] | None = None
+    languages: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _check(self):
+        for key in self.model_fields_set:
+            if getattr(self, key) is None and key not in _LEARNING_NULLABLE:
+                raise ValueError(f"{key} cannot be null")
+        if self.invite_time is not None and not _HHMM.match(self.invite_time):
+            raise ValueError("invite_time must be HH:MM")
+        offsets = self.reminder_offsets
+        if offsets is not None and len(set(offsets)) != len(offsets):
+            raise ValueError("reminder_offsets must be unique")
+        langs = self.languages
+        if langs is not None:
+            if len(set(langs)) != len(langs) or not set(langs) <= set(LEARNING_LANGUAGES):
+                raise ValueError("languages must be unique and within en, ja, ko, he")
+            if "en" not in langs:
+                raise ValueError("languages must include en")
+        if not set(self.email_text or {}) <= set(LEARNING_EMAIL_KINDS):
+            raise ValueError("email_text kinds must be within "
+                             + ", ".join(LEARNING_EMAIL_KINDS))
+        for by_lang in (self.email_text or {}).values():
+            if not set(by_lang) <= set(LEARNING_LANGUAGES):
+                raise ValueError("email_text languages must be within en, ja, ko, he")
+        return self
 
 
 class AiLookupConfigOut(BaseModel):
@@ -3675,6 +3768,23 @@ class KioskTimeclockTodayEntry(BaseModel):
     minutes: int
 
 
+class KioskLearningItem(BaseModel):
+    """One document the worker still has to sign: `required` by the move
+    (or the general set), or an `extra` a manager added by hand."""
+
+    title: str
+    kind: Literal["required", "extra"]
+
+
+class KioskLearningBlock(BaseModel):
+    """What the worker still owes for the station's move (the general set
+    when it has none). `link_email`: they have an address "Email me the
+    link" can reach."""
+
+    outstanding: list[KioskLearningItem]
+    link_email: bool
+
+
 class KioskTimeclockStatusOut(BaseModel):
     person: KioskTimeclockPerson
     clocked_in: bool
@@ -3684,6 +3794,10 @@ class KioskTimeclockStatusOut(BaseModel):
     # kiosk's site (UTC without one), oldest punch first
     today_minutes: int = 0
     today_entries: list[KioskTimeclockTodayEntry] = []
+    # on the status reads only (null on punch replies, and whenever nothing
+    # is outstanding or a "day" override covers today): the kiosk warns
+    # before a clock-in, the server never refuses one
+    learning: KioskLearningBlock | None = None
 
 
 # ── kiosk containers (pack / unpack) ──
@@ -3970,6 +4084,11 @@ class KioskClockInIn(BaseModel):
     # The kiosk's own IANA zone: "today" falls back to it when the site
     # has none (see `timeclock.site_zone`).
     tz: str | None = Field(None, max_length=64)
+    # the admin override this punch was let through on (learning-override):
+    # that person's, made on this kiosk, today, not yet used. Any JSON
+    # value: anything else (malformed, not a string, someone else's,
+    # used) never refuses the punch, it is only recorded on the audit
+    learning_override_id: Any = None
 
 
 class KioskClockOutIn(BaseModel):
@@ -3990,6 +4109,45 @@ class KioskStationClockIn(BaseModel):
     serial: str = Field(min_length=1, max_length=120)
     person_id: uuid.UUID
     tz: str | None = Field(None, max_length=64)   # as KioskClockInIn
+    # clock-in only, as KioskClockInIn (clock-out ignores it)
+    learning_override_id: Any = None
+
+
+class KioskLearningLinkIn(BaseModel):
+    """"Email me the link" at the time clock. `tz` as on the punches (the
+    local day a "day" override covers)."""
+
+    serial: str = Field(min_length=1, max_length=120)
+    person_id: uuid.UUID
+    tz: str | None = Field(None, max_length=64)
+
+
+class KioskLearningLinkOut(BaseModel):
+    # false: nothing the station would warn about, no address, or one
+    # already sent this minute
+    sent: bool
+
+
+class KioskLearningOverrideIn(BaseModel):
+    """An admin (rank 60+) lets a worker with unsigned learning punch
+    anyway. The admin's credentials are checked like /auth/login's and no
+    session is opened. `scope` "day" also stops the warning for that person
+    at that site for the rest of the local day; `tz` is the kiosk's own
+    zone, as on the punches. `other` needs `reason_text`."""
+
+    serial: str = Field(min_length=1, max_length=120)
+    person_id: uuid.UUID
+    admin_email: EmailStr
+    admin_password: str = Field(min_length=1, max_length=1024)
+    totp_code: str | None = Field(None, max_length=64)
+    reason: Literal["signing_on_break", "signed_on_paper", "no_phone", "other"]
+    reason_text: str | None = Field(None, max_length=500)
+    scope: Literal["punch", "day"]
+    tz: str | None = Field(None, max_length=64)
+
+
+class KioskLearningOverrideOut(BaseModel):
+    override_id: uuid.UUID
 
 
 # ── kiosk rolodex ──

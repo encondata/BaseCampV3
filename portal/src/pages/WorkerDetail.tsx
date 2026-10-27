@@ -10,6 +10,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
 import DataTable from '../components/DataTable';
+import LearningHistoryPanel from '../components/learning/LearningHistoryPanel';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import { printBadgeQr } from '../components/people/BadgeQr';
 import StatusHover from '../components/StatusHover';
@@ -368,9 +369,12 @@ export default function WorkerDetailPage() {
               </span>
             </div>
             <div className="panel-body">
-              <CertsPanel personId={worker.person_id} onChanged={() => void load()} />
+              <CertsPanel personId={worker.person_id} personName={worker.display_name}
+                          onChanged={() => void load()} />
             </div>
           </div>
+
+          <LearningHistoryPanel personId={worker.person_id} personName={worker.display_name} />
 
           <div className="panel">
             <div className="panel-head">

@@ -240,3 +240,23 @@ it('deletes a file', async () => {
   await user.click(screen.getByRole('button', { name: 'Delete' }));
   await waitFor(() => expect(api.deleteAttachment).toHaveBeenCalledWith('f1'));
 });
+
+const LEARNING_DEF: ReportDefinition = {
+  id: 'd11', name: 'Learning compliance', description: '', report_type: 'learning_compliance',
+  is_system: true, updated_at: '2026-10-26T10:00:00Z', options: { default_format: 'pdf' },
+};
+
+it('edits Learning compliance as just its default format', async () => {
+  const user = userEvent.setup();
+  api.updateReportDefinition.mockResolvedValue({ ...LEARNING_DEF, options: { default_format: 'xlsx' } });
+  const onSaved = vi.fn();
+  render(<EditDefinitionModal definition={LEARNING_DEF} onClose={() => {}} onSaved={onSaved} />);
+  expect(screen.getByRole('radio', { name: /PDF document/ }).getAttribute('aria-checked')).toBe('true');
+  expect(screen.queryByText('Default sections')).toBeNull();
+  await user.click(screen.getByRole('radio', { name: /Excel workbook/ }));
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  expect(api.updateReportDefinition).toHaveBeenCalledWith('d11', {
+    name: 'Learning compliance', description: '', options: { default_format: 'xlsx' },
+  });
+});

@@ -47,6 +47,7 @@ function previewOut(overrides: Record<string, number[]> = {}): CleanupPreviewOut
         cat('sessions', 'Expired sessions', n('sessions', 0, 3)),
         cat('reset_links', 'Used or expired password-reset links', n('reset_links', 0, 0)),
         cat('trusted_browsers', 'Expired or revoked trusted browsers', n('trusted_browsers', 0, 0)),
+        cat('learn_sessions', 'Expired or revoked learn sessions', n('learn_sessions', 0, 0)),
       ],
     },
     {
@@ -201,7 +202,7 @@ it('keeps Delete disabled when the preview finds nothing', async () => {
   const { user } = renderTab();
   const signin = within(card('Sign-in leftovers'));
   await user.click(signin.getByRole('button', { name: 'Preview' }));
-  await waitFor(() => expect(signin.getAllByText('0 rows').length).toBe(3));
+  await waitFor(() => expect(signin.getAllByText('0 rows').length).toBe(4));
   expect((signin.getByRole('button', { name: 'Delete selected' }) as HTMLButtonElement).disabled)
     .toBe(true);
 });

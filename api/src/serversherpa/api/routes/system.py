@@ -25,13 +25,15 @@ from serversherpa.api.deps import (
 )
 from serversherpa.api.routes.attachments import MAX_IMAGE_BYTES, _sniff_image
 from serversherpa.api.schemas import (
-    BrandingIn, BrandingOut,
+    BrandingIn, BrandingOut, LearningSettingsIn, LearningSettingsOut,
     RevokeAllSessionsOut, SecurityConfigIn, SecurityConfigOut,
     AiLookupConfigIn, AiLookupConfigOut,
     AdminConfigIn, AdminConfigOut, BackgroundStatusOut, LogEntryOut, LogPageOut, SystemProcessOut,
     SystemStatusOut,
 )
 from serversherpa.config import get_settings
+from serversherpa.learning.access import require_manager
+from serversherpa.learning.settings import SECTION as LEARNING_SECTION
 from serversherpa.mail import email_enabled
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
@@ -234,6 +236,42 @@ async def put_security_config(
               changes=changes)
     await db.commit()
     return SecurityConfigOut(**data)
+
+
+@router.get("/learning", response_model=LearningSettingsOut)
+async def get_learning_settings(
+    db: DbSession,
+    actor: AuthContext = require_manager("view"),
+) -> LearningSettingsOut:
+    return LearningSettingsOut(**await read_section(db, LEARNING_SECTION))
+
+
+@router.put("/learning", response_model=LearningSettingsOut)
+async def put_learning_settings(
+    body: LearningSettingsIn,
+    db: DbSession,
+    actor: AuthContext = require_manager("change"),
+) -> LearningSettingsOut:
+    stored = await read_section(db, LEARNING_SECTION)
+    # null is a real value for the three "rule off" numbers (the schema
+    # already rejected null anywhere else), so only unset keys are skipped
+    patch = body.model_dump(exclude_unset=True)
+    data = {**stored, **patch}
+    row = await db.get(SystemConfig, LEARNING_SECTION)
+    if row is None:
+        row = SystemConfig(section=LEARNING_SECTION)
+        db.add(row)
+    row.data = data
+    row.updated_at = datetime.now(UTC)
+    row.updated_by = actor.person.id
+    changes = {key: {"from": stored.get(key), "to": data[key]}
+               for key in data if stored.get(key) != data[key]}
+    if changes:
+        audit(db, actor_id=actor.person.id, entity_type="system",
+              entity_id=LEARNING_SECTION, action="learning_config_update",
+              changes=changes)
+    await db.commit()
+    return LearningSettingsOut(**data)
 
 
 AI_LOOKUP_SECTION = "ai_lookup"

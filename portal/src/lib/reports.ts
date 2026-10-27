@@ -22,6 +22,7 @@ export const RUN_ERROR_TEXT: Record<string, string> = {
   too_many_entries: 'Too many entries for one report (over 20,000). Narrow the date range or filters.',
   too_many_for_pdf: 'Too many entries for a PDF (over 5,000). Choose Excel or narrow the range.',
   time_view_required: 'You need permission to view time to run this report.',
+  learning_view_required: 'You need permission to view learning to run this report.',
 };
 export const runErrorText = (code: string): string => RUN_ERROR_TEXT[code] ?? code;
 

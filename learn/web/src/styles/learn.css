@@ -1,0 +1,208 @@
+/* ============================================================
+   learn.css — the learn site's own rules. The sign-in page is the
+   shared light scene (auth-theme.css + login-light.css); only what the
+   learn form adds lives here, scoped to .login-shell.login-light so it
+   can't leak. Logical properties throughout: Hebrew runs right to left.
+   ============================================================ */
+
+/* base.css paints the body dark for the portal; the learn site is light */
+body { background: #FFF9F2; }
+
+/* ---------- the six code boxes ---------- */
+.login-shell.login-light .learn-code {
+  display: flex; gap: 8px; justify-content: space-between;
+  margin: 26px 0 22px;
+}
+.login-shell.login-light .learn-code input {
+  inline-size: 100%; max-inline-size: 56px; min-inline-size: 0; block-size: 60px;
+  text-align: center; text-transform: uppercase;
+  font-family: var(--font-mono); font-size: 24px; color: var(--lx-ink);
+  background: #fff; border: 1px solid var(--lx-line); border-radius: 10px;
+  outline: none; caret-color: var(--lx-orange);
+  transition: border-color .2s, box-shadow .2s;
+}
+.login-shell.login-light .learn-code input:focus {
+  border-color: var(--lx-orange); box-shadow: 0 0 0 4px #ff6a0024;
+}
+.login-shell.login-light .learn-code input.filled { border-color: #94A3B8 }
+.login-shell.login-light .learn-code.bad input { border-color: #e5484d; box-shadow: 0 0 0 4px #e5484d1a }
+.login-shell.login-light .learn-code input:disabled { opacity: .6 }
+
+/* Continue's arrow points the way the text reads (and nudges that way on hover) */
+[dir='rtl'] .login-shell.login-light.learn-signin .btn .arrow { transform: scaleX(-1) }
+[dir='rtl'] .login-shell.login-light.learn-signin .btn:hover .arrow { transform: scaleX(-1) translate(4px) }
+
+/* ---------- language links ---------- */
+.login-shell.login-light .learn-langs {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: 6px 14px; margin-block-start: 26px;
+  color: var(--lx-slate); font-size: 14px;
+}
+.login-shell.login-light .learn-langs svg { inline-size: 16px; block-size: 16px; flex: none }
+.login-shell.login-light .learn-langs button {
+  border: 0; background: transparent; padding: 2px 0; cursor: pointer;
+  font: inherit; color: inherit;
+  border-block-end: 1px solid transparent;
+  transition: color .2s, border-color .2s;
+}
+.login-shell.login-light .learn-langs button:hover { color: var(--lx-ink) }
+.login-shell.login-light .learn-langs button.on { color: var(--lx-ink); border-block-end-color: var(--lx-orange) }
+
+/* ---------- back to the code form (inside the portal sign-in's notice) ---------- */
+.login-shell.login-light .learn-back {
+  border: 0; background: transparent; padding: 0; cursor: pointer;
+  font: inherit; color: var(--lx-ink);
+  border-block-end: 1px solid var(--lx-orange);
+}
+
+/* ---------- the invite link's holding card ---------- */
+/* auth-theme.css lays .login-shell out as a two-column (narrow: two-row)
+   grid; this page is one centered card */
+.login-shell.login-light.learn-start {
+  display: grid; grid-template: 1fr / 1fr; place-items: center; padding: 16px;
+}
+.login-shell.login-light .learn-start-card {
+  inline-size: 100%; max-inline-size: 418px; padding: 28px;
+  background: #fff; border: 1px solid var(--lx-line); border-radius: 16px;
+  box-shadow: 0 18px 40px -24px rgba(15, 23, 42, .25);
+}
+.login-shell.login-light .learn-start-msg { margin: 14px 0 0; font-size: 16px; line-height: 1.5 }
+.login-shell.login-light .learn-start-btn { margin-block-start: 22px; text-decoration: none }
+
+/* ---------- signed-in pages and the error screen ---------- */
+.learn-page, .learn-crash {
+  max-inline-size: 640px; margin: 0 auto; padding: 24px 16px;
+  color: #0F172A; font-family: 'Geologica', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+.learn-page .eyebrow, .learn-crash .eyebrow {
+  font-family: 'Fragment Mono', monospace; font-size: 12px; letter-spacing: .12em;
+  text-transform: uppercase; color: #64748B;
+}
+.learn-crash pre { white-space: pre-wrap; font-size: 12px; color: #64748B }
+.learn-crash button {
+  padding: 10px 18px; border: 0; border-radius: 10px; cursor: pointer;
+  background: #0F172A; color: #fff; font: inherit;
+}
+
+/* ---------- training list, reader, quiz and done (worker screens) ---------- */
+.learn-page {
+  --l-ink: #0F172A; --l-mute: #64748B; --l-line: #E2E8F0; --l-orange: #FF6A00;
+  --l-orange-bg: #FFF1E3; --l-green: #15803D; --l-green-bg: #E6F6EC; --l-red: #B91C1C;
+  display: flex; flex-direction: column; gap: 12px; min-block-size: 100dvh;
+}
+.learn-top { display: flex; align-items: center; gap: 8px; font-weight: 500; font-size: 14px }
+.learn-mark { inline-size: 24px; block-size: 24px; border-radius: 8px; background: var(--l-orange) }
+.learn-hi { margin: 0; font-size: 22px; font-weight: 500; letter-spacing: -.01em }
+.learn-sub { margin: 0; font-size: 13px; color: var(--l-mute); line-height: 1.5 }
+.learn-note { margin: 12px 0; color: var(--l-mute); font-size: 14px }
+.learn-fine { margin: 0; font-size: 12px; color: var(--l-mute) }
+.learn-group { display: flex; flex-direction: column; gap: 10px }
+
+.learn-pbar { block-size: 8px; border-radius: 999px; background: var(--l-line); overflow: hidden }
+.learn-pbar span { display: block; block-size: 100%; border-radius: 999px; background: var(--l-orange); transition: inline-size .3s }
+
+.learn-tasks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px }
+.learn-task { border-radius: 12px; background: #fff; border: 1px solid var(--l-line) }
+.learn-task .row {
+  display: flex; align-items: center; gap: 12px; padding: 12px; text-decoration: none; color: inherit;
+}
+.learn-task .ck {
+  inline-size: 26px; block-size: 26px; border-radius: 50%; flex: none;
+  display: grid; place-items: center; border: 1.5px solid var(--l-line); color: #94A3B8;
+}
+.learn-task .ck svg { inline-size: 15px; block-size: 15px }
+.learn-task .txt { display: flex; flex-direction: column; min-inline-size: 0 }
+.learn-task .t { font-size: 14px; font-weight: 500 }
+.learn-task .s { font-size: 12px; color: var(--l-mute) }
+.learn-task .chev { inline-size: 18px; block-size: 18px; margin-inline-start: auto; color: #94A3B8; flex: none }
+[dir='rtl'] .learn-task .chev { transform: scaleX(-1) }
+.learn-task.done .ck { background: var(--l-green-bg); border-color: transparent; color: var(--l-green) }
+.learn-task.done .t { color: var(--l-mute) }
+.learn-task.next { border-color: var(--l-orange); box-shadow: 0 0 0 3px var(--l-orange-bg) }
+.learn-task.next .ck { background: var(--l-orange); border-color: transparent; color: #1a1205 }
+
+.learn-cta {
+  display: block; box-sizing: border-box; inline-size: 100%; padding: 13px; border: 0; border-radius: 12px;
+  background: var(--l-orange); color: #1a1205; font: inherit; font-weight: 500; font-size: 15px;
+  text-align: center; text-decoration: none; cursor: pointer;
+}
+.learn-cta:disabled { opacity: .6; cursor: default }
+.learn-cta:focus-visible, .learn-link:focus-visible, .learn-task .row:focus-visible { outline: 3px solid var(--l-ink); outline-offset: 2px }
+.learn-link {
+  /* a 44px-tall target for a thumb, though the text is small */
+  display: inline-flex; align-items: center; justify-content: center; min-block-size: 44px; min-inline-size: 44px;
+  border: 0; background: transparent; padding: 0 8px; cursor: pointer; font: inherit; font-size: 13px;
+  color: #B45309; text-decoration: none; align-self: center;
+}
+.learn-page .learn-langs {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: 6px 14px; margin-block-start: 14px; color: var(--l-mute); font-size: 14px;
+}
+.learn-page .learn-langs svg { inline-size: 16px; block-size: 16px; flex: none }
+.learn-page .learn-langs button {
+  border: 0; background: transparent; padding: 2px 0; cursor: pointer; font: inherit; color: inherit;
+  border-block-end: 1px solid transparent;
+}
+.learn-page .learn-langs button.on { color: var(--l-ink); border-block-end-color: var(--l-orange) }
+
+/* reader and quiz */
+.learn-readhead { display: flex; align-items: center; gap: 10px }
+.learn-backlink { display: grid; place-items: center; inline-size: 44px; block-size: 44px; color: var(--l-ink); flex: none }
+.learn-backlink svg { inline-size: 20px; block-size: 20px }
+[dir='rtl'] .learn-backlink svg { transform: scaleX(-1) }
+.learn-doctitle { margin: 0; font-size: 17px; font-weight: 500; line-height: 1.3 }
+.learn-banner {
+  margin: 0; padding: 9px 12px; border-radius: 10px; font-size: 13px; line-height: 1.5;
+  background: var(--l-orange-bg); color: #7C2D12;
+}
+.learn-doc {
+  flex: 1; min-block-size: 220px; max-block-size: 55dvh; overflow-y: auto; overscroll-behavior: contain;
+  background: #fff; border: 1px solid var(--l-line); border-radius: 14px; padding: 14px;
+  font-size: 14px; line-height: 1.65; color: #434b57;
+}
+.learn-doc h1, .learn-doc h2, .learn-doc h3, .learn-doc h4 { font-size: 15px; font-weight: 500; margin: 14px 0 4px; color: var(--l-ink) }
+.learn-doc > div > :first-child { margin-block-start: 0 }
+.learn-doc img { max-inline-size: 100%; block-size: auto }
+.learn-doc table { border-collapse: collapse; max-inline-size: 100% }
+.learn-doc th, .learn-doc td { border: 1px solid var(--l-line); padding: 4px 8px }
+.learn-readdone { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; color: var(--l-green) }
+.learn-readdone svg { inline-size: 16px; block-size: 16px }
+.learn-agree { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; line-height: 1.5 }
+.learn-agree input { inline-size: 20px; block-size: 20px; margin: 0; accent-color: var(--l-orange); flex: none }
+.learn-field { display: flex; flex-direction: column; gap: 6px }
+.learn-field label, .learn-fieldlabel { font-size: 12px; color: var(--l-mute) }
+.learn-sig {
+  box-sizing: border-box; inline-size: 100%; padding: 11px 12px; border: 1.5px solid var(--l-line);
+  border-radius: 10px; background: #fff; font-family: 'Geologica', sans-serif; font-style: italic; font-size: 22px; color: #1f3a8a;
+}
+.learn-sig:focus { outline: none; border-color: var(--l-orange); box-shadow: 0 0 0 3px var(--l-orange-bg) }
+.learn-sigpad { display: flex; flex-direction: column; gap: 6px }
+.learn-sigpad canvas {
+  inline-size: 100%; background: #fff; border: 1.5px solid var(--l-line); border-radius: 10px; touch-action: none;
+}
+.learn-reason { margin: 0; min-block-size: 18px; font-size: 13px; color: var(--l-red); visibility: hidden }
+.learn-reason.show { visibility: visible }
+
+.learn-quiz { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; min-inline-size: 0 }
+.learn-prompt { font-size: 17px; font-weight: 500; line-height: 1.4; padding: 0; margin-block-end: 2px }
+.learn-choice {
+  display: flex; align-items: center; gap: 10px; padding: 12px; border-radius: 12px; font-size: 14px;
+  border: 1.5px solid var(--l-line); background: #fff; cursor: pointer;
+}
+.learn-choice input { accent-color: var(--l-orange); inline-size: 18px; block-size: 18px; margin: 0; flex: none }
+.learn-choice.sel { border-color: var(--l-orange); background: #fff8ee }
+.learn-choice:focus-within { box-shadow: 0 0 0 3px var(--l-orange-bg) }
+
+.learn-result, .learn-done { display: flex; flex-direction: column; gap: 12px; align-items: center; text-align: center }
+.learn-result .learn-cta, .learn-done .learn-cta { max-inline-size: 360px }
+.learn-badge {
+  display: grid; place-items: center; inline-size: 48px; block-size: 48px; border-radius: 50%;
+  font-size: 24px; font-weight: 600; margin-block-start: 8px;
+}
+.learn-badge.big { inline-size: 64px; block-size: 64px; font-size: 32px }
+.learn-badge.ok { background: var(--l-green-bg); color: var(--l-green) }
+.learn-badge.no { background: var(--l-orange-bg); color: #9A3412 }
+.learn-qr {
+  inline-size: 180px; block-size: 180px; padding: 12px; box-sizing: content-box; background: #fff;
+  border: 1px solid var(--l-line); border-radius: 14px; image-rendering: pixelated;
+}

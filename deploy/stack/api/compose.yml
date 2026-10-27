@@ -10,7 +10,9 @@ x-ss-env: &ss-env
   SS_API_BASE_URL: https://api.${STACK_DOMAIN:?set STACK_DOMAIN}
   SS_PORTAL_ORIGIN: https://portal.${STACK_DOMAIN}
   SS_WIKI_ORIGIN: https://wiki.${STACK_DOMAIN}
-  SS_ALLOWED_ORIGINS: https://portal.${STACK_DOMAIN},https://kiosk.${STACK_DOMAIN},https://wiki.${STACK_DOMAIN}
+  # the invite emails' one-click links point here
+  SS_LEARN_ORIGIN: https://learn.${STACK_DOMAIN}
+  SS_ALLOWED_ORIGINS: https://portal.${STACK_DOMAIN},https://kiosk.${STACK_DOMAIN},https://wiki.${STACK_DOMAIN},https://learn.${STACK_DOMAIN}
   SS_COOKIE_DOMAIN: ""
   # Local stacks: the db stack's postgres; a DigitalOcean droplet's .env sets
   # SS_DATABASE_URL (the managed database) and SS_DATABASE_SSL=require.

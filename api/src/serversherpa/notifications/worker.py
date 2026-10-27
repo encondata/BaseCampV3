@@ -1,7 +1,9 @@
 """The notification-worker loop — a separate process from the API
 (`serversherpa notification-worker`). Each poll it delivers the email
 outbox (mail/delivery.py); once an hour it runs the password-expiry
-reminder sweep (notifications/password_reminders.py); once a day it
+reminder sweep (notifications/password_reminders.py); every minute the
+learning sweep (learning/scheduler.py: scheduled invites, reminders,
+overdue notices); once a day it
 refreshes Google's Android attestation revocation list
 (security/attestation_status.py, retried hourly after a failure); every 15
 minutes it logs a status line. Quiet hours / DND are applied when a notification is
@@ -15,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import NotificationGroup, NotificationGroupMember
+from serversherpa.learning.scheduler import run_learning_once
 from serversherpa.mail import email_enabled
 from serversherpa.mail.delivery import deliver_once
 from serversherpa.notifications.password_reminders import run_reminders_once
@@ -23,6 +26,7 @@ from serversherpa.security import attestation_status
 logger = logging.getLogger("serversherpa.notifications.worker")
 IDLE_LOG_SECONDS = 900   # one INFO status line every 15 min
 REMINDER_INTERVAL_SECONDS = 3600
+LEARNING_INTERVAL_SECONDS = 60
 ATTESTATION_STATUS_INTERVAL_SECONDS = 86_400
 ATTESTATION_STATUS_RETRY_SECONDS = 3600
 
@@ -65,6 +69,24 @@ async def run_attestation_refresh(maker) -> bool:
     return True
 
 
+async def run_learning(maker, state: dict) -> None:
+    """One learning sweep; a failure is logged once per outage, never raised
+    (each initiative's own failures are already counted inside)."""
+    try:
+        out = await run_learning_once(maker)
+        state["failed"] = False
+    except Exception as exc:
+        # the class only: the text of a DB error can carry SQL parameters
+        if not state["failed"]:
+            logger.warning("could not run the learning sweep — retrying (%s)",
+                           type(exc).__name__)
+        state["failed"] = True
+        return
+    if out["invites"] or out["reminders"] or out["overdue"]:
+        logger.info("learning: %d invite(s), %d reminder(s), %d overdue notice(s)",
+                    out["invites"], out["reminders"], out["overdue"])
+
+
 async def run_forever(poll_seconds: float = 5.0) -> None:
     from serversherpa.db.engine import get_sessionmaker
     from serversherpa.system.admin_config import poll_workers_paused
@@ -75,11 +97,13 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
     pause_state = {"paused": False}
     check_state = {}
     deliver_state = {"failed": False}
+    learning_state = {"failed": False}
     heartbeat = start_heartbeat("notification-worker", "worker",
                                 meta_fn=lambda: dict(pause_state))
 
     logger.info("notification worker online — email outbox every %.0fs, hourly "
-                "password expiry reminders, daily attestation revocation list",
+                "password expiry reminders, learning sweep every minute, daily attestation "
+                "revocation list",
                 poll_seconds)
 
     maker = get_sessionmaker()
@@ -88,6 +112,7 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
         # interval in the past so the first loop iteration always logs.
         last_log = time.monotonic() - IDLE_LOG_SECONDS
         last_reminders = time.monotonic() - REMINDER_INTERVAL_SECONDS
+        last_learning = time.monotonic() - LEARNING_INTERVAL_SECONDS
         last_attestation = time.monotonic() - ATTESTATION_STATUS_INTERVAL_SECONDS
         while True:
             # read-only mode's "also pause background services": idle (still
@@ -116,6 +141,9 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
                 if sent:
                     logger.info("sent %d password expiry reminder(s)", sent)
                 last_reminders = now
+            if now - last_learning >= LEARNING_INTERVAL_SECONDS:
+                await run_learning(maker, learning_state)
+                last_learning = now
             if now - last_attestation >= ATTESTATION_STATUS_INTERVAL_SECONDS:
                 if await run_attestation_refresh(maker):
                     last_attestation = now

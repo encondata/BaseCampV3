@@ -160,6 +160,11 @@ class Settings(BaseSettings):
     wiki_export_max_pages: int = 1000
     wiki_export_max_bytes: int = 2 * 1024 ** 3
 
+    # ── Learning ───────────────────────────────────────────
+    # Origin of the worker learn site (Vite dev server in development); the
+    # invite emails' one-click links point here (learn_url below).
+    learn_origin: str = "http://localhost:5179"
+
     # ── cert-worker (environments Sirdar builds on DigitalOcean) ─────
     # The account's renewal token: certificates and load balancers only.
     cert_do_token: SecretStr | None = None
@@ -198,3 +203,9 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def learn_url(path: str) -> str:
+    """An absolute learn-site URL (services/password_reset.portal_url's
+    counterpart), e.g. learn_url("/start#t=<token>")."""
+    return f"{get_settings().learn_origin.rstrip('/')}{path}"

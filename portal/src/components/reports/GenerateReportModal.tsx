@@ -6,7 +6,8 @@
  * report_type — all three share `ReportOptionsLayout`'s preview card and
  * option groups), then progress (poll the run every 2 s) with "Notify me
  * when it's ready" / Close, ending in Download or Try again. A Timesheet
- * skips the pick step (its job is an optional filter) and opens on options.
+ * skips the pick step (its job is an optional filter) and opens on options;
+ * so does Learning compliance (the initiative is optional: blank = everyone).
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
@@ -21,6 +22,7 @@ import {
 } from '../../lib/reports';
 import { useSystemStatus } from '../../lib/systemStatusContext';
 import ContainerLabelsOptions from './ContainerLabelsOptions';
+import LearningComplianceOptions from './LearningComplianceOptions';
 import MoveReportOptions from './MoveReportOptions';
 import MoveScanHistoryOptions from './MoveScanHistoryOptions';
 import { InitiativeSummary, PreviewCard, summaryFromInitiative } from './ReportOptionsLayout';
@@ -52,7 +54,10 @@ export default function GenerateReportModal({ definition, onClose, onToast, time
   // A Timesheet has no initiative pick step — its job is an optional filter
   // on the options step — so it opens straight on the options.
   const isTimesheet = definition.report_type === 'timesheet';
-  const [step, setStep] = useState<Step>(isTimesheet ? 'sections' : 'pick');
+  // Learning compliance is the same: its initiative is an option, not a pick.
+  const isLearning = definition.report_type === 'learning_compliance';
+  const skipsPick = isTimesheet || isLearning;
+  const [step, setStep] = useState<Step>(skipsPick ? 'sections' : 'pick');
   const [initiatives, setInitiatives] = useState<InitiativeItem[] | null>(null);
   const [search, setSearch] = useState('');
   const [type, setType] = useState('');
@@ -71,7 +76,7 @@ export default function GenerateReportModal({ definition, onClose, onToast, time
 
   useEffect(() => {
     closedRef.current = false;
-    if (isTimesheet) return () => { closedRef.current = true; };
+    if (skipsPick) return () => { closedRef.current = true; };
     listInitiatives().then(setInitiatives).catch(() => setError("Couldn't load initiatives."));
     return () => { closedRef.current = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -175,7 +180,7 @@ export default function GenerateReportModal({ definition, onClose, onToast, time
           </button>
         </div>
         <div className="rgm-steps">
-          {!isTimesheet && (
+          {!skipsPick && (
             <>
               <span className={`rgm-step ${step === 'pick' ? 'on' : ''} ${step !== 'pick' ? 'done' : ''}`}>
                 <span className="rgm-step-num">1</span>
@@ -185,12 +190,12 @@ export default function GenerateReportModal({ definition, onClose, onToast, time
             </>
           )}
           <span className={`rgm-step ${step === 'sections' ? 'on' : ''} ${step === 'progress' ? 'done' : ''}`}>
-            <span className="rgm-step-num">{isTimesheet ? 1 : 2}</span>
+            <span className="rgm-step-num">{skipsPick ? 1 : 2}</span>
             <span className="rgm-step-label">Options</span>
           </span>
           <span className="rgm-step-sep" />
           <span className={`rgm-step ${step === 'progress' ? 'on' : ''}`}>
-            <span className="rgm-step-num">{isTimesheet ? 2 : 3}</span>
+            <span className="rgm-step-num">{skipsPick ? 2 : 3}</span>
             <span className="rgm-step-label">Progress</span>
           </span>
         </div>
@@ -290,6 +295,13 @@ export default function GenerateReportModal({ definition, onClose, onToast, time
           />
         )}
 
+        {step === 'sections' && isLearning && (
+          <LearningComplianceOptions
+            definition={definition}
+            onGenerate={(p) => void start(p)}
+          />
+        )}
+
         {step === 'sections' && isContainerLabels && (
           <ContainerLabelsOptions
             definition={definition}
@@ -299,7 +311,7 @@ export default function GenerateReportModal({ definition, onClose, onToast, time
           />
         )}
 
-        {step === 'sections' && !isSurvey && !isScanHistory && !isContainerLabels && !isTimesheet && (
+        {step === 'sections' && !isSurvey && !isScanHistory && !isContainerLabels && !isTimesheet && !isLearning && (
           <MoveReportOptions
             definition={definition}
             initiative={picked}
@@ -324,7 +336,7 @@ export default function GenerateReportModal({ definition, onClose, onToast, time
               {run?.status === 'completed' && (
                 <>
                   <div><b>{run.filename}</b></div>
-                  {run.initiative_id && !isTimesheet && (
+                  {run.initiative_id && !isTimesheet && !isLearning && (
                     <div className="cell-sub">Also saved to the initiative&apos;s Files</div>
                   )}
                 </>

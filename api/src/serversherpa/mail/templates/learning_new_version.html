@@ -1,0 +1,13 @@
+{% extends "_base.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">Hi {{ name }},</p>
+{% if intro_override %}
+<p style="margin:0 0 16px;white-space:pre-line;">{{ intro_override }}</p>
+{% else %}
+<p style="margin:0 0 16px;"><b>{{ title }}</b> has a new version. Please read it and sign again.</p>
+{% endif %}
+{% if change_note %}<p style="margin:0 0 24px;padding:12px 14px;background:#f2f4f7;border-radius:8px;font-size:14px;"><b>What changed:</b> {{ change_note }}</p>{% endif %}
+<p style="margin:0 0 24px;"><a href="{{ link }}" style="display:inline-block;background:#ffa12e;color:#0c1117;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:8px;">Review and sign</a></p>
+<p style="margin:0 0 8px;font-size:13px;color:#667085;">If the button doesn't work, paste this address into your browser:</p>
+<p style="margin:0;font-size:13px;word-break:break-all;"><a href="{{ link }}" style="color:#1b2129;">{{ link }}</a></p>
+{% endblock %}

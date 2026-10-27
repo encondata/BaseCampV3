@@ -49,6 +49,7 @@ def registry() -> dict[str, ReportModule]:
     if _REGISTRY is None:
         from serversherpa.reports import (
             container_labels,
+            learning_compliance,
             move_report,
             move_scan_history,
             site_move_survey,
@@ -60,6 +61,7 @@ def registry() -> dict[str, ReportModule]:
             move_scan_history.report_type: move_scan_history,    # type: ignore[dict-item]
             container_labels.report_type: container_labels,      # type: ignore[dict-item]
             timesheet.report_type: timesheet,                    # type: ignore[dict-item]
+            learning_compliance.report_type: learning_compliance,  # type: ignore[dict-item]
         }
     return _REGISTRY
 

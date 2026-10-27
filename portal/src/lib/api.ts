@@ -54,7 +54,7 @@ export type NotificationSound = 'none' | 'chime' | 'ping' | 'pop' | 'bell';
 /** How one notification category reaches the person: inbox + email, inbox
  *  only, or nothing. Mirrors notifications/kinds.py CATEGORIES. */
 export type DeliveryChoice = 'email' | 'inbox' | 'off';
-export type NotificationCategory = 'approvals' | 'reports' | 'wiki' | 'security';
+export type NotificationCategory = 'approvals' | 'reports' | 'wiki' | 'learning' | 'security';
 
 export interface NotifPrefs {
   sound: NotificationSound; // in-app sound for new inbox items
@@ -211,7 +211,7 @@ export class ApiError extends Error {
   }
 }
 
-async function errorFrom(resp: Response): Promise<ApiError> {
+export async function errorFrom(resp: Response): Promise<ApiError> {
   let code = 'unknown_error';
   let detail: unknown;
   try {
@@ -1471,8 +1471,10 @@ export async function commitSiteBulk(
 }
 
 /** GET an attachment and hand it to the browser as a download. */
-async function downloadAttachment(path: string, filename: string): Promise<void> {
-  const resp = await apiFetch(path);
+export async function downloadAttachment(
+  path: string, filename: string, init: RequestInit = {},
+): Promise<void> {
+  const resp = await apiFetch(path, init);
   if (!resp.ok) throw await errorFrom(resp);
   const blob = await resp.blob();
   const url = URL.createObjectURL(blob);
@@ -3397,6 +3399,9 @@ export interface InitiativeItem {
   code?: string | null;
   /** Sent on list rows and the detail alike, so the edit modal can offer Reveal from either page. */
   kiosk_password_set?: boolean;
+  /** When the learning invites go out (or went out): the timeline marker.
+   *  Null when none is scheduled or sent; optional so older fixtures still type-check. */
+  learning_send_at?: string | null;
   initiative_type: string; type_label: string; type_color: string;
   sub_type: string | null; sub_type_label: string | null;
   sub_type_color: string | null;

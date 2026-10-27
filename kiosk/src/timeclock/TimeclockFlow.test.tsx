@@ -100,6 +100,8 @@ function fakeBackend(people: KioskPersonRow[] = [ALEX, TINA]): Fake {
     status: vi.fn(async (id: string) => statusOf(people.find((p) => p.id === id) ?? ALEX, false)),
     clockIn: vi.fn(async (id: string) => statusOf(people.find((p) => p.id === id) ?? ALEX, true)),
     clockOut: vi.fn(async (id: string) => statusOf(people.find((p) => p.id === id) ?? ALEX, false)),
+    learningLink: vi.fn(async () => ({ sent: true })),
+    learningOverride: vi.fn(async () => ({ override_id: 'ovr-1' })),
   };
 }
 
@@ -699,5 +701,241 @@ describe('idle and exits', () => {
     await user.click(await screen.findByRole('button', { name: 'My badge works' }));
     await user.click(await screen.findByRole('button', { name: 'Done' }));
     expect(onExit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('learning warning', () => {
+  const OWES: KioskTimeclockStatus['learning'] = {
+    outstanding: [
+      { title: 'Acme NDA', kind: 'required' },
+      { title: 'Forklift safety', kind: 'extra' },
+    ],
+    link_email: true,
+  };
+  const owing = (clockedIn = false, learning = OWES) => statusOf(ALEX, clockedIn, { learning });
+
+  async function toWarning() {
+    backend.status.mockResolvedValue(owing());
+    renderFlow();
+    await toAction();
+    await user.click(screen.getByRole('button', { name: /Clock In/ }));
+    await heading("2 required items aren't signed yet");
+  }
+  const openOverride = async () => {
+    await user.click(screen.getByRole('button', { name: /Admin override/ }));
+    await screen.findByRole('dialog');
+  };
+  const fillAdmin = async () => {
+    await user.type(screen.getByLabelText('Admin email'), 'laura@example.com');
+    await user.type(screen.getByLabelText('Password'), 'hunter2hunter2');
+  };
+
+  it('Clock In with items outstanding shows the warning instead of punching', async () => {
+    await toWarning();
+    expect(backend.clockIn).not.toHaveBeenCalled();
+    expect(screen.getByText('Alex Johnson')).toBeTruthy();
+    expect(screen.getByText('Acme NDA')).toBeTruthy();
+    expect(screen.getByText('Required for this move')).toBeTruthy();
+    expect(screen.getByText('Extra')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
+  });
+
+  it('nothing outstanding (or no learning block) punches straight away', async () => {
+    backend.status.mockResolvedValue(statusOf(ALEX, false, { learning: null }));
+    renderFlow();
+    await toAction();
+    await user.click(screen.getByRole('button', { name: /Clock In/ }));
+    expect(await heading('Do you need a new badge?')).toBeTruthy();
+    expect(backend.clockIn).toHaveBeenCalledWith('p-alex');
+  });
+
+  it('Clock Out never shows the warning', async () => {
+    backend.status.mockResolvedValue(owing(true));
+    renderFlow();
+    await toAction();
+    await user.click(screen.getByRole('button', { name: /Clock Out/ }));
+    expect(await heading('Clock Out')).toBeTruthy();
+    expect(screen.queryByText(/aren't signed yet/)).toBeNull();
+    await user.click(screen.getByRole('button', { name: /Confirm Clock Out/ }));
+    expect(backend.clockOut).toHaveBeenCalledWith('p-alex');
+    expect(backend.learningLink).not.toHaveBeenCalled();
+  });
+
+  it('Cancel punch resets to Welcome without punching', async () => {
+    await toWarning();
+    await user.click(screen.getByRole('button', { name: /Cancel punch/ }));
+    expect(await heading('Welcome!')).toBeTruthy();
+    expect(backend.clockIn).not.toHaveBeenCalled();
+  });
+
+  it('Cancel punch leaves a kiosk', async () => {
+    backend.status.mockResolvedValue(owing());
+    const onExit = vi.fn();
+    renderFlow('kiosk', { onExit });
+    await peopleLoaded();
+    await user.type(searchBox(), BADGE);
+    await user.click(await screen.findByRole('button', { name: /Yes, that's me/ }));
+    await user.click(await screen.findByRole('button', { name: /Clock In/ }));
+    await user.click(await screen.findByRole('button', { name: /Cancel punch/ }));
+    expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
+  it('Email me the link sends once and then says it went', async () => {
+    await toWarning();
+    await user.click(screen.getByRole('button', { name: /Email me the link/ }));
+    expect(await screen.findByText('Link sent to your email')).toBeTruthy();
+    expect(backend.learningLink).toHaveBeenCalledTimes(1);
+    expect(backend.learningLink).toHaveBeenCalledWith('p-alex');
+    expect(screen.queryByRole('button', { name: /Email me the link/ })).toBeNull();
+    expect(backend.clockIn).not.toHaveBeenCalled();
+  });
+
+  it('Email me the link is not offered without an address', async () => {
+    backend.status.mockResolvedValue(owing(false, { ...OWES!, link_email: false }));
+    renderFlow();
+    await toAction();
+    await user.click(screen.getByRole('button', { name: /Clock In/ }));
+    await heading("2 required items aren't signed yet");
+    expect(screen.queryByRole('button', { name: /Email me the link/ })).toBeNull();
+    expect(screen.getByRole('button', { name: /Cancel punch/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Admin override/ })).toBeTruthy();
+  });
+
+  it.each([
+    [{ sent: false }, "We couldn't send the link. Try again in a minute."],
+    [new ApiError(429, 'rate_limited'), 'Too many tries. Wait a few minutes.'],
+    [new ApiError(0, 'network'), "Can't reach the portal. Try again."],
+    [new ApiError(500, 'boom'), 'Something went wrong. Try again.'],
+  ])('a link that did not go out says so and stays available (%#)', async (outcome, text) => {
+    if (outcome instanceof ApiError) backend.learningLink.mockRejectedValue(outcome);
+    else backend.learningLink.mockResolvedValue(outcome);
+    await toWarning();
+    await user.click(screen.getByRole('button', { name: /Email me the link/ }));
+    expect((await screen.findByRole('alert')).textContent).toBe(text);
+    expect((screen.getByRole('button', { name: /Email me the link/ }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('Admin override then Override and clock in: overrides, then clocks in with the id', async () => {
+    await toWarning();
+    await openOverride();
+    await fillAdmin();
+    await user.click(screen.getByRole('radio', { name: 'Rest of today' }));
+    await user.click(screen.getByRole('button', { name: 'Override and clock in' }));
+
+    await heading('Do you need a new badge?');
+    expect(backend.learningOverride).toHaveBeenCalledTimes(1);
+    expect(backend.learningOverride).toHaveBeenCalledWith('p-alex', {
+      admin_email: 'laura@example.com', admin_password: 'hunter2hunter2',
+      reason: 'signing_on_break', scope: 'day',
+    });
+    expect(backend.clockIn).toHaveBeenCalledTimes(1);
+    expect(backend.clockIn).toHaveBeenCalledWith('p-alex', 'ovr-1');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('a refused override never clocks in, and the form stays up with the reason', async () => {
+    backend.learningOverride.mockRejectedValueOnce(new ApiError(403, 'override_credentials_invalid'));
+    await toWarning();
+    await openOverride();
+    await fillAdmin();
+    await user.click(screen.getByRole('button', { name: 'Override and clock in' }));
+    expect((await screen.findByRole('alert')).textContent).toBe("That email and password didn't work.");
+    expect(backend.clockIn).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  });
+
+  it('asks for the 2FA code after totp_required and then clocks in', async () => {
+    backend.learningOverride.mockRejectedValueOnce(new ApiError(403, 'totp_required'));
+    await toWarning();
+    await openOverride();
+    await fillAdmin();
+    await user.click(screen.getByRole('button', { name: 'Override and clock in' }));
+    await user.type(await screen.findByLabelText('2FA code'), '123456');
+    await user.click(screen.getByRole('button', { name: 'Override and clock in' }));
+    await heading('Do you need a new badge?');
+    expect(backend.learningOverride).toHaveBeenLastCalledWith('p-alex', expect.objectContaining({ totp_code: '123456' }));
+    expect(backend.clockIn).toHaveBeenCalledWith('p-alex', 'ovr-1');
+  });
+
+  it('Back closes the form and leaves the warning up', async () => {
+    await toWarning();
+    await openOverride();
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('heading', { name: "2 required items aren't signed yet" })).toBeTruthy();
+    expect(backend.learningOverride).not.toHaveBeenCalled();
+  });
+
+  it('a clock-in that fails after the override can be retried with the same override', async () => {
+    backend.clockIn.mockRejectedValueOnce(new ApiError(0, 'network'));
+    await toWarning();
+    await openOverride();
+    await fillAdmin();
+    await user.click(screen.getByRole('button', { name: 'Override and clock in' }));
+    expect(await screen.findByText(/Your punch was not recorded/)).toBeTruthy();
+    expect(screen.getByRole('heading', { name: "2 required items aren't signed yet" })).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    await heading('Do you need a new badge?');
+    expect(backend.learningOverride).toHaveBeenCalledTimes(1);
+    expect(backend.clockIn).toHaveBeenCalledTimes(2);
+    expect(backend.clockIn).toHaveBeenLastCalledWith('p-alex', 'ovr-1');
+  });
+
+  it('the busy guard: one clock-in even if Try again is tapped twice', async () => {
+    let resolve!: (s: KioskTimeclockStatus) => void;
+    backend.clockIn
+      .mockRejectedValueOnce(new ApiError(0, 'network'))
+      .mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+    await toWarning();
+    await openOverride();
+    await fillAdmin();
+    await user.click(screen.getByRole('button', { name: 'Override and clock in' }));
+    await user.dblClick(await screen.findByRole('button', { name: 'Try again' }));
+    expect(backend.clockIn).toHaveBeenCalledTimes(2);
+    await act(async () => { resolve(statusOf(ALEX, true)); });
+    expect(await heading('Do you need a new badge?')).toBeTruthy();
+  });
+
+  it('20 s idle on the warning returns to Welcome', async () => {
+    await toWarning();
+    act(() => { vi.advanceTimersByTime(IDLE_MS); });
+    expect(await heading('Welcome!')).toBeTruthy();
+  });
+
+  it('20 s idle with the form open returns to Welcome and closes it', async () => {
+    await toWarning();
+    await openOverride();
+    act(() => { vi.advanceTimersByTime(IDLE_MS); });
+    expect(await heading('Welcome!')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('an override that answers after the person left never clocks in the next one', async () => {
+    let resolve!: (v: { override_id: string }) => void;
+    backend.learningOverride.mockImplementation(() => new Promise((r) => { resolve = r; }));
+    await toWarning();
+    await openOverride();
+    await fillAdmin();
+    await user.click(screen.getByRole('button', { name: 'Override and clock in' }));
+    act(() => { vi.advanceTimersByTime(IDLE_MS); });
+    await heading('Welcome!');
+    await act(async () => { resolve({ override_id: 'ovr-late' }); });
+    expect(backend.clockIn).not.toHaveBeenCalled();
+  });
+
+  it('the next person does not inherit the last one\'s override or sent link', async () => {
+    await toWarning();
+    await user.click(screen.getByRole('button', { name: /Email me the link/ }));
+    await screen.findByText('Link sent to your email');
+    await user.click(screen.getByRole('button', { name: /Cancel punch/ }));
+    await heading('Welcome!');
+
+    backend.status.mockResolvedValue(owing());
+    await scan(`${BADGE}{Enter}`);
+    await user.click(await screen.findByRole('button', { name: /Yes, that's me/ }));
+    await user.click(await screen.findByRole('button', { name: /Clock In/ }));
+    await heading("2 required items aren't signed yet");
+    expect(screen.getByRole('button', { name: /Email me the link/ })).toBeTruthy();
   });
 });

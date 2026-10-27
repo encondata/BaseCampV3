@@ -1,0 +1,7 @@
+You're all set, {{ name }}
+
+{% if intro_override %}{{ intro_override }}{% else %}Everything is signed{% if initiative_name %} for {{ initiative_name }}{% endif %}. Thank you.{% endif %}
+
+Your time clock QR code is in the HTML version of this email. Scan it at the station when you clock in.
+
+Don't share this code with anyone: it clocks you in.

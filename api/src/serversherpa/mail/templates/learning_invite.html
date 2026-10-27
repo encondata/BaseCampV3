@@ -1,0 +1,16 @@
+{% extends "_base.html" %}
+{% block content %}
+<p style="margin:0 0 16px;font-size:18px;font-weight:600;">{% if initiative_name %}Welcome to {{ initiative_name }}, {{ name }}{% else %}Hi {{ name }}{% endif %}</p>
+{% if intro_override %}
+<p style="margin:0 0 24px;white-space:pre-line;">{{ intro_override }}</p>
+{% else %}
+<p style="margin:0 0 24px;">{% if start_on %}Before your first shift on <b>{{ start_on }}</b>, review{% else %}Please review{% endif %} and sign {{ documents }} short document{{ "" if documents == 1 else "s" }}.</p>
+{% endif %}
+<p style="margin:0 0 24px;"><a href="{{ link }}" style="display:inline-block;background:#ffa12e;color:#0c1117;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:8px;">Start my training</a></p>
+<p style="margin:0 0 8px;font-size:13px;color:#667085;">Or go to <a href="{{ learn_origin }}" style="color:#1b2129;">{{ learn_host }}</a>, enter this code and your last name:</p>
+<p style="margin:0 0 8px;font-family:Menlo,Consolas,monospace;font-size:24px;letter-spacing:.2em;">{{ code }}</p>
+<p style="margin:0 0 24px;font-size:13px;color:#667085;">{% if due_on %}Due {{ due_on }}{% endif %}{% if due_on and expires_on %} · {% endif %}{% if expires_on %}Code works until {{ expires_on }}{% endif %}</p>
+<p style="margin:0 0 8px;font-size:13px;color:#667085;">If the button doesn't work, paste this address into your browser:</p>
+<p style="margin:0 0 24px;font-size:13px;word-break:break-all;"><a href="{{ link }}" style="color:#1b2129;">{{ link }}</a></p>
+<p style="margin:0;font-size:13px;color:#667085;">Keep this email to yourself: the code and the link open your training.</p>
+{% endblock %}

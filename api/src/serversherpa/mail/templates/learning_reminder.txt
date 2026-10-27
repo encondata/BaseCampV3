@@ -1,0 +1,11 @@
+Hi {{ name }},
+
+{% if intro_override %}{{ intro_override }}{% else %}You still have {{ remaining }} document{{ "" if remaining == 1 else "s" }} to review and sign{% if initiative_name %} for {{ initiative_name }}{% endif %}{% if start_on %}, which starts {{ start_on }}{% endif %}.{% endif %}
+
+Continue your training:
+
+{{ link }}
+{% if due_on %}
+Due {{ due_on }}.{% endif %}
+
+You can also go to {{ learn_origin }} and enter the code from your invite with your last name. This link replaces the one in earlier emails.

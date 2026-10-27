@@ -59,6 +59,7 @@ from serversherpa.db.models import (
     SystemConfig,
     TrustedDevice,
 )
+from serversherpa.learning.models import LearningSession
 from serversherpa.notifications.password_reminders import KIND as PASSWORD_EXPIRING_KIND
 from serversherpa.services import storage
 
@@ -248,6 +249,12 @@ def _spent_reset_links() -> ColumnElement[bool]:
 def _dead_trusted_browsers() -> ColumnElement[bool]:
     return or_(TrustedDevice.revoked_at.is_not(None),
                TrustedDevice.expires_at < func.now())
+
+
+# A learn session has no refresh token, so nothing looks a dead one up again.
+def _dead_learn_sessions() -> ColumnElement[bool]:
+    return or_(LearningSession.revoked_at.is_not(None),
+               LearningSession.expires_at < func.now())
 
 
 async def _count_sessions(db: AsyncSession, _cutoff: datetime | None) -> tuple[int, int]:
@@ -649,6 +656,18 @@ async def _purge_label_images(
     return result
 
 
+async def _count_learn_sessions(db: AsyncSession, _cutoff: datetime | None) -> tuple[int, int]:
+    return await _count_rows(db, LearningSession, _dead_learn_sessions()), 0
+
+
+async def _purge_learn_sessions(
+    maker: async_sessionmaker, _cutoff: datetime | None,
+) -> CategoryResult:
+    result = CategoryResult("learn_sessions")
+    await purge_in_chunks(maker, LearningSession, _dead_learn_sessions(), result)
+    return result
+
+
 # ── the registry ─────────────────────────────────────────────────────
 
 # Ordered.
@@ -675,6 +694,12 @@ GROUPS: dict[str, Group] = {g.key: g for g in (
                 description="Remembered browsers whose trust has expired or was revoked, "
                             "so they ask for a two-factor code again anyway.",
                 count=_count_trusted_browsers, purge=_purge_trusted_browsers),
+            Category(
+                key="learn_sessions", label="Expired or revoked learn sessions",
+                description="Learn site sign-ins (a worker's learning code or link) that "
+                            "have expired or were ended when their code was replaced or "
+                            "revoked. Sign-offs never depend on them.",
+                count=_count_learn_sessions, purge=_purge_learn_sessions),
         )),
     Group(
         key="history", label="Old history",

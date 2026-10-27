@@ -17,6 +17,7 @@ from serversherpa.db.models import (
     PersonRole,
     TrustedDevice,
 )
+from serversherpa.learning.models import LearningSession
 from tests.test_assets_api import make_login
 from tests.test_devtools import login as devtools_login
 from tests.test_devtools import set_role
@@ -73,6 +74,7 @@ async def test_preview_lists_the_three_groups_in_order(client, db, seeded_user):
         ("sessions", "Expired sessions"),
         ("reset_links", "Used or expired password-reset links"),
         ("trusted_browsers", "Expired or revoked trusted browsers"),
+        ("learn_sessions", "Expired or revoked learn sessions"),
     ]
     for g in groups:
         assert g["description"]
@@ -209,6 +211,29 @@ async def test_trusted_browsers_revoked_and_expired_go_live_stays(
     assert left == [live_id]
 
 
+async def test_learn_sessions_revoked_and_expired_go_live_stays(client, db, seeded_user):
+    pid = seeded_user.id
+
+    def learn(**kw):
+        return LearningSession(person_id=pid, token_hash=uuid.uuid4().hex,
+                               expires_at=kw.pop("expires_at", NOW + HOUR), **kw)
+
+    revoked, expired, live = learn(revoked_at=NOW - HOUR), learn(expires_at=NOW - HOUR), learn()
+    db.add_all([revoked, expired, live])
+    await db.commit()
+    live_id = live.id
+
+    hdrs = await _developer(db, client, seeded_user)
+    preview = (await client.get("/devtools/cleanup/preview", headers=hdrs)).json()
+    assert _by_key(preview["groups"][0]["categories"])["learn_sessions"]["rows"] == 2
+    resp = await _run(client, hdrs, "signin", ["learn_sessions"])
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["categories"][0]["rows_deleted"] == 2
+    db.expire_all()
+    left = (await db.execute(select(LearningSession.id))).scalars().all()
+    assert left == [live_id]
+
+
 async def test_only_the_selected_categories_run(client, db, seeded_user):
     pid = seeded_user.id
     old = _session(pid, expires=NOW - HOUR)
@@ -246,7 +271,7 @@ async def test_preview_counts_equal_what_the_run_deletes(client, db, seeded_user
             signin["trusted_browsers"]["rows"]) == (2, 2, 1)
 
     resp = await _run(client, hdrs, "signin",
-                      ["sessions", "reset_links", "trusted_browsers"])
+                      ["sessions", "reset_links", "trusted_browsers", "learn_sessions"])
     ran = _by_key(resp.json()["categories"])
     for key in signin:
         assert ran[key]["rows_deleted"] == signin[key]["rows"]

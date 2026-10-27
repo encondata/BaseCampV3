@@ -8,7 +8,7 @@ a Docker host:
 | `db` | postgres (16) | — |
 | `storage` | seaweedfs, mailpit | 9000 (spaces), 8025 (mailpit UI) |
 | `api` | migrate (job), api, 10 workers | 8000 |
-| `web` | portal, kiosk, wiki | 8091, 8090, 8096 |
+| `web` | portal, kiosk, wiki, learn | 8091, 8090, 8096, 8092 |
 | `status` | status | 8095 |
 | `proxy` | caddy | 80 (DigitalOcean droplets only) |
 
@@ -113,10 +113,10 @@ LAN environment is `uat`.
 
 5. **DNS (Cloudflare, DNS only / grey cloud)** — A records to the WAN IP
    (`curl -fsS https://api.ipify.org` on the host):
-   `api.uat`, `portal.uat`, `kiosk.uat`, `wiki.uat`, `spaces.uat`, `status.uat`.
+   `api.uat`, `portal.uat`, `kiosk.uat`, `wiki.uat`, `learn.uat`, `spaces.uat`, `status.uat`.
 
    LAN browsers need the router to support hairpin NAT for the `*.uat`
-   names. If it doesn't, add the six names to local DNS pointing at NPM's
+   names. If it doesn't, add the seven names to local DNS pointing at NPM's
    LAN IP. The containers themselves already go straight to NPM.
 
    Sirdar does steps 5 and 6 itself for an environment with Publish on
@@ -133,6 +133,7 @@ LAN environment is `uat`.
    | `portal.uat.serversherpa.com` | 8091 |
    | `kiosk.uat.serversherpa.com` | 8090 |
    | `wiki.uat.serversherpa.com` | 8096 |
+   | `learn.uat.serversherpa.com` | 8092 |
    | `spaces.uat.serversherpa.com` | 9000 |
    | `status.uat.serversherpa.com` | 8095 |
 

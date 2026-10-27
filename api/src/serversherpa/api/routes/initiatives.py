@@ -36,6 +36,9 @@ from serversherpa.db.ordering import natural
 from serversherpa.imports.parsing import (
     MAX_BYTES, build_template_csv, build_template_xlsx, template_columns,
 )
+from serversherpa.learning import assign as learning_assign
+from serversherpa.learning import codes as learning_codes
+from serversherpa.learning.invites import send_markers as learning_send_markers
 from serversherpa.people import team_bulk
 from serversherpa.racks.recheck import recheck_placement
 from serversherpa.scans.manual import record_status_edit, stamp_rule_failure
@@ -180,12 +183,15 @@ async def _context(db: DbSession, initiatives: list[Initiative],
     for child_id, parent_id, role in (
             (await db.execute(parent_q)).all() if ids else []):
         parent_of.setdefault(child_id, (parent_id, role))
-    return vocab, sites, clients, partners, people_counts, link_counts, parent_of
+    # the timeline's learning marker: when invites went out / will go out
+    learning_send = await learning_send_markers(db, initiatives)
+    return (vocab, sites, clients, partners, people_counts, link_counts, parent_of,
+            learning_send)
 
 
 def _item(i: Initiative, vocab: dict, sites: dict, clients: dict,
           partners: dict, people_counts: dict, link_counts: dict,
-          parent_of: dict) -> dict:
+          parent_of: dict, learning_send: dict) -> dict:
     s_label, s_color = vocab["initiative"].get(
         i.status, (i.status, "#51606f"))
     t_label, t_color = vocab["initiative_type"].get(
@@ -230,6 +236,7 @@ def _item(i: Initiative, vocab: dict, sites: dict, clients: dict,
         "parent_role": parent_of.get(i.id, (None, None))[1],
         "archived_at": i.archived_at, "created_at": i.created_at,
         "kiosk_password_set": i.kiosk_password_fp is not None,
+        "learning_send_at": learning_send.get(i.id),
     }
 
 
@@ -453,6 +460,10 @@ async def update_initiative(
         if "status" in changes \
                 and initiative.status in move_password_service.MOVE_LOGIN_BLOCKED_STATUSES:
             await move_password_service.revoke_move_sessions(db, initiative.id)
+        # learning codes last through the initiative's last day
+        if learning_codes.EXPIRY_FIELDS & changes.keys():
+            await db.flush()
+            await learning_codes.refresh_expiry(db, initiative)
         await db.commit()
     except IntegrityError as exc:
         # a racing save took the same code, or a racing admin the same
@@ -574,11 +585,22 @@ async def add_initiative_person(
           changes={"person_id": {"from": None,
                                  "to": str(data["person_id"])}})
     try:
+        # flush first so the learning rules see the new row (its work
+        # type); the assignments commit or roll back with the add
+        await db.flush()
+        await learning_assign.assign_on_add(db, initiative_id, data["person_id"],
+                                            actor.person.id)
         await db.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         # lost the check-then-insert race against a concurrent add of the
-        # same (initiative, person) pair — initiative_people_uniq fired
+        # same (initiative, person) pair — initiative_people_uniq fired.
+        # Any other violation is a different bug and must not read as a
+        # friendly duplicate (the constraint name is on asyncpg's own
+        # exception, chained onto SQLAlchemy's DBAPI wrapper).
         await db.rollback()
+        asyncpg_exc = exc.orig.__cause__ if exc.orig is not None else None
+        if getattr(asyncpg_exc, "constraint_name", None) != "initiative_people_uniq":
+            raise
         raise _err(409, "duplicate_person") from None
     return await _people_rows(db, initiative_id, actor)
 
@@ -738,6 +760,7 @@ async def remove_initiative_person(
     initiative_id = assoc.initiative_id
     person_id = assoc.person_id
     await db.delete(assoc)
+    await learning_assign.cancel_for_removed(db, initiative_id, person_id)
     audit(db, actor_id=actor.person.id, entity_type="initiative",
           entity_id=str(initiative_id), action="person_remove",
           changes={"person_id": {"from": str(person_id), "to": None}})

@@ -33,6 +33,12 @@ import GenerateLabels from './pages/GenerateLabels';
 import Home from './pages/Home';
 import ImportMoveAssets from './pages/ImportMoveAssets';
 import Initiatives from './pages/Initiatives';
+import LearningDashboard from './pages/learning/LearningDashboard';
+import LearningDocument from './pages/learning/LearningDocument';
+import LearningLibrary from './pages/learning/LearningLibrary';
+import LearningPackets from './pages/learning/LearningPackets';
+import LearningRules from './pages/learning/LearningRules';
+import LearningSettings from './pages/learning/LearningSettings';
 import InitiativeDetailPage from './pages/InitiativeDetail';
 import InitiativeTimeline from './pages/InitiativeTimeline';
 import KioskDevices from './pages/KioskDevices';
@@ -164,6 +170,24 @@ export default function App() {
                 } />
                 <Route path="/people/external" element={<ProtectedRoute resource="users"><External /></ProtectedRoute>} />
                 <Route path="/people/time" element={<ProtectedRoute resource="dashboard"><TimeManagement /></ProtectedRoute>} />
+                <Route path="/learning" element={
+                  <ProtectedRoute learningManager><LearningDashboard /></ProtectedRoute>
+                } />
+                <Route path="/learning/library" element={
+                  <ProtectedRoute learningManager><LearningLibrary /></ProtectedRoute>
+                } />
+                <Route path="/learning/library/:documentId" element={
+                  <ProtectedRoute learningManager><LearningDocument /></ProtectedRoute>
+                } />
+                <Route path="/learning/packets" element={
+                  <ProtectedRoute learningManager><LearningPackets /></ProtectedRoute>
+                } />
+                <Route path="/learning/rules" element={
+                  <ProtectedRoute learningManager><LearningRules /></ProtectedRoute>
+                } />
+                <Route path="/learning/settings" element={
+                  <ProtectedRoute learningManager><LearningSettings /></ProtectedRoute>
+                } />
                 <Route path="/stakeholders/clients" element={<ProtectedRoute resource="clients"><Clients /></ProtectedRoute>} />
                 <Route path="/stakeholders/clients/:id" element={
                   <ProtectedRoute resource="clients"><StakeholderDetail kind="client" /></ProtectedRoute>

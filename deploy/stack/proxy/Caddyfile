@@ -37,6 +37,7 @@
 	@portal host portal.{$STACK_DOMAIN}
 	@kiosk host kiosk.{$STACK_DOMAIN}
 	@wiki host wiki.{$STACK_DOMAIN}
+	@learn host learn.{$STACK_DOMAIN}
 	@status host status.{$STACK_DOMAIN}
 	# production has the rule too, but no DNS record or certificate name, so
 	# nothing reaches it
@@ -58,6 +59,9 @@
 			header_up X-Forwarded-For {client_ip}
 		}
 		reverse_proxy @wiki wiki:8080 {
+			header_up X-Forwarded-For {client_ip}
+		}
+		reverse_proxy @learn learn:8080 {
 			header_up X-Forwarded-For {client_ip}
 		}
 		reverse_proxy @status status:8080 {

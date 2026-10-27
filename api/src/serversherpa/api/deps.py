@@ -159,6 +159,10 @@ READ_ONLY_EXEMPT_PATHS = frozenset({
     # below), exactly as my remembered browsers are. The admin
     # /users/{id}/biometric-keys and /devices/{id}/biometric stay frozen.
     "/auth/me/biometric-keys",
+    # the learn site's sign-in and sign-out (code and link are public, so
+    # listed for completeness): a learn session's writes freeze like any
+    # other (learning/sessions.learn_actor)
+    "/learn/auth/code", "/learn/auth/link", "/learn/auth/logout",
 })
 READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/auth/me/trusted-browsers/",
                              "/auth/me/biometric-keys/", "/kiosk/pair")

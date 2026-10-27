@@ -711,3 +711,27 @@ it('draws no calendar segment for a dateless parent — the envelope is timeline
   expect(document.querySelectorAll('.itl-span')).toHaveLength(1);
   expect(spanNames()).toEqual(['Denver DC migration › Kickoff walkthrough']);
 });
+
+/* ── learning invites marker ──────────────────────────────────────── */
+
+it('marks the day the learning invites go out (or went out) on the row', async () => {
+  await renderPage([initiative({ learning_send_at: '2026-09-09T14:00:00Z' })]);
+  const mark = document.querySelector('.itl-learning-mark');
+  expect(mark).not.toBeNull();
+  expect(mark?.getAttribute('title')).toMatch(/^Learning invites go out /);
+  expect(mark?.getAttribute('style')).toMatch(/left:/);
+});
+
+it('words the marker as sent once the send time has passed', async () => {
+  await renderPage([initiative({ learning_send_at: '2026-09-07T14:00:00Z' })]);
+  expect(document.querySelector('.itl-learning-mark')?.getAttribute('title'))
+    .toMatch(/^Learning invites sent /);
+});
+
+it('draws no marker without a learning send, or when it falls outside the range', async () => {
+  await renderPage([
+    initiative({ id: 'i1' }),
+    initiative({ id: 'i2', name: 'Far off', learning_send_at: '2025-01-01T09:00:00Z' }),
+  ]);
+  expect(document.querySelector('.itl-learning-mark')).toBeNull();
+});

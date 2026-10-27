@@ -491,6 +491,21 @@ def test_limiter_window_resets():
     assert limiter.hit("ip", now=61)
 
 
+def test_limiter_release_refunds_only_its_own_window():
+    limiter = share_links.IpRateLimiter(limit=2, window_seconds=60)
+    first = limiter.reserve("ip", now=0)
+    assert first == 0 and limiter.reserve("ip", now=1) == 0
+    assert limiter.reserve("ip", now=2) is None
+    limiter.release("ip", first)                 # same window: the slot comes back
+    assert limiter.reserve("ip", now=3) == 0
+    # a slot taken in window 0 and released once window 61 is open (a slow
+    # request across the boundary) gives nothing to the new window
+    assert limiter.reserve("ip", now=61) == 61 and limiter.reserve("ip", now=62) == 61
+    limiter.release("ip", first)
+    assert limiter.reserve("ip", now=63) is None
+    assert limiter._hits["ip"] == (61, 2)
+
+
 def test_limiter_table_stays_bounded_and_sweeps_once_per_window(monkeypatch):
     limiter = share_links.IpRateLimiter(limit=5, window_seconds=60, max_keys=10)
     sweeps = []

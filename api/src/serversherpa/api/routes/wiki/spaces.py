@@ -41,14 +41,13 @@ from serversherpa.db.models import (
     WikiSpace,
 )
 from serversherpa.services.audit import audit, diff, snapshot
-from serversherpa.wiki import reviews, space_settings
+from serversherpa.wiki import reviews, space_settings, spaces
 from serversherpa.wiki.permissions import AccessIndex, principal_labels, require_space_level
-from serversherpa.wiki.tree import create_node, publish_empty_home
+from serversherpa.wiki.spaces import SPACE_FIELDS
 
 router = APIRouter()
 
 KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,39}$")
-SPACE_FIELDS = ["name", "description", "icon", "color", "settings"]
 # every principal type whose id is a row's uuid — used to validate a grant's
 # principal exists. /principals search reuses only the "named org" subset
 # below (person has its own query, joined to user_accounts).
@@ -103,36 +102,9 @@ async def create_space(body: SpaceCreateIn, ctx: WikiContext) -> SpaceOut:
     if await space_by_key(ctx.db, key):
         raise err(409, "key_taken")
 
-    actor_id = ctx.user.person.id
-    space = WikiSpace(
-        key=key, name=body.name, description=body.description,
-        icon=body.icon, color=body.color, created_by=actor_id,
-    )
-    ctx.db.add(space)
-    await ctx.db.flush()
-
-    home_node = await create_node(
-        ctx.db, space=space, parent=None, kind="page",
-        title=space.name, actor_id=actor_id)
-    await publish_empty_home(ctx.db, home_node, actor_id)
-    space.home_node_id = home_node.id
-
-    ctx.db.add(WikiGrant(
-        space_id=space.id, principal_type="person",
-        principal_id=str(actor_id), level="manage", created_by=actor_id))
-    if body.default_access == "internal":
-        ctx.db.add(WikiGrant(
-            space_id=space.id, principal_type="internal",
-            level="view", created_by=actor_id))
-    elif body.default_access == "everyone":
-        ctx.db.add(WikiGrant(
-            space_id=space.id, principal_type="everyone",
-            level="view", created_by=actor_id))
-
-    audit(ctx.db, actor_id=actor_id, entity_type="wiki_space",
-          entity_id=str(space.id), action="create",
-          changes=diff({}, {**snapshot(space, SPACE_FIELDS),
-                            "default_access": body.default_access}))
+    space = await spaces.create_space(
+        ctx.db, key=key, name=body.name, description=body.description, icon=body.icon,
+        color=body.color, default_access=body.default_access, actor_id=ctx.user.person.id)
     await ctx.db.commit()
     return space_out(space, "manage")
 

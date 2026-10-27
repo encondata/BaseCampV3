@@ -17,7 +17,7 @@ import { kioskUrl, wikiUrl } from '../lib/appLinks';
 /** `href` marks a link to another app (the kiosk, the wiki): it opens in a
  *  new tab instead of routing; `to` then only serves as the item key. An
  *  empty `resource` means every signed-in user sees the item. */
-export interface NavItem { to: string; label: string; resource: string; icon: ReactNode; godOnly?: boolean; minRank?: number; globalOnly?: boolean; end?: boolean; href?: string }
+export interface NavItem { to: string; label: string; resource: string; icon: ReactNode; godOnly?: boolean; minRank?: number; globalOnly?: boolean; learningManager?: boolean; end?: boolean; href?: string }
 export interface NavSection { label: string; icon: ReactNode; items: NavItem[] }
 
 export const NAV_SECTIONS: NavSection[] = [
@@ -330,6 +330,88 @@ export const NAV_SECTIONS: NavSection[] = [
                strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="9" />
             <path d="M12 7v5l3.5 2" />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
+    label: 'Learning',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round">
+        <path d="M22 9 12 4 2 9l10 5 10-5Z" />
+        <path d="M6 11.5V16c0 1.5 2.7 3 6 3s6-1.5 6-3v-4.5" />
+        <path d="M22 9v5" />
+      </svg>
+    ),
+    items: [
+      {
+        to: '/learning',
+        end: true,
+        label: 'Dashboard',
+        resource: 'learning',
+        learningManager: true,
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="7" height="9" rx="1.5" />
+            <rect x="14" y="3" width="7" height="5" rx="1.5" />
+            <rect x="14" y="12" width="7" height="9" rx="1.5" />
+            <rect x="3" y="16" width="7" height="5" rx="1.5" />
+          </svg>
+        ),
+      },
+      {
+        to: '/learning/library',
+        label: 'Library',
+        resource: 'learning',
+        learningManager: true,
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z" />
+            <path d="M4 18.5A2.5 2.5 0 0 1 6.5 16H20" />
+          </svg>
+        ),
+      },
+      {
+        to: '/learning/packets',
+        label: 'Packets',
+        resource: 'learning',
+        learningManager: true,
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 8 12 3 3 8l9 5 9-5z" />
+            <path d="M3 8v8l9 5 9-5V8" />
+            <path d="M12 13v8" />
+          </svg>
+        ),
+      },
+      {
+        to: '/learning/rules',
+        label: 'Assignment rules',
+        resource: 'learning',
+        learningManager: true,
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 6h16M4 12h10M4 18h6" />
+            <path d="m16 15 2 2 4-4" />
+          </svg>
+        ),
+      },
+      {
+        to: '/learning/settings',
+        label: 'Settings',
+        resource: 'learning',
+        learningManager: true,
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3" />
+            <path d="M1 14h6M9 8h6M17 16h6" />
           </svg>
         ),
       },

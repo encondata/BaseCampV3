@@ -50,6 +50,7 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
   const isSurvey = definition.report_type === 'site_move_survey';
   const isScanHistory = definition.report_type === 'move_scan_history';
   const isTimesheet = definition.report_type === 'timesheet';
+  const isLearning = definition.report_type === 'learning_compliance';
   const [name, setName] = useState(definition.name);
   const [description, setDescription] = useState(definition.description);
   const [companyName, setCompanyName] = useState(String(definition.options.company_name ?? ''));
@@ -58,7 +59,7 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
   // never end up coerced into this boolean map (it would overwrite the
   // real company_name with `true`/`false` on save).
   const [boolOptions, setBoolOptions] = useState<Record<string, boolean>>(() => {
-    if (isScanHistory || isTimesheet) return {};
+    if (isScanHistory || isTimesheet || isLearning) return {};
     const keys = isSurvey ? SURVEY_SWITCHES.map((s) => s.key) : MOVE_REPORT_SECTIONS.map((s) => s.key);
     const out: Record<string, boolean> = {};
     for (const k of keys) out[k] = !!definition.options[k];
@@ -113,6 +114,8 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
         }
         : isSurvey
         ? { company_name: companyName.trim(), ...boolOptions }
+        : isLearning
+        ? { default_format: defaultFormat }
         : isScanHistory
         ? { default_format: defaultFormat, status_columns: statusColumns }
         : boolOptions;
@@ -210,6 +213,18 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
             </>
           )}
 
+          {isLearning && (
+            <>
+              <div className="modal-section">Default format</div>
+              <div className="rgm-choice-cards" role="radiogroup" aria-label="Default format">
+                <ChoiceCard title="Excel workbook" description="A Summary sheet and a Compliance sheet"
+                            selected={defaultFormat === 'xlsx'} onSelect={() => setDefaultFormat('xlsx')} />
+                <ChoiceCard title="PDF document" description="Printable, with a document tracking barcode"
+                            selected={defaultFormat === 'pdf'} onSelect={() => setDefaultFormat('pdf')} />
+              </div>
+            </>
+          )}
+
           {isTimesheet && (
             <>
               <div className="modal-section">Default format</div>
@@ -241,7 +256,7 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
             </>
           )}
 
-          {!isScanHistory && !isTimesheet && (
+          {!isScanHistory && !isTimesheet && !isLearning && (
             <>
               <div className="modal-section">{isSurvey ? 'Default options' : 'Default sections'}</div>
               <div className="mini-list report-sections">

@@ -124,6 +124,11 @@ class IpRateLimiter:
 
     def hit(self, address: str, now: float | None = None) -> bool:
         """Count one request from `address`; False when it's over the limit."""
+        return self.reserve(address, now) is not None
+
+    def reserve(self, address: str, now: float | None = None) -> float | None:
+        """`hit`, returning the start of the window the hit was counted in
+        (what `release` needs), or None when it's over the limit."""
         now = time.monotonic() if now is None else now
         key = bucket_for(address)
         with self._lock:
@@ -139,9 +144,20 @@ class IpRateLimiter:
                 entry = None
             start, count = entry if entry is not None else (now, 0)
             if count >= self.limit:
-                return False
+                return None
             self._hits[key] = (start, count + 1)
-            return True
+            return start
+
+    def release(self, address: str, window: float) -> None:
+        """Give back one hit `address` took in the window starting at
+        `window` (what `reserve` returned): a slot reserved up front whose
+        request turned out not to count. Nothing when that window has since
+        ended, so a slow request never frees a slot in the next one."""
+        key = bucket_for(address)
+        with self._lock:
+            entry = self._hits.get(key)
+            if entry is not None and entry[0] == window and entry[1] > 0:
+                self._hits[key] = (entry[0], entry[1] - 1)
 
     def reset(self) -> None:
         with self._lock:

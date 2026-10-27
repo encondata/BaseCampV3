@@ -65,7 +65,7 @@ class TodaySpan:
     minutes: int
 
 
-def _zone(name: str | None) -> ZoneInfo | None:
+def zone_named(name: str | None) -> ZoneInfo | None:
     """`name` as a zone, or None when it is empty or not one this host knows.
     The kiosk's `tz` is client input, so any lookup failure (an odd path
     included) counts as unknown."""
@@ -86,7 +86,7 @@ async def site_zone(
     name = None
     if site_id is not None:
         name = await db.scalar(select(Site.timezone).where(Site.id == site_id))
-    return _zone(name) or _zone(fallback) or ZoneInfo("UTC")
+    return zone_named(name) or zone_named(fallback) or ZoneInfo("UTC")
 
 
 async def today_summary(

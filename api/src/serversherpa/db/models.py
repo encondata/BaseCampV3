@@ -149,6 +149,8 @@ class EmailOutbox(Base):
     last_error: Mapped[str | None]
     worker_id: Mapped[str | None]
     heartbeat_at: Mapped[datetime | None]
+    # files to attach at delivery (migration 0109)
+    attachments: Mapped[list | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     sent_at: Mapped[datetime | None]
 
@@ -420,6 +422,9 @@ class WorkerCertification(Base):
     issuer: Mapped[str | None]
     issued_on: Mapped[date | None] = mapped_column(Date)
     expires_on: Mapped[date | None] = mapped_column(Date)
+    # 'learning' rows are written by a learning sign-off (migration 0109)
+    source: Mapped[str] = mapped_column(server_default="manual")
+    learning_initiative_id: Mapped[uuid.UUID | None]
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
@@ -2445,3 +2450,7 @@ class WikiSearchLog(Base):
     query: Mapped[str]
     result_count: Mapped[int] = mapped_column(Integer)
     at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+# Register the learning models on Base.metadata (they import Base from here).
+import serversherpa.learning.models  # noqa: F401

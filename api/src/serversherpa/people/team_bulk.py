@@ -23,6 +23,7 @@ from serversherpa.db.models import Initiative, InitiativePerson, Person, Site, S
 from serversherpa.db.ordering import natural
 from serversherpa.imports import bulk as core
 from serversherpa.imports.bulk import BulkImportError
+from serversherpa.learning import assign as learning_assign
 from serversherpa.people.bulk_import import _worker_query, name_keys
 from serversherpa.services.audit import audit, diff, snapshot
 
@@ -252,6 +253,10 @@ async def commit_rows(db: AsyncSession, actor_id: uuid.UUID, initiative_id: uuid
                     initiative_id=initiative_id, person_id=person_id,
                     site_worked_id=uuid.UUID(r["site_id"]) if r["site_id"] else None,
                     work_type=r["role_key"]))
+                # flushed so the learning rules see the row; the assignments
+                # commit or roll back with the whole import
+                await db.flush()
+                await learning_assign.assign_on_add(db, initiative_id, person_id, actor_id)
                 audit(db, actor_id=actor_id, entity_type="initiative",
                       entity_id=str(initiative_id), action="person_add",
                       changes={"person_id": {"from": None, "to": r["person_id"]}})

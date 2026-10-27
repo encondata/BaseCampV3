@@ -86,7 +86,7 @@ def test_default_published_ports() -> None:
              for name, svc in rendered(stack)["services"].items()
              if svc.get("ports")}
     assert ports == {"api": [8000], "portal": [8091], "kiosk": [8090], "wiki": [8096],
-                     "seaweedfs": [9000], "status": [8095], "mailpit": [8025]}
+                     "learn": [8092], "seaweedfs": [9000], "status": [8095], "mailpit": [8025]}
 
 
 def test_postgres_is_16_and_unpublished() -> None:
@@ -127,7 +127,7 @@ def test_build_file_builds_exactly_the_runtime_images() -> None:
             for stack in ("api", "web", "status")
             for svc in rendered(stack)["services"].values()}
     assert built == used == {f"serversherpa-{x}:{TAG}"
-                             for x in ("api", "portal", "kiosk", "wiki", "status")}
+                             for x in ("api", "portal", "kiosk", "wiki", "learn", "status")}
 
 
 @pytest.mark.parametrize("stack,service", [("api", "api"), ("api", "report-worker"),
@@ -157,6 +157,7 @@ def test_api_environment_points_at_the_stack() -> None:
     assert env["SS_API_BASE_URL"] == f"https://api.{DOMAIN}"
     assert env["SS_PORTAL_ORIGIN"] == f"https://portal.{DOMAIN}"
     assert env["SS_WIKI_ORIGIN"] == f"https://wiki.{DOMAIN}"
+    assert env["SS_LEARN_ORIGIN"] == f"https://learn.{DOMAIN}"
     assert env["SS_SPACES_ENDPOINT"] == f"https://spaces.{DOMAIN}"
     assert env["SS_SPACES_USE_PATH_STYLE"] == "true"
     assert env["SS_SMTP_HOST"] == "mailpit"
@@ -166,7 +167,7 @@ def test_api_environment_points_at_the_stack() -> None:
     assert env["SS_DATABASE_URL"].endswith("@postgres:5432/serversherpa")
     assert env["SS_WIKI_RENDER_URL"] == "http://wiki:8080"
     assert set(env["SS_ALLOWED_ORIGINS"].split(",")) == {
-        f"https://{n}.{DOMAIN}" for n in ("portal", "kiosk", "wiki")}
+        f"https://{n}.{DOMAIN}" for n in ("portal", "kiosk", "wiki", "learn")}
 
 
 def test_api_trusts_forwarded_headers_only_from_the_proxy() -> None:
@@ -187,6 +188,7 @@ def test_web_apps_point_at_the_stack() -> None:
     assert web["kiosk"]["environment"]["KIOSK_API_URL"] == f"https://api.{DOMAIN}"
     assert web["kiosk"]["environment"]["KIOSK_PORTAL_URL"] == f"https://portal.{DOMAIN}"
     assert web["wiki"]["environment"]["WIKI_API_URL"] == "http://api:8000"
+    assert web["learn"]["environment"]["LEARN_API_URL"] == f"https://api.{DOMAIN}"
     status = rendered("status")["services"]["status"]["environment"]
     assert status["STATUS_API_URL"] == f"https://api.{DOMAIN}"
     assert status["STATUS_PUBLIC_URL"] == f"https://status.{DOMAIN}"
@@ -294,3 +296,9 @@ def test_smtp_comes_from_the_env_file_with_mailpit_by_default(tmp_path) -> None:
     assert (smtp["SS_SMTP_HOST"], smtp["SS_SMTP_PORT"], smtp["SS_SMTP_USERNAME"],
             smtp["SS_SMTP_PASSWORD"], smtp["SS_SMTP_STARTTLS"], smtp["SS_SMTP_FROM"]) == (
         "smtp.example.com", "587", "mailer", "Mail-Secret-1", "true", "ops@example.com")
+
+
+def test_the_proxy_routes_the_learn_site() -> None:
+    caddyfile = (STACK_DIR / "proxy" / "Caddyfile").read_text()
+    assert "@learn host learn.{$STACK_DOMAIN}" in caddyfile
+    assert "reverse_proxy @learn learn:8080 {" in caddyfile
