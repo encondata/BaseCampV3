@@ -237,6 +237,10 @@
   font-size: 13.5px;
   color: var(--text-dark);
 }
+/* Versions tab: "v3" then the Current chip, centered on one line. */
+.cell .cell-line.lrn-ver-cell { display: flex; align-items: center; gap: 8px; }
+.lrn-ver-cell .lrn-ver-no { flex: none; }
+.lrn-ver-cell .chip { flex: 0 1 auto; min-width: 0; }
 .lrn-ver { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; color: var(--text-dark); }
 .lrn-vn {
   flex: 0 0 auto;

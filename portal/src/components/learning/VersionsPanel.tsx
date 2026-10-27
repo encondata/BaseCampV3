@@ -12,7 +12,7 @@ import { apiErrorText, dateTime } from '../../lib/learningDoc';
 import LearningList, { type LearningColumn } from './LearningList';
 
 export const VERSION_COLUMNS = {
-  version: { key: 'version', label: 'Version', short: 'Ver.', width: '0.7fr', default: true, min: 90 },
+  version: { key: 'version', label: 'Version', short: 'Ver.', width: '0.8fr', default: true, min: 120 },
   note: { key: 'note', label: 'What changed', width: '2.6fr', default: true, min: 220 },
   by: { key: 'by', label: 'Published by', short: 'By', width: '1.2fr', default: true, min: 130 },
   at: { key: 'at', label: 'Published', width: '1.3fr', default: true, min: 150 },
@@ -43,8 +43,8 @@ export default function VersionsPanel({ doc, counts }: {
     {
       def: VERSION_COLUMNS.version,
       cell: (v) => (
-        <span className="cell-top cell-line">
-          v{v.version_no}
+        <span className="cell-top cell-line lrn-ver-cell">
+          <span className="lrn-ver-no">v{v.version_no}</span>
           {v.id === doc.current_version_id && <span className="chip c-green">Current</span>}
         </span>
       ),
