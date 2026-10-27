@@ -2452,5 +2452,7 @@ class WikiSearchLog(Base):
     at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
-# Register the learning models on Base.metadata (they import Base from here).
+# Register the learning and project-plan models on Base.metadata (they import
+# Base from here).
 import serversherpa.learning.models  # noqa: F401
+import serversherpa.plans.models  # noqa: F401

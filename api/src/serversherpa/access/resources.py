@@ -116,6 +116,12 @@ _RESOURCES = [
     # see learning/access.py. Workers sign through access codes, not roles.
     Resource("learning", "Learning", routes=("/learning",),
              visible_to=frozenset({"global"})),
+    # An initiative's Project plan tab (plans/): view = see the tab and plans,
+    # add = create or import a plan and save a template, change = edit tasks,
+    # progress, settings, lock and baseline, delete = delete a plan or a
+    # template. A tab, not a page, so no routes. Internal users only; every
+    # plan route also checks the actor can see the initiative.
+    Resource("project_plans", "Project plans", visible_to=frozenset({"global"})),
 ]
 
 REGISTRY: dict[str, Resource] = {r.id: r for r in _RESOURCES}
