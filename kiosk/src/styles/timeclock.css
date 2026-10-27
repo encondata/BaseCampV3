@@ -212,6 +212,59 @@
   .tcx .tcx-spinner { animation-duration: 3s }
 }
 
+/* ---------- learning: the warning before a clock-in, and the admin override ---------- */
+.tcx .tcx-learning { max-width: 760px }
+.tcx .tcx-learning-person { display: flex; align-items: center; justify-content: center; gap: clamp(14px, 2.4vmin, 28px);
+  text-align: left }
+.tcx .tcx-learning .tcx-avatar { width: clamp(72px, 12vmin, 140px); height: clamp(72px, 12vmin, 140px); border-width: 4px }
+.tcx .tcx-learning .tcx-initials { font-size: clamp(26px, 4.4vmin, 52px) }
+.tcx .tcx-learning-who { display: flex; flex-direction: column; gap: 2px; min-width: 0 }
+.tcx .tcx-learning .tcx-person-name { font-size: clamp(26px, 5vmin, 56px) }
+.tcx .tcx-warnbox { width: 100%; padding: clamp(14px, 2.2vmin, 24px) clamp(16px, 2.6vmin, 30px); border: 1px solid #F5C99B;
+  border-left: 6px solid var(--tcx-amber); border-radius: 16px; background: #FFF1E3; text-align: left }
+.tcx .tcx-warn-head { margin: 0; display: flex; align-items: center; gap: 12px; font-size: clamp(22px, 3.8vmin, 40px);
+  font-weight: 800; letter-spacing: -.01em; line-height: 1.15 }
+.tcx .tcx-warn-icon { width: 1.1em; height: 1.1em; flex: none; color: var(--tcx-amber) }
+.tcx .tcx-warn-list { margin: clamp(10px, 1.8vmin, 18px) 0 0; padding: 0; list-style: none; display: grid; gap: 8px }
+.tcx .tcx-warn-list li { display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+  padding: 10px 14px; border-radius: 10px; background: rgba(255, 255, 255, .8); font-size: clamp(17px, 2.6vmin, 26px) }
+.tcx .tcx-warn-title { font-weight: 600; min-width: 0; overflow-wrap: anywhere }
+.tcx .tcx-warn-kind { flex: none; font-size: clamp(13px, 1.9vmin, 18px); color: var(--tcx-muted) }
+.tcx .tcx-warn-kind.is-required { color: #B45309; font-weight: 600 }
+.tcx .tcx-learning-buttons { max-width: 760px }
+.tcx .tcx-link-sent { min-height: 64px; display: inline-flex; align-items: center; justify-content: center; gap: 12px;
+  border-radius: 14px; background: #F0FDF4; border: 1px solid #86D3A3; color: #15803D;
+  font-size: clamp(19px, 3vmin, 30px); font-weight: 700 }
+
+.tcx .tcx-modal-scrim { position: absolute; inset: 0; z-index: 20; display: grid; place-items: center; padding: 16px;
+  overflow-y: auto; background: rgba(15, 23, 42, .55) }
+.tcx .tcx-modal { position: relative; width: 100%; max-width: 640px; max-height: 100%; display: flex; flex-direction: column;
+  border-radius: 20px; background: #fff; box-shadow: 0 24px 60px rgba(15, 23, 42, .35); overflow: hidden }
+.tcx .tcx-modal-head { position: relative; padding: 22px 72px 14px 26px; border-bottom: 1px solid var(--tcx-line) }
+.tcx .tcx-eyebrow { font-family: 'Fragment Mono', monospace; font-size: 13px; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--tcx-amber) }
+.tcx .tcx-modal-title { margin: 4px 0 0; font-size: clamp(24px, 3.4vmin, 34px); font-weight: 800; letter-spacing: -.01em }
+.tcx .tcx-modal-desc { margin: 6px 0 0; font-size: 16px; color: var(--tcx-muted); line-height: 1.4 }
+.tcx .tcx-modal-close { position: absolute; top: 14px; right: 14px; width: 48px; height: 48px; display: grid; place-items: center;
+  padding: 0; border: 1px solid transparent; border-radius: 50%; background: transparent; color: var(--tcx-slate) }
+.tcx .tcx-modal-close:hover { background: var(--tcx-field); border-color: var(--tcx-line) }
+.tcx .tcx-modal-close svg { width: 24px; height: 24px }
+.tcx .tcx-modal-body { padding: 18px 26px; display: grid; gap: 16px; overflow-y: auto }
+.tcx .tcx-field { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0 }
+.tcx .tcx-field-label { font-size: 14px; font-weight: 600; color: var(--tcx-muted) }
+.tcx .tcx-input { width: 100%; min-height: 60px; padding: 0 16px; border: 1px solid var(--tcx-line); border-radius: 12px;
+  background: var(--tcx-field); color: var(--tcx-ink); font: inherit; font-size: 20px }
+.tcx .tcx-input:focus { outline: 0; border-color: var(--tcx-amber); box-shadow: 0 0 0 3px rgba(255, 106, 0, .18) }
+.tcx .tcx-input:disabled { opacity: .6 }
+.tcx .tcx-chips { display: flex; flex-wrap: wrap; gap: 10px }
+.tcx .tcx-chip { min-height: 56px; padding: 0 20px; border: 1px solid var(--tcx-line); border-radius: 999px; background: #fff;
+  font-size: 18px; font-weight: 600; touch-action: manipulation }
+.tcx .tcx-chip.is-on { color: #fff; background: var(--tcx-ink); border-color: var(--tcx-ink) }
+.tcx .tcx-chip:disabled { opacity: .6 }
+.tcx .tcx-modal-error { margin: 0; padding: 12px 14px; border-left: 4px solid var(--tcx-red); border-radius: 10px;
+  background: #FEF2F2; color: #991B1B; font-size: 17px; line-height: 1.35 }
+.tcx .tcx-modal-foot { display: grid; grid-template-columns: 1fr 1.4fr; gap: 12px; padding: 14px 26px 22px }
+
 /* ---------- landscape: layout A ----------
    The portrait screen widened: greeting on top, the Welcome cards side by
    side, photo left of the words, the total left of the punches, the tiles

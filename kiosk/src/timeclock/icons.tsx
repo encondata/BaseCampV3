@@ -173,3 +173,38 @@ export function IconBadgeTap(props: IconProps) {
     </Svg>
   );
 }
+
+export function IconAlert(props: IconProps) {
+  return (
+    <Svg viewBox="0 0 24 24" {...props}>
+      <path d="M12 4l9 16H3L12 4z" stroke="currentColor" strokeWidth="2.2" strokeLinejoin="round" />
+      <path d="M12 10v4.5M12 17.2v.1" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+    </Svg>
+  );
+}
+
+export function IconMail(props: IconProps) {
+  return (
+    <Svg viewBox="0 0 24 24" {...props}>
+      <rect x="3" y="5.5" width="18" height="13" rx="2.5" stroke="currentColor" strokeWidth="2.2" />
+      <path d="M4 7.5l8 6 8-6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+export function IconShield(props: IconProps) {
+  return (
+    <Svg viewBox="0 0 24 24" {...props}>
+      <path d="M12 3l7.5 3v5.5c0 4.6-3.1 8-7.5 9.5-4.4-1.5-7.5-4.9-7.5-9.5V6L12 3z" stroke="currentColor" strokeWidth="2.2" strokeLinejoin="round" />
+      <path d="M8.8 12.2l2.2 2.2 4.2-4.6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+export function IconClose(props: IconProps) {
+  return (
+    <Svg viewBox="0 0 24 24" {...props}>
+      <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+    </Svg>
+  );
+}

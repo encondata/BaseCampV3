@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   getAll: vi.fn(), fetchTimeclockStatus: vi.fn(), postClockIn: vi.fn(), postClockOut: vi.fn(),
+  postLearningLink: vi.fn(), postLearningOverride: vi.fn(),
 }));
 vi.mock('../lib/localDb', () => ({ getAll: mocks.getAll }));
 vi.mock('../lib/api', async (importOriginal) => {
@@ -11,6 +12,8 @@ vi.mock('../lib/api', async (importOriginal) => {
     fetchTimeclockStatus: mocks.fetchTimeclockStatus,
     postClockIn: mocks.postClockIn,
     postClockOut: mocks.postClockOut,
+    postLearningLink: mocks.postLearningLink,
+    postLearningOverride: mocks.postLearningOverride,
   };
 });
 
@@ -49,6 +52,36 @@ it('sessionBackend punches carry the serial, the person and the kiosk zone', asy
   await b.clockOut('p-1');
   expect(mocks.postClockIn).toHaveBeenCalledWith({ serial: 'SER1', person_id: 'p-1', tz: ZONE });
   expect(mocks.postClockOut).toHaveBeenCalledWith({ serial: 'SER1', person_id: 'p-1', tz: ZONE });
+});
+
+it('sessionBackend.clockIn names the learning override only when it has one', async () => {
+  mocks.postClockIn.mockResolvedValue(STATUS);
+  const b = sessionBackend('SER1');
+  await b.clockIn('p-1', 'ovr-1');
+  expect(mocks.postClockIn).toHaveBeenLastCalledWith({
+    serial: 'SER1', person_id: 'p-1', tz: ZONE, learning_override_id: 'ovr-1',
+  });
+});
+
+it('sessionBackend learning calls carry the serial, the person and the kiosk zone', async () => {
+  mocks.postLearningLink.mockResolvedValue({ sent: true });
+  mocks.postLearningOverride.mockResolvedValue({ override_id: 'ovr-1' });
+  const b = sessionBackend('SER1');
+  expect(await b.learningLink('p-1')).toEqual({ sent: true });
+  expect(mocks.postLearningLink).toHaveBeenCalledWith({ serial: 'SER1', person_id: 'p-1', tz: ZONE });
+  const form = { admin_email: 'a@x.com', admin_password: 'pw', reason: 'no_phone' as const, scope: 'punch' as const };
+  expect(await b.learningOverride('p-1', form)).toEqual({ override_id: 'ovr-1' });
+  expect(mocks.postLearningOverride).toHaveBeenCalledWith({ ...form, serial: 'SER1', person_id: 'p-1', tz: ZONE });
+});
+
+it('stationBackend learning calls go to the edge', async () => {
+  fetchMock.mockImplementation(async () => new Response(JSON.stringify({ sent: true, override_id: 'o' }), { status: 200 }));
+  await stationBackend().learningLink('p-1');
+  await stationBackend().learningOverride('p-1', {
+    admin_email: 'a@x.com', admin_password: 'pw', reason: 'no_phone', scope: 'punch',
+  });
+  expect(fetchMock.mock.calls[0][0]).toBe('/edge/timeclock/learning-link');
+  expect(fetchMock.mock.calls[1][0]).toBe('/edge/timeclock/learning-override');
 });
 
 it('stationBackend reads through the edge', async () => {

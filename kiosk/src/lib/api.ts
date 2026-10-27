@@ -807,6 +807,20 @@ export interface KioskTimeclockLastEntry {
   minutes: number;
 }
 
+/** One document the worker still has to sign: `required` by the move (or
+ *  the general set), or an `extra` a manager added by hand. */
+export interface KioskLearningItem {
+  title: string;
+  kind: 'required' | 'extra';
+}
+
+/** What the worker still owes for the kiosk's move. `link_email`: they
+ *  have an address "Email me the link" can reach. */
+export interface KioskLearningBlock {
+  outstanding: KioskLearningItem[];
+  link_email: boolean;
+}
+
 export interface KioskTimeclockStatus {
   person: KioskTimeclockPerson;
   clocked_in: boolean;
@@ -817,6 +831,9 @@ export interface KioskTimeclockStatus {
   today_minutes: number;
   /** Today's entries, oldest first. */
   today_entries: { clock_in_at: string; clock_out_at: string | null; minutes: number }[];
+  /** Unsigned learning for the kiosk's move; null (or absent) when there
+   *  is nothing to warn about. Only the clock-in screen reads it. */
+  learning?: KioskLearningBlock | null;
 }
 
 /** Is this person on the clock right now, and since when? 404
@@ -848,6 +865,9 @@ export async function postClockIn(body: {
   site_id?: string | null; initiative_id?: string | null;
   /** The kiosk's own zone, as for `fetchTimeclockStatus`. */
   tz?: string;
+  /** An admin's learning override (`postLearningOverride`) this punch
+   *  rides on; the portal never refuses a punch over a bad one. */
+  learning_override_id?: string;
 }): Promise<KioskTimeclockStatus> {
   const resp = await apiFetch('/kiosk/timeclock/clock-in', {
     method: 'POST',
@@ -869,6 +889,60 @@ export async function postClockOut(body: {
     body: JSON.stringify(body),
   });
   return jsonFrom<KioskTimeclockStatus>(resp);
+}
+
+// ── timeclock learning ──────────────────────────────────────────────
+
+export type LearningOverrideReason = 'signing_on_break' | 'signed_on_paper' | 'no_phone' | 'other';
+
+/** What an admin fills in at the shared screen. The admin signs nothing in:
+ *  their email, password (and 2FA code) are checked for this one override. */
+export interface LearningOverrideForm {
+  admin_email: string;
+  admin_password: string;
+  totp_code?: string;
+  reason: LearningOverrideReason;
+  reason_text?: string;
+  /** `punch`: this clock-in only; `day`: also the rest of the local day. */
+  scope: 'punch' | 'day';
+}
+
+/** "Email me the link" from the session twin. `sent` is false when the
+ *  portal would not send one (no address, nothing outstanding, one already
+ *  went out this minute). 429 `rate_limited`. */
+export async function postLearningLink(body: {
+  serial: string; person_id: string; tz?: string;
+}): Promise<{ sent: boolean }> {
+  const resp = await apiFetch('/kiosk/timeclock/learning-link', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return jsonFrom<{ sent: boolean }>(resp);
+}
+
+/** An admin lets a worker with unsigned learning clock in. Throws
+ *  `ApiError` — 403 `override_credentials_invalid` / `totp_required` /
+ *  `totp_invalid` / `totp_enroll_required` / `override_rank`, 409
+ *  `totp_seed_unreadable`, 422 `reason_text_required`, 429 `rate_limited`.
+ *
+ *  Deliberately not `apiFetch`: the admin's typed credentials are being
+ *  checked, so a refusal must never trigger the refresh-and-retry (a
+ *  second guess) or end the signed-in operator's session. The token is
+ *  refreshed up front if it is stale; a 401 here is just an error. */
+export async function postLearningOverride(
+  body: LearningOverrideForm & { serial: string; person_id: string; tz?: string },
+): Promise<{ override_id: string }> {
+  if (tokenIsStale()) await refreshSession();
+  const resp = await request(`${apiUrl()}/kiosk/timeclock/learning-override`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  return jsonFrom<{ override_id: string }>(resp);
 }
 
 // ── label vocabulary ────────────────────────────────────────────────

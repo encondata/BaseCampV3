@@ -48,12 +48,16 @@ export interface TcShellProps {
   children: ReactNode;
   /** Back, bottom-left. Left out on screens with no way back. */
   back?: ReactNode;
+  /** A modal over the whole screen, header and footer included. */
+  overlay?: ReactNode;
   /** The small gear in the header (station Welcome only). */
   onSettings?: () => void;
   onMouseDown?: (e: MouseEvent<HTMLDivElement>) => void;
 }
 
-export default function TcShell({ step, children, back, onSettings, onMouseDown }: TcShellProps) {
+export default function TcShell({
+  step, children, back, overlay, onSettings, onMouseDown,
+}: TcShellProps) {
   const now = useNow();
   const date = now.toLocaleDateString(undefined, {
     weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
@@ -93,6 +97,7 @@ export default function TcShell({ step, children, back, onSettings, onMouseDown 
       </footer>
 
       {back && <div className="tcx-back-slot">{back}</div>}
+      {overlay}
       <ScanFlash />
     </div>
   );

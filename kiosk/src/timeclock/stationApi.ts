@@ -20,6 +20,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import {
   ApiError, apiFetch, type KioskPeopleSync, type KioskPersonRow, type KioskTimeclockStatus,
+  type LearningOverrideForm,
 } from '../lib/api';
 import { isLaptop } from '../lib/platform';
 import { kioskZone } from './format';
@@ -81,11 +82,13 @@ async function edgeRead<T>(path: string): Promise<T> {
   }
 }
 
-function postPerson(path: string, personId: string): Promise<KioskTimeclockStatus> {
-  return edgeFetch<KioskTimeclockStatus>(path, {
+function postPerson<T = KioskTimeclockStatus>(
+  path: string, personId: string, extra: object = {},
+): Promise<T> {
+  return edgeFetch<T>(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ person_id: personId, tz: kioskZone() }),
+    body: JSON.stringify({ person_id: personId, tz: kioskZone(), ...extra }),
   });
 }
 
@@ -116,12 +119,29 @@ export function stationStatus(personId: string): Promise<KioskTimeclockStatus> {
   return edgeRead<KioskTimeclockStatus>(`/status/${encodeURIComponent(personId)}${query}`);
 }
 
-export function stationClockIn(personId: string): Promise<KioskTimeclockStatus> {
-  return postPerson('/clock-in', personId);
+export function stationClockIn(
+  personId: string, learningOverrideId?: string,
+): Promise<KioskTimeclockStatus> {
+  return postPerson('/clock-in', personId, learningOverrideId ? { learning_override_id: learningOverrideId } : {});
 }
 
 export function stationClockOut(personId: string): Promise<KioskTimeclockStatus> {
   return postPerson('/clock-out', personId);
+}
+
+/** "Email me the link". Throws `ApiError` (429 `rate_limited`, ...). */
+export function stationLearningLink(personId: string): Promise<{ sent: boolean }> {
+  return postPerson('/learning-link', personId);
+}
+
+/** An admin's override at the station: the edge forwards it to the portal,
+ *  which checks the admin's credentials. Refusals are 403 (never 401, which
+ *  the edge would read as a revoked station key) and arrive as `ApiError`
+ *  with the portal's own code. */
+export function stationLearningOverride(
+  personId: string, form: LearningOverrideForm,
+): Promise<{ override_id: string }> {
+  return postPerson('/learning-override', personId, form);
 }
 
 /** The station info on a laptop. `loading` is true only until the first

@@ -13,8 +13,8 @@ vi.mock('../lib/api', async (importOriginal) => {
 
 import { ApiError } from '../lib/api';
 import {
-  armDisplay, getStationInfo, stationClockIn, stationClockOut, stationPeople, stationStatus,
-  useStationInfo,
+  armDisplay, getStationInfo, stationClockIn, stationClockOut, stationLearningLink,
+  stationLearningOverride, stationPeople, stationStatus, useStationInfo,
 } from './stationApi';
 
 const INFO = {
@@ -134,6 +134,48 @@ it.each([
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ person_id: 'p-1', tz: ZONE }),
   });
+});
+
+it('stationClockIn carries the learning override id when it has one', async () => {
+  fetchMock.mockResolvedValue(json(200, STATUS));
+  await stationClockIn('p-1', 'ovr-1');
+  const init = fetchMock.mock.calls[0][1] as RequestInit;
+  expect(JSON.parse(String(init.body))).toEqual({ person_id: 'p-1', tz: ZONE, learning_override_id: 'ovr-1' });
+});
+
+it('stationLearningLink posts the person and the zone to the edge', async () => {
+  fetchMock.mockResolvedValue(json(200, { sent: true }));
+  expect(await stationLearningLink('p-1')).toEqual({ sent: true });
+  expect(fetchMock).toHaveBeenCalledWith('/edge/timeclock/learning-link', {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ person_id: 'p-1', tz: ZONE }),
+  });
+});
+
+it('stationLearningOverride posts the admin form beside the person, signed out (never apiFetch)', async () => {
+  fetchMock.mockResolvedValue(json(200, { override_id: 'ovr-1' }));
+  const form = {
+    admin_email: 'laura@example.com', admin_password: 'pw', totp_code: '123456',
+    reason: 'other' as const, reason_text: 'forgot phone', scope: 'day' as const,
+  };
+  expect(await stationLearningOverride('p-1', form)).toEqual({ override_id: 'ovr-1' });
+  const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+  expect(url).toBe('/edge/timeclock/learning-override');
+  expect(JSON.parse(String(init.body))).toEqual({ person_id: 'p-1', tz: ZONE, ...form });
+  expect(apiMock.apiFetch).not.toHaveBeenCalled();
+});
+
+it.each([
+  [403, 'override_credentials_invalid'], [403, 'totp_required'], [403, 'override_rank'],
+  [409, 'totp_seed_unreadable'], [422, 'reason_text_required'], [429, 'rate_limited'],
+])('an override refusal keeps its status and code (%i %s)', async (status, code) => {
+  fetchMock.mockResolvedValue(json(status, { detail: { code } }));
+  const err = await stationLearningOverride('p-1', {
+    admin_email: 'a@x.com', admin_password: 'pw', reason: 'no_phone', scope: 'punch',
+  }).catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(ApiError);
+  expect(err).toMatchObject({ status, code });
 });
 
 it('a punch error keeps the edge code and status, edge_offline included', async () => {

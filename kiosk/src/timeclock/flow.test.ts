@@ -30,6 +30,7 @@ describe('constants', () => {
     expect(START_STEP('kiosk')).toBe('name');
     expect(initialState('station')).toEqual({
       mode: 'station', step: 'welcome', status: null, busy: false, error: null, notice: null, punched: null,
+      learningOverrideId: null, learningLinkSent: false,
     });
     expect(initialState('kiosk').step).toBe('name');
   });
@@ -153,5 +154,81 @@ describe('reducer', () => {
   it('reset returns to the initial state for the mode', () => {
     expect(reducer(at('done', { punched: 'out' }), { type: 'reset' })).toEqual(initialState('station'));
     expect(reducer(at('done', { punched: 'out' }, 'kiosk'), { type: 'reset' })).toEqual(initialState('kiosk'));
+  });
+});
+
+describe('learning step', () => {
+  const OWES: KioskTimeclockStatus = {
+    ...OFF,
+    learning: { outstanding: [{ title: 'Acme NDA', kind: 'required' }], link_email: true },
+  };
+
+  it('chooseIn with outstanding items enters learning, not busy, and sends nothing', () => {
+    const s = reducer(at('action', { status: OWES }), { type: 'chooseIn' });
+    expect(s).toMatchObject({ step: 'learning', busy: false, error: null });
+  });
+
+  it.each<[string, KioskTimeclockStatus]>([
+    ['no learning block', OFF],
+    ['a null block', { ...OFF, learning: null }],
+    ['an empty list', { ...OFF, learning: { outstanding: [], link_email: true } }],
+  ])('chooseIn with %s punches straight away', (_name, status) => {
+    expect(reducer(at('action', { status }), { type: 'chooseIn' })).toMatchObject({ step: 'action', busy: true });
+  });
+
+  it('chooseOut never shows learning, even with items outstanding', () => {
+    const on = { ...ON, learning: OWES.learning };
+    expect(reducer(at('action', { status: on }), { type: 'chooseOut' }).step).toBe('clockOut');
+    // and a clocked-in person can't choose in, so never lands on learning
+    const s = at('action', { status: on });
+    expect(reducer(s, { type: 'chooseIn' })).toBe(s);
+  });
+
+  it('learningOverride goes busy on the learning step and keeps the id', () => {
+    const s = reducer(at('learning', { status: OWES }), { type: 'learningOverride', overrideId: 'o-1' });
+    expect(s).toMatchObject({ step: 'learning', busy: true, learningOverrideId: 'o-1', error: null });
+  });
+
+  it('learningOverride is ignored off the learning step and while busy (no double punch)', () => {
+    const off = at('action', { status: OWES });
+    expect(reducer(off, { type: 'learningOverride', overrideId: 'o-1' })).toBe(off);
+    const busy = at('learning', { status: OWES, busy: true, learningOverrideId: 'o-1' });
+    expect(reducer(busy, { type: 'learningOverride', overrideId: 'o-2' })).toBe(busy);
+  });
+
+  it('learningCancel resets to the start', () => {
+    const s = at('learning', { status: OWES, learningLinkSent: true });
+    expect(reducer(s, { type: 'learningCancel' })).toEqual(initialState('station'));
+    expect(reducer(at('learning', { status: OWES }, 'kiosk'), { type: 'learningCancel' })).toEqual(initialState('kiosk'));
+  });
+
+  it('learningLinkSent is remembered on the learning step only', () => {
+    expect(reducer(at('learning', { status: OWES }), { type: 'learningLinkSent' }).learningLinkSent).toBe(true);
+    const off = at('action', { status: OWES });
+    expect(reducer(off, { type: 'learningLinkSent' })).toBe(off);
+  });
+
+  it('a punch that fails after the override stays on learning with the error and the id', () => {
+    const s = reducer(
+      at('learning', { status: OWES, busy: true, learningOverrideId: 'o-1' }),
+      { type: 'punchFailed', code: 'network' },
+    );
+    expect(s).toMatchObject({ step: 'learning', busy: false, error: NETWORK, learningOverrideId: 'o-1' });
+  });
+
+  it('a punch that lands moves on to the badge question', () => {
+    const s = reducer(
+      at('learning', { status: OWES, busy: true, learningOverrideId: 'o-1' }),
+      { type: 'punchSucceeded', status: ON, punched: 'in' },
+    );
+    expect(s).toMatchObject({ step: 'badge', punched: 'in' });
+  });
+
+  it('identified clears the last person\'s override and link flag', () => {
+    const s = reducer(
+      at('name', { learningOverrideId: 'o-1', learningLinkSent: true }),
+      { type: 'identified', status: OFF },
+    );
+    expect(s).toMatchObject({ learningOverrideId: null, learningLinkSent: false });
   });
 });

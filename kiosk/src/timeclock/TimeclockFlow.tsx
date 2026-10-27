@@ -12,6 +12,11 @@
  * moment it is complete, unless it is also the start of a longer tag
  * (`isAmbiguousPrefix`), when Enter settles it.
  *
+ * A worker with unsigned learning stops at a warning instead of punching
+ * (Email me the link / Cancel punch / Admin override); an admin override
+ * is made first, then the clock-in carries its id. The portal never
+ * refuses a punch over learning: this screen is the whole gate.
+ *
  * Two guards keep a punch honest:
  *  - one punch per tap: the reducer ignores the punch-starting actions
  *    while `busy`, and a punch is sent only when an action takes the
@@ -28,7 +33,7 @@ import {
 } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { ApiError, type KioskPersonRow } from '../lib/api';
+import { ApiError, type KioskPersonRow, type LearningOverrideForm } from '../lib/api';
 import { hslCss, useAppearance } from '../lib/appearance';
 import { flash } from '../lib/flash';
 import {
@@ -50,6 +55,8 @@ import ChooseAction from './screens/ChooseAction';
 import ClockOutSummary from './screens/ClockOutSummary';
 import ConfirmPerson from './screens/ConfirmPerson';
 import EnterName from './screens/EnterName';
+import LearningOverrideModal from './screens/LearningOverrideModal';
+import LearningWarning from './screens/LearningWarning';
 import PrintingBadge from './screens/PrintingBadge';
 import VerifyBadge from './screens/VerifyBadge';
 import Welcome from './screens/Welcome';
@@ -81,6 +88,10 @@ const NO_NAME_MATCH = 'No one matches that name.';
 const LOOKUP_UNREACHABLE = "Can't reach the portal. Try again.";
 const LOOKUP_FAILED = 'Something went wrong. Try again.';
 const NO_PEOPLE = 'No people on this kiosk. Sync from Kiosk Setup.';
+const LINK_UNREACHABLE = "Can't reach the portal. Try again.";
+const LINK_RATE_LIMITED = 'Too many tries. Wait a few minutes.';
+const LINK_NOT_SENT = "We couldn't send the link. Try again in a minute.";
+const LINK_FAILED = 'Something went wrong. Try again.';
 
 /** Focus is only reclaimed from things nobody deliberately moved it to. */
 const KEEPS_FOCUS = new Set(['INPUT', 'BUTTON', 'SELECT', 'TEXTAREA', 'A']);
@@ -116,6 +127,10 @@ export default function TimeclockFlow({
   const [message, setMessage] = useState<string | null>(null);
   const [looking, setLooking] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  // Learning step: the admin override modal, and "Email me the link" in flight.
+  const [overrideOpen, setOverrideOpen] = useState(false);
+  const [linkSending, setLinkSending] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   // The on-screen keyboard is off until this kiosk turns it on (a laptop
   // has a physical keyboard); the choice is remembered per kiosk.
@@ -188,6 +203,9 @@ export default function TimeclockFlow({
     setMessage(null);
     setLooking(false);
     setRefreshing(false);
+    setOverrideOpen(false);
+    setLinkSending(false);
+    setLinkError(null);
     if (mode === 'kiosk' && onExit) onExit();
     else apply({ type: 'reset' });
   }, [apply, mode, onExit]);
@@ -285,7 +303,10 @@ export default function TimeclockFlow({
     if (!status) return;
     const mine = session.current;
     const personId = status.person.id;
-    const call = kind === 'in' ? backend.clockIn(personId) : backend.clockOut(personId);
+    const overrideId = stateRef.current.learningOverrideId;
+    const call = kind === 'out'
+      ? backend.clockOut(personId)
+      : overrideId ? backend.clockIn(personId, overrideId) : backend.clockIn(personId);
     call.then(
       (next) => {
         if (mine !== session.current) return;
@@ -318,6 +339,53 @@ export default function TimeclockFlow({
   const punch = (action: FlowAction, kind: 'in' | 'out') => {
     const [prev, next] = apply(action);
     if (!prev.busy && next.busy) send(kind);
+  };
+
+  // ---- learning: the warning before a clock-in ----
+
+  const emailLink = () => {
+    const current = stateRef.current;
+    if (!current.status || linkSending || current.learningLinkSent) return;
+    const mine = session.current;
+    setLinkSending(true);
+    setLinkError(null);
+    backend.learningLink(current.status.person.id).then(
+      ({ sent }) => {
+        if (mine !== session.current) return;
+        setLinkSending(false);
+        if (sent) apply({ type: 'learningLinkSent' });
+        else setLinkError(LINK_NOT_SENT);
+      },
+      (err: unknown) => {
+        if (mine !== session.current) return;
+        setLinkSending(false);
+        const code = codeOf(err);
+        setLinkError(code === 'rate_limited' ? LINK_RATE_LIMITED
+          : code === 'network' || code === 'edge_offline' ? LINK_UNREACHABLE : LINK_FAILED);
+      },
+    );
+  };
+
+  const cancelLearning = () => {
+    apply({ type: 'learningCancel' });
+    exit();
+  };
+
+  /** Sends the admin's override; the modal reports its outcome. An answer
+   *  for a person who is gone (idle, Cancel) is never delivered, so it can
+   *  never clock in whoever is at the screen next. */
+  const sendOverride = (form: LearningOverrideForm) => {
+    const personId = stateRef.current.status?.person.id;
+    if (!personId) return Promise.reject(new ApiError(0, 'unknown_error'));
+    const mine = session.current;
+    return backend.learningOverride(personId, form).then(
+      (out) => (mine === session.current ? out : new Promise<never>(() => {})),
+    );
+  };
+
+  const overrideDone = (overrideId: string) => {
+    setOverrideOpen(false);
+    punch({ type: 'learningOverride', overrideId }, 'in');
   };
 
   // ---- timers ----
@@ -485,9 +553,35 @@ export default function TimeclockFlow({
             busy={busy}
             notice={state.notice}
             error={state.error}
-            onIn={() => punch({ type: 'chooseIn' }, 'in')}
+            onIn={() => {
+              setLinkError(null);
+              punch({ type: 'chooseIn' }, 'in');
+            }}
             onOut={() => apply({ type: 'chooseOut' })}
             onRetry={() => punch({ type: 'punchStarted' }, 'in')}
+          />
+        );
+      }
+      break;
+    case 'learning':
+      if (status?.learning) {
+        screen = (
+          <LearningWarning
+            person={status.person}
+            learning={status.learning}
+            busy={busy}
+            error={state.error}
+            linkSent={state.learningLinkSent}
+            linkSending={linkSending}
+            linkError={linkError}
+            onEmail={emailLink}
+            onCancel={cancelLearning}
+            onOverride={() => setOverrideOpen(true)}
+            onRetry={() => {
+              if (state.learningOverrideId) {
+                punch({ type: 'learningOverride', overrideId: state.learningOverrideId }, 'in');
+              }
+            }}
           />
         );
       }
@@ -531,6 +625,14 @@ export default function TimeclockFlow({
     <TcShell
       step={step}
       onMouseDown={keepFocus}
+      overlay={step === 'learning' && overrideOpen && status ? (
+        <LearningOverrideModal
+          personName={status.person.preferred_name?.trim() || status.person.display_name}
+          submit={sendOverride}
+          onBack={() => setOverrideOpen(false)}
+          onDone={overrideDone}
+        />
+      ) : undefined}
       onSettings={mode === 'station' && step === 'welcome' ? () => navigate('/login') : undefined}
       back={hasBack ? (
         <button type="button" className="tcx-back" disabled={busy} onClick={back}>

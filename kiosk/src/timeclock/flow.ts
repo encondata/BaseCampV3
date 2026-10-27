@@ -10,6 +10,12 @@
  * `kiosk` is a signed-in kiosk reaching the flow from its menu: it starts
  * on `name`, and leaving from there is the component's call, so Back from
  * `name` changes nothing here.
+ *
+ * `learning` is the soft gate before a clock-in: a worker with unsigned
+ * learning sees what is outstanding instead of punching straight away. It
+ * never refuses the punch: Cancel resets, and an admin override (made by
+ * the component, which reports its id) goes on to clock in. Clock-out
+ * never passes through it.
  */
 
 import { CLOUD_SIGN_IN_TEXT, type KioskTimeclockStatus } from '../lib/api';
@@ -18,7 +24,7 @@ export type FlowMode = 'station' | 'kiosk';
 
 export type Step =
   | 'welcome' | 'name' | 'confirm' | 'action' | 'clockOut'
-  | 'badge' | 'printing' | 'verify' | 'done';
+  | 'learning' | 'badge' | 'printing' | 'verify' | 'done';
 
 export interface FlowState {
   mode: FlowMode;
@@ -28,6 +34,10 @@ export interface FlowState {
   error: string | null;
   notice: string | null;
   punched: 'in' | 'out' | null;
+  /** The admin override the clock-in from `learning` rides on. */
+  learningOverrideId: string | null;
+  /** "Email me the link" went out for this person. */
+  learningLinkSent: boolean;
 }
 
 export type FlowAction =
@@ -37,6 +47,9 @@ export type FlowAction =
   | { type: 'confirmNo' }
   | { type: 'chooseIn' }
   | { type: 'chooseOut' }
+  | { type: 'learningOverride'; overrideId: string }
+  | { type: 'learningCancel' }
+  | { type: 'learningLinkSent' }
   | { type: 'punchStarted' }
   | { type: 'punchSucceeded'; status: KioskTimeclockStatus; punched: 'in' | 'out' }
   | { type: 'punchFailed'; code: string }
@@ -67,7 +80,13 @@ export function START_STEP(mode: FlowMode): Step {
 export function initialState(mode: FlowMode): FlowState {
   return {
     mode, step: START_STEP(mode), status: null, busy: false, error: null, notice: null, punched: null,
+    learningOverrideId: null, learningLinkSent: false,
   };
+}
+
+/** Unsigned learning for this clock-in: something is outstanding. */
+function hasOutstanding(status: KioskTimeclockStatus): boolean {
+  return (status.learning?.outstanding.length ?? 0) > 0;
 }
 
 const ERROR_READ_ONLY = 'The portal is in read-only mode. Your punch was not recorded. Try again shortly.';
@@ -83,7 +102,9 @@ function failureText(code: string): string {
 /** The actions that start a punch. While one is in flight (`busy`) they
  *  change nothing, so a double tap can never send a second punch: the
  *  component sends only when an action takes the state into busy. */
-const STARTS_PUNCH = new Set<FlowAction['type']>(['chooseIn', 'chooseOut', 'punchStarted']);
+const STARTS_PUNCH = new Set<FlowAction['type']>(
+  ['chooseIn', 'chooseOut', 'punchStarted', 'learningOverride'],
+);
 
 export function reducer(state: FlowState, action: FlowAction): FlowState {
   if (state.busy && STARTS_PUNCH.has(action.type)) return state;
@@ -93,6 +114,7 @@ export function reducer(state: FlowState, action: FlowAction): FlowState {
     case 'identified':
       return {
         ...state, step: 'confirm', status: action.status, busy: false, error: null, notice: null, punched: null,
+        learningOverrideId: null, learningLinkSent: false,
       };
     case 'confirmNo':
       return { ...state, step: 'name' };
@@ -101,10 +123,21 @@ export function reducer(state: FlowState, action: FlowAction): FlowState {
     case 'chooseOut':
       return state.status?.clocked_in ? { ...state, step: 'clockOut', error: null, notice: null } : state;
     case 'chooseIn':
-      // The component punches straight away (no second confirm to clock in).
-      return state.status && !state.status.clocked_in
-        ? { ...state, busy: true, error: null, notice: null }
+      if (!state.status || state.status.clocked_in) return state;
+      // Unsigned learning stops the punch at the warning; otherwise the
+      // component punches straight away (no second confirm to clock in).
+      return hasOutstanding(state.status)
+        ? { ...state, step: 'learning', error: null, notice: null }
+        : { ...state, busy: true, error: null, notice: null };
+    case 'learningOverride':
+      // The admin's override is made; clock in with it.
+      return state.step === 'learning' && state.status && !state.status.clocked_in
+        ? { ...state, busy: true, error: null, learningOverrideId: action.overrideId }
         : state;
+    case 'learningLinkSent':
+      return state.step === 'learning' ? { ...state, learningLinkSent: true } : state;
+    case 'learningCancel':
+      return state.step === 'learning' ? initialState(state.mode) : state;
     case 'punchStarted':
       return { ...state, busy: true, error: null };
     case 'punchSucceeded':
