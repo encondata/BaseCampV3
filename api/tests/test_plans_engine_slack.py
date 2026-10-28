@@ -125,6 +125,22 @@ def test_ss_backward():
     assert slack(out, "A", "B") == (0, 960)
 
 
+def test_fnlt_caps_late_finish():
+    # honor off: the link wins, A runs Wed-Thu and misses its Mon 17:00
+    # finish ceiling; X, which must finish before A starts, is as late
+    tasks = [T("X", 960),
+             T("A", 960, constraint_type="fnlt", constraint_date=dt("2026-11-02 17:00"))]
+    out = run(tasks, [L("X", "A")], honor_constraints=False)
+    assert (out["A"].start, out["A"].finish) == (dt("2026-11-04 08:00"),
+                                                 dt("2026-11-05 17:00"))
+    assert out["A"].conflict == "constraint"
+    assert late(out["A"]) == (dt("2026-10-30 08:00"), dt("2026-11-02 17:00"))
+    assert late(out["X"]) == (dt("2026-10-28 08:00"), dt("2026-10-29 17:00"))
+    assert slack(out, "X", "A") == (-1440, -1440)
+    assert out["A"].is_critical is True
+    assert out["X"].is_critical is True
+
+
 def test_perf_2000_tasks():
     rng = random.Random(7)
     tasks: list[TaskIn] = []
@@ -314,14 +330,17 @@ def test_honored_ceiling_pushes_negative_slack_onto_its_predecessor():
     assert late(out["X"]) == (dt("2026-10-29 08:00"), dt("2026-10-30 17:00"))
 
 
-def test_unhonored_ceiling_makes_the_task_negative():
-    # honor off: the link wins, B runs Wed and misses its Mon finish ceiling
-    tasks = [T("X", 960),
-             T("B", 480, constraint_type="fnlt", constraint_date=dt("2026-11-02 17:00"))]
-    out = run(tasks, [L("X", "B")], honor_constraints=False)
-    assert out["B"].start == dt("2026-11-04 08:00")
-    assert late(out["B"]) == (dt("2026-11-02 08:00"), dt("2026-11-02 17:00"))
-    assert slack(out, "X", "B") == (-960, -960)
+@pytest.mark.parametrize("honor", [True, False])
+def test_fnlt_before_project_start_without_links_has_no_slack(honor):
+    # no link passes the ceiling, so it wins quietly, honor on or off: A is
+    # placed before the project start and finishes on its FNLT date
+    out = run([T("A", 960, constraint_type="fnlt", constraint_date=dt("2026-11-02 17:00"))],
+              honor_constraints=honor)
+    a = out["A"]
+    assert (a.start, a.finish) == (dt("2026-10-30 08:00"), dt("2026-11-02 17:00"))
+    assert late(a) == (dt("2026-10-30 08:00"), dt("2026-11-02 17:00"))
+    assert a.total_slack == 0
+    assert a.conflict is None
 
 
 def test_manual_task_ignores_its_constraint_backward():

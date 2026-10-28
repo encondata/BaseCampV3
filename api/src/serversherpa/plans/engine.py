@@ -88,14 +88,16 @@ critical path (MS Project's rules; a deadline changes slack, never dates).
   start, negative when the task is already late. A task is critical when
   its slack is at most `EngineSettings.critical_slack_minutes` and it is
   not complete.
-- The summary nodes swap roles. The rollup, reached before the subtasks,
-  passes caps down: every task below it must finish by the summary's
-  deadline and by what the links out of the summary require. An SS or SF
-  link out of a summary caps every subtask's start, not only the earliest
-  one (conservative). The gate, reached once every subtask is done, rolls
-  up: late start = the earliest subtask late start (what a link into the
-  summary reads), late finish = the latest late finish, slack = the least
-  subtask slack, critical when any subtask is.
+- The summary nodes swap roles in reverse. The rollup, reached before the
+  subtasks, passes caps down: the summary's deadline and its links out cap
+  every task below it, an SS or SF link from a summary applied
+  conservatively to every subtask's start (not only the earliest one). The
+  gate, reached once every subtask is done, rolls up the subtasks' late
+  starts: the summary's late start is the earliest of them, and that is
+  what a link into the summary reads as its late start. The summary's late
+  finish is the latest subtask late finish, its slack the least subtask
+  slack; it is critical when any subtask is. The gate caps nothing below
+  it: in reverse, its subtasks are done before it.
 """
 
 import heapq
@@ -699,7 +701,9 @@ class _BackwardPass(_Clock):
         return finishes, starts
 
     def rollup(self, task: TaskIn) -> None:
-        """A summary passes its caps down to every task below it."""
+        """A summary's rollup, before its subtasks: its deadline and its
+        links out (with its ancestors' caps) become caps on every task below
+        it; SS/SF links out cap every subtask's start."""
         finishes, starts = self.caps_on((ROLLUP, task.id), task)
         self.caps[task.id] = _Caps(finish=min(finishes, default=None),
                                    start=min(starts, default=None))
@@ -725,7 +729,9 @@ class _BackwardPass(_Clock):
                            and out.percent_complete < 100)
 
     def summary(self, task: TaskIn, children: list[str]) -> None:
-        """A summary from its direct subtasks, once all of them are done."""
+        """A summary's gate, once every subtask is done: rolls up their late
+        dates. The late start (the earliest subtask late start) is what a
+        link into the summary reads."""
         outs = [self.out[child] for child in children]
         out = self.out[task.id]
         out.late_start = min(o.late_start for o in outs)
