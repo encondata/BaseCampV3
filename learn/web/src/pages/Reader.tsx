@@ -44,9 +44,9 @@ async function position(id: string): Promise<{ k: number; n: number } | null> {
   return null;
 }
 
-function ReaderBody({ id, doc, place, onVersionChanged }: {
+function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
   id: string; doc: AssignmentRead; place: { k: number; n: number } | null;
-  onVersionChanged: () => void;
+  changed: boolean; onVersionChanged: () => void;
 }) {
   const navigate = useNavigate();
   const box = useRef<HTMLDivElement>(null);
@@ -56,8 +56,10 @@ function ReaderBody({ id, doc, place, onVersionChanged }: {
   // box and there is nothing to scroll (re-checked as images load)
   const [reached, setReached] = useState(false);
   const [fits, setFits] = useState(false);
-  // back from a passed quiz: the reading happened before it
-  const alreadyRead = doc.has_quiz && doc.quiz_passed;
+  // back from a passed quiz: the reading happened before it — unless a
+  // newer version came in since, which the worker hasn't read yet (the
+  // pass is per assignment, not per version)
+  const alreadyRead = doc.has_quiz && doc.quiz_passed && !changed;
   const scrolled = reached || fits || alreadyRead;
   // the server's own clock said "not yet": hold off until then
   const [holdUntil, setHoldUntil] = useState(0);
@@ -229,7 +231,7 @@ function ReaderPage({ id }: { id: string }) {
       {changed && <p className="learn-banner" role="status">{t('reader.versionChanged')}</p>}
       {doc.data
         ? <ReaderBody key={`${id}:${doc.data.language}:${doc.data.version_no}`} id={id} doc={doc.data}
-                      place={place.data}
+                      place={place.data} changed={changed}
                       onVersionChanged={() => { setChanged(true); doc.reload(); }} />
         : <LoadState error={doc.error} onRetry={doc.reload} />}
     </main>

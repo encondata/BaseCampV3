@@ -48,7 +48,7 @@ const ACTIONS = '88px';
 
 export default function LearningRoster({
   rows, counts, filter, onFilter, loading, failed, onRetry,
-  canChange, canViewWorker, busyId, invitesEnded = false,
+  canChange, canViewWorker, busyId, invitesEnded = false, remindClosed = false,
   onRemind, onResend, onResendSelected, onRegenerate, onRevoke, onHistory,
 }: {
   /** The rows for the current filter; null until the first load. */
@@ -66,6 +66,8 @@ export default function LearningRoster({
   busyId: string | null;
   /** The initiative has ended: no new codes (Resend, Regenerate) can be issued. */
   invitesEnded?: boolean;
+  /** The initiative is archived, cancelled or completed: no reminders. */
+  remindClosed?: boolean;
   /** Send reminder: one person (row menu) or the ticked people (the tab
    *  confirms first). */
   onRemind: (personIds: string[]) => void;
@@ -111,7 +113,7 @@ export default function LearningRoster({
     const busy = busyId === r.person_id;
     return [
       ...(canChange ? [
-        ...(r.status === 'complete' || r.status === 'nothing_assigned' ? [] : [
+        ...(remindClosed || r.status === 'complete' || r.status === 'nothing_assigned' ? [] : [
           { key: 'remind', label: 'Send reminder', disabled: busy, onSelect: () => onRemind([r.person_id]) },
         ]),
         ...(invitesEnded ? [] : [
@@ -147,7 +149,7 @@ export default function LearningRoster({
                    onChange={(e) => setQuery(e.target.value)} />
           </div>
           {rows && <span className="result-count">{visible.length} of {rows.length} shown</span>}
-          {canChange && (
+          {canChange && !remindClosed && (
             <button type="button" className="mini-btn" disabled={selected.length === 0 || busyId !== null}
                     onClick={() => onRemind(selected)}>
               {selected.length > 0 ? `Remind selected (${selected.length})` : 'Remind selected'}

@@ -35,6 +35,7 @@ from serversherpa.learning.schemas import (
     SendInvitesIn,
     SendInvitesOut,
 )
+from serversherpa.learning.stats import initiative_live
 from serversherpa.reports.move_report.render import render_pdf_async
 
 router = APIRouter()
@@ -166,7 +167,12 @@ async def send_reminders(
     db: DbSession,
     actor: AuthContext = require_manager("change"),
 ) -> dict:
-    await _initiative(db, initiative_id)
+    initiative = await _initiative(db, initiative_id)
+    if not initiative_live(initiative):
+        raise HTTPException(status_code=409, detail={
+            "code": "initiative_inactive",
+            "message": "This initiative is archived, cancelled or completed. "
+                       "Reminders can't be sent for it."})
     out = await invites.remind_initiative(db, initiative_id, actor.person.id,
                                           person_ids=body.person_ids)
     await db.commit()

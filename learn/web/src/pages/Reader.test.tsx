@@ -156,6 +156,32 @@ describe('Reader', () => {
     expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
   });
 
+  it('a new version after a passed quiz brings the scroll gate back: the worker hasn\'t read it', async () => {
+    overflow();
+    let version = 2;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/learn/training')) return json(200, TRAINING);
+      if (init?.method === 'POST') {
+        version = 3;
+        return json(409, { detail: { code: 'version_changed' } });
+      }
+      return json(200, { ...DOC, has_quiz: true, quiz_passed: true, version_no: version,
+        html: version === 3 ? '<p>New rules.</p>' : DOC.html });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderReader();
+    fireEvent.click(await screen.findByRole('checkbox'));
+    fireEvent.change(screen.getByLabelText('Type your full name to sign'), { target: { value: 'Kenji Watanabe' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign and continue' }));
+    expect(await screen.findByText('New rules.')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.change(screen.getByLabelText('Type your full name to sign'), { target: { value: 'Kenji Watanabe' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign and continue' }));
+    expect(screen.getByText('Scroll to the end of the document first.')).toBeTruthy();
+    expect(signCalls(fetchMock)).toHaveLength(1);
+  });
+
   it('explains what is missing before it calls the server, in the server\'s order', async () => {
     overflow();
     const fetchMock = api();

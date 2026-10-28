@@ -305,6 +305,8 @@ export interface ScheduleOut {
   codes_expire_on: string | null;
   /** The initiative's local end day is before today: no invites can be sent for it. */
   ended: boolean;
+  /** Archived, cancelled or completed: no invites or reminders go out. */
+  inactive: boolean;
   /** No schedule saved yet: these are the learning settings' defaults. */
   is_default: boolean;
 }

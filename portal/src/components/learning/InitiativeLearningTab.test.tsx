@@ -62,7 +62,7 @@ const { default: InitiativeLearningTab } = await import('./InitiativeLearningTab
 const SCHEDULE: ScheduleOut = {
   mode: 'scheduled', send_offset_days: 7, send_time: '08:00', reminder_offsets: [5, 3],
   due_offset_days: 2, late_adds: true, sent_at: '2026-11-03T14:00:00Z',
-  send_at: '2026-11-03T14:00:00Z', codes_expire_on: '2026-11-21', ended: false, is_default: false,
+  send_at: '2026-11-03T14:00:00Z', codes_expire_on: '2026-11-21', ended: false, inactive: false, is_default: false,
 };
 
 const SUMMARY: InitiativeLearning = {
@@ -261,7 +261,7 @@ it('a person with nothing assigned is its own status, not Complete 0/0', async (
 describe('an initiative that has ended', () => {
   beforeEach(() => {
     api.getInitiativeLearning.mockResolvedValue({
-      ...SUMMARY, schedule: { ...SCHEDULE, ended: true, codes_expire_on: '2026-11-21' } });
+      ...SUMMARY, schedule: { ...SCHEDULE, ended: true, inactive: false, codes_expire_on: '2026-11-21' } });
   });
 
   it('says so and offers no way to issue codes', async () => {
@@ -278,6 +278,18 @@ describe('an initiative that has ended', () => {
     expect(screen.queryByRole('menuitem', { name: 'Regenerate code' })).toBeNull();
     // reminding and revoking stay
     expect(screen.getByRole('menuitem', { name: 'Send reminder' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Revoke' })).toBeTruthy();
+  });
+
+  it('an archived, cancelled or completed initiative offers no reminders', async () => {
+    api.getInitiativeLearning.mockResolvedValue({
+      ...SUMMARY, schedule: { ...SCHEDULE, ended: true, inactive: true, codes_expire_on: '2026-11-21' } });
+    const user = userEvent.setup();
+    renderTab();
+    await rosterName('Maria Santos');
+    expect(screen.queryByRole('button', { name: /Remind selected/ })).toBeNull();
+    await user.click(within(workerRow('Derek Hill')).getByRole('button', { name: /actions/i }));
+    expect(screen.queryByRole('menuitem', { name: 'Send reminder' })).toBeNull();
     expect(screen.getByRole('menuitem', { name: 'Revoke' })).toBeTruthy();
   });
 

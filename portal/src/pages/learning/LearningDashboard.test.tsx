@@ -119,7 +119,7 @@ it('Remind confirms first, then sends the reminder (no new codes) and refreshes'
   await waitFor(() => expect(api.remindInitiative).toHaveBeenCalledWith('i1'));
   expect(api.sendInitiativeInvites).not.toHaveBeenCalled();
   expect(toast).toHaveBeenCalledWith(
-    'Reminded 8 people · 2 without email · 1 without a working code on Meridian SIN-2 refresh');
+    'Meridian SIN-2 refresh: Reminded 8 people · 2 without email · 1 without a working code');
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   await waitFor(() => expect(api.getLearningDashboard).toHaveBeenCalledTimes(2));
 });
