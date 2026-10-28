@@ -216,8 +216,8 @@ async def set_baseline(
     """Set the baseline (the one there is): every task's start, finish and
     duration. 409 `baseline_exists` {set_at} unless `replace`."""
     plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
-    state = await service.load_state(db, plan)
-    plan_writes.set_baseline(db, state, actor, replace=body is not None and body.replace)
+    state = await plan_writes.set_baseline(db, plan, actor,
+                                           replace=body is not None and body.replace)
     return await _answer(db, state, actor)
 
 
@@ -228,8 +228,7 @@ async def clear_baseline(
     actor: AuthContext = require_permission("project_plans", "change"),
 ) -> PlanOut:
     plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
-    state = await service.load_state(db, plan)
-    plan_writes.clear_baseline(db, state, actor)
+    state = await plan_writes.clear_baseline(db, plan, actor)
     return await _answer(db, state, actor)
 
 

@@ -5,6 +5,7 @@ Every plan time is floating wall-clock text, `YYYY-MM-DDTHH:MM`
 (`locked_at`, `baseline_set_at`, `completed_at`, `updated_at`) are real
 instants and serialize as ISO datetimes with an offset."""
 
+import math
 import re
 import uuid
 from datetime import datetime
@@ -437,7 +438,31 @@ class OpsOut(BaseModel):
 # --- plan-level writes (PATCH /plans/{id}, lock, baseline, version) ----------------
 
 
-class PlanPatchIn(BaseModel):
+def _json_safe(value):
+    """`value` with every NaN and Infinity (Python's JSON parser accepts
+    them) replaced by its text, at any depth."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+class JsonSafeBody(BaseModel):
+    """A request body whose NaN or Infinity is refused like any other bad
+    value. FastAPI's 422 echoes each bad input, and a non-finite float
+    cannot be written as JSON (the refusal would become a 500), so they
+    arrive as text, which no number field takes."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _finite(cls, data):
+        return _json_safe(data)
+
+
+class PlanPatchIn(JsonSafeBody):
     """PATCH /plans/{plan_id}: send `base_version` (409 `plan_changed`
     unless it is the plan's version) and only the fields that change.
 
@@ -453,7 +478,9 @@ class PlanPatchIn(BaseModel):
       down inside `completion` / `reminders`: a value overrides, null
       removes the override (that key, or a whole group) so the plan
       inherits the system value again. Checked as PlanSettingsOverrides
-      (422 `bad_field`, `field` = "settings.<path>").
+      (422 `bad_field`, `field` = "settings.<path>"); `default_duration`
+      also against the 10-year cap in the units of the plan's calendar
+      (the one sent with it, else the stored one).
 
     A locked plan takes only `status_date` and `owner_id`: sending any
     other field, even unchanged, is 409 `plan_locked`. The plan is
@@ -578,11 +605,14 @@ class ProjectPlanSettingsOut(BaseModel):
     reminders: ReminderSettings
 
 
-class ProjectPlanSettingsIn(BaseModel):
+class ProjectPlanSettingsIn(JsonSafeBody):
     """PUT /system/project-plans: only the keys sent change, and none may be
     null. `completion` and `reminders` replace the whole group (every key
     required); `calendar` replaces the whole calendar, checked by the
-    route (422 `bad_calendar` {message}) and stored in canonical form."""
+    route (422 `bad_calendar` {message}) and stored in canonical form.
+    `default_duration` is also held to the 10-year cap in the units of the
+    calendar (the one sent with it, else the stored one): 422 `bad_field`
+    {"field": "default_duration"}."""
 
     model_config = _SETTINGS
 

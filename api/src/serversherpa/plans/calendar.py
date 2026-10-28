@@ -31,6 +31,8 @@ from datetime import date, datetime, time, timedelta
 from itertools import pairwise
 
 from serversherpa.plans.durations import Units
+from serversherpa.plans.schemas import MAX_RESTORE_ROWS
+from serversherpa.services.text import has_control_chars
 
 STANDARD_CALENDAR: dict = {
     "week": {
@@ -73,6 +75,9 @@ _UNIT_MAX = {"hours_per_day": 24, "hours_per_week": 168, "days_per_month": 31}
 _DEFAULT_KEYS = ("default_start", "default_end")
 _CALENDAR_KEYS = frozenset({"week", "exceptions", *_UNIT_KEYS, *_DEFAULT_KEYS})
 _EXCEPTION_KEYS = frozenset({"date", "name", "hours"})
+# the most exceptions a stored calendar lists: the cap the restore op's
+# lists have (plans/schemas.py)
+MAX_EXCEPTIONS = MAX_RESTORE_ROWS
 
 
 class CalendarError(ValueError):
@@ -437,14 +442,28 @@ class WorkCalendar:
         return total // _MINUTE
 
 
+def _pairs(hours) -> list[list[str]]:
+    """A day's [start, end] pairs (already checked) by start. Zero-padded
+    HH:MM text sorts as time does, and no two intervals share a start."""
+    return sorted(list(pair) for pair in hours)
+
+
 def clean_calendar(data) -> dict:
     """The calendar a write stores (plan settings, the system section): the
     checks of `from_json`, and a key it does not know (in the calendar, its
     week or an exception) is refused too, since it would be stored without
-    meaning anything. Answers a new dict with every key: a missing or null
-    unit key or default time takes the Standard value, the week is Monday
-    first, the exceptions are by date, each with its `name` (null when
-    none). Raises `CalendarError` (`bad_calendar`); the input is only read."""
+    meaning anything. An exception's name is one line of text (no control
+    characters), and there are at most MAX_EXCEPTIONS exceptions.
+
+    Answers a new dict in one canonical form, so the same calendar sent in
+    another order stores the same value: every key (a missing or null unit
+    key or default time takes the Standard value), the week Monday first,
+    each day's intervals by start, the exceptions by date, each with its
+    `name` (null when none). Raises `CalendarError` (`bad_calendar`); the
+    input is only read."""
+    listed = data.get("exceptions") if isinstance(data, dict) else None
+    if isinstance(listed, (list, tuple)) and len(listed) > MAX_EXCEPTIONS:
+        raise _bad(f"calendar.exceptions: at most {MAX_EXCEPTIONS} exceptions")
     WorkCalendar.from_json(data)
     unknown = sorted(str(key) for key in data if key not in _CALENDAR_KEYS)
     if unknown:
@@ -457,8 +476,11 @@ def clean_calendar(data) -> dict:
         unknown = sorted(str(key) for key in item if key not in _EXCEPTION_KEYS)
         if unknown:
             raise _bad(f"exceptions[{index}]: {_shown(unknown[0])} is not an exception field")
-        exceptions.append({"date": item["date"], "name": item.get("name"),
-                           "hours": [list(pair) for pair in item["hours"]]})
+        name = item.get("name")
+        if name is not None and has_control_chars(name):
+            raise _bad(f"exceptions[{index}].name: a control character (a line break, "
+                       "a tab, ...) is not allowed")
+        exceptions.append({"date": item["date"], "name": name, "hours": _pairs(item["hours"])})
     exceptions.sort(key=lambda item: item["date"])
 
     def kept(key: str):
@@ -466,7 +488,7 @@ def clean_calendar(data) -> dict:
         return STANDARD_CALENDAR[key] if value is None else value
 
     return {
-        "week": {key: [list(pair) for pair in data["week"][key]] for key in DAY_KEYS},
+        "week": {key: _pairs(data["week"][key]) for key in DAY_KEYS},
         "exceptions": exceptions,
         **{key: kept(key) for key in (*_UNIT_KEYS, *_DEFAULT_KEYS)},
     }

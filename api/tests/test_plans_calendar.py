@@ -21,6 +21,7 @@ from serversherpa.plans.calendar import (
     clean_calendar,
 )
 from serversherpa.plans.durations import Units
+from serversherpa.plans.schemas import MAX_RESTORE_ROWS
 from serversherpa.system.config_store import DEFAULTS
 
 MINUTE = timedelta(minutes=1)
@@ -868,17 +869,45 @@ def test_clean_calendar_keeps_valid_values():
     assert clean_calendar(data) == data
 
 
+def test_clean_calendar_sorts_each_days_intervals():
+    """The same calendar in another order is the same stored calendar."""
+    week = {day: list(reversed(hours)) for day, hours in STANDARD_CALENDAR["week"].items()}
+    moves = {"date": "2026-11-14", "name": "Move",
+             "hours": [["18:00", "24:00"], ["06:00", "12:00"], ["13:00", "17:00"]]}
+    got = clean_calendar(calendar_json(week=week, exceptions=[moves, THANKSGIVING]))
+    assert got["week"] == STANDARD_CALENDAR["week"]
+    assert got["exceptions"][0]["hours"] == [["06:00", "12:00"], ["13:00", "17:00"],
+                                             ["18:00", "24:00"]]
+    assert got == clean_calendar(calendar_json(exceptions=[THANKSGIVING, {
+        **moves, "hours": sorted(moves["hours"])}], week=STANDARD_CALENDAR["week"]))
+
+
 @pytest.mark.parametrize("data", [
     calendar_json(color="blue"),
     calendar_json(exceptions=[{**THANKSGIVING, "recurring": True}]),
     calendar_json(week={**empty_week(), "holiday": []}),
     calendar_json(week={**empty_week(), "mon": [["08:00", "25:00"]]}),
+    calendar_json(exceptions=[{**THANKSGIVING, "name": "Thanks\x00giving"}]),
+    calendar_json(exceptions=[{**THANKSGIVING, "name": "Thanksgiving\n"}]),
+    calendar_json(exceptions=[{**THANKSGIVING, "name": "\x1b[31mred"}]),
     None,
 ])
 def test_clean_calendar_refuses_what_it_would_not_store(data):
     with pytest.raises(CalendarError) as caught:
         clean_calendar(data)
     assert caught.value.code == "bad_calendar"
+
+
+def test_clean_calendar_caps_the_exception_list():
+    """At most MAX_RESTORE_ROWS exceptions, checked before any is parsed."""
+    days = [date(2027, 1, 1) + ONE_DAY * i for i in range(MAX_RESTORE_ROWS + 1)]
+    listed = [{"date": d.isoformat(), "hours": []} for d in days]
+    assert len(clean_calendar(calendar_json(exceptions=listed[:-1]))["exceptions"]) \
+        == MAX_RESTORE_ROWS
+    with pytest.raises(CalendarError) as caught:
+        clean_calendar(calendar_json(exceptions=listed))
+    assert caught.value.code == "bad_calendar"
+    assert str(MAX_RESTORE_ROWS) in str(caught.value)
 
 
 def test_units_from_calendar():

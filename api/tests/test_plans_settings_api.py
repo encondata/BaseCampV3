@@ -11,9 +11,12 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from serversherpa.db.models import AuditLog, Person
+from serversherpa.plans import plan_writes, service
 from serversherpa.plans.calendar import STANDARD_CALENDAR
+from serversherpa.plans.models import PlanLink, PlanTask
+from serversherpa.plans.schemas import MAX_RESTORE_ROWS
 from serversherpa.system.config_store import DEFAULTS
-from tests.test_plans_api import _make, _person_id
+from tests.test_plans_api import _make, _person_id, _plan_row
 from tests.test_plans_ops import _add, _by_id, _fails, _get, _ok, _setup
 from tests.test_sites_api import login
 
@@ -54,6 +57,32 @@ def _week(hours) -> dict:
 async def _audits(db, action) -> list[AuditLog]:
     return list(await db.scalars(
         select(AuditLog).where(AuditLog.action == action).order_by(AuditLog.at)))
+
+
+async def _task_row(db, task_id) -> PlanTask:
+    return await db.scalar(select(PlanTask).where(PlanTask.id == task_id)
+                           .execution_options(populate_existing=True))
+
+
+async def _loop(db, ids):
+    """A link loop A -> B -> A written straight to the table (the ops refuse
+    one), so the next engine run raises link_cycle."""
+    a, b = (await _task_row(db, ids["A"])), (await _task_row(db, ids["B"]))
+    db.add_all([PlanLink(plan_id=a.plan_id, predecessor_id=a.id, successor_id=b.id),
+                PlanLink(plan_id=a.plan_id, predecessor_id=b.id, successor_id=a.id)])
+    await db.commit()
+
+
+async def _put_system(client, hdrs, **body):
+    resp = await client.put("/system/project-plans", headers=hdrs, json=body)
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+async def _raw(client, method, url, hdrs, text):
+    """A body sent as raw JSON text (NaN and Infinity are not JSON values)."""
+    return await client.request(method, url, content=text,
+                                headers={**hdrs, "Content-Type": "application/json"})
 
 
 SYSTEM_DEFAULTS = {k: v for k, v in DEFAULTS["project_plans"].items()}
@@ -157,6 +186,55 @@ async def test_patch_bad_settings(client, db):
     assert (await _get(client, hdrs, plan))["version"] == plan["version"]
 
 
+async def test_patch_default_duration_is_capped(client, db):
+    """10 years of the plan's own working time (the cap every duration has),
+    in the units of the calendar sent with it, else the plan's."""
+    hdrs, _move, plan = await _setup(client, db)
+    for text in ("2601d", "3651ed", "521w"):
+        detail = await _refused(client, hdrs, plan, 422, "bad_field",
+                                settings={"default_duration": text})
+        assert detail["field"] == "settings.default_duration", text
+    await _patched(client, hdrs, plan, settings={"default_duration": "2600d"})
+    # 20,000 h is under 10 years of 8-hour days, over 10 years of 4-hour ones
+    four_hours = _calendar(hours_per_day=4)
+    detail = await _refused(client, hdrs, plan, 422, "bad_field", calendar=four_hours,
+                            settings={"default_duration": "20000h"})
+    assert detail["field"] == "settings.default_duration"
+    await _patched(client, hdrs, plan, settings={"default_duration": "20000h"})
+    await _patched(client, hdrs, plan, calendar=four_hours,
+                   settings={"default_duration": None})
+    detail = await _refused(client, hdrs, plan, 422, "bad_field",
+                            settings={"default_duration": "20000h"})
+    assert detail["field"] == "settings.default_duration"
+
+
+async def test_patch_non_finite_slack_days(client, db):
+    hdrs, _move, plan = await _setup(client, db)
+    for number in ("NaN", "Infinity", "-Infinity"):
+        resp = await _raw(client, "PATCH", f"/plans/{plan['id']}", hdrs,
+                          f'{{"base_version": {plan["version"]}, '
+                          f'"settings": {{"critical_slack_days": {number}}}}}')
+        assert resp.status_code == 422, (number, resp.text)
+        assert resp.json()["detail"] == {"code": "bad_field",
+                                         "field": "settings.critical_slack_days"}
+
+
+async def test_patch_maps_engine_errors(client, db):
+    hdrs, _move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A", "B", duration="2d")
+    # the work runs past the last date the calendar reaches
+    detail = await _refused(client, hdrs, plan, 422, "no_working_time",
+                            project_start="9999-12-31")
+    assert set(detail) == {"code"}
+    await _loop(db, ids)
+    detail = await _refused(client, hdrs, plan, 422, "link_cycle",
+                            settings={"honor_constraints": False})
+    assert sorted(detail["task_ids"]) == sorted([ids["A"], ids["B"]])
+    assert detail["display_ids"] == [1, 2]
+    body = await _get(client, hdrs, plan)
+    assert body["settings_overrides"] == {} and body["project_start"] == "2026-11-02T08:00"
+
+
 async def test_patch_needs_the_current_version(client, db):
     hdrs, _move, plan = await _setup(client, db)
     await _add(client, hdrs, plan, "A")
@@ -167,10 +245,15 @@ async def test_patch_needs_the_current_version(client, db):
 
 
 async def test_patch_audits_and_stamps(client, db):
+    """The audit row, the plan's stamps, and the stamps of the task rows the
+    recalc moved (only those: B stays where it was)."""
     email = f"ps-{uuid4().hex[:8]}@test.example.com"
     hdrs = await _make(db, client, "admin", email)
     me = await _person_id(db, email)
-    _h, _move, plan = await _setup(client, db)
+    other, move, plan = await _setup(client, db)
+    ids = await _add(client, other, plan, "A")
+    row = await _task_row(db, ids["A"])
+    added = (row.updated_by, row.updated_at)
     body = await _patched(client, hdrs, plan, settings={"show_times": True},
                           status_date="2026-11-04T12:00")
     [row] = await _audits(db, "plan_settings")
@@ -181,6 +264,17 @@ async def test_patch_audits_and_stamps(client, db):
     probe = (await client.get(f"/plans/{plan['id']}/version", headers=hdrs)).json()
     assert probe["version"] == body["version"]
     assert probe["updated_by_name"] == "R X"
+    # nothing the recalc stores moved, so A keeps its stamps
+    kept = await _task_row(db, ids["A"])
+    assert (kept.updated_by, kept.updated_at) == added
+    assert kept.updated_by != me
+
+    await _patched(client, hdrs, plan, project_start="2026-11-09")
+    moved = await _task_row(db, ids["A"])
+    stamped = await _plan_row(db, move)
+    assert moved.start.isoformat() == "2026-11-09T08:00:00"
+    assert moved.updated_by == me == stamped.updated_by
+    assert moved.updated_at == stamped.updated_at > added[1]
 
 
 async def test_patch_without_changes_keeps_the_version(client, db):
@@ -218,6 +312,22 @@ async def test_patch_calendar_is_stored_canonical(client, db):
     assert body["calendar"]["hours_per_week"] == 40
 
 
+async def test_patch_calendar_in_another_order_changes_nothing(client, db):
+    hdrs, _move, plan = await _setup(client, db)
+    exceptions = [{"date": "2026-11-26", "name": "Thanksgiving", "hours": []},
+                  {"date": "2026-11-14", "name": "Move", "hours": [["13:00", "22:00"],
+                                                                   ["06:00", "12:00"]]}]
+    body = await _patched(client, hdrs, plan, calendar=_calendar(exceptions=exceptions))
+    assert body["calendar"]["exceptions"][0]["hours"] == [["06:00", "12:00"],
+                                                          ["13:00", "22:00"]]
+    week = {day: list(reversed(hours)) for day, hours in STANDARD_CALENDAR["week"].items()}
+    again = await _patched(client, hdrs, plan, calendar=_calendar(
+        week=week, exceptions=list(reversed(copy.deepcopy(exceptions)))))
+    assert again["version"] == body["version"]
+    assert again["calendar"] == body["calendar"]
+    assert len(await _audits(db, "plan_settings")) == 1
+
+
 async def test_bad_calendar(client, db):
     hdrs, _move, plan = await _setup(client, db)
     for calendar in (
@@ -227,6 +337,8 @@ async def test_bad_calendar(client, db):
         _calendar(days_per_month=32),
         _calendar(color="blue"),
         _calendar(exceptions=[{"date": "2026-11-26", "hours": [], "recurring": True}]),
+        _calendar(exceptions=[{"date": "2026-11-26", "name": "Thanks\ngiving", "hours": []}]),
+        _calendar(exceptions=[{"date": "2026-11-26", "hours": []}] * (MAX_RESTORE_ROWS + 1)),
         {"week": {}},
         None,
     ):
@@ -404,10 +516,16 @@ async def test_baseline(client, db):
     assert actions == ["plan_baseline_set", "plan_baseline_set", "plan_baseline_clear"]
 
 
-async def test_baseline_on_a_locked_plan(client, db):
+async def test_baseline_on_a_locked_plan(client, db, monkeypatch):
     hdrs, _move, plan = await _setup(client, db)
     await _add(client, hdrs, plan, "A")
     await client.post(f"/plans/{plan['id']}/lock", headers=hdrs)
+
+    async def no_load(*_args):
+        raise AssertionError("a locked plan is refused before its tasks are loaded")
+
+    monkeypatch.setattr(plan_writes, "load_state", no_load)
+    monkeypatch.setattr(service, "load_state", no_load)
     for method in ("post", "delete"):
         resp = await getattr(client, method)(f"/plans/{plan['id']}/baseline", headers=hdrs)
         assert resp.status_code == 409, method
@@ -550,3 +668,83 @@ async def test_system_settings_put_audits_and_sorts(client, db):
     # a new plan copies the system calendar
     _h, _move2, plan2 = await _setup(client, db)
     assert plan2["calendar"]["exceptions"] == calendar["exceptions"]
+
+
+async def test_system_default_duration_is_capped(client, db):
+    """10 years of working time in the units of the calendar sent with it,
+    else the system calendar's."""
+    hdrs, _move, _plan = await _setup(client, db)
+    four_hours = _calendar(hours_per_day=4)
+    for body in ({"default_duration": "2601d"}, {"default_duration": "3651ed"},
+                 {"default_duration": "20000h", "calendar": four_hours}):
+        resp = await client.put("/system/project-plans", headers=hdrs, json=body)
+        assert resp.status_code == 422, (body, resp.text)
+        assert resp.json()["detail"] == {"code": "bad_field", "field": "default_duration"}
+    await _put_system(client, hdrs, default_duration="20000h")
+    await _put_system(client, hdrs, default_duration="1d", calendar=four_hours)
+    resp = await client.put("/system/project-plans", headers=hdrs,
+                            json={"default_duration": "20000h"})
+    assert resp.status_code == 422, resp.text
+    assert (await client.get("/system/project-plans", headers=hdrs)).json()[
+        "default_duration"] == "1d"
+
+
+async def test_system_non_finite_slack_days(client, db):
+    hdrs, _move, _plan = await _setup(client, db)
+    for number in ("NaN", "Infinity", "-Infinity"):
+        resp = await _raw(client, "PUT", "/system/project-plans", hdrs,
+                          f'{{"critical_slack_days": {number}}}')
+        assert resp.status_code == 422, (number, resp.text)
+    assert await _audits(db, "project_plans_config_update") == []
+
+
+async def test_system_put_recalculates_inheriting_plans(client, db):
+    """B (1 day beside a 3-day A) has 2 days of slack. Raising the system's
+    critical slack to 2 days marks it critical in every plan that inherits
+    the setting, locked or not, and bumps those plans; a plan overriding
+    the key is left alone, and a PUT of anything else bumps no plan."""
+    hdrs, _move, inherits = await _setup(client, db)
+    _h2, _move2, overrides = await _setup(client, db)
+    ids, other = {}, {}
+    for plan, named in ((inherits, ids), (overrides, other)):
+        named |= await _add(client, hdrs, plan, "A", duration="3d")
+        named |= await _add(client, hdrs, plan, "B", duration="1d")
+    await _patched(client, hdrs, overrides, settings={"critical_slack_days": 0})
+    await client.post(f"/plans/{inherits['id']}/lock", headers=hdrs)
+    before = {p["id"]: (await _get(client, hdrs, p))["version"] for p in (inherits, overrides)}
+
+    await _put_system(client, hdrs, critical_slack_days=2)
+    got = await _get(client, hdrs, inherits)
+    assert _by_id(got)[ids["B"]]["is_critical"] is True
+    assert got["version"] == before[inherits["id"]] + 1
+    assert got["locked_at"] is not None
+    kept = await _get(client, hdrs, overrides)
+    assert _by_id(kept)[other["B"]]["is_critical"] is False
+    assert kept["version"] == before[overrides["id"]]
+    probe = (await client.get(f"/plans/{inherits['id']}/version", headers=hdrs)).json()
+    assert probe["updated_by_name"] == "R X"
+
+    # a PUT that leaves both scheduling keys as they are bumps nothing
+    await _put_system(client, hdrs, default_task_mode="manual", critical_slack_days=2,
+                      honor_constraints=True)
+    assert (await _get(client, hdrs, inherits))["version"] == got["version"]
+    assert (await _get(client, hdrs, overrides))["version"] == kept["version"]
+
+    # honor_constraints reaches plans the same way
+    await _put_system(client, hdrs, honor_constraints=False)
+    assert (await _get(client, hdrs, inherits))["version"] == got["version"] + 1
+    assert (await _get(client, hdrs, overrides))["version"] == kept["version"] + 1
+
+
+async def test_system_put_keeps_dates_of_a_plan_the_engine_refuses(client, db):
+    hdrs, _move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A", "B", duration="2d")
+    before = await _get(client, hdrs, plan)
+    await _loop(db, ids)
+    await _put_system(client, hdrs, honor_constraints=False)
+    after = await _get(client, hdrs, plan)
+    assert [(t["start"], t["finish"]) for t in after["tasks"]] == [
+        (t["start"], t["finish"]) for t in before["tasks"]]
+    assert after["settings"]["honor_constraints"] is False
+    # its next write reports the loop
+    await _refused(client, hdrs, plan, 422, "link_cycle", project_start="2026-11-09")

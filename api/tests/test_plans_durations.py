@@ -8,11 +8,13 @@ from pathlib import Path
 import pytest
 
 from serversherpa.plans.durations import (
+    MAX_YEARS,
     Duration,
     DurationError,
     Units,
     format_duration,
     format_lag,
+    max_minutes,
     parse_duration,
     parse_lag,
 )
@@ -255,3 +257,12 @@ def test_duration_is_frozen_and_hashable():
     with pytest.raises(AttributeError):
         d.minutes = 1  # type: ignore[misc]
     assert {d, Duration(480, "d", False)} == {d}
+
+
+def test_the_ten_year_cap():
+    """260 working days a year of the plan's own day, or 365 wall-clock days
+    for elapsed time (the cap every plan duration and lag has)."""
+    assert MAX_YEARS == 10
+    assert max_minutes(Units(), elapsed=False) == 480 * 260 * 10
+    assert max_minutes(UNITS_ALT, elapsed=False) == 600 * 260 * 10
+    assert max_minutes(Units(), elapsed=True) == 1440 * 365 * 10

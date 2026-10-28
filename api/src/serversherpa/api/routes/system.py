@@ -40,6 +40,7 @@ from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
     AuthSession, LogEntry, SystemConfig, SystemProcess, TrustedDevice,
 )
+from serversherpa.plans import plan_writes
 from serversherpa.plans.calendar import CalendarError, clean_calendar
 from serversherpa.plans.schemas import ProjectPlanSettingsIn, ProjectPlanSettingsOut
 from serversherpa.plans.settings import SECTION as PLANS_SECTION
@@ -294,7 +295,9 @@ async def put_project_plan_settings(
     actor: AuthContext = require_permission("settings", "change"),
 ) -> ProjectPlanSettingsOut:
     """Project-plan settings (plans/settings.py reads them). Plans inherit
-    every key but the calendar live; a new plan copies the calendar."""
+    every key but the calendar live; a new plan copies the calendar. A
+    change to a scheduling key reschedules the plans that inherit it, in
+    this transaction (plan_writes.recalc_inheriting)."""
     stored = system_view(await read_section(db, PLANS_SECTION))
     patch = body.model_dump(exclude_unset=True)
     if "calendar" in patch:
@@ -302,6 +305,10 @@ async def put_project_plan_settings(
             patch["calendar"] = clean_calendar(patch["calendar"])
         except CalendarError as exc:
             raise _err(422, exc.code, message=str(exc)) from None
+    if "default_duration" in patch:
+        plan_writes.check_default_duration(
+            patch["default_duration"], patch.get("calendar", stored["calendar"]),
+            "default_duration")
     data = {**stored, **patch}
     row = await db.get(SystemConfig, PLANS_SECTION)
     if row is None:
@@ -316,6 +323,7 @@ async def put_project_plan_settings(
         audit(db, actor_id=actor.person.id, entity_type="system",
               entity_id=PLANS_SECTION, action="project_plans_config_update",
               changes=changes)
+    await plan_writes.recalc_inheriting(db, stored, data, actor)
     await db.commit()
     return ProjectPlanSettingsOut(**data)
 

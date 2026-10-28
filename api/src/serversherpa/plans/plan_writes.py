@@ -1,8 +1,8 @@
 """Plan-level writes: PATCH /plans/{id} (settings overrides, calendar,
 project start, timezone, status date, owner), the schedule lock, the
-baseline, and the version probe. Split from plans/service.py the way the
-ops are split into plans/ops_*.py; built on the service's load, recalc
-and serialize helpers.
+baseline, the version probe, and the plans a system settings change
+reschedules. Split from plans/service.py the way the ops are split into
+plans/ops_*.py; built on the service's load, recalc and serialize helpers.
 
 Each write runs on a plan the route took with `plan_for_actor(lock=True)`.
 One that has nothing to change writes nothing; otherwise it bumps the
@@ -18,10 +18,12 @@ from zoneinfo import available_timezones
 from fastapi import HTTPException
 from pydantic import ValidationError
 from pydantic_core import to_jsonable_python
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.deps import AuthContext
 from serversherpa.plans.calendar import CalendarError, WorkCalendar, clean_calendar
+from serversherpa.plans.durations import DurationError, max_minutes, parse_duration
 from serversherpa.plans.engine import ScheduleError
 from serversherpa.plans.floating import format_floating, parse_floating
 from serversherpa.plans.models import ProjectPlan
@@ -36,7 +38,7 @@ from serversherpa.plans.service import (
     schedule_error,
     settings_of,
 )
-from serversherpa.plans.settings import merge_overrides
+from serversherpa.plans.settings import effective, merge_overrides
 from serversherpa.services.audit import audit
 
 
@@ -50,6 +52,9 @@ async def version_out(db: AsyncSession, plan: ProjectPlan) -> PlanVersionOut:
 
 # what a PATCH may still change on a locked plan (spec Lock)
 LOCKED_PATCH_FIELDS = frozenset({"status_date", "owner_id"})
+# the system settings the engine reads: changing one reschedules every
+# plan that inherits it
+SCHEDULING_KEYS = ("honor_constraints", "critical_slack_days")
 # baseline column <- the task column it copies
 _BASELINE = (("baseline_start", "start"), ("baseline_finish", "finish"),
              ("baseline_duration_minutes", "duration_minutes"))
@@ -112,6 +117,25 @@ def _calendar_error(exc: CalendarError) -> HTTPException:
     return err(422, exc.code, message=str(exc))
 
 
+def check_default_duration(text: str | None, calendar: dict, field: str) -> None:
+    """A default duration within the 10-year cap every plan duration has,
+    in the units of `calendar` (a calendar as stored): else 422 `bad_field`
+    naming `field`. The schemas only parse it, since the cap depends on
+    the calendar's hours a day; None (inherit) passes."""
+    if text is None:
+        return
+    try:
+        units = WorkCalendar.from_json(calendar).units
+    except CalendarError as exc:
+        raise _calendar_error(exc) from None
+    try:
+        duration = parse_duration(text, units)
+    except DurationError:
+        raise err(422, "bad_field", field=field) from None
+    if duration.minutes > max_minutes(units, duration.elapsed):
+        raise err(422, "bad_field", field=field)
+
+
 def _moment(text: str | None, at: time, name: str) -> datetime:
     try:
         return parse_floating(text, date_only_time=at)
@@ -159,7 +183,10 @@ async def patch_plan(db: AsyncSession, plan: ProjectPlan, body: PlanPatchIn,
             raise err(422, "bad_owner")
         new["owner_id"] = body.owner_id
     if "settings" in sent:
-        new["settings"] = merge_overrides(plan.settings, check_overrides(body.settings))
+        overrides = check_overrides(body.settings)
+        check_default_duration(overrides.get("default_duration"),
+                               new.get("calendar", plan.calendar), "settings.default_duration")
+        new["settings"] = merge_overrides(plan.settings, overrides)
 
     changes = {key: {"from": _logged(getattr(plan, key)), "to": _logged(value)}
                for key, value in new.items() if getattr(plan, key) != value}
@@ -213,18 +240,18 @@ def _write_baseline(state: PlanState, value) -> set[uuid.UUID]:
     return moved
 
 
-def set_baseline(db: AsyncSession, state: PlanState, actor: AuthContext, *,
-                 replace: bool) -> None:
+async def set_baseline(db: AsyncSession, plan: ProjectPlan, actor: AuthContext, *,
+                       replace: bool) -> PlanState:
     """Copy every task's start, finish and duration into its baseline and
-    record who set it when; audit `plan_baseline_set`. 409 `plan_locked` on
-    a locked plan (the baseline is part of what the lock freezes); 409
-    `baseline_exists` {set_at} when the plan has one and `replace` is
-    false."""
-    plan = state.plan
+    record who set it when; audit `plan_baseline_set`. Answers the loaded
+    plan. 409 `plan_locked` on a locked plan (the baseline is part of what
+    the lock freezes); 409 `baseline_exists` {set_at} when the plan has one
+    and `replace` is false. Both are refused before any task is loaded."""
     if plan.locked_at is not None:
         raise err(409, "plan_locked")
     if plan.baseline_set_at is not None and not replace:
         raise err(409, "baseline_exists", set_at=_instant(plan.baseline_set_at))
+    state = await load_state(db, plan)
     now = datetime.now(UTC)
     replaced = _instant(plan.baseline_set_at)
     moved = _write_baseline(state, lambda task, source: getattr(task, source))
@@ -233,18 +260,20 @@ def set_baseline(db: AsyncSession, state: PlanState, actor: AuthContext, *,
     _touch(plan, actor, now)
     audit(db, actor_id=actor.person.id, entity_type="project_plan", entity_id=str(plan.id),
           action="plan_baseline_set", changes={"tasks": len(state.tasks), "replaced": replaced})
+    return state
 
 
-def clear_baseline(db: AsyncSession, state: PlanState, actor: AuthContext) -> None:
-    """Empty every task's baseline; audit `plan_baseline_clear`. 409
-    `plan_locked` on a locked plan; a plan with no baseline changes
-    nothing."""
-    plan = state.plan
+async def clear_baseline(db: AsyncSession, plan: ProjectPlan,
+                         actor: AuthContext) -> PlanState:
+    """Empty every task's baseline; audit `plan_baseline_clear`. Answers the
+    loaded plan. 409 `plan_locked` on a locked plan, before any task is
+    loaded; a plan with no baseline changes nothing."""
     if plan.locked_at is not None:
         raise err(409, "plan_locked")
+    state = await load_state(db, plan)
     moved = _write_baseline(state, lambda task, source: None)
     if plan.baseline_set_at is None and not moved:
-        return
+        return state
     now = datetime.now(UTC)
     cleared = _instant(plan.baseline_set_at)
     plan.baseline_set_at, plan.baseline_set_by = None, None
@@ -252,3 +281,38 @@ def clear_baseline(db: AsyncSession, state: PlanState, actor: AuthContext) -> No
     _touch(plan, actor, now)
     audit(db, actor_id=actor.person.id, entity_type="project_plan", entity_id=str(plan.id),
           action="plan_baseline_clear", changes={"set_at": cleared, "tasks": len(moved)})
+    return state
+
+
+async def recalc_inheriting(db: AsyncSession, before: dict, after: dict,
+                            actor: AuthContext) -> int:
+    """After a PUT /system/project-plans (`before` / `after`: the whole
+    section): when it changed `honor_constraints` or `critical_slack_days`,
+    reschedule every plan that inherits a changed key (it has no override
+    of its own; locked plans too), bump its version and stamp it and the
+    task rows that moved, so an open tab refreshes. Nothing when neither
+    changed.
+
+    The plan rows are locked FOR UPDATE in id order: every other writer
+    locks a single plan row, so no two transactions wait on each other in
+    a loop. A plan the engine refuses (ScheduleError, CalendarError) keeps
+    its dates and is still bumped, since the new setting applies to it;
+    its next write reports the error. Answers how many plans were bumped.
+    The caller commits."""
+    changed = [key for key in SCHEDULING_KEYS if before.get(key) != after.get(key)]
+    if not changed:
+        return 0
+    inherits = or_(*(ProjectPlan.settings[key].astext.is_(None) for key in changed))
+    plans = (await db.scalars(
+        select(ProjectPlan).where(inherits).order_by(ProjectPlan.id)
+        .with_for_update().execution_options(populate_existing=True))).all()
+    now = datetime.now(UTC)
+    for plan in plans:
+        state = await load_state(db, plan)
+        try:
+            moved = recalc(state, effective(after, plan.settings))
+        except (ScheduleError, CalendarError):
+            moved = set()               # recalc writes nothing when the engine refuses
+        _stamp(state, moved, actor, now)
+        _touch(plan, actor, now)
+    return len(plans)
