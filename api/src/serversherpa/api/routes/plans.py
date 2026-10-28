@@ -13,11 +13,11 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
-from serversherpa.plans import service
+from serversherpa.plans import ops, service
 from serversherpa.plans.calendar import WorkCalendar
 from serversherpa.plans.floating import parse_floating
 from serversherpa.plans.models import PlanTask
-from serversherpa.plans.schemas import PlanCreateIn, PlanOut
+from serversherpa.plans.schemas import OpsIn, OpsOut, PlanCreateIn, PlanOut
 from serversherpa.services.audit import audit
 
 router = APIRouter(tags=["plans"])
@@ -94,3 +94,23 @@ async def delete_plan(
     # tasks, links, assignments and reminder rows go with it (FK cascade)
     await db.delete(plan)
     await db.commit()
+
+
+@router.post("/plans/{plan_id}/ops", response_model=OpsOut)
+async def post_ops(
+    plan_id: uuid.UUID,
+    body: OpsIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("project_plans", "change"),
+) -> OpsOut:
+    """One atomic batch of edits (plans/ops.py). Anything but a progress-only
+    batch needs an unlocked plan and `base_version` equal to its version."""
+    plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
+    if not ops.is_progress_only(body.ops):
+        if plan.locked_at is not None:
+            raise _err(409, "plan_locked")
+        if body.base_version != plan.version:
+            raise _err(409, "plan_changed", version=plan.version)
+    out = await ops.run_batch(db, plan, body.ops, actor)
+    await db.commit()
+    return out

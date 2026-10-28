@@ -7,9 +7,9 @@ instants and serialize as ISO datetimes with an offset."""
 
 import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PlanCreateIn(BaseModel):
@@ -128,3 +128,152 @@ class PlanOut(BaseModel):
     tasks: list[PlanTaskOut]
     links: list[PlanLinkOut]
     resources: list[ResourceOut]
+
+
+# --- ops (POST /plans/{plan_id}/ops) ------------------------------------------------
+#
+# Values are checked by plans/ops.py, not here, so a bad one answers 422
+# {"code": "bad_field", "field": ...} (or `bad_duration`) like the rest of
+# the plan API. A field left out of `fields` is not touched; a field sent
+# as null clears it where that makes sense (dates, notes) and is refused
+# where it does not (name, duration, mode, ...).
+
+MAX_OPS = 5000          # one paste of a whole plan, with room to spare
+
+
+class TaskFields(BaseModel):
+    """The editable task fields; send only the ones that change."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    duration: str | None = None             # duration text: "2d", "4 hrs", "0", "3ed"
+    start: str | None = None                # floating time; a date alone = default start
+    finish: str | None = None               # a date alone = default end
+    mode: str | None = None                 # auto | manual
+    is_milestone: bool | None = None
+    constraint_type: str | None = None      # asap snet snlt fnet fnlt mso mfo
+    constraint_date: str | None = None
+    deadline: str | None = None
+    percent_complete: int | None = None
+    actual_start: str | None = None
+    actual_finish: str | None = None
+    notes: str | None = None
+    show_on_timeline: bool | None = None
+    predecessors: str | None = None         # MS Project text (links ops, Task 10)
+
+
+class AddTaskOp(BaseModel):
+    """A new task. With `before_id` it goes right above that task, as its
+    sibling; otherwise it is the last subtask of `parent_id`, or the last
+    task of the plan. `temp_id` is the client's name for it, answered in
+    `OpsOut.temp_ids`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["add_task"]
+    temp_id: str | None = None
+    before_id: uuid.UUID | None = None
+    parent_id: uuid.UUID | None = None
+    name: str = ""
+    duration: str | None = None
+    start: str | None = None
+    finish: str | None = None
+    mode: str | None = None
+    is_milestone: bool | None = None
+    deadline: str | None = None
+    notes: str | None = None
+
+
+class UpdateTaskOp(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["update_task"]
+    id: uuid.UUID
+    fields: TaskFields
+
+
+class DeleteTasksOp(BaseModel):
+    """Deletes each task with all of its subtasks (and their links)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["delete_tasks"]
+    ids: list[uuid.UUID]
+
+
+class MoveTasksOp(BaseModel):
+    """Moves the tasks (each with its subtasks, in outline order) right
+    above `before_id`, else to the end of `parent_id`'s subtasks, else to
+    the end of the plan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["move_tasks"]
+    ids: list[uuid.UUID]
+    before_id: uuid.UUID | None = None
+    parent_id: uuid.UUID | None = None
+
+
+class IndentOp(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["indent"]
+    ids: list[uuid.UUID]
+
+
+class OutdentOp(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["outdent"]
+    ids: list[uuid.UUID]
+
+
+class RestoreOp(BaseModel):
+    """Puts rows back as an earlier batch found them: the `inverse` of
+    every batch is one of these (plans/ops_inverse.py has the row format).
+    `tasks` re-creates a missing task from its full snapshot or writes the
+    given fields onto an existing one; `links` likewise; each `assignments`
+    entry ({task_id, resources: [{kind, id}]}) replaces that task's
+    assignees; `remove_tasks` (with their subtasks) and `remove_links` are
+    deleted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["restore"]
+    tasks: list[dict[str, Any]] = []
+    links: list[dict[str, Any]] = []
+    assignments: list[dict[str, Any]] = []
+    remove_tasks: list[uuid.UUID] = []
+    remove_links: list[uuid.UUID] = []
+
+
+Op = Annotated[
+    AddTaskOp | UpdateTaskOp | DeleteTasksOp | MoveTasksOp | IndentOp | OutdentOp | RestoreOp,
+    Field(discriminator="op"),
+]
+
+
+class OpsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_version: int
+    ops: list[Op] = Field(min_length=1, max_length=MAX_OPS)
+
+
+class OpsOut(BaseModel):
+    """What one batch changed. `tasks` and `links` are only the rows whose
+    stored fields changed (the engine's included); `order` is the whole
+    outline order when any task's parent or position changed (else None),
+    for the client to renumber display IDs and WBS. `inverse` is the batch
+    that undoes this one."""
+
+    version: int
+    tasks: list[PlanTaskOut]
+    links: list[PlanLinkOut]
+    deleted_tasks: list[uuid.UUID]
+    deleted_links: list[uuid.UUID]
+    order: list[uuid.UUID] | None
+    temp_ids: dict[str, uuid.UUID]
+    inverse: list[dict[str, Any]]
+    notices: list[dict[str, Any]]
