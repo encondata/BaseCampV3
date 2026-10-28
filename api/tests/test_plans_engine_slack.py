@@ -351,6 +351,15 @@ def test_manual_task_ignores_its_constraint_backward():
     assert run(tasks)["M"].total_slack == 1920
 
 
+def test_manual_task_deadline_caps_its_late_finish():
+    tasks = [T("M", 480, mode="manual", start=dt("2026-11-02 08:00"),
+               deadline=dt("2026-11-03 17:00")),
+             T("C", 2400)]
+    out = run(tasks)
+    assert late(out["M"]) == (dt("2026-11-03 08:00"), dt("2026-11-03 17:00"))
+    assert out["M"].total_slack == 480
+
+
 def test_deadline_does_not_move_dates():
     out = run([T("D", 960, deadline=dt("2026-11-02 17:00"))])
     assert (out["D"].start, out["D"].finish) == (dt("2026-11-02 08:00"),
@@ -397,13 +406,81 @@ def test_fs_from_summary_caps_every_subtask():
     assert slack(out, "A", "B", "X", "S") == (480, 0, 0, 0)
 
 
-def test_ss_from_summary_caps_every_subtask_start():
-    # conservative: every subtask (not only the earliest) must start by Mon
-    # 08:00 for X to keep its SS + 1 day
+def test_ss_from_summary_caps_the_subtasks_that_start_it():
+    # S must start by Mon 08:00 for X to keep its SS + 1 day; A and B both
+    # start S (no offset), so both must start by then
     tasks = [T("S"), T("A", 480, "S"), T("B", 960, "S"), T("X", 960)]
     out = run(tasks, [L("S", "X", "SS", 480)])
     assert out["X"].start == dt("2026-11-03 08:00")
     assert slack(out, "A", "B", "X") == (0, 0, 0)
+
+
+def _ss_probe(**x_fields) -> list[TaskIn]:
+    """S{A 1 day -> B 1 day} (Mon-Tue) -SS-> X 3 days (Mon-Wed)."""
+    return [T("S"), T("A", 480, "S"), T("B", 480, "S"), T("X", 1440, **x_fields)]
+
+
+SS_PROBE = [L("A", "B"), L("S", "X", "SS")]
+
+
+def test_ss_from_summary_keeps_each_subtask_offset():
+    # S may start no later than Mon 08:00 and does; B keeps its one-day
+    # offset from S's start, so nothing here is late
+    out = run(_ss_probe(), SS_PROBE)
+    assert late(out["A"]) == (dt("2026-11-02 08:00"), dt("2026-11-02 17:00"))
+    assert late(out["B"]) == (dt("2026-11-03 08:00"), dt("2026-11-03 17:00"))
+    assert slack(out, "A", "B", "S", "X") == (0, 0, 0, 0)
+
+
+def test_ss_from_summary_with_room_is_not_critical():
+    # the same with C (4 days) setting the finish: S may start as late as
+    # Tue 08:00, so A and B keep a day of slack
+    out = run(_ss_probe() + [T("C", 1920)], SS_PROBE)
+    assert late(out["B"]) == (dt("2026-11-04 08:00"), dt("2026-11-04 17:00"))
+    assert slack(out, "A", "B", "S", "X") == (480, 480, 480, 480)
+    for task_id in ("A", "B", "S", "X"):
+        assert out[task_id].is_critical is False, task_id
+
+
+def test_ss_from_summary_that_must_start_earlier_is_negative():
+    # X's deadline needs it (so S) to start Fri 10-30: the subtask that
+    # starts S, and B after it, are a day late
+    out = run(_ss_probe(deadline=dt("2026-11-03 17:00")), SS_PROBE)
+    assert late(out["A"]) == (dt("2026-10-30 08:00"), dt("2026-10-30 17:00"))
+    assert slack(out, "A", "B", "S", "X") == (-480, -480, -480, -480)
+    assert out["A"].is_critical is True
+
+
+def test_ss_from_summary_offset_of_an_elapsed_subtask_is_wall_clock():
+    # E (1 h elapsed) starts 4.5 h after S on the wall clock (4 h of work)
+    tasks = [T("S"), T("A", 480, "S"),
+             T("E", 60, "S", elapsed=True, constraint_type="snet",
+               constraint_date=dt("2026-11-02 12:30")),
+             T("X", 1440)]
+    out = run(tasks, [L("S", "X", "SS")])
+    assert late(out["E"]) == (dt("2026-11-02 12:30"), dt("2026-11-02 13:30"))
+    assert out["E"].total_slack == 0
+
+
+def test_ss_from_outer_summary_measures_offsets_from_its_start():
+    # P{C, N{B}} -SS-> X: B, a day into P, keeps that day; measured from N's
+    # own start it would be a day late
+    tasks = [T("P"), T("C", 480, "P"), T("N", parent="P"),
+             T("B", 480, "N", constraint_type="snet", constraint_date=dt("2026-11-03 08:00")),
+             T("X", 1440)]
+    out = run(tasks, [L("P", "X", "SS")])
+    assert late(out["B"]) == (dt("2026-11-03 08:00"), dt("2026-11-03 17:00"))
+    assert slack(out, "C", "B", "N", "P") == (0, 0, 0, 0)
+
+
+def test_sf_from_summary_backward():
+    # X must finish 3 days after S starts: S may start no later than Mon
+    # 08:00, B keeping its offset
+    out = run(_ss_probe()[:3] + [T("X", 480)], [L("A", "B"), L("S", "X", "SF", 1440)])
+    assert out["X"].start == dt("2026-11-04 08:00")
+    assert late(out["A"]) == (dt("2026-11-02 08:00"), dt("2026-11-02 17:00"))
+    assert late(out["B"]) == (dt("2026-11-03 08:00"), dt("2026-11-03 17:00"))
+    assert slack(out, "A", "B", "S", "X") == (0, 0, 0, 0)
 
 
 def test_ff_from_summary_backward():

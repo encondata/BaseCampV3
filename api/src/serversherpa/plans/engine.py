@@ -89,10 +89,14 @@ critical path (MS Project's rules; a deadline changes slack, never dates).
   its slack is at most `EngineSettings.critical_slack_minutes` and it is
   not complete.
 - The summary nodes swap roles in reverse. The rollup, reached before the
-  subtasks, passes caps down: the summary's deadline and its links out cap
-  every task below it, an SS or SF link from a summary applied
-  conservatively to every subtask's start (not only the earliest one). The
-  gate, reached once every subtask is done, rolls up the subtasks' late
+  subtasks, passes caps down: the summary's deadline and its FS/FF links
+  out cap every task below it. An SS or SF link from a summary bounds the
+  summary's start: each subtask's late start is capped at that bound moved
+  later by the subtask's own offset from the summary's start (working time,
+  or wall clock for an elapsed subtask), as if the summary moved as a
+  block. A schedule that meets the bound keeps slack >= 0; a summary that
+  must start earlier shows negative slack from the subtask that starts it.
+  The gate, reached once every subtask is done, rolls up the subtasks' late
   starts: the summary's late start is the earliest of them, and that is
   what a link into the summary reads as its late start. The summary's late
   finish is the latest subtask late finish, its slack the least subtask
@@ -659,11 +663,12 @@ class _ForwardPass(_Clock):
 @dataclass(frozen=True)
 class _Caps:
     """What a summary's rollup holds, in the backward pass, for every task
-    below it: the latest each may finish and the latest each may start (None
-    where nothing caps it)."""
+    below it: the latest each may finish (None where nothing caps it), and
+    the requirements the SS/SF links out of the summary and its ancestors
+    put on their starts, as (latest start, that summary's start) pairs."""
 
     finish: datetime | None = None
-    start: datetime | None = None
+    starts: tuple[tuple[datetime, datetime], ...] = ()
 
 
 class _BackwardPass(_Clock):
@@ -680,9 +685,9 @@ class _BackwardPass(_Clock):
         self.project_finish = max(o.finish for o in out.values() if not o.is_summary)
         self.caps: dict[str, _Caps] = {}
 
-    def caps_on(self, node: Node, task: TaskIn) -> tuple[list[datetime], list[datetime]]:
-        """(finish caps, start caps) on `task`: what each link out of `node`
-        requires, its deadline and its parent rollup's caps."""
+    def own_caps(self, node: Node, task: TaskIn) -> tuple[list[datetime], list[datetime]]:
+        """(finish caps, start caps) on `task` of its own: what each link out
+        of `node` requires, and its deadline."""
         finishes: list[datetime] = []
         starts: list[datetime] = []
         for link in self.graph.links_out.get(node, ()):
@@ -692,26 +697,36 @@ class _BackwardPass(_Clock):
             (finishes if link.link_type in ("FS", "FF") else starts).append(moment)
         if task.deadline is not None:
             finishes.append(task.deadline)
-        if task.parent_id is not None:
-            parent = self.caps[task.parent_id]
-            if parent.finish is not None:
-                finishes.append(parent.finish)
-            if parent.start is not None:
-                starts.append(parent.start)
         return finishes, starts
+
+    def parent_caps(self, task: TaskIn) -> _Caps:
+        return self.caps[task.parent_id] if task.parent_id is not None else _Caps()
 
     def rollup(self, task: TaskIn) -> None:
         """A summary's rollup, before its subtasks: its deadline and its
         links out (with its ancestors' caps) become caps on every task below
-        it; SS/SF links out cap every subtask's start."""
-        finishes, starts = self.caps_on((ROLLUP, task.id), task)
+        it. An SS/SF link out bounds the summary's start, kept with that
+        start so each subtask can keep its offset from it."""
+        finishes, starts = self.own_caps((ROLLUP, task.id), task)
+        parent = self.parent_caps(task)
+        if parent.finish is not None:
+            finishes.append(parent.finish)
+        own = ((min(starts), self.out[task.id].start),) if starts else ()
         self.caps[task.id] = _Caps(finish=min(finishes, default=None),
-                                   start=min(starts, default=None))
+                                   starts=parent.starts + own)
 
     def leaf(self, task: TaskIn) -> None:
         out = self.out[task.id]
-        finishes, starts = self.caps_on((LEAF, task.id), task)
+        finishes, starts = self.own_caps((LEAF, task.id), task)
         finishes.append(self.project_finish)
+        parent = self.parent_caps(task)
+        if parent.finish is not None:
+            finishes.append(parent.finish)
+        for latest, summary_start in parent.starts:
+            # a summary that may start no later than `latest` moves as a
+            # block: this subtask keeps its offset from the summary's start
+            offset = self.span(task, summary_start, out.start)
+            starts.append(self.after(task, latest, offset))
         kind, date = task.constraint_type, task.constraint_date
         if task.mode == "auto" and date is not None:
             if kind in ("fnlt", "mfo"):
@@ -728,7 +743,7 @@ class _BackwardPass(_Clock):
         out.is_critical = (out.total_slack <= self.settings.critical_slack_minutes
                            and out.percent_complete < 100)
 
-    def summary(self, task: TaskIn, children: list[str]) -> None:
+    def gate(self, task: TaskIn, children: list[str]) -> None:
         """A summary's gate, once every subtask is done: rolls up their late
         dates. The late start (the earliest subtask late start) is what a
         link into the summary reads."""
@@ -773,7 +788,7 @@ def schedule(tasks: list[TaskIn], links: list[LinkIn], calendar: WorkCalendar,
                 if kind == ROLLUP:
                     backward.rollup(task)
                 elif kind == GATE:
-                    backward.summary(task, outline.children[task_id])
+                    backward.gate(task, outline.children[task_id])
                 else:
                     backward.leaf(task)
     except OverflowError:       # elapsed time past year 9999 (or before year 1)
