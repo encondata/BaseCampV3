@@ -35,6 +35,11 @@ it('renders the "Actions ▾" trigger; menu items are hidden until clicked, then
   const trigger = screen.getByRole('button', { name: 'Actions' });
   expect(trigger.textContent).toBe('Actions ▾');
   expect(trigger.querySelector('[aria-hidden="true"]')?.textContent).toBe(' ▾');
+  // label and caret are one flex child of the inline-flex button, so its 7px
+  // gap doesn't come between them (the trigger stays as wide as it was)
+  expect(trigger.children).toHaveLength(1);
+  expect(trigger.children[0].tagName).toBe('SPAN');
+  expect(trigger.children[0].textContent).toBe('Actions ▾');
   expect(screen.queryByRole('menuitem')).toBeNull();
 
   await user.click(trigger);

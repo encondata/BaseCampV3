@@ -170,8 +170,9 @@ export function RowActionsMenu({
                 }
                 setOpen(next);
               }}>
-        {/* the ▾ marks the menu; the trigger is named by its label alone */}
-        {icon ?? <>{name}<span aria-hidden="true"> ▾</span></>}
+        {/* the ▾ marks the menu; the trigger is named by its label alone. One
+            element, so the button's flex gap doesn't come between them */}
+        {icon ?? <span>{name}<span aria-hidden="true"> ▾</span></span>}
       </button>
       {open && pos && createPortal(
         <div className="pop-menu" role="menu" ref={menuRef}
