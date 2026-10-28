@@ -578,6 +578,9 @@
   right: 0;
   height: 3px;
   background: var(--pln-hue);
+  /* a 1px line in the lane's color under it: a color close to the critical
+     red would otherwise run into the bar and the stripe be lost */
+  box-shadow: 0 1px 0 var(--pln-lane-bg);
   pointer-events: none;
 }
 /* a diamond's 3px point would be a speck: its top 5px (a 10px-wide cap) */

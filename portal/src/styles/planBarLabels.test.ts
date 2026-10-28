@@ -10,13 +10,14 @@ import { describe, expect, it } from 'vitest';
 
 const CSS = readFileSync(join(__dirname, 'plans.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 
-/** The declarations of the rule whose selector list is exactly `selector`. */
+/** The declarations of every rule whose selector list names `selector`. */
 function rule(selector: string): string {
+  const out: string[] = [];
   for (const m of CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const selectors = m[1].split(',').map((s) => s.trim());
-    if (selectors.includes(selector)) return m[2];
+    if (selectors.includes(selector)) out.push(m[2]);
   }
-  return '';
+  return out.join('\n');
 }
 
 describe('the names’ halo under the sheet', () => {
@@ -26,5 +27,11 @@ describe('the names’ halo under the sheet', () => {
     const shadow = /text-shadow:([^;]+);/.exec(rule('.pln-bar-label'))?.[1] ?? '';
     expect(shadow).toContain('var(--pln-lane-bg)');
     expect(shadow).not.toContain('var(--surface)');
+  });
+});
+
+describe('a critical bar’s color stripe', () => {
+  it('has a 1px line in the lane’s color under it, so a color close to the critical red still shows', () => {
+    expect(rule('.pln-bar-hue')).toMatch(/box-shadow:\s*0 1px 0 var\(--pln-lane-bg\)/);
   });
 });

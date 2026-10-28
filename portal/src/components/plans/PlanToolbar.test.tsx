@@ -303,9 +303,20 @@ describe('hover tips', () => {
     expect(hoverTip(button('More')).desc).toBe(COMMAND_TIPS.moreNoDelete.desc);
     expect(COMMAND_TIPS.moreNoDelete.desc).not.toMatch(/delete/i);
     noDelete.unmount();
-    render(<Bar plan={makePlan({ permissions: { view: true, add: false, change: false, delete: false } })}
-                cmd={commands()} />);
+    const reader = render(<Bar plan={makePlan({ permissions: { view: true, add: false, change: false, delete: false } })}
+                               cmd={commands()} />);
     expect(hoverTip(button('More')).desc).toBe(COMMAND_TIPS.moreReadOnly.desc);
+    reader.unmount();
+    // a reader who may delete the plan: the columns, the shortcuts and Delete plan
+    render(<Bar plan={makePlan({ permissions: { view: true, add: false, change: false, delete: true } })}
+                cmd={commands()} />);
+    expect(hoverTip(button('More')).desc).toBe(COMMAND_TIPS.moreReadOnlyDelete.desc);
+    expect(COMMAND_TIPS.moreReadOnlyDelete.desc).toBe(
+      'Choose the sheet’s columns, see the keyboard shortcuts, or delete the plan.');
+    vi.useRealTimers();
+    fireEvent.click(button('More'));
+    expect(screen.getAllByRole('menuitem').map((m) => m.textContent))
+      .toEqual(['Columns…', 'Keyboard shortcuts', 'Delete plan…']);
   });
 
   it('the More trigger’s tip says what it holds, and goes once its menu opens', () => {
