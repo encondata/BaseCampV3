@@ -3,8 +3,13 @@
  * into. It owns the PlanController (usePlan), the URL state, full screen
  * and the open dialog, and lays out three slots:
  *
- *  - the toolbar slot (`.pln-toolbar`): the view switcher at the left,
- *    PlanToolbar's groups in `.pln-tools` (Task 7), Full screen at the right;
+ *  - the toolbar slot: `.pln-toolbar` (role="toolbar", one tab stop, ←/→
+ *    between its buttons) holds the view switcher at the left,
+ *    PlanToolbar's groups in `.pln-tools` and Full screen at the right;
+ *    beside it, outside the toolbar, the initiative's name in full screen
+ *    and the "Plan updated by…" status. The commands, the MS Project
+ *    keyboard map and the clipboard are usePlanCommands' and
+ *    usePlanShortcuts';
  *  - the view area (`.pln-view`): the Gantt view (sheet + chart, Tasks 5
  *    and 8) inside one scroll box (`.pln-panes`, `scrollRef`) both panes
  *    virtualize against; Calendar and Board arrive in Plan C;
@@ -41,10 +46,15 @@ import { SHEET_ROW_PX } from '../../lib/plans/columns';
 import { canAddTasks } from '../../lib/plans/editOps';
 import { isPlanChanged, planErrorText } from '../../lib/plans/errors';
 import ColumnsModal from './ColumnsModal';
+import DeleteTasksModal from './DeleteTasksModal';
 import PlanCreateModal, { type PlanInitiative } from './PlanCreateModal';
 import PlanEmptyState from './PlanEmptyState';
 import PlanSheet from './PlanSheet';
+import PlanToolbar, { useRovingToolbar } from './PlanToolbar';
+import ShortcutsModal from './ShortcutsModal';
 import { usePlan, type PlanController } from './usePlan';
+import { usePlanCommands, type PlanDialog } from './usePlanCommands';
+import { usePlanShortcuts } from './usePlanShortcuts';
 import { useSheetView } from './useSheetView';
 
 import '../../styles/plans.css';
@@ -55,9 +65,6 @@ export type PlanViewKey = 'gantt' | 'calendar' | 'board';
 const PLAN_VIEWS: readonly { key: PlanViewKey; label: string }[] = [
   { key: 'gantt', label: 'Gantt' },
 ];
-
-/** The dialog the tab has open; later tasks add their kinds here. */
-type PlanDialog = { kind: 'create' } | { kind: 'columns' };
 
 /** `?view=` as one of the views on offer; anything else is the Gantt. */
 function readView(param: string | null): PlanViewKey {
@@ -103,8 +110,9 @@ function useFillHeight(ref: RefObject<HTMLElement | null>, on: boolean): number 
 }
 
 /** What stays live behind full screen: the toasts, whose actions (Undo,
- *  Open) still have to be reachable. */
-const KEEP_LIVE = '.toast-host';
+ *  Open) still have to be reachable, and an open More menu (portaled into
+ *  the shell, it sits above full screen). */
+const KEEP_LIVE = '.toast-host, .pop-menu';
 
 /** While `on`, everything in the shell outside `ref` — the nav, the top
  *  bar, the page header and tabs — is `inert`, so neither Tab nor a click
@@ -160,8 +168,13 @@ export default function PlanTab({ initiativeId, initiative }: {
   const viewHeight = useFillHeight(viewRef, ready && !isFull);
   useInertOutside(rootRef, isFull);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const clipRef = useRef<HTMLTextAreaElement>(null);
   const rowHeight = Math.round(SHEET_ROW_PX * listScale(preferences?.list_size));
   const sheet = useSheetView(ctl, searchParams.get('task'), scrollRef, rowHeight);
+  const commands = usePlanCommands({ ctl, sheet, root: rootRef, clip: clipRef, openDialog: setDialog });
+  usePlanShortcuts(commands.handlers, { root: rootRef, enabled: ready && view === 'gantt' });
+  useRovingToolbar(toolbarRef, ready);
 
   const selectView = (next: PlanViewKey) => {
     setSearchParams((prev) => {
@@ -207,30 +220,32 @@ export default function PlanTab({ initiativeId, initiative }: {
         {plan.locked_at && <LockBanner ctl={ctl} plan={plan} />}
 
         {/* the toolbar slot */}
-        <div className="pln-toolbar" role="toolbar" aria-label="Project plan">
+        <div className="pln-topbar">
           {/* the page header is covered in full screen: whose plan this is */}
           {isFull && <h2 className="pln-fs-name">{initiative.name}</h2>}
-          <div className="segmented" role="group" aria-label="View">
-            {PLAN_VIEWS.map((v) => (
-              <button key={v.key} type="button" aria-pressed={view === v.key}
-                      className={view === v.key ? 'on' : ''} onClick={() => selectView(v.key)}>
-                {v.label}
-              </button>
-            ))}
-          </div>
-          <div className="pln-tools">
-            {/* PlanToolbar (Task 7); Columns… moves into its More menu */}
-            <button type="button" className="mini-btn" onClick={() => setDialog({ kind: 'columns' })}>
-              Columns…
+          <div className="pln-toolbar" role="toolbar" aria-label="Project plan" ref={toolbarRef}>
+            <div className="pln-tgroup">
+              <div className="segmented pln-views" role="group" aria-label="View">
+                {PLAN_VIEWS.map((v) => (
+                  <button key={v.key} type="button" aria-pressed={view === v.key}
+                          className={view === v.key ? 'on' : ''} onClick={() => selectView(v.key)}>
+                    {v.label}
+                  </button>
+                ))}
+              </div>
+              <span className="pln-tgroup-label" aria-hidden="true">View</span>
+            </div>
+            <div className="pln-tools">
+              <PlanToolbar plan={plan} ctl={ctl} commands={commands} />
+            </div>
+            <button type="button" className="mini-btn pln-screen-btn"
+                    title={isFull ? 'Exit full screen (Esc)' : undefined}
+                    onClick={() => setFullScreen((on) => !on)}>
+              <FullScreenIcon exit={isFull} />
+              {isFull ? 'Exit full screen' : 'Full screen'}
             </button>
           </div>
           {ctl.staleBy && <span className="pln-stale" role="status">{ctl.staleBy}</span>}
-          <button type="button" className="mini-btn pln-screen-btn"
-                  title={isFull ? 'Exit full screen (Esc)' : undefined}
-                  onClick={() => setFullScreen((on) => !on)}>
-            <FullScreenIcon exit={isFull} />
-            {isFull ? 'Exit full screen' : 'Full screen'}
-          </button>
         </div>
 
         {/* the view area */}
@@ -252,11 +267,20 @@ export default function PlanTab({ initiativeId, initiative }: {
     <div className={`pln-tab${isFull ? ' pln-fullscreen' : ''}`} ref={rootRef}>
       {body}
 
+      {/* the clipboard shortcuts' keystroke target (usePlanCommands): never seen or tabbed to */}
+      <textarea ref={clipRef} className="pln-clip" aria-hidden="true" tabIndex={-1} spellCheck={false} />
+
       {/* the dialogs host */}
       {dialog?.kind === 'create' && (
         <PlanCreateModal ctl={ctl} initiative={initiative} onClose={closeDialog} />
       )}
       {dialog?.kind === 'columns' && <ColumnsModal onClose={closeDialog} />}
+      {dialog?.kind === 'shortcuts' && <ShortcutsModal onClose={closeDialog} />}
+      {dialog?.kind === 'deleteTasks' && (
+        <DeleteTasksModal tasks={dialog.tasks} subtasks={dialog.subtasks} onClose={closeDialog}
+                          onConfirm={() => commands.confirmDelete(dialog)} />
+      )}
+      {/* Task 10 renders taskInfo, setBaseline, clearBaseline, updateProject, settings and deletePlan */}
     </div>
   );
 }

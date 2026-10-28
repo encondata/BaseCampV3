@@ -65,6 +65,25 @@ it('Escape closes the menu', async () => {
   expect(screen.queryAllByRole('menuitem')).toHaveLength(0);
 });
 
+it('the Escape that closes the menu is marked handled (a full-screen view or dialog behind stays); a later one is not', async () => {
+  const user = userEvent.setup();
+  render(<RowActionsMenu actions={actions()} />);
+  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+
+  // a host listening on document after the menu (full screen, a dialog)
+  const seen: boolean[] = [];
+  const host = (e: KeyboardEvent) => { if (e.key === 'Escape') seen.push(e.defaultPrevented); };
+  document.addEventListener('keydown', host);
+  try {
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    expect(screen.queryAllByRole('menuitem')).toHaveLength(0);
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+  } finally {
+    document.removeEventListener('keydown', host);
+  }
+  expect(seen).toEqual([true, false]);
+});
+
 it('a mousedown outside the menu closes it', async () => {
   const user = userEvent.setup();
   render(<RowActionsMenu actions={actions()} />);
@@ -101,6 +120,19 @@ it('renders the open menu as a child of document.body, not the .row-actions wrap
   const menu = screen.getByRole('menu');
   expect(menu.parentElement).toBe(document.body);
   expect(container.querySelector('.row-actions')?.contains(menu)).toBe(false);
+});
+
+it('inside a .portal-shell, the menu goes into the shell, where the theme tokens (dark mode) are', async () => {
+  const user = userEvent.setup();
+  render(
+    <div className="portal-shell" data-theme="dark">
+      <div className="dir-list"><RowActionsMenu actions={actions()} /></div>
+    </div>,
+  );
+  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+  const menu = screen.getByRole('menu');
+  expect(menu.parentElement).toBe(document.querySelector('.portal-shell'));
+  expect(menu.closest('.dir-list')).toBeNull();
 });
 
 it('renders nothing at all when actions is empty', () => {

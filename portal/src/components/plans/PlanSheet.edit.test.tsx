@@ -473,7 +473,7 @@ describe('fix round 1', () => {
       pick('Dana Reyes');
       await user.click(within(picker()!).getByRole('button', { name: 'Save' }));
       // focus went elsewhere while it was in flight (the toolbar, or a browser's focus fixup)
-      act(() => screen.getByRole('button', { name: 'Columns…' }).focus());
+      act(() => screen.getByRole('button', { name: /Full screen/ }).focus());
       expect(picker()!.contains(document.activeElement)).toBe(false);
       await act(async () => held.reject(new ApiError(422, 'bad_resource', { code: 'bad_resource', kind: 'person', id: 'p1' })));
       const alert = await within(picker()!).findByRole('alert');

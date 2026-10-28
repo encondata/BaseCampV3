@@ -1,8 +1,10 @@
 /**
  * What happens when a write that completes a task is stopped by the plan's
  * completion rules (ApplyResult `confirm` or `blocked`): the one place the
- * sheet calls, so Task 10 can swap the CompletionDialog in here without
- * touching the sheet.
+ * sheet, the toolbar's 0–100% and Mark on Track, and a paste call, so
+ * Task 10 can swap the CompletionDialog in here without touching them
+ * (Ruling B2). `opts` go with the resend (a paste's second batch joins
+ * its undo step).
  *
  * Until then it is a toast. `blocked` names the tasks in the way; `confirm`
  * names what completes along with it (or the open predecessors the plan
@@ -15,22 +17,24 @@ import { useToast } from '../../lib/notificationsContext';
 import type { Op } from '../../lib/plans/api';
 import type { ApplyResult } from '../../lib/plans/applyResult';
 import { completionText } from '../../lib/plans/errors';
-import type { PlanController } from './usePlan';
+import type { ApplyOptions, PlanController } from './usePlan';
 
 export type CompletionStop = Extract<ApplyResult, { kind: 'confirm' | 'blocked' }>;
 
+export type CompletionPrompt = (stop: CompletionStop, ops: Op[], label: string, opts?: ApplyOptions) => void;
+
 /** Errors usePlan has already told the person about (or that mean the tab
  *  moved on): no second toast. */
-const SAID_ALREADY = new Set(['plan_changed', 'gone']);
+export const SAID_ALREADY: ReadonlySet<string> = new Set(['plan_changed', 'gone']);
 
-export function useCompletionPrompt(ctl: PlanController): (stop: CompletionStop, ops: Op[], label: string) => void {
+export function useCompletionPrompt(ctl: PlanController): CompletionPrompt {
   const toast = useToast();
   const ctlRef = useRef(ctl);
   useLayoutEffect(() => {
     ctlRef.current = ctl;
   }, [ctl]);
 
-  return useCallback((stop: CompletionStop, ops: Op[], label: string) => {
+  return useCallback((stop: CompletionStop, ops: Op[], label: string, opts: ApplyOptions = {}) => {
     if (stop.kind === 'blocked') {
       toast(completionText(stop));
       return;
@@ -38,7 +42,7 @@ export function useCompletionPrompt(ctl: PlanController): (stop: CompletionStop,
     toast(completionText(stop), {
       label: 'Complete anyway',
       onClick: () => {
-        void ctlRef.current.apply(ops, label, { confirm: true }).then((again) => {
+        void ctlRef.current.apply(ops, label, { ...opts, confirm: true }).then((again) => {
           if (again.ok) return;
           if (again.kind === 'error') {
             if (!SAID_ALREADY.has(again.code) && again.message) toast(again.message);

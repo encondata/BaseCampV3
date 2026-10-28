@@ -98,6 +98,11 @@ function renderTab(search = '?tab=plan') {
 
 const grid = () => screen.getByRole('grid', { name: 'Task sheet' });
 const headers = () => within(grid()).getAllByRole('columnheader').map((h) => h.textContent);
+/** More › Columns… (the toolbar's More menu). */
+async function openColumns(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: 'More ▾' }));
+  await user.click(screen.getByRole('menuitem', { name: 'Columns…' }));
+}
 /** The task rows on screen (not the header, not the blank new-task row), by name. */
 const rowNames = () => within(grid()).getAllByRole('row')
   .filter((r) => r.hasAttribute('data-task'))
@@ -167,7 +172,7 @@ describe('columns', () => {
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab();
     await screen.findByRole('grid', { name: 'Task sheet' });
-    await user.click(screen.getByRole('button', { name: 'Columns…' }));
+    await openColumns(user);
     const dialog = screen.getByRole('dialog', { name: 'Columns' });
     const toggle = within(dialog).getByRole('checkbox', { name: 'Show Predecessors' });
     expect((toggle as HTMLInputElement).checked).toBe(true);
@@ -186,7 +191,7 @@ describe('columns', () => {
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab();
     await screen.findByRole('grid', { name: 'Task sheet' });
-    await user.click(screen.getByRole('button', { name: 'Columns…' }));
+    await openColumns(user);
     let dialog = screen.getByRole('dialog', { name: 'Columns' });
     await user.click(within(dialog).getByRole('button', { name: 'Move Duration up' }));
     await user.click(within(dialog).getByRole('checkbox', { name: 'Show WBS' }));
@@ -194,7 +199,7 @@ describe('columns', () => {
     expect(headers().slice(3, 5)).toEqual(['Duration', 'Task Name']);
     expect(headers()).toContain('WBS');
 
-    await user.click(screen.getByRole('button', { name: 'Columns…' }));
+    await openColumns(user);
     dialog = screen.getByRole('dialog', { name: 'Columns' });
     // ID and Task Name are always shown
     expect((within(dialog).getByRole('checkbox', { name: 'Show Task Name' }) as HTMLInputElement).disabled).toBe(true);
@@ -209,7 +214,7 @@ describe('columns', () => {
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab();
     await screen.findByRole('grid', { name: 'Task sheet' });
-    await user.click(screen.getByRole('button', { name: 'Columns…' }));
+    await openColumns(user);
     const dialog = screen.getByRole('dialog', { name: 'Columns' });
     await user.click(within(dialog).getByRole('checkbox', { name: 'Show Deadline' }));
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));

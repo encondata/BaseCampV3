@@ -91,7 +91,7 @@ function renderInShell() {
           <div className="portal-shell">
             <nav className="portal-nav"><a href="/sites">Sites</a></nav>
             <div className="portal-main-col">
-              <div className="toast-host"><button type="button">Undo</button></div>
+              <div className="toast-host"><button type="button">Undo delete</button></div>
               <header className="topbar"><button type="button">Search everywhere</button></header>
               <main className="portal-main">
                 <div className="portal-page">
@@ -350,7 +350,7 @@ describe('full screen', () => {
     for (const text of ['Sites', 'Search everywhere', '← Initiatives']) {
       expect(inertAround(text), text).toBe(true);
     }
-    expect(inertAround('Undo')).toBe(false);                   // toasts keep their actions
+    expect(inertAround('Undo delete')).toBe(false);            // toasts keep their actions
     expect(inertAround('Exit full screen')).toBe(false);
     expect(screen.getByRole('toolbar', { name: 'Project plan' }).closest('[inert]')).toBeNull();
 

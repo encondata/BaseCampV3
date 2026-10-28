@@ -3,8 +3,9 @@
  *  pre-gated (an item the user may not use is simply not passed), so
  *  an empty list means no trigger at all.
  *
- *  The open menu is portaled to document.body (see StatusHover for the
- *  same pattern) rather than nested under the trigger: list containers
+ *  The open menu is portaled to the enclosing .portal-shell, where the
+ *  theme tokens live (document.body without one; see useMenuPlacement
+ *  for the same rule) rather than nested under the trigger: list containers
  *  (.dir-list) clip overflow for their rounded corners, which would
  *  otherwise clip/eat clicks on the menu whenever it opens on the last
  *  row of a list. Position is computed from the trigger's
@@ -90,11 +91,19 @@ export function RowActionsMenu({ label, actions }: {
     return () => document.removeEventListener('mousedown', onDown, true);
   }, [open]);
 
+  // Escape closes the open menu and is marked handled (ComboBox's
+  // convention), so a host that also listens for Escape — a dialog, a
+  // full-screen view — leaves it alone. Capture phase: it runs before any
+  // host's document listener, whichever was added first.
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      e.preventDefault();
+      setOpen(false);
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
   }, [open]);
 
   // Anchor the portaled menu to the trigger's current position. A
@@ -119,6 +128,9 @@ export function RowActionsMenu({ label, actions }: {
   }, [open]);
 
   if (actions.length === 0) return null;
+  // the enclosing .portal-shell holds the theme tokens (the dark palette);
+  // a menu parked under document.body would paint light in dark mode
+  const host = triggerRef.current?.closest<HTMLElement>('.portal-shell') ?? document.body;
   return (
     <div className="row-actions" ref={triggerRef} style={{ position: 'relative' }}>
       <button type="button" className="mini-btn" aria-haspopup="menu"
@@ -169,7 +181,7 @@ export function RowActionsMenu({ label, actions }: {
             </button>
           ))}
         </div>,
-        document.body,
+        host,
       )}
     </div>
   );

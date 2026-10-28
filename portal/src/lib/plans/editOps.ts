@@ -61,11 +61,11 @@ const DATE_KEYS: ReadonlySet<string> = new Set<DateKey>(
 const REQUIRED_DATES: ReadonlySet<string> = new Set(['start', 'finish']);
 
 /** The fields an add_task takes (AddTaskOp): the blank row's columns. */
-const ADD_FIELDS: ReadonlySet<string> = new Set(['name', 'duration', 'start', 'finish', 'mode', 'deadline', 'notes']);
+export const ADD_FIELDS: ReadonlySet<string> = new Set(['name', 'duration', 'start', 'finish', 'mode', 'deadline', 'notes']);
 
 /** A summary's own duration and dates come from its subtasks (the API's
  *  SUMMARY_FIELDS). Its % stays open: 100 completes it. */
-const SUMMARY_DERIVED: ReadonlySet<string> = new Set(['duration', 'start', 'finish', 'actual_start', 'actual_finish']);
+export const SUMMARY_DERIVED: ReadonlySet<string> = new Set(['duration', 'start', 'finish', 'actual_start', 'actual_finish']);
 
 const PERCENT = /^[ \t]*([0-9]{1,3})(?:\.([0-9]+))?[ \t]*%?[ \t]*$/;
 /** Date text that isn't a whole date (a native date field part typed). */

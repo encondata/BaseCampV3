@@ -35,22 +35,105 @@
 
 /* ── toolbar slot: views at the left, full screen at the right ── */
 
-.pln-toolbar {
+/* the row: the name (full screen), the toolbar, the "updated by" status */
+.pln-topbar {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   flex-wrap: wrap;
-  gap: 10px 12px;
+  gap: 8px 14px;
   min-width: 0;
 }
-/* PlanToolbar's groups (Task 7) */
-.pln-tools {
+/* centered on the 32px group frames, whether beside the toolbar or wrapped above it */
+.pln-topbar > .pln-fs-name { line-height: 20px; margin-top: 6px; }
+.pln-topbar > .pln-stale { line-height: 16px; margin-top: 8px; }
+/* role="toolbar": everything lines up on the group frames' top; the
+   captions hang below */
+.pln-toolbar {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
+  align-items: flex-start;
   gap: 8px;
   flex: 1 1 auto;
   min-width: 0;
 }
+/* PlanToolbar's groups take the room between the views and Full screen,
+   wrapping onto a second line when the page is narrow */
+.pln-tools {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+@media (max-width: 720px) {
+  .pln-toolbar { flex-wrap: wrap; }
+  .pln-tools { flex-basis: 100%; }
+}
+
+/* one ribbon group: a framed cluster of buttons, its name under it */
+.pln-tgroup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.pln-tgroup-btns {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+}
+.pln-tgroup-label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  line-height: 1;
+  white-space: nowrap;
+}
+/* an icon button: the house mini button, quiet until hovered or on */
+.mini-btn.pln-tbtn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  justify-content: center;
+  border-color: transparent;
+  border-radius: 8px;
+  background: transparent;
+}
+.mini-btn.pln-tbtn svg { width: 16px; height: 16px; }
+.mini-btn.pln-tbtn.on {
+  background: var(--surface);
+  border-color: var(--paper-line);
+  color: var(--c-amber);
+  box-shadow: 0 1px 3px rgba(27, 33, 41, 0.08);
+}
+/* off (locked, nothing selected, not yet built): reachable, explained by its tooltip */
+.mini-btn.pln-tbtn[aria-disabled] { opacity: 0.38; cursor: default; }
+.mini-btn.pln-tbtn[aria-disabled]:hover { border-color: transparent; background: transparent; }
+.pln-tsep { align-self: stretch; width: 1px; margin: 5px 3px; background: var(--paper-line); }
+/* the view switcher and Auto / Manual: as tall as a group frame */
+.segmented.pln-views,
+.segmented.pln-modes { padding: 2px; gap: 2px; border-radius: 10px; }
+.segmented.pln-views button,
+.segmented.pln-modes button { height: 26px; padding: 0 11px; }
+.segmented.pln-modes button[aria-disabled] { opacity: 0.45; cursor: default; }
+/* the clipboard shortcuts' hidden field: off screen, never clicked */
+.pln-clip {
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.pln-tmore { display: flex; }
+.pln-tmore .mini-btn { height: 32px; }
 /* full screen only: the initiative's name, since the page header is covered */
 .pln-fs-name {
   margin: 0 4px 0 0;
@@ -65,6 +148,7 @@
 }
 .pln-stale { font-size: 12.5px; color: var(--c-amber); }
 .pln-screen-btn { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.pln-toolbar > .pln-screen-btn { height: 32px; flex: none; }
 .pln-screen-btn svg { width: 14px; height: 14px; flex: none; }
 
 /* ── view area: the Gantt (Plan B), Calendar and Board (Plan C) ── */
@@ -222,3 +306,55 @@
 .pln-colpick-name { flex: 1 1 auto; min-width: 0; font-size: 13.5px; color: var(--text-dark); }
 .pln-colpick-item.off .pln-colpick-name { color: var(--text-mute); }
 .pln-colpick-moves { display: flex; gap: 4px; flex: none; }
+
+/* ── Keyboard shortcuts (ShortcutsModal): action · Windows · Mac ── */
+
+.pln-keys {
+  display: grid;
+  grid-template-columns: minmax(190px, 1.4fr) minmax(150px, 1fr) minmax(130px, 1fr);
+  width: min(700px, 86vw);
+  font-size: 13px;
+  color: var(--text-dark);
+}
+.pln-keys-cols,
+.pln-keys-line { display: contents; }
+.pln-keys-cols > span {
+  padding: 4px 8px 7px;
+  border-bottom: 1px solid var(--paper-line);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.pln-keys-sub > span { padding-top: 18px; }
+.pln-keys-line > span {
+  padding: 6px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--paper-line) 60%, transparent);
+}
+.pln-keys kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  border: 1px solid var(--paper-line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-dark);
+}
+
+/* ── Delete with subtasks (DeleteTasksModal) ──────────────────── */
+
+.pln-doomed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 40vh;
+  overflow-y: auto;
+  font-size: 13.5px;
+  color: var(--text-dark);
+}
+.pln-doomed-id { display: inline-block; min-width: 2.5em; font-family: var(--font-mono); font-size: 12px; color: var(--text-mute); }

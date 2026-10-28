@@ -1,0 +1,357 @@
+// @vitest-environment jsdom
+/**
+ * The plan tab's commands end to end (PlanTab + usePlan + usePlanCommands
+ * against a mocked lib/plans/api): the MS Project keys on the sheet and
+ * not in an editor (Review Focus 3), the toolbar, Delete's confirm, the
+ * completion prompt (Ruling B2), copy, and a paste that adds rows sending
+ * two batches that one Undo takes back (Ruling B3).
+ */
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { ApiError } from '../../lib/api';
+import type { AddTaskOp, Op, Plan, PlanTask } from '../../lib/plans/api';
+import { PLAN_ERRORS } from '../../lib/plans/errors';
+import { parseClipboard } from '../../lib/plans/paste';
+import { flatTasks, makeLink, makeOpsResult, makePlan, makeRestore, makeTask } from '../../lib/plans/planFixtures';
+
+if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
+
+const toast = vi.hoisted(() => vi.fn());
+vi.mock('../../lib/notificationsContext', () => ({ useToast: () => toast }));
+
+vi.mock('../../auth/AuthContext', () => ({
+  useAuth: () => ({
+    can: (resource: string) => resource === 'project_plans',
+    person: { id: 'p-me', display_name: 'Jimmy Henderson' },
+    preferences: {},
+  }),
+}));
+
+const api = vi.hoisted(() => ({
+  getPlan: vi.fn(),
+  createPlan: vi.fn(),
+  deletePlan: vi.fn(),
+  postOps: vi.fn(),
+  patchPlan: vi.fn(),
+  lockPlan: vi.fn(),
+  unlockPlan: vi.fn(),
+  setBaseline: vi.fn(),
+  clearBaseline: vi.fn(),
+  updateProject: vi.fn(),
+  getPlanVersion: vi.fn(),
+}));
+vi.mock('../../lib/plans/api', async (importActual) => ({
+  ...(await importActual<typeof import('../../lib/plans/api')>()),
+  ...api,
+}));
+
+const { default: PlanTab } = await import('./PlanTab');
+
+const INITIATIVE = { name: 'NAP11 Hall Migration', scheduled_start: '2026-11-14', scheduled_end: '2026-11-16' };
+
+function tasks3(): PlanTask[] {
+  const [a, b, c] = flatTasks(['a', 'b', 'c']);
+  return [{ ...a, name: 'Survey' }, { ...b, name: 'Pack', predecessors: '1' }, { ...c, name: 'Go live' }];
+}
+const plan3 = (over: Partial<Plan> = {}) => makePlan({ tasks: tasks3(), links: [makeLink('l1', 'a', 'b')], ...over });
+
+function renderTab() {
+  return render(
+    <MemoryRouter initialEntries={['/initiatives/init-1?tab=plan']}>
+      <Routes>
+        <Route path="/initiatives/:id" element={<PlanTab initiativeId="init-1" initiative={INITIATIVE} />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+const grid = () => screen.getByRole('grid', { name: 'Task sheet' });
+const rowOf = (name: string) => within(grid()).getAllByRole('row')
+  .find((r) => r.querySelector('[data-col="name"]')?.textContent === name) as HTMLElement;
+const cellOf = (name: string, col: string) => rowOf(name).querySelector(`[data-col="${col}"]`) as HTMLElement;
+const blankCell = (col: string) => grid().querySelector(`[data-blank] [data-col="${col}"]`) as HTMLElement;
+const sent = (call = 0): Op[] => api.postOps.mock.calls[call]?.[2];
+const tool = (name: string) => within(screen.getByRole('toolbar', { name: 'Project plan' })).getByRole('button', { name });
+
+async function ready(plan: Plan = plan3()) {
+  api.getPlan.mockResolvedValueOnce(plan);
+  const user = userEvent.setup();
+  // after setup, which puts a clipboard stub of its own on navigator
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard });
+  renderTab();
+  await screen.findByRole('grid', { name: 'Task sheet' });
+  return user;
+}
+
+const SIZES = ['offsetHeight', 'offsetWidth', 'clientHeight', 'clientWidth'] as const;
+const realSizes = SIZES.map((key) => Object.getOwnPropertyDescriptor(HTMLElement.prototype, key)
+  ?? Object.getOwnPropertyDescriptor(Element.prototype, key));
+let clipboard: { writeText: ReturnType<typeof vi.fn>; readText: ReturnType<typeof vi.fn> };
+beforeEach(() => {
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+    top: 0, left: 0, right: 1200, bottom: 600, width: 1200, height: 600, x: 0, y: 0, toJSON: () => ({}),
+  } as DOMRect);
+  for (const [key, px] of [['offsetHeight', 600], ['offsetWidth', 1200], ['clientHeight', 600], ['clientWidth', 1200]] as const) {
+    Object.defineProperty(HTMLElement.prototype, key, { configurable: true, get: () => px });
+  }
+  for (const fn of [toast, ...Object.values(api)]) fn.mockReset();
+  clipboard = { writeText: vi.fn(async () => {}), readText: vi.fn(async () => '') };
+  localStorage.clear();
+});
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  SIZES.forEach((key, i) => {
+    const real = realSizes[i];
+    if (real) Object.defineProperty(HTMLElement.prototype, key, real);
+    else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key];
+  });
+  delete (navigator as unknown as Record<string, unknown>).clipboard;
+  localStorage.clear();
+});
+
+describe('the keyboard map on the sheet (Review Focus 3)', () => {
+  it('Alt+Shift+→ with a row selected indents it; Ctrl+Z takes it back', async () => {
+    const user = await ready();
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ inverse: [makeRestore('i1')] }));
+    await user.click(cellOf('Pack', 'name'));
+    fireEvent.keyDown(grid(), { key: 'ArrowRight', altKey: true, shiftKey: true });
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    expect(sent()).toEqual([{ op: 'indent', ids: ['b'] }]);
+    expect(tool('Undo').title).toBe('Undo Indent (Ctrl+Z)');
+
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 7, inverse: [makeRestore('r1')] }));
+    fireEvent.keyDown(grid(), { key: 'z', ctrlKey: true });
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(2));
+    expect(sent(1)).toEqual([makeRestore('i1')]);
+  });
+
+  it('inside a cell editor Delete, Insert and Alt+Shift+→ type: nothing is sent', async () => {
+    const user = await ready();
+    await user.click(cellOf('Pack', 'name'));
+    await user.keyboard('{F2}');
+    const input = screen.getByRole('textbox', { name: 'Task Name' }) as HTMLInputElement;
+    for (const init of [{ key: 'Delete' }, { key: 'Insert' }, { key: 'ArrowRight', altKey: true, shiftKey: true }]) {
+      fireEvent.keyDown(input, init);
+    }
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(api.postOps).not.toHaveBeenCalled();
+    expect(screen.getByRole('textbox', { name: 'Task Name' })).toBe(input);
+  });
+
+  it('Insert adds a task above the active row and selects its name', async () => {
+    const user = await ready();
+    api.postOps.mockImplementationOnce(async (_plan: string, _v: number, ops: Op[]) => makeOpsResult({
+      temp_ids: { [(ops[0] as AddTaskOp).temp_id!]: 'n1' },
+      tasks: [makeTask('n1', { display_id: 2, position: 1, name: 'New Task' })],
+      order: ['a', 'n1', 'b', 'c'],
+    }));
+    await user.click(cellOf('Pack', 'duration'));
+    fireEvent.keyDown(grid(), { key: 'Insert' });
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    expect(sent()).toEqual([{ op: 'add_task', temp_id: expect.any(String), before_id: 'b', name: 'New Task' }]);
+    await waitFor(() => expect(cellOf('New Task', 'name').getAttribute('aria-selected')).toBe('true'));
+  });
+
+  it('a reader’s Delete does nothing; a locked plan’s Indent says so without a request', async () => {
+    const user = await ready(plan3({ permissions: { view: true, add: false, change: false, delete: false } }));
+    await user.click(cellOf('Pack', 'name'));
+    fireEvent.keyDown(grid(), { key: 'Delete' });
+    expect(api.postOps).not.toHaveBeenCalled();
+    expect(toast).not.toHaveBeenCalled();
+    cleanup();
+
+    const again = await ready(plan3({ locked_at: '2026-10-27T12:00:00Z' }));
+    await again.click(cellOf('Pack', 'name'));
+    fireEvent.keyDown(grid(), { key: 'ArrowRight', altKey: true, shiftKey: true });
+    expect(toast).toHaveBeenCalledWith(PLAN_ERRORS.plan_locked);
+    expect(api.postOps).not.toHaveBeenCalled();
+  });
+});
+
+describe('the toolbar', () => {
+  it('Delete on a summary asks first; Delete in the dialog sends, and the next row is selected', async () => {
+    const tasks = [
+      makeTask('s', { display_id: 1, is_summary: true, name: 'Prep' }),
+      makeTask('k', { display_id: 2, wbs: '1.1', outline_level: 2, parent_id: 's', name: 'Crates' }),
+      makeTask('z', { display_id: 3, wbs: '2', position: 1, name: 'Go live' }),
+    ];
+    const user = await ready(makePlan({ tasks }));
+    await user.click(cellOf('Prep', 'name'));
+    fireEvent.keyDown(grid(), { key: 'Delete' });
+    const dialog = screen.getByRole('dialog', { name: 'Delete “Prep”?' });
+    expect(dialog.textContent).toContain('Its 1 subtask is deleted too.');
+    expect(api.postOps).not.toHaveBeenCalled();
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ deleted_tasks: ['s', 'k'], order: ['z'] }));
+    await user.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    expect(sent()).toEqual([{ op: 'delete_tasks', ids: ['s'] }]);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(cellOf('Go live', 'name').getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('100% goes through the completion prompt; Complete anyway resends with confirm', async () => {
+    const user = await ready();
+    api.postOps.mockRejectedValueOnce(new ApiError(409, 'completion_confirm', {
+      code: 'completion_confirm', will_complete: [],
+      open_predecessors: [{ task_id: 'a', display_id: 1, name: 'Survey', reason: 'predecessor' }],
+    }));
+    await user.click(cellOf('Pack', 'name'));
+    await user.click(tool('100% Complete'));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('Task 1 comes before it and isn’t complete yet.',
+      expect.objectContaining({ label: 'Complete anyway' })));
+    api.postOps.mockResolvedValueOnce(makeOpsResult());
+    act(() => toast.mock.calls[0][1].onClick());
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(2));
+    expect(sent(1)).toEqual([{ op: 'set_percent', ids: ['b'], percent: 100, confirm: true }]);
+  });
+
+  it('a click on a command hands focus back to the sheet', async () => {
+    const user = await ready();
+    api.postOps.mockResolvedValueOnce(makeOpsResult());
+    await user.click(cellOf('Pack', 'name'));
+    await user.click(tool('Outdent'));
+    expect(toast).toHaveBeenCalledWith(PLAN_ERRORS.cannot_outdent);
+    expect(document.activeElement).toBe(grid());
+  });
+
+  it('More › Keyboard shortcuts and `?` open the map', async () => {
+    const user = await ready();
+    await user.click(cellOf('Pack', 'name'));
+    fireEvent.keyDown(grid(), { key: '?', shiftKey: true });
+    const dialog = screen.getByRole('dialog', { name: 'Keyboard shortcuts' });
+    expect(within(dialog).getByText('Alt+Shift+→')).toBeTruthy();
+    expect(within(dialog).getByText('⌥⇧→')).toBeTruthy();
+    await user.click(within(dialog).getByRole('button', { name: 'Done' }));
+    // the sheet didn't take the ? as typing
+    expect(screen.queryByRole('textbox', { name: 'Task Name' })).toBeNull();
+  });
+});
+
+describe('copy and paste', () => {
+  it('copy writes the selected rows’ visible columns as TSV; pasting that copy re-creates the task', async () => {
+    const user = await ready();
+    await user.click(cellOf('Pack', 'name'));
+    fireEvent.keyDown(grid(), { key: 'c', ctrlKey: true });
+    expect(clipboard.writeText).toHaveBeenCalledTimes(1);
+    const text = clipboard.writeText.mock.calls[0][0] as string;
+    expect(parseClipboard(text)).toEqual([
+      ['', '2', 'Auto Scheduled', 'Pack', '1 day', 'Mon 11/2/26', 'Mon 11/2/26', '1', '', '0%', ''],
+    ]);
+    // the copy event the shortcut leaves the browser gets the same text
+    const setData = vi.fn();
+    fireEvent.copy(grid(), { clipboardData: { setData } });
+    expect(setData).toHaveBeenCalledWith('text/plain', text);
+
+    api.postOps.mockResolvedValueOnce(makeOpsResult());
+    await user.click(cellOf('Go live', 'name'));
+    fireEvent.paste(grid(), { clipboardData: { getData: () => text.replace(/\r\n/g, '\n') } });
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    expect(sent()).toEqual([{ op: 'add_task', temp_id: expect.any(String), before_id: 'c', name: 'Pack', duration: '1d' }]);
+  });
+
+  it('⌘/Ctrl+C and V aim the browser’s own copy and paste at a hidden field, then focus comes back', async () => {
+    const user = await ready();
+    await user.click(cellOf('Pack', 'name'));
+    const clip = document.querySelector('.pln-clip') as HTMLTextAreaElement;
+    fireEvent.keyDown(grid(), { key: 'c', ctrlKey: true });
+    // the browser copies what the field holds selected: the rows' TSV
+    expect(document.activeElement).toBe(clip);
+    expect(clip.value.slice(clip.selectionStart, clip.selectionEnd)).toBe(clip.value);
+    expect(parseClipboard(clip.value)[0][3]).toBe('Pack');
+    const setData = vi.fn();
+    fireEvent.copy(clip, { clipboardData: { setData } });
+    // Excel's CRLF rows (a textarea's own value reads them as LF)
+    expect(setData).toHaveBeenCalledWith('text/plain', clip.value.replace(/\n/g, '\r\n'));
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(document.activeElement).toBe(grid());
+    expect(clip.value).toBe('');
+
+    // paste: into the field, whose paste event brings the text; nothing typed lands there
+    fireEvent.keyDown(grid(), { key: 'v', ctrlKey: true });
+    expect(document.activeElement).toBe(clip);
+    api.postOps.mockResolvedValueOnce(makeOpsResult());
+    const pasted = fireEvent.paste(clip, { clipboardData: { getData: () => 'Pack crates\r\n' } });
+    expect(pasted).toBe(false);                                  // handled: the field stays empty
+    expect(document.activeElement).toBe(grid());
+    await waitFor(() => expect(sent()).toEqual([{ op: 'update_task', id: 'b', fields: { name: 'Pack crates' } }]));
+    expect(clipboard.readText).not.toHaveBeenCalled();           // the event came: no fallback
+  });
+
+  it('a paste that adds rows and fills their Predecessors sends two batches; one Undo takes both back', async () => {
+    const user = await ready();
+    await user.click(blankCell('name'));
+    // from Task Name: Duration, Start, Finish, Predecessors (Excel's TSV)
+    const text = 'Crate\t2d\t\t\t3\r\n"Load\nthe truck"\t1d\t\t\t4\r\n';
+    api.postOps.mockImplementationOnce(async (_plan: string, _v: number, ops: Op[]) => makeOpsResult({
+      version: 6,
+      temp_ids: Object.fromEntries(ops.map((op, i) => [(op as AddTaskOp).temp_id!, `n${i + 1}`])),
+      tasks: ops.map((op, i) => makeTask(`n${i + 1}`, {
+        display_id: 4 + i, wbs: String(4 + i), position: 3 + i, name: (op as AddTaskOp).name,
+      })),
+      order: ['a', 'b', 'c', 'n1', 'n2'],
+      inverse: [makeRestore('one')],
+    }));
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 7, inverse: [makeRestore('two')] }));
+    fireEvent.paste(grid(), { clipboardData: { getData: () => text } });
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(2));
+    expect(sent(0)).toEqual([
+      { op: 'add_task', temp_id: expect.any(String), parent_id: null, name: 'Crate', duration: '2d' },
+      { op: 'add_task', temp_id: expect.any(String), parent_id: null, name: 'Load the truck', duration: '1d' },
+    ]);
+    // the second batch names the new rows by the ids the first answered, at its version
+    expect(api.postOps.mock.calls[1][1]).toBe(6);
+    expect(sent(1)).toEqual([
+      { op: 'update_task', id: 'n1', fields: { predecessors: '3' } },
+      { op: 'update_task', id: 'n2', fields: { predecessors: '4' } },
+    ]);
+    await waitFor(() => expect(tool('Undo').title).toBe('Undo Paste (Ctrl+Z)'));
+
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 8, inverse: [makeRestore('redo-two')] }));
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 9, inverse: [makeRestore('redo-one')] }));
+    await user.click(tool('Undo'));
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(4));
+    // last batch first, both in the one step
+    expect(sent(2)).toEqual([makeRestore('two')]);
+    expect(sent(3)).toEqual([makeRestore('one')]);
+    await waitFor(() => expect(tool('Undo').getAttribute('aria-disabled')).toBe('true'));
+    expect(tool('Redo').title).toBe('Redo Paste (Ctrl+Y or Ctrl+Shift+Z)');
+  });
+
+  it('when the second batch is refused, the rows stay in with one Undo step, and the toast says so', async () => {
+    const user = await ready();
+    await user.click(blankCell('name'));
+    api.postOps.mockImplementationOnce(async (_plan: string, _v: number, ops: Op[]) => makeOpsResult({
+      temp_ids: { [(ops[0] as AddTaskOp).temp_id!]: 'n1' },
+      tasks: [makeTask('n1', { display_id: 4, wbs: '4', position: 3, name: 'Crate' })],
+      order: ['a', 'b', 'c', 'n1'],
+    }));
+    api.postOps.mockRejectedValueOnce(new ApiError(422, 'link_cycle', { code: 'link_cycle', display_ids: [3, 4] }));
+    fireEvent.paste(grid(), { clipboardData: { getData: () => 'Crate\t2d\t\t\t3\r\n' } });
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(
+      'Only part of that went in. Tasks 3 and 4 would depend on each other. Undo takes it back.'));
+    expect(tool('Undo').title).toBe('Undo Paste (Ctrl+Z)');
+  });
+
+  it('a paste the sheet refuses says where, and sends nothing', async () => {
+    const user = await ready();
+    await user.click(cellOf('Pack', 'duration'));
+    fireEvent.paste(grid(), { clipboardData: { getData: () => 'soon\r\n' } });
+    expect(toast).toHaveBeenCalledWith('Row 1, Duration: "soon" isn’t a duration. Try 5d, 4h or 3ed.');
+    expect(api.postOps).not.toHaveBeenCalled();
+  });
+
+  it('a paste into the cell editor is the editor’s own', async () => {
+    const user = await ready();
+    await user.click(cellOf('Pack', 'name'));
+    await user.keyboard('{F2}');
+    const input = screen.getByRole('textbox', { name: 'Task Name' });
+    const e = fireEvent.paste(input, { clipboardData: { getData: () => 'Crate\t2d' } });
+    expect(e).toBe(true);                    // not prevented: the field takes it
+    expect(api.postOps).not.toHaveBeenCalled();
+  });
+});

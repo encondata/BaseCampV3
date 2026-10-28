@@ -115,5 +115,8 @@ export function useSheetView(ctl: PlanController, taskParam: string | null,
     setScrollTo(null);
   }, [scrollTo, rows, rowHeight, scrollRef]);
 
-  return { rows, collapsed, toggleCollapse, selection, select: setSelection };
+  /** Scrolls the task's row to the middle of the view (Scroll to task). */
+  const reveal = useCallback((id: string) => setScrollTo(id), []);
+
+  return { rows, collapsed, toggleCollapse, selection, select: setSelection, reveal };
 }
