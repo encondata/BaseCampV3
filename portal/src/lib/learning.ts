@@ -23,12 +23,18 @@ export type QuizFailAction = 'retry' | 'lock';
 
 export interface PersonRef { id: string; name: string }
 
-/** The language tags the learning settings allow, in the order the API lists them. */
-export const LEARNING_LANGUAGES = ['en', 'ja', 'ko', 'he'] as const;
-export const LEARNING_LANGUAGE_NAMES: Record<string, string> = {
-  en: 'English', ja: 'Japanese', ko: 'Korean', he: 'Hebrew',
-};
-export const languageName = (code: string): string => LEARNING_LANGUAGE_NAMES[code] ?? code;
+const LANGUAGE_NAMES = new Intl.DisplayNames(['en'], { type: 'language' });
+
+/** A language tag's English name ("ms" → "Malay"), from the browser's own
+ *  list; the tag itself when it has none. Learning settings say which
+ *  languages can be offered (`available_languages`). */
+export function languageName(code: string): string {
+  try {
+    return LANGUAGE_NAMES.of(code) ?? code;
+  } catch {
+    return code;   // not a well-formed tag
+  }
+}
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -577,12 +583,15 @@ export interface LearningSettings {
   brand_line: string;
   /** Email kind → language → text. */
   email_text: Record<string, Record<string, LearningEmailText>>;
+  /** The languages offered; always includes English. */
   languages: string[];
+  /** Every language that can be offered, in the API's order (read-only). */
+  available_languages: string[];
 }
 
 /** Partial update: only sent fields change. The three nullable numbers
  *  accept an explicit null (the rule is off); nothing else does. */
-export type LearningSettingsPatch = Partial<LearningSettings>;
+export type LearningSettingsPatch = Partial<Omit<LearningSettings, 'available_languages'>>;
 
 export const getLearningSettings = () => get<LearningSettings>('/system/learning');
 

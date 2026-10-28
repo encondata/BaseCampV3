@@ -133,7 +133,7 @@ it('Translate draft asks Claude for that language and reloads', async () => {
   await user.click(within(rowOf('es')).getByRole('button', { name: 'Translate draft' }));
   await waitFor(() => expect(api.draftTranslation).toHaveBeenCalledWith('d1', 'es'));
   await waitFor(() => expect(onReload).toHaveBeenCalled());
-  expect(toast).toHaveBeenCalledWith('Drafted the es translation');
+  expect(toast).toHaveBeenCalledWith('Drafted the Spanish translation');
 });
 
 it('Translate draft maps an unavailable Claude to a plain message', async () => {
@@ -193,7 +193,7 @@ it('Hebrew previews right to left; a missing language starts blank', async () =>
   await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
 
   await user.click(within(rowOf('es')).getByRole('button', { name: 'Write one' }));
-  dialog = await screen.findByRole('dialog', { name: /edit es translation/i });
+  dialog = await screen.findByRole('dialog', { name: /edit Spanish translation/i });
   expect((within(dialog).getByLabelText('Title') as HTMLInputElement).value).toBe('');
   expect((within(dialog).getByLabelText('HTML') as HTMLTextAreaElement).value).toBe('');
 });
@@ -203,7 +203,7 @@ it('a save with no title or no content is refused before it is sent', async () =
   api.getTranslation.mockRejectedValue(new ApiError(404, 'not_found'));
   renderPanel();
   await user.click(within(rowOf('es')).getByRole('button', { name: 'Write one' }));
-  const dialog = await screen.findByRole('dialog', { name: /edit es translation/i });
+  const dialog = await screen.findByRole('dialog', { name: /edit Spanish translation/i });
   await user.click(within(dialog).getByRole('button', { name: 'Save translation' }));
   expect(within(dialog).getByText('The translation needs a title.')).toBeTruthy();
   expect(api.saveTranslation).not.toHaveBeenCalled();
