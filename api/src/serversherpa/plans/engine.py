@@ -90,12 +90,11 @@ critical path (MS Project's rules; a deadline changes slack, never dates).
   not complete.
 - The summary nodes swap roles in reverse. The rollup, reached before the
   subtasks, passes caps down: the summary's deadline and its FS/FF links
-  out cap every task below it. An SS or SF link from a summary bounds the
-  summary's start: each subtask's late start is capped at that bound moved
-  later by the subtask's own offset from the summary's start (working time,
-  or wall clock for an elapsed subtask), as if the summary moved as a
-  block. A schedule that meets the bound keeps slack >= 0; a summary that
-  must start earlier shows negative slack from the subtask that starts it.
+  out cap every task below it (exact: its finish is the latest subtask
+  finish). An SS or SF link from a summary bounds only the summary's start,
+  the earliest subtask start, so it caps the late start of just the
+  subtasks whose start is the start of the summary the link leaves (every
+  one on a tie); the others may slip without moving it.
   The gate, reached once every subtask is done, rolls up the subtasks' late
   starts: the summary's late start is the earliest of them, and that is
   what a link into the summary reads as its late start. The summary's late
@@ -706,7 +705,7 @@ class _BackwardPass(_Clock):
         """A summary's rollup, before its subtasks: its deadline and its
         links out (with its ancestors' caps) become caps on every task below
         it. An SS/SF link out bounds the summary's start, kept with that
-        start so each subtask can keep its offset from it."""
+        start so the subtasks that set it can be told apart."""
         finishes, starts = self.own_caps((ROLLUP, task.id), task)
         parent = self.parent_caps(task)
         if parent.finish is not None:
@@ -723,10 +722,11 @@ class _BackwardPass(_Clock):
         if parent.finish is not None:
             finishes.append(parent.finish)
         for latest, summary_start in parent.starts:
-            # a summary that may start no later than `latest` moves as a
-            # block: this subtask keeps its offset from the summary's start
-            offset = self.span(task, summary_start, out.start)
-            starts.append(self.after(task, latest, offset))
+            # an SS/SF link from a summary bounds only the summary's start,
+            # its earliest subtask start: only a subtask that sets it (each
+            # one, on a tie) is capped; the others may slip without moving it
+            if out.start == summary_start:
+                starts.append(latest)
         kind, date = task.constraint_type, task.constraint_date
         if task.mode == "auto" and date is not None:
             if kind in ("fnlt", "mfo"):

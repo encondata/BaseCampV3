@@ -406,12 +406,14 @@ def test_fs_from_summary_caps_every_subtask():
     assert slack(out, "A", "B", "X", "S") == (480, 0, 0, 0)
 
 
-def test_ss_from_summary_caps_the_subtasks_that_start_it():
+def test_ss_from_summary_caps_every_subtask_tied_for_its_start():
     # S must start by Mon 08:00 for X to keep its SS + 1 day; A and B both
-    # start S (no offset), so both must start by then
+    # start S, so each must start by then
     tasks = [T("S"), T("A", 480, "S"), T("B", 960, "S"), T("X", 960)]
     out = run(tasks, [L("S", "X", "SS", 480)])
     assert out["X"].start == dt("2026-11-03 08:00")
+    assert late(out["A"]) == (dt("2026-11-02 08:00"), dt("2026-11-02 17:00"))
+    assert late(out["B"]) == (dt("2026-11-02 08:00"), dt("2026-11-03 17:00"))
     assert slack(out, "A", "B", "X") == (0, 0, 0)
 
 
@@ -423,64 +425,79 @@ def _ss_probe(**x_fields) -> list[TaskIn]:
 SS_PROBE = [L("A", "B"), L("S", "X", "SS")]
 
 
-def test_ss_from_summary_keeps_each_subtask_offset():
-    # S may start no later than Mon 08:00 and does; B keeps its one-day
-    # offset from S's start, so nothing here is late
+def test_ss_from_summary_caps_only_the_subtask_that_starts_it():
+    # S must start by Mon 08:00, and A sets S's start; B may slip to the
+    # project finish without moving it
     out = run(_ss_probe(), SS_PROBE)
     assert late(out["A"]) == (dt("2026-11-02 08:00"), dt("2026-11-02 17:00"))
-    assert late(out["B"]) == (dt("2026-11-03 08:00"), dt("2026-11-03 17:00"))
-    assert slack(out, "A", "B", "S", "X") == (0, 0, 0, 0)
+    assert late(out["B"]) == (dt("2026-11-04 08:00"), dt("2026-11-04 17:00"))
+    assert slack(out, "A", "B", "S", "X") == (0, 480, 0, 0)
+    assert out["A"].is_critical is True
+    assert out["B"].is_critical is False
 
 
 def test_ss_from_summary_with_room_is_not_critical():
     # the same with C (4 days) setting the finish: S may start as late as
-    # Tue 08:00, so A and B keep a day of slack
+    # Tue 08:00
     out = run(_ss_probe() + [T("C", 1920)], SS_PROBE)
-    assert late(out["B"]) == (dt("2026-11-04 08:00"), dt("2026-11-04 17:00"))
-    assert slack(out, "A", "B", "S", "X") == (480, 480, 480, 480)
+    assert late(out["A"]) == (dt("2026-11-03 08:00"), dt("2026-11-03 17:00"))
+    assert late(out["B"]) == (dt("2026-11-05 08:00"), dt("2026-11-05 17:00"))
+    assert slack(out, "A", "B", "S", "X") == (480, 960, 480, 480)
     for task_id in ("A", "B", "S", "X"):
         assert out[task_id].is_critical is False, task_id
 
 
 def test_ss_from_summary_that_must_start_earlier_is_negative():
-    # X's deadline needs it (so S) to start Fri 10-30: the subtask that
-    # starts S, and B after it, are a day late
+    # X's deadline needs it (so S) to start Fri 10-30: A, which starts S,
+    # is a day late; B still is not
     out = run(_ss_probe(deadline=dt("2026-11-03 17:00")), SS_PROBE)
     assert late(out["A"]) == (dt("2026-10-30 08:00"), dt("2026-10-30 17:00"))
-    assert slack(out, "A", "B", "S", "X") == (-480, -480, -480, -480)
+    assert slack(out, "A", "B", "S", "X") == (-480, 480, -480, -480)
     assert out["A"].is_critical is True
+    assert out["B"].is_critical is False
 
 
-def test_ss_from_summary_offset_of_an_elapsed_subtask_is_wall_clock():
-    # E (1 h elapsed) starts 4.5 h after S on the wall clock (4 h of work)
-    tasks = [T("S"), T("A", 480, "S"),
-             T("E", 60, "S", elapsed=True, constraint_type="snet",
-               constraint_date=dt("2026-11-02 12:30")),
+def test_ss_from_summary_caps_an_elapsed_starter_in_wall_clock():
+    # E (1 h elapsed) starts S at Mon 08:00 and must finish by 09:00; A
+    # starts Mon 13:00, after S's start, and is not capped
+    tasks = [T("S"), T("E", 60, "S", elapsed=True),
+             T("A", 480, "S", constraint_type="snet", constraint_date=dt("2026-11-02 13:00")),
              T("X", 1440)]
     out = run(tasks, [L("S", "X", "SS")])
-    assert late(out["E"]) == (dt("2026-11-02 12:30"), dt("2026-11-02 13:30"))
-    assert out["E"].total_slack == 0
+    assert late(out["E"]) == (dt("2026-11-02 08:00"), dt("2026-11-02 09:00"))
+    assert slack(out, "E", "A", "S") == (0, 720, 0)
 
 
-def test_ss_from_outer_summary_measures_offsets_from_its_start():
-    # P{C, N{B}} -SS-> X: B, a day into P, keeps that day; measured from N's
-    # own start it would be a day late
+def test_ss_from_outer_summary_compares_with_its_start():
+    # P{C, N{B}} -SS-> X: C starts P and is capped; B starts N but not P, so
+    # it is free (compared with N's start it would be a day late)
     tasks = [T("P"), T("C", 480, "P"), T("N", parent="P"),
              T("B", 480, "N", constraint_type="snet", constraint_date=dt("2026-11-03 08:00")),
              T("X", 1440)]
     out = run(tasks, [L("P", "X", "SS")])
-    assert late(out["B"]) == (dt("2026-11-03 08:00"), dt("2026-11-03 17:00"))
-    assert slack(out, "C", "B", "N", "P") == (0, 0, 0, 0)
+    assert late(out["C"]) == (dt("2026-11-02 08:00"), dt("2026-11-02 17:00"))
+    assert late(out["B"]) == (dt("2026-11-04 08:00"), dt("2026-11-04 17:00"))
+    assert slack(out, "C", "B", "N", "P") == (0, 480, 480, 0)
+
+
+def test_ss_from_outer_summary_reaches_a_nested_subtask_that_starts_it():
+    # P{N{B}, C} -SS-> X: B, inside N, starts P, so P's bound reaches it
+    tasks = [T("P"), T("N", parent="P"), T("B", 480, "N"),
+             T("C", 480, "P", constraint_type="snet", constraint_date=dt("2026-11-03 08:00")),
+             T("X", 1440)]
+    out = run(tasks, [L("P", "X", "SS")])
+    assert late(out["B"]) == (dt("2026-11-02 08:00"), dt("2026-11-02 17:00"))
+    assert slack(out, "B", "C", "N", "P") == (0, 480, 0, 0)
 
 
 def test_sf_from_summary_backward():
-    # X must finish 3 days after S starts: S may start no later than Mon
-    # 08:00, B keeping its offset
+    # X must finish 3 days after S starts: A, which starts S, must start by
+    # Mon 08:00; B is free
     out = run(_ss_probe()[:3] + [T("X", 480)], [L("A", "B"), L("S", "X", "SF", 1440)])
     assert out["X"].start == dt("2026-11-04 08:00")
     assert late(out["A"]) == (dt("2026-11-02 08:00"), dt("2026-11-02 17:00"))
-    assert late(out["B"]) == (dt("2026-11-03 08:00"), dt("2026-11-03 17:00"))
-    assert slack(out, "A", "B", "S", "X") == (0, 0, 0, 0)
+    assert late(out["B"]) == (dt("2026-11-04 08:00"), dt("2026-11-04 17:00"))
+    assert slack(out, "A", "B", "S", "X") == (0, 480, 0, 0)
 
 
 def test_ff_from_summary_backward():
