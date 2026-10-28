@@ -184,7 +184,7 @@ export default function LearningSettings() {
                   'Where a new document starts. Leave blank for no end date.')}
                 {number('invite_offset_days', 'Send invites (days before the start)')}
                 <Field label="Send at" id="ls-invite-time" error={result.errors.invite_time}>
-                  <ComboBox inputId="ls-invite-time" ariaLabel="Send at" disabled={locked}
+                  <ComboBox inputId="ls-invite-time" ariaLabel="Send at" disabled={locked} portal
                             value={draft.invite_time}
                             onChange={(v) => v && patchDraft({ invite_time: v })}
                             options={timeValues.map((t) => ({ value: t, label: timeLabel(t) }))} />
@@ -194,7 +194,7 @@ export default function LearningSettings() {
                   <div role="group" aria-labelledby="ls-reminders-label">
                     <ChipPicker options={reminderOptions} selected={draft.reminder_offsets}
                                 onChange={(v) => patchDraft({ reminder_offsets: v })} disabled={locked}
-                                ariaLabel="Add a reminder day" placeholder="Add a reminder day…"
+                                ariaLabel="Add a reminder day" placeholder="Add a reminder day…" portal
                                 note={draft.reminder_offsets.length === 0 ? 'No reminders.' : undefined} />
                   </div>
                 </Field>
@@ -207,12 +207,12 @@ export default function LearningSettings() {
             <div className="panel-body">
               <div className="pf-form">
                 <Field label="Template" id="ls-email-kind">
-                  <ComboBox inputId="ls-email-kind" ariaLabel="Template" value={kind}
+                  <ComboBox inputId="ls-email-kind" ariaLabel="Template" value={kind} portal
                             onChange={(v) => v && setKind(v)}
                             options={EMAIL_KINDS.map((k) => ({ value: k.key, label: k.label }))} />
                 </Field>
                 <Field label="Language" id="ls-email-lang">
-                  <ComboBox inputId="ls-email-lang" ariaLabel="Language" value={lang}
+                  <ComboBox inputId="ls-email-lang" ariaLabel="Language" value={lang} portal
                             onChange={(v) => v && setLanguage(v)}
                             options={languages.map((l) => ({ value: l, label: languageName(l) }))} />
                 </Field>
