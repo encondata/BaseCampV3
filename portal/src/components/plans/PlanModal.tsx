@@ -19,6 +19,8 @@
 
 import { useEffect, useRef, type ReactNode } from 'react';
 
+import { focusQuietly } from './quietFocus';
+
 import '../../styles/reports.css';   // .rgm-* — the roomy modal header
 import '../../styles/plans.css';
 
@@ -75,7 +77,10 @@ export default function PlanModal({
     (field ?? card)?.focus();
     return () => {
       if (opener?.isConnected && opener !== document.body && !opener.matches(':disabled')) {
-        opener.focus();
+        // the task sheet takes it back quietly: a closing dialog isn't a Tab
+        // into it, so it doesn't select its first row and scroll up to it
+        if (opener.matches('.pln-sheet')) focusQuietly(opener);
+        else opener.focus();
         return;
       }
       // nothing to go back to (the page had focus: a busy OK under a check

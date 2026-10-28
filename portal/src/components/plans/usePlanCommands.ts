@@ -45,6 +45,7 @@ import {
 } from '../../lib/plans/paste';
 import { EMPTY_SELECTION, selectCell, type Selection } from '../../lib/plans/selection';
 import type { TaskInfoTab } from '../../lib/plans/taskInfo';
+import { focusQuietly } from './quietFocus';
 import { SAID_ALREADY, type Completion } from './useCompletion';
 import type { PlanController, ThenOps } from './usePlan';
 import { keysBelongElsewhere, type PlanShortcutHandlers } from './usePlanShortcuts';
@@ -227,18 +228,11 @@ export function usePlanCommands({
   });
   const tempRef = useRef(0);
 
-  // focus back on the sheet without it taking that for a Tab into it: the
-  // quiet flag tells its focus handler not to select the first row (and
-  // scroll up to it) when nothing is selected
+  // focus back on the sheet without it taking that for a Tab into it (with
+  // nothing selected that would select the first row and scroll up to it)
   const focusSheet = useCallback(() => {
     const sheet = root.current?.querySelector<HTMLElement>('.pln-sheet');
-    if (!sheet) return;
-    sheet.dataset.quietFocus = '1';
-    try {
-      sheet.focus({ preventScroll: true });
-    } finally {
-      delete sheet.dataset.quietFocus;
-    }
+    if (sheet) focusQuietly(sheet);
   }, [root]);
 
   /** The command context for the plan on screen. */

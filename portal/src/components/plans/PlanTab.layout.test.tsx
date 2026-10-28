@@ -425,6 +425,22 @@ describe('switching layouts', () => {
     expect(grid().hasAttribute('data-quiet-focus')).toBe(false);
   });
 
+  it('closing a dialog the sheet opened, with nothing selected, gives focus back quietly: no row, no jump', async () => {
+    await ready();
+    userScroll(sheetBox(), 450);
+    // a command clicked with nothing selected leaves focus on the sheet; `?` there opens the shortcuts
+    fireEvent.click(button('Zoom In'), { detail: 1 });
+    expect(document.activeElement).toBe(grid());
+    fireEvent.keyDown(grid(), { key: '?' });
+    const dialog = await screen.findByRole('dialog', { name: 'Keyboard shortcuts' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(document.activeElement).toBe(grid());
+    expect(within(grid()).getAllByRole('row').filter((r) => r.getAttribute('aria-selected') === 'true')).toEqual([]);
+    expect(sheetBox().scrollTop).toBe(450);
+    expect(grid().hasAttribute('data-quiet-focus')).toBe(false);
+  });
+
   it('full screen works in all three', async () => {
     const { container } = await ready();
     const root = container.querySelector('.pln-tab') as HTMLElement;
