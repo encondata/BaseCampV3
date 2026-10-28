@@ -76,7 +76,9 @@ async def _person_id(db, email) -> uuid.UUID:
 
 
 async def test_create_and_get_plan(client, db):
-    hdrs = await _admin(db, client)
+    email = f"pc-{uuid4().hex[:8]}@test.example.com"
+    hdrs = await _make(db, client, "admin", email)
+    me = await _person_id(db, email)
     move = await _initiative(db)
     resp = await client.post(f"/initiatives/{move.id}/plan", headers=hdrs,
                              json={"project_start": "2026-11-02"})
@@ -96,7 +98,7 @@ async def test_create_and_get_plan(client, db):
     assert body["settings_overrides"] == {}
     assert body["status_date"] is None
     assert len(body["now"]) == len("2026-11-02T08:00")
-    assert body["owner_id"] is None and body["owner_name"] is None
+    assert body["owner_id"] == str(me) and body["owner_name"] == "R X"   # the creator
     assert body["locked_at"] is None and body["locked_by_name"] is None
     assert body["baseline_set_at"] is None
 
@@ -183,6 +185,39 @@ async def test_owner(client, db):
     body = await _create(client, hdrs, move, owner_id=str(me))
     assert body["owner_id"] == str(me)
     assert body["owner_name"] == "R X"
+
+
+async def test_owner_defaults_to_the_creator(client, db):
+    email = f"pd-{uuid4().hex[:8]}@test.example.com"
+    hdrs = await _make(db, client, "admin", email)
+    me = await _person_id(db, email)
+    move = await _initiative(db)
+    body = await _create(client, hdrs, move)
+    assert body["owner_id"] == str(me)
+    assert body["owner_name"] == "R X"
+    row = await db.scalar(select(AuditLog).where(AuditLog.action == "plan_create",
+                                                 AuditLog.entity_id == body["id"]))
+    assert row.changes["owner_id"] == str(me)
+
+
+async def test_owner_sent_as_null_means_no_owner(client, db):
+    hdrs = await _admin(db, client)
+    move = await _initiative(db)
+    body = await _create(client, hdrs, move, owner_id=None)
+    assert body["owner_id"] is None and body["owner_name"] is None
+
+
+async def test_owner_default_is_skipped_for_a_creator_who_cannot_own(client, db, monkeypatch):
+    # the same staff check an explicit owner gets; a default never refuses the plan
+    hdrs = await _admin(db, client)
+
+    async def nobody_is_staff(_db, _person_id):
+        return False
+
+    monkeypatch.setattr(service, "is_staff", nobody_is_staff)
+    move = await _initiative(db)
+    body = await _create(client, hdrs, move)
+    assert body["owner_id"] is None and body["owner_name"] is None
 
 
 async def test_owner_must_be_staff(client, db):

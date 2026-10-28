@@ -67,12 +67,20 @@ async def create_plan(
                                        date_only_time=calendar.default_start)
     except ValueError:
         raise err(422, "bad_field", field="project_start") from None
-    if body.owner_id is not None and not await service.is_staff(db, body.owner_id):
+    owner_id = body.owner_id
+    if "owner_id" not in body.model_fields_set:
+        # not sent: the creator owns the plan when they could be named its
+        # owner (the same staff check); otherwise it has none — a default
+        # never refuses the plan. An explicit null still means no owner.
+        person_id = actor.person.id if actor.person is not None else None
+        owner_id = person_id if person_id is not None and await service.is_staff(
+            db, person_id) else None
+    elif owner_id is not None and not await service.is_staff(db, owner_id):
         raise err(422, "bad_owner")
     # body.template_id is accepted and unused until templates land (Plan C)
     try:
         plan = await service.create_plan(db, initiative, actor, project_start=project_start,
-                                         owner_id=body.owner_id)
+                                         owner_id=owner_id)
         await db.commit()
     except IntegrityError as exc:
         # another create for this initiative won the race
