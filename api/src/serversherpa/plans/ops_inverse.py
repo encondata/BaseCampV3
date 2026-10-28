@@ -399,6 +399,7 @@ async def restore(b: Batch, op: RestoreOp) -> None:
     for link in links:
         await db.delete(link)
         del state.links[link.id]
+    b.links_in = None       # links went and come back: ops_links indexes them again
     await db.flush()        # before a link can come back with the same pair
     await remove_subtrees(b, selected(b, [t for t in op.remove_tasks if t in state.tasks]))
     await _restore_links(b, op.links)

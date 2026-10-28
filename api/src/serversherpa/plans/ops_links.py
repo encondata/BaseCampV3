@@ -13,6 +13,10 @@ Links:
   the unit of work inserts before it deletes and a link for the same pair
   (or the same assignee) may come back later in the batch; a row the batch
   itself added and has not flushed is just dropped from the session.
+- The duplicate check and the Predecessors cell read the links by
+  successor (`Batch.links_in`), not by walking every link per op: a paste
+  of thousands of rows over a plan of thousands of links stays linear
+  inside the plan lock.
 
 The Predecessors cell (`set_predecessors`) replaces every link into the
 task. Its numbers are display IDs in the outline order the batch began
@@ -122,6 +126,18 @@ def _set(link: PlanLink, link_type: str, lag: Duration) -> None:
             setattr(link, name, value)
 
 
+def _links_in(b: Batch) -> dict[uuid.UUID, dict[uuid.UUID, PlanLink]]:
+    """The plan's links by successor, then predecessor (`Batch.links_in`),
+    built from every link on first use in the batch (or after a change
+    that dropped it); _new_link and _drop_links keep it after that."""
+    if b.links_in is None:
+        index: dict[uuid.UUID, dict[uuid.UUID, PlanLink]] = {}
+        for lk in b.state.links.values():
+            index.setdefault(lk.successor_id, {})[lk.predecessor_id] = lk
+        b.links_in = index
+    return b.links_in
+
+
 def _new_link(b: Batch, pred: uuid.UUID, succ: uuid.UUID, link_type: str,
               lag: Duration) -> PlanLink:
     link = PlanLink(id=uuid.uuid4(), plan_id=b.state.plan.id, predecessor_id=pred,
@@ -129,12 +145,17 @@ def _new_link(b: Batch, pred: uuid.UUID, succ: uuid.UUID, link_type: str,
                     lag_unit=lag.unit, lag_elapsed=lag.elapsed)
     b.db.add(link)
     b.state.links[link.id] = link
+    if b.links_in is not None:
+        b.links_in.setdefault(succ, {})[pred] = link
     return link
 
 
 async def _drop_links(b: Batch, links: list[PlanLink]) -> None:
     for link in links:
         del b.state.links[link.id]
+        into = b.links_in.get(link.successor_id) if b.links_in is not None else None
+        if into is not None and into.get(link.predecessor_id) is link:
+            del into[link.predecessor_id]
     await _remove(b, links)
 
 
@@ -146,8 +167,7 @@ async def add_link(b: Batch, op: AddLinkOp) -> None:
     b.task(succ)
     link_type = _link_type(op.link_type)
     lag = _lag(b, op.lag)
-    if any(lk.predecessor_id == pred and lk.successor_id == succ
-           for lk in b.state.links.values()):
+    if pred in _links_in(b).get(succ, {}):
         raise err(422, "duplicate_link", predecessor_id=str(pred), successor_id=str(succ))
     _new_link(b, pred, succ, link_type, lag)
 
@@ -184,21 +204,48 @@ def _keeps_lag(link: PlanLink, spec: PredSpec, entry: str, units: Units) -> bool
     return _reads(stored, units) == _reads(spec.lag, units)
 
 
+class _Shown:
+    """The display IDs of the batch's starting outline (`start_order`)
+    whose task is still in the plan: what Predecessors text may name. Read
+    one ID at a time, so a batch of many Predecessors edits never numbers
+    the whole outline per op."""
+
+    __slots__ = ("order", "tasks")
+
+    def __init__(self, order: list[uuid.UUID], tasks: dict) -> None:
+        self.order, self.tasks = order, tasks
+
+    def __contains__(self, display_id: object) -> bool:
+        return (isinstance(display_id, int) and 1 <= display_id <= len(self.order)
+                and self.order[display_id - 1] in self.tasks)
+
+    def __getitem__(self, display_id: int) -> uuid.UUID:
+        return self.order[display_id - 1]
+
+
+def _start_number(b: Batch, task_id: uuid.UUID) -> int | None:
+    """The task's display ID in the batch's starting outline (None for a
+    task the batch added)."""
+    if b.start_numbers is None:
+        b.start_numbers = {tid: n for n, tid in enumerate(b.start_order, 1)}
+    return b.start_numbers.get(task_id)
+
+
 async def set_predecessors(b: Batch, task_id: uuid.UUID, text: str) -> None:
     """Replace every link into the task with the ones the text lists."""
     state, units = b.state, b.units
-    display = {n: tid for n, tid in enumerate(b.start_order, 1) if tid in state.tasks}
-    number = {tid: n for n, tid in display.items()}
+    display = _Shown(b.start_order, state.tasks)
     try:
-        specs = parse_predecessors(text, units, valid_ids=display, self_id=number.get(task_id))
+        specs = parse_predecessors(text, units, valid_ids=display,
+                                   self_id=_start_number(b, task_id))
     except PredecessorError as exc:
         raise err(422, exc.code, field="predecessors", task_id=str(task_id),
                   message=exc.detail) from None
 
     wanted = {display[spec.display_id]: (spec, entry)
               for spec, entry in zip(specs, split_entries(text), strict=True)}
-    incoming = {lk.predecessor_id: lk for lk in state.links.values()
-                if lk.successor_id == task_id}
+    # a copy: dropping links below changes the index
+    incoming = dict(_links_in(b).get(task_id, {}))
     await _drop_links(b, [lk for pred, lk in incoming.items() if pred not in wanted])
     for pred, (spec, entry) in wanted.items():
         link = incoming.get(pred)

@@ -46,7 +46,7 @@ from serversherpa.plans.durations import (
 )
 from serversherpa.plans.engine import CONSTRAINT_TYPES, MODES, SUMMARY_CONSTRAINT_TYPES
 from serversherpa.plans.floating import parse_floating
-from serversherpa.plans.models import PlanTask
+from serversherpa.plans.models import PlanLink, PlanTask
 from serversherpa.plans.schemas import (
     AddTaskOp,
     DeleteTasksOp,
@@ -195,6 +195,17 @@ class Batch:
     # task -> (fill actual start, fill actual finish): queued by % edits,
     # filled from the batch's final schedule
     fills: dict[uuid.UUID, tuple[bool, bool]] = field(default_factory=dict)
+    # the plan's links by successor, then predecessor: what the duplicate
+    # check and the Predecessors cell read (plans/ops_links.py), so a batch
+    # of thousands of link edits never walks every link per op. Built on
+    # first use and kept by ops_links' _new_link / _drop_links; anything
+    # else that adds or removes links (deleting tasks, a restore) sets it
+    # back to None, and the next use builds it again
+    links_in: dict[uuid.UUID, dict[uuid.UUID, PlanLink]] | None = None
+    # task id -> its display ID in `start_order`, numbered once on first
+    # use (a deleted task keeps its number; readers check it is still in
+    # the plan)
+    start_numbers: dict[uuid.UUID, int] | None = None
 
     @property
     def units(self) -> Units:
@@ -290,6 +301,8 @@ async def remove_subtrees(b: Batch, roots: list[uuid.UUID]) -> None:
         b.db.expunge(obj)
     for link in links:
         del state.links[link.id]
+    if links:
+        b.links_in = None
     for tid in doomed:
         del state.tasks[tid]
         state.assignments.pop(tid, None)

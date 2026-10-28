@@ -4,6 +4,7 @@ Predecessors cell (`update_task.fields.predecessors`) and assignees
 
 Reference week (Standard calendar): the plan starts Mon 2026-11-02 08:00."""
 
+import time
 import uuid
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -13,7 +14,7 @@ from sqlalchemy import delete, select
 from serversherpa.db.models import InitiativePerson, Partner, Person
 from serversherpa.plans.models import PlanLink
 from serversherpa.plans.ops import apply_ops
-from serversherpa.plans.schemas import RestoreOp, SetAssigneesOp
+from serversherpa.plans.schemas import AddLinkOp, RestoreOp, SetAssigneesOp, UpdateTaskOp
 from serversherpa.plans.service import load_state, settings_of
 from tests.test_plans_api import _actor, _create, _initiative, _plan_row
 from tests.test_plans_ops import _add, _by_id, _fails, _get, _ok, _setup, _update
@@ -584,3 +585,108 @@ async def test_inverse_of_link_and_assignee_ops(client, db):
     assert comparable(restored) == comparable(before)
     await _ok(client, hdrs, plan, undo["inverse"])
     assert comparable(await _get(client, hdrs, plan)) == comparable(after)
+
+
+# ── large batches: the link checks don't walk every link per op ──────
+
+
+class _CountingLinks(dict):
+    """`state.links` that counts every walk over all of the plan's links."""
+
+    walks = 0
+
+    def values(self):
+        self.walks += 1
+        return super().values()
+
+    def items(self):
+        self.walks += 1
+        return super().items()
+
+    def __iter__(self):
+        self.walks += 1
+        return super().__iter__()
+
+
+async def _big_plan(client, hdrs, plan, size: int) -> list[str]:
+    """`size` one-day tasks, each linked FS to the three after it."""
+    ops = [{"op": "add_task", "temp_id": f"t{i}", "name": f"T{i}"} for i in range(size)]
+    body = await _ok(client, hdrs, plan, ops)
+    ids = [body["temp_ids"][f"t{i}"] for i in range(size)]
+    links = [_link(ids[i], ids[j]) for i in range(size) for j in range(i + 1, min(i + 4, size))]
+    await _ok(client, hdrs, plan, links)
+    return ids
+
+
+async def test_a_large_predecessors_batch_walks_the_links_a_few_times(client, db):
+    """2,000 Predecessors edits on a 3,000-link plan (a big paste): each op
+    reads the task's incoming links and the duplicate check from an index,
+    not a walk over every link (which was ~6M checks inside the plan lock)."""
+    hdrs, move, plan = await _setup(client, db)
+    ids = await _big_plan(client, hdrs, plan, 1001)
+    actor = await _actor(db, hdrs)
+    row = await _plan_row(db, move)
+    settings = await settings_of(db, row)
+    state = await load_state(db, row)
+    assert len(state.links) == 2997
+    state.links = _CountingLinks(state.links)
+
+    # display ID k is ids[k - 1]; task k follows k-1, k-2 and k-3
+    ops = [UpdateTaskOp.model_validate(_update(ids[k - 1], predecessors=f"{k - 2},{k - 1}"))
+           for k in range(4, 1001)]
+    ops += [UpdateTaskOp.model_validate(_update(ids[k - 1], predecessors=f"{k - 3}SS,{k - 2},{k - 1}"))
+            for k in range(4, 1001)]
+    # and the duplicate check of add_link: links the plan doesn't have yet
+    ops += [AddLinkOp.model_validate(_link(ids[k], ids[k + 4])) for k in range(6)]
+    assert len(ops) == 2000
+
+    started = time.perf_counter()
+    result = await apply_ops(db, state, ops, actor, settings)
+    elapsed = time.perf_counter() - started
+    print(f"\n2,000-op batch on a 2,997-link plan: {elapsed:.2f}s, {state.links.walks} link walks")
+    # a handful per batch (the snapshots, the schedule), none per op
+    assert state.links.walks < 40
+    assert elapsed < 60          # generous: the old per-op walks made the batch quadratic
+    assert len(state.links) == 2997 + 6
+    types = {(lk.predecessor_id, lk.successor_id): lk.link_type for lk in state.links.values()}
+    k = 500
+    assert types[(uuid.UUID(ids[k - 4]), uuid.UUID(ids[k - 1]))] == "SS"
+    assert types[(uuid.UUID(ids[k - 2]), uuid.UUID(ids[k - 1]))] == "FS"
+    # the SS links (re-created after the first pass dropped them) and the new ones
+    assert len(result.changed_links) == 997 + 6
+    await db.rollback()
+
+
+async def test_link_index_follows_deleted_tasks(client, db):
+    """X→S and P→S; once the batch has read the links (an add_link),
+    deleting X takes its link out of the index too, so S's Predecessors
+    text naming only P drops nothing that is already gone."""
+    hdrs, _move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "P", "X", "S", "Q")
+    await _ok(client, hdrs, plan, [_link(ids["X"], ids["S"]), _link(ids["P"], ids["S"])])
+    body = await _ok(client, hdrs, plan, [
+        _link(ids["P"], ids["Q"]),
+        {"op": "delete_tasks", "ids": [ids["X"]]},
+        _update(ids["S"], predecessors="1"),
+        _link(ids["Q"], ids["S"]),
+    ])
+    assert ids["X"] in body["deleted_tasks"]
+    got = _tasks(await _get(client, hdrs, plan))
+    assert got["S"]["predecessors"] == "1,3"
+
+
+async def test_link_index_follows_a_restore(client, db):
+    """A restore that takes a link out lets the same pair be linked again
+    later in the batch, after the duplicate check has read the links."""
+    hdrs, _move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A", "B", "C")
+    body = await _ok(client, hdrs, plan, [_link(ids["A"], ids["B"])])
+    undo = body["inverse"]
+    await _ok(client, hdrs, plan, [
+        _link(ids["B"], ids["C"]),
+        *undo,
+        _link(ids["A"], ids["B"], link_type="SS"),
+    ])
+    got = await _get(client, hdrs, plan)
+    pairs = sorted((lk["predecessor_id"], lk["successor_id"], lk["link_type"]) for lk in got["links"])
+    assert pairs == sorted([(ids["A"], ids["B"], "SS"), (ids["B"], ids["C"], "FS")])
