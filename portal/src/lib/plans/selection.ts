@@ -11,9 +11,12 @@ export interface ActiveCell {
   col: string;
 }
 
+/** Never changed in place: every update builds a new Selection (and a new
+ *  `rows` set), so the shared EMPTY_SELECTION stays empty and a memoized row
+ *  sees a new object whenever its state changed. */
 export interface Selection {
   active: ActiveCell | null;
-  rows: Set<string>;
+  rows: ReadonlySet<string>;
   anchor: string | null;
 }
 
@@ -21,9 +24,9 @@ export type MoveDir = 'up' | 'down' | 'left' | 'right';
 
 export const EMPTY_SELECTION: Selection = Object.freeze({
   active: null,
-  rows: new Set<string>(),
+  rows: new Set<string>() as ReadonlySet<string>,
   anchor: null,
-}) as Selection;
+});
 
 /** The cell becomes active and its row the only selected one (the blank
  *  row selects no task). */

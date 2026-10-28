@@ -38,6 +38,17 @@ describe('selectCell and selectRow', () => {
     expect(EMPTY_SELECTION.rows.size).toBe(0);
     expect(EMPTY_SELECTION.anchor).toBeNull();
   });
+
+  it('never changes a selection in place: the shared empty one stays empty', () => {
+    const picked = selectCell('a', 'name');
+    const moved = moveActive(EMPTY_SELECTION, 'down', ROWS, COLS);
+    const again = moveActive(picked, 'down', ROWS, COLS);
+    expect(EMPTY_SELECTION.rows.size).toBe(0);
+    expect(EMPTY_SELECTION.active).toBeNull();
+    for (const sel of [picked, moved, again]) expect(sel.rows).not.toBe(EMPTY_SELECTION.rows);
+    expect([...picked.rows]).toEqual(['a']);
+    expect(again.rows).not.toBe(picked.rows);
+  });
 });
 
 describe('moveActive', () => {

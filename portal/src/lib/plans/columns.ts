@@ -289,6 +289,12 @@ export function loadColumnPrefs(): ColumnPrefs {
 const listeners = new Set<() => void>();
 const notify = () => listeners.forEach((fn) => fn());
 
+/** The stored text the snapshot last read, kept only while someone is
+ *  subscribed: a save here and a `storage` event from another tab (the only
+ *  ways the text changes) both drop it. Without subscribers nothing tells it
+ *  about a change, so every read goes to storage. */
+let rawCache: { raw: string | null } | null = null;
+
 /** Stores the choice (with every column it offered, for the `seen` rule)
  *  and tells every subscriber. */
 export function saveColumnPrefs(prefs: ColumnPrefs): void {
@@ -300,15 +306,23 @@ export function saveColumnPrefs(prefs: ColumnPrefs): void {
   } catch {
     memoryWins = true;
   }
+  rawCache = null;
   notify();
 }
 
 let snapshot: { raw: string | null; prefs: ColumnPrefs } | null = null;
 
 /** The current choice for useSyncExternalStore: the same object until the
- *  stored text changes. */
+ *  stored text changes. Called on every render of every sheet, so while
+ *  subscribed it reads storage only after a change. */
 export function columnPrefsSnapshot(): ColumnPrefs {
-  const raw = readRaw();
+  let raw: string | null;
+  if (rawCache) {
+    raw = rawCache.raw;
+  } else {
+    raw = readRaw();
+    if (listeners.size > 0) rawCache = { raw };
+  }
   if (!snapshot || snapshot.raw !== raw) snapshot = { raw, prefs: parse(raw) };
   return snapshot.prefs;
 }
@@ -316,12 +330,15 @@ export function columnPrefsSnapshot(): ColumnPrefs {
 /** Calls `fn` after every save, here or in another tab. */
 export function subscribeColumnPrefs(fn: () => void): () => void {
   const onStorage = (e: StorageEvent) => {
-    if (e.key === COLUMNS_KEY || e.key === null) fn();
+    if (e.key !== COLUMNS_KEY && e.key !== null) return;
+    rawCache = null;
+    fn();
   };
   listeners.add(fn);
   window.addEventListener('storage', onStorage);
   return () => {
     listeners.delete(fn);
     window.removeEventListener('storage', onStorage);
+    if (listeners.size === 0) rawCache = null;
   };
 }

@@ -620,6 +620,36 @@ async def test_tasks_and_links_served(client, db):
     assert crates["start_variance_minutes"] is None     # no baseline yet
 
 
+async def test_variance_is_negative_ahead_of_the_baseline(client, db):
+    """A task running ahead of its baseline has a negative variance: the
+    working minutes from the baseline back to the schedule (MS Project's
+    Start / Finish Variance), as the sheet shows them."""
+    hdrs = await _admin(db, client)
+    move = await _initiative(db)
+    await _create(client, hdrs, move)
+    plan = await _plan_row(db, move)
+    db.add_all([
+        # baselined to run Wed; it now runs Mon, two working days early
+        _task(plan, 0, "ahead", baseline_start=dt("2026-11-04 08:00"),
+              baseline_finish=dt("2026-11-04 17:00"), baseline_duration_minutes=480),
+        # starts on its baseline but finishes a day early (Mon-Tue, not Mon-Wed)
+        _task(plan, 1, "shorter", duration_minutes=960, baseline_start=dt("2026-11-02 08:00"),
+              baseline_finish=dt("2026-11-04 17:00"), baseline_duration_minutes=1440),
+    ])
+    await db.commit()
+    state = await service.load_state(db, plan)
+    service.recalc(state, await service.settings_of(db, plan))
+    await db.commit()
+
+    body = (await client.get(f"/initiatives/{move.id}/plan", headers=hdrs)).json()
+    tasks = {t["name"]: t for t in body["tasks"]}
+    ahead, shorter = tasks["ahead"], tasks["shorter"]
+    assert (ahead["start"], ahead["finish"]) == ("2026-11-02T08:00", "2026-11-02T17:00")
+    assert (ahead["start_variance_minutes"], ahead["finish_variance_minutes"]) == (-960, -960)
+    assert shorter["finish"] == "2026-11-03T17:00"
+    assert (shorter["start_variance_minutes"], shorter["finish_variance_minutes"]) == (0, -480)
+
+
 async def test_task_status_and_missed_deadline(client, db):
     hdrs = await _admin(db, client)
     move = await _initiative(db)

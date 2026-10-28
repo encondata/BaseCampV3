@@ -49,6 +49,19 @@ vi.mock('../../lib/plans/api', async (importActual) => ({
   ...api,
 }));
 
+// counts each row's redraws: a row draws its indicators once per render
+const drawn = vi.hoisted(() => ({ ids: [] as string[] }));
+vi.mock('../../lib/plans/indicators', async (importActual) => {
+  const actual = await importActual<typeof import('../../lib/plans/indicators')>();
+  return {
+    ...actual,
+    indicatorsOf: (...args: Parameters<typeof actual.indicatorsOf>) => {
+      drawn.ids.push(args[0].id);
+      return actual.indicatorsOf(...args);
+    },
+  };
+});
+
 const { default: PlanTab } = await import('./PlanTab');
 const { default: PlanSheet } = await import('./PlanSheet');
 
@@ -106,6 +119,7 @@ beforeEach(() => {
     Object.defineProperty(HTMLElement.prototype, key, { configurable: true, get: () => px });
   }
   for (const fn of [toast, ...Object.values(api)]) fn.mockReset();
+  drawn.ids = [];
   localStorage.clear();
 });
 
@@ -228,6 +242,23 @@ describe('columns', () => {
     const min = Number(border.getAttribute('aria-valuemin'));
     expect(Number(border.getAttribute('aria-valuenow'))).toBe(min);
     expect(JSON.parse(localStorage.getItem('plans.columns.v1')!).widths.duration).toBe(min);
+  });
+
+  it('a drag whose pointer capture is lost ends without saving, and later moves do nothing', async () => {
+    api.getPlan.mockResolvedValueOnce(outlinePlan());
+    renderTab();
+    await screen.findByRole('grid', { name: 'Task sheet' });
+    const border = screen.getByRole('separator', { name: 'Resize Duration' });
+    const before = Number(border.getAttribute('aria-valuenow'));
+    fireEvent.pointerDown(border, { clientX: 500, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(border, { clientX: 540, pointerId: 1 });
+    expect(Number(border.getAttribute('aria-valuenow'))).toBe(before + 40);
+    fireEvent(border, new Event('lostpointercapture', { bubbles: true }));
+    expect(Number(border.getAttribute('aria-valuenow'))).toBe(before);
+    fireEvent.pointerMove(border, { clientX: 600, pointerId: 1 });
+    fireEvent.pointerUp(border, { clientX: 600, pointerId: 1 });
+    expect(Number(border.getAttribute('aria-valuenow'))).toBe(before);
+    expect(localStorage.getItem('plans.columns.v1')).toBeNull();
   });
 });
 
@@ -419,6 +450,31 @@ describe('PlanSheet props', () => {
     fireEvent.click(within(rowOf('Labels')).getByRole('button', { name: 'Collapse Labels' }));
     expect(onToggle).toHaveBeenCalledWith('s2');
     expect(rowNames()).toHaveLength(5);
+  });
+
+  it('an op redraws only the rows whose tasks changed', () => {
+    const scroll = { current: null as HTMLDivElement | null };
+    const noop = () => {};
+    const collapsed = new Set<string>();
+    function Stable({ plan }: { plan: Plan }) {
+      const view = planView(plan);
+      const ctl = { status: 'ready', plan: view.plan, outline: view.outline } as unknown as PlanController;
+      return (
+        <div ref={(el) => { scroll.current = el; }} className="pln-panes">
+          <PlanSheet ctl={ctl} rows={['s1', 'a', 's2', 'b', 'c']} collapsed={collapsed} rowHeight={30}
+                     scrollRef={scroll} selection={EMPTY_SELECTION} onSelect={noop}
+                     onToggleCollapse={noop} editable={false} />
+        </div>
+      );
+    }
+    const before = outlinePlan();
+    const { rerender } = render(<Stable plan={before} />);
+    expect(new Set(drawn.ids)).toEqual(new Set(['s1', 'a', 's2', 'b', 'c']));
+    drawn.ids = [];
+    const tasks = [...before.tasks];
+    tasks[4] = { ...tasks[4], name: 'Go live now' };
+    rerender(<Stable plan={{ ...before, version: 6, tasks }} />);
+    expect(drawn.ids).toEqual(['c']);
   });
 
   it('with no selection marks nothing', () => {

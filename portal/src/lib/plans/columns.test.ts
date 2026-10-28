@@ -22,6 +22,7 @@ import {
 import { makeTask } from './planFixtures';
 
 const KEY = 'plans.columns.v1';
+const ALL = PLAN_COLUMNS.map((c) => c.key);
 const CTX: SheetContext = { showTimes: false, units: STANDARD_UNITS, timeZone: 'America/Chicago', locked: false };
 const cell = (key: string, over = {}, ctx: Partial<SheetContext> = {}) =>
   COLUMN_BY_KEY.get(key)!.value(makeTask('t', over), { ...CTX, ...ctx });
@@ -202,6 +203,42 @@ describe('column preferences', () => {
     stop();
     saveColumnPrefs({ visible: [...DEFAULT_VISIBLE], widths: {} });
     expect(heard).toHaveBeenCalledTimes(1);
+  });
+
+  it('while subscribed, the snapshot reads storage once until a save or a storage event', () => {
+    localStorage.setItem(KEY, JSON.stringify({ visible: ['id', 'name', 'duration'], widths: {}, seen: ALL }));
+    const stop = subscribeColumnPrefs(() => {});
+    const get = vi.spyOn(Storage.prototype, 'getItem');
+    try {
+      const first = columnPrefsSnapshot();
+      columnPrefsSnapshot();
+      columnPrefsSnapshot();
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(first.visible).toEqual(['id', 'name', 'duration']);
+
+      saveColumnPrefs({ visible: ['id', 'name'], widths: {} });
+      get.mockClear();
+      expect(columnPrefsSnapshot().visible).toEqual(['id', 'name']);
+      columnPrefsSnapshot();
+      expect(get).toHaveBeenCalledTimes(1);
+
+      // another tab saved: the next snapshot reads it
+      localStorage.setItem(KEY, JSON.stringify({ visible: ['id', 'name', 'wbs'], widths: {}, seen: ALL }));
+      window.dispatchEvent(new StorageEvent('storage', { key: KEY }));
+      get.mockClear();
+      expect(columnPrefsSnapshot().visible).toEqual(['id', 'name', 'wbs']);
+      expect(get).toHaveBeenCalledTimes(1);
+    } finally {
+      get.mockRestore();
+      stop();
+      saveColumnPrefs({ visible: [...DEFAULT_VISIBLE], widths: {} });   // the in-memory copy, for later tests
+    }
+  });
+
+  it('with nobody subscribed, the snapshot reads storage afresh', () => {
+    expect(columnPrefsSnapshot().visible).toEqual(DEFAULT_VISIBLE);
+    localStorage.setItem(KEY, JSON.stringify({ visible: ['id', 'name'], widths: {}, seen: ALL }));
+    expect(columnPrefsSnapshot().visible).toEqual(['id', 'name']);
   });
 
   it('survives storage that throws', () => {

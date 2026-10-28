@@ -10,7 +10,7 @@
  *    virtualize against; Calendar and Board arrive in Plan C;
  *  - the dialogs host: one PlanModal-based dialog at a time (`PlanDialog`).
  *
- * The Gantt view's shared state lives here too (useSheetView): the rows on
+ * The Gantt view's shared state lives here too (useSheetView.ts): the rows on
  * screen (the outline less collapsed subtasks; collapse state per plan in
  * localStorage `plans.collapsed.<planId>`), the selection, and the row
  * height (the list size).
@@ -28,7 +28,7 @@
  */
 
 import {
-  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject,
+  useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject,
 } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
@@ -36,16 +36,15 @@ import { useAuth } from '../../auth/AuthContext';
 import { longDate } from '../../lib/format';
 import { listScale } from '../../lib/listTools';
 import { useToast } from '../../lib/notificationsContext';
-import type { Plan, PlanTask } from '../../lib/plans/api';
-import { SHEET_HEAD_PX, SHEET_ROW_PX } from '../../lib/plans/columns';
+import type { Plan } from '../../lib/plans/api';
+import { SHEET_ROW_PX } from '../../lib/plans/columns';
 import { isPlanChanged, planErrorText } from '../../lib/plans/errors';
-import { ancestors, visibleRows } from '../../lib/plans/outline';
-import { EMPTY_SELECTION, selectCell, type Selection } from '../../lib/plans/selection';
 import ColumnsModal from './ColumnsModal';
 import PlanCreateModal, { type PlanInitiative } from './PlanCreateModal';
 import PlanEmptyState from './PlanEmptyState';
 import PlanSheet from './PlanSheet';
 import { usePlan, type PlanController } from './usePlan';
+import { useSheetView } from './useSheetView';
 
 import '../../styles/plans.css';
 
@@ -139,100 +138,6 @@ function escapeTakenElsewhere(e: KeyboardEvent): boolean {
   const target = e.target as Element | null;
   return !!target && typeof target.closest === 'function'
     && !!target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])');
-}
-
-const COLLAPSED_PREFIX = 'plans.collapsed.';
-const NO_TASKS: PlanTask[] = [];
-
-/** The summaries collapsed in this browser for the plan. */
-function readCollapsed(planId: string): Set<string> {
-  try {
-    const stored: unknown = JSON.parse(localStorage.getItem(COLLAPSED_PREFIX + planId) ?? '[]');
-    return new Set(Array.isArray(stored) ? stored.filter((id): id is string => typeof id === 'string') : []);
-  } catch {
-    return new Set();
-  }
-}
-
-function writeCollapsed(planId: string, ids: Iterable<string>): void {
-  try {
-    localStorage.setItem(COLLAPSED_PREFIX + planId, JSON.stringify([...ids]));
-  } catch {
-    // storage refused: the choice lasts this visit only
-  }
-}
-
-/**
- * The Gantt view's shared state: the rows the sheet and the chart show,
- * which summaries are collapsed, the selection, and the `&task=` deep
- * link (handled once per plan and task id).
- */
-function useSheetView(ctl: PlanController, taskParam: string | null,
-  scrollRef: RefObject<HTMLDivElement | null>, rowHeight: number) {
-  const plan = ctl.plan;
-  const planId = plan?.id ?? null;
-  const tasks = plan?.tasks ?? NO_TASKS;
-  const tasksById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
-  const order = useMemo(() => tasks.map((t) => t.id), [tasks]);
-
-  const stored = useMemo(() => (planId ? readCollapsed(planId) : new Set<string>()), [planId]);
-  const [changed, setChanged] = useState<{ planId: string; ids: Set<string> } | null>(null);
-  const collapsed = changed && changed.planId === planId ? changed.ids : stored;
-  const setCollapsed = useCallback((ids: Set<string>) => {
-    if (!planId) return;
-    setChanged({ planId, ids });
-    writeCollapsed(planId, [...ids].filter((id) => tasksById.has(id)));
-  }, [planId, tasksById]);
-
-  const rows = useMemo(() => visibleRows(order, tasksById, collapsed), [order, tasksById, collapsed]);
-
-  // another plan (another initiative) starts with nothing selected
-  const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
-  const [selectionPlan, setSelectionPlan] = useState(planId);
-  if (selectionPlan !== planId) {
-    setSelectionPlan(planId);
-    setSelection(EMPTY_SELECTION);
-  }
-
-  const toggleCollapse = useCallback((id: string) => {
-    const next = new Set(collapsed);
-    if (next.has(id)) {
-      next.delete(id);
-    } else {
-      next.add(id);
-      // the active cell's row going out of sight: the summary takes it (MS Project)
-      setSelection((sel) => (sel.active && sel.active.id !== 'blank'
-        && ancestors(sel.active.id, tasksById).includes(id) ? selectCell(id, sel.active.col) : sel));
-    }
-    setCollapsed(next);
-  }, [collapsed, setCollapsed, tasksById]);
-
-  const linked = useRef<string | null>(null);
-  const [scrollTo, setScrollTo] = useState<string | null>(null);
-  useEffect(() => {
-    if (!planId || !taskParam) return;
-    const key = `${planId}:${taskParam}`;
-    if (linked.current === key) return;
-    linked.current = key;
-    if (!tasksById.has(taskParam)) return;
-    const closed = ancestors(taskParam, tasksById).filter((id) => collapsed.has(id));
-    if (closed.length) setCollapsed(new Set([...collapsed].filter((id) => !closed.includes(id))));
-    setSelection(selectCell(taskParam, 'name'));
-    setScrollTo(taskParam);
-  }, [planId, taskParam, tasksById, collapsed, setCollapsed]);
-
-  // runs once the rows include the task, so the scroll box is tall enough
-  useEffect(() => {
-    if (!scrollTo) return;
-    const index = rows.indexOf(scrollTo);
-    const box = scrollRef.current;
-    if (index < 0 || !box) return;
-    const below = Math.max(0, box.clientHeight - SHEET_HEAD_PX - rowHeight);
-    box.scrollTop = Math.max(0, index * rowHeight - below / 2);
-    setScrollTo(null);
-  }, [scrollTo, rows, rowHeight, scrollRef]);
-
-  return { rows, collapsed, toggleCollapse, selection, select: setSelection };
 }
 
 export default function PlanTab({ initiativeId, initiative }: {

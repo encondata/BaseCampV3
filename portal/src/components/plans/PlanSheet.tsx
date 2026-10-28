@@ -131,6 +131,15 @@ export default function PlanSheet({
       resizing.current = null;
       setDrag(null);
     },
+    // the capture went away without a pointerup (the pointer left the
+    // window, another element took it): the drag ends, unsaved, rather than
+    // following a pointer that no longer reports here. After a pointerup
+    // the drag is already over and this does nothing.
+    onLostPointerCapture: () => {
+      if (!resizing.current) return;
+      resizing.current = null;
+      setDrag(null);
+    },
     onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => {
       const step = e.key === 'ArrowRight' ? KEY_STEP_PX : e.key === 'ArrowLeft' ? -KEY_STEP_PX : 0;
       if (!step) return;
