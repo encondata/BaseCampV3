@@ -23,6 +23,7 @@ import { makeLink, makePlan, makeTask } from '../../lib/plans/planFixtures';
 import { EMPTY_SELECTION, selectCell, type Selection } from '../../lib/plans/selection';
 import type { PlanController } from './usePlan';
 import type { ChartScroll, GanttDisplay } from './usePlanCommands';
+import { findSheet } from './planTabTesting';
 
 const toast = vi.hoisted(() => vi.fn());
 vi.mock('../../lib/notificationsContext', () => ({ useToast: () => toast }));
@@ -600,7 +601,7 @@ describe('in the tab beside the sheet', () => {
   it('the sheet and the chart virtualize against the one scroll box, with the same settings', async () => {
     api.getPlan.mockResolvedValueOnce(plan3());
     const { container } = renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     const panes = container.querySelector('.pln-panes');
     const sheet = virt.calls.filter((c) => /PlanSheet/.test(c.stack));
     const gantt = virt.calls.filter((c) => /PlanGantt/.test(c.stack));
@@ -616,7 +617,7 @@ describe('in the tab beside the sheet', () => {
   it('collapsing a summary in the sheet hides its subtasks’ bars too', async () => {
     api.getPlan.mockResolvedValueOnce(makePlan({ tasks: outlineTasks() }));
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     expect(ids('.pln-bar')).toEqual(['a', 'b']);
     expect(ids('.pln-bar-summary')).toEqual(['s1', 's2']);
     fireEvent.click(within(grid()).getByRole('button', { name: 'Collapse Labels' }));
@@ -634,7 +635,7 @@ describe('in the tab beside the sheet', () => {
       tasks: outlineTasks(), links: [makeLink('ab', 'a', 'b'), makeLink('ac', 'a', 'c')],
     }));
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     const links = () => qa('svg.pln-links path.pln-link-path').map((p) => p.getAttribute('data-link'));
     expect(links()).toEqual(['ab', 'ac']);
     fireEvent.click(within(grid()).getByRole('button', { name: 'Collapse Labels' }));
@@ -644,7 +645,7 @@ describe('in the tab beside the sheet', () => {
   it('each pane scrolls sideways on its own; the shared box never does', async () => {
     api.getPlan.mockResolvedValueOnce(plan3());
     const { container } = renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     const panes = container.querySelector('.pln-panes') as HTMLElement;
     const sheetShift = q('.pln-pane-sheet > .pln-pane-shift') as HTMLElement;
     const chartShift = q('.pln-pane-chart > .pln-pane-shift') as HTMLElement;
@@ -679,12 +680,12 @@ describe('in the tab beside the sheet', () => {
   it('keeps the zoom per plan; Ctrl+wheel over the chart zooms', async () => {
     api.getPlan.mockResolvedValue(plan3());
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     fireEvent.click(screen.getByRole('button', { name: 'Zoom In' }));
     expect(localStorage.getItem('plans.zoom.plan-1')).toBe('hours');
     cleanup();
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     expect(screen.getByRole('button', { name: 'Zoom In' }).getAttribute('aria-disabled')).toBe('true');
     fireEvent.wheel(q('.pln-pane-chart') as HTMLElement, { deltaY: 100, ctrlKey: true });
     expect(localStorage.getItem('plans.zoom.plan-1')).toBe('days');
@@ -695,7 +696,7 @@ describe('in the tab beside the sheet', () => {
     const plan = plan3();
     api.getPlan.mockResolvedValueOnce(plan);
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     fireEvent.click(screen.getByRole('button', { name: 'Fit Project' }));
     // 3.4 days fit 800px at 48px a day (162px), not at 480 (1,620px)
     expect(localStorage.getItem('plans.zoom.plan-1')).toBe('days');
@@ -707,7 +708,7 @@ describe('in the tab beside the sheet', () => {
     const plan = plan3();
     api.getPlan.mockResolvedValueOnce(plan);
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     const row = within(grid()).getAllByRole('row').find((r) => r.getAttribute('data-task') === 'c') as HTMLElement;
     fireEvent.mouseDown(row.querySelector('[data-col="name"]') as HTMLElement, { button: 0 });
     fireEvent.click(screen.getByRole('button', { name: 'Scroll to Task' }));
@@ -718,7 +719,7 @@ describe('in the tab beside the sheet', () => {
   it('the splitter moves the sheet’s edge, by drag or arrows, and keeps its place', async () => {
     api.getPlan.mockResolvedValue(plan3());
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     const split = () => q('.pln-split')?.style.getPropertyValue('--pln-split');
     const splitter = screen.getByRole('separator', { name: 'Resize the task sheet' });
     // 45% of the 800px view until moved
@@ -735,7 +736,7 @@ describe('in the tab beside the sheet', () => {
     expect(localStorage.getItem('plans.split.v1')).toBe('404');
     cleanup();
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     expect(split()).toBe('404px');
   });
 });

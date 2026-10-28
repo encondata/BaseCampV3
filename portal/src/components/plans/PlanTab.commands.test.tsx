@@ -16,6 +16,7 @@ import type { AddTaskOp, Op, Plan, PlanTask } from '../../lib/plans/api';
 import { PLAN_ERRORS } from '../../lib/plans/errors';
 import { parseClipboard } from '../../lib/plans/paste';
 import { flatTasks, makeLink, makeOpsResult, makePlan, makeRestore, makeTask } from '../../lib/plans/planFixtures';
+import { findSheet } from './planTabTesting';
 
 if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
 
@@ -98,7 +99,7 @@ async function ready(plan: Plan = plan3()) {
   // after setup, which puts a clipboard stub of its own on navigator
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard });
   renderTab();
-  await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+  await findSheet();
   return user;
 }
 

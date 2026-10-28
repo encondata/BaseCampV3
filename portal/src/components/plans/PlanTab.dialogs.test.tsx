@@ -16,6 +16,7 @@ import { ApiError } from '../../lib/api';
 import { longDate } from '../../lib/format';
 import type { Op, Plan, PlanTask } from '../../lib/plans/api';
 import { flatTasks, makeLink, makeOpsResult, makePlan } from '../../lib/plans/planFixtures';
+import { findSheet } from './planTabTesting';
 
 if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
 
@@ -82,7 +83,7 @@ async function ready(plan: Plan = plan3()) {
   api.getPlan.mockResolvedValueOnce(plan);
   const user = userEvent.setup();
   renderTab();
-  await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+  await findSheet();
   return user;
 }
 

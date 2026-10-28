@@ -19,6 +19,7 @@ import { makePlan, makeTask } from '../../lib/plans/planFixtures';
 import { planView } from '../../lib/plans/merge';
 import { EMPTY_SELECTION, selectCell } from '../../lib/plans/selection';
 import type { PlanController } from './usePlan';
+import { findSheet } from './planTabTesting';
 
 const toast = vi.hoisted(() => vi.fn());
 vi.mock('../../lib/notificationsContext', () => ({ useToast: () => toast }));
@@ -143,7 +144,7 @@ describe('columns', () => {
   it('renders the default columns’ headers in MS Project order', async () => {
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     expect(headers()).toEqual([
       'Indicators', 'ID', 'Mode', 'Task Name', 'Duration', 'Start', 'Finish', 'Predecessors',
       'Resource Names', '% Complete', 'Deadline',
@@ -157,7 +158,7 @@ describe('columns', () => {
       assignees: [{ kind: 'person', id: 'p1', name: 'Dana Reyes' }, { kind: 'partner', id: 'x', name: 'Champagne Logistics' }] };
     api.getPlan.mockResolvedValueOnce(outlinePlan({ tasks }));
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     const row = rowOf('Order crates');
     const text = (col: string) => row.querySelector(`[data-col="${col}"]`)?.textContent;
     expect(text('id')).toBe('2');
@@ -171,7 +172,7 @@ describe('columns', () => {
     const user = userEvent.setup();
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     await openColumns(user);
     const dialog = screen.getByRole('dialog', { name: 'Columns' });
     const toggle = within(dialog).getByRole('checkbox', { name: 'Show Predecessors' });
@@ -190,7 +191,7 @@ describe('columns', () => {
     const user = userEvent.setup();
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     await openColumns(user);
     let dialog = screen.getByRole('dialog', { name: 'Columns' });
     await user.click(within(dialog).getByRole('button', { name: 'Move Duration up' }));
@@ -213,7 +214,7 @@ describe('columns', () => {
     const user = userEvent.setup();
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     await openColumns(user);
     const dialog = screen.getByRole('dialog', { name: 'Columns' });
     await user.click(within(dialog).getByRole('checkbox', { name: 'Show Deadline' }));
@@ -225,7 +226,7 @@ describe('columns', () => {
   it('a column border resizes from the keyboard and the width persists', async () => {
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     const border = screen.getByRole('separator', { name: 'Resize Task Name' });
     const before = Number(border.getAttribute('aria-valuenow'));
     fireEvent.keyDown(border, { key: 'ArrowRight' });
@@ -236,7 +237,7 @@ describe('columns', () => {
   it('a column border resizes by dragging, never below the column minimum', async () => {
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     const border = screen.getByRole('separator', { name: 'Resize Duration' });
     const before = Number(border.getAttribute('aria-valuenow'));
     fireEvent.pointerDown(border, { clientX: 500, pointerId: 1, button: 0 });
@@ -252,7 +253,7 @@ describe('columns', () => {
   it('a drag whose pointer capture is lost ends without saving, and later moves do nothing', async () => {
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     const border = screen.getByRole('separator', { name: 'Resize Duration' });
     const before = Number(border.getAttribute('aria-valuenow'));
     fireEvent.pointerDown(border, { clientX: 500, pointerId: 1, button: 0 });
@@ -271,7 +272,7 @@ describe('outline rows', () => {
   it('indents Task Name by outline level and shows summaries bold', async () => {
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     const level = (name: string) =>
       (rowOf(name).querySelector('[data-col="name"]') as HTMLElement).style.getPropertyValue('--pln-level');
     expect(['Prep', 'Order crates', 'Print labels', 'Go live'].map(level)).toEqual(['1', '2', '3', '1']);
@@ -283,7 +284,7 @@ describe('outline rows', () => {
     const user = userEvent.setup();
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     expect(rowNames()).toEqual(['Prep', 'Order crates', 'Labels', 'Print labels', 'Go live']);
     // header + 5 tasks + the blank new-task row
     expect(grid().getAttribute('aria-rowcount')).toBe('7');
@@ -305,7 +306,7 @@ describe('outline rows', () => {
     localStorage.setItem(COLLAPSED_KEY, JSON.stringify(['s2']));
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     expect(rowNames()).toEqual(['Prep', 'Order crates', 'Labels', 'Go live']);
   });
 
@@ -313,7 +314,7 @@ describe('outline rows', () => {
     const user = userEvent.setup();
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     await user.click(rowOf('Print labels').querySelector('[data-col="duration"]')!);
     expect(rowOf('Print labels').getAttribute('aria-selected')).toBe('true');
     await user.click(within(rowOf('Prep')).getByRole('button', { name: 'Collapse Prep' }));
@@ -326,7 +327,7 @@ describe('outline rows', () => {
       permissions: { view: true, add: false, change: false, delete: false },
     }));
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     expect(grid().getAttribute('aria-rowcount')).toBe('6');
     expect(grid().querySelector('[data-blank]')).toBeNull();
   });
@@ -336,7 +337,7 @@ describe('indicators', () => {
   it('a constraint shows its type and date in the tooltip', async () => {
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     const icon = within(rowOf('Order crates')).getByTitle('Start No Earlier Than Thu 11/5/26');
     expect(icon.closest('[data-col]')?.getAttribute('data-col')).toBe('indicators');
     expect(icon.getAttribute('aria-label')).toBe('Start No Earlier Than Thu 11/5/26');
@@ -345,7 +346,7 @@ describe('indicators', () => {
   it('a locked schedule marks every row', async () => {
     api.getPlan.mockResolvedValueOnce(outlinePlan({ locked_at: '2026-10-28T15:30:00Z', locked_by_name: 'Dana' }));
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     expect(within(grid()).getAllByTitle('Schedule locked — progress updates only')).toHaveLength(5);
   });
 });
@@ -355,7 +356,7 @@ describe('selection', () => {
     const user = userEvent.setup();
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     const cell = rowOf('Go live').querySelector('[data-col="finish"]') as HTMLElement;
     await user.click(cell);
     expect(rowOf('Go live').getAttribute('aria-selected')).toBe('true');
@@ -369,7 +370,7 @@ describe('deep link (&task=)', () => {
     localStorage.setItem(COLLAPSED_KEY, JSON.stringify(['s1', 's2']));
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab('?tab=plan&task=b');
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     await waitFor(() => expect(rowNames()).toContain('Print labels'));
     expect(rowOf('Print labels').getAttribute('aria-selected')).toBe('true');
     expect(rowNames()).toEqual(['Prep', 'Order crates', 'Labels', 'Print labels', 'Go live']);
@@ -382,7 +383,7 @@ describe('deep link (&task=)', () => {
     }));
     api.getPlan.mockResolvedValueOnce(makePlan({ tasks: many }));
     const { container } = renderTab('?tab=plan&task=t250');
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     const scroller = container.querySelector('.pln-panes') as HTMLElement;
     await waitFor(() => expect(scroller.scrollTop).toBeGreaterThan(0));
     // about row 250 of 30px rows, centered in the 600px pane
@@ -401,7 +402,7 @@ describe('deep link (&task=)', () => {
     localStorage.setItem(COLLAPSED_KEY, JSON.stringify(['s1']));
     api.getPlan.mockResolvedValueOnce(outlinePlan());
     renderTab('?tab=plan&task=nope');
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     expect(rowNames()).toEqual(['Prep', 'Go live']);
     expect(within(grid()).getAllByRole('row').filter((r) => r.getAttribute('aria-selected') === 'true')).toEqual([]);
   });
@@ -414,7 +415,7 @@ describe('large plans (Review Focus 5)', () => {
     }));
     api.getPlan.mockResolvedValueOnce(makePlan({ tasks }));
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     const rows = within(grid()).getAllByRole('row').filter((r) => r.hasAttribute('data-task'));
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.length).toBeLessThan(80);

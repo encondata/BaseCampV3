@@ -26,6 +26,7 @@ import {
 import { makeOpsResult, makePlan, makeTask } from '../../lib/plans/planFixtures';
 import { planShortcutKeys } from '../../lib/plans/shortcuts';
 import { TIP_DELAY_MS } from '../Tip';
+import { findSheet } from './planTabTesting';
 
 const toast = vi.hoisted(() => vi.fn());
 vi.mock('../../lib/notificationsContext', () => ({ useToast: () => toast }));
@@ -110,7 +111,7 @@ function renderTab() {
 async function ready(plan: Plan = plan40()) {
   api.getPlan.mockResolvedValue(plan);
   const view = renderTab();
-  await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+  await findSheet();
   return view;
 }
 

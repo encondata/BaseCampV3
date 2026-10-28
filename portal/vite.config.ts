@@ -38,5 +38,7 @@ export default defineConfig({
     // that one file into real CSS processing so `?raw` yields the actual
     // rules — every other CSS import stays stubbed as before.
     css: { include: [/rack-svg\.css/] },
+    // Testing Library's async queries wait 3 s (see the file)
+    setupFiles: ['./src/test/setup.ts'],
   },
 });

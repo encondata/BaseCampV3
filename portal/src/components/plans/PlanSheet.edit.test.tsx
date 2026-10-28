@@ -26,6 +26,7 @@ import { planView } from '../../lib/plans/merge';
 import { flatTasks, makeLink, makeOpsResult, makePlan, makeRestore, makeTask } from '../../lib/plans/planFixtures';
 import { selectCell, type Selection } from '../../lib/plans/selection';
 import type { PlanController } from './usePlan';
+import { findSheet } from './planTabTesting';
 
 if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
 
@@ -104,7 +105,7 @@ async function ready(plan: Plan = plan3()) {
   api.getPlan.mockResolvedValueOnce(plan);
   const user = userEvent.setup();
   renderTab();
-  await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+  await findSheet();
   return user;
 }
 

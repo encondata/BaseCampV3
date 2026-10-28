@@ -23,6 +23,7 @@ import { makeLink, makeOpsResult, makePlan, makeRestore, makeTask } from '../../
 import { EMPTY_SELECTION, selectCell, type Selection } from '../../lib/plans/selection';
 import type { PlanController } from './usePlan';
 import type { GanttDisplay } from './usePlanCommands';
+import { findSheet } from './planTabTesting';
 
 const toast = vi.hoisted(() => vi.fn());
 vi.mock('../../lib/notificationsContext', () => ({ useToast: () => toast }));
@@ -686,7 +687,7 @@ describe('in the tab', () => {
   async function ready(plan: Plan) {
     api.getPlan.mockResolvedValue(plan);
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
   }
   const tabX = (plan: Plan, time: string) =>
     clientAt(plan, time, 'days', { start: INITIATIVE.scheduled_start, end: INITIATIVE.scheduled_end });
@@ -735,7 +736,7 @@ describe('Task Dependency dialog', () => {
   async function open(plan: Plan) {
     api.getPlan.mockResolvedValue(plan);
     renderTab();
-    await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
+    await findSheet();
     fireEvent.click(q('.pln-link-hit[data-link-hit="ab"]') as HTMLElement);
     return screen.findByRole('dialog', { name: 'Task Dependency' });
   }
