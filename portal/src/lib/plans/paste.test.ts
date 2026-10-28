@@ -11,7 +11,7 @@ import type { AddTaskOp, Op, PlanTask } from './api';
 import { COLUMN_BY_KEY, DEFAULT_VISIBLE, type PlanColumn } from './columns';
 import { PLAN_ERRORS } from './errors';
 import {
-  copyRows, opsForInternalPaste, opsForPaste, parseClipboard, pasteDate, sameClipboard, toTsv, type PasteContext,
+  copyCell, copyRows, opsForInternalPaste, opsForPaste, parseClipboard, pasteDate, sameClipboard, toTsv, type PasteContext,
 } from './paste';
 import { flatTasks, makeLink, makePlan, makeTask } from './planFixtures';
 import { selectCell } from './selection';
@@ -128,6 +128,83 @@ describe('opsForPaste', () => {
       .toEqual({ error: 'Row 1, Predecessors: Task 5 does not exist in this plan.' });
   });
 
+  it('a % that completes goes in the last batch, so only that batch can stop for a completion check', () => {
+    // from % Complete on Go live (3): its own row, then a new row
+    const result = opsForPaste([['100'], ['50']], { id: 'c', col: 'percent' }, COLUMNS, ROWS, ctx());
+    if (!('ops' in result)) throw new Error(result.error);
+    expect(result.ops).toEqual([{ op: 'add_task', temp_id: 't1', parent_id: null }]);
+    expect(result.then?.({ t1: 'n1' })).toEqual([
+      { op: 'set_percent', ids: ['c'], percent: 100 },
+      { op: 'set_percent', ids: ['n1'], percent: 50 },
+    ]);
+    // with no new rows there is one batch, so it is the last one
+    expect(opsForPaste([['100']], { id: 'c', col: 'percent' }, COLUMNS, ROWS, ctx())).toEqual({
+      ops: [{ op: 'set_percent', ids: ['c'], percent: 100 }],
+    });
+  });
+
+  it('rows past the end with nothing to paste add no task; an empty row over existing rows does nothing', () => {
+    const grid = [['', ''], ['Crate', '2d'], ['', ''], ['\t', ' '], ['Load', '']];
+    const result = opsForPaste(grid, { id: 'c', col: 'name' }, COLUMNS, ROWS, ctx());
+    expect(result).toEqual({
+      ops: [
+        { op: 'add_task', temp_id: 't1', parent_id: null, name: 'Crate', duration: '2d' },
+        { op: 'add_task', temp_id: 't2', parent_id: null, name: 'Load' },
+      ],
+    });
+    // the new rows' IDs count only the rows added: Load is 5, so 5 names it
+    const linked = opsForPaste([['A'], [''], ['B', '', '', '', '4']], { id: 'blank', col: 'name' }, COLUMNS, ROWS, ctx());
+    if (!('ops' in linked)) throw new Error(linked.error);
+    expect(linked.ops).toHaveLength(2);
+    expect(linked.then?.({ t1: 'n1', t2: 'n2' })).toEqual([{ op: 'update_task', id: 'n2', fields: { predecessors: '4' } }]);
+  });
+
+  it('counts the filled cells it skips for read-only or hidden columns', () => {
+    // from ID: ID (read-only), Mode, ..., then past the last visible column
+    const wide = [['9', 'Auto Scheduled', 'Survey all', ...Array(8).fill(''), 'past the end', 'more']];
+    const result = opsForPaste(wide, { id: 'a', col: 'id' }, COLUMNS, ROWS, ctx());
+    if (!('ops' in result)) throw new Error(result.error);
+    expect(result.skipped).toBe(3);
+    expect(result.ops).toEqual([{ op: 'update_task', id: 'a', fields: { name: 'Survey all' } }]);
+    // an empty cell in a read-only column isn't counted
+    const quiet = opsForPaste([['', '', 'Survey 2'], ['', '', 'Pack 2']], { id: 'a', col: 'id' }, COLUMNS, ROWS, ctx());
+    expect(quiet).toEqual({ ops: [
+      { op: 'update_task', id: 'a', fields: { name: 'Survey 2' } },
+      { op: 'update_task', id: 'b', fields: { name: 'Pack 2' } },
+    ] });
+  });
+
+  it('Resource Names: the whole cell, then each ;-part, then commas, so a name with a comma reads', () => {
+    const named = ctx({
+      resources: [
+        { kind: 'partner', id: 'x2', name: 'Acme, Inc.', group: 'partner', has_email: true, has_account: false },
+        { kind: 'person', id: 'p1', name: 'Dana Reyes', group: 'team', has_email: true, has_account: true },
+      ],
+    });
+    const at = { id: 'b', col: 'resources' };
+    const both = [{ kind: 'partner', id: 'x2' }, { kind: 'person', id: 'p1' }];
+    for (const text of ['Acme, Inc., Dana Reyes', 'acme, inc.; DANA REYES', 'Acme,Inc.,Dana Reyes']) {
+      expect(opsForPaste([[text]], at, COLUMNS, ROWS, named), text).toEqual({
+        ops: [{ op: 'set_assignees', task_id: 'b', resources: both }],
+      });
+    }
+    expect(opsForPaste([['Acme, Inc.']], at, COLUMNS, ROWS, named)).toEqual({
+      ops: [{ op: 'set_assignees', task_id: 'b', resources: [both[0]] }],
+    });
+    expect(opsForPaste([['Acme, Bob']], at, COLUMNS, ROWS, named)).toEqual({
+      error: 'Row 1, Resource Names: “Acme” isn’t one of this plan’s resources.',
+    });
+    // the plan's own copy reads back
+    const tasks = named.plan.tasks.map((t) => (t.id === 'a'
+      ? { ...t, assignees: [{ kind: 'partner' as const, id: 'x2', name: 'Acme, Inc.' }, { kind: 'person' as const, id: 'p1', name: 'Dana Reyes' }] }
+      : t));
+    const plan = { ...named.plan, tasks };
+    const { text } = copyRows(new Set(['a']), [COLUMN_BY_KEY.get('resources')!], plan);
+    expect(opsForPaste(parseClipboard(text), at, COLUMNS, ROWS, { ...named, plan })).toEqual({
+      ops: [{ op: 'set_assignees', task_id: 'b', resources: both }],
+    });
+  });
+
   it('read-only columns and empty cells are skipped; a summary’s derived dates too', () => {
     const tasks: PlanTask[] = [
       makeTask('s', { display_id: 1, is_summary: true, name: 'Prep' }),
@@ -142,6 +219,19 @@ describe('opsForPaste', () => {
         { op: 'update_task', id: 'k', fields: { mode: 'manual' } },
         { op: 'update_task', id: 'k', fields: { duration: '3d' } },
       ],
+      // the two IDs, and the summary's derived Duration
+      skipped: 3,
+    });
+  });
+
+  it('one cell copies as its own text, the way the sheet shows it (Excel’s single-cell TSV)', () => {
+    const c = ctx();
+    const pack = c.plan.tasks[1];
+    expect(copyCell(pack, COLUMN_BY_KEY.get('duration')!, c.plan)).toBe('1 day\r\n');
+    expect(copyCell({ ...pack, notes: 'Two\nlines' }, COLUMN_BY_KEY.get('notes')!, c.plan)).toBe('"Two\nlines"\r\n');
+    // pasted on another row's Duration, it sets that duration
+    expect(opsForPaste(parseClipboard('3 days\r\n'), { id: 'a', col: 'duration' }, COLUMNS, ROWS, c)).toEqual({
+      ops: [{ op: 'update_task', id: 'a', fields: { duration: '3 days' } }],
     });
   });
 

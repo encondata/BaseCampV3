@@ -9,8 +9,10 @@ import { planErrorDetail, planErrorText } from './errors';
 
 export type ApplyResult =
   /** `tempIds`: each added task's temp_id to its real id, for a second
-   *  batch that names the new rows (a paste's links and resources). */
-  | { ok: true; notices: Notice[]; tempIds: Record<string, string> }
+   *  batch that names the new rows (a paste's links and resources).
+   *  `undoStep`: the undo step the batch went into (null: nothing to undo),
+   *  for a later batch to join (ApplyOptions.joinUndo). */
+  | { ok: true; notices: Notice[]; tempIds: Record<string, string>; undoStep?: number | null }
   | { ok: false; kind: 'confirm'; willComplete: CompletionBlocker[]; openPredecessors: CompletionBlocker[] }
   | { ok: false; kind: 'blocked'; blockers: CompletionBlocker[] }
   | { ok: false; kind: 'error'; message: string; code: string; taskIds?: string[] };

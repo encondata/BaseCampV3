@@ -42,6 +42,8 @@ export interface CommandOps {
   select?: string;
   /** Ask before sending: the selection takes subtasks with it. */
   confirm?: { tasks: number; subtasks: number };
+  /** A paste: filled cells it left out (read-only or hidden columns). */
+  skipped?: number;
 }
 
 export type Command = CommandOps | { error: string };

@@ -61,9 +61,21 @@ export type PlanStatus = 'loading' | 'none' | 'ready' | 'error';
 export interface ApplyOptions {
   /** Resend after a `completion_confirm`: every completing op confirms. */
   confirm?: boolean;
-  /** Undo this batch with the step on top (a paste's second batch). */
-  joinUndo?: boolean;
+  /** Undo this batch with the step on top (a paste's second batch); with a
+   *  step id (ApplyResult `undoStep`), only while that step is still on
+   *  top, else the batch is a step of its own. */
+  joinUndo?: boolean | number;
 }
+
+/** What `applyThen` answers: the first batch's result, and the second's
+ *  (null when it wasn't sent: the first failed, or there was nothing). */
+export interface ApplyThenResult {
+  first: ApplyResult;
+  second: ApplyResult | null;
+}
+
+/** The second batch of `applyThen`, from the first one's answer. */
+export type ThenOps = (first: Extract<ApplyResult, { ok: true }>) => Op[] | null;
 
 /** A PATCH body without `base_version`: the controller sends the version it holds. */
 export type PlanPatchFields = Omit<PlanPatch, 'base_version'>;
@@ -75,6 +87,11 @@ export interface PlanController {
   error: string;                     // load error text
   busy: boolean;                     // a write is queued or in flight
   apply(ops: Op[], label: string, opts?: ApplyOptions): Promise<ApplyResult>;
+  /** Two batches as one write (Ruling B3): `ops`, then — once they went
+   *  through — what `then` builds from their answer (the new rows' ids),
+   *  in the same queue job, so no other write lands between them, and
+   *  joined into the first one's undo step. `opts` go with both. */
+  applyThen(ops: Op[], label: string, then: ThenOps, opts?: ApplyOptions): Promise<ApplyThenResult>;
   undo(): Promise<void>;             // a refusal is a toast; the step stays
   redo(): Promise<void>;
   canUndo: boolean;
@@ -351,7 +368,7 @@ export function usePlan(initiativeId: string): PlanController {
     /** An ops write (a batch, or Update Project): its answer merged and its
      *  inverse handed to `remember` for undo. */
     async function opsWrite(
-      ctx: Job, post: (sentAt: PlanView) => Promise<OpsResult>, remember: (inverse: Op[]) => void,
+      ctx: Job, post: (sentAt: PlanView) => Promise<OpsResult>, remember: (inverse: Op[]) => number | null | void,
     ): Promise<ApplyResult> {
       const sentAt = viewRef.current;
       if (!sentAt) return NO_PLAN;
@@ -361,13 +378,23 @@ export function usePlan(initiativeId: string): PlanController {
       } catch (err) {
         return failed(err, ctx);
       }
+      let undoStep: number | null = null;
       if (ctx.alive()) {
         commitOps(sentAt, out);
-        remember(out.inverse);
+        undoStep = remember(out.inverse) ?? null;
         syncSteps();
       }
-      return { ok: true, notices: out.notices, tempIds: out.temp_ids };
+      return { ok: true, notices: out.notices, tempIds: out.temp_ids, undoStep };
     }
+
+    /** One batch posted and remembered for undo (`apply`'s, and each half of `applyThen`'s). */
+    const batchWrite = (ctx: Job, ops: Op[], label: string, opts: ApplyOptions) => opsWrite(
+      ctx,
+      (at) => postOps(at.plan.id, at.plan.version, opts.confirm ? withConfirm(ops) : ops),
+      (inverse) => (opts.joinUndo === undefined || opts.joinUndo === false
+        ? stackRef.current.push(inverse, label)
+        : stackRef.current.join(inverse, label, opts.joinUndo === true ? undefined : opts.joinUndo)),
+    );
 
     /** Undo or redo: the step on top of that side, replayed. */
     const step = (side: 'undo' | 'redo') => enqueue(async (ctx) => {
@@ -444,14 +471,26 @@ export function usePlan(initiativeId: string): PlanController {
           dropped();
           return PLAN_CHANGED;
         }
-        return opsWrite(
-          ctx,
-          (at) => postOps(at.plan.id, at.plan.version, opts.confirm ? withConfirm(ops) : ops),
-          (inverse) => (opts.joinUndo
-            ? stackRef.current.join(inverse, label)
-            : stackRef.current.push(inverse, label)),
-        );
+        return batchWrite(ctx, ops, label, opts);
       }, GONE),
+
+      applyThen: (ops: Op[], label: string, then: ThenOps, opts: ApplyOptions = {}) =>
+        enqueue<ApplyThenResult>(async (ctx) => {
+          if (ctx.superseded()) {
+            dropped();
+            return { first: PLAN_CHANGED, second: null };
+          }
+          const first = await batchWrite(ctx, ops, label, opts);
+          if (!first.ok || !ctx.alive()) return { first, second: null };
+          const more = then(first);
+          if (!more?.length) return { first, second: null };
+          // the same job: nothing of ours lands between, and the second
+          // batch goes into the first one's undo step
+          const second = await batchWrite(ctx, more, label, {
+            confirm: opts.confirm, joinUndo: first.undoStep ?? false,
+          });
+          return { first, second };
+        }, { first: GONE, second: null }),
 
       undo: () => step('undo'),
       redo: () => step('redo'),
@@ -592,6 +631,7 @@ export function usePlan(initiativeId: string): PlanController {
     error,
     busy: pending > 0,
     apply: actions.apply,
+    applyThen: actions.applyThen,
     undo: actions.undo,
     redo: actions.redo,
     ...steps,

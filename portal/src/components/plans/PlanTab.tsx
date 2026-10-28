@@ -267,8 +267,8 @@ export default function PlanTab({ initiativeId, initiative }: {
     <div className={`pln-tab${isFull ? ' pln-fullscreen' : ''}`} ref={rootRef}>
       {body}
 
-      {/* the clipboard shortcuts' keystroke target (usePlanCommands): never seen or tabbed to */}
-      <textarea ref={clipRef} className="pln-clip" aria-hidden="true" tabIndex={-1} spellCheck={false} />
+      {/* the clipboard shortcuts' keystroke target (usePlanCommands): hidden but for that keystroke */}
+      <textarea ref={clipRef} className="pln-clip" aria-label="Clipboard" tabIndex={-1} spellCheck={false} hidden />
 
       {/* the dialogs host */}
       {dialog?.kind === 'create' && (

@@ -21,6 +21,10 @@ export interface UndoEntry {
   readonly label: string;
   /** The inverse batches, in the order their edits were applied. */
   readonly batches: readonly (readonly Op[])[];
+  /** Which step this is, set by the stack: a batch that comes later (a
+   *  paste's "Complete anyway") joins the step by this id, and only while
+   *  it is still on top. */
+  readonly id?: number;
 }
 
 /** The batches that hold something to send. */
@@ -32,24 +36,31 @@ export class UndoStack {
 
   private redoSteps: UndoEntry[] = [];
 
+  private seq = 0;
+
   constructor(private readonly limit = UNDO_LEVELS) {}
 
-  /** A fresh edit's inverse as a new step; the redo side is gone. */
-  push(inverse: readonly Op[], label: string): void {
-    if (!inverse.length) return;
+  /** A fresh edit's inverse as a new step; the redo side is gone. Answers
+   *  the step's id (null when there was nothing to keep). */
+  push(inverse: readonly Op[], label: string): number | null {
+    if (!inverse.length) return null;
     this.redoSteps = [];
-    this.add(this.undoSteps, { label, batches: [inverse] });
+    return this.add(this.undoSteps, { label, batches: [inverse] });
   }
 
   /** Another batch of the edit on top (applied after its others, so undone
-   *  before them); a new step when there is none. The step keeps its label. */
-  join(inverse: readonly Op[], label: string): void {
-    if (!inverse.length) return;
-    const top = this.undoSteps.pop();
+   *  before them); a new step when there is none. The step keeps its label.
+   *  `into`: join only the step with that id, and only while it is on top
+   *  (else the batch is a step of its own); null never joins. Answers the
+   *  id of the step the batch went into. */
+  join(inverse: readonly Op[], label: string, into?: number | null): number | null {
+    const top = this.undoSteps[this.undoSteps.length - 1];
+    const joins = top !== undefined && into !== null && (into === undefined || top.id === into);
+    if (!inverse.length) return joins ? top.id ?? null : null;
+    if (!joins) return this.push(inverse, label);
+    this.undoSteps.pop();
     this.redoSteps = [];
-    this.add(this.undoSteps, top
-      ? { label: top.label, batches: [...top.batches, inverse] }
-      : { label, batches: [inverse] });
+    return this.add(this.undoSteps, { label: top.label, batches: [...top.batches, inverse], id: top.id });
   }
 
   /** Takes the newest undo step off, for the caller to post. */
@@ -96,12 +107,15 @@ export class UndoStack {
     return this.redoSteps[this.redoSteps.length - 1]?.label ?? null;
   }
 
-  /** Onto `side`, dropping the oldest past the limit; a step with nothing
-   *  to send is not kept. */
-  private add(side: UndoEntry[], entry: UndoEntry): void {
+  /** Onto `side` with its id (a new one when it has none), dropping the
+   *  oldest past the limit; a step with nothing to send is not kept.
+   *  Answers the id, or null. */
+  private add(side: UndoEntry[], entry: UndoEntry): number | null {
     const batches = nonEmpty(entry.batches);
-    if (!batches.length) return;
-    side.push(batches.length === entry.batches.length ? entry : { label: entry.label, batches });
+    if (!batches.length) return null;
+    const id = entry.id ?? (this.seq += 1);
+    side.push({ label: entry.label, batches, id });
     if (side.length > this.limit) side.splice(0, side.length - this.limit);
+    return id;
   }
 }

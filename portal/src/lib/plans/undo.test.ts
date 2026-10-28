@@ -99,6 +99,24 @@ describe('UndoStack', () => {
     expect(stack.undo()).toBeNull();
   });
 
+  it('joins a named step only while it is on top; otherwise the batch is a step of its own', () => {
+    const stack = new UndoStack();
+    const paste = stack.push(batch('add'), 'Paste');
+    expect(paste).toEqual(expect.any(Number));
+    expect(stack.join(batch('links'), 'Paste', paste)).toBe(paste);
+    stack.push(batch('rename'), 'Edit Task Name');
+    // the paste is no longer on top: its late batch (Complete anyway) stands alone
+    const late = stack.join(batch('percent'), 'Paste', paste);
+    expect(late).not.toBe(paste);
+    expect(tags(stack.undo())).toEqual(['percent']);
+    expect(tags(stack.undo())).toEqual(['rename']);
+    expect(tags(stack.undo())).toEqual(['add', 'links']);
+    // null: never join
+    stack.push(batch('x'), 'X');
+    stack.join(batch('y'), 'Y', null);
+    expect(stack.undoLabel).toBe('Y');
+  });
+
   it('keeps the top step’s label when joining, and clears the redo side', () => {
     const stack = new UndoStack();
     stack.push(batch('a'), 'Paste');

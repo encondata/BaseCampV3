@@ -38,14 +38,14 @@ import {
 } from '../../lib/plans/commands';
 import { noticeText } from '../../lib/plans/editOps';
 import { fitZoom, zoomIn as zoomInOf, zoomOut as zoomOutOf, type Zoom } from '../../lib/plans/ganttGeometry';
-import { PLAN_ERRORS, isPlanChanged, planErrorText } from '../../lib/plans/errors';
+import { PLAN_ERRORS, completionText, isPlanChanged, planErrorText } from '../../lib/plans/errors';
 import { descendants } from '../../lib/plans/outline';
 import {
-  copyRows, opsForInternalPaste, opsForPaste, parseClipboard, sameClipboard, type PasteContext, type PlanCopy,
+  copyCell, copyRows, opsForInternalPaste, opsForPaste, parseClipboard, sameClipboard, type PasteContext, type PlanCopy,
 } from '../../lib/plans/paste';
 import { EMPTY_SELECTION, selectCell, type Selection } from '../../lib/plans/selection';
 import { SAID_ALREADY, useCompletionPrompt } from './useCompletionPrompt';
-import type { ApplyOptions, PlanController } from './usePlan';
+import type { PlanController } from './usePlan';
 import { keysBelongElsewhere, type PlanShortcutHandlers } from './usePlanShortcuts';
 
 /** Task 10's dialogs: wired to these kinds, rendered by PlanTab's host
@@ -71,8 +71,38 @@ export const PASTE_LABEL = 'Paste';
 const PASTE_WAIT_MS = 120;
 
 /** The last copy of whole tasks, kept for the page's life: a paste of the
- *  same text into any plan re-creates them. */
+ *  same text into any plan re-creates them. A copy of one cell clears it. */
 let lastCopy: PlanCopy | null = null;
+
+/** How a command words a second batch that didn't go in. */
+interface PartWords {
+  /** The toast: why, and whether Undo still takes the first batch back. */
+  said(reason: string, undoable: boolean): string;
+  /** Before a completion check's own words ("Complete anyway"). */
+  lead: string;
+}
+
+const PART_WORDS: PartWords = {
+  said: (reason, undoable) => `Only part of that went in. ${reason}${undoable ? ' Undo takes it back.' : ''}`,
+  lead: 'Only part of that went in. ',
+};
+
+const PASTE_WORDS: PartWords = {
+  said: (reason, undoable) => `Rows were added, but some values couldn’t be set: ${reason}`
+    + `${undoable ? ' Undo removes the whole paste.' : ''}`,
+  lead: 'Rows were added. ',
+};
+
+/** The paste toast for filled cells it left out. */
+const skippedText = (n: number) =>
+  `${n} cell${n === 1 ? ' was' : 's were'} skipped (read-only or hidden columns).`;
+
+/** Text the person selected on the page (the lock banner, a toast): a
+ *  copy of it is the browser's, not the sheet's. */
+function textSelected(): boolean {
+  const selection = typeof window.getSelection === 'function' ? window.getSelection() : null;
+  return !!selection && !selection.isCollapsed && selection.toString() !== '';
+}
 
 /** The Gantt's display options (Task 8 draws them). */
 export interface GanttDisplay {
@@ -183,8 +213,7 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
 
   /** One answer said: notices with Undo, a stopped completion to the
    *  prompt, a refusal as a toast (unless usePlan said it already). */
-  const answered = useCallback((result: ApplyResult, ops: Op[], label: string, opts: ApplyOptions = {},
-    frame: (message: string) => string = (message) => message): boolean => {
+  const answered = useCallback((result: ApplyResult, ops: Op[], label: string): boolean => {
     const { toast: say, prompt: ask } = latest.current;
     if (result.ok) {
       for (const notice of result.notices) {
@@ -193,34 +222,62 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
       return true;
     }
     if (result.kind !== 'error') {
-      ask(result, ops, label, opts);
+      ask(result, ops, label);
       return false;
     }
-    if (!SAID_ALREADY.has(result.code) && result.message) say(frame(result.message));
+    if (!SAID_ALREADY.has(result.code) && result.message) say(result.message);
     return false;
   }, []);
 
-  /** Sends a command (both batches) and answers its new tasks' ids. */
+  /** A second batch that didn't go in, said as the outcome of the whole
+   *  command: the first batch's rows stay (its undo step takes them back);
+   *  a completion stop's "Complete anyway" resends the second batch into
+   *  that same step. */
+  const partlyDone = useCallback((second: Exclude<ApplyResult, { ok: true }>, more: Op[], label: string,
+    step: number | null | undefined, words: PartWords) => {
+    const { toast: say, prompt: ask } = latest.current;
+    if (second.kind === 'confirm') {
+      ask(second, more, label, { joinUndo: step ?? false }, (text) => `${words.lead}${text}`);
+    } else if (second.kind === 'blocked') {
+      say(words.said(completionText(second), true));
+    } else if (second.code === 'plan_changed') {
+      say(words.said('someone else changed the plan, so it was reloaded.', false));
+    } else if (second.code !== 'gone' && second.message) {
+      say(words.said(second.message, true));
+    }
+  }, []);
+
+  /** Sends a command — both batches in one write (applyThen) — and
+   *  answers its new tasks' ids. */
   const run = useCallback(async (cmd: Command, label: string,
-    after?: (ids: Readonly<Record<string, string>>) => void): Promise<boolean> => {
+    after?: (ids: Readonly<Record<string, string>>) => void, words: PartWords = PART_WORDS): Promise<boolean> => {
+    const say = latest.current.toast;
     if ('error' in cmd) {
-      latest.current.toast(cmd.error);
+      say(cmd.error);
       return false;
     }
-    if (!cmd.ops.length) return false;
-    const first = await latest.current.ctl.apply(cmd.ops, label);
-    if (!answered(first, cmd.ops, label) || !first.ok) return false;
-    const ids = { ...first.tempIds };
-    const more = cmd.then?.(first.tempIds) ?? [];
-    if (more.length) {
-      // the first batch is in: say what didn't go, and that Undo takes it all back
-      const second = await latest.current.ctl.apply(more, label, { joinUndo: true });
-      const partly = (message: string) => `Only part of that went in. ${message} Undo takes it back.`;
-      if (!answered(second, more, label, { joinUndo: true }, partly)) return false;
+    const skipped = () => { if (cmd.skipped) say(skippedText(cmd.skipped)); };
+    if (!cmd.ops.length) {
+      skipped();
+      return false;
     }
-    after?.(ids);
+    const then = cmd.then;
+    let more: Op[] = [];
+    const { first, second } = await latest.current.ctl.applyThen(cmd.ops, label, then
+      ? (done) => { more = then(done.tempIds); return more; }
+      : () => null);
+    // a stop in the first batch is a one-batch command's (every completing
+    // op rides in the last batch): the prompt resends it as it was
+    if (!answered(first, cmd.ops, label) || !first.ok) return false;
+    if (second && !second.ok) {
+      partlyDone(second, more, label, first.undoStep, words);
+      return false;
+    }
+    if (second) answered(second, more, label);
+    skipped();
+    after?.(first.tempIds);
     return true;
-  }, [answered]);
+  }, [answered, partlyDone]);
 
   /** A command on the selection, for the plan on screen. `need`: what it
    *  changes — progress (any plan the person may change), the schedule
@@ -292,16 +349,30 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
   }, [run]);
 
   // ── the clipboard ──
-  /** The selection as TSV plus a copy of the tasks (kept as `lastCopy`). */
-  const makeCopy = useCallback((): PlanCopy | null => {
+  /**
+   * What a copy takes. Whole tasks — TSV of the rows plus a copy of the
+   * tasks (`lastCopy`, which a paste re-creates) — when rows were picked by
+   * their numbers or the active cell is an ID or a Task Name; else the one
+   * active cell's text, as Excel copies a cell (and `lastCopy` goes).
+   */
+  const makeCopy = useCallback((): { text: string; tasks: boolean } | null => {
     const { ctl: now, sheet: view } = latest.current;
     const plan = now.plan;
-    if (!plan) return null;
-    const chosen = selectedTasks(view.selection, plan);
+    const sel = view.selection;
+    if (!plan || !sel.active) return null;
+    const active = sel.active;
+    if (sel.rows.size < 2 && active.col !== 'id' && active.col !== 'name') {
+      const task = plan.tasks.find((t) => t.id === active.id);
+      const column = COLUMN_BY_KEY.get(active.col);
+      if (!task || !column) return null;
+      lastCopy = null;
+      return { text: copyCell(task, column, plan), tasks: false };
+    }
+    const chosen = selectedTasks(sel, plan);
     if (!chosen.length) return null;
     const { copy } = copyRows(new Set(chosen.map((t) => t.id)), visibleColumns(), plan);
     lastCopy = copy;
-    return copy;
+    return { text: copy.text, tasks: true };
   }, []);
 
   /** What the copy or cut shortcut put together, for the clipboard event
@@ -316,6 +387,8 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
   const toClip = useCallback((text: string) => {
     const field = clip.current;
     if (!field) return;
+    // `hidden` at rest: out of the accessibility tree except for this keystroke
+    field.hidden = false;
     field.value = text;
     field.focus({ preventScroll: true });
     field.select();
@@ -323,8 +396,12 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
 
   const backToSheet = useCallback(() => {
     const field = clip.current;
-    if (field) field.value = '';
-    if (!field || document.activeElement === field) focusSheet();
+    const had = !!field && document.activeElement === field;
+    if (field) {
+      field.value = '';
+      field.hidden = true;
+    }
+    if (!field || had) focusSheet();
   }, [clip, focusSheet]);
 
   const writeClipboard = useCallback((text: string, cut: boolean) => {
@@ -338,20 +415,24 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
     void navigator.clipboard?.writeText?.(text).catch(() => undefined);
   }, [toClip, backToSheet]);
 
+  /** Copy; false (the browser's own copy) when there is nothing of the
+   *  sheet's to copy, or the person selected text on the page. */
   const copy = useCallback((): boolean => {
+    if (textSelected()) return false;
     const made = makeCopy();
     if (!made) return false;
     writeClipboard(made.text, false);
     return true;
   }, [makeCopy, writeClipboard]);
 
-  /** Copy, then Delete; a reader's cut is a copy. */
+  /** Copy, then Delete the tasks; a cut of one cell, or a reader's, is a copy. */
   const cut = useCallback((): boolean => {
+    if (textSelected()) return false;
     if (!latest.current.ctl.plan?.permissions.change) return copy();
     const made = makeCopy();
     if (!made) return false;
-    writeClipboard(made.text, true);
-    deleteTasks();
+    writeClipboard(made.text, made.tasks);
+    if (made.tasks) deleteTasks();
     return true;
   }, [copy, deleteTasks, makeCopy, writeClipboard]);
 
@@ -368,7 +449,8 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
     }
     const grid = parseClipboard(text);
     if (!grid.length) return;
-    void run(opsForPaste(grid, view.selection.active, visibleColumns(), view.rows, ctx), PASTE_LABEL);
+    void run(opsForPaste(grid, view.selection.active, visibleColumns(), view.rows, ctx), PASTE_LABEL, undefined,
+      PASTE_WORDS);
   }, [contextOf, run, selectNew]);
 
   // the browser's own clipboard events: on the hidden field after a
@@ -377,16 +459,25 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
     const el = root.current;
     if (!el) return undefined;
     const ours = (target: EventTarget | null) => target === clip.current || !keysBelongElsewhere(target);
+    /** A copy or cut that is the sheet's: from the hidden field after a
+     *  shortcut, or with the sheet focused and no text selected (else the
+     *  browser copies the text the person selected). */
+    const sheetCopy = (target: EventTarget | null) => {
+      if (target === clip.current) return true;
+      const focus = document.activeElement;
+      return !textSelected() && focus instanceof HTMLElement && focus.classList.contains('pln-sheet');
+    };
     const onCopy = (e: ClipboardEvent) => {
-      if (!ours(e.target)) return;
+      if (!sheetCopy(e.target)) return;
       const ready = armed.current;
       armed.current = null;
-      const text = ready?.text ?? makeCopy()?.text;
+      const made = ready ? null : makeCopy();
+      const text = ready?.text ?? made?.text;
       if (text === undefined || !e.clipboardData) return;
       e.clipboardData.setData('text/plain', text);
       e.preventDefault();
-      // a cut from the browser's own menu (the shortcut has deleted already)
-      if (e.type === 'cut' && !ready?.cut) deleteTasks();
+      // a cut from the browser's own menu (the shortcut deleted already)
+      if (e.type === 'cut' && made?.tasks && latest.current.ctl.plan?.permissions.change) deleteTasks();
     };
     const onPaste = (e: ClipboardEvent) => {
       if (!ours(e.target)) return;

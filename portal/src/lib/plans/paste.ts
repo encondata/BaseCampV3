@@ -16,8 +16,11 @@
  *   across the visible columns, row by row, as typing each value would
  *   (editOps.opsForCell, so every value is checked the same way and a
  *   refusal names its row and column before anything is sent). Rows past
- *   the last one become new tasks at the end. Read-only columns, empty
- *   cells and a summary's derived dates are skipped.
+ *   the last one become new tasks at the end, unless they hold nothing to
+ *   paste. Empty cells are left alone; filled cells in read-only or hidden
+ *   columns, and a summary's derived dates, are skipped and counted
+ *   (`skipped`, for the toast).
+ * - `copyCell`: one cell's text, for a copy of a single cell (Excel's).
  *
  * Ruling B3: the API can't name a task added earlier in the same batch,
  * so a paste that adds rows sends two batches: the adds (with the fields
@@ -26,7 +29,10 @@
  * the ids the first batch answers (`then`), joined into one undo step.
  * Every Predecessors value waits for the second batch then, since any of
  * them may name a new row by the ID it gets (the new rows go at the end,
- * so they take the next IDs and no existing ID moves).
+ * so they take the next IDs and no existing ID moves), and so does every
+ * % Complete: only the last batch can stop for a completion check, so
+ * "Complete anyway" resends just that batch, into the paste's undo step.
+ * PlanController.applyThen sends both in one write.
  *
  * A batch is at most 5,000 ops (MAX_OPS): a paste that needs more in
  * either batch is refused whole, with the count, rather than split.
@@ -369,15 +375,57 @@ function newRow(id: string): PlanTask {
   };
 }
 
-/** Lower-cased resource names to their editor keys (`person:<id>`): the
+/** A resource name as it compares: lower case, single spaces, no space
+ *  around a comma ("Acme, Inc." and "acme,inc." are one name). */
+const nameKey = (name: string) => name.toLowerCase().replace(/\s*,\s*/g, ',').replace(/\s+/g, ' ').trim();
+
+/** Resource names (nameKey) to their editor keys (`person:<id>`): the
  *  plan's resources, then the row's own assignees. */
 function resourceNames(plan: Plan, task: PlanTask | null): Map<string, string> {
   const names = new Map<string, string>();
   for (const r of [...plan.resources, ...(task?.assignees ?? [])]) {
-    const name = r.name.trim().toLowerCase();
+    const name = nameKey(r.name);
     if (!names.has(name)) names.set(name, resourceKey(r));
   }
   return names;
+}
+
+const shortName = (name: string) => (name.length > 40 ? `${name.slice(0, 40)}...` : name);
+
+/**
+ * A Resource Names cell as editor keys. The whole cell is tried as one
+ * name first, then each `;`-separated part, and only then the commas
+ * (MS Project's separator), taking the longest run of comma pieces that
+ * names a resource each time — so "Acme, Inc., Dana Reyes" is two names,
+ * and the sheet's own copy reads back.
+ */
+function resourceKeys(raw: string, names: ReadonlyMap<string, string>): string[] | { error: string } {
+  const whole = names.get(nameKey(raw));
+  if (whole) return [whole];
+  const keys: string[] = [];
+  const take = (key: string) => { if (!keys.includes(key)) keys.push(key); };
+  for (const part of raw.split(';')) {
+    if (!part.trim()) continue;
+    const exact = names.get(nameKey(part));
+    if (exact) {
+      take(exact);
+      continue;
+    }
+    const pieces = part.split(',');
+    let at = 0;
+    while (at < pieces.length) {
+      if (!pieces[at].trim()) {
+        at += 1;
+        continue;
+      }
+      let end = pieces.length;
+      while (end > at && !names.has(nameKey(pieces.slice(at, end).join(',')))) end -= 1;
+      if (end === at) return { error: `“${shortName(pieces[at].trim())}” isn’t one of this plan’s resources.` };
+      take(names.get(nameKey(pieces.slice(at, end).join(',')))!);
+      at = end;
+    }
+  }
+  return keys;
 }
 
 /** A pasted cell as the text its column's editor takes, or why it can't be. */
@@ -392,16 +440,8 @@ function editorText(column: PlanColumn, raw: string, plan: Plan, task: PlanTask 
       return option ? option.value : { error: `Use one of: ${(column.options ?? []).map((o) => o.label).join(', ')}.` };
     }
     case 'resources': {
-      const names = resourceNames(plan, task);
-      const keys: string[] = [];
-      for (const part of raw.split(/[,;]/)) {
-        const name = part.trim();
-        if (!name) continue;
-        const key = names.get(name.toLowerCase());
-        if (!key) return { error: `“${name.length > 40 ? `${name.slice(0, 40)}...` : name}” isn’t one of this plan’s resources.` };
-        if (!keys.includes(key)) keys.push(key);
-      }
-      return keys.join(',');
+      const keys = resourceKeys(raw, resourceNames(plan, task));
+      return Array.isArray(keys) ? keys.join(',') : keys;
     }
     default:
       // a name is one line
@@ -426,16 +466,26 @@ export function opsForPaste(
   if (!grid.length) return { ops: [] };
 
   const filled = Math.max(0, Math.min(grid.length, rows.length - startRow));
-  const adding = grid.length - filled;
-  if (adding > 0 && !canAddTasks(plan)) return noAdding(plan);
+  /** The column a pasted cell lands in, when it is one a paste fills. */
+  const target = (c: number) => {
+    const column = columns[startCol + c];
+    return column && column.editor !== 'none' ? column : null;
+  };
+  const hasValue = (raw: string) => asciiTrim(raw) !== '';
+  // rows past the end become tasks only when they hold something to paste
+  const fresh = new Map<number, string>();
+  for (let r = filled; r < grid.length; r += 1) {
+    if (grid[r].some((raw, c) => hasValue(raw) && target(c) !== null)) fresh.set(r, '');
+  }
+  if (fresh.size > 0 && !canAddTasks(plan)) return noAdding(plan);
+  for (const r of fresh.keys()) fresh.set(r, ctx.tempId());
 
   const byId = new Map(plan.tasks.map((t) => [t.id, t]));
-  const temps = Array.from({ length: adding }, () => ctx.tempId());
   // the new rows go at the end: they take the next display IDs
   const count = plan.tasks.length;
   const displayOf = new Map<string, number>([
     ...plan.tasks.map((t): [string, number] => [t.id, t.display_id]),
-    ...temps.map((t, i): [string, number] => [t, count + i + 1]),
+    ...[...fresh.values()].map((t, i): [string, number] => [t, count + i + 1]),
   ]);
   const edit: EditContext = {
     units: planUnits(plan),
@@ -444,31 +494,42 @@ export function opsForPaste(
     tempId: ctx.tempId,
     appendParentId: ctx.appendParentId,
   };
+  // with new rows there are two batches: what names them, and every %
+  // (only the last batch may stop for a completion check), goes second
+  const twoBatches = fresh.size > 0;
+  const goesSecond = (op: Op) => op.op === 'set_percent' || op.op === 'complete' || op.op === 'mark_on_track'
+    || (op.op === 'update_task' && (op.fields.predecessors !== undefined || op.fields.percent_complete !== undefined));
 
   const first: Op[] = [];
   const later: Op[] = [];
+  let skipped = 0;
   for (let r = 0; r < grid.length; r += 1) {
     const task = r < filled ? byId.get(rows[startRow + r]) ?? null : null;
     if (r < filled && !task) return { error: 'That row no longer exists, so reload the plan and try again.' };
-    const add: AddTaskOp | null = task ? null : { op: 'add_task', temp_id: temps[r - filled], parent_id: ctx.appendParentId };
-    const target = task ?? newRow(add!.temp_id!);
+    const temp = fresh.get(r);
+    const add: AddTaskOp | null = temp ? { op: 'add_task', temp_id: temp, parent_id: ctx.appendParentId } : null;
     for (let c = 0; c < grid[r].length; c += 1) {
-      const column = columns[startCol + c];
       const raw = grid[r][c];
-      if (!column || column.editor === 'none' || asciiTrim(raw) === '') continue;
+      if (!hasValue(raw)) continue;
+      const column = target(c);
+      // read-only, or past the visible columns; a summary's derived values too
+      if (!column || (task?.is_summary && SUMMARY_DERIVED.has(column.key))) {
+        skipped += 1;
+        continue;
+      }
+      if (!task && !add) continue;
       const where = `Row ${r + 1}, ${column.label}`;
       if (task) {
-        if (task.is_summary && SUMMARY_DERIVED.has(column.key)) continue;    // derived: nothing to paste over
         if (!plan.permissions.change) return { error: `${where}: ${PLAN_ERRORS.forbidden}` };
         if (plan.locked_at && !LOCKED_COLUMNS.has(column.key)) return { error: `${where}: ${PLAN_ERRORS.plan_locked}` };
       }
       const text = editorText(column, raw, plan, task);
       if (typeof text !== 'string') return { error: `${where}: ${text.error}` };
-      const cell = opsForCell(target, column, text, edit);
+      const cell = opsForCell(task ?? newRow(temp!), column, text, edit);
       if ('error' in cell) return { error: `${where}: ${cell.error}` };
       for (const op of cell.ops) {
         if (add && op.op === 'update_task' && ADD_FIELDS.has(column.key)) Object.assign(add, op.fields);
-        else if (add || (adding > 0 && column.key === 'predecessors')) later.push(op);
+        else if (add || (twoBatches && goesSecond(op))) later.push(op);
         else first.push(op);
       }
     }
@@ -477,7 +538,19 @@ export function opsForPaste(
 
   const big = tooBig(first, later);
   if (big) return big;
-  return later.length
-    ? { ops: first, then: (ids: Readonly<Record<string, string>>) => renamed(later, ids) }
-    : { ops: first };
+  return {
+    ops: first,
+    ...(later.length ? { then: (ids: Readonly<Record<string, string>>) => renamed(later, ids) } : {}),
+    ...(skipped ? { skipped } : {}),
+  };
+}
+
+/** One cell as the clipboard gets it: its text as the sheet shows it (a
+ *  note whole), as Excel writes a single copied cell. */
+export function copyCell(task: PlanTask, column: PlanColumn, plan: Plan): string {
+  const ctx: SheetContext = {
+    showTimes: plan.settings.show_times, units: planUnits(plan), timeZone: plan.timezone,
+    locked: plan.locked_at !== null,
+  };
+  return toTsv([[cellText(column, task, ctx)]]);
 }

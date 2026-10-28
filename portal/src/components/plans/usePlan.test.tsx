@@ -173,7 +173,7 @@ describe('apply', () => {
     }));
     const res = await call(() => result.current.apply(rename, 'Rename'));
     expect(api.postOps).toHaveBeenCalledWith('plan-1', 5, rename);
-    expect(res).toEqual({
+    expect(res).toMatchObject({
       ok: true, notices: [{ code: 'constraint_added', task_id: 'b', constraint_type: 'snet' }], tempIds: {},
     });
     const plan = result.current.plan!;
@@ -201,7 +201,7 @@ describe('apply', () => {
     }));
     const res = await call(() => result.current.apply(
       [{ op: 'add_task', temp_id: 't1' }, { op: 'add_task', temp_id: 't2' }], 'Insert Task'));
-    expect(res).toEqual({ ok: true, notices: [], tempIds: { t1: 'task-9', t2: 'task-10' } });
+    expect(res).toMatchObject({ ok: true, notices: [], tempIds: { t1: 'task-9', t2: 'task-10' } });
   });
 
   it('puts the inverse on the undo stack; undo posts it as received and redo posts its answer', async () => {
@@ -265,8 +265,8 @@ describe('apply', () => {
 
     first.resolve(makeOpsResult({ version: 6 }));
     const [r1, r2] = await call(() => Promise.all([one, two]));
-    expect(r1).toEqual({ ok: true, notices: [], tempIds: {} });
-    expect(r2).toEqual({ ok: true, notices: [], tempIds: {} });
+    expect(r1).toMatchObject({ ok: true, notices: [], tempIds: {} });
+    expect(r2).toMatchObject({ ok: true, notices: [], tempIds: {} });
     expect(api.postOps).toHaveBeenCalledTimes(2);
     expect(api.postOps.mock.calls[1]).toEqual(['plan-1', 6, second]);
     expect(result.current.plan?.version).toBe(7);
@@ -491,6 +491,102 @@ describe('grouped undo', () => {
   });
 });
 
+describe('applyThen (a paste: rows, then what names them)', () => {
+  const add: Op[] = [{ op: 'add_task', temp_id: 't1', name: 'Crate' }];
+  const addResult = (over: Partial<OpsResult> = {}) => makeOpsResult({
+    version: 6, inverse: [makeRestore('one')], temp_ids: { t1: 'n' },
+    tasks: [makeTask('n', { display_id: 4, position: 3, name: 'Crate' })], order: ['a', 'b', 'c', 'n'], ...over,
+  });
+  const linkNew = (first: { tempIds: Record<string, string> }): Op[] =>
+    [{ op: 'update_task', id: first.tempIds.t1, fields: { predecessors: '1' } }];
+
+  it('sends the second batch with the ids the first answered, and both undo as one step', async () => {
+    const { result } = await loaded();
+    api.postOps
+      .mockResolvedValueOnce(addResult())
+      .mockResolvedValueOnce(makeOpsResult({ version: 7, inverse: [makeRestore('two')] }));
+    const out = await call(() => result.current.applyThen(add, 'Paste', linkNew));
+    expect(out.first.ok && out.second?.ok).toBe(true);
+    expect(api.postOps.mock.calls[1]).toEqual(['plan-1', 6, [{ op: 'update_task', id: 'n', fields: { predecessors: '1' } }]]);
+    expect(result.current.undoLabel).toBe('Paste');
+    api.postOps
+      .mockResolvedValueOnce(makeOpsResult({ version: 8 }))
+      .mockResolvedValueOnce(makeOpsResult({ version: 9 }));
+    await call(() => result.current.undo());
+    expect(api.postOps.mock.calls[2][2]).toEqual([makeRestore('two')]);
+    expect(api.postOps.mock.calls[3][2]).toEqual([makeRestore('one')]);
+    expect(result.current.canUndo).toBe(false);
+  });
+
+  it('a write asked for while the paste runs lands after both batches, never between them', async () => {
+    const { result } = await loaded();
+    const held = deferred<OpsResult>();
+    api.postOps
+      .mockReturnValueOnce(held.promise)
+      .mockResolvedValueOnce(makeOpsResult({ version: 7, inverse: [makeRestore('two')] }))
+      .mockResolvedValueOnce(makeOpsResult({ version: 8, inverse: [makeRestore('three')] }));
+    let paste!: Promise<unknown>;
+    let edit!: Promise<unknown>;
+    act(() => {
+      paste = result.current.applyThen(add, 'Paste', linkNew);
+      edit = result.current.apply(rename, 'Edit Task Name');
+    });
+    await act(async () => { held.resolve(addResult()); await paste; await edit; });
+    expect(api.postOps.mock.calls.map((c) => c[2])).toEqual([
+      add, [{ op: 'update_task', id: 'n', fields: { predecessors: '1' } }], rename,
+    ]);
+    expect(api.postOps.mock.calls.map((c) => c[1])).toEqual([5, 6, 7]);
+    // two steps: the edit, then the paste (both of its batches)
+    expect(result.current.undoLabel).toBe('Edit Task Name');
+  });
+
+  it('a first batch the rules stop sends no second one', async () => {
+    const { result } = await loaded();
+    api.postOps.mockRejectedValueOnce(apiError(409, {
+      code: 'completion_confirm', will_complete: [], open_predecessors: [blocker('a', 1, 'predecessor')],
+    }));
+    const then = vi.fn(linkNew);
+    const out = await call(() => result.current.applyThen(add, 'Paste', then));
+    expect(out.first).toMatchObject({ ok: false, kind: 'confirm' });
+    expect(out.second).toBeNull();
+    expect(then).not.toHaveBeenCalled();
+    expect(api.postOps).toHaveBeenCalledTimes(1);
+  });
+
+  it('a refused second batch leaves the first in, as the paste’s one undo step', async () => {
+    const { result } = await loaded();
+    api.postOps
+      .mockResolvedValueOnce(addResult())
+      .mockRejectedValueOnce(apiError(422, { code: 'link_cycle', display_ids: [1, 4] }));
+    const out = await call(() => result.current.applyThen(add, 'Paste', linkNew));
+    expect(out.first.ok).toBe(true);
+    expect(out.second).toMatchObject({ ok: false, kind: 'error', code: 'link_cycle' });
+    expect(result.current.plan?.tasks.map((t) => t.id)).toEqual(['a', 'b', 'c', 'n']);
+    expect(result.current.undoLabel).toBe('Paste');
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 7, deleted_tasks: ['n'], order: ['a', 'b', 'c'] }));
+    await call(() => result.current.undo());
+    expect(api.postOps.mock.lastCall?.[2]).toEqual([makeRestore('one')]);
+    expect(result.current.canUndo).toBe(false);
+  });
+
+  it('a late batch joins the step it names only while that step is still on top', async () => {
+    const { result } = await loaded();
+    api.postOps
+      .mockResolvedValueOnce(makeOpsResult({ version: 6, inverse: [makeRestore('paste')] }))
+      .mockResolvedValueOnce(makeOpsResult({ version: 7, inverse: [makeRestore('edit')] }))
+      .mockResolvedValueOnce(makeOpsResult({ version: 8, inverse: [makeRestore('late')] }));
+    const first = await call(() => result.current.apply(rename, 'Paste'));
+    if (!first.ok) throw new Error('paste failed');
+    await call(() => result.current.apply(relink, 'Edit Predecessors'));
+    await call(() => result.current.apply(rename, 'Paste', { joinUndo: first.undoStep ?? false }));
+    // the paste's step isn't on top any more: the late batch is its own step
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 9 }));
+    await call(() => result.current.undo());
+    expect(api.postOps.mock.lastCall?.[2]).toEqual([makeRestore('late')]);
+    expect(result.current.undoLabel).toBe('Edit Predecessors');
+  });
+});
+
 describe('undo failures', () => {
   it('keeps a step the API refused, says why, and leaves the plan as it was', async () => {
     const { result } = await loaded();
@@ -611,7 +707,7 @@ describe('plan-level writes', () => {
     const body = { status_date: '2026-11-03', complete_through: '2026-11-03' };
     const res = await call(() => result.current.updateProject(body));
     expect(api.updateProject).toHaveBeenCalledWith('plan-1', body);
-    expect(res).toEqual({ ok: true, notices: [], tempIds: {} });
+    expect(res).toMatchObject({ ok: true, notices: [], tempIds: {} });
     expect(api.getPlan).toHaveBeenCalledTimes(2);
     expect(result.current.plan?.status_date).toBe('2026-11-03T17:00');
     expect(result.current.canUndo).toBe(true);
@@ -1128,7 +1224,7 @@ describe('a controller the tab has moved on from', () => {
     unmount();
     first.resolve(makeOpsResult({ version: 6 }));
     const [r1, r2] = await Promise.all([one, two]);
-    expect(r1).toEqual({ ok: true, notices: [], tempIds: {} });
+    expect(r1).toMatchObject({ ok: true, notices: [], tempIds: {} });
     expect(r2).toEqual({ ok: false, kind: 'error', code: 'gone', message: '' });
     expect(api.postOps).toHaveBeenCalledTimes(1);
   });

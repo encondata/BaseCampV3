@@ -21,7 +21,11 @@ import type { ApplyOptions, PlanController } from './usePlan';
 
 export type CompletionStop = Extract<ApplyResult, { kind: 'confirm' | 'blocked' }>;
 
-export type CompletionPrompt = (stop: CompletionStop, ops: Op[], label: string, opts?: ApplyOptions) => void;
+/** `opts` go with the resend (`joinUndo`: a paste's last batch joins the
+ *  paste's own undo step); `frame` words the toast in context ("Rows were
+ *  added. …"). */
+export type CompletionPrompt = (stop: CompletionStop, ops: Op[], label: string, opts?: ApplyOptions,
+  frame?: (text: string) => string) => void;
 
 /** Errors usePlan has already told the person about (or that mean the tab
  *  moved on): no second toast. */
@@ -34,12 +38,13 @@ export function useCompletionPrompt(ctl: PlanController): CompletionPrompt {
     ctlRef.current = ctl;
   }, [ctl]);
 
-  return useCallback((stop: CompletionStop, ops: Op[], label: string, opts: ApplyOptions = {}) => {
+  return useCallback((stop: CompletionStop, ops: Op[], label: string, opts: ApplyOptions = {},
+    frame: (text: string) => string = (text) => text) => {
     if (stop.kind === 'blocked') {
-      toast(completionText(stop));
+      toast(frame(completionText(stop)));
       return;
     }
-    toast(completionText(stop), {
+    toast(frame(completionText(stop)), {
       label: 'Complete anyway',
       onClick: () => {
         void ctlRef.current.apply(ops, label, { ...opts, confirm: true }).then((again) => {
