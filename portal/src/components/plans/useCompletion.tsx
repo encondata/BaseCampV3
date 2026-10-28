@@ -36,6 +36,7 @@ import { useToast, type ToastAction } from '../../lib/notificationsContext';
 import type { Notice, Op } from '../../lib/plans/api';
 import type { ApplyResult } from '../../lib/plans/applyResult';
 import { noticeText } from '../../lib/plans/editOps';
+import { planErrorText } from '../../lib/plans/errors';
 import CompletionDialog from './CompletionDialog';
 import type { PlanController } from './usePlan';
 
@@ -161,14 +162,21 @@ export function useCompletion(ctl: PlanController, opts: { onGoTo?(taskId: strin
     if (!current) return null;
     const confirm = async () => {
       setBusy(true);
-      const again = await current.resend();
-      if (!again.ok && again.kind !== 'error') {
-        // stopped again (the plan changed meanwhile): this stop takes its place
-        setWaiting((list) => list.map((x) => (x.id === current.id ? { ...x, stop: again } : x)));
+      // a resend that throws is said, and leaves the dialog usable (Complete
+      // or Cancel), never stuck busy
+      try {
+        const again = await current.resend();
+        if (!again.ok && again.kind !== 'error') {
+          // stopped again (the plan changed meanwhile): this stop takes its place
+          setWaiting((list) => list.map((x) => (x.id === current.id ? { ...x, stop: again } : x)));
+          return;
+        }
+        finish(current, again);
+      } catch (err) {
+        latest.current.toast(planErrorText(err));
+      } finally {
         setBusy(false);
-        return;
       }
-      finish(current, again);
     };
     return (
       <CompletionDialog key={current.id} result={current.stop} lead={current.lead} busy={busy}

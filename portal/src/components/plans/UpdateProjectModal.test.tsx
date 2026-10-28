@@ -55,6 +55,15 @@ describe('Update project', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
+  it('a blank status date sends null: the status date is always now', async () => {
+    const { updateProject, onClose, user } = open(PLAN);
+    expect(within(dialog()).getByText('Blank: the status date is always now.')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Status date'), { target: { value: '' } });
+    await user.click(within(dialog()).getByRole('button', { name: 'Update' }));
+    await waitFor(() => expect(updateProject).toHaveBeenCalledWith({ status_date: null }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
   it('posts complete_through only when its switch is on', async () => {
     const { updateProject, user } = open(PLAN);
     await user.click(screen.getByRole('checkbox', { name: 'Update work as complete through' }));

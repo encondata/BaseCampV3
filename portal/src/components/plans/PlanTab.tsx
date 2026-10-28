@@ -17,8 +17,9 @@
  *    same row; or the sheet alone), each pane with its own sideways scroll
  *    (SidePane: the design is in Splitter.tsx); Calendar and Board arrive
  *    in Plan C;
- *  - the dialogs host: one PlanModal-based dialog at a time (`PlanDialog`),
- *    and over it the completion check (useCompletion: every 100% path,
+ *  - the dialogs host: one PlanModal-based dialog at a time (`PlanDialog`;
+ *    one from More that closes with nothing under it hands focus back to
+ *    the sheet, quietly), and over it the completion check (useCompletion: every 100% path,
  *    Task Information's and Update project's too, ends there). The check
  *    reaches the sheet and the chart through CompletionContext; its Go to
  *    task selects the task and scrolls it into view in both.
@@ -160,6 +161,29 @@ function useInertOutside(ref: RefObject<HTMLElement | null>, on: boolean): void 
   }, [ref, on]);
 }
 
+/** The dialogs More opens (and Set baseline's replace question). */
+const MORE_DIALOGS: ReadonlySet<PlanDialog['kind']> = new Set<PlanDialog['kind']>([
+  'columns', 'shortcuts', 'replaceBaseline', 'clearBaseline', 'lock', 'updateProject', 'settings', 'deletePlan',
+]);
+
+/** A dialog from More that closes with no dialog under it hands focus back
+ *  to the sheet when it fell to the page (its opener, the menu item, is
+ *  gone): quietly, so nothing is selected and the sheet doesn't scroll. */
+function useFocusBackAfter(dialog: PlanDialog | null, focusSheet: () => void): void {
+  const shown = useRef<PlanDialog | null>(null);
+  useEffect(() => {
+    const was = shown.current;
+    shown.current = dialog;
+    if (dialog || !was || !MORE_DIALOGS.has(was.kind)) return undefined;
+    // after the dialog's own focus return, which ran as it unmounted
+    const id = window.setTimeout(() => {
+      const focus = document.activeElement;
+      if ((focus === null || focus === document.body) && !document.querySelector('.modal-scrim')) focusSheet();
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [dialog, focusSheet]);
+}
+
 /** Where Escape belongs to someone else: a dialog or an open menu takes it
  *  first, and inside a field it cancels the edit. */
 function escapeTakenElsewhere(e: KeyboardEvent): boolean {
@@ -208,8 +232,9 @@ export default function PlanTab({ initiativeId, initiative }: {
   useRovingToolbar(toolbarRef, ready);
   const { scheduled_start: scheduledStart, scheduled_end: scheduledEnd } = initiative;
   const scheduled = useMemo(() => ({ start: scheduledStart, end: scheduledEnd }), [scheduledStart, scheduledEnd]);
-  const { zoomIn, zoomOut } = commands;
+  const { zoomIn, zoomOut, focusSheet } = commands;
   const zoomStep = useCallback((dir: -1 | 1) => (dir < 0 ? zoomIn() : zoomOut()), [zoomIn, zoomOut]);
+  useFocusBackAfter(dialog, focusSheet);
   // the chart's link click and bar double-click, the sheet's double-click
   // on a cell that doesn't edit (a row's number): Task Dependency, Task Information
   const openLink = useCallback((linkId: string) => setDialog({ kind: 'dependency', linkId }), []);

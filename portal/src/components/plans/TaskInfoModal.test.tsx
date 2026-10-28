@@ -5,7 +5,7 @@
  * batch with every change (update_task, link ops, set_assignees,
  * set_percent), nothing when nothing changed; a summary's derived fields
  * are read-only; a locked plan edits only progress (% Complete, Notes); a
- * completion stop goes through the completion check and, cancelled, leaves
+ * completion stop goes through the completion check and, canceled, leaves
  * the dialog open with the edits.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -237,6 +237,21 @@ describe('a summary', () => {
     await waitFor(() => expect(sentOps(s)).toEqual([{ op: 'update_task', id: 's', fields: { name: 'Prep work' } }]));
   });
 
+  it('its % Complete takes only 100 (it completes the subtasks), as the API does', async () => {
+    const { s, user } = open(summaryPlan(), 's');
+    const percent = screen.getByLabelText('% Complete');
+    await user.clear(percent);
+    await user.type(percent, '50');
+    await user.click(within(dialog()).getByRole('button', { name: 'OK' }));
+    expect(within(dialog()).getByText('Only 100 can be entered for a summary: its % Complete comes from its subtasks.'))
+      .toBeTruthy();
+    expect(s.apply).not.toHaveBeenCalled();
+    await user.clear(percent);
+    await user.type(percent, '100');
+    await user.click(within(dialog()).getByRole('button', { name: 'OK' }));
+    await waitFor(() => expect(sentOps(s)).toEqual([{ op: 'set_percent', ids: ['s'], percent: 100 }]));
+  });
+
   it('offers only the constraints a summary takes', async () => {
     const { user } = open(summaryPlan(), 's');
     await user.click(tabButton('Advanced'));
@@ -330,6 +345,8 @@ describe('the completion check', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Confirm completion' })).toBeNull());
     expect(onClose).not.toHaveBeenCalled();
     expect((screen.getByLabelText('% Complete') as HTMLInputElement).value).toBe('100');
+    // the footer says so
+    expect(within(dialog().querySelector('.modal-foot') as HTMLElement).getByText('Nothing was saved.')).toBeTruthy();
 
     await user.click(within(dialog()).getByRole('button', { name: 'OK' }));
     await user.click(within(await screen.findByRole('dialog', { name: 'Confirm completion' })).getByRole('button', { name: 'Complete' }));

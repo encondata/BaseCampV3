@@ -123,7 +123,7 @@ describe('useCompletion', () => {
     expect(toast).not.toHaveBeenCalled();
   });
 
-  it('ask answers the resend’s result, or null when cancelled', async () => {
+  it('ask answers the resend’s result, or null when canceled', async () => {
     const user = userEvent.setup();
     const { ctl } = fakeCtl();
     render(<Host ctl={ctl} />);
@@ -136,6 +136,19 @@ describe('useCompletion', () => {
     act(() => { answered = completion.ask(CONFIRM, resend); });
     await user.click(screen.getByRole('button', { name: 'Complete' }));
     await expect(answered!).resolves.toEqual(OK);
+  });
+
+  it('a resend that throws is said, and leaves the dialog usable: Complete is on again', async () => {
+    const user = userEvent.setup();
+    const { ctl } = fakeCtl();
+    render(<Host ctl={ctl} />);
+    const resend = vi.fn(async (): Promise<ApplyResult> => { throw new Error('network down'); });
+    act(() => { void completion.ask(CONFIRM, resend); });
+    await user.click(screen.getByRole('button', { name: 'Complete' }));
+    await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
+    expect((screen.getByRole('button', { name: 'Complete' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByRole('dialog', { name: 'Confirm completion' })).toBeTruthy();
+    expect(resend).toHaveBeenCalledTimes(1);
   });
 
   it('a resend stopped again shows the new stop in its place', async () => {

@@ -31,6 +31,19 @@ it('the Resource Names picker mutes its waiting buttons and its box while busy',
   expect(declarations('.pln-respick[aria-busy] > :first-child')).toMatch(/opacity:\s*0?\.\d+/);
 });
 
+it('the completion check’s and the delete’s task lists are rounded scroll boxes on theme tokens', () => {
+  const chrome = readFileSync(join(__dirname, 'chrome.css'), 'utf8');
+  const listed = /:is\(([^)]*)\)::-webkit-scrollbar-track/.exec(chrome)?.[1] ?? '';
+  for (const list of ['.pln-done-tasks', '.pln-doomed']) {
+    const rule = declarations(list) ?? '';
+    expect(rule, list).toMatch(/overflow-y:\s*auto/);
+    expect(rule, list).toMatch(/border-radius:\s*\d+px/);
+    // colors only from the theme's tokens, so the dark theme has them too
+    expect(rule.match(/#[0-9a-f]{3,8}\b|rgba?\(/gi), list).toBeNull();
+    expect(listed.split(',').map((s) => s.trim()), list).toContain(list);
+  }
+});
+
 it('an aria-disabled toolbar button is muted and doesn’t light up on hover', () => {
   expect(declarations('.mini-btn.pln-tbtn[aria-disabled]')).toMatch(/opacity:\s*0?\.\d+/);
   expect(declarations('.mini-btn.pln-tbtn[aria-disabled]:hover')).toMatch(/background:\s*transparent/);

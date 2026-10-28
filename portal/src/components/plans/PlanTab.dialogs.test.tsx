@@ -213,12 +213,37 @@ describe('lock', () => {
 });
 
 describe('Update project, Plan settings, Delete plan', () => {
+  it('a More dialog closing with nothing under it hands focus back to the sheet, selecting nothing', async () => {
+    const user = await ready();
+    await more(user, 'Update project…');
+    await user.click(within(await dialogNamed('Update project')).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(document.activeElement).toBe(grid()));
+    expect(within(grid()).queryAllByRole('row').filter((r) => r.getAttribute('aria-selected') === 'true')).toEqual([]);
+    await more(user, 'Keyboard shortcuts');
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(grid()));
+  });
+
   it('More opens Update project and Plan settings', async () => {
     const user = await ready();
     await more(user, 'Update project…');
     await user.click(within(await dialogNamed('Update project')).getByRole('button', { name: 'Cancel' }));
     await more(user, 'Plan settings…');
     expect(await dialogNamed('Plan settings')).toBeTruthy();
+  });
+
+  it('Delete plan says what goes: the tasks and their links, and the baseline when there is one', async () => {
+    const user = await ready();
+    await more(user, 'Delete plan…');
+    expect(within(await dialogNamed('Delete the project plan?'))
+      .getByText('Its 3 tasks and their links go with it. This can’t be undone.')).toBeTruthy();
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    cleanup();
+    const again = await ready(plan3({ baseline_set_at: '2026-10-20T14:00:00Z' }));
+    await more(again, 'Delete plan…');
+    expect(within(await dialogNamed('Delete the project plan?'))
+      .getByText('Its 3 tasks, their links and the baseline go with it. This can’t be undone.')).toBeTruthy();
   });
 
   it('Delete plan turns on only for the initiative’s exact name; then the empty state', async () => {

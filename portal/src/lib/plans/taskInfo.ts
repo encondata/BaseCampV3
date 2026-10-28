@@ -120,6 +120,8 @@ export type TaskInfoErrors = Record<string, string>;
 
 const PERCENT = /^[ \t]*([0-9]{1,3})[ \t]*%?[ \t]*$/;
 const PERCENT_ERROR = 'Enter a % Complete from 0 to 100.';
+/** A summary's % is its subtasks'; 100 completes them (the API's rule). */
+export const SUMMARY_PERCENT = 'Only 100 can be entered for a summary: its % Complete comes from its subtasks.';
 export const CONSTRAINT_DATE_NEEDED = 'Enter a constraint date.';
 export const DUPLICATE_PREDECESSOR = 'This task is already a predecessor.';
 export const LABEL = 'Task Information';
@@ -345,7 +347,9 @@ export function taskInfoOps(form: TaskInfoForm, task: PlanTask, plan: Plan): { o
     const m = PERCENT.exec(form.percent);
     const value = m ? Number(m[1]) : Number.NaN;
     if (!(value >= 0 && value <= 100)) errors.percent = PERCENT_ERROR;
-    else if (value !== task.percent_complete) percent = { op: 'set_percent', ids: [task.id], percent: value };
+    else if (value === task.percent_complete) percent = null;
+    else if (task.is_summary && value !== 100) errors.percent = SUMMARY_PERCENT;
+    else percent = { op: 'set_percent', ids: [task.id], percent: value };
   }
 
   if (Object.keys(errors).length) return { errors };

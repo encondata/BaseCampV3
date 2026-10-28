@@ -2,7 +2,7 @@
 /**
  * The Gantt chart's interactions (Task 9): dragging a bar to move it,
  * its right end to resize it, its progress handle to set % Complete, and
- * its link handle onto another bar to link them; Esc, a cancelled pointer
+ * its link handle onto another bar to link them; Esc, a canceled pointer
  * and a press too short to be a drag; what a locked or read-only plan
  * allows; and a link's Task Dependency dialog. The chart alone with a
  * stand-in controller for the gesture mechanics; the real PlanTab and
@@ -308,7 +308,7 @@ describe('moving a bar', () => {
     expect(s.apply).not.toHaveBeenCalled();
   });
 
-  it('a cancelled pointer, or a lost capture, sends nothing', () => {
+  it('a canceled pointer, or a lost capture, sends nothing', () => {
     const plan = plan3();
     const s = stand();
     render(<Harness plan={plan} s={s} />);

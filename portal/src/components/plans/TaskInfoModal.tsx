@@ -39,6 +39,8 @@ import type { PlanController } from './usePlan';
 import '../../styles/profile.css';   // .pf-form, .btn-solid
 
 const HOLD_OWNER = 'task-information';
+/** The footer's word after a completion check that was blocked or canceled. */
+export const NOTHING_SAVED = 'Nothing was saved.';
 const FORM_ID = 'pln-ti-form';
 
 export default function TaskInfoModal({ ctl, taskId, tab = 'general', onClose }: {
@@ -103,6 +105,7 @@ export default function TaskInfoModal({ ctl, taskId, tab = 'general', onClose }:
       const answer = await ask(result, () => ctl.apply(built.ops, LABEL, { confirm: true }));
       if (answer === null) {          // not completed: back to the dialog, edits kept
         setBusy(false);
+        setError(NOTHING_SAVED);
         return;
       }
       result = answer;

@@ -1,6 +1,7 @@
 /**
  * MS Project's Update Project (More › Update project…): the status date
- * (today in plan time by default: `plan.now`'s day) and "Update work as
+ * (today in plan time by default: `plan.now`'s day; blank sends null, so
+ * the status date is always now) and "Update work as
  * complete through" a date — every task finishing by then goes to 100%,
  * every task spanning it is marked on track (spec Progress). The date
  * goes only while its switch is on. A date alone is the calendar's
@@ -10,10 +11,11 @@
  * this dialog: Complete resends with confirm and closes both; Cancel
  * comes back here. A progress edit, so it works on a locked plan too.
  */
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 import { useToast } from '../../lib/notificationsContext';
 import type { UpdateProjectBody } from '../../lib/plans/api';
+import { PARTIAL_DATE } from '../../lib/plans/editOps';
 import { completionText } from '../../lib/plans/errors';
 import { dayOf, fromDateInput } from '../../lib/plans/floatingTime';
 import { Switch } from '../Switch';
@@ -36,6 +38,7 @@ export default function UpdateProjectModal({ ctl, onClose }: { ctl: PlanControll
   const [throughDate, setThroughDate] = useState(today);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const statusRef = useRef<HTMLInputElement>(null);
 
   const { beginEditing } = ctl;
   useEffect(() => beginEditing(HOLD_OWNER), [beginEditing]);
@@ -46,12 +49,12 @@ export default function UpdateProjectModal({ ctl, onClose }: { ctl: PlanControll
   if (!plan) return null;
 
   const update = async () => {
-    const statusDate = fromDateInput(status);
-    if (!statusDate) {
-      setError('Enter the status date.');
+    // blank is now (null); part of a date reads as blank too, so it's refused instead
+    if (statusRef.current?.validity?.badInput) {
+      setError(PARTIAL_DATE);
       return;
     }
-    const body: UpdateProjectBody = { status_date: statusDate };
+    const body: UpdateProjectBody = { status_date: fromDateInput(status) };
     if (through) {
       const day = fromDateInput(throughDate);
       if (!day) {
@@ -104,8 +107,9 @@ export default function UpdateProjectModal({ ctl, onClose }: { ctl: PlanControll
       <form id={FORM_ID} className="pf-form pln-update" onSubmit={onSubmit} noValidate>
         <div className="full">
           <label htmlFor="pln-update-status">Status date</label>
-          <input id="pln-update-status" type="date" value={status} disabled={busy}
+          <input ref={statusRef} id="pln-update-status" type="date" value={status} disabled={busy}
                  onChange={(e) => setStatus(e.target.value)} />
+          <p className="pln-note pln-set-hint">Blank: the status date is always now.</p>
         </div>
         <div className="full pln-switch-line">
           <span className="pln-switch-text">

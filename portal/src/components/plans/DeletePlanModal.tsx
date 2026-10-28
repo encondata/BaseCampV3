@@ -18,6 +18,15 @@ import '../../styles/profile.css';   // .pf-form, .btn-solid
 const FORM_ID = 'pln-delete-plan-form';
 export const PLAN_DELETED = 'Project plan deleted.';
 
+/** What goes with the plan: "Its 40 tasks and their links go with it.",
+ *  naming the baseline when there is one. */
+export function whatGoes(count: number, baseline: boolean): string {
+  if (count === 0) return 'The plan has no tasks yet.';
+  const tasks = count === 1 ? 'Its 1 task' : `Its ${count.toLocaleString('en-US')} tasks`;
+  const links = count === 1 ? 'its links' : 'their links';
+  return baseline ? `${tasks}, ${links} and the baseline go with it.` : `${tasks} and ${links} go with it.`;
+}
+
 export default function DeletePlanModal({ ctl, initiativeName, onClose }: {
   ctl: PlanController;
   initiativeName: string;
@@ -52,11 +61,7 @@ export default function DeletePlanModal({ ctl, initiativeName, onClose }: {
     void remove();
   };
 
-  const count = ctl.plan?.tasks.length ?? 0;
-  const baseline = ctl.plan?.baseline_set_at ? ' and the baseline' : '';
-  const description = count === 0
-    ? 'The plan has no tasks yet. This can’t be undone.'
-    : `Its ${count} task${count === 1 ? '' : 's'}, their links${baseline} go with it. This can’t be undone.`;
+  const description = `${whatGoes(ctl.plan?.tasks.length ?? 0, !!ctl.plan?.baseline_set_at)} This can’t be undone.`;
   return (
     <PlanModal title="Delete the project plan?" busy={busy} onClose={onClose} description={description}
                footer={(

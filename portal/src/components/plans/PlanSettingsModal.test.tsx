@@ -145,6 +145,14 @@ describe('Plan settings', () => {
     expect(within(dialog()).getByText('At least one working day is needed')).toBeTruthy();
   });
 
+  it('Calendar: the HH:MM fields keep the text keyboard (iOS’s number pad has no colon)', async () => {
+    const { user } = open(plan());
+    await user.click(section('Calendar'));
+    const times = [...document.querySelectorAll<HTMLInputElement>('.pln-cal-time')];
+    expect(times.length).toBeGreaterThan(0);
+    for (const t of times) expect(t.inputMode).toBe('text');
+  });
+
   it('Calendar: 24:00 ends a day; hours per day over 24 are refused', async () => {
     const { patch, user } = open(plan());
     await user.click(section('Calendar'));

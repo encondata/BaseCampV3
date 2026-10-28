@@ -979,15 +979,20 @@
 
 /* ── Delete with subtasks (DeleteTasksModal) ──────────────────── */
 
+/* the tasks that go, framed; a long list scrolls inside its rounded
+   corners with the house dialog scrollbar (chrome.css's list) */
 .pln-doomed {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: 8px 12px;
   display: flex;
   flex-direction: column;
   gap: 4px;
   max-height: 40vh;
   overflow-y: auto;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  background: var(--surface-2);
   font-size: 13.5px;
   color: var(--text-dark);
 }
@@ -1038,6 +1043,8 @@
 .pln-done-group { width: min(520px, 86vw); }
 .pln-done-group + .pln-done-group { margin-top: 18px; }
 .pln-done-title { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--text-dark); }
+/* a long list scrolls inside rounded corners with the house dialog
+   scrollbar (chrome.css's list), so its bar stays clear of them */
 .pln-done-tasks {
   margin: 0;
   padding: 0;
@@ -1047,6 +1054,7 @@
   gap: 6px;
   max-height: 40vh;
   overflow-y: auto;
+  border-radius: 9px;
 }
 .pln-done-task {
   display: flex;

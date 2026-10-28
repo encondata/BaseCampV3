@@ -199,7 +199,7 @@ const KEY_STEP_PX = 16;
 /**
  * The bar between the sheet and the chart: drag it, or focus it and use
  * ←/→ (Shift for bigger steps), Home and End. `onChange` follows the drag;
- * `onCommit` gets where it ends (a cancelled drag goes back where it began).
+ * `onCommit` gets where it ends (a canceled drag goes back where it began).
  * `value` is the sheet's width; with `orientation="horizontal"` (Below: the
  * bar lies across the view, the sheet above it) it is the sheet's height,
  * and ↑/↓ and the pointer's y move it.

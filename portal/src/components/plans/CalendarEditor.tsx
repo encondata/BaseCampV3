@@ -29,11 +29,12 @@ function Hours({ label, ranges, disabled, onChange }: {
     <div className="pln-cal-hours">
       {ranges.map((r, i) => (
         <span key={i} className="pln-cal-range">
-          <input type="text" className="pln-cal-time" inputMode="numeric" maxLength={5} placeholder="HH:MM"
+          {/* the text keyboard: iOS's number pad has no colon */}
+          <input type="text" className="pln-cal-time" inputMode="text" maxLength={5} placeholder="HH:MM"
                  aria-label={`${label} hours ${i + 1} start`} value={r.start} disabled={disabled}
                  onChange={(e) => put(i, { start: e.target.value })} />
           <span aria-hidden="true">–</span>
-          <input type="text" className="pln-cal-time" inputMode="numeric" maxLength={5} placeholder="HH:MM"
+          <input type="text" className="pln-cal-time" inputMode="text" maxLength={5} placeholder="HH:MM"
                  aria-label={`${label} hours ${i + 1} end`} value={r.end} disabled={disabled}
                  onChange={(e) => put(i, { end: e.target.value })} />
           {ranges.length > 1 && (
