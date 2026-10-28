@@ -68,9 +68,13 @@ export const COMMAND_TIPS = {
     label: 'Scroll to Task', desc: 'Scroll the chart to the selected task’s bar.', shortcut: 'scrollToTask',
   },
 
-  // the Gantt layout
+  // the Gantt layout: one button at the end of Display, its menu's items
+  layout: { label: 'Gantt Layout', desc: 'Choose where the Gantt chart goes: beside the sheet, below it, or hidden.' },
   layoutBeside: { label: 'Beside', desc: 'Show the Gantt chart beside the task sheet.' },
-  layoutBelow: { label: 'Below', desc: 'Show the Gantt chart under the task sheet — good for narrower screens.' },
+  layoutBelow: {
+    label: 'Below',
+    desc: 'Show the Gantt chart under the task sheet — for narrower screens; Full screen gives it the most room.',
+  },
   layoutHidden: { label: 'Hidden', desc: 'Hide the Gantt chart and show only the task sheet.' },
 
   // More, and what's around the toolbar

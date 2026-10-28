@@ -120,7 +120,18 @@ const chartBar = () => q('.pln-pane-chart > .pln-hbar') as HTMLElement;
 const rowOf = (id: string) => within(grid()).getAllByRole('row').find((r) => r.getAttribute('data-task') === id) as HTMLElement;
 const sheetIds = () => within(grid()).getAllByRole('row').map((r) => r.getAttribute('data-task')).filter(Boolean);
 const laneIds = () => qa('.pln-lane').map((l) => l.getAttribute('data-lane')).filter((id) => id !== 'blank');
-const choose = (layout: 'Beside' | 'Below' | 'Hidden') => fireEvent.click(button(layout));
+/** Picks a layout from the Display group's Gantt Layout menu (`detail` 1: a mouse click). */
+function choose(layout: 'Beside' | 'Below' | 'Hidden', detail = 0) {
+  fireEvent.click(button('Gantt Layout'), { detail });
+  fireEvent.click(screen.getByRole('menuitemradio', { name: layout }), { detail });
+}
+/** The layout the menu has checked (it opens and closes the menu). */
+function checkedLayout(): string | null {
+  fireEvent.click(button('Gantt Layout'));
+  const on = screen.getAllByRole('menuitemradio').find((i) => i.getAttribute('aria-checked') === 'true');
+  fireEvent.keyDown(document, { key: 'Escape' });
+  return on?.getAttribute('aria-label') ?? null;
+}
 
 /** The browser's part in a scroll the person makes: the box moves, then
  *  says so. (jsdom fires no scroll event of its own.) */
@@ -208,8 +219,8 @@ afterEach(() => {
 describe('the layout control', () => {
   it('Beside by default: the sheet, the splitter and the chart side by side in one scroll box', async () => {
     await ready();
-    const gantt = screen.getByRole('group', { name: 'Gantt' });
-    expect(within(gantt).getAllByRole('button').map((b) => b.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false']);
+    expect(checkedLayout()).toBe('Beside');
+    expect(button('Gantt Layout').querySelector('svg')?.getAttribute('data-layout')).toBe('beside');
     expect(scrollers()).toHaveLength(1);
     expect(sheetBox()).toBe(chartBox());
     expect(screen.getByRole('separator', { name: 'Resize the task sheet' }).getAttribute('aria-orientation'))
@@ -221,7 +232,7 @@ describe('the layout control', () => {
     await ready();
     choose('Below');
     expect(localStorage.getItem(LAYOUT_KEY)).toBe('below');
-    expect(button('Below').getAttribute('aria-pressed')).toBe('true');
+    expect(checkedLayout()).toBe('Below');
     expect(q('.pln-view')?.getAttribute('data-layout')).toBe('below');
     expect(scrollers()).toHaveLength(2);
     const [top, bottom] = scrollers();
@@ -247,14 +258,14 @@ describe('the layout control', () => {
 
     cleanup();
     await ready();
-    expect(button('Below').getAttribute('aria-pressed')).toBe('true');
+    expect(checkedLayout()).toBe('Below');
     expect(scrollers()).toHaveLength(2);
   });
 
   it('a stored layout that isn’t one opens Beside', async () => {
     localStorage.setItem(LAYOUT_KEY, 'sideways');
     await ready();
-    expect(button('Beside').getAttribute('aria-pressed')).toBe('true');
+    expect(checkedLayout()).toBe('Beside');
     expect(scrollers()).toHaveLength(1);
   });
 
@@ -381,10 +392,10 @@ describe('switching layouts', () => {
   it('a mouse click on a layout with nothing selected keeps the place too (no first row selected)', async () => {
     await ready();
     userScroll(sheetBox(), 450);
-    fireEvent.click(button('Below'), { detail: 1 });
+    choose('Below', 1);
     expect(sheetBox().scrollTop).toBe(450);
     expect(chartBox().scrollTop).toBe(450);
-    fireEvent.click(button('Hidden'), { detail: 1 });
+    choose('Hidden', 1);
     expect(sheetBox().scrollTop).toBe(450);
     expect(within(grid()).getAllByRole('row').filter((r) => r.getAttribute('aria-selected') === 'true')).toEqual([]);
   });
@@ -399,7 +410,7 @@ describe('switching layouts', () => {
       expect(scrollers(), layout).toHaveLength(boxes);
       expect(q('.pln-pane-chart') !== null, layout).toBe(chart);
       // the layout can change in full screen too
-      expect(button(layout).getAttribute('aria-pressed')).toBe('true');
+      expect(checkedLayout()).toBe(layout);
       fireEvent.keyDown(document, { key: 'Escape' });
       expect(root.classList.contains('pln-fullscreen'), layout).toBe(false);
     }

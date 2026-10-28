@@ -11,9 +11,15 @@
  *  row of a list. Position is computed from the trigger's
  *  getBoundingClientRect — below and right-aligned to the trigger by
  *  default, flipped upward when there isn't ~200px of viewport space
- *  below it. */
+ *  below it.
+ *
+ *  Optional, for a toolbar's menu button: an `icon` trigger (named by
+ *  `label`) in place of "label ▾", with its own `triggerClassName`; items
+ *  that are a choice among several (`checked`: menuitemradio, a ✓ on the
+ *  current one); and `returnFocus`, which puts focus back on the trigger
+ *  once an item is chosen (the menu-button pattern). */
 
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 import '../../styles/column-menu.css';
@@ -32,6 +38,9 @@ export interface RowAction {
   /** Why a disabled item is off ("Deactivate it first to rename it"): a
    *  muted line under its label that also describes it to a screen reader. */
   hint?: string;
+  /** A choice among several (a menuitemradio): true on the current one,
+   *  which shows a ✓; false on the others. Left out, a plain menuitem. */
+  checked?: boolean;
 }
 
 interface MenuPos { top: number | 'auto'; bottom: number | 'auto'; right: number }
@@ -51,14 +60,24 @@ const GAP = 6;
 const CLOSE_OTHERS_EVENT = 'row-actions-menu:close-others';
 const menuCoordinator = new EventTarget();
 
-export function RowActionsMenu({ label, actions, 'aria-describedby': describedBy }: {
+export function RowActionsMenu({
+  label, actions, 'aria-describedby': describedBy, icon, triggerClassName, returnFocus = false,
+}: {
   label?: string; actions: RowAction[];
   /** Passed to the trigger button (a hover tip around the menu names itself here). */
   'aria-describedby'?: string;
+  /** The trigger shows this icon instead of "label ▾", and is named by `label`. */
+  icon?: ReactNode;
+  /** The trigger's class (`mini-btn` by default). */
+  triggerClassName?: string;
+  /** Choosing an item puts focus back on the trigger. */
+  returnFocus?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<MenuPos | null>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const name = label ?? 'Actions';
   const menuRef = useRef<HTMLDivElement>(null);
   const instanceId = useRef(Symbol('row-actions-menu')).current;
   const hintPrefix = `row-action-hint-${useId().replace(/:/g, '')}`;
@@ -135,8 +154,8 @@ export function RowActionsMenu({ label, actions, 'aria-describedby': describedBy
   const host = triggerRef.current?.closest<HTMLElement>('.portal-shell') ?? document.body;
   return (
     <div className="row-actions" ref={triggerRef} style={{ position: 'relative' }}>
-      <button type="button" className="mini-btn" aria-haspopup="menu"
-              aria-expanded={open} aria-describedby={describedBy}
+      <button type="button" className={triggerClassName ?? 'mini-btn'} aria-haspopup="menu" ref={buttonRef}
+              aria-expanded={open} aria-describedby={describedBy} aria-label={icon ? name : undefined}
               onClick={(e) => {
                 e.stopPropagation();
                 // Broadcast BEFORE setState, in the handler body — never
@@ -152,7 +171,7 @@ export function RowActionsMenu({ label, actions, 'aria-describedby': describedBy
                 setOpen(next);
               }}>
         {/* the ▾ marks the menu; the trigger is named by its label alone */}
-        {label ?? 'Actions'}<span aria-hidden="true"> ▾</span>
+        {icon ?? <>{name}<span aria-hidden="true"> ▾</span></>}
       </button>
       {open && pos && createPortal(
         <div className="pop-menu" role="menu" ref={menuRef}
@@ -160,29 +179,41 @@ export function RowActionsMenu({ label, actions, 'aria-describedby': describedBy
                position: 'fixed', top: pos.top, bottom: pos.bottom, right: pos.right,
                zIndex: 1200,
              }}>
-          {actions.map((a) => (
-            <button key={a.key} type="button" role="menuitem"
-                    className={`pop-item${a.destructive ? ' danger' : ''}${a.hint ? ' has-hint' : ''}`}
-                    disabled={a.disabled}
-                    aria-label={a.hint ? a.label : undefined}
-                    aria-describedby={a.hint ? `${hintPrefix}-${a.key}` : undefined}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      // Belt and braces: a disabled button fires no click
-                      // in a browser, but a programmatic dispatch still
-                      // reaches React's root listener.
-                      if (a.disabled) return;
-                      setOpen(false);
-                      a.onSelect();
-                    }}>
-              {a.hint ? (
-                <>
-                  <span>{a.label}</span>
-                  <span className="pop-item-hint" id={`${hintPrefix}-${a.key}`}>{a.hint}</span>
-                </>
-              ) : a.label}
-            </button>
-          ))}
+          {actions.map((a) => {
+            const radio = a.checked !== undefined;
+            const text = a.hint ? (
+              <>
+                <span>{a.label}</span>
+                <span className="pop-item-hint" id={`${hintPrefix}-${a.key}`}>{a.hint}</span>
+              </>
+            ) : a.label;
+            return (
+              <button key={a.key} type="button" role={radio ? 'menuitemradio' : 'menuitem'}
+                      aria-checked={radio ? a.checked : undefined}
+                      className={`pop-item${a.destructive ? ' danger' : ''}${a.hint ? ' has-hint' : ''}`
+                        + `${radio ? ' pop-radio' : ''}${a.checked ? ' on' : ''}`}
+                      disabled={a.disabled}
+                      aria-label={a.hint ? a.label : undefined}
+                      aria-describedby={a.hint ? `${hintPrefix}-${a.key}` : undefined}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        // Belt and braces: a disabled button fires no click
+                        // in a browser, but a programmatic dispatch still
+                        // reaches React's root listener.
+                        if (a.disabled) return;
+                        setOpen(false);
+                        a.onSelect();
+                        if (returnFocus) buttonRef.current?.focus();
+                      }}>
+                {radio ? (
+                  <>
+                    <span className="pop-mark" aria-hidden="true">✓</span>
+                    <span className="pop-item-main">{text}</span>
+                  </>
+                ) : text}
+              </button>
+            );
+          })}
         </div>,
         host,
       )}

@@ -297,3 +297,60 @@ it('a disabled item can say why it is off: a hint line that describes it', async
   expect(edit.textContent).toBe('Edit');
   expect(edit.getAttribute('aria-describedby')).toBeNull();
 });
+
+it('a choice among several: `checked` items are menuitemradios, the current one checked with a ✓', async () => {
+  const user = userEvent.setup();
+  const pick = vi.fn();
+  render(
+    <RowActionsMenu
+      actions={[
+        { key: 'a', label: 'Beside', hint: 'Side by side.', checked: false, onSelect: pick },
+        { key: 'b', label: 'Below', hint: 'Stacked.', checked: true, onSelect: vi.fn() },
+        { key: 'c', label: 'Plain', onSelect: vi.fn() },
+      ]}
+    />,
+  );
+  await user.click(screen.getByRole('button', { name: 'Actions' }));
+  const radios = screen.getAllByRole('menuitemradio');
+  expect(radios.map((r) => r.getAttribute('aria-label'))).toEqual(['Beside', 'Below']);
+  expect(radios.map((r) => r.getAttribute('aria-checked'))).toEqual(['false', 'true']);
+  // the ✓ shows on the current one only, and is not part of the name
+  expect(radios[1].classList.contains('on')).toBe(true);
+  expect(radios[0].classList.contains('on')).toBe(false);
+  expect(radios[1].querySelector('.pop-mark')?.textContent).toBe('✓');
+  expect(radios[1].querySelector('.pop-mark')?.getAttribute('aria-hidden')).toBe('true');
+  // the hint still describes it
+  expect(screen.getByRole('menuitemradio', { name: 'Below' }).getAttribute('aria-describedby'))
+    .toBe(screen.getByText('Stacked.').id);
+  // an item without `checked` is a plain menuitem, as before
+  expect(screen.getByRole('menuitem', { name: 'Plain' }).getAttribute('aria-checked')).toBeNull();
+  await user.click(radios[0]);
+  expect(pick).toHaveBeenCalledTimes(1);
+});
+
+it('an icon trigger: the icon in place of "label ▾", named by the label; its own class', () => {
+  render(
+    <RowActionsMenu label="Gantt Layout" icon={<svg data-testid="icon" aria-hidden="true" />}
+                    triggerClassName="mini-btn pln-tbtn" actions={actions()} />,
+  );
+  const trigger = screen.getByRole('button', { name: 'Gantt Layout' });
+  expect(trigger.getAttribute('aria-label')).toBe('Gantt Layout');
+  expect(trigger.getAttribute('aria-haspopup')).toBe('menu');
+  expect(trigger.getAttribute('aria-expanded')).toBe('false');
+  expect(trigger.className).toBe('mini-btn pln-tbtn');
+  expect(trigger.querySelector('[data-testid="icon"]')).not.toBeNull();
+  expect(trigger.textContent).toBe('');
+});
+
+it('returnFocus: choosing an item puts focus back on the trigger; without it, as before', async () => {
+  const user = userEvent.setup();
+  const { unmount } = render(<RowActionsMenu label="Pick" returnFocus actions={actions()} />);
+  await user.click(screen.getByRole('button', { name: 'Pick' }));
+  await user.click(screen.getByRole('menuitem', { name: 'Register' }));
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Pick' }));
+  unmount();
+  render(<RowActionsMenu label="Other" actions={actions()} />);
+  await user.click(screen.getByRole('button', { name: 'Other' }));
+  await user.click(screen.getByRole('menuitem', { name: 'Register' }));
+  expect(document.activeElement).not.toBe(screen.getByRole('button', { name: 'Other' }));
+});

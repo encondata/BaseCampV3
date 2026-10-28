@@ -84,20 +84,28 @@ function hoverTip(el: HTMLElement) {
 }
 
 describe('groups', () => {
-  it('shows MS Project’s groups in order, then the Gantt layout', () => {
+  it('shows MS Project’s groups in order; the Gantt Layout button ends Display', () => {
     render(<Bar plan={makePlan()} cmd={commands()} />);
-    expect(groups()).toEqual(['Undo', 'Schedule', 'Tasks', 'Insert', 'Properties', 'Display', 'Gantt']);
+    expect(groups()).toEqual(['Undo', 'Schedule', 'Tasks', 'Insert', 'Properties', 'Display']);
+    expect(within(screen.getByRole('group', { name: 'Display' })).getAllByRole('button').map(nameOf))
+      .toEqual(['Critical Path', 'Baseline', 'Zoom Out', 'Zoom In', 'Fit Project', 'Scroll to Task', 'Gantt Layout']);
+    // after a separator, and no frame or caption of its own
+    const layout = button('Gantt Layout');
+    const seps = [...(layout.closest('.pln-tgroup-btns') as HTMLElement).querySelectorAll('.pln-tsep')];
+    expect(seps.at(-1)?.compareDocumentPosition(layout)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.queryByRole('button', { name: 'Gantt' })).toBeNull();
     expect(within(screen.getByRole('group', { name: 'Schedule' })).getAllByRole('button').map((b) => b.getAttribute('aria-label')))
       .toEqual(['0% Complete', '25% Complete', '50% Complete', '75% Complete', '100% Complete', 'Mark on Track',
         'Link Tasks', 'Unlink Tasks', 'Outdent', 'Indent']);
     expect(screen.getByRole('button', { name: 'More' })).toBeTruthy();
   });
 
-  it('read-only: only Display and the Gantt layout (and More, with what a reader can use)', async () => {
+  it('read-only: only Display, the Gantt Layout in it (and More, with what a reader can use)', async () => {
     const user = userEvent.setup();
     render(<Bar plan={makePlan({ permissions: { view: true, add: false, change: false, delete: false } })}
                 cmd={commands()} />);
-    expect(groups()).toEqual(['Display', 'Gantt']);
+    expect(groups()).toEqual(['Display']);
+    expect(button('Gantt Layout')).toBeTruthy();
     expect(screen.queryByRole('group', { name: 'Schedule' })).toBeNull();
     expect(screen.queryByRole('group', { name: 'Insert' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'More' }));
@@ -256,30 +264,48 @@ describe('hover tips', () => {
 });
 
 describe('the Gantt layout', () => {
-  it('Beside, Below and Hidden as a segmented control showing the layout; a choice is passed up, focus stays', () => {
+  it('one icon button, its icon the layout now; a menu of Beside, Below and Hidden, the current one checked', async () => {
+    const user = userEvent.setup();
     const onLayout = vi.fn();
     const cmd = commands();
-    render(<Bar plan={makePlan()} cmd={cmd} layout="below" onLayout={onLayout} />);
-    const gantt = screen.getByRole('group', { name: 'Gantt' });
-    const options = within(gantt).getAllByRole('button');
-    expect(options.map(nameOf)).toEqual(['Beside', 'Below', 'Hidden']);
-    expect(options.map((b) => b.getAttribute('aria-pressed'))).toEqual(['false', 'true', 'false']);
-    expect(options[1].classList.contains('on')).toBe(true);
-    expect(gantt.querySelector('.segmented')).not.toBeNull();
-    fireEvent.click(options[2], { detail: 1 });
-    expect(onLayout).toHaveBeenCalledWith('hidden');
-    // like the view switcher, not a sheet command: the sheet isn't focused (with
+    const { rerender } = render(<Bar plan={makePlan()} cmd={cmd} layout="below" onLayout={onLayout} />);
+    const trigger = button('Gantt Layout');
+    expect(trigger.className).toBe('mini-btn pln-tbtn');
+    expect(trigger.getAttribute('aria-haspopup')).toBe('menu');
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(trigger.querySelector('svg')?.getAttribute('data-layout')).toBe('below');
+    await user.click(trigger);
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    const items = screen.getAllByRole('menuitemradio');
+    expect(items.map((i) => i.getAttribute('aria-label'))).toEqual(['Beside', 'Below', 'Hidden']);
+    expect(items.map((i) => i.getAttribute('aria-checked'))).toEqual(['false', 'true', 'false']);
+    // each says what it does
+    expect(items.map((i) => i.querySelector('.pop-item-hint')?.textContent)).toEqual([
+      'Show the Gantt chart beside the task sheet.',
+      'Show the Gantt chart under the task sheet — for narrower screens; Full screen gives it the most room.',
+      'Hide the Gantt chart and show only the task sheet.',
+    ]);
+    // a choice is passed up; focus goes back to the button, not the sheet (with
     // nothing selected that would select the first row and scroll up to it)
+    await user.click(screen.getByRole('menuitemradio', { name: 'Hidden' }));
+    expect(onLayout).toHaveBeenCalledWith('hidden');
     expect(cmd.focusSheet).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(button('Gantt Layout'));
+    expect(screen.queryByRole('menu')).toBeNull();
+    // the icon follows the layout
+    rerender(<Bar plan={makePlan()} cmd={cmd} layout="hidden" onLayout={onLayout} />);
+    expect(button('Gantt Layout').querySelector('svg')?.getAttribute('data-layout')).toBe('hidden');
+    rerender(<Bar plan={makePlan()} cmd={cmd} layout="beside" onLayout={onLayout} />);
+    expect(button('Gantt Layout').querySelector('svg')?.getAttribute('data-layout')).toBe('beside');
   });
 
-  it('each option’s tip says what it does', () => {
+  it('its tip names it "Gantt Layout" and says what it does', () => {
     vi.useFakeTimers();
     render(<Bar plan={makePlan()} cmd={commands()} />);
-    expect(hoverTip(button('Beside')).desc).toBe('Show the Gantt chart beside the task sheet.');
-    expect(hoverTip(button('Below')).desc)
-      .toBe('Show the Gantt chart under the task sheet — good for narrower screens.');
-    expect(hoverTip(button('Hidden')).desc).toBe('Hide the Gantt chart and show only the task sheet.');
+    expect(hoverTip(button('Gantt Layout'))).toEqual({
+      label: 'Gantt Layout', keys: [], note: null,
+      desc: 'Choose where the Gantt chart goes: beside the sheet, below it, or hidden.',
+    });
   });
 
   it('Hidden: the chart-only commands are off, saying to show the chart; the rest work', () => {

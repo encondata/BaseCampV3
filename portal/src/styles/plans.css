@@ -107,7 +107,8 @@
   background: transparent;
 }
 .mini-btn.pln-tbtn svg { width: 16px; height: 16px; }
-.mini-btn.pln-tbtn.on {
+.mini-btn.pln-tbtn.on,
+.mini-btn.pln-tbtn[aria-expanded='true'] {
   background: var(--surface);
   border-color: var(--paper-line);
   color: var(--c-amber);
@@ -117,13 +118,11 @@
 .mini-btn.pln-tbtn[aria-disabled] { opacity: 0.38; cursor: default; }
 .mini-btn.pln-tbtn[aria-disabled]:hover { border-color: transparent; background: transparent; }
 .pln-tsep { align-self: stretch; width: 1px; margin: 5px 3px; background: var(--paper-line); }
-/* the view switcher, Auto / Manual and the Gantt layout: as tall as a group frame */
+/* the view switcher and Auto / Manual: as tall as a group frame */
 .segmented.pln-views,
-.segmented.pln-modes,
-.segmented.pln-layouts { padding: 2px; gap: 2px; border-radius: 10px; }
+.segmented.pln-modes { padding: 2px; gap: 2px; border-radius: 10px; }
 .segmented.pln-views button,
-.segmented.pln-modes button,
-.segmented.pln-layouts button { height: 26px; padding: 0 11px; }
+.segmented.pln-modes button { height: 26px; padding: 0 11px; }
 .segmented.pln-modes button[aria-disabled] { opacity: 0.45; cursor: default; }
 /* the clipboard shortcuts' hidden field: off screen, never clicked */
 .pln-clip {

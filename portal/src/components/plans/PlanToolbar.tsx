@@ -6,8 +6,9 @@
  *   · Tasks (Auto / Manual, a `.segmented` pair showing the selection's
  *   mode) · Insert (Task, Summary, Milestone) · Properties (Information,
  *   Notes, Add to Timeline) · Display (Critical path, Baseline, Zoom − / +
- *   / Fit, Scroll to task; the Timeline strip comes in Plan C) · Gantt (the
- *   layout: Beside, Below or Hidden, a `.segmented` trio) · More.
+ *   / Fit, Scroll to task, then Gantt Layout: one button whose icon is the
+ *   layout now, opening a menu of Beside, Below and Hidden; the Timeline
+ *   strip comes in Plan C) · More.
  *
  * Every button has a hover tip (components/Tip) in place of a native title:
  * its name (the button's accessible name), its shortcut as keycaps
@@ -15,8 +16,8 @@
  * and, when it's off, why. The names, sentences and reasons are one table,
  * lib/plans/commandTips.
  *
- * Read-only people see Display, Gantt and More (Columns…, Keyboard
- * shortcuts) only. On a locked plan the buttons that change the schedule
+ * Read-only people see Display (Gantt Layout included) and More (Columns…,
+ * Keyboard shortcuts) only. On a locked plan the buttons that change the schedule
  * stay reachable but off, their tip saying "Schedule is locked"; progress
  * (0–100%, Mark on Track, Notes) still works. A button that needs a
  * selection says so instead; with the chart Hidden, the chart-only commands
@@ -199,25 +200,17 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform, layout
         {tool('scrollToTask', cmd.scrollToTask, <Icon name="scroll" />, {
           hint: noChart ?? (count ? null : SELECT_HINT),
         })}
-      </Group>
-
-      {/* where the chart goes: about the monitor, so everyone has it. Like the
-          view switcher it leaves focus where it is: focusing a sheet with
-          nothing selected would select its first row and scroll up to it */}
-      <Group label="Gantt" bare>
-        <div className="segmented pln-layouts">
-          {LAYOUTS.map(([value, id]) => {
-            const tip = COMMAND_TIPS[id];
-            return (
-              <Tip key={value} label={tip.label} desc={tip.desc}>
-                <button type="button" className={layout === value ? 'on' : ''} aria-pressed={layout === value}
-                        onClick={() => onLayout(value)}>
-                  {tip.label}
-                </button>
-              </Tip>
-            );
-          })}
-        </div>
+        <span className="pln-tsep" aria-hidden="true" />
+        {/* where the chart goes: about the monitor, so everyone has it. A
+            choice leaves focus on this button, not the sheet */}
+        <Tip label={COMMAND_TIPS.layout.label} desc={COMMAND_TIPS.layout.desc}>
+          <RowActionsMenu label={COMMAND_TIPS.layout.label} icon={<LayoutIcon layout={layout} />}
+                          triggerClassName="mini-btn pln-tbtn" returnFocus
+                          actions={LAYOUTS.map(([value, id]) => ({
+                            key: value, label: COMMAND_TIPS[id].label, hint: COMMAND_TIPS[id].desc,
+                            checked: layout === value, onSelect: () => onLayout(value),
+                          }))} />
+        </Tip>
       </Group>
 
       <div className="pln-tmore">
@@ -354,7 +347,20 @@ const ICONS: Record<string, ReactNode> = {
   zoomIn: <><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5M8 11h6M11 8v6" /></>,
   fit: <><path d="M3 5v14M21 5v14" /><path d="M7 12h10" /><path d="m9.5 9-3 3 3 3M14.5 9l3 3-3 3" /></>,
   scroll: <><rect x="11" y="9" width="10" height="6" rx="1.5" /><path d="M3 12h5" /><path d="m6 9 3 3-3 3" /></>,
+  // the Gantt layouts: sheet and chart side by side, stacked, the sheet alone
+  layoutBeside: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M10 5v14" /><path d="M13 10h4M15 14h3" /></>,
+  layoutBelow: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 11h18" /><path d="M7 15h5M10 17.5h6" /></>,
+  layoutHidden: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M7 9.5h10M7 12.5h10M7 15.5h10" /></>,
 };
+
+/** The Gantt Layout button's icon: the layout now. */
+function LayoutIcon({ layout }: { layout: GanttLayout }) {
+  const name = layout === 'below' ? 'layoutBelow' : layout === 'hidden' ? 'layoutHidden' : 'layoutBeside';
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+         strokeLinejoin="round" aria-hidden="true" data-layout={layout}>{ICONS[name]}</svg>
+  );
+}
 
 function Icon({ name }: { name: keyof typeof ICONS }) {
   return (
