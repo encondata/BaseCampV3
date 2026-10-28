@@ -17,10 +17,11 @@
 
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { ADMIN_RANK } from '../lib/access';
+import { ApiError } from '../lib/api';
 import type {
   InitiativeAssetRow, InitiativeDetail as InitiativeDetailOut, InitiativePersonRow,
   UiPreferences,
@@ -96,6 +97,16 @@ const learning = vi.hoisted(() => ({
 vi.mock('../lib/learning', async (importActual) => ({
   ...(await importActual<typeof import('../lib/learning')>()),
   ...learning,
+}));
+
+// the Project plan tab's calls (its behavior is covered by components/plans/PlanTab.test.tsx)
+const plans = vi.hoisted(() => ({
+  getPlan: vi.fn(),
+  getPlanVersion: vi.fn(),
+}));
+vi.mock('../lib/plans/api', async (importActual) => ({
+  ...(await importActual<typeof import('../lib/plans/api')>()),
+  ...plans,
 }));
 
 const PERSON: InitiativePersonRow = {
@@ -192,6 +203,7 @@ beforeEach(() => {
   });
   learning.listInitiativeRoster.mockResolvedValue([]);
   learning.getInitiativeGrid.mockResolvedValue({ documents: [], rows: [] });
+  plans.getPlan.mockRejectedValue(new ApiError(404, 'no_plan', { code: 'no_plan' }));
 });
 
 afterEach(() => {
@@ -209,6 +221,12 @@ function renderPage(tab?: string) {
       </Routes>
     </MemoryRouter>,
   );
+}
+
+let currentSearch = '';
+function LocationProbe() {
+  currentSearch = useLocation().search;
+  return null;
 }
 
 const assetRow = async () =>
@@ -250,6 +268,43 @@ it('tabs: Learning is offered only to Learning managers', async () => {
   // a deep link falls back to Overview
   expect(screen.getByRole('tab', { name: 'Overview' }).getAttribute('aria-selected')).toBe('true');
   expect(learning.getInitiativeLearning).not.toHaveBeenCalled();
+});
+
+it('tabs: Project plan sits after Full Picture and renders the plan tab', async () => {
+  renderPage('plan');
+  const tab = await screen.findByRole('tab', { name: 'Project plan' });
+  expect(tab.getAttribute('aria-selected')).toBe('true');
+  const names = screen.getAllByRole('tab').map((t) => t.textContent);
+  expect(names.indexOf('Project plan')).toBe(names.indexOf('Full Picture') + 1);
+  expect(await screen.findByText('No project plan yet')).not.toBeNull();
+  expect(plans.getPlan).toHaveBeenCalledWith('i1');
+  // the panel spans the whole grid, like Learning
+  expect(screen.getByText('No project plan yet').closest('.idet-plan')).not.toBeNull();
+  expect(screen.queryByText('Linked initiatives')).toBeNull();
+});
+
+it('tabs: Project plan is offered only with project_plans:view', async () => {
+  auth.can = (resource: string) => resource !== 'project_plans';
+  renderPage('plan');
+  await screen.findByRole('tab', { name: 'Overview' });
+  expect(screen.queryByRole('tab', { name: 'Project plan' })).toBeNull();
+  // a deep link falls back to Overview
+  expect(screen.getByRole('tab', { name: 'Overview' }).getAttribute('aria-selected')).toBe('true');
+  expect(plans.getPlan).not.toHaveBeenCalled();
+});
+
+it('tabs: leaving the Project plan tab drops its view and task from the URL', async () => {
+  const user = userEvent.setup();
+  render(
+    <MemoryRouter initialEntries={['/initiatives/i1?tab=plan&view=gantt&task=t1']}>
+      <Routes>
+        <Route path="/initiatives/:id" element={<><InitiativeDetail /><LocationProbe /></>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  await screen.findByText('No project plan yet');
+  await user.click(screen.getByRole('tab', { name: /^Assets/ }));
+  expect(currentSearch).toBe('?tab=assets');
 });
 
 it('tabs: Full Picture shows the overview and the assets list together', async () => {

@@ -1,0 +1,142 @@
+/* ============================================================
+   plans.css — the initiative's Project plan tab: the tab frame
+   (toolbar slot, view area, full screen), the lock banner, the
+   empty state and the plan dialogs. Later: toolbar groups, Gantt,
+   board. Class prefix `pln-`.
+
+   NO list-ish selectors in this file (styles/listTypography.test.ts):
+   nothing containing row / cell / list / table / chip / mono / head,
+   and no `.pln-(row|rows|cell|cells|list|table|grid|feed)` class —
+   one of those would make every `.pln-*` rule here list-ish. The
+   task sheet's layout lives in plan-sheet.css instead.
+   ============================================================ */
+
+/* ── the tab ────────────────────────────────────────────────── */
+
+.pln-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* Full screen: the tab fills the viewport above the portal chrome (nav,
+   top bar) on the page's own background. z-index 60 sits over the nav and
+   the top bar; dialogs (.modal-scrim, 80), portaled menus (.combo-menu,
+   70; RowActionsMenu, 1200) and toasts still land above it. */
+.pln-tab.pln-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  padding: 14px 20px 18px;
+  background: linear-gradient(180deg, var(--paper) 0%, var(--paper-2) 100%);
+  color: var(--text-dark);
+}
+
+/* ── toolbar slot: views at the left, full screen at the right ── */
+
+.pln-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  min-width: 0;
+}
+/* PlanToolbar's groups (Task 7) */
+.pln-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* full screen only: the initiative's name, since the page header is covered */
+.pln-fs-name {
+  margin: 0 4px 0 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-dark);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40vw;
+}
+.pln-stale { font-size: 12.5px; color: var(--c-amber); }
+.pln-screen-btn { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.pln-screen-btn svg { width: 14px; height: 14px; flex: none; }
+
+/* ── view area: the Gantt (Plan B), Calendar and Board (Plan C) ── */
+
+.pln-view {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: max(320px, calc(100dvh - 390px));
+  background: var(--surface);
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.pln-fullscreen .pln-view { flex: 1 1 auto; height: auto; min-height: 0; }
+
+/* until the task sheet arrives: what the plan holds */
+.pln-view-note {
+  margin: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-align: center;
+}
+.pln-view-note-title { font-size: 15px; font-weight: 600; color: var(--text-dark); }
+.pln-view-note .page-hint { margin: 0; }
+
+/* ── lock banner ──────────────────────────────────────────────── */
+
+.pln-lock {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 14px;
+  border: 1px solid var(--c-amber-bd);
+  border-radius: 10px;
+  background: var(--c-amber-bg);
+  color: var(--c-amber);
+  font-size: 13px;
+}
+.pln-lock svg { width: 15px; height: 15px; flex: none; }
+.pln-lock-text { flex: 1 1 auto; min-width: 0; }
+.pln-lock .mini-btn { flex: none; }
+
+/* ── empty state ──────────────────────────────────────────────── */
+
+.pln-empty { padding: 22px 24px 24px; }
+.pln-empty .eyebrow-sm { margin-bottom: 10px; }
+.pln-empty-title { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -0.01em; color: var(--text-dark); }
+.pln-empty .page-hint { margin: 6px 0 0; }
+.rgm-choice-cards.pln-empty-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0 0;
+}
+@media (max-width: 900px) {
+  .rgm-choice-cards.pln-empty-cards { grid-template-columns: 1fr; }
+}
+/* "Coming soon" is news, not an error: muted, not the hint's red */
+.pln-empty-cards .rgm-choice-hint { color: var(--text-mute); font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; }
+
+/* ── dialogs (PlanModal): sized to content within the size bounds ── */
+
+.modal-card.reports-modal-card.rgm-card.pln-modal {
+  width: fit-content;
+  min-width: min(480px, 96vw);
+  max-width: min(720px, 96vw);
+}
+.modal-card.reports-modal-card.rgm-card.pln-modal.pln-modal-wide { max-width: min(980px, 96vw); }
+.modal-card.reports-modal-card.rgm-card.pln-modal.pln-modal-xwide { max-width: min(1200px, 96vw); }
+
+.pln-note { margin: 0; font-size: 12.5px; color: var(--text-mute); }

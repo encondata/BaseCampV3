@@ -23,6 +23,7 @@ import RackViewModal from '../components/initiatives/RackViewModal';
 import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import InlineTextField from '../components/InlineTextField';
 import InitiativeLearningTab from '../components/learning/InitiativeLearningTab';
+import PlanTab from '../components/plans/PlanTab';
 import { useLearningAccess } from '../components/learning/useLearningAccess';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import ScanHistoryTable from '../components/scans/ScanHistoryTable';
@@ -100,13 +101,15 @@ import '../styles/system.css'; /* .sysconf-tabbar */
 const dateOnly = (iso: string | null) => (iso ? iso.slice(0, 10) : null);
 
 /** Detail page tabs, in display order. Full Picture shows the Overview
- *  and Assets sections together on one page. Learning is offered only to
+ *  and Assets sections together on one page. Project plan is offered only
+ *  with project_plans:view. Learning is offered only to
  *  Learning managers: every call behind it is a manager call (the roster
  *  and summary refuse anyone else), so there is nothing a plain
  *  workers:view holder could read there. */
 const DETAIL_TABS = [
   { key: 'overview', label: 'Overview' },
   { key: 'full', label: 'Full Picture' },
+  { key: 'plan', label: 'Project plan' },
   { key: 'assets', label: 'Assets' },
   { key: 'people', label: 'People' },
   { key: 'time', label: 'Time' },
@@ -311,13 +314,17 @@ export default function InitiativeDetail() {
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get('tab');
   const canSeeLearning = useLearningAccess()('view');
-  const tabs = DETAIL_TABS.filter((t) => t.key !== 'learning' || canSeeLearning);
+  const canSeePlan = can('project_plans', 'view');
+  const tabs = DETAIL_TABS.filter((t) => (t.key !== 'learning' || canSeeLearning)
+    && (t.key !== 'plan' || canSeePlan));
   const tab: DetailTab = tabs.some((t) => t.key === tabParam)
     ? tabParam as DetailTab : 'overview';
   const selectTab = (next: DetailTab) => {
     setSearchParams((prev) => {
       const p = new URLSearchParams(prev);
       if (next === 'overview') p.delete('tab'); else p.set('tab', next);
+      // the plan tab's own state (view, deep-linked task) stays with it
+      if (next !== 'plan') { p.delete('view'); p.delete('task'); }
       return p;
     }, { replace: true });
   };
@@ -1245,6 +1252,12 @@ export default function InitiativeDetail() {
             </div>
           )}
         </div>
+        )}
+
+        {tab === 'plan' && (
+          <div className="idet-plan">
+            <PlanTab initiativeId={initiative.id} initiative={initiative} />
+          </div>
         )}
 
         {tab === 'learning' && (

@@ -137,12 +137,15 @@ export function InitiativeSummary({ initiative, emptyText }: {
  *  own refs; it's a no-op for the checkbox variant (no radiogroup to
  *  find). `disabled` renders a native-disabled button (inert to click/
  *  key) with an optional `hint` explaining why — Generate Labels uses
- *  this for a type with no active template instead of hiding it. */
+ *  this for a type with no active template instead of hiding it. The
+ *  `button` variant is a plain action card (the Project plan tab's ways
+ *  to start a plan): no role override, no checked state, always
+ *  tabbable; `selected` only styles it. */
 export function ChoiceCard({
   title, description, selected, onSelect, variant = 'radio', disabled = false, hint,
 }: {
   title: string; description: string; selected: boolean; onSelect: () => void;
-  variant?: 'radio' | 'checkbox'; disabled?: boolean; hint?: string;
+  variant?: 'radio' | 'checkbox' | 'button'; disabled?: boolean; hint?: string;
 }) {
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
     if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'ArrowRight' || e.key === 'ArrowDown') {
@@ -162,7 +165,8 @@ export function ChoiceCard({
     }
   };
   return (
-    <button type="button" role={variant} aria-checked={selected} disabled={disabled}
+    <button type="button" role={variant === 'button' ? undefined : variant}
+            aria-checked={variant === 'button' ? undefined : selected} disabled={disabled}
             tabIndex={variant === 'radio' ? (selected ? 0 : -1) : 0}
             className={`rgm-choice-card ${selected ? 'on' : ''} ${disabled ? 'disabled' : ''}`}
             onClick={onSelect} onKeyDown={onKeyDown}>
