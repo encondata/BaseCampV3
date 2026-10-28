@@ -57,12 +57,13 @@
   min-width: 0;
 }
 /* PlanToolbar's groups take the room between the views and Full screen,
-   wrapping onto a second line when the page is narrow */
+   wrapping onto a second line when the page is narrow (6px between the
+   groups keeps them on one line at 1512px with the nav open) */
 .pln-tools {
   display: flex;
   align-items: flex-start;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 8px 6px;
   flex: 1 1 0;
   min-width: 0;
 }
@@ -135,7 +136,7 @@
   pointer-events: none;
 }
 .pln-tmore { display: flex; }
-.pln-tmore .mini-btn { height: 32px; }
+.pln-tmore .mini-btn { height: 32px; padding: 0 11px; }
 /* full screen only: the initiative's name, since the page header is covered */
 .pln-fs-name {
   margin: 0 4px 0 0;
