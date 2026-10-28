@@ -24,8 +24,19 @@ TABLES = ("project_plans", "plan_tasks", "plan_links", "plan_assignments",
           "plan_reminder_log", "plan_templates")
 INDEXES = ("plan_tasks_plan_position_idx", "plan_tasks_parent_idx",
            "plan_links_plan_idx", "plan_tasks_open_deadline_idx",
-           "plan_assignments_task_person_uniq", "plan_assignments_task_partner_uniq")
-FULL = {"view", "add", "change", "delete"}
+           "plan_assignments_task_person_uniq", "plan_assignments_task_partner_uniq",
+           "plan_links_successor_idx", "plan_assignments_task_idx",
+           "plan_assignments_person_idx", "plan_reminder_log_person_idx")
+# what a cascading delete looks rows up by: the FK trigger's
+# `DELETE ... WHERE col = $1` can use neither a partial index nor one that
+# leads with another column. Index -> its columns (and predicate).
+FK_INDEXES = {
+    "plan_links_successor_idx": "(successor_id)",
+    "plan_assignments_task_idx": "(task_id)",
+    "plan_assignments_person_idx": "(person_id) WHERE (person_id IS NOT NULL)",
+    "plan_reminder_log_person_idx": "(person_id)",
+}
+FULL ={"view", "add", "change", "delete"}
 GRANTED_ROLES = ("developer", "founder", "super_admin", "admin")
 
 
@@ -129,6 +140,26 @@ def test_downgrade_and_upgrade_again(throwaway_url):
     _alembic(throwaway_url, "upgrade", "head")
     with psycopg.connect(sync, autocommit=True) as conn:
         assert _state(conn) == up
+
+
+def test_models_declare_every_index():
+    """The ORM models name the indexes the migration creates (the ones
+    behind a constraint aside: the models declare those as constraints)."""
+    from serversherpa.db.models import Base
+
+    declared = {ix.name for table in TABLES for ix in Base.metadata.tables[table].indexes}
+    assert declared == set(INDEXES)
+
+
+async def test_a_delete_finds_dependent_rows_by_index(db):
+    """Deleting a task (or a person) finds its links, assignments and
+    reminder rows through an index, not a scan of every plan's rows."""
+    rows = dict((await db.execute(text(
+        "SELECT indexname, indexdef FROM pg_indexes WHERE indexname = ANY(:n)"),
+        {"n": list(FK_INDEXES)})).all())
+    assert set(rows) == set(FK_INDEXES)
+    for name, columns in FK_INDEXES.items():
+        assert rows[name].endswith(f"USING btree {columns}"), rows[name]
 
 
 async def _initiative(db):

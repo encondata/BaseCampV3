@@ -136,6 +136,7 @@ class PlanLink(Base):
     __table_args__ = (
         UniqueConstraint("predecessor_id", "successor_id", name="plan_links_pair_key"),
         Index("plan_links_plan_idx", "plan_id"),
+        Index("plan_links_successor_idx", "successor_id"),
     )
 
 
@@ -156,6 +157,9 @@ class PlanAssignment(Base):
               postgresql_where=text("person_id IS NOT NULL")),
         Index("plan_assignments_task_partner_uniq", "task_id", "partner_id", unique=True,
               postgresql_where=text("partner_id IS NOT NULL")),
+        Index("plan_assignments_task_idx", "task_id"),
+        Index("plan_assignments_person_idx", "person_id",
+              postgresql_where=text("person_id IS NOT NULL")),
     )
 
 
@@ -173,8 +177,11 @@ class PlanReminderLog(Base):
     due_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=False))
     sent_at: Mapped[datetime] = _now()
 
-    __table_args__ = (UniqueConstraint(
-        "task_id", "person_id", "stage", "due_at", name="plan_reminder_log_dedupe_key"),)
+    __table_args__ = (
+        UniqueConstraint("task_id", "person_id", "stage", "due_at",
+                         name="plan_reminder_log_dedupe_key"),
+        Index("plan_reminder_log_person_idx", "person_id"),
+    )
 
 
 class PlanTemplate(Base):

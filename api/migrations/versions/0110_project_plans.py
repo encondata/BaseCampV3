@@ -140,6 +140,9 @@ DDL = (
     )
     """,
     "CREATE INDEX plan_links_plan_idx ON plan_links (plan_id)",
+    # a task delete cascades here by successor too (the pair key leads with
+    # the predecessor)
+    "CREATE INDEX plan_links_successor_idx ON plan_links (successor_id)",
     # a task is assigned to a person or to a partner, never both; partners
     # are display-only resources that get no reminders
     """
@@ -160,6 +163,13 @@ DDL = (
         "CREATE UNIQUE INDEX plan_assignments_task_partner_uniq "
         "ON plan_assignments (task_id, partner_id) WHERE partner_id IS NOT NULL"
     ),
+    # what a task or person delete cascades through: the two unique indexes
+    # above are partial, so they cannot serve `WHERE task_id = $1`
+    "CREATE INDEX plan_assignments_task_idx ON plan_assignments (task_id)",
+    (
+        "CREATE INDEX plan_assignments_person_idx "
+        "ON plan_assignments (person_id) WHERE person_id IS NOT NULL"
+    ),
     # stage is `d<N>` / `due` / `overdue:<YYYY-MM-DD>`. Keying on due_at means
     # moving a due date re-arms its reminders.
     """
@@ -173,6 +183,8 @@ DDL = (
         CONSTRAINT plan_reminder_log_dedupe_key UNIQUE (task_id, person_id, stage, due_at)
     )
     """,
+    # a person delete cascades here (task_id leads the dedupe key)
+    "CREATE INDEX plan_reminder_log_person_idx ON plan_reminder_log (person_id)",
     """
     CREATE TABLE plan_templates (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
