@@ -545,20 +545,22 @@
 
 /* a task's own color (Task Information, the Color column, Properties ›
    Task color): `--pln-task`, set inline on its bar, bracket or diamond.
-   Read through --pln-hue, which keeps the hue and chroma as picked and, on
-   the dark theme, lifts the lightness off the dark lanes the way
-   .chip.custom does (directory.css); --pln-hue-deep is the darker shade
+   Read through --pln-hue, which keeps the hue and chroma as picked and
+   moves the lightness the way .chip.custom does (directory.css): on the
+   light theme a cap at 0.60, so a pale pick (#fff59d) still shows on a
+   white lane (every palette color is under it, so none changes); on the
+   dark theme a lift off the dark lanes. --pln-hue-deep is the darker shade
    the part done is filled with. The lightness tokens stay unregistered,
    so `l` is still a token when oklch(from …) reads it. No text sits on a
    colored bar: names and resource names are beside it, on the lane. */
-.portal-shell { --pln-hue-l: l; --pln-deep-l: calc(l * 0.72); }
+.portal-shell { --pln-hue-l: min(l, 0.60); --pln-deep-l: calc(min(l, 0.60) * 0.72); }
 .portal-shell[data-theme='dark'] {
   --pln-hue-l: clamp(0.66, calc(l + 0.18), 0.88);
   --pln-deep-l: clamp(0.5, calc(l + 0.04), 0.74);
 }
 .pln-tinted, .pln-bar-hue {
-  --pln-hue: oklch(from var(--pln-task) var(--pln-hue-l, l) c h);
-  --pln-hue-deep: oklch(from var(--pln-task) var(--pln-deep-l, calc(l * 0.72)) c h);
+  --pln-hue: oklch(from var(--pln-task) var(--pln-hue-l, min(l, 0.60)) c h);
+  --pln-hue-deep: oklch(from var(--pln-task) var(--pln-deep-l, calc(min(l, 0.60) * 0.72)) c h);
 }
 .pln-bar.pln-tinted {
   border-color: var(--pln-hue);

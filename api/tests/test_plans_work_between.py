@@ -6,6 +6,13 @@ a port of `WorkCalendar.work_between`, and both must agree on every row.
 The vectors' expected minutes were written by the API itself; a change to
 `work_between` that moves any of them fails here and in the portal's
 drag.test.ts until both sides agree again.
+
+To rebuild the minutes after a deliberate change (from api/, with
+PYTHONPATH=src, `at` as below; the portal's drag.test.ts then has to agree):
+
+    path = Path("tests/fixtures/plans/work_between.json"); rows = json.loads(path.read_text())
+    for r in rows: r["minutes"] = WorkCalendar.from_json(r["calendar"]).work_between(at(r["a"]), at(r["b"]))
+    path.write_text(json.dumps(rows, indent=1) + "\\n")
 """
 
 import json

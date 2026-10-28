@@ -881,6 +881,33 @@ async def test_inverse_of_outline_edits(client, db):
     assert _comparable(await _get(client, hdrs, plan)) == _comparable(after)
 
 
+async def test_colors_survive_delete_undo_and_outline_edits(client, db):
+    """A deleted colored task comes back with its color on undo; a move, an
+    indent and an outdent leave every task's color as it was."""
+    hdrs, _move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A", "B", "C")
+    await _ok(client, hdrs, plan, [_update(ids["A"], color="#1e88e5"),
+                                   _update(ids["B"], color="#fff59d"),
+                                   _update(ids["C"], color="#e53935")])
+    colors = {ids["A"]: "#1e88e5", ids["B"]: "#fff59d", ids["C"]: "#e53935"}
+
+    body = await _ok(client, hdrs, plan, [{"op": "delete_tasks", "ids": [ids["B"]]}])
+    await _ok(client, hdrs, plan, body["inverse"])
+    got = await _get(client, hdrs, plan)
+    assert {t["id"]: t["color"] for t in got["tasks"]} == colors
+
+    body = await _ok(client, hdrs, plan, [
+        {"op": "move_tasks", "ids": [ids["C"]], "before_id": ids["A"]},
+        {"op": "indent", "ids": [ids["A"]]},
+    ])
+    assert all(t["color"] == colors[t["id"]] for t in body["tasks"])
+    body = await _ok(client, hdrs, plan, [{"op": "outdent", "ids": [ids["A"]]}])
+    assert all(t["color"] == colors[t["id"]] for t in body["tasks"])
+    got = await _get(client, hdrs, plan)
+    assert {t["id"]: t["color"] for t in got["tasks"]} == colors
+    assert [t["name"] for t in got["tasks"]] == ["C", "A", "B"]
+
+
 async def test_inverse_restores_links_and_assignments(client, db):
     hdrs, move, plan = await _setup(client, db)
     ids = await _add(client, hdrs, plan, "A", "B", "C")

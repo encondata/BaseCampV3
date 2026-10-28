@@ -4,7 +4,8 @@
  * tabs (General, Predecessors, Resources, Advanced, Notes); OK sends one
  * batch with every change (update_task, link ops, set_assignees,
  * set_percent), nothing when nothing changed; a summary's derived fields
- * are read-only; a locked plan edits only progress (% Complete, Notes); a
+ * are read-only; a locked plan edits only progress and the bar's color
+ * (% Complete, Notes, Color); a
  * completion stop goes through the completion check and, canceled, leaves
  * the dialog open with the edits.
  */

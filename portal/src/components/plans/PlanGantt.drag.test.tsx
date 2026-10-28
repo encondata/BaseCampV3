@@ -625,6 +625,55 @@ describe('fix round 1', () => {
     expect(s.apply).not.toHaveBeenCalled();
   });
 
+  it('at the days zoom a task off the hour dropped back at its origin sends nothing, moved or resized', () => {
+    const plan = afternoon({ start: '2026-11-03T13:10', finish: '2026-11-04T11:50' });
+    const s = stand();
+    render(<Harness plan={plan} s={s} />);
+    // 0.6px at 48px a day is 18 minutes: under the hour's snap
+    const x = clientAt(plan, '2026-11-04T00:00');
+    drag(barOf('b'), [x, rowY(1)], [x + 40, rowY(1)], [x + 0.6, rowY(1)]);
+    const end = clientAt(plan, '2026-11-04T11:50') - 1;
+    drag(barOf('b'), [end, rowY(1)], [end + 40, rowY(1)], [end + 0.4, rowY(1)]);
+    expect(s.apply).not.toHaveBeenCalled();
+    // a day on keeps its 13:10
+    drag(barOf('b'), [x, rowY(1)], [x + 20, rowY(1)], [x + 48, rowY(1)]);
+    expect(s.apply).toHaveBeenCalledWith([{ op: 'update_task', id: 'b', fields: { start: '2026-11-04T13:10' } }],
+      'Move Task');
+  });
+
+  it('at the weeks zoom a resize dropped at its origin sends nothing; a week on adds 5 days', () => {
+    const plan = makePlan({
+      tasks: [makeTask('r', { name: 'Rack', start: '2026-11-02T08:00', finish: '2026-11-04T17:00',
+        duration_minutes: 1440, duration_text: '3 days' })],
+      project_finish: '2026-11-04T17:00', initiative_window: NO_WINDOW,
+    });
+    const s = stand();
+    render(<Harness plan={plan} s={s} zoom="weeks" />);
+    const end = clientAt(plan, '2026-11-04T17:00', 'weeks') - 1;
+    drag(barOf('r'), [end, rowY(0)], [end + 40, rowY(0)], [end + 1, rowY(0)]);
+    expect(s.apply).not.toHaveBeenCalled();
+    drag(barOf('r'), [end, rowY(0)], [end + 60, rowY(0)], [end + 7 * 18, rowY(0)]);
+    expect(s.apply).toHaveBeenCalledWith([{ op: 'update_task', id: 'r', fields: { duration: '8 days' } }],
+      'Edit Duration');
+  });
+
+  it('a task that started after the press (a refresh) is refused by its current state', () => {
+    const plan = plan3();
+    const s = stand();
+    const { rerender } = render(<Harness plan={plan} s={s} />);
+    const x = clientAt(plan, '2026-11-03T12:00');
+    fireEvent.pointerDown(barOf('b'), { clientX: x, clientY: rowY(1), pointerId: 1, button: 0 });
+    // someone records its Actual Start; its bar stays where it was pressed
+    rerender(<Harness plan={plan3({
+      tasks: tasks3().map((t) => (t.id === 'b' ? { ...t, actual_start: '2026-11-03T08:00', percent_complete: 10 } : t)),
+    })} s={s} />);
+    fireEvent.pointerMove(barOf('b'), { clientX: x + 48, clientY: rowY(1), pointerId: 1 });
+    fireEvent.pointerUp(barOf('b'), { clientX: x + 48, clientY: rowY(1), pointerId: 1 });
+    expect(toast).toHaveBeenCalledWith('This task has started — change its Actual Start instead.');
+    expect(s.beginEditing).not.toHaveBeenCalled();
+    expect(s.apply).not.toHaveBeenCalled();
+  });
+
   it('on a locked plan a one-day bar at the days zoom has a progress handle too', () => {
     const plan = plan3({ locked_at: '2026-10-27T12:00:00Z' });
     const s = stand();

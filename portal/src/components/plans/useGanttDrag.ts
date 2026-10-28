@@ -31,8 +31,9 @@
  * - A task that has started isn't moved (`moveRefusal`): crossing the
  *   threshold says "This task has started — change its Actual Start
  *   instead." and holds and sends nothing. Its other drags still work.
- * - Snaps (`snapShift`): at weeks and coarser the move snaps by whole days,
- *   so a task keeps its clock time; at days and hours its new place snaps.
+ * - Snaps (`snapShift`): the move snaps by the zoom's step (whole days at
+ *   weeks and coarser, the hour at days, 15 minutes at hours), so a task
+ *   keeps its clock time and a drop back at its origin sends nothing.
  * - The pointer's place on the scale is its x in the chart pane plus the
  *   pane's sideways scroll (the content moves by a transform), so a drag
  *   reads the same at any scroll.
@@ -347,7 +348,8 @@ export function useGanttDrag(o: Options): GanttDrag {
       }
       if (!s.live) {
         if (Math.hypot(ev.clientX - s.downClientX, ev.clientY - s.downClientY) < DRAG_THRESHOLD_PX) return;
-        const refused = s.kind === 'move' ? moveRefusal(s.task) : null;
+        // the task as it is now: a refresh since the press may have started it
+        const refused = s.kind === 'move' ? moveRefusal(latest.current.tasksById.get(s.task.id) ?? s.task) : null;
         if (refused) {
           end(s);
           latest.current.toast(refused);

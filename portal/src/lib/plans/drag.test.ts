@@ -129,9 +129,14 @@ describe('snapShift', () => {
     expect(snapShift(from, 40 * DAY, 'quarters')).toBe(at('2026-12-13T13:00'));
   });
 
-  it('at the hour and quarter-hour snaps the place snaps', () => {
+  it('at the hour and quarter-hour snaps the move snaps too', () => {
     expect(snapShift(at('2026-11-03T08:00'), DAY + 5.4 * HOUR, 'days')).toBe(at('2026-11-04T13:00'));
     expect(snapShift(at('2026-11-03T08:00'), 0.3 * HOUR, 'hours')).toBe(at('2026-11-03T08:15'));
+    // off the snap: the task keeps its minutes, so a drop at its origin is no change
+    expect(snapShift(at('2026-11-03T08:10'), 0.3 * HOUR, 'days')).toBe(at('2026-11-03T08:10'));
+    expect(snapShift(at('2026-11-03T08:10'), 1.4 * HOUR, 'days')).toBe(at('2026-11-03T09:10'));
+    expect(snapShift(at('2026-11-03T08:10'), 0.1 * HOUR, 'hours')).toBe(at('2026-11-03T08:10'));
+    expect(snapShift(at('2026-11-03T08:10'), 0.3 * HOUR, 'hours')).toBe(at('2026-11-03T08:25'));
   });
 });
 

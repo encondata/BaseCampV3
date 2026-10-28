@@ -62,7 +62,10 @@ it('a task’s color: its bar, bracket and diamond read --pln-task through the t
   // the hue as picked on the light theme, lifted on the dark one (as .chip.custom is), its part done a darker shade
   expect(declarations('.pln-tinted')).toMatch(/--pln-hue:\s*oklch\(from var\(--pln-task\)/);
   expect(declarations('.pln-tinted')).toMatch(/--pln-hue-deep:\s*oklch\(from var\(--pln-task\)/);
-  expect(declarations('.portal-shell')).toMatch(/--pln-hue-l:\s*l;/);
+  // light: capped, as .chip.custom is, so a pale pick (#fff59d) stays visible on a white lane
+  expect(declarations('.portal-shell')).toMatch(/--pln-hue-l:\s*min\(l,\s*0\.6\d*\);/);
+  expect(declarations('.portal-shell')).toMatch(/--pln-deep-l:\s*calc\(min\(l,\s*0\.6\d*\)\s*\*\s*0\.72\);/);
+  expect(declarations('.pln-tinted')).toMatch(/var\(--pln-hue-l,\s*min\(l,\s*0\.6\d*\)\)/);
   expect(declarations(".portal-shell[data-theme='dark']")).toMatch(/--pln-hue-l:\s*clamp\(/);
   expect(declarations('.pln-bar.pln-tinted')).toMatch(/border-color:\s*var\(--pln-hue\)/);
   expect(declarations('.pln-bar.pln-tinted')).toMatch(/background:\s*color-mix\(in srgb, var\(--pln-hue\)/);

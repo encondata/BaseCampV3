@@ -110,13 +110,13 @@ export function snapMs(ms: number, zoom: Zoom): number {
 }
 
 /**
- * Where a time `from` dragged by `moved` ms lands. At the whole-day snaps
- * (weeks and coarser) the move itself snaps, so a task keeps its clock time
- * (a 13:00 start moves to 13:00 a week on, and a drop back where it began
- * lands where it began); at the hour and quarter-hour snaps the place does.
+ * Where a time `from` dragged by `moved` ms lands: the move itself snaps,
+ * at every zoom, so a task keeps its clock time (a 13:00 start moves to
+ * 13:00 a week on, an 08:10 one to 09:10 an hour on) and a drop back where
+ * it began lands where it began, sending nothing.
  */
 export function snapShift(from: number, moved: number, zoom: Zoom): number {
-  return SNAP_MS[zoom] >= MS_PER_DAY ? from + snapMs(moved, zoom) : snapMs(from + moved, zoom);
+  return from + snapMs(moved, zoom);
 }
 
 /** The pointer's x on the scale: in from the chart pane's left edge, plus
