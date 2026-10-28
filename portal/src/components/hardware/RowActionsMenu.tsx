@@ -51,8 +51,10 @@ const GAP = 6;
 const CLOSE_OTHERS_EVENT = 'row-actions-menu:close-others';
 const menuCoordinator = new EventTarget();
 
-export function RowActionsMenu({ label, actions }: {
+export function RowActionsMenu({ label, actions, 'aria-describedby': describedBy }: {
   label?: string; actions: RowAction[];
+  /** Passed to the trigger button (a hover tip around the menu names itself here). */
+  'aria-describedby'?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<MenuPos | null>(null);
@@ -134,7 +136,7 @@ export function RowActionsMenu({ label, actions }: {
   return (
     <div className="row-actions" ref={triggerRef} style={{ position: 'relative' }}>
       <button type="button" className="mini-btn" aria-haspopup="menu"
-              aria-expanded={open}
+              aria-expanded={open} aria-describedby={describedBy}
               onClick={(e) => {
                 e.stopPropagation();
                 // Broadcast BEFORE setState, in the handler body — never

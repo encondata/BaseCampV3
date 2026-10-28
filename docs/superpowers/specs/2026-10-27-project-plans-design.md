@@ -168,6 +168,19 @@ transfers. Icon buttons with text tooltips that include the shortcut.
 
 Read-only users see the views, filters and Display group only.
 
+**Amendment 2026-10-28 (Jimmy, during Plan B): hover tips on every
+command.** Every command on the page has a styled hover tip (the house
+`Tip`, in place of the browser's `title`, never both): its name (the
+button's accessible name), its shortcut as keycaps from the same keyboard
+map the Keyboard shortcuts dialog shows, one plain sentence on what it does
+for people new to MS Project, and, when it's off, why ("Schedule is
+locked", "Select a task first", "Select two or more tasks", "Show the Gantt
+chart to use this"). That covers every toolbar group, More, the view
+switcher, Full screen / Exit full screen (Esc) and the lock banner's Unlock;
+the empty state's cards and the More menu's items already say what they do.
+The copy is one table (`lib/plans/commandTips.ts`). Read-only users also see
+the Gantt group below.
+
 ## Data model (migration 0110)
 
 All plan times are **floating local wall-clock times** in the plan's zone:
@@ -482,6 +495,29 @@ reload or on a version conflict.
 - Hover card (reuse the pointer-tracking approach of `InitiativeHoverCard`,
   its own `pln-` class prefix): name, start, finish, duration, %, assignees,
   deadline, slack.
+
+**Amendment 2026-10-28 (Jimmy, during Plan B): the Gantt beside, below or
+hidden.** For narrower monitors, a `.segmented` **Gantt** group after
+Display picks where the chart goes, remembered per browser (it's about the
+monitor, not the plan; localStorage `plans.layout.v1`, Beside by default):
+
+- **Beside** — the split above: sheet left, chart right, one vertical
+  scroller, the sheet's width in `plans.split.v1`.
+- **Below** — the sheet on top at full width, a horizontal splitter (drag or
+  ↑/↓; its height in `plans.split.below.v1`), the chart underneath at full
+  width. Each pane scrolls up and down on its own scroller, the two kept on
+  the same row both ways (and padded to scroll the same distance), each with
+  its own sideways scroll. Since the names aren't beside the bars, each bar
+  carries its task's name at its left, cut short with an ellipsis (after the
+  bar when there's no room), and the chart opens and fits with room for
+  them. Selection, drags, the hover card, links, Fit, Scroll to Task and zoom
+  all work on the chart's own scroller.
+- **Hidden** — the sheet alone at full width; the chart isn't drawn, and its
+  commands (Critical Path, Baseline, Zoom, Fit, Scroll to Task) are off with
+  "Show the Gantt chart to use this".
+
+Full screen works in all three; switching keeps the selection and the rows
+on screen.
 
 ## Dialogs
 

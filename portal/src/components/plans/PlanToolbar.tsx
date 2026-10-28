@@ -1,22 +1,28 @@
 /**
  * The plan's toolbar ("ribbon-lite"): MS Project's Task ribbon groups, in
- * order, each a labeled cluster of icon buttons whose tooltip is the name
- * and its shortcut (lib/plans/shortcuts, so it never disagrees with the
- * key):
+ * order, each a labeled cluster of icon buttons:
  *
  *   Undo · Schedule (0–100%, Mark on Track, Link, Unlink, Indent, Outdent)
  *   · Tasks (Auto / Manual, a `.segmented` pair showing the selection's
  *   mode) · Insert (Task, Summary, Milestone) · Properties (Information,
  *   Notes, Add to Timeline) · Display (Critical path, Baseline, Zoom − / +
- *   / Fit, Scroll to task; the Timeline strip comes in Plan C) · More.
+ *   / Fit, Scroll to task; the Timeline strip comes in Plan C) · Gantt (the
+ *   layout: Beside, Below or Hidden, a `.segmented` trio) · More.
  *
- * Read-only people see Display and More (Columns…, Keyboard shortcuts)
- * only. On a locked plan the buttons that change the schedule stay
- * reachable but off, their tooltip saying "Schedule is locked"; progress
+ * Every button has a hover tip (components/Tip) in place of a native title:
+ * its name (the button's accessible name), its shortcut as keycaps
+ * (lib/plans/shortcuts, so it never disagrees with the key), what it does
+ * and, when it's off, why. The names, sentences and reasons are one table,
+ * lib/plans/commandTips.
+ *
+ * Read-only people see Display, Gantt and More (Columns…, Keyboard
+ * shortcuts) only. On a locked plan the buttons that change the schedule
+ * stay reachable but off, their tip saying "Schedule is locked"; progress
  * (0–100%, Mark on Track, Notes) still works. A button that needs a
- * selection says so instead. Off buttons are `aria-disabled`, not
- * `disabled`, so they keep their tooltip and their place in the arrow-key
- * order (the ARIA toolbar pattern).
+ * selection says so instead; with the chart Hidden, the chart-only commands
+ * (Critical Path, Baseline, Zoom, Fit, Scroll to Task) say to show it. Off
+ * buttons are `aria-disabled`, not `disabled`, so they keep their tip and
+ * their place in the arrow-key order (the ARIA toolbar pattern).
  *
  * `useRovingToolbar` gives the toolbar element (PlanTab's, which also
  * holds the view switcher and Full screen) one tab stop: ←/→ move between
@@ -27,29 +33,42 @@
 import { useEffect, useLayoutEffect, useRef, type MouseEvent, type ReactNode, type RefObject } from 'react';
 
 import type { Plan } from '../../lib/plans/api';
+import {
+  COMMAND_TIPS, OFF_NOTES, redoDesc, tipKeys, undoDesc, type CommandTipId,
+} from '../../lib/plans/commandTips';
 import { canAddTasks } from '../../lib/plans/editOps';
 import { ZOOMS } from '../../lib/plans/ganttGeometry';
-import { detectPlatform, planShortcutKeys, type PlanShortcutId, type Platform } from '../../lib/plans/shortcuts';
+import type { GanttLayout } from '../../lib/plans/ganttView';
+import { detectPlatform, type Platform } from '../../lib/plans/shortcuts';
 import { RowActionsMenu, type RowAction } from '../hardware/RowActionsMenu';
+import Tip from '../Tip';
 import type { PlanCommands } from './usePlanCommands';
 import type { PlanController } from './usePlan';
 
-export const LOCKED_HINT = 'Schedule is locked';
-export const NO_BASELINE_HINT = 'No baseline set';
-const SELECT_HINT = 'Select a task first';
-const SELECT_TWO_HINT = 'Select two or more tasks';
-const PERCENTS = [0, 25, 50, 75, 100] as const;
+export const LOCKED_HINT = OFF_NOTES.locked;
+export const NO_BASELINE_HINT = OFF_NOTES.noBaseline;
+const SELECT_HINT = OFF_NOTES.select;
+const SELECT_TWO_HINT = OFF_NOTES.selectTwo;
+const PERCENTS = [
+  [0, 'pct0'], [25, 'pct25'], [50, 'pct50'], [75, 'pct75'], [100, 'pct100'],
+] as const;
+/** The layout trio, in order, with its tips. */
+const LAYOUTS: readonly (readonly [GanttLayout, CommandTipId])[] = [
+  ['beside', 'layoutBeside'], ['below', 'layoutBelow'], ['hidden', 'layoutHidden'],
+];
 
 interface Props {
   plan: Plan;
   ctl: Pick<PlanController, 'canUndo' | 'canRedo' | 'undoLabel' | 'redoLabel'>;
   commands: PlanCommands;
   platform?: Platform;
+  /** Where the Gantt chart is (PlanTab keeps it). */
+  layout: GanttLayout;
+  onLayout(layout: GanttLayout): void;
 }
 
-export default function PlanToolbar({ plan, ctl, commands: cmd, platform }: Props) {
+export default function PlanToolbar({ plan, ctl, commands: cmd, platform, layout, onLayout }: Props) {
   const os = platform ?? detectPlatform();
-  const keys = (id: PlanShortcutId) => planShortcutKeys(id, os);
   const canChange = plan.permissions.change;
   const locked = plan.locked_at !== null;
   const count = cmd.selected.length;
@@ -58,6 +77,8 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform }: Prop
     : count < need ? (need === 2 ? SELECT_TWO_HINT : SELECT_HINT) : null);
   const progress = count ? null : SELECT_HINT;
   const zoomAt = ZOOMS.indexOf(cmd.zoom);
+  /** The chart-only commands are off while the chart is hidden. */
+  const noChart = layout === 'hidden' ? OFF_NOTES.noChart : null;
 
   const more: RowAction[] = [];
   if (canChange) {
@@ -82,38 +103,37 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform }: Prop
     more.push({ key: 'delete-plan', label: 'Delete plan…', onSelect: () => cmd.open('deletePlan'), destructive: true });
   }
 
-  const tool = (label: string, run: () => void, icon: ReactNode, o: {
-    shortcut?: PlanShortcutId; hint?: string | null; pressed?: boolean; title?: string;
+  const tool = (id: CommandTipId, run: () => void, icon: ReactNode, o: {
+    hint?: string | null; pressed?: boolean; desc?: string;
   } = {}) => (
-    <Tool key={label} label={label} title={o.title} keys={o.shortcut ? keys(o.shortcut) : ''} hint={o.hint ?? null}
-          pressed={o.pressed} onRun={run} focusSheet={cmd.focusSheet}>{icon}</Tool>
+    <Tool key={id} label={COMMAND_TIPS[id].label} desc={o.desc ?? COMMAND_TIPS[id].desc} keys={tipKeys(id, os)}
+          hint={o.hint ?? null} pressed={o.pressed} onRun={run} focusSheet={cmd.focusSheet}>{icon}</Tool>
   );
+  const moreTip = COMMAND_TIPS[canChange ? 'more' : 'moreReadOnly'];
 
   return (
     <>
       {canChange && (
         <Group label="Undo">
-          {tool('Undo', cmd.undo, <Icon name="undo" />, {
-            shortcut: 'undo', hint: ctl.canUndo ? null : 'Nothing to undo',
-            title: ctl.undoLabel ? `Undo ${ctl.undoLabel}` : 'Undo',
+          {tool('undo', cmd.undo, <Icon name="undo" />, {
+            hint: ctl.canUndo ? null : OFF_NOTES.noUndo, desc: undoDesc(ctl.undoLabel),
           })}
-          {tool('Redo', cmd.redo, <Icon name="redo" />, {
-            shortcut: 'redo', hint: ctl.canRedo ? null : 'Nothing to redo',
-            title: ctl.redoLabel ? `Redo ${ctl.redoLabel}` : 'Redo',
+          {tool('redo', cmd.redo, <Icon name="redo" />, {
+            hint: ctl.canRedo ? null : OFF_NOTES.noRedo, desc: redoDesc(ctl.redoLabel),
           })}
         </Group>
       )}
 
       {canChange && (
         <Group label="Schedule">
-          {PERCENTS.map((n) => tool(`${n}% Complete`, () => cmd.percent(n), <Pie percent={n} />, { hint: progress }))}
-          {tool('Mark on Track', cmd.markOnTrack, <Icon name="track" />, { hint: progress })}
+          {PERCENTS.map(([n, id]) => tool(id, () => cmd.percent(n), <Pie percent={n} />, { hint: progress }))}
+          {tool('markOnTrack', cmd.markOnTrack, <Icon name="track" />, { hint: progress })}
           <span className="pln-tsep" aria-hidden="true" />
-          {tool('Link Tasks', cmd.link, <Icon name="link" />, { shortcut: 'link', hint: structure(2) })}
-          {tool('Unlink Tasks', cmd.unlink, <Icon name="unlink" />, { shortcut: 'unlink', hint: structure() })}
+          {tool('link', cmd.link, <Icon name="link" />, { hint: structure(2) })}
+          {tool('unlink', cmd.unlink, <Icon name="unlink" />, { hint: structure() })}
           <span className="pln-tsep" aria-hidden="true" />
-          {tool('Outdent', cmd.outdent, <Icon name="outdent" />, { shortcut: 'outdent', hint: structure() })}
-          {tool('Indent', cmd.indent, <Icon name="indent" />, { shortcut: 'indent', hint: structure() })}
+          {tool('outdent', cmd.outdent, <Icon name="outdent" />, { hint: structure() })}
+          {tool('indent', cmd.indent, <Icon name="indent" />, { hint: structure() })}
         </Group>
       )}
 
@@ -121,18 +141,21 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform }: Prop
         <Group label="Tasks" bare>
           <div className="segmented pln-modes">
             {(['auto', 'manual'] as const).map((m) => {
-              const name = m === 'auto' ? 'Auto Schedule' : 'Manually Schedule';
+              const tip = COMMAND_TIPS[m];
               const hint = structure();
               return (
-                <button key={m} type="button" className={cmd.mode === m ? 'on' : ''} aria-pressed={cmd.mode === m}
-                        aria-disabled={hint ? true : undefined} title={hint ? `${name} — ${hint}` : name}
-                        onClick={(e) => {
-                          if (hint) return;
-                          cmd.setMode(m);
-                          if (e.detail > 0) cmd.focusSheet();
-                        }}>
-                  {m === 'auto' ? 'Auto' : 'Manual'}
-                </button>
+                <Tip key={m} label={tip.label} desc={tip.desc} note={hint}>
+                  {/* the visible "Auto" / "Manual" begins the name MS Project gives the command */}
+                  <button type="button" className={cmd.mode === m ? 'on' : ''} aria-pressed={cmd.mode === m}
+                          aria-label={tip.label} aria-disabled={hint ? true : undefined}
+                          onClick={(e) => {
+                            if (hint) return;
+                            cmd.setMode(m);
+                            if (e.detail > 0) cmd.focusSheet();
+                          }}>
+                    {m === 'auto' ? 'Auto' : 'Manual'}
+                  </button>
+                </Tip>
               );
             })}
           </div>
@@ -141,13 +164,13 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform }: Prop
 
       {canChange && plan.permissions.add && (
         <Group label="Insert">
-          {tool('Insert Task', () => cmd.insert('task'), <Icon name="task" />, {
-            shortcut: 'insert', hint: canAddTasks(plan) ? null : LOCKED_HINT,
-          })}
-          {tool('Insert Summary Task', () => cmd.insert('summary'), <Icon name="summary" />, {
+          {tool('insertTask', () => cmd.insert('task'), <Icon name="task" />, {
             hint: canAddTasks(plan) ? null : LOCKED_HINT,
           })}
-          {tool('Insert Milestone', () => cmd.insert('milestone'), <Icon name="milestone" />, {
+          {tool('insertSummary', () => cmd.insert('summary'), <Icon name="summary" />, {
+            hint: canAddTasks(plan) ? null : LOCKED_HINT,
+          })}
+          {tool('insertMilestone', () => cmd.insert('milestone'), <Icon name="milestone" />, {
             hint: canAddTasks(plan) ? null : LOCKED_HINT,
           })}
         </Group>
@@ -155,31 +178,53 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform }: Prop
 
       {canChange && (
         <Group label="Properties">
-          {tool('Information', () => cmd.info(), <Icon name="info" />, { shortcut: 'info', hint: progress })}
-          {tool('Notes', () => cmd.info('notes'), <Icon name="notes" />, { hint: progress })}
-          {tool('Add to Timeline', cmd.timeline, <Icon name="timeline" />, {
-            hint: structure(), pressed: cmd.onTimeline,
-          })}
+          {tool('info', () => cmd.info(), <Icon name="info" />, { hint: progress })}
+          {tool('notes', () => cmd.info('notes'), <Icon name="notes" />, { hint: progress })}
+          {tool('timeline', cmd.timeline, <Icon name="timeline" />, { hint: structure(), pressed: cmd.onTimeline })}
         </Group>
       )}
 
       <Group label="Display">
-        {tool('Critical Path', cmd.toggleCritical, <Icon name="critical" />, { pressed: cmd.display.critical })}
-        {tool('Baseline', cmd.toggleBaseline, <Icon name="baseline" />, { pressed: cmd.display.baseline })}
+        {tool('critical', cmd.toggleCritical, <Icon name="critical" />, { hint: noChart, pressed: cmd.display.critical })}
+        {tool('baseline', cmd.toggleBaseline, <Icon name="baseline" />, { hint: noChart, pressed: cmd.display.baseline })}
         <span className="pln-tsep" aria-hidden="true" />
-        {tool('Zoom Out', cmd.zoomOut, <Icon name="zoomOut" />, {
-          hint: zoomAt === ZOOMS.length - 1 ? 'Zoomed out all the way' : null,
+        {tool('zoomOut', cmd.zoomOut, <Icon name="zoomOut" />, {
+          hint: noChart ?? (zoomAt === ZOOMS.length - 1 ? OFF_NOTES.zoomedOut : null),
         })}
-        {tool('Zoom In', cmd.zoomIn, <Icon name="zoomIn" />, { hint: zoomAt === 0 ? 'Zoomed in all the way' : null })}
-        {tool('Fit Project', cmd.fit, <Icon name="fit" />)}
+        {tool('zoomIn', cmd.zoomIn, <Icon name="zoomIn" />, {
+          hint: noChart ?? (zoomAt === 0 ? OFF_NOTES.zoomedIn : null),
+        })}
+        {tool('fit', cmd.fit, <Icon name="fit" />, { hint: noChart })}
         <span className="pln-tsep" aria-hidden="true" />
-        {tool('Scroll to Task', cmd.scrollToTask, <Icon name="scroll" />, {
-          shortcut: 'scrollToTask', hint: count ? null : SELECT_HINT,
+        {tool('scrollToTask', cmd.scrollToTask, <Icon name="scroll" />, {
+          hint: noChart ?? (count ? null : SELECT_HINT),
         })}
       </Group>
 
+      {/* where the chart goes: about the monitor, so everyone has it. Like the
+          view switcher it leaves focus where it is: focusing a sheet with
+          nothing selected would select its first row and scroll up to it */}
+      <Group label="Gantt" bare>
+        <div className="segmented pln-layouts">
+          {LAYOUTS.map(([value, id]) => {
+            const tip = COMMAND_TIPS[id];
+            return (
+              <Tip key={value} label={tip.label} desc={tip.desc}>
+                <button type="button" className={layout === value ? 'on' : ''} aria-pressed={layout === value}
+                        onClick={() => onLayout(value)}>
+                  {tip.label}
+                </button>
+              </Tip>
+            );
+          })}
+        </div>
+      </Group>
+
       <div className="pln-tmore">
-        <RowActionsMenu label="More" actions={more} />
+        {/* the trigger's ▾ marks its menu; the tip names the command */}
+        <Tip label={moreTip.label} desc={moreTip.desc}>
+          <RowActionsMenu label="More" actions={more} />
+        </Tip>
       </div>
     </>
   );
@@ -194,11 +239,12 @@ function Group({ label, bare = false, children }: { label: string; bare?: boolea
   );
 }
 
-function Tool({ label, title, keys, hint, pressed, onRun, focusSheet, children }: {
-  label: string; title?: string; keys: string; hint: string | null; pressed?: boolean;
+/** An icon button with its tip: the name (also its accessible name), the
+ *  keys, what it does and, when off (`hint`), why. */
+function Tool({ label, desc, keys, hint, pressed, onRun, focusSheet, children }: {
+  label: string; desc: string; keys: string; hint: string | null; pressed?: boolean;
   onRun(): void; focusSheet(): void; children: ReactNode;
 }) {
-  const tip = `${title ?? label}${keys ? ` (${keys})` : ''}${hint ? ` — ${hint}` : ''}`;
   const onClick = (e: MouseEvent<HTMLButtonElement>) => {
     if (hint) return;
     onRun();
@@ -206,10 +252,12 @@ function Tool({ label, title, keys, hint, pressed, onRun, focusSheet, children }
     if (e.detail > 0) focusSheet();
   };
   return (
-    <button type="button" className={`mini-btn pln-tbtn${pressed ? ' on' : ''}`} aria-label={label} title={tip}
-            aria-disabled={hint ? true : undefined} aria-pressed={pressed} onClick={onClick}>
-      {children}
-    </button>
+    <Tip label={label} keys={keys} desc={desc} note={hint}>
+      <button type="button" className={`mini-btn pln-tbtn${pressed ? ' on' : ''}`} aria-label={label}
+              aria-disabled={hint ? true : undefined} aria-pressed={pressed} onClick={onClick}>
+        {children}
+      </button>
+    </Tip>
   );
 }
 

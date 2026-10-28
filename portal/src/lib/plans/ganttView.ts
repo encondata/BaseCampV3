@@ -2,8 +2,10 @@
  * The Gantt view's layout math, on top of ganttGeometry: which slice of the
  * scale the chart draws, bars and bands clipped to it, a bar's place in its
  * row, which links are drawn and where their arrowheads point, the
- * initiative window band, what the hover card says, and the zoom and
- * splitter settings kept in localStorage. Pure, so PlanGantt only renders.
+ * initiative window band, what the hover card says, the zoom, splitter
+ * and layout settings kept in localStorage, and the Below layout's math
+ * (the end pads that keep its two scrollers level, where a task's name
+ * goes at its bar). Pure, so PlanGantt only renders.
  *
  * Drawing only what is visible (Review Focus 5): a 3-year plan at the hours
  * zoom is about 528,000 px wide, so the chart never makes an element that
@@ -460,4 +462,98 @@ export function splitWidth(stored: number | null, viewW: number): number {
   if (viewW <= 0) return Math.max(MIN_SHEET_PX, stored ?? UNMEASURED_SPLIT_PX);
   const want = stored ?? Math.round(viewW * DEFAULT_SPLIT);
   return Math.min(Math.max(want, MIN_SHEET_PX), maxSplit(viewW));
+}
+
+// ── the layout: Beside, Below or Hidden ─────────────────────────────
+
+/** Where the Gantt chart goes: beside the sheet (the split), under it (for
+ *  narrower screens), or nowhere. Kept per browser — it's about the
+ *  monitor, not the plan. */
+export type GanttLayout = 'beside' | 'below' | 'hidden';
+export const GANTT_LAYOUTS: readonly GanttLayout[] = ['beside', 'below', 'hidden'];
+export const LAYOUT_KEY = 'plans.layout.v1';
+
+/** The layout kept in this browser; Beside when none (or not one) is kept, or storage refuses. */
+export function readLayout(): GanttLayout {
+  try {
+    const stored = localStorage.getItem(LAYOUT_KEY);
+    return GANTT_LAYOUTS.find((l) => l === stored) ?? 'beside';
+  } catch {
+    return 'beside';
+  }
+}
+
+export function writeLayout(layout: GanttLayout): void {
+  try {
+    localStorage.setItem(LAYOUT_KEY, layout);
+  } catch {
+    // storage refused: the layout lasts this visit only
+  }
+}
+
+/** Below's splitter: the sheet's height in px (Beside's width keeps SPLIT_KEY). */
+export const SPLIT_BELOW_KEY = 'plans.split.below.v1';
+/** The sheet's least height in Below: its header, its scrollbar and a few rows. */
+export const MIN_SHEET_H = 120;
+/** The chart's least height in Below. */
+export const MIN_CHART_H = 120;
+/** Before the view is measured, with nothing kept. */
+const UNMEASURED_SPLIT_H = 280;
+
+export function readSplitBelow(): number | null {
+  try {
+    const stored = Number(localStorage.getItem(SPLIT_BELOW_KEY) ?? Number.NaN);
+    return Number.isFinite(stored) && stored > 0 ? Math.round(stored) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeSplitBelow(px: number): void {
+  try {
+    localStorage.setItem(SPLIT_BELOW_KEY, String(Math.round(px)));
+  } catch {
+    // storage refused: the splitter stays put this visit only
+  }
+}
+
+/** The tallest the sheet may be in a view `viewH` tall: the chart keeps MIN_CHART_H. */
+export function maxSplitHeight(viewH: number): number {
+  return Math.max(MIN_SHEET_H, viewH - SPLITTER_PX - MIN_CHART_H);
+}
+
+/** The sheet's height in Below: the kept one, else half of what the
+ *  splitter leaves, held between MIN_SHEET_H and maxSplitHeight. A view not
+ *  measured yet (0) takes the kept height as it is. */
+export function splitHeight(stored: number | null, viewH: number): number {
+  if (viewH <= 0) return Math.max(MIN_SHEET_H, stored ?? UNMEASURED_SPLIT_H);
+  const want = stored ?? Math.floor((viewH - SPLITTER_PX) / 2);
+  return Math.min(Math.max(want, MIN_SHEET_H), maxSplitHeight(viewH));
+}
+
+/** Below's two scrollers stay on the same row, so they must scroll the same
+ *  distance: both hold the same rows under the same header, and the one with
+ *  the taller view gets the difference as extra room at its end (else the
+ *  shorter one's last rows would be out of the other's reach). 0s until
+ *  both are measured. */
+export function endPads(sheetH: number, chartH: number): { sheet: number; chart: number } {
+  if (sheetH <= 0 || chartH <= 0) return { sheet: 0, chart: 0 };
+  return { sheet: Math.max(0, sheetH - chartH), chart: Math.max(0, chartH - sheetH) };
+}
+
+/** A task name's widest at its bar (Below), px. */
+export const LABEL_MAX_PX = 200;
+/** Less room than this before a bar and its name goes after it. */
+export const LABEL_MIN_PX = 48;
+/** Between a bar and the name left of it: a link's stub (and its
+ *  arrowhead, inside it) into the bar's start or out of it, and its turn
+ *  there, stay clear of the name. */
+export const LABEL_GAP_PX = LINK_STUB + 4;
+
+/** Where a task's name goes in Below, where the names aren't beside the
+ *  bars: left of its bar, ellipsized to the room there (`room`: px from the
+ *  scale's start to the bar's), else after the bar. */
+export function labelPlace(room: number): { side: 'before' | 'after'; width: number } {
+  const width = Math.min(LABEL_MAX_PX, room - LABEL_GAP_PX);
+  return width >= LABEL_MIN_PX ? { side: 'before', width } : { side: 'after', width: LABEL_MAX_PX };
 }

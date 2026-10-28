@@ -16,7 +16,7 @@ export { detectPlatform } from '../../labels/builder/shortcuts';
 
 export type PlanShortcutId =
   | 'insert' | 'delete' | 'indent' | 'outdent' | 'link' | 'unlink' | 'info' | 'undo' | 'redo'
-  | 'scrollToTask' | 'collapse' | 'expand' | 'find' | 'help' | 'copy' | 'cut' | 'paste';
+  | 'scrollToTask' | 'collapse' | 'expand' | 'find' | 'help' | 'copy' | 'cut' | 'paste' | 'exitFullScreen';
 
 export interface PlanShortcut {
   id: PlanShortcutId;
@@ -43,6 +43,8 @@ export const PLAN_SHORTCUTS: readonly PlanShortcut[] = [
   { id: 'cut', label: 'Cut the selected tasks', win: 'Ctrl+X', mac: '⌘X' },
   { id: 'paste', label: 'Paste tasks, or cells from Excel', win: 'Ctrl+V', mac: '⌘V' },
   { id: 'help', label: 'Keyboard shortcuts', win: '?', mac: '?' },
+  // PlanTab's own key (full screen), not the matcher's
+  { id: 'exitFullScreen', label: 'Exit full screen', win: 'Esc', mac: 'Esc' },
 ];
 
 /** The sheet's own keys, for the dialog (lib/plans/sheetKeys does them). */

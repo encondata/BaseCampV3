@@ -10,13 +10,13 @@
  *    and the "Plan updated by…" status. The commands, the MS Project
  *    keyboard map and the clipboard are usePlanCommands' and
  *    usePlanShortcuts';
- *  - the view area (`.pln-view`): the Gantt view — the task sheet, the
- *    splitter and the chart side by side (`.pln-split`) inside one
- *    vertical scroll box (`.pln-panes`, `scrollRef`) both panes virtualize
- *    against, each pane with its own sideways scroll (SidePane: the design
- *    is in Splitter.tsx). The splitter's place is the sheet pane's width,
- *    kept in localStorage `plans.split.v1`; Calendar and Board arrive in
- *    Plan C;
+ *  - the view area (`.pln-view`): the Gantt view — the task sheet and the
+ *    chart in the layout the toolbar's Gantt group picks (GanttPanes: side
+ *    by side in one vertical scroll box, `scrollRef`, both panes
+ *    virtualize against; stacked, each in a box of its own kept on the
+ *    same row; or the sheet alone), each pane with its own sideways scroll
+ *    (SidePane: the design is in Splitter.tsx); Calendar and Board arrive
+ *    in Plan C;
  *  - the dialogs host: one PlanModal-based dialog at a time (`PlanDialog`),
  *    and over it the completion check (useCompletion: every 100% path,
  *    Task Information's and Update project's too, ends there). The check
@@ -41,7 +41,7 @@
  */
 
 import {
-  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject,
+  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject,
 } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
@@ -51,12 +51,15 @@ import { listScale } from '../../lib/listTools';
 import { useToast } from '../../lib/notificationsContext';
 import type { Plan, PlanTask } from '../../lib/plans/api';
 import { SHEET_ROW_PX } from '../../lib/plans/columns';
+import { COMMAND_TIPS, tipKeys, type CommandTipId } from '../../lib/plans/commandTips';
 import { canAddTasks } from '../../lib/plans/editOps';
 import { isPlanChanged, planErrorText } from '../../lib/plans/errors';
-import { MIN_SHEET_PX, maxSplit, readSplit, splitWidth, writeSplit } from '../../lib/plans/ganttView';
+import { detectPlatform } from '../../lib/plans/shortcuts';
+import Tip from '../Tip';
 import ColumnsModal from './ColumnsModal';
 import DeletePlanModal from './DeletePlanModal';
 import DeleteTasksModal from './DeleteTasksModal';
+import GanttPanes, { useGanttLayout } from './GanttPanes';
 import { ClearBaselineModal, LockModal, ReplaceBaselineModal } from './PlanConfirmModals';
 import PlanCreateModal, { type PlanInitiative } from './PlanCreateModal';
 import PlanEmptyState from './PlanEmptyState';
@@ -65,7 +68,6 @@ import PlanSettingsModal from './PlanSettingsModal';
 import PlanSheet from './PlanSheet';
 import PlanToolbar, { useRovingToolbar } from './PlanToolbar';
 import ShortcutsModal from './ShortcutsModal';
-import Splitter, { SidePane } from './Splitter';
 import TaskDependencyModal from './TaskDependencyModal';
 import TaskInfoModal from './TaskInfoModal';
 import UpdateProjectModal from './UpdateProjectModal';
@@ -79,9 +81,10 @@ import '../../styles/plans.css';
 
 export type PlanViewKey = 'gantt' | 'calendar' | 'board';
 
-/** The views the switcher offers. Plan C adds Calendar and Board. */
-const PLAN_VIEWS: readonly { key: PlanViewKey; label: string }[] = [
-  { key: 'gantt', label: 'Gantt' },
+/** The views the switcher offers, with their tips (lib/plans/commandTips).
+ *  Plan C adds Calendar and Board. */
+const PLAN_VIEWS: readonly { key: PlanViewKey; tip: CommandTipId }[] = [
+  { key: 'gantt', tip: 'viewGantt' },
 ];
 
 /** `?view=` as one of the views on offer; anything else is the Gantt. */
@@ -125,30 +128,6 @@ function useFillHeight(ref: RefObject<HTMLElement | null>, on: boolean): number 
     return () => observer.disconnect();
   }, [ref, on]);
   return height;
-}
-
-/** The splitter's place: the sheet pane's width in px, within what the view
- *  (`ref`, the scroll box, measured while `on`) leaves the chart. `move`
- *  follows a drag; `save` keeps the place (`plans.split.v1`). */
-function useSplit(ref: RefObject<HTMLElement | null>, on: boolean) {
-  const [viewW, setViewW] = useState(0);
-  const [stored, setStored] = useState<number | null>(readSplit);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!on || !el) return undefined;
-    const measure = () => setViewW(el.clientWidth);
-    measure();
-    if (typeof ResizeObserver === 'undefined') return undefined;
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [ref, on]);
-  const width = splitWidth(stored, viewW);
-  const save = useCallback((px: number) => {
-    setStored(px);
-    writeSplit(px);
-  }, []);
-  return { width, max: viewW > 0 ? maxSplit(viewW) : Math.max(width, MIN_SHEET_PX), move: setStored, save };
 }
 
 /** What stays live behind full screen: the toasts, whose actions (Undo,
@@ -222,9 +201,12 @@ export default function PlanTab({ initiativeId, initiative }: {
   useLayoutEffect(() => {
     goToRef.current = commands.goToTask;
   });
-  usePlanShortcuts(commands.handlers, { root: rootRef, enabled: ready && view === 'gantt' });
+  const [layout, setLayout] = useGanttLayout();
+  // Hidden: Scroll to Task (Ctrl+Shift+F5) has no chart to scroll, as its button says
+  const handlers = useMemo(() => (layout === 'hidden'
+    ? { ...commands.handlers, scrollToTask: () => false } : commands.handlers), [commands.handlers, layout]);
+  usePlanShortcuts(handlers, { root: rootRef, enabled: ready && view === 'gantt' });
   useRovingToolbar(toolbarRef, ready);
-  const split = useSplit(scrollRef, ready && view === 'gantt');
   const { scheduled_start: scheduledStart, scheduled_end: scheduledEnd } = initiative;
   const scheduled = useMemo(() => ({ start: scheduledStart, end: scheduledEnd }), [scheduledStart, scheduledEnd]);
   const { zoomIn, zoomOut } = commands;
@@ -274,6 +256,7 @@ export default function PlanTab({ initiativeId, initiative }: {
     );
   } else {
     const plan = ctl.plan;
+    const screenTip = COMMAND_TIPS[isFull ? 'exitFullScreen' : 'fullScreen'];
     body = (
       <>
         {plan.locked_at && <LockBanner ctl={ctl} plan={plan} />}
@@ -286,48 +269,50 @@ export default function PlanTab({ initiativeId, initiative }: {
             <div className="pln-tgroup">
               <div className="segmented pln-views" role="group" aria-label="View">
                 {PLAN_VIEWS.map((v) => (
-                  <button key={v.key} type="button" aria-pressed={view === v.key}
-                          className={view === v.key ? 'on' : ''} onClick={() => selectView(v.key)}>
-                    {v.label}
-                  </button>
+                  <Tip key={v.key} label={COMMAND_TIPS[v.tip].label} desc={COMMAND_TIPS[v.tip].desc}>
+                    <button type="button" aria-pressed={view === v.key}
+                            className={view === v.key ? 'on' : ''} onClick={() => selectView(v.key)}>
+                      {COMMAND_TIPS[v.tip].label}
+                    </button>
+                  </Tip>
                 ))}
               </div>
               <span className="pln-tgroup-label" aria-hidden="true">View</span>
             </div>
             <div className="pln-tools">
-              <PlanToolbar plan={plan} ctl={ctl} commands={commands} />
+              <PlanToolbar plan={plan} ctl={ctl} commands={commands} layout={layout} onLayout={setLayout} />
             </div>
-            <button type="button" className="mini-btn pln-screen-btn"
-                    title={isFull ? 'Exit full screen (Esc)' : undefined}
-                    onClick={() => setFullScreen((on) => !on)}>
-              <FullScreenIcon exit={isFull} />
-              {isFull ? 'Exit full screen' : 'Full screen'}
-            </button>
+            <Tip label={screenTip.label} desc={screenTip.desc}
+                 keys={isFull ? tipKeys('exitFullScreen', detectPlatform()) : null}>
+              <button type="button" className="mini-btn pln-screen-btn" onClick={() => setFullScreen((on) => !on)}>
+                <FullScreenIcon exit={isFull} />
+                {screenTip.label}
+              </button>
+            </Tip>
           </div>
           {ctl.staleBy && <span className="pln-stale" role="status">{ctl.staleBy}</span>}
         </div>
 
         {/* the view area */}
-        <div className="pln-view" data-view={view} ref={viewRef}
+        <div className="pln-view" data-view={view} data-layout={layout} ref={viewRef}
              style={viewHeight === null ? undefined : { height: viewHeight }}>
           {view === 'gantt' && (
-            <div className="pln-panes" ref={scrollRef}>
-              <div className="pln-split" style={{ '--pln-split': `${split.width}px` } as CSSProperties}>
-                <SidePane className="pln-pane-sheet" barRef={sheetSideRef}>
-                  <PlanSheet ctl={ctl} rows={sheet.rows} collapsed={sheet.collapsed} rowHeight={rowHeight}
-                             scrollRef={scrollRef} sideScrollRef={sheetSideRef} selection={sheet.selection}
-                             onSelect={sheet.select} onToggleCollapse={sheet.toggleCollapse}
-                             blankRow={canAddTasks(plan)} onOpenInfo={openTaskInfoById} />
-                </SidePane>
-                <Splitter value={split.width} min={MIN_SHEET_PX} max={split.max} label="Resize the task sheet"
-                          onChange={split.move} onCommit={split.save} />
-                <PlanGantt ctl={ctl} rows={sheet.rows} rowHeight={rowHeight} scrollRef={scrollRef}
-                           zoom={commands.zoom} display={commands.display} selection={sheet.selection}
-                           onSelect={sheet.select} blankRow={canAddTasks(plan)} scheduled={scheduled}
-                           scrollRequest={commands.chartScroll} onZoomStep={zoomStep} focusSheet={commands.focusSheet}
-                           onLinkClick={openLink} onBarDoubleClick={openTaskInfo} />
-              </div>
-            </div>
+            <GanttPanes layout={layout} on={ready} viewRef={viewRef} scrollRef={scrollRef} sheetSideRef={sheetSideRef}
+                        sheet={(
+                          <PlanSheet ctl={ctl} rows={sheet.rows} collapsed={sheet.collapsed} rowHeight={rowHeight}
+                                     scrollRef={scrollRef} sideScrollRef={sheetSideRef} selection={sheet.selection}
+                                     onSelect={sheet.select} onToggleCollapse={sheet.toggleCollapse}
+                                     blankRow={canAddTasks(plan)} onOpenInfo={openTaskInfoById} />
+                        )}
+                        chart={(slot) => (
+                          <PlanGantt ctl={ctl} rows={sheet.rows} rowHeight={rowHeight} scrollRef={slot.scrollRef}
+                                     zoom={commands.zoom} display={commands.display} selection={sheet.selection}
+                                     onSelect={sheet.select} blankRow={canAddTasks(plan)} scheduled={scheduled}
+                                     scrollRequest={commands.chartScroll} onZoomStep={zoomStep}
+                                     focusSheet={commands.focusSheet} onLinkClick={openLink}
+                                     onBarDoubleClick={openTaskInfo} taskLabels={slot.taskLabels}
+                                     endPad={slot.endPad} startTop={slot.startTop} />
+                        )} />
           )}
         </div>
       </>
@@ -402,9 +387,11 @@ function LockBanner({ ctl, plan }: { ctl: PlanController; plan: Plan }) {
         Schedule locked{who} on {longDate(plan.locked_at)} — progress updates only
       </span>
       {plan.permissions.change && (
-        <button type="button" className="mini-btn" disabled={busy} onClick={() => void unlock()}>
-          Unlock
-        </button>
+        <Tip label={COMMAND_TIPS.unlock.label} desc={COMMAND_TIPS.unlock.desc}>
+          <button type="button" className="mini-btn" disabled={busy} onClick={() => void unlock()}>
+            {COMMAND_TIPS.unlock.label}
+          </button>
+        </Tip>
       )}
     </div>
   );

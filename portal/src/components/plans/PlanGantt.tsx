@@ -1,20 +1,26 @@
 /**
- * The Gantt chart: MS Project's bar chart beside the task sheet. It draws
- * the dates the API computed and schedules nothing.
+ * The Gantt chart: MS Project's bar chart beside the task sheet (or under
+ * it: PlanTab's Gantt › Below). It draws the dates the API computed and
+ * schedules nothing.
  *
  * - The timescale: two tiers (ganttGeometry `tiers`), sticky at the top of
  *   the view and exactly as tall as the sheet's header (SHEET_HEAD_PX), so
  *   the rows line up across the panes.
  * - Lanes: one per row the sheet shows (`rows`, the outline less collapsed
  *   subtasks, plus the blank new-task row), virtualized against the same
- *   scroll box with the same settings as the sheet (Review Focus 5). A task
+ *   scroll box with the same settings as the sheet (Review Focus 5) — under
+ *   the sheet, against a box of its own PlanTab keeps level with the
+ *   sheet's (Splitter.tsx). A task
  *   bar (`pln-bar`, accent, its progress filled in), a summary's bracket
  *   (`pln-bar-summary`), a milestone's diamond (`pln-diamond`) with its
  *   date; red (`pln-bar-critical`) for critical tasks while Display ›
  *   Critical Path is on; the baseline under the bar while Display ›
  *   Baseline is on (`pln-baseline`); a deadline's green down-arrow
  *   (`pln-deadline`); resource names right of the bar. A task without the
- *   dates to draw gets no bar.
+ *   dates to draw gets no bar. Under the sheet (`taskLabels`), where the
+ *   names aren't beside the bars, each task's name goes left of its bar,
+ *   ellipsized to the room there, or after it when there's none
+ *   (`labelPlace`).
  * - Behind the lanes, all of it deaf to the pointer: nonworking days shaded
  *   (days and hours zooms), the today and status-date lines, the
  *   initiative's scheduled window as a faint band, labeled in the
@@ -62,8 +68,9 @@ import {
   type Bar, type LinkEnd, type Scale, type Tick, type Zoom,
 } from '../../lib/plans/ganttGeometry';
 import {
-  bandsIn, barBox, chartWindow, clip, lineAt, linkEnd, linkRow, linkShape, linkStub, linksToDraw, pillAt, scaleSpan,
-  taskScrollLeft, windowLabel, windowPillX, windowSpan, type BarBox, type DayWindow, type LinkShape, type Span,
+  LABEL_GAP_PX, LABEL_MAX_PX, bandsIn, barBox, chartWindow, clip, labelPlace, lineAt, linkEnd, linkRow, linkShape, linkStub,
+  linksToDraw, pillAt, scaleSpan, taskScrollLeft, windowLabel, windowPillX, windowSpan, type BarBox, type DayWindow,
+  type LinkShape, type Span,
 } from '../../lib/plans/ganttView';
 import type { LinkType } from '../../lib/plans/predecessors';
 import { extendRows, selectCell, toggleRow, type Selection } from '../../lib/plans/selection';
@@ -78,7 +85,8 @@ export interface PlanGanttProps {
   /** The task ids shown, in order: the sheet's rows. */
   rows: string[];
   rowHeight: number;
-  /** The view's one vertical scroll box, which the sheet reads too. */
+  /** The chart's vertical scroll box: the view's one box, which the sheet
+   *  reads too (Beside), or the chart's own (Below). */
   scrollRef: RefObject<HTMLDivElement | null>;
   zoom: Zoom;
   display: GanttDisplay;
@@ -100,6 +108,12 @@ export interface PlanGanttProps {
   onLinkClick?(linkId: string): void;
   /** A double-click on a bar, diamond or summary bracket (Task Information's hook). */
   onBarDoubleClick?(task: PlanTask): void;
+  /** Each task's name at its bar (Below, where the sheet isn't beside it). */
+  taskLabels?: boolean;
+  /** Room after the last lane (Below: so the chart scrolls as far as the sheet). */
+  endPad?: number;
+  /** Where its scroll box is as the chart mounts (the sheet's place); the box's own scrollTop by default. */
+  startTop?(): number;
 }
 
 /** A link with its shape, ready to draw. */
@@ -113,7 +127,8 @@ const NO_TICKS = { top: [], bottom: [] };
 
 export default function PlanGantt({
   ctl, rows, rowHeight, scrollRef, zoom, display, selection, onSelect, blankRow = false, scheduled,
-  scrollRequest = null, onZoomStep, focusSheet, onLinkClick, onBarDoubleClick,
+  scrollRequest = null, onZoomStep, focusSheet, onLinkClick, onBarDoubleClick, taskLabels = false, endPad = 0,
+  startTop,
 }: PlanGanttProps) {
   const plan = ctl.plan;
   const tasks = plan?.tasks;
@@ -186,14 +201,16 @@ export default function PlanGantt({
   }, [scale]);
 
   // a plan opens at its start (the scale may begin weeks earlier, at the
-  // initiative's window), as a fit leaves it
+  // initiative's window), as a fit leaves it; under the sheet, with room
+  // left of it for the first tasks' names
   const planId = plan?.id ?? null;
   const opened = useRef<string | null>(null);
+  const labelRoom = taskLabels ? LABEL_MAX_PX : 0;
   useLayoutEffect(() => {
     if (!scale || !projectStart || !planId || opened.current === planId) return;
     opened.current = planId;
-    side.current?.scrollTo(fitScrollLeft(scale, projectStart));
-  }, [scale, projectStart, planId]);
+    side.current?.scrollTo(fitScrollLeft(scale, projectStart) - labelRoom);
+  }, [scale, projectStart, planId, labelRoom]);
 
   // Fit and Scroll to Task, once per request
   const handled = useRef(scrollRequest?.seq ?? 0);
@@ -202,13 +219,13 @@ export default function PlanGantt({
     handled.current = scrollRequest.seq;
     let x: number | null = null;
     if (scrollRequest.to === 'fit') {
-      x = fitScrollLeft(scale, projectStart);
+      x = fitScrollLeft(scale, projectStart) - labelRoom;
     } else {
       const task = scrollRequest.taskId ? tasksById.get(scrollRequest.taskId) : undefined;
       x = task ? taskScrollLeft(scale, task) : null;
     }
     if (x !== null) side.current?.scrollTo(x);
-  }, [scrollRequest, scale, projectStart, tasksById]);
+  }, [scrollRequest, scale, projectStart, tasksById, labelRoom]);
 
   // ── rows: the sheet's virtualizer settings, against the same box ──
   const count = rows.length + (blankRow ? 1 : 0);
@@ -220,6 +237,11 @@ export default function PlanGantt({
     overscan: SHEET_OVERSCAN,
     scrollMargin: SHEET_HEAD_PX,
     getItemKey: itemKey,
+    // the chart mounts into a box already scrolled (Gantt › Beside again
+    // from Hidden), or one to be kept level with the sheet's (Below): a new
+    // virtualizer scrolls its box to where it starts, so it starts there,
+    // not at the top
+    initialOffset: () => (startTop ? startTop() : scrollRef.current?.scrollTop ?? 0),
   });
   useEffect(() => {
     virtualizer.measure();
@@ -331,7 +353,7 @@ export default function PlanGantt({
 
   return (
     <SidePane className="pln-pane-chart" contentWidth={scale.width} origin={win[0]} onScrollX={onScrollX}
-              onWidth={setPaneW} onZoomStep={onZoomStep} handleRef={side} barRef={chartBar}>
+              onWidth={setPaneW} onZoomStep={onZoomStep} handleRef={side} barRef={chartBar} endPad={endPad}>
       {/* everything here is the sheet's rows again, drawn: the sheet is the accessible view */}
       <div className="pln-gantt" data-drag={drag.access} style={style} aria-hidden="true">
         <div className="pln-scale">
@@ -389,7 +411,7 @@ export default function PlanGantt({
             return (
               <Lane key={item.key} laneId={task?.id ?? 'blank'} task={task} y={item.start - SHEET_HEAD_PX}
                     scale={scale} win={win} box={box} display={display} selected={selected} access={drag.access}
-                    onBarPointerDown={drag.onBarPointerDown} onBarDoubleClick={onBarDouble} />
+                    labels={taskLabels} onBarPointerDown={drag.onBarPointerDown} onBarDoubleClick={onBarDouble} />
             );
           })}
 
@@ -434,6 +456,7 @@ interface LaneProps extends BarHandlers {
   box: BarBox;
   display: GanttDisplay;
   selected: boolean;
+  labels: boolean;
 }
 
 /** One row's lane; redraws only when its task, place, window or state changes. */
@@ -493,8 +516,8 @@ const NAMES_GAP = 6;
 /** A link handle's height beside a milestone's diamond. */
 const DOT_MARK_H = 2 * MILESTONE_HALF;
 
-function TaskMarks({ task, scale, win, box, display, access, onBarPointerDown, onBarDoubleClick }: BarHandlers & {
-  task: PlanTask; scale: Scale; win: Span; box: BarBox; display: GanttDisplay;
+function TaskMarks({ task, scale, win, box, display, labels, access, onBarPointerDown, onBarDoubleClick }: BarHandlers & {
+  task: PlanTask; scale: Scale; win: Span; box: BarBox; display: GanttDisplay; labels: boolean;
 }) {
   const out: ReactNode[] = [];
   const critical = display.critical && task.is_critical && !task.is_summary;
@@ -508,6 +531,18 @@ function TaskMarks({ task, scale, win, box, display, access, onBarPointerDown, o
   const names = task.assignees.map((a) => a.name).join(', ');
   const cut = (p: { cutStart: boolean; cutEnd: boolean }) =>
     `${p.cutStart ? ' pln-cut-start' : ''}${p.cutEnd ? ' pln-cut-end' : ''}`;
+  // Below: the task's name at its bar — left of it, or after it (before the resource names)
+  const title = task.name || 'Untitled task';
+  /** The name left of a mark whose left edge is at `x` on the scale (`at` in the window), or null to put it after. */
+  const nameBefore = (x: number, at: number) => {
+    if (!labels) return null;
+    const place = labelPlace(x);
+    if (place.side === 'after') return null;
+    return (
+      <span key="label" className="pln-bar-label"
+            style={{ left: at - LABEL_GAP_PX - place.width, width: place.width, top: box.mid }}>{title}</span>
+    );
+  };
 
   if (display.baseline) {
     const base = baselineOf(scale, task);
@@ -530,13 +565,16 @@ function TaskMarks({ task, scale, win, box, display, access, onBarPointerDown, o
   if (bar && task.is_milestone) {
     const at = lineAt(bar.x, win);
     if (at !== null) {
+      const before = nameBefore(bar.x - MILESTONE_HALF, at - MILESTONE_HALF);
       out.push(
+        before,
         <div key="bar" className={`pln-diamond${critical ? ' pln-diamond-critical' : ''}`} data-task-id={task.id}
              style={{ left: at - MILESTONE_HALF, top: box.mid - MILESTONE_HALF }} onPointerDown={down}
              onDoubleClick={dbl} />,
         dot(at + MILESTONE_HALF, box.mid - DOT_MARK_H / 2, DOT_MARK_H),
         <span key="names" className="pln-bar-names" style={{ left: at + MILESTONE_HALF + NAMES_GAP, top: box.mid }}>
           <span className="pln-diamond-date">{formatShortDay(task.start ?? task.finish)}</span>
+          {labels && !before && <span className="pln-bar-label-after">{title}</span>}
           {names && ` ${names}`}
         </span>,
       );
@@ -555,7 +593,11 @@ function TaskMarks({ task, scale, win, box, display, access, onBarPointerDown, o
       const grip = access !== 'none' && !task.is_summary && hasGrip(dragBar, progressOnly)
         ? gripX(dragBar, progressOnly) - win[0] - piece.x - GRIP_PX
         : null;
+      // a bar cut at the window's start begins out past the lead: so would a name left of it
+      const before = piece.cutStart ? null : nameBefore(bar.x, piece.x);
+      const after = labels && !before && !piece.cutStart;
       out.push(
+        before,
         <div key="bar" className={`${kind}${cut(piece)}`} data-task-id={task.id} onPointerDown={down}
              onDoubleClick={dbl} style={{ left: piece.x, width: piece.width, top: box.top, height }}>
           {done > 0 && <span className="pln-bar-done" style={{ width: done }} />}
@@ -563,10 +605,11 @@ function TaskMarks({ task, scale, win, box, display, access, onBarPointerDown, o
         </div>,
       );
       if (!piece.cutEnd) out.push(dot(piece.x + piece.width, box.top, box.height));
-      if (names && !piece.cutEnd) {
+      if ((names || after) && !piece.cutEnd) {
         out.push(
           <span key="names" className="pln-bar-names" style={{ left: piece.x + piece.width + NAMES_GAP, top: box.mid }}>
-            {names}
+            {after && <span className="pln-bar-label-after">{title}</span>}
+            {after && names ? ` ${names}` : names}
           </span>,
         );
       }

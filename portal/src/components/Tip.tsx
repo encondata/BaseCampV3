@@ -8,10 +8,12 @@
  *   or Space on the trigger (it was used), any pointer press, a scroll or
  *   a resize, and when the trigger turns disabled while it shows (its
  *   state changed under the tip; a fresh hover shows the new reason). One
- *   tip shows at a time.
+ *   tip shows at a time, and none while the trigger's own menu is open
+ *   (a trigger inside it is `aria-expanded="true"`): it would cover the menu.
  * - Content: a label, the shortcut as keycaps (`keys`, one keycap per
- *   binding of the builder's "⌘⇧Z" / "Delete / Backspace" strings), and an
- *   optional second line (`note`: why a button is off).
+ *   binding of the builder's "⌘⇧Z" / "Delete / Backspace" strings), then
+ *   optional lines of their own: `desc` (what the command does, in a
+ *   plain sentence) and `note` (why a button is off).
  * - Portals into the trigger's enclosing `.portal-shell` (its theme tokens;
  *   document.body without one) with `position: fixed`, below the trigger
  *   and centered on it, flipped above when there's no room below, kept
@@ -80,12 +82,14 @@ function watchModality(): void {
 // The tip on screen now: showing another closes it.
 let closeShown: (() => void) | null = null;
 
-export default function Tip({ label, keys, note, children }: {
+export default function Tip({ label, keys, desc, note, children }: {
   label: string;
   /** The shortcut as the platform shows it ("⌘⇧Z", "Ctrl+Shift+Z"); several
    *  bindings separated by " / ". */
   keys?: string | null;
-  /** A second line, e.g. why the trigger is off. */
+  /** A line under the label: what the trigger does, in one plain sentence. */
+  desc?: ReactNode;
+  /** A line of its own after that, e.g. why the trigger is off. */
   note?: ReactNode;
   /** The one trigger element (a button). */
   children: ReactElement;
@@ -114,6 +118,8 @@ export default function Tip({ label, keys, note, children }: {
 
   const show = useCallback(() => {
     clearTimer();
+    // the trigger's menu is open: a tip would cover it
+    if (wrapRef.current?.querySelector('[aria-expanded="true"]')) return;
     if (closeShown && closeShown !== hide) closeShown();
     closeShown = hide;
     setHost(wrapRef.current?.closest<HTMLElement>('.portal-shell') ?? document.body);
@@ -133,7 +139,7 @@ export default function Tip({ label, keys, note, children }: {
     const box = tipRef.current?.getBoundingClientRect();
     if (!trigger || !box) return;
     setPos(placeTip(trigger, box, { width: window.innerWidth, height: window.innerHeight }));
-  }, [open, host, label, keys, note]);
+  }, [open, host, label, keys, desc, note]);
 
   // While it shows: Escape, any pointer press, a scroll or a resize hide it.
   useEffect(() => {
@@ -188,6 +194,7 @@ export default function Tip({ label, keys, note, children }: {
             <span className="tip-label">{label}</span>
             {keycaps.map((k) => <kbd key={k} className="tip-kbd">{k}</kbd>)}
           </span>
+          {desc ? <span className="tip-desc">{desc}</span> : null}
           {note ? <span className="tip-note">{note}</span> : null}
         </div>,
         host ?? document.body,

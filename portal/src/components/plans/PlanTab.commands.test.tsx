@@ -75,6 +75,17 @@ const cellOf = (name: string, col: string) => rowOf(name).querySelector(`[data-c
 const blankCell = (col: string) => grid().querySelector(`[data-blank] [data-col="${col}"]`) as HTMLElement;
 const sent = (call = 0): Op[] => api.postOps.mock.calls[call]?.[2];
 const tool = (name: string) => within(screen.getByRole('toolbar', { name: 'Project plan' })).getByRole('button', { name });
+/** A toolbar button's hover tip, as a keyboard focus shows it: its
+ *  description and keycaps ("Take back your last change: Indent. (Ctrl+Z)"). */
+function tipOf(el: HTMLElement): string {
+  fireEvent.keyDown(document.body, { key: 'Tab' });     // the keyboard's focus: the tip shows at once
+  fireEvent.focusIn(el);
+  const tip = screen.getByRole('tooltip');
+  const keys = [...tip.querySelectorAll('kbd')].map((k) => k.textContent).join(' / ');
+  const read = `${tip.querySelector('.tip-desc')?.textContent} (${keys})`;
+  fireEvent.focusOut(el);
+  return read;
+}
 /** The completion check open now, and its Complete. */
 const check = () => screen.findByRole('dialog', { name: 'Confirm completion' });
 async function complete() {
@@ -127,7 +138,7 @@ describe('the keyboard map on the sheet (Review Focus 3)', () => {
     fireEvent.keyDown(grid(), { key: 'ArrowRight', altKey: true, shiftKey: true });
     await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
     expect(sent()).toEqual([{ op: 'indent', ids: ['b'] }]);
-    expect(tool('Undo').title).toBe('Undo Indent (Ctrl+Z)');
+    expect(tipOf(tool('Undo'))).toBe('Take back your last change: Indent. (Ctrl+Z)');
 
     api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 7, inverse: [makeRestore('r1')] }));
     fireEvent.keyDown(grid(), { key: 'z', ctrlKey: true });
@@ -329,7 +340,7 @@ describe('copy and paste', () => {
       { op: 'update_task', id: 'n1', fields: { predecessors: '3' } },
       { op: 'update_task', id: 'n2', fields: { predecessors: '4' } },
     ]);
-    await waitFor(() => expect(tool('Undo').title).toBe('Undo Paste (Ctrl+Z)'));
+    await waitFor(() => expect(tipOf(tool('Undo'))).toBe('Take back your last change: Paste. (Ctrl+Z)'));
 
     api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 8, inverse: [makeRestore('redo-two')] }));
     api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 9, inverse: [makeRestore('redo-one')] }));
@@ -339,7 +350,7 @@ describe('copy and paste', () => {
     expect(sent(2)).toEqual([makeRestore('two')]);
     expect(sent(3)).toEqual([makeRestore('one')]);
     await waitFor(() => expect(tool('Undo').getAttribute('aria-disabled')).toBe('true'));
-    expect(tool('Redo').title).toBe('Redo Paste (Ctrl+Y or Ctrl+Shift+Z)');
+    expect(tipOf(tool('Redo'))).toBe('Put back the change you just undid: Paste. (Ctrl+Y / Ctrl+Shift+Z)');
   });
 
   it('when the second batch is refused, the rows stay in with one Undo step, and the toast says so', async () => {
@@ -354,7 +365,7 @@ describe('copy and paste', () => {
     fireEvent.paste(grid(), { clipboardData: { getData: () => 'Crate\t2d\t\t\t3\r\n' } });
     await waitFor(() => expect(toast).toHaveBeenCalledWith('Rows were added, but some values couldn’t be set: '
       + 'Tasks 3 and 4 would depend on each other. Undo removes the whole paste.'));
-    expect(tool('Undo').title).toBe('Undo Paste (Ctrl+Z)');
+    expect(tipOf(tool('Undo'))).toBe('Take back your last change: Paste. (Ctrl+Z)');
     // one Undo takes the rows back out
     api.postOps.mockResolvedValueOnce(makeOpsResult({ version: 7, deleted_tasks: ['n1'], order: ['a', 'b', 'c'] }));
     await user.click(tool('Undo'));
@@ -419,7 +430,7 @@ describe('copy and paste', () => {
     expect(sent(1)).toEqual(sent(0));
     // the second batch went too, by the new id, into the paste's one step
     expect(sent(2)).toEqual([{ op: 'update_task', id: 'n1', fields: { predecessors: '3' } }]);
-    await waitFor(() => expect(tool('Undo').title).toBe('Undo Paste (Ctrl+Z)'));
+    await waitFor(() => expect(tipOf(tool('Undo'))).toBe('Take back your last change: Paste. (Ctrl+Z)'));
   });
 
   function pasteRowWithLinkAnswer() {
@@ -463,7 +474,7 @@ describe('copy and paste', () => {
       { op: 'set_percent', ids: ['n1'], percent: 50, confirm: true },
     ]);
     // one step: Undo posts the resend's inverse, then the rows'
-    await waitFor(() => expect(tool('Undo').title).toBe('Undo Paste (Ctrl+Z)'));
+    await waitFor(() => expect(tipOf(tool('Undo'))).toBe('Take back your last change: Paste. (Ctrl+Z)'));
     api.postOps
       .mockResolvedValueOnce(makeOpsResult({ version: 8 }))
       .mockResolvedValueOnce(makeOpsResult({ version: 9 }));
@@ -506,7 +517,7 @@ describe('copy and paste', () => {
     await complete();
     await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(2));
     expect(sent(1)).toEqual([{ op: 'set_percent', ids: ['b'], percent: 100, confirm: true }]);
-    await waitFor(() => expect(tool('Undo').title).toBe('Undo Paste (Ctrl+Z)'));
+    await waitFor(() => expect(tipOf(tool('Undo'))).toBe('Take back your last change: Paste. (Ctrl+Z)'));
   });
 
   it('cells it can’t fill (read-only or past the visible columns) are counted in one toast', async () => {

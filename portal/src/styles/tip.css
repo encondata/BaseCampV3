@@ -36,6 +36,9 @@
 .tip-main { display: flex; align-items: center; gap: 8px; }
 .tip-label { font-weight: 500; }
 .tip-main .tip-label { flex: 1 1 auto; }
+/* what the command does: a plain sentence under the label */
+.tip-desc { color: var(--text-dark); }
+/* why it's off */
 .tip-note { color: var(--text-mute); }
 /* the builder's keycap look (labelBuilder.css .lbp-kbd) */
 .tip-kbd {

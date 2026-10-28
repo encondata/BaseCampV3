@@ -24,6 +24,24 @@
  * The chart draws only a window of its scale (lib/plans/ganttView); it
  * passes the window's left edge as `origin`, so the content (drawn from
  * there) moves by `origin - scrollLeft`.
+ *
+ * That is the Beside layout (PlanTab's Gantt › Beside, the default). Below
+ * (Gantt › Below, for narrower screens) stacks the panes instead: the sheet
+ * on top at full width, a horizontal Splitter, the chart under it at full
+ * width. Side by side, one box can scroll both; stacked, each pane needs a
+ * vertical scroll box of its own, so Below has two `.pln-panes`, one per
+ * pane, each virtualizer reading its own. Everything above holds inside
+ * each: its header sticks to the top of its box, its scrollbar to the
+ * bottom, and both virtualize with the same settings (the header's
+ * `scrollMargin` included), so the same scrollTop shows the same rows. PlanTab
+ * keeps the two at the same scrollTop both ways (`useLevelScroll`): a
+ * scroll of either writes the other, and the scroll event that write
+ * causes is known by its value and not written back, so neither chases the
+ * other. They must also scroll the same distance, or the last rows of the
+ * one with the shorter view would be out of the other's reach: the pane
+ * with the taller view gets the difference as room at its end
+ * (SidePane's `endPad`, ganttView `endPads`). Hidden has no chart at all:
+ * the sheet alone fills the one box.
  */
 import {
   useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState,
@@ -60,11 +78,15 @@ interface SidePaneProps {
   /** Receives the pane's scrollbar (its scrollLeft is the pane's scroll). */
   barRef?: RefObject<HTMLDivElement>;
   handleRef?: Ref<SidePaneHandle>;
+  /** Room (px) after the content, inside the pane so its scrollbar still
+   *  holds to the bottom of the view: Below's scrollers scroll as far as
+   *  each other with it. */
+  endPad?: number;
   children: ReactNode;
 }
 
 export function SidePane({
-  className, contentWidth, origin = 0, onScrollX, onWidth, onZoomStep, barRef, handleRef, children,
+  className, contentWidth, origin = 0, onScrollX, onWidth, onZoomStep, barRef, handleRef, endPad = 0, children,
 }: SidePaneProps) {
   const paneRef = useRef<HTMLDivElement>(null);
   const shiftRef = useRef<HTMLDivElement>(null);
@@ -161,7 +183,8 @@ export function SidePane({
   const span = Math.max(0, Math.round(contentWidth ?? measured));
   return (
     <div className={`pln-pane ${className}`} ref={paneRef}>
-      <div className="pln-pane-shift" ref={shiftRef}>{children}</div>
+      <div className="pln-pane-shift" ref={shiftRef}
+           style={endPad > 0 ? { paddingBottom: Math.round(endPad) } : undefined}>{children}</div>
       {/* the pane's sideways scrollbar; the keyboard scrolls the sheet through its cells */}
       <div className="pln-hbar" ref={bar} onScroll={sync} tabIndex={-1} aria-hidden="true">
         <div className="pln-hbar-span" style={{ width: span }} />
@@ -177,16 +200,24 @@ const KEY_STEP_PX = 16;
  * The bar between the sheet and the chart: drag it, or focus it and use
  * ←/→ (Shift for bigger steps), Home and End. `onChange` follows the drag;
  * `onCommit` gets where it ends (a cancelled drag goes back where it began).
+ * `value` is the sheet's width; with `orientation="horizontal"` (Below: the
+ * bar lies across the view, the sheet above it) it is the sheet's height,
+ * and ↑/↓ and the pointer's y move it.
  */
-export default function Splitter({ value, min, max, label, onChange, onCommit }: {
+export default function Splitter({ value, min, max, label, orientation = 'vertical', onChange, onCommit }: {
   value: number;
   min: number;
   max: number;
   label: string;
+  /** The bar's own direction: vertical between side-by-side panes, horizontal between stacked ones. */
+  orientation?: 'vertical' | 'horizontal';
   onChange(px: number): void;
   onCommit(px: number): void;
 }) {
-  const drag = useRef<{ startX: number; start: number } | null>(null);
+  const across = orientation === 'horizontal';
+  /** The pointer along the axis the bar moves on. */
+  const at = (e: PointerEvent<HTMLDivElement>) => (across ? e.clientY : e.clientX);
+  const drag = useRef<{ from: number; start: number } | null>(null);
   const [dragging, setDragging] = useState(false);
   const clamp = (px: number) => Math.min(Math.max(Math.round(px), min), Math.max(min, max));
 
@@ -206,8 +237,8 @@ export default function Splitter({ value, min, max, label, onChange, onCommit }:
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const step = (e.shiftKey ? 4 : 1) * KEY_STEP_PX;
     let next: number;
-    if (e.key === 'ArrowRight') next = value + step;
-    else if (e.key === 'ArrowLeft') next = value - step;
+    if (e.key === (across ? 'ArrowDown' : 'ArrowRight')) next = value + step;
+    else if (e.key === (across ? 'ArrowUp' : 'ArrowLeft')) next = value - step;
     else if (e.key === 'Home') next = min;
     else if (e.key === 'End') next = max;
     else return;
@@ -218,8 +249,9 @@ export default function Splitter({ value, min, max, label, onChange, onCommit }:
   };
 
   return (
-    <div role="separator" aria-orientation="vertical" aria-label={label} aria-valuenow={value}
-         aria-valuetext={`Sheet ${value} pixels wide`} aria-valuemin={min} aria-valuemax={Math.max(min, max)}
+    <div role="separator" aria-orientation={orientation} aria-label={label} aria-valuenow={value}
+         aria-valuetext={`Sheet ${value} pixels ${across ? 'tall' : 'wide'}`} aria-valuemin={min}
+         aria-valuemax={Math.max(min, max)}
          tabIndex={0}
          className={`pln-splitter${dragging ? ' on' : ''}`}
          onPointerDown={(e: PointerEvent<HTMLDivElement>) => {
@@ -230,16 +262,16 @@ export default function Splitter({ value, min, max, label, onChange, onCommit }:
            } catch {
              // no capture (an inactive pointer id): moves over the bar still drag it
            }
-           drag.current = { startX: e.clientX, start: value };
+           drag.current = { from: at(e), start: value };
            setDragging(true);
          }}
          onPointerMove={(e: PointerEvent<HTMLDivElement>) => {
            const d = drag.current;
-           if (d) onChange(clamp(d.start + e.clientX - d.startX));
+           if (d) onChange(clamp(d.start + at(e) - d.from));
          }}
          onPointerUp={(e: PointerEvent<HTMLDivElement>) => {
            const d = drag.current;
-           if (d) end(clamp(d.start + e.clientX - d.startX));
+           if (d) end(clamp(d.start + at(e) - d.from));
          }}
          onPointerCancel={() => end(null)}
          // the capture went away without a pointerup: the drag ends where it began

@@ -14,9 +14,9 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Plan, PlanTask } from '../../lib/plans/api';
-import { fitScrollLeft, makeScale, type Zoom } from '../../lib/plans/ganttGeometry';
+import { fitScrollLeft, makeScale, xOf, type Zoom } from '../../lib/plans/ganttGeometry';
 import {
-  TIER_CHAR_PX, TIER_PAD, pillAt, pillWidth, scaleSpan, taskScrollLeft, windowPillX, windowSpan,
+  LABEL_GAP_PX, TIER_CHAR_PX, TIER_PAD, pillAt, pillWidth, scaleSpan, taskScrollLeft, windowPillX, windowSpan,
 } from '../../lib/plans/ganttView';
 import { planView } from '../../lib/plans/merge';
 import { makeLink, makePlan, makeTask } from '../../lib/plans/planFixtures';
@@ -118,12 +118,13 @@ interface HarnessProps {
   onSelect?: (sel: Selection) => void;
   scheduled?: { start: string | null; end: string | null };
   scrollRequest?: ChartScroll | null;
+  taskLabels?: boolean;
 }
 
 /** The chart alone, as PlanTab drives it. */
 function Harness({
   plan, rows = plan.tasks.map((t) => t.id), zoom = 'days', display = OFF, selection = EMPTY_SELECTION,
-  onSelect = () => {}, scheduled, scrollRequest = null,
+  onSelect = () => {}, scheduled, scrollRequest = null, taskLabels = false,
 }: HarnessProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const view = planView(plan);
@@ -132,7 +133,7 @@ function Harness({
     <div ref={scrollRef} className="pln-panes">
       <PlanGantt ctl={ctl} rows={rows} rowHeight={30} scrollRef={scrollRef} zoom={zoom} display={display}
                  selection={selection} onSelect={onSelect} scheduled={scheduled}
-                 scrollRequest={scrollRequest} />
+                 scrollRequest={scrollRequest} taskLabels={taskLabels} />
     </div>
   );
 }
@@ -255,6 +256,38 @@ describe('bars and links', () => {
     const bar = q('.pln-bar[data-task-id="a"]') as HTMLElement;
     const base = q('.pln-lane[data-lane="a"] .pln-baseline') as HTMLElement;
     expect(px(base.style.top)).toBeGreaterThanOrEqual(px(bar.style.top) + px(bar.style.height));
+  });
+
+  it('under the sheet (taskLabels): a name left of its bar, cut to the room there, or after it', () => {
+    // the scale starts two days before the project (Sat Oct 31 00:00): Survey, a manual task set
+    // before the project start at Oct 31 12:00, has 24px before its bar, too little; the others
+    // have room, Go live's diamond too
+    const tasks = tasks3();
+    tasks[0] = { ...tasks[0], mode: 'manual', start: '2026-10-31T12:00', finish: '2026-10-31T17:00',
+      assignees: [{ kind: 'person', id: 'p1', name: 'Dana Reyes' }] };
+    const plan = plan3({ tasks });
+    render(<Harness plan={plan} taskLabels />);
+    const scale = scaleFor(plan, 'days');
+    const labelOf = (id: string) => q(`.pln-lane[data-lane="${id}"] .pln-bar-label`);
+    // Survey: after its bar, ahead of its resource names
+    expect(labelOf('a')).toBeNull();
+    const after = q('.pln-lane[data-lane="a"] .pln-bar-names') as HTMLElement;
+    expect(after.querySelector('.pln-bar-label-after')?.textContent).toBe('Survey');
+    expect(after.textContent).toBe('Survey Dana Reyes');
+    // Pack: up to its bar's left edge, clear of a link's stub, as wide as the room allows (at most 200px)
+    const pack = labelOf('b') as HTMLElement;
+    expect(pack.textContent).toBe('Pack');
+    const packX = px((q('.pln-bar[data-task-id="b"]') as HTMLElement).style.left);
+    expect(px(pack.style.left) + px(pack.style.width)).toBe(packX - LABEL_GAP_PX);
+    expect(px(pack.style.width)).toBe(Math.min(200, xOf(scale, '2026-11-03T08:00') - LABEL_GAP_PX));
+    // Go live's diamond takes one too
+    expect(labelOf('m')?.textContent).toBe('Go live');
+    expect(q('.pln-lane[data-lane="m"] .pln-bar-label-after')).toBeNull();
+  });
+
+  it('beside the sheet the bars carry no task names', () => {
+    render(<Harness plan={plan3()} />);
+    expect(qa('.pln-bar-label, .pln-bar-label-after')).toHaveLength(0);
   });
 
   it('skips a task with no dates to draw', () => {

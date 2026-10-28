@@ -117,11 +117,13 @@
 .mini-btn.pln-tbtn[aria-disabled] { opacity: 0.38; cursor: default; }
 .mini-btn.pln-tbtn[aria-disabled]:hover { border-color: transparent; background: transparent; }
 .pln-tsep { align-self: stretch; width: 1px; margin: 5px 3px; background: var(--paper-line); }
-/* the view switcher and Auto / Manual: as tall as a group frame */
+/* the view switcher, Auto / Manual and the Gantt layout: as tall as a group frame */
 .segmented.pln-views,
-.segmented.pln-modes { padding: 2px; gap: 2px; border-radius: 10px; }
+.segmented.pln-modes,
+.segmented.pln-layouts { padding: 2px; gap: 2px; border-radius: 10px; }
 .segmented.pln-views button,
-.segmented.pln-modes button { height: 26px; padding: 0 11px; }
+.segmented.pln-modes button,
+.segmented.pln-layouts button { height: 26px; padding: 0 11px; }
 .segmented.pln-modes button[aria-disabled] { opacity: 0.45; cursor: default; }
 /* the clipboard shortcuts' hidden field: off screen, never clicked */
 .pln-clip {
@@ -218,6 +220,14 @@
   grid-template-columns: var(--pln-split, 45%) 6px minmax(0, 1fr);
   min-height: 100%;
 }
+/* one pane alone across the box: Below's two (each in its own box), Hidden's sheet */
+.pln-split.pln-solo { grid-template-columns: minmax(0, 1fr); }
+
+/* Below: the sheet on top at the height the splitter gives it, the bar
+   across the view, the chart under it taking the rest. Each box scrolls up
+   and down on its own; PlanTab keeps the two on the same row. */
+.pln-view[data-layout='below'] > .pln-panes-sheet { flex: none; }
+.pln-view[data-layout='below'] > .pln-panes-chart { flex: 1 1 0; }
 .pln-pane {
   display: flex;
   flex-direction: column;
@@ -249,6 +259,15 @@
   border-right: 1px solid var(--paper-line);
   cursor: col-resize;
   touch-action: none;
+}
+/* across the view between the stacked panes (Below) */
+.pln-splitter[aria-orientation='horizontal'] {
+  flex: none;
+  height: 6px;
+  border-width: 1px 0;
+  border-style: solid;
+  border-color: var(--paper-line);
+  cursor: row-resize;
 }
 .pln-splitter:hover,
 .pln-splitter:focus-visible,
@@ -485,6 +504,36 @@
   color: var(--text-mute);
   white-space: nowrap;
   pointer-events: none;
+}
+/* Below (the sheet isn't beside the bars): the task's name left of its bar,
+   right up to it and cut short with an ellipsis, or, with no room there,
+   after the bar ahead of its resource names */
+.pln-bar-label {
+  position: absolute;
+  transform: translateY(-50%);
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-dark);
+  /* a link running along the row passes under the name, never through it
+     (which would read as struck out): a solid halo in the chart's color,
+     wide enough sideways to close the gaps between words */
+  text-shadow:
+    -1px 0 var(--surface), 1px 0 var(--surface), 0 -1px var(--surface), 0 1px var(--surface),
+    -1px -1px var(--surface), 1px -1px var(--surface), -1px 1px var(--surface), 1px 1px var(--surface),
+    -2px 0 var(--surface), 2px 0 var(--surface), -2px 1px var(--surface), 2px -1px var(--surface),
+    0 0 3px var(--surface);
+  pointer-events: none;
+}
+.pln-bar-label-after {
+  display: inline-block;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  color: var(--text-dark);
 }
 
 /* the baseline: thin and gray under the bar (a small diamond under a milestone) */

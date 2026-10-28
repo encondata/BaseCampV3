@@ -37,7 +37,7 @@ import {
   type InsertKind,
 } from '../../lib/plans/commands';
 import { fitZoom, zoomIn as zoomInOf, zoomOut as zoomOutOf, type Zoom } from '../../lib/plans/ganttGeometry';
-import { readZoom, writeZoom } from '../../lib/plans/ganttView';
+import { LABEL_MAX_PX, readZoom, writeZoom } from '../../lib/plans/ganttView';
 import { PLAN_ERRORS, isPlanChanged, planErrorText } from '../../lib/plans/errors';
 import { descendants } from '../../lib/plans/outline';
 import {
@@ -582,10 +582,12 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog, completion
       scrollSeq.current += 1;
       setChartScroll({ seq: scrollSeq.current, to: 'task', taskId: task.id });
     };
-    // the finest zoom at which the project fits the chart pane, scrolled to its start
+    // the finest zoom at which the project fits the chart pane, scrolled to its
+    // start; under the sheet (Gantt › Below) less the room its first names take
     const fit = () => {
       const now = latest.current.ctl.plan;
-      const width = root.current?.querySelector<HTMLElement>('.pln-pane-chart')?.clientWidth ?? 0;
+      const pane = root.current?.querySelector<HTMLElement>('.pln-pane-chart');
+      const width = (pane?.clientWidth ?? 0) - (pane?.closest('.pln-panes-chart') ? LABEL_MAX_PX : 0);
       if (!now || width <= 0) return;
       setZoom(fitZoom(now.project_start, now.project_finish, width));
       scrollSeq.current += 1;

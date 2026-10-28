@@ -2,16 +2,18 @@
 /** The Gantt view's layout math (ganttView.ts): which slice of the scale is
  *  drawn, how bars clip to it, which links are drawn and where their arrows
  *  point, the initiative window band's label, what the hover card says, and
- *  the zoom and splitter settings kept in localStorage. */
+ *  the zoom, splitter and layout settings kept in localStorage, and the
+ *  Below layout's end pads. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { toMs } from './floatingTime';
-import { MILESTONE_HALF, makeScale, xOf, type Zoom } from './ganttGeometry';
+import { LINK_STUB, MILESTONE_HALF, makeScale, xOf, type Zoom } from './ganttGeometry';
 import {
-  ARROW_LEN, MIN_CHART_PX, MIN_LEAD_PX, MIN_SHEET_PX, SCROLL_PAD, SPLIT_KEY, SPLITTER_PX, bandsIn, barBox,
+  ARROW_LEN, LAYOUT_KEY, MIN_CHART_H, MIN_CHART_PX, MIN_LEAD_PX, MIN_SHEET_H, MIN_SHEET_PX, SCROLL_PAD, SPLIT_BELOW_KEY,
+  SPLIT_KEY, SPLITTER_PX, LABEL_GAP_PX, bandsIn, barBox, endPads, labelPlace,
   PILL_GAP, TIER_CHAR_PX, TIER_PAD, chartWindow, clip, hoverFacts, lineAt, linkEnd, linkRow, linkShape, linkStub,
-  linksToDraw, pillAt, pillWidth, readSplit, readZoom, scaleSpan, splitWidth, taskScrollLeft, windowLabel, windowPillX,
-  windowSpan, writeSplit, writeZoom,
+  linksToDraw, pillAt, pillWidth, readLayout, readSplit, readSplitBelow, readZoom, scaleSpan, splitHeight, splitWidth,
+  taskScrollLeft, windowLabel, windowPillX, windowSpan, writeLayout, writeSplit, writeSplitBelow, writeZoom,
 } from './ganttView';
 import { makeLink, makePlan, makeTask } from './planFixtures';
 
@@ -341,6 +343,10 @@ describe('stored settings', () => {
     expect(() => writeZoom('plan-1', 'hours')).not.toThrow();
     expect(readSplit()).toBeNull();
     expect(() => writeSplit(500)).not.toThrow();
+    expect(readLayout()).toBe('beside');
+    expect(() => writeLayout('below')).not.toThrow();
+    expect(readSplitBelow()).toBeNull();
+    expect(() => writeSplitBelow(300)).not.toThrow();
   });
 
   it('keeps the splitter’s place in px', () => {
@@ -363,6 +369,67 @@ describe('stored settings', () => {
     // nothing measured yet (no layout): the stored width, or a sensible one
     expect(splitWidth(700, 0)).toBe(700);
     expect(splitWidth(null, 0)).toBeGreaterThanOrEqual(MIN_SHEET_PX);
+  });
+
+  it('keeps the Gantt layout for the browser (the monitor, not the plan), Beside by default', () => {
+    expect(LAYOUT_KEY).toBe('plans.layout.v1');
+    expect(readLayout()).toBe('beside');
+    writeLayout('below');
+    expect(localStorage.getItem(LAYOUT_KEY)).toBe('below');
+    expect(readLayout()).toBe('below');
+    writeLayout('hidden');
+    expect(readLayout()).toBe('hidden');
+    for (const bad of ['sideways', '', 'BELOW', '{"layout":"below"}']) {
+      localStorage.setItem(LAYOUT_KEY, bad);
+      expect(readLayout(), bad).toBe('beside');
+    }
+  });
+
+  it('keeps Below’s split (the sheet’s height) apart from Beside’s width', () => {
+    expect(SPLIT_BELOW_KEY).toBe('plans.split.below.v1');
+    expect(readSplitBelow()).toBeNull();
+    writeSplitBelow(287.6);
+    expect(localStorage.getItem(SPLIT_BELOW_KEY)).toBe('288');
+    expect(readSplitBelow()).toBe(288);
+    expect(readSplit()).toBeNull();                      // Beside's width is its own
+    localStorage.setItem(SPLIT_BELOW_KEY, 'tall');
+    expect(readSplitBelow()).toBeNull();
+    localStorage.setItem(SPLIT_BELOW_KEY, '0');
+    expect(readSplitBelow()).toBeNull();
+  });
+
+  it('opens Below with the sheet half the view tall, and keeps room for both panes', () => {
+    expect(splitHeight(null, 600)).toBe(297);              // (600 - 6) / 2
+    expect(splitHeight(400, 600)).toBe(400);
+    expect(splitHeight(40, 600)).toBe(MIN_SHEET_H);
+    expect(splitHeight(590, 600)).toBe(600 - SPLITTER_PX - MIN_CHART_H);
+    expect(splitHeight(300, 200)).toBe(MIN_SHEET_H);        // too short for both: the sheet keeps its least
+    // nothing measured yet: the stored height, or a sensible one
+    expect(splitHeight(350, 0)).toBe(350);
+    expect(splitHeight(null, 0)).toBeGreaterThanOrEqual(MIN_SHEET_H);
+  });
+});
+
+describe('the Below layout', () => {
+  it('pads the taller pane so both scroll the same distance (rows stay lined up to the last)', () => {
+    // a 300px sheet over a 400px chart: the chart's 100px more view needs 100px more to scroll
+    expect(endPads(300, 400)).toEqual({ sheet: 0, chart: 100 });
+    expect(endPads(420, 300)).toEqual({ sheet: 120, chart: 0 });
+    expect(endPads(300, 300)).toEqual({ sheet: 0, chart: 0 });
+    // not measured yet: no pads
+    expect(endPads(0, 400)).toEqual({ sheet: 0, chart: 0 });
+  });
+
+  it('puts a task’s name left of its bar, ellipsized to the room there, else after the bar', () => {
+    // plenty of room before the bar: up to it, at most the label width
+    expect(labelPlace(600)).toEqual({ side: 'before', width: 200 });
+    // some room: the room there, less the gap that keeps a link's stub and arrowhead clear
+    expect(LABEL_GAP_PX).toBeGreaterThan(LINK_STUB + 1);
+    expect(LINK_STUB).toBeGreaterThan(ARROW_LEN);
+    expect(labelPlace(120)).toEqual({ side: 'before', width: 120 - LABEL_GAP_PX });
+    // too little to read: after the bar
+    expect(labelPlace(40)).toEqual({ side: 'after', width: 200 });
+    expect(labelPlace(0)).toEqual({ side: 'after', width: 200 });
   });
 });
 

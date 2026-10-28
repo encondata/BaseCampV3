@@ -1,21 +1,31 @@
 // @vitest-environment jsdom
 /**
  * components/plans/PlanToolbar.tsx: MS Project's ribbon groups in order,
- * tooltips with the shortcut, who sees what (read-only: Display and More
- * only), the locked plan's hint, the More menu, and the toolbar's one tab
- * stop with arrow keys between its buttons.
+ * a hover tip on every button (its name, the shortcut from the shortcut
+ * table, what it does, why it's off) in place of a native title, who sees
+ * what (read-only: Display, Gantt and More only), the locked plan's hint,
+ * the Gantt layout control (Beside / Below / Hidden; Hidden turns the
+ * chart-only commands off), the More menu, and the toolbar's one tab stop
+ * with arrow keys between its buttons.
  */
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useRef } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Plan } from '../../lib/plans/api';
+import { COMMAND_TIPS, OFF_NOTES } from '../../lib/plans/commandTips';
+import type { GanttLayout } from '../../lib/plans/ganttView';
 import { makePlan, makeTask } from '../../lib/plans/planFixtures';
+import { planShortcutKeys } from '../../lib/plans/shortcuts';
+import { TIP_DELAY_MS } from '../Tip';
 import PlanToolbar, { LOCKED_HINT, NO_BASELINE_HINT, useRovingToolbar } from './PlanToolbar';
 import type { PlanCommands } from './usePlanCommands';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 function commands(over: Partial<PlanCommands> = {}): PlanCommands {
   const fn = () => vi.fn();
@@ -34,38 +44,54 @@ function commands(over: Partial<PlanCommands> = {}): PlanCommands {
 
 const CTL = { canUndo: true, canRedo: false, undoLabel: 'Indent', redoLabel: null };
 
-function Bar({ plan, cmd }: { plan: Plan; cmd: PlanCommands }) {
+function Bar({ plan, cmd, layout = 'beside', onLayout = () => {} }: {
+  plan: Plan; cmd: PlanCommands; layout?: GanttLayout; onLayout?: (layout: GanttLayout) => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   useRovingToolbar(ref);
   return (
     <div role="toolbar" aria-label="Project plan" ref={ref}>
-      <PlanToolbar plan={plan} ctl={CTL} commands={cmd} platform="win" />
+      <PlanToolbar plan={plan} ctl={CTL} commands={cmd} platform="win" layout={layout} onLayout={onLayout} />
     </div>
   );
 }
 
 const groups = () => within(screen.getByRole('toolbar')).getAllByRole('group').map((g) => g.getAttribute('aria-label'));
 const button = (name: string) => screen.getByRole('button', { name });
+/** A button's accessible name: its aria-label, else its text (the icons are aria-hidden). */
+const nameOf = (el: HTMLElement) => el.getAttribute('aria-label') ?? (el.textContent ?? '').trim();
+
+/** What a hover on `el` shows (fake timers): the tip's label, keycaps,
+ *  description and note; the pointer then leaves. */
+function hoverTip(el: HTMLElement) {
+  fireEvent.pointerEnter(el);
+  act(() => { vi.advanceTimersByTime(TIP_DELAY_MS); });
+  const tip = screen.getByRole('tooltip');
+  const read = {
+    label: tip.querySelector('.tip-label')?.textContent ?? '',
+    keys: [...tip.querySelectorAll('kbd')].map((k) => k.textContent),
+    desc: tip.querySelector('.tip-desc')?.textContent ?? null,
+    note: tip.querySelector('.tip-note')?.textContent ?? null,
+  };
+  fireEvent.pointerLeave(el);
+  return read;
+}
 
 describe('groups', () => {
-  it('shows MS Project’s groups in order, with the shortcut in each tooltip', () => {
+  it('shows MS Project’s groups in order, then the Gantt layout', () => {
     render(<Bar plan={makePlan()} cmd={commands()} />);
-    expect(groups()).toEqual(['Undo', 'Schedule', 'Tasks', 'Insert', 'Properties', 'Display']);
+    expect(groups()).toEqual(['Undo', 'Schedule', 'Tasks', 'Insert', 'Properties', 'Display', 'Gantt']);
     expect(within(screen.getByRole('group', { name: 'Schedule' })).getAllByRole('button').map((b) => b.getAttribute('aria-label')))
       .toEqual(['0% Complete', '25% Complete', '50% Complete', '75% Complete', '100% Complete', 'Mark on Track',
         'Link Tasks', 'Unlink Tasks', 'Outdent', 'Indent']);
-    expect(button('Indent').title).toBe('Indent (Alt+Shift+→)');
-    expect(button('Link Tasks').title).toBe('Link Tasks (Ctrl+F2) — Select two or more tasks');
-    expect(button('Undo').title).toBe('Undo Indent (Ctrl+Z)');
-    expect(button('Redo').title).toBe('Redo (Ctrl+Y or Ctrl+Shift+Z) — Nothing to redo');
     expect(screen.getByRole('button', { name: 'More ▾' })).toBeTruthy();
   });
 
-  it('read-only: only Display (and More, with what a reader can use)', async () => {
+  it('read-only: only Display and the Gantt layout (and More, with what a reader can use)', async () => {
     const user = userEvent.setup();
     render(<Bar plan={makePlan({ permissions: { view: true, add: false, change: false, delete: false } })}
                 cmd={commands()} />);
-    expect(groups()).toEqual(['Display']);
+    expect(groups()).toEqual(['Display', 'Gantt']);
     expect(screen.queryByRole('group', { name: 'Schedule' })).toBeNull();
     expect(screen.queryByRole('group', { name: 'Insert' })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'More ▾' }));
@@ -77,22 +103,18 @@ describe('groups', () => {
     render(<Bar plan={makePlan({ locked_at: '2026-10-27T12:00:00Z' })} cmd={cmd} />);
     const indent = button('Indent');
     expect(indent.getAttribute('aria-disabled')).toBe('true');
-    expect(indent.title).toBe(`Indent (Alt+Shift+→) — ${LOCKED_HINT}`);
     fireEvent.click(indent);
     expect(cmd.indent).not.toHaveBeenCalled();
-    for (const name of ['Link Tasks', 'Unlink Tasks', 'Outdent', 'Insert Task', 'Insert Milestone', 'Add to Timeline']) {
-      expect(button(name).title, name).toContain(LOCKED_HINT);
-    }
-    expect(screen.getByRole('button', { name: 'Manual' }).getAttribute('aria-disabled')).toBe('true');
+    expect(button('Manually Schedule').getAttribute('aria-disabled')).toBe('true');
     fireEvent.click(button('50% Complete'));
     expect(cmd.percent).toHaveBeenCalledWith(50);
     fireEvent.click(button('Mark on Track'));
     expect(cmd.markOnTrack).toHaveBeenCalled();
   });
 
-  it('nothing selected: the commands that need a task say so', () => {
+  it('nothing selected: the commands that need a task are off', () => {
     render(<Bar plan={makePlan()} cmd={commands({ selected: [], mode: null })} />);
-    expect(button('Indent').title).toBe('Indent (Alt+Shift+→) — Select a task first');
+    expect(button('Indent').getAttribute('aria-disabled')).toBe('true');
     expect(button('25% Complete').getAttribute('aria-disabled')).toBe('true');
     expect(button('Insert Task').getAttribute('aria-disabled')).toBeNull();     // above the blank row: at the end
   });
@@ -100,16 +122,18 @@ describe('groups', () => {
   it('Auto / Manual shows the selection’s mode and sets it', () => {
     const cmd = commands({ mode: 'manual' });
     render(<Bar plan={makePlan()} cmd={cmd} />);
-    expect(screen.getByRole('button', { name: 'Manual' }).getAttribute('aria-pressed')).toBe('true');
-    expect(screen.getByRole('button', { name: 'Auto' }).getAttribute('aria-pressed')).toBe('false');
-    fireEvent.click(screen.getByRole('button', { name: 'Auto' }));
+    expect(button('Manually Schedule').getAttribute('aria-pressed')).toBe('true');
+    expect(button('Manually Schedule').textContent).toBe('Manual');
+    expect(button('Auto Schedule').getAttribute('aria-pressed')).toBe('false');
+    expect(button('Auto Schedule').textContent).toBe('Auto');
+    fireEvent.click(button('Auto Schedule'));
     expect(cmd.setMode).toHaveBeenCalledWith('auto');
   });
 
   it('Information and Notes open Task Information (Notes on its tab), even on a locked plan', () => {
     const cmd = commands();
     render(<Bar plan={makePlan({ locked_at: '2026-10-27T12:00:00Z' })} cmd={cmd} />);
-    expect(button('Information').title).toBe('Information (Shift+F2)');
+    expect(button('Information').getAttribute('aria-disabled')).toBeNull();
     fireEvent.click(button('Information'));
     expect(cmd.info).toHaveBeenLastCalledWith();
     fireEvent.click(button('Notes'));
@@ -118,7 +142,7 @@ describe('groups', () => {
 
   it('Information and Notes need a task selected', () => {
     render(<Bar plan={makePlan()} cmd={commands({ selected: [], mode: null })} />);
-    expect(button('Information').title).toBe('Information (Shift+F2) — Select a task first');
+    expect(button('Information').getAttribute('aria-disabled')).toBe('true');
     expect(button('Notes').getAttribute('aria-disabled')).toBe('true');
   });
 
@@ -130,6 +154,143 @@ describe('groups', () => {
     expect(button('Zoom In').getAttribute('aria-disabled')).toBe('true');
     fireEvent.click(button('Zoom Out'));
     expect(cmd.zoomOut).toHaveBeenCalled();
+  });
+});
+
+describe('hover tips', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+
+  it('every button has a tip: its name, the keys from the shortcut table, what it does — no native title', () => {
+    render(<Bar plan={makePlan()} cmd={commands()} />);
+    const buttons = within(screen.getByRole('toolbar')).getAllByRole('button');
+    expect(buttons.length).toBeGreaterThan(25);
+    expect(buttons.map(nameOf)).toContain('More ▾');
+    for (const b of buttons) {
+      const name = nameOf(b);
+      const tip = hoverTip(b);
+      // More's ▾ marks the menu; the tip names the command
+      expect(tip.label, name).toBe(name.replace(/ ▾$/, ''));
+      const entry = Object.values(COMMAND_TIPS).find((t) => t.label === tip.label);
+      expect(entry, name).toBeDefined();
+      const shortcut = entry && 'shortcut' in entry ? entry.shortcut : undefined;
+      expect(tip.keys, name).toEqual(shortcut ? planShortcutKeys(shortcut, 'win').split(' or ') : []);
+      expect(tip.desc, name).toBeTruthy();
+      expect(b.hasAttribute('title'), name).toBe(false);
+    }
+  });
+
+  it('shows the copy from the one table, and a Mac’s keys on a Mac', () => {
+    render(<PlanToolbar plan={makePlan()} ctl={CTL} commands={commands({ selected: [makeTask('a'), makeTask('b')] })}
+                        platform="mac" layout="beside" onLayout={() => {}} />);
+    expect(hoverTip(button('Link Tasks'))).toEqual({
+      label: 'Link Tasks', keys: ['⌘F2'], desc: COMMAND_TIPS.link.desc, note: null,
+    });
+    expect(COMMAND_TIPS.link.desc).toBe('Make each selected task follow the one before it (Finish-to-Start).');
+    expect(hoverTip(button('Indent')).desc).toBe('Make the selected tasks subtasks of the task above.');
+    expect(hoverTip(button('Mark on Track')).desc).toBe('Set progress to where the task should be as of the status date.');
+    expect(hoverTip(button('Redo')).keys).toEqual(['⌘Y', '⌘⇧Z']);
+  });
+
+  it('Undo names the step it takes back; Redo with nothing to redo says so', () => {
+    render(<Bar plan={makePlan()} cmd={commands()} />);
+    const undo = hoverTip(button('Undo'));
+    expect(undo.label).toBe('Undo');
+    expect(undo.keys).toEqual(['Ctrl+Z']);
+    expect(undo.desc).toContain('Indent');
+    expect(undo.note).toBeNull();
+    const redo = hoverTip(button('Redo'));
+    expect(redo.keys).toEqual(['Ctrl+Y', 'Ctrl+Shift+Z']);
+    expect(redo.note).toBe('Nothing to redo');
+  });
+
+  it('a locked plan: the schedule changes say “Schedule is locked”; progress says nothing', () => {
+    render(<Bar plan={makePlan({ locked_at: '2026-10-27T12:00:00Z' })} cmd={commands()} />);
+    const indent = button('Indent');
+    expect(indent.getAttribute('aria-disabled')).toBe('true');
+    expect(hoverTip(indent)).toEqual({
+      label: 'Indent', keys: ['Alt+Shift+→'], desc: 'Make the selected tasks subtasks of the task above.',
+      note: 'Schedule is locked',
+    });
+    expect(LOCKED_HINT).toBe('Schedule is locked');
+    for (const name of ['Link Tasks', 'Unlink Tasks', 'Outdent', 'Insert Task', 'Insert Summary Task', 'Insert Milestone',
+      'Add to Timeline', 'Auto Schedule', 'Manually Schedule']) {
+      expect(hoverTip(button(name)).note, name).toBe(LOCKED_HINT);
+    }
+    for (const name of ['50% Complete', 'Mark on Track', 'Information', 'Notes']) {
+      expect(hoverTip(button(name)).note, name).toBeNull();
+    }
+  });
+
+  it('nothing selected: the commands that need a task say so; Link needs two', () => {
+    render(<Bar plan={makePlan()} cmd={commands({ selected: [], mode: null })} />);
+    expect(hoverTip(button('Indent')).note).toBe('Select a task first');
+    expect(hoverTip(button('Information')).note).toBe('Select a task first');
+    expect(hoverTip(button('Scroll to Task')).note).toBe('Select a task first');
+    expect(hoverTip(button('Link Tasks')).note).toBe('Select two or more tasks');
+    expect(hoverTip(button('Insert Task')).note).toBeNull();
+  });
+
+  it('the More trigger’s tip says what it holds, and goes once its menu opens', () => {
+    render(<Bar plan={makePlan()} cmd={commands()} />);
+    const more = button('More ▾');
+    fireEvent.pointerEnter(more);
+    act(() => { vi.advanceTimersByTime(TIP_DELAY_MS); });
+    expect(screen.getByRole('tooltip').querySelector('.tip-label')?.textContent).toBe('More');
+    // the tip describes the trigger while it shows
+    expect(more.getAttribute('aria-describedby')).toBe(screen.getByRole('tooltip').id);
+    fireEvent.pointerDown(more);
+    fireEvent.click(more);
+    expect(screen.getByRole('menu')).toBeTruthy();
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    // resting on it with the menu open shows nothing over the menu
+    fireEvent.pointerLeave(more);
+    fireEvent.pointerEnter(more);
+    act(() => { vi.advanceTimersByTime(TIP_DELAY_MS); });
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+});
+
+describe('the Gantt layout', () => {
+  it('Beside, Below and Hidden as a segmented control showing the layout; a choice is passed up, focus stays', () => {
+    const onLayout = vi.fn();
+    const cmd = commands();
+    render(<Bar plan={makePlan()} cmd={cmd} layout="below" onLayout={onLayout} />);
+    const gantt = screen.getByRole('group', { name: 'Gantt' });
+    const options = within(gantt).getAllByRole('button');
+    expect(options.map(nameOf)).toEqual(['Beside', 'Below', 'Hidden']);
+    expect(options.map((b) => b.getAttribute('aria-pressed'))).toEqual(['false', 'true', 'false']);
+    expect(options[1].classList.contains('on')).toBe(true);
+    expect(gantt.querySelector('.segmented')).not.toBeNull();
+    fireEvent.click(options[2], { detail: 1 });
+    expect(onLayout).toHaveBeenCalledWith('hidden');
+    // like the view switcher, not a sheet command: the sheet isn't focused (with
+    // nothing selected that would select the first row and scroll up to it)
+    expect(cmd.focusSheet).not.toHaveBeenCalled();
+  });
+
+  it('each option’s tip says what it does', () => {
+    vi.useFakeTimers();
+    render(<Bar plan={makePlan()} cmd={commands()} />);
+    expect(hoverTip(button('Beside')).desc).toBe('Show the Gantt chart beside the task sheet.');
+    expect(hoverTip(button('Below')).desc)
+      .toBe('Show the Gantt chart under the task sheet — good for narrower screens.');
+    expect(hoverTip(button('Hidden')).desc).toBe('Hide the Gantt chart and show only the task sheet.');
+  });
+
+  it('Hidden: the chart-only commands are off, saying to show the chart; the rest work', () => {
+    vi.useFakeTimers();
+    const cmd = commands();
+    render(<Bar plan={makePlan()} cmd={cmd} layout="hidden" />);
+    for (const name of ['Critical Path', 'Baseline', 'Zoom Out', 'Zoom In', 'Fit Project', 'Scroll to Task']) {
+      const b = button(name);
+      expect(b.getAttribute('aria-disabled'), name).toBe('true');
+      expect(hoverTip(b).note, name).toBe(OFF_NOTES.noChart);
+    }
+    expect(OFF_NOTES.noChart).toBe('Show the Gantt chart to use this');
+    fireEvent.click(button('Fit Project'));
+    expect(cmd.fit).not.toHaveBeenCalled();
+    fireEvent.click(button('Indent'));
+    expect(cmd.indent).toHaveBeenCalled();
   });
 });
 
@@ -206,6 +367,31 @@ describe('the keyboard', () => {
     // back in: the button last used is the stop
     await user.tab({ shift: true });
     expect(document.activeElement).toBe(button('Redo'));
+  });
+
+  it('the tips’ wrappers take no stop: every button is one, each showing its tip as the arrows reach it', async () => {
+    const user = userEvent.setup();
+    render(<Bar plan={makePlan()} cmd={commands()} />);
+    const bar = screen.getByRole('toolbar');
+    const buttons = within(bar).getAllByRole('button');
+    expect(bar.querySelectorAll('.tip-trigger').length).toBe(buttons.length);
+    // one tab stop, and no wrapper is focusable
+    expect(buttons.filter((b) => b.tabIndex === 0)).toHaveLength(1);
+    expect([...bar.querySelectorAll('.tip-trigger')].some((w) => w.hasAttribute('tabindex'))).toBe(false);
+    act(() => { buttons[0].focus(); });
+    await user.keyboard('{End}');
+    expect(document.activeElement).toBe(button('More ▾'));
+    // back along every button: each the stop in turn, its tip showing
+    for (let i = buttons.length - 2; i >= 0; i -= 1) {
+      await user.keyboard('{ArrowLeft}');
+      expect(document.activeElement, nameOf(buttons[i])).toBe(buttons[i]);
+      expect(buttons[i].tabIndex).toBe(0);
+      expect(screen.getByRole('tooltip').querySelector('.tip-label')?.textContent).toBe(nameOf(buttons[i]));
+    }
+    // and round to the end
+    await user.keyboard('{ArrowLeft}');
+    expect(document.activeElement).toBe(button('More ▾'));
+    expect(screen.getAllByRole('tooltip')).toHaveLength(1);
   });
 
   it('a click hands focus back to the sheet; Enter on the button keeps it there', async () => {

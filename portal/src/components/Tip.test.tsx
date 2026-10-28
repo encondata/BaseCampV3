@@ -5,7 +5,8 @@
  * hides on leave, blur, Escape, a pointer press or a scroll, portals into
  * the .portal-shell below its trigger (above when there's no room), works
  * on a disabled trigger, wires aria-describedby while it shows, and only
- * one shows at a time.
+ * one shows at a time. A description (`desc`) gets a line of its own under
+ * the label, apart from the note; a trigger whose menu is open shows none.
  */
 
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -243,5 +244,67 @@ describe('the trigger at work', () => {
     // and turning it back on leaves the tip up
     rerender(view(false));
     expect(screen.getByRole('tooltip')).toBeTruthy();
+  });
+});
+
+describe('the description line', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+
+  const showTip = (button: HTMLElement) => {
+    fireEvent.pointerEnter(button);
+    act(() => { vi.advanceTimersByTime(TIP_DELAY_MS); });
+    return screen.getByRole('tooltip');
+  };
+
+  it('shows `desc` under the label, and the note on a line of its own after it', () => {
+    render(
+      <div className="portal-shell">
+        <Tip label="Indent" keys="Alt+Shift+→" desc="Make the selected tasks subtasks of the task above."
+             note="Schedule is locked">
+          <button type="button" aria-label="Indent" aria-disabled="true">→</button>
+        </Tip>
+      </div>,
+    );
+    const tip = showTip(screen.getByRole('button', { name: 'Indent' }));
+    expect([...tip.children].map((line) => line.className)).toEqual(['tip-main', 'tip-desc', 'tip-note']);
+    expect(tip.querySelector('.tip-main')?.textContent).toBe('IndentAlt+Shift+→');
+    expect(tip.querySelector('.tip-desc')?.textContent).toBe('Make the selected tasks subtasks of the task above.');
+    expect(tip.querySelector('.tip-note')?.textContent).toBe('Schedule is locked');
+  });
+
+  it('a description alone, or neither: only the lines given', () => {
+    render(
+      <div className="portal-shell">
+        <Tip label="Fit Project" desc="Zoom so the whole project fits in the chart.">
+          <button type="button">Fit</button>
+        </Tip>
+        <Tip label="Zoom out" keys="⌘-">
+          <button type="button">Zoom</button>
+        </Tip>
+      </div>,
+    );
+    let tip = showTip(screen.getByRole('button', { name: 'Fit' }));
+    expect([...tip.children].map((line) => line.className)).toEqual(['tip-main', 'tip-desc']);
+    fireEvent.pointerLeave(screen.getByRole('button', { name: 'Fit' }));
+    tip = showTip(screen.getByRole('button', { name: 'Zoom' }));
+    expect([...tip.children].map((line) => line.className)).toEqual(['tip-main']);
+  });
+
+  it('a trigger whose menu is open shows no tip over the menu', () => {
+    const view = (open: boolean) => (
+      <div className="portal-shell">
+        <Tip label="More" desc="More plan commands.">
+          <button type="button" aria-haspopup="menu" aria-expanded={open}>More ▾</button>
+        </Tip>
+      </div>
+    );
+    const { rerender } = render(view(true));
+    const more = screen.getByRole('button', { name: 'More ▾' });
+    fireEvent.pointerEnter(more);
+    act(() => { vi.advanceTimersByTime(TIP_DELAY_MS); });
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    fireEvent.pointerLeave(more);
+    rerender(view(false));
+    expect(showTip(more).querySelector('.tip-label')?.textContent).toBe('More');
   });
 });
