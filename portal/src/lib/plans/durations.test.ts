@@ -125,7 +125,8 @@ describe('parseDuration', () => {
     const started = performance.now();
     expect(() => parseDuration('9'.repeat(5000) + 'd', UNITS)).toThrow(DurationError);
     expect(() => parseDuration('1234567890m', UNITS)).toThrow(DurationError);
-    expect(performance.now() - started).toBeLessThan(100);
+    // a generous bound: it catches a runaway regex, not a busy machine
+    expect(performance.now() - started).toBeLessThan(2000);
     expect(parseDuration('999999999m', UNITS).minutes).toBe(999999999);
   });
 

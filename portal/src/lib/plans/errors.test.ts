@@ -7,7 +7,9 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { ApiError } from '../api';
+import { DurationError, STANDARD_UNITS, parseDuration } from './durations';
 import { PLAN_ERRORS, planErrorDetail, planErrorText } from './errors';
+import { PredecessorError, parsePredecessors } from './predecessors';
 
 const API = path.resolve(__dirname, '../../../../api/src/serversherpa');
 
@@ -119,6 +121,35 @@ describe('planErrorText', () => {
     expect(planErrorText(apiError(422, { code: 'something_new', message: 'Server says no.' })))
       .toBe('Server says no.');
     expect(planErrorText(new Error('boom'))).toBe('Something went wrong. Try again.');
+  });
+
+  it('passes on the message of a duration or predecessor the sheet checked itself', () => {
+    let durationError: unknown;
+    try {
+      parseDuration('5 parsecs', STANDARD_UNITS);
+    } catch (err) {
+      durationError = err;
+    }
+    expect(durationError).toBeInstanceOf(DurationError);
+    expect(planErrorText(durationError)).toBe((durationError as DurationError).message);
+
+    let predecessorError: unknown;
+    try {
+      parsePredecessors('9', STANDARD_UNITS, new Set([1, 2]), null);
+    } catch (err) {
+      predecessorError = err;
+    }
+    expect(predecessorError).toBeInstanceOf(PredecessorError);
+    expect(planErrorText(predecessorError)).toBe('Task 9 does not exist in this plan.');
+  });
+});
+
+describe('completion_confirm wording', () => {
+  it('fits both the subtasks it takes along and the open predecessors it warns about', () => {
+    // the 409 comes with will_complete, open_predecessors or both: the
+    // fallback text may not claim other tasks will be completed
+    expect(PLAN_ERRORS.completion_confirm).not.toMatch(/also completes/i);
+    expect(PLAN_ERRORS.completion_confirm).toMatch(/confirm/i);
   });
 });
 

@@ -93,7 +93,11 @@ function parseEntry(part: string, units: Units): [string, LinkType, Duration] {
  *  none for blank text. `parsePredecessors` answers one PredSpec per entry
  *  in this same order, so the two line up. */
 export function splitEntries(text: string): string[] {
-  const trimmed = asciiTrim(text);
+  return entriesOf(asciiTrim(text));
+}
+
+/** `splitEntries` of text that is already trimmed. */
+function entriesOf(trimmed: string): string[] {
   if (!trimmed) return [];
   return trimmed.split(',').map(asciiTrim);
 }
@@ -110,12 +114,14 @@ export function parsePredecessors(
   if (typeof text !== 'string') {
     throw new PredecessorError(`Predecessors must be text, not ${text === null ? 'null' : typeof text}.`);
   }
-  if (asciiTrim(text).length > MAX_PREDECESSOR_TEXT) {
+  // trimmed once: a megabyte of padding is walked once, not twice
+  const trimmed = asciiTrim(text);
+  if (trimmed.length > MAX_PREDECESSOR_TEXT) {
     throw new PredecessorError(`Predecessors are longer than ${MAX_PREDECESSOR_TEXT} characters.`);
   }
   const specs: PredSpec[] = [];
   const seen = new Set<number>();
-  for (const part of splitEntries(text)) {
+  for (const part of entriesOf(trimmed)) {
     if (!part) throw new PredecessorError('There is an empty entry: check for a stray comma.');
     const [digits, linkType, lag] = parseEntry(part, units);
     const number = digits.replace(/^0+(?=[0-9])/, '');

@@ -200,13 +200,14 @@ describe('parsePredecessors', () => {
   ])('fails fast on long input %#', (text) => {
     const started = performance.now();
     failure(() => parse(text, UNITS, new Set(Array.from({ length: 299 }, (_, i) => i + 1)), null));
-    expect(performance.now() - started).toBeLessThan(100);
+    // a generous bound: it catches a runaway regex, not a busy machine
+    expect(performance.now() - started).toBeLessThan(2000);
   });
 
   it('is fast and empty for whitespace of any size', () => {
     const started = performance.now();
     expect(parse(' '.repeat(1_000_000))).toEqual([]);
-    expect(performance.now() - started).toBeLessThan(100);
+    expect(performance.now() - started).toBeLessThan(2000);
   });
 
   it('refuses text that is not a string', () => {

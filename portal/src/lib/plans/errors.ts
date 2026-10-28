@@ -9,6 +9,8 @@
 import { ApiError } from '../api';
 import { apiErrorText } from '../learningDoc';
 import type { CompletionBlocker } from './api';
+import { DurationError } from './durations';
+import { PredecessorError } from './predecessors';
 
 export const PLAN_ERRORS: Record<string, string> = {
   // the plan and access
@@ -48,7 +50,7 @@ export const PLAN_ERRORS: Record<string, string> = {
   no_working_time: 'The calendar has no working time where the plan needs it.',
   // completion (usePlan turns these into the completion dialog)
   completion_blocked: 'Some tasks have to be complete first.',
-  completion_confirm: 'Completing this also completes other tasks, so confirm to go ahead.',
+  completion_confirm: 'Completing this involves other tasks that aren’t complete yet, so confirm to go ahead.',
   // notices: a batch went through and did this too
   constraint_added: 'Typing a date gave the task a Start No Earlier Than or Finish No Earlier Than constraint.',
   constraint_cleared: 'The task became a summary task, so its constraint went back to As Soon As Possible.',
@@ -170,8 +172,10 @@ function withTasks(code: string, ids: readonly number[] | undefined): string {
   return `${PLAN_ERRORS[code]} Check task${ids.length > 1 ? 's' : ''} ${idList(ids)}.`;
 }
 
-/** Plain-language text for any failure of a plan call. */
+/** Plain-language text for any failure of a plan call, or of the sheet's
+ *  own check of a duration or predecessors (its message is already one). */
 export function planErrorText(err: unknown): string {
+  if (err instanceof DurationError || err instanceof PredecessorError) return err.message;
   const detail = planErrorDetail(err);
   switch (detail?.code) {
     case 'link_cycle':
