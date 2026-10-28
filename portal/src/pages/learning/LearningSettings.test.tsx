@@ -38,6 +38,7 @@ const SETTINGS: Settings = {
   invite_offset_days: 7, invite_time: '08:00', reminder_offsets: [5, 3], due_offset_days: 2,
   retention_days: null, brand_line: 'Acme Moving', email_text: {},
   languages: ['en', 'ja', 'ko', 'he'],
+  available_languages: ['en', 'zh-Hans', 'he', 'ja', 'ko', 'ms', 'nl'],
 };
 
 const value = (label: string) => (screen.getByLabelText(label) as HTMLInputElement).value;
@@ -176,14 +177,31 @@ it('sends the send time as HH:MM', async () => {
 });
 
 it('keeps English on and sends the offered languages in the API order', async () => {
+  const user = userEvent.setup();
   renderPage();
   await screen.findByLabelText('Branding line');
-  const group = screen.getByRole('group', { name: 'Languages offered' });
-  expect((within(group).getByRole('checkbox', { name: 'English' }) as HTMLInputElement).disabled).toBe(true);
-  await userEvent.setup().click(within(group).getByRole('checkbox', { name: 'Korean' }));
+  const panel = screen.getByRole('region', { name: 'Languages' });
+  // English is always on: never a chip, never offered
+  expect(within(panel).queryByRole('button', { name: 'Remove English' })).toBeNull();
+  await user.click(within(panel).getByRole('button', { name: 'Remove Korean' }));
+  await user.click(within(panel).getByRole('combobox', { name: 'Add a language' }));
+  expect(screen.queryByRole('button', { name: 'English' })).toBeNull();
+  await user.click(await screen.findByRole('button', { name: 'Malay' }));
+  expect(within(panel).getByRole('button', { name: 'Remove Malay' })).toBeTruthy();
   await save();
   await waitFor(() => expect(api.putLearningSettings).toHaveBeenCalled());
-  expect(api.putLearningSettings).toHaveBeenCalledWith({ languages: ['en', 'ja', 'he'] });
+  expect(api.putLearningSettings).toHaveBeenCalledWith({ languages: ['en', 'he', 'ja', 'ms'] });
+});
+
+it('offers any language the API lists, under its English name', async () => {
+  const user = userEvent.setup();
+  api.getLearningSettings.mockResolvedValue({ ...SETTINGS, languages: ['en'] });
+  renderPage();
+  await screen.findByLabelText('Branding line');
+  await user.click(screen.getByRole('combobox', { name: 'Add a language' }));
+  for (const name of ['Simplified Chinese', 'Hebrew', 'Japanese', 'Korean', 'Malay', 'Dutch']) {
+    expect(await screen.findByRole('button', { name })).toBeTruthy();
+  }
 });
 
 it('edits email text for a template and language', async () => {

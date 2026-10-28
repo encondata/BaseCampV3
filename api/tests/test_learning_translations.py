@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import select
 
 from serversherpa.config import get_settings
-from serversherpa.db.models import AuditLog
+from serversherpa.db.models import AuditLog, SystemConfig
 from serversherpa.learning import translate
 from serversherpa.learning.models import (
     LearningDocument,
@@ -30,6 +30,17 @@ from tests.test_status_values_write import _make
 HTML = ('<p data-text-align="left">Wear <strong>boots</strong>.</p>'
         '<figure data-wiki-image="123e4567-e89b-12d3-a456-426614174000">'
         '<img alt="Boots"></figure>')
+
+
+async def offer_languages(db, *langs):
+    """Switch on learning languages (only English is on by default)."""
+    db.add(SystemConfig(section="learning", data={"languages": ["en", *langs]}))
+    await db.commit()
+
+
+@pytest.fixture(autouse=True)
+async def _ja_ko_he(db):
+    await offer_languages(db, "ja", "ko", "he")
 
 
 def _url(doc, lang="ja", tail=""):

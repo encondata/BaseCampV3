@@ -4,8 +4,8 @@
  * a × (Remove <label>); the ComboBox below offers only what isn't picked,
  * in natural order, and clears after a pick. Backspace in the empty box
  * takes the last chip off; after a ×, focus goes to the next chip's ×,
- * else the previous one's, else the box. Opt-in "Clear all" (2+ chips) and
- * a one-line note under the chips.
+ * else the previous one's, else the box. Opt-in "Clear all" (2+ chips), a
+ * one-line note under the chips, and an always-portaled menu.
  */
 
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
@@ -28,7 +28,7 @@ const OPTIONS: ComboOption[] = [
 /** A controlled picker, recording each change. */
 function Harness({ initial = [], onChange = vi.fn(), ...rest }: {
   initial?: string[]; onChange?: (ids: string[]) => void; disabled?: boolean; clearAll?: boolean;
-  note?: string;
+  note?: string; portal?: boolean;
 }) {
   const [ids, setIds] = useState(initial);
   return (
@@ -133,4 +133,15 @@ it('disabled: no removing, no adding, no clearing', () => {
 it('a picked id with no option shows the id itself', () => {
   render(<Harness initial={['gone']} />);
   expect(screen.getByRole('button', { name: 'Remove gone' })).toBeTruthy();
+});
+
+it('portal puts the menu outside the picker, so an overflow-hidden panel cannot clip it', () => {
+  const { unmount } = render(<Harness />);
+  fireEvent.focus(box());
+  expect(document.querySelector('.chip-picker .combo-menu')).not.toBeNull();
+  unmount();
+  render(<Harness portal />);
+  fireEvent.focus(box());
+  expect(document.querySelector('.combo-menu')).not.toBeNull();
+  expect(document.querySelector('.chip-picker .combo-menu')).toBeNull();
 });

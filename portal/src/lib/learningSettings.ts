@@ -5,9 +5,7 @@
  * nullable number means "no limit / keep", and every other field is shown
  * exactly as GET /system/learning returned it.
  */
-import {
-  LEARNING_LANGUAGES, type LearningEmailText, type LearningSettings, type LearningSettingsPatch,
-} from './learning';
+import type { LearningEmailText, LearningSettings, LearningSettingsPatch } from './learning';
 import { compareOrdinal } from './naturalSort';
 
 export const EMAIL_KINDS = [
@@ -123,7 +121,7 @@ export function evaluate(draft: SettingsDraft, saved: LearningSettings): Evaluat
   }
   if (draft.brand_line !== saved.brand_line) patch.brand_line = draft.brand_line;
 
-  const languages = LEARNING_LANGUAGES.filter((l) => draft.languages.includes(l));
+  const languages = saved.available_languages.filter((l) => draft.languages.includes(l));
   const savedLanguages = new Set(saved.languages);
   if (languages.length !== savedLanguages.size || languages.some((l) => !savedLanguages.has(l))) {
     patch.languages = languages;

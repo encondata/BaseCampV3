@@ -64,6 +64,19 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return resp.json() as Promise<T>;
 }
 
+/** The languages learning settings offer (public: the sign-in page shows
+ *  the picker), English first. */
+export async function getOfferedLanguages(): Promise<{ code: string; rtl: boolean }[]> {
+  let resp: Response;
+  try {
+    resp = await fetch(`${learnApiUrl()}/learn/languages`);
+  } catch {
+    throw new ApiError(0, 'network');
+  }
+  if (!resp.ok) throw new ApiError(resp.status, 'unknown_error');
+  return resp.json() as Promise<{ code: string; rtl: boolean }[]>;
+}
+
 export function signInWithCode(code: string, lastName: string): Promise<LearnSession> {
   return post('/learn/auth/code', { code: normalizeCode(code), last_name: lastName.trim() });
 }

@@ -5,8 +5,9 @@ learn session or a signed-in account (`serversherpa.learning.sessions
 module and is assembled here under one router/prefix."""
 from fastapi import APIRouter
 
-from serversherpa.api.routes.learn import auth, training
+from serversherpa.api.routes.learn import auth, languages, training
 
 router = APIRouter(prefix="/learn", tags=["learn"])
 router.include_router(auth.router)
 router.include_router(training.router)
+router.include_router(languages.router)

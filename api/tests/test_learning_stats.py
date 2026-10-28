@@ -9,7 +9,6 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi import HTTPException
 from PIL import Image
-
 from sqlalchemy import select
 
 from serversherpa.db.models import (
@@ -39,6 +38,7 @@ from tests.test_learning_assign import (
     _publish,
     _worker,
 )
+from tests.test_learning_translations import offer_languages
 from tests.test_sites_api import make_login
 
 NOW = datetime.now(UTC)
@@ -201,6 +201,7 @@ async def test_at_risk_sorting(client, db, seeded_user):
 
 
 async def test_dashboard_expiring_translations_and_hard_questions(client, db, seeded_user):
+    await offer_languages(db, "ja", "ko", "he")
     hdrs = await _manager(db, client)
     fork = await _doc(db, "Forklift safety", validity_days=365)
     never = await _doc(db, "Dress code")

@@ -24,13 +24,11 @@ import type { MessageKey } from '../i18n/en';
 import { errorKey } from '../lib/errors';
 import { mmss } from '../lib/format';
 import { isUuid } from '../lib/ids';
-import { getLang, t, useLang } from '../lib/i18n';
+import { getLang, isRtl, t, useLang } from '../lib/i18n';
 import { getAssignment, getTraining, signAssignment, type AssignmentRead } from '../lib/training';
 import { useLoad } from '../lib/useLoad';
 
 type Reason = { key: MessageKey; vars?: Record<string, string | number> };
-
-const RTL_LANGS = new Set(['he', 'ar', 'fa', 'ur']);
 
 /** Where this document sits in its list ("4 of 5"), when the list loads. */
 async function position(id: string): Promise<{ k: number; n: number } | null> {
@@ -148,7 +146,7 @@ function ReaderBody({ id, doc, place, changed, onVersionChanged }: {
     }
   };
 
-  const rtl = RTL_LANGS.has(doc.language.split('-')[0]);
+  const rtl = isRtl(doc.language);
   return (
     <>
       <div className="learn-readhead">

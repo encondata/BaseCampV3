@@ -198,3 +198,10 @@ it('formats a median in minutes or hours', () => {
   expect(L.formatMedianHours(6.4)).toBe('6.4 h');
   expect(L.formatMedianHours(30)).toBe('30 h');
 });
+
+it('names any language tag in English, else shows the tag', () => {
+  expect(L.languageName('en')).toBe('English');
+  expect(L.languageName('ms')).toBe('Malay');
+  expect(L.languageName('zh-Hans')).toBe('Simplified Chinese');
+  expect(L.languageName('not a tag')).toBe('not a tag');
+});

@@ -17,17 +17,16 @@ import {
 } from '../../components/learning/initiativeLearning';
 import { useLearningAccess } from '../../components/learning/useLearningAccess';
 import {
-  getLearningSettings, LEARNING_LANGUAGES, languageName, putLearningSettings,
+  getLearningSettings, languageName, putLearningSettings,
   type LearningSettings as Settings,
 } from '../../lib/learning';
 import { apiErrorText } from '../../lib/learningDoc';
 import {
   EMAIL_KINDS, evaluate, isDirty, isValid, toDraft, type NumberKey, type SettingsDraft,
 } from '../../lib/learningSettings';
-import { compareOrdinal } from '../../lib/naturalSort';
+import { compareOrdinal, naturalCompare } from '../../lib/naturalSort';
 import { useToast } from '../../lib/notificationsContext';
 import '../../styles/directory.css';
-import '../../styles/initiatives.css';   // .init-check pills (the languages)
 import '../../styles/learning.css';
 import '../../styles/profile.css';       // .panel, .pf-form
 
@@ -96,8 +95,8 @@ export default function LearningSettings() {
   );
 
   // the email text is edited per offered language
-  const languages: string[] = draft
-    ? LEARNING_LANGUAGES.filter((l) => draft.languages.includes(l)) : [];
+  const languages: string[] = draft && saved
+    ? saved.available_languages.filter((l) => draft.languages.includes(l)) : [];
   const lang = languages.includes(language) ? language : 'en';
   const entry = draft?.email_text[kind]?.[lang] ?? { subject: '', intro: '' };
   const hasOverride = entry.subject.trim() !== '' || entry.intro.trim() !== '';
@@ -136,6 +135,10 @@ export default function LearningSettings() {
   const reminderOptions = Array.from(new Set([
     ...REMINDER_CHOICES, ...(draft?.reminder_offsets.map(Number) ?? []),
   ])).sort((a, b) => a - b).map((n) => ({ value: String(n), label: offsetLabel(n) }));
+  // English is always on, so it's never a chip
+  const otherLanguages = (saved?.available_languages ?? []).filter((l) => l !== 'en')
+    .map((l) => ({ value: l, label: languageName(l) }));
+  const byName = (a: string, b: string) => naturalCompare(languageName(a), languageName(b));
   const timeValues = draft && !TIME_CHOICES.includes(draft.invite_time)
     ? [...TIME_CHOICES, draft.invite_time].sort(compareOrdinal) : TIME_CHOICES;
 
@@ -244,19 +247,10 @@ export default function LearningSettings() {
               <p className="lrn-hint" style={{ margin: '0 0 10px' }}>
                 What workers can read and sign in. English is always on.
               </p>
-              <div className="init-checks" role="group" aria-label="Languages offered">
-                {LEARNING_LANGUAGES.map((l) => (
-                  <label className="init-check" key={l}>
-                    <input type="checkbox" checked={draft.languages.includes(l)}
-                           disabled={locked || l === 'en'}
-                           onChange={(e) => patchDraft({
-                             languages: e.target.checked
-                               ? [...draft.languages, l] : draft.languages.filter((x) => x !== l),
-                           })} />
-                    {languageName(l)}
-                  </label>
-                ))}
-              </div>
+              <ChipPicker ariaLabel="Add a language" placeholder="Add a language…" disabled={locked}
+                          options={otherLanguages} clearAll portal
+                          selected={draft.languages.filter((l) => l !== 'en').sort(byName)}
+                          onChange={(picked) => patchDraft({ languages: ['en', ...picked] })} />
             </div>
           </section>
 

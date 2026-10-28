@@ -7,6 +7,8 @@ import { Navigate, Route, Routes, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '@portal/auth/AuthContext';
 
+import { getOfferedLanguages } from './lib/api';
+import { setOffered } from './lib/i18n';
 import { getToken, setSignedOutHandler } from './lib/session';
 import Quiz from './pages/Quiz';
 import Reader from './pages/Reader';
@@ -29,6 +31,9 @@ export function RequireLearner({ children }: { children: ReactNode }) {
 export default function App() {
   const navigate = useNavigate();
   useEffect(() => setSignedOutHandler(() => navigate('/', { replace: true })), [navigate]);
+  // the language picker's list; without it the page stays in English (or
+  // the saved choice) and the picker stays hidden
+  useEffect(() => { getOfferedLanguages().then(setOffered).catch(() => {}); }, []);
   return (
     <Routes>
       <Route path="/" element={<SignIn />} />
