@@ -125,10 +125,11 @@ async def update_project(
 ) -> OpsOut:
     """MS Project's Update Project: stores the status date (null = now)
     and, with `complete_through`, completes every incomplete leaf finishing
-    by then and marks every one spanning it on track through it, under the
-    completion rules (plans/ops_progress.py). A progress edit: no version
-    to match, and accepted on a locked plan. Its `inverse` puts the tasks
-    back; the status date stays."""
+    by then and marks every one spanning it on track through it (never
+    lowering a %), under the completion rules (plans/ops_progress.py). A
+    progress edit: no version to match, and accepted on a locked plan. Its
+    `inverse` puts the tasks back; the status date stays. Statuses that
+    change only with the status date are not in `tasks` (UpdateProjectIn)."""
     plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
     try:
         end_of_day = service.calendar_of(plan).default_end

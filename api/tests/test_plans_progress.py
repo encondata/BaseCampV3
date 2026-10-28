@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
+from serversherpa.plans import service
 from serversherpa.plans.completion import Blocker, check_completion
 from serversherpa.plans.models import PlanTask
 from serversherpa.plans.service import load_state
@@ -180,6 +181,62 @@ async def test_progress_uses_the_batch_schedule(client, db):
     assert tasks[ids["B"]]["actual_start"] == "2026-11-05T08:00"
 
 
+async def test_progress_paste_recalculates_a_bounded_number_of_times(client, db, monkeypatch):
+    """Duration + % on every row of a paste: the fills wait for the batch's
+    one schedule instead of recalculating per row."""
+    hdrs, _move, plan = await _setup(client, db)
+    names = [f"T{i}" for i in range(250)]
+    ids = await _add(client, hdrs, plan, *names)
+    calls = []
+    real = service.schedule
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(service, "schedule", counted)
+    batch = []
+    for name in names:
+        batch += [_update(ids[name], duration="2d"), _pct([ids[name]], 50)]
+    assert len(batch) == 500
+    body = await _ok(client, hdrs, plan, batch)
+    assert len(calls) <= 3
+    tasks = _by_id(body)
+    assert all(tasks[ids[n]]["actual_start"] == "2026-11-02T08:00" for n in names)
+    assert all(tasks[ids[n]]["finish"] == "2026-11-03T17:00" for n in names)
+
+
+async def test_transient_state_in_a_progress_batch(client, db):
+    """A task that is a summary (with a finish link into it) only for a
+    moment inside the batch: only the batch's final state is scheduled."""
+    hdrs, _move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A", "B", "C")
+    await _ok(client, hdrs, plan, [_link(ids["A"], ids["B"], link_type="FF")])
+    body = await _ok(client, hdrs, plan, [
+        {"op": "indent", "ids": [ids["C"]]},            # B: a summary with an FF into it
+        _pct([ids["C"]], 50),
+        _complete(ids["A"]),
+        {"op": "outdent", "ids": [ids["C"]]},
+    ])
+    tasks = _by_id(body)
+    assert tasks[ids["C"]]["actual_start"] == "2026-11-02T08:00"
+    assert tasks[ids["A"]]["actual_finish"] == "2026-11-02T17:00"
+    got = _named(await _get(client, hdrs, plan))
+    assert got["C"]["parent_id"] is None and got["B"]["is_summary"] is False
+
+
+async def test_full_percent_needs_an_actual_finish(client, db):
+    hdrs, _move, plan = await _setup(client, db)
+    a = (await _add(client, hdrs, plan, "A"))["A"]
+    detail = await _fails(client, hdrs, plan,
+                          [_update(a, percent_complete=100, actual_finish=None)],
+                          422, "bad_field")
+    assert detail["field"] == "actual_finish"
+    # a later actual edit without % decides for itself
+    body = await _ok(client, hdrs, plan, [_pct([a], 50), _update(a, actual_start=None)])
+    assert _by_id(body)[a]["actual_start"] is None
+
+
 # ── summaries ────────────────────────────────────────────────────────
 
 
@@ -231,6 +288,20 @@ async def test_summary_percent_rules(client, db):
     # its actuals stay derived
     await _fails(client, hdrs, plan, [_update(ids["S"], actual_start="2026-11-02")],
                  422, "summary_field")
+
+
+async def test_later_op_wins_over_a_summary_completion(client, db):
+    hdrs, _move, plan = await _setup(client, db)
+    ids = await _summary(client, hdrs, plan)
+    # a later op taking a leaf below 100 voids the earlier `complete [S]`
+    await _ok(client, hdrs, plan, [_complete(ids["S"], confirm=True), _pct([ids["A"]], 0)])
+    got = _named(await _get(client, hdrs, plan))
+    assert [got[n]["percent_complete"] for n in "SAB"] == [0, 0, 0]
+    assert got["A"]["actual_start"] is None and got["A"]["completed_at"] is None
+    # an earlier one is overridden by it
+    await _ok(client, hdrs, plan, [_pct([ids["A"]], 40), _complete(ids["S"], confirm=True)])
+    got = _named(await _get(client, hdrs, plan))
+    assert [got[n]["percent_complete"] for n in "SAB"] == [100, 100, 100]
 
 
 async def test_subtasks_block_rule(client, db):
@@ -476,6 +547,15 @@ async def test_progress_undo_is_progress_only(client, db):
         assert restore["tasks"] and restore["remove_tasks"] == [] and restore["links"] == []
         undone = await _ok(client, hdrs, plan, body["inverse"], version=1)
         assert undone["version"] == body["version"] + 1
+        if ops[0]["op"] == "complete":
+            # the cascade's undo takes A and B back to nothing done
+            back = _by_id(undone)
+            for name in "AB":
+                task = back[ids[name]]
+                assert task["percent_complete"] == 0, name
+                assert task["actual_start"] is None and task["actual_finish"] is None
+                assert task["completed_at"] is None and task["completed_by_name"] is None
+            assert back[ids["S"]]["percent_complete"] == 0
     # the undo of a batch that changed nothing (T is complete already) is empty
     await _ok(client, hdrs, plan, [_complete(ids["T"])], version=1)
     body = await _ok(client, hdrs, plan, [_complete(ids["T"])], version=1)
@@ -612,6 +692,23 @@ async def test_update_project_on_track_and_rules(client, db):
     assert resp.json()["tasks"] == []
     got = await _get(client, hdrs, plan)
     assert got["status_date"] is None
+
+
+async def test_update_project_never_lowers_progress(client, db):
+    hdrs, move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A", "B", duration="4d")
+    await _ok(client, hdrs, plan, [_pct([ids["A"]], 80), _pct([ids["B"]], 10)])
+    # through Tue 17:00 both are on track at 50%: A keeps its 80, B rises to 50
+    resp = await _update_project(client, hdrs, plan, status_date="2026-11-03",
+                                 complete_through="2026-11-03")
+    assert resp.status_code == 200, resp.text
+    tasks = _named(await _get(client, hdrs, plan))
+    assert tasks["A"]["percent_complete"] == 80
+    assert tasks["B"]["percent_complete"] == 50
+    # Mark on Track still sets the scheduled value
+    await _ok(client, hdrs, plan, [_on_track(ids["A"])])
+    assert _named(await _get(client, hdrs, plan))["A"]["percent_complete"] == 50
+    assert (await _plan_row(db, move)).status_date == dt("2026-11-03 17:00")
 
 
 async def test_update_project_errors(client, db):

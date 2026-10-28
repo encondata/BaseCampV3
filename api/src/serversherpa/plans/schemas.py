@@ -199,8 +199,9 @@ class UpdateTaskOp(BaseModel):
     `fields.percent_complete` is a progress edit, the same as `set_percent`
     (its actuals, stamps and completion rules), applied after the task's
     other fields and its Predecessors; an actual sent in the same `fields`
-    wins over the one % would fill or clear. `confirm` answers a
-    `completion_confirm` (see `SetPercentOp`)."""
+    wins over the one % would fill or clear, except that 100 with
+    `actual_finish: null` is 422 `bad_field` (a 100% task has an actual
+    finish). `confirm` answers a `completion_confirm` (see `SetPercentOp`)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -312,7 +313,11 @@ class SetPercentOp(BaseModel):
     (plans/completion.py) once the batch's ops have run: 409
     `completion_blocked` {blockers}, or 409 `completion_confirm`
     {will_complete, open_predecessors} until the op is resent with
-    `confirm: true`; either way nothing is written."""
+    `confirm: true`; either way nothing is written. `confirm` belongs to
+    its op: it answers only what that op completes, so after a
+    `completion_confirm` a client resends the batch with `confirm: true`
+    on every op that completes something (set_percent, complete,
+    mark_on_track, update_task)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -391,9 +396,15 @@ class UpdateProjectIn(BaseModel):
     """POST /plans/{plan_id}/update-project (MS Project's Update Project).
     `status_date` is stored (null = now); with `complete_through` every
     incomplete leaf finishing by then goes to 100% and every incomplete
-    leaf spanning it is marked on track through it. A date alone is the
-    calendar's default end of that day. `confirm` answers a
-    `completion_confirm`, as on `set_percent`."""
+    leaf spanning it is marked on track through it, never below the %
+    it already has. A date alone is the calendar's default end of that
+    day. `confirm` answers a `completion_confirm`, as on `set_percent`.
+
+    The answer is an `OpsOut`, whose `tasks` are only the rows whose
+    stored fields changed: a task whose `status` (late, in progress)
+    changes only because of the new status date is not among them, so
+    refetch the plan (or recompute status) after this call. The
+    `inverse` puts the tasks back; it does not restore the status date."""
 
     model_config = ConfigDict(extra="forbid")
 

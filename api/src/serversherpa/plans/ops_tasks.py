@@ -183,12 +183,16 @@ class Batch:
     # the plan's resources as (kind, id), read once on first use
     resources: set[tuple[str, uuid.UUID]] | None = None
     # progress (plans/ops_progress.py): True when an op since the last
-    # recalc may have moved the stored dates a % edit fills actuals from
+    # recalc may have moved the stored dates (Mark on Track and Update
+    # project read them)
     stale: bool = False
     # the tasks progress ops took to 100% (or asked to complete, for a
     # summary) -> whether an op that did so confirmed; the completion rules
     # run over them once every op has run
     completing: dict[uuid.UUID, bool] = field(default_factory=dict)
+    # task -> (fill actual start, fill actual finish): queued by % edits,
+    # filled from the batch's final schedule
+    fills: dict[uuid.UUID, tuple[bool, bool]] = field(default_factory=dict)
 
     @property
     def units(self) -> Units:

@@ -12,8 +12,11 @@ A batch (`apply_ops`):
    progress edits in plans/ops_progress.py (an `update_task` writes the
    task's own fields first, then its Predecessors, then its % complete),
    the `restore` op in plans/ops_inverse.py;
-3. applies the completion rules to the tasks the batch completed (409
-   `completion_blocked` / `completion_confirm`, plans/ops_progress.py);
+3. when progress edits queued anything, schedules the batch's final state
+   once, applies the completion rules to the tasks the batch completed
+   (409 `completion_blocked` / `completion_confirm`) and fills the queued
+   actuals from that schedule (plans/ops_progress.py); no op recalculates
+   mid-batch except Mark on Track / Update project after a date-moving op;
 4. writes the outline, renumbers, and recalculates the whole plan (the
    engine's ScheduleError and CalendarError propagate);
 5. stamps every row whose stored values changed and answers the changed
@@ -85,7 +88,9 @@ _PROGRESS_RESTORE_KEYS = PROGRESS_FIELDS | {"id", "completed_at", "completed_by"
 PROGRESS_OPS = (SetPercentOp, CompleteOp, MarkOnTrackOp)
 # ops that leave the batch's dates as they found them, or mark the batch
 # stale themselves (plans/ops_progress.py); any other marks it stale
-_KEEP_DATES = frozenset({"set_percent", "complete", "mark_on_track", "update_task"})
+_KEEP_DATES = frozenset({"set_percent", "complete", "mark_on_track", "update_task",
+                         "update_project"})
+_ACTUALS = frozenset({"actual_start", "actual_finish"})
 # deferred so a batch can write rows in any order; checked before it ends
 PARENT_FK = "plan_tasks_parent_id_fkey"
 
@@ -99,7 +104,10 @@ async def _update_task(b: Batch, op: UpdateTaskOp) -> None:
         await ops_links.set_predecessors(b, op.id, op.fields.predecessors)
     if "percent_complete" in sent:
         ops_progress.typed_percent(b, op)
-    elif sent - {"notes"}:
+        return
+    if sent & _ACTUALS:
+        ops_progress.actuals_typed(b, op.id, sent & _ACTUALS)
+    if sent - {"notes"}:
         b.stale = True
 
 
@@ -199,6 +207,8 @@ async def apply_ops(db: AsyncSession, state: PlanState, ops: Sequence, actor: Au
 
     for op in ops:
         await _HANDLERS[op.op](batch, op)
+        if isinstance(op, RestoreOp):
+            ops_progress.forget(batch, [uuid.UUID(row["id"]) for row in op.tasks])
         if op.op not in _KEEP_DATES:
             batch.stale = True
     ops_progress.finish(batch)
