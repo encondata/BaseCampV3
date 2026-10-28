@@ -65,6 +65,35 @@ A link between a task and its own ancestor or descendant is rejected
 (`OutlineLinkError`), as are FF/SF links into a summary
 (`SummaryLinkError`), other summary constraints (`SummaryConstraintError`)
 and loops (`CycleError`, which can run through a summary's gate or rollup).
+A loop through both a summary's gate and its rollup runs through every task
+below it, so it names the summary and none of those.
+
+Backward pass, the same graph in reverse: late dates, total slack and the
+critical path (MS Project's rules; a deadline changes slack, never dates).
+
+- The project finish is the latest leaf finish. A leaf's late finish is the
+  earliest of: the project finish, its deadline, an FNLT or MFO date, and
+  what each link out of it requires, for successor S with lag L:
+  FS  finish <= LS(S) - L;  SS  start <= LS(S) - L;
+  FF  finish <= LF(S) - L;  SF  start <= LF(S) - L.
+  A cap on the start (SS, SF, an SNLT or MSO date) caps the finish one
+  duration later. The late start is the late finish less the duration, the
+  duration being the length the task is scheduled with (its working time,
+  or wall clock when elapsed; an actual finish can shorten it). A task with
+  work does not finish on an interval's start: Wed 08:00 reads Tue 17:00.
+  A manual task's constraint is ignored here too; its deadline is not.
+- Total slack is the working minutes from the (early) start to the late
+  start, negative when the task is already late. A task is critical when
+  its slack is at most `EngineSettings.critical_slack_minutes` and it is
+  not complete.
+- The summary nodes swap roles. The rollup, reached before the subtasks,
+  passes caps down: every task below it must finish by the summary's
+  deadline and by what the links out of the summary require. An SS or SF
+  link out of a summary caps every subtask's start, not only the earliest
+  one (conservative). The gate, reached once every subtask is done, rolls
+  up: late start = the earliest subtask late start (what a link into the
+  summary reads), late finish = the latest late finish, slack = the least
+  subtask slack, critical when any subtask is.
 """
 
 import heapq
@@ -185,6 +214,7 @@ class _Graph:
     rank: dict[Node, tuple[int, int]]   # Kahn's tie-break: (position, input index)
     successors: dict[Node, list[Node]] = field(default_factory=dict)
     links_into: dict[Node, list[LinkIn]] = field(default_factory=dict)
+    links_out: dict[Node, list[LinkIn]] = field(default_factory=dict)
 
     def add_edge(self, before: Node, after: Node) -> None:
         self.successors.setdefault(before, []).append(after)
@@ -208,13 +238,15 @@ class _Outline:
     def is_summary(self, task_id: str) -> bool:
         return task_id in self.children
 
-    def is_ancestor(self, ancestor_id: str, task_id: str) -> bool:
+    def ancestors(self, task_id: str) -> Iterable[str]:
+        """The task's parent, its parent's parent, ... up to the top."""
         parent_id = self.by_id[task_id].parent_id
         while parent_id is not None:
-            if parent_id == ancestor_id:
-                return True
+            yield parent_id
             parent_id = self.by_id[parent_id].parent_id
-        return False
+
+    def is_ancestor(self, ancestor_id: str, task_id: str) -> bool:
+        return any(parent_id == ancestor_id for parent_id in self.ancestors(task_id))
 
     def entry(self, task_id: str) -> Node:
         """The node a link into the task (or its parent's gate) leads to."""
@@ -320,10 +352,11 @@ def _build_graph(tasks: list[TaskIn], links: list[LinkIn], outline: _Outline) ->
         after = outline.entry(link.successor_id)
         graph.add_edge(before, after)
         graph.links_into.setdefault(after, []).append(link)
+        graph.links_out.setdefault(before, []).append(link)
     return graph
 
 
-def _topological_order(graph: _Graph) -> list[Node]:
+def _topological_order(graph: _Graph, outline: _Outline) -> list[Node]:
     """Kahn's algorithm; among nodes ready together the one highest in the
     outline goes first. A loop raises CycleError naming the tasks on it."""
     indegree = dict.fromkeys(graph.rank, 0)
@@ -341,11 +374,8 @@ def _topological_order(graph: _Graph) -> list[Node]:
             if indegree[after] == 0:
                 heapq.heappush(ready, (graph.rank[after], after))
     if len(order) < len(graph.rank):
-        first: dict[str, tuple[int, int]] = {}    # task id -> its highest node's rank
-        for node in _on_cycles(graph, set(graph.rank).difference(order)):
-            task_id = node[1]
-            first[task_id] = min(first.get(task_id, graph.rank[node]), graph.rank[node])
-        raise CycleError("the links form a loop", sorted(first, key=first.__getitem__))
+        loops = _on_cycles(graph, set(graph.rank).difference(order))
+        raise CycleError("the links form a loop", _named(graph, outline, loops))
     return order
 
 
@@ -370,6 +400,75 @@ def _on_cycles(graph: _Graph, stuck: set[Node]) -> set[Node]:
             if outdegree[earlier] == 0:
                 dead_ends.append(earlier)
     return left
+
+
+def _named(graph: _Graph, outline: _Outline, loops: set[Node]) -> list[str]:
+    """The tasks a CycleError names for the nodes on `loops`, in outline
+    order. A loop through both a summary's gate and its rollup passes every
+    task below the summary (gate -> subtasks -> rollup): the summary alone
+    stands for them. Two loops, one through the gate and one through the
+    rollup, are not that: their subtasks stay named."""
+    around = {task_id for kind, task_id in loops
+              if kind == ROLLUP and (GATE, task_id) in loops
+              and _reaches(graph, (ROLLUP, task_id), (GATE, task_id), loops)}
+    return outline.in_order(
+        task_id for _, task_id in loops
+        if not any(parent_id in around for parent_id in outline.ancestors(task_id)))
+
+
+def _reaches(graph: _Graph, start: Node, goal: Node, within: set[Node]) -> bool:
+    """Whether a path leads from `start` to `goal` through `within` only."""
+    seen, todo = {start}, [start]
+    while todo:
+        for after in graph.successors.get(todo.pop(), ()):
+            if after == goal:
+                return True
+            if after in within and after not in seen:
+                seen.add(after)
+                todo.append(after)
+    return False
+
+
+# --- time in a task's own terms ----------------------------------------------------
+
+
+class _Clock:
+    """Arithmetic in working time through the calendar, or in wall-clock
+    time for an elapsed task or lag; both passes count with it."""
+
+    def __init__(self, calendar: WorkCalendar):
+        self.cal = calendar
+
+    def shift(self, moment: datetime, lag: int, elapsed: bool) -> datetime:
+        """`moment` moved by a signed lag: wall-clock minutes when elapsed,
+        else working minutes (a lead counts working time backward)."""
+        if elapsed:
+            return moment + timedelta(minutes=lag)
+        if lag > 0:
+            return self.cal.add_work(moment, lag)
+        if lag < 0:
+            return self.cal.sub_work(moment, -lag)
+        return moment
+
+    def after(self, task: TaskIn, start: datetime, minutes: int) -> datetime:
+        """`minutes` of the task's own time (wall clock when it is elapsed,
+        else working time) after `start`."""
+        if task.elapsed:
+            return start + timedelta(minutes=minutes)
+        return self.cal.add_work(start, minutes)
+
+    def before(self, task: TaskIn, finish: datetime, minutes: int) -> datetime:
+        """`minutes` of the task's own time before `finish`."""
+        if task.elapsed:
+            return finish - timedelta(minutes=minutes)
+        return self.cal.sub_work(finish, minutes)
+
+    def span(self, task: TaskIn, start: datetime, finish: datetime) -> int:
+        """Minutes of the task's own time from `start` to `finish`, never
+        negative."""
+        if task.elapsed:
+            return max((finish - start) // _MINUTE, 0)
+        return max(self.cal.work_between(start, finish), 0)
 
 
 # --- the forward pass ---------------------------------------------------------------
@@ -409,10 +508,10 @@ class _Progress:
         return (2 * self.percent + self.leaves) // (2 * self.leaves)
 
 
-class _ForwardPass:
+class _ForwardPass(_Clock):
     def __init__(self, calendar: WorkCalendar, project_start: datetime,
                  settings: EngineSettings):
-        self.cal = calendar
+        super().__init__(calendar)
         self.settings = settings
         self.project_start = calendar.next_work_start(project_start)
         self.out: dict[str, TaskOut] = {}
@@ -420,37 +519,6 @@ class _ForwardPass:
         self.progress: dict[str, _Progress] = {}    # summaries only
 
     # --- time arithmetic ---
-
-    def shift(self, moment: datetime, lag: int, elapsed: bool) -> datetime:
-        """`moment` moved by a signed lag: wall-clock minutes when elapsed,
-        else working minutes (a lead counts working time backward)."""
-        if elapsed:
-            return moment + timedelta(minutes=lag)
-        if lag > 0:
-            return self.cal.add_work(moment, lag)
-        if lag < 0:
-            return self.cal.sub_work(moment, -lag)
-        return moment
-
-    def after(self, task: TaskIn, start: datetime, minutes: int) -> datetime:
-        """`minutes` of the task's own time (wall clock when it is elapsed,
-        else working time) after `start`."""
-        if task.elapsed:
-            return start + timedelta(minutes=minutes)
-        return self.cal.add_work(start, minutes)
-
-    def before(self, task: TaskIn, finish: datetime, minutes: int) -> datetime:
-        """`minutes` of the task's own time before `finish`."""
-        if task.elapsed:
-            return finish - timedelta(minutes=minutes)
-        return self.cal.sub_work(finish, minutes)
-
-    def span(self, task: TaskIn, start: datetime, finish: datetime) -> int:
-        """Minutes of the task's own time from `start` to `finish`, never
-        negative."""
-        if task.elapsed:
-            return max((finish - start) // _MINUTE, 0)
-        return max(self.cal.work_between(start, finish), 0)
 
     def later(self, task: TaskIn, a: datetime, b: datetime) -> bool:
         """Whether `a` is after `b` in the task's own time. In working time
@@ -499,7 +567,7 @@ class _ForwardPass:
     def gate(self, task: TaskIn, links: list[LinkIn]) -> _Gate:
         """A summary's entry gate: its parent's, raised by the FS/SS links
         into the summary and its SNET date."""
-        parent = self.gates.get(task.parent_id) if task.parent_id is not None else None
+        parent = self.gates[task.parent_id] if task.parent_id is not None else None
         floor = self.project_start if parent is None else parent.floor
         if task.constraint_type == "snet" and task.constraint_date is not None:
             floor = max(floor, task.constraint_date)
@@ -581,19 +649,103 @@ class _ForwardPass:
                        is_summary=True, percent_complete=progress.rounded())
 
 
+# --- the backward pass --------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Caps:
+    """What a summary's rollup holds, in the backward pass, for every task
+    below it: the latest each may finish and the latest each may start (None
+    where nothing caps it)."""
+
+    finish: datetime | None = None
+    start: datetime | None = None
+
+
+class _BackwardPass(_Clock):
+    """Late dates, slack and criticality, filled into the forward pass's
+    `TaskOut`s in reverse link order: every successor (and a summary's
+    rollup, for its subtasks) is done before the task that feeds it."""
+
+    def __init__(self, calendar: WorkCalendar, settings: EngineSettings,
+                 out: dict[str, TaskOut], graph: _Graph):
+        super().__init__(calendar)
+        self.settings = settings
+        self.out = out
+        self.graph = graph
+        self.project_finish = max(o.finish for o in out.values() if not o.is_summary)
+        self.caps: dict[str, _Caps] = {}
+
+    def caps_on(self, node: Node, task: TaskIn) -> tuple[list[datetime], list[datetime]]:
+        """(finish caps, start caps) on `task`: what each link out of `node`
+        requires, its deadline and its parent rollup's caps."""
+        finishes: list[datetime] = []
+        starts: list[datetime] = []
+        for link in self.graph.links_out.get(node, ()):
+            succ = self.out[link.successor_id]
+            anchor = succ.late_start if link.link_type in ("FS", "SS") else succ.late_finish
+            moment = self.shift(anchor, -link.lag, link.lag_elapsed)
+            (finishes if link.link_type in ("FS", "FF") else starts).append(moment)
+        if task.deadline is not None:
+            finishes.append(task.deadline)
+        if task.parent_id is not None:
+            parent = self.caps[task.parent_id]
+            if parent.finish is not None:
+                finishes.append(parent.finish)
+            if parent.start is not None:
+                starts.append(parent.start)
+        return finishes, starts
+
+    def rollup(self, task: TaskIn) -> None:
+        """A summary passes its caps down to every task below it."""
+        finishes, starts = self.caps_on((ROLLUP, task.id), task)
+        self.caps[task.id] = _Caps(finish=min(finishes, default=None),
+                                   start=min(starts, default=None))
+
+    def leaf(self, task: TaskIn) -> None:
+        out = self.out[task.id]
+        finishes, starts = self.caps_on((LEAF, task.id), task)
+        finishes.append(self.project_finish)
+        kind, date = task.constraint_type, task.constraint_date
+        if task.mode == "auto" and date is not None:
+            if kind in ("fnlt", "mfo"):
+                finishes.append(date)
+            elif kind in ("snlt", "mso"):
+                starts.append(date)
+        length = self.span(task, out.start, out.finish)
+        late_finish = min(finishes + [self.after(task, start, length) for start in starts])
+        if length > 0 and not task.elapsed:
+            late_finish = self.cal.prev_work_end(late_finish)   # Tue 17:00, not Wed 08:00
+        out.late_finish = late_finish
+        out.late_start = self.before(task, late_finish, length)
+        out.total_slack = self.cal.work_between(out.start, out.late_start)
+        out.is_critical = (out.total_slack <= self.settings.critical_slack_minutes
+                           and out.percent_complete < 100)
+
+    def summary(self, task: TaskIn, children: list[str]) -> None:
+        """A summary from its direct subtasks, once all of them are done."""
+        outs = [self.out[child] for child in children]
+        out = self.out[task.id]
+        out.late_start = min(o.late_start for o in outs)
+        out.late_finish = max(o.late_finish for o in outs)
+        out.total_slack = min(o.total_slack for o in outs)
+        out.is_critical = any(o.is_critical for o in outs)
+
+
 def schedule(tasks: list[TaskIn], links: list[LinkIn], calendar: WorkCalendar,
              project_start: datetime, settings: EngineSettings = DEFAULT_SETTINGS
              ) -> dict[str, TaskOut]:
-    """Schedule the whole plan: a `TaskOut` per task id, summaries included.
-    Raises SummaryConstraintError, OutlineLinkError or SummaryLinkError when
-    the outline breaks a summary rule, CycleError when the links loop, and
+    """Schedule the whole plan: a `TaskOut` per task id, summaries included,
+    with early and late dates, total slack and criticality. Raises
+    SummaryConstraintError, OutlineLinkError or SummaryLinkError when the
+    outline breaks a summary rule, CycleError when the links loop, and
     CalendarError when the calendar has no working time to place a task in
-    or a date runs out of range. The late dates and slack stay None here."""
+    or a date runs out of range."""
     by_id = _check(tasks, links)
     outline = _Outline.of(tasks, by_id)
     _check_summaries(tasks, links, outline)
     graph = _build_graph(tasks, links, outline)
-    order = _topological_order(graph)
+    order = _topological_order(graph, outline)
     try:
         forward = _ForwardPass(calendar, project_start, settings)
         for node in order:
@@ -605,6 +757,17 @@ def schedule(tasks: list[TaskIn], links: list[LinkIn], calendar: WorkCalendar,
                 forward.out[task_id] = forward.rollup(task, outline.children[task_id])
             else:
                 forward.out[task_id] = forward.leaf(task, links_in)
+
+        if tasks:       # an empty plan has no project finish
+            backward = _BackwardPass(calendar, settings, forward.out, graph)
+            for kind, task_id in reversed(order):
+                task = by_id[task_id]
+                if kind == ROLLUP:
+                    backward.rollup(task)
+                elif kind == GATE:
+                    backward.summary(task, outline.children[task_id])
+                else:
+                    backward.leaf(task)
     except OverflowError:       # elapsed time past year 9999 (or before year 1)
         raise CalendarError("a date runs past the range the calendar can reach") from None
     return forward.out

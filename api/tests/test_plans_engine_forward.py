@@ -541,8 +541,10 @@ def test_leaf_output_fields():
     out = run([T("A", 960, percent_complete=40)])
     a = out["A"]
     assert (a.duration, a.is_summary, a.percent_complete) == (960, False, 40)
-    assert (a.late_start, a.late_finish, a.total_slack) == (None, None, None)
-    assert a.is_critical is False
+    # the backward pass fills the late fields (test_plans_engine_slack.py)
+    assert (a.late_start, a.late_finish, a.total_slack) == (
+        dt("2026-11-02 08:00"), dt("2026-11-03 17:00"), 0)
+    assert a.is_critical is True
     assert a.conflict is None
 
 

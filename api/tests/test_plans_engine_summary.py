@@ -226,8 +226,10 @@ def test_summary_inputs_are_ignored():
 def test_summary_output_fields():
     out = run([T("S"), T("A", 480, "S")])
     s = out["S"]
-    assert (s.late_start, s.late_finish, s.total_slack) == (None, None, None)
-    assert s.is_critical is False
+    # the backward pass fills the late fields (test_plans_engine_slack.py)
+    assert (s.late_start, s.late_finish, s.total_slack) == (
+        dt("2026-11-02 08:00"), dt("2026-11-02 17:00"), 0)
+    assert s.is_critical is True
     assert s.conflict is None
 
 
@@ -460,6 +462,45 @@ def test_ss_from_summary_to_own_subtask_path_is_a_cycle():
     tasks = [T("S"), T("A", parent="S"), T("C", parent="S"), T("Y")]
     with pytest.raises(CycleError):
         run(tasks, [L("S", "Y", "SS"), L("Y", "C")])
+
+
+def test_loop_around_a_summary_names_the_summary_not_its_subtasks():
+    # S -> Y -> S runs through S's gate and its rollup, so through every subtask
+    tasks = [T("S")] + [T(f"C{i}", parent="S") for i in range(5)] + [T("Y")]
+    with pytest.raises(CycleError) as caught:
+        run(tasks, [L("S", "Y"), L("Y", "S")])
+    assert caught.value.task_ids == ["S", "Y"]
+
+
+def test_summary_linked_to_itself_names_only_the_summary():
+    with pytest.raises(CycleError) as caught:
+        run([T("S"), T("A", parent="S")], [L("S", "S")])
+    assert caught.value.task_ids == ["S"]
+
+
+def test_loop_around_a_nested_summary_leaves_its_parent_out():
+    # N -> Y -> N inside S: N's subtasks fold into N; S is not on the loop
+    tasks = [T("S"), T("N", parent="S"), T("A", parent="N"), T("B", parent="N"),
+             T("Y", parent="S")]
+    with pytest.raises(CycleError) as caught:
+        run(tasks, [L("N", "Y"), L("Y", "N")])
+    assert caught.value.task_ids == ["N", "Y"]
+
+
+def test_loop_around_a_summary_folds_its_grandchildren():
+    tasks = [T("S"), T("N", parent="S"), T("A", parent="N"), T("Y")]
+    with pytest.raises(CycleError) as caught:
+        run(tasks, [L("Y", "S"), L("S", "Y")])
+    assert caught.value.task_ids == ["S", "Y"]
+
+
+def test_separate_loops_through_gate_and_rollup_keep_their_subtasks():
+    # B -> X -> S loops through S's gate and S -> Y -> A through its rollup,
+    # but no single loop runs through both, so A and B stay named
+    tasks = [T("S"), T("A", parent="S"), T("B", parent="S"), T("X"), T("Y")]
+    with pytest.raises(CycleError) as caught:
+        run(tasks, [L("B", "X"), L("X", "S"), L("S", "Y"), L("Y", "A")])
+    assert caught.value.task_ids == ["S", "A", "B", "X", "Y"]
 
 
 def test_no_false_cycle_from_sibling_summaries():
