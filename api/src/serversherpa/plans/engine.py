@@ -42,6 +42,29 @@ Forward pass (`schedule`), one task at a time in link order:
   start (what recording progress sets) moves nothing. An `actual_finish`
   replaces the finish. A task with an actual has no conflict.
 - Nothing moves a not-started task for being in the past.
+
+Summary tasks: a task is a summary when another task's `parent_id` names it
+(derived, never stored). Its own duration, mode, dates, actuals and %
+complete are ignored; everything comes from its subtasks. In the graph a
+summary is two nodes:
+
+- An entry gate, the earliest its subtasks may start: the latest of its
+  parent's gate, the FS/SS links into the summary and its SNET date. Every
+  subtask (or a child summary's gate) waits for it, so a link into a summary
+  reaches every task below it. Only FS and SS may link into a summary, and
+  its only constraints are ASAP and SNET. The links count as links for the
+  conflict rule above; the SNET date, like the project start, is a floor
+  that never conflicts with a subtask's own constraint.
+- A rollup: start = the earliest subtask start, finish = the latest subtask
+  finish, duration = the working time between them, % complete = the
+  duration-weighted average over its leaf descendants (each leaf counts
+  once when they are all zero-duration), rounded half up. Links out of a
+  summary, of any type, read the rollup.
+
+A link between a task and its own ancestor or descendant is rejected
+(`OutlineLinkError`), as are FF/SF links into a summary
+(`SummaryLinkError`), other summary constraints (`SummaryConstraintError`)
+and loops (`CycleError`, which can run through a summary's gate or rollup).
 """
 
 import heapq
@@ -56,6 +79,8 @@ _MINUTE = timedelta(minutes=1)
 LINK_TYPES = ("FS", "SS", "FF", "SF")
 CONSTRAINT_TYPES = ("asap", "snet", "snlt", "fnet", "fnlt", "mso", "mfo")
 MODES = ("auto", "manual")
+SUMMARY_CONSTRAINT_TYPES = ("asap", "snet")
+SUMMARY_LINK_TYPES = ("FS", "SS")       # into a summary; out of one, any type
 
 
 @dataclass(frozen=True)
@@ -147,9 +172,11 @@ class SummaryConstraintError(ScheduleError):
 
 # --- the graph ----------------------------------------------------------------------
 
-LEAF = "leaf"
+LEAF = "leaf"          # a task with no subtasks
+GATE = "gate"          # a summary's entry gate: the earliest its subtasks may start
+ROLLUP = "rollup"      # a summary's rollup: its dates, from its subtasks'
 
-# A graph node: (kind, task id). Every task is a leaf node here.
+# A graph node: (kind, task id). A leaf task is one node, a summary two.
 Node = tuple[str, str]
 
 
@@ -161,6 +188,44 @@ class _Graph:
 
     def add_edge(self, before: Node, after: Node) -> None:
         self.successors.setdefault(before, []).append(after)
+
+
+@dataclass
+class _Outline:
+    by_id: dict[str, TaskIn]
+    rank: dict[str, tuple[int, int]]    # outline order: (position, input index)
+    children: dict[str, list[str]]      # summary id -> its direct subtasks
+
+    @classmethod
+    def of(cls, tasks: list[TaskIn], by_id: dict[str, TaskIn]) -> "_Outline":
+        children: dict[str, list[str]] = {}
+        for task in tasks:
+            if task.parent_id is not None:
+                children.setdefault(task.parent_id, []).append(task.id)
+        rank = {task.id: (task.position, index) for index, task in enumerate(tasks)}
+        return cls(by_id=by_id, rank=rank, children=children)
+
+    def is_summary(self, task_id: str) -> bool:
+        return task_id in self.children
+
+    def is_ancestor(self, ancestor_id: str, task_id: str) -> bool:
+        parent_id = self.by_id[task_id].parent_id
+        while parent_id is not None:
+            if parent_id == ancestor_id:
+                return True
+            parent_id = self.by_id[parent_id].parent_id
+        return False
+
+    def entry(self, task_id: str) -> Node:
+        """The node a link into the task (or its parent's gate) leads to."""
+        return (GATE if self.is_summary(task_id) else LEAF, task_id)
+
+    def exit(self, task_id: str) -> Node:
+        """The node a link out of the task (or into its parent's rollup) leaves."""
+        return (ROLLUP if self.is_summary(task_id) else LEAF, task_id)
+
+    def in_order(self, task_ids: Iterable[str]) -> list[str]:
+        return sorted(set(task_ids), key=self.rank.__getitem__)
 
 
 def _check(tasks: list[TaskIn], links: list[LinkIn]) -> dict[str, TaskIn]:
@@ -177,6 +242,7 @@ def _check(tasks: list[TaskIn], links: list[LinkIn]) -> dict[str, TaskIn]:
         if task.duration < 0:
             raise ValueError(f"task {task.id}: negative duration {task.duration}")
         by_id[task.id] = task
+    _check_parents(by_id)
     for link in links:
         for end in (link.predecessor_id, link.successor_id):
             if end not in by_id:
@@ -186,11 +252,72 @@ def _check(tasks: list[TaskIn], links: list[LinkIn]) -> dict[str, TaskIn]:
     return by_id
 
 
-def _build_graph(tasks: list[TaskIn], links: list[LinkIn]) -> _Graph:
-    graph = _Graph(rank={(LEAF, task.id): (task.position, index)
-                         for index, task in enumerate(tasks)})
+def _check_parents(by_id: dict[str, TaskIn]) -> None:
+    """Every parent exists and the outline is a tree. Each task's chain of
+    parents is walked once, up to the first task already known good."""
+    good: set[str] = set()
+    for task_id in by_id:
+        chain: list[str] = []
+        on_chain: set[str] = set()
+        current: str | None = task_id
+        while current is not None and current not in good:
+            if current in on_chain:
+                raise ValueError(f"task {current}: its parents loop")
+            chain.append(current)
+            on_chain.add(current)
+            parent_id = by_id[current].parent_id
+            if parent_id is not None and parent_id not in by_id:
+                raise ValueError(f"task {current} has unknown parent {parent_id}")
+            current = parent_id
+        good.update(chain)
+
+
+def _check_summaries(tasks: list[TaskIn], links: list[LinkIn], outline: _Outline) -> None:
+    """The plan-level rules a summary imposes, checked before the graph is
+    sorted. Each raises for every task at fault, in outline order."""
+    at_fault = [task.id for task in tasks if outline.is_summary(task.id)
+                and task.constraint_type not in SUMMARY_CONSTRAINT_TYPES]
+    if at_fault:
+        raise SummaryConstraintError(
+            "a summary task can only start as soon as possible or no earlier than a date",
+            outline.in_order(at_fault))
+
+    ends: list[str] = []
     for link in links:
-        before, after = (LEAF, link.predecessor_id), (LEAF, link.successor_id)
+        pred, succ = link.predecessor_id, link.successor_id
+        if outline.is_ancestor(pred, succ) or outline.is_ancestor(succ, pred):
+            ends += (pred, succ)
+    if ends:
+        raise OutlineLinkError("a link joins a task to its own summary or subtask",
+                               outline.in_order(ends))
+
+    ends = []
+    for link in links:
+        if outline.is_summary(link.successor_id) and link.link_type not in SUMMARY_LINK_TYPES:
+            ends += (link.predecessor_id, link.successor_id)
+    if ends:
+        raise SummaryLinkError("only finish-to-start and start-to-start links can lead "
+                               "into a summary task", outline.in_order(ends))
+
+
+def _build_graph(tasks: list[TaskIn], links: list[LinkIn], outline: _Outline) -> _Graph:
+    """A leaf is one node; a summary S is a gate G:S and a rollup R:S, with
+    G:parent -> each child's entry, each child's exit -> R:parent, and a
+    link P -> S as P's exit -> S's entry (R:P and G:S for summaries)."""
+    rank: dict[Node, tuple[int, int]] = {}
+    for task in tasks:
+        if outline.is_summary(task.id):
+            rank[(GATE, task.id)] = rank[(ROLLUP, task.id)] = outline.rank[task.id]
+        else:
+            rank[(LEAF, task.id)] = outline.rank[task.id]
+    graph = _Graph(rank=rank)
+    for task in tasks:
+        if task.parent_id is not None:
+            graph.add_edge((GATE, task.parent_id), outline.entry(task.id))
+            graph.add_edge(outline.exit(task.id), (ROLLUP, task.parent_id))
+    for link in links:
+        before = outline.exit(link.predecessor_id)
+        after = outline.entry(link.successor_id)
         graph.add_edge(before, after)
         graph.links_into.setdefault(after, []).append(link)
     return graph
@@ -248,6 +375,40 @@ def _on_cycles(graph: _Graph, stuck: set[Node]) -> set[Node]:
 # --- the forward pass ---------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _Gate:
+    """What a summary's entry gate holds for every task below it."""
+
+    floor: datetime                     # the project start, raised by SNET dates
+    linked: datetime | None             # the latest link bound into it or an ancestor
+
+
+@dataclass(frozen=True)
+class _Progress:
+    """Sums over a summary's leaf descendants, for its % complete."""
+
+    weighted: int = 0                   # sum of percent * duration
+    duration: int = 0
+    percent: int = 0
+    leaves: int = 0
+
+    def __add__(self, other: "_Progress") -> "_Progress":
+        return _Progress(self.weighted + other.weighted, self.duration + other.duration,
+                         self.percent + other.percent, self.leaves + other.leaves)
+
+    @classmethod
+    def of_leaf(cls, out: TaskOut) -> "_Progress":
+        pct, minutes = out.percent_complete, out.duration
+        return cls(weighted=pct * minutes, duration=minutes, percent=pct, leaves=1)
+
+    def rounded(self) -> int:
+        """Duration-weighted, or count-weighted when every leaf is zero
+        length; rounded half up."""
+        if self.duration:
+            return (2 * self.weighted + self.duration) // (2 * self.duration)
+        return (2 * self.percent + self.leaves) // (2 * self.leaves)
+
+
 class _ForwardPass:
     def __init__(self, calendar: WorkCalendar, project_start: datetime,
                  settings: EngineSettings):
@@ -255,6 +416,8 @@ class _ForwardPass:
         self.settings = settings
         self.project_start = calendar.next_work_start(project_start)
         self.out: dict[str, TaskOut] = {}
+        self.gates: dict[str, _Gate] = {}
+        self.progress: dict[str, _Progress] = {}    # summaries only
 
     # --- time arithmetic ---
 
@@ -325,11 +488,31 @@ class _ForwardPass:
             return moment
         return self.start_from(task, moment)       # FF, SF bound the finish
 
-    def auto(self, task: TaskIn, links: list[LinkIn]
+    def linked(self, task: TaskIn, links: list[LinkIn], inherited: datetime | None
+               ) -> datetime | None:
+        """The latest bound from `links` and the gate's `inherited` one."""
+        bounds = [self.link_bound(link, task) for link in links]
+        if inherited is not None:
+            bounds.append(inherited)
+        return max(bounds, default=None)
+
+    def gate(self, task: TaskIn, links: list[LinkIn]) -> _Gate:
+        """A summary's entry gate: its parent's, raised by the FS/SS links
+        into the summary and its SNET date."""
+        parent = self.gates.get(task.parent_id) if task.parent_id is not None else None
+        floor = self.project_start if parent is None else parent.floor
+        if task.constraint_type == "snet" and task.constraint_date is not None:
+            floor = max(floor, task.constraint_date)
+        return _Gate(floor=floor,
+                     linked=self.linked(task, links, None if parent is None else parent.linked))
+
+    def auto(self, task: TaskIn, links: list[LinkIn], gate: _Gate | None
              ) -> tuple[tuple[datetime, datetime], str | None]:
-        """((start, finish), conflict) of an auto task."""
-        linked = max((self.link_bound(link, task) for link in links), default=None)
-        earliest = self.project_start if linked is None else max(self.project_start, linked)
+        """((start, finish), conflict) of an auto task under `gate` (None at
+        the top level)."""
+        floor = self.project_start if gate is None else gate.floor
+        linked = self.linked(task, links, None if gate is None else gate.linked)
+        earliest = floor if linked is None else max(floor, linked)
         kind, date = task.constraint_type, task.constraint_date
         if kind == "asap" or date is None:
             return self.place(task, earliest), None
@@ -369,7 +552,8 @@ class _ForwardPass:
             if task.start is not None and task.finish is not None:
                 duration = self.span(task, start, finish)     # the typed dates rule
         else:
-            (start, finish), conflict = self.auto(task, links)
+            gate = self.gates[task.parent_id] if task.parent_id is not None else None
+            (start, finish), conflict = self.auto(task, links, gate)
         if task.actual_start is not None and task.actual_start != start:
             # an actual start on the scheduled one (what recording progress
             # sets) leaves the finish alone, even one typed off the calendar
@@ -384,22 +568,43 @@ class _ForwardPass:
         return TaskOut(start=start, finish=finish, duration=duration, is_summary=False,
                        percent_complete=task.percent_complete, conflict=conflict)
 
+    def rollup(self, task: TaskIn, children: list[str]) -> TaskOut:
+        """A summary from its direct subtasks, once all of them are placed."""
+        start = min(self.out[child].start for child in children)
+        finish = max(self.out[child].finish for child in children)
+        progress = sum((self.progress[child] if child in self.progress
+                        else _Progress.of_leaf(self.out[child]) for child in children),
+                       _Progress())
+        self.progress[task.id] = progress
+        return TaskOut(start=start, finish=finish,
+                       duration=max(self.cal.work_between(start, finish), 0),
+                       is_summary=True, percent_complete=progress.rounded())
+
 
 def schedule(tasks: list[TaskIn], links: list[LinkIn], calendar: WorkCalendar,
              project_start: datetime, settings: EngineSettings = DEFAULT_SETTINGS
              ) -> dict[str, TaskOut]:
-    """Schedule the whole plan: a `TaskOut` per task id. Raises CycleError
-    when the links loop, and CalendarError when the calendar has no working
-    time to place a task in or a date runs out of range. The late dates and
-    slack stay None here."""
+    """Schedule the whole plan: a `TaskOut` per task id, summaries included.
+    Raises SummaryConstraintError, OutlineLinkError or SummaryLinkError when
+    the outline breaks a summary rule, CycleError when the links loop, and
+    CalendarError when the calendar has no working time to place a task in
+    or a date runs out of range. The late dates and slack stay None here."""
     by_id = _check(tasks, links)
-    graph = _build_graph(tasks, links)
+    outline = _Outline.of(tasks, by_id)
+    _check_summaries(tasks, links, outline)
+    graph = _build_graph(tasks, links, outline)
     order = _topological_order(graph)
     try:
         forward = _ForwardPass(calendar, project_start, settings)
         for node in order:
-            _, task_id = node
-            forward.out[task_id] = forward.leaf(by_id[task_id], graph.links_into.get(node, []))
+            kind, task_id = node
+            task, links_in = by_id[task_id], graph.links_into.get(node, [])
+            if kind == GATE:
+                forward.gates[task_id] = forward.gate(task, links_in)
+            elif kind == ROLLUP:
+                forward.out[task_id] = forward.rollup(task, outline.children[task_id])
+            else:
+                forward.out[task_id] = forward.leaf(task, links_in)
     except OverflowError:       # elapsed time past year 9999 (or before year 1)
         raise CalendarError("a date runs past the range the calendar can reach") from None
     return forward.out
