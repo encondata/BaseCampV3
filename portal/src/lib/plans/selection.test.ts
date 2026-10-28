@@ -5,7 +5,9 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { EMPTY_SELECTION, moveActive, selectCell, selectRow, type Selection } from './selection';
+import {
+  EMPTY_SELECTION, extendRows, moveActive, selectCell, selectRow, toggleRow, type Selection,
+} from './selection';
 
 const ROWS = ['a', 'b', 'c'];
 const COLS = ['name', 'duration', 'start'];
@@ -48,6 +50,41 @@ describe('selectCell and selectRow', () => {
     for (const sel of [picked, moved, again]) expect(sel.rows).not.toBe(EMPTY_SELECTION.rows);
     expect([...picked.rows]).toEqual(['a']);
     expect(again.rows).not.toBe(picked.rows);
+  });
+});
+
+describe('row selection (the ID column)', () => {
+  const ROWS5 = ['a', 'b', 'c', 'd', 'e'];
+
+  it('Ctrl/⌘-click toggles a row and leaves the others selected', () => {
+    const one = selectRow('b', 'id');
+    const two = toggleRow(one, 'd', 'id');
+    expect([...two.rows].sort()).toEqual(['b', 'd']);
+    expect(two.active).toEqual({ id: 'd', col: 'id' });
+    expect(two.anchor).toBe('d');
+    const back = toggleRow(two, 'b', 'id');
+    expect([...back.rows]).toEqual(['d']);
+    expect(one.rows.size).toBe(1);     // the selection it came from is untouched
+  });
+
+  it('Shift-click selects every visible row from the anchor', () => {
+    const sel = extendRows(selectRow('b', 'id'), 'd', 'id', ROWS5);
+    expect([...sel.rows]).toEqual(['b', 'c', 'd']);
+    expect(sel.anchor).toBe('b');
+    expect(sel.active).toEqual({ id: 'd', col: 'id' });
+    expect([...extendRows(sel, 'a', 'id', ROWS5).rows]).toEqual(['a', 'b']);
+  });
+
+  it('Shift-click with no anchor (or one now hidden) selects the row alone', () => {
+    expect([...extendRows(EMPTY_SELECTION, 'c', 'id', ROWS5).rows]).toEqual(['c']);
+    const hidden: Selection = { active: null, rows: new Set(['x']), anchor: 'x' };
+    expect([...extendRows(hidden, 'c', 'id', ROWS5).rows]).toEqual(['c']);
+  });
+
+  it('never touches the shared empty selection', () => {
+    toggleRow(EMPTY_SELECTION, 'a', 'id');
+    extendRows(EMPTY_SELECTION, 'a', 'id', ROWS5);
+    expect(EMPTY_SELECTION.rows.size).toBe(0);
   });
 });
 

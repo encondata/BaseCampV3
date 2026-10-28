@@ -41,6 +41,21 @@ const box = () => screen.getByRole('combobox') as HTMLInputElement;
 const chips = () => [...document.querySelectorAll('.chip-picker-list .chip')].map(
   (c) => c.firstChild?.textContent);
 
+it('grouped options stay in their groups (in the order given), each group in natural order', () => {
+  const grouped: ComboOption[] = [
+    { value: 'p2', label: 'Lee Park', group: 'Team' },
+    { value: 'p1', label: 'Dana Reyes', group: 'Team' },
+    { value: 'p4', label: 'Cy Ode', group: 'Team' },
+    { value: 'p3', label: 'Ari Moss', group: 'Staff' },
+    { value: 'x1', label: 'Acme Freight', group: 'Partners' },
+  ];
+  render(<ChipPicker options={grouped} selected={['p2']} onChange={() => {}} ariaLabel="Resource" />);
+  fireEvent.focus(box());
+  const menu = document.querySelector('.combo-menu') as HTMLElement;
+  expect([...menu.children].map((el) => el.textContent))
+    .toEqual(['Team', 'Cy Ode', 'Dana Reyes', 'Staff', 'Ari Moss', 'Partners', 'Acme Freight']);
+});
+
 it('a pick adds a chip and clears the box; the menu offers only what is not picked, naturally', async () => {
   const onChange = vi.fn();
   render(<Harness initial={['s2']} onChange={onChange} />);
@@ -52,6 +67,18 @@ it('a pick adds a chip and clears the box; the menu offers only what is not pick
   expect(onChange).toHaveBeenLastCalledWith(['s2', 's10']);
   expect(chips()).toEqual(['NAP2', 'NAP10']);
   expect(box().value).toBe('');
+});
+
+it('after a pick, focus stays in the box with its list closed (it opens again on typing or ↓)', () => {
+  render(<Harness initial={[]} />);
+  fireEvent.focus(box());
+  box().focus();
+  fireEvent.mouseDown(within(document.querySelector('.combo-menu') as HTMLElement).getByText('NAP1'));
+  expect(chips()).toEqual(['NAP1']);
+  expect(document.activeElement).toBe(box());
+  expect(document.querySelector('.combo-menu')).toBeNull();
+  fireEvent.keyDown(box(), { key: 'ArrowDown' });
+  expect(document.querySelector('.combo-menu')).not.toBeNull();
 });
 
 it('× removes that chip', async () => {

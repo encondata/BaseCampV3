@@ -19,6 +19,9 @@
   flex-direction: column;
   min-width: 100%;
 }
+/* the grid holds keyboard focus for its active cell, whose outline is the
+   focus mark (a ring round the whole sheet would say nothing) */
+.pln-sheet:focus { outline: none; }
 
 /* ── header: sticky at the top of the scroll box ─────────────── */
 
@@ -66,6 +69,8 @@
 /* ── rows ─────────────────────────────────────────────────────── */
 
 .pln-sheet-body { position: relative; }
+/* cells select like a spreadsheet's, not like text (the editor types) */
+.pln-sheet-body .pln-row { user-select: none; }
 
 .pln-row {
   position: absolute;
@@ -158,3 +163,59 @@
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+/* ── the cell editor (CellEditor): over the active cell ──────── */
+
+/* under the sticky header (3) when the sheet scrolls, over the rows */
+.pln-editor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  display: flex;
+}
+/* a date field needs room for mm/dd/yyyy and its calendar button, more
+   than a narrow column gives it; the editor may spill over the next cells */
+.pln-editor[data-kind="date"] { min-width: 150px; }
+.pln-editor[data-kind="datetime"] { min-width: 220px; }
+/* a select (Mode is 48px wide) shows its option names, and its portaled
+   menu takes this width */
+.pln-editor[data-kind="select"] { min-width: 210px; }
+.pln-editor > .org-select,
+.pln-editor .combo-wrap,
+.pln-editor .combo-input { height: 100%; }
+.pln-editor .org-select {
+  padding: 0 8px;
+  border-color: var(--accent);
+  border-radius: 0;
+  background: var(--surface);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.2);
+}
+.pln-editor .combo-input { padding-right: 28px; }
+.pln-editor[aria-busy="true"] .org-select { color: var(--text-mute); }
+.pln-editor-bad .org-select { border-color: var(--c-red); box-shadow: 0 0 0 2px var(--c-red-bg); }
+/* Resource Names: the names picked so far, while the picker is open */
+.pln-editor-names {
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  white-space: nowrap;
+}
+/* a refusal, under the cell (Review Focus 1); .pf-error colors and sizes it */
+.pln-editor-error {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  width: max-content;
+  min-width: 100%;
+  max-width: 360px;
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--c-red-bd);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 12px 30px -14px rgba(12, 17, 23, 0.4);
+  white-space: normal;
+}
+.pln-editor-error-end { left: auto; right: 0; }
+.pln-editor-error-up { top: auto; bottom: calc(100% + 4px); }

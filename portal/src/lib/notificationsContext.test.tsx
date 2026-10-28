@@ -17,7 +17,9 @@ const auth = vi.hoisted(() => ({
 }));
 vi.mock('../auth/AuthContext', () => ({ useAuth: () => auth }));
 
-const { NotificationsProvider, useNotifications, INBOX_POLL_MS } = await import('./notificationsContext');
+const {
+  NotificationsProvider, useNotifications, INBOX_POLL_MS, LOCAL_TOAST_MS, ACTION_TOAST_MS,
+} = await import('./notificationsContext');
 
 const inbox = (items: Inbox['items']): Inbox =>
   ({ unread_count: items.filter((i) => !i.read_at).length, items });
@@ -107,6 +109,27 @@ it('markUnread, hide and clearRead call the API optimistically and refresh', asy
   await act(async () => { screen.getByText('clear').click(); });
   await waitFor(() => expect(api.clearReadInbox).toHaveBeenCalled());
   expect(api.listInbox.mock.calls.length).toBeGreaterThanOrEqual(4);   // refresh after each
+});
+
+it('a local toast keeps its action, and one with an action stays as long as an inbox toast', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const undo = vi.fn();
+  function Toaster() {
+    const n = useNotifications();
+    return <div>
+      <button onClick={() => n.toast('Saved')}>plain</button>
+      <button onClick={() => n.toast('Constraint added', { label: 'Undo', onClick: undo })}>with-undo</button>
+      <span>toasts:{n.localToasts.map((t) => `${t.message}${t.action ? `[${t.action.label}]` : ''}`).join('|')}</span>
+    </div>;
+  }
+  render(<NotificationsProvider><Toaster /></NotificationsProvider>);
+  act(() => { screen.getByText('plain').click(); screen.getByText('with-undo').click(); });
+  expect(screen.getByText('toasts:Saved|Constraint added[Undo]')).toBeTruthy();
+  await act(async () => { await vi.advanceTimersByTimeAsync(LOCAL_TOAST_MS + 10); });
+  expect(screen.getByText('toasts:Constraint added[Undo]')).toBeTruthy();
+  await act(async () => { await vi.advanceTimersByTimeAsync(ACTION_TOAST_MS - LOCAL_TOAST_MS); });
+  expect(screen.getByText('toasts:')).toBeTruthy();
+  expect(undo).not.toHaveBeenCalled();
 });
 
 it('plays the chosen sound only when NEW items arrive after the first poll', async () => {

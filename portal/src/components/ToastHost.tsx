@@ -1,5 +1,6 @@
 /** Stacked toasts (max 3) for new inbox items + local messages. Generic:
- *  the only kind-specific bit is the action mapping below. */
+ *  the only kind-specific bit is the action mapping below. A local message
+ *  may carry its own action (the plan sheet's Undo). */
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -67,6 +68,11 @@ export default function ToastHost({ openLink }: Props = {}) {
       {toasts.map((t) => (
         <div key={t.id} className="toast toast-local" role="status">
           <div className="toast-text">{t.message}</div>
+          {t.action && (
+            <button className="toast-action" onClick={() => { t.action?.onClick(); dismiss(t.id); }}>
+              {t.action.label}
+            </button>
+          )}
           <button className="toast-dismiss" aria-label="Dismiss" onClick={() => dismiss(t.id)}>×</button>
         </div>
       ))}

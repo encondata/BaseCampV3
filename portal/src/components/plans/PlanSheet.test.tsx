@@ -432,7 +432,7 @@ describe('PlanSheet props', () => {
       <div ref={scrollRef} className="pln-panes">
         <PlanSheet ctl={ctl} rows={rows} collapsed={collapsed} rowHeight={24} scrollRef={scrollRef}
                    selection={selectCell('c', 'name')} onSelect={() => {}}
-                   onToggleCollapse={onToggle} editable={false} />
+                   onToggleCollapse={onToggle} blankRow={false} />
       </div>
     );
   }
@@ -463,7 +463,7 @@ describe('PlanSheet props', () => {
         <div ref={(el) => { scroll.current = el; }} className="pln-panes">
           <PlanSheet ctl={ctl} rows={['s1', 'a', 's2', 'b', 'c']} collapsed={collapsed} rowHeight={30}
                      scrollRef={scroll} selection={EMPTY_SELECTION} onSelect={noop}
-                     onToggleCollapse={noop} editable={false} />
+                     onToggleCollapse={noop} blankRow={false} />
         </div>
       );
     }
@@ -485,7 +485,7 @@ describe('PlanSheet props', () => {
       return (
         <div ref={scrollRef}>
           <PlanSheet ctl={ctl} rows={['a']} collapsed={new Set()} rowHeight={30} scrollRef={scrollRef}
-                     selection={EMPTY_SELECTION} onSelect={() => {}} onToggleCollapse={() => {}} editable />
+                     selection={EMPTY_SELECTION} onSelect={() => {}} onToggleCollapse={() => {}} blankRow />
         </div>
       );
     }

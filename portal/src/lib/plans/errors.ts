@@ -179,6 +179,30 @@ function withTasks(code: string, ids: readonly number[] | undefined): string {
   return `${PLAN_ERRORS[code]} Check task${ids.length > 1 ? 's' : ''} ${idList(ids)}.`;
 }
 
+/** A completion the API stopped (ApplyResult `blocked` / `confirm`). */
+export type CompletionAnswer =
+  | { kind: 'blocked'; blockers: readonly CompletionBlocker[] }
+  | { kind: 'confirm'; willComplete: readonly CompletionBlocker[]; openPredecessors: readonly CompletionBlocker[] };
+
+const sortedIds = (tasks: readonly CompletionBlocker[]) => tasks.map((t) => t.display_id).sort((a, b) => a - b);
+const tasksWord = (ids: readonly number[]) => `task${ids.length > 1 ? 's' : ''} ${idList(ids)}`;
+
+/** What a stopped completion says: which tasks are in the way, or which it
+ *  takes along and which come before it unfinished (the plan's warn rule). */
+export function completionText(answer: CompletionAnswer): string {
+  if (answer.kind === 'blocked') return withTasks('completion_blocked', sortedIds(answer.blockers));
+  const parts: string[] = [];
+  const along = sortedIds(answer.willComplete);
+  if (along.length) parts.push(`Completing this also completes ${tasksWord(along)}.`);
+  const before = sortedIds(answer.openPredecessors);
+  if (before.length) {
+    const words = tasksWord(before);
+    parts.push(`${words.charAt(0).toUpperCase()}${words.slice(1)} ${before.length > 1
+      ? 'come before it and aren’t' : 'comes before it and isn’t'} complete yet.`);
+  }
+  return parts.length ? parts.join(' ') : PLAN_ERRORS.completion_confirm;
+}
+
 /** Plain-language text for any failure of a plan call, or of the sheet's
  *  own check of a duration or predecessors (its message is already one). */
 export function planErrorText(err: unknown): string {

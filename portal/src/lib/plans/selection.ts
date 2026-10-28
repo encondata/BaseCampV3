@@ -41,6 +41,25 @@ export function selectRow(id: string, col: string): Selection {
   return selectCell(id, col);
 }
 
+/** Ctrl/⌘-click on a row number: the row joins the selection, or leaves it
+ *  when it was in; either way its cell becomes active and the anchor. */
+export function toggleRow(sel: Selection, id: string, col: string): Selection {
+  const rows = new Set(sel.rows);
+  if (rows.has(id)) rows.delete(id); else rows.add(id);
+  return { active: { id, col }, rows, anchor: id };
+}
+
+/** Shift-click on a row number: every row from the anchor to `id` in `rows`
+ *  (the visible rows, in order). Without an anchor that is still shown,
+ *  the row alone, which becomes the anchor. */
+export function extendRows(sel: Selection, id: string, col: string, rows: readonly string[]): Selection {
+  const from = sel.anchor === null ? -1 : rows.indexOf(sel.anchor);
+  const to = rows.indexOf(id);
+  if (from < 0 || to < 0) return selectRow(id, col);
+  const [lo, hi] = from <= to ? [from, to] : [to, from];
+  return { active: { id, col }, rows: new Set(rows.slice(lo, hi + 1)), anchor: sel.anchor };
+}
+
 /**
  * The active cell one step `dir` within `rows` (the visible rows in display
  * order, ending with 'blank' when the sheet shows the new-task row) and

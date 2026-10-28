@@ -38,6 +38,7 @@ import { listScale } from '../../lib/listTools';
 import { useToast } from '../../lib/notificationsContext';
 import type { Plan } from '../../lib/plans/api';
 import { SHEET_ROW_PX } from '../../lib/plans/columns';
+import { canAddTasks } from '../../lib/plans/editOps';
 import { isPlanChanged, planErrorText } from '../../lib/plans/errors';
 import ColumnsModal from './ColumnsModal';
 import PlanCreateModal, { type PlanInitiative } from './PlanCreateModal';
@@ -239,7 +240,7 @@ export default function PlanTab({ initiativeId, initiative }: {
             <div className="pln-panes" ref={scrollRef}>
               <PlanSheet ctl={ctl} rows={sheet.rows} collapsed={sheet.collapsed} rowHeight={rowHeight}
                          scrollRef={scrollRef} selection={sheet.selection} onSelect={sheet.select}
-                         onToggleCollapse={sheet.toggleCollapse} editable={plan.permissions.change} />
+                         onToggleCollapse={sheet.toggleCollapse} blankRow={canAddTasks(plan)} />
             </div>
           )}
         </div>

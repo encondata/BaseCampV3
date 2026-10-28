@@ -6,7 +6,8 @@
  *
  * - Chips show in `selected` order (sort it, if the caller wants them
  *   sorted); a picked id with no option shows the id itself.
- * - Picking adds a chip and clears the box. Backspace in the empty box
+ * - Picking adds a chip and clears the box, which keeps focus (its list
+ *   closed until typing, ↓ or a click). Backspace in the empty box
  *   takes the last chip off. Every × is a button, so Tab reaches it; after
  *   one removes its chip, focus goes to the next chip's ×, else the
  *   previous one's, else the box — without opening its menu (that waits
@@ -15,6 +16,8 @@
  *   chips; `note` is a one-line state under the chips.
  * - Inside a modal the ComboBox menu portals by itself (ComboBox /
  *   useMenuPlacement), and its Escape closes the menu, not the dialog.
+ * - Options with a `group` stay under their group's heading, the groups in
+ *   the order they first appear in `options`.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -53,8 +56,11 @@ export default function ChipPicker({
   const byValue = new Map(options.map((o) => [o.value, o]));
   const labelOf = (v: string) => byValue.get(v)?.label ?? v;
   const picked = new Set(selected);
+  // grouped options keep their groups, in the order the groups come
+  const groupRank = new Map<string | undefined, number>();
+  for (const o of options) if (!groupRank.has(o.group)) groupRank.set(o.group, groupRank.size);
   const remaining = options.filter((o) => !picked.has(o.value))
-    .sort((a, b) => naturalCompare(a.label, b.label));
+    .sort((a, b) => (groupRank.get(a.group)! - groupRank.get(b.group)!) || naturalCompare(a.label, b.label));
 
   useEffect(() => {
     if (!focusNext) return;
@@ -100,7 +106,11 @@ export default function ChipPicker({
       {note ? <p className="page-hint chip-picker-note">{note}</p> : null}
       <ComboBox options={remaining} value="" disabled={disabled} placeholder={placeholder} ariaLabel={ariaLabel}
         handle={combo}
-        onChange={(v) => { if (v) onChange([...selected, v]); }} />
+        onChange={(v) => {
+          if (!v) return;
+          onChange([...selected, v]);
+          setFocusNext({ kind: 'box' });   // the box keeps focus for the next pick, its list closed
+        }} />
     </div>
   );
 }

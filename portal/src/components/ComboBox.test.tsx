@@ -340,3 +340,36 @@ describe('onSearch (the caller searches the server)', () => {
     expect(onSearch).toHaveBeenLastCalledWith('');
   });
 });
+
+describe('option groups', () => {
+  afterEach(cleanup);
+  const GROUPED = [
+    { value: 'p1', label: 'Dana Reyes', group: 'Team' },
+    { value: 'p2', label: 'Lee Park', group: 'Team' },
+    { value: 'p3', label: 'Ari Moss', group: 'Staff' },
+    { value: 'x1', label: 'Acme Freight', group: 'Partners' },
+  ];
+
+  it('heads each run of options with its group, and the heading is not an option', () => {
+    render(<ComboBox value="" onChange={() => {}} options={GROUPED} ariaLabel="Resource" />);
+    fireEvent.focus(screen.getByLabelText('Resource'));
+    const menu = document.querySelector('.combo-menu') as HTMLElement;
+    expect([...menu.children].map((el) => `${el.className.includes('kbar-group') ? '#' : ''}${el.textContent}`))
+      .toEqual(['#Team', 'Dana Reyes', 'Lee Park', '#Staff', 'Ari Moss', '#Partners', 'Acme Freight']);
+    expect(menu.querySelectorAll('.kbar-item')).toHaveLength(4);
+  });
+
+  it('filtering drops the headings of groups with nothing left; Enter picks the first match', () => {
+    const onChange = vi.fn();
+    render(<ComboBox value="" onChange={onChange} options={GROUPED} ariaLabel="Resource" />);
+    const input = screen.getByLabelText('Resource');
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'a' } });
+    const menu = document.querySelector('.combo-menu') as HTMLElement;
+    expect([...menu.querySelectorAll('.kbar-group')].map((el) => el.textContent)).toEqual(['Team', 'Staff', 'Partners']);
+    fireEvent.change(input, { target: { value: 'acme' } });
+    expect([...menu.querySelectorAll('.kbar-group')].map((el) => el.textContent)).toEqual(['Partners']);
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onChange).toHaveBeenCalledWith('x1');
+  });
+});

@@ -113,6 +113,28 @@
   .pln-colpick { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text-mute) 45%, transparent) transparent; }
 }
 
+/* ── Resource Names picker (ResourcePicker) ─────────────────────
+   Portaled into .portal-shell with fixed placement under the cell: above
+   full screen (60), with the portaled menus (70), under dialogs (80). */
+
+.pln-respick {
+  position: fixed;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(340px, calc(100vw - 16px));
+  padding: 12px;
+  background: var(--surface);
+  color: var(--text-dark);
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  box-shadow: 0 18px 50px -18px rgba(12, 17, 23, 0.35);
+}
+.pln-respick:focus { outline: none; }
+.pln-respick .pf-error { margin: 0; }
+.pln-respick-foot { display: flex; justify-content: flex-end; gap: 8px; }
+
 /* ── lock banner ──────────────────────────────────────────────── */
 
 .pln-lock {

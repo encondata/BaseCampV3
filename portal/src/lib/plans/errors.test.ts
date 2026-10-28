@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ApiError } from '../api';
 import { DurationError, STANDARD_UNITS, parseDuration } from './durations';
-import { PLAN_ERRORS, isPlanChanged, planErrorDetail, planErrorText } from './errors';
+import { PLAN_ERRORS, completionText, isPlanChanged, planErrorDetail, planErrorText } from './errors';
 import { PredecessorError, parsePredecessors } from './predecessors';
 
 const API = path.resolve(__dirname, '../../../../api/src/serversherpa');
@@ -173,5 +173,28 @@ describe('isPlanChanged', () => {
     expect(isPlanChanged(new ApiError(409, 'plan_changed'))).toBe(false);   // no plan error body
     expect(isPlanChanged(new Error('plan_changed'))).toBe(false);
     expect(isPlanChanged(null)).toBe(false);
+  });
+});
+
+describe('completionText (the completion prompt until Task 10’s dialog)', () => {
+  const blocker = (displayId: number, reason: 'subtask' | 'predecessor' = 'subtask') =>
+    ({ task_id: 't' + displayId, display_id: displayId, name: 'Task ' + displayId, reason });
+
+  it('a blocked completion names the tasks to finish first', () => {
+    expect(completionText({ kind: 'blocked', blockers: [blocker(5), blocker(4)] }))
+      .toBe('Some tasks have to be complete first. Check tasks 4 and 5.');
+    expect(completionText({ kind: 'blocked', blockers: [] })).toBe(PLAN_ERRORS.completion_blocked);
+  });
+
+  it('a confirm names what completes with it and what comes before it unfinished', () => {
+    expect(completionText({ kind: 'confirm', willComplete: [blocker(3), blocker(2)], openPredecessors: [] }))
+      .toBe('Completing this also completes tasks 2 and 3.');
+    expect(completionText({ kind: 'confirm', willComplete: [], openPredecessors: [blocker(1, 'predecessor')] }))
+      .toBe('Task 1 comes before it and isn’t complete yet.');
+    expect(completionText({
+      kind: 'confirm', willComplete: [blocker(3)], openPredecessors: [blocker(1, 'predecessor'), blocker(2, 'predecessor')],
+    })).toBe('Completing this also completes task 3. Tasks 1 and 2 come before it and aren’t complete yet.');
+    expect(completionText({ kind: 'confirm', willComplete: [], openPredecessors: [] }))
+      .toBe(PLAN_ERRORS.completion_confirm);
   });
 });

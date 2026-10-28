@@ -20,6 +20,10 @@
  * `handle` (opt-in) gives the caller `focusQuietly()`: the box takes focus
  * without opening its list (a ChipPicker after its last chip goes), which
  * then opens only on a click, typing or ↓/Enter.
+ *
+ * An option's `group` (opt-in) puts a `.kbar-group` heading over each run
+ * of options that share one (the command palette's look); a group left
+ * empty by the filter loses its heading.
  */
 
 import { useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
@@ -41,6 +45,9 @@ export interface ComboOption {
   value: string;
   label: string;
   sub?: string | null;
+  /** A heading over each run of options that share it (keep a group's
+   *  options together in `options`); headings are not options. */
+  group?: string;
 }
 
 interface Props {
@@ -174,7 +181,10 @@ export default function ComboBox({
       {visible.length === 0 && (
         <div className="pop-empty">No matches{filter ? ` for “${filter.trim()}”` : ''}.</div>
       )}
-      {visible.map((o, i) => (
+      {visible.map((o, i) => [
+        o.group && o.group !== visible[i - 1]?.group
+          ? <div key={`group:${o.group}:${i}`} className="kbar-group" role="presentation">{o.group}</div>
+          : null,
         <button
           key={o.value}
           type="button"
@@ -184,8 +194,8 @@ export default function ComboBox({
         >
           {o.label}
           {o.sub && <span className="sub">{o.sub}</span>}
-        </button>
-      ))}
+        </button>,
+      ])}
     </div>
   );
 
