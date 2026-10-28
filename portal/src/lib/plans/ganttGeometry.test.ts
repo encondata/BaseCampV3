@@ -5,8 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { fromMs, toMs } from './floatingTime';
 import {
-  baselineOf, barOf, fitZoom, linkPath, makeScale, msOf, progressWidth, tiers, xOf,
-  ZOOM_PX_PER_DAY, ZOOMS, zoomIn, zoomOut, type Scale, type Zoom,
+  baselineOf, barOf, FIT_MARGIN, fitScrollLeft, fitZoom, LINK_STUB, linkPath, makeScale,
+  MILESTONE_HALF, msOf, progressWidth, tiers, xOf, ZOOM_PX_PER_DAY, ZOOMS, zoomIn, zoomOut,
+  type Scale, type Zoom,
 } from './ganttGeometry';
 import { makeTask } from './planFixtures';
 
@@ -187,23 +188,80 @@ describe('bars', () => {
 });
 
 describe('fitZoom', () => {
-  it('picks the finest zoom that fits the width', () => {
+  const start = '2026-11-02';
+  const after = (days: number): string => fromMs(toMs(start) + days * DAY);
+  /** The plan's own span in px at a zoom, without the scale's padding. */
+  const rawPx = (days: number, zoom: Zoom): number => days * ZOOM_PX_PER_DAY[zoom];
+
+  it('keeps a margin of two link stubs and a milestone half-width', () => {
+    expect(LINK_STUB).toBe(8);
+    expect(MILESTONE_HALF).toBe(6);
+    expect(FIT_MARGIN).toBe(2 * LINK_STUB + MILESTONE_HALF);
+    expect(FIT_MARGIN).toBe(22);
+  });
+
+  it('keeps the brief’s two cases', () => {
+    expect(fitZoom(start, after(14), 1000)).toBe('days');                       // a 2-week plan
+    expect(fitZoom(start, '2029-11-02', 1000)).toBe('quarters');               // a 3-year plan
     expect(fitZoom('2026-11-02T08:00', '2026-11-13T17:00', 1000)).toBe('days');
-    // twelve hours of work and the padding come to 360px at 480 px/day
+    // twelve hours of work come to 240px at 480 px/day
     expect(fitZoom('2026-11-02T08:00', '2026-11-02T20:00', 1000)).toBe('hours');
   });
 
-  it('never picks a zoom wider than the pane', () => {
-    const pick = fitZoom('2026-11-02', '2027-04-30', 2000);
-    expect(pick).toBe('months');
-    expect(makeScale('2026-11-02', '2027-04-30', pick).width).toBeLessThanOrEqual(2000);
-    expect(makeScale('2026-11-02', '2027-04-30', 'weeks').width).toBeGreaterThan(2000);
+  it.each([
+    [1, 'hours'], [2, 'hours'], [3, 'days'], [10, 'days'], [14, 'days'], [20, 'days'],
+    [21, 'weeks'], [42, 'weeks'], [54, 'weeks'], [55, 'months'], [90, 'months'], [180, 'months'],
+    [195, 'months'], [196, 'quarters'], [365, 'quarters'],
+  ] as [number, Zoom][])('fits %i days in 1,000px at %s, the padding not counted', (days, zoom) => {
+    expect(fitZoom(start, after(days), 1000)).toBe(zoom);
   });
 
-  it('falls back to quarters for a plan nothing fits', () => {
-    expect(fitZoom('2026-11-02', '2029-11-02', 1000)).toBe('quarters');
-    expect(fitZoom('2026-11-02', '2026-11-13', 0)).toBe('quarters');
-    expect(fitZoom('2026-11-02', '2026-11-13', Number.NaN)).toBe('quarters');
+  it('takes a width equal to the room left after the margin', () => {
+    // 20 days 9 hours is 978px at 48 px/day: exactly 1000 - FIT_MARGIN
+    expect(fitZoom(start, fromMs(toMs(start) + 20 * DAY + 9 * 3_600_000), 1000)).toBe('days');
+    expect(fitZoom(start, fromMs(toMs(start) + 20 * DAY + 10 * 3_600_000), 1000)).toBe('weeks');
+  });
+
+  it('picks the finest zoom whose raw span fits, for every span', () => {
+    for (let days = 1; days <= 800; days += 1) {
+      const pick = fitZoom(start, after(days), 1000);
+      if (pick !== 'quarters') expect(rawPx(days, pick)).toBeLessThanOrEqual(1000 - FIT_MARGIN);
+      for (const finer of ZOOMS.slice(0, ZOOMS.indexOf(pick))) {
+        expect(rawPx(days, finer)).toBeGreaterThan(1000 - FIT_MARGIN);
+      }
+    }
+  });
+
+  it('shows an empty span at days zoom, whatever the width', () => {
+    expect(fitZoom(start, start, 1000)).toBe('days');
+    expect(fitZoom(start, null, 1000)).toBe('days');
+    expect(fitZoom(start, after(-3), 1000)).toBe('days');
+    expect(fitZoom(start, start, 0)).toBe('days');
+  });
+
+  it('falls back to quarters when the room is gone', () => {
+    expect(fitZoom(start, after(11), 0)).toBe('quarters');
+    expect(fitZoom(start, after(11), FIT_MARGIN)).toBe('quarters');
+    expect(fitZoom(start, after(11), Number.NaN)).toBe('quarters');
+  });
+
+  it('refuses a start that is not a plan time', () => {
+    expect(() => fitZoom('soon', after(3), 1000)).toThrow(RangeError);
+  });
+});
+
+describe('fitScrollLeft', () => {
+  it('scrolls to the project start, half the margin short of it', () => {
+    const scale = makeScale('2026-11-02T08:00', '2026-11-06T17:00', 'days');
+    expect(xOf(scale, '2026-11-02T08:00')).toBe(112);
+    expect(fitScrollLeft(scale, '2026-11-02T08:00')).toBe(112 - FIT_MARGIN / 2);
+  });
+
+  it('never scrolls left of the scale', () => {
+    const scale = makeScale('2026-11-02T08:00', '2026-11-06T17:00', 'days');
+    expect(fitScrollLeft({ ...scale, startMs: toMs('2026-11-02T08:00') }, '2026-11-02T08:00')).toBe(0);
+    expect(fitScrollLeft(scale, '2026-10-01')).toBe(0);
+    expect(fitScrollLeft(scale, 'soon')).toBe(0);
   });
 });
 
@@ -275,6 +333,21 @@ describe('tiers', () => {
     tile(bottom, scale.width);
   });
 
+  it('gives February 29 days in a leap year and 28 in the year before', () => {
+    const leap = tiers(makeScale('2028-01-10', '2028-03-20', 'months'), 'months');
+    expect(labels(leap.bottom)).toEqual(['Nov', 'Dec', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul']);
+    expect(leap.bottom[3].width).toBeCloseTo(29 * 5, 6);
+    expect(leap.bottom[2].width).toBeCloseTo(31 * 5, 6);
+    // Q4 2027 is cut at the scale's start: November and December only
+    expect(labels(leap.top)).toEqual(['Q4 2027', 'Q1 2028', 'Q2 2028', 'Q3 2028']);
+    expect(leap.top[0].width).toBeCloseTo(61 * 5, 6);
+    expect(leap.top[1].width).toBeCloseTo(91 * 5, 6);
+    const plain = tiers(makeScale('2027-01-10', '2027-03-20', 'months'), 'months');
+    expect(plain.bottom[3].label).toBe('Feb');
+    expect(plain.bottom[3].width).toBeCloseTo(28 * 5, 6);
+    expect(plain.top[1].width).toBeCloseTo(90 * 5, 6);
+  });
+
   it('starts every weekly tick on a Monday', () => {
     const scale = makeScale('2026-11-04T08:00', '2027-02-26T17:00', 'weeks');
     for (const t of tiers(scale, 'weeks').bottom) {
@@ -283,25 +356,82 @@ describe('tiers', () => {
   });
 });
 
+describe('tiers in a window', () => {
+  // three years at 20 px an hour: over 26,000 hour ticks
+  const scale = makeScale('2026-01-01', '2028-12-31', 'hours');
+  const meets = (t: { x: number; width: number }, from: number, to: number): boolean =>
+    t.x < to && t.x + t.width > from;
+
+  it('is the whole tier without a window', () => {
+    const all = tiers(scale, 'hours');
+    expect(all.bottom.length).toBeGreaterThan(26_000);
+    expect(tiers(scale, 'hours', undefined)).toEqual(all);
+  });
+
+  it('keeps only the ticks that meet a 1,500px window', () => {
+    const all = tiers(scale, 'hours');
+    const { top, bottom } = tiers(scale, 'hours', [20_000, 21_500]);
+    expect(bottom.length).toBeLessThan(100);
+    expect(bottom.length).toBeGreaterThanOrEqual(75);
+    expect(top.length).toBeLessThan(6);
+    expect(bottom).toEqual(all.bottom.filter((t) => meets(t, 20_000, 21_500)));
+    expect(top).toEqual(all.top.filter((t) => meets(t, 20_000, 21_500)));
+    // the ticks at the window's edges are whole, not cut to it
+    expect(bottom[0].x).toBeLessThanOrEqual(20_000);
+    expect(bottom[0].x + bottom[0].width).toBeGreaterThan(20_000);
+    expect(bottom[bottom.length - 1].x).toBeLessThan(21_500);
+  });
+
+  it('does not take a tick that only touches the window', () => {
+    const { bottom } = tiers(scale, 'hours', [20_000, 20_100]);     // 20,000 = a tick edge
+    expect(bottom.map((t) => t.x)).toEqual([20_000, 20_020, 20_040, 20_060, 20_080]);
+  });
+
+  it('reaches a window at the scale’s start and past its end', () => {
+    expect(tiers(scale, 'hours', [-500, 60]).bottom.map((t) => t.x)).toEqual([0, 20, 40]);
+    const last = tiers(scale, 'hours').bottom.at(-1);
+    expect(tiers(scale, 'hours', [scale.width - 30, scale.width + 900]).bottom.at(-1)).toEqual(last);
+    expect(tiers(scale, 'hours', [scale.width + 10, scale.width + 900])).toEqual({ top: [], bottom: [] });
+    expect(tiers(scale, 'hours', [-900, -10])).toEqual({ top: [], bottom: [] });
+  });
+
+  it('treats a side that is not a number as open, and a backwards window as empty', () => {
+    const all = tiers(scale, 'hours');
+    expect(tiers(scale, 'hours', [Number.NaN, Number.NaN])).toEqual(all);
+    expect(tiers(scale, 'hours', [20_000, 20_000])).toEqual({ top: [], bottom: [] });
+    expect(tiers(scale, 'hours', [21_500, 20_000])).toEqual({ top: [], bottom: [] });
+  });
+
+  it('windows every zoom the same as filtering the whole tier', () => {
+    for (const zoom of ZOOMS) {
+      const s = makeScale('2026-03-02', '2028-09-15', zoom);
+      const from = s.width * 0.3;
+      const to = from + 400;
+      const whole = tiers(s, zoom);
+      const part = tiers(s, zoom, [from, to]);
+      expect(part.bottom).toEqual(whole.bottom.filter((t) => meets(t, from, to)));
+      expect(part.top).toEqual(whole.top.filter((t) => meets(t, from, to)));
+    }
+  });
+});
+
 describe('linkPath', () => {
   const pred = { x0: 100, x1: 200, y: 20 };
   const rowH = 40;
+  const runs = (path: string): number => (path.match(/[HV]/g) ?? []).length;
 
   it('runs a forward finish-to-start link out, down and in', () => {
     const path = linkPath(pred, { x0: 300, x1: 400, y: 60 }, 'FS', rowH);
     expect(path).toBe('M 200 20 H 208 V 60 H 300');
-    expect(path.match(/[HV]/g)).toHaveLength(3);
+    expect(runs(path)).toBe(3);
   });
 
-  it('detours below the predecessor row when the successor starts left of the stub', () => {
+  it('detours below the predecessor row when the successor starts left of the predecessor’s end', () => {
     const path = linkPath(pred, { x0: 150, x1: 250, y: 60 }, 'FS', rowH);
     expect(path).toBe('M 200 20 H 208 V 40 H 142 V 60 H 150');
-    expect(path.match(/[HV]/g)).toHaveLength(5);
-  });
-
-  it('takes the forward route right at the stub', () => {
-    expect(linkPath(pred, { x0: 208, x1: 300, y: 60 }, 'FS', rowH)).toBe('M 200 20 H 208 V 60 H 208');
-    expect(linkPath(pred, { x0: 207, x1: 300, y: 60 }, 'FS', rowH).match(/[HV]/g)).toHaveLength(5);
+    expect(runs(path)).toBe(5);
+    // one pixel behind the end is behind it
+    expect(runs(linkPath(pred, { x0: 199, x1: 300, y: 60 }, 'FS', rowH))).toBe(5);
   });
 
   it('detours above when the successor is on a row above', () => {
@@ -309,25 +439,93 @@ describe('linkPath', () => {
     expect(path).toBe('M 200 60 H 208 V 40 H 142 V 20 H 150');
   });
 
+  describe('a successor that starts at or just past the predecessor’s end', () => {
+    it('drops straight onto it for a zero-lag handoff, with no S-detour', () => {
+      expect(linkPath(pred, { x0: 200, x1: 300, y: 60 }, 'FS', rowH)).toBe('M 200 20 V 60');
+    });
+
+    it('turns at the successor’s edge when it is within the stub', () => {
+      expect(linkPath(pred, { x0: 204, x1: 300, y: 60 }, 'FS', rowH)).toBe('M 200 20 H 204 V 60');
+      expect(linkPath(pred, { x0: 208, x1: 300, y: 60 }, 'FS', rowH)).toBe('M 200 20 H 208 V 60');
+      expect(linkPath(pred, { x0: 209, x1: 300, y: 60 }, 'FS', rowH)).toBe('M 200 20 H 208 V 60 H 209');
+    });
+
+    it('reads at days zoom: zero lag, then a 2-hour gap (4px)', () => {
+      const scale = makeScale('2026-11-02T08:00', '2026-11-06T17:00', 'days');
+      const end = xOf(scale, '2026-11-04T17:00');
+      const from = { x0: xOf(scale, '2026-11-04T08:00'), x1: end, y: 20 };
+      expect(end).toBe(226);
+      const zero = linkPath(from, { x0: xOf(scale, '2026-11-04T17:00'), x1: 300, y: 60 }, 'FS', rowH);
+      expect(zero).toBe('M 226 20 V 60');
+      const gap = linkPath(from, { x0: xOf(scale, '2026-11-04T19:00'), x1: 300, y: 60 }, 'FS', rowH);
+      expect(gap).toBe('M 226 20 H 230 V 60');
+      expect(runs(zero)).toBe(1);
+      expect(runs(gap)).toBe(2);
+    });
+  });
+
   it('starts a start-to-start link at the predecessor’s start and ends at the successor’s start', () => {
     expect(linkPath(pred, { x0: 100, x1: 300, y: 60 }, 'SS', rowH)).toBe('M 100 20 H 92 V 60 H 100');
-    expect(linkPath(pred, { x0: 50, x1: 90, y: 60 }, 'SS', rowH)).toBe('M 100 20 H 92 V 40 H 42 V 60 H 50');
+    expect(linkPath(pred, { x0: 96, x1: 300, y: 60 }, 'SS', rowH)).toBe('M 100 20 H 92 V 60 H 96');
+    // a successor starting far left needs no detour: the drop moves out to its stub
+    expect(linkPath(pred, { x0: 50, x1: 90, y: 60 }, 'SS', rowH)).toBe('M 100 20 H 42 V 60 H 50');
   });
 
   it('starts a finish-to-finish link at the predecessor’s end and ends at the successor’s end', () => {
     expect(linkPath(pred, { x0: 120, x1: 200, y: 60 }, 'FF', rowH)).toBe('M 200 20 H 208 V 60 H 200');
-    expect(linkPath(pred, { x0: 250, x1: 300, y: 60 }, 'FF', rowH)).toBe('M 200 20 H 208 V 40 H 308 V 60 H 300');
+    expect(linkPath(pred, { x0: 120, x1: 205, y: 60 }, 'FF', rowH)).toBe('M 200 20 H 208 V 60 H 205');
+    // a successor ending far right needs no detour either
+    const far = linkPath({ x0: 100, x1: 200, y: 100 }, { x0: 400, x1: 500, y: 20 }, 'FF', rowH);
+    expect(far).toBe('M 200 100 H 508 V 20 H 500');
+    expect(runs(far)).toBe(3);
+    expect(linkPath(pred, { x0: 250, x1: 300, y: 60 }, 'FF', rowH)).toBe('M 200 20 H 308 V 60 H 300');
   });
 
   it('starts a start-to-finish link at the predecessor’s start and ends at the successor’s end', () => {
-    expect(linkPath(pred, { x0: 20, x1: 80, y: 60 }, 'SF', rowH)).toBe('M 100 20 H 92 V 60 H 80');
-    expect(linkPath(pred, { x0: 120, x1: 150, y: 60 }, 'SF', rowH)).toBe('M 100 20 H 92 V 40 H 158 V 60 H 150');
+    const from = { x0: 300, x1: 400, y: 20 };
+    expect(linkPath(from, { x0: 20, x1: 100, y: 60 }, 'SF', rowH)).toBe('M 300 20 H 292 V 60 H 100');
+    expect(linkPath(from, { x0: 220, x1: 295, y: 60 }, 'SF', rowH)).toBe('M 300 20 H 295 V 60');
+    expect(linkPath(from, { x0: 220, x1: 300, y: 60 }, 'SF', rowH)).toBe('M 300 20 V 60');
+    // a successor ending right of the predecessor’s start is behind the line: it detours
+    const behind = linkPath(from, { x0: 320, x1: 350, y: 60 }, 'SF', rowH);
+    expect(behind).toBe('M 300 20 H 292 V 40 H 358 V 60 H 350');
+    expect(runs(behind)).toBe(5);
   });
 
   it('rounds to a hundredth of a pixel and takes a narrower stub', () => {
     expect(linkPath({ x0: 0, x1: 100.123456, y: 20 }, { x0: 300.5, x1: 400, y: 60 }, 'FS', rowH))
       .toBe('M 100.12 20 H 108.12 V 60 H 300.5');
     expect(linkPath(pred, { x0: 300, x1: 400, y: 60 }, 'FS', rowH, 3)).toBe('M 200 20 H 203 V 60 H 300');
+    expect(LINK_STUB).toBe(8);
+  });
+
+  it('starts and ends a link at a milestone’s point (x0 === x1)', () => {
+    const diamond = { x0: 200, x1: 200, y: 20 };
+    expect(linkPath(diamond, { x0: 300, x1: 400, y: 60 }, 'FS', rowH)).toBe('M 200 20 H 208 V 60 H 300');
+    expect(linkPath(pred, { x0: 300, x1: 300, y: 60 }, 'FS', rowH)).toBe('M 200 20 H 208 V 60 H 300');
+    // milestone to milestone on the same instant
+    expect(linkPath(diamond, { x0: 200, x1: 200, y: 60 }, 'FS', rowH)).toBe('M 200 20 V 60');
+    expect(linkPath(diamond, { x0: 150, x1: 150, y: 60 }, 'FS', rowH)).toBe('M 200 20 H 208 V 40 H 142 V 60 H 150');
+  });
+
+  it('draws a link between bars on the same row without a zero-length turn', () => {
+    expect(linkPath(pred, { x0: 300, x1: 400, y: 20 }, 'FS', rowH)).toBe('M 200 20 H 300');
+    expect(linkPath(pred, { x0: 200, x1: 400, y: 20 }, 'FS', rowH)).toBe('M 200 20');
+    // behind the end on the same row still goes around, below
+    expect(linkPath(pred, { x0: 150, x1: 250, y: 20 }, 'FS', rowH)).toBe('M 200 20 H 208 V 40 H 142 V 20 H 150');
+  });
+
+  it('answers an empty path for a number that is not finite', () => {
+    const to = { x0: 300, x1: 400, y: 60 };
+    expect(linkPath({ ...pred, x1: Number.NaN }, to, 'FS', rowH)).toBe('');
+    expect(linkPath({ ...pred, x0: Number.NaN }, to, 'SS', rowH)).toBe('');
+    expect(linkPath({ ...pred, y: Number.POSITIVE_INFINITY }, to, 'FS', rowH)).toBe('');
+    expect(linkPath(pred, { ...to, x0: Number.NaN }, 'FS', rowH)).toBe('');
+    expect(linkPath(pred, { ...to, x1: Number.NEGATIVE_INFINITY }, 'FF', rowH)).toBe('');
+    expect(linkPath(pred, { ...to, y: Number.NaN }, 'FS', rowH)).toBe('');
+    expect(linkPath(pred, to, 'FS', Number.NaN)).toBe('');
+    expect(linkPath(pred, to, 'FS', rowH, Number.NaN)).toBe('');
+    expect(linkPath(pred, to, 'FS', rowH)).not.toBe('');
   });
 });
 

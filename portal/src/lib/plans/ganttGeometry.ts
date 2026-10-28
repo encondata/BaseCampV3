@@ -23,6 +23,17 @@ export const MS_PER_DAY = 86_400_000;
 const MS_PER_HOUR = 3_600_000;
 const MS_PER_WEEK = 7 * MS_PER_DAY;
 
+/** The straight run out of, and into, a bar before a link line turns, in px. */
+export const LINK_STUB = 8;
+
+/** Half the width of a milestone's diamond, in px: it has no bar of its own,
+ *  so it hangs this far past its instant on each side. */
+export const MILESTONE_HALF = 6;
+
+/** The room `fitZoom` keeps in the pane beyond the plan's own span: a link stub
+ *  at each end and a milestone's half-width past the last date. */
+export const FIT_MARGIN = 2 * LINK_STUB + MILESTONE_HALF;
+
 // ── zoom ─────────────────────────────────────────────────────────────
 
 export type Zoom = 'hours' | 'days' | 'weeks' | 'months' | 'quarters';
@@ -108,20 +119,27 @@ export interface Scale {
 const PAD_BEFORE = 2;
 const PAD_AFTER = 4;
 
+/** The project's start and finish as epoch ms. An empty plan (no finish), a
+ *  finish that is not a plan time and a finish before the start all read as
+ *  finishing at the start. A start that is not a plan time is a bug in the
+ *  caller: it throws. */
+function projectSpan(
+  caller: string, projectStart: string, projectFinish: string | null | undefined,
+): { start: number; finish: number } {
+  const start = toMs(projectStart);
+  if (Number.isNaN(start)) throw new RangeError(`${caller}: not a plan time: ${projectStart}`);
+  const finish = projectFinish ? toMs(projectFinish) : Number.NaN;
+  return { start, finish: Number.isNaN(finish) ? start : Math.max(start, finish) };
+}
+
 /**
  * The pixel axis for a plan: two bottom-tier units before the project start
- * and four after its finish, both snapped to the unit's edge. An empty plan
- * (no finish) or a finish before the start draws as if it finished at its
- * start. A start that is not a plan time is a bug in the caller: it throws.
+ * and four after its finish, both snapped to the unit's edge.
  */
 export function makeScale(
   projectStart: string, projectFinish: string | null | undefined, zoom: Zoom,
 ): Scale {
-  const start = toMs(projectStart);
-  if (Number.isNaN(start)) throw new RangeError(`makeScale: not a plan time: ${projectStart}`);
-  const finishMs = projectFinish ? toMs(projectFinish) : Number.NaN;
-  const finish = Number.isNaN(finishMs) ? start : Math.max(start, finishMs);
-
+  const { start, finish } = projectSpan('makeScale', projectStart, projectFinish);
   const unit = BOTTOM_UNIT[zoom];
   const startMs = ADD[unit](FLOOR[unit](start), -PAD_BEFORE);
   const endMs = ADD[unit](ceil(unit, finish), PAD_AFTER);
@@ -129,13 +147,29 @@ export function makeScale(
   return { startMs, endMs, pxPerMs: perDay / MS_PER_DAY, width: ((endMs - startMs) * perDay) / MS_PER_DAY };
 }
 
-/** The zoom that fits the plan in `widthPx`: the finest one whose scale is no
- *  wider, else quarters. */
+/**
+ * The zoom that fits the plan in a pane `widthPx` wide: the finest one at which
+ * the plan's own span (start to finish, not snapped to a unit and without the
+ * scale's padding, which scrolls out of the way) is no wider than the pane less
+ * FIT_MARGIN; quarters when none is. A plan with no span (start == finish, or
+ * no finish) is shown at days. After applying a fit, scroll to `fitScrollLeft`.
+ */
 export function fitZoom(projectStart: string, projectFinish: string | null | undefined, widthPx: number): Zoom {
+  const { start, finish } = projectSpan('fitZoom', projectStart, projectFinish);
+  if (finish <= start) return 'days';
+  const room = widthPx - FIT_MARGIN;
   for (const zoom of ZOOMS) {
-    if (makeScale(projectStart, projectFinish, zoom).width <= widthPx) return zoom;
+    if (((finish - start) * ZOOM_PX_PER_DAY[zoom]) / MS_PER_DAY <= room) return zoom;
   }
   return 'quarters';
+}
+
+/** Where to scroll the Gantt after a fit: the project start, half the margin
+ *  in from the pane's left edge (never left of the scale; 0 for a start that
+ *  is not a plan time). */
+export function fitScrollLeft(scale: Scale, projectStart: string): number {
+  const left = xOf(scale, projectStart) - FIT_MARGIN / 2;
+  return Number.isFinite(left) ? Math.max(0, left) : 0;
 }
 
 /** The scale's px per day, whole for every zoom (480, 48, 18, 5, 1.8). */
@@ -210,27 +244,38 @@ const LABELS: Record<Zoom, TierLabels> = {
 
 /** One tier: a tick per unit, the first and last cut off at the scale's edges
  *  so the ticks tile 0..width. A cut-off tick keeps the label of its whole unit. */
-function ticksOf(scale: Scale, unit: Unit, label: Labeler): Tick[] {
+function ticksOf(scale: Scale, unit: Unit, label: Labeler, fromX: number, toX: number): Tick[] {
   const ticks: Tick[] = [];
-  let at = FLOOR[unit](scale.startMs);
+  // start at the unit holding the window's left edge, not at the scale's start
+  let at = FLOOR[unit](Math.max(scale.startMs, msOf(scale, fromX)));
   while (at < scale.endMs) {
     const next = ADD[unit](at, 1);
     const from = Math.max(at, scale.startMs);
-    ticks.push({
-      x: xOfMs(scale, from),
-      width: widthOfMs(scale, Math.min(next, scale.endMs) - from),
-      label: label(at),
-    });
+    const x = xOfMs(scale, from);
+    if (x >= toX) break;
+    const width = widthOfMs(scale, Math.min(next, scale.endMs) - from);
+    if (x + width > fromX) ticks.push({ x, width, label: label(at) });
     at = next;
   }
   return ticks;
 }
 
-/** The two header tiers for the zoom the scale was made at. */
-export function tiers(scale: Scale, zoom: Zoom): { top: Tick[]; bottom: Tick[] } {
+/**
+ * The two header tiers for the zoom the scale was made at. With a `window`
+ * `[fromX, toX]` (the visible part of the scale, in px) only the ticks that
+ * overlap it are made, whole and not cut to it: a 3-year hours scale holds
+ * 26,000 ticks, a 1,500px window of it under 100. A side that is not a
+ * number is open; a window with no width holds nothing.
+ */
+export function tiers(
+  scale: Scale, zoom: Zoom, window?: readonly [fromX: number, toX: number],
+): { top: Tick[]; bottom: Tick[] } {
+  const fromX = window && !Number.isNaN(window[0]) ? window[0] : Number.NEGATIVE_INFINITY;
+  const toX = window && !Number.isNaN(window[1]) ? window[1] : Number.POSITIVE_INFINITY;
+  if (toX <= fromX) return { top: [], bottom: [] };
   return {
-    top: ticksOf(scale, TOP_UNIT[zoom], LABELS[zoom].top),
-    bottom: ticksOf(scale, BOTTOM_UNIT[zoom], LABELS[zoom].bottom),
+    top: ticksOf(scale, TOP_UNIT[zoom], LABELS[zoom].top, fromX, toX),
+    bottom: ticksOf(scale, BOTTOM_UNIT[zoom], LABELS[zoom].bottom, fromX, toX),
   };
 }
 
@@ -279,47 +324,83 @@ export function baselineOf(
 
 // ── link arrows ──────────────────────────────────────────────────────
 
-/** A bar's ends and the y of its row's center, in px. */
+/** A bar's ends and the y of its row's center, in px. A milestone has
+ *  x0 === x1. */
 export interface LinkEnd {
   x0: number;
   x1: number;
   y: number;
 }
 
-/** The straight run out of, and into, a bar before the line turns. */
-export const LINK_STUB = 8;
+type Point = readonly [x: number, y: number];
 
-const hundredth = (v: number): string => String(Math.round(v * 100) / 100);
+const hundredth = (v: number): number => Math.round(v * 100) / 100;
+
+/** The points (each a step along one axis from the one before) as a path
+ *  `M x y` then `H`/`V` runs, to a hundredth of a pixel. A run of no length is
+ *  left out, and two runs the same way in a row are one. */
+function trace(points: readonly Point[]): string {
+  const [first, ...rest] = points.map(([x, y]): Point => [hundredth(x), hundredth(y)]);
+  const runs: { axis: 'H' | 'V'; to: number; sign: number }[] = [];
+  let [cx, cy] = first;
+  for (const [x, y] of rest) {
+    const axis = x !== cx ? 'H' : 'V';
+    const delta = axis === 'H' ? x - cx : y - cy;
+    if (delta !== 0) {
+      const to = axis === 'H' ? x : y;
+      const last = runs[runs.length - 1];
+      if (last && last.axis === axis && last.sign === Math.sign(delta)) last.to = to;
+      else runs.push({ axis, to, sign: Math.sign(delta) });
+    }
+    [cx, cy] = [x, y];
+  }
+  return `M ${first[0]} ${first[1]}${runs.map((run) => ` ${run.axis} ${run.to}`).join('')}`;
+}
 
 /**
  * A right-angle SVG path for a link, from the predecessor's end (FS, FF) or
  * start (SS, SF) to the successor's start (FS, SS) or end (FF, SF).
  *
  * The line leaves the predecessor on the side it starts from (right of an
- * end, left of a start) by `stub` px, drops to the successor's row, and runs
- * into the successor's edge: `M x1 y H x1+8 V y2 H x0'` for a forward FS.
- * When that last run would have to turn back (the successor's edge lies
- * behind the stub, as in `x0' < x1 + 8` for FS), the line detours instead:
- * out, onto the line between the predecessor's row and the next one (the
- * previous one when the successor is above), across, down to the successor's
- * row `stub` px clear of its edge, and in. Five runs after the `M`.
+ * end, left of a start), drops to the successor's row at a vertical run, and
+ * runs into the successor's edge: `M x1 y H x1+8 V y2 H x0'` for an FS whose
+ * successor starts 8px or more past the end. Where the vertical run goes:
  *
- * Coordinates are rounded to a hundredth of a pixel. A narrower `stub` suits
- * the coarse zooms, where an FS gap is only a few px wide.
+ * - FS, SF (the line leaves and arrives the same way): `stub` px out, or at
+ *   the successor's edge when that is nearer, so a back-to-back handoff drops
+ *   straight onto the successor (`M 226 20 V 60` for zero lag) instead of
+ *   looping. When the edge lies behind the predecessor's own edge the line
+ *   detours: out `stub` px, onto the line between the predecessor's row and
+ *   the next one (the previous one when the successor is above), across, down
+ *   to the successor's row `stub` px clear of its edge, and in. Five runs.
+ * - FF, SS (it leaves and arrives opposite ways): `stub` px out, or `stub` px
+ *   past the successor's edge when that is farther, so it never needs the
+ *   detour (`M 200 100 H 508 V 20 H 500`).
+ *
+ * Runs of no length are left out. Coordinates are rounded to a hundredth of
+ * a pixel. A narrower `stub` suits the coarse zooms, where an FS gap is only
+ * a few px wide. Any input that is not finite gives `''`.
  */
 export function linkPath(
   from: LinkEnd, to: LinkEnd, type: LinkType, rowH: number, stub: number = LINK_STUB,
 ): string {
+  if (![from.x0, from.x1, from.y, to.x0, to.x1, to.y, rowH, stub].every(Number.isFinite)) return '';
   const out = type === 'FS' || type === 'FF' ? 1 : -1;        // the side the line leaves by
   const into = type === 'FS' || type === 'SS' ? 1 : -1;       // the way its last run travels
   const x = out > 0 ? from.x1 : from.x0;
   const edge = into > 0 ? to.x0 : to.x1;
   const turn = x + out * stub;
-  const head = `M ${hundredth(x)} ${hundredth(from.y)} H ${hundredth(turn)}`;
-  if ((edge - turn) * into >= 0) {
-    return `${head} V ${hundredth(to.y)} H ${hundredth(edge)}`;
+
+  let drop: number | null;
+  if (out === into) {
+    const ahead = (edge - x) * out;                           // how far on the edge lies
+    drop = ahead >= 0 ? x + out * Math.min(stub, ahead) : null;
+  } else {
+    drop = (edge - turn) * into >= 0 ? turn : edge + out * stub;
   }
+  if (drop !== null) return trace([[x, from.y], [drop, from.y], [drop, to.y], [edge, to.y]]);
+
   const between = from.y + (to.y < from.y ? -rowH : rowH) / 2;
-  return `${head} V ${hundredth(between)} H ${hundredth(edge - into * stub)}`
-    + ` V ${hundredth(to.y)} H ${hundredth(edge)}`;
+  const lead = edge - into * stub;
+  return trace([[x, from.y], [turn, from.y], [turn, between], [lead, between], [lead, to.y], [edge, to.y]]);
 }

@@ -94,6 +94,23 @@ describe('nonworkingBands', () => {
     expect(nonworkingBands(calendar, week)).toEqual([{ x: 5 * 48, width: 96 }]);
   });
 
+  it('ignores an exception outside the scale', () => {
+    const calendar = standard();
+    calendar.exceptions = [
+      { date: '2025-12-25', name: 'Christmas, a year ago', hours: [] },
+      { date: '2026-11-05', name: 'Thursday off', hours: [] },      // in range
+      { date: '2026-11-09', name: 'Just past the end', hours: [] },  // the scale ends 11-09 00:00
+      { date: '2027-07-04', name: 'Next summer', hours: [['06:00', '22:00']] },
+    ];
+    expect(nonworkingBands(calendar, week)).toEqual([
+      { x: 3 * 48, width: 48 },
+      { x: 5 * 48, width: 96 },
+    ]);
+    // a Saturday far away with hours changes nothing here either
+    calendar.exceptions = [{ date: '2027-07-03', name: 'Far Saturday', hours: [['06:00', '22:00']] }];
+    expect(nonworkingBands(calendar, week)).toEqual(nonworkingBands(standard(), week));
+  });
+
   it('reads the weekday pattern: a Wednesday off every week', () => {
     const calendar = standard();
     calendar.week = { ...calendar.week, wed: [] };
