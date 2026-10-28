@@ -5,11 +5,14 @@ Every plan time is floating wall-clock text, `YYYY-MM-DDTHH:MM`
 (`locked_at`, `baseline_set_at`, `completed_at`, `updated_at`) are real
 instants and serialize as ISO datetimes with an offset."""
 
+import re
 import uuid
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+
+from serversherpa.plans.durations import DurationError, Units, parse_duration
 
 
 class PlanCreateIn(BaseModel):
@@ -429,3 +432,209 @@ class OpsOut(BaseModel):
     temp_ids: dict[str, uuid.UUID]
     inverse: list[dict[str, Any]]
     notices: list[dict[str, Any]]
+
+
+# --- plan-level writes (PATCH /plans/{id}, lock, baseline, version) ----------------
+
+
+class PlanPatchIn(BaseModel):
+    """PATCH /plans/{plan_id}: send `base_version` (409 `plan_changed`
+    unless it is the plan's version) and only the fields that change.
+
+    - `project_start`, `status_date`: floating times; a date alone is the
+      calendar's default start (project start) or default end (status
+      date) that day, the calendar sent with them, else the plan's.
+      `status_date` null = now.
+    - `timezone`: an IANA name from the tz database (422 `bad_timezone`).
+    - `owner_id`: a staff person (422 `bad_owner`); null = no owner.
+    - `calendar`: the whole calendar (422 `bad_calendar` {message}),
+      stored in canonical form (plans/calendar.py, clean_calendar).
+    - `settings`: merged into the plan's overrides key by key, one level
+      down inside `completion` / `reminders`: a value overrides, null
+      removes the override (that key, or a whole group) so the plan
+      inherits the system value again. Checked as PlanSettingsOverrides
+      (422 `bad_field`, `field` = "settings.<path>").
+
+    A locked plan takes only `status_date` and `owner_id`: sending any
+    other field, even unchanged, is 409 `plan_locked`. The plan is
+    recalculated, audited and its version bumped when anything changed;
+    a PATCH that changes nothing answers the plan as it is."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    base_version: int
+    project_start: str | None = None
+    timezone: str | None = None
+    status_date: str | None = None
+    owner_id: uuid.UUID | None = None
+    calendar: Any = None                    # checked by the service: bad_calendar
+    settings: Any = None                    # checked as PlanSettingsOverrides: bad_field
+
+
+class BaselineIn(BaseModel):
+    """POST /plans/{plan_id}/baseline (the body is optional). `replace`
+    answers a 409 `baseline_exists` {set_at}."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    replace: bool = False
+
+
+class PlanVersionOut(BaseModel):
+    """GET /plans/{plan_id}/version: what the tab polls to notice another
+    admin's change."""
+
+    version: int
+    updated_at: datetime
+    updated_by_name: str | None
+
+
+# --- settings (plan overrides, and the system section) -----------------------------
+#
+# One set of rules for both: a plan override is checked exactly like the
+# system value it overrides. Strict types (no "yes" for true, no 2.0 for 2).
+
+MAX_REMINDER_OFFSETS = 5
+MAX_OFFSET_DAYS = 365
+MAX_CRITICAL_SLACK_DAYS = 30
+_HHMM = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
+
+
+def _send_time(value: str) -> str:
+    if _HHMM.fullmatch(value) is None:
+        raise ValueError("must be an HH:MM time, 00:00 to 23:59")
+    return value
+
+
+def _offsets(value: list[int]) -> list[int]:
+    """1-5 distinct days before the due day, each 1-365; kept largest first."""
+    if not 1 <= len(value) <= MAX_REMINDER_OFFSETS:
+        raise ValueError(f"must list 1 to {MAX_REMINDER_OFFSETS} offsets")
+    if len(set(value)) != len(value):
+        raise ValueError("offsets must be distinct")
+    if any(not 1 <= day <= MAX_OFFSET_DAYS for day in value):
+        raise ValueError(f"each offset must be 1 to {MAX_OFFSET_DAYS} days")
+    return sorted(value, reverse=True)
+
+
+def _whole(value: float) -> int | float:
+    """A whole number of days is kept as an int (2, not 2.0)."""
+    return int(value) if value.is_integer() else value
+
+
+def _duration_text(value: str) -> str:
+    try:
+        parse_duration(value, Units())
+    except DurationError as exc:
+        raise ValueError(str(exc)) from None
+    return value
+
+
+SubtasksRule = Literal["cascade", "block", "none"]
+PredecessorsRule = Literal["block", "warn", "none"]
+OverdueCadence = Literal["daily", "once", "off"]
+TaskMode = Literal["auto", "manual"]
+SendTime = Annotated[str, AfterValidator(_send_time)]
+OffsetDays = Annotated[list[int], AfterValidator(_offsets)]
+SlackDays = Annotated[float, Field(ge=0, le=MAX_CRITICAL_SLACK_DAYS, allow_inf_nan=False),
+                      AfterValidator(_whole)]
+DurationText = Annotated[str, AfterValidator(_duration_text)]
+
+_SETTINGS = ConfigDict(extra="forbid", strict=True)
+
+
+class CompletionSettings(BaseModel):
+    model_config = _SETTINGS
+
+    subtasks: SubtasksRule
+    predecessors: PredecessorsRule
+
+
+class ReminderSettings(BaseModel):
+    model_config = _SETTINGS
+
+    enabled: bool
+    offsets_days: OffsetDays
+    on_due_day: bool
+    overdue: OverdueCadence
+    send_time: SendTime                     # plan-local
+    use_finish_without_deadline: bool
+    notify_on_assign: bool
+    overdue_to_owner: bool
+    email_assignees: bool
+
+
+class ProjectPlanSettingsOut(BaseModel):
+    """GET|PUT /system/project-plans. A new plan copies `calendar`; every
+    other key is inherited live by each plan that does not override it."""
+
+    calendar: dict[str, Any]
+    honor_constraints: bool
+    critical_slack_days: int | float
+    default_task_mode: str
+    default_duration: str
+    show_times: bool
+    completion: CompletionSettings
+    reminders: ReminderSettings
+
+
+class ProjectPlanSettingsIn(BaseModel):
+    """PUT /system/project-plans: only the keys sent change, and none may be
+    null. `completion` and `reminders` replace the whole group (every key
+    required); `calendar` replaces the whole calendar, checked by the
+    route (422 `bad_calendar` {message}) and stored in canonical form."""
+
+    model_config = _SETTINGS
+
+    calendar: dict[str, Any] | None = None
+    honor_constraints: bool | None = None
+    critical_slack_days: SlackDays | None = None
+    default_task_mode: TaskMode | None = None
+    default_duration: DurationText | None = None
+    show_times: bool | None = None
+    completion: CompletionSettings | None = None
+    reminders: ReminderSettings | None = None
+
+    @model_validator(mode="after")
+    def _no_nulls(self):
+        for key in self.model_fields_set:
+            if getattr(self, key) is None:
+                raise ValueError(f"{key} cannot be null")
+        return self
+
+
+class CompletionOverrides(BaseModel):
+    model_config = _SETTINGS
+
+    subtasks: SubtasksRule | None = None
+    predecessors: PredecessorsRule | None = None
+
+
+class ReminderOverrides(BaseModel):
+    model_config = _SETTINGS
+
+    enabled: bool | None = None
+    offsets_days: OffsetDays | None = None
+    on_due_day: bool | None = None
+    overdue: OverdueCadence | None = None
+    send_time: SendTime | None = None
+    use_finish_without_deadline: bool | None = None
+    notify_on_assign: bool | None = None
+    overdue_to_owner: bool | None = None
+    email_assignees: bool | None = None
+
+
+class PlanSettingsOverrides(BaseModel):
+    """A PATCH's `settings`: any subset of the system keys but `calendar`
+    (a plan owns its own), with the same rules; null means "inherit"
+    (plans/settings.py, merge_overrides)."""
+
+    model_config = _SETTINGS
+
+    honor_constraints: bool | None = None
+    critical_slack_days: SlackDays | None = None
+    default_task_mode: TaskMode | None = None
+    default_duration: DurationText | None = None
+    show_times: bool | None = None
+    completion: CompletionOverrides | None = None
+    reminders: ReminderOverrides | None = None

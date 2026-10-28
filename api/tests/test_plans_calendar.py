@@ -18,6 +18,7 @@ from serversherpa.plans.calendar import (
     STANDARD_CALENDAR,
     CalendarError,
     WorkCalendar,
+    clean_calendar,
 )
 from serversherpa.plans.durations import Units
 from serversherpa.system.config_store import DEFAULTS
@@ -817,6 +818,67 @@ def test_bad_units(key, value):
 ])
 def test_bad_default_times(key, value):
     bad_calendar(calendar_json(**{key: value}))
+
+
+@pytest.mark.parametrize("key,value", [
+    ("hours_per_day", 25),
+    ("hours_per_day", 24.5),
+    ("hours_per_week", 169),
+    ("hours_per_week", 168.01),
+    ("days_per_month", 32),
+    ("days_per_month", 31.5),
+])
+def test_units_have_upper_bounds(key, value):
+    """A day has 24 hours, a week 168, a month at most 31 days."""
+    bad_calendar(calendar_json(**{key: value}))
+
+
+@pytest.mark.parametrize("key,value", [
+    ("hours_per_day", 24), ("hours_per_week", 168), ("days_per_month", 31),
+])
+def test_units_at_their_upper_bounds(key, value):
+    WorkCalendar.from_json(calendar_json(**{key: value}))
+
+
+# --- clean_calendar: what a write stores ------------------------------------------
+
+
+def test_clean_calendar_is_a_canonical_copy():
+    data = calendar_json(exceptions=[THANKSGIVING, {"date": "2026-11-14",
+                                                    "hours": [["06:00", "22:00"]]}])
+    del data["hours_per_week"]
+    data["default_end"] = None
+    before = copy.deepcopy(data)
+    got = clean_calendar(data)
+    assert data == before
+    assert got == {
+        **STANDARD_CALENDAR,
+        # by date; a missing name is null
+        "exceptions": [{"date": "2026-11-14", "name": None, "hours": [["06:00", "22:00"]]},
+                       THANKSGIVING],
+    }
+    got["week"]["mon"].append(["18:00", "19:00"])
+    assert data["week"]["mon"] == before["week"]["mon"]
+    assert STANDARD_CALENDAR["week"]["mon"] == [["08:00", "12:00"], ["13:00", "17:00"]]
+
+
+def test_clean_calendar_keeps_valid_values():
+    data = calendar_json(hours_per_day=7.5, days_per_month=22, default_start="07:00",
+                         week={**empty_week(), "sat": [["00:00", "24:00"]]})
+    assert clean_calendar(data) == data
+
+
+@pytest.mark.parametrize("data", [
+    calendar_json(color="blue"),
+    calendar_json(exceptions=[{**THANKSGIVING, "recurring": True}]),
+    calendar_json(week={**empty_week(), "holiday": []}),
+    calendar_json(week={**empty_week(), "mon": [["08:00", "25:00"]]}),
+    None,
+])
+def test_clean_calendar_refuses_what_it_would_not_store(data):
+    with pytest.raises(CalendarError) as caught:
+        clean_calendar(data)
+    assert caught.value.code == "bad_calendar"
 
 
 def test_units_from_calendar():

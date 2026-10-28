@@ -45,7 +45,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,7 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.api.deps import AuthContext
 from serversherpa.plans import ops_links, ops_progress, ops_tasks
 from serversherpa.plans.calendar import CalendarError
-from serversherpa.plans.engine import SUMMARY_LINK_TYPES, ScheduleError, SummaryLinkError
+from serversherpa.plans.engine import ScheduleError
 from serversherpa.plans.models import ProjectPlan
 from serversherpa.plans.ops_inverse import Snapshot, Stored, check_signature, restore
 from serversherpa.plans.ops_tasks import Batch, Outline, write_outline
@@ -73,6 +72,7 @@ from serversherpa.plans.service import (
     load_state,
     recalc,
     renumber,
+    schedule_error,
     settings_of,
     tasks_out,
 )
@@ -255,22 +255,6 @@ def _newly_assigned(b: Batch, before: dict[uuid.UUID, set[uuid.UUID]]
             for pid in sorted((added & after.get(tid, set())) - before.get(tid, set()), key=str):
                 out.setdefault(pid, []).append(tid)
     return out
-
-
-def schedule_error(state: PlanState, exc: ScheduleError) -> HTTPException:
-    """422 with the engine's code, the tasks at fault and their display IDs
-    in the outline the batch built (sorted). A link a summary cannot take
-    is named as well (`link_ids`): a task that becomes a summary keeps its
-    finish links, and the batch fails rather than drop one."""
-    display = {str(tid): i + 1 for i, tid in enumerate(state.order)}
-    extra = {}
-    if isinstance(exc, SummaryLinkError):
-        parents = {t.parent_id for t in state.tasks.values() if t.parent_id is not None}
-        extra["link_ids"] = sorted(
-            str(lk.id) for lk in state.links.values()
-            if lk.successor_id in parents and lk.link_type not in SUMMARY_LINK_TYPES)
-    return err(422, exc.code, task_ids=list(exc.task_ids),
-               display_ids=sorted(display[t] for t in exc.task_ids if t in display), **extra)
 
 
 async def run_batch(db: AsyncSession, plan: ProjectPlan, ops: Sequence,

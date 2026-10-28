@@ -18,8 +18,17 @@ from serversherpa.plans.calendar import CalendarError, WorkCalendar
 from serversherpa.plans.floating import format_floating, parse_floating
 from serversherpa.plans.models import PlanTask
 from serversherpa.plans.ops_progress import UpdateProjectOp
-from serversherpa.plans.schemas import OpsIn, OpsOut, PlanCreateIn, PlanOut, UpdateProjectIn
-from serversherpa.plans.service import err
+from serversherpa.plans.schemas import (
+    BaselineIn,
+    OpsIn,
+    OpsOut,
+    PlanCreateIn,
+    PlanOut,
+    PlanPatchIn,
+    PlanVersionOut,
+    UpdateProjectIn,
+)
+from serversherpa.plans.service import PlanState, err
 from serversherpa.services.audit import audit
 
 router = APIRouter(tags=["plans"])
@@ -149,3 +158,88 @@ async def update_project(
         actor, changes={name: format_floating(value) for name, value in moments.items()})
     await db.commit()
     return out
+
+
+async def _answer(db: DbSession, state: PlanState, actor: AuthContext) -> PlanOut:
+    """The plan after a plan-level write, serialized inside the write's
+    transaction, then committed."""
+    out = await service.plan_out(db, state, actor)
+    await db.commit()
+    return out
+
+
+@router.patch("/plans/{plan_id}", response_model=PlanOut)
+async def patch_plan(
+    plan_id: uuid.UUID,
+    body: PlanPatchIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("project_plans", "change"),
+) -> PlanOut:
+    """Plan settings: the overrides, calendar, project start, timezone,
+    status date and owner (PlanPatchIn has the rules)."""
+    plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
+    state = await service.patch_plan(db, plan, body, actor)
+    return await _answer(db, state, actor)
+
+
+@router.post("/plans/{plan_id}/lock", response_model=PlanOut)
+async def lock_plan(
+    plan_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("project_plans", "change"),
+) -> PlanOut:
+    """Lock the schedule: then only progress edits (ops.is_progress_only,
+    Update project) and a PATCH of the status date or owner are accepted."""
+    plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
+    service.set_lock(db, plan, actor, locked=True)
+    return await _answer(db, await service.load_state(db, plan), actor)
+
+
+@router.delete("/plans/{plan_id}/lock", response_model=PlanOut)
+async def unlock_plan(
+    plan_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("project_plans", "change"),
+) -> PlanOut:
+    plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
+    service.set_lock(db, plan, actor, locked=False)
+    return await _answer(db, await service.load_state(db, plan), actor)
+
+
+@router.post("/plans/{plan_id}/baseline", response_model=PlanOut)
+async def set_baseline(
+    plan_id: uuid.UUID,
+    db: DbSession,
+    body: BaselineIn | None = None,
+    actor: AuthContext = require_permission("project_plans", "change"),
+) -> PlanOut:
+    """Set the baseline (the one there is): every task's start, finish and
+    duration. 409 `baseline_exists` {set_at} unless `replace`."""
+    plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
+    state = await service.load_state(db, plan)
+    service.set_baseline(db, state, actor, replace=body is not None and body.replace)
+    return await _answer(db, state, actor)
+
+
+@router.delete("/plans/{plan_id}/baseline", response_model=PlanOut)
+async def clear_baseline(
+    plan_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("project_plans", "change"),
+) -> PlanOut:
+    plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
+    state = await service.load_state(db, plan)
+    service.clear_baseline(db, state, actor)
+    return await _answer(db, state, actor)
+
+
+@router.get("/plans/{plan_id}/version", response_model=PlanVersionOut)
+async def plan_version(
+    plan_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("project_plans", "view"),
+) -> PlanVersionOut:
+    """The plan's version, polled by an open tab to notice another admin's
+    change; every write bumps it."""
+    plan = await service.plan_for_actor(db, plan_id, actor)
+    return await service.version_out(db, plan)

@@ -67,6 +67,12 @@ _MINUTE = timedelta(minutes=1)
 _HHMM = re.compile(r"([01][0-9]|2[0-3]):([0-5][0-9])")
 _ISO_DATE = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})")
 _UNIT_KEYS = ("hours_per_day", "hours_per_week", "days_per_month")
+# the most each unit key can be: the hours in a day and in a week, the days
+# in the longest month
+_UNIT_MAX = {"hours_per_day": 24, "hours_per_week": 168, "days_per_month": 31}
+_DEFAULT_KEYS = ("default_start", "default_end")
+_CALENDAR_KEYS = frozenset({"week", "exceptions", *_UNIT_KEYS, *_DEFAULT_KEYS})
+_EXCEPTION_KEYS = frozenset({"date", "name", "hours"})
 
 
 class CalendarError(ValueError):
@@ -181,7 +187,9 @@ class WorkCalendar:
         Interval times are `HH:MM`; `24:00` is valid as an interval end only.
         `week` must name all seven days; `exceptions`, the three unit keys and
         the two default times keep the Standard value when missing or null.
-        The input is only read, never kept or modified."""
+        A unit key is a positive number of at most 24 hours a day, 168 hours
+        a week, 31 days a month. The input is only read, never kept or
+        modified. (A write stores `clean_calendar` instead.)"""
         if not isinstance(data, dict):
             raise _bad("calendar must be an object")
         week = data.get("week")
@@ -219,6 +227,8 @@ class WorkCalendar:
             is_number = isinstance(value, (int, float)) and not isinstance(value, bool)
             if value is not None and not is_number:
                 raise _bad(f"calendar.{key} must be a number")
+            if is_number and value > _UNIT_MAX[key]:
+                raise _bad(f"calendar.{key} must be at most {_UNIT_MAX[key]}")
         try:
             units = Units.from_calendar(data)
         except ValueError as exc:
@@ -425,3 +435,38 @@ class WorkCalendar:
                 total += weeks * self._week_work
                 day += timedelta(weeks=weeks)
         return total // _MINUTE
+
+
+def clean_calendar(data) -> dict:
+    """The calendar a write stores (plan settings, the system section): the
+    checks of `from_json`, and a key it does not know (in the calendar, its
+    week or an exception) is refused too, since it would be stored without
+    meaning anything. Answers a new dict with every key: a missing or null
+    unit key or default time takes the Standard value, the week is Monday
+    first, the exceptions are by date, each with its `name` (null when
+    none). Raises `CalendarError` (`bad_calendar`); the input is only read."""
+    WorkCalendar.from_json(data)
+    unknown = sorted(str(key) for key in data if key not in _CALENDAR_KEYS)
+    if unknown:
+        raise _bad(f"calendar: {_shown(unknown[0])} is not a calendar setting")
+    unknown = sorted(str(key) for key in data["week"] if key not in DAY_KEYS)
+    if unknown:
+        raise _bad(f"calendar.week: {_shown(unknown[0])} is not a day (mon ... sun)")
+    exceptions = []
+    for index, item in enumerate(data.get("exceptions") or []):
+        unknown = sorted(str(key) for key in item if key not in _EXCEPTION_KEYS)
+        if unknown:
+            raise _bad(f"exceptions[{index}]: {_shown(unknown[0])} is not an exception field")
+        exceptions.append({"date": item["date"], "name": item.get("name"),
+                           "hours": [list(pair) for pair in item["hours"]]})
+    exceptions.sort(key=lambda item: item["date"])
+
+    def kept(key: str):
+        value = data.get(key)
+        return STANDARD_CALENDAR[key] if value is None else value
+
+    return {
+        "week": {key: [list(pair) for pair in data["week"][key]] for key in DAY_KEYS},
+        "exceptions": exceptions,
+        **{key: kept(key) for key in (*_UNIT_KEYS, *_DEFAULT_KEYS)},
+    }

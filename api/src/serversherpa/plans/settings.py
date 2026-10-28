@@ -4,8 +4,12 @@ them. The route in api/routes/system.py is the only writer of the system
 section; a plan's overrides live in `project_plans.settings`.
 
 The calendar is deliberately not part of `PlanSettings`: a new plan copies
-the system calendar and then owns its own."""
+the system calendar and then owns its own.
 
+`system_view` is the section as GET|PUT /system/project-plans serve it;
+`merge_overrides` applies a PATCH to a plan's overrides."""
+
+import copy
 from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.system.config_store import DEFAULTS, read_section
 
 SECTION = "project_plans"
+# the nested groups, merged key by key (the calendar is replaced whole)
+GROUPS = ("completion", "reminders")
 
 
 @dataclass(frozen=True)
@@ -91,3 +97,40 @@ def effective(system: dict, overrides: dict | None) -> PlanSettings:
         reminders=Reminders(**{**reminders,
                                "offsets_days": tuple(reminders["offsets_days"])}),
     )
+
+
+def system_view(system: dict) -> dict:
+    """The system section (from `load_system`) with every key, each group
+    filled key by key the way `effective` reads it: a missing or null value
+    is the built-in default. A deep copy: the section shares its nested
+    values with config_store.DEFAULTS, which must never change."""
+    base = DEFAULTS[SECTION]
+    view = {key: system[key] if system.get(key) is not None else base[key]
+            for key in base if key not in GROUPS}
+    for name in GROUPS:
+        view[name] = _group(name, system, {})
+    return copy.deepcopy(view)
+
+
+def merge_overrides(current: dict | None, patch: dict) -> dict:
+    """A plan's overrides with a PATCH's `settings` applied: each key sent
+    replaces that override and None removes it (the plan inherits again);
+    inside `completion` / `reminders` the same, key by key, and None for a
+    whole group removes all of it. Null values and emptied groups are left
+    out of the result, so `{}` inherits everything. Neither input changes."""
+    merged = copy.deepcopy(current or {})
+    for key, value in patch.items():
+        if key in GROUPS and value is not None:
+            group = merged.get(key)
+            merged[key] = {**(group if isinstance(group, dict) else {}), **value}
+        else:
+            merged[key] = copy.deepcopy(value)
+    out = {}
+    for key, value in merged.items():
+        if key in GROUPS and isinstance(value, dict):
+            value = {k: v for k, v in value.items() if v is not None}
+            if not value:
+                continue
+        if value is not None:
+            out[key] = value
+    return out

@@ -1,6 +1,7 @@
 """Project-plan settings: the system_config `project_plans` section and the
 effective (system + per-plan override) view the services read."""
 
+import copy
 import dataclasses
 import json
 
@@ -14,6 +15,8 @@ from serversherpa.plans.settings import (
     Reminders,
     effective,
     load_system,
+    merge_overrides,
+    system_view,
 )
 from serversherpa.system.config_store import DEFAULTS
 
@@ -175,3 +178,34 @@ async def test_stored_null_in_a_group_keeps_the_other_stored_keys(db):
                                             "completion": {"subtasks": None}})
     assert got.reminders.send_time == "09:30"
     assert got.completion.subtasks == "cascade"
+
+
+# --- the system view and merging a PATCH into a plan's overrides ------------------
+
+
+def test_system_view_fills_each_group_key_by_key():
+    stored = {"reminders": {"offsets_days": [9], "send_time": None},
+              "honor_constraints": None, "critical_slack_days": 3}
+    view = system_view(stored)
+    assert view == {**DEFAULTS[SECTION], "critical_slack_days": 3,
+                    "reminders": {**DEFAULTS[SECTION]["reminders"], "offsets_days": [9]}}
+    # a deep copy: the shared defaults never change through it
+    view["calendar"]["exceptions"].append({"date": "2026-11-26", "hours": []})
+    view["reminders"]["offsets_days"].append(1)
+    assert DEFAULTS[SECTION]["calendar"]["exceptions"] == []
+    assert system_view({})["reminders"]["offsets_days"] == [3, 1]
+
+
+def test_merge_overrides_key_by_key():
+    current = {"completion": {"subtasks": "block", "predecessors": None},
+               "show_times": True, "calendar": {"kept": "as is"}}
+    before = copy.deepcopy(current)
+    got = merge_overrides(current, {"completion": {"predecessors": "warn"},
+                                    "show_times": None, "reminders": {"enabled": False}})
+    assert got == {"completion": {"subtasks": "block", "predecessors": "warn"},
+                   "reminders": {"enabled": False}, "calendar": {"kept": "as is"}}
+    assert current == before
+    # null for a whole group, or for its last key, leaves nothing behind
+    assert merge_overrides(got, {"completion": None, "reminders": {"enabled": None},
+                                 "calendar": None}) == {}
+    assert merge_overrides(None, {}) == {}
