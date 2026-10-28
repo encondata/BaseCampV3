@@ -7,9 +7,13 @@ All datetimes are naive wall-clock times.
 """
 
 import copy
+import os
 import random
+import subprocess
+import sys
 from bisect import bisect_left
 from datetime import date, datetime, time, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -908,6 +912,18 @@ def test_clean_calendar_caps_the_exception_list():
         clean_calendar(calendar_json(exceptions=listed))
     assert caught.value.code == "bad_calendar"
     assert str(MAX_RESTORE_ROWS) in str(caught.value)
+
+
+def test_calendar_stands_below_the_schemas():
+    """The pure calendar layer does not import the pydantic schemas (they
+    share the row cap through plans/limits.py)."""
+    api = Path(__file__).resolve().parents[1]
+    code = ("import sys, serversherpa.plans.calendar; "
+            "print('serversherpa.plans.schemas' in sys.modules)")
+    done = subprocess.run([sys.executable, "-c", code], cwd=api, capture_output=True,
+                          text=True, check=True,
+                          env={**os.environ, "PYTHONPATH": str(api / "src")})
+    assert done.stdout.strip() == "False"
 
 
 def test_units_from_calendar():

@@ -46,12 +46,13 @@ from serversherpa.db.models import (
 )
 from serversherpa.learning.codes import initiative_site_id
 from serversherpa.learning.emails import ADDRESS_COLUMNS, listed_address
-from serversherpa.plans.calendar import STANDARD_CALENDAR, WorkCalendar
+from serversherpa.plans.calendar import STANDARD_CALENDAR, CalendarError, WorkCalendar
 from serversherpa.plans.durations import Duration, Units, format_duration, format_lag
 from serversherpa.plans.engine import (
     SUMMARY_LINK_TYPES,
     EngineSettings,
     LinkIn,
+    OutlineLinkError,
     ScheduleError,
     SummaryLinkError,
     TaskIn,
@@ -357,11 +358,29 @@ def recalc(state: PlanState, settings: PlanSettings) -> set[uuid.UUID]:
     return changed
 
 
+def calendar_error(exc: CalendarError) -> HTTPException:
+    """422 with the calendar's code (`bad_calendar`, `no_working_time`)
+    and its message, which names the setting or the moment at fault."""
+    return err(422, exc.code, message=str(exc))
+
+
+def _ancestors(state: PlanState, task_id: uuid.UUID) -> set[uuid.UUID]:
+    """The task's summaries, up to the top level."""
+    out: set[uuid.UUID] = set()
+    current = state.tasks[task_id].parent_id
+    while current is not None and current not in out:
+        out.add(current)
+        current = state.tasks[current].parent_id
+    return out
+
+
 def schedule_error(state: PlanState, exc: ScheduleError) -> HTTPException:
     """422 with the engine's code, the tasks at fault and their display IDs
-    in the outline the write built (sorted). A link a summary cannot take
-    is named as well (`link_ids`): a task that becomes a summary keeps its
-    finish links, and the batch fails rather than drop one."""
+    in the outline the write built (sorted). A link the outline cannot keep
+    is named as well (`link_ids`): one a summary cannot take (a task that
+    becomes a summary keeps its finish links, and the batch fails rather
+    than drop one), or one joining a task to its own summary or subtask
+    (link 1 -> 2, then indent 2 under 1)."""
     display = {str(tid): i + 1 for i, tid in enumerate(state.order)}
     extra = {}
     if isinstance(exc, SummaryLinkError):
@@ -369,6 +388,11 @@ def schedule_error(state: PlanState, exc: ScheduleError) -> HTTPException:
         extra["link_ids"] = sorted(
             str(lk.id) for lk in state.links.values()
             if lk.successor_id in parents and lk.link_type not in SUMMARY_LINK_TYPES)
+    elif isinstance(exc, OutlineLinkError):
+        extra["link_ids"] = sorted(
+            str(lk.id) for lk in state.links.values()
+            if lk.predecessor_id in _ancestors(state, lk.successor_id)
+            or lk.successor_id in _ancestors(state, lk.predecessor_id))
     return err(422, exc.code, task_ids=list(exc.task_ids),
                display_ids=sorted(display[t] for t in exc.task_ids if t in display), **extra)
 

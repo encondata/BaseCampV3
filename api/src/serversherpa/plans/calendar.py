@@ -31,7 +31,7 @@ from datetime import date, datetime, time, timedelta
 from itertools import pairwise
 
 from serversherpa.plans.durations import Units
-from serversherpa.plans.schemas import MAX_RESTORE_ROWS
+from serversherpa.plans.limits import MAX_RESTORE_ROWS
 from serversherpa.services.text import has_control_chars
 
 STANDARD_CALENDAR: dict = {
@@ -76,7 +76,7 @@ _DEFAULT_KEYS = ("default_start", "default_end")
 _CALENDAR_KEYS = frozenset({"week", "exceptions", *_UNIT_KEYS, *_DEFAULT_KEYS})
 _EXCEPTION_KEYS = frozenset({"date", "name", "hours"})
 # the most exceptions a stored calendar lists: the cap the restore op's
-# lists have (plans/schemas.py)
+# lists have (plans/limits.py)
 MAX_EXCEPTIONS = MAX_RESTORE_ROWS
 
 
@@ -452,8 +452,9 @@ def clean_calendar(data) -> dict:
     """The calendar a write stores (plan settings, the system section): the
     checks of `from_json`, and a key it does not know (in the calendar, its
     week or an exception) is refused too, since it would be stored without
-    meaning anything. An exception's name is one line of text (no control
-    characters), and there are at most MAX_EXCEPTIONS exceptions.
+    meaning anything. So is a week with no working time on any day. An
+    exception's name is one line of text (no control characters), and
+    there are at most MAX_EXCEPTIONS exceptions.
 
     Answers a new dict in one canonical form, so the same calendar sent in
     another order stores the same value: every key (a missing or null unit
@@ -471,6 +472,10 @@ def clean_calendar(data) -> dict:
     unknown = sorted(str(key) for key in data["week"] if key not in DAY_KEYS)
     if unknown:
         raise _bad(f"calendar.week: {_shown(unknown[0])} is not a day (mon ... sun)")
+    # every plan scheduled on it would fail `no_working_time` (the system
+    # calendar is copied into each new plan); exceptions do not count
+    if not any(data["week"][key] for key in DAY_KEYS):
+        raise _bad("calendar.week: the week has no working time")
     exceptions = []
     for index, item in enumerate(data.get("exceptions") or []):
         unknown = sorted(str(key) for key in item if key not in _EXCEPTION_KEYS)

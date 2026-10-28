@@ -237,6 +237,30 @@ async def test_full_percent_needs_an_actual_finish(client, db):
     assert _by_id(body)[a]["actual_start"] is None
 
 
+async def test_full_percent_keeps_its_actual_finish(client, db):
+    """Clearing the actual finish of a task already at 100% is the same
+    422 as sending 100 with no actual finish, in its own batch or in the
+    one that completed it; with a lower % in the same op it clears."""
+    hdrs, _move, plan = await _setup(client, db)
+    a = (await _add(client, hdrs, plan, "A"))["A"]
+    await _ok(client, hdrs, plan, [_complete(a)])
+    for batch in ([_update(a, actual_finish=None)],
+                  [_update(a, notes="done", actual_finish=None)]):
+        detail = await _fails(client, hdrs, plan, batch, 422, "bad_field")
+        assert detail["field"] == "actual_finish"
+    got = _named(await _get(client, hdrs, plan))["A"]
+    assert got["percent_complete"] == 100 and got["actual_finish"] == "2026-11-02T17:00"
+
+    b = (await _add(client, hdrs, plan, "B"))["B"]
+    detail = await _fails(client, hdrs, plan, [_pct([b], 100), _update(b, actual_finish=None)],
+                          422, "bad_field")
+    assert detail["field"] == "actual_finish"
+
+    body = await _ok(client, hdrs, plan, [_update(a, percent_complete=50, actual_finish=None)])
+    assert _by_id(body)[a]["percent_complete"] == 50
+    assert _by_id(body)[a]["actual_finish"] is None
+
+
 # ── summaries ────────────────────────────────────────────────────────
 
 
@@ -605,6 +629,22 @@ async def test_mark_on_track(client, db):
     body = await _ok(client, hdrs, plan, [_on_track(ids["A"])])
     assert _by_id(body)[ids["A"]]["percent_complete"] == 100
     assert _by_id(body)[ids["A"]]["completed_by_name"] is not None
+
+
+async def test_mark_on_track_flagged_milestone_with_duration(client, db):
+    """A milestone flag on a task with a duration does not make it 0/100
+    (MS Project schedules it like a task); only a zero duration does."""
+    hdrs, move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "F", duration="5d")
+    body = await _ok(client, hdrs, plan, [_update(ids["F"], is_milestone=True)])
+    flagged = _by_id(body)[ids["F"]]
+    assert flagged["is_milestone"] is True and flagged["duration_minutes"] == 5 * 480
+    row = await _plan_row(db, move)
+    row.status_date = dt("2026-11-04 12:00")
+    await db.commit()
+    body = await _ok(client, hdrs, plan, [_on_track(ids["F"])])
+    # Mon 08:00 to Wed 12:00 is 20 of the 40 hours, as for any task
+    assert _by_id(body)[ids["F"]]["percent_complete"] == 50
 
 
 async def test_mark_on_track_summary_and_rules(client, db):

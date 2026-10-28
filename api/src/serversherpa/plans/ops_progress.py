@@ -81,10 +81,11 @@ def fresh(b: Batch) -> None:
 
 def on_track(b: Batch, task: PlanTask, moment: datetime) -> int:
     """The % of the task scheduled by `moment`: the share of its duration
-    between its start and `moment`, rounded half up; a milestone (or a
-    zero-duration task) is 100 once reached, else 0."""
+    between its start and `moment`, rounded half up; a zero-duration task
+    is 100 once reached, else 0. A milestone flag on a task with a duration
+    changes nothing here (MS Project schedules it as a task)."""
     start, finish = task.start, task.finish
-    if task.is_milestone or task.duration_minutes == 0:
+    if task.duration_minutes == 0:
         return 100 if start <= moment else 0
     if moment >= finish:
         return 100

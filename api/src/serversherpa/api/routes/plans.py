@@ -143,7 +143,7 @@ async def update_project(
     try:
         end_of_day = service.calendar_of(plan).default_end
     except CalendarError as exc:
-        raise err(422, exc.code) from None
+        raise service.calendar_error(exc) from None
     moments = {}
     for name in ("status_date", "complete_through"):
         text = getattr(body, name)

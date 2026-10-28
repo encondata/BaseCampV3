@@ -252,9 +252,36 @@ async def test_link_to_parent(client, db):
     await _ok(client, hdrs, plan, [{"op": "indent", "ids": [ids["A"]]}])
     detail = await _fails(client, hdrs, plan, [_link(ids["A"], ids["S"])],
                           422, "link_to_outline")
-    assert detail["display_ids"] == [1, 2]
+    assert detail["display_ids"] == [1, 2] and len(detail["link_ids"]) == 1
     await _fails(client, hdrs, plan, [_update(ids["A"], predecessors="1")],
                  422, "link_to_outline")
+
+
+async def test_link_to_outline_names_the_links(client, db):
+    """Link 1 -> 2, then indent 2 under 1: the error names the link the
+    outline cannot keep (as bad_summary_link does), and only that one."""
+    hdrs, _move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A", "B", "C", "X")
+    body = await _ok(client, hdrs, plan, [_link(ids["A"], ids["B"]), _link(ids["A"], ids["C"]),
+                                          _link(ids["X"], ids["C"])])
+    by_ends = {(lk["predecessor_id"], lk["successor_id"]): lk["id"] for lk in body["links"]}
+    # B and C both go under A; X -> C stays a plain link
+    detail = await _fails(client, hdrs, plan, [{"op": "indent", "ids": [ids["B"], ids["C"]]}],
+                          422, "link_to_outline")
+    assert detail["link_ids"] == sorted([by_ends[(ids["A"], ids["B"])],
+                                         by_ends[(ids["A"], ids["C"])]])
+    assert detail["display_ids"] == [1, 2, 3]
+    # a grandchild's link to its grandparent is named the same way
+    await _ok(client, hdrs, plan, [{"op": "delete_link", "id": by_ends[(ids["A"], ids["C"])]}])
+    detail = await _fails(client, hdrs, plan, [{"op": "indent", "ids": [ids["B"]]},
+                                               {"op": "indent", "ids": [ids["C"]]},
+                                               {"op": "indent", "ids": [ids["C"]]},
+                                               {"op": "delete_link",
+                                                "id": by_ends[(ids["A"], ids["B"])]},
+                                               _link(ids["C"], ids["A"])],
+                          422, "link_to_outline")
+    assert len(detail["link_ids"]) == 1
+    assert detail["display_ids"] == [1, 3]
 
 
 async def test_finish_link_into_a_summary(client, db):

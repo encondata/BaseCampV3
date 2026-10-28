@@ -55,7 +55,7 @@ from serversherpa.plans.calendar import CalendarError
 from serversherpa.plans.engine import ScheduleError
 from serversherpa.plans.models import ProjectPlan
 from serversherpa.plans.ops_inverse import Snapshot, Stored, check_signature, restore
-from serversherpa.plans.ops_tasks import Batch, Outline, write_outline
+from serversherpa.plans.ops_tasks import Batch, Outline, bad_field, write_outline
 from serversherpa.plans.schemas import (
     CompleteOp,
     MarkOnTrackOp,
@@ -66,6 +66,7 @@ from serversherpa.plans.schemas import (
 )
 from serversherpa.plans.service import (
     PlanState,
+    calendar_error,
     calendar_of,
     err,
     links_out,
@@ -105,6 +106,11 @@ async def _update_task(b: Batch, op: UpdateTaskOp) -> None:
     if "percent_complete" in sent:
         ops_progress.typed_percent(b, op)
         return
+    # a 100% leaf has an actual finish: typed_percent's rule, for a task
+    # already at 100% (a summary's own check has refused this op by now)
+    if ("actual_finish" in sent and op.fields.actual_finish is None
+            and b.task(op.id).percent_complete == 100):
+        raise bad_field("actual_finish")
     if sent & _ACTUALS:
         ops_progress.actuals_typed(b, op.id, sent & _ACTUALS)
     if sent - {"notes"}:
@@ -269,7 +275,7 @@ async def run_batch(db: AsyncSession, plan: ProjectPlan, ops: Sequence,
     except ScheduleError as exc:
         raise schedule_error(state, exc) from None
     except CalendarError as exc:
-        raise err(422, exc.code) from None
+        raise calendar_error(exc) from None
 
     plan.version += 1
     plan.updated_by, plan.updated_at = actor.person.id, result.now

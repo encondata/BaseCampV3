@@ -298,6 +298,10 @@ async def put_project_plan_settings(
     every key but the calendar live; a new plan copies the calendar. A
     change to a scheduling key reschedules the plans that inherit it, in
     this transaction (plan_writes.recalc_inheriting)."""
+    # locked before it is read, so two saves at once cannot both start from
+    # the same keys and drop one's change (read_section then reads this row)
+    row = await db.get(SystemConfig, PLANS_SECTION, with_for_update=True,
+                       populate_existing=True)
     stored = system_view(await read_section(db, PLANS_SECTION))
     patch = body.model_dump(exclude_unset=True)
     if "calendar" in patch:
@@ -310,7 +314,6 @@ async def put_project_plan_settings(
             patch["default_duration"], patch.get("calendar", stored["calendar"]),
             "default_duration")
     data = {**stored, **patch}
-    row = await db.get(SystemConfig, PLANS_SECTION)
     if row is None:
         row = SystemConfig(section=PLANS_SECTION)
         db.add(row)

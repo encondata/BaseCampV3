@@ -14,6 +14,7 @@ from typing import Annotated, Any, Literal
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from serversherpa.plans.durations import DurationError, Units, parse_duration
+from serversherpa.plans.limits import MAX_RESTORE_ROWS
 
 
 class PlanCreateIn(BaseModel):
@@ -143,7 +144,6 @@ class PlanOut(BaseModel):
 # where it does not (name, duration, mode, ...).
 
 MAX_OPS = 5000          # one paste of a whole plan, with room to spare
-MAX_RESTORE_ROWS = 20_000   # rows in each list of one restore op
 
 
 class TaskFields(BaseModel):
@@ -344,7 +344,8 @@ class CompleteOp(BaseModel):
 class MarkOnTrackOp(BaseModel):
     """MS Project's Mark on Track: each task's % becomes the share of its
     duration scheduled before the status date (the plan's, else now); a
-    milestone is 100 once it is reached, else 0. A summary marks every leaf
+    zero-duration milestone is 100 once it is reached, else 0 (one flagged
+    with a duration counts as a task). A summary marks every leaf
     below it. Reaching 100 goes through the completion rules, so it takes a
     `confirm` like `set_percent`."""
 

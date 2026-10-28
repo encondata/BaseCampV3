@@ -8,8 +8,9 @@ Reference week (Standard calendar): the plan starts Mon 2026-11-02 08:00."""
 import copy
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 
+from serversherpa.db.engine import get_engine
 from serversherpa.db.models import AuditLog, Person
 from serversherpa.plans import plan_writes, service
 from serversherpa.plans.calendar import STANDARD_CALENDAR
@@ -225,7 +226,9 @@ async def test_patch_maps_engine_errors(client, db):
     # the work runs past the last date the calendar reaches
     detail = await _refused(client, hdrs, plan, 422, "no_working_time",
                             project_start="9999-12-31")
-    assert set(detail) == {"code"}
+    # the calendar's own words, as a bad_calendar carries them
+    assert detail == {"code": "no_working_time",
+                      "message": "the work runs past the last date the calendar can reach"}
     await _loop(db, ids)
     detail = await _refused(client, hdrs, plan, 422, "link_cycle",
                             settings={"honor_constraints": False})
@@ -345,6 +348,38 @@ async def test_bad_calendar(client, db):
         detail = await _refused(client, hdrs, plan, 422, "bad_calendar", calendar=calendar)
         assert "message" in detail
     assert (await _get(client, hdrs, plan))["calendar"] == STANDARD_CALENDAR
+
+
+NO_WORKING_WEEK = "calendar.week: the week has no working time"
+
+
+async def test_patch_calendar_with_no_working_week(client, db):
+    """A week with no working interval on any day is refused as a bad
+    calendar, whatever its exceptions add (MS Project wants one working
+    day), before the plan is scheduled on it."""
+    hdrs, _move, plan = await _setup(client, db)
+    await _add(client, hdrs, plan, "A")
+    for exceptions in ([], [{"date": "2026-11-07", "hours": [["08:00", "17:00"]]}]):
+        detail = await _refused(client, hdrs, plan, 422, "bad_calendar",
+                                calendar=_calendar(week=_week([]), exceptions=exceptions))
+        assert detail["message"] == NO_WORKING_WEEK
+    # one working day is enough
+    week = {**_week([]), "sat": [["08:00", "12:00"]]}
+    assert (await _patched(client, hdrs, plan, calendar=_calendar(week=week)))[
+        "calendar"]["week"] == week
+
+
+async def test_system_calendar_with_no_working_week(client, db):
+    """The system calendar is copied into every new plan: one with no
+    working time is refused, not stored."""
+    hdrs, _move, _plan = await _setup(client, db)
+    resp = await client.put("/system/project-plans", headers=hdrs,
+                            json={"calendar": _calendar(week=_week([]))})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "bad_calendar", "message": NO_WORKING_WEEK}
+    got = (await client.get("/system/project-plans", headers=hdrs)).json()
+    assert got["calendar"] == STANDARD_CALENDAR
+    assert await _audits(db, "project_plans_config_update") == []
 
 
 async def test_bad_timezone(client, db):
@@ -687,6 +722,26 @@ async def test_system_default_duration_is_capped(client, db):
     assert resp.status_code == 422, resp.text
     assert (await client.get("/system/project-plans", headers=hdrs)).json()[
         "default_duration"] == "1d"
+
+
+async def test_system_put_locks_the_section_row(client, db):
+    """The PUT reads the section FOR UPDATE before anything else reads it,
+    so two admins saving at once cannot both start from the same keys and
+    drop one's change."""
+    hdrs, _move, _plan = await _setup(client, db)
+    await _put_system(client, hdrs, critical_slack_days=1)        # the row exists
+    engine = get_engine().sync_engine
+    reads: list[str] = []
+
+    def listener(conn, cursor, statement, parameters, context, executemany):
+        if "FROM system_config" in statement and "project_plans" in str(parameters):
+            reads.append(statement)
+    event.listen(engine, "before_cursor_execute", listener)
+    try:
+        await _put_system(client, hdrs, default_duration="2d")
+    finally:
+        event.remove(engine, "before_cursor_execute", listener)
+    assert reads and "FOR UPDATE" in reads[0], reads
 
 
 async def test_system_non_finite_slack_days(client, db):

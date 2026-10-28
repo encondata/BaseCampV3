@@ -15,7 +15,6 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, time
 from zoneinfo import available_timezones
 
-from fastapi import HTTPException
 from pydantic import ValidationError
 from pydantic_core import to_jsonable_python
 from sqlalchemy import or_, select
@@ -30,6 +29,7 @@ from serversherpa.plans.models import ProjectPlan
 from serversherpa.plans.schemas import PlanPatchIn, PlanSettingsOverrides, PlanVersionOut
 from serversherpa.plans.service import (
     PlanState,
+    calendar_error,
     err,
     is_staff,
     load_state,
@@ -113,10 +113,6 @@ def check_overrides(raw) -> dict:
         raise err(422, "bad_field", field=".".join(["settings", *path])) from None
 
 
-def _calendar_error(exc: CalendarError) -> HTTPException:
-    return err(422, exc.code, message=str(exc))
-
-
 def check_default_duration(text: str | None, calendar: dict, field: str) -> None:
     """A default duration within the 10-year cap every plan duration has,
     in the units of `calendar` (a calendar as stored): else 422 `bad_field`
@@ -127,7 +123,7 @@ def check_default_duration(text: str | None, calendar: dict, field: str) -> None
     try:
         units = WorkCalendar.from_json(calendar).units
     except CalendarError as exc:
-        raise _calendar_error(exc) from None
+        raise calendar_error(exc) from None
     try:
         duration = parse_duration(text, units)
     except DurationError:
@@ -162,13 +158,13 @@ async def patch_plan(db: AsyncSession, plan: ProjectPlan, body: PlanPatchIn,
         try:
             new["calendar"] = clean_calendar(body.calendar)
         except CalendarError as exc:
-            raise _calendar_error(exc) from None
+            raise calendar_error(exc) from None
     if sent & {"project_start", "status_date"}:
         # a date alone takes its time from the calendar the plan will have
         try:
             calendar = WorkCalendar.from_json(new.get("calendar", plan.calendar))
         except CalendarError as exc:
-            raise _calendar_error(exc) from None
+            raise calendar_error(exc) from None
         if "project_start" in sent:
             new["project_start"] = _moment(body.project_start, calendar.default_start,
                                            "project_start")
@@ -200,7 +196,7 @@ async def patch_plan(db: AsyncSession, plan: ProjectPlan, body: PlanPatchIn,
     except ScheduleError as exc:
         raise schedule_error(state, exc) from None
     except CalendarError as exc:
-        raise err(422, exc.code) from None
+        raise calendar_error(exc) from None
     now = datetime.now(UTC)
     _stamp(state, moved, actor, now)
     _touch(plan, actor, now)

@@ -397,6 +397,31 @@ async def test_duration_cap(client, db):
                  422, "bad_duration")
 
 
+async def test_calendar_errors_carry_the_calendars_message(client, db):
+    """A batch the calendar cannot place answers its code and its message,
+    the body a PATCH with a bad calendar has; so does a stored calendar the
+    calendar refuses to read, on the ops and on Update project."""
+    hdrs, move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A", duration="2d")
+    # Fri 9999-12-31 is the last day there is: two days of work run off it
+    detail = await _fails(client, hdrs, plan, [_update(ids["A"], start="9999-12-31")],
+                          422, "no_working_time")
+    assert set(detail) == {"code", "message"} and detail["message"], detail
+
+    version = (await _get(client, hdrs, plan))["version"]
+    row = await _plan_row(db, move)
+    row.calendar = {"week": {}}
+    await db.commit()
+    detail = await _fails(client, hdrs, plan, [_update(ids["A"], name="B")],
+                          422, "bad_calendar", version=version)
+    assert detail == {"code": "bad_calendar",
+                      "message": "calendar.week is missing mon"}
+    resp = await client.post(f"/plans/{plan['id']}/update-project", headers=hdrs,
+                             json={"status_date": None})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == detail
+
+
 # ── outline ──────────────────────────────────────────────────────────
 
 
