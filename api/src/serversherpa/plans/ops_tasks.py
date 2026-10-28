@@ -174,6 +174,13 @@ class Batch:
     outline: Outline
     notices: list[dict] = field(default_factory=list)
     temp_ids: dict[str, uuid.UUID] = field(default_factory=dict)
+    # the outline order when the batch began: what Predecessors text numbers
+    start_order: list[uuid.UUID] = field(default_factory=list)
+    # task id -> people a set_assignees op put on it (plans/ops.py works out
+    # who is newly assigned once the batch is done)
+    added_people: dict[uuid.UUID, set[uuid.UUID]] = field(default_factory=dict)
+    # the plan's resources as (kind, id), read once on first use
+    resources: set[tuple[str, uuid.UUID]] | None = None
 
     @property
     def units(self) -> Units:
@@ -354,7 +361,9 @@ def set_duration(task: PlanTask, minutes: int, unit: str | None = None,
 
 
 def edit_task(b: Batch, task: PlanTask, sent: dict, *, new: bool = False) -> None:
-    """Apply the fields the client sent (a None clears) to one task."""
+    """Apply the fields the client sent (a None clears) to one task. The
+    Predecessors text is only checked for null here: it edits links, which
+    plans/ops_links.py does once the task's own fields are in."""
     for name in NOT_NULL & sent.keys():
         if sent[name] is None:
             raise bad_field(name)
@@ -362,8 +371,6 @@ def edit_task(b: Batch, task: PlanTask, sent: dict, *, new: bool = False) -> Non
         for name in SUMMARY_FIELDS:
             if name in sent:
                 raise err(422, "summary_field", field=name, task_id=str(task.id))
-    if "predecessors" in sent:
-        raise bad_field("predecessors")         # link ops land in Task 10
 
     if "name" in sent:
         task.name = sent["name"]

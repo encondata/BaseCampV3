@@ -5,15 +5,20 @@ generic undo (`inverse`), the schedule lock and MS Project's editing rules.
 Reference week (Standard calendar): the plan starts Mon 2026-11-02 08:00."""
 
 import copy
+import json
 import uuid
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from serversherpa.db.models import AuditLog, InitiativePerson, Partner, Person
+from serversherpa.plans import ops, ops_inverse
 from serversherpa.plans.models import PlanAssignment, PlanLink, PlanTask, ProjectPlan
-from serversherpa.plans.ops_inverse import sign_restore
+from serversherpa.plans.ops_inverse import check_signature, sign_restore
+from serversherpa.plans.schemas import RestoreOp
 from tests.test_plans_api import _admin, _create, _initiative, _plan_row
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -898,3 +903,84 @@ async def test_restore_signature_is_bound_to_its_plan(client, db):
     # still good on the plan it was issued for
     await _ok(client, hdrs, plan, body["inverse"])
     assert [t["name"] for t in (await _get(client, hdrs, plan))["tasks"]] == ["A"]
+
+
+async def test_restore_signatures_are_checked_before_anything_runs(client, db):
+    hdrs, move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A")
+    body = await _ok(client, hdrs, plan, [_update(ids["A"], name="A2")])
+    forged = {**body["inverse"][0], "sig": "0" * 64}
+    # an op that would fail runs first in the batch, but the forgery is named
+    await _fails(client, hdrs, plan, [_update(str(uuid4()), name="X"), forged],
+                 422, "bad_restore")
+    # a structural forgery: refused for its signature, not for the stale
+    # version or the lock (it never reaches the progress-only check)
+    await _fails(client, hdrs, plan, [forged], 422, "bad_restore", version=1)
+    row = await _plan_row(db, move)
+    row.locked_at = datetime.now(UTC)
+    await db.commit()
+    await _fails(client, hdrs, plan, [forged], 422, "bad_restore")
+    assert (await _get(client, hdrs, plan))["tasks"][0]["name"] == "A2"
+
+
+async def test_restore_refuses_non_finite_numbers(client, db):
+    hdrs, _move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A")
+    body = await _ok(client, hdrs, plan, [_update(ids["A"], notes="on site")])
+    inverse = body["inverse"][0]
+    assert inverse["tasks"] == [{"id": ids["A"], "notes": None}]
+    url, headers = f"/plans/{plan['id']}/ops", {**hdrs, "content-type": "application/json"}
+    text = json.dumps({"base_version": body["version"], "ops": [inverse]})
+    assert text.count('"notes": null') == 1
+    for bad in ("NaN", "Infinity", "-Infinity"):
+        # json reads these as floats; a normalized dump would sign them as null
+        resp = await client.post(url, headers=headers,
+                                 content=text.replace('"notes": null', f'"notes": {bad}'))
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["detail"] == {"code": "bad_restore"}
+        # anywhere in the payload
+        nested = json.dumps({"base_version": body["version"], "ops": [
+            {**inverse, "links": [{"lag_minutes": "@"}]}]}).replace('"@"', bad)
+        resp = await client.post(url, headers=headers, content=nested)
+        assert resp.json()["detail"] == {"code": "bad_restore"}, resp.text
+    assert (await _get(client, hdrs, plan))["tasks"][0]["notes"] == "on site"
+
+
+def test_every_restore_field_is_signed(monkeypatch):
+    plan_id = uuid4()
+
+    class Later(RestoreOp):
+        note: str | None = None             # a field added after this test was written
+
+    monkeypatch.setattr(ops_inverse, "RestoreOp", Later)
+    sig = sign_restore(plan_id, {"op": "restore", "note": "a"})
+    assert sign_restore(plan_id, {"op": "restore", "note": "b"}) != sig
+    assert sign_restore(plan_id, {"op": "restore"}) != sig
+    check_signature(plan_id, Later(op="restore", note="a", sig=sig))
+    with pytest.raises(HTTPException) as exc:
+        check_signature(plan_id, Later(op="restore", note="b", sig=sig))
+    assert exc.value.detail == {"code": "bad_restore"}
+
+    # and each field there is today (the signature never covers itself)
+    base = {"op": "restore"}
+    for name in Later.model_fields:
+        if name not in ("op", "sig"):
+            assert sign_restore(plan_id, {**base, name: ["x"]}) != sign_restore(plan_id, base)
+    assert sign_restore(plan_id, {**base, "sig": "x"}) == sign_restore(plan_id, base)
+
+
+async def test_dangling_parent_is_refused_inside_the_batch(client, db, monkeypatch):
+    hdrs, _move, plan = await _setup(client, db)
+    ids = await _add(client, hdrs, plan, "A")
+    real = ops.apply_ops
+
+    async def dangling(db_, state, batch, actor, settings):
+        result = await real(db_, state, batch, actor, settings)
+        state.tasks[uuid.UUID(ids["A"])].parent_id = uuid4()     # no such task
+        return result
+
+    monkeypatch.setattr(ops, "apply_ops", dangling)
+    detail = await _fails(client, hdrs, plan, [_update(ids["A"], name="B")], 422, "bad_field")
+    assert detail["field"] == "parent_id"
+    got = await _get(client, hdrs, plan)
+    assert got["version"] == 2 and got["tasks"][0]["name"] == "A"

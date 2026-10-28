@@ -102,6 +102,16 @@ def _parse_entry(part: str, units: Units) -> tuple[str, str, Duration]:
     return digits, (link_type or "FS").upper(), lag
 
 
+def split_entries(text: str) -> list[str]:
+    """The entries of predecessor text, each trimmed, in the order written;
+    none for blank text. `parse_predecessors` answers one PredSpec per
+    entry in this same order, so the two line up."""
+    trimmed = text.strip(_ASCII_WHITESPACE)
+    if not trimmed:
+        return []
+    return [raw.strip(_ASCII_WHITESPACE) for raw in trimmed.split(",")]
+
+
 def parse_predecessors(
     text: str,
     units: Units,
@@ -115,15 +125,11 @@ def parse_predecessors(
     Raises PredecessorError otherwise."""
     if not isinstance(text, str):
         raise PredecessorError(f"predecessors must be text, not <{type(text).__name__}>")
-    trimmed = text.strip(_ASCII_WHITESPACE)
-    if len(trimmed) > MAX_TEXT_LENGTH:
+    if len(text.strip(_ASCII_WHITESPACE)) > MAX_TEXT_LENGTH:
         raise PredecessorError(f"predecessors are longer than {MAX_TEXT_LENGTH} characters")
-    if not trimmed:
-        return []
     specs: list[PredSpec] = []
     seen: set[int] = set()
-    for raw in trimmed.split(","):
-        part = raw.strip(_ASCII_WHITESPACE)
+    for part in split_entries(text):
         if not part:
             raise PredecessorError("empty entry: check for a stray comma")
         digits, link_type, lag = _parse_entry(part, units)

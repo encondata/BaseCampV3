@@ -161,7 +161,9 @@ class TaskFields(BaseModel):
     actual_finish: str | None = None
     notes: str | None = None
     show_on_timeline: bool | None = None
-    predecessors: str | None = None         # MS Project text (links ops, Task 10)
+    # The Predecessors cell, MS Project text ("2,3SS+1d"): replaces every
+    # link into the task (numbering: see UpdateTaskOp).
+    predecessors: str | None = None
 
 
 class AddTaskOp(BaseModel):
@@ -187,6 +189,13 @@ class AddTaskOp(BaseModel):
 
 
 class UpdateTaskOp(BaseModel):
+    """Edits one task's fields. `fields.predecessors` replaces every link
+    into the task; its numbers are display IDs in the outline order as it
+    stood when the batch began, before any of the batch's outline changes
+    (add, delete, move, indent, outdent, restore) are applied, since that
+    is the outline the text was typed against. A task added in the batch
+    cannot be named, nor one deleted earlier in it."""
+
     model_config = ConfigDict(extra="forbid")
 
     op: Literal["update_task"]
@@ -230,6 +239,58 @@ class OutdentOp(BaseModel):
     ids: list[uuid.UUID]
 
 
+class AddLinkOp(BaseModel):
+    """A link from `predecessor_id` to `successor_id`: `link_type` FS, SS,
+    FF or SF, and `lag` as lag text ("+2d", "-4h", "1ed"; negative is a
+    lead). The new link's id comes back in `OpsOut.links`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["add_link"]
+    predecessor_id: uuid.UUID
+    successor_id: uuid.UUID
+    link_type: str = "FS"
+    lag: str = "0"
+
+
+class UpdateLinkOp(BaseModel):
+    """Changes a link's type or lag; its ends never change (delete it and
+    add another)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["update_link"]
+    id: uuid.UUID
+    link_type: str | None = None
+    lag: str | None = None
+
+
+class DeleteLinkOp(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["delete_link"]
+    id: uuid.UUID
+
+
+class ResourceRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str                               # person | partner
+    id: uuid.UUID
+
+
+class SetAssigneesOp(BaseModel):
+    """Replaces the task's assignees (an empty list clears them). A new
+    assignee must be in the plan's `resources`; one the task already has
+    stays allowed after leaving that list (archived, off the team)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["set_assignees"]
+    task_id: uuid.UUID
+    resources: list[ResourceRef]
+
+
 class RestoreOp(BaseModel):
     """Puts rows back as an earlier batch found them: the `inverse` of
     every batch is one of these (plans/ops_inverse.py has the row format).
@@ -240,8 +301,9 @@ class RestoreOp(BaseModel):
     deleted.
 
     Only the server writes these: `sig` is its signature over the plan id
-    and the rest of the op, and a restore without a valid one for this
-    plan is refused (422 `bad_restore`). Send an inverse back unchanged."""
+    and every other field of the op, and a restore without a valid one for
+    this plan is refused (422 `bad_restore`). Send an inverse back
+    unchanged."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -256,7 +318,8 @@ class RestoreOp(BaseModel):
 
 
 Op = Annotated[
-    AddTaskOp | UpdateTaskOp | DeleteTasksOp | MoveTasksOp | IndentOp | OutdentOp | RestoreOp,
+    AddTaskOp | UpdateTaskOp | DeleteTasksOp | MoveTasksOp | IndentOp | OutdentOp
+    | AddLinkOp | UpdateLinkOp | DeleteLinkOp | SetAssigneesOp | RestoreOp,
     Field(discriminator="op"),
 ]
 

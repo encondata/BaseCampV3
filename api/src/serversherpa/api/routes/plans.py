@@ -100,9 +100,11 @@ async def post_ops(
     db: DbSession,
     actor: AuthContext = require_permission("project_plans", "change"),
 ) -> OpsOut:
-    """One atomic batch of edits (plans/ops.py). Anything but a progress-only
+    """One atomic batch of edits (plans/ops.py). Every restore op must carry
+    the server's signature for this plan; anything but a progress-only
     batch needs an unlocked plan and `base_version` equal to its version."""
     plan = await service.plan_for_actor(db, plan_id, actor, lock=True)
+    ops.check_restores(plan.id, body.ops)
     if not ops.is_progress_only(body.ops):
         if plan.locked_at is not None:
             raise err(409, "plan_locked")

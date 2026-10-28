@@ -5,22 +5,30 @@ as they were.
 
 A batch (`apply_ops`):
 1. records every row's stored values (to report what changed) and, once
-   the positions are normalized, every row's input fields (for the undo);
+   the positions are normalized, every row's input fields (for the undo)
+   and the outline order (what Predecessors text numbers);
 2. applies the ops in order: the task edits in plans/ops_tasks.py, the
-   `restore` op in plans/ops_inverse.py;
+   link, Predecessors and assignee edits in plans/ops_links.py (an
+   `update_task` writes the task's own fields first, then its
+   Predecessors), the `restore` op in plans/ops_inverse.py;
 3. writes the outline, renumbers, and recalculates the whole plan (the
    engine's ScheduleError and CalendarError propagate);
 4. stamps every row whose stored values changed and answers the changed
    and deleted rows, the outline order when it moved, the client's temp
-   ids, notices and the inverse (one `restore` op).
+   ids, notices, the inverse (one `restore` op) and who was newly assigned
+   (people a `set_assignees` op put on a task they were not on when the
+   batch began and are still on at its end; a restore adds nobody).
 
 `run_batch` adds the rest of a write: loading the plan, mapping engine
-errors to 422s, bumping the version, the audit row, the response.
+errors to 422s, bumping the version, the audit row, the deferred parent
+check, the response.
 
 Concurrency (spec API): a batch made only of progress edits
 (`is_progress_only`) applies against the current state without a version
 match and on a locked plan; every other batch needs `base_version` to be
-the plan's version and an unlocked plan. The route checks both."""
+the plan's version and an unlocked plan. The route checks both, after
+`check_restores` has verified every restore op's signature (so a forged
+restore never reaches the progress-only check)."""
 
 import uuid
 from collections import Counter
@@ -29,14 +37,16 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.deps import AuthContext
-from serversherpa.plans import ops_tasks
+from serversherpa.plans import ops_links, ops_tasks
 from serversherpa.plans.calendar import CalendarError
 from serversherpa.plans.engine import SUMMARY_LINK_TYPES, ScheduleError, SummaryLinkError
 from serversherpa.plans.models import ProjectPlan
-from serversherpa.plans.ops_inverse import Snapshot, Stored, restore
+from serversherpa.plans.ops_inverse import Snapshot, Stored, check_signature, restore
 from serversherpa.plans.ops_tasks import Batch, Outline, write_outline
 from serversherpa.plans.schemas import OpsOut, RestoreOp, UpdateTaskOp
 from serversherpa.plans.service import (
@@ -58,14 +68,28 @@ from serversherpa.services.audit import audit
 PROGRESS_FIELDS = frozenset({"percent_complete", "actual_start", "actual_finish", "notes"})
 # What the undo of a progress edit carries (completion stamps included).
 _PROGRESS_RESTORE_KEYS = PROGRESS_FIELDS | {"id", "completed_at", "completed_by"}
+# deferred so a batch can write rows in any order; checked before it ends
+PARENT_FK = "plan_tasks_parent_id_fkey"
+
+
+async def _update_task(b: Batch, op: UpdateTaskOp) -> None:
+    """The task's own fields, then its Predecessors text (links)."""
+    await ops_tasks.update_task(b, op)
+    if "predecessors" in op.fields.model_fields_set:
+        await ops_links.set_predecessors(b, op.id, op.fields.predecessors)
+
 
 _HANDLERS = {
     "add_task": ops_tasks.add_task,
-    "update_task": ops_tasks.update_task,
+    "update_task": _update_task,
     "delete_tasks": ops_tasks.delete_tasks,
     "move_tasks": ops_tasks.move_tasks,
     "indent": ops_tasks.indent,
     "outdent": ops_tasks.outdent,
+    "add_link": ops_links.add_link,
+    "update_link": ops_links.update_link,
+    "delete_link": ops_links.delete_link,
+    "set_assignees": ops_links.set_assignees,
     "restore": restore,
 }
 
@@ -80,13 +104,24 @@ class OpResult:
     temp_ids: dict[str, uuid.UUID]
     inverse: list[dict]
     notices: list[dict]
-    # person id -> the task ids they were newly assigned to (link and
-    # assignee ops fill it; reminders use it)
+    # person id -> the task ids they were newly assigned to, in outline
+    # order (set_assignees fills it; reminders use it; nobody is left out,
+    # the actor included: who to tell is the reader's call)
     newly_assigned: dict[uuid.UUID, list[uuid.UUID]] = field(default_factory=dict)
     # the deleted tasks in their outline order before the batch
     deleted_order: list[uuid.UUID] = field(default_factory=list)
     # the batch's moment: every row it changed is stamped with it
     now: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+def check_restores(plan_id: uuid.UUID, ops: Sequence) -> None:
+    """422 `bad_restore` unless every restore op in the batch carries the
+    server's signature for this plan. The route runs this before anything
+    reads a restore's payload (is_progress_only does) and before any op
+    runs; `restore` checks again."""
+    for op in ops:
+        if isinstance(op, RestoreOp):
+            check_signature(plan_id, op)
 
 
 def _progress_restore(op: RestoreOp) -> bool:
@@ -122,11 +157,13 @@ async def apply_ops(db: AsyncSession, state: PlanState, ops: Sequence, actor: Au
     rolled back."""
     now = datetime.now(UTC)
     before = Stored.take(state)
+    people_before = _people(state)
     renumber(state)
     snapshot = Snapshot.take(state)
     batch = Batch(
         db=db, state=state, actor_id=actor.person.id, settings=settings,
-        calendar=calendar_of(state.plan), now=now, outline=Outline.of(state))
+        calendar=calendar_of(state.plan), now=now, outline=Outline.of(state),
+        start_order=list(state.order))
 
     for op in ops:
         await _HANDLERS[op.op](batch, op)
@@ -149,9 +186,30 @@ async def apply_ops(db: AsyncSession, state: PlanState, ops: Sequence, actor: Au
         temp_ids=dict(batch.temp_ids),
         inverse=[snapshot.inverse(state)],
         notices=batch.notices,
+        newly_assigned=_newly_assigned(batch, people_before),
         deleted_order=[tid for tid in snapshot.tasks if tid in deleted_tasks],
         now=now,
     )
+
+
+def _people(state: PlanState) -> dict[uuid.UUID, set[uuid.UUID]]:
+    """Each task's assigned people (partners aside)."""
+    return {tid: {row.person_id for row in rows if row.person_id is not None}
+            for tid, rows in state.assignments.items()}
+
+
+def _newly_assigned(b: Batch, before: dict[uuid.UUID, set[uuid.UUID]]
+                    ) -> dict[uuid.UUID, list[uuid.UUID]]:
+    """Person -> the tasks (in outline order) a set_assignees op put them on
+    that they were not on when the batch began and are still on now."""
+    after = _people(b.state)
+    out: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for tid in b.state.order:
+        added = b.added_people.get(tid)
+        if added:
+            for pid in sorted((added & after.get(tid, set())) - before.get(tid, set()), key=str):
+                out.setdefault(pid, []).append(tid)
+    return out
 
 
 def schedule_error(state: PlanState, exc: ScheduleError) -> HTTPException:
@@ -188,6 +246,11 @@ async def run_batch(db: AsyncSession, plan: ProjectPlan, ops: Sequence,
     audit(db, actor_id=actor.person.id, entity_type="project_plan", entity_id=str(plan.id),
           action="plan_update", changes={"ops": dict(Counter(op.op for op in ops))})
     await db.flush()
+    try:
+        # a dangling or looping parent fails here, inside the batch, not at commit
+        await db.execute(text(f"SET CONSTRAINTS {PARENT_FK} IMMEDIATE"))
+    except IntegrityError:
+        raise err(422, "bad_field", field="parent_id") from None
     return OpsOut(
         version=plan.version,
         tasks=await tasks_out(db, state, result.changed_tasks),

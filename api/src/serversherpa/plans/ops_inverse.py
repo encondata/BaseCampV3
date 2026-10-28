@@ -26,13 +26,19 @@ Applying a batch's inverse and then that restore's own inverse returns the
 plan to the state after the batch.
 
 Only the server writes restore ops. Every inverse is signed (`sig`):
-HMAC-SHA256 over the plan id and the op's canonical JSON (sorted keys, no
-whitespace), keyed by a key derived from `jwt_secret` for this one use. A
+HMAC-SHA256 over the plan id and the canonical JSON (sorted keys, no
+whitespace) of every RestoreOp field but `sig`, keyed by a key derived from
+`jwt_secret` for this one use. The fields come from the model, so a field
+added later is signed too. A restore is verified over the values it will
+apply, as the model holds them, never a normalized dump: a non-finite
+number (NaN, Infinity), which no inverse holds, is refused outright. A
 restore without a valid signature for its plan is refused (422
-`bad_restore`) before anything is read, so a client can neither forge rows
-nor carry one plan's undo to another. The content checks below stay as a
-second line; they accept what a snapshot holds (archived assignees,
-completion stamps) and refuse what no snapshot could."""
+`bad_restore`) before anything is read: the route checks every restore op
+of a batch before the batch runs (plans/ops.py, check_restores), and
+`restore` checks again. So a client can neither forge rows nor carry one
+plan's undo to another. The content checks below stay as a second line;
+they accept what a snapshot holds (archived assignees, completion stamps)
+and refuse what no snapshot could."""
 
 import hashlib
 import hmac
@@ -51,6 +57,7 @@ from serversherpa.plans.durations import UNITS
 from serversherpa.plans.engine import CONSTRAINT_TYPES, LINK_TYPES, MODES
 from serversherpa.plans.floating import format_floating, parse_floating
 from serversherpa.plans.models import PlanAssignment, PlanLink, PlanTask
+from serversherpa.plans.ops_links import resource_key, write_assignees
 from serversherpa.plans.ops_tasks import (
     Batch,
     Outline,
@@ -88,9 +95,7 @@ STORED_FIELDS = (
 _MISSING = object()
 MAX_POSITION = 1_000_000            # a restored position is below this
 RESTORE_CONTEXT = b"plan-restore-v1"
-# what the signature covers, with the value an op left out reads as
-_SIGNED = (("op", "restore"), ("tasks", []), ("links", []), ("assignments", []),
-           ("remove_tasks", []), ("remove_links", []))
+UNSIGNED = frozenset({"sig"})       # the one RestoreOp field the signature leaves out
 
 
 # --- signatures ---------------------------------------------------------------------
@@ -103,19 +108,43 @@ def _restore_key() -> bytes:
     return hmac.new(secret.encode(), RESTORE_CONTEXT, hashlib.sha256).digest()
 
 
+def _signed_fields(op: Mapping[str, Any]) -> dict[str, Any]:
+    """Every RestoreOp field but `sig`, read from `op`; one it leaves out
+    reads as the field's default."""
+    body = {}
+    for name, info in RestoreOp.model_fields.items():
+        if name not in UNSIGNED:
+            body[name] = op[name] if name in op else info.get_default(call_default_factory=True)
+    return body
+
+
+def _id_text(value: Any) -> str:
+    """JSON for the one non-JSON value a restore holds: an id, written
+    lower-case as the snapshots write it."""
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    raise TypeError(f"a restore op cannot hold {type(value).__name__}")
+
+
 def sign_restore(plan_id: uuid.UUID | str, op: Mapping[str, Any]) -> str:
-    """The hex signature of a restore op (its `sig`, if any, aside) for one
-    plan. Ids are lower-case strings, as `model_dump(mode="json")` and the
-    snapshots write them."""
-    body = {key: op.get(key, default) for key, default in _SIGNED}
-    message = (str(plan_id).encode() + b"\0"
-               + json.dumps(body, sort_keys=True, separators=(",", ":")).encode())
+    """The hex signature of a restore op for one plan. Raises ValueError for
+    a non-finite number (NaN, Infinity) anywhere in the op, and TypeError
+    for a value JSON cannot hold."""
+    text = json.dumps(_signed_fields(op), sort_keys=True, separators=(",", ":"),
+                      allow_nan=False, default=_id_text)
+    message = str(plan_id).encode() + b"\0" + text.encode()
     return hmac.new(_restore_key(), message, hashlib.sha256).hexdigest()
 
 
 def check_signature(plan_id: uuid.UUID, op: RestoreOp) -> None:
-    """422 `bad_restore` unless the server signed this op for this plan."""
-    expected = sign_restore(plan_id, op.model_dump(mode="json", exclude={"sig"}))
+    """422 `bad_restore` unless the server signed this op for this plan,
+    checked over the values the restore applies (a normalized dump would
+    read NaN as null)."""
+    try:
+        expected = sign_restore(plan_id, {name: getattr(op, name)
+                                          for name in type(op).model_fields})
+    except (TypeError, ValueError):
+        raise err(422, "bad_restore") from None
     if op.sig is None or not hmac.compare_digest(op.sig.encode(), expected.encode()):
         raise err(422, "bad_restore")
 
@@ -151,9 +180,7 @@ def link_inputs(link: PlanLink) -> dict[str, Any]:
 
 
 def _resource_keys(rows: list[PlanAssignment]) -> tuple[tuple[str, uuid.UUID], ...]:
-    return tuple(sorted(
-        (("person", r.person_id) if r.person_id is not None else ("partner", r.partner_id))
-        for r in rows))
+    return tuple(sorted(resource_key(r) for r in rows))
 
 
 def assignees(state: PlanState, task_id: uuid.UUID) -> list[dict[str, str]]:
@@ -497,7 +524,6 @@ async def _restore_links(b: Batch, raw_rows: list) -> None:
 
 
 async def _restore_assignments(b: Batch, raw_rows: list) -> None:
-    state = b.state
     wanted: dict[uuid.UUID, set[tuple[str, uuid.UUID]]] = {}
     for raw in raw_rows:
         if not isinstance(raw, dict) or raw.keys() != {"task_id", "resources"}:
@@ -513,25 +539,7 @@ async def _restore_assignments(b: Batch, raw_rows: list) -> None:
         wanted[tid] = {_resource(r) for r in resources}
     await _check_resources(b, {key for keys in wanted.values() for key in keys})
     for tid, keys in wanted.items():
-        rows = state.assignments.get(tid, [])
-        keep = []
-        for row in rows:
-            key = ("person", row.person_id) if row.person_id else ("partner", row.partner_id)
-            if key in keys:
-                keep.append(row)
-                keys.discard(key)
-            else:
-                await b.db.delete(row)
-        for kind, rid in sorted(keys, key=lambda k: (k[0], str(k[1]))):
-            row = PlanAssignment(id=uuid.uuid4(), task_id=tid,
-                                 person_id=rid if kind == "person" else None,
-                                 partner_id=rid if kind == "partner" else None)
-            b.db.add(row)
-            keep.append(row)
-        if keep:
-            state.assignments[tid] = keep
-        else:
-            state.assignments.pop(tid, None)
+        await write_assignees(b, tid, keys)
 
 
 def _resource(raw) -> tuple[str, uuid.UUID]:
