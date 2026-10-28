@@ -360,6 +360,180 @@ def test_manual_without_dates_at_project_start():
     assert dates(out["M"]) == (dt("2026-11-02 08:00"), dt("2026-11-02 17:00"))
 
 
+# --- a lead never reaches back past the project start --------------------------------
+
+
+def test_ss_lead_clamped_to_project_start():
+    out = run([T("A", 480), T("B", 480)], [L("A", "B", "SS", -480)])
+    assert dates(out["B"]) == (dt("2026-11-02 08:00"), dt("2026-11-02 17:00"))
+
+
+def test_fs_lead_clamped_to_project_start():
+    # A finishes Mon 17:00; two days of lead would start B Fri 10-30 08:00
+    out = run([T("A", 480), T("B", 480)], [L("A", "B", "FS", -960)])
+    assert dates(out["B"]) == (dt("2026-11-02 08:00"), dt("2026-11-02 17:00"))
+
+
+# --- FF and SF with lag, and into milestones ------------------------------------------
+
+
+def _snet_wed(task_id: str = "A") -> TaskIn:
+    return T(task_id, 480, constraint_type="snet", constraint_date=dt("2026-11-04 08:00"))
+
+
+def test_ff_working_lag():
+    out = run([T("A", 960), T("B", 480)], [L("A", "B", "FF", 480)])
+    assert dates(out["B"]) == (dt("2026-11-04 08:00"), dt("2026-11-04 17:00"))
+
+
+def test_ff_working_lead():
+    # A finishes Wed 17:00, so B may finish from Wed 13:00 (Wed 12:00 in work time)
+    out = run([T("A", 1440), T("B", 480)], [L("A", "B", "FF", -240)])
+    assert dates(out["B"]) == (dt("2026-11-03 13:00"), dt("2026-11-04 12:00"))
+
+
+def test_ff_elapsed_lag():
+    out = run([T("A", 480), T("B", 480)], [L("A", "B", "FF", 1440, elapsed=True)])
+    assert dates(out["B"]) == (dt("2026-11-03 08:00"), dt("2026-11-03 17:00"))
+
+
+def test_sf_working_lag():
+    out = run([_snet_wed(), T("B", 480)], [L("A", "B", "SF", 480)])
+    assert dates(out["B"]) == (dt("2026-11-04 08:00"), dt("2026-11-04 17:00"))
+
+
+def test_sf_elapsed_lag():
+    out = run([_snet_wed(), T("B", 480)], [L("A", "B", "SF", 2880, elapsed=True)])
+    assert dates(out["B"]) == (dt("2026-11-05 08:00"), dt("2026-11-05 17:00"))
+
+
+def test_ff_into_milestone():
+    out = run([T("A", 960), T("M", 0)], [L("A", "M", "FF")])
+    assert dates(out["M"]) == (dt("2026-11-03 17:00"), dt("2026-11-03 17:00"))
+
+
+def test_sf_into_milestone():
+    out = run([_snet_wed(), T("M", 0)], [L("A", "M", "SF")])
+    assert dates(out["M"]) == (dt("2026-11-04 08:00"), dt("2026-11-04 08:00"))
+
+
+# --- a milestone on a period boundary is not in conflict ------------------------------
+
+
+@pytest.mark.parametrize("honor", [True, False])
+def test_milestone_mfo_friday_end_vs_monday_start(honor):
+    # the SS bound is Mon 11-09 08:00; no working time lies after Fri 17:00 before it
+    tasks = [T("A", 480, constraint_type="snet", constraint_date=dt("2026-11-09 08:00")),
+             T("M", 0, constraint_type="mfo", constraint_date=dt("2026-11-06 17:00"))]
+    out = run(tasks, [L("A", "M", "SS")], honor_constraints=honor)
+    assert dates(out["M"]) == (dt("2026-11-06 17:00"), dt("2026-11-06 17:00"))
+    assert out["M"].conflict is None
+
+
+def test_milestone_mso_monday_end_vs_tuesday_start():
+    tasks = [T("A", 480, constraint_type="snet", constraint_date=dt("2026-11-03 08:00")),
+             T("M", 0, constraint_type="mso", constraint_date=dt("2026-11-02 17:00"))]
+    out = run(tasks, [L("A", "M", "SS")])
+    assert dates(out["M"]) == (dt("2026-11-02 17:00"), dt("2026-11-02 17:00"))
+    assert out["M"].conflict is None
+
+
+def test_milestone_snlt_monday_end_vs_tuesday_start():
+    # a ceiling the link meets in working time: the milestone stays ASAP, unflagged
+    tasks = [T("A", 480, constraint_type="snet", constraint_date=dt("2026-11-03 08:00")),
+             T("M", 0, constraint_type="snlt", constraint_date=dt("2026-11-02 17:00"))]
+    out = run(tasks, [L("A", "M", "SS")])
+    assert dates(out["M"]) == (dt("2026-11-03 08:00"), dt("2026-11-03 08:00"))
+    assert out["M"].conflict is None
+
+
+def test_milestone_mso_real_conflict_still_flagged():
+    tasks = [T("A", 480, constraint_type="snet", constraint_date=dt("2026-11-03 09:00")),
+             T("M", 0, constraint_type="mso", constraint_date=dt("2026-11-02 17:00"))]
+    out = run(tasks, [L("A", "M", "SS")])
+    assert out["M"].start == dt("2026-11-02 17:00")
+    assert out["M"].conflict == "link"
+
+
+def test_honor_off_ceiling_before_project_start_takes_project_start():
+    # A is pinned before the project start; its link passes B's ceiling, and with
+    # honor off B takes its natural date, which the project start floors
+    tasks = [T("A", 480, constraint_type="mso", constraint_date=dt("2026-10-28 08:00")),
+             T("B", 480, constraint_type="snlt", constraint_date=dt("2026-10-28 08:00"))]
+    out = run(tasks, [L("A", "B")], honor_constraints=False)
+    assert dates(out["A"]) == (dt("2026-10-28 08:00"), dt("2026-10-28 17:00"))
+    assert dates(out["B"]) == (dt("2026-11-02 08:00"), dt("2026-11-02 17:00"))
+    assert out["B"].conflict == "constraint"
+
+
+# --- a manual task's typed span is authoritative --------------------------------------
+
+
+def test_manual_duration_is_typed_span():
+    out = run([_manual()])
+    assert out["M"].duration == 720
+
+
+def test_manual_actual_start_on_typed_start_keeps_finish():
+    out = run([replace(_manual(), actual_start=dt("2026-11-03 10:00"))])
+    assert dates(out["M"]) == (dt("2026-11-03 10:00"), dt("2026-11-04 15:00"))
+    assert out["M"].duration == 720
+
+
+def test_manual_later_actual_start_shifts_finish_by_working_time():
+    out = run([replace(_manual(), actual_start=dt("2026-11-03 11:00"))])
+    assert dates(out["M"]) == (dt("2026-11-03 11:00"), dt("2026-11-04 16:00"))
+
+
+def test_manual_actual_start_keeps_finish_typed_off_the_calendar():
+    # typed on a nonworking Saturday and finishing mid-lunch: progress moves nothing
+    manual = T("M", 480, mode="manual", start=dt("2026-11-07 10:00"),
+               finish=dt("2026-11-09 12:30"), actual_start=dt("2026-11-07 10:00"))
+    out = run([manual])
+    assert dates(out["M"]) == (dt("2026-11-07 10:00"), dt("2026-11-09 12:30"))
+
+
+def test_manual_elapsed_span_is_wall_clock():
+    manual = T("M", 480, mode="manual", elapsed=True, start=dt("2026-11-03 10:00"),
+               finish=dt("2026-11-04 15:00"), actual_start=dt("2026-11-03 11:00"))
+    out = run([manual])
+    assert dates(out["M"]) == (dt("2026-11-03 11:00"), dt("2026-11-04 16:00"))
+    assert out["M"].duration == 1740
+
+
+def test_manual_actual_finish_still_wins():
+    manual = replace(_manual(), actual_start=dt("2026-11-03 10:00"),
+                     actual_finish=dt("2026-11-05 09:00"))
+    out = run([manual])
+    assert dates(out["M"]) == (dt("2026-11-03 10:00"), dt("2026-11-05 09:00"))
+
+
+def test_manual_start_only_actual_start_uses_duration():
+    manual = T("M", 960, mode="manual", start=dt("2026-11-03 10:00"),
+               actual_start=dt("2026-11-03 11:00"))
+    out = run([manual])
+    assert dates(out["M"]) == (dt("2026-11-03 11:00"), dt("2026-11-05 11:00"))
+    assert out["M"].duration == 960
+
+
+# --- input the schema never stores is a caller's bug ----------------------------------
+
+
+@pytest.mark.parametrize("tasks,links,message", [
+    ([T("A"), T("A")], [], "listed twice"),
+    ([T("A")], [L("A", "X")], "unknown task X"),
+    ([T("A")], [L("X", "A")], "unknown task X"),
+    ([T("A", mode="auto-ish")], [], "unknown mode"),
+    ([T("A", constraint_type="alap")], [], "unknown constraint"),
+    ([T("A"), T("B")], [L("A", "B", "XY")], "unknown link type"),
+    ([T("A", -1)], [], "negative duration"),
+])
+def test_bad_input_is_a_value_error(tasks, links, message):
+    with pytest.raises(ValueError, match=message) as caught:
+        run(tasks, links)
+    assert not isinstance(caught.value, ScheduleError)
+
+
 # --- the output shape and the error types later tasks raise --------------------------
 
 

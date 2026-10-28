@@ -22,16 +22,25 @@ Forward pass (`schedule`), one task at a time in link order:
   and MFO pins; when a link wants the task later than one of those allows,
   `EngineSettings.honor_constraints` decides. On (MS Project's default): the
   constraint wins and the task gets `conflict = "link"`. Off: the links win
-  and it gets `conflict = "constraint"`. The project start is not a link: a
-  ceiling or pin before it moves the task there without a conflict. A
-  non-ASAP constraint without a date is ignored.
-- Manual tasks keep the start and finish the user gave (only a start: the
-  finish follows from the duration; only a finish: the start does; neither:
-  the project start) but still drive their successors. Links and
-  constraints never move them.
-- Actuals are what happened: `actual_start` replaces the start (the finish
-  follows from the duration) and `actual_finish` replaces the finish, for
-  auto and manual tasks alike; a task with an actual has no conflict.
+  and it gets `conflict = "constraint"`. "Later" is measured in the task's
+  own time: working time, so a milestone pinned at Fri 17:00 does not
+  conflict with a link bound of Mon 08:00 (no work lies between), or wall
+  clock for an elapsed task. The project start is not a link: a ceiling or
+  pin before it moves the task there without a conflict. But once a link
+  does pass the ceiling with honor off, the task takes its natural date,
+  which the project start floors: a link that alone would need only a date
+  before the project start still lands the task on the project start,
+  flagged "constraint". A non-ASAP constraint without a date is ignored.
+- Manual tasks keep the start and finish the user gave, and when both are
+  given their span (working time, or wall clock when elapsed) is the task's
+  duration. Only a start: the finish follows from the duration; only a
+  finish: the start does; neither: the project start. They still drive their
+  successors; links and constraints never move them.
+- Actuals are what happened, for auto and manual tasks alike. An
+  `actual_start` replaces the start and the finish moves with it, keeping
+  the duration (a manual task's typed span); one equal to the scheduled
+  start (what recording progress sets) moves nothing. An `actual_finish`
+  replaces the finish. A task with an actual has no conflict.
 - Nothing moves a not-started task for being in the past.
 """
 
@@ -41,6 +50,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from serversherpa.plans.calendar import CalendarError, WorkCalendar
+
+_MINUTE = timedelta(minutes=1)
 
 LINK_TYPES = ("FS", "SS", "FF", "SF")
 CONSTRAINT_TYPES = ("asap", "snet", "snlt", "fnet", "fnlt", "mso", "mfo")
@@ -258,17 +269,41 @@ class _ForwardPass:
             return self.cal.sub_work(moment, -lag)
         return moment
 
+    def after(self, task: TaskIn, start: datetime, minutes: int) -> datetime:
+        """`minutes` of the task's own time (wall clock when it is elapsed,
+        else working time) after `start`."""
+        if task.elapsed:
+            return start + timedelta(minutes=minutes)
+        return self.cal.add_work(start, minutes)
+
+    def before(self, task: TaskIn, finish: datetime, minutes: int) -> datetime:
+        """`minutes` of the task's own time before `finish`."""
+        if task.elapsed:
+            return finish - timedelta(minutes=minutes)
+        return self.cal.sub_work(finish, minutes)
+
+    def span(self, task: TaskIn, start: datetime, finish: datetime) -> int:
+        """Minutes of the task's own time from `start` to `finish`, never
+        negative."""
+        if task.elapsed:
+            return max((finish - start) // _MINUTE, 0)
+        return max(self.cal.work_between(start, finish), 0)
+
+    def later(self, task: TaskIn, a: datetime, b: datetime) -> bool:
+        """Whether `a` is after `b` in the task's own time. In working time
+        two moments with no work between them are the same (Fri 17:00 and
+        Mon 08:00), which matters for a milestone, as it never snaps."""
+        if task.elapsed:
+            return a > b
+        return self.cal.work_between(b, a) > 0
+
     def finish_from(self, task: TaskIn, start: datetime) -> datetime:
         """The finish of `task` when it starts at `start`."""
-        if task.elapsed:
-            return start + timedelta(minutes=task.duration)
-        return self.cal.add_work(start, task.duration)
+        return self.after(task, start, task.duration)
 
     def start_from(self, task: TaskIn, finish: datetime) -> datetime:
         """The start `task` needs to finish at `finish`."""
-        if task.elapsed:
-            return finish - timedelta(minutes=task.duration)
-        return self.cal.sub_work(finish, task.duration)
+        return self.before(task, finish, task.duration)
 
     def place(self, task: TaskIn, earliest: datetime) -> tuple[datetime, datetime]:
         """(start, finish) of an auto task starting as early as `earliest`
@@ -306,9 +341,9 @@ class _ForwardPass:
         # SNLT/FNLT cap the start, MSO/MFO pin it
         held = self.place(task, date if kind in ("snlt", "mso") else self.start_from(task, date))
         natural = self.place(task, earliest)
-        if kind in ("snlt", "fnlt") and natural[0] <= held[0]:
+        if kind in ("snlt", "fnlt") and not self.later(task, natural[0], held[0]):
             return natural, None
-        if linked is not None and self.place(task, linked)[0] > held[0]:
+        if linked is not None and self.later(task, self.place(task, linked)[0], held[0]):
             # a link wants the task later than its constraint allows
             if self.settings.honor_constraints:
                 return held, "link"
@@ -328,20 +363,25 @@ class _ForwardPass:
 
     def leaf(self, task: TaskIn, links: list[LinkIn]) -> TaskOut:
         conflict = None
+        duration = task.duration
         if task.mode == "manual":
             start, finish = self.manual(task)
+            if task.start is not None and task.finish is not None:
+                duration = self.span(task, start, finish)     # the typed dates rule
         else:
             (start, finish), conflict = self.auto(task, links)
-        if task.actual_start is not None:
+        if task.actual_start is not None and task.actual_start != start:
+            # an actual start on the scheduled one (what recording progress
+            # sets) leaves the finish alone, even one typed off the calendar
             start = task.actual_start
-            finish = self.finish_from(task, start)
+            finish = self.after(task, start, duration)
         if task.actual_finish is not None:
             finish = task.actual_finish
             if task.actual_start is None and start > finish:
-                start = self.start_from(task, finish)
+                start = self.before(task, finish, duration)
         if task.actual_start is not None or task.actual_finish is not None:
             conflict = None
-        return TaskOut(start=start, finish=finish, duration=task.duration, is_summary=False,
+        return TaskOut(start=start, finish=finish, duration=duration, is_summary=False,
                        percent_complete=task.percent_complete, conflict=conflict)
 
 
