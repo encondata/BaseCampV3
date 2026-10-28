@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { editorKey, gridKey, scrollToShow, type KeyLike } from './sheetKeys';
+import { editorKey, gridKey, keyLike, scrollToShow, type KeyLike } from './sheetKeys';
 
 const key = (k: string, mods: Partial<KeyLike> = {}): KeyLike => ({
   key: k, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, isComposing: false, ...mods,
@@ -67,6 +67,30 @@ describe('editorKey (inside a cell editor)', () => {
     for (const k of [key('ArrowLeft'), key('a'), key('Delete'), key('Enter', { isComposing: true })]) {
       expect(editorKey(k)).toEqual({ kind: 'none' });
     }
+  });
+});
+
+describe('keyLike (a React keydown as KeyLike)', () => {
+  const ev = (over: Partial<Parameters<typeof keyLike>[0]> = {}) => ({
+    key: 'Enter', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, keyCode: 13,
+    nativeEvent: { isComposing: false }, ...over,
+  });
+
+  it('reads the composition flag from the native event (React’s own event has none)', () => {
+    expect(keyLike(ev({ nativeEvent: { isComposing: true } })).isComposing).toBe(true);
+    expect(editorKey(keyLike(ev({ nativeEvent: { isComposing: true } })))).toEqual({ kind: 'none' });
+  });
+
+  it('counts keyCode 229 as composing (Safari ends the composition before the keydown)', () => {
+    expect(keyLike(ev({ keyCode: 229 })).isComposing).toBe(true);
+    expect(gridKey(keyLike(ev({ key: 'a', keyCode: 229 })))).toEqual({ kind: 'none' });
+  });
+
+  it('a plain key is not composing', () => {
+    expect(keyLike(ev())).toEqual({
+      key: 'Enter', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, isComposing: false,
+    });
+    expect(editorKey(keyLike(ev()))).toEqual({ kind: 'commit', dir: 'down' });
   });
 });
 

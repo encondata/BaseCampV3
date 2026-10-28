@@ -21,6 +21,30 @@ export interface KeyLike {
   isComposing?: boolean;
 }
 
+/** A React keydown, as far as `keyLike` reads it. */
+export interface KeyEventLike {
+  key: string;
+  shiftKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  altKey: boolean;
+  keyCode?: number;
+  nativeEvent?: { isComposing?: boolean };
+}
+
+/**
+ * A React keydown as KeyLike. React's synthetic event has no `isComposing`,
+ * so it comes from the native event; keyCode 229 counts too, since Safari
+ * ends the composition before the keydown of the Enter that confirms it.
+ * Every keydown handler in the sheet goes through this.
+ */
+export function keyLike(e: KeyEventLike): KeyLike {
+  return {
+    key: e.key, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey,
+    isComposing: !!e.nativeEvent?.isComposing || e.keyCode === 229,
+  };
+}
+
 export type GridAction =
   | { kind: 'move'; dir: MoveDir }
   /** `seed` null: start from the cell's value (F2); else from this text. */

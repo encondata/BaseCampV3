@@ -301,6 +301,171 @@ describe('typing into a cell', () => {
   });
 });
 
+describe('fix round 1', () => {
+  /** A promise the test settles, for a commit held in flight. */
+  function deferred<T>() {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  }
+
+  it('an Enter that confirms an IME composition neither commits nor moves', async () => {
+    const user = await ready();
+    await user.click(cellOf('Pack', 'name'));
+    await user.keyboard('{F2}');
+    const input = editor('Task Name')!;
+    fireEvent.change(input, { target: { value: 'Pack 箱' } });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
+    // a commit would post on the write queue's next turn: let it run
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(api.postOps).not.toHaveBeenCalled();
+    expect(editor('Task Name')?.value).toBe('Pack 箱');
+    expect(editor('Task Name')?.readOnly).toBe(false);
+    expect(active()).toBe('Pack/name');
+    // the Enter after the composition commits
+    api.postOps.mockResolvedValueOnce(makeOpsResult());
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(sentOps()).toEqual([{ op: 'update_task', id: 'b', fields: { name: 'Pack 箱' } }]));
+  });
+
+  it('a half-typed date says so and changes nothing (the field never clears)', async () => {
+    const user = await ready(plan3({ tasks: tasks3().map((t) => (t.id === 'b' ? { ...t, deadline: '2026-11-09T17:00' } : t)) }));
+    await user.dblClick(cellOf('Pack', 'deadline'));
+    const input = screen.getByLabelText('Deadline', { selector: 'input' }) as HTMLInputElement;
+    Object.defineProperty(input, 'validity', { configurable: true, value: { badInput: true } });
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(screen.getByRole('alert').textContent).toBe('Enter a full date.');
+    expect(screen.getByLabelText('Deadline', { selector: 'input' })).toBeTruthy();
+    expect(api.postOps).not.toHaveBeenCalled();
+    expect(cellOf('Pack', 'deadline').textContent).toBe('Mon 11/9/26');
+  });
+
+  it('a select commits and moves down on Enter; a mouse pick commits and stays', async () => {
+    const user = await ready();
+    api.postOps.mockResolvedValue(makeOpsResult());
+    await user.dblClick(cellOf('Survey', 'mode'));
+    await screen.findByRole('button', { name: 'Manually Scheduled' });
+    await user.keyboard('{ArrowDown}{Enter}');
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    expect(sentOps()).toEqual([{ op: 'update_task', id: 'a', fields: { mode: 'manual' } }]);
+    await waitFor(() => expect(active()).toBe('Pack/mode'));
+    await user.dblClick(cellOf('Go live', 'mode'));
+    fireEvent.mouseDown(await screen.findByRole('button', { name: 'Manually Scheduled' }));
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(2));
+    expect(active()).toBe('Go live/mode');
+  });
+
+  it('Enter twice, or Enter while a commit is in flight, posts once', async () => {
+    const user = await ready();
+    const held = deferred<ReturnType<typeof makeOpsResult>>();
+    api.postOps.mockReturnValueOnce(held.promise);
+    await user.click(cellOf('Survey', 'duration'));
+    await user.keyboard('5d{Enter}{Enter}');
+    const input = editor('Duration')!;
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(api.postOps).toHaveBeenCalledTimes(1);
+    await act(async () => held.resolve(makeOpsResult()));
+    await waitFor(() => expect(editor('Duration')).toBeNull());
+    expect(api.postOps).toHaveBeenCalledTimes(1);
+    expect(active()).toBe('Pack/duration');
+  });
+
+  it('the blank row adds under the parent of the last row shown (a subtask’s summary)', async () => {
+    const tasks = [
+      makeTask('s', { display_id: 1, wbs: '1', is_summary: true, name: 'Prep' }),
+      makeTask('a', { display_id: 2, wbs: '1.1', outline_level: 2, parent_id: 's', name: 'Order crates' }),
+    ];
+    const user = await ready(makePlan({ tasks }));
+    api.postOps.mockResolvedValueOnce(makeOpsResult({ inverse: [] }));
+    await user.click(blankCell('name'));
+    await user.keyboard('Label crates{Enter}');
+    await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+    expect(sentOps()).toEqual([
+      { op: 'add_task', temp_id: expect.any(String), parent_id: 's', name: 'Label crates' },
+    ]);
+  });
+
+  it('a note with a line break does not open in the cell, and its title says where to edit it', async () => {
+    localStorage.setItem('plans.columns.v1', JSON.stringify({
+      visible: ['id', 'name', 'notes'], widths: {}, seen: ['id', 'name', 'notes'],
+    }));
+    const tasks = tasks3().map((t) => (t.id === 'b' ? { ...t, notes: 'Call the dock\nthen pack' } : t));
+    const user = await ready(plan3({ tasks }));
+    const cell = cellOf('Pack', 'notes');
+    expect(cell.querySelector('[title]')?.getAttribute('title')).toBe('Multi-line note — edit in Task Information');
+    await user.dblClick(cell);
+    expect(editor('Notes')).toBeNull();
+    await user.dblClick(cellOf('Survey', 'notes'));
+    expect(editor('Notes')).not.toBeNull();
+  });
+
+  describe('Resource Names picker focus', () => {
+    const withPeople = () => plan3({
+      resources: [
+        { kind: 'person', id: 'p1', name: 'Dana Reyes', group: 'team', has_email: true, has_account: true },
+        { kind: 'person', id: 'p2', name: 'Lee Park', group: 'team', has_email: true, has_account: true },
+      ],
+    });
+    const picker = () => screen.queryByRole('dialog', { name: 'Resource Names' });
+    const pick = (name: string) => {
+      const box = within(picker()!).getByRole('combobox');
+      fireEvent.focus(box);
+      fireEvent.mouseDown(within(picker()!.querySelector('.combo-menu') as HTMLElement).getByText(name));
+    };
+
+    it('keeps focus inside while the commit is in flight', async () => {
+      const user = await ready(withPeople());
+      const held = deferred<ReturnType<typeof makeOpsResult>>();
+      api.postOps.mockReturnValueOnce(held.promise);
+      await user.dblClick(cellOf('Pack', 'resources'));
+      pick('Dana Reyes');
+      await user.click(within(picker()!).getByRole('button', { name: 'Save' }));
+      expect(api.postOps).toHaveBeenCalledTimes(1);
+      expect(picker()!.contains(document.activeElement)).toBe(true);
+      expect(picker()!.getAttribute('aria-busy')).toBe('true');
+      await act(async () => held.resolve(makeOpsResult()));
+      await waitFor(() => expect(picker()).toBeNull());
+    });
+
+    it('a refusal keeps focus in the picker, so the next Escape closes it (handled), not full screen', async () => {
+      const user = await ready(withPeople());
+      const held = deferred<never>();
+      api.postOps.mockReturnValueOnce(held.promise);
+      await user.dblClick(cellOf('Pack', 'resources'));
+      pick('Dana Reyes');
+      await user.click(within(picker()!).getByRole('button', { name: 'Save' }));
+      // focus went elsewhere while it was in flight (the toolbar, or a browser's focus fixup)
+      act(() => screen.getByRole('button', { name: 'Columns…' }).focus());
+      expect(picker()!.contains(document.activeElement)).toBe(false);
+      await act(async () => held.reject(new ApiError(422, 'bad_resource', { code: 'bad_resource', kind: 'person', id: 'p1' })));
+      const alert = await within(picker()!).findByRole('alert');
+      expect(alert.textContent).toBe('That person or partner can’t be assigned to tasks in this plan.');
+      expect(picker()!.contains(document.activeElement)).toBe(true);
+      expect(cellOf('Pack', 'resources').textContent).toBe('');
+      const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      act(() => { document.activeElement!.dispatchEvent(esc); });
+      expect(esc.defaultPrevented).toBe(true);
+      expect(picker()).toBeNull();
+      expect(api.postOps).toHaveBeenCalledTimes(1);
+    });
+
+    it('tabbing past Save commits the picker', async () => {
+      const user = await ready(withPeople());
+      api.postOps.mockResolvedValueOnce(makeOpsResult());
+      await user.dblClick(cellOf('Pack', 'resources'));
+      pick('Lee Park');
+      within(picker()!).getByRole('button', { name: 'Save' }).focus();
+      await user.tab();
+      await waitFor(() => expect(api.postOps).toHaveBeenCalledTimes(1));
+      expect(sentOps()).toEqual([{ op: 'set_assignees', task_id: 'b', resources: [{ kind: 'person', id: 'p2' }] }]);
+      await waitFor(() => expect(picker()).toBeNull());
+    });
+  });
+});
+
 describe('the blank new-task row', () => {
   it('typing a name there adds a task under no parent, and the blank row stays active', async () => {
     const user = await ready();

@@ -11,18 +11,23 @@
  *    shows above full screen and outside the sheet's scroll box;
  *  - Resource Names: the ResourcePicker popover.
  *
- * Enter and Tab commit and move, Esc cancels, a click elsewhere commits
- * where it is. Every key typed here stays here: the grid and the plan's
- * shortcuts never see it (Review Focus 3). A refusal shows in `.pf-error`
- * under the cell, and focus comes back to the field.
+ * Enter and Tab commit and move (a select's Enter picks, then moves down;
+ * a mouse pick stays), Esc cancels, a click elsewhere commits where it is.
+ * Keys that belong to an IME composition (the Enter that confirms one)
+ * do nothing here. Every key typed here stays here: the grid and the
+ * plan's shortcuts never see it (Review Focus 3). A refusal shows in
+ * `.pf-error` under the cell, and focus comes back to the field. A native
+ * date field holding part of a date is refused ("Enter a full date.")
+ * rather than read as empty.
  */
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type FocusEvent,
   type KeyboardEvent } from 'react';
 
 import ComboBox, { type ComboOption } from '../ComboBox';
 import type { PlanColumn } from '../../lib/plans/columns';
+import { PARTIAL_DATE } from '../../lib/plans/editOps';
 import type { MoveDir } from '../../lib/plans/selection';
-import { editorKey } from '../../lib/plans/sheetKeys';
+import { editorKey, keyLike, type KeyLike } from '../../lib/plans/sheetKeys';
 import ResourcePicker from './ResourcePicker';
 import type { SheetEditor } from './useSheetEditing';
 
@@ -38,13 +43,20 @@ interface Props {
   onChange(text: string): void;
   onCommit(text: string, dir: MoveDir | null, refocus: boolean): void;
   onCancel(refocus: boolean): void;
+  /** A refusal the field knows of itself (a half-typed date). */
+  onFail(message: string): void;
   onTypeAhead(key: string): void;
 }
 
-const printable = (e: KeyboardEvent) => [...e.key].length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
+const printable = (k: KeyLike) => [...k.key].length === 1 && !k.ctrlKey && !k.metaKey && !k.altKey;
 
-export default function CellEditor({ editor, column, style, options, onChange, onCommit, onCancel, onTypeAhead }: Props) {
+export default function CellEditor({
+  editor, column, style, options, onChange, onCommit, onCancel, onFail, onTypeAhead,
+}: Props) {
   const { kind, text, error, pending } = editor;
+  const isDate = kind === 'date' || kind === 'datetime';
+  /** The select's pick under way came from Enter (so it moves down). */
+  const enterPick = useRef(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const errorId = useId();
@@ -53,7 +65,18 @@ export default function CellEditor({ editor, column, style, options, onChange, o
   // cell's right edge near the box's right side, and opens upward near its bottom
   const [errorFit, setErrorFit] = useState('');
 
-  useLayoutEffect(() => setAnchor(wrapRef.current), []);
+  // an editor wider than its column (dates, selects) that would run past
+  // the sheet's right edge opens leftward instead
+  const [shift, setShift] = useState(0);
+
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    setAnchor(el);
+    const sheet = el?.closest('.pln-sheet');
+    if (!el || !sheet) return;
+    const over = el.getBoundingClientRect().right - sheet.getBoundingClientRect().right;
+    if (over > 0) setShift(Math.ceil(over));
+  }, []);
 
   useLayoutEffect(() => {
     const box = wrapRef.current?.closest('.pln-panes')?.getBoundingClientRect();
@@ -77,29 +100,55 @@ export default function CellEditor({ editor, column, style, options, onChange, o
     if (kind === 'text') input.setSelectionRange(input.value.length, input.value.length);
   }, [kind, error, pending]);
 
-  // a select's Escape cancels the edit at once (before the ComboBox would
-  // close only its list)
+  /** Commits what the field holds, unless a date field holds part of a date
+   *  (its value then reads as empty, which would clear the field). */
+  const commitAs = (value: string, dir: MoveDir | null, refocus: boolean) => {
+    if (isDate && wrapRef.current?.querySelector('input')?.validity?.badInput) {
+      onFail(PARTIAL_DATE);
+      return;
+    }
+    onCommit(value, dir, refocus);
+  };
+
+  // a select's keys before the ComboBox sees them: Escape cancels the edit
+  // at once (not only the list); Enter on an open list picks and moves down,
+  // on a closed one commits as it is and moves down
   const onKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (kind !== 'select' || e.key !== 'Escape') return;
-    e.preventDefault();
-    e.stopPropagation();
-    onCancel(true);
+    if (kind !== 'select' || pending) return;
+    const k = keyLike(e);
+    if (k.isComposing) return;
+    if (k.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      onCancel(true);
+    } else if (k.key === 'Enter' && !k.shiftKey && !k.ctrlKey && !k.metaKey && !k.altKey) {
+      if ((e.target as HTMLElement).getAttribute('aria-expanded') === 'true') {
+        enterPick.current = true;
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      onCommit(text, 'down', true);
+    }
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     e.stopPropagation();
+    enterPick.current = false;          // a pick it led to has happened by now
+    const k = keyLike(e);
+    if (k.isComposing) return;          // the IME's keys (its Enter confirms the text)
     if (pending) {
       // the commit is on its way: keep what is typed for the next cell
-      if (kind === 'text' && printable(e)) onTypeAhead(e.key);
-      if (printable(e) || e.key === 'Enter' || e.key === 'Tab') e.preventDefault();
+      if (kind === 'text' && printable(k)) onTypeAhead(k.key);
+      if (printable(k) || k.key === 'Enter' || k.key === 'Tab') e.preventDefault();
       return;
     }
     // the picker owns its keys; an Enter the ComboBox used was a pick
     if (kind === 'resources' || e.defaultPrevented) return;
-    const action = editorKey(e);
+    const action = editorKey(k);
     if (action.kind === 'commit') {
       e.preventDefault();
-      onCommit(text, action.dir, true);
+      commitAs(text, action.dir, true);
     } else if (action.kind === 'cancel') {
       e.preventDefault();
       onCancel(true);
@@ -113,7 +162,7 @@ export default function CellEditor({ editor, column, style, options, onChange, o
     const next = e.relatedTarget as Node | null;
     if (next && wrapRef.current?.contains(next)) return;
     if (!document.hasFocus()) return;
-    onCommit(text, null, false);
+    commitAs(text, null, false);
   };
 
   const field = { 'aria-label': column.label, 'aria-invalid': error ? true : undefined,
@@ -123,7 +172,11 @@ export default function CellEditor({ editor, column, style, options, onChange, o
     control = (
       <ComboBox portal options={column.options ?? []} value={text} ariaLabel={column.label}
                 placeholder={column.options?.find((o) => o.value === text)?.label}
-                onChange={(v) => onCommit(v, null, true)} />
+                onChange={(v) => {
+                  const dir = enterPick.current ? 'down' : null;
+                  enterPick.current = false;
+                  onCommit(v, dir, true);
+                }} />
     );
   } else if (kind === 'resources') {
     const keys = text ? text.split(',') : [];
@@ -150,7 +203,8 @@ export default function CellEditor({ editor, column, style, options, onChange, o
   }
 
   return (
-    <div ref={wrapRef} className={`pln-editor${error ? ' pln-editor-bad' : ''}`} style={style} data-col={column.key}
+    <div ref={wrapRef} className={`pln-editor${error ? ' pln-editor-bad' : ''}`} data-col={column.key}
+         style={shift ? { ...style, marginLeft: -shift } : style}
          data-kind={kind}
          aria-busy={pending || undefined} onKeyDownCapture={onKeyDownCapture} onKeyDown={onKeyDown} onBlur={onBlur}>
       {control}

@@ -11,8 +11,8 @@ import { PROGRESS_FIELDS, type Op, type PlanTask } from './api';
 import { COLUMN_BY_KEY, PLAN_COLUMNS } from './columns';
 import { STANDARD_UNITS } from './durations';
 import {
-  LOCKED_COLUMNS, canAddTasks, canEditCell, editLabel, editText, noticeText, opsForCell, resourceKey,
-  type EditContext,
+  LOCKED_COLUMNS, MULTILINE_NOTE_TITLE, canAddTasks, canEditCell, editLabel, editText, multiLineNote, noticeText,
+  opsForCell, resourceKey, type EditContext,
 } from './editOps';
 import { makePlan, makeTask } from './planFixtures';
 
@@ -61,6 +61,13 @@ describe('opsForCell: local checks', () => {
   it('Start and Finish cannot be emptied', () => {
     expect(opsForCell(task(), col('start'), '', ctx())).toEqual({ error: 'Enter a Start date.' });
     expect(opsForCell(task(), col('finish'), '', ctx())).toEqual({ error: 'Enter a Finish date.' });
+  });
+
+  it('date text that is not a whole date is an error, never a clear', () => {
+    const due = task({ deadline: '2026-11-09T17:00' });
+    expect(opsForCell(due, col('deadline'), '2026-11', ctx())).toEqual({ error: 'Enter a full date.' });
+    expect(opsForCell(due, col('deadline'), '2026-02-30', ctx())).toEqual({ error: 'Enter a full date.' });
+    expect(opsForCell(null, col('start'), '11/5', ctx())).toEqual({ error: 'Enter a full date.' });
   });
 
   it('a select value the column does not offer is an error', () => {
@@ -236,6 +243,25 @@ describe('which cells open an editor', () => {
     for (const key of ['name', 'percent', 'predecessors', 'resources', 'notes', 'deadline']) {
       expect(canEditCell(plan, summary, col(key))).toBe(true);
     }
+  });
+
+  it('locked: a summary’s actuals still come from its subtasks; its % and notes open', () => {
+    const summary = task({ is_summary: true });
+    expect(canEditCell(locked, summary, col('actual_start'))).toBe(false);
+    expect(canEditCell(locked, summary, col('actual_finish'))).toBe(false);
+    expect(canEditCell(locked, summary, col('percent'))).toBe(true);
+    expect(canEditCell(locked, summary, col('notes'))).toBe(true);
+  });
+
+  it('a note with a line break is edited in Task Information, not the cell', () => {
+    expect(multiLineNote(task({ notes: 'call first\nthen pack' }))).toBe(true);
+    expect(multiLineNote(task({ notes: 'one\r\ntwo' }))).toBe(true);
+    expect(multiLineNote(task({ notes: 'call first' }))).toBe(false);
+    expect(multiLineNote(task({ notes: null }))).toBe(false);
+    expect(canEditCell(plan, task({ notes: 'call first\nthen pack' }), col('notes'))).toBe(false);
+    expect(canEditCell(locked, task({ notes: 'call first\nthen pack' }), col('notes'))).toBe(false);
+    expect(canEditCell(plan, task({ notes: 'call first' }), col('notes'))).toBe(true);
+    expect(MULTILINE_NOTE_TITLE).toBe('Multi-line note — edit in Task Information');
   });
 
   it('the blank row: only fields a new task takes, and only while tasks can be added', () => {

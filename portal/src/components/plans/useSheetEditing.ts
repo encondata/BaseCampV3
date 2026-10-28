@@ -74,6 +74,9 @@ export interface SheetEditing {
   change(text: string): void;
   commit(text: string, dir: MoveDir | null, refocus: boolean): void;
   cancel(refocus: boolean): void;
+  /** A refusal the field itself knows of (a half-typed date): shown like
+   *  any other, nothing sent. */
+  fail(message: string): void;
   /** A key typed while a commit is in flight. */
   typeAhead(key: string): void;
 }
@@ -158,6 +161,21 @@ export function useSheetEditing(o: Options): SheetEditing {
     if (editorRef.current?.pending) aheadRef.current += key;
   }, []);
 
+  /** The edit is refused: the editor stays open with what was typed and
+   *  the message, and the active cell comes back to it (a click elsewhere
+   *  may have committed it). */
+  const refuse = useCallback((ed: SheetEditor, text: string, message: string) => {
+    aheadRef.current = '';
+    setEditor({ ...ed, text, error: message, pending: false });
+    const { selection, onSelect } = latest.current;
+    if (selection.active?.id !== ed.id || selection.active.col !== ed.col) onSelect(selectCell(ed.id, ed.col));
+  }, [setEditor]);
+
+  const fail = useCallback((message: string) => {
+    const ed = editorRef.current;
+    if (ed && !ed.pending) refuse(ed, ed.text, message);
+  }, [refuse]);
+
   /** After a commit: the next cell, if the person is still on this one. */
   const moveAfter = useCallback((ed: SheetEditor, dir: MoveDir | null, addedId: string | null) => {
     const { selection, onSelect, rows, blankRow, columns } = latest.current;
@@ -200,7 +218,7 @@ export function useSheetEditing(o: Options): SheetEditing {
     };
     const edit = opsForCell(task, column, text, ctx);
     if ('error' in edit) {
-      setEditor({ ...ed, text, error: edit.error });
+      refuse(ed, text, edit.error);
       return;
     }
     if (!edit.ops.length) {
@@ -235,12 +253,9 @@ export function useSheetEditing(o: Options): SheetEditing {
         close(refocus);      // reloaded (or gone): the toast already said why
         return;
       }
-      aheadRef.current = '';
-      setEditor({ ...ed, text, error: result.message, pending: false });
-      const { selection, onSelect } = latest.current;
-      if (selection.active?.id !== ed.id || selection.active.col !== ed.col) onSelect(selectCell(ed.id, ed.col));
+      refuse(ed, text, result.message);
     });
-  }, [close, moveAfter, setEditor]);
+  }, [close, moveAfter, refuse, setEditor]);
 
   // keys typed while a commit was in flight start the next cell's editor
   // once the plan on screen has the row (a new task arrives a render later)
@@ -252,6 +267,6 @@ export function useSheetEditing(o: Options): SheetEditing {
     open(queued.id, queued.col, queued.seed);
   }, [queued, o.ctl.plan, open]);
 
-  return useMemo(() => ({ editor, open, change, commit, cancel, typeAhead }),
-    [editor, open, change, commit, cancel, typeAhead]);
+  return useMemo(() => ({ editor, open, change, commit, cancel, fail, typeAhead }),
+    [editor, open, change, commit, cancel, fail, typeAhead]);
 }

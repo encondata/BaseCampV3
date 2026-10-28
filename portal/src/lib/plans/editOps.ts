@@ -68,6 +68,10 @@ const ADD_FIELDS: ReadonlySet<string> = new Set(['name', 'duration', 'start', 'f
 const SUMMARY_DERIVED: ReadonlySet<string> = new Set(['duration', 'start', 'finish', 'actual_start', 'actual_finish']);
 
 const PERCENT = /^[ \t]*([0-9]{1,3})(?:\.([0-9]+))?[ \t]*%?[ \t]*$/;
+/** Date text that isn't a whole date (a native date field part typed). */
+export const PARTIAL_DATE = 'Enter a full date.';
+/** The Notes cell's title when the note has line breaks. */
+export const MULTILINE_NOTE_TITLE = 'Multi-line note — edit in Task Information';
 const PERCENT_ERROR = 'Enter a % Complete from 0 to 100.';
 
 /** A resource as the Resource Names editor names it: `person:<id>`. */
@@ -121,7 +125,10 @@ type Parsed = { value: unknown } | { error: string };
 function parseField(task: PlanTask | null, column: PlanColumn, text: string, ctx: EditContext): Parsed | 'same' {
   const key = column.key;
   if (DATE_KEYS.has(key)) {
-    const value = fromDateInput(asciiTrim(text));
+    const typed = asciiTrim(text);
+    const value = fromDateInput(typed);
+    // part of a date is not an empty one: never clear the field for it
+    if (value === null && typed !== '') return { error: PARTIAL_DATE };
     if (task && sameDate(value ?? '', dateOf(task, key))) return 'same';
     if (value === null && REQUIRED_DATES.has(key) && task) return { error: `Enter a ${column.label} date.` };
     return { value };
@@ -240,13 +247,21 @@ export function canAddTasks(plan: PlanAccess): boolean {
   return plan.permissions.add && plan.permissions.change && plan.locked_at === null;
 }
 
-/** Whether the cell opens an editor (typing, F2, a double-click). */
+/** A note with line breaks: the one-line cell editor would flatten it, so
+ *  it is edited in Task Information instead (Task 10). */
+export function multiLineNote(task: Pick<PlanTask, 'notes'>): boolean {
+  return /[\r\n]/.test(task.notes ?? '');
+}
+
+/** Whether the cell opens an editor (typing, F2, a double-click). The task
+ *  rules come first, so a locked plan never reopens what they close. */
 export function canEditCell(plan: PlanAccess, task: PlanTask | null, column: PlanColumn): boolean {
   if (column.editor === 'none') return false;
   if (!task) return canAddTasks(plan) && ADD_FIELDS.has(column.key);
   if (!plan.permissions.change) return false;
-  if (plan.locked_at !== null) return LOCKED_COLUMNS.has(column.key);
-  return !(task.is_summary && SUMMARY_DERIVED.has(column.key));
+  if (task.is_summary && SUMMARY_DERIVED.has(column.key)) return false;
+  if (column.key === 'notes' && multiLineNote(task)) return false;
+  return plan.locked_at === null || LOCKED_COLUMNS.has(column.key);
 }
 
 /** The undo step's name (the toolbar shows "Undo Edit Duration"). */

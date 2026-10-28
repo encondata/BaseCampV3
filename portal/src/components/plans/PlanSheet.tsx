@@ -32,10 +32,11 @@ import {
   COLUMN_BY_KEY, SHEET_HEAD_PX, SHEET_ROW_PX, STATUS_CHIP, columnPrefsSnapshot, columnWidth, saveColumnPrefs,
   subscribeColumnPrefs, type PlanColumn, type SheetContext,
 } from '../../lib/plans/columns';
+import { MULTILINE_NOTE_TITLE, multiLineNote } from '../../lib/plans/editOps';
 import { indicatorsOf, type IndicatorKind } from '../../lib/plans/indicators';
 import { planUnits } from '../../lib/plans/merge';
 import { extendRows, moveActive, selectCell, toggleRow, type Selection } from '../../lib/plans/selection';
-import { gridKey, scrollToShow } from '../../lib/plans/sheetKeys';
+import { gridKey, keyLike, scrollToShow } from '../../lib/plans/sheetKeys';
 import CellEditor from './CellEditor';
 import { resourceOptions } from './ResourcePicker';
 import type { PlanController } from './usePlan';
@@ -164,10 +165,7 @@ export default function PlanSheet({
 
   const onGridKey = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.target !== e.currentTarget || editing.editor) return;
-    const action = gridKey({
-      key: e.key, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey,
-      isComposing: e.nativeEvent.isComposing,
-    });
+    const action = gridKey(keyLike(e));
     if (action.kind === 'move') {
       const next = moveActive(selection, action.dir, blankRow ? [...rows, 'blank'] : rows, columns.map((c) => c.key));
       const moved = next.active?.id !== selection.active?.id || next.active?.col !== selection.active?.col;
@@ -319,7 +317,7 @@ export default function PlanSheet({
                       style={{ transform: `translate(${xOf(edCol)}px, ${edRow * rowHeight}px)`, width: widths[edCol],
                         height: rowHeight }}
                       onChange={editing.change} onCommit={editing.commit} onCancel={editing.cancel}
-                      onTypeAhead={editing.typeAhead} />
+                      onFail={editing.fail} onTypeAhead={editing.typeAhead} />
         )}
       </div>
     </div>
@@ -401,7 +399,9 @@ function CellContent({ col, task, ctx, collapsed, onToggleCollapse }: {
       const text = col.value(task, ctx);
       if (!text) return null;
       const kind = col.text === 'mono' ? 'mono' : col.text === 'sub' ? 'cell-sub' : 'cell-top';
-      const title = kind !== 'mono' || TITLED.has(col.key) ? text : undefined;
+      // a multi-line note is edited in Task Information, not this cell
+      const title = col.key === 'notes' && multiLineNote(task) ? MULTILINE_NOTE_TITLE
+        : kind !== 'mono' || TITLED.has(col.key) ? text : undefined;
       return <span className={`${kind} cell-line`} title={title}>{text}</span>;
     }
   }
