@@ -79,9 +79,11 @@ critical path (MS Project's rules; a deadline changes slack, never dates).
   A cap on the start (SS, SF, an SNLT or MSO date) caps the finish one
   duration later. The late start is the late finish less the duration, the
   duration being the length the task is scheduled with (its working time,
-  or wall clock when elapsed; an actual finish can shorten it). A task with
-  work does not finish on an interval's start: Wed 08:00 reads Tue 17:00.
-  A manual task's constraint is ignored here too; its deadline is not.
+  or wall clock when elapsed; an actual finish can shorten it). A late
+  finish in working time with work to do never sits on an interval's start:
+  Wed 08:00 reads Tue 17:00 (a milestone or an elapsed task keeps the exact
+  moment). A manual task's constraint is ignored here too; its deadline is
+  not.
 - Total slack is the working minutes from the (early) start to the late
   start, negative when the task is already late. A task is critical when
   its slack is at most `EngineSettings.critical_slack_minutes` and it is
