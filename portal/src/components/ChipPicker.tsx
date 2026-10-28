@@ -14,7 +14,8 @@
  * - `clearAll` adds a "Clear all" text button once there are two or more
  *   chips; `note` is a one-line state under the chips.
  * - Inside a modal the ComboBox menu portals by itself (ComboBox /
- *   useMenuPlacement), and its Escape closes the menu, not the dialog.
+ *   useMenuPlacement), and its Escape closes the menu, not the dialog;
+ *   `portal` makes it portal anywhere (inside an overflow-hidden panel).
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -37,6 +38,8 @@ export interface ChipPickerProps {
   note?: ReactNode;
   /** The ComboBox's accessible name. */
   ariaLabel?: string;
+  /** Always portal the menu (ComboBox `portal`). */
+  portal?: boolean;
 }
 
 /** Where focus goes after a chip is removed: a value's ×, or the box. */
@@ -44,6 +47,7 @@ type FocusTarget = { kind: 'chip'; value: string } | { kind: 'box' };
 
 export default function ChipPicker({
   options, selected, onChange, disabled = false, placeholder = 'Add…', clearAll = false, note, ariaLabel,
+  portal = false,
 }: ChipPickerProps) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const removeRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -99,7 +103,7 @@ export default function ChipPicker({
       )}
       {note ? <p className="page-hint chip-picker-note">{note}</p> : null}
       <ComboBox options={remaining} value="" disabled={disabled} placeholder={placeholder} ariaLabel={ariaLabel}
-        handle={combo}
+        handle={combo} portal={portal}
         onChange={(v) => { if (v) onChange([...selected, v]); }} />
     </div>
   );

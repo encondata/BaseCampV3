@@ -248,7 +248,7 @@ export default function LearningSettings() {
                 What workers can read and sign in. English is always on.
               </p>
               <ChipPicker ariaLabel="Add a language" placeholder="Add a language…" disabled={locked}
-                          options={otherLanguages} clearAll
+                          options={otherLanguages} clearAll portal
                           selected={draft.languages.filter((l) => l !== 'en').sort(byName)}
                           onChange={(picked) => patchDraft({ languages: ['en', ...picked] })} />
             </div>
