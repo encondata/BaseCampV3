@@ -4,8 +4,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  dayOf, formatCell, formatDay, formatDayTime, fromDateInput, fromInstant, fromMs, toDateInput,
-  toDateTimeInput, toMs,
+  dayOf, formatCell, formatDay, formatDayRange, formatDayTime, formatShortDay, fromDateInput, fromInstant, fromMs,
+  toDateInput, toDateTimeInput, toMs,
 } from './floatingTime';
 
 describe('toMs / fromMs', () => {
@@ -64,6 +64,28 @@ describe('display', () => {
     expect(formatDay('nope')).toBe('');
     expect(formatDayTime(undefined)).toBe('');
   });
+
+  it('formats a milestone’s short date as M/D', () => {
+    expect(formatShortDay('2026-11-16T17:00')).toBe('11/16');
+    expect(formatShortDay('2027-01-03')).toBe('1/3');
+    expect(formatShortDay(null)).toBe('');
+    expect(formatShortDay('2026-02-30')).toBe('');
+  });
+
+  it('formats a day range with an en dash, naming the month and year only once when they repeat', () => {
+    expect(formatDayRange('2026-11-14', '2026-11-16')).toBe('Nov 14\u201316');
+    expect(formatDayRange('2026-11-30', '2026-12-02')).toBe('Nov 30 \u2013 Dec 2');
+    expect(formatDayRange('2026-12-30', '2027-01-02')).toBe('Dec 30, 2026 \u2013 Jan 2, 2027');
+    expect(formatDayRange('2026-11-14', '2026-11-14')).toBe('Nov 14');
+    expect(formatDayRange('2026-11-14T08:00', '2026-11-16T17:00')).toBe('Nov 14\u201316');
+  });
+
+  it('formats a range from either end alone, and nothing from bad days', () => {
+    expect(formatDayRange('2026-11-14', null)).toBe('Nov 14');
+    expect(formatDayRange(null, '2026-11-16')).toBe('Nov 16');
+    expect(formatDayRange('nope', 'also nope')).toBe('');
+    expect(formatDayRange(null, null)).toBe('');
+  });
 });
 
 describe('inputs', () => {
@@ -111,6 +133,8 @@ describe('in a browser far from the plan’s zone (Review Focus 4)', () => {
       expect(ft.toMs('2026-11-02T00:00')).toBe(Date.UTC(2026, 10, 2));
       expect(ft.fromMs(ft.toMs('2026-03-08T02:30'))).toBe('2026-03-08T02:30');   // a US DST gap
       expect(ft.fromDateInput('2026-11-02')).toBe('2026-11-02');
+      expect(ft.formatShortDay('2026-11-02T00:00')).toBe('11/2');
+      expect(ft.formatDayRange('2026-11-30T00:00', '2026-12-02T23:59')).toBe('Nov 30 \u2013 Dec 2');
     });
 });
 

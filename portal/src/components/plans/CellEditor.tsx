@@ -51,6 +51,13 @@ interface Props {
 
 const printable = (k: KeyLike) => [...k.key].length === 1 && !k.ctrlKey && !k.metaKey && !k.altKey;
 
+/** The right edge of what shows of `el`'s surroundings: `right`, or the
+ *  sheet pane's edge (the splitter) when that comes first. */
+function visibleRight(el: Element, right: number): number {
+  const pane = el.closest('.pln-pane')?.getBoundingClientRect().right;
+  return pane === undefined ? right : Math.min(right, pane);
+}
+
 export default function CellEditor({
   editor, column, style, options, onChange, onCommit, onCancel, onFail, onTypeAhead,
 }: Props) {
@@ -75,7 +82,7 @@ export default function CellEditor({
     setAnchor(el);
     const sheet = el?.closest('.pln-sheet');
     if (!el || !sheet) return;
-    const over = el.getBoundingClientRect().right - sheet.getBoundingClientRect().right;
+    const over = el.getBoundingClientRect().right - visibleRight(el, sheet.getBoundingClientRect().right);
     if (over > 0) setShift(Math.ceil(over));
   }, []);
 
@@ -87,7 +94,7 @@ export default function CellEditor({
       return;
     }
     const cell = wrapRef.current!.getBoundingClientRect();
-    setErrorFit(`${msg.right > box.right ? ' pln-editor-error-end' : ''}`
+    setErrorFit(`${msg.right > visibleRight(wrapRef.current!, box.right) ? ' pln-editor-error-end' : ''}`
       + `${cell.bottom + msg.height + 8 > box.bottom && cell.top - msg.height - 8 > box.top ? ' pln-editor-error-up' : ''}`);
   }, [error]);
 

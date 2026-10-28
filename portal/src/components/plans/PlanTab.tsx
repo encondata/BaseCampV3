@@ -10,9 +10,13 @@
  *    and the "Plan updated by…" status. The commands, the MS Project
  *    keyboard map and the clipboard are usePlanCommands' and
  *    usePlanShortcuts';
- *  - the view area (`.pln-view`): the Gantt view (sheet + chart, Tasks 5
- *    and 8) inside one scroll box (`.pln-panes`, `scrollRef`) both panes
- *    virtualize against; Calendar and Board arrive in Plan C;
+ *  - the view area (`.pln-view`): the Gantt view — the task sheet, the
+ *    splitter and the chart side by side (`.pln-split`) inside one
+ *    vertical scroll box (`.pln-panes`, `scrollRef`) both panes virtualize
+ *    against, each pane with its own sideways scroll (SidePane: the design
+ *    is in Splitter.tsx). The splitter's place is the sheet pane's width,
+ *    kept in localStorage `plans.split.v1`; Calendar and Board arrive in
+ *    Plan C;
  *  - the dialogs host: one PlanModal-based dialog at a time (`PlanDialog`).
  *
  * The Gantt view's shared state lives here too (useSheetView.ts): the rows on
@@ -33,7 +37,7 @@
  */
 
 import {
-  useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject,
+  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject,
 } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
@@ -45,13 +49,16 @@ import type { Plan } from '../../lib/plans/api';
 import { SHEET_ROW_PX } from '../../lib/plans/columns';
 import { canAddTasks } from '../../lib/plans/editOps';
 import { isPlanChanged, planErrorText } from '../../lib/plans/errors';
+import { MIN_SHEET_PX, maxSplit, readSplit, splitWidth, writeSplit } from '../../lib/plans/ganttView';
 import ColumnsModal from './ColumnsModal';
 import DeleteTasksModal from './DeleteTasksModal';
 import PlanCreateModal, { type PlanInitiative } from './PlanCreateModal';
 import PlanEmptyState from './PlanEmptyState';
+import PlanGantt from './PlanGantt';
 import PlanSheet from './PlanSheet';
 import PlanToolbar, { useRovingToolbar } from './PlanToolbar';
 import ShortcutsModal from './ShortcutsModal';
+import Splitter, { SidePane } from './Splitter';
 import { usePlan, type PlanController } from './usePlan';
 import { usePlanCommands, type PlanDialog } from './usePlanCommands';
 import { usePlanShortcuts } from './usePlanShortcuts';
@@ -107,6 +114,30 @@ function useFillHeight(ref: RefObject<HTMLElement | null>, on: boolean): number 
     return () => observer.disconnect();
   }, [ref, on]);
   return height;
+}
+
+/** The splitter's place: the sheet pane's width in px, within what the view
+ *  (`ref`, the scroll box, measured while `on`) leaves the chart. `move`
+ *  follows a drag; `save` keeps the place (`plans.split.v1`). */
+function useSplit(ref: RefObject<HTMLElement | null>, on: boolean) {
+  const [viewW, setViewW] = useState(0);
+  const [stored, setStored] = useState<number | null>(readSplit);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!on || !el) return undefined;
+    const measure = () => setViewW(el.clientWidth);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref, on]);
+  const width = splitWidth(stored, viewW);
+  const save = useCallback((px: number) => {
+    setStored(px);
+    writeSplit(px);
+  }, []);
+  return { width, max: viewW > 0 ? maxSplit(viewW) : Math.max(width, MIN_SHEET_PX), move: setStored, save };
 }
 
 /** What stays live behind full screen: the toasts, whose actions (Undo,
@@ -168,6 +199,7 @@ export default function PlanTab({ initiativeId, initiative }: {
   const viewHeight = useFillHeight(viewRef, ready && !isFull);
   useInertOutside(rootRef, isFull);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const sheetSideRef = useRef<HTMLDivElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const clipRef = useRef<HTMLTextAreaElement>(null);
   const rowHeight = Math.round(SHEET_ROW_PX * listScale(preferences?.list_size));
@@ -175,6 +207,11 @@ export default function PlanTab({ initiativeId, initiative }: {
   const commands = usePlanCommands({ ctl, sheet, root: rootRef, clip: clipRef, openDialog: setDialog });
   usePlanShortcuts(commands.handlers, { root: rootRef, enabled: ready && view === 'gantt' });
   useRovingToolbar(toolbarRef, ready);
+  const split = useSplit(scrollRef, ready && view === 'gantt');
+  const { scheduled_start: scheduledStart, scheduled_end: scheduledEnd } = initiative;
+  const scheduled = useMemo(() => ({ start: scheduledStart, end: scheduledEnd }), [scheduledStart, scheduledEnd]);
+  const { zoomIn, zoomOut } = commands;
+  const zoomStep = useCallback((dir: -1 | 1) => (dir < 0 ? zoomIn() : zoomOut()), [zoomIn, zoomOut]);
 
   const selectView = (next: PlanViewKey) => {
     setSearchParams((prev) => {
@@ -253,9 +290,21 @@ export default function PlanTab({ initiativeId, initiative }: {
              style={viewHeight === null ? undefined : { height: viewHeight }}>
           {view === 'gantt' && (
             <div className="pln-panes" ref={scrollRef}>
-              <PlanSheet ctl={ctl} rows={sheet.rows} collapsed={sheet.collapsed} rowHeight={rowHeight}
-                         scrollRef={scrollRef} selection={sheet.selection} onSelect={sheet.select}
-                         onToggleCollapse={sheet.toggleCollapse} blankRow={canAddTasks(plan)} />
+              <div className="pln-split" style={{ '--pln-split': `${split.width}px` } as CSSProperties}>
+                <SidePane className="pln-pane-sheet" barRef={sheetSideRef}>
+                  <PlanSheet ctl={ctl} rows={sheet.rows} collapsed={sheet.collapsed} rowHeight={rowHeight}
+                             scrollRef={scrollRef} sideScrollRef={sheetSideRef} selection={sheet.selection}
+                             onSelect={sheet.select} onToggleCollapse={sheet.toggleCollapse}
+                             blankRow={canAddTasks(plan)} />
+                </SidePane>
+                <Splitter value={split.width} min={MIN_SHEET_PX} max={split.max} label="Resize the task sheet"
+                          onChange={split.move} onCommit={split.save} />
+                <PlanGantt ctl={ctl} rows={sheet.rows} rowHeight={rowHeight} scrollRef={scrollRef}
+                           zoom={commands.zoom} display={commands.display} selection={sheet.selection}
+                           onSelect={sheet.select} editable={plan.permissions.change && !plan.locked_at}
+                           blankRow={canAddTasks(plan)} scheduled={scheduled} scrollRequest={commands.chartScroll}
+                           onZoomStep={zoomStep} focusSheet={commands.focusSheet} />
+              </div>
             </div>
           )}
         </div>

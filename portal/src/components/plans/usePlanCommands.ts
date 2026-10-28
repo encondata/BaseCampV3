@@ -38,6 +38,7 @@ import {
 } from '../../lib/plans/commands';
 import { noticeText } from '../../lib/plans/editOps';
 import { fitZoom, zoomIn as zoomInOf, zoomOut as zoomOutOf, type Zoom } from '../../lib/plans/ganttGeometry';
+import { readZoom, writeZoom } from '../../lib/plans/ganttView';
 import { PLAN_ERRORS, completionText, isPlanChanged, planErrorText } from '../../lib/plans/errors';
 import { descendants } from '../../lib/plans/outline';
 import {
@@ -104,10 +105,18 @@ function textSelected(): boolean {
   return !!selection && !selection.isCollapsed && selection.toString() !== '';
 }
 
-/** The Gantt's display options (Task 8 draws them). */
+/** The Gantt's display options (PlanGantt draws them). */
 export interface GanttDisplay {
   critical: boolean;
   baseline: boolean;
+}
+
+/** A sideways scroll the chart does once (per `seq`): Fit Project scrolls
+ *  to the project start, Scroll to Task to the task's bar. */
+export interface ChartScroll {
+  seq: number;
+  to: 'fit' | 'task';
+  taskId?: string;
 }
 
 export interface SheetState {
@@ -137,7 +146,10 @@ export interface PlanCommands {
   /** Every selected task is on the timeline. */
   onTimeline: boolean;
   display: GanttDisplay;
+  /** The Gantt's zoom, kept per plan in localStorage `plans.zoom.<planId>`. */
   zoom: Zoom;
+  /** The chart's latest one-off sideways scroll (Fit, Scroll to Task). */
+  chartScroll: ChartScroll | null;
   canOpen(kind: PlanDialog['kind']): boolean;
 
   undo(): void;
@@ -184,7 +196,9 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
   const toast = useToast();
   const prompt = useCompletionPrompt(ctl);
   const [display, setDisplay] = useState<GanttDisplay>({ critical: false, baseline: false });
-  const [zoom, setZoom] = useState<Zoom>('days');
+  const [zoom, setZoom] = usePlanZoom(ctl.plan?.id ?? null);
+  const [chartScroll, setChartScroll] = useState<ChartScroll | null>(null);
+  const scrollSeq = useRef(0);
 
   // what callbacks read after an await, and what keeps them one identity
   const latest = useRef({ ctl, sheet, toast, prompt, openDialog });
@@ -544,15 +558,23 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
         if (view.collapsed.has(t.id) !== shut) view.toggleCollapse(t.id);
       }
     };
+    // the row into view in the sheet, the bar into view in the chart
     const scrollToTask = () => {
       const { sheet: view, ctl: now } = latest.current;
       const task = now.plan ? selectedTasks(view.selection, now.plan)[0] : undefined;
-      if (task) view.reveal(task.id);
+      if (!task) return;
+      view.reveal(task.id);
+      scrollSeq.current += 1;
+      setChartScroll({ seq: scrollSeq.current, to: 'task', taskId: task.id });
     };
+    // the finest zoom at which the project fits the chart pane, scrolled to its start
     const fit = () => {
       const now = latest.current.ctl.plan;
-      const width = root.current?.querySelector<HTMLElement>('.pln-view')?.clientWidth ?? 0;
-      if (now && width > 0) setZoom(fitZoom(now.project_start, now.project_finish, width));
+      const width = root.current?.querySelector<HTMLElement>('.pln-pane-chart')?.clientWidth ?? 0;
+      if (!now || width <= 0) return;
+      setZoom(fitZoom(now.project_start, now.project_finish, width));
+      scrollSeq.current += 1;
+      setChartScroll({ seq: scrollSeq.current, to: 'fit' });
     };
     const undo = () => { void latest.current.ctl.undo(); };
     const redo = () => { void latest.current.ctl.redo(); };
@@ -625,8 +647,29 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
       paste: () => (latest.current.ctl.plan?.permissions.change ? pasteKey() : false),
     };
     return { ...actions, handlers };
-  }, [withPlan, selectNew, deleteTasks, confirmDelete, copy, cut, paste, pasteKey, focusSheet, root]);
+  }, [withPlan, selectNew, deleteTasks, confirmDelete, copy, cut, paste, pasteKey, focusSheet, root, setZoom]);
 
-  return useMemo(() => ({ ...commands, selected, mode, onTimeline, display, zoom }),
-    [commands, selected, mode, onTimeline, display, zoom]);
+  return useMemo(() => ({ ...commands, selected, mode, onTimeline, display, zoom, chartScroll }),
+    [commands, selected, mode, onTimeline, display, zoom, chartScroll]);
+}
+
+/** The Gantt's zoom for the plan on screen: kept per plan in this browser
+ *  (`plans.zoom.<planId>`, days until changed). The setter takes a zoom or
+ *  a step from the current one, and stores the result. */
+function usePlanZoom(planId: string | null): [Zoom, (next: Zoom | ((now: Zoom) => Zoom)) => void] {
+  const stored = useMemo(() => readZoom(planId), [planId]);
+  const [picked, setPicked] = useState<{ planId: string | null; zoom: Zoom } | null>(null);
+  const zoom = picked && picked.planId === planId ? picked.zoom : stored;
+  const latest = useRef({ planId, zoom });
+  useLayoutEffect(() => {
+    latest.current = { planId, zoom };
+  }, [planId, zoom]);
+  const set = useCallback((next: Zoom | ((now: Zoom) => Zoom)) => {
+    const { planId: id, zoom: now } = latest.current;
+    const value = typeof next === 'function' ? next(now) : next;
+    latest.current = { planId: id, zoom: value };
+    setPicked({ planId: id, zoom: value });
+    if (id) writeZoom(id, value);
+  }, []);
+  return [zoom, set];
 }

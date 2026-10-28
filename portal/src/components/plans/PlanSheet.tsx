@@ -29,8 +29,8 @@ import {
 import type { ComboOption } from '../ComboBox';
 import type { PlanTask } from '../../lib/plans/api';
 import {
-  COLUMN_BY_KEY, SHEET_HEAD_PX, SHEET_ROW_PX, STATUS_CHIP, columnPrefsSnapshot, columnWidth, saveColumnPrefs,
-  subscribeColumnPrefs, type PlanColumn, type SheetContext,
+  COLUMN_BY_KEY, SHEET_HEAD_PX, SHEET_OVERSCAN, SHEET_ROW_PX, STATUS_CHIP, columnPrefsSnapshot, columnWidth,
+  saveColumnPrefs, subscribeColumnPrefs, type PlanColumn, type SheetContext,
 } from '../../lib/plans/columns';
 import { MULTILINE_NOTE_TITLE, multiLineNote } from '../../lib/plans/editOps';
 import { indicatorsOf, type IndicatorKind } from '../../lib/plans/indicators';
@@ -53,6 +53,10 @@ export interface PlanSheetProps {
   rowHeight: number;
   /** The scroll box the sheet (and the Gantt) virtualize against. */
   scrollRef: RefObject<HTMLDivElement | null>;
+  /** The sheet pane's own sideways scroller (SidePane's scrollbar), when
+   *  it has one: the active cell is scrolled into view across it.
+   *  Without one, `scrollRef` scrolls both ways. */
+  sideScrollRef?: RefObject<HTMLElement | null>;
   selection: Selection;
   onSelect(sel: Selection): void;
   onToggleCollapse(id: string): void;
@@ -63,7 +67,6 @@ export interface PlanSheetProps {
 /** What a mousedown on a cell needs to know. */
 type CellPress = Pick<MouseEvent, 'button' | 'shiftKey' | 'ctrlKey' | 'metaKey'>;
 
-const OVERSCAN = 20;
 const MAX_WIDTH = 1200;
 const KEY_STEP_PX = 8;
 const TITLED = new Set(['predecessors', 'successors']);
@@ -72,7 +75,7 @@ const NO_OPTIONS: ComboOption[] = [];
 const alignClass = (col: PlanColumn) => (col.align === 'start' ? '' : ` pln-${col.align}`);
 
 export default function PlanSheet({
-  ctl, rows, collapsed, rowHeight, scrollRef, selection, onSelect, onToggleCollapse, blankRow,
+  ctl, rows, collapsed, rowHeight, scrollRef, sideScrollRef, selection, onSelect, onToggleCollapse, blankRow,
 }: PlanSheetProps) {
   const plan = ctl.plan;
   const prefs = useSyncExternalStore(subscribeColumnPrefs, columnPrefsSnapshot);
@@ -105,7 +108,7 @@ export default function PlanSheet({
     count,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => rowHeight,
-    overscan: OVERSCAN,
+    overscan: SHEET_OVERSCAN,
     scrollMargin: SHEET_HEAD_PX,
     getItemKey: itemKey,
   });
@@ -192,8 +195,9 @@ export default function PlanSheet({
     const top = scrollToShow(SHEET_HEAD_PX + activeIndex * rowHeight, rowHeight, box.scrollTop, box.clientHeight,
       SHEET_HEAD_PX);
     if (top !== null) box.scrollTop = top;
-    const left = scrollToShow(xOf(activeCol), widths[activeCol], box.scrollLeft, box.clientWidth, 0);
-    if (left !== null) box.scrollLeft = left;
+    const side = sideScrollRef?.current ?? box;
+    const left = scrollToShow(xOf(activeCol), widths[activeCol], side.scrollLeft, side.clientWidth, 0);
+    if (left !== null) side.scrollLeft = left;
     // only when the active cell changes, not on every redraw
   }, [reveal]);
 

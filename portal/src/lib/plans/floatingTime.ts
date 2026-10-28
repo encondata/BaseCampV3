@@ -65,6 +65,36 @@ export function formatCell(s: string | null | undefined, showTimes: boolean): st
   return showTimes ? formatDayTime(s) : formatDay(s);
 }
 
+/** `11/16`, a milestone's date beside its diamond; '' for a missing or bad value. */
+export function formatShortDay(s: string | null | undefined): string {
+  const at = parts(s);
+  return at ? `${at.getUTCMonth() + 1}/${at.getUTCDate()}` : '';
+}
+
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+const monthDay = (at: Date, withYear: boolean): string =>
+  `${MONTHS_SHORT[at.getUTCMonth()]} ${at.getUTCDate()}${withYear ? `, ${at.getUTCFullYear()}` : ''}`;
+
+/**
+ * The days `a` through `b` with an en dash, naming a month or a year once
+ * when both ends share it: `Nov 14–16`, `Nov 30 – Dec 2`, `Dec 30, 2026 –
+ * Jan 2, 2027`; one day (or one end alone) is `Nov 14`. Times are ignored;
+ * '' when neither end is a real day.
+ */
+export function formatDayRange(a: string | null | undefined, b: string | null | undefined): string {
+  const from = parts(a ? dayOf(a) : null);
+  const to = parts(b ? dayOf(b) : null);
+  if (!from || !to) {
+    const one = from ?? to;
+    return one ? monthDay(one, false) : '';
+  }
+  if (from.getTime() === to.getTime()) return monthDay(from, false);
+  if (from.getUTCFullYear() !== to.getUTCFullYear()) return `${monthDay(from, true)} – ${monthDay(to, true)}`;
+  if (from.getUTCMonth() !== to.getUTCMonth()) return `${monthDay(from, false)} – ${monthDay(to, false)}`;
+  return `${monthDay(from, false)}–${to.getUTCDate()}`;
+}
+
 /** The day of a plan time, `YYYY-MM-DD`. */
 export function dayOf(s: string): string {
   return s.slice(0, 10);

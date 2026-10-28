@@ -1,8 +1,9 @@
 /* ============================================================
    plans.css — the initiative's Project plan tab: the tab frame
    (toolbar slot, view area and its scroll box, full screen), the
-   lock banner, the empty state and the plan dialogs (Columns…).
-   Later: toolbar groups, Gantt, board. Class prefix `pln-`.
+   Gantt view (split panes, splitter, chart, hover card), the lock
+   banner, the empty state and the plan dialogs (Columns…).
+   Later: board. Class prefix `pln-`.
 
    NO list-ish selectors in this file (styles/listTypography.test.ts):
    nothing containing row / cell / list / table / chip / mono / head,
@@ -165,25 +166,31 @@
 }
 .pln-fullscreen .pln-view { flex: 1 1 auto; height: auto; min-height: 0; }
 
-/* The Gantt view's one scroll box: the task sheet now, the chart beside it
-   (Task 8). Both virtualize against it, so they scroll as one. No radius
-   of its own: .pln-view's rounded corners clip it. */
+/* The Gantt view's one vertical scroll box, around the sheet and the
+   chart side by side. Both virtualize against it, so they scroll up and
+   down as one; it never scrolls sideways (each pane does that on its own:
+   SidePane in Splitter.tsx). No radius of its own: .pln-view's rounded
+   corners clip it. */
 .pln-panes {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   overscroll-behavior: contain;
 }
 /* slim, trackless bars (the dialogs' look), so the always-present bars of
    a long, wide sheet (and the Columns dialog's list) don't paint a light
    track in the dark theme */
 .pln-panes::-webkit-scrollbar,
+.pln-hbar::-webkit-scrollbar,
 .pln-colpick::-webkit-scrollbar { width: 12px; height: 12px; }
 .pln-panes::-webkit-scrollbar-track,
 .pln-panes::-webkit-scrollbar-corner,
+.pln-hbar::-webkit-scrollbar-track,
 .pln-colpick::-webkit-scrollbar-track,
 .pln-colpick::-webkit-scrollbar-corner { background: transparent; }
 .pln-panes::-webkit-scrollbar-thumb,
+.pln-hbar::-webkit-scrollbar-thumb,
 .pln-colpick::-webkit-scrollbar-thumb {
   background-color: color-mix(in srgb, var(--text-mute) 45%, transparent);
   border: 3px solid transparent;
@@ -191,11 +198,321 @@
   border-radius: 999px;
 }
 .pln-panes::-webkit-scrollbar-thumb:hover,
+.pln-hbar::-webkit-scrollbar-thumb:hover,
 .pln-colpick::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--text-mute) 65%, transparent); }
 @supports not selector(::-webkit-scrollbar) {
   .pln-panes,
+  .pln-hbar,
   .pln-colpick { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text-mute) 45%, transparent) transparent; }
 }
+
+/* ── the Gantt view: sheet | splitter | chart ───────────────────
+   The panes sit side by side in the scroll box, each as tall as all the
+   rows. A pane clips sideways without being a scroll box (`clip`, so the
+   sticky header and scrollbar still hold to .pln-panes) and its content
+   moves by a transform under its own scrollbar (.pln-hbar), held at the
+   bottom of the view. */
+
+.pln-split {
+  display: grid;
+  grid-template-columns: var(--pln-split, 45%) 6px minmax(0, 1fr);
+  min-height: 100%;
+}
+.pln-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-x: clip;
+}
+.pln-pane-shift { flex: 1 0 auto; will-change: transform; }
+/* the pane's own sideways scrollbar: a thin native scroller around an
+   empty spacer as wide as the content */
+.pln-hbar {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  flex: none;
+  height: 13px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--surface-2);
+  border-top: 1px solid var(--paper-line);
+}
+.pln-hbar-span { height: 1px; }
+
+/* the bar between the panes: drag it, or focus it and use the arrows */
+.pln-splitter {
+  position: relative;
+  z-index: 5;
+  background: var(--surface-2);
+  border-left: 1px solid var(--paper-line);
+  border-right: 1px solid var(--paper-line);
+  cursor: col-resize;
+  touch-action: none;
+}
+.pln-splitter:hover,
+.pln-splitter:focus-visible,
+.pln-splitter.on {
+  outline: none;
+  background: rgba(var(--accent-rgb), 0.45);
+  border-color: var(--accent);
+}
+
+/* ── the chart (PlanGantt) ──────────────────────────────────────
+   Drawn in window coordinates: only a window of the scale around the
+   visible part exists, so nothing here is ever as wide as the scale. */
+
+.pln-gantt {
+  position: relative;
+  color: var(--text-dark);
+  user-select: none;
+}
+/* the timescale: two tiers, sticky at the top of the view and as tall as
+   the sheet's header (--pln-head-h), so the rows line up */
+.pln-scale {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  height: var(--pln-head-h);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--paper-line);
+}
+.pln-scale-top,
+.pln-scale-bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  overflow: hidden;
+}
+.pln-scale-top { top: 0; height: 50%; }
+.pln-scale-bottom { bottom: 0; height: 50%; border-top: 1px solid var(--paper-line); }
+.pln-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  border-left: 1px solid var(--paper-line);
+  overflow: hidden;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-mute);
+}
+.pln-scale-top .pln-tick { color: var(--text-dark); }
+/* a top-tier label holds to the view's left edge while its unit scrolls
+   past (--pln-view-x, set by PlanGantt on scroll), stopping whole at the
+   unit's end and leaving with it. Moved by a transform, so the tick keeps
+   its width; the tier's type is monospace, so the label is its length in
+   ch (plus the letter spacing). */
+.pln-tick-label {
+  display: inline-block;
+  transform: translateX(clamp(0px,
+    calc(var(--pln-view-x, 0px) - var(--pln-tick-x, 0px)),
+    calc(var(--pln-tick-w, 0px) - 12px - var(--pln-label-ch, 0) * (1ch + 0.02em))));
+}
+.pln-scale-bottom .pln-tick { justify-content: center; padding: 0; }
+
+.pln-chart { position: relative; }
+
+/* behind the lanes: nonworking days, the initiative window, today, the status date */
+.pln-offday,
+.pln-window,
+.pln-today,
+.pln-status-date {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+.pln-offday { background: color-mix(in srgb, var(--text-mute) 10%, transparent); }
+.pln-window {
+  background: rgba(var(--accent-rgb), 0.07);
+  border-left: 1px dashed rgba(var(--accent-rgb), 0.6);
+  border-right: 1px dashed rgba(var(--accent-rgb), 0.6);
+}
+.pln-today { width: 0; margin-left: -1px; border-left: 2px solid var(--c-blue); }
+.pln-status-date { width: 0; margin-left: -1px; border-left: 2px dashed var(--c-violet); }
+/* the window's label: above the lanes, held under the timescale as the view
+   scrolls. No overflow here: a clipping box would be the scroll box the
+   label sticks to, and a narrow band (months, quarters) would cut it. */
+.pln-window-pin {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.pln-window-label {
+  position: sticky;
+  top: calc(var(--pln-head-h) + 4px);
+  display: inline-block;
+  margin: 4px 0 0 4px;
+  padding: 1px 8px;
+  border: 1px solid rgba(var(--accent-rgb), 0.55);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dark);
+  white-space: nowrap;
+}
+
+/* the link arrows: one SVG over the rendered rows, under the bars */
+.pln-links {
+  position: absolute;
+  left: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.pln-link-path {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text-mute) 90%, transparent);
+  stroke-width: 1.25;
+}
+.pln-link-tip { fill: color-mix(in srgb, var(--text-mute) 90%, transparent); }
+.pln-link-path.pln-link-critical { stroke: var(--c-red); }
+.pln-link-tip.pln-link-critical { fill: var(--c-red); }
+
+/* one lane per row the sheet shows, its line matching the sheet's */
+.pln-lane {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: var(--pln-row-h);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--paper-line) 60%, transparent);
+}
+.pln-lane.on { background-color: rgba(var(--accent-rgb), 0.08); }
+
+/* a task's bar: accent, the part done filled in */
+.pln-bar {
+  position: absolute;
+  min-width: 2px;
+  overflow: hidden;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: rgba(var(--accent-rgb), 0.42);
+}
+.pln-bar-done {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: var(--accent);
+}
+.pln-bar.pln-bar-critical {
+  border-color: var(--c-red);
+  background: color-mix(in srgb, var(--c-red) 38%, transparent);
+}
+.pln-bar.pln-bar-critical .pln-bar-done { background: var(--c-red); }
+/* cut at the drawn window's edge: no end there */
+.pln-bar.pln-cut-start { border-left-width: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.pln-bar.pln-cut-end { border-right-width: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+
+/* a summary: MS Project's bracket, its end caps pointing down */
+.pln-bar-summary {
+  position: absolute;
+  min-width: 2px;
+  background: var(--text-dark);
+}
+.pln-bar-summary .pln-bar-done { background: rgba(var(--accent-rgb), 0.9); }
+.pln-bar-summary::before,
+.pln-bar-summary::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  border-top: 5px solid var(--text-dark);
+}
+.pln-bar-summary::before { left: 0; border-right: 5px solid transparent; }
+.pln-bar-summary::after { right: 0; border-left: 5px solid transparent; }
+.pln-bar-summary.pln-cut-start::before,
+.pln-bar-summary.pln-cut-end::after { display: none; }
+
+/* a milestone: a diamond (2 × MILESTONE_HALF), its date beside it */
+.pln-diamond {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: var(--text-dark);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+.pln-diamond.pln-diamond-critical { background: var(--c-red); }
+.pln-diamond-date { margin-right: 6px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-dark); }
+
+/* resource names (and a milestone's date) right of the bar */
+.pln-bar-names {
+  position: absolute;
+  transform: translateY(-50%);
+  font-size: 11.5px;
+  color: var(--text-mute);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* the baseline: thin and gray under the bar (a small diamond under a milestone) */
+.pln-baseline {
+  position: absolute;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--text-mute) 65%, transparent);
+  pointer-events: none;
+}
+.pln-baseline.pln-baseline-mark {
+  width: 8px;
+  height: 8px;
+  border-radius: 0;
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+
+/* a deadline: MS Project's green down-arrow at the date */
+.pln-deadline {
+  position: absolute;
+  width: 10px;
+  color: var(--c-green);
+  pointer-events: none;
+}
+.pln-deadline svg { display: block; width: 100%; height: 100%; fill: currentColor; }
+
+/* ── the Gantt's hover card (GanttHoverCard) ───────────────────
+   InitiativeHoverCard's look: an always-dark card following the pointer,
+   portaled into the shell above full screen (60), never taking the hover. */
+
+.pln-hover {
+  position: fixed;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 280px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--ink, #0c1117);
+  color: var(--snow, #e8edf4);
+  font-family: var(--font-display, sans-serif);
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: none;
+  box-shadow: 0 6px 20px rgba(12, 17, 23, 0.35);
+}
+.pln-hover-name { font-size: 13.5px; font-weight: 600; line-height: 1.3; }
+.pln-hover-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 12px;
+  margin: 0;
+}
+.pln-hover-fact { display: contents; }
+.pln-hover-facts dt {
+  align-self: center;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(232, 237, 244, 0.55);
+}
+.pln-hover-facts dd { margin: 0; color: rgba(232, 237, 244, 0.9); }
+
 
 /* ── Resource Names picker (ResourcePicker) ─────────────────────
    Portaled into .portal-shell with fixed placement under the cell: above

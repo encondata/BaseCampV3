@@ -21,7 +21,7 @@ function commands(over: Partial<PlanCommands> = {}): PlanCommands {
   const fn = () => vi.fn();
   return {
     selected: [makeTask('a')], mode: 'auto', onTimeline: false,
-    display: { critical: false, baseline: false }, zoom: 'days',
+    display: { critical: false, baseline: false }, zoom: 'days', chartScroll: null,
     canOpen: (kind) => DIALOGS_READY.has(kind),
     undo: fn(), redo: fn(), percent: fn(), markOnTrack: fn(), link: fn(), unlink: fn(), indent: fn(),
     outdent: fn(), setMode: fn(), insert: fn(), timeline: fn(), deleteTasks: fn(), confirmDelete: vi.fn(async () => {}),

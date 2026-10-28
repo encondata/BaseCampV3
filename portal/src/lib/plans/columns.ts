@@ -51,6 +51,9 @@ export interface PlanColumn {
  *  size); the Gantt beside it uses the same so the rows line up. */
 export const SHEET_ROW_PX = 30;
 export const SHEET_HEAD_PX = 44;
+/** Rows rendered past each edge of the view, by the sheet and the Gantt
+ *  alike (both virtualize the same rows against the same scroll box). */
+export const SHEET_OVERSCAN = 20;
 /** Extra width a date column needs for `8:00 AM`. */
 const TIME_PX = 60;
 const MAX_WIDTH = 1200;
