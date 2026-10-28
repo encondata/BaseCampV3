@@ -45,6 +45,28 @@ it('the Gantt colors critical work with --c-red, deadlines with --c-green, and b
   expect(declarations('.pln-deadline')).toMatch(/color:\s*var\(--c-green\)/);
 });
 
+it('the today and status-date lines sit behind the lanes and never take the pointer; their marks in the timescale do', () => {
+  for (const line of ['.pln-today', '.pln-status-date']) {
+    expect(allDeclarations(line)).toMatch(/pointer-events:\s*none/);
+    expect(allDeclarations(line)).not.toMatch(/z-index/);
+    expect(allDeclarations(`${line}::before`)).toBe('');
+  }
+  for (const mark of ['.pln-today-mark', '.pln-status-mark']) expect(allDeclarations(mark)).toMatch(/position:\s*absolute/);
+});
+
+it('the lanes let the pointer through to the chart; bars, handles and link hit lines take it', () => {
+  expect(allDeclarations('.pln-lane')).toMatch(/pointer-events:\s*none/);
+  for (const mark of ['.pln-bar', '.pln-bar-summary', '.pln-diamond', '.pln-link-dot']) {
+    expect(allDeclarations(mark)).toMatch(/pointer-events:\s*auto/);
+  }
+  // the link's click target: an invisible line wider than the 1px one
+  expect(declarations('.pln-link-hit')).toMatch(/pointer-events:\s*stroke/);
+  expect(declarations('.pln-link-hit')).toMatch(/stroke:\s*transparent/);
+  expect(Number(/stroke-width:\s*(\d+)/.exec(declarations('.pln-link-hit') ?? '')?.[1])).toBeGreaterThanOrEqual(6);
+  // a summary says it can't be dragged
+  expect(declarations('.pln-gantt[data-drag="full"] .pln-bar-summary')).toMatch(/cursor:\s*not-allowed/);
+});
+
 it('the panes scroll up and down in one box, each sideways on its own, headers held at the top', () => {
   // one vertical box that never scrolls sideways
   expect(declarations('.pln-panes')).toMatch(/overflow-x:\s*hidden/);

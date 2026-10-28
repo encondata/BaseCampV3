@@ -15,13 +15,16 @@
  *   Baseline is on (`pln-baseline`); a deadline's green down-arrow
  *   (`pln-deadline`); resource names right of the bar. A task without the
  *   dates to draw gets no bar.
- * - Behind the lanes: nonworking days shaded (days and hours zooms), the
- *   today and status-date lines (each titled with its date), the
+ * - Behind the lanes, all of it deaf to the pointer: nonworking days shaded
+ *   (days and hours zooms), the today and status-date lines, the
  *   initiative's scheduled window as a faint band, labeled in the
  *   timescale's top tier ("Scheduled: Nov 14–16") so the label never covers
  *   a bar, and the link arrows in one SVG over the rows rendered: a link
  *   with an end there is drawn, its far end placed by its row, so a link to
- *   a task out of sight runs off the edge (as in MS Project).
+ *   a task out of sight runs off the edge (as in MS Project). The two lines
+ *   are titled ("Today …", "Status date …") by a small mark at their top in
+ *   the timescale, never by the line itself, so a line never takes a press
+ *   meant for a bar or its lane.
  *
  * Only what is visible is drawn (lib/plans/ganttView): a window of the
  * scale around the visible part, in window coordinates, every span cut to
@@ -29,20 +32,30 @@
  * zoom is ~528,000 px). The window changes only every half a pane of
  * scrolling. The chart's sideways scroll is its own (SidePane, Splitter.tsx).
  *
- * A press on a lane selects its row (Shift extends, Ctrl/⌘ toggles, as on
- * the sheet's row numbers). The hover card is GanttHover's, a component of
- * its own, so it never redraws the chart. Bars carry `data-task-id`, and
- * `onBarPointerDown` is the hook Task 9's drags attach to.
+ * Presses. The lanes let the pointer through: only the marks that do
+ * something take it — a bar, a diamond, a summary's bracket, a link handle,
+ * and a link's wide invisible hit line. A press anywhere else on the chart
+ * selects the row under it (Shift extends, Ctrl/⌘ toggles, as on the
+ * sheet's row numbers). A press on a bar is useGanttDrag's: drag it to
+ * move it, its right end to resize it, its progress handle to set
+ * % Complete, its link handle (the dot right of it) onto another bar to
+ * link them; a press too short to be a drag selects it. What a plan allows
+ * is `data-drag` on the chart (full, progress while locked, none for a
+ * reader); the ghost and tooltip are DragLayer's. A click on a link opens
+ * its Task Dependency dialog (`onLinkClick`); a double-click on a bar is
+ * Task Information's hook (`onBarDoubleClick`). The hover card is
+ * GanttHover's, a component of its own, so it never redraws the chart.
  */
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
-  memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState,
+  memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore,
   type CSSProperties, type MouseEvent, type PointerEvent, type ReactNode, type RefObject,
 } from 'react';
 
 import type { PlanTask } from '../../lib/plans/api';
 import { nonworkingBands } from '../../lib/plans/calendarShade';
 import { SHEET_HEAD_PX, SHEET_OVERSCAN } from '../../lib/plans/columns';
+import { GRIP_PX, gripX, hasGrip } from '../../lib/plans/drag';
 import { formatDay, formatShortDay } from '../../lib/plans/floatingTime';
 import {
   MILESTONE_HALF, baselineOf, barOf, fitScrollLeft, makeScale, msOf, progressWidth, tiers, widthOfMs, xOf, xOfMs,
@@ -54,8 +67,9 @@ import {
 } from '../../lib/plans/ganttView';
 import type { LinkType } from '../../lib/plans/predecessors';
 import { extendRows, selectCell, toggleRow, type Selection } from '../../lib/plans/selection';
-import { GanttHover } from './GanttHoverCard';
+import { GanttDragTip, GanttHover } from './GanttHoverCard';
 import { SidePane, type SidePaneHandle } from './Splitter';
+import { useGanttDrag, type DragAccess, type DragStore } from './useGanttDrag';
 import type { PlanController } from './usePlan';
 import type { ChartScroll, GanttDisplay } from './usePlanCommands';
 
@@ -70,8 +84,6 @@ export interface PlanGanttProps {
   display: GanttDisplay;
   selection: Selection;
   onSelect(sel: Selection): void;
-  /** Bars may be dragged (Task 9): the plan can be changed and isn't locked. */
-  editable: boolean;
   /** The sheet's blank new-task row is shown: the chart keeps a lane for it,
    *  so both panes are the same height. */
   blankRow?: boolean;
@@ -84,8 +96,10 @@ export interface PlanGanttProps {
   onZoomStep?(dir: -1 | 1): void;
   /** Focus back on the sheet after a press on the chart (keys act there). */
   focusSheet?(): void;
-  /** Task 9's drags: a pointerdown on a bar, diamond or summary bracket. */
-  onBarPointerDown?(e: PointerEvent<HTMLElement>, task: PlanTask): void;
+  /** A click on a link's line: its Task Dependency dialog. Without it links take no clicks. */
+  onLinkClick?(linkId: string): void;
+  /** A double-click on a bar, diamond or summary bracket (Task Information's hook). */
+  onBarDoubleClick?(task: PlanTask): void;
 }
 
 /** A link with its shape, ready to draw. */
@@ -98,8 +112,8 @@ interface DrawnLink {
 const NO_TICKS = { top: [], bottom: [] };
 
 export default function PlanGantt({
-  ctl, rows, rowHeight, scrollRef, zoom, display, selection, onSelect, editable, blankRow = false, scheduled,
-  scrollRequest = null, onZoomStep, focusSheet, onBarPointerDown,
+  ctl, rows, rowHeight, scrollRef, zoom, display, selection, onSelect, blankRow = false, scheduled,
+  scrollRequest = null, onZoomStep, focusSheet, onLinkClick, onBarDoubleClick,
 }: PlanGanttProps) {
   const plan = ctl.plan;
   const tasks = plan?.tasks;
@@ -268,27 +282,43 @@ export default function PlanGantt({
     pinLabels();
   }, [pillBase, bandLabel, tierTop, pinLabels]);
 
-  // ── presses (the hover card is GanttHover's) ──
+  // ── presses (the hover card is GanttHover's, the drags useGanttDrag's) ──
   const chartRef = useRef<HTMLDivElement>(null);
   const chartBar = useRef<HTMLDivElement>(null);
-  const latest = useRef({ selection, onSelect, rows, focusSheet, onBarPointerDown });
+  const latest = useRef({ selection, onSelect, rows, focusSheet, onLinkClick, onBarDoubleClick });
   useLayoutEffect(() => {
-    latest.current = { selection, onSelect, rows, focusSheet, onBarPointerDown };
+    latest.current = { selection, onSelect, rows, focusSheet, onLinkClick, onBarDoubleClick };
   });
-  const onChartDown = (e: MouseEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-    const id = (e.target as Element).closest('[data-lane]')?.getAttribute('data-lane');
-    if (!id || id === 'blank') return;
+  /** A press on a task's row, as on the sheet's row numbers. */
+  const selectRow = useCallback((id: string, mods: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => {
     const { selection: sel, onSelect: select, rows: shownRows, focusSheet: focus } = latest.current;
     const col = sel.active?.col ?? 'name';
-    if (e.shiftKey) select(extendRows(sel, id, col, shownRows));
-    else if (e.ctrlKey || e.metaKey) select(toggleRow(sel, id, col));
+    if (mods.shiftKey) select(extendRows(sel, id, col, shownRows));
+    else if (mods.ctrlKey || mods.metaKey) select(toggleRow(sel, id, col));
     else select(selectCell(id, col));
     focus?.();
-  };
-  const onBarDown = useCallback((e: PointerEvent<HTMLElement>, task: PlanTask) => {
-    latest.current.onBarPointerDown?.(e, task);
   }, []);
+  const onChartDown = (e: MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const target = e.target as Element;
+    if (target.closest('[data-link-hit]')) return;       // a link: its click opens its dialog
+    let id = target.closest('[data-lane]')?.getAttribute('data-lane') ?? null;
+    if (!id) {
+      // the lanes let presses through to the chart: the row under the pointer
+      const top = chartRef.current?.getBoundingClientRect().top ?? 0;
+      id = latest.current.rows[Math.floor((e.clientY - top) / rowHeight)] ?? null;
+    }
+    if (!id || id === 'blank') return;
+    selectRow(id, e);
+  };
+  const onLinkHit = useCallback((e: MouseEvent<SVGPathElement>) => {
+    const id = e.currentTarget.getAttribute('data-link-hit');
+    if (id) latest.current.onLinkClick?.(id);
+  }, []);
+  const onBarDouble = useCallback((task: PlanTask) => latest.current.onBarDoubleClick?.(task), []);
+  const drag = useGanttDrag({
+    ctl, scale, zoom, rows, rowHeight, box, tasksById, chartRef, barRef: chartBar, select: selectRow,
+  });
 
   if (!plan || !scale) return null;
 
@@ -303,7 +333,7 @@ export default function PlanGantt({
     <SidePane className="pln-pane-chart" contentWidth={scale.width} origin={win[0]} onScrollX={onScrollX}
               onWidth={setPaneW} onZoomStep={onZoomStep} handleRef={side} barRef={chartBar}>
       {/* everything here is the sheet's rows again, drawn: the sheet is the accessible view */}
-      <div className={`pln-gantt${editable ? ' pln-gantt-editable' : ''}`} style={style} aria-hidden="true">
+      <div className="pln-gantt" data-drag={drag.access} style={style} aria-hidden="true">
         <div className="pln-scale">
           {bandPiece && <span className="pln-window-cap" style={{ left: bandPiece.x, width: bandPiece.width }} />}
           <div className="pln-scale-top" ref={scaleTop}>
@@ -325,16 +355,19 @@ export default function PlanGantt({
               <span key={t.x} className="pln-tick" style={{ left: t.x - win[0], width: t.width }}>{t.label}</span>
             ))}
           </div>
+          {/* the today and status-date lines' titles: a mark at each line's top, up here clear of the bars */}
+          {today !== null && <span className="pln-today-mark" title={`Today ${formatDay(now)}`} style={{ left: today }} />}
+          {status !== null && (
+            <span className="pln-status-mark" title={`Status date ${formatDay(statusDate)}`} style={{ left: status }} />
+          )}
         </div>
 
         <div className="pln-chart" ref={chartRef} style={{ height: virtualizer.getTotalSize() }}
              onMouseDown={onChartDown}>
           {offDays.map((b) => <span key={b.x} className="pln-offday" style={{ left: b.x, width: b.width }} />)}
           {bandPiece && <span className="pln-window" style={{ left: bandPiece.x, width: bandPiece.width }} />}
-          {today !== null && <span className="pln-today" title={`Today ${formatDay(now)}`} style={{ left: today }} />}
-          {status !== null && (
-            <span className="pln-status-date" title={`Status date ${formatDay(statusDate)}`} style={{ left: status }} />
-          )}
+          {today !== null && <span className="pln-today" style={{ left: today }} />}
+          {status !== null && <span className="pln-status-date" style={{ left: status }} />}
 
           {drawnLinks.length > 0 && (
             <svg className="pln-links" width={winW} height={linkRows * rowHeight} style={{ top: linkTop }}>
@@ -342,6 +375,8 @@ export default function PlanGantt({
                 <g key={l.id}>
                   <path className={`pln-link-path${l.critical ? ' pln-link-critical' : ''}`} data-link={l.id} d={l.shape.d} />
                   <polygon className={`pln-link-tip${l.critical ? ' pln-link-critical' : ''}`} points={l.shape.head} />
+                  {/* a click target wider than the 1px line, drawn invisible over it */}
+                  {onLinkClick && <path className="pln-link-hit" data-link-hit={l.id} d={l.shape.d} onClick={onLinkHit} />}
                 </g>
               ))}
             </svg>
@@ -353,10 +388,12 @@ export default function PlanGantt({
             const selected = task ? selection.rows.has(task.id) || selection.active?.id === task.id : false;
             return (
               <Lane key={item.key} laneId={task?.id ?? 'blank'} task={task} y={item.start - SHEET_HEAD_PX}
-                    scale={scale} win={win} box={box} display={display} selected={selected}
-                    onBarPointerDown={onBarPointerDown ? onBarDown : undefined} />
+                    scale={scale} win={win} box={box} display={display} selected={selected} access={drag.access}
+                    onBarPointerDown={drag.onBarPointerDown} onBarDoubleClick={onBarDouble} />
             );
           })}
+
+          <DragLayer store={drag.store} win={win} rowHeight={rowHeight} box={box} />
         </div>
       </div>
       <GanttHover chartRef={chartRef} scrollRef={scrollRef} barRef={chartBar} tasksById={tasksById} plan={plan} />
@@ -381,7 +418,14 @@ function shapeInto(
 
 const runsOf = (d: string): number => (d.match(/[HV]/g) ?? []).length;
 
-interface LaneProps {
+/** A bar's handlers: the drags' press and Task Information's double-click. */
+interface BarHandlers {
+  access: DragAccess;
+  onBarPointerDown(e: PointerEvent<HTMLElement>, task: PlanTask): void;
+  onBarDoubleClick(task: PlanTask): void;
+}
+
+interface LaneProps extends BarHandlers {
   laneId: string;
   task: PlanTask | undefined;
   y: number;
@@ -390,18 +434,54 @@ interface LaneProps {
   box: BarBox;
   display: GanttDisplay;
   selected: boolean;
-  onBarPointerDown?(e: PointerEvent<HTMLElement>, task: PlanTask): void;
 }
 
 /** One row's lane; redraws only when its task, place, window or state changes. */
-const Lane = memo(function Lane({ laneId, task, y, scale, win, box, display, selected, onBarPointerDown }: LaneProps) {
+const Lane = memo(function Lane({ laneId, task, y, selected, ...marks }: LaneProps) {
   return (
     <div className={`pln-lane${selected ? ' on' : ''}`} data-lane={laneId} style={{ transform: `translateY(${y}px)` }}>
-      {task && <TaskMarks task={task} scale={scale} win={win} box={box} display={display}
-                          onBarPointerDown={onBarPointerDown} />}
+      {task && <TaskMarks task={task} {...marks} />}
     </div>
   );
 });
+
+/** The live drag's ghost bar, link band and tooltip; redraws on its own as the pointer moves. */
+function DragLayer({ store, win, rowHeight, box }: { store: DragStore; win: Span; rowHeight: number; box: BarBox }) {
+  const p = useSyncExternalStore(store.subscribe, store.get, store.get);
+  if (!p) return null;
+  const out: ReactNode[] = [];
+  const barAt = (row: number, x: number, width: number, milestone: boolean, kind: string) => {
+    if (milestone) {
+      const at = lineAt(x, win);
+      if (at !== null) {
+        out.push(<span key={kind} className={`pln-drag-ghost pln-drag-mark ${kind}`}
+                       style={{ left: at - MILESTONE_HALF, top: row * rowHeight + box.mid - MILESTONE_HALF }} />);
+      }
+      return;
+    }
+    const piece = clip(x, width, win);
+    if (piece) {
+      out.push(<span key={kind} className={`pln-drag-ghost ${kind}`}
+                     style={{ left: piece.x, width: piece.width, top: row * rowHeight + box.top, height: box.height }} />);
+    }
+  };
+  if (p.ghost && p.done !== null) barAt(p.row, p.ghost.x, p.done, false, 'pln-drag-done');
+  else if (p.ghost) barAt(p.row, p.ghost.x, p.ghost.width, p.milestone, 'pln-drag-bar');
+  if (p.target) barAt(p.target.row, p.target.bar.x, p.target.bar.width, p.target.milestone, 'pln-drag-target');
+  if (p.band) {
+    out.push(
+      <svg key="band" className="pln-drag-svg" width={1} height={1}>
+        <line className="pln-drag-band" x1={p.band.x0 - win[0]} y1={p.band.y0} x2={p.band.x1 - win[0]} y2={p.band.y1} />
+      </svg>,
+    );
+  }
+  return (
+    <>
+      {out}
+      <GanttDragTip title={p.title} facts={p.facts} x={p.clientX} y={p.clientY} />
+    </>
+  );
+}
 
 /** The deadline marker's half width (its arrow points at the deadline). */
 const DEADLINE_HALF = 5;
@@ -410,13 +490,21 @@ const BASE_MARK_HALF = 4;
 /** Room between a bar's end and its resource names. */
 const NAMES_GAP = 6;
 
-function TaskMarks({ task, scale, win, box, display, onBarPointerDown }: {
+/** A link handle's height beside a milestone's diamond. */
+const DOT_MARK_H = 2 * MILESTONE_HALF;
+
+function TaskMarks({ task, scale, win, box, display, access, onBarPointerDown, onBarDoubleClick }: BarHandlers & {
   task: PlanTask; scale: Scale; win: Span; box: BarBox; display: GanttDisplay;
-  onBarPointerDown?(e: PointerEvent<HTMLElement>, task: PlanTask): void;
 }) {
   const out: ReactNode[] = [];
   const critical = display.critical && task.is_critical && !task.is_summary;
-  const down = onBarPointerDown ? (e: PointerEvent<HTMLElement>) => onBarPointerDown(e, task) : undefined;
+  const down = access === 'none' ? undefined : (e: PointerEvent<HTMLElement>) => onBarPointerDown(e, task);
+  const dbl = () => onBarDoubleClick(task);
+  /** The link handle, right of the bar's end (window px): open plans only. */
+  const dot = (at: number, top: number, height: number) => (access === 'full'
+    ? <span key="dot" className="pln-link-dot" data-task-id={task.id} style={{ left: at, top, height }}
+            onPointerDown={down} />
+    : null);
   const names = task.assignees.map((a) => a.name).join(', ');
   const cut = (p: { cutStart: boolean; cutEnd: boolean }) =>
     `${p.cutStart ? ' pln-cut-start' : ''}${p.cutEnd ? ' pln-cut-end' : ''}`;
@@ -444,7 +532,9 @@ function TaskMarks({ task, scale, win, box, display, onBarPointerDown }: {
     if (at !== null) {
       out.push(
         <div key="bar" className={`pln-diamond${critical ? ' pln-diamond-critical' : ''}`} data-task-id={task.id}
-             style={{ left: at - MILESTONE_HALF, top: box.mid - MILESTONE_HALF }} onPointerDown={down} />,
+             style={{ left: at - MILESTONE_HALF, top: box.mid - MILESTONE_HALF }} onPointerDown={down}
+             onDoubleClick={dbl} />,
+        dot(at + MILESTONE_HALF, box.mid - DOT_MARK_H / 2, DOT_MARK_H),
         <span key="names" className="pln-bar-names" style={{ left: at + MILESTONE_HALF + NAMES_GAP, top: box.mid }}>
           <span className="pln-diamond-date">{formatShortDay(task.start ?? task.finish)}</span>
           {names && ` ${names}`}
@@ -458,13 +548,20 @@ function TaskMarks({ task, scale, win, box, display, onBarPointerDown }: {
       const doneTo = bar.x + progressWidth(bar, task.percent_complete) - win[0];
       const done = Math.min(Math.max(doneTo - piece.x, 0), piece.width);
       const kind = task.is_summary ? 'pln-bar-summary' : `pln-bar${critical ? ' pln-bar-critical' : ''}`;
+      const height = task.is_summary ? box.summaryHeight : box.height;
+      // the progress handle (drag.ts `gripX`), where the plan takes progress drags
+      const dragBar = { ...bar, done: progressWidth(bar, task.percent_complete), milestone: false };
+      const grip = access !== 'none' && !task.is_summary && hasGrip(dragBar)
+        ? gripX(dragBar) - win[0] - piece.x - GRIP_PX
+        : null;
       out.push(
         <div key="bar" className={`${kind}${cut(piece)}`} data-task-id={task.id} onPointerDown={down}
-             style={{ left: piece.x, width: piece.width, top: box.top,
-               height: task.is_summary ? box.summaryHeight : box.height }}>
+             onDoubleClick={dbl} style={{ left: piece.x, width: piece.width, top: box.top, height }}>
           {done > 0 && <span className="pln-bar-done" style={{ width: done }} />}
+          {grip !== null && <span className="pln-pct-grip" style={{ left: grip, width: 2 * GRIP_PX }} />}
         </div>,
       );
+      if (!piece.cutEnd) out.push(dot(piece.x + piece.width, box.top, box.height));
       if (names && !piece.cutEnd) {
         out.push(
           <span key="names" className="pln-bar-names" style={{ left: piece.x + piece.width + NAMES_GAP, top: box.mid }}>

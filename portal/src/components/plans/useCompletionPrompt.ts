@@ -10,12 +10,18 @@
  * names what completes along with it (or the open predecessors the plan
  * warns about) and offers "Complete anyway", which sends the same batch
  * again with `confirm: true` on each completing op (usePlan's `confirm`).
+ *
+ * `sayNotices` and `useApplyAnswer` are how every write's answer is said:
+ * a notice (a constraint an edit added or cleared) as a toast with Undo,
+ * a stopped completion to the prompt, a refusal as a toast — the sheet,
+ * the toolbar and the chart's drags all say it the same way.
  */
 import { useCallback, useLayoutEffect, useRef } from 'react';
 
-import { useToast } from '../../lib/notificationsContext';
-import type { Op } from '../../lib/plans/api';
+import { useToast, type ToastAction } from '../../lib/notificationsContext';
+import type { Notice, Op } from '../../lib/plans/api';
 import type { ApplyResult } from '../../lib/plans/applyResult';
+import { noticeText } from '../../lib/plans/editOps';
 import { completionText } from '../../lib/plans/errors';
 import type { ApplyOptions, PlanController } from './usePlan';
 
@@ -58,4 +64,39 @@ export function useCompletionPrompt(ctl: PlanController): CompletionPrompt {
       },
     });
   }, [toast]);
+}
+
+type Toast = (message: string, action?: ToastAction) => void;
+
+/** A batch's notices, each a toast with Undo (which takes the batch back). */
+export function sayNotices(toast: Toast, notices: readonly Notice[], undo: () => void): void {
+  for (const notice of notices) toast(noticeText(notice), { label: 'Undo', onClick: undo });
+}
+
+/** Says one write's answer: notices with Undo, a stopped completion to the
+ *  prompt, a refusal as a toast (unless usePlan said it already). True
+ *  when the batch went through. */
+export type ApplyAnswer = (result: ApplyResult, ops: Op[], label: string) => boolean;
+
+export function useApplyAnswer(ctl: PlanController): ApplyAnswer {
+  const toast = useToast();
+  const prompt = useCompletionPrompt(ctl);
+  const latest = useRef({ ctl, toast, prompt });
+  useLayoutEffect(() => {
+    latest.current = { ctl, toast, prompt };
+  });
+
+  return useCallback((result: ApplyResult, ops: Op[], label: string): boolean => {
+    const { toast: say, prompt: ask } = latest.current;
+    if (result.ok) {
+      sayNotices(say, result.notices, () => void latest.current.ctl.undo());
+      return true;
+    }
+    if (result.kind !== 'error') {
+      ask(result, ops, label);
+      return false;
+    }
+    if (!SAID_ALREADY.has(result.code) && result.message) say(result.message);
+    return false;
+  }, []);
 }

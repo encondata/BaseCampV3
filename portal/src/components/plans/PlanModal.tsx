@@ -6,8 +6,9 @@
  * their own (ComboBox/TagInput via useMenuPlacement). Modeled on
  * LearningModal.
  *
- * Focus moves in on open — to the body's first field, else the dialog
- * itself — and goes back to what had it when the dialog closes. Escape
+ * Focus moves in on open — to the body's first field (a ComboBox is
+ * passed over: focus opens its list), else the dialog itself — and goes
+ * back to what had it when the dialog closes. Escape
  * closes it unless a control inside already handled that Escape (a
  * ComboBox closing its list marks it `defaultPrevented`); neither Escape
  * nor the scrim closes it while `busy` (a write is in flight).
@@ -20,8 +21,9 @@ import '../../styles/plans.css';
 
 export type PlanModalSize = 'normal' | 'wide' | 'xwide';
 
-/** The body's first field that takes focus. */
-const FIRST_FIELD = '.modal-body :is(input:not([type="hidden"]), select, textarea):not(:disabled), '
+/** The body's first field that takes focus. Not a ComboBox: focusing one
+ *  opens its list, which would cover the dialog the moment it opens. */
+const FIRST_FIELD = '.modal-body :is(input:not([type="hidden"]), select, textarea):not(:disabled):not([role="combobox"]), '
   + '.modal-body [contenteditable]:not([contenteditable="false"])';
 
 export default function PlanModal({

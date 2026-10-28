@@ -45,7 +45,7 @@ import { useAuth } from '../../auth/AuthContext';
 import { longDate } from '../../lib/format';
 import { listScale } from '../../lib/listTools';
 import { useToast } from '../../lib/notificationsContext';
-import type { Plan } from '../../lib/plans/api';
+import type { Plan, PlanTask } from '../../lib/plans/api';
 import { SHEET_ROW_PX } from '../../lib/plans/columns';
 import { canAddTasks } from '../../lib/plans/editOps';
 import { isPlanChanged, planErrorText } from '../../lib/plans/errors';
@@ -59,8 +59,9 @@ import PlanSheet from './PlanSheet';
 import PlanToolbar, { useRovingToolbar } from './PlanToolbar';
 import ShortcutsModal from './ShortcutsModal';
 import Splitter, { SidePane } from './Splitter';
+import TaskDependencyModal from './TaskDependencyModal';
 import { usePlan, type PlanController } from './usePlan';
-import { usePlanCommands, type PlanDialog } from './usePlanCommands';
+import { DIALOGS_READY, usePlanCommands, type PlanDialog } from './usePlanCommands';
 import { usePlanShortcuts } from './usePlanShortcuts';
 import { useSheetView } from './useSheetView';
 
@@ -212,6 +213,12 @@ export default function PlanTab({ initiativeId, initiative }: {
   const scheduled = useMemo(() => ({ start: scheduledStart, end: scheduledEnd }), [scheduledStart, scheduledEnd]);
   const { zoomIn, zoomOut } = commands;
   const zoomStep = useCallback((dir: -1 | 1) => (dir < 0 ? zoomIn() : zoomOut()), [zoomIn, zoomOut]);
+  // the chart's link click and bar double-click; Task Information opens
+  // once it exists (Task 10 adds it to DIALOGS_READY), until then nothing
+  const openLink = useCallback((linkId: string) => setDialog({ kind: 'dependency', linkId }), []);
+  const openTaskInfo = useCallback((task: PlanTask) => {
+    if (DIALOGS_READY.has('taskInfo')) setDialog({ kind: 'taskInfo', taskId: task.id });
+  }, []);
 
   const selectView = (next: PlanViewKey) => {
     setSearchParams((prev) => {
@@ -301,9 +308,9 @@ export default function PlanTab({ initiativeId, initiative }: {
                           onChange={split.move} onCommit={split.save} />
                 <PlanGantt ctl={ctl} rows={sheet.rows} rowHeight={rowHeight} scrollRef={scrollRef}
                            zoom={commands.zoom} display={commands.display} selection={sheet.selection}
-                           onSelect={sheet.select} editable={plan.permissions.change && !plan.locked_at}
-                           blankRow={canAddTasks(plan)} scheduled={scheduled} scrollRequest={commands.chartScroll}
-                           onZoomStep={zoomStep} focusSheet={commands.focusSheet} />
+                           onSelect={sheet.select} blankRow={canAddTasks(plan)} scheduled={scheduled}
+                           scrollRequest={commands.chartScroll} onZoomStep={zoomStep} focusSheet={commands.focusSheet}
+                           onLinkClick={openLink} onBarDoubleClick={openTaskInfo} />
               </div>
             </div>
           )}
@@ -329,6 +336,7 @@ export default function PlanTab({ initiativeId, initiative }: {
         <DeleteTasksModal tasks={dialog.tasks} subtasks={dialog.subtasks} onClose={closeDialog}
                           onConfirm={() => commands.confirmDelete(dialog)} />
       )}
+      {dialog?.kind === 'dependency' && <TaskDependencyModal ctl={ctl} linkId={dialog.linkId} onClose={closeDialog} />}
       {/* Task 10 renders taskInfo, setBaseline, clearBaseline, updateProject, settings and deletePlan */}
     </div>
   );

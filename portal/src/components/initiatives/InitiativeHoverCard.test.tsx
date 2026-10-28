@@ -214,6 +214,12 @@ it('flips to the left of the cursor rather than running off the right edge', () 
   expect(left + 280).toBeLessThanOrEqual(1024 - 8);
 });
 
+it('a card that knows its size flips to sit right beside the cursor', () => {
+  // a 150px card near the right edge: its right side 14px left of the cursor, not 280px's worth
+  expect(cardPosition(1000, 300, 1024, 768, 150, 60)).toEqual({ left: 1000 - 14 - 150, top: 318 });
+  expect(cardPosition(400, 740, 1024, 768, 150, 60).top).toBe(740 - 18 - 60);
+});
+
 it('flips above the cursor rather than running off the bottom edge', () => {
   const { top } = cardPosition(400, 740, 1024, 768);
   expect(top).toBeLessThan(740);

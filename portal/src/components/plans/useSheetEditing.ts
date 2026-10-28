@@ -24,10 +24,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useToast } from '../../lib/notificationsContext';
 import type { Plan, PlanTask } from '../../lib/plans/api';
 import type { PlanColumn } from '../../lib/plans/columns';
-import { canEditCell, editLabel, editText, noticeText, opsForCell, type EditContext } from '../../lib/plans/editOps';
+import { canEditCell, editLabel, editText, opsForCell, type EditContext } from '../../lib/plans/editOps';
 import { planUnits } from '../../lib/plans/merge';
 import { moveActive, selectCell, type MoveDir, type Selection } from '../../lib/plans/selection';
-import { useCompletionPrompt } from './useCompletionPrompt';
+import { sayNotices, useCompletionPrompt } from './useCompletionPrompt';
 import type { PlanController } from './usePlan';
 
 /** How a column is edited (CellEditor draws one of these). */
@@ -241,9 +241,7 @@ export function useSheetEditing(o: Options): SheetEditing {
         const ahead = aheadRef.current;
         aheadRef.current = '';
         close(refocus);
-        for (const notice of result.notices) {
-          say(noticeText(notice), { label: 'Undo', onClick: () => void latest.current.ctl.undo() });
-        }
+        sayNotices(say, result.notices, () => void latest.current.ctl.undo());
         const addedId = task ? null : (Object.values(result.tempIds)[0] ?? null);
         const next = moveAfter(ed, dir, addedId);
         if (ahead && next) setQueued({ id: next.id, col: next.col, seed: ahead });

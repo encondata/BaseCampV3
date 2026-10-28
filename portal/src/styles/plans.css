@@ -317,7 +317,8 @@
 
 .pln-chart { position: relative; }
 
-/* behind the lanes: nonworking days, the initiative window, today, the status date */
+/* behind the lanes, and deaf to the pointer (a press there is the lane's,
+   or a bar's): nonworking days, the initiative window, today, the status date */
 .pln-offday,
 .pln-window,
 .pln-today,
@@ -335,20 +336,21 @@
 }
 .pln-today { width: 0; margin-left: -1px; border-left: 2px solid var(--c-blue); }
 .pln-status-date { width: 0; margin-left: -1px; border-left: 2px dashed var(--c-violet); }
-/* the two lines over the lanes, each with a thin strip that takes the hover
-   for its title ("Today …", "Status date …"), so they can be told apart */
-.pln-today,
-.pln-status-date { z-index: 1; }
-.pln-today::before,
-.pln-status-date::before {
-  content: '';
+/* each line's title ("Today …", "Status date …") is on a small mark at its
+   top, in the timescale: a hover there tells the two apart, and no hover
+   target lies over the bars */
+.pln-today-mark,
+.pln-status-mark {
   position: absolute;
-  top: 0;
   bottom: 0;
-  left: -3px;
-  width: 6px;
-  pointer-events: auto;
+  z-index: 2;
+  width: 12px;
+  height: 9px;
+  margin-left: -6px;
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
 }
+.pln-today-mark { background: var(--c-blue); }
+.pln-status-mark { background: var(--c-violet); }
 
 /* the initiative window's span, tinted across the timescale too */
 .pln-window-cap {
@@ -394,8 +396,21 @@
 .pln-link-tip { fill: color-mix(in srgb, var(--text-mute) 90%, transparent); }
 .pln-link-path.pln-link-critical { stroke: var(--c-red); }
 .pln-link-tip.pln-link-critical { fill: var(--c-red); }
+/* a link's click target: an invisible line 8px wide over the 1px one (the
+   lanes above let the pointer through to it); a hover lights the link */
+.pln-link-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 8;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+.pln-links g:hover .pln-link-path { stroke: var(--accent); stroke-width: 2; }
+.pln-links g:hover .pln-link-tip { fill: var(--accent); }
 
-/* one lane per row the sheet shows, its line matching the sheet's */
+/* one lane per row the sheet shows, its line matching the sheet's. A lane
+   lets the pointer through (a press on its empty part is the chart's,
+   which selects the row under it); only its marks that do something take it */
 .pln-lane {
   position: absolute;
   top: 0;
@@ -403,6 +418,7 @@
   width: 100%;
   height: var(--pln-row-h);
   box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--paper-line) 60%, transparent);
+  pointer-events: none;
 }
 .pln-lane.on { background-color: rgba(var(--accent-rgb), 0.08); }
 
@@ -494,6 +510,113 @@
 }
 .pln-deadline svg { display: block; width: 100%; height: 100%; fill: currentColor; }
 
+/* ── the chart's drags (useGanttDrag; lib/plans/drag's zones) ──
+   data-drag on .pln-gantt: full (an open plan the person may change),
+   progress (its schedule is locked), none (read only). The cursor says
+   what a press does: move, the right end resizes, the progress handle
+   sets % Complete, the dot right of a bar links; a summary does none of
+   these (it only links). The lanes let the pointer through; these marks
+   take it (whatever the plan allows: a press selects, a double-click is
+   Task Information's). */
+.pln-bar,
+.pln-bar-summary,
+.pln-diamond,
+.pln-link-dot { pointer-events: auto; }
+.pln-gantt[data-drag="full"] .pln-bar,
+.pln-gantt[data-drag="full"] .pln-diamond { cursor: move; touch-action: none; }
+.pln-gantt[data-drag="full"] .pln-bar-summary,
+.pln-gantt[data-drag="progress"] .pln-bar-summary { cursor: not-allowed; }
+.pln-gantt[data-drag="progress"] .pln-bar { touch-action: none; }
+/* the right end that resizes (RESIZE_PX, a third of a narrow bar) */
+.pln-gantt[data-drag="full"] .pln-bar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(6px, 33.333%);
+  cursor: ew-resize;
+}
+.pln-gantt[data-drag="full"] .pln-bar.pln-cut-end::after { display: none; }
+/* the progress handle (2 × GRIP_PX at the progress edge): a line on hover */
+.pln-pct-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  cursor: col-resize;
+}
+.pln-pct-grip::before {
+  content: '';
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  left: calc(50% - 1px);
+  width: 2px;
+  border-radius: 1px;
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--accent);
+  opacity: 0;
+}
+.pln-bar:hover .pln-pct-grip::before { opacity: 1; }
+/* the link handle: a dot right of the bar, shown while its lane is hovered */
+.pln-link-dot {
+  position: absolute;
+  width: 16px;
+  cursor: crosshair;
+  touch-action: none;
+}
+.pln-link-dot::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 4px;
+  width: 8px;
+  height: 8px;
+  box-sizing: border-box;
+  margin-top: -4px;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+  background: var(--surface);
+  opacity: 0;
+}
+.pln-lane:hover .pln-link-dot::before,
+.pln-link-dot:hover::before { opacity: 1; }
+
+/* the live drag: where the bar would go (dashed), the part done once let
+   go, the bar a link would land on, the link's band, over every lane */
+.pln-drag-ghost {
+  position: absolute;
+  z-index: 2;
+  box-sizing: border-box;
+  border: 1.5px dashed var(--accent);
+  border-radius: 3px;
+  background: rgba(var(--accent-rgb), 0.18);
+  pointer-events: none;
+}
+.pln-drag-ghost.pln-drag-mark {
+  width: 12px;
+  height: 12px;
+  border: 0;
+  border-radius: 0;
+  background: rgba(var(--accent-rgb), 0.6);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+.pln-drag-ghost.pln-drag-done { border-style: solid; background: var(--accent); opacity: 0.75; }
+.pln-drag-ghost.pln-drag-target {
+  border-style: solid;
+  background: transparent;
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.35);
+}
+.pln-drag-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  overflow: visible;
+  pointer-events: none;
+}
+.pln-drag-band { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 3; }
+
 /* ── the Gantt's hover card (GanttHoverCard) ───────────────────
    InitiativeHoverCard's look: an always-dark card following the pointer,
    portaled into the shell above full screen (60), never taking the hover. */
@@ -531,6 +654,23 @@
   color: rgba(232, 237, 244, 0.55);
 }
 .pln-hover-facts dd { margin: 0; color: rgba(232, 237, 244, 0.9); }
+/* a drag's tooltip is the hover card's look, a little narrower */
+.pln-hover.pln-drag-tip { max-width: 260px; }
+
+/* ── Task Dependency (TaskDependencyModal) ───────────────────── */
+
+.pln-dep { width: min(520px, 86vw); }
+.pln-dep-task {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 34px;
+  padding-top: 8px;
+  color: var(--text-dark);
+  overflow-wrap: anywhere;
+}
+.pln-dep-num { font-family: var(--font-mono); color: var(--text-mute); }
+.pln-dep-error { margin: 6px 0 0; }
 
 
 /* ── Resource Names picker (ResourcePicker) ─────────────────────

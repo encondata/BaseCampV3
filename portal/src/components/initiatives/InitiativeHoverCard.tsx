@@ -57,16 +57,17 @@ const EDGE = 8;
 /** Where the card's top-left goes for a cursor at (x, y): below-right by
  *  default, flipped to the opposite side of the cursor on whichever axis
  *  would otherwise run past the viewport, then clamped so it can never
- *  leave the screen entirely. */
+ *  leave the screen entirely. A card that knows its size (a measured one)
+ *  passes it as `w`/`h`, so a flip puts it right beside the cursor. */
 export function cardPosition(
-  x: number, y: number, vw: number, vh: number,
+  x: number, y: number, vw: number, vh: number, w: number = CARD_W, h: number = CARD_H,
 ): { left: number; top: number } {
   let left = x + CURSOR_GAP_X;
-  if (left + CARD_W > vw - EDGE) left = x - CURSOR_GAP_X - CARD_W;
+  if (left + w > vw - EDGE) left = x - CURSOR_GAP_X - w;
   let top = y + CURSOR_GAP_Y;
-  if (top + CARD_H > vh - EDGE) top = y - CURSOR_GAP_Y - CARD_H;
+  if (top + h > vh - EDGE) top = y - CURSOR_GAP_Y - h;
   return {
-    left: Math.max(EDGE, Math.min(left, vw - CARD_W - EDGE)),
+    left: Math.max(EDGE, Math.min(left, vw - w - EDGE)),
     top: Math.max(EDGE, top),
   };
 }

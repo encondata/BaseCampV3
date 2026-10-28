@@ -131,7 +131,7 @@ function Harness({
   return (
     <div ref={scrollRef} className="pln-panes">
       <PlanGantt ctl={ctl} rows={rows} rowHeight={30} scrollRef={scrollRef} zoom={zoom} display={display}
-                 selection={selection} onSelect={onSelect} editable scheduled={scheduled}
+                 selection={selection} onSelect={onSelect} scheduled={scheduled}
                  scrollRequest={scrollRequest} />
     </div>
   );
@@ -194,7 +194,7 @@ describe('bars and links', () => {
   it('a 3-task fixture with an FS link and a milestone draws three bars, one link path and a diamond', () => {
     render(<Harness plan={plan3()} />);
     expect(ids('.pln-bar')).toEqual(['a', 'b', 'c']);
-    expect(qa('svg.pln-links path')).toHaveLength(1);
+    expect(qa('svg.pln-links path.pln-link-path')).toHaveLength(1);
     expect(qa('svg.pln-links polygon')).toHaveLength(1);
     expect(ids('.pln-diamond')).toEqual(['m']);
     // the milestone's date beside its diamond
@@ -326,11 +326,13 @@ describe('timescale and markers', () => {
     expect(qa('.pln-today')).toHaveLength(1);
     expect(qa('.pln-status-date')).toHaveLength(0);
     expect(qa('.pln-offday').length).toBeGreaterThan(0);
-    expect(q('.pln-today')?.getAttribute('title')).toBe('Today Tue 11/3/26');
+    // titled by a mark at its top in the timescale, not by the line over the bars
+    expect(q('.pln-scale .pln-today-mark')?.getAttribute('title')).toBe('Today Tue 11/3/26');
+    expect(q('.pln-scale .pln-today-mark')?.style.left).toBe((q('.pln-today') as HTMLElement).style.left);
     rerender(<Harness plan={plan3({ now: '2026-11-03T12:00', status_date: '2026-11-04T17:00' })} />);
     expect(qa('.pln-status-date')).toHaveLength(1);
     // told apart from the today line on hover
-    expect(q('.pln-status-date')?.getAttribute('title')).toBe('Status date Wed 11/4/26');
+    expect(q('.pln-scale .pln-status-mark')?.getAttribute('title')).toBe('Status date Wed 11/4/26');
     rerender(<Harness plan={plan3()} zoom="weeks" />);
     expect(qa('.pln-offday')).toHaveLength(0);
   });
@@ -370,7 +372,7 @@ describe('drawing only what is visible (Review Focus 5)', () => {
     expect(qa('.pln-lane').length).toBeGreaterThan(0);
     expect(qa('.pln-lane').length).toBeLessThan(80);
     expect(qa('.pln-bar').length).toBeLessThan(80);
-    const drawn = qa('svg.pln-links path').map((p) => p.getAttribute('data-link'));
+    const drawn = qa('svg.pln-links path.pln-link-path').map((p) => p.getAttribute('data-link'));
     expect(drawn.length).toBeGreaterThan(0);
     expect(drawn.length).toBeLessThan(100);
     // t0 is in view: its link to row 1,400 runs off the bottom edge, as in MS Project
@@ -378,7 +380,7 @@ describe('drawing only what is visible (Review Focus 5)', () => {
     const svg = q('svg.pln-links') as unknown as SVGSVGElement;
     const height = Number(svg.getAttribute('height'));
     expect(height).toBeLessThan(80 * 30);
-    const far = q('svg.pln-links path[data-link="far"]')?.getAttribute('d') ?? '';
+    const far = q('svg.pln-links path.pln-link-path[data-link="far"]')?.getAttribute('d') ?? '';
     const drops = [...far.matchAll(/V (-?[\d.]+)/g)].map((m) => Number(m[1]));
     // its far end is held one row past the SVG, which cuts it: the line leaves the edge, the SVG stays small
     expect(Math.max(...drops)).toBeGreaterThan(height);
@@ -552,7 +554,7 @@ describe('in the tab beside the sheet', () => {
     }));
     renderTab();
     await screen.findByRole('grid', { name: 'Task sheet' }, { timeout: 3000 });
-    const links = () => qa('svg.pln-links path').map((p) => p.getAttribute('data-link'));
+    const links = () => qa('svg.pln-links path.pln-link-path').map((p) => p.getAttribute('data-link'));
     expect(links()).toEqual(['ab', 'ac']);
     fireEvent.click(within(grid()).getByRole('button', { name: 'Collapse Labels' }));
     expect(links()).toEqual(['ac']);

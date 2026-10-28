@@ -15,34 +15,38 @@
  * (one delegated listener: the bar under the pointer is the nearest
  * `[data-task-id]`), so a card that appears or follows the pointer redraws
  * only itself, never the chart. Scrolling the view, or the chart sideways,
- * hides it (the bar has moved from under the pointer). Class prefix
- * `pln-hover`.
+ * hides it (the bar has moved from under the pointer), and so does a press
+ * (a drag shows its own tooltip, GanttDragTip). Class prefix `pln-hover`.
  */
-import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 
 import type { Plan, PlanTask } from '../../lib/plans/api';
-import { hoverFacts } from '../../lib/plans/ganttView';
+import { hoverFacts, type Fact } from '../../lib/plans/ganttView';
 import { cardPosition } from '../initiatives/InitiativeHoverCard';
 
 const HOVER_DELAY_MS = 180;
 
 type HoverPlan = Pick<Plan, 'calendar' | 'settings'>;
 
-/** The card itself, at `left`/`top` in the viewport. */
-export default function GanttHoverCard({ task, plan, left, top }: {
-  task: PlanTask;
-  plan: HoverPlan;
+/** A dark fact card at `left`/`top` in the viewport: a title over label /
+ *  value lines. Portaled under the shell, so it sits above full screen and
+ *  keeps the theme's tokens; it never takes the pointer. */
+function FactCard({ title, facts, left, top, className = '', cardRef }: {
+  title: string;
+  facts: readonly Fact[];
   left: number;
   top: number;
+  className?: string;
+  cardRef?: RefObject<HTMLDivElement>;
 }) {
-  // under the shell, so it sits above full screen and keeps the theme's tokens
   const host = document.querySelector('.portal-shell') ?? document.body;
   return createPortal(
-    <div className="pln-hover" aria-hidden="true" style={{ left, top }}>
-      <span className="pln-hover-name">{task.name || 'Untitled task'}</span>
+    <div className={`pln-hover${className ? ` ${className}` : ''}`} aria-hidden="true" style={{ left, top }}
+         ref={cardRef}>
+      <span className="pln-hover-name">{title}</span>
       <dl className="pln-hover-facts">
-        {hoverFacts(task, plan).map((fact) => (
+        {facts.map((fact) => (
           <div key={fact.label} className="pln-hover-fact">
             <dt>{fact.label}</dt>
             <dd>{fact.value}</dd>
@@ -52,6 +56,32 @@ export default function GanttHoverCard({ task, plan, left, top }: {
     </div>,
     host,
   );
+}
+
+/** The card itself, at `left`/`top` in the viewport. */
+export default function GanttHoverCard({ task, plan, left, top }: {
+  task: PlanTask;
+  plan: HoverPlan;
+  left: number;
+  top: number;
+}) {
+  return <FactCard title={task.name || 'Untitled task'} facts={hoverFacts(task, plan)} left={left} top={top} />;
+}
+
+/** A drag's tooltip (useGanttDrag): what letting go would set — the new
+ *  Start, Finish and Duration, % Complete, or the link — beside the
+ *  pointer at `x`/`y`, placed like the hover card but by its measured size,
+ *  so near the right edge it flips to sit right beside the pointer. */
+export function GanttDragTip({ title, facts, x, y }: { title: string; facts: readonly Fact[]; x: number; y: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState<{ w: number; h: number } | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || !el.offsetWidth) return;
+    if (size?.w !== el.offsetWidth || size.h !== el.offsetHeight) setSize({ w: el.offsetWidth, h: el.offsetHeight });
+  });
+  const { left, top } = cardPosition(x, y, window.innerWidth, window.innerHeight, size?.w, size?.h);
+  return <FactCard className="pln-drag-tip" title={title} facts={facts} left={left} top={top} cardRef={ref} />;
 }
 
 /**
@@ -120,11 +150,13 @@ export function GanttHover({ chartRef, scrollRef, barRef, tasksById, plan }: {
     };
     chart?.addEventListener('mousemove', onMove);
     chart?.addEventListener('mouseleave', hide);
+    chart?.addEventListener('pointerdown', hide);
     box?.addEventListener('scroll', hide, { passive: true });
     bar?.addEventListener('scroll', hide, { passive: true });
     return () => {
       chart?.removeEventListener('mousemove', onMove);
       chart?.removeEventListener('mouseleave', hide);
+      chart?.removeEventListener('pointerdown', hide);
       box?.removeEventListener('scroll', hide);
       bar?.removeEventListener('scroll', hide);
       stop();

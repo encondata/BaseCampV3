@@ -41,6 +41,16 @@ it('moves focus to the first field of the body on open, past the Close button', 
   expect(document.activeElement).toBe(screen.getByLabelText('Task Name'));
 });
 
+it('passes over a ComboBox, whose list focus would open, to the next field', () => {
+  render(
+    <PlanModal title="Task Dependency" onClose={() => {}}>
+      <input aria-label="Type" role="combobox" aria-expanded={false} />
+      <input aria-label="Lag" />
+    </PlanModal>,
+  );
+  expect(document.activeElement).toBe(screen.getByLabelText('Lag'));
+});
+
 it('focuses the dialog itself when it has no field', () => {
   render(
     <PlanModal title="Clear baseline" onClose={() => {}}

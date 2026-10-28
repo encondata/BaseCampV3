@@ -36,7 +36,6 @@ import {
   selectionMode, setMode as modeOps, setPercent, toggleTimeline, unlinkSelected, type Command, type CommandOps,
   type InsertKind,
 } from '../../lib/plans/commands';
-import { noticeText } from '../../lib/plans/editOps';
 import { fitZoom, zoomIn as zoomInOf, zoomOut as zoomOutOf, type Zoom } from '../../lib/plans/ganttGeometry';
 import { readZoom, writeZoom } from '../../lib/plans/ganttView';
 import { PLAN_ERRORS, completionText, isPlanChanged, planErrorText } from '../../lib/plans/errors';
@@ -45,7 +44,7 @@ import {
   copyCell, copyRows, opsForInternalPaste, opsForPaste, parseClipboard, sameClipboard, type PasteContext, type PlanCopy,
 } from '../../lib/plans/paste';
 import { EMPTY_SELECTION, selectCell, type Selection } from '../../lib/plans/selection';
-import { SAID_ALREADY, useCompletionPrompt } from './useCompletionPrompt';
+import { useApplyAnswer, useCompletionPrompt } from './useCompletionPrompt';
 import type { PlanController } from './usePlan';
 import { keysBelongElsewhere, type PlanShortcutHandlers } from './usePlanShortcuts';
 
@@ -60,10 +59,12 @@ export type PlanDialog =
   | { kind: 'shortcuts' }
   | { kind: 'deleteTasks'; ops: Op[]; tasks: PlanTask[]; subtasks: number; next: Selection }
   | { kind: 'taskInfo'; taskId: string; tab?: 'notes' }
+  | { kind: 'dependency'; linkId: string }
   | { kind: Exclude<ComingDialog, 'taskInfo'> };
 
 /** The dialogs that exist; Task 10 adds its kinds. */
-export const DIALOGS_READY: ReadonlySet<PlanDialog['kind']> = new Set(['create', 'columns', 'shortcuts', 'deleteTasks']);
+export const DIALOGS_READY: ReadonlySet<PlanDialog['kind']> = new Set(
+  ['create', 'columns', 'shortcuts', 'deleteTasks', 'dependency']);
 
 export const COMING_SOON = 'Coming in this release';
 export const PASTE_LABEL = 'Paste';
@@ -227,21 +228,7 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog }: Options)
 
   /** One answer said: notices with Undo, a stopped completion to the
    *  prompt, a refusal as a toast (unless usePlan said it already). */
-  const answered = useCallback((result: ApplyResult, ops: Op[], label: string): boolean => {
-    const { toast: say, prompt: ask } = latest.current;
-    if (result.ok) {
-      for (const notice of result.notices) {
-        say(noticeText(notice), { label: 'Undo', onClick: () => void latest.current.ctl.undo() });
-      }
-      return true;
-    }
-    if (result.kind !== 'error') {
-      ask(result, ops, label);
-      return false;
-    }
-    if (!SAID_ALREADY.has(result.code) && result.message) say(result.message);
-    return false;
-  }, []);
+  const answered = useApplyAnswer(ctl);
 
   /** A second batch that didn't go in, said as the outcome of the whole
    *  command: the first batch's rows stay (its undo step takes them back);
