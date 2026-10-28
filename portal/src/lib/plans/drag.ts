@@ -13,8 +13,10 @@
  * calendar (`workMinutes`, the API's `work_between`), so the Duration is
  * what that drop means, in the task's own unit.
  */
-import type { Op, Plan, PlanCalendar, PlanTask } from './api';
-import { formatDuration, parseDuration, unitMinutes, type Units } from './durations';
+import type { Op, Plan, PlanCalendar, PlanTask, WorkInterval } from './api';
+import {
+  MAX_DURATION_TEXT, MAX_INTEGER_DIGITS, durationLabel, parseDuration, unitMinutes, type DurationUnit, type Units,
+} from './durations';
 import { dayOf, fromMs, toMs } from './floatingTime';
 import { MILESTONE_HALF, MS_PER_DAY, type Zoom } from './ganttGeometry';
 
@@ -52,28 +54,45 @@ export const resizeEdge = (width: number): number => Math.min(RESIZE_PX, width /
 export const barEnd = (bar: Pick<DragBar, 'x' | 'width' | 'milestone'>): number =>
   (bar.milestone ? bar.x + MILESTONE_HALF : bar.x + bar.width);
 
-/** Whether the bar has a progress handle at all. */
-export const hasGrip = (bar: Pick<DragBar, 'width' | 'milestone'>): boolean =>
-  !bar.milestone && bar.width >= MIN_GRIP_BAR_PX;
+/** Whether the bar has a progress handle at all. `progressOnly` (a locked
+ *  plan, where progress is the only drag) drops the narrow-bar floor: there
+ *  is no move to keep room for. */
+export const hasGrip = (bar: Pick<DragBar, 'width' | 'milestone'>, progressOnly = false): boolean =>
+  !bar.milestone && (progressOnly || bar.width >= MIN_GRIP_BAR_PX);
 
 /** Where the progress handle sits: the progress edge, kept left of the
- *  resize zone so a bar at 100% can still be grabbed by either. */
-export function gripX(bar: DragBar): number {
-  return bar.x + Math.min(Math.max(bar.done, 0), bar.width - resizeEdge(bar.width));
+ *  resize zone so a bar at 100% can still be grabbed by either (with
+ *  `progressOnly` there is no resize zone to share). */
+export function gripX(bar: DragBar, progressOnly = false): number {
+  const room = progressOnly ? bar.width : bar.width - resizeEdge(bar.width);
+  return bar.x + Math.min(Math.max(bar.done, 0), room);
 }
 
 /**
  * What a press at `pointerX` on a bar does: past its right end (the link
  * handle) `link`; the right 6px `resize`; within GRIP_PX of the progress
  * handle `progress`; anywhere else `move`. A milestone only moves or links.
+ * With `progressOnly` (a locked plan) it is `progress` at the handle and
+ * `move` (which the plan refuses) anywhere else.
  */
-export function dragKind(pointerX: number, bar: DragBar): DragKind {
+export function dragKind(pointerX: number, bar: DragBar, progressOnly = false): DragKind {
+  const atGrip = hasGrip(bar, progressOnly) && Math.abs(pointerX - gripX(bar, progressOnly)) <= GRIP_PX;
+  if (progressOnly) return atGrip ? 'progress' : 'move';
   const end = barEnd(bar);
   if (pointerX > end) return 'link';
   if (bar.milestone) return 'move';
   if (pointerX >= end - resizeEdge(bar.width)) return 'resize';
-  if (hasGrip(bar) && Math.abs(pointerX - gripX(bar)) <= GRIP_PX) return 'progress';
-  return 'move';
+  return atGrip ? 'progress' : 'move';
+}
+
+/** What a move of a task that has started gets instead (MS Project moves its
+ *  Actual Start; here the engine keeps a started task where it began). */
+export const MOVE_REFUSAL = 'This task has started — change its Actual Start instead.';
+
+/** Why `task` can't be moved by a drag, or null: it has an actual start.
+ *  Resizing it, its progress and its links are still drags. */
+export function moveRefusal(task: Pick<PlanTask, 'actual_start'>): string | null {
+  return task.actual_start !== null ? MOVE_REFUSAL : null;
 }
 
 const MINUTE = 60_000;
@@ -90,6 +109,16 @@ export function snapMs(ms: number, zoom: Zoom): number {
   return Math.round(ms / step) * step;
 }
 
+/**
+ * Where a time `from` dragged by `moved` ms lands. At the whole-day snaps
+ * (weeks and coarser) the move itself snaps, so a task keeps its clock time
+ * (a 13:00 start moves to 13:00 a week on, and a drop back where it began
+ * lands where it began); at the hour and quarter-hour snaps the place does.
+ */
+export function snapShift(from: number, moved: number, zoom: Zoom): number {
+  return SNAP_MS[zoom] >= MS_PER_DAY ? from + snapMs(moved, zoom) : snapMs(from + moved, zoom);
+}
+
 /** The pointer's x on the scale: in from the chart pane's left edge, plus
  *  the pane's sideways scroll (its content moves by a transform). */
 export function pointerScaleX(clientX: number, paneLeft: number, scrollLeft: number): number {
@@ -104,6 +133,19 @@ const clockMs = (hhmm: string): number => {
   return h * HOUR + m * MINUTE;
 };
 
+/** Each calendar's exceptions by date, made once per calendar (a drag
+ *  measures on every pointer move). */
+const EXCEPTIONS = new WeakMap<object, ReadonlyMap<string, readonly WorkInterval[]>>();
+
+function exceptionsOf(calendar: Pick<PlanCalendar, 'exceptions'>): ReadonlyMap<string, readonly WorkInterval[]> {
+  let byDate = EXCEPTIONS.get(calendar.exceptions);
+  if (!byDate) {
+    byDate = new Map(calendar.exceptions.map((e) => [e.date, e.hours]));
+    EXCEPTIONS.set(calendar.exceptions, byDate);
+  }
+  return byDate;
+}
+
 /**
  * Working minutes from `a` to `b` (epoch ms) on the calendar, negative when
  * `b` is earlier: the API's `work_between` (plans/calendar.py). A dated
@@ -111,7 +153,7 @@ const clockMs = (hhmm: string): number => {
  */
 export function workMinutes(calendar: Pick<PlanCalendar, 'week' | 'exceptions'>, a: number, b: number): number {
   if (b < a) return -workMinutes(calendar, b, a);
-  const exceptions = new Map(calendar.exceptions.map((e) => [e.date, e.hours]));
+  const exceptions = exceptionsOf(calendar);
   let total = 0;
   const last = Math.floor(b / MS_PER_DAY) * MS_PER_DAY;
   for (let day = Math.floor(a / MS_PER_DAY) * MS_PER_DAY; day <= last; day += MS_PER_DAY) {
@@ -125,13 +167,45 @@ export function workMinutes(calendar: Pick<PlanCalendar, 'week' | 'exceptions'>,
   return Math.trunc(total / MINUTE);
 }
 
-/** A duration that never reads as zero: at least a minute, and enough of
- *  the unit to show (two decimals), so the API reads it back as non-zero
- *  (a zero duration would make a milestone). */
+/** Smaller units first falls back through: a month to weeks, days, hours, minutes. */
+const SMALLER: Record<DurationUnit, DurationUnit | null> = { mo: 'w', w: 'd', d: 'h', h: 'm', m: null };
+
+/** The most decimals the parser could read in a duration of `unit` (its
+ *  64-character text limit, less the whole part, the point and the word). */
+function decimalLimit(unit: DurationUnit, elapsed: boolean): number {
+  return MAX_DURATION_TEXT - MAX_INTEGER_DIGITS - 2 - durationLabel(unit, elapsed, false).length;
+}
+
+/**
+ * Duration text that parses back (parseDuration, the API's parse_duration)
+ * to exactly `minutes`, a whole number >= 0: the task's own unit with the
+ * fewest decimals that do (`2.125 days` for 1,020 minutes of 480-minute
+ * days, where `2.13 days` would read as 1,022). When no decimal count up
+ * to `maxDecimals` (the parser's own limit unless given) round-trips, the
+ * next smaller unit that does (`17 hrs`). Minutes always do.
+ */
+export function exactDurationText(
+  minutes: number, unit: DurationUnit, elapsed: boolean, units: Units, maxDecimals?: number,
+): string {
+  const per = BigInt(unitMinutes(units, unit, elapsed));
+  const want = BigInt(Math.round(Math.abs(minutes)));
+  const limit = Math.max(0, Math.min(maxDecimals ?? Number.POSITIVE_INFINITY, decimalLimit(unit, elapsed)));
+  for (let k = 0; k <= limit; k += 1) {
+    const scale = 10n ** BigInt(k);
+    const n = (want * scale * 2n + per) / (per * 2n);          // the nearest k-decimal number of units
+    if ((n * per * 2n + scale) / (scale * 2n) !== want) continue;   // as the parser rounds it back
+    const whole = (n / scale).toString();
+    const text = k === 0 ? whole : `${whole}.${(n % scale).toString().padStart(k, '0')}`;
+    return `${text} ${durationLabel(unit, elapsed, text === '1')}`;
+  }
+  const smaller = SMALLER[unit];
+  return smaller ? exactDurationText(minutes, smaller, elapsed, units, maxDecimals) : `${want} ${durationLabel('m', elapsed, want === 1n)}`;
+}
+
+/** A resize's duration: at least a minute (none would make a milestone), in
+ *  the task's own unit, in text that reads back to exactly that. */
 function durationText(minutes: number, task: PlanTask, units: Units): string {
-  const per = unitMinutes(units, task.duration_unit, task.elapsed);
-  const kept = Math.max(minutes, 1, Math.ceil(per / 200));
-  return formatDuration(kept, task.duration_unit, task.elapsed, units);
+  return exactDurationText(Math.max(1, minutes), task.duration_unit, task.elapsed, units);
 }
 
 /**

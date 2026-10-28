@@ -500,6 +500,149 @@ describe('linking', () => {
   });
 });
 
+describe('fix round 1', () => {
+  /** Pack at 13:00 Tue to noon Wed, so its clock time shows. */
+  const afternoon = (over: Partial<PlanTask> = {}) => plan3({
+    tasks: tasks3().map((t) => (t.id === 'b'
+      ? { ...t, start: '2026-11-03T13:00', finish: '2026-11-04T12:00', ...over }
+      : t)),
+  });
+
+  it('at the weeks zoom a drop back at its origin sends nothing', () => {
+    const plan = afternoon();
+    const s = stand();
+    render(<Harness plan={plan} s={s} zoom="weeks" />);
+    const x = clientAt(plan, '2026-11-03T13:00', 'weeks') + 5;
+    drag(barOf('b'), [x, rowY(1)], [x + 40, rowY(1)], [x + 1, rowY(1)]);
+    expect(s.apply).not.toHaveBeenCalled();
+  });
+
+  it('at the weeks zoom a one-week move keeps the task’s 13:00, and a manual task’s too', () => {
+    for (const mode of ['auto', 'manual'] as const) {
+      const plan = afternoon({ mode });
+      const s = stand();
+      const { unmount } = render(<Harness plan={plan} s={s} zoom="weeks" />);
+      const x = clientAt(plan, '2026-11-03T13:00', 'weeks') + 5;
+      drag(barOf('b'), [x, rowY(1)], [x + 60, rowY(1)], [x + 7 * 18 + 4, rowY(1)]);
+      expect(s.apply).toHaveBeenCalledWith([{ op: 'update_task', id: 'b', fields: { start: '2026-11-10T13:00' } }],
+        'Move Task');
+      unmount();
+    }
+  });
+
+  it('a resize’s tooltip shows the text it sends, which parses back to exactly the working time', () => {
+    const plan = makePlan({
+      tasks: [makeTask('r', { name: 'Rack', start: '2026-11-02T13:00', finish: '2026-11-04T12:00', duration_minutes: 960,
+        duration_text: '2 days' })],
+      project_finish: '2026-11-04T12:00', initiative_window: NO_WINDOW,
+    });
+    const s = stand();
+    render(<Harness plan={plan} s={s} />);
+    const end = clientAt(plan, '2026-11-04T12:00') - 1;
+    const bar = barOf('r');
+    fireEvent.pointerDown(bar, { clientX: end, clientY: rowY(0), pointerId: 1, button: 0 });
+    fireEvent.pointerMove(bar, { clientX: end + 4, clientY: rowY(0), pointerId: 1 });
+    expect(q('.pln-drag-tip')?.textContent).toContain('2.125 days');
+    fireEvent.pointerUp(bar, { clientX: end + 4, clientY: rowY(0), pointerId: 1 });
+    expect(s.apply).toHaveBeenCalledWith([{ op: 'update_task', id: 'r', fields: { duration: '2.125 days' } }],
+      'Edit Duration');
+  });
+
+  it('losing the window, the page going hidden, or a mouse let go unseen ends the drag unsent', () => {
+    const plan = plan3();
+    const ends: [string, () => void][] = [
+      ['blur', () => { fireEvent.blur(window); }],
+      ['hidden', () => {
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+        fireEvent(document, new Event('visibilitychange'));
+        Reflect.deleteProperty(document, 'visibilityState');
+      }],
+      ['no buttons', () => {
+        fireEvent.pointerMove(barOf('b'), { clientX: 900, clientY: rowY(1), pointerId: 1, pointerType: 'mouse',
+          buttons: 0 });
+      }],
+    ];
+    for (const [name, endIt] of ends) {
+      const s = stand();
+      const { unmount } = render(<Harness plan={plan} s={s} />);
+      const x = clientAt(plan, '2026-11-03T12:00');
+      const bar = barOf('b');
+      fireEvent.pointerDown(bar, { clientX: x, clientY: rowY(1), pointerId: 1, button: 0, pointerType: 'mouse' });
+      fireEvent.pointerMove(bar, { clientX: x + 48, clientY: rowY(1), pointerId: 1, pointerType: 'mouse', buttons: 1 });
+      expect(q('.pln-drag-ghost'), name).not.toBeNull();
+      endIt();
+      expect(q('.pln-drag-ghost'), name).toBeNull();
+      expect(s.release, name).toHaveBeenCalledTimes(1);
+      fireEvent.pointerUp(bar, { clientX: x + 48, clientY: rowY(1), pointerId: 1, pointerType: 'mouse' });
+      expect(s.apply, name).not.toHaveBeenCalled();
+      unmount();
+    }
+  });
+
+  it('a task that has started can’t be moved: it says so, holds nothing and sends nothing', () => {
+    const plan = plan3({
+      tasks: tasks3().map((t) => (t.id === 'b' ? { ...t, actual_start: '2026-11-03T08:00', percent_complete: 25 } : t)),
+    });
+    const s = stand();
+    const onSelect = vi.fn();
+    render(<Harness plan={plan} s={s} onSelect={onSelect} />);
+    const x = clientAt(plan, '2026-11-03T12:00');
+    drag(barOf('b'), [x, rowY(1)], [x + 20, rowY(1)], [x + 48, rowY(1)]);
+    expect(toast).toHaveBeenCalledWith('This task has started — change its Actual Start instead.');
+    expect(toast).toHaveBeenCalledTimes(1);
+    expect(s.beginEditing).not.toHaveBeenCalled();
+    expect(s.apply).not.toHaveBeenCalled();
+    expect(q('.pln-drag-ghost')).toBeNull();
+    // a click still selects it, and its end still resizes it
+    drag(barOf('b'), [x, rowY(1)], [x + 1, rowY(1)]);
+    expect(onSelect).toHaveBeenCalledWith(selectCell('b', 'name'));
+    const end = clientAt(plan, '2026-11-03T17:00') - 1;
+    drag(barOf('b'), [end, rowY(1)], [end + 48, rowY(1)]);
+    expect(s.apply).toHaveBeenCalledWith([{ op: 'update_task', id: 'b', fields: { duration: '2 days' } }],
+      'Edit Duration');
+  });
+
+  it('a refresh between the press and the drag that moves the task’s row calls the drag off', () => {
+    const plan = plan3();
+    const s = stand();
+    const { rerender } = render(<Harness plan={plan} s={s} />);
+    const x = clientAt(plan, '2026-11-03T12:00');
+    fireEvent.pointerDown(barOf('b'), { clientX: x, clientY: rowY(1), pointerId: 1, button: 0 });
+    // someone else's change lands: Pack is now the third row
+    const [a, b, c, m] = tasks3();
+    rerender(<Harness plan={plan3({ tasks: [a, { ...c, position: 1 }, { ...b, position: 2 }, m] })} s={s} />);
+    fireEvent.pointerMove(barOf('b'), { clientX: x + 48, clientY: rowY(1), pointerId: 1 });
+    expect(q('.pln-drag-ghost')).toBeNull();
+    expect(s.beginEditing).not.toHaveBeenCalled();
+    fireEvent.pointerUp(barOf('b'), { clientX: x + 48, clientY: rowY(1), pointerId: 1 });
+    expect(s.apply).not.toHaveBeenCalled();
+  });
+
+  it('on a locked plan a one-day bar at the days zoom has a progress handle too', () => {
+    const plan = plan3({ locked_at: '2026-10-27T12:00:00Z' });
+    const s = stand();
+    render(<Harness plan={plan} s={s} />);
+    expect(barOf('b').querySelector('.pln-pct-grip')).not.toBeNull();
+    const left = clientAt(plan, '2026-11-03T08:00');
+    drag(barOf('b'), [left + 1, rowY(1)], [left + 5, rowY(1)], [left + 9, rowY(1)]);
+    expect(s.apply).toHaveBeenCalledWith([{ op: 'set_percent', ids: ['b'], percent: 50 }], '50% Complete');
+  });
+
+  it('a touch tap under the threshold selects the task', () => {
+    const plan = plan3();
+    const s = stand();
+    const onSelect = vi.fn();
+    render(<Harness plan={plan} s={s} onSelect={onSelect} />);
+    const x = clientAt(plan, '2026-11-03T12:00');
+    const bar = barOf('b');
+    fireEvent.pointerDown(bar, { clientX: x, clientY: rowY(1), pointerId: 7, button: 0, pointerType: 'touch' });
+    fireEvent.pointerMove(bar, { clientX: x + 2, clientY: rowY(1), pointerId: 7, pointerType: 'touch', buttons: 0 });
+    fireEvent.pointerUp(bar, { clientX: x + 2, clientY: rowY(1), pointerId: 7, pointerType: 'touch' });
+    expect(onSelect).toHaveBeenCalledWith(selectCell('b', 'name'));
+    expect(s.apply).not.toHaveBeenCalled();
+  });
+});
+
 describe('locked and read-only plans', () => {
   it('a locked plan only takes progress drags', () => {
     const plan = plan3({ locked_at: '2026-10-27T12:00:00Z' });

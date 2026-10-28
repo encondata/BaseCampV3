@@ -239,6 +239,13 @@ function format(minutes: number, unit: DurationUnit, elapsed: boolean, units: Un
   return `${sign}${number} ${label}`;
 }
 
+/** The unit's word as formatDuration writes it: `day` / `days`, `ehr` /
+ *  `ehrs`... (`one` for a number that reads as 1). */
+export function durationLabel(unit: DurationUnit, elapsed: boolean, one: boolean): string {
+  const [singular, plural] = WORKING_LABELS[unit];
+  return (elapsed ? 'e' : '') + (one ? singular : plural);
+}
+
 /** `5 days`, `1 day`, `4 hrs`, `0.5 days`, `3 edays`, `0 days`. */
 export function formatDuration(minutes: number, unit: DurationUnit, elapsed: boolean, units: Units): string {
   return format(minutes, unit, elapsed, units, false);

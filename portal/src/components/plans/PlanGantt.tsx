@@ -551,8 +551,9 @@ function TaskMarks({ task, scale, win, box, display, access, onBarPointerDown, o
       const height = task.is_summary ? box.summaryHeight : box.height;
       // the progress handle (drag.ts `gripX`), where the plan takes progress drags
       const dragBar = { ...bar, done: progressWidth(bar, task.percent_complete), milestone: false };
-      const grip = access !== 'none' && !task.is_summary && hasGrip(dragBar)
-        ? gripX(dragBar) - win[0] - piece.x - GRIP_PX
+      const progressOnly = access === 'progress';
+      const grip = access !== 'none' && !task.is_summary && hasGrip(dragBar, progressOnly)
+        ? gripX(dragBar, progressOnly) - win[0] - piece.x - GRIP_PX
         : null;
       out.push(
         <div key="bar" className={`${kind}${cut(piece)}`} data-task-id={task.id} onPointerDown={down}

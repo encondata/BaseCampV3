@@ -5,14 +5,18 @@
  * a link drag's FS link — plus the working time a resize measures, the
  * links a drop may make, and where a pointer sits on the scale.
  */
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
-import { STANDARD_UNITS, parseDuration } from './durations';
+import type { PlanCalendar } from './api';
+import { DURATION_UNITS, STANDARD_UNITS, parseDuration } from './durations';
 import { toMs } from './floatingTime';
 import { makeLink, makePlan, makeTask } from './planFixtures';
 import {
-  DRAG_THRESHOLD_PX, GRIP_PX, MIN_GRIP_BAR_PX, RESIZE_PX, canLink, dragKind, gripX, opsForDrag, pointerScaleX, snapMs,
-  workMinutes,
+  DRAG_THRESHOLD_PX, GRIP_PX, MIN_GRIP_BAR_PX, MOVE_REFUSAL, RESIZE_PX, canLink, dragKind, exactDurationText, gripX,
+  moveRefusal, opsForDrag, pointerScaleX, snapMs, snapShift, workMinutes,
 } from './drag';
 
 const HOUR = 3_600_000;
@@ -86,6 +90,19 @@ describe('dragKind', () => {
   });
 });
 
+describe('progress only (a locked plan)', () => {
+  it('every bar has a handle, at its progress edge, with no resize zone to share', () => {
+    const day = { x: 100, width: 18, done: 0, milestone: false };
+    expect(dragKind(101, day, true)).toBe('progress');
+    expect(dragKind(110, day, true)).toBe('move');           // not a handle: the lane's press
+    const full = { ...day, done: 18 };
+    expect(gripX(full, true)).toBe(118);
+    expect(dragKind(117, full, true)).toBe('progress');
+    expect(dragKind(119, full, true)).toBe('progress');
+    expect(dragKind(100, { x: 100, width: 0, done: 0, milestone: true }, true)).toBe('move');
+  });
+});
+
 describe('snapMs', () => {
   const at = (s: string) => toMs(s);
 
@@ -98,6 +115,75 @@ describe('snapMs', () => {
     expect(snapMs(at('2026-11-02T13:00'), 'weeks')).toBe(at('2026-11-03T00:00'));
     expect(snapMs(at('2026-11-02T13:00'), 'months')).toBe(at('2026-11-03T00:00'));
     expect(snapMs(at('2026-11-02T13:00'), 'quarters')).toBe(at('2026-11-03T00:00'));
+  });
+});
+
+describe('snapShift', () => {
+  const at = (s: string) => toMs(s);
+
+  it('at whole-day snaps the move snaps, so a task keeps its clock time', () => {
+    const from = at('2026-11-03T13:00');
+    expect(snapShift(from, 0.3 * DAY, 'weeks')).toBe(from);                   // back where it began
+    expect(snapShift(from, 7 * DAY + 3 * HOUR, 'weeks')).toBe(at('2026-11-10T13:00'));
+    expect(snapShift(from, -1.6 * DAY, 'months')).toBe(at('2026-11-01T13:00'));
+    expect(snapShift(from, 40 * DAY, 'quarters')).toBe(at('2026-12-13T13:00'));
+  });
+
+  it('at the hour and quarter-hour snaps the place snaps', () => {
+    expect(snapShift(at('2026-11-03T08:00'), DAY + 5.4 * HOUR, 'days')).toBe(at('2026-11-04T13:00'));
+    expect(snapShift(at('2026-11-03T08:00'), 0.3 * HOUR, 'hours')).toBe(at('2026-11-03T08:15'));
+  });
+});
+
+describe('the shared work_between vectors (api/tests/fixtures/plans/work_between.json)', () => {
+  interface Row { name: string; calendar: PlanCalendar; a: string; b: string; minutes: number }
+  const ROWS: Row[] = JSON.parse(fs.readFileSync(
+    path.resolve(__dirname, '../../../../api/tests/fixtures/plans/work_between.json'), 'utf8'));
+
+  it('has the rows the API wrote', () => {
+    expect(ROWS.length).toBeGreaterThanOrEqual(20);
+  });
+
+  it.each(ROWS.map((r) => [r.name, r] as const))('%s', (_name, row) => {
+    expect(workMinutes(row.calendar, toMs(row.a), toMs(row.b))).toBe(row.minutes);
+  });
+});
+
+describe('exactDurationText', () => {
+  it('writes the fewest decimals that parse back to exactly the minutes', () => {
+    expect(exactDurationText(960, 'd', false, units)).toBe('2 days');
+    expect(exactDurationText(1020, 'd', false, units)).toBe('2.125 days');
+    expect(parseDuration(exactDurationText(1020, 'd', false, units), units).minutes).toBe(1020);
+    expect(exactDurationText(495, 'd', false, units)).toBe('1.031 days');
+    expect(exactDurationText(75, 'h', false, units)).toBe('1.25 hrs');
+    expect(exactDurationText(1440, 'd', true, units)).toBe('1 eday');
+  });
+
+  it('every quarter hour in every unit round-trips', () => {
+    for (const unit of DURATION_UNITS) {
+      for (const elapsed of [false, true]) {
+        for (let minutes = 15; minutes <= 5 * 2400; minutes += 15) {
+          const text = exactDurationText(minutes, unit, elapsed, units);
+          const back = parseDuration(text, units);
+          // in the task's own unit: the parser's decimals always suffice for it
+          expect([back.minutes, back.unit, back.elapsed], text).toEqual([minutes, unit, elapsed]);
+        }
+      }
+    }
+  });
+
+  it('falls back to the next smaller unit when no decimals up to the limit round-trip', () => {
+    expect(exactDurationText(1020, 'd', false, units, 2)).toBe('17 hrs');
+    expect(exactDurationText(1021, 'd', false, units, 2)).toBe('17.02 hrs');
+    expect(exactDurationText(61, 'h', false, units, 1)).toBe('61 mins');
+  });
+});
+
+describe('moveRefusal', () => {
+  it('refuses to move a task that has started; nothing else is refused', () => {
+    expect(MOVE_REFUSAL).toBe('This task has started — change its Actual Start instead.');
+    expect(moveRefusal(makeTask('a', { actual_start: '2026-11-02T08:00', percent_complete: 25 }))).toBe(MOVE_REFUSAL);
+    expect(moveRefusal(makeTask('a'))).toBeNull();
   });
 });
 
@@ -165,14 +251,36 @@ describe('opsForDrag', () => {
     ]);
   });
 
-  it('a resize past the start keeps at least a minute, in text the API reads as one', () => {
+  it('a resize past the start keeps a minute, in text the API reads as exactly one', () => {
     const [op] = opsForDrag('resize', twoDays(), -3 * DAY, units, calendar);
     const text = (op as { fields: { duration: string } }).fields.duration;
-    expect(text).toBe('0.01 days');
-    expect(parseDuration(text, units).minutes).toBeGreaterThanOrEqual(1);
+    expect(parseDuration(text, units).minutes).toBe(1);
     const hours = makeTask('h', { duration_minutes: 240, duration_unit: 'h', finish: '2026-11-02T12:00' });
     const [h] = opsForDrag('resize', hours, -DAY, units, calendar);
     expect(parseDuration((h as { fields: { duration: string } }).fields.duration, units).minutes).toBe(1);
+  });
+
+  it('a resize’s text parses back to exactly the working time measured', () => {
+    // Mon 13:00 to Wed 12:00 is two days; two more hours ends Wed 14:00, past the lunch hour
+    const task = makeTask('a', { start: '2026-11-02T13:00', finish: '2026-11-04T12:00', duration_minutes: 960 });
+    const [op] = opsForDrag('resize', task, 2 * HOUR, units, calendar);
+    const text = (op as { fields: { duration: string } }).fields.duration;
+    expect(text).toBe('2.125 days');
+    expect(parseDuration(text, units).minutes).toBe(1020);
+    // every quarter hour the hours zoom snaps to, through one morning
+    const early = makeTask('e', { start: '2026-11-02T08:00', finish: '2026-11-02T09:00', duration_minutes: 60 });
+    for (let k = 1; k <= 12; k += 1) {
+      const [q] = opsForDrag('resize', early, k * 15 * 60_000, units, calendar);
+      expect(parseDuration((q as { fields: { duration: string } }).fields.duration, units).minutes).toBe(60 + 15 * k);
+    }
+  });
+
+  it('a move keeps a manual task’s clock time at a whole-day snap', () => {
+    const manual = twoDays({ mode: 'manual', start: '2026-11-02T13:00' });
+    const from = toMs('2026-11-02T13:00');
+    expect(opsForDrag('move', manual, snapShift(from, 7 * DAY + 2 * HOUR, 'weeks') - from, units, calendar)).toEqual([
+      { op: 'update_task', id: 'a', fields: { start: '2026-11-09T13:00' } },
+    ]);
   });
 
   it('progress sets % Complete rounded to 5%, within 0 to 100', () => {

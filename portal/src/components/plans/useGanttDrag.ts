@@ -21,7 +21,18 @@
  *   ops FIRST and lets go of the hold after: the refresh that waited is then
  *   queued behind the drag's write, never ahead of it (which would drop the
  *   write as made against a plan that is gone), the sheet editor's rule.
- *   Esc cancels: nothing is sent and the hold goes.
+ *   Esc cancels: nothing is sent and the hold goes. A release outside the
+ *   window still commits (the capture brings it).
+ * - A release that may never come ends the drag unsent, hold let go: the
+ *   window losing focus, the page going hidden, a mouse move with no button
+ *   down. So does a press the plan no longer matches (its task gone, on
+ *   another row, its bar moved: a refresh between the press and the drag),
+ *   and a new scale (a zoom).
+ * - A task that has started isn't moved (`moveRefusal`): crossing the
+ *   threshold says "This task has started — change its Actual Start
+ *   instead." and holds and sends nothing. Its other drags still work.
+ * - Snaps (`snapShift`): at weeks and coarser the move snaps by whole days,
+ *   so a task keeps its clock time; at days and hours its new place snaps.
  * - The pointer's place on the scale is its x in the chart pane plus the
  *   pane's sideways scroll (the content moves by a transform), so a drag
  *   reads the same at any scroll.
@@ -35,10 +46,11 @@ import {
   type RefObject,
 } from 'react';
 
+import { useToast } from '../../lib/notificationsContext';
 import type { Op, Plan, PlanTask } from '../../lib/plans/api';
 import {
-  DRAG_THRESHOLD_PX, DROP_SLOP_PX, LINK_DOT_PX, barEnd, canLink, dragKind, opsForDrag, pointerScaleX, snapMs,
-  type DragKind,
+  DRAG_THRESHOLD_PX, DROP_SLOP_PX, LINK_DOT_PX, barEnd, canLink, dragKind, moveRefusal, opsForDrag, pointerScaleX,
+  snapShift, type DragKind,
 } from '../../lib/plans/drag';
 import { formatDuration } from '../../lib/plans/durations';
 import { formatDay, formatDayTime, fromMs, toMs } from '../../lib/plans/floatingTime';
@@ -170,10 +182,11 @@ const taskName = (t: PlanTask): string => t.name || 'Untitled task';
 
 export function useGanttDrag(o: Options): GanttDrag {
   const answer = useApplyAnswer(o.ctl);
+  const toast = useToast();
   const store = useMemo(makeStore, []);
-  const latest = useRef({ ...o, answer });
+  const latest = useRef({ ...o, answer, toast });
   useLayoutEffect(() => {
-    latest.current = { ...o, answer };
+    latest.current = { ...o, answer, toast };
   });
   const session = useRef<Session | null>(null);
 
@@ -201,6 +214,15 @@ export function useGanttDrag(o: Options): GanttDrag {
     store.set(null);
   }, [store]);
 
+  /** The press no longer matches the plan on screen: its task is gone, on
+   *  another row, or its bar has moved (someone else's change landed). */
+  const stale = useCallback((s: Session): boolean => {
+    const { scale, rows, tasksById } = latest.current;
+    const now = tasksById.get(s.task.id);
+    const bar = now && scale ? barOf(scale, now) : null;
+    return !bar || rows[s.row] !== s.task.id || bar.x !== s.bar.x || bar.width !== s.bar.width;
+  }, []);
+
   /** Where the pointer at (clientX, clientY) puts the drag: its ops, label and preview. */
   const follow = useCallback((s: Session, clientX: number, clientY: number) => {
     const { ctl, scale, zoom, rows, rowHeight, box, tasksById, chartRef } = latest.current;
@@ -219,7 +241,7 @@ export function useGanttDrag(o: Options): GanttDrag {
 
     if (s.kind === 'move') {
       const from = toMs(t.is_milestone ? (t.start ?? t.finish ?? '') : (t.start ?? ''));
-      const at = snapMs(from + moved, zoom);
+      const at = snapShift(from, moved, zoom);
       s.ops = opsForDrag('move', t, at - from, units, plan.calendar);
       s.label = 'Move Task';
       preview.ghost = { x: xOfMs(scale, at), width: s.bar.width };
@@ -227,7 +249,7 @@ export function useGanttDrag(o: Options): GanttDrag {
     } else if (s.kind === 'resize') {
       const start = toMs(t.start ?? '');
       const finish = toMs(t.finish ?? '');
-      const to = Math.max(start, snapMs(finish + moved, zoom));
+      const to = Math.max(start, snapShift(finish, moved, zoom));
       s.ops = opsForDrag('resize', t, to - finish, units, plan.calendar);
       s.label = 'Edit Duration';
       const op = s.ops[0];
@@ -297,7 +319,7 @@ export function useGanttDrag(o: Options): GanttDrag {
     const downX = scaleX(e.clientX);
     const kind = dragKind(downX, {
       ...bar, done: progressWidth(bar, task.percent_complete), milestone: task.is_milestone,
-    });
+    }, access === 'progress');
     if (!canDrag(kind, task, access)) return;      // left to the lane: it selects the row
     e.preventDefault();
     const el = e.currentTarget;
@@ -311,8 +333,26 @@ export function useGanttDrag(o: Options): GanttDrag {
     const onMove = (ev: PointerEvent) => {
       const s = session.current;
       if (!s || ev.pointerId !== s.pointerId) return;
+      // a mouse let go where we never heard it (outside the window, an alert
+      // took it): nothing to commit, the drag just ends
+      if (ev.pointerType === 'mouse' && ev.buttons === 0) {
+        end(s);
+        return;
+      }
+      // the plan changed under the press (a refresh before the hold): the
+      // bar isn't where it was pressed any more
+      if (stale(s)) {
+        end(s);
+        return;
+      }
       if (!s.live) {
         if (Math.hypot(ev.clientX - s.downClientX, ev.clientY - s.downClientY) < DRAG_THRESHOLD_PX) return;
+        const refused = s.kind === 'move' ? moveRefusal(s.task) : null;
+        if (refused) {
+          end(s);
+          latest.current.toast(refused);
+          return;
+        }
         s.live = true;
         s.release = latest.current.ctl.beginEditing(HOLD_OWNER);
       }
@@ -324,6 +364,10 @@ export function useGanttDrag(o: Options): GanttDrag {
       if (!s.live) {
         end(s);
         latest.current.select(s.task.id, s.mods);   // a click
+        return;
+      }
+      if (stale(s)) {
+        end(s);
         return;
       }
       follow(s, ev.clientX, ev.clientY);
@@ -341,11 +385,22 @@ export function useGanttDrag(o: Options): GanttDrag {
       ev.stopPropagation();
       end(s);
     };
+    // the window lost focus or the page went out of sight mid-drag: its
+    // release may never come, so it ends unsent and lets go of the hold
+    const onLeave = () => {
+      const s = session.current;
+      if (s) end(s);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') onLeave();
+    };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onCancel);
     window.addEventListener('lostpointercapture', onCancel);
     window.addEventListener('keydown', onKey, true);
+    window.addEventListener('blur', onLeave);
+    document.addEventListener('visibilitychange', onVisibility);
 
     session.current = {
       pointerId: e.pointerId, el, task, kind, row, bar, downX,
@@ -358,9 +413,11 @@ export function useGanttDrag(o: Options): GanttDrag {
         window.removeEventListener('pointercancel', onCancel);
         window.removeEventListener('lostpointercapture', onCancel);
         window.removeEventListener('keydown', onKey, true);
+        window.removeEventListener('blur', onLeave);
+        document.removeEventListener('visibilitychange', onVisibility);
       },
     };
-  }, [commit, end, follow, scaleX]);
+  }, [commit, end, follow, scaleX, stale]);
 
   // a new scale mid-drag (a zoom, the plan's span changed under it): the
   // press was read on the old one, so the drag is called off unsent
