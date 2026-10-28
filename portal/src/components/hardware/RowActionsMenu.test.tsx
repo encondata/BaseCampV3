@@ -10,9 +10,9 @@
  * renders nothing at all.
  */
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { RowActionsMenu, type RowAction } from './RowActionsMenu';
 
@@ -358,4 +358,141 @@ it('returnFocus: choosing an item puts focus back on the trigger; without it, as
   await user.click(screen.getByRole('button', { name: 'Other' }));
   await user.click(screen.getByRole('menuitem', { name: 'Register' }));
   expect(document.activeElement).not.toBe(screen.getByRole('button', { name: 'Other' }));
+});
+
+describe('the keyboard (the menu-button pattern)', () => {
+  /** Edit, a disabled Rename, Register, Delete: the arrows skip Rename. */
+  function withDisabled(): RowAction[] {
+    return [
+      { key: 'edit', label: 'Edit', onSelect: vi.fn() },
+      { key: 'rename', label: 'Rename', onSelect: vi.fn(), disabled: true },
+      { key: 'register', label: 'Register', onSelect: vi.fn() },
+      { key: 'delete', label: 'Delete', destructive: true, onSelect: vi.fn() },
+    ];
+  }
+  const trigger = () => screen.getByRole('button', { name: 'Actions' });
+  const focused = () => document.activeElement?.textContent;
+
+  it('Enter, Space or ↓ on the trigger opens the menu on its first enabled item; ↑ on its last', async () => {
+    const user = userEvent.setup();
+    render(<RowActionsMenu actions={[{ key: 'off', label: 'Off', onSelect: vi.fn(), disabled: true }, ...actions()]} />);
+    for (const key of ['{Enter}', ' ', '{ArrowDown}']) {
+      act(() => { trigger().focus(); });
+      await user.keyboard(key);
+      expect(screen.getByRole('menu'), key).toBeTruthy();
+      expect(focused(), key).toBe('Edit');
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('menu')).toBeNull();
+    }
+    act(() => { trigger().focus(); });
+    await user.keyboard('{ArrowUp}');
+    expect(focused()).toBe('Delete');
+  });
+
+  it('a keyboard open lands on the checked item of a choice', async () => {
+    const user = userEvent.setup();
+    render(
+      <RowActionsMenu actions={[
+        { key: 'a', label: 'Beside', checked: false, onSelect: vi.fn() },
+        { key: 'b', label: 'Below', checked: true, onSelect: vi.fn() },
+        { key: 'c', label: 'Hidden', checked: false, onSelect: vi.fn() },
+      ]} />,
+    );
+    act(() => { trigger().focus(); });
+    await user.keyboard('{Enter}');
+    expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: 'Below' }));
+  });
+
+  it('a mouse open leaves focus on the trigger; the arrows from there go into the menu', async () => {
+    const user = userEvent.setup();
+    render(<RowActionsMenu actions={withDisabled()} />);
+    await user.click(trigger());
+    expect(document.activeElement).toBe(trigger());
+    await user.keyboard('{ArrowDown}');
+    expect(focused()).toBe('Edit');
+    await user.keyboard('{Escape}');
+    await user.click(trigger());
+    await user.keyboard('{ArrowUp}');
+    expect(focused()).toBe('Delete');
+  });
+
+  it('↑/↓ move between the enabled items, wrapping; Home and End go to the ends; items are tabIndex -1', async () => {
+    const user = userEvent.setup();
+    render(<RowActionsMenu actions={withDisabled()} />);
+    act(() => { trigger().focus(); });
+    await user.keyboard('{Enter}');
+    expect(screen.getAllByRole('menuitem').map((i) => i.tabIndex)).toEqual([-1, -1, -1, -1]);
+    expect(focused()).toBe('Edit');
+    await user.keyboard('{ArrowDown}');
+    expect(focused()).toBe('Register');           // the disabled Rename is skipped
+    await user.keyboard('{ArrowDown}');
+    expect(focused()).toBe('Delete');
+    await user.keyboard('{ArrowDown}');
+    expect(focused()).toBe('Edit');               // wraps
+    await user.keyboard('{ArrowUp}');
+    expect(focused()).toBe('Delete');             // and back
+    await user.keyboard('{Home}');
+    expect(focused()).toBe('Edit');
+    await user.keyboard('{End}');
+    expect(focused()).toBe('Delete');
+  });
+
+  it('Enter or Space picks the focused item; focus goes back to the trigger', async () => {
+    const user = userEvent.setup();
+    const acts = withDisabled();
+    render(<RowActionsMenu actions={acts} />);
+    act(() => { trigger().focus(); });
+    await user.keyboard('{Enter}{ArrowDown}{Enter}');
+    expect(acts[2].onSelect).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(trigger());
+    await user.keyboard('{Enter}');
+    await user.keyboard(' ');
+    expect(acts[0].onSelect).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(trigger());
+  });
+
+  it('a pick that moves focus itself (a dialog, a field) keeps it there', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <input aria-label="Name" />
+        <RowActionsMenu actions={[{
+          key: 'rename', label: 'Rename', onSelect: () => screen.getByRole('textbox', { name: 'Name' }).focus(),
+        }]} />
+      </>,
+    );
+    act(() => { trigger().focus(); });
+    await user.keyboard('{Enter}{Enter}');
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Name' }));
+  });
+
+  it('Escape closes it and puts focus back on the trigger, marked handled', async () => {
+    const user = userEvent.setup();
+    render(<RowActionsMenu actions={withDisabled()} />);
+    act(() => { trigger().focus(); });
+    await user.keyboard('{Enter}{ArrowDown}');
+    expect(focused()).toBe('Register');
+    const item = document.activeElement as HTMLElement;
+    expect(fireEvent.keyDown(item, { key: 'Escape' })).toBe(false);
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(trigger());
+  });
+
+  it('Tab closes it and lets focus move on from the trigger (not held: the browser moves it)', async () => {
+    const user = userEvent.setup();
+    render(<RowActionsMenu actions={withDisabled()} />);
+    act(() => { trigger().focus(); });
+    await user.keyboard('{Enter}');
+    const item = document.activeElement as HTMLElement;
+    expect(screen.getByRole('menu').contains(item)).toBe(true);
+    // the browser's own Tab goes on from where focus is when it acts: the trigger
+    expect(fireEvent.keyDown(item, { key: 'Tab' })).toBe(true);
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(trigger());
+    act(() => { trigger().focus(); });
+    await user.keyboard('{Enter}');
+    expect(fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Tab', shiftKey: true })).toBe(true);
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
 });

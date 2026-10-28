@@ -364,6 +364,40 @@ describe('the Gantt layout', () => {
     expect(button('Gantt Layout').querySelector('svg')?.getAttribute('data-layout')).toBe('beside');
   });
 
+  it('from the keyboard: Enter opens it on the current layout, ↓ moves, Enter picks Below; focus comes back', async () => {
+    const user = userEvent.setup();
+    const onLayout = vi.fn();
+    const cmd = commands();
+    render(<Bar plan={makePlan()} cmd={cmd} layout="beside" onLayout={onLayout} />);
+    act(() => { button('Gantt Layout').focus(); });
+    await user.keyboard('{Enter}');
+    expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: 'Beside' }));
+    await user.keyboard('{ArrowDown}');
+    expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: 'Below' }));
+    await user.keyboard('{Enter}');
+    expect(onLayout).toHaveBeenCalledWith('below');
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(button('Gantt Layout'));
+    expect(cmd.focusSheet).not.toHaveBeenCalled();
+  });
+
+  it('More from the keyboard: Enter opens it on its first item, ↑ wraps to the last, Escape comes back', async () => {
+    const user = userEvent.setup();
+    const cmd = commands();
+    render(<Bar plan={makePlan({ baseline_set_at: '2026-10-20T10:00:00Z' })} cmd={cmd} />);
+    act(() => { button('More').focus(); });
+    await user.keyboard('{Enter}');
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: 'Set baseline…' }));
+    await user.keyboard('{ArrowUp}');
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: 'Delete plan…' }));
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(button('More'));
+    // ↓ opens it too, and Enter on an item runs it
+    await user.keyboard('{ArrowDown}{ArrowDown}{ArrowDown}{Enter}');
+    expect(cmd.open).toHaveBeenLastCalledWith('updateProject');
+  });
+
   it('its tip names it "Gantt Layout" and says what it does', () => {
     vi.useFakeTimers();
     render(<Bar plan={makePlan()} cmd={commands()} />);

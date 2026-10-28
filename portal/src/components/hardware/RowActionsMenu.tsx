@@ -13,13 +13,23 @@
  *  default, flipped upward when there isn't ~200px of viewport space
  *  below it.
  *
+ *  The keyboard (the ARIA menu-button pattern): Enter, Space or ↓ on the
+ *  trigger opens the menu on its checked item, else its first enabled one
+ *  (↑: its last); a mouse-opened menu leaves focus on the trigger, and ↓/↑
+ *  from there go into it. In the menu ↓/↑ move between the enabled items
+ *  (wrapping), Home/End go to the ends, Enter or Space picks one (focus
+ *  then goes back to the trigger, unless the pick moved it somewhere
+ *  itself), Escape closes it with focus back on the trigger, and Tab
+ *  closes it, focus moving on from the trigger as Tab would. The items
+ *  take no tab stop of their own (tabIndex -1, focus moved by the keys).
+ *
  *  Optional, for a toolbar's menu button: an `icon` trigger (named by
  *  `label`) in place of "label ▾", with its own `triggerClassName`; items
  *  that are a choice among several (`checked`: menuitemradio, a ✓ on the
  *  current one); and `returnFocus`, which puts focus back on the trigger
- *  once an item is chosen (the menu-button pattern). */
+ *  after a mouse pick too. */
 
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 import '../../styles/column-menu.css';
@@ -44,6 +54,10 @@ export interface RowAction {
 }
 
 interface MenuPos { top: number | 'auto'; bottom: number | 'auto'; right: number }
+
+/** Where focus goes in a menu just opened from the keyboard: the checked
+ *  item (else the first enabled one), or the last enabled one. */
+type Landing = 'start' | 'last';
 
 const OPEN_UPWARD_THRESHOLD = 200;
 const GAP = 6;
@@ -79,6 +93,8 @@ export function RowActionsMenu({
   const buttonRef = useRef<HTMLButtonElement>(null);
   const name = label ?? 'Actions';
   const menuRef = useRef<HTMLDivElement>(null);
+  /** A keyboard open's landing, done once the menu is drawn. */
+  const landing = useRef<Landing | null>(null);
   const instanceId = useRef(Symbol('row-actions-menu')).current;
   const hintPrefix = `row-action-hint-${useId().replace(/:/g, '')}`;
 
@@ -122,6 +138,7 @@ export function RowActionsMenu({
       if (e.key !== 'Escape' || e.defaultPrevented) return;
       e.preventDefault();
       setOpen(false);
+      buttonRef.current?.focus();
     };
     document.addEventListener('keydown', onKey, true);
     return () => document.removeEventListener('keydown', onKey, true);
@@ -148,6 +165,62 @@ export function RowActionsMenu({
     return () => window.removeEventListener('scroll', onScroll, true);
   }, [open]);
 
+  // a keyboard open lands in the menu once it's drawn
+  useEffect(() => {
+    if (!open || !pos || !landing.current) return;
+    const where = landing.current;
+    landing.current = null;
+    focusItem(where);
+  });
+
+  /** The enabled items, in order (a disabled one takes no focus). */
+  const enabledItems = (): HTMLElement[] => [
+    ...(menuRef.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]') ?? []),
+  ].filter((el) => !(el as HTMLButtonElement).disabled);
+  const focusItem = (where: Landing | 'first') => {
+    const items = enabledItems();
+    const checked = where === 'start' ? items.find((el) => el.getAttribute('aria-checked') === 'true') : undefined;
+    const target = checked ?? (where === 'last' ? items[items.length - 1] : items[0]);
+    target?.focus();
+  };
+  const openMenu = (land: Landing | null) => {
+    // Broadcast BEFORE setState, in the handler body — never inside the
+    // updater: React may run updaters during render, and the broadcast
+    // synchronously setStates the other instances (setState-during-render
+    // warning).
+    menuCoordinator.dispatchEvent(new CustomEvent(CLOSE_OTHERS_EVENT, { detail: instanceId }));
+    landing.current = land;
+    setOpen(true);
+  };
+
+  const onTriggerKey = (e: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    e.preventDefault();
+    const where: Landing = e.key === 'ArrowDown' ? 'start' : 'last';
+    if (open) focusItem(where);
+    else openMenu(where);
+  };
+
+  const onMenuKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Tab') {
+      // close, and let the browser's Tab go on from the trigger
+      setOpen(false);
+      buttonRef.current?.focus();
+      return;
+    }
+    const items = enabledItems();
+    if (!items.length) return;
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    let next: HTMLElement | undefined;
+    if (e.key === 'ArrowDown') next = items[(at + 1) % items.length];
+    else if (e.key === 'ArrowUp') next = items[at <= 0 ? items.length - 1 : at - 1];
+    else if (e.key === 'Home') next = items[0];
+    else if (e.key === 'End') next = items[items.length - 1];
+    else return;
+    e.preventDefault();
+    next?.focus();
+  };
+
   if (actions.length === 0) return null;
   // the enclosing .portal-shell holds the theme tokens (the dark palette);
   // a menu parked under document.body would paint light in dark mode
@@ -156,26 +229,20 @@ export function RowActionsMenu({
     <div className="row-actions" ref={triggerRef} style={{ position: 'relative' }}>
       <button type="button" className={triggerClassName ?? 'mini-btn'} aria-haspopup="menu" ref={buttonRef}
               aria-expanded={open} aria-describedby={describedBy} aria-label={icon ? name : undefined}
+              onKeyDown={onTriggerKey}
               onClick={(e) => {
                 e.stopPropagation();
-                // Broadcast BEFORE setState, in the handler body — never
-                // inside the updater: React may run updaters during
-                // render, and the broadcast synchronously setStates the
-                // other instances (setState-during-render warning).
-                const next = !open;
-                if (next) {
-                  menuCoordinator.dispatchEvent(
-                    new CustomEvent(CLOSE_OTHERS_EVENT, { detail: instanceId }),
-                  );
-                }
-                setOpen(next);
+                // Enter or Space (a click with no pointer: detail 0) opens on
+                // an item; a mouse click leaves focus on the trigger
+                if (open) setOpen(false);
+                else openMenu(e.detail === 0 ? 'start' : null);
               }}>
         {/* the ▾ marks the menu; the trigger is named by its label alone. One
             element, so the button's flex gap doesn't come between them */}
         {icon ?? <span>{name}<span aria-hidden="true"> ▾</span></span>}
       </button>
       {open && pos && createPortal(
-        <div className="pop-menu" role="menu" ref={menuRef}
+        <div className="pop-menu" role="menu" ref={menuRef} onKeyDown={onMenuKey}
              style={{
                position: 'fixed', top: pos.top, bottom: pos.bottom, right: pos.right,
                zIndex: 1200,
@@ -189,7 +256,7 @@ export function RowActionsMenu({
               </>
             ) : a.label;
             return (
-              <button key={a.key} type="button" role={radio ? 'menuitemradio' : 'menuitem'}
+              <button key={a.key} type="button" role={radio ? 'menuitemradio' : 'menuitem'} tabIndex={-1}
                       aria-checked={radio ? a.checked : undefined}
                       className={`pop-item${a.destructive ? ' danger' : ''}${a.hint ? ' has-hint' : ''}`
                         + `${radio ? ' pop-radio' : ''}${a.checked ? ' on' : ''}`}
@@ -202,9 +269,14 @@ export function RowActionsMenu({
                         // in a browser, but a programmatic dispatch still
                         // reaches React's root listener.
                         if (a.disabled) return;
+                        // picked with Enter or Space (a click with no pointer: detail 0)
+                        const fromKeys = e.detail === 0;
                         setOpen(false);
                         a.onSelect();
-                        if (returnFocus) buttonRef.current?.focus();
+                        // back to the trigger, unless the pick moved focus somewhere itself
+                        const now = document.activeElement;
+                        const unmoved = !now || now === document.body || !!menuRef.current?.contains(now);
+                        if (returnFocus || (fromKeys && unmoved)) buttonRef.current?.focus();
                       }}>
                 {radio ? (
                   <>
