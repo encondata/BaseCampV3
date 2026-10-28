@@ -82,9 +82,17 @@ def _parse_entry(part: str, units: Units) -> tuple[str, str, Duration]:
     rest = part[head.end():].strip(_ASCII_WHITESPACE)
     if not rest:
         lag = _ZERO_LAG
-    elif rest[0] not in "+-":
+    elif rest[0] in "0123456789.":
+        # a number straight after the ID or type: the sign is missing
         raise PredecessorError(
             f"{_quoted(part)} is not a predecessor: a lag starts with + or -, like 3FS+2d"
+        )
+    elif rest[0] not in "+-":
+        # anything else after the ID is most likely a mistyped link type
+        raise PredecessorError(
+            f"{_quoted(part)} is not a predecessor: after the task number put a "
+            "link type (FS, SS, FF or SF), then a lag that starts with + or -, "
+            "like 3FS+2d"
         )
     else:
         try:
@@ -119,6 +127,8 @@ def parse_predecessors(
         if not part:
             raise PredecessorError("empty entry: check for a stray comma")
         digits, link_type, lag = _parse_entry(part, units)
+        # at most MAX_TEXT_LENGTH digits: this relies on that staying under
+        # CPython's int-digit limit (4300), which would raise a ValueError
         display_id = int(digits)
         shown = _clip(str(display_id), 12)
         if display_id == self_id:
@@ -147,7 +157,15 @@ def _format_entry(spec: PredSpec, units: Units) -> str:
 
 
 def format_predecessors(specs: Iterable[PredSpec], units: Units) -> str:
-    """`3`, `3FS+2 days`, `5SS`, `7FF-4 hrs`, `2,3SS`: the shortest text that
-    parses back to the same links. A zero lag is left out (its unit is not
-    kept) and so is an FS type with no lag."""
+    """Display text for links: `3`, `3FS+2 days`, `5SS`, `7FF-4 hrs`, `2,3SS`.
+
+    This is for people to read, not a lossless encoding. A lag prints rounded
+    to two decimals of its own unit, so 160 minutes of a 480-minute day is
+    `3FS+0.33 days`, which parses back to 158; a zero lag is left out (its
+    unit is not kept) and so is an FS type with no lag; a nonzero lag too
+    small to show keeps only its sign (`3FS+0 days`).
+
+    A caller that re-parses edited text must compare each entry with the
+    formatted text of the link it already has and keep the stored lag when
+    they match, and compare zero lags by minutes, not by whole spec."""
     return ",".join(_format_entry(spec, units) for spec in specs)

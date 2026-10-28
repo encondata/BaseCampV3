@@ -149,10 +149,30 @@ def test_every_parse_vector_formats_to_text_that_parses_back():
         ids = {spec.display_id for spec in specs}
         text = format_predecessors(specs, UNITS)
         again = parse_predecessors(text, UNITS, valid_ids=ids, self_id=None)
-        # a zero lag comes back as a plain day, so compare the parts that last
-        assert [(s.display_id, s.link_type, s.lag.minutes) for s in again] == [
-            (s.display_id, s.link_type, s.lag.minutes) for s in specs
-        ]
+        # a zero lag comes back as a plain day (the text does not keep its
+        # unit), so its unit and elapsed flag are compared only when it is not zero
+        assert len(again) == len(specs)
+        for got, want in zip(again, specs, strict=True):
+            assert (got.display_id, got.link_type, got.lag.minutes) == (
+                want.display_id,
+                want.link_type,
+                want.lag.minutes,
+            )
+            if want.lag.minutes != 0:
+                assert (got.lag.unit, got.lag.elapsed) == (want.lag.unit, want.lag.elapsed)
+
+
+def test_formatted_text_is_display_text_not_a_lossless_encoding():
+    # two decimals of the unit: 160 minutes of a 480-minute day prints 0.33
+    # days, which reads back as 158, so callers keep the stored lag for an
+    # entry whose text matches the formatted existing link
+    specs = _specs([[3, "FS", 160, "d", False]])
+    text = format_predecessors(specs, UNITS)
+    assert text == "3FS+0.33 days"
+    (again,) = parse_predecessors(text, UNITS, valid_ids={3}, self_id=None)
+    assert again.lag.minutes == 158
+    assert format_predecessors([again], UNITS) == text
+    assert format_predecessors.__doc__ and "not a lossless encoding" in format_predecessors.__doc__
 
 
 def test_all_four_link_types_are_covered_by_the_vectors():
@@ -192,6 +212,24 @@ def test_details_say_what_is_wrong_with_which_part():
     with pytest.raises(PredecessorError) as exc:
         _parse("2,,3")
     assert "empty" in exc.value.detail
+
+
+@pytest.mark.parametrize("text", ["3XX", "3S", "3F", "3 x", "3SSS", "3FSFS", "3FS x", "3SS,4YY"])
+def test_a_mistyped_link_type_hint_lists_the_link_types(text):
+    with pytest.raises(PredecessorError) as exc:
+        _parse(text)
+    detail = exc.value.detail
+    assert "FS, SS, FF or SF" in detail
+    assert "+ or -" in detail
+
+
+@pytest.mark.parametrize("text", ["3 2d", "3FS 2d", "3 4", "3FS 4", "3FS2d", "3.5"])
+def test_a_lag_without_a_sign_hint_says_so(text):
+    with pytest.raises(PredecessorError) as exc:
+        _parse(text)
+    detail = exc.value.detail
+    assert "starts with + or -" in detail
+    assert "link type" not in detail
 
 
 def test_a_bad_lag_is_a_predecessor_error_naming_the_part():
