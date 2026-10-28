@@ -60,13 +60,18 @@ vi.mock('../../lib/plans/api', async (importActual) => ({
 }));
 
 // who asked for a virtualizer, and against which scroll element
-const virt = vi.hoisted(() => ({ calls: [] as { opts: Record<string, unknown>; stack: string }[] }));
+const virt = vi.hoisted(() => ({
+  calls: [] as { opts: Record<string, unknown>; stack: string; el: Element | null }[],
+}));
 vi.mock('@tanstack/react-virtual', async (importActual) => {
   const actual = await importActual<typeof import('@tanstack/react-virtual')>();
   return {
     ...actual,
     useVirtualizer: ((opts: Parameters<typeof actual.useVirtualizer>[0]) => {
-      virt.calls.push({ opts: opts as unknown as Record<string, unknown>, stack: new Error().stack ?? '' });
+      virt.calls.push({
+        opts: opts as unknown as Record<string, unknown>, stack: new Error().stack ?? '',
+        el: (opts.getScrollElement as () => Element | null)(),
+      });
       return actual.useVirtualizer(opts);
     }) as typeof actual.useVirtualizer,
   };
@@ -230,6 +235,7 @@ describe('the layout control', () => {
 
   it('Below: the sheet above the chart, each in its own scroller, a horizontal splitter between; kept for the browser', async () => {
     await ready();
+    virt.calls = [];
     choose('Below');
     expect(localStorage.getItem(LAYOUT_KEY)).toBe('below');
     expect(checkedLayout()).toBe('Below');
@@ -250,6 +256,10 @@ describe('the layout control', () => {
     expect((g.getScrollElement as () => Element)()).toBe(bottom);
     for (const key of ['count', 'overscan', 'scrollMargin'] as const) expect(g[key]).toBe(s[key]);
     expect(g.scrollMargin).toBe(HEAD);
+    // the chart is drawn once its box exists: its virtualizer has the box from its first render
+    const chartCalls = virt.calls.filter((c) => /PlanGantt/.test(c.stack) && c.el !== top);
+    expect(chartCalls.length).toBeGreaterThan(0);
+    expect(chartCalls.every((c) => c.el === bottom)).toBe(true);
     // the sheet's and the chart's sticky headers and sideways scrollbars, one each per pane
     expect(top.querySelectorAll('.pln-sheet-head')).toHaveLength(1);
     expect(bottom.querySelectorAll('.pln-scale')).toHaveLength(1);
@@ -293,7 +303,8 @@ describe('the layout control', () => {
     // Ctrl+Shift+F5 (Scroll to Task) has no chart to scroll: the sheet doesn't move either
     const box = sheetBox();
     const writes = watchTop(box);
-    fireEvent.keyDown(grid(), { key: 'F5', ctrlKey: true, shiftKey: true });
+    // handled, as a disabled button would be: the browser doesn't reload on it either
+    expect(fireEvent.keyDown(grid(), { key: 'F5', ctrlKey: true, shiftKey: true })).toBe(false);
     expect(writes).toEqual([]);
     // the rest of the toolbar works
     expect(button('Indent').getAttribute('aria-disabled')).toBeNull();
@@ -620,5 +631,6 @@ describe('hover tips on the tab’s own commands', () => {
     const exit = hoverTip(button('Exit full screen'));
     expect(exit.keys).toEqual([planShortcutKeys('exitFullScreen', 'win')]);
     expect(exit.keys).toEqual(['Esc']);
+    expect(exit.desc).toBe('Show the portal’s menus and page header again.');
   });
 });

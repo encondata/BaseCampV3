@@ -78,10 +78,25 @@ export const COMMAND_TIPS = {
   layoutHidden: { label: 'Hidden', desc: 'Hide the Gantt chart and show only the task sheet.' },
 
   // More, and what's around the toolbar
-  more: { label: 'More', desc: 'Baseline, Update project, lock, plan settings, columns and keyboard shortcuts.' },
+  // More: what its menu holds for you
+  more: {
+    label: 'More',
+    desc: 'Set or clear the baseline, update the project, lock the schedule, change plan settings, choose '
+      + 'columns, see the shortcuts, or delete the plan.',
+  },
+  moreNoDelete: {
+    label: 'More',
+    desc: 'Set or clear the baseline, update the project, lock the schedule, change plan settings, choose '
+      + 'columns, or see the shortcuts.',
+  },
   moreReadOnly: { label: 'More', desc: 'Choose the sheet’s columns, or see the keyboard shortcuts.' },
+  moreReadOnlyDelete: {
+    label: 'More', desc: 'Choose the sheet’s columns, see the keyboard shortcuts, or delete the plan.',
+  },
   fullScreen: { label: 'Full screen', desc: 'Give the plan the whole window.' },
-  exitFullScreen: { label: 'Exit full screen', desc: 'Go back to the initiative page.', shortcut: 'exitFullScreen' },
+  exitFullScreen: {
+    label: 'Exit full screen', desc: 'Show the portal’s menus and page header again.', shortcut: 'exitFullScreen',
+  },
   unlock: { label: 'Unlock', desc: 'Let the schedule change again: dates, links and the outline.' },
 } as const satisfies Record<string, CommandTip>;
 

@@ -37,7 +37,7 @@ import {
   type InsertKind,
 } from '../../lib/plans/commands';
 import { fitZoom, zoomIn as zoomInOf, zoomOut as zoomOutOf, type Zoom } from '../../lib/plans/ganttGeometry';
-import { LABEL_MAX_PX, readZoom, writeZoom } from '../../lib/plans/ganttView';
+import { LABEL_MAX_PX, readZoom, writeZoom, type GanttLayout } from '../../lib/plans/ganttView';
 import { PLAN_ERRORS, isPlanChanged, planErrorText } from '../../lib/plans/errors';
 import { descendants } from '../../lib/plans/outline';
 import {
@@ -147,6 +147,9 @@ interface Options {
   openDialog(dialog: PlanDialog): void;
   /** The tab's completion check (useCompletion). */
   completion: Pick<Completion, 'answer' | 'prompt'>;
+  /** Where the Gantt chart is (Beside by default): Fit leaves room for the
+   *  names under the sheet; Hidden has no chart to scroll to a task. */
+  layout?: GanttLayout;
 }
 
 export interface PlanCommands {
@@ -205,7 +208,9 @@ function visibleColumns(): PlanColumn[] {
   return columnPrefsSnapshot().visible.map((k) => COLUMN_BY_KEY.get(k)).filter((c): c is PlanColumn => !!c);
 }
 
-export function usePlanCommands({ ctl, sheet, root, clip, openDialog, completion }: Options): PlanCommands {
+export function usePlanCommands({
+  ctl, sheet, root, clip, openDialog, completion, layout = 'beside',
+}: Options): PlanCommands {
   const toast = useToast();
   const { prompt, answer: answered } = completion;
   const [display, setDisplay] = useState<GanttDisplay>({ critical: false, baseline: false });
@@ -214,9 +219,9 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog, completion
   const scrollSeq = useRef(0);
 
   // what callbacks read after an await, and what keeps them one identity
-  const latest = useRef({ ctl, sheet, toast, prompt, openDialog });
+  const latest = useRef({ ctl, sheet, toast, prompt, openDialog, layout });
   useLayoutEffect(() => {
-    latest.current = { ctl, sheet, toast, prompt, openDialog };
+    latest.current = { ctl, sheet, toast, prompt, openDialog, layout };
   });
   const tempRef = useRef(0);
 
@@ -597,7 +602,7 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog, completion
     const fit = () => {
       const now = latest.current.ctl.plan;
       const pane = root.current?.querySelector<HTMLElement>('.pln-pane-chart');
-      const width = (pane?.clientWidth ?? 0) - (pane?.closest('.pln-panes-chart') ? LABEL_MAX_PX : 0);
+      const width = (pane?.clientWidth ?? 0) - (latest.current.layout === 'below' ? LABEL_MAX_PX : 0);
       if (!now || width <= 0) return;
       setZoom(fitZoom(now.project_start, now.project_finish, width));
       scrollSeq.current += 1;
@@ -685,7 +690,9 @@ export function usePlanCommands({ ctl, sheet, root, clip, openDialog, completion
       info: () => info(),
       undo: () => (latest.current.ctl.plan?.permissions.change ? undo() : false),
       redo: () => (latest.current.ctl.plan?.permissions.change ? redo() : false),
-      scrollToTask,
+      // with the chart hidden, Scroll to Task is off: the key does nothing (as
+      // its button would), and isn't the browser's either
+      scrollToTask: () => (latest.current.layout === 'hidden' ? undefined : scrollToTask()),
       collapse: () => (summariesSelected().length ? collapseTo(true) : false),
       expand: () => (summariesSelected().length ? collapseTo(false) : false),
       // the search box arrives with the filters (Task 11): until then the browser finds

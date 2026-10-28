@@ -243,6 +243,21 @@ describe('hover tips', () => {
     expect(hoverTip(button('Insert Task')).note).toBeNull();
   });
 
+  it('More’s sentence names what it holds, Delete plan only for those who may delete', () => {
+    const { unmount } = render(<Bar plan={makePlan()} cmd={commands()} />);
+    expect(hoverTip(button('More')).desc).toBe(COMMAND_TIPS.more.desc);
+    expect(COMMAND_TIPS.more.desc).toMatch(/delete the plan\.$/);
+    unmount();
+    const noDelete = render(<Bar plan={makePlan({ permissions: { view: true, add: true, change: true, delete: false } })}
+                                 cmd={commands()} />);
+    expect(hoverTip(button('More')).desc).toBe(COMMAND_TIPS.moreNoDelete.desc);
+    expect(COMMAND_TIPS.moreNoDelete.desc).not.toMatch(/delete/i);
+    noDelete.unmount();
+    render(<Bar plan={makePlan({ permissions: { view: true, add: false, change: false, delete: false } })}
+                cmd={commands()} />);
+    expect(hoverTip(button('More')).desc).toBe(COMMAND_TIPS.moreReadOnly.desc);
+  });
+
   it('the More trigger’s tip says what it holds, and goes once its menu opens', () => {
     render(<Bar plan={makePlan()} cmd={commands()} />);
     const more = button('More');

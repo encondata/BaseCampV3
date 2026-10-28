@@ -110,7 +110,9 @@ export default function PlanToolbar({ plan, ctl, commands: cmd, platform, layout
     <Tool key={id} label={COMMAND_TIPS[id].label} desc={o.desc ?? COMMAND_TIPS[id].desc} keys={tipKeys(id, os)}
           hint={o.hint ?? null} pressed={o.pressed} onRun={run} focusSheet={cmd.focusSheet}>{icon}</Tool>
   );
-  const moreTip = COMMAND_TIPS[canChange ? 'more' : 'moreReadOnly'];
+  const canDelete = plan.permissions.delete;
+  const moreTip = COMMAND_TIPS[canChange ? (canDelete ? 'more' : 'moreNoDelete')
+    : (canDelete ? 'moreReadOnlyDelete' : 'moreReadOnly')];
 
   return (
     <>

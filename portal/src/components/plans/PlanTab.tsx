@@ -197,15 +197,14 @@ export default function PlanTab({ initiativeId, initiative }: {
   // the completion check's Go to task: the commands' (they come after it)
   const goToRef = useRef<(taskId: string) => void>(() => {});
   const completion = useCompletion(ctl, { onGoTo: (taskId) => goToRef.current(taskId) });
-  const commands = usePlanCommands({ ctl, sheet, root: rootRef, clip: clipRef, openDialog: setDialog, completion });
+  const [layout, setLayout] = useGanttLayout();
+  const commands = usePlanCommands({
+    ctl, sheet, root: rootRef, clip: clipRef, openDialog: setDialog, completion, layout,
+  });
   useLayoutEffect(() => {
     goToRef.current = commands.goToTask;
   });
-  const [layout, setLayout] = useGanttLayout();
-  // Hidden: Scroll to Task (Ctrl+Shift+F5) has no chart to scroll, as its button says
-  const handlers = useMemo(() => (layout === 'hidden'
-    ? { ...commands.handlers, scrollToTask: () => false } : commands.handlers), [commands.handlers, layout]);
-  usePlanShortcuts(handlers, { root: rootRef, enabled: ready && view === 'gantt' });
+  usePlanShortcuts(commands.handlers, { root: rootRef, enabled: ready && view === 'gantt' });
   useRovingToolbar(toolbarRef, ready);
   const { scheduled_start: scheduledStart, scheduled_end: scheduledEnd } = initiative;
   const scheduled = useMemo(() => ({ start: scheduledStart, end: scheduledEnd }), [scheduledStart, scheduledEnd]);

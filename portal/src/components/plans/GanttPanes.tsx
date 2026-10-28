@@ -23,7 +23,7 @@
  * Splitter.tsx.
  */
 import {
-  useCallback, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject,
+  useCallback, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject,
 } from 'react';
 
 import {
@@ -76,10 +76,14 @@ export default function GanttPanes({ layout, on, viewRef, scrollRef, sheetSideRe
 }) {
   const beside = layout === 'beside';
   const below = layout === 'below';
-  const chartRef = useRef<HTMLDivElement>(null);
+  // the chart's own box below the sheet, held in state (a callback ref): the
+  // chart is drawn only once the box exists, so its virtualizer has it from
+  // its first render, and the box's scroll is kept level from the start
+  const [chartBox, setChartBox] = useState<HTMLDivElement | null>(null);
+  const chartRef = useMemo(() => ({ current: chartBox }), [chartBox]);
   const split = useSplit(scrollRef, on && beside);
   const stack = useSplitBelow(viewRef, on && below);
-  const pads = useLevelScroll(scrollRef, chartRef, on && below);
+  const pads = useLevelScroll(scrollRef, chartBox, on && below);
   const startTop = useCallback(() => scrollRef.current?.scrollTop ?? 0, [scrollRef]);
   // the chart's place in time, kept across its remounts (and Hidden)
   const leftMoment = useRef<{ planId: string; ms: number } | null>(null);
@@ -113,9 +117,9 @@ export default function GanttPanes({ layout, on, viewRef, scrollRef, sheetSideRe
                   label="Resize the task sheet" onChange={stack.move} onCommit={stack.save} />
       )}
       {below && (
-        <div className="pln-panes pln-panes-chart" ref={chartRef}>
+        <div className="pln-panes pln-panes-chart" ref={setChartBox}>
           <div className="pln-split pln-solo">
-            {chart({ scrollRef: chartRef, endPad: pads.chart, taskLabels: true, ...slot })}
+            {chartBox && chart({ scrollRef: chartRef, endPad: pads.chart, taskLabels: true, ...slot })}
           </div>
         </div>
       )}
@@ -171,7 +175,7 @@ function useSplitBelow(ref: RefObject<HTMLElement | null>, on: boolean) {
 }
 
 /**
- * Below: the sheet's box (`sheetRef`) and the chart's (`chartRef`) on the
+ * Below: the sheet's box (`sheetRef`) and the chart's (`chart`) on the
  * same row, both ways. A scroll of either writes the other's scrollTop; the
  * scroll event that write causes comes back with the value written (read
  * back, so a clamp counts) and is let go, so neither box chases the other.
@@ -180,14 +184,14 @@ function useSplitBelow(ref: RefObject<HTMLElement | null>, on: boolean) {
  * let both scroll as far as each other (ganttView `endPads`), measured
  * again as the boxes change size; a change of pads levels the chart again.
  */
-function useLevelScroll(sheetRef: RefObject<HTMLElement | null>, chartRef: RefObject<HTMLElement | null>,
+function useLevelScroll(sheetRef: RefObject<HTMLElement | null>, chartEl: HTMLElement | null,
   on: boolean): { sheet: number; chart: number } {
   const [heights, setHeights] = useState<readonly [number, number]>([0, 0]);
   const level = useRef<() => void>(() => {});
 
   useLayoutEffect(() => {
     const sheet = sheetRef.current;
-    const chart = chartRef.current;
+    const chart = chartEl;
     if (!on || !sheet || !chart) {
       setHeights((h) => (h[0] || h[1] ? [0, 0] : h));
       return undefined;
@@ -226,7 +230,7 @@ function useLevelScroll(sheetRef: RefObject<HTMLElement | null>, chartRef: RefOb
       observer?.disconnect();
       level.current = () => {};
     };
-  }, [sheetRef, chartRef, on]);
+  }, [sheetRef, chartEl, on]);
 
   const pads = endPads(heights[0], heights[1]);
   // new pads change how far each box scrolls: the chart comes level again
