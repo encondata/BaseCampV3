@@ -76,7 +76,7 @@ DEFAULTS: dict[str, dict] = {
         "retention_days": None,
         "brand_line": "",
         "email_text": {},
-        "languages": ["en", "ja", "ko", "he"],
+        "languages": ["en"],
     },
 }
 

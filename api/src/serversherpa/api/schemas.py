@@ -20,6 +20,7 @@ from pydantic import (
     model_validator,
 )
 
+from serversherpa.learning import languages as learning_languages
 from serversherpa.notifications.kinds import CATEGORY_KEYS
 
 
@@ -2534,7 +2535,7 @@ class SecurityConfigIn(BaseModel):
     password_history_count: int | None = None
 
 
-LEARNING_LANGUAGES = ("en", "ja", "ko", "he")
+LEARNING_LANGUAGES = learning_languages.CODES
 _HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 # settings that may be cleared back to null (null = the rule is off)
 _LEARNING_NULLABLE = ("general_code_days", "default_validity_days", "retention_days")
@@ -2570,13 +2571,15 @@ class LearningSettingsOut(BaseModel):
     brand_line: str
     email_text: dict[str, dict[str, LearningEmailText]]
     languages: list[str]
+    # every language that can be switched on (learning/languages.py)
+    available_languages: list[str] = Field(default_factory=lambda: list(LEARNING_LANGUAGES))
 
 
 class LearningSettingsIn(BaseModel):
     """Partial update — only sent fields change. general_code_days,
     default_validity_days and retention_days accept an explicit null (the
     rule is off); every other field rejects null. `languages` must include
-    "en" and stay within the four supported languages."""
+    "en" and stay within learning/languages.py's catalog."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -2609,7 +2612,7 @@ class LearningSettingsIn(BaseModel):
         langs = self.languages
         if langs is not None:
             if len(set(langs)) != len(langs) or not set(langs) <= set(LEARNING_LANGUAGES):
-                raise ValueError("languages must be unique and within en, ja, ko, he")
+                raise ValueError("languages must be unique and supported")
             if "en" not in langs:
                 raise ValueError("languages must include en")
         if not set(self.email_text or {}) <= set(LEARNING_EMAIL_KINDS):
@@ -2617,7 +2620,7 @@ class LearningSettingsIn(BaseModel):
                              + ", ".join(LEARNING_EMAIL_KINDS))
         for by_lang in (self.email_text or {}).values():
             if not set(by_lang) <= set(LEARNING_LANGUAGES):
-                raise ValueError("email_text languages must be within en, ja, ko, he")
+                raise ValueError("email_text languages must be supported")
         return self
 
 
